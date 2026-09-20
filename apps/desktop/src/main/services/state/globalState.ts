@@ -85,6 +85,15 @@ export type GlobalState = {
   welcomeVideo?: AppWelcomeVideoState;
   /** Set once Terminal access to `ade` has been settled; see `AdeCliAutoInstall`. */
   adeCliAutoInstall?: AdeCliAutoInstall;
+  /**
+   * The user picked "Don't ask again" on Claude's resume-return dialog.
+   *
+   * Machine-wide and durable: the dialog asks whether to compact a session on
+   * resume, and a person who has said no once should not be asked again by the
+   * next chat. ADE stops declaring the `resume_return` dialog kind while this
+   * is set, which is what makes the CLI stop emitting it.
+   */
+  claudeResumeReturnDismissed?: boolean;
 };
 
 export function readGlobalState(filePath: string): GlobalState {

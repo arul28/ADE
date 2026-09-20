@@ -146,7 +146,13 @@ import {
 import { resolveLaneOverlayContext } from "../lanes/laneOverlayContext";
 import { mergeAiConfig } from "../config/projectConfigService";
 import { appendDiffTruncationNotice, MAX_DIFF_SIDE_TEXT_BYTES } from "../diffs/diffService";
+import { isPathInside } from "../shared/pathCompare";
+import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
+import { isProviderInstanceProvider } from "../../../shared/types/providerInstances";
 import { runGit } from "../git/git";
+// The turn diff is shared with the local ipcMain handler; see chat/turnFileDiff.ts.
+export { getTurnFileDiffFromGit } from "../chat/turnFileDiff";
+import { getTurnFileDiffFromGit } from "../chat/turnFileDiff";
 import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
 import { buildLaneListSnapshots } from "../lanes/laneListSnapshotService";
 import { mapPermissionModeForModelFamily } from "../prs/resolverUtils";
@@ -165,8 +171,9 @@ import {
   getSessionWithChatProjection,
   listSessionsWithChatProjection,
 } from "../sessions/chatSessionProjection";
-import { createOrchestrationDomainService } from "../orchestration/orchestrationDomain";
 import { createAccountActionDomainService } from "../../../../../ade-cli/src/services/account/accountAuthService";
+import { createProxyActionDomainService } from "../../../../../ade-cli/src/services/proxy/proxyService";
+import { providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
 
 // The names themselves live in `./domains`, which has no imports, so consumers
 // that need only the vocabulary (the analytics policy) do not have to load this
@@ -376,16 +383,9 @@ function toService(value: unknown): OpaqueService | null {
   return (value ?? null) as OpaqueService | null;
 }
 
-function buildOrchestrationDomainService(runtime: AdeRuntime): OpaqueService | null {
-  const orchestrationService = runtime.orchestrationService;
-  const laneService = runtime.laneService;
-  const agentChatService = runtime.agentChatService;
-  if (!orchestrationService || !laneService || !agentChatService) return null;
-  return createOrchestrationDomainService({
-    orchestrationService,
-    laneService: { getLaneWorktreePath: (laneId: string) => laneService.getLaneWorktreePath(laneId) },
-    agentChatService,
-  }) as unknown as OpaqueService;
+function buildProxyDomainService(runtime: AdeRuntime): OpaqueService | null {
+  const proxyService = runtime.getProxyService?.() ?? runtime.proxyService;
+  return proxyService ? toService(createProxyActionDomainService(proxyService)) : null;
 }
 
 // The base64/in-memory ceiling, single-sourced so the constant and the
@@ -481,43 +481,6 @@ function normalizeAgentChatParallelLaunchState(
   };
 }
 
-async function getTurnFileDiffFromGit(
-  projectRoot: string,
-  arg: AgentChatGetTurnFileDiffArgs,
-): Promise<AgentChatTurnFileDiff> {
-  const lang = arg.filePath.split(".").pop() ?? undefined;
-  const readSide = async (spec: string): Promise<{
-    exists: boolean;
-    text: string;
-    isTruncated?: boolean;
-    isBinary?: boolean;
-  }> => {
-    const result = await runGit(["show", spec], {
-      cwd: projectRoot,
-      timeoutMs: 10_000,
-      maxOutputBytes: MAX_DIFF_SIDE_TEXT_BYTES + 64 * 1024,
-    });
-    if (result.exitCode !== 0) return { exists: false, text: "" };
-    const buf = Buffer.from(result.stdout, "utf8");
-    if (buf.includes(0)) return { exists: true, text: "", isBinary: true };
-    if (buf.length <= MAX_DIFF_SIDE_TEXT_BYTES) return { exists: true, text: result.stdout };
-    return {
-      exists: true,
-      text: appendDiffTruncationNotice(buf.subarray(0, MAX_DIFF_SIDE_TEXT_BYTES).toString("utf8")),
-      isTruncated: true,
-    };
-  };
-  const origResult = await readSide(`${arg.beforeSha}:${arg.filePath}`);
-  const modResult = await readSide(`${arg.afterSha}:${arg.filePath}`);
-  return {
-    path: arg.filePath,
-    mode: "commit",
-    ...(lang ? { language: lang } : {}),
-    original: origResult,
-    modified: modResult,
-    ...(origResult.isBinary || modResult.isBinary ? { isBinary: true } : {}),
-  };
-}
 
 async function saveAgentChatTempAttachment(projectRoot: string, arg: { data?: string; filename?: string }): Promise<{ path: string }> {
   const maxEncodedLength = Math.ceil(MAX_TEMP_ATTACHMENT_BYTES / 3) * 4;
@@ -2296,7 +2259,6 @@ const AI_SETTINGS_FEATURE_KEYS: AiFeatureKey[] = [
   "commit_messages",
   "pr_descriptions",
   "terminal_summaries",
-  "orchestrator",
   "initial_context",
 ];
 
@@ -2329,6 +2291,12 @@ async function buildAiSettingsStatus(
       dailyUsage: usageBatch.get(feature) ?? 0,
       dailyLimit: aiIntegrationService.getDailyBudgetLimit(feature),
     })),
+    // The `ade-harnesses` skill tells agents to read these two from
+    // `ade actions run ai getStatus`; this projection is that call's only
+    // source, so dropping them left the documented contract unanswerable from
+    // the CLI even though the renderer's IPC status carried them.
+    ...(status.harnessPresets?.length ? { harnessPresets: status.harnessPresets } : {}),
+    ...(status.providerAccounts?.length ? { providerAccounts: status.providerAccounts } : {}),
   };
 }
 
@@ -3285,6 +3253,104 @@ function buildExternalSessionsDomainService(runtime: AdeRuntime): OpaqueService 
   } as OpaqueService;
 }
 
+function buildProviderInstancesDomainService(runtime: AdeRuntime): OpaqueService {
+  // Machine-local by nature: the registry names directories on THIS machine, so
+  // the store is reached through its own ADE-home accessor rather than through
+  // the runtime graph. The runtime is used only for the brain-owned analytics
+  // sink; every machine still has at least its own default account.
+  const store = getMachineProviderInstanceStore();
+  const capture = providerAccountAnalyticsCapture(runtime.productAnalyticsService, "api");
+  // The registry file caches each account's email and plan from its last
+  // refresh. A brain that has never refreshed would list every account as
+  // "not signed in" until something else asked, which is what the Accounts
+  // panel shows on first open. Refresh once per process on the first list;
+  // later lists stay synchronous reads and explicit refreshes stay explicit.
+  let accountsRefreshedOnce = false;
+  return {
+    async list(args: unknown) {
+      const provider = isRecord(args) && isProviderInstanceProvider(args.provider) ? args.provider : undefined;
+      if (!accountsRefreshedOnce) {
+        accountsRefreshedOnce = true;
+        await store.refreshAccounts().catch(() => {
+          // A failed identity read must not hide the accounts themselves; the
+          // list below still returns them, marked not signed in.
+        });
+      }
+      return { instances: store.list(provider) };
+    },
+    create(args: unknown) {
+      const input = isRecord(args) ? args : {};
+      const result = store.create({
+        provider: input.provider,
+        label: input.label,
+        accentColor: input.accentColor,
+      });
+      capture("account_created", "completed", result.instance.provider);
+      return result;
+    },
+    remove(args: unknown) {
+      const id = String((isRecord(args) ? args.id : "") ?? "");
+      const provider = store.get(id)?.provider;
+      const result = store.remove(id);
+      capture("account_removed", "completed", provider);
+      return result;
+    },
+    rename(args: unknown) {
+      const input = isRecord(args) ? args : {};
+      return { instance: store.rename(String(input.id ?? ""), input.label) };
+    },
+    setDefault(args: unknown) {
+      const instance = store.setDefault(String((isRecord(args) ? args.id : "") ?? ""));
+      capture("default_selected", "completed", instance.provider);
+      return { instance };
+    },
+    setAccent(args: unknown) {
+      const input = isRecord(args) ? args : {};
+      const accent = input.accentColor;
+      return {
+        instance: store.setAccent(
+          String(input.id ?? ""),
+          typeof accent === "string" ? accent : null,
+        ),
+      };
+    },
+    getSettings(args: unknown) {
+      const provider = isRecord(args) ? args.provider : undefined;
+      if (!isProviderInstanceProvider(provider)) {
+        throw new Error('A provider is required: "claude" or "codex".');
+      }
+      return { settings: store.getProviderSettings(provider) };
+    },
+    setSettings(args: unknown) {
+      const input = isRecord(args) ? args : {};
+      if (!isProviderInstanceProvider(input.provider)) {
+        throw new Error('A provider is required: "claude" or "codex".');
+      }
+      const requestedSettings = isRecord(input.settings) ? input.settings : {};
+      const settings = store.setProviderSettings(input.provider, {
+        ...(typeof requestedSettings.smartBalance === "boolean" ? { smartBalance: requestedSettings.smartBalance } : {}),
+        ...(typeof requestedSettings.autoStartWindows === "boolean"
+          ? { autoStartWindows: requestedSettings.autoStartWindows }
+          : {}),
+      });
+      if (typeof requestedSettings.smartBalance === "boolean") {
+        capture("balance_changed", requestedSettings.smartBalance ? "enabled" : "disabled", input.provider);
+      }
+      if (typeof requestedSettings.autoStartWindows === "boolean") {
+        capture("auto_start_changed", requestedSettings.autoStartWindows ? "enabled" : "disabled", input.provider);
+      }
+      return { settings };
+    },
+    loginCommand(args: unknown) {
+      return { loginCommand: store.loginCommand(String((isRecord(args) ? args.id : "") ?? "")) };
+    },
+    async refresh(args: unknown) {
+      const provider = isRecord(args) && isProviderInstanceProvider(args.provider) ? args.provider : undefined;
+      return { instances: await store.refreshAccounts(provider) };
+    },
+  } as OpaqueService;
+}
+
 function buildStorageDomainService(runtime: AdeRuntime): OpaqueService | null {
   const storageInsightsService = runtime.storageInsightsService;
   if (!storageInsightsService) return null;
@@ -3316,6 +3382,7 @@ export function getAdeActionDomainServices(
       : null,
     attention: toService(buildAttentionDomainService(runtime)),
     lane: toService(buildLaneDomainService(runtime)),
+    proxy: toService(buildProxyDomainService(runtime)),
     git: toService(runtime.gitService),
     diff: toService(runtime.diffService),
     conflicts: toService(runtime.conflictService),
@@ -3360,8 +3427,8 @@ export function getAdeActionDomainServices(
     automations: automationsEnabled ? toService(buildAutomationsDomainService(runtime)) : null,
     review: toService(runtime.reviewService),
     issue: toService(buildIssueDomainService(runtime)),
-    orchestration: toService(buildOrchestrationDomainService(runtime)),
     search: toService(buildSearchDomainService(runtime)),
     "external-sessions": toService(buildExternalSessionsDomainService(runtime)),
+    provider_instances: toService(buildProviderInstancesDomainService(runtime)),
   };
 }

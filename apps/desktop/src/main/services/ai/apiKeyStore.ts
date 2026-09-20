@@ -1,15 +1,22 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import type { SafeStorage } from "electron";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { isSafeIdentifier } from "../../../shared/safeIdentifier";
 import {
   deviceCredentialProvenance,
   normalizeCredentialProvenance,
   type CredentialProvenance,
 } from "../../../shared/types/credentialProvenance";
 import type { MachineApiKeySource, MachineApiKeyStatus } from "../../../shared/types/config";
+import {
+  DEFAULT_API_CREDENTIAL_ID,
+  type ApiCredentialStoreArgs,
+  type ApiCredentialSummary,
+} from "../../../shared/types/apiCredentials";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import type { AccountVaultBridge } from "../account/accountVaultBridge";
 import {
@@ -18,6 +25,15 @@ import {
 } from "../account/vaultWrite";
 import type { Logger } from "../logging/logger";
 import { writeFileAtomic } from "../state/durableFile";
+import {
+  removeCredentialLaunchHome,
+  type PrivateTreeCleanupOptions,
+} from "../chat/harnessPresetConfigHomes";
+import {
+  captureApiCredentialAnalytics,
+  type FeatureAnalytics,
+} from "../analytics/featureProductAnalytics";
+
 
 // electron.safeStorage is only available inside an Electron main process.
 // When this module is bundled into the ADE CLI headless runtime, `electron`
@@ -36,19 +52,41 @@ try {
 
 type StoredKeys = Record<string, string>;
 
+type ApiCredentialInternalOptions = {
+  source?: "device" | "account";
+  accountUserId?: string | null;
+};
+
 export type ApiKeyProvenance = CredentialProvenance;
 
 export type ApiKeyCredentialStore = SyncCredentialStore;
+
+export type ApiKeyHydrationCollision = {
+  provider: string;
+  credentialId: string;
+  existingCredentialId: string;
+  storageKey: string;
+};
+
+export type ApiKeyHydrationResult = {
+  collisions: ApiKeyHydrationCollision[];
+};
 
 export type InitApiKeyStoreOptions = {
   credentialStore?: ApiKeyCredentialStore | null;
   getAccountVault?: () => AccountVaultBridge | null | undefined;
   getAccountUserId?: () => string | null;
   logger?: Pick<Logger, "warn"> | null;
+  /** Test seam; production resolves the machine ADE home. */
+  launchHomeAdeDir?: string;
+  /** Brain/main-owned product analytics; omitted by isolated store tests. */
+  analytics?: FeatureAnalytics | null;
 };
 
 export type InitMachineApiKeyStoreOptions = {
   credentialStore: ApiKeyCredentialStore | null;
+  /** Test seam; production resolves the machine ADE home. */
+  launchHomeAdeDir?: string;
 };
 
 export type ApiKeyStoreStatus = {
@@ -88,18 +126,36 @@ const MACOS_KEYCHAIN_MISSING_PATTERNS = [
 ];
 const SECURITY_TIMEOUT_MS = 5_000;
 const CREDENTIAL_PROVIDER_INDEX_KEY = "ai.api_key.index.v1";
+/** Credential-store key holding the summary index for every stored credential. */
+export const API_CREDENTIALS_INDEX_KEY = "ai.api_credentials.index.v1";
 const CREDENTIAL_PROVIDER_PROVENANCE_KEY = "ai.api_key.provenance.v1";
 const PROVENANCE_FILE_SUFFIX = ".provenance";
+const DEFAULT_CREDENTIAL_ID = DEFAULT_API_CREDENTIAL_ID;
+const LEGACY_CREDENTIAL_TIMESTAMP = "1970-01-01T00:00:00.000Z";
 
 let getAccountVault: (() => AccountVaultBridge | null | undefined) | null = null;
 let getAccountUserId: (() => string | null) | null = null;
 let vaultLogger: Pick<Logger, "warn"> | null = null;
+let productAnalytics: FeatureAnalytics | null = null;
 
 function logVaultFailure(operation: string, provider: string, detail: unknown): void {
   vaultLogger?.warn("ai.api_key_vault_sync_failed", {
     operation,
     provider,
     error: describeVaultFailure(detail),
+  });
+}
+
+const HYDRATION_COLLISION_MESSAGE =
+  "credential id collides case-insensitively with an existing local credential; skipped";
+
+function logHydrationCollision(collision: ApiKeyHydrationCollision): void {
+  vaultLogger?.warn("ai.api_key_vault_sync_failed", {
+    operation: "hydrate",
+    provider: collision.storageKey,
+    credentialId: collision.credentialId,
+    existingCredentialId: collision.existingCredentialId,
+    error: HYDRATION_COLLISION_MESSAGE,
   });
 }
 
@@ -126,8 +182,10 @@ type ApiKeyScopeState = {
   storePath: string | null;
   legacyStorePath: string | null;
   projectRootPath: string | null;
+  launchHomeAdeDir: string | null;
   credentialStore: ApiKeyCredentialStore | null;
   cache: StoredKeys | null;
+  summaries: ApiCredentialSummary[] | null;
   provenance: Record<string, ApiKeyProvenance> | null;
   decryptionFailed: boolean;
   macosKeychainError: string | null;
@@ -153,8 +211,10 @@ function emptyScopeState(): ApiKeyScopeState {
     storePath: null,
     legacyStorePath: null,
     projectRootPath: null,
+    launchHomeAdeDir: null,
     credentialStore: null,
     cache: null,
+    summaries: null,
     provenance: null,
     decryptionFailed: false,
     macosKeychainError: null,
@@ -203,6 +263,7 @@ let cursorKeyOrigin: "oauth" | "pasted" | null = null;
 export function __setSafeStorageForTests(next: SafeStorage | null): void {
   safeStorage = next;
   projectScope.cache = null;
+  projectScope.summaries = null;
   projectScope.provenance = null;
   projectScope.missingMacosKeychainProviders = new Set<string>();
   machineScopeState = null;
@@ -227,13 +288,63 @@ function normalizeProvider(provider: string): string {
   return provider.trim().toLowerCase();
 }
 
+function normalizeCredentialId(credentialId: string): string {
+  const normalized = credentialId.trim();
+  if (!normalized || normalized.includes("#") || !isSafeIdentifier(normalized)) return "";
+  return normalized;
+}
+
+/**
+ * Canonical storage key for one credential. The single source of truth for the
+ * `provider` / `provider#credentialId` shape — other packages (the CLI launch
+ * preview) must call this rather than re-deriving it, so normalization and the
+ * identifier safety check cannot drift.
+ */
+export function credentialStorageKey(provider: string, credentialId = DEFAULT_CREDENTIAL_ID): string {
+  const normalizedProvider = normalizeProvider(provider);
+  const normalizedCredentialId = normalizeCredentialId(credentialId);
+  if (!normalizedProvider || !isSafeIdentifier(normalizedProvider) || !normalizedCredentialId) return "";
+  return normalizedCredentialId === DEFAULT_CREDENTIAL_ID
+    ? normalizedProvider
+    : `${normalizedProvider}#${normalizedCredentialId}`;
+}
+
+function parseCredentialStorageKey(value: string): { provider: string; credentialId: string } | null {
+  const separator = value.indexOf("#");
+  const provider = normalizeProvider(separator >= 0 ? value.slice(0, separator) : value);
+  const credentialId = separator >= 0
+    ? normalizeCredentialId(value.slice(separator + 1))
+    : DEFAULT_CREDENTIAL_ID;
+  if (!provider || !credentialId) return null;
+  return { provider, credentialId };
+}
+
+function normalizeCredentialStorageKey(value: string): string {
+  const parsed = parseCredentialStorageKey(value);
+  return parsed ? credentialStorageKey(parsed.provider, parsed.credentialId) : "";
+}
+
+function isDefaultCredentialStorageKey(value: string): boolean {
+  return parseCredentialStorageKey(value)?.credentialId === DEFAULT_CREDENTIAL_ID;
+}
+
+function isReservedStoreEntry(key: string): boolean {
+  return [
+    API_CREDENTIALS_INDEX_KEY,
+    CREDENTIAL_PROVIDER_INDEX_KEY,
+    CREDENTIAL_PROVIDER_PROVENANCE_KEY,
+    CREDENTIAL_LEGACY_KEYCHAIN_MIGRATED_KEY,
+    CREDENTIAL_LEGACY_PROJECTS_MIGRATED_KEY,
+  ].includes(key);
+}
+
 function normalizeProvenanceMap(value: unknown): Record<string, ApiKeyProvenance> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const out: Record<string, ApiKeyProvenance> = {};
-  for (const [provider, raw] of Object.entries(value as Record<string, unknown>)) {
-    const normalizedProvider = normalizeProvider(provider);
+  for (const [credentialKey, raw] of Object.entries(value as Record<string, unknown>)) {
+    const normalizedCredentialKey = normalizeCredentialStorageKey(credentialKey);
     const normalized = normalizeCredentialProvenance(raw);
-    if (normalizedProvider && normalized) out[normalizedProvider] = normalized;
+    if (normalizedCredentialKey && normalized) out[normalizedCredentialKey] = normalized;
   }
   return out;
 }
@@ -241,14 +352,204 @@ function normalizeProvenanceMap(value: unknown): Record<string, ApiKeyProvenance
 function normalizeStoredKeys(value: unknown): StoredKeys {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const out: StoredKeys = {};
-  for (const [provider, rawValue] of Object.entries(value as Record<string, unknown>)) {
+  for (const [credentialKey, rawValue] of Object.entries(value as Record<string, unknown>)) {
+    if (isReservedStoreEntry(credentialKey)) continue;
     if (typeof rawValue !== "string") continue;
-    const normalizedProvider = normalizeProvider(provider);
+    const normalizedCredentialKey = normalizeCredentialStorageKey(credentialKey);
     const normalizedKey = rawValue.trim();
-    if (!normalizedProvider.length || !normalizedKey.length) continue;
-    out[normalizedProvider] = normalizedKey;
+    if (!normalizedCredentialKey.length || !normalizedKey.length) continue;
+    out[normalizedCredentialKey] = normalizedKey;
   }
   return out;
+}
+
+function maskCredentialKey(value: string): string {
+  return `••••${value.slice(-4)}`;
+}
+
+function normalizeCredentialSummaries(value: unknown): ApiCredentialSummary[] {
+  if (!Array.isArray(value)) return [];
+  const summaries = new Map<string, ApiCredentialSummary>();
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const record = raw as Record<string, unknown>;
+    if (typeof record.provider !== "string" || typeof record.credentialId !== "string") continue;
+    const provider = normalizeProvider(record.provider);
+    const credentialId = normalizeCredentialId(record.credentialId);
+    if (!provider || !credentialId) continue;
+    const label = typeof record.label === "string" && record.label.trim().length
+      ? record.label.trim()
+      : provider;
+    const source = record.source === "store" || record.source === "env" || record.source === "config"
+      ? record.source
+      : "store";
+    const summary: ApiCredentialSummary = {
+      provider,
+      credentialId,
+      label,
+      source,
+      createdAt: typeof record.createdAt === "string" && record.createdAt.trim().length
+        ? record.createdAt
+        : LEGACY_CREDENTIAL_TIMESTAMP,
+      updatedAt: typeof record.updatedAt === "string" && record.updatedAt.trim().length
+        ? record.updatedAt
+        : LEGACY_CREDENTIAL_TIMESTAMP,
+    };
+    if (typeof record.envVar === "string" && record.envVar.trim().length) summary.envVar = record.envVar.trim();
+    if (typeof record.baseUrl === "string" && record.baseUrl.trim().length) summary.baseUrl = record.baseUrl.trim();
+    if (record.protocol === "openai-compatible" || record.protocol === "openai-responses" || record.protocol === "anthropic") {
+      summary.protocol = record.protocol;
+    }
+    if (Array.isArray(record.models)) {
+      const models = Array.from(new Set(
+        record.models.filter((model): model is string => typeof model === "string" && model.trim().length > 0)
+          .map((model) => model.trim()),
+      ));
+      if (models.length) summary.models = models;
+    }
+    if (typeof record.maskedTail === "string" && record.maskedTail.trim().length) {
+      summary.maskedTail = record.maskedTail.trim();
+    }
+    const storageKey = credentialStorageKey(provider, credentialId);
+    if (storageKey) summaries.set(storageKey, summary);
+  }
+  return Array.from(summaries.values());
+}
+
+function summaryStorageKey(summary: Pick<ApiCredentialSummary, "provider" | "credentialId">): string {
+  return credentialStorageKey(summary.provider, summary.credentialId);
+}
+
+function legacyCredentialSummary(provider: string, key?: string): ApiCredentialSummary {
+  const normalizedProvider = normalizeProvider(provider);
+  const summary: ApiCredentialSummary = {
+    provider: normalizedProvider,
+    credentialId: DEFAULT_CREDENTIAL_ID,
+    label: normalizedProvider,
+    source: "store",
+    createdAt: LEGACY_CREDENTIAL_TIMESTAMP,
+    updatedAt: LEGACY_CREDENTIAL_TIMESTAMP,
+  };
+  const envVar = ENV_KEY_PROVIDERS[normalizedProvider];
+  if (envVar) summary.envVar = envVar;
+  if (key) summary.maskedTail = maskCredentialKey(key);
+  return summary;
+}
+
+function environmentCredentialSummary(provider: string): ApiCredentialSummary | null {
+  const normalizedProvider = normalizeProvider(provider);
+  const envVar = ENV_KEY_PROVIDERS[normalizedProvider];
+  if (!envVar) return null;
+  const value = (process.env[envVar] ?? "").trim();
+  if (!value) return null;
+  return {
+    ...legacyCredentialSummary(normalizedProvider, value),
+    source: "env",
+    envVar,
+  };
+}
+
+function normalizeCredentialModels(models: string[] | undefined): string[] | undefined {
+  if (!models) return undefined;
+  const normalized = Array.from(new Set(models
+    .filter((model): model is string => typeof model === "string")
+    .map((model) => model.trim())
+    .filter((model) => model.length > 0)));
+  return normalized.length ? normalized : undefined;
+}
+
+function normalizeCredentialProtocol(
+  protocol: ApiCredentialSummary["protocol"] | undefined,
+): ApiCredentialSummary["protocol"] | undefined {
+  return protocol === "openai-compatible" || protocol === "openai-responses" || protocol === "anthropic"
+    ? protocol
+    : undefined;
+}
+
+function generateCredentialId(label: string): string {
+  const slug = label
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32) || "credential";
+  return `${slug}-${randomBytes(3).toString("hex")}`;
+}
+
+function buildCredentialSummary(
+  args: ApiCredentialStoreArgs,
+  provider: string,
+  credentialId: string,
+  previous: ApiCredentialSummary | undefined,
+  key: string,
+): ApiCredentialSummary {
+  const label = args.label.trim();
+  if (!provider || !label || !key.trim()) throw new Error("Provider, label, and key are required.");
+  const summary: ApiCredentialSummary = {
+    provider,
+    credentialId,
+    label,
+    source: "store",
+    createdAt: previous?.createdAt ?? new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    maskedTail: maskCredentialKey(key),
+  };
+  const envVar = args.envVar?.trim();
+  const baseUrl = args.baseUrl?.trim();
+  const protocol = normalizeCredentialProtocol(args.protocol);
+  const models = normalizeCredentialModels(args.models);
+  if (envVar) summary.envVar = envVar;
+  if (baseUrl) summary.baseUrl = baseUrl;
+  if (protocol) summary.protocol = protocol;
+  if (models) summary.models = models;
+  return summary;
+}
+
+function upsertCredentialSummary(scope: ApiKeyScopeState, summary: ApiCredentialSummary): void {
+  const key = summaryStorageKey(summary);
+  scope.summaries = [
+    ...(scope.summaries ?? []).filter((entry) => summaryStorageKey(entry) !== key),
+    summary,
+  ];
+}
+
+function ensureLegacyCredentialSummary(scope: ApiKeyScopeState, storageKey: string, key: string): void {
+  if ((scope.summaries ?? []).some((summary) => summaryStorageKey(summary) === storageKey)) return;
+  const parsed = parseCredentialStorageKey(storageKey);
+  if (!parsed) return;
+  const summary = parsed.credentialId === DEFAULT_CREDENTIAL_ID
+    ? legacyCredentialSummary(parsed.provider, key)
+    : {
+        provider: parsed.provider,
+        credentialId: parsed.credentialId,
+        label: parsed.credentialId,
+        source: "store" as const,
+        createdAt: LEGACY_CREDENTIAL_TIMESTAMP,
+        updatedAt: LEGACY_CREDENTIAL_TIMESTAMP,
+        maskedTail: maskCredentialKey(key),
+      };
+  upsertCredentialSummary(scope, summary);
+  writeApiCredentialIndex(scope, scope.summaries ?? []);
+}
+
+function storedCredentialSummaries(scope: ApiKeyScopeState, provider?: string): ApiCredentialSummary[] {
+  const normalizedProvider = provider === undefined ? undefined : normalizeProvider(provider);
+  const summaries = [...(scope.summaries ?? [])];
+  const knownKeys = new Set(summaries.map(summaryStorageKey));
+  for (const candidate of Object.keys(ENV_KEY_PROVIDERS)) {
+    const summary = environmentCredentialSummary(candidate);
+    const key = summary ? summaryStorageKey(summary) : "";
+    if (summary && !knownKeys.has(key)) {
+      summaries.push(summary);
+      knownKeys.add(key);
+    }
+  }
+  return summaries
+    .filter((summary) => normalizedProvider === undefined || summary.provider === normalizedProvider)
+    .sort((left, right) => {
+      const providerOrder = left.provider.localeCompare(right.provider);
+      return providerOrder || left.credentialId.localeCompare(right.credentialId);
+    });
 }
 
 function ensureInitialized(scope: ApiKeyScopeState): void {
@@ -345,8 +646,11 @@ function normalizeProviderList(value: unknown): string[] {
   return Array.from(providers).sort();
 }
 
-function credentialProviderKey(provider: string): string {
-  return `ai.api_key.${provider}.v1`;
+function credentialProviderKey(providerOrCredentialKey: string, credentialId?: string): string {
+  const credentialKey = credentialId === undefined
+    ? normalizeCredentialStorageKey(providerOrCredentialKey)
+    : credentialStorageKey(providerOrCredentialKey, credentialId);
+  return `ai.api_key.${credentialKey}.v1`;
 }
 
 function readCredentialSecret(scope: ApiKeyScopeState, key: string): string | null {
@@ -379,7 +683,9 @@ function deleteCredentialSecret(scope: ApiKeyScopeState, key: string): void {
 }
 
 function provenancePath(scope: ApiKeyScopeState): string | null {
-  return scope.storePath ? `${scope.storePath}${PROVENANCE_FILE_SUFFIX}` : null;
+  return scope.storePath
+    ? path.join(path.dirname(scope.storePath), `${path.basename(scope.storePath)}${PROVENANCE_FILE_SUFFIX}`)
+    : null;
 }
 
 function loadEncryptedProvenance(scope: ApiKeyScopeState): Record<string, ApiKeyProvenance> {
@@ -419,20 +725,20 @@ function persistProvenance(
   noteStoreWriteCommitted(scope);
 }
 
-function ensureProvenance(scope: ApiKeyScopeState, providers: Iterable<string>): Record<string, ApiKeyProvenance> {
+function ensureProvenance(scope: ApiKeyScopeState, credentialKeys: Iterable<string>): Record<string, ApiKeyProvenance> {
   if (!scope.provenance) {
     scope.provenance = scope.credentialStore
       ? readCredentialProvenance(scope)
       : loadEncryptedProvenance(scope);
   }
   let changed = false;
-  for (const provider of providers) {
-    const normalizedProvider = normalizeProvider(provider);
-    if (normalizedProvider && !scope.provenance[normalizedProvider]) {
+  for (const credentialKey of credentialKeys) {
+    const normalizedCredentialKey = normalizeCredentialStorageKey(credentialKey);
+    if (normalizedCredentialKey && !scope.provenance[normalizedCredentialKey]) {
       // Existing stores predate provenance. Treat their values as device-only
       // so a later account cannot inherit account ownership; the value remains
       // eligible for this machine's one-time device migration.
-      scope.provenance[normalizedProvider] = deviceCredentialProvenance();
+      scope.provenance[normalizedCredentialKey] = deviceCredentialProvenance();
       changed = true;
     }
   }
@@ -440,15 +746,18 @@ function ensureProvenance(scope: ApiKeyScopeState, providers: Iterable<string>):
   return scope.provenance;
 }
 
-function setProvenance(scope: ApiKeyScopeState, provider: string, value: ApiKeyProvenance): void {
-  ensureProvenance(scope, [])[provider] = value;
+function setProvenance(scope: ApiKeyScopeState, credentialKey: string, value: ApiKeyProvenance): void {
+  const normalizedCredentialKey = normalizeCredentialStorageKey(credentialKey);
+  if (!normalizedCredentialKey) return;
+  ensureProvenance(scope, [])[normalizedCredentialKey] = value;
   persistProvenance(scope);
 }
 
-function deleteProvenance(scope: ApiKeyScopeState, provider: string): void {
+function deleteProvenance(scope: ApiKeyScopeState, credentialKey: string): void {
+  const normalizedCredentialKey = normalizeCredentialStorageKey(credentialKey);
   if (!scope.provenance) return;
-  if (!(provider in scope.provenance)) return;
-  delete scope.provenance[provider];
+  if (!(normalizedCredentialKey in scope.provenance)) return;
+  delete scope.provenance[normalizedCredentialKey];
   persistProvenance(scope);
 }
 
@@ -463,11 +772,73 @@ function readCredentialProviderIndex(scope: ApiKeyScopeState): { exists: boolean
 }
 
 function writeCredentialProviderIndex(scope: ApiKeyScopeState, providers: Iterable<string>): void {
+  const defaultProviders = Array.from(new Set(Array.from(providers)
+    .map((credentialKey) => parseCredentialStorageKey(credentialKey))
+    .filter((parsed): parsed is { provider: string; credentialId: string } => Boolean(parsed))
+    .filter((parsed) => parsed.credentialId === DEFAULT_CREDENTIAL_ID)
+    .map((parsed) => parsed.provider)));
   writeCredentialSecret(
     scope,
     CREDENTIAL_PROVIDER_INDEX_KEY,
-    JSON.stringify(normalizeProviderList(Array.from(providers))),
+    JSON.stringify(normalizeProviderList(defaultProviders)),
   );
+}
+
+function readApiCredentialIndex(scope: ApiKeyScopeState): { exists: boolean; summaries: ApiCredentialSummary[] } {
+  if (!scope.credentialStore) {
+    return { exists: scope.summaries !== null, summaries: scope.summaries ?? [] };
+  }
+  const raw = readCredentialSecret(scope, API_CREDENTIALS_INDEX_KEY);
+  if (!raw) return { exists: false, summaries: [] };
+  try {
+    return { exists: true, summaries: normalizeCredentialSummaries(JSON.parse(raw)) };
+  } catch {
+    return { exists: true, summaries: [] };
+  }
+}
+
+function writeApiCredentialIndex(scope: ApiKeyScopeState, summaries: Iterable<ApiCredentialSummary>): void {
+  const normalizedSummaries = normalizeCredentialSummaries(Array.from(summaries));
+  scope.summaries = normalizedSummaries;
+  if (scope.credentialStore) {
+    writeCredentialSecret(scope, API_CREDENTIALS_INDEX_KEY, JSON.stringify(normalizedSummaries));
+    noteStoreWriteCommitted(scope);
+    return;
+  }
+  if (scope.cache && canPersistEncryptedStore(scope)) persistEncryptedStore(scope, scope.cache);
+}
+
+function mergeCredentialSummaries(
+  current: Iterable<ApiCredentialSummary>,
+  legacyProviders: Iterable<string>,
+  store: StoredKeys,
+): ApiCredentialSummary[] {
+  const summaries = new Map<string, ApiCredentialSummary>();
+  for (const summary of current) summaries.set(summaryStorageKey(summary), summary);
+  for (const provider of legacyProviders) {
+    const normalizedProvider = normalizeProvider(provider);
+    const key = credentialStorageKey(normalizedProvider);
+    if (normalizedProvider && !summaries.has(key)) {
+      summaries.set(key, legacyCredentialSummary(normalizedProvider, store[key]));
+    }
+  }
+  for (const [credentialKey, value] of Object.entries(store)) {
+    if (summaries.has(credentialKey)) continue;
+    const parsed = parseCredentialStorageKey(credentialKey);
+    if (!parsed) continue;
+    summaries.set(credentialKey, parsed.credentialId === DEFAULT_CREDENTIAL_ID
+      ? legacyCredentialSummary(parsed.provider, value)
+      : {
+          provider: parsed.provider,
+          credentialId: parsed.credentialId,
+          label: parsed.credentialId,
+          source: "store",
+          createdAt: LEGACY_CREDENTIAL_TIMESTAMP,
+          updatedAt: LEGACY_CREDENTIAL_TIMESTAMP,
+          maskedTail: maskCredentialKey(value),
+        });
+  }
+  return Array.from(summaries.values());
 }
 
 function readCredentialLegacyMigratedProjectRoots(scope: ApiKeyScopeState): Set<string> {
@@ -501,13 +872,13 @@ function markCredentialLegacyKeychainMigrated(scope: ApiKeyScopeState): void {
   writeCredentialSecret(scope, CREDENTIAL_LEGACY_KEYCHAIN_MIGRATED_KEY, new Date().toISOString());
 }
 
-function readCredentialStore(scope: ApiKeyScopeState, providerCandidates: Iterable<string>): StoredKeys {
+function readCredentialStore(scope: ApiKeyScopeState, credentialCandidates: Iterable<string>): StoredKeys {
   const out: StoredKeys = {};
-  for (const provider of providerCandidates) {
-    const normalizedProvider = normalizeProvider(provider);
-    if (!normalizedProvider.length) continue;
-    const value = readCredentialSecret(scope, credentialProviderKey(normalizedProvider));
-    if (value) out[normalizedProvider] = value;
+  for (const credentialKey of credentialCandidates) {
+    const normalizedCredentialKey = normalizeCredentialStorageKey(credentialKey);
+    if (!normalizedCredentialKey.length) continue;
+    const value = readCredentialSecret(scope, credentialProviderKey(normalizedCredentialKey));
+    if (value) out[normalizedCredentialKey] = value;
   }
   return out;
 }
@@ -518,16 +889,16 @@ function mergeLegacyValuesIntoCredentialStore(
   legacyStore: StoredKeys,
 ): StoredKeys {
   const nextStore = { ...currentStore };
-  const changedProviders = new Set<string>();
-  for (const [provider, rawValue] of Object.entries(legacyStore)) {
-    const normalizedProvider = normalizeProvider(provider);
+  const changedCredentialKeys = new Set<string>();
+  for (const [credentialKey, rawValue] of Object.entries(legacyStore)) {
+    const normalizedCredentialKey = normalizeCredentialStorageKey(credentialKey);
     const value = rawValue.trim();
-    if (!normalizedProvider.length || !value.length || nextStore[normalizedProvider]) continue;
-    writeCredentialSecret(scope, credentialProviderKey(normalizedProvider), value);
-    nextStore[normalizedProvider] = value;
-    changedProviders.add(normalizedProvider);
+    if (!normalizedCredentialKey.length || !value.length || nextStore[normalizedCredentialKey]) continue;
+    writeCredentialSecret(scope, credentialProviderKey(normalizedCredentialKey), value);
+    nextStore[normalizedCredentialKey] = value;
+    changedCredentialKeys.add(normalizedCredentialKey);
   }
-  if (changedProviders.size) {
+  if (changedCredentialKeys.size) {
     const index = readCredentialProviderIndex(scope);
     writeCredentialProviderIndex(scope, new Set([...index.providers, ...Object.keys(nextStore)]));
   }
@@ -627,6 +998,7 @@ function loadEncryptedStore(scope: ApiKeyScopeState): StoredKeys {
 
   if (!fs.existsSync(scope.storePath)) {
     scope.decryptionFailed = false;
+    if (!scope.credentialStore) scope.summaries = [];
     return {};
   }
 
@@ -639,7 +1011,12 @@ function loadEncryptedStore(scope: ApiKeyScopeState): StoredKeys {
     const raw = fs.readFileSync(scope.storePath);
     const decrypted = safeStorage!.decryptString(raw);
     scope.decryptionFailed = false;
-    return normalizeStoredKeys(JSON.parse(decrypted));
+    const parsed = JSON.parse(decrypted) as unknown;
+    if (!scope.credentialStore && parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const metadata = (parsed as Record<string, unknown>)[API_CREDENTIALS_INDEX_KEY];
+      scope.summaries = normalizeCredentialSummaries(metadata);
+    }
+    return normalizeStoredKeys(parsed);
   } catch {
     scope.decryptionFailed = true;
     return {};
@@ -647,6 +1024,7 @@ function loadEncryptedStore(scope: ApiKeyScopeState): StoredKeys {
 }
 
 function deleteMacosKeychainSecretBestEffort(scope: ApiKeyScopeState, account: string): void {
+  if (!isDefaultCredentialStorageKey(account)) return;
   try {
     deleteMacosKeychainSecret(scope, account);
   } catch {
@@ -708,9 +1086,21 @@ function ensureStore(scope: ApiKeyScopeState): StoredKeys {
   ensureInitialized(scope);
 
   if (scope.credentialStore) {
-    const index = readCredentialProviderIndex(scope);
-    const credentialValues = index.exists ? readCredentialStore(scope, index.providers) : {};
+    const providerIndex = readCredentialProviderIndex(scope);
+    const credentialIndex = readApiCredentialIndex(scope);
+    const credentialCandidates = new Set<string>(providerIndex.providers);
+    for (const summary of credentialIndex.summaries) credentialCandidates.add(summaryStorageKey(summary));
+    const credentialValues = readCredentialStore(scope, credentialCandidates);
     scope.cache = migrateLegacyStoresIntoCredentialStore(scope, credentialValues);
+    const mergedSummaries = mergeCredentialSummaries(
+      credentialIndex.summaries,
+      providerIndex.providers,
+      scope.cache,
+    );
+    const summariesChanged = JSON.stringify(mergedSummaries) !== JSON.stringify(credentialIndex.summaries);
+    scope.summaries = mergedSummaries;
+    if (summariesChanged) writeApiCredentialIndex(scope, mergedSummaries);
+    else noteStoreWriteCommitted(scope);
     ensureProvenance(scope, Object.keys(scope.cache));
     return scope.cache;
   }
@@ -719,17 +1109,22 @@ function ensureStore(scope: ApiKeyScopeState): StoredKeys {
   if (isMacosKeychainAvailable()) {
     if (canPersistEncryptedStore(scope)) {
       scope.cache = migrateLegacyMacosKeychainIntoEncryptedStore(scope, encryptedStore);
+      const summaries = mergeCredentialSummaries(scope.summaries ?? [], [], scope.cache);
+      if (JSON.stringify(summaries) !== JSON.stringify(scope.summaries ?? [])) writeApiCredentialIndex(scope, summaries);
       ensureProvenance(scope, Object.keys(scope.cache));
       return scope.cache;
     }
 
     const index = readMacosKeychainProviderIndex(scope);
     scope.cache = index.exists ? readMacosKeychainStore(scope, index.providers) : encryptedStore;
+    scope.summaries = mergeCredentialSummaries(scope.summaries ?? [], index.providers, scope.cache);
     ensureProvenance(scope, Object.keys(scope.cache));
     return scope.cache;
   }
 
   scope.cache = encryptedStore;
+  const summaries = mergeCredentialSummaries(scope.summaries ?? [], [], scope.cache);
+  if (JSON.stringify(summaries) !== JSON.stringify(scope.summaries ?? [])) writeApiCredentialIndex(scope, summaries);
   ensureProvenance(scope, Object.keys(scope.cache));
   return scope.cache;
 }
@@ -739,26 +1134,41 @@ function purgeApiKeysMatching(
   predicate: (value: ApiKeyProvenance) => boolean,
 ): Set<string> {
   const store = ensureStore(scope);
-  const metadata = ensureProvenance(scope, Object.keys(store));
+  const summaries = scope.summaries ?? [];
+  const metadata = ensureProvenance(scope, [...Object.keys(store), ...summaries.map(summaryStorageKey)]);
   const matched = Object.entries(metadata)
     .filter(([, value]) => predicate(value))
-    .map(([provider]) => provider);
+    .map(([credentialKey]) => credentialKey);
   if (!matched.length) return new Set();
 
   const nextStore = { ...store };
-  for (const provider of matched) {
-    delete nextStore[provider];
-    if (scope.credentialStore) deleteCredentialSecret(scope, credentialProviderKey(provider));
-    delete metadata[provider];
-    scope.missingCredentialProviders.add(provider);
-    scope.missingMacosKeychainProviders.add(provider);
+  for (const credentialKey of matched) {
+    const parsedCredential = parseCredentialStorageKey(credentialKey);
+    if (parsedCredential) {
+      // WHY: deleting a secret without deleting the raw provider config leaves
+      // a revoked key usable by a later harness launch.
+      const cleanupOptions: PrivateTreeCleanupOptions = { logger: vaultLogger };
+      removeCredentialLaunchHome(
+        parsedCredential.provider,
+        parsedCredential.credentialId,
+        scope.launchHomeAdeDir ?? undefined,
+        cleanupOptions,
+      );
+    }
+    delete nextStore[credentialKey];
+    if (scope.credentialStore) deleteCredentialSecret(scope, credentialProviderKey(credentialKey));
+    delete metadata[credentialKey];
+    scope.summaries = (scope.summaries ?? []).filter((summary) => summaryStorageKey(summary) !== credentialKey);
+    scope.missingCredentialProviders.add(credentialKey);
+    if (isDefaultCredentialStorageKey(credentialKey)) scope.missingMacosKeychainProviders.add(credentialKey);
   }
   if (scope.credentialStore) {
     const index = readCredentialProviderIndex(scope);
     writeCredentialProviderIndex(scope, index.providers.filter((provider) => !matched.includes(provider)));
+    writeApiCredentialIndex(scope, scope.summaries ?? []);
   } else if (canPersistEncryptedStore(scope)) {
     persistEncryptedStore(scope, nextStore);
-    for (const provider of matched) deleteMacosKeychainSecretBestEffort(scope, provider);
+    for (const credentialKey of matched) deleteMacosKeychainSecretBestEffort(scope, credentialKey);
   }
   scope.cache = nextStore;
   persistProvenance(scope, metadata);
@@ -779,7 +1189,9 @@ function persistEncryptedStore(scope: ApiKeyScopeState, nextStore: StoredKeys = 
     throw new Error("OS secure storage is unavailable. Cannot persist API keys.");
   }
   fs.mkdirSync(path.dirname(scope.storePath), { recursive: true });
-  const encrypted = safeStorage!.encryptString(JSON.stringify(nextStore));
+  const payload: Record<string, unknown> = { ...nextStore };
+  if (scope.summaries !== null) payload[API_CREDENTIALS_INDEX_KEY] = scope.summaries;
+  const encrypted = safeStorage!.encryptString(JSON.stringify(payload));
   fs.writeFileSync(scope.storePath, encrypted);
   try {
     fs.chmodSync(scope.storePath, 0o600);
@@ -796,6 +1208,7 @@ export function initApiKeyStore(projectRoot: string, options: InitApiKeyStoreOpt
   projectScope = {
     ...emptyScopeState(),
     projectRootPath: path.resolve(projectRoot),
+    launchHomeAdeDir: options.launchHomeAdeDir ?? resolveMachineAdeLayout().adeDir,
     storePath: layout.apiKeysPath,
     legacyStorePath: layout.legacyApiKeysPath,
     credentialStore: options.credentialStore ?? null,
@@ -803,6 +1216,7 @@ export function initApiKeyStore(projectRoot: string, options: InitApiKeyStoreOpt
   getAccountVault = options.getAccountVault ?? null;
   getAccountUserId = options.getAccountUserId ?? null;
   vaultLogger = options.logger ?? null;
+  productAnalytics = options.analytics ?? null;
   cursorKeyOrigin = null;
   // A re-init can hand over a different credential store instance. The machine
   // scope may be borrowing the project's one (when no machine store was
@@ -870,6 +1284,7 @@ function createMachineScopeState(): ApiKeyScopeState {
   // never touch a project directory.
   return {
     ...emptyScopeState(),
+    launchHomeAdeDir: resolveMachineAdeLayout().adeDir,
     storePath,
     legacyStorePath,
     // Every door into this machine's secrets: the encrypted key fallback and
@@ -912,6 +1327,12 @@ function machineScope(): ApiKeyScopeState {
 export function initMachineApiKeyStore(options: InitMachineApiKeyStoreOptions): void {
   machineCredentialStore = options.credentialStore ?? null;
   machineScopeState = null;
+  if (options.launchHomeAdeDir !== undefined) {
+    machineScopeState = {
+      ...createMachineScopeState(),
+      launchHomeAdeDir: options.launchHomeAdeDir,
+    };
+  }
 }
 
 /**
@@ -922,6 +1343,7 @@ export function initMachineApiKeyStore(options: InitMachineApiKeyStoreOptions): 
 function invalidatePeerScopeCache(scope: ApiKeyScopeState): void {
   if (scope === machineScopeState) {
     projectScope.cache = null;
+    projectScope.summaries = null;
     projectScope.provenance = null;
     projectScope.missingCredentialProviders = new Set<string>();
     return;
@@ -938,7 +1360,7 @@ export function getMachineApiKey(provider: string): string | null {
 }
 
 export function deleteMachineApiKey(provider: string): void {
-  deleteApiKeyIn(machineScope(), provider);
+  removeApiCredentialIn(machineScope(), provider, DEFAULT_CREDENTIAL_ID);
 }
 
 export function listMachineStoredProviders(): string[] {
@@ -1003,26 +1425,71 @@ export function getApiKeyStoreStatus(): ApiKeyStoreStatus {
   return getApiKeyStoreStatusIn(projectScope);
 }
 
-function storeApiKeyIn(
+function findCaseInsensitiveCredentialCollision(
   scope: ApiKeyScopeState,
   provider: string,
-  key: string,
-  options: {
-    deviceOnly?: boolean;
-    /** Internal provenance used only when hydrating a value from the vault. */
-    source?: "device" | "account";
-    accountUserId?: string | null;
-  } = {},
-): void {
+  credentialId: string,
+): { provider: string; credentialId: string } | null {
   const normalizedProvider = normalizeProvider(provider);
-  const normalizedKey = key.trim();
-  if (!normalizedProvider.length || !normalizedKey.length) {
-    throw new Error("Provider and key are required.");
+  const normalizedCredentialId = normalizeCredentialId(credentialId);
+  const normalizedCredentialIdLower = normalizedCredentialId.toLowerCase();
+  const entries = [
+    ...(scope.summaries ?? []).map((summary) => ({
+      provider: normalizeProvider(summary.provider),
+      credentialId: normalizeCredentialId(summary.credentialId),
+    })),
+    ...Object.keys(ensureStore(scope)).map((storageKey) => parseCredentialStorageKey(storageKey)).filter(
+      (parsed): parsed is { provider: string; credentialId: string } => parsed !== null,
+    ),
+  ];
+  return entries.find((entry) => entry.provider === normalizedProvider
+    && entry.credentialId.toLowerCase() === normalizedCredentialIdLower
+    && entry.credentialId !== normalizedCredentialId) ?? null;
+}
+
+function storeApiCredentialIn(
+  scope: ApiKeyScopeState,
+  args: ApiCredentialStoreArgs,
+  options: ApiCredentialInternalOptions = {},
+): string {
+  const normalizedProvider = normalizeProvider(args.provider);
+  const normalizedKey = args.key.trim();
+  const normalizedCredentialId = args.credentialId === undefined
+    ? generateCredentialId(args.label)
+    : normalizeCredentialId(args.credentialId);
+  if (!normalizedProvider || !normalizedCredentialId || !normalizedKey || !args.label.trim()) {
+    if (args.credentialId !== undefined && !normalizedCredentialId) {
+      throw new Error("Credential ids may contain only letters, digits, dot, underscore, and dash.");
+    }
+    if (!isSafeIdentifier(normalizedProvider)) {
+      throw new Error("Provider ids may contain only letters, digits, dot, underscore, and dash.");
+    }
+    throw new Error("Provider, label, and key are required.");
   }
+  const storageKey = credentialStorageKey(normalizedProvider, normalizedCredentialId);
+
   invalidatePeerScopeCache(scope);
   ensureStore(scope);
   if (scope === projectScope) purgeForeignAccountApiKeys(scope);
   const store = ensureStore(scope);
+  const caseInsensitiveCollision = findCaseInsensitiveCredentialCollision(
+    scope,
+    normalizedProvider,
+    normalizedCredentialId,
+  );
+  if (caseInsensitiveCollision) {
+    throw new Error("A credential with this provider and id already exists (credential ids are case-insensitive).");
+  }
+  const previousSummary = (scope.summaries ?? []).find((summary) => summaryStorageKey(summary) === storageKey);
+  const summary = buildCredentialSummary(
+    args,
+    normalizedProvider,
+    normalizedCredentialId,
+    previousSummary,
+    normalizedKey,
+  );
+  upsertCredentialSummary(scope, summary);
+
   const source = options.source === "account" ? "account" : "device";
   const currentUserId = getAccountUserId?.()?.trim() || null;
   const accountUserId = source === "account"
@@ -1032,34 +1499,55 @@ function storeApiKeyIn(
   const normalizedProvenance: ApiKeyProvenance = accountUserId && accountOwnerMatches
     ? { source: "account", accountUserId }
     : deviceCredentialProvenance();
+
   if (scope.credentialStore) {
-    if (normalizedProvenance.source === "account") setProvenance(scope, normalizedProvider, normalizedProvenance);
-    writeCredentialSecret(scope, credentialProviderKey(normalizedProvider), normalizedKey);
-    store[normalizedProvider] = normalizedKey;
-    scope.missingCredentialProviders.delete(normalizedProvider);
-    const index = readCredentialProviderIndex(scope);
-    writeCredentialProviderIndex(scope, new Set([...index.providers, normalizedProvider]));
-    noteStoreWriteCommitted(scope);
-    if (normalizedProvenance.source !== "account") setProvenance(scope, normalizedProvider, normalizedProvenance);
-    if (normalizedProvider === "cursor") cursorKeyOrigin = "pasted";
+    if (normalizedProvenance.source === "account") setProvenance(scope, storageKey, normalizedProvenance);
+    writeCredentialSecret(scope, credentialProviderKey(storageKey), normalizedKey);
+    store[storageKey] = normalizedKey;
+    scope.missingCredentialProviders.delete(storageKey);
+    if (normalizedCredentialId === DEFAULT_CREDENTIAL_ID) {
+      const index = readCredentialProviderIndex(scope);
+      writeCredentialProviderIndex(scope, new Set([...index.providers, normalizedProvider]));
+    }
+    writeApiCredentialIndex(scope, scope.summaries ?? []);
+    if (normalizedProvenance.source !== "account") setProvenance(scope, storageKey, normalizedProvenance);
   } else {
-    const nextStore = { ...store, [normalizedProvider]: normalizedKey };
-    if (normalizedProvenance.source === "account") setProvenance(scope, normalizedProvider, normalizedProvenance);
-    persistEncryptedStore(scope, nextStore);
-    deleteMacosKeychainSecretBestEffort(scope, normalizedProvider);
-    scope.missingMacosKeychainProviders.add(normalizedProvider);
+    const nextStore = { ...store, [storageKey]: normalizedKey };
+    if (normalizedProvenance.source === "account") setProvenance(scope, storageKey, normalizedProvenance);
     scope.cache = nextStore;
-    noteStoreWriteCommitted(scope);
-    if (normalizedProvenance.source !== "account") setProvenance(scope, normalizedProvider, normalizedProvenance);
-    if (normalizedProvider === "cursor") cursorKeyOrigin = "pasted";
+    persistEncryptedStore(scope, nextStore);
+    deleteMacosKeychainSecretBestEffort(scope, storageKey);
+    if (normalizedCredentialId === DEFAULT_CREDENTIAL_ID) {
+      scope.missingMacosKeychainProviders.add(storageKey);
+    }
+    if (normalizedProvenance.source !== "account") setProvenance(scope, storageKey, normalizedProvenance);
   }
-  if (!options.deviceOnly) {
+  if (normalizedCredentialId === DEFAULT_CREDENTIAL_ID && normalizedProvider === "cursor") {
+    cursorKeyOrigin = "pasted";
+  }
+  if (!args.deviceOnly) {
     fireAndForgetVaultWrite(
-      { getAccountVault: getAccountVault ?? undefined, logger: vaultLogger, logEvent: "ai.api_key_vault_sync_failed", context: { provider: normalizedProvider } },
+      { getAccountVault: getAccountVault ?? undefined, logger: vaultLogger, logEvent: "ai.api_key_vault_sync_failed", context: { provider: storageKey } },
       "set",
-      (vault) => vault.set("all", "provider_api_key", normalizedProvider, normalizedKey),
+      (vault) => vault.set("all", "provider_api_key", storageKey, normalizedKey),
     );
   }
+  return storageKey;
+}
+
+function storeApiKeyIn(
+  scope: ApiKeyScopeState,
+  provider: string,
+  key: string,
+  options: ApiCredentialInternalOptions & { deviceOnly?: boolean } = {},
+): void {
+  storeApiCredentialIn(scope, {
+    provider,
+    credentialId: DEFAULT_CREDENTIAL_ID,
+    label: normalizeProvider(provider),
+    key,
+    deviceOnly: options.deviceOnly,
+  }, options);
 }
 
 export function storeApiKey(
@@ -1074,100 +1562,188 @@ export function storeApiKey(
   storeApiKeyIn(projectScope, provider, key, options);
 }
 
-function getApiKeyIn(scope: ApiKeyScopeState, provider: string): string | null {
+function getApiCredentialKeyIn(
+  scope: ApiKeyScopeState,
+  provider: string,
+  credentialId = DEFAULT_CREDENTIAL_ID,
+): string | null {
   const normalizedProvider = normalizeProvider(provider);
-  if (!normalizedProvider.length) return null;
+  const normalizedCredentialId = normalizeCredentialId(credentialId);
+  const storageKey = credentialStorageKey(normalizedProvider, normalizedCredentialId);
+  if (!storageKey) return null;
   ensureStore(scope);
   if (scope === projectScope) purgeForeignAccountApiKeys(scope);
   const store = ensureStore(scope);
-  const stored = store[normalizedProvider];
+  const stored = store[storageKey];
   if (stored) return stored;
-  if (scope.credentialStore && !scope.missingCredentialProviders.has(normalizedProvider)) {
-    const credentialValue = readCredentialSecret(scope, credentialProviderKey(normalizedProvider));
+  if (scope.credentialStore && !scope.missingCredentialProviders.has(storageKey)) {
+    const credentialValue = readCredentialSecret(scope, credentialProviderKey(storageKey));
     if (credentialValue) {
-      store[normalizedProvider] = credentialValue;
-      const index = readCredentialProviderIndex(scope);
-      writeCredentialProviderIndex(scope, new Set([...index.providers, normalizedProvider]));
-      setProvenance(scope, normalizedProvider, deviceCredentialProvenance());
-      return credentialValue;
-    }
-    scope.missingCredentialProviders.add(normalizedProvider);
-  }
-  const allowLegacyKeychainFallback =
-    !scope.credentialStore || !isCredentialLegacyKeychainMigrated(scope);
-  if (allowLegacyKeychainFallback && isMacosKeychainAvailable() && !scope.missingMacosKeychainProviders.has(normalizedProvider)) {
-    const keychainValue = readMacosKeychainSecret(scope, normalizedProvider);
-    if (keychainValue) {
-      store[normalizedProvider] = keychainValue;
-      if (scope.credentialStore) {
-        writeCredentialSecret(scope, credentialProviderKey(normalizedProvider), keychainValue);
+      store[storageKey] = credentialValue;
+      if (normalizedCredentialId === DEFAULT_CREDENTIAL_ID) {
         const index = readCredentialProviderIndex(scope);
         writeCredentialProviderIndex(scope, new Set([...index.providers, normalizedProvider]));
-        setProvenance(scope, normalizedProvider, deviceCredentialProvenance());
+      }
+      ensureLegacyCredentialSummary(scope, storageKey, credentialValue);
+      setProvenance(scope, storageKey, deviceCredentialProvenance());
+      return credentialValue;
+    }
+    scope.missingCredentialProviders.add(storageKey);
+  }
+  const allowLegacyKeychainFallback =
+    normalizedCredentialId === DEFAULT_CREDENTIAL_ID
+    && (!scope.credentialStore || !isCredentialLegacyKeychainMigrated(scope));
+  if (allowLegacyKeychainFallback && isMacosKeychainAvailable() && !scope.missingMacosKeychainProviders.has(storageKey)) {
+    const keychainValue = readMacosKeychainSecret(scope, normalizedProvider);
+    if (keychainValue) {
+      store[storageKey] = keychainValue;
+      ensureLegacyCredentialSummary(scope, storageKey, keychainValue);
+      if (scope.credentialStore) {
+        writeCredentialSecret(scope, credentialProviderKey(storageKey), keychainValue);
+        const index = readCredentialProviderIndex(scope);
+        writeCredentialProviderIndex(scope, new Set([...index.providers, normalizedProvider]));
+        setProvenance(scope, storageKey, deviceCredentialProvenance());
       } else if (canPersistEncryptedStore(scope)) {
         persistEncryptedStore(scope, store);
-        setProvenance(scope, normalizedProvider, deviceCredentialProvenance());
+        setProvenance(scope, storageKey, deviceCredentialProvenance());
       }
       return keychainValue;
     }
-    scope.missingMacosKeychainProviders.add(normalizedProvider);
+    scope.missingMacosKeychainProviders.add(storageKey);
   }
-  const envVar = ENV_KEY_PROVIDERS[normalizedProvider];
-  if (envVar) {
-    const envValue = (process.env[envVar] ?? "").trim();
-    if (envValue.length > 0) return envValue;
+  if (normalizedCredentialId === DEFAULT_CREDENTIAL_ID) {
+    const envVar = ENV_KEY_PROVIDERS[normalizedProvider];
+    if (envVar) {
+      const envValue = (process.env[envVar] ?? "").trim();
+      if (envValue.length > 0) return envValue;
+    }
   }
   return null;
+}
+
+function getApiKeyIn(scope: ApiKeyScopeState, provider: string): string | null {
+  return getApiCredentialKeyIn(scope, provider, DEFAULT_CREDENTIAL_ID);
 }
 
 export function getApiKey(provider: string): string | null {
   return getApiKeyIn(projectScope, provider);
 }
 
-function deleteApiKeyIn(scope: ApiKeyScopeState, provider: string): void {
+export function storeApiCredential(args: ApiCredentialStoreArgs): string {
+  const storageKey = storeApiCredentialIn(projectScope, args);
+  captureApiCredentialAnalytics({
+    analytics: productAnalytics,
+    surface: "api",
+    action: "credential_stored",
+    provider: args.provider,
+  });
+  return parseCredentialStorageKey(storageKey)?.credentialId ?? DEFAULT_CREDENTIAL_ID;
+}
+
+export function getApiCredentialKey(provider: string, credentialId = DEFAULT_CREDENTIAL_ID): string | null {
+  return getApiCredentialKeyIn(projectScope, provider, credentialId);
+}
+
+export function listApiCredentials(provider?: string): ApiCredentialSummary[] {
+  ensureStore(projectScope);
+  purgeForeignAccountApiKeys(projectScope);
+  return storedCredentialSummaries(projectScope, provider);
+}
+
+export function getApiCredentialSummary(
+  provider: string,
+  credentialId = DEFAULT_CREDENTIAL_ID,
+): ApiCredentialSummary | null {
   const normalizedProvider = normalizeProvider(provider);
-  if (!normalizedProvider.length) return;
+  const normalizedCredentialId = normalizeCredentialId(credentialId);
+  if (!normalizedProvider || !normalizedCredentialId) return null;
+  return listApiCredentials(normalizedProvider)
+    .find((summary) => summary.credentialId === normalizedCredentialId) ?? null;
+}
+
+/** @returns true when a credential actually existed and was removed. */
+function removeApiCredentialIn(
+  scope: ApiKeyScopeState,
+  provider: string,
+  credentialId = DEFAULT_CREDENTIAL_ID,
+): boolean {
+  const normalizedProvider = normalizeProvider(provider);
+  const normalizedCredentialId = normalizeCredentialId(credentialId);
+  const storageKey = credentialStorageKey(normalizedProvider, normalizedCredentialId);
+  if (!storageKey) return false;
   invalidatePeerScopeCache(scope);
   ensureStore(scope);
-  if (scope === projectScope && purgeForeignAccountApiKeys(scope).has(normalizedProvider)) return;
+  if (scope === projectScope && purgeForeignAccountApiKeys(scope).has(storageKey)) return false;
   const store = ensureStore(scope);
-  if (normalizedProvider === "cursor") cursorKeyOrigin = null;
+  // Captured before the removal runs: the cleanup below is deliberately
+  // idempotent, so only this tells a real removal from a no-op.
+  const existed = Object.prototype.hasOwnProperty.call(store, storageKey)
+    || (scope.summaries ?? []).some((summary) => summaryStorageKey(summary) === storageKey);
+  if (normalizedCredentialId === DEFAULT_CREDENTIAL_ID && normalizedProvider === "cursor") cursorKeyOrigin = null;
+  scope.summaries = (scope.summaries ?? []).filter((summary) => summaryStorageKey(summary) !== storageKey);
   if (scope.credentialStore) {
-    deleteCredentialSecret(scope, credentialProviderKey(normalizedProvider));
-    delete store[normalizedProvider];
-    scope.missingCredentialProviders.add(normalizedProvider);
-    const index = readCredentialProviderIndex(scope);
-    writeCredentialProviderIndex(scope, index.providers.filter((entry) => entry !== normalizedProvider));
-    noteStoreWriteCommitted(scope);
+    deleteCredentialSecret(scope, credentialProviderKey(storageKey));
+    delete store[storageKey];
+    scope.missingCredentialProviders.add(storageKey);
+    if (normalizedCredentialId === DEFAULT_CREDENTIAL_ID) {
+      const index = readCredentialProviderIndex(scope);
+      writeCredentialProviderIndex(scope, index.providers.filter((entry) => entry !== normalizedProvider));
+    }
+    writeApiCredentialIndex(scope, scope.summaries);
   } else {
     const nextStore = { ...store };
-    delete nextStore[normalizedProvider];
+    delete nextStore[storageKey];
     if (canPersistEncryptedStore(scope)) {
       persistEncryptedStore(scope, nextStore);
     }
-    deleteMacosKeychainSecretBestEffort(scope, normalizedProvider);
-    scope.missingMacosKeychainProviders.add(normalizedProvider);
+    deleteMacosKeychainSecretBestEffort(scope, storageKey);
+    if (normalizedCredentialId === DEFAULT_CREDENTIAL_ID) {
+      scope.missingMacosKeychainProviders.add(storageKey);
+    }
     scope.cache = nextStore;
     noteStoreWriteCommitted(scope);
   }
-  deleteProvenance(scope, normalizedProvider);
+  deleteProvenance(scope, storageKey);
+  removeCredentialLaunchHome(
+    normalizedProvider,
+    normalizedCredentialId,
+    scope.launchHomeAdeDir ?? undefined,
+    { logger: vaultLogger },
+  );
   if (scope === projectScope) {
     fireAndForgetVaultWrite(
-      { getAccountVault: getAccountVault ?? undefined, logger: vaultLogger, logEvent: "ai.api_key_vault_sync_failed", context: { provider: normalizedProvider } },
+      { getAccountVault: getAccountVault ?? undefined, logger: vaultLogger, logEvent: "ai.api_key_vault_sync_failed", context: { provider: storageKey } },
       "remove",
-      (vault) => vault.remove("all", "provider_api_key", normalizedProvider),
+      (vault) => vault.remove("all", "provider_api_key", storageKey),
     );
   }
+  return existed;
+}
+
+export function removeApiCredential(provider: string, credentialId = DEFAULT_CREDENTIAL_ID): void {
+  const removed = removeApiCredentialIn(projectScope, provider, credentialId);
+  // Removing a credential that was never stored is a no-op, not a completed
+  // removal: capturing it would inflate the funnel with phantom events.
+  if (!removed) return;
+  captureApiCredentialAnalytics({
+    analytics: productAnalytics,
+    surface: "api",
+    action: "credential_removed",
+    provider,
+  });
 }
 
 export function deleteApiKey(provider: string): void {
-  deleteApiKeyIn(projectScope, provider);
+  removeApiCredentialIn(projectScope, provider, DEFAULT_CREDENTIAL_ID);
 }
 
 function listStoredProvidersIn(scope: ApiKeyScopeState): string[] {
   ensureStore(scope);
   if (scope === projectScope) purgeForeignAccountApiKeys(scope);
-  return Object.keys(ensureStore(scope));
+  return Object.keys(ensureStore(scope))
+    .filter((storageKey) => isDefaultCredentialStorageKey(storageKey))
+    .map((storageKey) => parseCredentialStorageKey(storageKey)?.provider)
+    .filter((provider): provider is string => Boolean(provider));
 }
 
 export function listStoredProviders(): string[] {
@@ -1194,58 +1770,82 @@ export function purgeAccountApiKeys(): void {
  * value this machine already has. The vault list intentionally omits secret
  * values, so readable rows are fetched individually before they are stored.
  */
-export async function hydrateApiKeysFromVault(): Promise<void> {
+export async function hydrateApiKeysFromVault(): Promise<ApiKeyHydrationResult> {
+  const collisions: ApiKeyHydrationCollision[] = [];
   const accountUserId = getAccountUserId?.()?.trim() || null;
-  if (!accountUserId) return;
+  if (!accountUserId) return { collisions };
   const vault = resolveAccountVault("list", "*");
-  if (!vault) return;
+  if (!vault) return { collisions };
 
   let listed: Awaited<ReturnType<AccountVaultBridge["list"]>>;
   try {
     listed = await vault.list("all");
   } catch (error) {
     logVaultFailure("list", "*", error);
-    return;
+    return { collisions };
   }
   if (!listed.ok) {
     logVaultFailure("list", "*", listed);
-    return;
+    return { collisions };
   }
 
   for (const item of listed.value) {
     if (item.scope !== "all" || item.kind !== "provider_api_key") continue;
-    const provider = normalizeProvider(item.key);
-    if (!provider.length) continue;
+    const parsed = parseCredentialStorageKey(item.key);
+    if (!parsed) continue;
+    const storageKey = credentialStorageKey(parsed.provider, parsed.credentialId);
 
     let value = typeof item.value === "string" ? item.value.trim() : "";
     if (!value.length) {
       let fetched: Awaited<ReturnType<AccountVaultBridge["get"]>>;
       try {
-        fetched = await vault.get("all", "provider_api_key", provider);
+        fetched = await vault.get("all", "provider_api_key", storageKey);
       } catch (error) {
-        logVaultFailure("get", provider, error);
+        logVaultFailure("get", storageKey, error);
         continue;
       }
       if (!fetched.ok) {
-        logVaultFailure("get", provider, fetched);
+        logVaultFailure("get", storageKey, fetched);
         continue;
       }
       value = fetched.value?.trim() ?? "";
     }
     if (!value.length) continue;
-    if ((getAccountUserId?.()?.trim() || null) !== accountUserId) return;
+    if ((getAccountUserId?.()?.trim() || null) !== accountUserId) return { collisions };
 
     try {
-      if (getApiKey(provider)) continue;
-      storeApiKey(provider, value, {
+      if (getApiCredentialKey(parsed.provider, parsed.credentialId)) continue;
+      const caseInsensitiveCollision = findCaseInsensitiveCredentialCollision(
+        projectScope,
+        parsed.provider,
+        parsed.credentialId,
+      );
+      if (caseInsensitiveCollision) {
+        const collision: ApiKeyHydrationCollision = {
+          provider: parsed.provider,
+          credentialId: parsed.credentialId,
+          existingCredentialId: caseInsensitiveCollision.credentialId,
+          storageKey,
+        };
+        collisions.push(collision);
+        logHydrationCollision(collision);
+        continue;
+      }
+      storeApiCredentialIn(projectScope, {
+        provider: parsed.provider,
+        credentialId: parsed.credentialId,
+        label: parsed.credentialId === DEFAULT_CREDENTIAL_ID ? parsed.provider : parsed.credentialId,
+        key: value,
         deviceOnly: true,
+      }, {
         source: "account",
         accountUserId,
       });
     } catch (error) {
-      logVaultFailure("hydrate", provider, error);
+      logVaultFailure("hydrate", storageKey, error);
     }
   }
+  return { collisions };
 }
 
 /**
@@ -1276,5 +1876,12 @@ export function getCursorApiKeyOrigin(): "oauth" | "pasted" | null {
 export function getAllApiKeys(): Record<string, string> {
   ensureStore(projectScope);
   purgeForeignAccountApiKeys(projectScope);
-  return { ...ensureStore(projectScope) };
+  return Object.fromEntries(
+    Object.entries(ensureStore(projectScope))
+      .map(([storageKey, key]) => {
+        const parsed = parseCredentialStorageKey(storageKey);
+        return parsed?.credentialId === DEFAULT_CREDENTIAL_ID ? [parsed.provider, key] : null;
+      })
+      .filter((entry): entry is [string, string] => entry !== null),
+  );
 }

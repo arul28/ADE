@@ -695,7 +695,7 @@ Machine runtime and sync host:
 - `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts` - remote
   command registry. It carries the web-parity `register("...")` entries for
   Work, chat, terminal, files/git, PRs, project config, AI status, GitHub
-  status, history, orchestration, rebase, and safe smart-link preview surfaces.
+  status, history, rebase, and safe smart-link preview surfaces.
   The legacy runtime-scoped
   `sync.getWebPairingInfo` descriptor remains in the protocol, but no current
   iOS or hosted-web UI uses it to create browser pairings.

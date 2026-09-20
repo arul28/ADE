@@ -82,6 +82,13 @@ import {
 } from "./claudeOutputStyles";
 import { createClaudeSubprocessReaper, type ClaudeSubprocessReaper } from "./claudeSubprocessReaper";
 import {
+  decideChatRuntimeOwnership,
+  nextBrainInstanceId,
+  normalizeChatRuntimeOwner,
+  resolveAdeHomeForOwnership,
+  type ChatRuntimeOwner,
+} from "./chatRuntimeOwnership";
+import {
   createChatScheduledWorkScheduler,
   nextChatScheduledCronFireAt,
   type ChatScheduledWorkRecord,
@@ -241,6 +248,26 @@ import {
   resolveReadableHistoryPath,
 } from "../storage/historyCompression";
 import { runGit } from "../git/git";
+import {
+  captureWorkingTreeFingerprint,
+  collectTurnDiffSummary,
+  type WorkingTreeFingerprint,
+} from "./turnDiffSummary";
+import {
+  getMachineProviderInstanceStore,
+  providerInstanceEnvPatch,
+} from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
+import type { ProviderInstance, ProviderInstanceProvider } from "../../../shared/types/providerInstances";
+import {
+  resolveLaunchBrain,
+  type HarnessPresetLaunchPlan,
+} from "./harnessPresetLaunch";
+import {
+  createCredentialModelDescriptorBase,
+  encodeOpenCodeCustomCredentialId,
+  listLaunchableCredentials,
+} from "./harnessPresetCredentialCatalog";
+import { HARNESS_PRESET_BODIES } from "../../../shared/harnessPresets";
 import { CLAUDE_RUNTIME_AUTH_ERROR, isClaudeRuntimeAuthError } from "../ai/claudeRuntimeProbe";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
 import { parseStructuredOutput, withTimeout } from "../ai/utils";
@@ -373,6 +400,7 @@ import type {
   AgentChatPrepareCrossMachineHandoffArgs,
   AgentChatPrepareCrossMachineHandoffResult,
   AgentChatValidateCrossMachineSourceArgs,
+  AgentChatDismissPendingInputArgs,
   AgentChatRespondToInputArgs,
   AgentChatResolveUnprocessedMessageArgs,
   AgentChatResolveUnprocessedMessageResult,
@@ -477,6 +505,13 @@ import {
 import {
   AGENT_CHAT_DROID_PERMISSION_MODE_VALUES,
   AGENT_CHAT_PERMISSION_MODE_VALUES,
+  CHAT_STOP_REASON_BRAIN_RESTARTED,
+  CHAT_STOP_REASON_CHAT_HANDED_OFF,
+  CHAT_STOP_REASON_FOREIGN_BRAIN,
+  CHAT_STOP_REASON_PROVIDER_ENDED_TURN,
+  CHAT_STOP_REASON_RUNTIME_EXITED,
+  CHAT_STOP_REASON_WORKFLOW_ENDED,
+  type AgentChatStopSource,
   droidPermissionModeFromLegacyPermissionMode,
   isAcpChatProvider,
   legacyPermissionModeFromDroidPermissionMode,
@@ -498,6 +533,7 @@ import {
   type AgentChatResourceLink,
   type AgentChatWorkflowProgress,
 } from "../../../shared/types/chat";
+
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import {
   classifyProviderRetryCause,
@@ -519,11 +555,21 @@ import {
   type ChatTurnStatusSnapshot,
 } from "../../../shared/chatTurnStatus";
 import {
+  PENDING_INPUT_SEND_BLOCKED_MESSAGE,
   flattenAnswerForSingleStringProvider,
+  formatPendingInputAnswersAsMessage,
   isSteeringPendingRequest,
+  normalizePendingInputAnswers,
   ownQuestionValue,
   sanitizeAnswersForTranscript,
 } from "../../../shared/pendingInputAnswers";
+import { retainUnresolvedApprovalRequests } from "../../../shared/chatPendingInputRetention";
+import { defaultProviderInstanceId } from "../../../shared/types/providerInstances";
+import {
+  CLAUDE_RESUME_RETURN_OPTIONS,
+  claudeResumeReturnChoiceFromAnswer,
+  formatClaudeResumeCompactionQuestion,
+} from "../../../shared/claudeCompaction";
 import {
   CROSS_MACHINE_FORK_BRIEF_STUB,
   CROSS_MACHINE_FORK_ENCODED_BUDGET_BYTES,
@@ -592,6 +638,7 @@ import {
   type ModelProviderGroup,
 } from "../../../shared/modelRegistry";
 import { piSdkToolPolicyForPermissionMode } from "../../../shared/cliLaunch";
+import { pathsEqual } from "../shared/pathCompare";
 import { isProviderDisabled } from "../../../shared/providerEnablement";
 import {
   buildProviderGroupBlocks,
@@ -605,16 +652,6 @@ import type {
   AskUserToolResult,
   UniversalToolSetOptions,
 } from "../ai/tools/universalTools";
-import {
-  createOrchestrationToolSet,
-  type OrchestrationAgentChatHandle,
-  type OrchestrationInteractionMode,
-  type OrchestrationLeadReadResult,
-  type OrchestrationLeadReadServices,
-  type OrchestrationSessionContext,
-  type OrchestrationToolMap,
-} from "../ai/tools/orchestrationTools";
-import { drainOutbox } from "../ai/tools/orchestrationOutbox";
 import type { ExecutableTool } from "../ai/tools/executableTool";
 import {
   buildCodexDynamicToolSpecs,
@@ -773,7 +810,6 @@ import {
   mapPermissionModeToOpenCodeAgent,
   openCodeEventStream,
   openCodePartUpdatedDelta,
-  refreshOpenCodeSessionToolSelection,
   resolveOpenCodeExecutablePath,
   resolveOpenCodeModelSelection,
   startOpenCodeSession,
@@ -897,8 +933,10 @@ import {
 import { recordCursorBilledUsage } from "../usage/cursorBilledUsageStore";
 import {
   codexFiveHourUsedPercent,
-  shouldEmitCodexApproachingPlanLimit,
+  codexPlanLimitNoticeState,
+  parseCodexResetCredits,
 } from "../usage/providerQuotaParsers";
+import type { CodexResetCredits } from "../usage/providerQuotaParsers";
 import type { CursorCloudIngressEventRecord } from "../automations/cursorCloudIngressService";
 import {
   createDroidSdkEventMapperState,
@@ -961,20 +999,6 @@ import { promises as fsPromises } from "node:fs";
 import { mapStopReasonToTerminalEvents } from "./stopReasonEvents";
 import { CURSOR_AVAILABLE_MODE_IDS, legacyPermissionModeToCursorModeId } from "../../../shared/cursorModes";
 import { getApiKey } from "../ai/apiKeyStore";
-import type { createOrchestrationService } from "../orchestration/orchestrationService";
-import {
-  ORCHESTRATION_LEAD_CODEX_POLICY,
-  ORCHESTRATION_LEAD_DENIED_CLAUDE_TOOLS,
-  ORCHESTRATION_LEAD_DENIED_DROID_TOOL_CATEGORIES,
-  applyOrchestrationPermissionProfile,
-  codexConfiguredMcpServerNames,
-  orchestrationLeadCodexMcpOverrides,
-  isOrchestrationInteractionMode,
-  isOrchestrationLeadSession,
-  lockedOrchestrationPermissionMode,
-  orchestrationInteractionModeForRole,
-  orchestrationRoleForInteractionMode,
-} from "../../../shared/orchestrationRuntimePolicy";
 import {
   CALLER_MCP_CAPABLE_PROVIDERS,
   callerMcpServersToCodexConfig,
@@ -983,6 +1007,8 @@ import {
   callerMcpServersToOpenCodeConfig,
   callerMcpSupport,
   callerMcpUnsupportedTransport,
+  codexConfiguredMcpServerNames,
+  codexDisabledMcpServerOverrides,
   normalizeCallerMcpCapability,
   normalizeCallerMcpServers,
   parseCallerMcpServers,
@@ -1031,6 +1057,21 @@ import {
   resolvePersonalSystemPrompt,
 } from "./personalSession";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
+import {
+  createStaleRunSweep,
+  type StaleRunSweepChatRow,
+} from "./chatStaleRunSweep";
+
+export function restartRecoveryStopAttribution(args: {
+  ownerSocketPath?: string | null;
+  selfSocketPath?: string | null;
+}): { stopSource: AgentChatStopSource; stopReason: string } {
+  const ownerSocket = typeof args.ownerSocketPath === "string" ? args.ownerSocketPath.trim() || null : null;
+  const selfSocket = typeof args.selfSocketPath === "string" ? args.selfSocketPath.trim() || null : null;
+  return ownerSocket && selfSocket && !pathsEqual(ownerSocket, selfSocket)
+    ? { stopSource: "foreign-brain", stopReason: CHAT_STOP_REASON_FOREIGN_BRAIN }
+    : { stopSource: "system", stopReason: CHAT_STOP_REASON_BRAIN_RESTARTED };
+}
 
 const requireFromRuntime = createRequire(
   typeof __filename === "string" ? __filename : fileURLToPath(import.meta.url),
@@ -1424,6 +1465,12 @@ type PersistedChatState = {
   strictMcpConfig?: boolean;
   mcpCapability?: AgentChatMcpCapability;
   runtimeTitleAdopted?: boolean;
+  /**
+   * Which brain instance last held a provider process for this chat. Absent on
+   * every record written before this field existed, which is exactly what makes
+   * such a record adoptable — see `chatRuntimeOwnership.ts` for the rule.
+   */
+  runtimeOwner?: ChatRuntimeOwner | null;
   permissionMode?: AgentChatSession["permissionMode"];
   identityKey?: AgentChatIdentityKey;
   surface?: AgentChatSurface;
@@ -1458,6 +1505,21 @@ type PersistedChatState = {
    * once per runtime start.
    */
   acpSupervisionNoticeShown?: boolean;
+  /**
+   * Which provider ACCOUNT this chat runs as, when it is not the provider's
+   * default. Persisted next to the provider thread pointer because the two are
+   * a pair: a thread belongs to the account whose config home holds it, so a
+   * chat that falls back to the default must also start a fresh thread.
+   */
+  instanceId?: string;
+  /**
+   * Which harness preset (or bare provider-card key) this chat launched under.
+   * Persisted for the same reason as the account: a resumed chat has to come
+   * back on the same brain, and the individual session fields cannot describe
+   * one — a preset also carries the subagent pins and the config home.
+   */
+  presetId?: string;
+  credentialId?: string;
   /** Pi-native JSONL session pointer for SDK resume and CLI handoff. */
   piSessionId?: string;
   piSessionFile?: string;
@@ -1539,9 +1601,13 @@ type PersistedChatState = {
   approvalOverrides?: string[];
   /** Queued mid-turn steers for the Claude runtime, restored on app restart. */
   pendingSteers?: PersistedPendingSteer[];
-  // Orchestration-mode fields
-  orchestrationRunId?: string;
-  orchestrationRole?: "lead" | "worker" | "validator";
+  /**
+   * Codex async questions still on screen. See {@link PersistedAsyncQuestion}:
+   * these are cards, not waiters, and `awaitingInput` is deliberately NOT set
+   * for them.
+   */
+  asyncQuestions?: PersistedAsyncQuestion[];
+  // Spawn lineage
   orchestrationParentSessionId?: string;
   spawnKind?: AgentChatSession["spawnKind"];
   subagentTakeoverPromptShownAt?: string | null;
@@ -1564,9 +1630,6 @@ type PersistedChatState = {
   lastTurnFailure?: AgentChatLastTurnFailure | null;
   /** How full the thread was at the last settled turn. See the type. */
   contextHealth?: AgentChatSessionContextHealth | null;
-  orchestrationTag?: string;
-  orchestrationStepId?: string;
-  orchestrationBundlePath?: string;
   /**
    * High-water mark of the session's `eventSequence` counter as of the last
    * persist. Read back alongside the transcript's own maximum on rehydration;
@@ -1701,6 +1764,23 @@ function normalizeUnprocessedMessageResolutionReceipts(
   }
   return [...bySteerId.values()].slice(-64);
 }
+
+/**
+ * A Codex async question the user has neither answered nor dismissed.
+ *
+ * Durable because the card is not a waiter: nothing in any runtime is blocked
+ * on it, so a restart has no live request to rebuild it from, and the transcript
+ * `approval_request` alone cannot tell an unanswered async question from one the
+ * user already dealt with. Entries are removed the moment a receipt is written.
+ */
+type PersistedAsyncQuestion = {
+  itemId: string;
+  request: PendingInputRequest;
+  raisedAt: string;
+};
+
+/** How many async questions one chat may bank before the oldest falls off. */
+const MAX_ASYNC_QUESTIONS = 16;
 
 type PersistedPendingSteer = {
   steerId: string;
@@ -1907,6 +1987,16 @@ type CodexRuntime = {
   rateLimits: CodexRateLimits | null;
   /** Set after the once-per-runtime "Approaching Codex plan limit" notice. */
   rateLimitWarningEmitted: boolean;
+  /**
+   * Banked reset credits for the account this runtime is signed in as, from the
+   * most recent `account/rateLimits/read`. Null until one has been read.
+   */
+  resetCredits: CodexResetCredits | null;
+  /**
+   * Set after the once-per-window "a reset credit is banked" notice. Re-armed
+   * on a window rollover, like `rateLimitWarningEmitted`.
+   */
+  resetCreditNoticeEmitted: boolean;
   collaborationModes: Set<string> | null;
   collaborationModesReady: Promise<void> | null;
   planModeFallbackNotified: boolean;
@@ -2934,7 +3024,30 @@ function normalizeCodexAssistantDelta(
   return args.delta;
 }
 
-const PENDING_INPUT_SEND_BLOCKED_MESSAGE = "Answer or decline the pending request before sending another message.";
+const CODEX_ASYNC_QUESTION_TITLE = "Codex has a question";
+
+/** Refused when a card the provider is genuinely waiting on is dismissed. */
+const PENDING_INPUT_NOT_DISMISSIBLE_MESSAGE =
+  "This question needs an answer. Answer it or stop the turn.";
+
+/**
+ * Is this transcript `approval_request` a non-blocking card?
+ *
+ * The transcript fallback that names a session's pending item must ignore
+ * these. A Codex steering prompt or an async question leaves the composer live
+ * by design, and naming one as `pendingInputItemId` makes the row read "Needs
+ * you" and the send path refuse — for a question the user was invited to
+ * ignore.
+ */
+function isNonBlockingApprovalRequestEvent(
+  event: Extract<AgentChatEvent, { type: "approval_request" }>,
+): boolean {
+  const detail = event.detail;
+  if (!detail || typeof detail !== "object" || Array.isArray(detail)) return false;
+  const request = (detail as Record<string, unknown>).request;
+  if (!request || typeof request !== "object" || Array.isArray(request)) return false;
+  return (request as Record<string, unknown>).blocking === false;
+}
 
 function validateSessionReadyForTurn(managed: ManagedChatSession): { ready: true } | { ready: false; reason: string } {
   if (managed.closed) return { ready: false, reason: "Session is disposed" };
@@ -2964,6 +3077,10 @@ function validateSessionReadyForTurn(managed: ManagedChatSession): { ready: true
  */
 function hasLivePendingInput(managed: ManagedChatSession | null | undefined): boolean {
   if (!managed) return false;
+  // `managed.asyncQuestions` is deliberately absent from this check. Codex
+  // async questions are cards, not waiters: nothing is blocked on them, so
+  // counting them here would refuse every later send with a card the user was
+  // explicitly told they could ignore.
   if (managed.localPendingInputs.size > 0) return true;
   const runtime = managed.runtime;
   if (!runtime) return false;
@@ -3024,6 +3141,11 @@ function collectPendingInputRequests(
     requests.push(request);
   };
   for (const pending of managed.localPendingInputs.values()) add(pending.request);
+  // Listed even though `hasLivePendingInput` ignores them: this function
+  // answers "what is on screen", and a Codex async question is on screen. The
+  // same asymmetry already exists for Codex steering, which sits in
+  // `runtime.approvals` and is skipped by the blocked check below.
+  for (const pending of managed.asyncQuestions.values()) add(pending.request);
   const runtime = managed.runtime;
   if (runtime) {
     if (runtime.kind === "claude" || runtime.kind === "codex") {
@@ -3863,6 +3985,13 @@ type ManagedChatSession = {
     }) => void;
   }>;
   /**
+   * Codex async questions, keyed by item id. Deliberately NOT in
+   * `localPendingInputs`: everything in that map is a waiter that
+   * `hasLivePendingInput` counts and teardown must settle, and an async
+   * question is neither. Mirrored to `PersistedChatState.asyncQuestions`.
+   */
+  asyncQuestions: Map<string, { request: PendingInputRequest; raisedAt: string; responding?: boolean }>;
+  /**
    * While a settlement runs, every item id it has already resolved. Settlement
    * drains several card stores and then emits a receipt for each card it
    * remembered up front, so without this the same card gets two
@@ -3872,7 +4001,7 @@ type ManagedChatSession = {
   /** The settle in flight for this session, so a second one joins it. */
   pendingInputSettlement?: Promise<void>;
   /** Live HTTP MCP leases, at most one per tool set. */
-  httpMcpServers: Partial<Record<"orchestration" | "cto", HttpMcpLease>>;
+  httpMcpServers: Partial<Record<"cto", HttpMcpLease>>;
   /**
    * Extension tool packs the CTO has asked for in this session (`loadCtoTools`).
    * The core pack is never listed here — it is always loaded by construction,
@@ -3886,6 +4015,8 @@ type ManagedChatSession = {
   eventSequence: number;
   lastActivityTimestamp: number;
   turnBeforeSha: string | null;
+  /** The dirty tree at turn start; scopes an uncommitted turn's diff summary. */
+  turnBeforeTree: Promise<WorkingTreeFingerprint | null> | null;
   claudeBackgroundJobShort: string | null;
   claudeBackgroundResumeSessionId: string | null;
   claudeBackgroundLogText: string;
@@ -4174,6 +4305,7 @@ const HANDOFF_NOTE_TOO_LONG_MESSAGE = "Handoff note is too long. Keep it under 4
 const SESSION_INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const OPENCODE_SESSION_INACTIVITY_TIMEOUT_MS = 60 * 1000; // 1 minute
 const SESSION_CLEANUP_INTERVAL_MS = 15 * 1000; // check every 15 seconds
+
 const MAX_RECENT_CONVERSATION_ENTRIES = 50;
 const MAX_SESSION_MAP_ENTRIES = 200;
 const CODEX_GOAL_BUDGET_CLEAR_RETRY_BACKOFF_MS = 30_000;
@@ -4608,19 +4740,11 @@ type CodexThreadConfigOptions = {
   reasoningEffort?: string | null;
   computerUse?: CodexComputerUseMcpConfig | null;
   /**
-   * Orchestrator leads plan and delegate — they get no MCP at all. Codex merges
-   * this overlay into the user's config.toml instead of replacing it, so the
-   * isolation is an explicit `enabled = false` per configured server (see
-   * ORCHESTRATION_LEAD_MCP_ISOLATION.codex). Computer Use is an MCP server too,
-   * so a lead does not receive it either.
-   */
-  leadConfiguredMcpServerNames?: readonly string[] | null;
-  /**
    * Servers an external embedder injected for this chat, plus the names of the
    * user's configured servers when the caller asked for strict mode. Codex
    * merges this overlay into config.toml rather than replacing it, so strict
-   * mode is expressed the same way a lead's isolation is: an explicit
-   * `enabled = false` per enumerated server. A server contributed by a Codex
+   * mode is expressed as an explicit `enabled = false` per enumerated server.
+   * A server contributed by a Codex
    * *plugin* is not in config.toml's mcp_servers table, cannot be enumerated,
    * and therefore survives — reported as the `residual` in
    * CALLER_MCP_SUPPORT.codex rather than papered over.
@@ -4635,19 +4759,13 @@ function codexThreadConfigArgs(
   const {
     reasoningEffort,
     computerUse = null,
-    leadConfiguredMcpServerNames = null,
     callerServers = null,
     callerStrictAgainstConfiguredServerNames = null,
   } = options;
   const effort = typeof reasoningEffort === "string" ? reasoningEffort.trim() : "";
-  const leadMcpOverrides = leadConfiguredMcpServerNames
-    ? orchestrationLeadCodexMcpOverrides(leadConfiguredMcpServerNames)
-    : null;
-  const baseMcpServers = leadMcpOverrides
-    ? (Object.keys(leadMcpOverrides).length ? leadMcpOverrides : null)
-    : (computerUse ? { computer_use: computerUse } : null);
+  const baseMcpServers = computerUse ? { computer_use: computerUse } : null;
   const callerStrictOverrides = callerStrictAgainstConfiguredServerNames?.length
-    ? orchestrationLeadCodexMcpOverrides(callerStrictAgainstConfiguredServerNames)
+    ? codexDisabledMcpServerOverrides(callerStrictAgainstConfiguredServerNames)
     : null;
   const callerCodexServers = callerServers ? callerMcpServersToCodexConfig(callerServers) : null;
   // Order is load-bearing, and it was wrong: with ADE's servers first, a caller
@@ -7502,9 +7620,6 @@ const VALID_EXECUTION_MODES = new Set(["focused", "parallel", "subagents", "team
 const VALID_INTERACTION_MODES = new Set([
   "default",
   "plan",
-  "orchestrator-lead",
-  "orchestrator-worker",
-  "orchestrator-validator",
 ]);
 const VALID_CLAUDE_PERMISSION_MODES = new Set(["default", "auto", "plan", "acceptEdits", "bypassPermissions"]);
 const VALID_CODEX_APPROVAL_POLICIES = new Set(["untrusted", "on-request", "on-failure", "never"]);
@@ -7869,30 +7984,25 @@ function hydrateNativePermissionControls(
     "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "cursorModeId"
   >,
 ): void {
-  const orchestrationMode = isOrchestrationInteractionMode(session.interactionMode)
-    ? session.interactionMode
-    : null;
   if (session.provider === "claude") {
     session.interactionMode = resolveSessionClaudeInteractionMode(session);
     session.claudePermissionMode = resolveSessionClaudeAccessMode(session, "default");
   } else if (session.provider === "codex") {
-    if (orchestrationMode) session.interactionMode = orchestrationMode;
     session.codexApprovalPolicy = session.codexApprovalPolicy ?? legacyPermissionModeToCodexApprovalPolicy(session.permissionMode);
     session.codexSandbox = session.codexSandbox ?? legacyPermissionModeToCodexSandbox(session.permissionMode);
     session.codexConfigSource = session.codexConfigSource ?? legacyPermissionModeToCodexConfigSource(session.permissionMode);
   } else if (session.provider === "droid") {
-    session.interactionMode = orchestrationMode ?? (session.interactionMode === "plan" || session.permissionMode === "plan"
+    session.interactionMode = session.interactionMode === "plan" || session.permissionMode === "plan"
       ? "plan"
-      : "default");
+      : "default";
     session.droidPermissionMode = session.droidPermissionMode
       ?? droidPermissionModeFromLegacyPermissionMode(session.permissionMode)
       ?? legacyOpenCodePermissionModeToDroidPermissionMode(session.opencodePermissionMode);
   } else if (session.provider === "pi") {
-    if (orchestrationMode) session.interactionMode = orchestrationMode;
+    // Pi keeps whatever interaction mode the session already carries.
   } else if (session.provider === "cursor") {
     applyCursorModeIdFromLegacyPermissionMode(session);
   } else {
-    if (orchestrationMode) session.interactionMode = orchestrationMode;
     session.opencodePermissionMode = session.opencodePermissionMode ?? legacyPermissionModeToOpenCodePermissionMode(session.permissionMode);
   }
 
@@ -7988,85 +8098,32 @@ function toHarnessPermissionMode(
  * from the environment, ordinary process/terminal settings, and nothing from
  * ADE's capability-token or agent-control environment.
  */
-function enforceOrchestrationLockedPermissionMode(
-  session: Pick<
-    AgentChatSession,
-    | "provider"
-    | "permissionMode"
-    | "interactionMode"
-    | "orchestrationRole"
-    | "claudePermissionMode"
-    | "codexApprovalPolicy"
-    | "codexSandbox"
-    | "codexConfigSource"
-    | "opencodePermissionMode"
-    | "droidPermissionMode"
-    | "acpPermissionMode"
-    | "cursorModeId"
-  >,
-): boolean {
-  const lockedMode = lockedOrchestrationPermissionMode(session);
-  if (!lockedMode) return false;
-
-  const orchestrationMode = isOrchestrationInteractionMode(session.interactionMode)
-    ? session.interactionMode
-    : null;
-  // Use the per-provider profile directly — each provider has its own
-  // "most permissive" mode name (bypassPermissions, danger-full-access,
-  // full-auto, auto-high, etc.).
-  //
-  // This profile is intentionally permissive for EVERY orchestration role,
-  // leads included. A lead's protection is a per-provider tool deny applied at
-  // the runtime boundary — Claude `canUseTool`/`disallowedTools`, OpenCode's
-  // prompt `tools` map, Droid's `disabledToolIds`, Cursor's hook risk gate, and
-  // (Codex having no tool knob) a read-only thread sandbox. Narrowing this
-  // profile instead was considered and rejected; see
-  // shared/orchestrationRuntimePolicy.ts for the per-provider deny sets.
-  const profile = applyOrchestrationPermissionProfile(session.provider);
-  Object.assign(session, profile);
-  session.permissionMode = lockedMode;
-  if (orchestrationMode) session.interactionMode = orchestrationMode;
-  return true;
-}
-
 // ---------------------------------------------------------------------------
-// Orchestration field helpers — single source of truth for the session lineage bag
+// Spawn lineage helpers — single source of truth for the session lineage bag
 // that gets spread/read in persistence, hydration, session creation, summary,
 // and dead-session reconstruction.  Every call-site that previously copy-pasted
 // these fields now delegates here.
 // ---------------------------------------------------------------------------
 
-const ORCHESTRATION_SESSION_FIELD_NAMES = [
-  "orchestrationRunId",
-  "orchestrationRole",
+const SPAWN_LINEAGE_FIELD_NAMES = [
   "orchestrationParentSessionId",
   "spawnKind",
   "subagentTakeoverPromptShownAt",
-  "orchestrationTag",
-  "orchestrationStepId",
-  "orchestrationBundlePath",
 ] as const;
 
-type OrchestrationFieldSource = Partial<Record<(typeof ORCHESTRATION_SESSION_FIELD_NAMES)[number], unknown>>;
+type SpawnLineageFieldSource = Partial<Record<(typeof SPAWN_LINEAGE_FIELD_NAMES)[number], unknown>>;
 
-const VALID_ORCHESTRATION_ROLES = new Set(["lead", "worker", "validator"]);
 const VALID_AGENT_CHAT_SPAWN_KINDS = new Set(["subagent", "peer"]);
 
 /**
- * Read orchestration fields from an untyped record (e.g. persisted JSON),
+ * Read spawn-lineage fields from an untyped record (e.g. persisted JSON),
  * validating and trimming each value.  Returns only the fields that are
  * present and valid, ready to spread into a typed object.
  */
-function hydrateOrchestrationFields(
+function hydrateSpawnLineageFields(
   record: Record<string, unknown>,
 ): Partial<PersistedChatState> {
   const out: Partial<PersistedChatState> = {};
-  const runId = record.orchestrationRunId;
-  if (typeof runId === "string" && runId.trim().length) out.orchestrationRunId = runId.trim();
-  const role = record.orchestrationRole;
-  if (typeof role === "string" && VALID_ORCHESTRATION_ROLES.has(role)) {
-    out.orchestrationRole = role as "lead" | "worker" | "validator";
-  }
   const parentId = record.orchestrationParentSessionId;
   if (typeof parentId === "string" && parentId.trim().length) out.orchestrationParentSessionId = parentId.trim();
   const spawnKind = record.spawnKind;
@@ -8077,34 +8134,26 @@ function hydrateOrchestrationFields(
   if (typeof shownAt === "string" && shownAt.trim().length) {
     out.subagentTakeoverPromptShownAt = shownAt.trim();
   }
-  const tag = record.orchestrationTag;
-  if (typeof tag === "string" && tag.trim().length) out.orchestrationTag = tag.trim();
-  const stepId = record.orchestrationStepId;
-  if (typeof stepId === "string" && stepId.trim().length) out.orchestrationStepId = stepId.trim();
-  const bundlePath = record.orchestrationBundlePath;
-  if (typeof bundlePath === "string" && bundlePath.trim().length) out.orchestrationBundlePath = bundlePath.trim();
   return out;
 }
 
 /**
- * Collect orchestration fields from a live session or persisted state, falling
+ * Collect spawn-lineage fields from a live session or persisted state, falling
  * back from live to persisted when the live value is absent.  Returns a spread-
  * ready partial.
  */
-function collectOrchestrationFields(
-  live: OrchestrationFieldSource | null | undefined,
-  persisted: OrchestrationFieldSource | null | undefined,
+function collectSpawnLineageFields(
+  live: SpawnLineageFieldSource | null | undefined,
+  persisted: SpawnLineageFieldSource | null | undefined,
 ): Partial<PersistedChatState> {
   const out: Partial<PersistedChatState> = {};
-  for (const key of ORCHESTRATION_SESSION_FIELD_NAMES) {
+  for (const key of SPAWN_LINEAGE_FIELD_NAMES) {
     const value = (live as Record<string, unknown>)?.[key] ?? (persisted as Record<string, unknown>)?.[key];
     if (value != null) (out as Record<string, unknown>)[key] = value;
   }
   return out;
 }
 
-const ORCHESTRATION_CLAUDE_SERVER_NAME = "ade-orchestration";
-const ORCHESTRATION_CODEX_TOOL_NAMESPACE = "ade_orchestration";
 const CTO_MCP_SERVER_NAME = "ade-cto";
 const CTO_CODEX_TOOL_NAMESPACE = "ade_cto";
 
@@ -8179,13 +8228,8 @@ function buildCodexDeveloperInstructions(args: {
     AgentChatSession,
     | "permissionMode"
     | "interactionMode"
-    | "orchestrationRole"
-    | "orchestrationRunId"
-    | "orchestrationBundlePath"
-    | "orchestrationTag"
     | "orchestrationParentSessionId"
     | "spawnKind"
-    | "orchestrationStepId"
     | "surface"
     | "instructions"
   >;
@@ -8205,12 +8249,6 @@ function buildCodexDeveloperInstructions(args: {
     interactive: true,
     runtime: "codex-app-server",
     adeSkillRoots: getAdeAgentSkillRootsForPrompt({ cwd: args.laneWorktreePath }),
-    orchestrationRole: args.session.orchestrationRole,
-    orchestrationRunId: args.session.orchestrationRunId,
-    orchestrationBundlePath: args.session.orchestrationBundlePath,
-    orchestrationTag: args.session.orchestrationTag,
-    orchestrationParentSessionId: args.session.orchestrationParentSessionId,
-    orchestrationStepId: args.session.orchestrationStepId,
   });
   const spawnGuidance = buildSpawnSelfReportGuidance(args.session, args.spawnGuidance);
   return [base, args.linearDirective, spawnGuidance].filter(Boolean).join("\n\n");
@@ -8224,12 +8262,7 @@ function buildOpenCodeSystemPrompt(args: {
     | "permissionMode"
     | "interactionMode"
     | "surface"
-    | "orchestrationRole"
-    | "orchestrationRunId"
-    | "orchestrationBundlePath"
-    | "orchestrationTag"
     | "orchestrationParentSessionId"
-    | "orchestrationStepId"
     | "spawnKind"
     | "instructions"
   >;
@@ -8246,12 +8279,6 @@ function buildOpenCodeSystemPrompt(args: {
     interactive: true,
     runtime: "opencode",
     adeSkillRoots: getAdeAgentSkillRootsForPrompt({ cwd: args.laneWorktreePath }),
-    orchestrationRole: args.session.orchestrationRole,
-    orchestrationRunId: args.session.orchestrationRunId,
-    orchestrationBundlePath: args.session.orchestrationBundlePath,
-    orchestrationTag: args.session.orchestrationTag,
-    orchestrationParentSessionId: args.session.orchestrationParentSessionId,
-    orchestrationStepId: args.session.orchestrationStepId,
   });
   return [base, buildAdeSessionLineageGuidance(args.session, args.spawnGuidance)]
     .filter(Boolean)
@@ -8564,8 +8591,8 @@ function resolveDroidSdkAutonomyLevel(
     case "read-only":
       return "off";
     case "agi":
-      // Orchestrator runs read-only at the top level; workers carry their own
-      // autonomy, so the lead session stays at "off".
+      // Droid's AGI mode runs read-only at the top level; its worker
+      // sub-sessions carry their own autonomy.
       return "off";
     case "auto-low":
       return "low";
@@ -8626,15 +8653,11 @@ function normalizeSessionNativePermissionControls(
   >,
   config: ResolvedChatConfig,
 ): void {
-  const orchestrationMode = isOrchestrationInteractionMode(session.interactionMode)
-    ? session.interactionMode
-    : null;
   if (session.provider === "claude") {
     session.interactionMode = resolveSessionClaudeInteractionMode(session);
     session.claudePermissionMode = resolveSessionClaudePermissionMode(session, config.claudePermissionMode);
   } else if (session.provider === "codex") {
-    if (orchestrationMode) session.interactionMode = orchestrationMode;
-    else delete session.interactionMode;
+    delete session.interactionMode;
     session.codexConfigSource = resolveSessionCodexConfigSource(session);
     if (session.codexConfigSource === "config-toml") {
       // Keep the last flag-based values so switching back from config-toml does
@@ -8644,9 +8667,9 @@ function normalizeSessionNativePermissionControls(
       session.codexSandbox = resolveSessionCodexSandbox(session, config.codexSandboxMode);
     }
   } else if (session.provider === "droid") {
-    session.interactionMode = orchestrationMode ?? (session.interactionMode === "plan" || session.permissionMode === "plan"
+    session.interactionMode = session.interactionMode === "plan" || session.permissionMode === "plan"
       ? "plan"
-      : "default");
+      : "default";
     // Materialising a fallback here would be read back as a real choice on the
     // next launch and pin it forever, which is what made the equivalent Claude
     // bug durable. Absence has to stay absent.
@@ -8654,15 +8677,12 @@ function normalizeSessionNativePermissionControls(
     if (chosenDroidMode) session.droidPermissionMode = chosenDroidMode;
     else delete session.droidPermissionMode;
   } else if (session.provider === "pi") {
-    if (orchestrationMode) session.interactionMode = orchestrationMode;
-    else delete session.interactionMode;
+    delete session.interactionMode;
   } else if (session.provider === "cursor") {
-    if (orchestrationMode) session.interactionMode = orchestrationMode;
-    else delete session.interactionMode;
+    delete session.interactionMode;
     applyCursorModeIdFromLegacyPermissionMode(session);
   } else {
-    if (orchestrationMode) session.interactionMode = orchestrationMode;
-    else delete session.interactionMode;
+    delete session.interactionMode;
     session.opencodePermissionMode = resolveSessionOpenCodePermissionMode(session, config.opencodePermissionMode);
   }
 
@@ -8780,19 +8800,17 @@ function isLightweightSession(session: Pick<AgentChatSession, "sessionProfile">)
  * `.mcp.json`, no user MCP).
  *
  * Precedence, highest first:
- *  1. Orchestration lead — isolation is policy, not preference. Always strict.
- *  2. The caller's explicit `strictMcpConfig`, either value. `false` is the
+ *  1. The caller's explicit `strictMcpConfig`, either value. `false` is the
  *     only way to get the user's MCP config into a lightweight session, and
  *     every SDK/personal chat is lightweight; without this the SDK's
  *     `loadUserMcpServers: true` was accepted on the wire and then discarded.
- *  3. The session profile: lightweight side-jobs (auto-title, lane naming)
+ *  2. The session profile: lightweight side-jobs (auto-title, lane naming)
  *     stay lean.
  */
 function resolveClaudeStrictMcpConfig(
-  session: Pick<AgentChatSession, "sessionProfile" | "strictMcpConfig" | "interactionMode" | "orchestrationRole">,
+  session: Pick<AgentChatSession, "sessionProfile" | "strictMcpConfig">,
   lightweight: boolean,
 ): boolean {
-  if (isOrchestrationLeadSession(session)) return true;
   return session.strictMcpConfig ?? lightweight;
 }
 
@@ -8865,6 +8883,8 @@ export const CHAT_EVENT_HISTORY_BUFFER_MAX_SESSIONS = 64;
 
 export function createAgentChatService(args: {
   projectRoot: string;
+  /** Control endpoint this runtime actually bound, used for ownership attribution. */
+  runtimeSocketPath?: string | null;
   adeDir?: string;
   transcriptsDir: string;
   fileService?: ReturnType<typeof createFileService> | null;
@@ -8872,11 +8892,9 @@ export function createAgentChatService(args: {
   ctoMemoryService?: CtoMemoryService | null;
   linearIssueTracker?: IssueTracker | null;
   githubService?: Pick<GithubService, "getIssue"> | null;
-  getOrchestrationService?: () => ReturnType<typeof createOrchestrationService> | null;
   /**
-   * Lazy accessor for the universal search service. Used only to back the
-   * orchestrator lead's read-only `searchWorkspace` tool; may be null in
-   * runtimes where search is not wired (tool degrades to "unavailable").
+   * Lazy accessor for the universal search service; may be null in runtimes
+   * where search is not wired.
    */
   getSearchService?: () => {
     query: (args: {
@@ -8897,6 +8915,21 @@ export function createAgentChatService(args: {
    * exactly as they did before sleep was tracked.
    */
   hostPowerSource?: MachinePowerSource | null;
+  /**
+   * This machine's answer to "Don't ask again" on Claude's resume-return
+   * dialog.
+   *
+   * A port rather than a direct `globalState` read because the file lives in
+   * the Electron user-data directory, which only the host that launched the app
+   * can resolve. Absent means the preference cannot be remembered, so the
+   * dialog is declared and "never" behaves as "keep full history" for that
+   * session — the honest degradation, since silently never asking again would
+   * be a preference the user could not see or undo.
+   */
+  claudeResumeDialogPreference?: {
+    isDismissed: () => boolean;
+    markDismissed: () => void;
+  } | null;
   getTestService?: () => { listSuites: () => any[]; run: (args: any) => Promise<any>; stop: (args: any) => void; listRuns: (args?: any) => any[]; getLogTail: (args: any) => string } | null;
   ptyService?: (
     Pick<
@@ -8959,8 +8992,7 @@ export function createAgentChatService(args: {
     | Promise<CodexComputerUseMcpConfig | null>;
   /**
    * Names of the MCP servers the user configured in Codex's `config.toml`.
-   * Orchestrator leads carry an explicit `enabled = false` for each of them
-   * (see ORCHESTRATION_LEAD_MCP_ISOLATION.codex).
+   * Strict-MCP sessions carry an explicit `enabled = false` for each of them.
    */
   resolveCodexConfiguredMcpServerNames?: () => readonly string[] | Promise<readonly string[]>;
   claudeSubprocessReaper?: ClaudeSubprocessReaper;
@@ -8997,6 +9029,8 @@ export function createAgentChatService(args: {
    * `ChatAutoResumeAnalyticsProperties`.
    */
   onAutoResumeOutcome?: (properties: ChatAutoResumeAnalyticsProperties) => void;
+  /** Content-free hook fired after a user dismisses a pending question. */
+  onPendingInputDismissed?: (event: { provider: AgentChatProvider }) => void;
   onUsageLimitAutoResumed?: (args: { sessionId: string; title?: string | null }) => void;
   onSessionEnded?: (args: { laneId: string; sessionId: string; exitCode: number | null }) => void;
   onLinearIssueChatLinked?: (args: {
@@ -9030,13 +9064,13 @@ export function createAgentChatService(args: {
   const runtimeBudget = args.runtimeBudget ?? createChatRuntimeBudget();
   const {
     projectRoot,
+    runtimeSocketPath: injectedRuntimeSocketPath,
     transcriptsDir,
     fileService,
     ctoStateService,
     ctoMemoryService,
     linearIssueTracker,
     githubService,
-    getOrchestrationService,
     getSearchService,
     prService,
     diskPressureMonitor,
@@ -9075,11 +9109,16 @@ export function createAgentChatService(args: {
     onChatHandoffReplay,
     onSessionMetadataRegenerated,
     onAutoResumeOutcome,
+    onPendingInputDismissed,
     onUsageLimitAutoResumed,
     onSessionEnded,
     onLinearIssueChatLinked,
     getDirtyFileTextForPath,
   } = args;
+  const runtimeSocketPath = typeof injectedRuntimeSocketPath === "string"
+    ? injectedRuntimeSocketPath.trim() || null
+    : null;
+  const claudeResumeDialogPreference = args.claudeResumeDialogPreference ?? null;
   const browserActorCapabilityIssuer =
     args.browserActorCapabilityIssuer ?? localBrowserActorCapabilityIssuer;
   const nativeTitleWaitMs = Math.max(0, args.nativeTitleWaitMs ?? NATIVE_TITLE_WAIT_MS);
@@ -9096,21 +9135,14 @@ export function createAgentChatService(args: {
     });
 
   /**
-   * Thread-level Codex config for one session. Orchestrator leads never get MCP
-   * (user servers are switched off one by one and Computer Use is skipped);
-   * every other session keeps the user's Codex config untouched unless an
-   * external embedder injected servers or asked for strict mode.
+   * Thread-level Codex config for one session. A session keeps the user's Codex
+   * config untouched unless an external embedder injected servers or asked for
+   * strict mode.
    */
   const codexThreadConfigArgsFor = async (
     managed: ManagedChatSession,
     reasoningEffort: string | null | undefined,
   ): Promise<{ config?: Record<string, unknown> }> => {
-    if (isOrchestrationLeadSession(managed.session)) {
-      return codexThreadConfigArgs({
-        reasoningEffort,
-        leadConfiguredMcpServerNames: await resolveCodexConfiguredMcpServerNames(),
-      });
-    }
     const callerServers = managed.session.mcpServers ?? null;
     const callerStrict = managed.session.strictMcpConfig === true;
     return codexThreadConfigArgs({
@@ -9309,6 +9341,167 @@ export function createAgentChatService(args: {
     });
   };
 
+  /**
+   * Which provider ACCOUNT this chat runs as.
+   *
+   * An explicit `instanceId` wins while it still names a real account; anything
+   * else resolves to the provider's default. Only Claude and Codex have
+   * accounts — every other provider returns `null` and its launch is untouched.
+   *
+   * A pointer at a REMOVED account is the interesting case. Falling back
+   * silently is the locked behaviour, but a fallback cannot keep the old
+   * account's provider thread: that thread lives inside the config home that is
+   * gone, so resuming it would either fail or (worse) resume a stranger's
+   * conversation in the default account. So the fallback also forgets the
+   * thread pointer and lets the next turn start fresh — once, because the stale
+   * id is cleared at the same time. Leaving the id in place would restart the
+   * conversation on every single turn.
+   */
+  const resolveSessionInstance = (managed: ManagedChatSession): ProviderInstance | null => {
+    const provider: ProviderInstanceProvider | null = managed.session.provider === "claude"
+      ? "claude"
+      : managed.session.provider === "codex"
+        ? "codex"
+        : null;
+    if (!provider) return null;
+    const requestedId = managed.session.instanceId?.trim();
+    let resolved: { instance: ProviderInstance; fellBack: boolean };
+    try {
+      resolved = getMachineProviderInstanceStore().resolve(provider, requestedId);
+    } catch (error) {
+      logger.warn("agent_chat.provider_instance_resolve_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+    if (requestedId && resolved.fellBack) {
+      logger.info("agent_chat.provider_instance_fell_back", {
+        sessionId: managed.session.id,
+        provider,
+        requestedId,
+        instanceId: resolved.instance.id,
+      });
+      delete managed.session.instanceId;
+      forgetProviderThreadPointer(managed);
+    }
+    return resolved.instance;
+  };
+
+  /**
+   * The resolved harness preset (or bare provider-card key) for a chat.
+   *
+   * Memoized per session because resolving is not free: a Codex or Droid preset
+   * writes its config home's files as part of resolving, and
+   * `buildAgentRuntimeEnv` runs on every helper lookup, not only at spawn. The
+   * cache key carries both ids so switching a chat's preset re-resolves rather
+   * than serving the previous brain's environment.
+   *
+   * An `unsupported` result is remembered as "no plan" and reported once: the
+   * chat then launches on the harness's own sign-in, which is the honest
+   * fallback, and the notice tells the user which capability was dropped.
+   */
+  const sessionLaunchPlanCache = new Map<string, { key: string; plan: HarnessPresetLaunchPlan | null }>();
+
+  const resolveSessionLaunchPlan = (managed: ManagedChatSession): HarnessPresetLaunchPlan | null => {
+    const presetId = managed.session.presetId?.trim() ?? "";
+    const credentialId = managed.session.credentialId?.trim() ?? "";
+    if (!presetId && !credentialId) return null;
+    const cacheKey = `${managed.session.provider} ${presetId} ${credentialId}`;
+    const cached = sessionLaunchPlanCache.get(managed.session.id);
+    if (cached && cached.key === cacheKey) return cached.plan;
+    let plan: HarnessPresetLaunchPlan | null = null;
+    try {
+      const result = resolveLaunchBrain({
+        provider: managed.session.provider,
+        presetId,
+        credentialId,
+      });
+      if (result?.status === "unsupported") {
+        logger.info("agent_chat.harness_preset_unsupported", {
+          sessionId: managed.session.id,
+          provider: managed.session.provider,
+          presetId: presetId || undefined,
+          reason: result.unsupported,
+        });
+      } else {
+        plan = result;
+      }
+    } catch (error) {
+      logger.warn("agent_chat.harness_preset_resolve_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    sessionLaunchPlanCache.set(managed.session.id, { key: cacheKey, plan });
+    return plan;
+  };
+
+  /**
+   * `process.env` plus this chat's provider-account override, and nothing else.
+   *
+   * For the helper lookups (rollout discovery, prompt-file discovery) that need
+   * to read the same config home the runtime will launch against, but must not
+   * pay for `buildAgentRuntimeEnv` — which issues a browser capability token and
+   * writes a Linear context file as side effects.
+   */
+  const sessionProviderLookupEnv = (managed: ManagedChatSession): NodeJS.ProcessEnv => {
+    const patch = providerInstanceEnvPatch(resolveSessionInstance(managed));
+    return Object.keys(patch).length ? { ...process.env, ...patch } : process.env;
+  };
+
+  /**
+   * The Codex config home a chat's rollouts live under, when it is not the
+   * default account's. `undefined` means "the default", which is what every
+   * caller already assumed.
+   */
+  const sessionCodexHome = (sessionId: string): string | undefined => {
+    const instanceId = readPersistedState(sessionId)?.instanceId?.trim();
+    if (!instanceId) return undefined;
+    try {
+      const instance = getMachineProviderInstanceStore().get(instanceId);
+      return instance?.provider === "codex" ? instance.configHome : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
+  /**
+   * Drop every pointer that would resume this chat's provider-side thread, in
+   * memory AND on disk.
+   *
+   * The persisted copies exist precisely so a transient teardown does not lose
+   * continuity (`persistChatState` reads them back when the runtime is gone),
+   * which is exactly what would resurrect the old account's thread here. Best
+   * effort: the worst case of a failed write is one more turn resuming a thread
+   * the provider will reject, which is the state we were already in.
+   */
+  const forgetProviderThreadPointer = (managed: ManagedChatSession): void => {
+    delete managed.session.threadId;
+    managed.claudeBackgroundResumeSessionId = null;
+    try {
+      const persisted = readPersistedState(managed.session.id);
+      if (!persisted) return;
+      const next: PersistedChatState = { ...persisted };
+      delete next.threadId;
+      delete next.sdkSessionId;
+      delete next.forkFromSdkSessionId;
+      delete next.providerSessionId;
+      delete next.claudeBackgroundResumeSessionId;
+      delete next.claudeBackgroundJobShort;
+      fs.mkdirSync(path.dirname(managed.metadataPath), { recursive: true });
+      writeJsonWithPrevious(managed.metadataPath, next, {
+        validate: isPersistedChatStateShape,
+        fsync: true,
+      });
+    } catch (error) {
+      logger.warn("agent_chat.provider_thread_pointer_clear_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   const buildAgentRuntimeEnv = (managed: ManagedChatSession): NodeJS.ProcessEnv => {
     const personalSession = isPersonalSession(managed.session);
     const issueSync = browserActorCapabilityIssuer.issueSync;
@@ -9327,9 +9520,7 @@ export function createAgentChatService(args: {
     }
     const env: NodeJS.ProcessEnv = {
       ...(getAdeCliAgentEnv?.(process.env) ?? process.env),
-      ADE_DEFAULT_ROLE: managed.session.orchestrationRole === "lead"
-        ? "orchestrator"
-        : "agent",
+      ADE_DEFAULT_ROLE: "agent",
       ADE_CHAT_SESSION_ID: managed.session.id,
       ...(browserActorToken ? { ADE_BROWSER_ACTOR_TOKEN: browserActorToken } : {}),
       ...(personalSession
@@ -9365,6 +9556,24 @@ export function createAgentChatService(args: {
     if (linearContext) {
       env.ADE_LINEAR_ISSUE_IDS = linearContext.identifiers;
       env.ADE_LINEAR_CONTEXT_FILE = linearContext.filePath;
+    }
+    // The provider account, as ONE env var naming ONE config directory. Applied
+    // here rather than at each launch site so every process this chat starts —
+    // the SDK query, the background CLI, slash-command discovery, the Codex
+    // app-server — reads the same account. `HOME` is never rewritten and
+    // `process.env` is never mutated: this object is the only thing that moves.
+    const instance = resolveSessionInstance(managed);
+    if (instance) {
+      Object.assign(env, providerInstanceEnvPatch(instance));
+    }
+    // A harness preset (or a bare provider-card key) lands LAST, so a preset
+    // that owns its own config home outranks the account patch above. Same
+    // reasoning as the account patch: applied once here rather than at each
+    // launch site, so the SDK query, the background CLI, slash-command
+    // discovery and the Codex app-server all read the same brain.
+    const presetPlan = resolveSessionLaunchPlan(managed);
+    if (presetPlan) {
+      Object.assign(env, presetPlan.env);
     }
     return env;
   };
@@ -10011,18 +10220,6 @@ export function createAgentChatService(args: {
     runtime: ClaudeRuntime,
     managed: ManagedChatSession,
   ): ClaudeSDKOptions["canUseTool"] => async (toolName, input, sdkOptions): Promise<ClaudePermissionResult> => {
-    if (
-      isOrchestrationLeadSession(managed.session)
-      && ORCHESTRATION_LEAD_DENIED_CLAUDE_TOOLS.includes(
-        toolName as (typeof ORCHESTRATION_LEAD_DENIED_CLAUDE_TOOLS)[number],
-      )
-    ) {
-      return {
-        behavior: "deny",
-        message: "Orchestrator lead sessions cannot use Claude's direct coding tools. Use orchestration tools like spawnAgent instead.",
-      };
-    }
-
     // ── Host permission policy, evaluated once ──
     // Placed ahead of every tool-specific interception below so that a refusal
     // is absolute. `AskUserQuestion` and ADE's own `ask_user` both auto-allow
@@ -10771,7 +10968,6 @@ export function createAgentChatService(args: {
         iosSimulatorService: getIosSimulatorService?.() ?? null,
         appControlService: getAppControlService?.() ?? null,
         builtInBrowserService: getBuiltInBrowserService?.() ?? null,
-        orchestrationService: getOrchestrationService?.() ?? null,
     };
   };
 
@@ -12173,15 +12369,19 @@ export function createAgentChatService(args: {
     const countWindowed = parentVisibleLength > maxEvents
       ? parentVisibleMerged.slice(-maxEvents)
       : parentVisibleMerged;
-    const windowed = requestedMaxBytes == null
+    const budgeted = requestedMaxBytes == null
       ? trimEnvelopesToByteBudget(countWindowed, responseMaxChars)
       : keepNewestWithinCharBudget(countWindowed, responseMaxChars, estimateEnvelopeBytes, {
         keepOversizeNewest: false,
       });
+    // An `approval_request` with no receipt is a control, not history: aging it
+    // out deletes the card from every client while this service goes on
+    // counting the session as blocked. Re-admitted in place, past both budgets.
+    const windowed = retainUnresolvedApprovalRequests(parentVisibleMerged, budgeted);
     const windowTruncated =
       mergedLengthBeforeResponseCap > CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION
       || parentVisibleLength > maxEvents
-      || windowed.length < countWindowed.length;
+      || budgeted.length < countWindowed.length;
     const truncated = transcriptTruncated || windowTruncated;
     // Authoritative "older content exists beyond this response" signal. Both
     // inputs are computed at tail-read / merge-window time, never from envelope
@@ -14013,12 +14213,6 @@ export function createAgentChatService(args: {
           interactive: true,
           runtime: "pi-sdk",
           adeSkillRoots: getAdeAgentSkillRootsForPrompt({ cwd: managed.laneWorktreePath }),
-          orchestrationRole: managed.session.orchestrationRole,
-          orchestrationRunId: managed.session.orchestrationRunId,
-          orchestrationBundlePath: managed.session.orchestrationBundlePath,
-          orchestrationTag: managed.session.orchestrationTag,
-          orchestrationParentSessionId: managed.session.orchestrationParentSessionId,
-          orchestrationStepId: managed.session.orchestrationStepId,
         });
     // Pi's built-in tool registry only contains read, bash, edit, and write.
     // Passing ADE's generic grep/find/ls names would make the SDK launch fail.
@@ -14273,6 +14467,10 @@ export function createAgentChatService(args: {
     // inspectLocalProvider results are cached (30s TTL) so this is near-instant
     // when aiIntegrationService has already probed recently.
     const discoveredLocalModels: DiscoveredLocalModelEntry[] = [];
+    const openCodePresetPlan = resolveSessionLaunchPlan(managed);
+    const openCodePresetProviders = openCodePresetPlan?.openCodeProvider
+      ? { [openCodePresetPlan.openCodeProvider.id]: openCodePresetPlan.openCodeProvider.block }
+      : null;
     const localProviderConfigs = configSnapshot.effective.ai?.localProviders ?? {};
     for (const family of ["ollama", "lmstudio"] as const) {
       const providerSettings = localProviderConfigs[family];
@@ -14291,23 +14489,18 @@ export function createAgentChatService(args: {
         // Non-fatal — provider may be offline
       }
     }
-    const openCodeOrchestrationLead = isOrchestrationLeadSession(managed.session);
-    // A caller-requested strict MCP surface needs the same isolation a lead
-    // gets, and for the same reason: OpenCode has no per-server switch, so the
-    // only way to withhold the user's servers is a dedicated server with an
-    // ADE-authored config and the project config layer disabled.
-    const openCodeIsolatedConfig = openCodeOrchestrationLead
-      || managed.session.strictMcpConfig === true;
+    // A caller-requested strict MCP surface needs its own isolation: OpenCode
+    // has no per-server switch, so the only way to withhold the user's servers
+    // is a dedicated server with an ADE-authored config and the project config
+    // layer disabled.
+    const openCodeIsolatedConfig = managed.session.strictMcpConfig === true;
     const opencodeMcpLeases = await ensureHttpMcpLeases(managed);
-    // Ordinary chats and orchestrator workers inherit the user's OpenCode
-    // config and MCP servers. A lead gets a dedicated server with ADE-owned
-    // config only, because a user MCP server can reintroduce edit/shell access
-    // through a different door (see ORCHESTRATION_LEAD_MCP_ISOLATION.opencode).
+    // Ordinary chats inherit the user's OpenCode config and MCP servers.
     // Caller-injected servers (ADE SDK embedders) join the same map, ADE leases
     // last so a caller cannot displace one by reusing its name. OpenCode's
     // config calls an HTTP/SSE server "remote" and a stdio server "local".
     const opencodeCallerMcpServers = managed.session.mcpServers ?? null;
-    const opencodeOrchestrationMcp = opencodeMcpLeases.length || opencodeCallerMcpServers
+    const opencodeMcpConfig = opencodeMcpLeases.length || opencodeCallerMcpServers
       ? {
         ...(opencodeCallerMcpServers
           ? callerMcpServersToOpenCodeConfig(opencodeCallerMcpServers)
@@ -14326,7 +14519,11 @@ export function createAgentChatService(args: {
         sessionId: persisted?.providerSessionId,
         projectConfig: configSnapshot.effective,
         discoveredLocalModels,
-        ...(opencodeOrchestrationMcp ? { mcp: opencodeOrchestrationMcp } : {}),
+        // OpenCode has no env var for "use this key against this endpoint" — a
+        // provider is a config block or it does not exist. A preset's block is
+        // resolved per chat and merged last, so it changes this session only.
+        ...(openCodePresetProviders ? { presetProviders: openCodePresetProviders } : {}),
+        ...(opencodeMcpConfig ? { mcp: opencodeMcpConfig } : {}),
         ownerKind: "chat",
         ownerId: managed.session.id,
         ownerKey: `chat:${managed.session.id}`,
@@ -14794,68 +14991,49 @@ export function createAgentChatService(args: {
     void computeHeadShaBestEffort(laneId).then((sha) => {
       if (sha) managed.turnBeforeSha = sha;
     }).catch(() => {});
+    // The dirty tree as of now, so an uncommitted turn is reported by what it
+    // touched rather than by everything the lane already had dirty.
+    managed.turnBeforeTree = captureWorkingTreeFingerprint(managed.laneWorktreePath).catch(() => null);
   };
 
   const emitTurnDiffSummaryIfChanged = async (managed: ManagedChatSession, turnId: string): Promise<void> => {
     const beforeSha = managed.turnBeforeSha;
+    const beforeTreePromise = managed.turnBeforeTree;
     managed.turnBeforeSha = null;
+    managed.turnBeforeTree = null;
     if (!beforeSha) return;
 
     const laneId = resolveManagedExecutionLaneId(managed);
     const afterSha = await computeHeadShaBestEffort(laneId).catch(() => null);
-    if (!afterSha || beforeSha === afterSha) return;
+    if (!afterSha) return;
+    const beforeTree = await beforeTreePromise?.catch(() => null) ?? null;
 
     try {
       // Same rule as the Codex rewind: a `managed` in hand names the directory
       // the session actually runs in, so take it rather than re-resolving from
       // the lane id.
-      const cwd = managed.laneWorktreePath;
-      const result = await runGit(["diff", "--numstat", `${beforeSha}..${afterSha}`], { cwd, timeoutMs: 10_000 });
-      if (result.exitCode !== 0) return;
-
-      const files: Array<{ path: string; additions: number; deletions: number; status: string }> = [];
-      let totalAdditions = 0;
-      let totalDeletions = 0;
-
-      for (const line of result.stdout.split("\n")) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        const parts = trimmed.split("\t");
-        if (parts.length < 3) continue;
-        const additions = parts[0] === "-" ? 0 : parseInt(parts[0], 10) || 0;
-        const deletions = parts[1] === "-" ? 0 : parseInt(parts[1], 10) || 0;
-        const filePath = parts.slice(2).join("\t");
-        files.push({ path: filePath, additions, deletions, status: "M" });
-        totalAdditions += additions;
-        totalDeletions += deletions;
-      }
-
-      if (files.length === 0) return;
-
-      // Determine file status (A/M/D) from diff-filter
-      const statusResult = await runGit(["diff", "--name-status", `${beforeSha}..${afterSha}`], { cwd, timeoutMs: 10_000 });
-      if (statusResult.exitCode === 0) {
-        const statusMap = new Map<string, string>();
-        for (const line of statusResult.stdout.split("\n")) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-          const tabIdx = trimmed.indexOf("\t");
-          if (tabIdx < 0) continue;
-          statusMap.set(trimmed.slice(tabIdx + 1).trim(), trimmed.slice(0, tabIdx).trim().charAt(0));
-        }
-        for (const file of files) {
-          file.status = statusMap.get(file.path) ?? "M";
-        }
-      }
+      //
+      // An unchanged sha is NOT an empty turn. A turn that edited files and did
+      // not commit reports the same head on both sides, which this used to read
+      // as "nothing happened" and return on — so the most common shape of agent
+      // turn, edit-and-wait-for-review, showed no files-changed row at all.
+      // `collectTurnDiffSummary` compares against the working tree in that case.
+      const summary = await collectTurnDiffSummary({
+        cwd: managed.laneWorktreePath,
+        beforeSha,
+        afterSha,
+        beforeTree,
+      });
+      if (!summary || summary.files.length === 0) return;
 
       emitChatEvent(managed, {
         type: "turn_diff_summary",
         turnId,
         beforeSha,
         afterSha,
-        files,
-        totalAdditions,
-        totalDeletions,
+        files: summary.files,
+        totalAdditions: summary.totalAdditions,
+        totalDeletions: summary.totalDeletions,
       });
     } catch {
       // Silently ignore diff computation failures
@@ -14921,26 +15099,6 @@ export function createAgentChatService(args: {
       refreshReconstructionContext(managed);
     }
     return launchContext;
-  };
-
-  const orchestrationBundlePathForRun = (worktreePath: string, runId: string): string =>
-    path.join(worktreePath, ".ade", "orchestration", runId);
-
-  const relocateOrchestrationRunBundle = async (
-    runId: string,
-    bundlePath: string,
-    sessionId: string,
-  ): Promise<void> => {
-    try {
-      await getOrchestrationService?.()?.relocateRunBundle(runId, bundlePath);
-    } catch (error) {
-      logger.warn("agent_chat.orchestration_bundle_relocate_failed", {
-        runId,
-        sessionId,
-        bundlePath,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
   };
 
   const resolvePrimaryIdentityLane = async (): Promise<string> => {
@@ -15133,6 +15291,14 @@ export function createAgentChatService(args: {
     if (!managed.runtime && !managed.runtimeInvalidated) {
       try { prevPersisted = readPersistedState(managed.session.id); } catch { /* ignore */ }
     }
+    // Runtime ownership, stamped on every persist: holding a live runtime IS
+    // the claim, and a deliberate teardown (`runtimeInvalidated`, which nulls
+    // `prevPersisted`) releases it. A chat with no provider process is
+    // genuinely adoptable; a chat whose process belongs to a live sibling brain
+    // is not, and this is the field that says which.
+    const runtimeOwner: ChatRuntimeOwner | null = managed.runtime
+      ? selfChatRuntimeOwner()
+      : prevPersisted?.runtimeOwner ?? null;
     const liveClaudeSdkSessionId = managed.runtime?.kind === "claude" ? managed.runtime.sdkSessionId : null;
     const claudeBackgroundResumeSessionId = managed.session.provider === "claude"
       ? managed.claudeBackgroundResumeSessionId
@@ -15210,6 +15376,7 @@ export function createAgentChatService(args: {
       // tool gate reads the policy on every call.
       ...pickHostSessionConfig(managed.session),
       ...(managed.runtimeTitleAdopted ? { runtimeTitleAdopted: true } : {}),
+      ...(runtimeOwner ? { runtimeOwner } : {}),
       ...(managed.session.permissionMode ? { permissionMode: managed.session.permissionMode } : {}),
       ...(managed.session.identityKey ? { identityKey: managed.session.identityKey } : {}),
       ...(managed.session.surface ? { surface: managed.session.surface } : {}),
@@ -15258,6 +15425,15 @@ export function createAgentChatService(args: {
       // tripped the invariant must not erase a flag an earlier run set.
       ...(managed.acpSupervisionNoticeShown || prevPersisted?.acpSupervisionNoticeShown
         ? { acpSupervisionNoticeShown: true }
+        : {}),
+      ...((managed.session.instanceId ?? prevPersisted?.instanceId)
+        ? { instanceId: managed.session.instanceId ?? prevPersisted?.instanceId }
+        : {}),
+      ...((managed.session.presetId ?? prevPersisted?.presetId)
+        ? { presetId: managed.session.presetId ?? prevPersisted?.presetId }
+        : {}),
+      ...((managed.session.credentialId ?? prevPersisted?.credentialId)
+        ? { credentialId: managed.session.credentialId ?? prevPersisted?.credentialId }
         : {}),
       ...(managed.runtime?.kind === "pi" && !managed.runtimeInvalidated
         ? {
@@ -15384,6 +15560,19 @@ export function createAgentChatService(args: {
       ...(managed.answeredPlanApprovalItemIds.size
         ? { answeredPlanApprovalItemIds: [...managed.answeredPlanApprovalItemIds].slice(-32) }
         : {}),
+      // Live-set-only for the same reason: answering or dismissing the last
+      // async question has to be able to write an empty list.
+      ...(managed.asyncQuestions.size
+        ? {
+            asyncQuestions: [...managed.asyncQuestions.entries()]
+              .slice(-MAX_ASYNC_QUESTIONS)
+              .map(([itemId, entry]): PersistedAsyncQuestion => ({
+                itemId,
+                request: entry.request,
+                raisedAt: entry.raisedAt,
+              })),
+          }
+        : {}),
       ...(managed.codexAutomaticRecoveryAttempted
         ? { codexAutomaticRecoveryAttempted: true }
         : {}),
@@ -15394,7 +15583,7 @@ export function createAgentChatService(args: {
             ].slice(-64),
           }
         : {}),
-      ...collectOrchestrationFields(managed.session, prevPersisted),
+      ...collectSpawnLineageFields(managed.session, prevPersisted),
       // Always written (never omitted) so a consumed replay overwrites the
       // stored text instead of surviving into the next reconstruct.
       pendingTranscriptReplay: managed.pendingTranscriptReplay?.trim()
@@ -15664,6 +15853,15 @@ export function createAgentChatService(args: {
       const providerSessionId = typeof record.providerSessionId === "string" && record.providerSessionId.trim().length
         ? record.providerSessionId.trim()
         : undefined;
+      const instanceId = typeof record.instanceId === "string" && record.instanceId.trim().length
+        ? record.instanceId.trim()
+        : undefined;
+      const presetId = typeof record.presetId === "string" && record.presetId.trim().length
+        ? record.presetId.trim()
+        : undefined;
+      const credentialId = typeof record.credentialId === "string" && record.credentialId.trim().length
+        ? record.credentialId.trim()
+        : undefined;
       const piSessionId = typeof record.piSessionId === "string" && record.piSessionId.trim().length
         ? record.piSessionId.trim()
         : undefined;
@@ -15739,6 +15937,27 @@ export function createAgentChatService(args: {
       // Absent on state written before the field existed; the transcript scan
       // covers those sessions on its own.
       const persistedEventSequence = resolveRehydratedEventSequence(0, record.eventSequence);
+      const asyncQuestions: PersistedAsyncQuestion[] | undefined = Array.isArray(record.asyncQuestions)
+        ? record.asyncQuestions
+            .flatMap((entry) => {
+              const row = asRecord(entry);
+              const itemId = typeof row?.itemId === "string" ? row.itemId.trim() : "";
+              const request = asRecord(row?.request);
+              if (!itemId.length || !request) return [];
+              // A persisted card that lost its questions cannot be answered, so
+              // it is dropped rather than redrawn as an empty prompt.
+              if (!Array.isArray(request.questions) || request.questions.length === 0) return [];
+              const raisedAt = typeof row?.raisedAt === "string" && row.raisedAt.trim().length
+                ? row.raisedAt.trim()
+                : new Date().toISOString();
+              return [{
+                itemId,
+                request: request as unknown as PendingInputRequest,
+                raisedAt,
+              }];
+            })
+            .slice(-MAX_ASYNC_QUESTIONS)
+        : undefined;
       const pendingSteers: PersistedPendingSteer[] | undefined = Array.isArray(record.pendingSteers)
         ? record.pendingSteers
             .filter((entry): entry is PersistedPendingSteer => {
@@ -15826,6 +16045,9 @@ export function createAgentChatService(args: {
         ...(acpConfigSnapshot ? { acpConfigSnapshot } : {}),
         ...(acpDegradationNotesShown.length ? { acpDegradationNotesShown } : {}),
         ...(acpSupervisionNoticeShown ? { acpSupervisionNoticeShown } : {}),
+        ...(instanceId ? { instanceId } : {}),
+        ...(presetId ? { presetId } : {}),
+        ...(credentialId ? { credentialId } : {}),
         ...(piSessionId ? { piSessionId } : {}),
         ...(piSessionFile ? { piSessionFile } : {}),
         ...(piProfileId ? { piProfileId } : {}),
@@ -15846,6 +16068,7 @@ export function createAgentChatService(args: {
         ...(cursorPromotedTurnId ? { cursorPromotedTurnId } : {}),
         ...(approvalOverrides?.length ? { approvalOverrides } : {}),
         ...(pendingSteers?.length ? { pendingSteers } : {}),
+        ...(asyncQuestions?.length ? { asyncQuestions } : {}),
         ...(recentConversationEntries?.length ? { recentConversationEntries } : {}),
         ...(typeof record.continuitySummary === "string" && record.continuitySummary.trim().length
           ? { continuitySummary: record.continuitySummary.trim() }
@@ -15864,6 +16087,10 @@ export function createAgentChatService(args: {
           : {}),
         ...(record.manuallyNamed === true ? { manuallyNamed: true } : {}),
         ...(record.runtimeTitleAdopted === true ? { runtimeTitleAdopted: true } : {}),
+        ...((): { runtimeOwner?: ChatRuntimeOwner } => {
+          const runtimeOwner = normalizeChatRuntimeOwner(record.runtimeOwner);
+          return runtimeOwner ? { runtimeOwner } : {};
+        })(),
         ...(record.awaitingInput === true ? { awaitingInput: true } : {}),
         ...(typeof record.requestedCwd === "string" && record.requestedCwd.trim().length
           ? { requestedCwd: record.requestedCwd.trim() }
@@ -15885,18 +16112,96 @@ export function createAgentChatService(args: {
           ? { runtimeMode: record.runtimeMode }
           : {}),
         ...(persistedEventSequence > 0 ? { eventSequence: persistedEventSequence } : {}),
-        ...hydrateOrchestrationFields(record as Record<string, unknown>),
+        ...hydrateSpawnLineageFields(record as Record<string, unknown>),
         updatedAt: typeof record.updatedAt === "string" && record.updatedAt.trim().length ? record.updatedAt : nowIso()
       };
-      if (!hydrated.interactionMode && hydrated.orchestrationRole) {
-        hydrated.interactionMode = orchestrationInteractionModeForRole(hydrated.orchestrationRole);
-      }
       hydrateNativePermissionControls(hydrated as Parameters<typeof hydrateNativePermissionControls>[0]);
-      enforceOrchestrationLockedPermissionMode(hydrated);
       return hydrated;
     } catch {
       return null;
     }
+  };
+
+  /**
+   * This brain instance's runtime-ownership identity.
+   *
+   * Minted per service (one per brain process) rather than read from the pid:
+   * pids are reused and a synced row can carry another machine's pid, so the
+   * id is what distinguishes "my earlier claim" from "somebody else's".
+   *
+   * Deliberately NOT `randomUUID()`: the chat service's tests stub that to a
+   * deterministic sequence, and drawing from it here shifts every session id
+   * the suite asserts on.
+   */
+  const brainInstanceId = nextBrainInstanceId();
+  const brainAdeHome = resolveAdeHomeForOwnership();
+  const selfChatRuntimeOwner = (): ChatRuntimeOwner => ({
+    brainId: brainInstanceId,
+    pid: processRegistry?.pid ?? process.pid,
+    startedAt: processRegistry?.startedAt ?? null,
+    adeHome: brainAdeHome,
+    ...(runtimeSocketPath ? { socketPath: runtimeSocketPath } : {}),
+    claimedAt: nowIso(),
+  });
+
+  /**
+   * May this brain adopt the chat — relaunch its provider, terminalize its
+   * in-flight turn, mark its subagents stale?
+   *
+   * Only when nobody else holds the runtime. A second `ade serve` against the
+   * same ADE home used to answer "yes" for every `active` chat it found,
+   * relaunch the provider, and then close the FIRST brain's live turn as
+   * interrupted. Liveness comes from the process registry's
+   * `isProcessIdentityLive`, which is the repo's Windows-safe pid probe; this
+   * path never calls `process.kill` itself.
+   */
+  /**
+   * How a restart-recovery sweep should describe itself.
+   *
+   * Two different incidents land in the same code path and must not read the
+   * same: the primary brain restarting (pid 42765 → 82741 at 02:14 on
+   * 2026-09-18) and a second `ade serve --socket /tmp/...` brain claiming a
+   * chat the primary was running. The socket path is what separates them — a
+   * restart keeps it, a sibling brain has its own — so a stamp from a
+   * different socket is a takeover and anything else is a restart.
+   */
+  const getRestartRecoveryStopAttribution = (
+    persisted?: PersistedChatState | null,
+  ): { stopSource: AgentChatStopSource; stopReason: string } => {
+    return restartRecoveryStopAttribution({
+      ownerSocketPath: persisted?.runtimeOwner?.socketPath,
+      selfSocketPath: selfChatRuntimeOwner().socketPath,
+    });
+  };
+
+  const chatRuntimeAdoptable = (
+    sessionId: string,
+    persisted?: PersistedChatState | null,
+    /**
+     * `quiet` skips the denial warn. For callers that re-probe the same chats
+     * on a timer (the stale-run sweep, every session summary): a foreign owner
+     * is a steady state, and one warn per chat per pass buries the log.
+     */
+    options?: { quiet?: boolean },
+  ): boolean => {
+    const owner = persisted === undefined
+      ? readPersistedState(sessionId)?.runtimeOwner ?? null
+      : persisted?.runtimeOwner ?? null;
+    const decision = decideChatRuntimeOwnership({
+      owner,
+      self: { brainId: brainInstanceId, pid: processRegistry?.pid ?? process.pid, startedAt: processRegistry?.startedAt ?? null, adeHome: brainAdeHome },
+      isProcessIdentityLive: (pid, startedAt) =>
+        processRegistry?.isProcessIdentityLive(pid, startedAt) ?? false,
+    });
+    if (!decision.adoptable && options?.quiet !== true) {
+      logger.warn("agent_chat.runtime_owned_by_other_brain", {
+        sessionId,
+        ownerPid: owner?.pid ?? null,
+        ownerBrainId: owner?.brainId ?? null,
+        verdict: decision.verdict,
+      });
+    }
+    return decision.adoptable;
   };
 
   type ReconciledPointerCandidate = {
@@ -15999,10 +16304,15 @@ export function createAgentChatService(args: {
     if (transcriptPointer) candidates.push(transcriptPointer);
 
     let winner = candidates[0] ?? null;
-    if (winner?.provider === "codex" && probeCodexRolloutFile(winner.pointer) === false) {
+    // A chat on a non-default Codex account keeps its rollouts inside that
+    // account's config home, so probing the default one would report every
+    // pointer as dead and discard a thread that is perfectly resumable.
+    const codexHome = sessionCodexHome(sessionId);
+    const codexProbeOptions = codexHome ? { codexHome } : {};
+    if (winner?.provider === "codex" && probeCodexRolloutFile(winner.pointer, codexProbeOptions) === false) {
       const winnerAt = Date.parse(winner.at);
       const olderWithRollout = candidates.slice(1).find((candidate) => {
-        if (candidate.provider !== "codex" || probeCodexRolloutFile(candidate.pointer) !== true) return false;
+        if (candidate.provider !== "codex" || probeCodexRolloutFile(candidate.pointer, codexProbeOptions) !== true) return false;
         const candidateAt = Date.parse(candidate.at);
         return Number.isFinite(winnerAt) && Number.isFinite(candidateAt)
           ? Math.abs(winnerAt - candidateAt) <= 24 * 60 * 60 * 1_000
@@ -16807,6 +17117,57 @@ export function createAgentChatService(args: {
     liveEvent?: AgentChatEvent;
   };
 
+  /**
+   * "Codex hit its limit. A reset credit is banked."
+   *
+   * Emitted at most once per five-hour window per chat, and only when the
+   * account actually HAS a credit — a notice offering a reset the user cannot
+   * spend is worse than silence. The armed flag is re-armed by
+   * `applyCodexRateLimitPayload` on a window rollover, so a chat left open for
+   * a day tells the user about each window's limit rather than only the first.
+   *
+   * Deferred by one microtask for the same reason the auto-resume notice is:
+   * this runs from inside the commit of the error event, so emitting inline
+   * would file the notice ABOVE the failure it is explaining.
+   */
+  const maybeEmitCodexResetCreditNotice = (
+    managed: ManagedChatSession,
+    turnId: string | null,
+  ): void => {
+    const runtime = managed.runtime;
+    if (runtime?.kind !== "codex") return;
+    if (runtime.resetCreditNoticeEmitted) return;
+    if ((runtime.resetCredits?.availableCount ?? 0) <= 0) return;
+    runtime.resetCreditNoticeEmitted = true;
+    const accountId = codexUsageAccountIdForSession(managed);
+    void Promise.resolve().then(() => {
+      if (managed.closed) return;
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "rate_limit",
+        severity: "info",
+        status: "reset_credit_available",
+        message: "Codex hit its limit. A reset credit is banked.",
+        detail: { accountId },
+        ...(turnId ? { turnId } : {}),
+      });
+    });
+  };
+
+  /**
+   * The usage-snapshot account id for this chat's Codex login.
+   *
+   * Same composition as the usage service's `accountIdForInstance`, because the
+   * renderer's "Use reset" button looks the account up in the usage snapshot by
+   * this string. A chat with no explicit instance is on the provider's default
+   * account, which the registry names.
+   */
+  const codexUsageAccountIdForSession = (managed: ManagedChatSession): string => {
+    const instanceId = managed.session.instanceId?.trim()
+      || defaultProviderInstanceId("codex");
+    return `codex:${instanceId}`;
+  };
+
   const commitChatEvent = (
     managed: ManagedChatSession,
     event: AgentChatEvent,
@@ -16822,6 +17183,7 @@ export function createAgentChatService(args: {
       // same reset instant and provider detail; duplicating the else here is
       // how the two copies drift.
       armUsageLimitAutoResume(managed, decoratedEvent.turnId ?? null);
+      maybeEmitCodexResetCreditNotice(managed, decoratedEvent.turnId ?? null);
     }
     const liveEvent = options.liveEvent ?? decoratedEvent;
     const storedEvent = compactChatEventForStorage(decoratedEvent);
@@ -19870,58 +20232,6 @@ export function createAgentChatService(args: {
     return true;
   };
 
-  const normalizePendingInputAnswers = (
-    request: PendingInputRequest | undefined,
-    answers: Record<string, string | string[]> | undefined,
-    responseText?: string | null,
-  ): Record<string, string[]> => {
-    const normalized = Object.create(null) as Record<string, string[]>;
-    const trimValues = (values: string[]): string[] => values.map((value) => value.trim()).filter((value) => value.length > 0);
-
-    if (request?.questions.length) {
-      for (const question of request.questions) {
-        const raw = ownQuestionValue(answers, question.id);
-        let nextValues: string[];
-        if (Array.isArray(raw)) {
-          nextValues = trimValues(raw.filter((value): value is string => typeof value === "string"));
-        } else if (typeof raw === "string") {
-          nextValues = trimValues([raw]);
-        } else {
-          nextValues = [];
-        }
-        if (nextValues.length > 0) {
-          normalized[question.id] = nextValues;
-        }
-      }
-    }
-
-    if (request?.kind === "model_selection") {
-      const rawSelection = ownQuestionValue(answers, "selection");
-      const selectionValues = Array.isArray(rawSelection)
-        ? trimValues(rawSelection.filter((value): value is string => typeof value === "string"))
-        : typeof rawSelection === "string"
-          ? trimValues([rawSelection])
-          : [];
-      if (selectionValues.length > 0) {
-        normalized.selection = selectionValues;
-      }
-    }
-
-    const trimmedResponse = typeof responseText === "string" ? responseText.trim() : "";
-    if (trimmedResponse.length > 0) {
-      if (request?.questions.length === 1) {
-        const [question] = request.questions;
-        if (question && !(ownQuestionValue(normalized, question.id)?.length)) {
-          normalized[question.id] = [trimmedResponse];
-        }
-      } else {
-        normalized["response"] = [trimmedResponse];
-      }
-    }
-
-    return normalized;
-  };
-
   const activeTurnIdForManaged = (managed: ManagedChatSession): string | null => {
     const runtime = managed.runtime;
     if (!runtime) return null;
@@ -19958,36 +20268,6 @@ export function createAgentChatService(args: {
     return fromAnswers ?? fallback?.trim() ?? "";
   };
 
-  const buildOrchestrationSessionContext = (
-    managed: ManagedChatSession,
-  ): {
-    interactionMode: OrchestrationInteractionMode;
-    sessionContext: OrchestrationSessionContext;
-  } | null => {
-    const interactionMode = isOrchestrationInteractionMode(managed.session.interactionMode)
-      ? managed.session.interactionMode
-      : managed.session.orchestrationRole
-        ? orchestrationInteractionModeForRole(managed.session.orchestrationRole)
-        : null;
-    if (!interactionMode) return null;
-    const runId = managed.session.orchestrationRunId?.trim();
-    const bundlePath = managed.session.orchestrationBundlePath?.trim();
-    if (!runId || !bundlePath) return null;
-    return {
-      interactionMode,
-      sessionContext: {
-        sessionId: managed.session.id,
-        runId,
-        role: managed.session.orchestrationRole ?? orchestrationRoleForInteractionMode(interactionMode),
-        bundlePath,
-        laneId: managed.session.laneId,
-        ...(managed.session.orchestrationParentSessionId
-          ? { leadSessionId: managed.session.orchestrationParentSessionId }
-          : {}),
-      },
-    };
-  };
-
   const abortActiveBashControllers = (managed: ManagedChatSession, reason: string): void => {
     if (!managed.activeBashControllers.size) return;
     for (const controller of [...managed.activeBashControllers]) {
@@ -19996,235 +20276,6 @@ export function createAgentChatService(args: {
       }
     }
     managed.activeBashControllers.clear();
-  };
-
-  const buildOrchestrationUniversalOptions = (
-    managed: ManagedChatSession,
-  ): UniversalToolSetOptions => ({
-    permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
-    getDirtyFileTextForPath,
-    // Append-only hand-up to the project's CTO. The worker's own lane is
-    // stamped when it did not tag one, so an untagged finding is still
-    // findable from the lane it came out of.
-    onRecordDiscovery: ({ fact, tags }) => {
-      if (!ctoMemoryService) return { saved: false, fact };
-      return ctoMemoryService.recordDiscovery(fact, {
-        lane: resolveManagedExecutionLaneId(managed),
-        ...(tags ?? {}),
-      });
-    },
-    getTodoItems: () => managed.todoItems,
-    onTodoUpdate: (items) => {
-      emitChatEvent(managed, {
-        type: "todo_update",
-        items,
-        ...(activeTurnIdForManaged(managed) ? { turnId: activeTurnIdForManaged(managed)! } : {}),
-      });
-    },
-    onAskUser: async (input: AskUserToolInput): Promise<AskUserToolResult> => {
-      const title = input.title?.trim() || "Input requested";
-      const body =
-        input.body?.trim()
-        || input.question?.trim()
-        || input.questions?.[0]?.question?.trim()
-        || waitingOnYouDescription(input.questions?.length);
-      const response = await requestChatInput({
-        chatSessionId: managed.session.id,
-        title,
-        body,
-        source: "ade",
-        ...(input.pendingInputKind ? { kind: input.pendingInputKind } : {}),
-        questions: input.questions,
-        providerMetadata: {
-          tool: "askUser",
-          orchestration: true,
-          ...(input.providerMetadata ?? {}),
-        },
-        eventDescription: body,
-        eventDetail: {
-          tool: "askUser",
-          orchestration: true,
-          ...(input.providerMetadata ?? {}),
-        },
-      });
-      return {
-        answer: firstAnswerText(response.answers, response.responseText),
-        answers: response.answers,
-        responseText: response.responseText,
-        decision: response.decision,
-      };
-    },
-    onApprovalRequest: async (request) => {
-      const response = await requestChatInput({
-        chatSessionId: managed.session.id,
-        title: "Approval required",
-        body: request.description,
-        source: "ade",
-        questions: [{
-          id: "tool_decision",
-          header: "Tool approval",
-          question: request.description,
-          options: [
-            { label: "Allow", value: "allow", recommended: true },
-            { label: "Deny", value: "deny" },
-          ],
-          allowsFreeform: true,
-        }],
-        providerMetadata: { toolApproval: true, detail: request.detail ?? null },
-        eventDescription: request.description,
-        eventDetail: { toolApproval: true, detail: request.detail ?? null },
-      });
-      const answer = firstAnswerText(response.answers, response.responseText).toLowerCase();
-      const denied = response.decision === "decline"
-        || response.decision === "cancel"
-        || answer.includes("deny")
-        || answer.includes("reject");
-      return {
-        approved: !denied,
-        decision: denied ? "decline" : "accept",
-        reason: response.responseText,
-      };
-    },
-    registerActiveBash: (controller) => {
-      managed.activeBashControllers.add(controller);
-      if (managed.closed && !controller.signal.aborted) {
-        controller.abort("Session is closed.");
-      }
-      return () => {
-        managed.activeBashControllers.delete(controller);
-      };
-    },
-  });
-
-  // Curated READ-ONLY ADE capability backings for the orchestrator lead. Every
-  // method is attached only when its backing service is actually wired in this
-  // process — a missing service leaves the method undefined, so the lead tool
-  // degrades to a clean "unavailable" result rather than throwing (runtime-
-  // backed-null-services safety). None of these mutate anything.
-  const buildOrchestrationLeadReadServices = (): OrchestrationLeadReadServices => {
-    const services: OrchestrationLeadReadServices = {};
-
-    const searchService = getSearchService?.() ?? null;
-    if (searchService) {
-      services.searchWorkspace = async (args): Promise<OrchestrationLeadReadResult> => {
-        const res = await searchService.query({
-          query: args.query,
-          ...(args.limit ? { limit: args.limit } : {}),
-          ...(args.laneId ? { laneId: args.laneId } : {}),
-        });
-        return { ok: true, results: res.results, totalByKind: res.totalByKind };
-      };
-    }
-
-    if (linearIssueTracker) {
-      services.readLinearIssue = async (args): Promise<OrchestrationLeadReadResult> => {
-        const issue = await linearIssueTracker.fetchIssueById(args.issueId);
-        if (!issue) {
-          return { ok: false, error: "not_found", message: `Linear issue ${args.issueId} not found.` };
-        }
-        let comments: unknown[] = [];
-        try {
-          comments = await linearIssueTracker.fetchIssueComments(args.issueId);
-        } catch {
-          comments = [];
-        }
-        return { ok: true, issue, comments };
-      };
-    }
-
-    if (prService) {
-      services.readPr = async (args): Promise<OrchestrationLeadReadResult> => {
-        if (args.prId) {
-          const [status, checks] = await Promise.all([
-            prService.getStatus(args.prId),
-            prService.getChecks(args.prId).catch(() => []),
-          ]);
-          return { ok: true, status, checks };
-        }
-        const prs = await prService.listPrsByLane();
-        return { ok: true, prs };
-      };
-    }
-
-    // Read the late-bound ref (mutated by setComputerUseArtifactBrokerService to
-    // break a circular dep), not the raw constructor param. This function runs
-    // per-session at tool-map build time, so each session sees current wiring.
-    const artifactBroker = computerUseArtifactBrokerRef;
-    if (artifactBroker) {
-      services.listProofArtifacts = async (args): Promise<OrchestrationLeadReadResult> => {
-        const artifacts = artifactBroker.listArtifacts({
-          // Proof only: a scene still is a picture the transcript already
-          // shows inline, not something anyone chose to keep as evidence.
-          ...PROOF_LISTING_ARTIFACT_FILTER,
-          ...(args.limit ? { limit: args.limit } : {}),
-        });
-        return { ok: true, artifacts };
-      };
-    }
-
-    // Deeplink minting is pure (side-effect-free) — always available.
-    services.mintDeeplink = async (args): Promise<OrchestrationLeadReadResult> => {
-      const target = args.target as DeeplinkTarget;
-      const ade = buildDeeplink(target, { form: "ade" });
-      const https = buildDeeplink(target, { form: "https" });
-      return { ok: true, ade, https };
-    };
-
-    return services;
-  };
-
-  // Stable chat handle reused for every orchestration tool set and for the
-  // service-registered run-activation drainer. Its methods are stable closures,
-  // so binding it once keeps the drainer valid across runs/sessions.
-  const orchestrationChatHandle: OrchestrationAgentChatHandle = {
-    createSession: (args) => createSession(args),
-    deleteSession: (args) => deleteSession(args),
-    sendMessage: (args, options) => sendMessage(args, options),
-    steer: (args) => steer(args),
-    interrupt: async (args) => {
-      await interrupt(args);
-    },
-    // Wrapped (not a direct reference) so the handle can be bound before
-    // `readTranscript` is declared later in this factory body.
-    readTranscript: (sessionId, limit, since) => readTranscript(sessionId, limit, since),
-  };
-
-  // Register (once) the chat-backed drainer the orchestration service invokes
-  // when a run is (re)hydrated with undelivered outbox entries. This is what
-  // delivers a persisted brief/ping after a process restart without waiting for
-  // an unrelated mutating tool to fire a drain. Coalesced per run by the outbox
-  // module's in-process guard, so it is safe to call on every activation.
-  let orchestrationDrainerRegistered = false;
-  const ensureOrchestrationDrainerRegistered = (
-    orchestrationService: ReturnType<typeof createOrchestrationService>,
-  ): void => {
-    if (orchestrationDrainerRegistered) return;
-    if (typeof orchestrationService.registerRunActivationDrainer !== "function") return;
-    orchestrationDrainerRegistered = true;
-    orchestrationService.registerRunActivationDrainer(({ runId, bundlePath }) => {
-      void drainOutbox(orchestrationService, orchestrationChatHandle, { runId, bundlePath });
-    });
-  };
-
-  const createOrchestrationRuntimeToolMap = (
-    managed: ManagedChatSession,
-  ): OrchestrationToolMap | null => {
-    const context = buildOrchestrationSessionContext(managed);
-    if (!context) return null;
-    const orchestrationService = getOrchestrationService?.() ?? null;
-    if (!orchestrationService) return null;
-    ensureOrchestrationDrainerRegistered(orchestrationService);
-    return createOrchestrationToolSet({
-      cwd: managed.laneWorktreePath,
-      interactionMode: context.interactionMode,
-      sessionContext: context.sessionContext,
-      orchestrationService,
-      agentChatService: orchestrationChatHandle,
-      universal: buildOrchestrationUniversalOptions(managed),
-      ...(context.interactionMode === "orchestrator-lead"
-        ? { leadReadServices: buildOrchestrationLeadReadServices() }
-        : {}),
-    });
   };
 
   const droidMcpInputShapeForTool = (toolDefinition: ExecutableTool): Record<string, z.ZodTypeAny> => {
@@ -20242,11 +20293,6 @@ export function createAgentChatService(args: {
    * distinct Codex namespaces, and distinct lease slots.
    */
   const HTTP_MCP_TOOL_SETS = {
-    orchestration: {
-      serverName: ORCHESTRATION_CLAUDE_SERVER_NAME,
-      codexNamespace: ORCHESTRATION_CODEX_TOOL_NAMESPACE,
-      buildTools: (managed: ManagedChatSession) => createOrchestrationRuntimeToolMap(managed),
-    },
     cto: {
       serverName: CTO_MCP_SERVER_NAME,
       codexNamespace: CTO_CODEX_TOOL_NAMESPACE,
@@ -20319,7 +20365,7 @@ export function createAgentChatService(args: {
       if (!lease) continue;
       managed.httpMcpServers[toolSet] = undefined;
       lease.close().catch((error) => {
-        logger.warn("agent_chat.orchestration_mcp_close_failed", {
+        logger.warn("agent_chat.http_mcp_close_failed", {
           sessionId: managed.session.id,
           toolSet,
           error: error instanceof Error ? error.message : String(error),
@@ -20829,6 +20875,7 @@ export function createAgentChatService(args: {
           runtime,
           runtime.activeTurnId ?? undefined,
           "The Claude session ended before this task reported completion.",
+          { stopSource: "system", stopReason: CHAT_STOP_REASON_RUNTIME_EXITED },
         ),
       );
       runtime.taskToolInputByToolUseId.clear();
@@ -21173,6 +21220,9 @@ export function createAgentChatService(args: {
         ...(persisted?.codexSandbox ? { codexSandbox: persisted.codexSandbox } : {}),
         ...(persisted?.codexConfigSource ? { codexConfigSource: persisted.codexConfigSource } : {}),
         ...(persisted?.opencodePermissionMode ? { opencodePermissionMode: persisted.opencodePermissionMode } : {}),
+        ...(persisted?.instanceId ? { instanceId: persisted.instanceId } : {}),
+        ...(persisted?.presetId ? { presetId: persisted.presetId } : {}),
+        ...(persisted?.credentialId ? { credentialId: persisted.credentialId } : {}),
         ...(persisted?.piProfileId ? { piProfileId: persisted.piProfileId } : {}),
         ...(persisted?.piProviderId ? { piProviderId: persisted.piProviderId } : {}),
         ...(persisted?.piModelId ? { piModelId: persisted.piModelId } : {}),
@@ -21219,7 +21269,7 @@ export function createAgentChatService(args: {
           ...persisted,
           permissionPolicy: rehydratedPermissionPolicy ?? undefined,
         }),
-        ...collectOrchestrationFields(null, persisted),
+        ...collectSpawnLineageFields(null, persisted),
         createdAt: row.startedAt,
         lastActivityAt: persisted?.updatedAt ?? row.endedAt ?? row.startedAt
       },
@@ -21292,12 +21342,14 @@ export function createAgentChatService(args: {
         ...(entry.turnId ? { turnId: entry.turnId } : {}),
       })) ?? [],
       localPendingInputs: new Map(),
+      asyncQuestions: new Map(),
       httpMcpServers: {},
       ctoToolPacks: new Set<CtoToolPack>(),
       activeBashControllers: new Set(),
       eventSequence: 0,
       lastActivityTimestamp: Date.now(),
       turnBeforeSha: null,
+      turnBeforeTree: null,
       claudeBackgroundJobShort: persisted?.claudeBackgroundJobShort ?? null,
       claudeBackgroundResumeSessionId: persisted?.claudeBackgroundResumeSessionId ?? persisted?.sdkSessionId ?? null,
       claudeBackgroundLogText: persisted?.claudeBackgroundLogText ?? "",
@@ -21313,15 +21365,17 @@ export function createAgentChatService(args: {
       transcriptHydration.maxEventSequence,
       persisted?.eventSequence,
     );
-    if (!managed.session.interactionMode && managed.session.orchestrationRole) {
-      managed.session.interactionMode = orchestrationInteractionModeForRole(managed.session.orchestrationRole);
-    }
     normalizeSessionNativePermissionControls(managed.session, resolveChatConfig());
-    enforceOrchestrationLockedPermissionMode(managed.session);
     managed.transcriptLimitReached = managed.transcriptBytesWritten >= MAX_CHAT_TRANSCRIPT_BYTES;
     refreshReconstructionContext(managed);
     if (typeof persisted?.pendingTranscriptReplay === "string" && persisted.pendingTranscriptReplay.trim()) {
       managed.pendingTranscriptReplay = persisted.pendingTranscriptReplay;
+    }
+    for (const entry of persisted?.asyncQuestions ?? []) {
+      managed.asyncQuestions.set(entry.itemId, {
+        request: entry.request,
+        raisedAt: entry.raisedAt,
+      });
     }
     managed.transcriptReplayOrigin = normalizeTranscriptReplayOrigin(persisted?.transcriptReplayOrigin);
     managed.lastTurnFailure = normalizeLastTurnFailure(persisted?.lastTurnFailure);
@@ -21342,7 +21396,11 @@ export function createAgentChatService(args: {
           error: error instanceof Error ? error.message : String(error),
         });
       });
-    if (row.status === "detached") {
+    // `detached` means "no runtime attached to THIS process", which is not the
+    // same as "no runtime". A second brain on the same ADE home sees every
+    // sibling-owned chat that way, and recovering one closes the sibling's
+    // in-flight turn as interrupted. Only the owner (or nobody) may recover.
+    if (row.status === "detached" && chatRuntimeAdoptable(sessionId, persisted)) {
       try {
         recoverDetachedChatAfterRestart(
           managed,
@@ -22976,6 +23034,8 @@ export function createAgentChatService(args: {
       closeClaudeWorkflowAgentTracker(managed, runtime, taskId, {
         workflowName,
         turnId,
+        stopSource: "system",
+        stopReason: CHAT_STOP_REASON_WORKFLOW_ENDED,
       });
       return true;
     }
@@ -23010,6 +23070,8 @@ export function createAgentChatService(args: {
         workflowName,
         turnId,
         summary,
+        stopSource: "system",
+        stopReason: CHAT_STOP_REASON_WORKFLOW_ENDED,
       });
       return true;
     }
@@ -23054,6 +23116,8 @@ export function createAgentChatService(args: {
         workflowName,
         turnId,
         summary,
+        stopSource: "system",
+        stopReason: CHAT_STOP_REASON_WORKFLOW_ENDED,
       });
       return true;
     }
@@ -23796,7 +23860,15 @@ export function createAgentChatService(args: {
       // The process is gone, so every still-open task edge is now terminal.
       // Query is already null, which deliberately prevents provider stopTask
       // calls against a dead control channel while still settling all UI rows.
-      await stopActiveClaudeSubagents(managed, runtime, turnId, summary);
+      await stopActiveClaudeSubagents(
+        managed,
+        runtime,
+        turnId,
+        summary,
+        runtime.interrupted
+          ? { stopSource: "user" }
+          : { stopSource: "system", stopReason: CHAT_STOP_REASON_RUNTIME_EXITED },
+      );
 
       if (state.turnId && runtime.activeTurnId === state.turnId) {
         await finishClaudeIdleTurn(managed, runtime, state, status);
@@ -25056,6 +25128,8 @@ export function createAgentChatService(args: {
               workflowName,
               turnId,
               summary,
+              stopSource: "system",
+              stopReason: CHAT_STOP_REASON_WORKFLOW_ENDED,
             });
             continue;
           }
@@ -25100,6 +25174,8 @@ export function createAgentChatService(args: {
               workflowName,
               turnId,
               summary,
+              stopSource: "system",
+              stopReason: CHAT_STOP_REASON_WORKFLOW_ENDED,
             });
           } else {
             runtime.activeSubagents.set(taskId, {
@@ -25412,9 +25488,13 @@ export function createAgentChatService(args: {
             ...claudeTaskTreeFields(taskMsg as Record<string, unknown>, existing),
             turnId,
           });
+          // A workflow task that ends with agents still mid-flight (stop,
+          // interrupt, script error) leaves those rows running — close them.
           closeClaudeWorkflowAgentTracker(managed, runtime, taskId, {
             workflowName,
             turnId,
+            stopSource: "system",
+            stopReason: CHAT_STOP_REASON_WORKFLOW_ENDED,
           });
           continue;
         }
@@ -26251,6 +26331,9 @@ export function createAgentChatService(args: {
           finalToolStatus === "interrupted"
             ? "Interrupted"
             : "Claude's query ended before this task reported completion.",
+          finalToolStatus === "interrupted"
+            ? { stopSource: "user" }
+            : { stopSource: "provider", stopReason: CHAT_STOP_REASON_PROVIDER_ENDED_TURN },
         );
       }
       const doneModel = buildDoneModelPayload();
@@ -26464,7 +26547,13 @@ export function createAgentChatService(args: {
     resolveManagedClaudeOutputStyle(managed);
     const projectSlashCommands = (() => {
       try {
-        return discoverClaudeSlashCommands(managed.laneWorktreePath).filter(isDispatchableClaudeSdkSlashCommand);
+        return discoverClaudeSlashCommands(managed.laneWorktreePath)
+          .filter(isDispatchableClaudeSdkSlashCommand)
+          // `disable-model-invocation` is the author saying the model must not
+          // reach for this one. Listing it here would be ADE handing the model
+          // the exact path and telling it to use the skill when it seems
+          // relevant — the opposite instruction, from a louder place.
+          .filter((cmd) => cmd.modelInvocable !== false);
       } catch {
         return [];
       }
@@ -26507,12 +26596,6 @@ export function createAgentChatService(args: {
       interactive: true,
       runtime: "claude-code-cli",
       adeSkillRoots: getAdeAgentSkillRootsForPrompt({ cwd: managed.laneWorktreePath }),
-      orchestrationRole: managed.session.orchestrationRole,
-      orchestrationRunId: managed.session.orchestrationRunId,
-      orchestrationBundlePath: managed.session.orchestrationBundlePath,
-      orchestrationTag: managed.session.orchestrationTag,
-      orchestrationParentSessionId: managed.session.orchestrationParentSessionId,
-      orchestrationStepId: managed.session.orchestrationStepId,
     });
     return [
       harnessPrompt,
@@ -27777,9 +27860,6 @@ export function createAgentChatService(args: {
       runtime.compactionStartedPartIds.clear();
 
       const toPromptFiles = toOpenCodePromptFiles(resolvedAttachments).files;
-      const toolSelection = await refreshOpenCodeSessionToolSelection(runtime.handle, {
-        orchestrationLead: isOrchestrationLeadSession(managed.session),
-      });
       const openCodeReasoningVariant =
         managed.session.reasoningEffort
         && runtime.modelDescriptor.reasoningTiers?.includes(managed.session.reasoningEffort)
@@ -27803,7 +27883,6 @@ export function createAgentChatService(args: {
         ...(openCodeAgent ? { agent: openCodeAgent } : {}),
         model: resolveOpenCodeModelSelection(runtime.modelDescriptor),
         ...(openCodeSystemPrompt ? { system: openCodeSystemPrompt } : {}),
-        ...(toolSelection ? { tools: toolSelection } : {}),
         ...(openCodeVariant ? { variant: openCodeVariant } : {}),
         parts: buildOpenCodePromptParts({
           prompt: userContent,
@@ -28954,10 +29033,30 @@ export function createAgentChatService(args: {
     const record = asRecord(payload);
     const rateLimits = normalizeCodexRateLimits(record?.rateLimits ?? payload);
     if (rateLimits) runtime.rateLimits = rateLimits;
-    if (runtime.rateLimitWarningEmitted || !shouldEmitCodexApproachingPlanLimit(codexFiveHourUsedPercent(payload))) {
-      return;
+    // Only written when the payload actually carries the key: the
+    // `account/rateLimits/updated` notification does not, and clearing a real
+    // banked credit on every push would make the "Use reset" affordance blink.
+    const resetCredits = parseCodexResetCredits(payload);
+    if (resetCredits) runtime.resetCredits = resetCredits;
+    const percentUsed = codexFiveHourUsedPercent(payload);
+    // Once per five-hour window, not once per session: a reading back under the
+    // threshold is the window having rolled over, and re-arms the notice.
+    const notice = codexPlanLimitNoticeState({
+      alreadyEmitted: runtime.rateLimitWarningEmitted,
+      percentUsed,
+    });
+    runtime.rateLimitWarningEmitted = notice.emitted;
+    // Only the RE-ARM half of the same helper applies to the reset-credit
+    // notice: it fires on a limit error, not on a percentage crossing, so a
+    // high reading must not pre-arm it. A reading back under the threshold is
+    // the window rolling over, which is exactly when it may fire again.
+    if (
+      runtime.resetCreditNoticeEmitted
+      && !codexPlanLimitNoticeState({ alreadyEmitted: true, percentUsed }).emitted
+    ) {
+      runtime.resetCreditNoticeEmitted = false;
     }
-    runtime.rateLimitWarningEmitted = true;
+    if (!notice.emit) return;
     emitChatEvent(managed, {
       type: "system_notice",
       noticeKind: "rate_limit",
@@ -29724,6 +29823,9 @@ export function createAgentChatService(args: {
         parentToolUseId,
         status: "stopped",
         summary,
+        // Reached only from the Codex interrupt handler, which is the Stop
+        // button. Machine-initiated Codex teardown settles elsewhere.
+        stopSource: "user",
         turnId,
       });
       runtime.activeSubagents.delete(taskId);
@@ -30019,7 +30121,18 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
     workflowTaskId: string,
-    context: { workflowName?: string; turnId?: string; summary?: string },
+    context: {
+      workflowName?: string;
+      turnId?: string;
+      summary?: string;
+      /**
+       * Why these rows closed. Required: the default used to hand every
+       * happy-path caller "the runtime process exited", so a workflow that
+       * finished normally told the reader its process had died.
+       */
+      stopSource: AgentChatStopSource;
+      stopReason?: string;
+    },
   ): void {
     const tracked = runtime.workflowAgentsByTask.get(workflowTaskId);
     if (!tracked) return;
@@ -30037,6 +30150,8 @@ export function createAgentChatService(args: {
         status: "stopped",
         summary: terminalSummary,
         finalSummary: terminalSummary,
+        stopSource: context.stopSource,
+        ...(context.stopReason ? { stopReason: context.stopReason } : {}),
         taskType: "subagent",
         ...(context.workflowName ? { workflowName: context.workflowName } : {}),
         turnId: context.turnId,
@@ -30049,7 +30164,18 @@ export function createAgentChatService(args: {
     runtime: ClaudeRuntime,
     turnId: string | undefined,
     summary: string,
+    /**
+     * Who is doing the stopping. Defaults to the user because every ordinary
+     * caller of this helper IS the Stop button; the machine-initiated callers
+     * (handoff recovery, plan-limit rescue) pass their own attribution so the
+     * card stops telling the reader they interrupted something they did not.
+     */
+    attribution: { stopSource: AgentChatStopSource; stopReason?: string } = { stopSource: "user" },
   ): Promise<void> => {
+    const attributionFields = {
+      stopSource: attribution.stopSource,
+      ...(attribution.stopReason ? { stopReason: attribution.stopReason } : {}),
+    } as const;
     // Close any still-running Workflow agent rows first — they are tracked
     // separately from activeSubagents (they are snapshot-derived, not SDK
     // tasks, so there is nothing to stopTask for them).
@@ -30059,6 +30185,7 @@ export function createAgentChatService(args: {
         workflowName,
         turnId,
         summary,
+        ...attributionFields,
       });
     }
     // Close still-open background shell commands as stopped (terminal
@@ -30129,6 +30256,7 @@ export function createAgentChatService(args: {
         status: "stopped",
         summary,
         finalSummary: summary,
+        ...attributionFields,
         ...optionalSubagentModelFields(subagent.model),
         turnId,
       });
@@ -30191,6 +30319,7 @@ export function createAgentChatService(args: {
       workflowName: tracked?.workflowName,
       turnId,
       summary: "Stopped by user",
+      stopSource: "user",
     });
     if (tracked && isBackgroundShellCommand({
       taskType: tracked.taskType,
@@ -30216,6 +30345,7 @@ export function createAgentChatService(args: {
         status: "stopped",
         summary: "Stopped by user",
         finalSummary: "Stopped by user",
+        stopSource: "user",
         ...optionalSubagentModelFields(tracked.model),
         turnId,
       });
@@ -30758,6 +30888,7 @@ export function createAgentChatService(args: {
           parentToolUseId: entry.parentToolUseId,
           status: "stopped",
           summary: "Interrupted by user",
+          stopSource: "user",
           ...(runtime.startedTurnId ? { turnId: runtime.startedTurnId } : {}),
         });
         return;
@@ -31334,6 +31465,107 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * Build the card for a Codex async question, or null when this item is not one.
+   *
+   * Codex 0.153.4 ships the question ON an `agentMessage` item: `delivery:
+   * "async"` plus a `questions` array of `{ title, options }`. There is no
+   * question id, no multi-select flag, and free text is always accepted, so the
+   * ids here are positional and `allowsFreeform` is unconditionally true —
+   * inventing a stricter shape would refuse answers Codex would have taken.
+   *
+   * The reply is an ORDINARY user message, which is why `responseMode:
+   * "message"` rides on `providerMetadata`: nothing is waiting on a JSON-RPC
+   * response, so `deliverInputResponse` sends rather than answers. `dismissible`
+   * is the other half — a card nobody is blocked on is one the user is allowed
+   * to throw away, and `chat.dismissPendingInput` checks that flag rather than
+   * inferring the right from `blocking: false`.
+   */
+  const codexAsyncQuestionRequest = (
+    item: Record<string, unknown>,
+    itemId: string,
+    turnId: string | null | undefined,
+    threadId: string | null,
+  ): PendingInputRequest | null => {
+    if (stringOrNull(item.delivery) !== "async") return null;
+    const rawQuestions = Array.isArray(item.questions) ? item.questions : [];
+    const questions: PendingInputQuestion[] = rawQuestions.flatMap((value, index) => {
+      const question = asRecord(value);
+      const title = stringOrNull(question?.title);
+      if (!title) return [];
+      const options = Array.isArray(question?.options)
+        ? question.options.flatMap((optionValue) => {
+            const label = stringOrNull(optionValue);
+            return label ? [{ label, value: label, description: "" }] : [];
+          })
+        : [];
+      return [{
+        id: String(index),
+        header: "Question",
+        question: title,
+        options,
+        allowsFreeform: true,
+        multiSelect: false,
+      }];
+    });
+    if (!questions.length) return null;
+    return {
+      requestId: itemId,
+      itemId,
+      source: "codex",
+      kind: "structured_question",
+      title: CODEX_ASYNC_QUESTION_TITLE,
+      description: questions[0]?.question ?? CODEX_ASYNC_QUESTION_TITLE,
+      questions,
+      allowsFreeform: true,
+      blocking: false,
+      canProceedWithoutAnswer: true,
+      providerMetadata: {
+        responseMode: "message",
+        dismissible: true,
+        itemId,
+        threadId,
+      },
+      turnId: turnId ?? null,
+    };
+  };
+
+  /**
+   * Put an async question on screen and bank it.
+   *
+   * Idempotent by item id: the recovery sweep replays the same item, and a
+   * second `approval_request` for a card already on screen is a duplicate the
+   * renderer would draw twice.
+   */
+  const raiseCodexAsyncQuestion = (
+    managed: ManagedChatSession,
+    request: PendingInputRequest,
+  ): void => {
+    const itemId = request.itemId ?? request.requestId;
+    if (managed.asyncQuestions.has(itemId)) return;
+    managed.asyncQuestions.set(itemId, { request, raisedAt: new Date().toISOString() });
+    // Bounded like every other durable per-chat list. The oldest card gets a
+    // real receipt on the way out, because a card that vanishes without one is
+    // redrawn by the next transcript re-derivation.
+    while (managed.asyncQuestions.size > MAX_ASYNC_QUESTIONS) {
+      const oldest = managed.asyncQuestions.keys().next().value;
+      if (typeof oldest !== "string") break;
+      const evicted = managed.asyncQuestions.get(oldest);
+      managed.asyncQuestions.delete(oldest);
+      emitPendingInputResolved(managed, {
+        itemId: oldest,
+        decision: "cancel",
+        turnId: evicted?.request.turnId ?? null,
+        questions: evicted?.request.questions ?? [],
+      });
+    }
+    emitPendingInputRequest(managed, request, {
+      kind: "tool_call",
+      description: request.description ?? CODEX_ASYNC_QUESTION_TITLE,
+      detail: { asyncQuestion: true },
+    });
+  };
+
   const handleCodexItemEvent = (
     managed: ManagedChatSession,
     runtime: CodexRuntime,
@@ -31684,6 +31916,7 @@ export function createAgentChatService(args: {
           parentToolUseId: existing?.parentToolUseId ?? itemId,
           status: "stopped",
           summary: "Agent interrupted",
+          stopSource: "user",
           turnId,
         });
         return;
@@ -31940,6 +32173,8 @@ export function createAgentChatService(args: {
             parentToolUseId: existing?.parentToolUseId ?? null,
             status: "stopped",
             summary: "Agent closed",
+            stopSource: "provider",
+            stopReason: CHAT_STOP_REASON_PROVIDER_ENDED_TURN,
             turnId,
           });
         }
@@ -32091,6 +32326,23 @@ export function createAgentChatService(args: {
       return;
     }
 
+    if (itemType === "agentMessage") {
+      // Prose `agentMessage` text reaches the transcript through the streamed
+      // delta handler; the only shape this branch owns is the async question,
+      // and emitting it as assistant text instead would turn a control the user
+      // is meant to answer into a paragraph.
+      const asyncRequest = codexAsyncQuestionRequest(
+        item,
+        itemId,
+        turnId,
+        stringOrNull(item.threadId),
+      );
+      if (asyncRequest) {
+        raiseCodexAsyncQuestion(managed, asyncRequest);
+        return;
+      }
+    }
+
     logger.debug("agent_chat.codex_unhandled_item", { sessionId: managed.session.id, itemType, itemId });
   };
 
@@ -32186,6 +32438,20 @@ export function createAgentChatService(args: {
     if (hasReconciledItemSignature(runtime, turnId, signature)) return false;
     const itemType = stringOrNull(item.type) ?? "";
     if (itemType === "agentMessage") {
+      // Same rule as the live handler: a recovered async question is a card,
+      // not prose. Without this the recovery sweep renders the question as an
+      // assistant paragraph and the user has nothing to click.
+      const asyncRequest = codexAsyncQuestionRequest(
+        item,
+        itemId,
+        turnId,
+        stringOrNull(item.threadId),
+      );
+      if (asyncRequest) {
+        raiseCodexAsyncQuestion(managed, asyncRequest);
+        rememberReconciledItemSignature(runtime, turnId, signature);
+        return true;
+      }
       const text = stringOrNull(item.text ?? item.content ?? item.message);
       if (!text) return false;
       const normalizedText = normalizeCodexAssistantDelta(runtime, {
@@ -33615,7 +33881,10 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     runtime: CodexRuntime,
   ): void => {
-    runtime.request<{ rateLimits?: unknown }>("account/rateLimits/read", {})
+    runtime.request<{ rateLimits?: unknown; rateLimitResetCredits?: unknown }>(
+      "account/rateLimits/read",
+      {},
+    )
       .then((res) => {
         applyCodexRateLimitPayload(managed, runtime, res);
       })
@@ -33636,7 +33905,7 @@ export function createAgentChatService(args: {
     const spawnEnv = buildAgentRuntimeEnv(managed);
     let codexExecutable: string;
     try {
-      codexExecutable = resolveCodexExecutable().path;
+      codexExecutable = resolveCodexExecutable({ env: spawnEnv }).path;
       if (!codexExecutable) {
         throw new Error("Codex executable path was empty.");
       }
@@ -33725,6 +33994,8 @@ export function createAgentChatService(args: {
       slashCommands: [],
       rateLimits: null,
       rateLimitWarningEmitted: false,
+      resetCredits: null,
+      resetCreditNoticeEmitted: false,
       collaborationModes: null,
       collaborationModesReady: null,
       planModeFallbackNotified: false,
@@ -34008,22 +34279,6 @@ export function createAgentChatService(args: {
     codexPolicy: CodexPolicy;
   } => {
     const config = resolveChatConfig();
-    const lockedMode = lockedOrchestrationPermissionMode(managed.session);
-    if (lockedMode) {
-      // Codex exposes no tool allow/deny list (see ORCHESTRATION_LEAD_CODEX_POLICY),
-      // so the lead's "never edits code, never runs shell" invariant is enforced
-      // by running its thread read-only with approvals off. Workers and
-      // validators keep full access. This covers `turn/start` too — the turn
-      // path resolves its policy through this same function.
-      const codexPolicy: CodexPolicy = isOrchestrationLeadSession(managed.session)
-        ? { ...ORCHESTRATION_LEAD_CODEX_POLICY }
-        : { approvalPolicy: "never", sandbox: "danger-full-access" };
-      managed.session.codexConfigSource = "flags";
-      managed.session.codexApprovalPolicy = codexPolicy.approvalPolicy;
-      managed.session.codexSandbox = codexPolicy.sandbox;
-      managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? lockedMode;
-      return { codexPolicy };
-    }
     const codexConfigSource = resolveSessionCodexConfigSource(managed.session);
     managed.session.codexConfigSource = codexConfigSource;
     const codexPolicy = codexConfigSource === "config-toml"
@@ -34414,6 +34669,144 @@ export function createAgentChatService(args: {
     return resolved?.name ?? null;
   };
 
+  /**
+   * The Claude dialog kinds ADE renders, and the whole list on purpose.
+   *
+   * The Agent SDK fails CLOSED on absence: a kind not declared here is never
+   * emitted to the session, and the flow behind it degrades to its no-dialog
+   * behavior. So this list is a capability claim, not a filter — declaring a
+   * kind ADE cannot draw parks a dialog nobody can answer.
+   *
+   * `refusal_fallback_prompt` is deliberately NOT declared. Its no-dialog
+   * behavior is the classic refusal error ending the turn, which ADE already
+   * renders and the user already understands; offering a fallback model mid-turn
+   * would silently change which model answered, and ADE's transcript attributes
+   * a turn to one model. Revisit only with a card that says what it is
+   * switching to. See docs/features/chat/README.md (capability gate).
+   */
+  const CLAUDE_SUPPORTED_DIALOG_KINDS = ["resume_return"] as const;
+
+  /**
+   * Render Claude's `resume_return` dialog as an ordinary ADE question card.
+   *
+   * Same shape as the `AskUserQuestion` interception: emit the card, park on a
+   * resolver in `runtime.approvals`, and let `respondToInput` deliver the
+   * answer. It has to be that registry and not a private map — every
+   * turn-ending path already settles `runtime.approvals`, and a waiter parked
+   * anywhere else survives the death of the runtime holding it.
+   *
+   * An unrecognized kind answers `{behavior: "cancelled"}`, which is what the
+   * SDK requires of a host that was sent a kind it did not declare.
+   */
+  const buildClaudeUserDialogHandler = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+  ): NonNullable<ClaudeSDKOptions["onUserDialog"]> => async (request, options) => {
+    const logDialog = (result: string): void => {
+      logger.info("chat.claude.user_dialog", {
+        sessionId: managed.session.id,
+        kind: request.dialogKind,
+        result,
+      });
+    };
+    if (request.dialogKind !== "resume_return") {
+      logDialog("unsupported_kind");
+      return { behavior: "cancelled" };
+    }
+    const payload = asRecord(request.payload) ?? {};
+    const ageMinutes = typeof payload.sessionAgeMinutes === "number" ? payload.sessionAgeMinutes : 0;
+    const estimatedTokens = typeof payload.estimatedTokens === "number" ? payload.estimatedTokens : 0;
+    const itemId = `claude-resume-return:${request.toolUseID ?? randomUUID()}`;
+    const pendingRequest: PendingInputRequest = {
+      requestId: itemId,
+      itemId,
+      source: "claude",
+      kind: "structured_question",
+      title: "Resume session",
+      description: formatClaudeResumeCompactionQuestion({ ageMinutes, estimatedTokens }),
+      questions: [{
+        id: "resume_decision",
+        header: "Resume session",
+        question: formatClaudeResumeCompactionQuestion({ ageMinutes, estimatedTokens }),
+        options: CLAUDE_RESUME_RETURN_OPTIONS.map((option) => ({
+          label: option.label,
+          value: option.value,
+          description: option.description,
+          ...("recommended" in option && option.recommended ? { recommended: true } : {}),
+        })),
+        allowsFreeform: false,
+      }],
+      allowsFreeform: false,
+      blocking: true,
+      canProceedWithoutAnswer: false,
+      providerMetadata: { dialogKind: "resume_return" },
+      turnId: runtime.activeTurnId ?? null,
+    };
+    emitPendingInputRequest(managed, pendingRequest, {
+      kind: "tool_call",
+      description: pendingRequest.description ?? "Resume session",
+      detail: { dialogKind: "resume_return" },
+    });
+
+    let abandoned = false;
+    let response: {
+      decision?: AgentChatApprovalDecision;
+      answers?: Record<string, string | string[]>;
+      responseText?: string | null;
+    };
+    try {
+      runtime.pauseIdleWatchdog?.();
+      response = await new Promise<typeof response>((resolve) => {
+        const entry = { kind: "question" as const, resolve, request: pendingRequest };
+        runtime.approvals.set(itemId, entry);
+        const onAbort = (): void => {
+          // Only when this entry is still the live one: a replaced waiter
+          // belongs to a newer dialog and must not be resolved by this signal.
+          if (runtime.approvals.get(itemId) !== entry) return;
+          runtime.approvals.delete(itemId);
+          abandoned = true;
+          resolve({ decision: "cancel" });
+        };
+        if (options.signal.aborted) onAbort();
+        else options.signal.addEventListener("abort", onAbort, { once: true });
+      });
+    } finally {
+      runtime.approvals.delete(itemId);
+      runtime.resumeIdleWatchdog?.();
+    }
+
+    if (abandoned) {
+      // The user never answered, so nothing wrote a receipt. Without one the
+      // card is redrawn by the next re-derivation with no waiter behind it.
+      emitPendingInputResolved(managed, {
+        itemId,
+        decision: "cancel",
+        turnId: pendingRequest.turnId ?? null,
+        questions: pendingRequest.questions,
+      });
+      logDialog("cancelled");
+      return { behavior: "cancelled" };
+    }
+    if (response.decision === "cancel" || response.decision === "decline") {
+      logDialog("cancelled");
+      return { behavior: "cancelled" };
+    }
+    const answered = normalizePendingInputAnswers(
+      pendingRequest,
+      response.answers,
+      response.responseText,
+    ).resume_decision?.[0];
+    // An answer that maps to nothing keeps the conversation intact. "Compact"
+    // is destructive and "never" is durable; neither is a safe default for a
+    // reply ADE could not read.
+    const choice = claudeResumeReturnChoiceFromAnswer(answered) ?? "continue";
+    if (choice === "never") {
+      claudeResumeDialogPreference?.markDismissed();
+    }
+    logDialog(choice);
+    return { behavior: "completed", result: choice };
+  };
+
   const buildClaudeQueryOptions = (
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
@@ -34427,6 +34820,9 @@ export function createAgentChatService(args: {
     managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
     const lightweight = isLightweightSession(managed.session);
     const personalSession = isPersonalSession(managed.session);
+    // The preset decides the model id and the built-in agent pins. Its env is
+    // already inside `buildAgentRuntimeEnv`; what is read here is the rest.
+    const claudePresetPlan = resolveSessionLaunchPlan(managed);
     const claudeEnv = {
       ...buildAgentRuntimeEnv(managed),
       // Claude Code has changed these defaults between public builds. ADE owns
@@ -34456,23 +34852,17 @@ export function createAgentChatService(args: {
       // from chats — e.g. iOS-automation servers — making the SDK chat strictly less
       // capable than an `ade` CLI session for the same task. ENABLE_TOOL_SEARCH now
       // keeps large tool catalogs cheap, so the trim is no longer worth the capability
-      // loss. Orchestration sessions re-apply managed-only isolation in their own block.
+      // loss.
       // Lightweight side-jobs (auto-title / lane-naming) get no settingSources, and the
       // SDK loads all MCP sources when unconstrained — so keep them lean with
       // strictMcpConfig (ignores on-disk .mcp.json / user MCP), preserving prior behavior.
-      // Orchestration LEAD sessions are read-only planners (their direct Claude tools are
-      // denied below); isolate their MCP the same way so user/project MCP servers can't
-      // hand a draft lead (no bundle yet → orchestration block skipped) tool capability
-      // back. Workers/validators do real work and keep user MCP. strictMcpConfig still
-      // permits the programmatic orchestration MCP server added below for bundled leads.
       // An external embedder's stated preference joins the same condition
       // rather than assigning the option after the fact — one place decides
       // whether this query ignores the user's on-disk MCP config. That
       // preference is the only thing that can turn the lightweight shortcut
       // OFF: every SDK/personal chat runs on the "light" profile, so without
       // this an embedder asking for the user's MCP servers was silently
-      // overridden and got none. A lead's isolation is policy, not preference,
-      // so it stays strict either way.
+      // overridden and got none.
       ...(resolveClaudeStrictMcpConfig(managed.session, lightweight)
         ? { strictMcpConfig: true }
         : {}),
@@ -34502,7 +34892,12 @@ export function createAgentChatService(args: {
       enableFileCheckpointing: true,
       skills: "all",
       maxBudgetUsd: chatConfig.sessionBudgetUsd ?? undefined,
-      model: resolveClaudeCliModel(claudeDescriptor?.providerModelId ?? managed.session.model ?? DEFAULT_CLAUDE_MODEL),
+      // A preset states its model in the endpoint's own spelling — an
+      // OpenRouter id, a gateway's alias — so it must reach the harness
+      // unrewritten. `resolveClaudeCliModel` is ADE's substring alias table,
+      // which is right for ADE's catalog and would silently repoint a preset.
+      model: claudePresetPlan?.model?.trim()
+        || resolveClaudeCliModel(claudeDescriptor?.providerModelId ?? managed.session.model ?? DEFAULT_CLAUDE_MODEL),
       spawnClaudeCodeProcess: (spawnOptions) => claudeSubprocessReaper.spawnClaudeCodeProcess(spawnOptions, {
         sessionId: managed.session.id,
         sdkSessionId: runtime.sdkSessionId,
@@ -34520,15 +34915,20 @@ export function createAgentChatService(args: {
         ? { perTaskStopAffordance: true }
         : {}),
     } as ClaudeSDKOptions;
-    if (isOrchestrationLeadSession(managed.session)) {
-      opts.disallowedTools = Array.from(new Set([
-        ...(opts.disallowedTools ?? []),
-        ...ORCHESTRATION_LEAD_DENIED_CLAUDE_TOOLS,
-      ]));
+    // Built-in agents the preset pinned to a specific model. The SDK has no
+    // "same agent, different model" overlay — an `agents` entry replaces the
+    // whole definition — so ADE supplies its own copy of the built-in prompt
+    // and the built-in's `disallowedTools` alongside the model. That fork is
+    // stated to the user when the pin is made (see `harnessPresets.ts`).
+    if (claudePresetPlan?.claudeAgents && Object.keys(claudePresetPlan.claudeAgents).length) {
+      opts.agents = {
+        ...(opts.agents ?? {}),
+        ...(claudePresetPlan.claudeAgents as NonNullable<ClaudeSDKOptions["agents"]>),
+      };
     }
-    // The CTO tool server is injected without the `allowManagedMcpServersOnly`
-    // isolation the orchestration lead uses — the CTO is a daily driver chat and
-    // must keep the user's own MCP servers.
+    // The CTO tool server is injected without `allowManagedMcpServersOnly`
+    // isolation — the CTO is a daily driver chat and must keep the user's own
+    // MCP servers.
     const ctoMcpServer = buildClaudeSdkMcpServer(managed, "cto");
     if (ctoMcpServer) {
       opts.mcpServers = { ...(opts.mcpServers ?? {}), [CTO_MCP_SERVER_NAME]: ctoMcpServer };
@@ -34543,34 +34943,6 @@ export function createAgentChatService(args: {
       opts.mcpServers = {
         ...callerMcpServersToInlineRecord(callerClaudeMcpServers),
         ...(opts.mcpServers ?? {}),
-      };
-    }
-    const orchestrationMcpServer = buildClaudeSdkMcpServer(managed, "orchestration");
-    if (orchestrationMcpServer) {
-      opts.mcpServers = {
-        ...(opts.mcpServers ?? {}),
-        [ORCHESTRATION_CLAUDE_SERVER_NAME]: orchestrationMcpServer,
-      };
-      const existingAllowedMcpServers = opts.managedSettings?.allowedMcpServers ?? [];
-      const hasOrchestrationMcpServer = existingAllowedMcpServers.some(
-        (server) => server.serverName === ORCHESTRATION_CLAUDE_SERVER_NAME,
-      );
-      // If a session ever carried both tool sets, `allowManagedMcpServersOnly`
-      // below would block `ade-cto` even though it is in `opts.mcpServers` — a
-      // silent capability loss. Unreachable today (a CTO session has no
-      // orchestration run), but the invariant is implicit, so allow it too.
-      const managedServerNames = [
-        ...(hasOrchestrationMcpServer ? [] : [{ serverName: ORCHESTRATION_CLAUDE_SERVER_NAME }]),
-        ...(ctoMcpServer
-          && !existingAllowedMcpServers.some((server) => server.serverName === CTO_MCP_SERVER_NAME)
-          ? [{ serverName: CTO_MCP_SERVER_NAME }]
-          : []),
-      ];
-      opts.managedSettings = {
-        ...(opts.managedSettings ?? {}),
-        allowedMcpServers: [...existingAllowedMcpServers, ...managedServerNames],
-        allowManagedMcpServersOnly: true,
-        strictPluginOnlyCustomization: ["mcp"],
       };
     }
     logger.debug("agent_chat.claude_executable_resolved", {
@@ -34620,7 +34992,7 @@ export function createAgentChatService(args: {
           //
           // Merged, never assigned over. ADE's own managed servers are already
           // in this object on the paths that build one, and dropping them here
-          // would take away the orchestration or CTO tools with no diagnostic —
+          // would take away the CTO tools with no diagnostic —
           // the exact silent capability loss the block above guards against.
           const existingAllowedMcpServers = opts.managedSettings?.allowedMcpServers ?? [];
           const policyServerNames = policyAllowedMcpServers(permissionPolicy)
@@ -34647,7 +35019,14 @@ export function createAgentChatService(args: {
       };
       const projectSlashCommands = (() => {
         try {
-          return discoverClaudeSlashCommands(managed.laneWorktreePath).filter(isDispatchableClaudeSdkSlashCommand);
+          return discoverClaudeSlashCommands(managed.laneWorktreePath)
+            .filter(isDispatchableClaudeSdkSlashCommand)
+            // See the twin in `buildClaudeBackgroundSystemPrompt`: a skill that
+            // declares `disable-model-invocation` must not be advertised to the
+            // model as autonomously usable. The user can still invoke it — ADE
+            // expands `/<name>` before the message reaches the model, so that
+            // path does not need this list.
+            .filter((cmd) => cmd.modelInvocable !== false);
         } catch {
           return [];
         }
@@ -34690,12 +35069,6 @@ export function createAgentChatService(args: {
         interactive: true,
         runtime: "claude-agent-sdk-query",
         adeSkillRoots: getAdeAgentSkillRootsForPrompt({ cwd: managed.laneWorktreePath }),
-        orchestrationRole: managed.session.orchestrationRole,
-        orchestrationRunId: managed.session.orchestrationRunId,
-        orchestrationBundlePath: managed.session.orchestrationBundlePath,
-        orchestrationTag: managed.session.orchestrationTag,
-        orchestrationParentSessionId: managed.session.orchestrationParentSessionId,
-        orchestrationStepId: managed.session.orchestrationStepId,
       });
       opts.systemPrompt = {
         type: "preset",
@@ -34715,6 +35088,13 @@ export function createAgentChatService(args: {
       };
       opts.settingSources = ["user", "project", "local"];
       opts.canUseTool = buildClaudeCanUseTool(runtime, managed) as any;
+      // Dialogs ride alongside the tool gate and are scoped to the same
+      // sessions: a lightweight or embedder-owned personal chat renders no ADE
+      // cards, so declaring a kind there would park a dialog with no UI.
+      opts.onUserDialog = buildClaudeUserDialogHandler(managed, runtime);
+      if (!claudeResumeDialogPreference?.isDismissed()) {
+        opts.supportedDialogKinds = [...CLAUDE_SUPPORTED_DIALOG_KINDS];
+      }
       opts.hooks = buildAdeClaudeHooks(managed, runtime);
 
       // Enable provider tool search for every session, CTO included. When
@@ -34828,6 +35208,7 @@ export function createAgentChatService(args: {
         runtime,
         runtime.activeTurnId ?? undefined,
         "The Claude session restarted before this task reported completion.",
+        { stopSource: "system", stopReason: CHAT_STOP_REASON_RUNTIME_EXITED },
       ),
     );
     if (hadOpenBackgroundTasks) {
@@ -35744,77 +36125,46 @@ export function createAgentChatService(args: {
     return unsettled.turnId;
   };
 
-  const reconcileClaudeSessionAfterRestart = (
-    managed: ManagedChatSession,
-    runtime: ClaudeRuntime,
-  ): void => {
+  /**
+   * Heal a chat that is being re-bound after its owning process went away.
+   *
+   * The stale rows themselves are the shared sweep's job — same verdicts, same
+   * copy, same attribution as the chat nobody reopens. What is restart-specific
+   * and stays here: the one system_notice, and the parent turn the SDK never
+   * settled.
+   */
+  const reconcileClaudeSessionAfterRestart = (managed: ManagedChatSession): void => {
     try {
       const envelopes = readFullTranscriptEnvelopesForSessionId(managed.session.id);
       if (envelopes.length === 0) return;
 
       const orphanParentTurn = findUnsettledParentTurn(managed, envelopes);
-
-      const orphanBackground = deriveBackgroundItems(envelopes).filter(
-        (snapshot) => snapshot.status === "scheduled" || snapshot.status === "running",
-      );
-      const orphanSubagents = subagentSnapshotsFromEvents(envelopes).filter(
-        (snapshot) => snapshot.kind === "subagent"
-          && snapshot.status === "running"
-          && snapshot.background !== true,
+      const outcome = staleRunSweep.terminalizeStaleRowsForSession(
+        managed,
+        getRestartRecoveryStopAttribution(readPersistedState(managed.session.id)),
+        envelopes,
       );
 
-      if (orphanBackground.length === 0 && orphanSubagents.length === 0 && !orphanParentTurn) return;
-
-      const restartTurnId = `claude-restart-reconcile-${randomUUID()}`;
-
-      for (const snapshot of orphanBackground) {
-        emitClaudeScheduledWorkUpdate(managed, runtime, {
-          type: "scheduled_work_update",
-          id: snapshot.id,
-          kind: "background_task",
-          status: "stopped",
-          origin: "background_task",
-          title: snapshot.title,
-          summary: snapshot.summary ?? "lost on ADE restart",
-          ...(snapshot.sourceTaskId ? { sourceTaskId: snapshot.sourceTaskId } : {}),
-          ...(snapshot.sourceToolUseId ? { sourceToolUseId: snapshot.sourceToolUseId } : {}),
-          turnId: restartTurnId,
-        });
-      }
-
-      for (const snapshot of orphanSubagents) {
-        const summary = snapshot.summary && snapshot.summary !== snapshot.name
-          ? snapshot.summary
-          : "Stopped: lost on ADE restart";
-        emitChatEvent(managed, {
-          type: "subagent_result",
-          taskId: snapshot.id,
-          ...(snapshot.parentToolUseId ? { parentToolUseId: snapshot.parentToolUseId } : { parentToolUseId: null }),
-          status: "stopped",
-          summary,
-          finalSummary: summary,
-          ...(snapshot.turnId ? { turnId: snapshot.turnId } : {}),
-        });
-      }
-
-      if (orphanBackground.length > 0) {
+      if (outcome.backgroundStopped > 0) {
         emitChatEvent(managed, {
           type: "system_notice",
           noticeKind: "info",
-          message: `Reconciled after restart: ${orphanBackground.length} background task${orphanBackground.length === 1 ? "" : "s"} stopped`,
-          turnId: restartTurnId,
+          message: `Reconciled after restart: ${outcome.backgroundStopped} background task${outcome.backgroundStopped === 1 ? "" : "s"} stopped`,
+          turnId: `claude-restart-reconcile-${randomUUID()}`,
         });
       }
 
       // Keep the parent terminal pair last. Renderer turn state is derived in
       // event order, so no later reconciliation row may revive the stopped turn.
       const orphanTurnId = terminalizeUnsettledClaudeParentTurn(managed, "restart", orphanParentTurn);
+      if (!orphanTurnId && outcome.backgroundStopped === 0 && outcome.subagentsTerminalized === 0) return;
 
       logger.info("agent_chat.claude_restart_reconciled", {
         sessionId: managed.session.id,
         orphanTurnId,
-        backgroundTasksStopped: orphanBackground.length,
-        subagentsStopped: orphanSubagents.length,
+        backgroundTasksStopped: outcome.backgroundStopped,
+        subagentsStopped: outcome.subagentsTerminalized,
+        subagentsLeftRunning: outcome.subagentsLeftRunning,
       });
     } catch (error) {
       logger.warn("agent_chat.claude_restart_reconcile_failed", {
@@ -35928,7 +36278,14 @@ export function createAgentChatService(args: {
     // the prior process crashed before it persisted an SDK session id. Sweep
     // any non-terminal parent/background/subagent transcript rows once; a brand
     // new chat has no rows, so this is a no-op there.
-    reconcileClaudeSessionAfterRestart(managed, runtime);
+    //
+    // Skipped when a live sibling brain owns the runtime: those rows are not
+    // orphans, they are the sibling's running work, and "reconciling" them
+    // writes a stopped subagent + an interrupted parent turn into a turn that
+    // is still streaming somewhere else.
+    if (chatRuntimeAdoptable(managed.session.id, persisted)) {
+      reconcileClaudeSessionAfterRestart(managed);
+    }
 
     return runtime;
   };
@@ -35997,12 +36354,14 @@ export function createAgentChatService(args: {
       bufferedText: null,
       recentConversationEntries: [],
       localPendingInputs: new Map(),
+      asyncQuestions: new Map(),
       httpMcpServers: {},
       ctoToolPacks: new Set<CtoToolPack>(),
       activeBashControllers: new Set(),
       eventSequence: 0,
       lastActivityTimestamp: Date.now(),
       turnBeforeSha: null,
+      turnBeforeTree: null,
       claudeBackgroundJobShort: null,
       claudeBackgroundResumeSessionId: null,
       claudeBackgroundLogText: "",
@@ -36198,14 +36557,11 @@ export function createAgentChatService(args: {
           title: label,
         },
         spawnKind,
-        // A plain spawn also emits an inline `subagent_started` card below; an
-        // orchestration-run child emits only this notice. The renderer keeps the
-        // quiet deep-link pill only when no card accompanies it.
-        hasInlineCard: !child.session.orchestrationRunId,
+        // A spawn always emits an inline `subagent_started` card below, so the
+        // renderer suppresses the quiet deep-link pill.
+        hasInlineCard: true,
       },
     });
-    const emitInlineEvents = !child.session.orchestrationRunId;
-    if (!emitInlineEvents) return;
     emitChatEvent(parent, {
       type: "subagent_started",
       taskId: `chat:${child.session.id}`,
@@ -36494,7 +36850,7 @@ export function createAgentChatService(args: {
                 prNumber: readChildPullRequestNumber(child.session.completion, summary),
               })
             : null;
-          if (!child.session.orchestrationRunId && !inlineEventEmitted && !parentIsCto) {
+          if (!inlineEventEmitted && !parentIsCto) {
             emitChatEvent(parent, {
               type: "subagent_result",
               taskId: `chat:${childSessionId}`,
@@ -36626,6 +36982,9 @@ export function createAgentChatService(args: {
     codexSandbox: requestedCodexSandbox,
     codexConfigSource: requestedCodexConfigSource,
     opencodePermissionMode: requestedOpenCodePermissionModeArg,
+    instanceId: requestedInstanceId,
+    presetId: requestedPresetId,
+    credentialId: requestedCredentialId,
     piProfileId: requestedPiProfileId,
     piProviderId: requestedPiProviderId,
     piModelId: requestedPiModelId,
@@ -36649,13 +37008,8 @@ export function createAgentChatService(args: {
     goal: requestedGoal,
     recoveredFromSessionId,
     sessionId: requestedSessionId,
-    orchestrationRunId: requestedOrchestrationRunId,
-    orchestrationRole: requestedOrchestrationRole,
     orchestrationParentSessionId: requestedOrchestrationParentSessionId,
     spawnKind: requestedSpawnKind,
-    orchestrationTag: requestedOrchestrationTag,
-    orchestrationStepId: requestedOrchestrationStepId,
-    orchestrationBundlePath: requestedOrchestrationBundlePath,
     idempotencyKey,
   }: AgentChatCreateInternalArgs): Promise<AgentChatSession> => {
     const requestedFastMode = requestedFastModeArg ?? requestedLegacyFastModeArg;
@@ -36825,6 +37179,16 @@ export function createAgentChatService(args: {
       return existing.session;
     }
 
+    const usageService = getUsageService?.() as {
+      resolveBalancedInstance?: (provider: "claude" | "codex") => { instanceId: string; reason: string } | null;
+    } | null | undefined;
+    const balancedInstance = !requestedInstanceId?.trim()
+      && (effectiveProvider === "claude" || effectiveProvider === "codex")
+      ? usageService?.resolveBalancedInstance?.(effectiveProvider as "claude" | "codex")
+      : null;
+    if (balancedInstance) logger.info("chat.account_balance_pick", { provider: effectiveProvider, ...balancedInstance });
+    const selectedInstanceId = balancedInstance?.instanceId ?? requestedInstanceId?.trim();
+
     const rawEffort = effectiveProvider === "codex"
       ? normalizeReasoningEffort(reasoningEffort)
         ?? resolvedDescriptor?.defaultReasoningEffort
@@ -36918,9 +37282,7 @@ export function createAgentChatService(args: {
     // opencodePermissionMode.
     const identityPinned = isPrimaryPinnedIdentity(identityKey);
     const effectiveInteractionMode = identityPinned ? undefined : requestedInteractionMode;
-    const orchestrationLeadRequested =
-      effectiveInteractionMode === "orchestrator-lead" || requestedOrchestrationRole === "lead";
-    const permissionsPinned = identityPinned || orchestrationLeadRequested;
+    const permissionsPinned = identityPinned;
     // A structured policy needs a coarse per-provider dial that leaves its own
     // rules reachable: Claude's `default` mode is the one that still calls
     // `canUseTool`, and Codex's `on-request` + `workspace-write` is the pair
@@ -36943,9 +37305,6 @@ export function createAgentChatService(args: {
     let effectivePermissionMode = identityKey
       ? normalizeIdentityPermissionMode(identityKey, requestedPermMode, effectiveProvider, sessionId)
       : requestedPermMode;
-    if (orchestrationLeadRequested) {
-      effectivePermissionMode = "plan";
-    }
     const chatConfig = resolveChatConfig();
     let requestedOpenCodePermissionMode = permissionsPinned ? undefined : requestedOpenCodePermissionModeArg;
     const localHarnessPermissions = applyLocalHarnessPermissionMode({
@@ -37067,6 +37426,20 @@ export function createAgentChatService(args: {
         provider: effectiveProvider,
         model: normalizedModel,
         ...(resolvedModelId ? { modelId: resolvedModelId } : {}),
+        // Only Claude and Codex have accounts; an id sent for any other
+        // provider is dropped rather than persisted as a pointer nothing will
+        // ever resolve.
+        ...(selectedInstanceId
+          && (effectiveProvider === "claude" || effectiveProvider === "codex")
+          ? { instanceId: selectedInstanceId }
+          : {}),
+        // A preset names its own harness; ADE keeps the id on any provider
+        // because the resolver, not this call site, is what decides whether the
+        // pairing is launchable and what to say when it is not.
+        ...(requestedPresetId?.trim() ? { presetId: requestedPresetId.trim() } : {}),
+        ...(!requestedPresetId?.trim() && requestedCredentialId?.trim()
+          ? { credentialId: requestedCredentialId.trim() }
+          : {}),
         ...(effectiveProvider === "pi" && (requestedPiProfileId ?? resolvedDescriptor?.piProfileId)
           ? { piProfileId: requestedPiProfileId ?? resolvedDescriptor?.piProfileId }
           : {}),
@@ -37089,9 +37462,6 @@ export function createAgentChatService(args: {
             ? { cursorCloudServiceTier: initialCursorCloudServiceTier }
             : {}),
           ...nativePermissionFields,
-          ...(isOrchestrationInteractionMode(effectiveInteractionMode)
-            ? { interactionMode: effectiveInteractionMode }
-            : {}),
           ...(initialClaudeOutputStyle ? { claudeOutputStyle: initialClaudeOutputStyle } : {}),
           ...(effectivePermissionMode ? { permissionMode: effectivePermissionMode } : {}),
         ...(callerMcpServers ? { mcpServers: callerMcpServers } : {}),
@@ -37127,14 +37497,9 @@ export function createAgentChatService(args: {
           ? { requestedCwd: requestedCwd.trim() }
           : {}),
         ...(runtimeMode === "print" ? { runtimeMode: "print" as const } : {}),
-        ...collectOrchestrationFields({
-          orchestrationRunId: requestedOrchestrationRunId,
-          orchestrationRole: requestedOrchestrationRole,
+        ...collectSpawnLineageFields({
           orchestrationParentSessionId: requestedOrchestrationParentSessionId,
           spawnKind: requestedSpawnKind,
-          orchestrationTag: requestedOrchestrationTag,
-          orchestrationStepId: requestedOrchestrationStepId,
-          orchestrationBundlePath: requestedOrchestrationBundlePath,
         }, null),
       },
       transcriptPath,
@@ -37188,19 +37553,20 @@ export function createAgentChatService(args: {
       bufferedText: null,
       recentConversationEntries: [],
       localPendingInputs: new Map(),
+      asyncQuestions: new Map(),
       httpMcpServers: {},
       ctoToolPacks: new Set<CtoToolPack>(),
       activeBashControllers: new Set(),
       eventSequence: 0,
       lastActivityTimestamp: Date.now(),
       turnBeforeSha: null,
+      turnBeforeTree: null,
       claudeBackgroundJobShort: null,
       claudeBackgroundResumeSessionId: null,
       claudeBackgroundLogText: "",
       compactionEmitterState: createCompactionEmitterState(),
     };
     normalizeSessionNativePermissionControls(managed.session, resolveChatConfig());
-    enforceOrchestrationLockedPermissionMode(managed.session);
     managed.transcriptLimitReached = managed.transcriptBytesWritten >= MAX_CHAT_TRANSCRIPT_BYTES;
     refreshReconstructionContext(managed);
 
@@ -37296,6 +37662,7 @@ export function createAgentChatService(args: {
           runtime,
           interruptedTurnId ?? undefined,
           "This chat was handed off while Claude was stuck after a plan-limit reset.",
+          { stopSource: "system", stopReason: CHAT_STOP_REASON_CHAT_HANDED_OFF },
         ),
       );
     }
@@ -37335,6 +37702,8 @@ export function createAgentChatService(args: {
         status: "stopped",
         summary,
         finalSummary: summary,
+        stopSource: "provider",
+        stopReason: CHAT_STOP_REASON_PROVIDER_ENDED_TURN,
         ...(snapshot.turnId ? { turnId: snapshot.turnId } : {}),
       });
     }
@@ -38112,7 +38481,10 @@ export function createAgentChatService(args: {
       // NOT discoverCodexSessions: that is the external-import surface and
       // filters out ADE-originated rollouts, which are exactly the ones this
       // path packages. Resolve by filename suffix like codex itself does.
-      const sourcePath = findCodexRolloutPathBySessionId(threadId, { logger });
+      const sourcePath = findCodexRolloutPathBySessionId(threadId, {
+        logger,
+        env: sessionProviderLookupEnv(managed),
+      });
       if (!sourcePath) throw new Error("ADE could not find the Codex rollout to fork.");
       if (sourcePath.endsWith(".zst")) {
         throw new Error("This Codex chat is stored compressed and can't be forked across machines yet. Use a brief instead.");
@@ -40220,6 +40592,7 @@ export function createAgentChatService(args: {
           codexBuiltInNames: CODEX_BUILT_IN_SLASH_COMMAND_NAMES,
           claudeRuntimeSlashCommandNames,
           codexRuntimeSlashCommandNames,
+          env: sessionProviderLookupEnv(managed),
         })
       : null;
     const contextAttachmentPrompt = providerSlashCommand && !personalSession
@@ -40534,9 +40907,7 @@ export function createAgentChatService(args: {
     stableStringify((modelParams ?? []).map((entry) => [entry.id, entry.value])),
     policy.chatMode,
     policy.approvalPolicy,
-    policy.orchestrationLead ? "lead-gated" : "unrestricted",
     policy.fullAuto ? "full-auto" : "guarded",
-    buildOrchestrationSessionContext(managed) ? "orchestration-mcp" : "standard",
   ].join(":");
 
   const cursorSdkStateKeyFor = (managed: ManagedChatSession): string => [
@@ -41218,7 +41589,7 @@ export function createAgentChatService(args: {
     // Mirrors the terminal path: droidSettingsJson omits sessionDefaultSettings
     // when permissionMode is null, letting the user's settings.json decide.
     const stated: Pick<DroidSdkSessionSettings, "autonomyLevel" | "interactionMode"> | null =
-      chosenMode !== null || planRequested || isOrchestrationLeadSession(managed.session)
+      chosenMode !== null || planRequested
         ? ((): Pick<DroidSdkSessionSettings, "autonomyLevel" | "interactionMode"> => {
             const interactionMode = chosenMode === "agi"
               ? "agi" as const
@@ -41238,11 +41609,6 @@ export function createAgentChatService(args: {
     return {
       modelId,
       ...stated,
-      // Droid's own editor/terminal tools live outside ADE's toolset, so a lead
-      // has to have them withheld natively as well.
-      ...(isOrchestrationLeadSession(managed.session)
-        ? { disabledToolCategories: ORCHESTRATION_LEAD_DENIED_DROID_TOOL_CATEGORIES }
-        : {}),
       ...(reasoningEffort ? { reasoningEffort } : {}),
       ...(stated?.interactionMode === "spec"
         ? {
@@ -41827,16 +42193,13 @@ export function createAgentChatService(args: {
     }
 
     const cursorMcpLeases = await ensureHttpMcpLeases(managed);
-    // These inline servers are additive. A lead's isolation from the user's own
-    // MCP servers rides on `policy.orchestrationLead`, which the worker turns
-    // into a trimmed `local.settingSources` (cursorSdkSettingSources) — see
-    // ORCHESTRATION_LEAD_MCP_ISOLATION.cursor.
-    // Caller-injected servers (ADE SDK embedders) are additive too, and land
-    // first so an ADE lease can never be shadowed by a caller reusing its name.
-    // Strict mode rides the same trimmed `local.settingSources` a lead uses;
-    // see CALLER_MCP_SUPPORT.cursor for the residual (user-layer servers).
+    // These inline servers are additive. Caller-injected servers (ADE SDK
+    // embedders) are additive too, and land first so an ADE lease can never be
+    // shadowed by a caller reusing its name. Strict mode rides a trimmed
+    // `local.settingSources`; see CALLER_MCP_SUPPORT.cursor for the residual
+    // (user-layer servers).
     const cursorCallerMcpServers = managed.session.mcpServers ?? null;
-    const cursorOrchestrationMcpServers = cursorMcpLeases.length || cursorCallerMcpServers
+    const cursorMcpServerConfig = cursorMcpLeases.length || cursorCallerMcpServers
       ? {
         ...(cursorCallerMcpServers ? callerMcpServersToInlineRecord(cursorCallerMcpServers) : {}),
         ...Object.fromEntries(cursorMcpLeases.map((lease) => [
@@ -41892,7 +42255,7 @@ export function createAgentChatService(args: {
       agentName: manualSessionTitleForRuntime(managed),
       sessionId: managed.session.id,
       policy,
-      ...(cursorOrchestrationMcpServers ? { mcpServers: cursorOrchestrationMcpServers } : {}),
+      ...(cursorMcpServerConfig ? { mcpServers: cursorMcpServerConfig } : {}),
       logger,
     };
     try {
@@ -44489,7 +44852,6 @@ export function createAgentChatService(args: {
     managed.session.id,
     managed.session.laneId,
     managed.laneWorktreePath,
-    buildOrchestrationSessionContext(managed) ? "orchestration-mcp" : "standard",
   ].join(":");
 
   const ensureDroidRuntime = async (managed: ManagedChatSession): Promise<DroidRuntime> => {
@@ -44540,13 +44902,12 @@ export function createAgentChatService(args: {
       const droidMcpLeases = await ensureHttpMcpLeases(managed);
       // Droid's native MCP config is user/project scoped. The worker keeps
       // ADE's inline lease and disables every other live MCP tool through the
-      // session-scoped toggleMcpTool RPC before each lead turn (see
-      // ORCHESTRATION_LEAD_MCP_ISOLATION.droid).
+      // session-scoped toggleMcpTool RPC.
       // Caller-injected servers (ADE SDK embedders) ride the same list. Droid's
       // config shape is `{ name, ...transport }`, and the ADE leases go last so
       // a caller reusing an ADE server name cannot displace the lease.
       const droidCallerMcpServers = managed.session.mcpServers ?? null;
-      const droidOrchestrationMcpServers = droidMcpLeases.length || droidCallerMcpServers
+      const droidMcpServerList = droidMcpLeases.length || droidCallerMcpServers
         ? [
           ...(droidCallerMcpServers ? callerMcpServersToDroidList(droidCallerMcpServers) : []),
           ...droidMcpLeases.map((lease) => lease.config),
@@ -44564,12 +44925,12 @@ export function createAgentChatService(args: {
         sessionId: managed.session.id,
         resumeSessionId: persisted?.droidSdkSessionId ?? null,
         settings: buildDroidSdkSessionSettings(managed, launchModelId),
-        ...(droidOrchestrationMcpServers ? { mcpServers: droidOrchestrationMcpServers } : {}),
+        ...(droidMcpServerList ? { mcpServers: droidMcpServerList } : {}),
         // Droid's only MCP knob is the session-scoped toggleMcpTool sweep the
-        // worker runs over everything outside this allow-list. Strict mode
-        // reuses it, with the caller's own servers added so the servers the
-        // embedder asked for survive the sweep.
-        ...(isOrchestrationLeadSession(managed.session) || managed.session.strictMcpConfig === true
+        // worker runs over everything outside this allow-list. Strict mode uses
+        // it, with the caller's own servers added so the servers the embedder
+        // asked for survive the sweep.
+        ...(managed.session.strictMcpConfig === true
           ? {
             allowedMcpServerNames: [
               ...droidMcpLeases.map((lease) => lease.serverName),
@@ -44766,12 +45127,6 @@ export function createAgentChatService(args: {
             interactive: true,
             runtime: "droid-sdk",
             adeSkillRoots: getAdeAgentSkillRootsForPrompt({ cwd: managed.laneWorktreePath }),
-            orchestrationRole: managed.session.orchestrationRole,
-            orchestrationRunId: managed.session.orchestrationRunId,
-            orchestrationBundlePath: managed.session.orchestrationBundlePath,
-            orchestrationTag: managed.session.orchestrationTag,
-            orchestrationParentSessionId: managed.session.orchestrationParentSessionId,
-            orchestrationStepId: managed.session.orchestrationStepId,
           });
       const sdkInput = [
         droidHarnessPrompt,
@@ -45261,8 +45616,7 @@ export function createAgentChatService(args: {
     // e.g. the user picks xhigh after the session pre-warmed at medium —
     // ensureClaudeQuery would otherwise reuse the stale warm query and the new
     // effort would never reach the SDK. Invalidate it so a fresh query is built
-    // with the updated thinking configuration. Mirrors the explicit
-    // setOrchestrationFields effort-change path.
+    // with the updated thinking configuration.
     if (
       nextClaudeEffort
       && nextClaudeEffort !== prevClaudeEffort
@@ -47878,6 +48232,13 @@ export function createAgentChatService(args: {
     ) {
       throw new Error("Chat session is owned by another ADE process; cannot resume from here.");
     }
+    // The row's `owner_pid` is stamped at creation, so it goes stale the moment
+    // a different brain legitimately takes a dormant chat over. The runtime
+    // owner stamp is the live one, and it is what stops a resume from starting
+    // a SECOND provider process for a chat that already has one.
+    if (!chatRuntimeAdoptable(sessionId)) {
+      throw new Error("Chat session is owned by another ADE process; cannot resume from here.");
+    }
 
     let managed = ensureManagedSession(sessionId);
 
@@ -48816,6 +49177,10 @@ export function createAgentChatService(args: {
     for (const envelope of events) {
       const event = envelope.event;
       if (event.type === "approval_request" || event.type === "structured_question") {
+        // A non-blocking card (Codex steering, Codex async question) is never
+        // the session's addressable pending input — see
+        // `isNonBlockingApprovalRequestEvent`.
+        if (event.type === "approval_request" && isNonBlockingApprovalRequestEvent(event)) continue;
         if (typeof event.itemId === "string" && event.itemId.trim().length) {
           pending.delete(event.itemId);
           pending.add(event.itemId);
@@ -49127,6 +49492,9 @@ export function createAgentChatService(args: {
       ...(liveSession?.opencodePermissionMode || persisted?.opencodePermissionMode
         ? { opencodePermissionMode: liveSession?.opencodePermissionMode ?? persisted?.opencodePermissionMode }
         : {}),
+      ...((liveSession?.instanceId ?? persisted?.instanceId) ? { instanceId: liveSession?.instanceId ?? persisted?.instanceId } : {}),
+      ...((liveSession?.presetId ?? persisted?.presetId) ? { presetId: liveSession?.presetId ?? persisted?.presetId } : {}),
+      ...((liveSession?.credentialId ?? persisted?.credentialId) ? { credentialId: liveSession?.credentialId ?? persisted?.credentialId } : {}),
       ...((liveSession?.piProfileId ?? persisted?.piProfileId) ? { piProfileId: liveSession?.piProfileId ?? persisted?.piProfileId } : {}),
       ...((liveSession?.piProviderId ?? persisted?.piProviderId) ? { piProviderId: liveSession?.piProviderId ?? persisted?.piProviderId } : {}),
       ...((liveSession?.piModelId ?? persisted?.piModelId) ? { piModelId: liveSession?.piModelId ?? persisted?.piModelId } : {}),
@@ -49223,11 +49591,23 @@ export function createAgentChatService(args: {
       ...(activeBackgroundTaskCount > 0 ? { backgroundWork } : {}),
       ...(activeBackgroundTaskCount > 0 && backgroundWorkSince ? { backgroundWorkSince } : {}),
       ...(runtimeProcesses.length ? { runtimeProcesses } : {}),
+      // `true` is this brain's own runtime; `false` is only honest when no
+      // other live brain holds the chat, because this brain having no runtime
+      // says nothing about a sibling that does. Neither → omitted, which the
+      // type documents as "this host cannot say".
+      ...(liveManaged?.runtime
+        ? { runtimeAlive: true }
+        : chatRuntimeAdoptable(row.id, persisted, { quiet: true })
+          ? { runtimeAlive: false }
+          : {}),
       scheduledWorkPaused,
       scheduledWork,
       ...(sessionHasPendingInput ? { awaitingInput: true } : {}),
       ...(pendingInputItemId ? { pendingInputItemId } : {}),
       ...(hasLiveSteeringInput(liveManaged) ? { steeringInput: true } : {}),
+      // Live-only, exactly like `steeringInput`: never persisted, never paired
+      // with `awaitingInput` / `pendingInputItemId`.
+      ...((liveManaged?.asyncQuestions.size ?? 0) > 0 ? { asyncQuestion: true } : {}),
       ...(liveSession?.threadId || persisted?.threadId
         ? { threadId: liveSession?.threadId ?? persisted?.threadId }
         : {}),
@@ -49240,7 +49620,7 @@ export function createAgentChatService(args: {
       ...(liveSession?.requestedCwd != null || persisted?.requestedCwd != null
         ? { requestedCwd: liveSession?.requestedCwd ?? persisted?.requestedCwd ?? null }
         : {}),
-      ...collectOrchestrationFields(liveSession, persisted),
+      ...collectSpawnLineageFields(liveSession, persisted),
       ...(() => {
         const parentId = (liveSession?.orchestrationParentSessionId ?? persisted?.orchestrationParentSessionId)?.trim();
         if (!parentId) return {};
@@ -50647,6 +51027,60 @@ export function createAgentChatService(args: {
   }: AgentChatRespondToInputArgs): Promise<void> => {
     const managed = ensureManagedSession(sessionId);
     const resolvedDecision: AgentChatApprovalDecision = decision ?? "decline";
+
+    // Cards answered by SENDING rather than by answering a request. Nothing is
+    // waiting on a JSON-RPC response — Codex reads the reply as an ordinary
+    // user message — so this runs before every provider branch below, all of
+    // which look the answer up in a waiter registry that never held this card.
+    const asyncQuestion = managed.asyncQuestions.get(itemId);
+    if (asyncQuestion && asyncQuestion.request.providerMetadata?.responseMode === "message") {
+      if (asyncQuestion.responding) {
+        throw new Error("An answer is already being sent.");
+      }
+      const request = asyncQuestion.request;
+      // Declining an async question is a dismissal by another name: there is no
+      // provider to tell, and sending "the user declined" as a message would
+      // put words in their mouth.
+      if (resolvedDecision === "decline" || resolvedDecision === "cancel") {
+        managed.asyncQuestions.delete(itemId);
+        emitPendingInputResolved(managed, {
+          itemId,
+          decision: resolvedDecision,
+          turnId: request.turnId ?? null,
+          questions: request.questions,
+        });
+        return;
+      }
+      const normalizedAnswers = normalizePendingInputAnswers(request, answers, responseText);
+      const messageText = formatPendingInputAnswersAsMessage(request, normalizedAnswers);
+      if (!messageText.trim().length) {
+        throw new Error("Answer at least one question before sending.");
+      }
+      // Keep the card banked while dispatching. `messageSession` can reject
+      // when another provider request is live; removing or receipting first
+      // would lose the only recoverable answer in that case.
+      managed.asyncQuestions.set(itemId, { ...asyncQuestion, responding: true });
+      // `kind: "auto"` is the session's normal send path: it steers into the
+      // active turn when one is running and starts a turn when none is.
+      try {
+        await messageSession({ sessionId, text: messageText, kind: "auto" });
+      } catch (error) {
+        managed.asyncQuestions.set(itemId, asyncQuestion);
+        persistChatState(managed);
+        throw error;
+      }
+      managed.asyncQuestions.delete(itemId);
+      emitPendingInputResolved(managed, {
+        itemId,
+        decision: resolvedDecision,
+        turnId: request.turnId ?? null,
+        answers,
+        responseText,
+        questions: request.questions,
+      });
+      return;
+    }
+
     const localPending = managed.localPendingInputs.get(itemId);
     if (localPending) {
       managed.localPendingInputs.delete(itemId);
@@ -50944,6 +51378,63 @@ export function createAgentChatService(args: {
   const respondToInput = async (args: AgentChatRespondToInputArgs): Promise<void> => {
     await deliverInputResponse(args);
     sessionService.clearTurnStartMarkers(args.sessionId);
+  };
+
+  /**
+   * Throw a non-blocking card away without answering it.
+   *
+   * The right to dismiss is a property the PROVIDER grants — `dismissible` on
+   * the request's `providerMetadata` — not something inferred from `blocking:
+   * false`. A Codex steering prompt is also non-blocking and is still a
+   * question the app-server has an open request for; dismissing it locally
+   * would strand that request forever. So this refuses anything the request did
+   * not mark, and says what to do instead.
+   *
+   * The receipt is the reverse state: `pending_input_resolved` with
+   * `resolution: "cancelled"` plus a one-line notice, because a card that
+   * disappears with no transcript trace is redrawn by the next re-derivation
+   * and leaves no record that the user ever decided anything.
+   */
+  const dismissPendingInput = async (
+    { sessionId, itemId }: AgentChatDismissPendingInputArgs,
+  ): Promise<void> => {
+    const managed = ensureManagedSession(sessionId);
+    const trimmedItemId = itemId.trim();
+    const banked = managed.asyncQuestions.get(trimmedItemId);
+    const request = banked?.request
+      ?? managed.localPendingInputs.get(trimmedItemId)?.request
+      ?? (managed.runtime?.kind === "codex" || managed.runtime?.kind === "claude"
+        ? managed.runtime.approvals.get(trimmedItemId)?.request
+        : undefined);
+    if (banked?.responding) {
+      throw new Error("An answer is already being sent.");
+    }
+    if (!request) {
+      // No card by that id: settle it anyway rather than throwing. A click that
+      // lands after the card is gone must still write a receipt, or the
+      // transcript fallback keeps naming it.
+      settleUnclaimedPendingInput(managed, trimmedItemId, "cancel");
+      onPendingInputDismissed?.({ provider: managed.session.provider });
+      return;
+    }
+    if (request.providerMetadata?.dismissible !== true) {
+      throw new Error(PENDING_INPUT_NOT_DISMISSIBLE_MESSAGE);
+    }
+    managed.asyncQuestions.delete(trimmedItemId);
+    emitPendingInputResolved(managed, {
+      itemId: trimmedItemId,
+      decision: "cancel",
+      turnId: request.turnId ?? null,
+      questions: request.questions,
+    });
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "info",
+      message: "Question dismissed",
+      ...(request.turnId ? { turnId: request.turnId } : {}),
+    });
+    persistChatState(managed);
+    onPendingInputDismissed?.({ provider: managed.session.provider });
   };
 
   const approveToolUse = async ({
@@ -51657,6 +52148,65 @@ export function createAgentChatService(args: {
       descriptorInfo.set(catalogDescriptorInfoKey(groupKey, providerKey, descriptor.id), { provider: "opencode", info });
     }
 
+    // Models a stored API key makes reachable on its own, with no preset.
+    //
+    // A key saved on a provider page declares the model ids it serves; without
+    // this they existed in the store and nowhere the user could pick them. Each
+    // row keeps the key's id so the launch resolves the same credential — two
+    // keys on one provider can name the same model against different endpoints,
+    // which is why the credential is part of the row's identity and not a
+    // property of the model id.
+    const credentialDescriptorIds = new Set<string>();
+    for (const harness of HARNESS_PRESET_BODIES) {
+      if (providerIsDisabled(harness as ModelProviderGroup)) continue;
+      let credentials: ReturnType<typeof listLaunchableCredentials>;
+      try {
+        credentials = listLaunchableCredentials(harness, {
+          customProviderIds: harness === "opencode"
+            ? effectiveConfig.ai?.customProviders?.map((entry) => entry.id) ?? []
+            : [],
+        });
+      } catch {
+        continue;
+      }
+      for (const credential of credentials) {
+        const catalogCredentialId = harness === "opencode" && credential.provider !== "opencode"
+          ? encodeOpenCodeCustomCredentialId(credential.provider, credential.credentialId)
+          : credential.credentialId;
+        for (const rawModelId of credential.models ?? []) {
+          const modelId = rawModelId.trim();
+          if (!modelId) continue;
+          const base = resolveModelDescriptorForProvider(modelId, harness as ModelProviderGroup)
+            ?? getModelById(modelId);
+          const descriptorId = `${harness}:${catalogCredentialId}:${modelId}`;
+          if (credentialDescriptorIds.has(descriptorId)) continue;
+          credentialDescriptorIds.add(descriptorId);
+          const descriptor: ModelDescriptor = {
+            ...(base ?? createCredentialModelDescriptorBase(modelId, harness)),
+            id: descriptorId,
+            shortId: modelId,
+            displayName: base?.displayName ?? modelId,
+            providerModelId: modelId,
+            credentialId: catalogCredentialId,
+            credentialLabel: credential.label,
+          };
+          descriptors.push(descriptor);
+          descriptorInfo.set(
+            catalogDescriptorInfoKey(harness as ModelProviderGroup, descriptor.family, descriptor.id),
+            {
+              provider: harness as ModelProviderGroup,
+              info: {
+                id: modelId,
+                displayName: descriptor.displayName,
+                description: `${credential.label} key`,
+                isDefault: false,
+              },
+            },
+          );
+        }
+      }
+    }
+
     const opencodeProviderById = new Map(opencodeInventory.providers.map((provider) => [provider.id, provider]));
     // Curated descriptors are in the registry whether or not a provider is
     // installed, so a disabled provider would still produce a full group block
@@ -51742,6 +52292,7 @@ export function createAgentChatService(args: {
                 sourceRuntime: runtimeProvider,
                 providerId: providerMeta?.id ?? provider.key,
                 providerName: providerMeta?.name ?? provider.label,
+                ...(descriptor.credentialId ? { credentialId: descriptor.credentialId } : {}),
               };
             }),
           })),
@@ -52072,6 +52623,7 @@ export function createAgentChatService(args: {
     runtimeBudget.unregister(runtimeBudgetParticipant);
     hostSleepChips.dispose();
     clearInterval(sessionCleanupTimer);
+    staleRunSweep.dispose();
     clearCursorCloudMirrorWatches();
     clearAllCursorCloudHydrationState();
     scheduledWorkScheduler?.dispose();
@@ -52176,6 +52728,60 @@ export function createAgentChatService(args: {
   }, SESSION_CLEANUP_INTERVAL_MS);
   // Allow the process to exit even if the timer is still scheduled
   if (sessionCleanupTimer.unref) sessionCleanupTimer.unref();
+
+  // --- Stale-run reconcile (dead runtime → terminal pane rows) ---
+  /**
+   * Close pane rows whose owning process is gone, for a chat nobody reopens.
+   *
+   * `reconcileClaudeSessionAfterRestart` heals a chat somebody re-binds — it
+   * runs off `ensureClaudeSessionRuntime`. A chat nobody touches again keeps
+   * its "running" subagent and background rows forever (the 17-24 hour rows in
+   * the owner's screenshot), so the same reconcile also runs with no runtime
+   * required, at brain start and on a bounded timer. Both paths are the one
+   * module below, so the two incidents never read differently again.
+   */
+  const staleRunSweep = createStaleRunSweep<ManagedChatSession>({
+    readFullTranscriptEnvelopesForSessionId,
+    listChatSessionIds: (limit) => sessionService
+      // Scoped to chat tool types so the scan cap is spent on chats: unscoped,
+      // a fleet of terminal sessions ordered by start time fills all 200 rows
+      // and the sweep never reaches a single chat.
+      .list({ limit, toolTypes: CHAT_SESSION_TOOL_TYPES })
+      .filter((row) => isChatToolType(row.toolType))
+      .map((row) => row.id),
+    getChatSessionRow: (sessionId) => {
+      const row = sessionService.get(sessionId);
+      if (!row || !isChatToolType(row.toolType)) return null;
+      return row satisfies StaleRunSweepChatRow;
+    },
+    chatRuntimeOwnerLive: (sessionId) => {
+      const owner = readPersistedState(sessionId)?.runtimeOwner ?? null;
+      if (!owner) return false;
+      return processRegistry?.isProcessIdentityLive(owner.pid, owner.startedAt ?? null) ?? false;
+    },
+    chatRuntimeAdoptable: (sessionId, options) => chatRuntimeAdoptable(sessionId, undefined, options),
+    peekManagedSession: (sessionId) => managedSessions.get(sessionId),
+    ensureManagedSession,
+    liveRuntimeSessionIds: () => [...managedSessions]
+      .filter(([, managed]) => managed.runtime)
+      .map(([id]) => id),
+    restartRecoveryStopAttribution: (sessionId) =>
+      getRestartRecoveryStopAttribution(readPersistedState(sessionId)),
+    emitChatEvent: (managed, event) => emitChatEvent(managed, event),
+    // A restart-path close still has a runtime, and that runtime's row
+    // bookkeeping (kind, task/tool aliases, dedupe signature) has to see the
+    // terminal row; a swept chat has no runtime and goes straight out.
+    emitScheduledWorkUpdate: (managed, event) => {
+      if (managed.runtime?.kind === "claude") emitClaudeScheduledWorkUpdate(managed, managed.runtime, event);
+      else emitChatEvent(managed, event);
+    },
+    persistChatState: (managed) => { persistChatState(managed); },
+    logger,
+  });
+  // Autonomous scheduling is off under test: a background pass firing partway
+  // through an unrelated suite would inject reconciliation events into that
+  // test's stream. Tests drive `reconcileStaleRuns()` directly instead.
+  if (process.env.VITEST !== "true" && process.env.NODE_ENV !== "test") staleRunSweep.start();
 
   // --- Warm-runtime budget participation ---
   /**
@@ -52289,8 +52895,7 @@ export function createAgentChatService(args: {
     const chatConfig = resolveChatConfig();
     const isIdentitySession = Boolean(managed.session.identityKey);
     const identityPinned = isPrimaryPinnedIdentity(managed.session.identityKey);
-    const orchestrationLockedMode = lockedOrchestrationPermissionMode(managed.session);
-    const permissionsPinned = identityPinned || orchestrationLockedMode !== null;
+    const permissionsPinned = identityPinned;
     const previousAcpPermissionMode = isAcpChatProvider(managed.session.provider)
       ? resolveAcpPermissionMode(managed.session)
       : null;
@@ -52497,9 +53102,7 @@ export function createAgentChatService(args: {
         resumeCommand: resumeCommandForProvider(nextProvider, sessionId)
       });
 
-      if (orchestrationLockedMode) {
-        enforceOrchestrationLockedPermissionMode(managed.session);
-      } else if (isIdentitySession) {
+      if (isIdentitySession) {
         managed.session.permissionMode = normalizeIdentityPermissionMode(
           managed.session.identityKey,
           managed.session.permissionMode,
@@ -52682,15 +53285,14 @@ export function createAgentChatService(args: {
     }
 
     if (permissionMode !== undefined) {
-      managed.session.permissionMode = orchestrationLockedMode
-        ?? (isIdentitySession
+      managed.session.permissionMode = isIdentitySession
         ? normalizeIdentityPermissionMode(
           managed.session.identityKey,
           permissionMode,
           managed.session.provider,
           managed.session.id,
         )
-          : permissionMode);
+        : permissionMode;
       applyLegacyPermissionModeToNativeControls(managed.session, managed.session.permissionMode);
     }
 
@@ -52807,7 +53409,6 @@ export function createAgentChatService(args: {
     if (modeFieldsTouched) {
       enforceManagedLocalHarnessPermissionMode(managed);
       normalizeSessionNativePermissionControls(managed.session, chatConfig);
-      enforceOrchestrationLockedPermissionMode(managed.session);
       if (managed.runtime?.kind === "opencode") {
         managed.runtime.permissionMode = resolveSessionOpenCodePermissionMode(
           managed.session,
@@ -53014,6 +53615,9 @@ export function createAgentChatService(args: {
   }): Promise<void> => {
     const managed = managedSessions.get(sessionId);
     if (!managed) return;
+    // Prewarm starts a provider process with nobody watching, which is the
+    // quietest possible way to end up with two brains driving one chat.
+    if (!chatRuntimeAdoptable(sessionId)) return;
     refreshManagedLaneLaunchContext(managed, { purpose: "warm this chat" });
 
     const descriptor = getModelById(modelId) ?? resolveModelAlias(modelId);
@@ -53123,7 +53727,10 @@ export function createAgentChatService(args: {
     };
 
     const filesystemBackedCommands = (): AgentChatSlashCommand[] => {
-      const promptCommands: AgentChatSlashCommand[] = discoverCodexSlashCommands(laneWorktreePath)
+      const promptCommands: AgentChatSlashCommand[] = discoverCodexSlashCommands(
+        laneWorktreePath,
+        managed ? sessionProviderLookupEnv(managed) : process.env,
+      )
         .map((cmd) => ({
           name: cmd.name,
           description: cmd.description,
@@ -55045,66 +55652,6 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * Set orchestration fields on a session and persist them. Used by the
-   * orchestration.runCreate IPC handler to stitch the new run id back into the
-   * lead chat's persisted record so the OrchestrationPanel mounts after a
-   * restart.
-   */
-  const setOrchestrationFields = (
-    sessionId: string,
-    fields: {
-      orchestrationRunId?: string | null;
-      orchestrationRole?: "lead" | "worker" | "validator" | null;
-      orchestrationParentSessionId?: string | null;
-      spawnKind?: AgentChatSession["spawnKind"] | null;
-      subagentTakeoverPromptShownAt?: string | null;
-      orchestrationTag?: string | null;
-      orchestrationStepId?: string | null;
-      orchestrationBundlePath?: string | null;
-    },
-  ): void => {
-    const managed = managedSessions.get(sessionId);
-    if (!managed) return;
-    const hadOrchestrationToolContext = buildOrchestrationSessionContext(managed) != null;
-    const session = managed.session;
-    for (const key of ORCHESTRATION_SESSION_FIELD_NAMES) {
-      const value = fields[key];
-      if (value === undefined) continue;
-      if (value) {
-        (session as Record<string, unknown>)[key] = value;
-      } else {
-        delete (session as Record<string, unknown>)[key];
-      }
-    }
-    if (
-      fields.orchestrationRole === "lead"
-      && !isOrchestrationInteractionMode(session.interactionMode)
-    ) {
-      session.interactionMode = "orchestrator-lead";
-    }
-    const hasOrchestrationToolContext = buildOrchestrationSessionContext(managed) != null;
-    if (
-      !hadOrchestrationToolContext
-      && hasOrchestrationToolContext
-      && managed.runtime?.kind === "claude"
-      && managed.session.status !== "active"
-    ) {
-      const runtime = managed.runtime;
-      void resetClaudeQuerySession(managed, runtime, "session_reset", {
-        clearSdkSessionId: true,
-      }).then(() => {
-        if (managed.runtime === runtime) prewarmClaudeQuery(managed);
-      }).catch((error) => {
-        logger.warn("agent_chat.claude_orchestration_context_reset_failed", {
-          sessionId: managed.session.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-    }
-    persistChatState(managed);
-  };
-
-  /**
    * Create a session and fire its first turn without a mounted chat pane.
    *
    * The interactive launch path (`sendMessage`) only drives a turn once a pane
@@ -55616,6 +56163,14 @@ export function createAgentChatService(args: {
 
   return {
     createSession,
+    /**
+     * Run the stale-run reconcile now instead of waiting for the 60 s timer.
+     * Named on the service (rather than left to the interval) so diagnostics —
+     * and the tests that prove a dead owner terminalizes exactly once — can
+     * drive it deterministically.
+     */
+    reconcileStaleRuns: () => staleRunSweep.reconcileStaleRuns(),
+    dismissPendingInput,
     importExternalChatSession,
     launchHeadless,
     suggestLaneNameFromPrompt,
@@ -55639,7 +56194,6 @@ export function createAgentChatService(args: {
     setScheduledWorkPaused,
     refreshScheduledWork,
     readTranscript,
-    setOrchestrationFields,
     getCodexGoal,
     setCodexGoal,
     setCodexGoalStatus,
@@ -55802,18 +56356,6 @@ export function createAgentChatService(args: {
     },
     setComputerUseArtifactBrokerService(svc: ComputerUseArtifactBrokerService) {
       computerUseArtifactBrokerRef = svc;
-    },
-    /**
-     * Register the chat-backed outbox drainer eagerly, as soon as the
-     * orchestration service is available (called from main.ts wiring). Without
-     * this, registration only happens lazily when an orchestration turn first
-     * builds its tool map — so a run hydrated on boot (opened/listed) but with no
-     * turn yet would never drain its persisted brief/ping after a restart. Idempotent.
-     */
-    registerOrchestrationOutboxDrainer() {
-      const orchestrationService = getOrchestrationService?.() ?? null;
-      if (!orchestrationService) return;
-      ensureOrchestrationDrainerRegistered(orchestrationService);
     },
     /**
      * Subscribe to "this chat is over" (deleted or archived). Returns an

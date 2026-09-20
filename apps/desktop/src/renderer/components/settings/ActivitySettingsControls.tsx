@@ -392,7 +392,7 @@ export function ActivitySettingsControls({
           <section>
             {/*
               These two are scope labels, not macOS prose: the page variant
-              renders the very same notch row with `<ScopeChip scope="machine">`,
+              renders the very same notch row,
               and this component exists so the two surfaces cannot say different
               things about one setting. A badge reading "This Mac" beside a chip
               reading "This computer" would be two names for one machine. The
@@ -601,7 +601,6 @@ export function ActivitySettingsControls({
           anchor="activity-notch"
           title="ADE notch"
           description="A small HUD near the menu bar for work that needs you."
-          scope="machine"
           disabled={!notchSupported}
           control={
             <SettingsToggle
@@ -616,7 +615,6 @@ export function ActivitySettingsControls({
           anchor="activity-notch-reveal"
           title="Notch behavior"
           description={NOTCH_REVEAL_HELP[notchPresentation.revealMode]}
-          scope="machine"
           disabled={!notchSupported || !notchEnabled}
           control={
             <SettingsSelect
@@ -632,7 +630,6 @@ export function ActivitySettingsControls({
           anchor="activity-notch-expanded"
           title="Expanded panel"
           description="Allow the notch to grow into a full list of sessions."
-          scope="machine"
           disabled={!notchSupported || !notchEnabled}
           control={
             <SettingsToggle

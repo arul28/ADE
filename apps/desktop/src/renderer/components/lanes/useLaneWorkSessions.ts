@@ -614,8 +614,6 @@ export function useLaneWorkSessions(laneId: string | null) {
     setViewState((prev) => ({
       ...prev,
       draftKind: nextKind,
-      // CLI has no orchestrator form — switching to it forces the flag off.
-      orchestratorEnabled: nextKind === "cli" ? false : prev.orchestratorEnabled,
       activeItemId: null,
       selectedItemId: null,
     }));
@@ -679,7 +677,6 @@ export function useLaneWorkSessions(laneId: string | null) {
       const launchFields = args.runtimeCliLaunch ? {} : resolveLaunchFields({
         profile: args.profile,
         ...(args.permissionMode !== undefined ? { permissionMode: args.permissionMode } : {}),
-        ...(args.orchestrationRole !== undefined ? { orchestrationRole: args.orchestrationRole } : {}),
         ...(args.startupCommand !== undefined ? { startupCommand: args.startupCommand } : {}),
         ...(args.command !== undefined ? { command: args.command } : {}),
         ...(args.args !== undefined ? { args: args.args } : {}),
@@ -882,7 +879,6 @@ export function useLaneWorkSessions(laneId: string | null) {
     gridLayoutId,
     activeItemId: laneViewState.activeItemId,
     draftKind: laneViewState.draftKind,
-    orchestratorEnabled: laneViewState.orchestratorEnabled,
     showDraftKind,
     setActiveItemId,
     closeTab,

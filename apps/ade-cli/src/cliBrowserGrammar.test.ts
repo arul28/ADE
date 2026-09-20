@@ -4,11 +4,23 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { BROWSER_VALUE_FLAGS, VALUE_CARRIER_FLAGS } from "./cli";
+import {
+  CHAT_PARENT_FLAGS,
+  DEFAULT_PARENT_FLAGS,
+  SPAWN_TYPE_FLAGS,
+} from "./launchFlagNames";
 
-const SOURCE = fs.readFileSync(
-  path.join(path.dirname(fileURLToPath(import.meta.url)), "cli.ts"),
-  "utf8",
-);
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const SOURCE = fs.readFileSync(path.join(HERE, "cli.ts"), "utf8");
+/**
+ * The launch-arg readers moved out of cli.ts, and the CLI-wide boolean-flag
+ * guard below silently lost them with the move: `readFlag(args, ["--no-parent"])`
+ * now lives here, so a cli.ts-only scan would no longer see `--no-parent` as a
+ * boolean and a carrier table could claim it. The browser-plan scans stay
+ * cli.ts-only on purpose — no browser subcommand reaches these readers — so
+ * this source feeds the CLI-wide scan alone.
+ */
+const LAUNCH_ARGS_SOURCE = fs.readFileSync(path.join(HERE, "launchArgs.ts"), "utf8");
 
 /**
  * The scans below used to run on a hand-rolled lexer: a previous-character
@@ -24,6 +36,7 @@ function parseSource(name: string, text: string): ts.SourceFile {
 }
 
 const FILE = parseSource("cli.ts", SOURCE);
+const LAUNCH_ARGS_FILE = parseSource("launchArgs.ts", LAUNCH_ARGS_SOURCE);
 
 function walk(node: ts.Node, visit: (child: ts.Node) => void): void {
   visit(node);
@@ -582,8 +595,25 @@ const BUILD_CLI_PLAN_HELP_CALL_SITES = 2;
  * `ios-sim` branches read the same `--device|--udid` pair, and five read,
  * require and validate an enumerated argument with the same refusal sentence.
  * One reader each is why neither can drift apart.
+ *
+ * 108 since the provider-account and proxy subcommands: `providers accounts`
+ * (list/add/rename/default/login/remove/refresh) and `proxy` each read their
+ * argv through one plan builder, so an `--instance` or `--provider` spelling
+ * cannot differ between the two families.
+ *
+ * 107 since the launch-arg block moved to `launchArgs.ts`: `readParentSessionId`,
+ * `readAgentSpawnLineage` and `collectLaunchArgs` now live there, and
+ * `readLaunchIdentitySelectors` arrived here — a net drop of one. This scan
+ * only sees cli.ts, which is still the whole browser plan; the moved readers
+ * are launch-surface readers no browser subcommand reaches, so nothing they
+ * read needs a `BROWSER_VALUE_FLAGS` entry.
  */
-const ARGV_READER_COUNT = 106;
+const ARGV_READER_COUNT = 107;
+/*
+ * The moved readers — `readParentSessionId`, `readAgentSpawnLineage`,
+ * `collectLaunchArgs`/`normalizeLaunchArgs` — now live in launchArgs.ts, which
+ * `ALL_BOOLEAN_FLAGS` below parses as a second source for exactly that reason.
+ */
 
 /** The carrier-aware positional readers the browser table must reach. */
 const CARRIER_AWARE_READERS = [
@@ -874,8 +904,12 @@ describe("browser value flags", () => {
   // scans run over the WHOLE file: scanning only the browser plan is how
   // `--text` — a global boolean output switch — became a browser carrier and
   // broke `ade session show --text s1`.
+  //
+  // Both cli.ts AND launchArgs.ts, because "CLI-wide" is a claim about the
+  // whole CLI and the launch-arg readers are no longer in cli.ts: a cli.ts-only
+  // scan stopped seeing `--no-parent` when that block moved out.
   const ALL_BOOLEAN_FLAGS = new Set(
-    collect([FILE], ts.isCallExpression)
+    collect([FILE, LAUNCH_ARGS_FILE], ts.isCallExpression)
       .filter((call) => calleeName(call) === "readFlag" && call.arguments.length >= 2)
       .flatMap((call) =>
         collect([call.arguments[1]!], ts.isStringLiteralLike)
@@ -883,6 +917,23 @@ describe("browser value flags", () => {
           .filter((text) => /^--?\S+$/.test(text)),
       ),
   );
+
+  it("sees the launch-arg readers that no longer live in cli.ts", () => {
+    // The negative control for the union above: `--no-parent` is read as a
+    // boolean in launchArgs.ts and nowhere in cli.ts, so this line fails the
+    // moment the second source is dropped and the guard goes half-blind.
+    expect(ALL_BOOLEAN_FLAGS.has("--no-parent")).toBe(true);
+    expect(
+      collect([FILE], ts.isCallExpression).filter(
+        (call) =>
+          calleeName(call) === "readFlag" &&
+          call.arguments.length >= 2 &&
+          collect([call.arguments[1]!], ts.isStringLiteralLike).some(
+            (literal) => literal.text === "--no-parent",
+          ),
+      ),
+    ).toEqual([]);
+  });
 
   it("claims no flag that is read as a boolean anywhere in the CLI", () => {
     // A boolean in a carrier set would swallow the positional after it.
@@ -920,5 +971,33 @@ describe("browser value flags", () => {
       .filter((flag) => /^--[a-z-]+$/.test(flag) && !VALUE_CARRIER_FLAGS.has(flag));
     expect(globalSwitches).toContain("--text");
     expect(BROWSER_VALUE_FLAGS.filter((flag) => globalSwitches.includes(flag))).toEqual([]);
+  });
+
+  /**
+   * The launch-surface lineage flags all read a value (`readValue(args,
+   * SPAWN_TYPE_FLAGS)`, `readParentSessionId(args, parentFlags)`), so every
+   * spelling in those two exported tables has to be a CLI-wide carrier or the
+   * positional readers swallow the id after it. `--chat-parent` was filed under
+   * `BROWSER_VALUE_FLAGS` instead — a table the browser builder alone consults,
+   * and the browser plan never reads that flag — so it carried nowhere.
+   *
+   * `VALUE_CARRIER_FLAGS` now spreads all three tables (they live in the leaf
+   * `launchFlagNames`, which has no import cycle to be evaluated second in), so
+   * the membership half of this is a spread check. What is NOT tautological is
+   * the browser-table half: `--chat-parent` belongs to the global table, and an
+   * entry in the browser-only one is not a substitute.
+   */
+  it("carries a value for every launch-lineage flag spelling", () => {
+    const lineageFlags = [
+      ...SPAWN_TYPE_FLAGS,
+      ...CHAT_PARENT_FLAGS,
+      ...DEFAULT_PARENT_FLAGS,
+    ];
+    expect(lineageFlags.filter((flag) => !VALUE_CARRIER_FLAGS.has(flag))).toEqual([]);
+    // The browser table is not a substitute: the browser builder is its only
+    // consumer, so an entry there leaves the flag a non-carrier everywhere the
+    // launch surfaces actually live.
+    expect(lineageFlags).toContain("--chat-parent");
+    expect(BROWSER_VALUE_FLAGS).not.toContain("--chat-parent");
   });
 });

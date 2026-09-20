@@ -14704,6 +14704,23 @@ final class SyncService: ObservableObject {
     )
   }
 
+  /// Throw a dismissible question away. The host rejects any card the provider
+  /// is still waiting on, and that refusal surfaces as a thrown error rather
+  /// than being quietly swallowed into a decline.
+  func dismissChatPendingInput(
+    sessionId: String,
+    itemId: String
+  ) async throws {
+    try requireInvokableRemoteAction("chat.dismissPendingInput")
+    let scope = chatCommandScope(for: sessionId)
+    _ = try await sendChatCommand(
+      action: chatActionName("chat.dismissPendingInput", sessionId: sessionId),
+      payload: AgentChatDismissPendingInputRequest(sessionId: sessionId, itemId: itemId),
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
+  }
+
   func updateChatSession(
     sessionId: String,
     title: String? = nil,
@@ -20336,6 +20353,22 @@ final class SyncService: ObservableObject {
     )
   }
 
+  /// Spend one banked provider reset credit for `accountId`.
+  ///
+  /// The host names the outcome; the phone only phrases it. A machine that
+  /// predates reset credits does not advertise the action, and the caller shows
+  /// its own "update the machine" line rather than a silent no-op.
+  func consumeUsageResetCredit(accountId: String) async throws -> UsageConsumeResetCreditResponse {
+    try requireInvokableRemoteAction("usage.consumeResetCredit")
+    return try await sendDecodableCommand(
+      action: "usage.consumeResetCredit",
+      args: ["accountId": accountId],
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: 25_000_000_000,
+      as: UsageConsumeResetCreditResponse.self
+    )
+  }
+
   private func sendDecodableCommand<T: Decodable>(
     action: String,
     args: [String: Any] = [:],
@@ -23422,12 +23455,9 @@ extension SyncService {
 
   /// Creates a projectless (machine-scope) chat on the paired host.
   ///
-  /// `interactionMode` is forwarded verbatim, and the host REFUSES the create
-  /// when it is `"orchestrator-lead"` (a personal chat is never an orchestration
-  /// lead — see `personalChatScope.ts`). Every value iOS can produce comes from
-  /// `workRuntimeWireFields`, which only ever emits `"default"` or `"plan"`, so
-  /// this path cannot trip the refusal today. Keep it that way: if a caller ever
-  /// needs a lead-mode chat, create it inside a project instead.
+  /// `interactionMode` is forwarded verbatim. Every value iOS can produce comes
+  /// from `workRuntimeWireFields`, which only ever emits `"default"` or
+  /// `"plan"`.
   func createPersonalChat(
     provider: String,
     model: String,

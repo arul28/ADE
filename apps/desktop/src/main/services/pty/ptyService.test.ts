@@ -9,6 +9,7 @@ import { buildOpenCodeReplayResumeCommand as buildCanonicalOpenCodeReplayResumeC
 import { parseCommandLine } from "../../../shared/shell";
 import { isPtySendPreDeliveryError } from "../../../shared/types";
 import { expectNoJargon } from "../../../test/jargonGuard";
+import { resetSharedProviderInstanceStoresForTests } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 
 // ---------------------------------------------------------------------------
 // Hoisted mocks
@@ -355,6 +356,7 @@ import {
   EARLY_CLI_AI_TITLE_DELAY_MS,
   selectPiStorageSessionCandidate,
 } from "./ptyService";
+import { resolveProviderInstanceForLaunch } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import {
   BACKGROUND_UTILITY_CLAUDE_MODEL_ID,
   BACKGROUND_UTILITY_CODEX_MODEL_ID,
@@ -785,6 +787,218 @@ describe("ptyService", () => {
     expect(linux.command).toBe("/bin/bash");
     expect(linux.env?.ADE_AGENT_SKILLS_DIRS).toMatch(/^\/repo\/lane\/\.cursor\/skills:/);
     expect(linux.env?.ADE_AGENT_SKILLS_DIRS).not.toContain(";");
+  });
+
+  describe("provider accounts (instances)", () => {
+    const WORK_HOME = "/machine/.ade/provider-homes/claude/acct-work";
+    let previousAdeHome: string | undefined;
+    let adeHome = "";
+
+    beforeEach(() => {
+      previousAdeHome = process.env.ADE_HOME;
+      // A fresh home per test: the store is cached per ADE directory, so two
+      // tests sharing one path would share one parsed registry.
+      // `path.resolve` mirrors what `resolveMachineAdeDir` does to ADE_HOME, so
+      // the seeded registry path matches the one the store reads on Windows too.
+      adeHome = path.resolve(os.tmpdir(), `ade-instances-${Math.random().toString(36).slice(2)}`, ".ade");
+      process.env.ADE_HOME = adeHome;
+      resetSharedProviderInstanceStoresForTests();
+      mocks.fileContents.set(
+        path.join(adeHome, "provider-instances.json"),
+        JSON.stringify({
+          version: 1,
+          instances: [
+            {
+              id: "acct-work",
+              provider: "claude",
+              label: "Work",
+              configHome: WORK_HOME,
+              createdAt: "2026-04-09T12:00:00.000Z",
+            },
+          ],
+          defaults: {},
+          settings: {},
+        }),
+      );
+    });
+
+    afterEach(() => {
+      if (previousAdeHome === undefined) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = previousAdeHome;
+      resetSharedProviderInstanceStoresForTests();
+    });
+
+    it("launches a fresh Claude CLI against the requested account's config home", () => {
+      setPlatform("linux");
+      const launch = materializeRuntimeCliLaunch(
+        { provider: "claude", permissionMode: "full-auto", instanceId: "acct-work" },
+        "/repo/lane",
+      );
+      expect(launch.env?.CLAUDE_CONFIG_DIR).toBe(WORK_HOME);
+      expect(launch.env?.HOME).toBeUndefined();
+      expect(launch.env?.USERPROFILE).toBeUndefined();
+    });
+
+    it("spawns a fresh Claude terminal with the account's config home in its env", async () => {
+      const { service, loadPty } = createHarness();
+      await service.create({
+        sessionId: "session-instance-fresh",
+        allowNewSessionId: true,
+        laneId: "lane-1",
+        title: "Claude CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+        runtimeCliLaunch: {
+          provider: "claude",
+          permissionMode: "full-auto",
+          instanceId: "acct-work",
+        },
+      });
+      const spawn = (loadPty.mock.results[0]?.value as { spawn: ReturnType<typeof vi.fn> }).spawn;
+      const opts = spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      expect(opts?.env?.CLAUDE_CONFIG_DIR).toBe(WORK_HOME);
+    });
+
+    it("silently falls back to the provider default when the account is gone", () => {
+      const resolved = resolveProviderInstanceForLaunch("claude", "acct-deleted");
+      expect(resolved?.id).toBe("claude");
+      expect(resolved?.configHome).toBeTruthy();
+      expect(resolved?.configHome).not.toBe(WORK_HOME);
+
+      setPlatform("linux");
+      const launch = materializeRuntimeCliLaunch(
+        { provider: "claude", permissionMode: "full-auto", instanceId: "acct-deleted" },
+        "/repo/lane",
+      );
+      // The base identity inherits the environment: Claude Code keys its
+      // keychain entry by CLAUDE_CONFIG_DIR when the variable is set, so even
+      // the default path must not be exported.
+      expect(launch.env?.CLAUDE_CONFIG_DIR).toBeUndefined();
+    });
+
+    it("resolves nothing for a launch that named no account, or a provider without one", () => {
+      expect(resolveProviderInstanceForLaunch("claude", null)).toBeNull();
+      expect(resolveProviderInstanceForLaunch("claude", "   ")).toBeNull();
+      expect(resolveProviderInstanceForLaunch("cursor", "acct-work")).toBeNull();
+      expect(resolveProviderInstanceForLaunch("droid", "acct-work")).toBeNull();
+
+      setPlatform("linux");
+      const launch = materializeRuntimeCliLaunch(
+        { provider: "cursor", permissionMode: "full-auto", instanceId: "acct-work" },
+        "/repo/lane",
+      );
+      expect(launch.env?.CLAUDE_CONFIG_DIR).toBeUndefined();
+      expect(launch.env?.CODEX_HOME).toBeUndefined();
+    });
+
+    it("resumes a tracked CLI into the account it launched under", async () => {
+      const { service, sessionService, loadPty } = createHarness();
+      sessionService.create({
+        sessionId: "session-instance-resume",
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: "Claude CLI",
+        startedAt: "2026-04-09T12:00:00.000Z",
+        transcriptPath: "/tmp/transcripts/session-instance-resume.log",
+        toolType: "claude",
+        resumeCommand: "claude --resume claude-session-123",
+        resumeMetadata: {
+          provider: "claude",
+          targetKind: "session",
+          targetId: "claude-session-123",
+          instanceId: "acct-work",
+          launch: { permissionMode: "default", instanceId: "acct-work" },
+        },
+      });
+      sessionService.end({
+        sessionId: "session-instance-resume",
+        endedAt: "2026-04-09T12:30:00.000Z",
+        exitCode: 0,
+        status: "completed",
+      });
+
+      const result = await service.sendToSession({
+        sessionId: "session-instance-resume",
+        text: "keep going",
+      });
+
+      expect(result).toEqual(expect.objectContaining({ resumed: true }));
+      const spawn = (loadPty.mock.results[0]?.value as { spawn: ReturnType<typeof vi.fn> }).spawn;
+      const opts = spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      expect(opts?.env?.CLAUDE_CONFIG_DIR).toBe(WORK_HOME);
+    });
+
+    it("resumes into the provider default when the stored account is gone", async () => {
+      const { service, sessionService, loadPty } = createHarness();
+      sessionService.create({
+        sessionId: "session-instance-resume-gone",
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: "Claude CLI",
+        startedAt: "2026-04-09T12:00:00.000Z",
+        transcriptPath: "/tmp/transcripts/session-instance-resume-gone.log",
+        toolType: "claude",
+        resumeCommand: "claude --resume claude-session-123",
+        resumeMetadata: {
+          provider: "claude",
+          targetKind: "session",
+          targetId: "claude-session-123",
+          launch: { permissionMode: "default", instanceId: "acct-deleted" },
+        },
+      });
+      sessionService.end({
+        sessionId: "session-instance-resume-gone",
+        endedAt: "2026-04-09T12:30:00.000Z",
+        exitCode: 0,
+        status: "completed",
+      });
+
+      const result = await service.sendToSession({
+        sessionId: "session-instance-resume-gone",
+        text: "keep going",
+      });
+
+      expect(result).toEqual(expect.objectContaining({ resumed: true }));
+      const spawn = (loadPty.mock.results[0]?.value as { spawn: ReturnType<typeof vi.fn> }).spawn;
+      const opts = spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      // Falling back to the base identity means inheriting the environment —
+      // whatever CLAUDE_CONFIG_DIR the process already has, or nothing — never
+      // exporting the default directory (see `isBaseProviderInstance`).
+      expect(resolveProviderInstanceForLaunch("claude", "acct-deleted")?.id).toBe("claude");
+      expect(opts?.env?.CLAUDE_CONFIG_DIR).toBe(process.env.CLAUDE_CONFIG_DIR);
+      expect(opts?.env?.CLAUDE_CONFIG_DIR).not.toBe(WORK_HOME);
+    });
+
+    it("persists the RESOLVED account id onto resume metadata, so a stale id heals", async () => {
+      const { service, sessionService } = createHarness();
+      createDetachedResumableSession(sessionService, { sessionId: "session-instance-heal" });
+      await service.create({
+        laneId: "lane-1",
+        sessionId: "session-instance-heal",
+        title: "Claude CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+        startupCommand: "claude --resume claude-session-123",
+        runtimeCliLaunch: {
+          provider: "claude",
+          permissionMode: "default",
+          instanceId: "acct-deleted",
+        },
+      });
+      expect(sessionService.updateMeta).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: "session-instance-heal",
+          resumeMetadata: expect.objectContaining({
+            instanceId: "claude",
+            launch: expect.objectContaining({ instanceId: "claude" }),
+          }),
+        }),
+      );
+    });
   });
 
   it("recognizes Pi executables across Windows launch forms", () => {

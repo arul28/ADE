@@ -4,11 +4,6 @@ import type { AgentChatSession } from "../../../shared/types";
 import { projectAttachmentsDir } from "../../../shared/chatAttachmentStagingFs";
 import { cursorProjectSlug } from "../../../shared/cursorProjectSlug";
 import { pathComparisonKey } from "../shared/pathCompare";
-import {
-  isOrchestrationLeadSession,
-  ORCHESTRATION_LEAD_ALLOWED_CURSOR_TOOL_RISKS,
-  ORCHESTRATION_LEAD_CURSOR_SETTING_SOURCES,
-} from "../../../shared/orchestrationRuntimePolicy";
 import type {
   CursorSdkAgentMode,
   CursorSdkApprovalPolicy,
@@ -19,7 +14,7 @@ import type {
 } from "./cursorSdkProtocol";
 
 type CursorSessionModeInput = Pick<AgentChatSession, "cursorModeId" | "opencodePermissionMode" | "permissionMode">
-  & Partial<Pick<AgentChatSession, "interactionMode" | "orchestrationRole" | "strictMcpConfig">>;
+  & Partial<Pick<AgentChatSession, "interactionMode" | "strictMcpConfig">>;
 
 /** Mirrors `SettingSource` from `@cursor/sdk` (`local.settingSources`). */
 export type CursorSdkSettingSource = "project" | "user" | "team" | "mdm" | "plugins" | "all";
@@ -113,10 +108,6 @@ export function resolveCursorSdkChatMode(session: CursorSessionModeInput): Curso
 }
 
 export function resolveCursorSdkPolicy(session: CursorSessionModeInput): CursorSdkPermissionPolicy {
-  // Leads run under the same permissive `full-auto` profile as workers by
-  // design; their protection is the risk gate in `evaluateCursorSdkHook`, which
-  // this flag switches on.
-  const orchestrationLead = isOrchestrationLeadSession(session);
   // Only set when an external embedder asked for it, so every chat that does
   // not use the SDK's strict mode produces the exact policy object it did
   // before this flag existed.
@@ -134,7 +125,6 @@ export function resolveCursorSdkPolicy(session: CursorSessionModeInput): CursorS
       approvalPolicy: "never",
       fullAuto: true,
       hardGuards: true,
-      orchestrationLead,
       ...strictMcp,
       autoReview: false,
     };
@@ -147,7 +137,6 @@ export function resolveCursorSdkPolicy(session: CursorSessionModeInput): CursorS
       approvalPolicy: "read-only",
       fullAuto: false,
       hardGuards: true,
-      orchestrationLead,
       ...strictMcp,
       autoReview: false,
       tools: CURSOR_SDK_READONLY_TOOLS,
@@ -159,7 +148,6 @@ export function resolveCursorSdkPolicy(session: CursorSessionModeInput): CursorS
     approvalPolicy: "on-request",
     fullAuto: false,
     hardGuards: true,
-    orchestrationLead,
     ...strictMcp,
     autoReview: true,
   };
@@ -182,7 +170,6 @@ export const CURSOR_SDK_ONESHOT_POLICY: CursorSdkPermissionPolicy = Object.freez
   approvalPolicy: "read-only",
   fullAuto: false,
   hardGuards: true,
-  orchestrationLead: false,
   autoReview: false,
   tools: [],
 });
@@ -191,23 +178,20 @@ export const CURSOR_SDK_ONESHOT_POLICY: CursorSdkPermissionPolicy = Object.freez
  * Ambient Cursor setting layers an agent may load (`local.settingSources`).
  *
  * The Cursor SDK derives `includeProjectMcp` / `includePluginMcp` from these
- * sources, so an orchestrator lead — which must see ADE-managed MCP servers
- * only — drops the `project` and `plugins` layers. `user` has to stay: ADE's
- * own preToolUse tool-gate hook is installed under the user's `~/.cursor` and
- * is the enforcement point for every Cursor lead denial (an MCP call arrives at
- * the gate as `MCP:<tool>`, classifies as risk `unknown`, and fails closed).
- * See ORCHESTRATION_LEAD_MCP_ISOLATION.cursor.
- *
- * A chat whose external embedder asked for `strictMcpConfig` needs the same
- * withholding for the same reason, so it takes the same trimmed list. The
- * residual is identical and recorded in CALLER_MCP_SUPPORT.cursor: user
- * layer servers still load, because the `user` layer cannot be dropped.
+ * sources, so a chat whose external embedder asked for `strictMcpConfig` drops
+ * the `project` and `plugins` layers. `user` has to stay: ADE's own preToolUse
+ * tool-gate hook is installed under the user's `~/.cursor` and is the
+ * enforcement point for every Cursor denial. The residual is recorded in
+ * CALLER_MCP_SUPPORT.cursor: user layer servers still load, because the `user`
+ * layer cannot be dropped.
  */
+const STRICT_MCP_CURSOR_SETTING_SOURCES = ["user", "team", "mdm"] as const;
+
 export function cursorSdkSettingSources(
-  policy: Pick<CursorSdkPermissionPolicy, "orchestrationLead" | "strictMcpConfig">,
+  policy: Pick<CursorSdkPermissionPolicy, "strictMcpConfig">,
 ): CursorSdkSettingSource[] {
-  if (!policy.orchestrationLead && policy.strictMcpConfig !== true) return ["all"];
-  return [...ORCHESTRATION_LEAD_CURSOR_SETTING_SOURCES];
+  if (policy.strictMcpConfig !== true) return ["all"];
+  return [...STRICT_MCP_CURSOR_SETTING_SOURCES];
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -656,17 +640,6 @@ export function evaluateCursorSdkHook(args: {
   }
 
   const normalized = normalizeToolName(args.request.toolName);
-  // An orchestrator lead never edits code or runs shell, whatever its approval
-  // policy says. Allow-list by risk so an unrecognised tool name (risk
-  // "unknown") is denied rather than waved through by `approvalPolicy: never`.
-  if (args.policy.orchestrationLead) {
-    if ((ORCHESTRATION_LEAD_ALLOWED_CURSOR_TOOL_RISKS as readonly string[]).includes(args.request.risk)) {
-      return "allow";
-    }
-    args.request.reason =
-      "Orchestrator lead sessions cannot use Cursor's edit, shell, or subagent tools. Delegate the work to a worker instead.";
-    return "deny";
-  }
   if (args.policy.approvalPolicy === "never") return "allow";
   if (args.policy.approvalPolicy === "read-only") {
     return args.request.risk === "read" ? "allow" : "deny";

@@ -3,13 +3,18 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  ensurePrivateDirectory,
   resolveTrustedWindowsTool,
   TRUSTED_WINDOWS_SYSTEM32_KERNEL_ROOT,
   trustedWindowsToolKernelPath,
   type TrustedWindowsTool,
 } from "./trustedWindowsTools";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("trusted Windows tool resolution", () => {
   it("exposes rundll32 through the same System32 kernel alias", () => {
@@ -64,12 +69,51 @@ describe("trusted Windows tool resolution", () => {
     })).toThrow(/is not a file/);
   });
 
+  it("uses a case-folded platform-aware key for the ACL cache", () => {
+    const calls: string[] = [];
+    const mkdir = vi.spyOn(fs, "mkdirSync").mockReturnValue(undefined);
+    const options = {
+      platform: "win32" as const,
+      currentUser: "ADEBOX\\arul",
+      aclRunner: (_command: string, args: string[]) => {
+        calls.push(args[0] ?? "");
+        return { status: 0 };
+      },
+    };
+
+    ensurePrivateDirectory("C:\\ADE\\Private", options);
+    ensurePrivateDirectory("c:\\ade\\private", options);
+
+    expect(mkdir).toHaveBeenCalledTimes(2);
+    expect(calls).toEqual(["C:\\ADE\\Private"]);
+  });
+
+  it("re-applies the ACL when recursive mkdir reports a newly created directory", () => {
+    const calls: string[] = [];
+    vi.spyOn(fs, "mkdirSync")
+      .mockReturnValueOnce(undefined)
+      .mockReturnValueOnce("C:\\ADE\\Recreated");
+    const options = {
+      platform: "win32" as const,
+      currentUser: "ADEBOX\\arul",
+      aclRunner: (_command: string, args: string[]) => {
+        calls.push(args[0] ?? "");
+        return { status: 0 };
+      },
+    };
+
+    ensurePrivateDirectory("C:\\ADE\\Recreated", options);
+    ensurePrivateDirectory("C:\\ADE\\Recreated", options);
+
+    expect(calls).toEqual(["C:\\ADE\\Recreated", "C:\\ADE\\Recreated"]);
+  });
+
   const nativeWindowsTest = process.platform === "win32" ? it : it.skip;
   nativeWindowsTest("ignores cwd, PATH, SystemRoot, and windir poisoning on Windows", () => {
     const poisonDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-trusted-tools-poison-"));
 
     try {
-      for (const tool of ["powershell.exe", "reg.exe", "schtasks.exe", "taskkill.exe"]) {
+      for (const tool of ["powershell.exe", "reg.exe", "schtasks.exe", "taskkill.exe", "icacls.exe"]) {
         fs.writeFileSync(path.join(poisonDir, tool), "not a Windows executable");
       }
       const moduleUrl = pathToFileURL(path.resolve("src/lib/trustedWindowsTools.ts")).href;
@@ -83,7 +127,7 @@ describe("trusted Windows tool resolution", () => {
         const originalWindir = process.env.windir;
         process.env.SystemRoot = ${JSON.stringify(poisonDir)};
         process.env.windir = ${JSON.stringify(poisonDir)};
-        const tools = ["powershell", "reg", "schtasks", "taskkill"];
+        const tools = ["powershell", "reg", "schtasks", "taskkill", "icacls"];
         const canonicalRoot = fs.realpathSync.native(TRUSTED_WINDOWS_SYSTEM32_KERNEL_ROOT);
         const resolved = Object.fromEntries(tools.map((tool) => [tool, resolveTrustedWindowsTool(tool)]));
         process.env.SystemRoot = originalSystemRoot;

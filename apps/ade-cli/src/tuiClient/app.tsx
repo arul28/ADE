@@ -79,7 +79,17 @@ import type {
 import type { FeedbackPreparedDraft, FeedbackSubmission } from "../../../desktop/src/shared/types/feedback";
 import type { ProjectSecretsListResult, ProjectSecretValueResult } from "../../../desktop/src/shared/types/projectSecrets";
 import type { SearchQueryResult, SearchResultItem } from "../../../desktop/src/shared/types/search";
-import type { ChatTerminalPreviewResult, ChatTerminalSession, UsageSnapshot } from "../../../desktop/src/shared/types";
+import type {
+  ChatTerminalPreviewResult,
+  ChatTerminalSession,
+  UsageResetCreditResult,
+  UsageSnapshot,
+} from "../../../desktop/src/shared/types";
+import {
+  resetCreditApplied,
+  resetCreditOutcomeText,
+} from "../../../desktop/src/shared/usageResetCredit";
+import { launchIdentityFields, resolveLaunchIdentity, sameLaunchIdentity } from "./launchIdentity";
 import { rollupPrChecks } from "../../../desktop/src/shared/prChecksRollup";
 import type { GitHubPrStackMembership, PrChecksStatus } from "../../../desktop/src/shared/types/prs";
 import {
@@ -150,6 +160,7 @@ import {
   resumeTerminalSession,
   resizeTerminal,
   reloadClaudePlugins,
+  dismissPendingInput,
   respondToInput,
   resumeUsageLimitNow,
   runDefaultLaneSetup,
@@ -175,6 +186,7 @@ import {
   updateChatModel,
   writeTerminal,
   type TuiChatSessionSummary,
+  type TuiChatTerminalSession,
   type TokenStats,
 } from "./adeApi";
 import { aggregateChatBlocks, derivePendingSteers, type AggregatedBlock } from "./aggregate";
@@ -433,6 +445,7 @@ import {
   ensurePendingQuestionSelectionState,
   latestPendingApproval,
   pendingApprovalCapturesPrompt,
+  pendingApprovalIsDismissible,
   pendingApprovalOwnsQuestionKeys,
   movePendingQuestionFocus,
   movePendingQuestionOption,
@@ -1154,6 +1167,7 @@ export function chatSessionToOptimisticSummary(
     provider: session.provider,
     model: session.model,
     ...(session.modelId ? { modelId: session.modelId } : {}),
+    ...launchIdentityFields(resolveLaunchIdentity(session)),
     ...(session.sessionProfile ? { sessionProfile: session.sessionProfile } : {}),
     title: title?.trim() || "New chat",
     ...(session.reasoningEffort ? { reasoningEffort: session.reasoningEffort } : {}),
@@ -1194,13 +1208,8 @@ export function chatSessionToOptimisticSummary(
     nextWakeAt: null,
     ...(session.threadId ? { threadId: session.threadId } : {}),
     ...(session.requestedCwd !== undefined ? { requestedCwd: session.requestedCwd } : {}),
-    ...(session.orchestrationRunId ? { orchestrationRunId: session.orchestrationRunId } : {}),
-    ...(session.orchestrationRole ? { orchestrationRole: session.orchestrationRole } : {}),
     ...(session.orchestrationParentSessionId ? { orchestrationParentSessionId: session.orchestrationParentSessionId } : {}),
     ...(session.spawnKind ? { spawnKind: session.spawnKind } : {}),
-    ...(session.orchestrationTag ? { orchestrationTag: session.orchestrationTag } : {}),
-    ...(session.orchestrationStepId ? { orchestrationStepId: session.orchestrationStepId } : {}),
-    ...(session.orchestrationBundlePath ? { orchestrationBundlePath: session.orchestrationBundlePath } : {}),
   };
 }
 
@@ -1231,7 +1240,7 @@ export function mergeOptimisticChatSessions(
 export function mergeOptimisticTerminalSessions(
   sessions: ChatTerminalSession[],
   optimistic: Map<string, ChatTerminalSession>,
-): ChatTerminalSession[] {
+): TuiChatTerminalSession[] {
   if (optimistic.size === 0) return sessions;
   for (const session of sessions) optimistic.delete(session.terminalId);
   const pending = [...optimistic.values()];
@@ -2887,6 +2896,23 @@ function decodeMouseButton(code: number, x: number | null, y: number | null, pre
   return withMouseModifiers({ kind: "other", x, y }, code);
 }
 
+export type UsageResetCreditRow = { accountId: string };
+
+export function cycleUsageResetCreditIndex(currentIndex: number, rowCount: number, direction: -1 | 1): number {
+  if (rowCount <= 0) return 0;
+  const index = Number.isInteger(currentIndex) ? currentIndex : 0;
+  return ((index % rowCount) + direction + rowCount) % rowCount;
+}
+
+export function selectedUsageResetCreditAccountId(
+  rows: readonly UsageResetCreditRow[],
+  selectedIndex: number,
+): string | null {
+  if (rows.length === 0) return null;
+  const index = Math.min(Math.max(0, Number.isInteger(selectedIndex) ? selectedIndex : 0), rows.length - 1);
+  return rows[index]?.accountId ?? null;
+}
+
 export function parseTerminalMouseInput(input: string): TerminalMouseInput | null {
   const events = parseTerminalMouseInputs(input);
   return events.find((event) => event.kind !== "move") ?? events[0] ?? null;
@@ -3859,6 +3885,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   // Full right-pane mirror so async draft-commit paths (first send) can check
   // the CURRENT pane without stale-closure state (see showChatInfoAfterDraftCommit).
   const rightPaneRef = useRef<RightPaneContent>({ kind: "empty" });
+  const resetCreditSpendInFlightRef = useRef<string | null>(null);
   const externalSessionListGenerationRef = useRef(0);
   // Claim imports synchronously, before React has mirrored importingKey into
   // rightPaneRef. This prevents a rapid double-Enter from creating two copies.
@@ -5934,8 +5961,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       recents: modelPickerRecents,
       settingsRows: modelWizardSettingsRows,
       activeModelId: modelState.modelId,
+      activeCredentialId: modelState.credentialId,
     };
-  }, [modelPickerRecents, modelState.modelId, modelWizardEntries, modelWizardSettingsRows, rightPane]);
+  }, [modelPickerRecents, modelState.credentialId, modelState.modelId, modelWizardEntries, modelWizardSettingsRows, rightPane]);
   const modelWizardView = useMemo(
     () => (modelWizardInput ? buildModelWizardView(modelWizardInput) : null),
     [modelWizardInput],
@@ -7825,6 +7853,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         entries: modelWizardEntries,
         provider,
         activeModelId: modelState.modelId,
+        activeCredentialId: modelState.credentialId,
         ...(options.startAtSettings ? { startAtSettings: true } : {}),
       });
       setRightPane({
@@ -7852,6 +7881,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       lanes,
       loadProviderModels,
       modelPickerRows,
+      modelState.credentialId,
       modelState.modelId,
       modelState.provider,
       modelWizardEntries,
@@ -8292,11 +8322,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     if (nextTerminalSession) {
       const current = modelStateRef.current;
       const terminalProvider = terminalSessionProvider(nextTerminalSession) ?? "claude";
-      if (current.provider !== terminalProvider) {
+      const terminalIdentity = resolveLaunchIdentity(nextTerminalSession);
+      if (
+        current.provider !== terminalProvider
+        || !sameLaunchIdentity(resolveLaunchIdentity(current), terminalIdentity)
+      ) {
         setModelState((prev) => {
           const next = {
             ...prev,
             ...fallbackModelStatePatch(terminalProvider),
+            ...terminalIdentity,
             permissionMode: nextTerminalSession.resumeMetadata?.launch?.permissionMode ?? prev.permissionMode,
             claudePermissionMode: nextTerminalSession.resumeMetadata?.launch?.claudePermissionMode ?? prev.claudePermissionMode,
           };
@@ -8325,6 +8360,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           codexConfigSource: configSession.codexConfigSource ?? prev.codexConfigSource,
           opencodePermissionMode: configSession.opencodePermissionMode ?? prev.opencodePermissionMode,
           droidPermissionMode: configSession.droidPermissionMode ?? prev.droidPermissionMode,
+          ...resolveLaunchIdentity(configSession),
           // `null` is an intentional clear for the legacy permission-only
           // paths. Only an omitted field should fall back to the snapshot or
           // the previous chat's value; `??` would leak the previous Cursor
@@ -9600,6 +9636,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       modelId: normalized.modelId,
       reasoningEffort: normalized.reasoningEffort,
       fastMode: normalized.fastMode,
+      instanceId: normalized.instanceId,
+      presetId: normalized.presetId,
+      credentialId: normalized.credentialId,
       permissionMode: normalized.permissionMode,
       interactionMode: normalized.interactionMode,
       claudePermissionMode: normalized.claudePermissionMode,
@@ -10200,6 +10239,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       model: launchModel,
       reasoningEffort: normalized.reasoningEffort,
       fastMode: normalized.fastMode,
+      instanceId: normalized.instanceId,
+      presetId: normalized.presetId,
+      credentialId: normalized.credentialId,
       permissionMode: normalized.permissionMode,
       initialInput: text.trim() ? text : null,
       cols,
@@ -11066,6 +11108,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return;
     }
     if (name === "/usage") {
+      setRightSelectionIndex(0);
       // Session tokens/cost come straight off the local event stream — always
       // available even when the daemon snapshot carries no quota window. Mirror
       // the token-summary effect's fallback-context resolution.
@@ -11108,7 +11151,26 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             ...(account ? { account } : {}),
           };
         });
-        setRightPane({ kind: "usage", title: "Usage", providerStatuses, quotaWindows, session: sessionBlock, spendControlReached: snapshot.spendControlReached === true });
+        // Codex-only today: Claude grants no reset credits, so the field is
+        // simply absent there rather than reported as zero.
+        const resetCredits = (snapshot.accounts ?? []).flatMap((account) => {
+          const availableCount = account.resetCredits?.availableCount ?? 0;
+          if (availableCount <= 0) return [];
+          return [{
+            accountId: account.id,
+            label: account.email || account.label || account.id,
+            availableCount,
+          }];
+        });
+        setRightPane({
+          kind: "usage",
+          title: "Usage",
+          providerStatuses,
+          quotaWindows,
+          session: sessionBlock,
+          spendControlReached: snapshot.spendControlReached === true,
+          ...(resetCredits.length ? { resetCredits } : {}),
+        });
       } catch (error) {
         setRightPane({
           kind: "usage",
@@ -13652,6 +13714,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           modelId: normalized.modelId,
           reasoningEffort: normalized.reasoningEffort,
           fastMode: normalized.fastMode,
+          instanceId: normalized.instanceId,
+          presetId: normalized.presetId,
+          credentialId: normalized.credentialId,
           permissionMode: normalized.permissionMode,
           interactionMode: normalized.interactionMode,
           claudePermissionMode: normalized.claudePermissionMode,
@@ -13744,13 +13809,20 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   // model state and push it onto the cross-surface recents list. Defined here
   // (after applyModelState) so the closure captures a live binding.
 	  const commitModelPickerSelection = useCallback(
-	    (modelId: string) => {
+	    (modelId: string, credentialId?: string | null) => {
+	      const requestedCredentialId = credentialId === undefined
+	        ? undefined
+	        : credentialId?.trim() || null;
 	      let catalogModel: AgentChatModelCatalogModel | null = null;
 	      let catalogProvider: AdeCodeProvider | null = null;
 	      for (const group of modelCatalogRef.current?.groups ?? modelCatalog?.groups ?? []) {
 	        for (const provider of group.providers) {
 	          for (const subsection of provider.subsections) {
-	            const found = subsection.models.find((entry) => entry.id === modelId || entry.modelId === modelId);
+	            const matches = subsection.models.filter((entry) => entry.id === modelId || entry.modelId === modelId);
+	            const found = matches.find((entry) => (
+	              requestedCredentialId === undefined
+	              || (entry.credentialId?.trim() || null) === requestedCredentialId
+	            ));
 		            if (found) {
 		              catalogModel = found;
 		              catalogProvider = normalizeCatalogProvider(group.key);
@@ -13761,8 +13833,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 	        }
 	        if (catalogModel) break;
 	      }
-	      const target = models.find((entry) => (entry.modelId ?? entry.id) === modelId)
-	        ?? (catalogModel?.isAvailable === true ? catalogModel as AgentChatModelInfo : null)
+	      const target = (catalogModel?.isAvailable === true ? catalogModel as AgentChatModelInfo : null)
+	        ?? models.find((entry) => (entry.modelId ?? entry.id) === modelId)
           ?? modelInfoFromDescriptor(modelId);
 	      if (!target) {
 	        addNotice(`Model ${modelId} is not available right now.`, "error");
@@ -13784,6 +13856,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
 	      }
 	      const previousModelState = modelStateRef.current;
+	      const selectedCredentialId = catalogModel?.credentialId?.trim()
+	        || (requestedCredentialId ?? null);
 	      if (provider === "cursor" && !cursorModelAvailableForInterface(target, previousModelState.interfaceMode)) {
 	        addNotice(
 	          previousModelState.interfaceMode === "cli"
@@ -13796,6 +13870,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const nextModelState: AdeCodeModelState = {
         ...previousModelState,
         ...modelStatePatchForModel(provider, target),
+        instanceId: provider === previousModelState.provider ? previousModelState.instanceId ?? null : null,
+        presetId: null,
+        credentialId: selectedCredentialId,
       };
       modelStateRef.current = nextModelState;
       setModelState(nextModelState);
@@ -13866,6 +13943,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return {
         ...prev,
         ...patch,
+        instanceId: null,
+        presetId: null,
+        credentialId: null,
       };
     });
     void loadProviderModels(provider, { applyDefault: false }).catch(() => undefined);
@@ -13891,6 +13971,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     applyModelState((prev) => ({
       ...prev,
       ...modelStatePatchForModel(modelState.provider, nextModel),
+      presetId: null,
+      credentialId: null,
     }));
   }, [applyModelState, modelState.modelId, modelState.provider, models]);
 
@@ -15274,6 +15356,76 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return;
     }
 
+    if (
+      rightPane.kind === "usage"
+      && !key.ctrl
+      && !key.meta
+      && prompt.length === 0
+      && (key.upArrow || key.downArrow)
+      && (rightPane.resetCredits?.length ?? 0) > 0
+    ) {
+      setRightSelectionIndex((index) => cycleUsageResetCreditIndex(
+        index,
+        rightPane.resetCredits?.length ?? 0,
+        key.upArrow ? -1 : 1,
+      ));
+      return;
+    }
+
+    // `r` spends the selected banked Codex reset credit while the usage pane is
+    // open. Gated on an empty prompt so it never eats a letter someone is
+    // typing, and only offered when a credit actually exists.
+    if (
+      rightPane.kind === "usage"
+      && !key.ctrl
+      && !key.meta
+      && prompt.length === 0
+      && input === "r"
+      && (rightPane.resetCredits?.length ?? 0) > 0
+    ) {
+      const accountId = selectedUsageResetCreditAccountId(
+        rightPane.resetCredits ?? [],
+        rightSelectionIndex,
+      );
+      const conn = connectionRef.current;
+      if (accountId && conn && resetCreditSpendInFlightRef.current == null) {
+        resetCreditSpendInFlightRef.current = accountId;
+        void conn.action<UsageResetCreditResult>(
+          "usage",
+          "consumeResetCredit",
+          { accountId },
+        ).then(async (result) => {
+          // Same sentence the desktop usage popup and the chat notice use for
+          // the same server answer, so the two surfaces never disagree — and
+          // the tone and the optimistic removal both read that one verdict, so
+          // a `{ok: true, status: "failure"}` answer cannot say "could not use
+          // the reset credit" in green while dropping the credit row.
+          const text = resetCreditOutcomeText(result ?? null);
+          const applied = resetCreditApplied(result ?? null);
+          addNotice(text, applied ? "success" : "error");
+          if (applied) {
+            setRightPane((previous) => previous.kind === "usage"
+              ? {
+                ...previous,
+                resetCredits: (previous.resetCredits ?? []).filter((credit) => credit.accountId !== accountId),
+              }
+              : previous);
+            setRightSelectionIndex(0);
+            if (rightPaneRef.current.kind === "usage") {
+              await runRightCommand("/usage", "");
+            }
+          }
+        })
+          .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"))
+          .finally(() => {
+            if (resetCreditSpendInFlightRef.current === accountId) {
+              resetCreditSpendInFlightRef.current = null;
+            }
+          });
+        return;
+      }
+    }
+
     if (commandPaletteOpen && !isCtrlInput(input, key, "c")) {
       // Ctrl/Cmd+K toggles the palette shut (mirrors Esc) so the same chord
       // opens and closes it — no need to reach for Escape.
@@ -15650,7 +15802,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             return;
           }
           case "select-model":
-            commitModelPickerSelection(advance.modelId);
+            commitModelPickerSelection(advance.modelId, advance.credentialId);
             applyWizardSelection(advance.selection);
             return;
           case "sign-in":
@@ -16018,6 +16170,22 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 	          return result.state;
 	        });
 	        if (cancelled) return;
+	      }
+	      // Esc on a dismissible card throws the question away. Only after the
+	      // digit-selection cancel above, so Esc still means "undo my pick" while
+	      // a pick is live.
+	      if (key.escape && pendingApprovalIsDismissible(pendingQuestionApproval)) {
+	        const conn = connectionRef.current;
+	        const sessionId = activeSessionIdRef.current;
+	        if (conn && sessionId) {
+	          void dismissPendingInput({ connection: conn, sessionId, itemId: pendingQuestionApproval.itemId })
+	            .then(() => {
+	              addNotice("Question dismissed.", "info");
+	              return refreshState();
+	            })
+	            .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
+	          return;
+	        }
 	      }
 	      if (key.upArrow || key.downArrow) {
         updateQuestionState((state) => {
@@ -17437,7 +17605,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
                   return;
                 }
                 case "select-model":
-                  commitModelPickerSelection(advance.modelId);
+                  commitModelPickerSelection(advance.modelId, advance.credentialId);
                   setRightPane({
                     ...wizard,
                     step: advance.selection.step,
@@ -17891,6 +18059,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     favorites: modelPickerFavorites,
     recents: modelPickerRecents,
     activeModelId: modelState.modelId,
+    activeCredentialId: modelState.credentialId,
     activeReasoningEffort: footerReasoningLabel,
     aiStatus,
     interfaceMode: modelState.interfaceMode,
@@ -17901,6 +18070,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     modelCatalogRefreshingProvider,
     modelPickerFavorites,
     modelPickerRecents,
+    modelState.credentialId,
     modelState.interfaceMode,
     modelState.modelId,
     footerReasoningLabel,

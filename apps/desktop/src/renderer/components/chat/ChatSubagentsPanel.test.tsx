@@ -1326,3 +1326,121 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     expect(screen.queryByRole("button", { name: "Show nested agents" })).toBeNull();
   });
 });
+
+/**
+ * The 17-24 hour "running" rows: the SDK emits no terminal event for a
+ * subagent or a background command when the parent process exits, so the pane
+ * has to stop believing the stream once the host says the runtime is gone.
+ */
+describe("ChatSubagentsPanel stale-run self-heal", () => {
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  const orphanAgent: ChatSubagentSnapshot = {
+    ...baseSnapshot,
+    taskId: "orphan-1",
+    description: "Audit chat renderer",
+    summary: null,
+    background: false,
+    status: "running",
+  };
+
+  it("still says running while the host reports a live runtime", () => {
+    render(
+      <ChatSubagentsPanel
+        snapshots={[orphanAgent]}
+        backgroundItems={[scheduledSnapshot({ id: "bg-1", kind: "background_task", status: "running", title: "npm run dev" })]}
+        events={[]}
+        variant="pane"
+        runtimeAlive
+      />,
+    );
+
+    expect(screen.getAllByText("running").length).toBeGreaterThan(0);
+  });
+
+  it("renders a dead-runtime subagent row as halted with the plain reason, never running", () => {
+    render(
+      <ChatSubagentsPanel
+        snapshots={[orphanAgent]}
+        events={[]}
+        variant="pane"
+        runtimeAlive={false}
+      />,
+    );
+
+    expect(screen.queryByText("running")).toBeNull();
+    // Terminal rows file under the section's Earlier group, like every other
+    // settled row — the point is that nothing claims to be running any more.
+    fireEvent.click(screen.getByRole("button", { name: "Completed (1)" }));
+    expect(screen.getByText("halted")).toBeTruthy();
+    // ...and the row keeps its age frozen at the last thing it reported,
+    // instead of a counter that had been climbing for 17 hours.
+    expect(screen.getByText("10s")).toBeTruthy();
+  });
+
+  it("renders a dead-runtime background command as stopped, never running", () => {
+    render(
+      <ChatSubagentsPanel
+        snapshots={[]}
+        backgroundItems={[scheduledSnapshot({ id: "bg-1", kind: "background_task", status: "running", title: "npm run dev" })]}
+        events={[]}
+        variant="pane"
+        runtimeAlive={false}
+      />,
+    );
+
+    expect(screen.queryByText("running")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Completed (1)" }));
+    expect(screen.getByText("stopped")).toBeTruthy();
+  });
+
+  it("keeps a delegate running when its own subagent chat is still active", () => {
+    render(
+      <ChatSubagentsPanel
+        snapshots={[{ ...orphanAgent, taskId: "chat:child-1", childSessionId: "child-1" }]}
+        events={[]}
+        variant="pane"
+        runtimeAlive={false}
+        childChatStatuses={new Map([["child-1", "active" as const]])}
+      />,
+    );
+
+    expect(screen.getByText("running")).toBeTruthy();
+  });
+
+  // A delegate reads "idle" for the seconds its own runtime takes to launch, so
+  // an idle child while the parent is alive is not evidence that it stopped.
+  it("keeps a just-spawned idle delegate running while the parent runtime is alive", () => {
+    render(
+      <ChatSubagentsPanel
+        snapshots={[{ ...orphanAgent, taskId: "chat:child-1", childSessionId: "child-1" }]}
+        events={[]}
+        variant="pane"
+        runtimeAlive
+        childChatStatuses={new Map([["child-1", "idle" as const]])}
+      />,
+    );
+
+    expect(screen.getByText("running")).toBeTruthy();
+  });
+
+  it("halts a delegate whose subagent chat ended, even with the parent runtime alive", () => {
+    render(
+      <ChatSubagentsPanel
+        snapshots={[{ ...orphanAgent, taskId: "chat:child-1", childSessionId: "child-1" }]}
+        events={[]}
+        variant="pane"
+        runtimeAlive
+        childChatStatuses={new Map([["child-1", "ended" as const]])}
+      />,
+    );
+
+    expect(screen.queryByText("running")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Completed (1)" }));
+    expect(screen.getByText("halted")).toBeTruthy();
+  });
+});

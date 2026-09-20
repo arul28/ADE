@@ -2,13 +2,9 @@ import type { ReactNode } from "react";
 import type { ChatSurfaceMode } from "../../../shared/types";
 import { cn } from "../ui/cn";
 
-const ORCHESTRATOR_COMPOSER_GRADIENT =
-  "conic-gradient(from 0deg, #ff5f5f, #ff9b3f, #f7d05c, #59d97f, #4f93ff, #a566ff, #ff5f5f)";
-
 export function ChatComposerShell({
   mode,
   glowColor,
-  orchestratorActive = false,
   pendingBanner,
   trays,
   pickerLayer,
@@ -18,7 +14,6 @@ export function ChatComposerShell({
 }: {
   mode: ChatSurfaceMode;
   glowColor?: string | null;
-  orchestratorActive?: boolean;
   pendingBanner?: ReactNode;
   trays?: ReactNode;
   pickerLayer?: ReactNode;
@@ -37,19 +32,7 @@ export function ChatComposerShell({
         borderColor: `color-mix(in srgb, ${glowColor} 30%, transparent)`,
       } : undefined}
       data-chat-composer-mode={mode}
-      data-chat-composer-orchestrator-active={orchestratorActive ? "true" : undefined}
     >
-      {orchestratorActive ? (
-        <div
-          data-chat-composer-orchestrator-glow=""
-          aria-hidden
-          className="pointer-events-none absolute -inset-8 rounded-[calc(var(--chat-radius-shell)+24px)] blur-3xl"
-          style={{
-            background: ORCHESTRATOR_COMPOSER_GRADIENT,
-            opacity: 0.34,
-          }}
-        />
-      ) : null}
       <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-[var(--chat-radius-shell)]">
         <div className="absolute left-6 top-0 h-24 w-32 rounded-full bg-[radial-gradient(circle,rgba(255,255,255,0.05)_0%,transparent_72%)] opacity-50 blur-2xl" />
         <div className="absolute bottom-[-3rem] right-[-2rem] h-24 w-36 rounded-full bg-[radial-gradient(circle,var(--chat-liquid-sheen)_0%,transparent_70%)] opacity-50 blur-3xl" />

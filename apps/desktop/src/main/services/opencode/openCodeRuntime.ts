@@ -34,7 +34,6 @@ import type {
   OpenCodeRuntimeSnapshot,
   ProjectConfigFile,
 } from "../../../shared/types";
-import { orchestrationLeadOpenCodeToolSelection } from "../../../shared/orchestrationRuntimePolicy";
 import { basenameCrossPlatform } from "../../../shared/pathDisplay";
 import { stableStringify } from "../shared/utils";
 import { resolveOpenCodeBinaryPath } from "./openCodeBinaryManager";
@@ -61,7 +60,6 @@ export type OpenCodeSessionHandle = {
   sessionId: string;
   initialTitle: string | null;
   directory: string;
-  toolSelection: Record<string, boolean> | null;
   close(reason?: OpenCodeServerShutdownReason): Promise<void>;
   touch(): void;
   setBusy(busy: boolean): void;
@@ -101,6 +99,17 @@ type BuildOpenCodeConfigArgs = {
   mcp?: OpenCodeConfig["mcp"];
   /** Lead servers inherit no user config, so ADE must supply what they need. */
   isolatedConfig?: boolean;
+  /**
+   * Provider blocks a harness preset contributes for THIS session only.
+   *
+   * A preset's key is not in the project's `ai.customProviders` — it is one
+   * credential in the key store, chosen per chat — so it cannot be resolved by
+   * the same `resolveStoredApiKey` lookup the configured providers use. The
+   * resolved block (endpoint, key, declared models) arrives already built and
+   * is merged LAST, so a preset outranks a same-named configured provider for
+   * the session that asked for it and changes nothing for any other.
+   */
+  presetProviders?: NonNullable<OpenCodeConfig["provider"]>;
 };
 
 type StartOpenCodeSessionArgs = BuildOpenCodeConfigArgs & {
@@ -111,7 +120,7 @@ type StartOpenCodeSessionArgs = BuildOpenCodeConfigArgs & {
   ownerId?: string | null;
   ownerKey?: string | null;
   leaseKind?: "shared" | "dedicated";
-  /** Isolate user/project config for an orchestrator lead only. */
+  /** Isolate user/project config for this session only. */
   isolatedConfig?: boolean;
   logger?: Logger | null;
 };
@@ -521,7 +530,13 @@ function mergeCustomModelSlugs(
 }
 
 export function buildOpenCodeConfig(args: BuildOpenCodeConfigArgs): OpenCodeConfig {
-  const provider = buildProviderConfig(args.projectConfig, args.discoveredLocalModels, args.isolatedConfig);
+  const configuredProviders = buildProviderConfig(args.projectConfig, args.discoveredLocalModels, args.isolatedConfig);
+  const presetProviders = args.presetProviders && Object.keys(args.presetProviders).length
+    ? args.presetProviders
+    : undefined;
+  const provider = presetProviders
+    ? { ...(configuredProviders ?? {}), ...presetProviders }
+    : configuredProviders;
   const helperPermission = {
     edit: "deny",
     bash: "deny",
@@ -702,7 +717,6 @@ function createOpenCodeSessionHandle(args: {
   sessionId: string;
   initialTitle?: string | null;
   directory: string;
-  toolSelection: Record<string, boolean> | null;
 }): OpenCodeSessionHandle {
   return {
     client: args.client,
@@ -716,7 +730,6 @@ function createOpenCodeSessionHandle(args: {
     sessionId: args.sessionId,
     initialTitle: trimToUndefined(args.initialTitle) ?? null,
     directory: args.directory,
-    toolSelection: args.toolSelection,
     async close(reason = "handle_close") {
       args.lease.close(reason);
     },
@@ -777,7 +790,6 @@ async function startOpenCodeSessionInternal(
         sessionId: resolvedSessionId,
         initialTitle: existing.data?.title,
         directory: args.directory,
-        toolSelection: null,
       });
     } catch (error) {
       // Only a confirmed "session missing" may fall through to creation. Any
@@ -811,7 +823,6 @@ async function startOpenCodeSessionInternal(
     sessionId: created.data.id,
     initialTitle: created.data.title,
     directory: args.directory,
-    toolSelection: null,
   });
 }
 
@@ -881,24 +892,6 @@ export async function openCodeEventStream(args: {
   return result.stream as AsyncGenerator<OpenCodeRuntimeEvent>;
 }
 
-/**
- * Resolves the `tools` map ADE sends with every OpenCode prompt.
- *
- * OpenCode has no server-side role model: whatever it exposes, the model may
- * call. `session.prompt`'s `tools` map is the only lever, so an orchestrator
- * lead gets every write/shell tool explicitly switched off here. Every other
- * session keeps OpenCode's defaults (`null` — field omitted entirely).
- */
-export async function refreshOpenCodeSessionToolSelection(
-  handle: OpenCodeSessionHandle,
-  options?: { orchestrationLead?: boolean },
-): Promise<Record<string, boolean> | null> {
-  handle.toolSelection = options?.orchestrationLead
-    ? orchestrationLeadOpenCodeToolSelection()
-    : null;
-  return handle.toolSelection;
-}
-
 export async function runOpenCodeTextPrompt(
   args: RunOpenCodePromptArgs,
 ): Promise<{ text: string; inputTokens: number | null; outputTokens: number | null }> {
@@ -921,8 +914,6 @@ export async function runOpenCodeTextPrompt(
       directory: handle.directory,
       signal: controller.signal,
     });
-    const toolSelection = await refreshOpenCodeSessionToolSelection(handle);
-
     await handle.client.session.promptAsync(
       {
         sessionID: handle.sessionId,
@@ -934,7 +925,6 @@ export async function runOpenCodeTextPrompt(
         // model context entirely, so the prompt would silently never reach
         // the model.
         ...(args.system?.trim() ? { system: args.system.trim() } : {}),
-        ...(toolSelection ? { tools: toolSelection } : {}),
         parts: buildOpenCodePromptParts({
           prompt: args.prompt,
           files: args.files,

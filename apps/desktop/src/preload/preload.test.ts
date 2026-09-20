@@ -8867,10 +8867,7 @@ describe("per-chat runtime routing", () => {
         throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
       });
 
-      const unsubscribe = bridge.orchestration.subscribe(
-        { runId: "run-1" },
-        vi.fn(),
-      );
+      const unsubscribe = bridge.review.onEvent(vi.fn());
       await vi.advanceTimersByTimeAsync(0);
       const releaseCalls = () =>
         invoke.mock.calls
@@ -9499,7 +9496,6 @@ describe("preload remote runtime event fanout table", () => {
     "sync-status": { type: "sync-status", snapshot: { role: "host" } },
     usage: { type: "usage", snapshot: { windows: [] } },
     automations_event: { source: "automations", type: "runs-updated" },
-    orchestration_event: { runId: "run-1", etag: "etag-1", kind: "manifest" },
   };
 
   it("delivers every listed domain to its own subscriber", async () => {
@@ -9747,5 +9743,91 @@ describe("preload machine-scoped API key routing", () => {
 
     await expect(bridge.ai.getMachineApiKeyStatus("openai")).resolves.toEqual(status);
     expect(invoke).toHaveBeenCalledWith(IPC.aiGetMachineApiKeyStatus, { provider: "openai" });
+  });
+});
+
+describe("preload provider API credential bridge", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    delete (globalThis as any).__adeBridge;
+  });
+
+  afterEach(() => {
+    vi.resetModules();
+    vi.doUnmock("electron");
+    delete (globalThis as any).__adeBridge;
+  });
+
+  const summary = {
+    provider: "anthropic",
+    credentialId: "default",
+    label: "Anthropic",
+    envVar: "ANTHROPIC_API_KEY",
+    source: "store",
+    createdAt: "2026-09-01T00:00:00.000Z",
+    updatedAt: "2026-09-01T00:00:00.000Z",
+    maskedTail: "••••3c1x",
+  };
+
+  function mockElectron(invoke: ReturnType<typeof vi.fn>) {
+    vi.doMock("electron", () => ({
+      contextBridge: {
+        exposeInMainWorld: vi.fn((_name: string, value: unknown) => {
+          (globalThis as any).__adeBridge = value;
+        }),
+      },
+      ipcRenderer: { invoke, on: vi.fn(), removeListener: vi.fn() },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+  }
+
+  it("routes every call at local IPC, and never at a remote runtime", async () => {
+    // The store desktop main writes is THIS machine's Electron safeStorage, so
+    // a key filed through a remote runtime would land on a computer the harness
+    // does not run on.
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return {
+          windowId: 1,
+          project: { rootPath: "/repo", displayName: "Project" },
+          binding: { kind: "remote", key: "remote:host/repo", rootPath: "/repo", displayName: "Project" },
+        };
+      }
+      if (channel === IPC.apiCredentialsList) return [summary];
+      if (channel === IPC.apiCredentialsGet) return summary;
+      if (channel === IPC.apiCredentialsStore) return summary;
+      if (channel === IPC.apiCredentialsRemove) return undefined;
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    mockElectron(invoke);
+    await import("./preload");
+    const bridge = (globalThis as any).__adeBridge;
+
+    await expect(bridge.apiCredentials.list()).resolves.toEqual([summary]);
+    await expect(bridge.apiCredentials.get({ provider: "anthropic" })).resolves.toEqual(summary);
+    await expect(
+      bridge.apiCredentials.store({ provider: "anthropic", label: "Anthropic", key: "sk-1" }),
+    ).resolves.toEqual(summary);
+    await expect(
+      bridge.apiCredentials.remove({ provider: "anthropic", credentialId: "default" }),
+    ).resolves.toBeUndefined();
+
+    expect(invoke).toHaveBeenCalledWith(IPC.apiCredentialsList, {});
+    expect(invoke).toHaveBeenCalledWith(IPC.apiCredentialsGet, { provider: "anthropic" });
+    expect(invoke).toHaveBeenCalledWith(IPC.apiCredentialsStore, {
+      provider: "anthropic",
+      label: "Anthropic",
+      key: "sk-1",
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.apiCredentialsRemove, {
+      provider: "anthropic",
+      credentialId: "default",
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.localRuntimeCallAction, expect.anything());
   });
 });

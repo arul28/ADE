@@ -105,16 +105,20 @@ enum ADEColor {
   static let tintAutomations = Color(red: 0xf9 / 255.0, green: 0x73 / 255.0, blue: 0x16 / 255.0)
   static let tintSettings = Color(red: 0x71 / 255.0, green: 0x71 / 255.0, blue: 0x7a / 255.0)
 
-  /// Per-provider brand colors mirroring desktop's PROVIDER_BADGE_COLORS.
-  /// Keep in sync with apps/desktop/src/renderer/components/shared/providerModelSelectorGrouping.ts.
-  static let brandClaude = Color(red: 0xD9 / 255.0, green: 0x77 / 255.0, blue: 0x06 / 255.0)      // #D97706
-  static let brandCodex = Color(red: 0x10 / 255.0, green: 0xA3 / 255.0, blue: 0x7F / 255.0)       // #10A37F
-  static let brandCursor = Color(red: 0xA7 / 255.0, green: 0x8B / 255.0, blue: 0xFA / 255.0)      // #A78BFA
-  static let brandOpenCode = Color(red: 0x25 / 255.0, green: 0x63 / 255.0, blue: 0xEB / 255.0)    // #2563EB
-  static let brandGoogle = Color(red: 0xF5 / 255.0, green: 0x9E / 255.0, blue: 0x0B / 255.0)      // #F59E0B
-  static let brandMistral = Color(red: 0xF9 / 255.0, green: 0x73 / 255.0, blue: 0x16 / 255.0)     // #F97316
-  static let brandDeepSeek = Color(red: 0x3B / 255.0, green: 0x82 / 255.0, blue: 0xF6 / 255.0)    // #3B82F6
-  static let brandXAI = Color(red: 0xDC / 255.0, green: 0x26 / 255.0, blue: 0x26 / 255.0)         // #DC2626
+  /// Per-provider brand colors.
+  ///
+  /// One source of truth for the whole product:
+  /// `apps/desktop/src/renderer/components/usage/providerColors.ts` (its
+  /// dark-theme value per provider). `shared/modelCatalog.ts` and
+  /// `ADESharedTheme` mirror the same hexes — change the brand there first.
+  static let brandClaude = Color(red: 0xD9 / 255.0, green: 0x77 / 255.0, blue: 0x57 / 255.0)      // #D97757
+  static let brandCodex = Color(red: 0x2D / 255.0, green: 0xD4 / 255.0, blue: 0xBF / 255.0)       // #2DD4BF
+  static let brandCursor = Color(red: 0x93 / 255.0, green: 0xA6 / 255.0, blue: 0xC4 / 255.0)      // #93A6C4
+  static let brandOpenCode = Color(red: 0xA7 / 255.0, green: 0x8B / 255.0, blue: 0xFA / 255.0)    // #A78BFA
+  static let brandGoogle = Color(red: 0x5B / 255.0, green: 0x93 / 255.0, blue: 0xF5 / 255.0)      // #5B93F5
+  static let brandMistral = Color(red: 0xFF / 255.0, green: 0x7A / 255.0, blue: 0x1A / 255.0)     // #FF7A1A
+  static let brandDeepSeek = Color(red: 0x6C / 255.0, green: 0x86 / 255.0, blue: 0xFF / 255.0)    // #6C86FF
+  static let brandXAI = Color(red: 0xB4 / 255.0, green: 0xB4 / 255.0, blue: 0xBD / 255.0)         // #B4B4BD
   static let brandGroq = Color(red: 0x06 / 255.0, green: 0xB6 / 255.0, blue: 0xD4 / 255.0)        // #06B6D4
 
   /// Resolve a provider id/label ("claude", "codex", "anthropic"…) to its brand color.

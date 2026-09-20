@@ -30,7 +30,6 @@ export const CTO_TOOL_PACK_NAMES = [
   "insights",
   "config",
   "devices",
-  "orchestration",
 ] as const;
 
 export type CtoToolPack = (typeof CTO_TOOL_PACK_NAMES)[number];
@@ -49,7 +48,6 @@ export const CTO_TOOL_PACK_SCOPES: Record<CtoToolPack, string> = {
   insights: "usage, spend, and budget reads",
   config: "project config reads and secret NAMES (never secret values)",
   devices: "iOS simulator, desktop app control, and built-in browser reads",
-  orchestration: "orchestration run and bundle reads",
 };
 
 export function isCtoToolPack(value: unknown): value is CtoToolPack {

@@ -21,6 +21,7 @@ import {
 import { computeHeatmapLayout, fillMissingDays, weekAlignment } from "./ActivityHeatmap";
 import { AdeUsageSection } from "../settings/AdeUsageSection";
 import { UsageLimitsBand } from "./UsageLimitsBand";
+import { providerColor } from "./providerColors";
 import { useUsageSnapshot } from "./useUsageSnapshot";
 import {
   bucketActivityIntensity,
@@ -381,8 +382,10 @@ describe("usage components", () => {
       render(<MountedBand />);
 
       await screen.findByText("Codex");
-      fireEvent.click(screen.getByRole("button", { name: "Open Claude usage in browser" }));
-      fireEvent.click(screen.getByRole("button", { name: "Open Codex usage in browser" }));
+      // One link per provider, on the provider box's own header — not one per
+      // account row.
+      fireEvent.click(screen.getByRole("button", { name: "Open Claude limits in browser" }));
+      fireEvent.click(screen.getByRole("button", { name: "Open Codex limits in browser" }));
 
       expect(window.ade.app.openExternal).toHaveBeenCalledTimes(2);
       expect(window.ade.app.openExternal).toHaveBeenCalledWith("https://claude.ai/new#settings/usage");
@@ -391,19 +394,24 @@ describe("usage components", () => {
       );
     });
 
-    it("names the signed-in account on each provider, and stays silent when the host omits it", async () => {
+    it("names the signed-in account on the provider's row, and falls back to this machine", async () => {
       const snapshot = makeQuotaPanelSnapshot();
       snapshot.providerStatus = {
         ...snapshot.providerStatus,
         claude: { ...snapshot.providerStatus!.claude!, accountEmail: "dev@example.com" },
       };
       vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(snapshot);
+      // The band notes demand on mount and adopts THAT snapshot; leaving it on
+      // the default made which reading won a race.
+      vi.mocked(window.ade.usage.noteDemand).mockResolvedValue(snapshot);
       render(<MountedBand />);
 
       expect((await screen.findAllByText("dev@example.com")).length).toBe(1);
+      // Codex has no account email in this snapshot, so it says so plainly.
+      expect((await screen.findAllByText("This machine")).length).toBe(1);
     });
 
-    it("gives each account a chip and a details popover with plan, machines, and restore", async () => {
+    it("gives each account its own row and a details popover with plan, machines, and restore", async () => {
       const snapshot = makeQuotaPanelSnapshot();
       snapshot.accounts = [
         {
@@ -439,6 +447,241 @@ describe("usage components", () => {
       expect(window.ade.app.openExternal).toHaveBeenCalledWith(
         "https://chatgpt.com/codex/cloud/settings/analytics#usage",
       );
+    });
+
+    /**
+     * Three windows on one account (5h, weekly, and Claude's OAuth-apps
+     * allowance) used to divide the row into equal columns narrower than their
+     * own contents, and the meter's `overflow-hidden` cut the reset clock in
+     * half. The row wraps and every meter has a floor width instead.
+     */
+    it("stacks an account's windows rather than squeezing them side by side", async () => {
+      const snapshot = makeQuotaPanelSnapshot();
+      snapshot.accounts = [
+        {
+          id: "codex:dev@example.com",
+          provider: "codex",
+          email: "dev@example.com",
+          plan: "ChatGPT Pro",
+          machines: [{ label: "studio", checkedAt: "2026-05-08T07:00:00.000Z" }],
+        },
+      ];
+      snapshot.windows = snapshot.windows
+        .filter((window) => window.provider === "codex")
+        .map((window) => ({ ...window, accountId: "codex:dev@example.com" }));
+      vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(snapshot);
+      vi.mocked(window.ade.usage.noteDemand).mockResolvedValue(snapshot);
+
+      render(<MountedBand />);
+
+      const meter = await screen.findByRole("button", { name: /Weekly · dev@example.com: 37% left/ });
+      const cells = meter.parentElement!.parentElement!;
+      // A column, and each meter is the full width of it — two meters across a
+      // 420px popover left each one narrower than the words inside it.
+      expect(cells.className).toContain("flex-col");
+      expect(cells.className).not.toContain("flex-wrap");
+      expect(meter.parentElement!.className).toContain("w-full");
+    });
+
+    /**
+     * The panel used to be `position: absolute` inside the row. The header
+     * usage popup is a ~400px scroll container, and a 320px panel hanging off
+     * a meter near its top was simply cut off — "Open limits" was unreachable
+     * by mouse. It is portalled to the body and placed in viewport
+     * coordinates now, so no ancestor's clipping can eat it.
+     */
+    it("escapes any scrolling ancestor by portalling the details panel to the body", async () => {
+      const snapshot = makeQuotaPanelSnapshot();
+      snapshot.accounts = [
+        {
+          id: "codex:dev@example.com",
+          provider: "codex",
+          email: "dev@example.com",
+          plan: "ChatGPT Pro",
+          machines: [{ label: "studio", checkedAt: "2026-05-08T07:00:00.000Z" }],
+          url: "https://chatgpt.com/codex/cloud/settings/analytics#usage",
+        },
+      ];
+      snapshot.windows = snapshot.windows.map((window) =>
+        window.provider === "codex" ? { ...window, accountId: "codex:dev@example.com" } : window,
+      );
+      vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(snapshot);
+      vi.mocked(window.ade.usage.noteDemand).mockResolvedValue(snapshot);
+
+      const { container } = render(<MountedBand />);
+      const meter = await screen.findByRole("button", { name: /Weekly · dev@example.com: 37% left/ });
+      fireEvent.focus(meter);
+
+      const popover = screen.getByRole("dialog", { name: "Weekly details" });
+      expect(container.contains(popover)).toBe(false);
+      expect(document.body.contains(popover)).toBe(true);
+      expect(popover.style.position).toBe("fixed");
+      expect(popover.className).not.toContain("absolute");
+    });
+
+    /**
+     * The email was hidden behind a `providerAccountCount > 1` guard — it
+     * disappeared exactly when two logins made it the only way to tell the rows
+     * apart. Every account row names itself now.
+     */
+    it("names every account when a provider has more than one", async () => {
+      const snapshot = makeQuotaPanelSnapshot();
+      snapshot.accounts = [
+        {
+          id: "codex:personal@example.com",
+          provider: "codex",
+          email: "personal@example.com",
+          plan: "ChatGPT Pro",
+          label: "Personal",
+          machines: [{ label: "studio", checkedAt: "2026-05-08T07:00:00.000Z" }],
+        },
+        {
+          id: "codex:work@example.com",
+          provider: "codex",
+          email: "work@example.com",
+          plan: "ChatGPT Team",
+          label: "Work",
+          machines: [{ label: "studio", checkedAt: "2026-05-08T07:00:00.000Z" }],
+        },
+      ];
+      snapshot.windows = [
+        ...snapshot.windows.filter((window) => window.provider !== "codex"),
+        {
+          provider: "codex",
+          windowType: "weekly",
+          accountId: "codex:personal@example.com",
+          percentUsed: 63,
+          resetsAt: "2099-05-15T07:00:00.000Z",
+          resetsInMs: 86_400_000,
+        },
+        {
+          provider: "codex",
+          windowType: "weekly",
+          accountId: "codex:work@example.com",
+          percentUsed: 10,
+          resetsAt: "2099-05-15T07:00:00.000Z",
+          resetsInMs: 86_400_000,
+        },
+      ];
+      vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(snapshot);
+      vi.mocked(window.ade.usage.noteDemand).mockResolvedValue(snapshot);
+
+      render(<MountedBand />);
+
+      // The email, and only the email. The plan and the user's own nickname
+      // for the login are four identifiers for one account on a 420px popover;
+      // both moved into the window's details panel.
+      expect(await screen.findByText("personal@example.com")).toBeTruthy();
+      expect(screen.getByText("work@example.com")).toBeTruthy();
+      expect(screen.queryByText(/ChatGPT Pro/)).toBeNull();
+      expect(screen.queryByText("· Personal")).toBeNull();
+      expect(screen.queryByText("· Work")).toBeNull();
+      // One meter per account, each named by its own login.
+      expect(
+        screen.getByRole("button", { name: /Weekly · personal@example.com: 37% left/ }),
+      ).toBeTruthy();
+      expect(
+        screen.getByRole("button", { name: /Weekly · work@example.com: 90% left/ }),
+      ).toBeTruthy();
+      // One link, on the provider's box header. Two rows of one provider used
+      // to mean two links with hand-disambiguated names; the link belongs to
+      // the provider, not to each of its logins.
+      expect(screen.getAllByRole("button", { name: /Open Codex limits in browser/ })).toHaveLength(1);
+    });
+
+    /**
+     * The bars were coloured by `accountAccentColor`, which hashed the CARD key
+     * ("claude:5-hour") into a six-entry palette — so Claude's own window was
+     * drawn in a generic blue or purple, and two windows of one provider
+     * disagreed with each other. Colour comes from the provider now.
+     */
+    it("draws a provider's bars in that provider's brand colour", async () => {
+      render(<MountedBand />);
+
+      const claude = await screen.findByRole("button", {
+        name: /Weekly · this machine: 80% left/,
+      });
+      // 20% used is calm, so the meter is the brand colour itself — not a hash
+      // of the card key into a palette that happens to hold Gemini's blue.
+      expect(claude.style.getPropertyValue("--usage-fill")).toBe(providerColor("claude", "dark"));
+
+      const codex = screen.getByRole("button", { name: /Weekly · this machine: 37% left/ });
+      expect(codex.style.getPropertyValue("--usage-fill")).toBe(providerColor("codex", "dark"));
+    });
+
+    /**
+     * "Use reset" is offered only where there is a credit to spend, and it
+     * never claims a reset the host did not perform.
+     */
+    it("offers Use reset only with a banked credit, and reports what the host did", async () => {
+      const snapshot = makeQuotaPanelSnapshot();
+      snapshot.accounts = [
+        {
+          id: "codex:dev@example.com",
+          provider: "codex",
+          email: "dev@example.com",
+          machines: [{ label: "studio", checkedAt: "2026-05-08T07:00:00.000Z" }],
+          resetCredits: { availableCount: 1 },
+        },
+        {
+          id: "claude:dev@example.com",
+          provider: "claude",
+          email: "dev@example.com",
+          machines: [{ label: "studio", checkedAt: "2026-05-08T07:00:00.000Z" }],
+        },
+      ];
+      snapshot.windows = snapshot.windows.map((window) => ({
+        ...window,
+        accountId: `${window.provider}:dev@example.com`,
+      }));
+      vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(snapshot);
+      vi.mocked(window.ade.usage.noteDemand).mockResolvedValue(snapshot);
+      const consumeResetCredit = vi.fn(async () => ({ ok: true, status: "reset" as const }));
+      Object.assign(window.ade.usage, { consumeResetCredit });
+
+      render(<MountedBand />);
+
+      const useReset = await screen.findAllByRole("button", { name: /Use reset/ });
+      // Only the account carrying a credit offers it.
+      expect(useReset).toHaveLength(1);
+
+      fireEvent.click(useReset[0]!);
+      await waitFor(() => {
+        expect(consumeResetCredit).toHaveBeenCalledWith({ accountId: "codex:dev@example.com" });
+      });
+      expect(await screen.findByText("Reset applied. Your windows have cleared.")).toBeTruthy();
+    });
+
+    it("says so, rather than faking a reset, when the host cannot spend credits", async () => {
+      const snapshot = makeQuotaPanelSnapshot();
+      snapshot.accounts = [
+        {
+          id: "codex:dev@example.com",
+          provider: "codex",
+          email: "dev@example.com",
+          machines: [{ label: "studio", checkedAt: "2026-05-08T07:00:00.000Z" }],
+          resetCredits: { availableCount: 2 },
+        },
+      ];
+      snapshot.windows = snapshot.windows.map((window) =>
+        window.provider === "codex" ? { ...window, accountId: "codex:dev@example.com" } : window,
+      );
+      vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(snapshot);
+      vi.mocked(window.ade.usage.noteDemand).mockResolvedValue(snapshot);
+      Object.assign(window.ade.usage, {
+        consumeResetCredit: vi.fn(async () => ({
+          ok: false,
+          message: "Reset credits are not available on this host yet.",
+        })),
+      });
+
+      render(<MountedBand />);
+
+      fireEvent.click(await screen.findByRole("button", { name: /Use reset/ }));
+      expect(
+        await screen.findByText("Reset credits are not available on this host yet."),
+      ).toBeTruthy();
+      expect(screen.queryByText(/Reset applied/)).toBeNull();
     });
 
     /**
@@ -505,8 +748,15 @@ describe("usage components", () => {
 
       render(<MountedBand />);
 
-      expect((await screen.findAllByText("Weekly")).length).toBeGreaterThan(0);
-      expect(await screen.findByText("Monthly")).toBeTruthy();
+      // The meters abbreviate — "wk", "mo" — and carry the full window name on
+      // their accessible name, which is the label a reader is offered.
+      expect(
+        await screen.findByRole("button", { name: /Weekly · this machine: 37% left/ }),
+      ).toBeTruthy();
+      expect(
+        screen.getByRole("button", { name: /Monthly · this machine: 56% left/ }),
+      ).toBeTruthy();
+      expect(screen.getByText("mo")).toBeTruthy();
       expect((await screen.findAllByText("56%")).length).toBeGreaterThan(0);
     });
 
@@ -556,15 +806,23 @@ describe("usage components", () => {
 
       render(<MountedBand />);
 
-      // One card per window, each naming the account its segment belongs to.
+      // One meter per window, each naming the account it belongs to.
       const fiveHour = await screen.findByRole("button", { name: /5-hour .*: 52% left/ });
-      expect(fiveHour).toBeTruthy();
       const weekly = screen.getByRole("button", { name: /Weekly .*: 37% left/ });
-      expect(screen.getByText("on track")).toBeTruthy();
-      expect(screen.getByText("13% ahead")).toBeTruthy();
-      // The projection moved into the segment's own details.
+
+      // Pace is per window, so it reads inside that window's own details rather
+      // than competing with the number on a 420px row. Both windows keep it.
+      fireEvent.click(fiveHour);
+      const fiveHourPanel = screen.getByRole("dialog", { name: "5-hour details" });
+      expect(within(fiveHourPanel).getByText("on pace")).toBeTruthy();
+
       fireEvent.click(weekly);
-      expect(screen.getByText(/trending to 126% by reset/)).toBeTruthy();
+      const weeklyPanel = screen.getByRole("dialog", { name: "Weekly details" });
+      // "13% ahead" on its own read as ahead of something else on the row.
+      expect(within(weeklyPanel).getByText("13% ahead of pace")).toBeTruthy();
+      // The projection and its outcome are two one-line rows now: joined into
+      // one sentence they truncated mid-word in a 300px panel.
+      expect(within(weeklyPanel).getByText("126% by reset")).toBeTruthy();
     });
 
     it("registers non-interactive quota demand on mount without forcing user auth", async () => {
@@ -620,7 +878,7 @@ describe("usage components", () => {
      * their own. Nothing pinned these classes, so a cleanup pass dropped them
      * and shipped green: the stack floated on the popover background.
      */
-    it("draws the provider stack and the empty state on their own card surface", async () => {
+    it("gives each provider its own box in its own colour, and the empty state a card", async () => {
       const snapshot = makeQuotaPanelSnapshot();
       snapshot.extraUsage = [{
         provider: "claude",
@@ -634,9 +892,12 @@ describe("usage components", () => {
       vi.mocked(window.ade.usage.noteDemand).mockResolvedValue(snapshot);
 
       const { unmount } = render(<MountedBand />);
-      const stack = (await screen.findAllByText("Codex"))[0].closest(".rounded-xl.bg-surface-raised");
-      expect(stack).toBeTruthy();
-      expect(stack?.className).toContain("shadow-panel");
+      // One rounded, clipped box per provider. `overflow-hidden` is the fix for
+      // the tinted header and the bar fills painting through the radius.
+      const box = (await screen.findAllByText("Codex"))[0].closest(".rounded-lg");
+      expect(box).toBeTruthy();
+      expect(box?.className).toContain("overflow-hidden");
+      expect(box?.className).toContain("border");
       // The extra-usage card is already padded; the grid holding it must not
       // add a second inset inside the popover's own padding.
       const extraGrid = screen.getByText("$12.50").closest(".grid");
@@ -929,9 +1190,9 @@ describe("usage components", () => {
         expect(window.ade.usage.getSnapshot).toHaveBeenCalledTimes(1);
       });
 
-      expect(await screen.findByText("19%")).toBeTruthy();
+      expect(await screen.findByText("81% left")).toBeTruthy();
       expect(screen.queryByText("9%")).toBeNull();
-      expect(screen.getByRole("button", { name: /Codex wk 19%, 5h 9%/ })).toBeTruthy();
+      expect(screen.getByRole("button", { name: /Codex wk 81% left, 5h 91% left/ })).toBeTruthy();
       expect(window.ade.usage.refresh).not.toHaveBeenCalled();
     });
 
@@ -997,7 +1258,7 @@ describe("usage components", () => {
         onUpdate?.(makeHeaderUsageSnapshot());
       });
 
-      expect(screen.getByText("19%")).toBeTruthy();
+      expect(screen.getByText("81% left")).toBeTruthy();
       expect(screen.queryByText("9%")).toBeNull();
       expect(window.ade.usage.refresh).not.toHaveBeenCalled();
     });
@@ -1016,14 +1277,14 @@ describe("usage components", () => {
       await act(async () => {
         onUpdate?.(makeHeaderUsageSnapshot());
       });
-      expect(screen.getByRole("button", { name: /Codex wk 19%, 5h 9%/ })).toBeTruthy();
+      expect(screen.getByRole("button", { name: /Codex wk 81% left, 5h 91% left/ })).toBeTruthy();
 
       await act(async () => {
         startupSnapshot.resolve(makeEmptySnapshot());
         await startupSnapshot.promise;
       });
 
-      expect(screen.getByRole("button", { name: /Codex wk 19%, 5h 9%/ })).toBeTruthy();
+      expect(screen.getByRole("button", { name: /Codex wk 81% left, 5h 91% left/ })).toBeTruthy();
       expect(window.ade.usage.refresh).not.toHaveBeenCalled();
     });
 
@@ -1047,7 +1308,7 @@ describe("usage components", () => {
       });
 
       expect(window.ade.usage.onUpdate).toHaveBeenCalledTimes(1);
-      expect(screen.getByRole("button", { name: /Codex wk 19%, 5h 9%/ })).toBeTruthy();
+      expect(screen.getByRole("button", { name: /Codex wk 81% left, 5h 91% left/ })).toBeTruthy();
       expect(screen.queryByText("77%")).toBeNull();
     });
 
@@ -1082,7 +1343,7 @@ describe("usage components", () => {
         onBindingChanged?.(null);
       });
 
-      expect(await screen.findByText("42%")).toBeTruthy();
+      expect(await screen.findByText("58% left")).toBeTruthy();
       expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(2);
       expect(screen.queryByRole("button", { name: /Claude wk/ })).toBeNull();
     });
@@ -1155,7 +1416,7 @@ describe("usage components", () => {
       vi.mocked(window.ade.usage.refresh).mockReturnValue(refresh.promise);
 
       render(<HeaderUsageControl />);
-      fireEvent.click(await screen.findByRole("button", { name: /Codex wk 19%, 5h 9%/ }));
+      fireEvent.click(await screen.findByRole("button", { name: /Codex wk 81% left, 5h 91% left/ }));
       fireEvent.click(screen.getByTitle("Refresh usage"));
       await waitFor(() => expect(window.ade.usage.refresh).toHaveBeenCalledTimes(1));
 
@@ -1163,13 +1424,13 @@ describe("usage components", () => {
       await act(async () => {
         for (const callback of bindingCallbacks) callback(null);
       });
-      expect(await screen.findByRole("button", { name: /Codex wk 42%, 5h 42%/ })).toBeTruthy();
+      expect(await screen.findByRole("button", { name: /Codex wk 58% left, 5h 58% left/ })).toBeTruthy();
 
       await act(async () => {
         refresh.resolve(oldBindingResponse);
         await refresh.promise;
       });
-      expect(screen.getByRole("button", { name: /Codex wk 42%, 5h 42%/ })).toBeTruthy();
+      expect(screen.getByRole("button", { name: /Codex wk 58% left, 5h 58% left/ })).toBeTruthy();
       expect(screen.queryByRole("button", { name: /Codex wk 91%, 5h 91%/ })).toBeNull();
     });
 
@@ -1235,7 +1496,7 @@ describe("usage components", () => {
       );
 
       await waitFor(() => {
-        expect(screen.getAllByRole("button", { name: /Codex wk 19%, 5h 19%/ })).toHaveLength(2);
+        expect(screen.getAllByRole("button", { name: /Codex wk 81% left, 5h 81% left/ })).toHaveLength(2);
       });
 
       // Both popovers open, so both render the "updated … ago" line.
@@ -1246,7 +1507,7 @@ describe("usage components", () => {
       await act(async () => {
         push(pushed);
       });
-      expect(screen.getAllByRole("button", { name: /Codex wk 33%, 5h 33%/ })).toHaveLength(2);
+      expect(screen.getAllByRole("button", { name: /Codex wk 67% left, 5h 67% left/ })).toHaveLength(2);
 
       // Only the first mount asks for a refresh; only it sees the stale answer.
       fireEvent.click(screen.getAllByTitle("Refresh usage")[0]);
@@ -1257,7 +1518,7 @@ describe("usage components", () => {
         push(latest);
       });
 
-      expect(screen.getAllByRole("button", { name: /Codex wk 51%, 5h 51%/ })).toHaveLength(2);
+      expect(screen.getAllByRole("button", { name: /Codex wk 49% left, 5h 49% left/ })).toHaveLength(2);
       const ages = screen.getAllByText(/^updated /);
       expect(ages).toHaveLength(2);
       expect(ages[0].textContent).toBe(ages[1].textContent);
@@ -1287,7 +1548,7 @@ describe("usage components", () => {
         .mockResolvedValue(missed);
 
       render(<HeaderUsageControl />);
-      expect(await screen.findByRole("button", { name: /Codex wk 19%, 5h 19%/ })).toBeTruthy();
+      expect(await screen.findByRole("button", { name: /Codex wk 81% left, 5h 81% left/ })).toBeTruthy();
       expect(window.ade.usage.getSnapshot).toHaveBeenCalledTimes(1);
 
       await act(async () => {
@@ -1296,7 +1557,7 @@ describe("usage components", () => {
       });
 
       expect(window.ade.usage.getSnapshot).toHaveBeenCalledTimes(2);
-      expect(await screen.findByRole("button", { name: /Codex wk 44%, 5h 44%/ })).toBeTruthy();
+      expect(await screen.findByRole("button", { name: /Codex wk 56% left, 5h 56% left/ })).toBeTruthy();
     });
 
     it("does not poll usage while the drawer stays closed", async () => {
@@ -1318,7 +1579,7 @@ describe("usage components", () => {
       try {
         render(<HeaderUsageControl />);
 
-        fireEvent.click(await screen.findByRole("button", { name: /Usage .* Codex wk 19%, 5h 9%/ }));
+        fireEvent.click(await screen.findByRole("button", { name: /Usage .* Codex wk 81% left, 5h 91% left/ }));
 
         await waitFor(() => expect(events).toEqual(["start"]));
 

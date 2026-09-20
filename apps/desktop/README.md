@@ -86,6 +86,71 @@ Skip runtime rebuild when the CLI is already fresh:
 ADE_PROJECT_ROOT=/path/to/your/project npm run dev:vite:live -- --skip-runtime-build
 ```
 
+### Testing against a dev brain safely on the same machine
+
+Always give both the dev brain and the dev desktop a scratch `ADE_HOME`. The
+desktop main process and the headless CLI both resolve their machine layout from
+`ADE_HOME` (with the packaged channel default applied only when it is absent),
+so this keeps the database, chat records, sockets, provider homes, and secrets
+out of the live ADE home.
+
+The SQLite backup reads the live database; the copies below are the only JSON
+machine files to seed. Never copy `~/.ade/secrets`,
+`account-vault.json.enc`, or `account-migration.json`.
+
+```bash
+DEV_HOME="${TMPDIR:-/tmp}/ade-dev-home"
+DEV_SOCKET="${TMPDIR:-/tmp}/ade-runtime-dev.sock"
+PROJECT_ROOT="/path/to/your/project"
+mkdir -p "$DEV_HOME"
+sqlite3 "$HOME/.ade/ade.db" ".backup '$DEV_HOME/ade.db'"
+for name in projects.json provider-instances.json modelPicker.json account-settings.json; do
+  if [ -f "$HOME/.ade/$name" ]; then cp "$HOME/.ade/$name" "$DEV_HOME/$name"; fi
+done
+export ADE_HOME="$DEV_HOME"
+export ADE_DEV_RUNTIME_SOCKET_PATH="$DEV_SOCKET"
+```
+
+In one terminal, start the brain from the repository root:
+
+```bash
+node scripts/dev-runtime.mjs --socket "$DEV_SOCKET" --no-sync --skip-runtime-build --project-root "$PROJECT_ROOT"
+```
+
+In a second terminal, repeat the `DEV_HOME`, `DEV_SOCKET`, `PROJECT_ROOT`, and
+`ADE_HOME` exports, then attach the desktop to that already-running brain:
+
+```bash
+npm run dev:desktop:attach -- --socket "$DEV_SOCKET" --skip-runtime-build --project-root "$PROJECT_ROOT"
+```
+
+The scratch desktop stops at the "Sign in to ADE" gate: the account session
+lives in `~/.ade/secrets`, which is never copied, and `ade account token create`
+is a CTO-only command that an agent shell cannot run. Sign in once inside the
+scratch desktop with your own account if you need the full UI there, or verify
+renderer UI with the mock browser preview (`npm run dev:vite`, see above) and
+verify main-process behavior through the dev brain's CLI
+(`node apps/ade-cli/dist/cli.cjs --socket "$DEV_SOCKET" ...`). A scratch brain
+started with `--no-sync` never publishes a machine to the account directory
+(the publisher only starts when sync is enabled), so signing in there is safe.
+
+Keep `--no-sync` on the brain and never pair a phone, simulator, or web client
+to this scratch runtime. Do not bind port `8787`. `scripts/dev-shared.mjs`
+derives `ADE_DESKTOP_BRIDGE_SOCKET_PATH` from the selected dev socket, and
+`main.ts` uses that value before falling back to the machine layout; the bridge
+must therefore stay paired with this dev brain rather than sharing the live
+desktop bridge socket.
+
+This isolation matters because a brain using the shared database can see active
+chat rows it does not own, relaunch their processes, and kill the live
+coordinator's process. A failed `npm --prefix apps/ade-cli run build` also wipes
+`apps/ade-cli/dist/cli.cjs`; the coordinator owns runtime builds, so do not use
+that command while a live desktop depends on the runtime.
+
+When stopping these processes, kill only PIDs captured when you spawned them,
+after confirming each command line (for example, `ps -p <pid> -o pid=,command=`).
+Do not use broad `pkill`, `killall`, or pattern-based process termination.
+
 Bridge only (Vite already running):
 
 ```bash
@@ -123,7 +188,7 @@ Even with `dev:vite:live`, these stay on the mock until wired to the bridge or a
 - PR list/detail/actions, git read/write, files on disk
 - Remote runtime connection UI (Electron IPC)
 - Computer use, App Control, iOS simulator
-- Agent chat send/receive, orchestration runs
+- Agent chat send/receive
 - Most settings persistence beyond Linear token via bridge
 
 For full product behavior, use **`npm run dev`** (Electron + preload).

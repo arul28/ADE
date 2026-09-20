@@ -25,31 +25,27 @@ import type {
 } from "../../../shared/types";
 import { usageProviderAccountUrl } from "../../../shared/types";
 import { hasLocalProviderConnectionSignal } from "../../lib/aiProviderStatus";
-import { formatCost, formatTokens } from "../../lib/format";
+import { formatCost } from "../../lib/format";
 import { openExternalUrl } from "../../lib/openExternal";
 import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
 import { type ThemeId, useAppStore } from "../../state/appStore";
-import { ClaudeLogo, CodexLogo } from "../terminals/ToolLogos";
 import { cn } from "../ui/cn";
 import { providerColor } from "./providerColors";
-import { UsageLimitCard } from "./UsageLimitCard";
+import { ProviderMark, UsageAccountRow } from "./UsageAccountRow";
 import {
   USAGE_BAR_TRACK_CLASS,
   USAGE_BUTTON_CLASS,
   USAGE_CARD_CLASS,
-  USAGE_DIVIDER_COLOR_CLASS,
   USAGE_HAIRLINE_CLASS,
   USAGE_NUMERIC_CLASS,
   USAGE_TEXT,
   usagePressureColor,
 } from "./usageDesign";
+import { formatUpdatedAge } from "./usageWindowFormat";
 import {
-  WEEKDAYS,
-  formatUpdatedAge,
-} from "./usageWindowFormat";
-import {
+  type AccountLimitRow,
   type UsageAccountView,
-  buildLimitCards,
+  buildAccountRows,
   poolAccounts,
 } from "./usageLimitModel";
 import type { UsageRefreshOutcome, UsageSnapshotSource } from "./useUsageSnapshot";
@@ -66,17 +62,6 @@ const PROVIDER_META: Record<UsageProvider, { label: string }> = {
   codex: { label: "Codex" },
   cursor: { label: "Cursor" },
 };
-
-/** 5-hour before Weekly before Monthly; anything else keeps provider order. */
-function orderLimitCards<T extends { label: string }>(cards: T[]): T[] {
-  const rank = (label: string) => {
-    if (/-min$|-hour$/.test(label)) return 0;
-    if (label === "Weekly") return 1;
-    if (label === "Monthly") return 2;
-    return 3;
-  };
-  return [...cards].sort((a, b) => rank(a.label) - rank(b.label));
-}
 
 function providerConnection(
   connections: AiProviderConnections | null,
@@ -403,11 +388,12 @@ export function UsageLimitsBand({
           </div>
         </div>
       ) : (
-        // The provider stack and the empty state are each their own card: this
-        // band is rendered into the header popover's bare surface, so without
-        // it they float on the popover background with no edge of their own.
-        <div className={USAGE_CARD_CLASS}>
-          {visibleProviders.map((provider, index) => (
+        // One box per provider, in that provider's own colour, rather than one
+        // card with hairlines between providers: the colour is what tells a
+        // Claude reading from a Codex one at a glance, and a shared card made
+        // both of them read as sections of a single table.
+        <div className="flex flex-col gap-2.5">
+          {visibleProviders.map((provider) => (
             <ProviderLimitsRow
               key={provider}
               provider={provider}
@@ -418,12 +404,10 @@ export function UsageLimitsBand({
               status={snapshot?.providerStatus?.[provider] ?? null}
               messages={(snapshot?.providerMessages ?? []).filter((message) => message.provider === provider)}
               spendControlReached={provider === "codex" && snapshot?.spendControlReached === true}
-              dailyUsage7d={snapshot?.dailyUsage7d?.[provider] ?? null}
               nowMs={nowMs}
               reducedMotion={reducedMotion}
               refreshing={refreshing}
               onRefresh={refreshNow}
-              divided={index > 0}
             />
           ))}
         </div>
@@ -448,39 +432,6 @@ export function UsageLimitsBand({
 }
 
 // ── supporting reads ─────────────────────────────────────────────
-
-function Sparkline7d({ data, color, nowMs }: { data: number[]; color: string; nowMs: number }) {
-  const max = Math.max(1, ...data);
-  return (
-    <div className="flex h-4 items-end gap-[3px]">
-      {data.map((value, index) => {
-        const heightPx = Math.max(2, Math.round((value / max) * 16));
-        const isToday = index === data.length - 1;
-        const dayMs = nowMs - (data.length - 1 - index) * 86_400_000;
-        const date = new Date(dayMs);
-        const title = `${WEEKDAYS[date.getDay()]} ${date.getMonth() + 1}/${date.getDate()} · ${formatTokens(value)} tokens`;
-        return (
-          <div
-            key={index}
-            title={title}
-            className="w-full rounded-[2px]"
-            style={{ minWidth: 4, height: heightPx, background: color, opacity: isToday ? 0.95 : 0.4 }}
-          />
-        );
-      })}
-    </div>
-  );
-}
-
-function ModelSplitLine({ breakdown }: { breakdown: Record<string, number> }) {
-  const entries = Object.entries(breakdown).filter(([, pct]) => pct > 0);
-  if (entries.length === 0) return null;
-  return (
-    <span className={cn(USAGE_TEXT.micro, "truncate text-muted-fg")}>
-      {entries.map(([model, pct]) => `${model} ${Math.round(pct)}%`).join(" · ")}
-    </span>
-  );
-}
 
 function SkeletonRows() {
   return (
@@ -508,12 +459,10 @@ function ProviderLimitsRow({
   status,
   messages,
   spendControlReached,
-  dailyUsage7d,
   nowMs,
   reducedMotion,
   refreshing,
   onRefresh,
-  divided,
 }: {
   provider: UsageProvider;
   theme: ThemeId;
@@ -523,12 +472,10 @@ function ProviderLimitsRow({
   status: UsageProviderStatus | null;
   messages: NonNullable<UsageSnapshot["providerMessages"]>;
   spendControlReached: boolean;
-  dailyUsage7d: number[] | null;
   nowMs: number;
   reducedMotion: boolean;
   refreshing: boolean;
   onRefresh: () => Promise<UsageRefreshOutcome>;
-  divided: boolean;
 }) {
   const meta = PROVIDER_META[provider];
   const tone = providerColor(provider, theme);
@@ -539,22 +486,24 @@ function ProviderLimitsRow({
   const handleEnter = useCallback(() => setHovering(true), []);
   const handleLeave = useCallback(() => setHovering(false), []);
 
-  // Always one column.
-  //
-  // This carried a `md:grid-cols-[...]` alternative reached through a `dense`
-  // prop, but `dense` is a *viewport* query's replacement and the only caller
-  // is a 420px popover that always passes it — the two-column branch was
-  // unreachable. Hovering warms the row in the provider's own brand colour.
+  /**
+   * The provider's own box.
+   *
+   * `overflow-hidden` is load-bearing: the header's tinted fill and the meter
+   * fills inside are square-cornered rectangles, and without the clip they
+   * painted straight through the box's rounded corners — the "colored fills
+   * escape the radius" defect. The radius belongs to the box, so the clip has
+   * to as well.
+   */
   const rowClass = cn(
-    "group grid grid-cols-1 gap-x-6 gap-y-3 px-4 py-3.5 transition-[background-color] duration-150 motion-reduce:transition-none",
-    // The seam between provider groups, drawn like every other seam on these
-    // surfaces. `border-separator` is the full-strength token: against a
-    // hairline card outline it read as a hard rule stamped across the panel.
-    divided && `border-t ${USAGE_DIVIDER_COLOR_CLASS}`,
+    "flex min-w-0 flex-col overflow-hidden rounded-lg border transition-[background-color] duration-150 motion-reduce:transition-none",
   );
-  const rowStyle = hovering
-    ? { background: `color-mix(in srgb, ${tone} 9%, transparent)` }
-    : undefined;
+  const rowStyle = {
+    borderColor: `color-mix(in srgb, ${tone} 34%, transparent)`,
+    background: hovering
+      ? `color-mix(in srgb, ${tone} 9%, var(--color-surface-raised))`
+      : `color-mix(in srgb, ${tone} 5%, var(--color-surface-raised))`,
+  };
 
   // Dismissal is per mount, so it survives re-renders and provider polls but
   // not closing the popover or leaving the page.
@@ -589,65 +538,23 @@ function ProviderLimitsRow({
     )
     : null;
 
-  // `status.accountEmail` is whichever login the host polled last. With one
-  // account that names the numbers below it; with two it contradicts them,
-  // because the cards already carry an initials chip per account. The heading
-  // stays silent in that case rather than picking a side.
-  const providerAccountCount = accounts.filter(
-    (account) => account.provider === provider,
-  ).length;
-  const headingEmail = providerAccountCount > 1 ? null : status?.accountEmail ?? null;
+  const usageUrl = status?.accountUrl ?? usageProviderAccountUrl(provider);
+  const sourceLine = providerSourceLine(status, nowMs);
+  // One row per account, each with that account's own windows stacked.
+  const rows = buildAccountRows(provider, windows, accounts, nowMs);
+  const dim = windows.length === 0 && (!isAuthed || isUsageUnauthed);
 
-  const identity = (
-    <div className="flex min-w-0 flex-col gap-1">
-      <ProviderHeading
-        provider={provider}
-        color={tone}
-        label={meta.label}
-        usageUrl={status?.accountUrl ?? usageProviderAccountUrl(provider)}
-        dim={windows.length === 0 && (!isAuthed || isUsageUnauthed)}
-      />
-      <span className={cn(USAGE_TEXT.micro, USAGE_NUMERIC_CLASS, "text-muted-fg")}>
-        {providerSourceLine(status, nowMs)}
-      </span>
-      {headingEmail ? (
-        <span className={cn(USAGE_TEXT.micro, "truncate text-muted-fg")} title={headingEmail}>
-          {headingEmail}
-        </span>
-      ) : null}
-    </div>
-  );
-
-  if (windows.length === 0 && (!isAuthed || isUsageUnauthed)) {
-    return (
-      <div
-        className={rowClass}
-        style={rowStyle}
-        onMouseEnter={handleEnter}
-        onMouseLeave={handleLeave}
-      >
-        {identity}
-        <div className="self-center">
-          {statusNotice ?? (
-            <NoticeRow
-              message={status?.message ?? "Not signed in"}
-              actionLabel="Reconnect"
-              onAction={() => void onRefresh()}
-              actionDisabled={refreshing}
-            />
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  // Short window first, then the long one, then whatever else the provider
-  // reports — the order a reader checks them in.
-  const limitCards = orderLimitCards(buildLimitCards(provider, windows, accounts, nowMs));
-  const trendWindow = windows.find((w) => w.windowType === "weekly")
-    ?? windows.find((w) => w.windowType === "monthly");
-  const has7d = !!dailyUsage7d && dailyUsage7d.some((value) => value > 0);
-  const modelBreakdown = trendWindow?.modelBreakdown;
+  /**
+   * The row a provider shows before it has any readings.
+   *
+   * Its key is the one `buildAccountRows` gives an account-less row, so the
+   * first real reading REPLACES this row rather than remounting beside it. A
+   * different key here made React tear the row down and build a new one the
+   * moment the snapshot landed, which threw away hover and popover state.
+   */
+  const identityRows: AccountLimitRow[] = rows.length > 0
+    ? rows
+    : [{ key: `${provider}:this-machine`, provider, account: null, cells: [] }];
 
   return (
     <div
@@ -656,69 +563,86 @@ function ProviderLimitsRow({
       onMouseEnter={handleEnter}
       onMouseLeave={handleLeave}
     >
-      <div className="flex min-w-0 flex-col gap-2">
-        {identity}
-        {modelBreakdown ? <ModelSplitLine breakdown={modelBreakdown} /> : null}
-        {has7d && dailyUsage7d ? (
-          <div className="flex items-center gap-2">
-            <Sparkline7d data={dailyUsage7d} color={tone} nowMs={nowMs} />
-            <span className={cn(USAGE_TEXT.micro, "text-muted-fg")}>7d</span>
-          </div>
+      {/* Provider mark left, its limits page right. The provider's NAME is not
+          here: the mark is the name, and the row beneath it is the account —
+          spelling out "Claude" above `ada@example.com` was the popover saying
+          the same thing twice in the space it had. */}
+      <div
+        className="flex min-w-0 items-center justify-between gap-2 px-3 py-1.5"
+        style={{ background: `color-mix(in srgb, ${tone} 13%, transparent)` }}
+      >
+        <span className="flex min-w-0 items-center gap-2" title={`${meta.label} · ${sourceLine}`}>
+          <ProviderMark provider={provider} size={16} dim={dim} />
+          <span className="sr-only">{meta.label}</span>
+        </span>
+        {usageUrl ? (
+          <button
+            type="button"
+            onClick={() => openExternalUrl(usageUrl)}
+            className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-fg hover:bg-muted hover:text-fg"
+            aria-label={`Open ${meta.label} limits in browser`}
+            title={`Open ${meta.label} limits in browser`}
+          >
+            <ArrowSquareOut size={12} weight="regular" />
+          </button>
         ) : null}
       </div>
 
-      <div className="flex min-w-0 flex-col gap-3">
-        {spendControlReached ? <NoticeRow message="Spending cap reached" /> : null}
+      <div className="flex min-w-0 flex-col gap-2 px-3 py-2.5">
+      {spendControlReached ? <NoticeRow message="Spending cap reached" /> : null}
 
-        {/* A failed refresh sits above the readings it could not update — with
-            the provider's own words, an honest retry, and a dismiss (see
-            `ProviderStatusNotice`). It never claims the bars are gone. */}
-        {statusNotice}
+      {/* A failed refresh sits above the readings it could not update — with
+          the provider's own words, an honest retry, and a dismiss (see
+          `ProviderStatusNotice`). It never claims the bars are gone. */}
+      {statusNotice}
 
-        {messages.slice(0, 1).map((message) => (
-          <div
-            key={message.id}
-            className={cn(
-              USAGE_TEXT.micro,
-              "rounded-md border bg-surface-recessed px-2.5 py-1.5 leading-relaxed text-muted-fg",
-              USAGE_HAIRLINE_CLASS,
-            )}
-            title={message.message}
-          >
-            <span className="mr-1.5 font-semibold text-fg/75">
-              {message.kind === "headline" ? "Notice" : "Update"}
-            </span>
-            {message.message}
-          </div>
-        ))}
+      {messages.slice(0, 1).map((message) => (
+        <div
+          key={message.id}
+          className={cn(
+            USAGE_TEXT.micro,
+            "rounded-md border bg-surface-recessed px-2.5 py-1.5 leading-relaxed text-muted-fg",
+            USAGE_HAIRLINE_CLASS,
+          )}
+          title={message.message}
+        >
+          <span className="mr-1.5 font-semibold text-fg/75">
+            {message.kind === "headline" ? "Notice" : "Update"}
+          </span>
+          {message.message}
+        </div>
+      ))}
 
-        {windows.length > 0 ? (
-          /* One card per window, stacked.
-           *
-           * Each card is headroom ("49% left"), the next restore, and one
-           * segment per account — so a provider with two logins reads as two
-           * chips on one row rather than two copies of the same bar. The stack
-           * is unconditional: this band lives in a 420px popover, and there is
-           * no width at which side-by-side cards would be legible. */
-          <div className="grid grid-cols-1 gap-y-4">
-            {limitCards.map((card) => (
-              <UsageLimitCard
-                key={card.key}
-                card={card}
-                theme={theme}
-                fallbackAccountUrl={status?.accountUrl ?? usageProviderAccountUrl(provider)}
-                nowMs={nowMs}
-                reducedMotion={reducedMotion}
-              />
-            ))}
-          </div>
-        ) : status?.state === "error" ? (
-          <div className={cn(USAGE_TEXT.detail, "text-muted-fg")}>
-            {status.message ?? "Couldn't reach this provider — retrying"}
-          </div>
-        ) : (
-          <SkeletonRows />
-        )}
+      {identityRows.map((row) => (
+        <UsageAccountRow
+          key={row.key}
+          row={row}
+          theme={theme}
+          providerTitle={sourceLine}
+          fallbackAccountUrl={usageUrl}
+          fallbackEmail={status?.accountEmail ?? null}
+          nowMs={nowMs}
+          reducedMotion={reducedMotion}
+          dim={dim}
+        />
+      ))}
+
+      {rows.length > 0 ? null : dim ? (
+        statusNotice ? null : (
+          <NoticeRow
+            message={status?.message ?? "Not signed in"}
+            actionLabel="Reconnect"
+            onAction={() => void onRefresh()}
+            actionDisabled={refreshing}
+          />
+        )
+      ) : status?.state === "error" ? (
+        <div className={cn(USAGE_TEXT.detail, "text-muted-fg")}>
+          {status.message ?? "Couldn't reach this provider — retrying"}
+        </div>
+      ) : (
+        <SkeletonRows />
+      )}
       </div>
     </div>
   );
@@ -726,28 +650,16 @@ function ProviderLimitsRow({
 
 function ProviderHeading({
   provider,
-  color,
   label,
   usageUrl,
-  dim,
 }: {
   provider: UsageProvider;
-  color: string;
   label: string;
   usageUrl?: string;
-  dim?: boolean;
 }) {
-  const Logo = provider === "claude" ? ClaudeLogo : provider === "codex" ? CodexLogo : null;
   return (
     <div className="flex items-center gap-2">
-      {Logo ? (
-        <Logo size={16} className={cn("shrink-0 text-fg", dim && "opacity-55")} />
-      ) : (
-        <span
-          className="h-2 w-2 shrink-0 rounded-full"
-          style={{ background: color, opacity: dim ? 0.5 : 1 }}
-        />
-      )}
+      <ProviderMark provider={provider} size={16} />
       <span className={cn(USAGE_TEXT.body, "font-semibold tracking-[-0.01em] text-fg")}>{label}</span>
       {usageUrl ? (
         <button
@@ -804,7 +716,6 @@ function ExtraUsageCard({
       <div className="flex items-center justify-between gap-3">
         <ProviderHeading
           provider={extra.provider}
-          color={tone}
           label={`${meta.label} extra usage`}
           usageUrl={usageProviderAccountUrl(extra.provider)}
         />

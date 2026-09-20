@@ -2399,6 +2399,7 @@ function RightPaneComponent({
     favorites: string[];
     recents: string[];
     activeModelId: string | null;
+    activeCredentialId?: string | null;
     activeReasoningEffort?: string | null;
     aiStatus?: AiSettingsStatus | null;
     interfaceMode?: AdeCodeInterfaceMode;
@@ -2520,7 +2521,7 @@ function RightPaneComponent({
       ) : null}
 
       {content.kind === "usage" ? (
-        <UsagePane content={content} width={paneWidth} />
+        <UsagePane content={content} width={paneWidth} selectedIndex={selectedIndex} />
       ) : null}
 
       {content.kind === "diff" ? (
@@ -2579,6 +2580,7 @@ function RightPaneComponent({
             favorites: modelPickerInputs.favorites,
             recents: modelPickerInputs.recents,
             activeModelId: modelPickerInputs.activeModelId,
+            activeCredentialId: modelPickerInputs.activeCredentialId,
             activeReasoningEffort: modelPickerInputs.activeReasoningEffort,
             aiStatus: modelPickerInputs.aiStatus,
             interfaceMode: modelPickerInputs.interfaceMode,

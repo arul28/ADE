@@ -39,6 +39,7 @@ import {
   type AgentChatPermissionMode,
   type AgentChatParallelLaunchState,
   type AgentChatSessionProfile,
+  type AgentChatSessionStatus,
   type ChatSurfaceChip,
   type ChatSurfaceProfile,
   type ChatSurfacePresentation,
@@ -66,22 +67,21 @@ import {
   cursorSessionRunsInCloud,
 } from "../../../shared/types/chat";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
-import { isSteeringPendingRequest } from "../../../shared/pendingInputAnswers";
+import {
+  PENDING_INPUT_SEND_BLOCKED_MESSAGE,
+  isDismissiblePendingRequest,
+  isNonBlockingPendingRequest,
+} from "../../../shared/pendingInputAnswers";
 import { resolveSubagentCapability } from "../../../shared/subagentCapabilities";
 import { formatSubagentModelChip, subagentModelAttribution } from "../../../shared/chatSubagents";
 import {
   buildChatContextAttachmentPrompt,
   makeLinearIssueContextAttachment,
-  makeOrchestrationAnnotationContextAttachment,
   mergeChatContextAttachments,
   normalizeChatContextAttachments,
   removeChatContextAttachment,
 } from "../../../shared/chatContextAttachments";
 import { isChatMentionTokenBody } from "../../../shared/chatMentions";
-import type {
-  OrchestrationAnnotationEventDetail,
-  OrchestrationContextItem,
-} from "../../../shared/types/orchestration";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import {
   captureAgentChatHistoryArrivalWatermark,
@@ -211,8 +211,6 @@ import {
   type ExternalSessionSummary,
 } from "../terminals/importSessions/contract";
 import { CHAT_SHELL_HEADER_CLASS, ChatSurfaceShell } from "./ChatSurfaceShell";
-import { OrchestratorLeadFrame } from "./OrchestratorLeadFrame";
-import { OrchestrationPanel } from "../orchestration/OrchestrationPanel";
 import { chatAccentForRenderedChat, chatChipToneClass } from "./chatSurfaceTheme";
 import { ChatComputerUsePanel } from "./ChatComputerUsePanel";
 import { ChatIosSimulatorPanel } from "./ChatIosSimulatorPanel";
@@ -1532,8 +1530,8 @@ type ParallelModelRowState = NativeControlState & {
 type WorkDraftLaunchKind = "chat" | "cli";
 type WorkDraftStorageKind = WorkDraftLaunchKind | "work-start";
 
-// Orchestrator is an orthogonal boolean now, so every launch kind shares the
-// single "work-start" bucket — prompt/model/lane persist across chat↔cli↔orchestrator.
+// Every launch kind shares the single "work-start" bucket — prompt/model/lane
+// persist across chat↔cli.
 function normalizeWorkDraftStorageKind(): WorkDraftStorageKind {
   return "work-start";
 }
@@ -1948,7 +1946,9 @@ const HANDOFF_DROID_MODES: Array<{ value: AgentChatDroidPermissionMode; label: s
   { value: "auto-low", label: "Auto low" },
   { value: "auto-medium", label: "Auto medium" },
   { value: "auto-high", label: "Auto high" },
-  { value: "agi", label: "AGI (orchestrator)" },
+  // "AGI", as the composer's own picker names it. The "(orchestrator)" gloss
+  // was the last place ADE's removed orchestration vocabulary still showed.
+  { value: "agi", label: "AGI" },
 ];
 
 const handoffSelectCls = cn(
@@ -2159,39 +2159,7 @@ function contextAttachmentMatchKey(attachment: AgentChatContextAttachment): stri
       return `${attachment.type}:${attachment.issue.id}`;
     case "github_issue":
       return `${attachment.type}:${attachment.issue.id}`;
-    case "orchestration_annotation": {
-      const anchor = attachment.item.anchor;
-      const anchorId = anchor.id ?? "anon";
-      return `${attachment.type}:${attachment.item.runId}:${anchor.kind}:${anchorId}:${attachment.item.capturedAt}`;
-    }
   }
-}
-
-/**
- * Runtime guard for the OrchestrationContextItem payload arriving via the
- * `ade:agent-chat:add-plan-annotation` CustomEvent. We validate the bare
- * minimum so a malformed event can't crash the renderer.
- */
-function isOrchestrationContextItem(value: unknown): value is OrchestrationContextItem {
-  if (!value || typeof value !== "object") return false;
-  const record = value as Record<string, unknown>;
-  if (record.type !== "orchestration_annotation") return false;
-  if (typeof record.runId !== "string" || !record.runId.length) return false;
-  if (typeof record.capturedAt !== "string" || !record.capturedAt.length) return false;
-  if (typeof record.comment !== "string") return false;
-  if (typeof record.selectionExcerpt !== "string") return false;
-  const anchor = record.anchor as Record<string, unknown> | null | undefined;
-  if (!anchor || typeof anchor !== "object") return false;
-  if (typeof anchor.kind !== "string" || !anchor.kind.length) return false;
-  if (typeof anchor.preview !== "string") return false;
-  return true;
-}
-
-function isOrchestrationPlanApprovalRequest(
-  request: DerivedPendingInput["request"] | null | undefined,
-): boolean {
-  return request?.kind === "plan_approval"
-    && request.providerMetadata?.orchestrationPlanApproval === true;
 }
 
 function sortedMatchKeys<T>(items: T[] | undefined, readKey: (item: T) => string): string[] {
@@ -2684,45 +2652,8 @@ function normalizeComposerFileAttachments(value: unknown): AgentChatFileRef[] {
   return [...out.values()];
 }
 
-function normalizeComposerOrchestrationContextAttachment(value: unknown): AgentChatContextAttachment | null {
-  if (!isRecord(value) || value.type !== "orchestration_annotation") return null;
-  const item = isRecord(value.item) ? value.item : null;
-  const anchor = item && isRecord(item.anchor) ? item.anchor : null;
-  const runId = item ? nonEmptyString(item.runId) : null;
-  const capturedAt = item ? nonEmptyString(item.capturedAt) : null;
-  const anchorKind = anchor ? nonEmptyString(anchor.kind) : null;
-  if (!item || !anchor || !runId || !capturedAt || !anchorKind) return null;
-  const normalizedItem: OrchestrationContextItem = {
-    type: "orchestration_annotation",
-    runId,
-    anchor: {
-      kind: anchorKind as OrchestrationContextItem["anchor"]["kind"],
-      ...(nonEmptyString(anchor.id) ? { id: nonEmptyString(anchor.id)! } : {}),
-      preview: typeof anchor.preview === "string" ? anchor.preview : "",
-      ...(nonEmptyString(anchor.href) ? { href: nonEmptyString(anchor.href)! } : {}),
-      ...(nonEmptyString(anchor.sectionId) ? { sectionId: nonEmptyString(anchor.sectionId)! } : {}),
-    },
-    selectionExcerpt: typeof item.selectionExcerpt === "string" ? item.selectionExcerpt : "",
-    comment: typeof item.comment === "string" ? item.comment : "",
-    capturedAt,
-  };
-  return {
-    type: "orchestration_annotation",
-    item: normalizedItem,
-    source: "manual",
-    attachedAt: nullableString(value.attachedAt) ?? undefined,
-  };
-}
-
 function normalizeComposerContextAttachments(value: unknown): AgentChatContextAttachment[] {
-  const linear = normalizeChatContextAttachments(value);
-  const annotations = Array.isArray(value)
-    ? value.flatMap((entry) => {
-        const normalized = normalizeComposerOrchestrationContextAttachment(entry);
-        return normalized ? [normalized] : [];
-      })
-    : [];
-  return mergeChatContextAttachments(linear, annotations);
+  return normalizeChatContextAttachments(value);
 }
 
 function normalizeComposerIosContextItems(value: unknown): IosElementContextItem[] {
@@ -3281,7 +3212,6 @@ export function AgentChatPane({
   onInitialLinearIssueContextConsumed,
   onSessionCreated,
   workDraftKind = "chat",
-  orchestratorEnabled = false,
   onLaunchCliSession,
   onOpenShellSession,
   onImportedSession,
@@ -3345,13 +3275,6 @@ export function AgentChatPane({
   onInitialLinearIssueContextConsumed?: () => void;
   onSessionCreated?: (session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => void | Promise<void>;
   workDraftKind?: "chat" | "cli";
-  /**
-   * Orthogonal orchestrator flag: when true the chat draft launches an
-   * orchestrator-lead run. Independent of `workDraftKind` so toggling
-   * chat↔cli↔orchestrator never splits prompt/model/lane draft state. CLI
-   * surfaces force this off (orchestrator has no CLI form).
-   */
-  orchestratorEnabled?: boolean;
   onLaunchCliSession?: (args: WorkPtyLaunchArgs) => Promise<WorkPtyLaunchResult>;
   onOpenShellSession?: (
     laneId: string,
@@ -3467,6 +3390,12 @@ export function AgentChatPane({
   const navigate = useNavigate();
   const openAiProvidersSettings = useCallback(() => {
     navigate(settingsRouteFor("agents.providers"));
+  }, [navigate]);
+  /* The harnesses tab's empty state has one way forward and this is it. Routed
+     through the manifest rather than a literal `?harnesses=1`, so the page can
+     move without stranding the CTA. */
+  const openHarnessSettings = useCallback(() => {
+    navigate(settingsRouteFor("agents.harnesses"));
   }, [navigate]);
   const openLinearSettings = useCallback(() => {
     navigate(settingsRouteFor("integrations.linear"));
@@ -3674,6 +3603,17 @@ export function AgentChatPane({
    * off. Reading the ref makes that path see the user's actual intent.
    */
   const fastModeRef = useRef(false);
+  /* The brain the next launch runs on, when the picker named one.
+
+     A ref rather than state: it is read once, at create time, and never
+     rendered — the trigger reads the SESSION's presetId, not this. Cleared by
+     any selection that names neither, so switching back to an ordinary model
+     row cannot leave a stale preset attached to the next launch. */
+  const draftLaunchBrainRef = useRef<{ presetId?: string; credentialId?: string }>({});
+  /* The same preset, held as state so the composer's model trigger can name it
+     before the chat exists. Only read while there is no selected session; a
+     running chat is named by its own `presetId`. */
+  const [draftHarnessPresetId, setDraftHarnessPresetId] = useState<string | null>(null);
   const setFastModeState = useCallback((enabled: boolean) => {
     fastModeRef.current = enabled;
     setFastMode(enabled);
@@ -4592,6 +4532,19 @@ export function AgentChatPane({
     }
   }, [selectedSessionId]);
   const selectedSubagentSnapshots = useMemo(() => deriveChatSubagentSnapshots(selectedEvents), [selectedEvents]);
+  /**
+   * Session status of every chat the roster knows, keyed by id, so the actions
+   * pane can tell a spawned subagent row whose chat is still active apart from
+   * one whose chat went idle or ended. Without it a delegate row keeps reading
+   * "running" for as long as the parent transcript is kept — the SDK emits no
+   * terminal event for it when the parent process exits.
+   */
+  const knownChatStatusesById = useMemo(() => {
+    const map = new Map<string, AgentChatSessionStatus>();
+    for (const row of sessions) map.set(row.sessionId, row.status);
+    for (const row of archivedSessions) map.set(row.sessionId, row.status);
+    return map;
+  }, [sessions, archivedSessions]);
   const selectedScheduledWorkSnapshots = useMemo(
     () => mergeManagedScheduledWorkSnapshots(selectedEvents, selectedSession?.scheduledWork),
     [selectedEvents, selectedSession?.scheduledWork],
@@ -4616,7 +4569,7 @@ export function AgentChatPane({
     [selectedSession?.provider],
   );
   // Droid AGI mission state (Missions tab). Null unless the session is a Droid
-  // orchestrator run that has surfaced mission events — non-AGI chats stay null
+  // AGI run that has surfaced mission events — non-AGI chats stay null
   // and the Missions tab never appears.
   const selectedMission = useMemo(() => deriveMissionSnapshot(selectedEvents), [selectedEvents]);
   // Keep keyboard recall scoped to the transcript currently selected in Work.
@@ -4953,22 +4906,17 @@ export function AgentChatPane({
   const selectedPendingInputs = composerSessionId
     ? (resolvedPendingInputsBySession[composerSessionId] ?? [])
     : [];
+  // Non-blocking cards — Codex steering and Codex async questions — share the
+  // above-composer slot and leave the composer live. The partition is
+  // `blocking === false` rather than "is it steering", because the placement
+  // follows from the card not gating sends, not from which provider raised it.
   const steeringPendingInput = selectedPendingInputs.find((entry) =>
-    isSteeringPendingRequest(entry.request),
+    isNonBlockingPendingRequest(entry.request),
   ) ?? null;
   const pendingInput = selectedPendingInputs.find((entry) =>
-    !isSteeringPendingRequest(entry.request),
+    !isNonBlockingPendingRequest(entry.request),
   ) ?? null;
-  const planApprovalPendingInput = selectedPendingInputs.find((entry) =>
-    isOrchestrationPlanApprovalRequest(entry.request),
-  ) ?? null;
-  const composerPendingInput = (() => {
-    if (!pendingInput) return null;
-    if (isOrchestrationPlanApprovalRequest(pendingInput.request)) {
-      return { ...pendingInput.request, blocking: false, canProceedWithoutAnswer: true };
-    }
-    return pendingInput.request;
-  })();
+  const composerPendingInput = pendingInput ? pendingInput.request : null;
   const selectedSessionAwaitingInput =
     Boolean(pendingInput)
     || (Boolean(composerSessionId) && selectedSession?.awaitingInput === true);
@@ -5786,10 +5734,7 @@ export function AgentChatPane({
   const chatHeaderLaneColor = getLaneAccent(chatHeaderLane, 0);
   const assistantLabel = presentation?.assistantLabel?.trim()
     || resolveAssistantLabel(selectedModelDesc, selectedSession?.provider);
-  const defaultMessagePlaceholder =
-    orchestratorEnabled && !selectedSessionId
-      ? "Describe the orchestration goal..."
-      : "Type to vibecode...";
+  const defaultMessagePlaceholder = "Type to vibecode...";
   const messagePlaceholder = presentation?.messagePlaceholder?.trim() || defaultMessagePlaceholder;
   const effectiveMessagePlaceholder = projectTransitionBlocksChat
     ? "Project is switching..."
@@ -8549,35 +8494,18 @@ export function AgentChatPane({
       if (!detail?.item) return;
       void addBuiltInBrowserContext(detail.item);
     };
-    // Plan-panel annotation events (goal.md §10.7). The popover composes an
-    // OrchestrationContextItem, dispatches `ade:agent-chat:add-plan-annotation`,
-    // and the listener below merges it into the composer attachment tray via
-    // the existing `mergeChatContextAttachments` flow. Pure ephemeral — no
-    // persistence to the manifest in v1.
-    const onAddPlanAnnotation = (event: Event) => {
-      const detail = (event as CustomEvent<OrchestrationAnnotationEventDetail>).detail;
-      if (!matchesThisChat(detail?.sessionId)) return;
-      const rawItem = detail?.item;
-      if (!isOrchestrationContextItem(rawItem)) return;
-      setContextAttachments((prev) => mergeChatContextAttachments(prev, [
-        makeOrchestrationAnnotationContextAttachment(rawItem),
-      ]));
-    };
-
     window.addEventListener("ade:agent-chat:add-attachment", onAddAttachment);
     window.addEventListener("ade:agent-chat:insert-draft", onInsertDraft);
     window.addEventListener("ade:agent-chat:add-ios-context", onAddIosContext);
     window.addEventListener("ade:agent-chat:add-app-control-context", onAddAppControlContext);
     window.addEventListener("ade:agent-chat:add-builtin-browser-context", onAddBuiltInBrowserContext);
-    window.addEventListener("ade:agent-chat:add-plan-annotation", onAddPlanAnnotation);
     return () => {
       window.removeEventListener("ade:agent-chat:add-attachment", onAddAttachment);
       window.removeEventListener("ade:agent-chat:insert-draft", onInsertDraft);
       window.removeEventListener("ade:agent-chat:add-ios-context", onAddIosContext);
       window.removeEventListener("ade:agent-chat:add-app-control-context", onAddAppControlContext);
       window.removeEventListener("ade:agent-chat:add-builtin-browser-context", onAddBuiltInBrowserContext);
-      window.removeEventListener("ade:agent-chat:add-plan-annotation", onAddPlanAnnotation);
-    };
+      };
   }, [
     addAppControlContext,
     addAttachment,
@@ -9209,10 +9137,9 @@ export function AgentChatPane({
       notifyOptions?: AgentChatSessionCreatedOptions;
       launchState?: DraftLaunchSnapshot;
       // Draft launches pass a guard that throws if the originating project
-      // changed (or the launch timed out); checked before the inner
-      // orchestration mutation so a bundle is never allocated in the wrong project.
+      // changed (or the launch timed out).
       assertActive?: () => void;
-      // Originating project binding, used to pin the orchestrator lead rollback.
+      // Originating project binding.
       pin?: OpenProjectBinding | null;
     } = {},
   ): Promise<AgentChatSession> => {
@@ -9236,12 +9163,6 @@ export function AgentChatPane({
         ...summarizeNativeControls(provider, launchControls),
         ...(provider === "cursor" ? { cursorConfigValues: launchControls.cursorConfigValues } : {}),
       };
-      // Orchestrator-lead draft: force the interactionMode so the lead chat
-      // boots with the orchestrator skill + tool gates (`goal.md` §10.1).
-      const orchestratorOverrides: Partial<Parameters<typeof window.ade.agentChat.create>[0]> =
-        orchestratorEnabled
-          ? { interactionMode: "orchestrator-lead" as AgentChatInteractionMode }
-          : {};
       const createArgs = {
         laneId: targetLaneId,
         provider,
@@ -9250,8 +9171,11 @@ export function AgentChatPane({
         sessionProfile,
         reasoningEffort: launchReasoningEffort,
         fastMode: launchFastMode,
+        // The saved preset (or the stored key) the picker named. Sent as an id:
+        // the runtime that owns the lane is the one that can read this
+        // machine's preset list and key store, so nothing resolved travels.
+        ...draftLaunchBrainRef.current,
         ...nativeControlPayload,
-        ...orchestratorOverrides,
       };
       const created = options.pin
         ? await window.ade.agentChat.create(createArgs, options.pin)
@@ -9264,42 +9188,6 @@ export function AgentChatPane({
         throw new Error("The chat was not created: this ADE runtime returned a session with no id.");
       }
       invalidateAgentChatSessionListCache({ laneId: targetLaneId });
-      // Follow-up: allocate the orchestration bundle. We do this immediately
-      // so the bundle path is persisted alongside the new chat (workers will
-      // pick it up from the manifest). If it fails, stop before sending the
-      // first prompt so a half-created lead chat cannot start working.
-      if (orchestratorEnabled) {
-        try {
-          options.assertActive?.();
-          const runCreateArgs = {
-            laneId: targetLaneId,
-            leadSessionId: created.id,
-          };
-          const runCreate = options.pin
-            ? await window.ade.orchestration.runCreate(runCreateArgs, options.pin)
-            : await window.ade.orchestration.runCreate(runCreateArgs);
-          // Stitch the run id into the local session summary cache so the
-          // OrchestrationPanel mounts on the next render. The main process
-          // persists the same fields against the chat record.
-          patchSessionSummary(created.id, {
-            orchestrationRunId: runCreate.runId,
-            orchestrationRole: "lead",
-          });
-        } catch (runCreateError) {
-          console.warn(
-            "[AgentChatPane] orchestration.runCreate failed; lead chat created without bundle",
-            runCreateError,
-          );
-          await window.ade.agentChat.delete({ sessionId: created.id }, options.pin).catch((cleanupError: unknown) => {
-            console.warn("[AgentChatPane] orchestration lead cleanup failed", cleanupError);
-          });
-          const message = runCreateError instanceof Error
-            ? `Orchestration bundle could not be allocated: ${runCreateError.message}`
-            : "Orchestration bundle could not be allocated.";
-          setError(message);
-          throw new Error(message);
-        }
-      }
       const launchConfig = buildLastLaunchConfig({
         model: created.model,
         modelId: created.modelId ?? launchModelId,
@@ -9338,7 +9226,7 @@ export function AgentChatPane({
       if (options.notify) notifySessionCreated(created, options.notifyOptions);
       if (targetLaneId === laneId && canRefreshPinnedProject(options.pin)) void refreshSessions({ force: true }).catch(() => {});
       return created;
-  }, [canRefreshPinnedProject, fastMode, constrainedModelSelectionError, currentNativeControls, effectiveReasoningEffort, executionMode, initialNativeControls, laneId, lastLaunchConfigStorageKey, modelId, notifySessionCreated, orchestratorEnabled, patchSessionSummary, refreshSessions, touchSession, workDraftKind]);
+  }, [canRefreshPinnedProject, fastMode, constrainedModelSelectionError, currentNativeControls, effectiveReasoningEffort, executionMode, initialNativeControls, laneId, lastLaunchConfigStorageKey, modelId, notifySessionCreated, patchSessionSummary, refreshSessions, touchSession, workDraftKind]);
 
   const createSession = useCallback(async (): Promise<string | null> => {
     if (createSessionPromiseRef.current) {
@@ -10890,6 +10778,37 @@ export function AgentChatPane({
     }
   }, [refreshSessions, selectedSessionId, touchSession]);
 
+  /**
+   * Throw a dismissible card away.
+   *
+   * Separate from `handleApproval` because it is a different backend call with
+   * a different refusal: the host rejects a dismiss for any card the provider
+   * is still waiting on, and that refusal has to reach the user rather than be
+   * laundered into a decline.
+   */
+  const handleDismissPendingInput = useCallback(async (itemId: string): Promise<boolean> => {
+    if (!selectedSessionId) return false;
+    try {
+      touchSession(selectedSessionId);
+      setRespondingApprovalIds((prev) => new Set(prev).add(itemId));
+      await window.ade.agentChat.dismissPendingInput({
+        sessionId: selectedSessionId,
+        itemId,
+      }, chatRuntimePinRef.current);
+      setPendingInputsBySession((prev) => ({
+        ...prev,
+        [selectedSessionId]: (prev[selectedSessionId] ?? []).filter((entry) => entry.itemId !== itemId),
+      }));
+      setRespondingApprovalIds((prev) => { const next = new Set(prev); next.delete(itemId); return next; });
+      await refreshSessions().catch(() => {});
+      return true;
+    } catch (dismissError) {
+      setRespondingApprovalIds((prev) => { const next = new Set(prev); next.delete(itemId); return next; });
+      setError(dismissError instanceof Error ? dismissError.message : String(dismissError));
+      return false;
+    }
+  }, [refreshSessions, selectedSessionId, touchSession]);
+
   const submit = useCallback(async (activeTurnDispatchMode?: AgentChatDispatchSteerMode) => {
     // A turn is about to run against this worktree — surface the branch-drift
     // strip if HEAD has wandered off the lane's branch. No-op when it hasn't.
@@ -10908,31 +10827,9 @@ export function AgentChatPane({
     }
     if (selectedSessionId) {
       const sessionPending = resolvedPendingInputsBySession[selectedSessionId] ?? [];
-      const planReadyGate = sessionPending.find((entry) =>
-        isOrchestrationPlanApprovalRequest(entry.request),
-      ) ?? null;
-      const onlyPlanReadyGatePending = sessionPending.length > 0
-        && sessionPending.every((entry) => isOrchestrationPlanApprovalRequest(entry.request));
-      const draftText = draft.trim();
-      if (planReadyGate && onlyPlanReadyGatePending && draftText.length > 0) {
-        const hasUnsupportedRevisionContext = attachments.length > 0
-          || contextAttachments.length > 0
-          || iosElementContextItems.length > 0
-          || appControlContextItems.length > 0
-          || builtInBrowserContextItems.length > 0;
-        if (hasUnsupportedRevisionContext) {
-          setError("Plan revisions from the ready gate are text-only. Remove attachments or click Keep planning first.");
-          return;
-        }
-        clearPromptSuggestionForSession(selectedSessionId);
-        void copyPromptForLaunch(draftText);
-        const resolved = await handleApproval(planReadyGate.itemId, "decline", draftText);
-        if (resolved) setDraft("");
-        return;
-      }
       const hasBlockingPending = sessionPending.some((entry) => entry.request.blocking);
       if (hasBlockingPending || selectedSession?.awaitingInput === true) {
-        setError("Answer or decline the pending request before sending another message.");
+        setError(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
         return;
       }
     }
@@ -11522,13 +11419,7 @@ export function AgentChatPane({
         try {
           setOptimisticIfAllowed(sessionId);
           const sendInteractionMode: AgentChatInteractionMode | null =
-            sessionProvider === "claude"
-              ? (
-                orchestratorEnabled || selectedSession?.interactionMode === "orchestrator-lead"
-                  ? "orchestrator-lead"
-                  : interactionMode
-              )
-              : null;
+            sessionProvider === "claude" ? interactionMode : null;
           await window.ade.agentChat.send({
             sessionId,
             text: finalText,
@@ -11679,7 +11570,6 @@ export function AgentChatPane({
     appControlContextItems,
     builtInBrowserContextItems,
     workDraftKind,
-    orchestratorEnabled,
   ]);
 
   const compactContext = useCallback(async () => {
@@ -12617,6 +12507,8 @@ export function AgentChatPane({
     <ChatSubagentsPanel
       sessionId={selectedSessionId}
       snapshots={selectedSubagentSnapshots}
+      runtimeAlive={selectedSession?.runtimeAlive}
+      childChatStatuses={knownChatStatusesById}
       events={selectedEvents}
       todoItems={selectedTodoItems}
       scheduleItems={selectedScheduleItems}
@@ -13477,7 +13369,7 @@ export function AgentChatPane({
               const title = chatSessionTitle(session);
               const isActive = session.sessionId === selectedSessionId;
               const sessionNeedsInput = (resolvedPendingInputsBySession[session.sessionId] ?? [])
-                .some((entry) => !isSteeringPendingRequest(entry.request))
+                .some((entry) => !isNonBlockingPendingRequest(entry.request))
                 || session.awaitingInput === true;
               const isRunning = !sessionNeedsInput && turnActiveBySession[session.sessionId] === true;
               const sessionReadyForPrompt = !sessionNeedsInput && !isRunning && session.status === "idle";
@@ -13579,10 +13471,6 @@ export function AgentChatPane({
       ) : null}
     </div>
   );
-
-  const activeOrchestrationRole = selectedSession?.orchestrationRole ?? null;
-  const isOrchestratorLead = selectedSession?.interactionMode === "orchestrator-lead";
-  const isOrchestratorDraft = forceDraft && orchestratorEnabled && selectedSessionId == null;
 
   // While Claude is logged out, keep a re-login affordance pinned just above the
   // composer so it stays reachable even when the inline transcript card has
@@ -13701,6 +13589,15 @@ export function AgentChatPane({
             shouldAutofocus={layoutVariant === "grid-tile" ? shouldAutofocusComposer : false}
             sdkSlashCommands={sdkSlashCommands}
             modelId={modelId}
+            // A chat launched from a saved preset is named by the preset in the
+            // model trigger; the model id moves to the trigger's tooltip.
+            activeHarnessPresetId={selectedSessionId ? selectedSession?.presetId ?? null : draftHarnessPresetId}
+            // A tracked CLI launch drops a preset by design
+            // (`shared/harnessPresetCliGate.ts`), so the picker must not offer
+            // one here: offering a choice that is then ignored is exactly what
+            // that gate exists to prevent.
+            listsHarnessPresets={workDraftKind !== "cli"}
+            onOpenHarnessSettings={openHarnessSettings}
             modelPickerOpenRequestKey={modelPickerOpenRequestKey}
             onModelPickerOpenRequestHandled={handleModelPickerOpenRequestHandled}
             // Cloud mode narrows the picker to the models Cursor Cloud can actually run. Leaving
@@ -13803,29 +13700,6 @@ export function AgentChatPane({
             launchPromptClipboardEnabled={launchPromptClipboardEnabled}
             launchPromptClipboardNoticeEnabled={launchPromptClipboardNoticeEnabled}
             onOpenLaunchPromptClipboardSettings={openLaunchPromptClipboardSettings}
-            onStartOrchestratorChat={() => {
-              // Switch the lane to a fresh orchestrator-lead draft. The
-              // submit path will then call `agentChat.create` +
-              // `orchestration.runCreate` together.
-              try {
-                window.dispatchEvent(
-                  new CustomEvent("ade:work:start-orchestrator-chat"),
-                );
-              } catch {
-                /* dispatch is best-effort */
-              }
-            }}
-            onStopOrchestratorChat={() => {
-              try {
-                window.dispatchEvent(
-                  new CustomEvent("ade:work:stop-orchestrator-chat"),
-                );
-              } catch {
-                /* dispatch is best-effort */
-              }
-            }}
-            orchestratorModeActive={isOrchestratorDraft || isOrchestratorLead}
-            orchestrationRole={isOrchestratorDraft ? "lead" : activeOrchestrationRole}
             onModelChange={(nextModelId, options) => {
               const modelAllowed = composerConstrainModelSelection
                 ? composerAvailableModelIds.includes(nextModelId)
@@ -13842,6 +13716,16 @@ export function AgentChatPane({
                 return;
               }
               const previousFastMode = fastModeRef.current;
+              draftLaunchBrainRef.current = options?.presetId
+                ? { presetId: options.presetId }
+                : options?.credentialId
+                  ? { credentialId: options.credentialId }
+                  : {};
+              // The ref above is launch payload; this is the same choice made
+              // visible. Without it a draft picked from the Harnesses tab fell
+              // back to the model's own provider in the trigger — naming a
+              // provider the preset does not even run on.
+              setDraftHarnessPresetId(options?.presetId ?? null);
               const snapshot = buildModelSelectionSnapshot(nextModelId);
               // Ordinary model selection clears the previous cloud service
               // tier. A service-tier row selection carries the newly chosen
@@ -14292,6 +14176,9 @@ export function AgentChatPane({
             onDecline={() => {
               void handleApproval(steeringPendingInput.itemId, "decline");
             }}
+            onDismiss={isDismissiblePendingRequest(steeringPendingInput.request)
+              ? () => { void handleDismissPendingInput(steeringPendingInput.itemId); }
+              : null}
           />
         </div>
       ) : null}
@@ -14306,13 +14193,7 @@ export function AgentChatPane({
   const appPanelOpen = effectiveIosSimulatorOpen || effectiveAppControlOpen;
   const effectiveCursorCloudPaneOpen = cursorCloudPaneOpen && cursorCloudPanelAvailable;
   const terminalRightPaneOpen = chatTerminalVisible && !hasExternalTerminalPane && terminalDrawerOpen && Boolean(selectedSessionId);
-  // Orchestration: derive runId / role from the active session. When set, mount
-  // the right plan panel and (for "orchestrator-lead") wrap the chat surface in
-  // the conic-gradient frame.
-  const orchestrationRunId = selectedSession?.orchestrationRunId ?? null;
-  const orchestrationRole = activeOrchestrationRole;
-  const orchestrationPanelOpen = Boolean(orchestrationRunId);
-  const heavyRightPaneOpen = appPanelOpen || orchestrationPanelOpen || terminalRightPaneOpen || effectiveCursorCloudPaneOpen;
+  const heavyRightPaneOpen = appPanelOpen || terminalRightPaneOpen || effectiveCursorCloudPaneOpen;
   const supportsSplit = layoutVariant !== "grid-tile";
   const chatActionsFloating = chatActionsAvailable && chatActionsOpen && supportsSplit && !heavyRightPaneOpen;
   const chatActionsRightPaneOpen = chatActionsAvailable && chatActionsOpen && !chatActionsFloating;
@@ -14408,44 +14289,11 @@ export function AgentChatPane({
     </motion.div>
   );
 
-  // Orchestration plan panel — mounted whenever the active session has a
-  // runId. Lead view is fully interactive; worker/validator view is read-only.
-  const orchestrationPanelContent = orchestrationRunId ? (
-    <OrchestrationPanel
-      runId={orchestrationRunId}
-      laneId={selectedSession?.laneId ?? laneId ?? ""}
-      laneName={laneLabel ?? null}
-      viewerRole={orchestrationRole ?? undefined}
-      bundleRoot={selectedSession?.orchestrationBundlePath ?? null}
-      planApprovalPending={planApprovalPendingInput ? {
-        itemId: planApprovalPendingInput.itemId,
-        request: planApprovalPendingInput.request,
-        responding: respondingApprovalIds.has(planApprovalPendingInput.itemId),
-      } : null}
-      onPlanApproval={(itemId, decision, responseText, answers) => {
-        void handleApproval(itemId, decision, responseText, answers);
-      }}
-      onOpenSession={(sessionId) => {
-        // Switch the Work tab to the target chat session (a peer worker/validator
-        // in the same orchestration lane). TerminalsPage listens for this event.
-        try {
-          window.dispatchEvent(
-            new CustomEvent("ade:work:select-session", {
-              detail: { sessionId, laneId: selectedSession?.laneId ?? laneId ?? "" },
-            }),
-          );
-        } catch {
-          /* no-op */
-        }
-      }}
-    />
-  ) : null;
-
   return (
     <ChatRuntimeScopeProvider pin={chatRuntimePin} binding={chatEffectiveBinding} laneId={chatScopeLaneId} sessionId={renderedSessionId}>
     <ChatWorkspacePathProvider value={chatWorkspacePaths}>
     <>
-      <OrchestratorLeadFrame active={false} className="flex h-full min-h-0 w-full min-w-0 flex-col">
+      <div className="flex h-full min-h-0 w-full min-w-0 flex-col">
       <ChatSurfaceShell
         containerRef={shellRef}
         paneReserveLeft={paneReserve.left}
@@ -14599,55 +14447,6 @@ export function AgentChatPane({
                         selectedSyncPending ? "opacity-70" : "opacity-0",
                       )}
                     />
-                    {(orchestrationRole === "worker" || orchestrationRole === "validator") && orchestrationRunId ? (
-                      <div
-                        data-orchestration-role-banner={orchestrationRole}
-                        className={cn(
-                          "flex shrink-0 items-center gap-2 border-b px-4 py-1.5 font-sans text-[11px]",
-                          orchestrationRole === "worker"
-                            ? "border-sky-300/20 bg-sky-500/[0.05] text-sky-100/85"
-                            : "border-emerald-300/20 bg-emerald-500/[0.05] text-emerald-100/85",
-                        )}
-                      >
-                        <span
-                          className={cn(
-                            "inline-flex h-4 items-center rounded-sm px-1.5 font-mono text-[9px] font-bold uppercase tracking-[0.16em]",
-                            orchestrationRole === "worker"
-                              ? "border border-sky-300/30 bg-sky-300/10 text-sky-100"
-                              : "border border-emerald-300/30 bg-emerald-300/10 text-emerald-100",
-                          )}
-                        >
-                          {orchestrationRole}
-                          {selectedSession?.orchestrationTag ? ` · ${selectedSession.orchestrationTag.toLowerCase()}` : ""}
-                        </span>
-                        {selectedSession?.orchestrationParentSessionId ? (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const targetId = selectedSession.orchestrationParentSessionId;
-                              if (!targetId) return;
-                              try {
-                                window.dispatchEvent(
-                                  new CustomEvent("ade:work:select-session", {
-                                    detail: { sessionId: targetId, laneId: selectedSession.laneId },
-                                  }),
-                                );
-                              } catch {
-                                /* no-op */
-                              }
-                            }}
-                            className="inline-flex items-center text-fg/80 underline-offset-2 hover:underline"
-                          >
-                            Lead chat
-                          </button>
-                        ) : null}
-                        {selectedSession?.orchestrationStepId ? (
-                          <span className="text-fg/60">
-                            · Task <span className="font-mono text-fg/80">{selectedSession.orchestrationStepId}</span>
-                          </span>
-                        ) : null}
-                      </div>
-                    ) : null}
                     {cloudConversationPending ? (
                       <div
                         data-testid="cursor-cloud-connecting"
@@ -14885,7 +14684,6 @@ export function AgentChatPane({
                   {effectiveAppControlOpen ? renderRightPane(appControlPanelContent) : null}
                   {effectiveCursorCloudPaneOpen ? renderRightPane(cursorCloudPanelContent) : null}
                   {terminalRightPaneOpen && terminalPanelContent ? renderRightPane(terminalPanelContent) : null}
-                  {orchestrationPanelOpen && orchestrationPanelContent ? renderRightPane(orchestrationPanelContent) : null}
                 </motion.div>
               ) : (
                 <motion.div
@@ -14939,12 +14737,6 @@ export function AgentChatPane({
                             "Start a new conversation" was a caption on a thing
                             that needs no caption — and a whole band of vertical
                             space spent saying nothing the user did not know. */}
-                        {isOrchestratorDraft ? (
-                          <h2 className="shrink-0 font-sans text-[18px] font-semibold tracking-tight text-fg/80">
-                            Orchestrate a swarm of agents
-                          </h2>
-                        ) : null}
-
                         {/* Inline composer for empty state (only when sim drawer closed) */}
                         {!appPanelOpen ? (
                           <div data-chat-composer-wrapper className="relative z-10 w-full shrink-0">
@@ -15128,7 +14920,7 @@ export function AgentChatPane({
           )}
         </div>
       </ChatSurfaceShell>
-      </OrchestratorLeadFrame>
+      </div>
       <RewindFilesConfirmDialog
         state={rewindConfirmDialog}
         sessionId={selectedSessionId}

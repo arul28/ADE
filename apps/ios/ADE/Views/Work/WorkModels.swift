@@ -214,6 +214,12 @@ struct WorkPendingQuestionModel: Identifiable, Equatable {
   var source: String? = nil
   /// Codex `isBlocking: false` steering. Missing/true locks the composer.
   var blocking: Bool = true
+  /// The host marked this card throw-away-able (`providerMetadata.dismissible`).
+  ///
+  /// Not the same as `blocking == false`: Codex steering is also non-blocking
+  /// and still holds an open app-server request, so dismissing it locally would
+  /// strand the turn. Only the host's explicit flag earns the Dismiss button.
+  var dismissible: Bool = false
 
   var primary: WorkPendingQuestion { questions.first ?? WorkPendingQuestion(questionId: "response", question: "", options: [], allowsFreeform: true) }
   var questionId: String { primary.questionId }
@@ -224,6 +230,78 @@ struct WorkPendingQuestionModel: Identifiable, Equatable {
   var impact: String? { primary.impact }
   var multiSelect: Bool { primary.multiSelect }
   var isSecret: Bool { primary.isSecret }
+}
+
+/// The payload a structured question card sends: the per-question `answers`
+/// map and the single-question `sharedFreeform` that rides `responseText`.
+struct WorkQuestionAnswerPayload: Equatable {
+  var answers: [String: AgentChatInputAnswerValue]
+  var sharedFreeform: String?
+}
+
+/// Builds a structured question card's answer payload.
+///
+/// Mirrors desktop `buildAnswers` (`apps/desktop/src/shared/pendingInputAnswers.ts`):
+///
+/// 1. A question's option values come first and its own trimmed note last, so a
+///    pick and the note typed beside it travel together instead of the `continue`
+///    dropping the note. A question with neither contributes no key.
+/// 2. On a paged (multi-question) card the shared note is appended to the last
+///    answered question's values, or to the first question when none is
+///    answered, rather than being discarded.
+/// 3. On a single-question card the shared note stays the request's
+///    `responseText`.
+enum WorkQuestionAnswerBuilder {
+  static func build(
+    questions: [WorkPendingQuestion],
+    selections: [String: Set<String>],
+    freeformByQuestion: [String: String],
+    sharedFreeform: String,
+    isPaged: Bool
+  ) -> WorkQuestionAnswerPayload {
+    var answers: [String: AgentChatInputAnswerValue] = [:]
+    var answeredIds: [String] = []
+    for question in questions {
+      let selected = selections[question.questionId] ?? []
+      let ordered = question.options.map(\.value).filter { selected.contains($0) }
+      var values = ordered
+      let note = (freeformByQuestion[question.questionId] ?? "")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      if !note.isEmpty { values.append(note) }
+      guard !values.isEmpty else { continue }
+      answers[question.questionId] = values.count == 1 ? .string(values[0]) : .strings(values)
+      answeredIds.append(question.questionId)
+    }
+
+    let shared = sharedFreeform.trimmingCharacters(in: .whitespacesAndNewlines)
+    if isPaged {
+      if !shared.isEmpty, let targetId = answeredIds.last ?? questions.first?.questionId {
+        appendSharedNote(shared, to: targetId, in: &answers)
+      }
+      return WorkQuestionAnswerPayload(answers: answers, sharedFreeform: nil)
+    }
+    return WorkQuestionAnswerPayload(
+      answers: answers,
+      sharedFreeform: shared.isEmpty ? nil : shared
+    )
+  }
+
+  private static func appendSharedNote(
+    _ note: String,
+    to questionId: String,
+    in answers: inout [String: AgentChatInputAnswerValue]
+  ) {
+    if let existing = answers[questionId] {
+      switch existing {
+      case .string(let value):
+        answers[questionId] = .strings([value, note])
+      case .strings(let values):
+        answers[questionId] = .strings(values + [note])
+      }
+    } else {
+      answers[questionId] = .string(note)
+    }
+  }
 }
 
 /// Shared provider-display-name mapping for chat-surface card headers, mirroring
@@ -925,10 +1003,9 @@ enum WorkTimelinePayload: Equatable {
   /// spawn/result rows hard timeline boundaries that tool/activity folding
   /// cannot absorb.
   case subagent(WorkSubagentTimelineRow)
-  /// A run of 2+ consecutive interrupt-stopped subagent result rows, folded into
-  /// one calm "N agents stopped when you interrupted" card (desktop parity:
-  /// `subagent_stopped_group`). Keeps a mass interrupt from rendering as a wall
-  /// of identical stopped rows.
+  /// A run of 2+ consecutive same-source stopped subagent result rows, folded
+  /// into one calm attributed card (desktop parity: `subagent_stopped_group`).
+  /// Keeps a mass stop from rendering as a wall of identical rows.
   case subagentStoppedGroup(WorkSubagentStoppedGroupModel)
   /// Cluster of consecutive read-only tool-like entries (tool cards,
   /// commands) collapsed into a single header-only row. Tap to reveal the
@@ -957,8 +1034,8 @@ enum WorkTimelinePayload: Equatable {
   /// Plan-approval gate: agent has finished planning and is waiting for the
   /// user to Approve & Implement or Reject & Revise before it acts.
   case pendingPlanApproval(WorkPendingPlanApprovalModel)
-  /// Orchestration model routing gate: desktop asks the user to choose a
-  /// provider/model/reasoning tuple before workers can be spawned.
+  /// Model routing gate: the host asks the user to choose a
+  /// provider/model/reasoning tuple before the agent continues.
   case pendingModelSelection(WorkPendingModelSelectionModel)
 }
 
@@ -1166,6 +1243,15 @@ struct WorkSubagentSnapshot: Identifiable, Equatable {
   var parentAgentId: String? = nil
   var spawnDepth: Int? = nil
   var resourceLinks: [AgentChatResourceLink] = []
+  /// Who ended this agent's work. Older events omit it; the stopped-group fold
+  /// treats that as `unknown` and never claims the user interrupted it.
+  var stopSource: String? = nil
+  /// Plain-language cause for a non-user stop, when the host supplied one.
+  var stopReason: String? = nil
+  /// True when a real result arrived before a later stop event.
+  var resultLanded: Bool = false
+  /// Last progress/activity text observed before the terminal result.
+  var lastActivity: String? = nil
 
   var id: String { taskId }
 }
@@ -1189,9 +1275,9 @@ struct WorkSubagentTimelineRow: Identifiable, Equatable {
   }
 }
 
-/// Folded run of 2+ interrupt-stopped subagent result rows (desktop parity:
-/// `SubagentStoppedGroupEvent`). Carries the original result rows so the card
-/// can list each agent's title and reopen its detail on tap.
+/// Folded run of 2+ same-cause, same-source subagent result rows (desktop
+/// parity: `SubagentStoppedGroupEvent`). Carries the original result rows so
+/// the card can list each agent's title, last activity, and outcome.
 struct WorkSubagentStoppedGroupModel: Identifiable, Equatable {
   /// Why the run stopped. The two causes read differently and must not be
   /// merged: an interrupt is something you did, a usage limit is something that
@@ -1204,16 +1290,43 @@ struct WorkSubagentStoppedGroupModel: Identifiable, Equatable {
   let id: String
   let rows: [WorkSubagentTimelineRow]
   var reason: Reason = .interrupted
+  /// Normalized source (`unknown` when the host omitted `stopSource`).
+  var stopSource: String = "unknown"
+  /// Shared plain-language cause for a non-user stop.
+  var stopReason: String? = nil
 
   var count: Int { rows.count }
 
   var headline: String {
     let noun = count == 1 ? "agent" : "agents"
     switch reason {
-    case .interrupted: return "\(count) \(noun) stopped when you interrupted"
     case .usageLimit: return "\(count) \(noun) stopped · usage limit"
+    case .interrupted:
+      if stopSource == "user" {
+        return "\(count) \(noun) stopped when you interrupted"
+      }
+      if let stopReason = stopReason?.trimmingCharacters(in: .whitespacesAndNewlines), !stopReason.isEmpty {
+        return "\(count) \(noun) stopped: \(stopReason)"
+      }
+      return "\(count) \(noun) stopped"
     }
   }
+}
+
+/// Status line for an individual stopped result row. A missing source or cause
+/// stays deliberately neutral instead of blaming the person reading the chat.
+func workSubagentStoppedStatusLine(_ snapshot: WorkSubagentSnapshot) -> String {
+  if snapshot.stopSource == "user" {
+    return "stopped — interrupted"
+  }
+  if let stopReason = snapshot.stopReason?.trimmingCharacters(in: .whitespacesAndNewlines), !stopReason.isEmpty {
+    return "stopped: \(stopReason)"
+  }
+  return "stopped"
+}
+
+func workSubagentStoppedOutcomeLabel(_ snapshot: WorkSubagentSnapshot) -> String {
+  snapshot.resultLanded ? "report landed" : "work lost"
 }
 
 struct WorkSubagentSelection: Identifiable, Equatable {
@@ -1559,6 +1672,11 @@ struct WorkChatEnvelope: Identifiable, Equatable {
   /// `.subagentResult`, so only this flag can tell an old host's duplicate twin
   /// apart from two genuine results for the same agent.
   let isLegacySubagentCompletedFrame: Bool
+  /// Optional stop attribution carried by `subagent_result`. Kept beside the
+  /// normalized event so older hosts and the raw transcript path can omit it
+  /// without changing the broad WorkChatEvent associated-value surface.
+  let stopSource: String?
+  let stopReason: String?
 
   init(
     sessionId: String,
@@ -1572,7 +1690,9 @@ struct WorkChatEnvelope: Identifiable, Equatable {
     subagentSpawnDepth: Int? = nil,
     subagentResourceLinks: [AgentChatResourceLink] = [],
     apiErrorStatus: Int? = nil,
-    isLegacySubagentCompletedFrame: Bool = false
+    isLegacySubagentCompletedFrame: Bool = false,
+    stopSource: String? = nil,
+    stopReason: String? = nil
   ) {
     self.sessionId = sessionId
     self.timestamp = timestamp
@@ -1586,6 +1706,8 @@ struct WorkChatEnvelope: Identifiable, Equatable {
     self.subagentResourceLinks = subagentResourceLinks
     self.apiErrorStatus = apiErrorStatus
     self.isLegacySubagentCompletedFrame = isLegacySubagentCompletedFrame
+    self.stopSource = stopSource
+    self.stopReason = stopReason
   }
 }
 

@@ -141,6 +141,22 @@ describe("AskQuestionComposer answer semantics", () => {
   // Bug 2. The old card submitted on click for a single single-select question
   // — unless the freeform field happened to hold text, in which case the same
   // click only selected. One gesture, two outcomes, no signal.
+  /**
+   * The card advertises "1-9 pick · ↵ send · esc decline" but listens on its
+   * own root, so the shortcuts were dead until focus happened to be inside it.
+   * Clicking the card — the gesture that precedes reaching for "1" — arms them.
+   */
+  it("arms its own keyboard shortcuts when the card body is clicked", () => {
+    renderComposer(buildRequest([planQuestion()]));
+    const card = screen.getByTestId("ask-question-composer");
+
+    fireEvent.mouseDown(card, { target: card });
+    expect(document.activeElement).toBe(card);
+
+    fireEvent.keyDown(card, { key: "2" });
+    expect(screen.getByTestId("ask-question-option-plan_choice-merge").getAttribute("aria-checked")).toBe("true");
+  });
+
   it("regression: selecting an option marks it and never submits on click", () => {
     const { onSubmit } = renderComposer(buildRequest([planQuestion({ allowsFreeform: false })]));
 

@@ -548,10 +548,6 @@ describe("projectConfigService - committed ade.yaml carry-over", () => {
         localProviders: {
           ollama: { enabled: true, autoDetect: false, preferredModelId: "llama3", endpoint: "https://evil.example" },
         },
-        orchestrator: {
-          defaultOrchestratorModel: { modelId: "openai/orchestrator-safe", provider: "openai" },
-          hooks: { TaskCompleted: { command: "curl https://evil.example" } },
-        },
       },
       providers: {
         openai: { endpoint: "https://evil.example", command: ["curl", "evil.example"] },
@@ -566,12 +562,10 @@ describe("projectConfigService - committed ade.yaml carry-over", () => {
       customModelSlugs: ["openai/gpt-pinned"],
       sessionIntelligence: { titles: { enabled: true, modelId: "openai/title-safe" } },
       localProviders: { ollama: { enabled: true, autoDetect: false, preferredModelId: "llama3" } },
-      orchestrator: { defaultOrchestratorModel: { modelId: "openai/orchestrator-safe" } },
     });
     expect(snapshot.local.ai?.permissions).toBeUndefined();
     expect(snapshot.local.ai?.apiKeys).toBeUndefined();
     expect(snapshot.local.ai?.localProviders?.ollama?.endpoint).toBeUndefined();
-    expect(snapshot.local.ai?.orchestrator?.hooks).toBeUndefined();
     expect(snapshot.local.providers).toBeUndefined();
 
     const line = logger.info.mock.calls.find(([event]: [string]) => event === "projectConfig.carryOver");
@@ -583,11 +577,10 @@ describe("projectConfigService - committed ade.yaml carry-over", () => {
       "ai.permissions.cli.mode",
       "ai.apiKeys.openai",
       "ai.localProviders.ollama.endpoint",
-      "ai.orchestrator.hooks.TaskCompleted.command",
       "providers.openai.endpoint",
       "providers.openai.command",
     ]));
-    expect((line?.[1] as { skippedCount: number }).skippedCount).toBeGreaterThanOrEqual(6);
+    expect((line?.[1] as { skippedCount: number }).skippedCount).toBeGreaterThanOrEqual(5);
   });
 
   it("deletes the committed ade.yaml after carrying it over", () => {
@@ -762,56 +755,6 @@ describe("projectConfigService - AI mode migration", () => {
     expect(persistedAi).toBeUndefined();
     expect(persistedProviders?.mode).toBeUndefined();
     expect((persistedProviders?.contextTools as Record<string, unknown> | undefined)).toBeDefined();
-  });
-
-  it("parses and normalizes ai.orchestrator settings from local config", () => {
-    const { root, adeDir } = makeProjectFixture("ade-project-config-orchestrator-");
-
-    const localPath = path.join(adeDir, "local.yaml");
-    fs.writeFileSync(
-      localPath,
-      YAML.stringify({
-        version: 1,
-        testSuites: [],
-        laneOverlayPolicies: [],
-        automations: [],
-        ai: {
-          orchestrator: {
-            teammatePlanMode: "required",
-            maxParallelWorkers: 9,
-            contextPressureThreshold: 0.82,
-            progressiveLoading: false,
-            hooks: {
-              TeammateIdle: {
-                command: "echo teammate-idle",
-                timeoutMs: 4500,
-              },
-              TaskCompleted: {
-                command: "echo task-completed",
-              },
-            },
-          },
-        },
-      }),
-      "utf8",
-    );
-
-    const service = createProjectConfigService({
-      projectRoot: root,
-      adeDir,
-      projectId: "project-1",
-      db: makeDb(),
-      logger: makeLogger(),
-    });
-
-    const orchestrator = service.get().effective.ai?.orchestrator;
-    expect(orchestrator?.teammatePlanMode).toBe("required");
-    expect(orchestrator?.maxParallelWorkers).toBe(9);
-    expect(orchestrator?.contextPressureThreshold).toBe(0.82);
-    expect(orchestrator?.progressiveLoading).toBe(false);
-    expect(orchestrator?.hooks?.TeammateIdle?.command).toBe("echo teammate-idle");
-    expect(orchestrator?.hooks?.TeammateIdle?.timeoutMs).toBe(4500);
-    expect(orchestrator?.hooks?.TaskCompleted?.command).toBe("echo task-completed");
   });
 
   it("preserves commit message feature settings and chat settings on read/save", () => {

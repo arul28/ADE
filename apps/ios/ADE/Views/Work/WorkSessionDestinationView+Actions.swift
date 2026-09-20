@@ -785,6 +785,21 @@ extension WorkSessionDestinationView {
     }
   }
 
+  /// Throw a dismissible question away. Distinct from `declineQuestion`
+  /// because it is a different host command with a different refusal — a card
+  /// the provider is still waiting on comes back as an error the user sees.
+  @MainActor
+  func dismissPendingQuestion(itemId: String) async {
+    do {
+      try await syncService.dismissChatPendingInput(sessionId: sessionId, itemId: itemId)
+      await refreshChatStateAfterAction(forceRemote: true)
+      errorMessage = nil
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+
   @MainActor
   func respondToPermission(itemId: String, decision: AgentChatApprovalDecision) async {
     do {

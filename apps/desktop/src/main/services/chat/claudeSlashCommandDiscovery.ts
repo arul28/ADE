@@ -20,6 +20,8 @@ export type DiscoveredClaudeSlashCommand = {
   argumentHint?: string;
   source: "command" | "skill";
   filePath: string;
+  /** False when the skill declares `disable-model-invocation`; see the base type. */
+  modelInvocable: boolean;
 };
 
 export type ResolvedClaudeSlashCommandInvocation = {

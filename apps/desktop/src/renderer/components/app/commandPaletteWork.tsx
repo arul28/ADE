@@ -416,7 +416,6 @@ export function useWorkSessionActions({
             draftKind: "chat",
             draftLaneId: session.laneId || null,
             draftMachineId: binding?.kind === "remote" ? binding.targetId : null,
-            orchestratorEnabled: false,
             activeItemId: null,
             selectedItemId: null,
           }));

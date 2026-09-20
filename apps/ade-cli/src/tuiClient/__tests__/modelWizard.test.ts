@@ -135,6 +135,44 @@ describe("modelWizard navigation", () => {
     });
   });
 
+  it("keeps duplicate model rows selectable by credential", () => {
+    const entries = [
+      entry({
+        modelId: "openai/gpt-5.5",
+        family: "codex",
+        displayName: "GPT-5.5 · Work key",
+        credentialId: "cred-work",
+        subProvider: "Work key",
+        subProviderKey: "cred-work",
+      }),
+      entry({
+        modelId: "openai/gpt-5.5",
+        family: "codex",
+        displayName: "GPT-5.5 · Personal key",
+        credentialId: "cred-personal",
+        subProvider: "Personal key",
+        subProviderKey: "cred-personal",
+      }),
+    ];
+    const view = buildModelWizardView(input(
+      { step: "model", provider: "codex", familyKey: null, index: 0 },
+      { entries },
+    ));
+
+    expect(view.options.map((option) => option.id)).toEqual([
+      "model:openai/gpt-5.5:cred-work",
+      "model:openai/gpt-5.5:cred-personal",
+    ]);
+    expect(advanceModelWizard(input(
+      { step: "model", provider: "codex", familyKey: null, index: 1 },
+      { entries },
+    ))).toMatchObject({
+      kind: "select-model",
+      modelId: "openai/gpt-5.5",
+      credentialId: "cred-personal",
+    });
+  });
+
   it("Enter on an unavailable model routes to sign-in instead of committing", () => {
     const entries = [entry({ modelId: "claude-x", family: "claude", isAvailable: false })];
     const result = advanceModelWizard(input({ step: "model", provider: "claude", familyKey: null, index: 0 }, { entries }));

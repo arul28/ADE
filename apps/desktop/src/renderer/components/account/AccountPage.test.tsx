@@ -186,6 +186,7 @@ describe("AccountPage signed-in", () => {
   const renameMachine = vi.fn(async (machineKey: string, customName: string | null) =>
     machine({ machineKey, deviceId: "this-dev", name: "MacBook Pro", customName }),
   );
+  const getMachineInventory = vi.fn();
   const signOut = vi.fn(async () => SIGNED_OUT);
   const repairMachinePairing = vi.fn();
 
@@ -233,6 +234,7 @@ describe("AccountPage signed-in", () => {
         getLocalMachineIdentity,
         removeMachine,
         renameMachine,
+        getMachineInventory,
         repairMachinePairing,
         repairSession: vi.fn(async () => ({
           outcome: "repaired" as const,
@@ -260,6 +262,7 @@ describe("AccountPage signed-in", () => {
     getLocalMachineIdentity.mockReset();
     removeMachine.mockClear();
     renameMachine.mockClear();
+    getMachineInventory.mockReset();
     repairMachinePairing.mockReset();
     runAccountDeviceLogin.mockReset();
     signOut.mockClear();
@@ -392,6 +395,129 @@ describe("AccountPage signed-in", () => {
 
     expect(await screen.findByText(/Last seen/)).toBeTruthy();
     expect(screen.queryByText("Offline")).toBeNull();
+  });
+
+  it("keeps the collapsed row to one line and expands it into grouped, marked detail", async () => {
+    listMachines.mockResolvedValue({
+      state: "ok",
+      message: null,
+      machines: [
+        machine({
+          machineKey: "this-key",
+          deviceId: "this-dev",
+          name: "MacBook Pro",
+          online: true,
+          inventory: {
+            providers: [{ provider: "claude", accounts: 2, models: 4 }],
+            presets: 1,
+          },
+        }),
+      ],
+    });
+    getMachineInventory.mockResolvedValue({
+      machineKey: "this-key",
+      providers: [{
+        provider: "claude",
+        modelCount: 4,
+        accounts: [{
+          instanceId: "claude-work",
+          label: "Work",
+          email: "ada@example.com",
+          plan: "Pro",
+          isDefault: true,
+        }],
+      }],
+      presets: [{
+        id: "ship",
+        name: "Ship",
+        harness: "claude",
+        model: "sonnet",
+        bound: true,
+      }],
+    });
+
+    renderPage();
+    await screen.findByText(THIS_MACHINE_NAME);
+    // The collapsed row is "which computer, is it up" and nothing else. The
+    // inventory chips that used to hang under every name added a second line
+    // per row to say something the expanded details say properly.
+    expect(screen.queryByText("Claude · 2 accounts · 4 models")).toBeNull();
+    expect(screen.queryByText("1 preset")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show provider inventory for MacBook Pro" }));
+
+    await waitFor(() => expect(getMachineInventory).toHaveBeenCalledWith(undefined));
+    // Grouped per provider, in that provider's own tile, with its model count
+    // on the tile's header rather than in a chip on the row above.
+    const claudeTile = await waitFor(() => {
+      const tile = document.querySelector('[data-machine-inventory-provider="claude"]');
+      expect(tile).toBeTruthy();
+      return tile as HTMLElement;
+    });
+    expect(claudeTile.textContent).toContain("Claude");
+    expect(claudeTile.textContent).toContain("4 models");
+    expect(claudeTile.textContent).toContain("Work");
+    expect(claudeTile.textContent).toContain("ada@example.com · Pro");
+
+    expect(screen.getByText("Custom")).toBeTruthy();
+    expect(screen.getByText("Ship")).toBeTruthy();
+    expect(screen.getByText("Claude · sonnet")).toBeTruthy();
+  });
+
+  it("does not fetch detail while a machine is offline", async () => {
+    listMachines.mockResolvedValue({
+      state: "ok",
+      message: null,
+      machines: [machine({
+        machineKey: "studio-key",
+        deviceId: "studio-dev",
+        name: "Studio",
+        online: false,
+        inventory: {
+          providers: [{ provider: "codex", accounts: 1, models: 3 }],
+          presets: 2,
+        },
+      })],
+    });
+
+    renderPage();
+    await screen.findByText("Studio");
+    // The counts live in the expanded details; nothing about them leaks onto
+    // the collapsed row.
+    expect(screen.queryByText("Codex · 1 account · 3 models")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Show provider inventory for Studio" }));
+
+    expect(await screen.findByText("Details unavailable while offline.")).toBeTruthy();
+    expect(getMachineInventory).not.toHaveBeenCalled();
+  });
+
+  /**
+   * An awake machine this computer has no live link to used to read "Details
+   * unavailable while offline." directly under its own green "Online".
+   */
+  it("says a reachable-but-unconnected machine needs connecting, not that it is offline", async () => {
+    listMachines.mockResolvedValue({
+      state: "ok",
+      message: null,
+      machines: [machine({
+        machineKey: "studio-key",
+        deviceId: "studio-dev",
+        name: "Studio",
+        online: true,
+        inventory: {
+          providers: [{ provider: "codex", accounts: 1, models: 3 }],
+          presets: 2,
+        },
+      })],
+    });
+
+    renderPage();
+    await screen.findByText("Studio");
+    fireEvent.click(screen.getByRole("button", { name: "Show provider inventory for Studio" }));
+
+    expect(await screen.findByText("Connect to this computer to see what it has installed.")).toBeTruthy();
+    expect(screen.queryByText("Details unavailable while offline.")).toBeNull();
+    expect(getMachineInventory).not.toHaveBeenCalled();
   });
 
   it("pins this computer first with a badge and offers rename but never removal", async () => {

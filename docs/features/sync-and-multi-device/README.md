@@ -249,7 +249,7 @@ Its `accountSignedIn` gate is *ownership*, not usability — see
 ## Who participates
 
 - **Machine runtime** — the per-channel, per-machine `ade serve` runtime. It owns agent
-  execution, PTYs, worktrees, worker heartbeats, the orchestrator, and
+  execution, PTYs, worktrees, and
   the sync WebSocket server. It can hold **multiple** open projects at
   once behind a single brain-level WebSocket listener on a stable port;
   a phone picks which project to bind to via the machine project
@@ -706,7 +706,9 @@ Runtime support files outside `services/sync/`:
   end-to-end failure is never retained. The relay route therefore appears
   in the directory without waiting for an external client to open the first
   tunnel. A 30-second heartbeat keeps the Worker row inside its 90-second online
-  window. Failed publications retry after 1, 2, 5, 10, then 20 seconds so a
+  window and carries the bounded, token-free provider/model/preset inventory
+  summary used by the Accounts page. Failed publications retry after 1, 2, 5,
+  10, then 20 seconds so a
   short outage normally recovers within the lease, and a 401 forces one token
   refresh before the publication is classified as expired. These operational
   retries and status polls are local logs, not product analytics. Two failure
@@ -781,6 +783,12 @@ Runtime support files outside `services/sync/`:
   `ADE_ALLOW_DEVELOPMENT_CLERK=1` is the explicit controlled-testing escape
   hatch. Source-checkout runtimes and non-development custom issuers keep their
   existing override behavior.
+- `apps/desktop/src/shared/types/machineInventory.ts` — the bounded, token-free
+  summary/detail contract for provider accounts, model counts, and harness
+  presets that can cross the account-directory boundary.
+- `apps/desktop/src/main/services/account/accountMachineInventoryLiveRefresh.ts`
+  — the connected-peer-only detail refresh used when a desktop expands an
+  account-directory machine row; it never pairs or reconnects an offline peer.
 - `apps/ade-cli/src/services/account/hardwareAnchor.ts` — the one piece of
   machine identity a reinstall cannot destroy. Both halves of ADE's identity
   live under `~/.ade` (the machine key in `sync-cloud-relay.json`, the device id
@@ -4081,3 +4089,20 @@ feature is merged or because a deliberately isolated-port host is running.
   failed to start the turn. iOS therefore does not queue or resend that message:
   it restores the draft and asks the user to check the transcript before a
   manual retry. Do not assume synchronous semantics from the phone side.
+
+### Machine inventory
+
+The Accounts page shows a token-free provider inventory summary on each machine
+row. The 30-second account-directory heartbeat carries provider account and
+model counts plus the number of saved harness presets. Expanding a row fetches
+the live account labels, optional email and plan, and preset bindings through
+`account.getMachineInventory`.
+
+Live detail is requested only for an online machine that is already paired and
+connected; expanding a row never creates a pairing. Reads are capped at twelve
+machines and rate-limited to one attempt per machine every 30 seconds. Offline
+rows keep their heartbeat counts and say “Details unavailable while offline.”
+Older runtimes that do not implement the command are reported as an update
+compatibility issue, while authorization failures remain ordinary access
+errors. Inventory payloads exclude config-home paths, executable paths, and
+credentials.

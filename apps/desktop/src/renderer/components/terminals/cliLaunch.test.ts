@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseCommandLine } from "../../../shared/shell";
 import {
+  buildCliIdentityResumeMetadata,
   buildPtyContinuationLaunchFields,
   buildOpenCodeReplayResumeLaunchCommand,
   buildTrackedCliLaunchCommand,
@@ -20,6 +21,7 @@ import {
   validateLaunchProfilePermissionMode,
   withOpenCodeAdeInstructions,
   resolveTrackedCliResumeCommand,
+  trackedCliResumeInstanceId,
   withClaudeSessionIdInCommandLine,
   withCodexNoAltScreen,
 } from "./cliLaunch";
@@ -46,6 +48,40 @@ beforeEach(() => {
 
 afterEach(() => {
   Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+});
+
+describe("buildCliIdentityResumeMetadata", () => {
+  it("keeps local and sync identity metadata on one contract", () => {
+    expect(buildCliIdentityResumeMetadata({
+      provider: "codex",
+      targetId: null,
+      permissionMode: "full-auto",
+      droidPermissionMode: null,
+      model: "gateway/model",
+      reasoningEffort: "high",
+      fastMode: false,
+      instanceId: " work ",
+      presetId: " preset ",
+      credentialId: " credential ",
+    })).toEqual({
+      provider: "codex",
+      targetKind: "thread",
+      targetId: null,
+      launch: {
+        permissionMode: "full-auto",
+        droidPermissionMode: null,
+        model: "gateway/model",
+        reasoningEffort: "high",
+        fastMode: false,
+        instanceId: "work",
+        presetId: "preset",
+        credentialId: "credential",
+      },
+      instanceId: "work",
+      presetId: "preset",
+      credentialId: "credential",
+    });
+  });
 });
 
 describe("buildPtyContinuationLaunchFields", () => {
@@ -429,6 +465,23 @@ describe("ACP CLI providers", () => {
     expect(resumed.args).toEqual(expect.arrayContaining(["--permission-mode", "default"]));
   });
 
+  it("normalizes Codex resume model aliases unless a preset enables passthrough", () => {
+    const metadata = {
+      provider: "codex" as const,
+      targetKind: "thread" as const,
+      targetId: "thread-1",
+      launch: { model: "openai/gpt-x" },
+    };
+
+    const native = buildTrackedCliResumeLaunchCommand(metadata);
+    expect(native.args).toEqual(expect.arrayContaining(["--model", "gpt-x"]));
+
+    const preset = buildTrackedCliResumeLaunchCommand(metadata, {
+      preset: { passthroughModelId: true },
+    });
+    expect(preset.args).toEqual(expect.arrayContaining(["--model", "openai/gpt-x"]));
+  });
+
   it("assigns a Copilot session through --resume and maps plan to tool denials", () => {
     const launch = withProcessPlatform("darwin", () => buildTrackedCliLaunchCommand({
       provider: "copilot",
@@ -502,50 +555,6 @@ describe("ACP CLI providers", () => {
     });
     // Kimi spells continue with a lowercase short flag, not `--continue`.
     expect(kimi.args).toContain("-c");
-  });
-});
-
-describe("orchestration CLI launch policy", () => {
-  it("forces orchestration roles to full-auto for every tracked CLI runtime", () => {
-    const claude = buildTrackedCliLaunchCommand({
-      provider: "claude",
-      permissionMode: "plan",
-      orchestrationRole: "worker",
-    });
-    expect(claude.args).toContain("--dangerously-skip-permissions");
-    expect(claude.args).not.toEqual(expect.arrayContaining(["--permission-mode", "plan"]));
-
-    const codex = buildTrackedCliLaunchCommand({
-      provider: "codex",
-      permissionMode: "plan",
-      orchestrationRole: "worker",
-    });
-    expect(codex.args).toEqual(expect.arrayContaining(["--dangerously-bypass-approvals-and-sandbox"]));
-    expect(codex.args).not.toEqual(expect.arrayContaining(["--sandbox", "read-only"]));
-
-    const cursor = buildTrackedCliLaunchCommand({
-      provider: "cursor",
-      permissionMode: "plan",
-      orchestrationRole: "validator",
-    });
-    expect(cursor.args).toContain("--force");
-    expect(cursor.args).not.toEqual(expect.arrayContaining(["--mode", "plan"]));
-
-    const droid = buildTrackedCliLaunchCommand({
-      provider: "droid",
-      permissionMode: "plan",
-      orchestrationRole: "worker",
-    });
-    expect(droid.startupCommand).toContain('\\"autonomyLevel\\":\\"high\\"');
-    expect(droid.startupCommand).not.toContain('\\"interactionMode\\":\\"spec\\"');
-
-    const opencode = buildTrackedCliLaunchCommand({
-      provider: "opencode",
-      permissionMode: "plan",
-      orchestrationRole: "validator",
-    });
-    expect(opencode.args).not.toEqual(expect.arrayContaining(["--agent", "plan"]));
-    expect(opencode.env?.OPENCODE_CONFIG_CONTENT).toContain('"permission":"allow"');
   });
 });
 
@@ -1103,6 +1112,25 @@ describe("buildTrackedCliStartupCommand", () => {
   });
 
   describe("additional CLI providers", () => {
+    it.each([
+      ["droid", "droid/vendor/model", "vendor/model"],
+      ["opencode", "opencode/vendor/model", "vendor/model"],
+      ["qwen", "qwen/vendor/model", "vendor/model"],
+      ["kimi", "moonshot/vendor/model", "vendor/model"],
+      ["grok", "xai/vendor/model", "vendor/model"],
+      ["copilot", "github-copilot/vendor/model", "vendor/model"],
+      ["pi", "pi/default/vendor/model", "vendor/model"],
+    ] as const)("passes a %s preset model through its provider normalizer", (provider, model, expected) => {
+      const launch = buildTrackedCliLaunchCommand({
+        provider,
+        permissionMode: "default",
+        model,
+        preset: { passthroughModelId: true },
+      });
+
+      expect(`${launch.args.join("\n")}\n${launch.startupCommand}`).toContain(expected);
+    });
+
     it("launches Cursor with initial prompts submitted through PTY input", () => {
       const launch = buildTrackedCliLaunchCommand({ provider: "cursor", permissionMode: "plan", model: "cursor-fast", initialPrompt: "Review this lane." });
       expect(launch.command).toBe("cursor-agent");
@@ -1693,6 +1721,24 @@ describe("tracked CLI resume helpers", () => {
     );
 
     expect(buildTrackedCliResumeCommand({
+      provider: "claude",
+      targetKind: "session",
+      targetId: "claude-session-1",
+      launch: { permissionMode: "default", model: "anthropic/claude-opus-4.5" },
+    }, { preset: { passthroughModelId: true } })).toBe(
+      "claude --permission-mode default --model \"anthropic/claude-opus-4.5\" --resume claude-session-1",
+    );
+
+    expect(buildTrackedCliResumeCommand({
+      provider: "cursor",
+      targetKind: "session",
+      targetId: "cursor-session-1",
+      launch: { permissionMode: "default", model: "cursor/gateway/composer" },
+    }, { preset: { passthroughModelId: true } })).toBe(
+      "cursor-agent --model \"cursor/gateway/composer\" --resume cursor-session-1",
+    );
+
+    expect(buildTrackedCliResumeCommand({
       provider: "codex",
       targetKind: "thread",
       targetId: "thread-99",
@@ -1919,5 +1965,131 @@ describe("tracked CLI resume helpers", () => {
       expect(withOpenCodeAdeInstructions({ env }, "/cache/ade/instructions.md")).toBeNull();
       expect(withOpenCodeAdeInstructions({ env }, "   ")).toBeNull();
     });
+  });
+});
+
+describe("provider account (instance) launch env", () => {
+  it("exports nothing for the base identity, even when its home is known", () => {
+    // Claude Code keys its keychain entry by CLAUDE_CONFIG_DIR whenever the
+    // variable is set; exporting the default path logged the CLI out.
+    const claude = buildTrackedCliLaunchCommand({
+      provider: "claude",
+      permissionMode: "full-auto",
+      instance: { id: "claude", provider: "claude", configHome: "/home/dev/.claude" },
+    });
+    expect(claude.env?.CLAUDE_CONFIG_DIR).toBeUndefined();
+    const codex = buildTrackedCliLaunchCommand({
+      provider: "codex",
+      permissionMode: "full-auto",
+      instance: { id: "codex", provider: "codex", configHome: "/home/dev/.codex" },
+    });
+    expect(codex.env?.CODEX_HOME).toBeUndefined();
+  });
+
+  it("points a fresh Claude launch at the account's config home", () => {
+    const launch = buildTrackedCliLaunchCommand({
+      provider: "claude",
+      permissionMode: "full-auto",
+      instance: { id: "acct-work", provider: "claude", configHome: "/home/dev/.claude-work" },
+    });
+    expect(launch.env?.CLAUDE_CONFIG_DIR).toBe("/home/dev/.claude-work");
+    expect(launch.env?.CODEX_HOME).toBeUndefined();
+    expect(launch.env?.HOME).toBeUndefined();
+    expect(launch.env?.USERPROFILE).toBeUndefined();
+  });
+
+  it("points a fresh Codex launch at CODEX_HOME instead", () => {
+    const launch = buildTrackedCliLaunchCommand({
+      provider: "codex",
+      permissionMode: "full-auto",
+      instance: { id: "acct-work", provider: "codex", configHome: "/home/dev/.codex-work" },
+    });
+    expect(launch.env?.CODEX_HOME).toBe("/home/dev/.codex-work");
+    expect(launch.env?.CLAUDE_CONFIG_DIR).toBeUndefined();
+  });
+
+  it("keeps the ADE skill roots it would have emitted anyway", () => {
+    const withInstance = buildTrackedCliLaunchCommand({
+      provider: "claude",
+      permissionMode: "full-auto",
+      laneWorktreePath: "/repo/.ade/worktrees/lane",
+      instance: { id: "acct-work", provider: "claude", configHome: "/home/dev/.claude-work" },
+    });
+    const withoutInstance = buildTrackedCliLaunchCommand({
+      provider: "claude",
+      permissionMode: "full-auto",
+      laneWorktreePath: "/repo/.ade/worktrees/lane",
+    });
+    expect(withInstance.env?.[ADE_AGENT_SKILLS_DIRS_ENV])
+      .toBe(withoutInstance.env?.[ADE_AGENT_SKILLS_DIRS_ENV]);
+  });
+
+  it("emits nothing for a provider that has no config-home identity", () => {
+    for (const provider of ["cursor", "droid", "opencode", "pi"] as const) {
+      const launch = buildTrackedCliLaunchCommand({
+        provider,
+        permissionMode: "full-auto",
+        instance: { id: "acct-work", provider: "claude", configHome: "/home/dev/.claude-work" },
+      });
+      expect(launch.env?.CLAUDE_CONFIG_DIR).toBeUndefined();
+      expect(launch.env?.CODEX_HOME).toBeUndefined();
+    }
+  });
+
+  it("refuses an account belonging to a different provider", () => {
+    const launch = buildTrackedCliLaunchCommand({
+      provider: "codex",
+      permissionMode: "full-auto",
+      instance: { id: "acct-work", provider: "claude", configHome: "/home/dev/.claude-work" },
+    });
+    expect(launch.env?.CLAUDE_CONFIG_DIR).toBeUndefined();
+    expect(launch.env?.CODEX_HOME).toBeUndefined();
+  });
+
+  it("emits nothing when no account was resolved", () => {
+    const launch = buildTrackedCliLaunchCommand({ provider: "claude", permissionMode: "full-auto" });
+    expect(launch.env?.CLAUDE_CONFIG_DIR).toBeUndefined();
+    const blank = buildTrackedCliLaunchCommand({
+      provider: "claude",
+      permissionMode: "full-auto",
+      instance: { id: "acct-work", provider: "claude", configHome: "   " },
+    });
+    expect(blank.env?.CLAUDE_CONFIG_DIR).toBeUndefined();
+  });
+
+  it("re-emits the account on resume, on both platforms", () => {
+    const metadata = {
+      provider: "claude" as const,
+      targetKind: "session" as const,
+      targetId: "sess-1",
+      instanceId: "acct-2",
+      launch: { permissionMode: "full-auto" as AgentChatPermissionMode, instanceId: "acct-2" },
+    };
+    for (const platform of ["linux", "win32"] as const) {
+      const resumed = buildTrackedCliResumeLaunchCommand(
+        metadata,
+        { instance: { id: "acct-work", provider: "claude", configHome: "/home/dev/.claude-work" } },
+        { platform },
+      );
+      expect(resumed.env?.CLAUDE_CONFIG_DIR).toBe("/home/dev/.claude-work");
+      expect(resumed.startupCommand).toContain("--resume");
+    }
+  });
+
+  it("reads the account id from either the launch config or the metadata mirror", () => {
+    expect(trackedCliResumeInstanceId({ launch: { instanceId: "acct-1" } })).toBe("acct-1");
+    expect(trackedCliResumeInstanceId({ launch: {}, instanceId: "acct-2" })).toBe("acct-2");
+    expect(trackedCliResumeInstanceId({ launch: { instanceId: "  " }, instanceId: "acct-3" })).toBe("acct-3");
+    expect(trackedCliResumeInstanceId({ launch: {} })).toBeNull();
+    expect(trackedCliResumeInstanceId(null)).toBeNull();
+  });
+
+  it("leaves a resume without an account untouched", () => {
+    const resumed = buildTrackedCliResumeLaunchCommand(
+      { provider: "codex", targetKind: "thread", targetId: "thread-1", launch: {} },
+      {},
+      { platform: "linux" },
+    );
+    expect(resumed.env?.CODEX_HOME).toBeUndefined();
   });
 });

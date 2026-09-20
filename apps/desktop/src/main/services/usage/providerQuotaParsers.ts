@@ -230,10 +230,87 @@ export function codexFiveHourUsedPercent(payload: unknown): number | null {
   return typeof window?.percentUsed === "number" ? window.percentUsed : null;
 }
 
+/**
+ * Banked Codex reset credits, from an `account/rateLimits/read` response.
+ *
+ * NOT `CreditsSnapshot` — that is the account's billing balance, a dollar
+ * figure, and reading it as "you have credits to reset with" would offer a
+ * reset the API refuses. The reset credits live under `rateLimitResetCredits`
+ * and each one is a single-use token that clears the account's windows.
+ *
+ * Only `status: "available"` counts. A credit mid-redemption or already spent
+ * is visible in the same array, and counting those makes the button offer a
+ * reset that comes back `alreadyRedeemed`.
+ */
+export type CodexResetCredits = {
+  availableCount: number;
+  nextExpiresAt?: string;
+};
+
+export function parseCodexResetCredits(payload: unknown): CodexResetCredits | null {
+  if (!isRecord(payload)) return null;
+  const container = payload.rateLimitResetCredits ?? payload.rate_limit_reset_credits;
+  if (!isRecord(container)) return null;
+  const credits = Array.isArray(container.credits) ? container.credits : [];
+  let availableCount = 0;
+  let nextExpiresAt: string | null = null;
+  for (const entry of credits) {
+    if (!isRecord(entry)) continue;
+    if (entry.status !== "available") continue;
+    availableCount += 1;
+    const expiresAt = typeof entry.expiresAt === "string"
+      ? entry.expiresAt
+      : typeof entry.expires_at === "string" ? entry.expires_at : null;
+    if (!expiresAt) continue;
+    const parsed = Date.parse(expiresAt);
+    if (!Number.isFinite(parsed)) continue;
+    if (nextExpiresAt == null || parsed < Date.parse(nextExpiresAt)) nextExpiresAt = expiresAt;
+  }
+  // `availableCount` on the container is the server's own tally. Trusted when
+  // the array is absent (the server may omit it), but the array wins when both
+  // are present — it is the one that can be filtered by status.
+  const reported = typeof container.availableCount === "number"
+    ? Math.max(0, Math.floor(container.availableCount))
+    : typeof container.available_count === "number"
+      ? Math.max(0, Math.floor(container.available_count))
+      : null;
+  const resolvedCount = credits.length ? availableCount : reported ?? 0;
+  return {
+    availableCount: resolvedCount,
+    ...(nextExpiresAt ? { nextExpiresAt } : {}),
+  };
+}
+
 export const CODEX_PLAN_LIMIT_NOTICE_PERCENT = 50;
 
 export function shouldEmitCodexApproachingPlanLimit(percentUsed: number | null | undefined): boolean {
   return typeof percentUsed === "number" && percentUsed >= CODEX_PLAN_LIMIT_NOTICE_PERCENT;
+}
+
+/**
+ * Should the "approaching Codex plan limit" notice fire now, and does the
+ * session stay armed?
+ *
+ * The notice is once per WINDOW, not once per session. A chat left open across
+ * a five-hour rollover used to warn for the first window and then stay silent
+ * forever, because the flag that suppresses the repeat inside one window was
+ * only ever set, never cleared — the longer a session ran, the less the notice
+ * was worth. Codex reports the fresh window at a low percent, so a reading back
+ * under the threshold IS the rollover signal, and re-arming on it is what makes
+ * the second window warn like the first.
+ *
+ * A reading of `null` (no five-hour window in the payload) changes nothing: it
+ * is an absent measurement, not a low one, and treating it as a rollover would
+ * re-arm on every unrelated payload and warn twice inside one window.
+ */
+export function codexPlanLimitNoticeState(args: {
+  alreadyEmitted: boolean;
+  percentUsed: number | null | undefined;
+}): { emit: boolean; emitted: boolean } {
+  const { alreadyEmitted, percentUsed } = args;
+  if (typeof percentUsed !== "number") return { emit: false, emitted: alreadyEmitted };
+  if (percentUsed < CODEX_PLAN_LIMIT_NOTICE_PERCENT) return { emit: false, emitted: false };
+  return { emit: !alreadyEmitted, emitted: true };
 }
 
 function codexWindowTypeFromDuration(value: number | null): UsageWindow["windowType"] | null {

@@ -158,6 +158,22 @@ describe("modelPickerGeometry — list rows", () => {
     expect(at(g.entries, 1).rect.y - at(g.entries, 0).rect.y).toBe(MODEL_ENTRY_HEIGHT);
   });
 
+  it("uses credential identity in hit targets for duplicate model rows", () => {
+    const state = makeState({
+      entries: [
+        entry({ modelId: "gpt-5.5", credentialId: "cred-work" }),
+        entry({ modelId: "gpt-5.5", credentialId: "cred-personal" }),
+      ],
+    });
+
+    const g = geo(state);
+
+    expect(g.entries.map((entry) => entry.id)).toEqual([
+      "right:model-picker:entry:gpt-5.5::credential:cred-work",
+      "right:model-picker:entry:gpt-5.5::credential:cred-personal",
+    ]);
+  });
+
   it("windows a long scrolled list using MODEL_LIST_ROWS, mapping screen rows to true indices", () => {
     const entries: ModelPickerEntry[] = Array.from({ length: 25 }, (_v, i) =>
       entry({ modelId: `m${i}` }),

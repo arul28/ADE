@@ -25,6 +25,7 @@ import type {
   SubagentResultCardRenderEvent,
   SubagentSpawnAnchorRenderEvent,
   SubagentStoppedGroupEvent,
+  SubagentStoppedGroupItem,
 } from "./chatTranscriptRows";
 
 // Re-exported for existing importers that reach it through this module.
@@ -337,9 +338,10 @@ export function SubagentResultCard({
   const isStopped = event.status === "stopped";
   const isFailed = event.status === "failed";
   const duration = formatSubagentDurationMs(event.durationMs);
-  const statusWord = isSuccess ? "Finished" : isStopped ? "Stopped — interrupted" : "Failed";
+  const statusWord = isSuccess ? "Finished" : isStopped ? stoppedResultStatusLine(event) : "Failed";
   const title = event.description?.trim() || statusWord;
   const summary = firstMeaningfulSummary(event.summaryPreview);
+  const stoppedActivity = event.lastActivity?.trim() || null;
   const childSessionId = event.childSessionId?.trim() || null;
   const typeAccent = spawnTypeAccent(event.spawnKind);
 
@@ -443,6 +445,18 @@ export function SubagentResultCard({
             </div>
           ) : null}
         </div>
+      ) : null}
+      {isStopped ? (
+        <ChatCardDetail>
+          {stoppedActivity ? (
+            <ChatCardDetailRow tone="idle" label="last activity" value={stoppedActivity} />
+          ) : null}
+          <ChatCardDetailRow
+            tone={event.resultLanded ? "ok" : "idle"}
+            label="outcome"
+            value={stoppedResultOutcome(event.resultLanded)}
+          />
+        </ChatCardDetail>
       ) : null}
     </ChatCard>
   );
@@ -575,19 +589,63 @@ export function BackgroundJobLine({
  * agents. Never a red error block — neither an interrupt nor a usage limit is
  * something that broke.
  */
+/**
+ * The one sentence this card exists to get right.
+ *
+ * "N agents stopped when you interrupted" is reserved for `stopSource: "user"`.
+ * An ADE brain restart, a sibling brain claiming the chat, and a provider that
+ * ended the turn under the agents all used to render as the reader's own Stop
+ * press, which is both false and the most annoying possible false thing for a
+ * card to say. Anything that is not the user names itself instead.
+ */
+type StoppedAttributionEvent = Pick<SubagentStoppedGroupEvent, "stopSource" | "stopReason">;
+
+function stoppedAttributionSuffix(event: StoppedAttributionEvent): string {
+  if (event.stopSource === "user") return " when you interrupted";
+  const reason = event.stopReason?.trim();
+  return reason ? `: ${reason}` : "";
+}
+
+/** Status line for the individual card that represents one stopped agent. */
+export function stoppedResultStatusLine(event: StoppedAttributionEvent): string {
+  return event.stopSource === "user"
+    ? "Stopped — interrupted"
+    : `Stopped${stoppedAttributionSuffix(event)}`;
+}
+
+export function stoppedGroupHeadline(agents: string, event: SubagentStoppedGroupEvent): string {
+  if (event.cause === "usage_limit") return `${agents} stopped · usage limit`;
+  return `${agents} stopped${stoppedAttributionSuffix(event)}`;
+}
+
+/** Title plus what the agent was actually doing when it ended. */
+export function stoppedGroupItemLabel(item: SubagentStoppedGroupItem): string {
+  const activity = item.lastActivity?.trim();
+  return activity ? `${item.title} · ${activity}` : item.title;
+}
+
+/**
+ * Whether this agent's work survived. A folded row that only says "stopped"
+ * hides the difference between a report that had already landed and one that
+ * was lost mid-flight — which is the whole question the reader has.
+ */
+export function stoppedGroupItemOutcome(item: SubagentStoppedGroupItem): string {
+  return stoppedResultOutcome(item.resultLanded);
+}
+
+export function stoppedResultOutcome(resultLanded: boolean): string {
+  return resultLanded ? "report landed" : "work lost";
+}
+
 export function SubagentStoppedGroupCard({
   event,
-  onJumpToStart,
 }: {
   event: SubagentStoppedGroupEvent;
-  onJumpToStart?: (rowKey: string) => void;
 }) {
   const count = event.count;
   const [expanded, setExpanded] = useState(count <= 6);
   const agents = `${count} ${count === 1 ? "agent" : "agents"}`;
-  const headline = event.cause === "usage_limit"
-    ? `${agents} stopped · usage limit`
-    : `${agents} stopped when you interrupted`;
+  const headline = stoppedGroupHeadline(agents, event);
 
   return (
     <ChatCard skin="rail" tone="warn">
@@ -615,10 +673,9 @@ export function SubagentStoppedGroupCard({
             <ChatCardDetailRow
               key={item.agentKey}
               tone="idle"
-              label={item.title}
-              title={item.title}
-              value={onJumpToStart ? "jump to start" : undefined}
-              onClick={onJumpToStart ? () => onJumpToStart(item.jumpToStartRowKey) : undefined}
+              label={stoppedGroupItemLabel(item)}
+              title={item.lastActivity ? `${item.title} — ${item.lastActivity}` : item.title}
+              value={stoppedGroupItemOutcome(item)}
             />
           ))}
         </ChatCardDetail>

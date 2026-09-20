@@ -9,7 +9,6 @@ import {
   DownloadSimple,
   GitPullRequest,
   GridFour,
-  IdentificationBadge,
   PushPin,
   Tag,
   TreeStructure,
@@ -26,7 +25,6 @@ import type {
 } from "../../../shared/types";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import type { CrossMachineLaneMarker } from "../../state/crossMachineLanes";
-import type { OrchestrationRole } from "../../../shared/types/orchestration";
 import {
   canonicalInputFromSummary,
   sanitizeTerminalInlineText,
@@ -176,15 +174,6 @@ const DELTA_CHIP_STYLE: React.CSSProperties = {
 
 export function shouldShowCursorCloudRowBadge(connected: boolean, agentHref: string | null): boolean {
   return connected && Boolean(agentHref);
-}
-
-function orchestrationRoleA11yLabel(role: OrchestrationRole, tag?: string | null): string {
-  if (role === "worker" && tag && tag.trim().length > 0) {
-    return `Worker · ${tag.trim().toLowerCase()}`;
-  }
-  if (role === "lead") return "Lead";
-  if (role === "validator") return "Validator";
-  return role;
 }
 
 /**
@@ -608,9 +597,6 @@ export const SessionCard = React.memo(function SessionCard({
     awaitingInput: session.runtimeState === "waiting-input",
   });
   const hasDeltaChips = Boolean(delta && (delta.insertions > 0 || delta.deletions > 0));
-  const orchestrationLabel = session.orchestrationRole
-    ? orchestrationRoleA11yLabel(session.orchestrationRole, session.orchestrationTag ?? null)
-    : null;
   /**
    * Spawned BY the CTO. `parentIdentityKey` is stamped host-side (see
    * `chatSessionProjection`) — the renderer never infers it, because the CTO
@@ -800,12 +786,11 @@ export const SessionCard = React.memo(function SessionCard({
      fact that tells the rows apart — and until now it lived only in a small
      glyph next to the provider mark and in the hover card.
 
-     It names ADE's OWN spawn primitive (Subagent / Peer, else the orchestration
-     role) rather than the parent's title. The parent is very often not in the
-     visible list, so the title branch degraded to the literal string "another
-     chat" for most real users — a label that says nothing. `spawnKind` and
-     `orchestrationRole` are projected onto every summary, so they are always
-     known locally and always specific.
+     It names ADE's OWN spawn primitive (Subagent / Peer) rather than the
+     parent's title. The parent is very often not in the visible list, so the
+     title branch degraded to the literal string "another chat" for most real
+     users — a label that says nothing. `spawnKind` is projected onto every
+     summary, so it is always known locally and always specific.
 
      The chip is also the keyboard path to the parent thread. The hover card
      repeats that action for pointer users, but a hover-only action would make
@@ -848,9 +833,8 @@ export const SessionCard = React.memo(function SessionCard({
         ? "Subagent"
         : session.spawnKind === "peer"
           ? "Peer"
-          // No spawn kind recorded: the orchestration role is the next most
-          // specific truth, and "Spawned" is the honest floor.
-          : orchestrationLabel ?? "Spawned";
+          // No spawn kind recorded: "Spawned" is the honest floor.
+          : "Spawned";
     whereParts.push(
       <button
         type="button"
@@ -1058,13 +1042,6 @@ export const SessionCard = React.memo(function SessionCard({
       onActivate: () => navigateToSpawnedChat(session.orchestrationParentSessionId, null),
       activateLabel: "Open parent thread",
       testId: "session-hover-parent-thread",
-    });
-  }
-  if (orchestrationLabel) {
-    hoverRows.push({
-      id: "role",
-      icon: <IdentificationBadge size={13} className="text-muted-fg/60" />,
-      value: orchestrationLabel,
     });
   }
   // A CTO child's spawn kind is suppressed for the same reason its chip
@@ -1301,9 +1278,7 @@ export const SessionCard = React.memo(function SessionCard({
       data-session-recede={shouldRecede ? "true" : undefined}
       {...(disabledReason
         ? { "aria-label": `${primaryText}: ${disabledReason}` }
-        : orchestrationLabel
-          ? { "aria-label": `${orchestrationLabel}: ${primaryText}` }
-          : { "aria-label": primaryText })}
+        : { "aria-label": primaryText })}
       onClick={(event) => {
         // Selecting loads this session into the very area the card floats over,
         // so the card gets out of the way the moment the row is acted on.

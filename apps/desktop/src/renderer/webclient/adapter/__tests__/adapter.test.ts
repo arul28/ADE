@@ -2745,6 +2745,39 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  /**
+   * The account id travels; the config path never does. The host that owns the
+   * lane resolves the id against its own machine registry, so a web client's
+   * filesystem cannot name a provider config home on someone else's machine.
+   */
+  it("forwards the provider account id on a CLI launch", async () => {
+    fake.descriptors = descriptors(["work.startCliSession"]);
+    fake.commandResults.set("work.startCliSession", { sessionId: "session-1", ptyId: "pty-1" });
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await adapter.ade.pty.create({
+      laneId: "lane-1",
+      toolType: "claude",
+      title: "Claude CLI",
+      cols: 80,
+      rows: 24,
+      runtimeCliLaunch: { provider: "claude", permissionMode: "full-auto", instanceId: "acct-work" },
+    });
+    await adapter.ade.pty.create({
+      laneId: "lane-1",
+      toolType: "shell",
+      title: "Shell",
+      cols: 80,
+      rows: 24,
+    });
+
+    expect(fake.commandCalls.map((call) => (call.args as { instanceId?: string | null }).instanceId))
+      .toEqual(["acct-work", null]);
+
+    adapter.dispose();
+  });
+
   it("still refuses a same-machine pin naming a different project", async () => {
     fake.descriptors = descriptors(["work.startCliSession"]);
     const adapter = createAdeWebAdapter(fake.asClient());

@@ -10,7 +10,7 @@ import type {
   DroidSdkWorkerRequest,
   DroidSdkWorkerResponse,
 } from "./droidSdkProtocol";
-import { droidDisabledToolIdsForCategories, droidInteractionModeValue, droidMcpToolsToDisable } from "./droidSdkProtocol";
+import { droidInteractionModeValue, droidMcpToolsToDisable } from "./droidSdkProtocol";
 import { loadDroidSdk } from "../ai/droidSdkLoader";
 import { summarizeDroidAskUser } from "./droidSdkAskUser";
 import { ensureDroidSpawnsAreWindowless } from "./droidSdkWindowsHide";
@@ -265,33 +265,16 @@ function buildReady(): DroidSdkReady {
 }
 
 /**
- * Resolves the concrete `disabledToolIds` for a settings bag, if it asks for
- * any category to be withheld. Droid reports tool ids and their categories at
- * runtime, so the lookup happens here rather than against a pinned id list.
- * Applied on every settings push so a resumed session cannot drift back to the
- * full toolset.
- */
-async function resolveDisabledToolIds(
-  settings: DroidSdkSessionSettings,
-): Promise<string[] | null> {
-  const categories = settings.disabledToolCategories ?? null;
-  if (!session || !categories?.length) return null;
-  const listed = await session.listTools();
-  const tools = Array.isArray(listed?.tools) ? listed.tools : [];
-  return droidDisabledToolIdsForCategories(tools, categories);
-}
-
-/**
  * DroidSession exposes MCP enumeration publicly, but @factory/droid-sdk
  * 0.2.0 exposes `toggleMcpTool` only on its low-level client. Keep the
  * private-field bridge in one place and fail closed if a future SDK removes it.
  */
-async function disableUnmanagedMcpToolsForLead(): Promise<void> {
+async function disableUnmanagedMcpTools(): Promise<void> {
   const allowedServerNames = initState?.allowedMcpServerNames;
   if (!session || !allowedServerNames) return;
   const listed = await session.listMcpTools();
   if (!listed || !Array.isArray(listed.tools)) {
-    throw new Error("Droid did not return a valid MCP tool list for the orchestrator lead.");
+    throw new Error("Droid did not return a valid MCP tool list for the strict MCP sweep.");
   }
   const tools = listed.tools;
   const toDisable = droidMcpToolsToDisable(tools, allowedServerNames);
@@ -318,7 +301,7 @@ async function disableUnmanagedMcpToolsForLead(): Promise<void> {
   post({
     type: "log",
     level: "debug",
-    message: "Disabled unmanaged Droid MCP tools for orchestrator lead.",
+    message: "Disabled unmanaged Droid MCP tools.",
     detail: { disabledCount: toDisable.length },
   });
 }
@@ -326,15 +309,13 @@ async function disableUnmanagedMcpToolsForLead(): Promise<void> {
 async function applySettings(settings: DroidSdkSessionSettings): Promise<void> {
   if (!session) throw new Error("Droid SDK worker is not initialized.");
   const sdk = await getSdk();
-  await disableUnmanagedMcpToolsForLead();
-  const disabledToolIds = await resolveDisabledToolIds(settings);
+  await disableUnmanagedMcpTools();
   if (settings.interactionMode === "spec") {
     await session.enterSpecMode({
       specModeModelId: settings.specModeModelId?.trim() || settings.modelId,
       specModeReasoningEffort: coerceReasoning(settings.specModeReasoningEffort ?? settings.reasoningEffort),
     });
     enteredSpecMode = true;
-    if (disabledToolIds?.length) await session.updateSettings({ disabledToolIds });
     return;
   }
   // Omitting the mode leaves Droid's own setting alone, which is the point —
@@ -350,7 +331,6 @@ async function applySettings(settings: DroidSdkSessionSettings): Promise<void> {
     ...(settings.autonomyLevel ? { autonomyLevel: settings.autonomyLevel as DroidSdkTypes.AutonomyLevel } : {}),
     ...(updateInteractionMode ? { interactionMode: updateInteractionMode } : {}),
     reasoningEffort: coerceReasoning(settings.reasoningEffort),
-    ...(disabledToolIds ? { disabledToolIds } : {}),
   });
 }
 
@@ -388,14 +368,7 @@ async function initWorker(init: DroidSdkWorkerInit): Promise<DroidSdkReady> {
     session = await sdk.createSession(sessionOptions(sdk, init, init.settings));
     enteredSpecMode = init.settings.interactionMode === "spec";
   }
-  // `createSession`/`resumeSession` take `disabledToolIds`, but the ids are
-  // only discoverable from the live session, so the lead's denial is pushed
-  // immediately after the session exists and before any prompt can run.
-  if (init.settings.disabledToolCategories?.length) {
-    const disabledToolIds = await resolveDisabledToolIds(init.settings);
-    if (disabledToolIds?.length) await session.updateSettings({ disabledToolIds });
-  }
-  await disableUnmanagedMcpToolsForLead();
+  await disableUnmanagedMcpTools();
   const ready = buildReady();
   post({ type: "ready", ready });
   return ready;

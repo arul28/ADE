@@ -964,6 +964,79 @@ struct WorkModelHandoffDivider: View {
   }
 }
 
+/// "Codex hit its limit. A reset credit is banked." — with the way to spend it.
+///
+/// Desktop parity with `ResetCreditNoticeRow` in `AgentChatMessageList.tsx`:
+/// the credit is the one usage notice with something to DO, so the action rides
+/// the notice instead of living only in the Limits module a tab away. The
+/// outcome REPLACES the button rather than sitting beside it — the credit is
+/// gone either way, and a live button invites a second spend.
+struct WorkResetCreditNoticeView: View {
+  let card: WorkEventCardModel
+
+  @EnvironmentObject private var syncService: SyncService
+  @State private var spending = false
+  @State private var outcome: String?
+
+  /// Absent when the host omitted `detail.accountId`. The sentence is still
+  /// worth reading; there is simply no account to spend against.
+  private var accountId: String? { card.metadata.first }
+
+  var body: some View {
+    HStack(alignment: .firstTextBaseline, spacing: 8) {
+      Image(systemName: card.icon)
+        .font(.system(size: 11, weight: .bold))
+        .foregroundStyle(card.tint.color)
+      Text(card.title)
+        .font(.caption)
+        .foregroundStyle(ADEColor.textSecondary)
+        .fixedSize(horizontal: false, vertical: true)
+      Spacer(minLength: 6)
+      if let outcome {
+        Text(outcome)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textMuted)
+          .fixedSize(horizontal: false, vertical: true)
+      } else if let accountId, syncService.canInvokeRemoteAction("usage.consumeResetCredit") {
+        Button("Use reset") {
+          Task { await spend(accountId: accountId) }
+        }
+        .buttonStyle(.plain)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .disabled(spending)
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
+        .accessibilityHint("Clears this account's limit windows now.")
+      }
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 8)
+    .background(ADEColor.warning.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .stroke(ADEColor.warning.opacity(0.18), lineWidth: 0.8)
+    )
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  /// The host names the outcome; the phone only phrases it. A failure is never
+  /// dressed up as a reset — see `workResetCreditOutcomeText`.
+  @MainActor
+  private func spend(accountId: String) async {
+    spending = true
+    defer { spending = false }
+    do {
+      outcome = workResetCreditOutcomeText(
+        try await syncService.consumeUsageResetCredit(accountId: accountId)
+      )
+    } catch {
+      ADEHaptics.error()
+      outcome = error.localizedDescription
+    }
+  }
+}
+
 struct WorkTurnEndMarkerView: View {
   let marker: WorkTurnEndMarker
   var toolCount: Int = 0

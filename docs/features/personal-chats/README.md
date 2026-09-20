@@ -9,7 +9,7 @@ desktop, the hosted web client, mobile, and the ADE CLI.
 
 | Path | Role |
 |---|---|
-| `apps/ade-cli/src/services/personalChats/personalChatScope.ts` | Machine-owned chat runtime, existing-state background prewarm, hidden persistence/scratch roots, personal-surface recovery for legacy session rows, action allowlist (including scheduled-work create/cancel/pause), attachment confinement, terminal ownership, event stream, push `subscribeEvents`, caller MCP forwarding, orchestrator-lead refusal, and the `chat` / `embedded` runtime profile. |
+| `apps/ade-cli/src/services/personalChats/personalChatScope.ts` | Machine-owned chat runtime, existing-state background prewarm, hidden persistence/scratch roots, personal-surface recovery for legacy session rows, action allowlist (including scheduled-work create/cancel/pause), attachment confinement, terminal ownership, event stream, push `subscribeEvents`, caller MCP forwarding, and the `chat` / `embedded` runtime profile. |
 | `apps/ade-cli/src/services/runtime/parentDeathWatchdog.ts` | Embedded-profile parent-death poll. An SDK sidecar sets `ADE_EMBEDDED_PARENT_PID`; if that process vanishes without unwinding, this guest runtime shuts itself down. |
 | `apps/desktop/src/shared/callerMcpServers.ts` | Shared caller-MCP validation and per-provider honesty table. Personal create forwards `mcpServers` / `strictMcpConfig` into the chat service; Pi and invalid payloads fail closed. |
 | `packages/sdk/` | Embeddable sidecar that speaks this machine RPC. See [ADE SDK](../sdk/README.md). |
@@ -145,11 +145,6 @@ to redraw those cards as well. They cannot be answered through `approve`: they
 want prose or a choice, and the engine would take the decision while the request
 stayed unanswered. The SDK refuses them client-side with `invalid_option`.
 
-Create refuses `interactionMode: "orchestrator-lead"` and
-`orchestrationRole: "lead"`. A projectless chat that led a run would report
-`strictRequested: false` while running under locked, always-strict lead
-isolation. Start a lead inside a project instead.
-
 The action family covers list/create/read/send and interactive turn controls,
 session metadata/lifecycle, scheduled-work create/cancel/pause, model inventory,
 paged event history, bounded image attachment ingress/readback, and a chat-owned
@@ -240,10 +235,8 @@ listing, reading, or continuing them. A missing marker must not hide an intact
 transcript from the conversation rail.
 
 Personal chat creation strips or overrides project-only fields such as a
-caller-supplied lane/cwd, orchestration metadata, automation ownership, and
-persistent project identity. It also refuses orchestrator-lead markers
-outright rather than stripping them and opening a mis-isolated chat. The CLI
-separately rejects Linear attachment flags. Machine RPC actions are
+caller-supplied lane/cwd, automation ownership, and persistent project
+identity. The CLI separately rejects Linear attachment flags. Machine RPC actions are
 allowlisted rather than forwarding arbitrary ADE domains into the hidden
 runtime.
 
@@ -301,8 +294,6 @@ themselves are not trimmed.
   prompts or message bodies in machine RPC/sync diagnostics.
 - Do not enable project push notifications for the hidden runtime until push
   links and notification actions have an explicit personal-chat route.
-- Never create a personal chat as an orchestration lead. The create refuses
-  those markers; do not strip them and continue.
 - Treat `capabilities.personalChats.mcpServers` / `pushEvents` as optional.
   An older runtime omitting them would ignore the fields rather than error.
 - Strict MCP on this surface is Claude-only as a guarantee. Read

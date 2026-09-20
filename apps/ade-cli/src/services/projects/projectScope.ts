@@ -104,6 +104,8 @@ export class ProjectScopeRegistry {
     private readonly projectRegistry: ProjectRegistry,
     private readonly options: {
       syncRuntime?: AdeRuntimeSyncOptions;
+      /** Socket endpoint shared by every project scope in this brain. */
+      runtimeSocketPath?: string | null;
       onDisposeProject?: (projectId: ProjectId) => void;
       /** Injectable clock for the failed-boot backoff. Tests only. */
       now?: () => number;
@@ -175,6 +177,7 @@ export class ProjectScopeRegistry {
         projectRoot: record.rootPath,
         workspaceRoot: record.rootPath,
         chatRuntime: "agent",
+        ...(this.options.runtimeSocketPath ? { runtimeSocketPath: this.options.runtimeSocketPath } : {}),
         ...(syncRuntime ? { syncRuntime } : {}),
       });
       return new ProjectScope({

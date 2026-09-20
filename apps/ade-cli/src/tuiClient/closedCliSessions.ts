@@ -1,6 +1,7 @@
 import type { AgentChatScheduledWorkState, AgentChatSessionSummary } from "../../../desktop/src/shared/types/chat";
 import type { ChatTerminalSession } from "../../../desktop/src/shared/types/sessions";
 import type { TuiChatTerminalSession, TuiSessionLifecycleFields } from "./adeApi";
+import { launchIdentityFields, resolveLaunchIdentity } from "./launchIdentity";
 import { formatRelativePastTime } from "./relativeTime";
 import { theme } from "./theme";
 import type { AdeCodeProvider } from "./types";
@@ -73,6 +74,7 @@ export function terminalSessionToChatSummary(
     ? session.runtimeState === "idle" ? "idle" : "active"
     : "ended";
   const provider = terminalSummaryProvider(session);
+  const launchIdentity = resolveLaunchIdentity(lifecycle);
   return {
     sessionId: session.terminalId,
     laneId: session.laneId,
@@ -92,6 +94,7 @@ export function terminalSessionToChatSummary(
     scheduledWorkPaused: scheduledWorkState?.paused === true,
     scheduledWork: scheduledWorkState?.items ?? [],
     surface: "work",
+    ...launchIdentityFields(launchIdentity),
     ...(session.resumeMetadata?.orchestrationParentSessionId
       ? { orchestrationParentSessionId: session.resumeMetadata.orchestrationParentSessionId }
       : {}),

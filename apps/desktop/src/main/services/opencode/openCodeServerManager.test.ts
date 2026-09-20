@@ -603,7 +603,7 @@ describe("openCodeServerManager", () => {
 
     const spec = __buildOpenCodeServeLaunchSpecForTests({
       config: {
-        mcp: { "ade-orchestration": { type: "remote", url: "http://ade/mcp" } },
+        mcp: { "ade-cto": { type: "remote", url: "http://ade/mcp" } },
       } as const,
       port: 4311,
     });
@@ -615,7 +615,7 @@ describe("openCodeServerManager", () => {
     expect(JSON.parse(spec.env.OPENCODE_CONFIG_CONTENT ?? "{}")).toEqual({
       mcp: {
         filesystem: { type: "local", command: ["filesystem"] },
-        "ade-orchestration": { type: "remote", url: "http://ade/mcp" },
+        "ade-cto": { type: "remote", url: "http://ade/mcp" },
       },
       theme: "user-theme",
     });
@@ -626,7 +626,7 @@ describe("openCodeServerManager", () => {
     process.env.OPENCODE_CONFIG_CONTENT = "{not valid json";
 
     const spec = __buildOpenCodeServeLaunchSpecForTests({
-      config: { mcp: { "ade-orchestration": { type: "remote", url: "http://ade/mcp" } } } as const,
+      config: { mcp: { "ade-cto": { type: "remote", url: "http://ade/mcp" } } } as const,
       port: 4312,
     });
 

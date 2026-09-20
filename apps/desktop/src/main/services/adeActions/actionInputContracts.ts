@@ -161,6 +161,38 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade account token create",
     },
   },
+  proxy: {
+    status: {
+      description: "Read the local subscription proxy and its signed-in provider subscriptions without exposing credentials.",
+      input: "no input",
+      example: "ade proxy status --text",
+    },
+    ensureRunning: {
+      description: "Install and start the local subscription proxy when a harness needs a borrowed subscription.",
+      input: "no input",
+      example: "ade proxy start --text",
+    },
+    stop: {
+      description: "Stop the local subscription proxy without removing its installed binary or signed-in subscriptions.",
+      input: "no input",
+      example: "ade proxy stop --text",
+    },
+    signIn: {
+      description: "Sign in one Claude or Codex subscription for use by harness presets; ADE opens the provider's sign-in page and waits for completion.",
+      input: "object { provider: \"claude\" | \"codex\" }",
+      example: "ade actions run proxy.signIn --input-json '{\"provider\":\"claude\"}'",
+    },
+    signOut: {
+      description: "Remove one subscription sign-in from this machine.",
+      input: "object { loginId: string }",
+      example: "ade actions run proxy.signOut --input-json '{\"loginId\":\"...\"}'",
+    },
+    setDisabled: {
+      description: "Temporarily enable or disable one subscription sign-in without removing it.",
+      input: "object { loginId: string, disabled: boolean }",
+      example: "ade actions run proxy.setDisabled --input-json '{\"loginId\":\"...\",\"disabled\":true}'",
+    },
+  },
   attention: {
     getSnapshot: {
       description: "Read the account-wide Activity stream across every connected machine and project.",
@@ -611,18 +643,6 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade actions run built_in_browser.getTrace --input-json '{\"sessionId\":\"browser-1\"}' --json",
     },
   },
-  orchestration: {
-    runList: {
-      description: "List orchestration runs and their status, optionally for one lane.",
-      input: "positional argsList [laneId?, { limit?: number }?]",
-      example: "ade actions run orchestration.runList --args-json '[null,{\"limit\":10}]' --json",
-    },
-    bundleRead: {
-      description: "Read one orchestration run's bundle: manifest, plan, and registered assets.",
-      input: "positional argsList [runId, bundlePath]",
-      example: "ade actions run orchestration.bundleRead --args-json '[\"run-1\",\"/path/to/bundle\"]' --json",
-    },
-  },
   computer_use_artifacts: {
     listArtifacts: {
       description: "List computer-use proof artifacts (screenshots, recordings, traces, logs) across the project.",
@@ -669,6 +689,71 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description: "Re-parse one outside session file and return a generous transcript tail.",
       input: "object { provider, sessionId }",
       example: "ade actions run external-sessions.getDetail --input-json '{\"provider\":\"claude\",\"sessionId\":\"session-id\"}' --text",
+    },
+  },
+  provider_instances: {
+    list: {
+      description:
+        "List this machine's provider accounts (Claude and Codex only). Each entry is a label plus the config directory "
+        + "that holds that login, never a credential.",
+      input: "object { provider?: \"claude\" | \"codex\" }",
+      example: "ade actions run provider_instances.list --input-json '{\"provider\":\"claude\"}' --text",
+    },
+    create: {
+      description:
+        "Create an empty provider account: a new config directory plus a label. Returns the account and the exact login "
+        + "command (argv + env var) a terminal must run so the provider CLI signs in to THIS directory.",
+      input: "object { provider: \"claude\" | \"codex\", label: string, accentColor?: string }",
+      example: "ade actions run provider_instances.create --input-json '{\"provider\":\"claude\",\"label\":\"Work\"}' --text",
+    },
+    remove: {
+      description:
+        "Forget a provider account. Nothing on disk is deleted — the config home is returned so the caller can say what is "
+        + "still there. The machine's own login and the current default cannot be removed.",
+      input: "object { id: string }",
+      example: "ade actions run provider_instances.remove --input-json '{\"id\":\"work\"}' --text",
+    },
+    rename: {
+      description: "Rename one provider account. Labels are at most 60 characters.",
+      input: "object { id: string, label: string }",
+      example: "ade actions run provider_instances.rename --input-json '{\"id\":\"work\",\"label\":\"Work (EU)\"}' --text",
+    },
+    setDefault: {
+      description:
+        "Make one account the provider's default, so sessions that name no instance land there. Exactly one default per provider.",
+      input: "object { id: string }",
+      example: "ade actions run provider_instances.setDefault --input-json '{\"id\":\"work\"}' --text",
+    },
+    setAccent: {
+      description: "Set or clear one account's accent colour. `#rrggbb`, or null to clear it.",
+      input: "object { id: string, accentColor: string | null }",
+      example: "ade actions run provider_instances.setAccent --input-json '{\"id\":\"work\",\"accentColor\":\"#3b82f6\"}' --text",
+    },
+    getSettings: {
+      description:
+        "Read the per-provider account settings: whether new chats spread across signed-in accounts, and whether the "
+        + "provider's accounts start with the machine on Windows.",
+      input: "object { provider: \"claude\" | \"codex\" }",
+      example: "ade actions run provider_instances.getSettings --input-json '{\"provider\":\"codex\"}' --text",
+    },
+    setSettings: {
+      description: "Patch the per-provider account settings. Omitted fields keep their current value.",
+      input: "object { provider: \"claude\" | \"codex\", settings: { smartBalance?: boolean, autoStartWindows?: boolean } }",
+      example: "ade actions run provider_instances.setSettings --input-json '{\"provider\":\"codex\",\"settings\":{\"smartBalance\":true}}' --text",
+    },
+    loginCommand: {
+      description:
+        "The exact command that signs one account in: the provider binary, its argv, and the single env var that points it at "
+        + "this account's config home. ADE never drives the OAuth flow itself.",
+      input: "object { id: string }",
+      example: "ade actions run provider_instances.loginCommand --input-json '{\"id\":\"work\"}' --text",
+    },
+    refresh: {
+      description:
+        "Re-read every account's config home and record who is signed in there. Writes only when something changed, so it is "
+        + "safe to call on a cadence.",
+      input: "object { provider?: \"claude\" | \"codex\" }",
+      example: "ade actions run provider_instances.refresh --input-json '{\"provider\":\"claude\"}' --text",
     },
   },
 };

@@ -33,14 +33,9 @@ import {
 } from "../../providerSectionPrimitives";
 import type { OpenCodeProviderDetail } from "../../OpenCodeProviderDetailModal";
 import { CopyableCommand } from "../providerUi";
+import { OpenCodeCustomProvidersPanel } from "../keys/OpenCodeCustomProvidersPanel";
 import { openCodeInstallCommands } from "../cliTools";
 import type { ProvidersViewContext } from "../types";
-
-const CUSTOM_PROVIDER_NPM_OPTIONS = [
-  "@ai-sdk/openai-compatible",
-  "@ai-sdk/openai",
-  "@ai-sdk/anthropic",
-];
 
 function formatLocalModelLabel(modelId: string): string {
   const descriptor = getModelById(modelId);
@@ -220,27 +215,17 @@ function AdvancedOpenCode({ ctx }: { ctx: ProvidersViewContext }) {
         Advanced — custom providers &amp; model slugs
       </summary>
       <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 18, borderTop: `1px solid ${COLORS.border}` }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <div style={SECTION_LABEL_STYLE}>Custom provider</div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 200px), 1fr))", gap: 8 }}>
-            <input aria-label="Provider id" value={ctx.customProviderDraft.id} onChange={(e) => ctx.actions.setCustomProviderDraft((d) => ({ ...d, id: e.target.value }))} placeholder="provider-id" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "8px 10px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textPrimary, outline: "none" }} />
-            <input aria-label="Provider name" value={ctx.customProviderDraft.name} onChange={(e) => ctx.actions.setCustomProviderDraft((d) => ({ ...d, name: e.target.value }))} placeholder="Display name" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "8px 10px", fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textPrimary, outline: "none" }} />
-            <input aria-label="Base URL" value={ctx.customProviderDraft.baseUrl} onChange={(e) => ctx.actions.setCustomProviderDraft((d) => ({ ...d, baseUrl: e.target.value }))} placeholder="https://api.example.com/v1" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "8px 10px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textPrimary, outline: "none" }} />
-            <select aria-label="npm package" value={ctx.customProviderDraft.npm} onChange={(e) => ctx.actions.setCustomProviderDraft((d) => ({ ...d, npm: e.target.value }))} style={{ background: COLORS.cardBgSolid, border: `1px solid ${COLORS.border}`, padding: "8px 10px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textPrimary }}>
-              {CUSTOM_PROVIDER_NPM_OPTIONS.map((opt) => (
-                <option key={opt} value={opt}>{opt}</option>
-              ))}
-            </select>
-            <input aria-label="Model slugs" value={ctx.customProviderDraft.slugs} onChange={(e) => ctx.actions.setCustomProviderDraft((d) => ({ ...d, slugs: e.target.value }))} placeholder="model-a, model-b" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "8px 10px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textPrimary, outline: "none" }} />
-            <input aria-label="Provider API key" value={ctx.customProviderDraft.apiKey} onChange={(e) => ctx.actions.setCustomProviderDraft((d) => ({ ...d, apiKey: e.target.value }))} placeholder="API key (optional)" type="password" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "8px 10px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textPrimary, outline: "none" }} />
-          </div>
-          <div>
-            <button type="button" style={primaryButton()} disabled={ctx.savingAdvanced} onClick={() => void ctx.actions.saveAdvancedProvider()}>{ctx.savingAdvanced ? "Saving…" : "Add provider"}</button>
-          </div>
-        </div>
+        {/* Was a six-field form with two Save buttons that both lit up when
+            either was touched, and no way to see or change what it had already
+            written. The provider list below is readable and editable; adding
+            one opens the same key sheet every other provider page uses. */}
+        <OpenCodeCustomProvidersPanel ctx={ctx} />
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           <div style={SECTION_LABEL_STYLE}>Custom model slugs</div>
+          <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.45 }}>
+            Model ids OpenCode should offer that its catalog does not list. Comma separated, written as provider/model.
+          </div>
           <input aria-label="Custom model slugs" value={ctx.customModelSlugs} onChange={(e) => ctx.actions.setCustomModelSlugs(e.target.value)} placeholder="provider/model-a, provider/model-b" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "8px 10px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textPrimary, outline: "none" }} />
           <div>
             <button type="button" style={primaryButton()} disabled={ctx.savingAdvanced} onClick={() => void ctx.actions.saveCustomModelSlugs()}>{ctx.savingAdvanced ? "Saving…" : "Save model slugs"}</button>

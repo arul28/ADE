@@ -6,6 +6,7 @@ import type {
 import type { SyncHelloOkPayload } from "./types/sync";
 import { fromMachinePowerRecord } from "./types/power";
 import type { MachinePower, MachineSleepState } from "./types/power";
+import type { MachineInventorySummary } from "./types/machineInventory";
 import { isTailnetHostname } from "./tailnet";
 
 const DEFAULT_TIMEOUT_MS = 8_000;
@@ -228,8 +229,35 @@ export function parseAccountMachine(value: unknown): AdeAccountMachine | null {
     reachableEndpoints: endpoints,
     lastSeenAt,
     online: value.online === true,
+    ...parseMachineInventory(value),
     ...parseMachinePower(value),
   };
+}
+
+function parseMachineInventory(value: Record<string, unknown>): {
+  inventory?: MachineInventorySummary;
+} {
+  if (!isRecord(value.inventory)) return {};
+  const providers = Array.isArray(value.inventory.providers)
+    ? value.inventory.providers.slice(0, 16).flatMap((entry) => {
+      if (!isRecord(entry)) return [];
+      const provider = boundedString(entry.provider, MAX_LABEL_CHARS);
+      const accounts = typeof entry.accounts === "number" && Number.isFinite(entry.accounts)
+        ? Math.max(0, Math.floor(entry.accounts))
+        : null;
+      const models = typeof entry.models === "number" && Number.isFinite(entry.models)
+        ? Math.max(0, Math.floor(entry.models))
+        : null;
+      return provider && accounts !== null && models !== null
+        ? [{ provider, accounts, models }]
+        : [];
+    })
+    : [];
+  const presets = typeof value.inventory.presets === "number"
+    && Number.isFinite(value.inventory.presets)
+    ? Math.max(0, Math.floor(value.inventory.presets))
+    : null;
+  return presets === null ? {} : { inventory: { providers, presets } };
 }
 
 /**

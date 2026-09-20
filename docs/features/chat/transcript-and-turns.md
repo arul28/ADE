@@ -37,7 +37,7 @@ envelope carries transport metadata; the actual payload is the
 discriminated `AgentChatEvent` union.
 
 `provenance` is populated for delegated worker chat, where messages can
-originate from orchestrator, worker, or user threads and must be routed
+originate from agent or user threads and must be routed
 back to the correct activity feed.
 
 ## Canonical assistant text (fragile — read before editing)

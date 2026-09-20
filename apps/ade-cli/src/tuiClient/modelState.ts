@@ -35,6 +35,9 @@ export function initialModelState(draftKind: AdeCodeInterfaceMode = "chat"): Ade
   const descriptor = getDefaultModelDescriptor("codex");
   return {
     provider: "codex",
+    instanceId: null,
+    presetId: null,
+    credentialId: null,
     interfaceMode: draftKind,
     model: descriptor?.providerModelId ?? "gpt-6-astra",
     modelId: descriptor?.id ?? null,

@@ -56,8 +56,12 @@ export type SettingsGroupId = "account" | "preferences" | "repo" | "machine";
 export type SettingsTab = {
   id: SettingsTabId;
   label: string;
-  /** One line, shown under the tab title in the content header. */
-  description: string;
+  /**
+   * One line under the tab title. Optional, and deliberately absent on pages
+   * whose own contents already say what they are — a caption that restates the
+   * title is scaffolding, not information.
+   */
+  description?: string;
   /**
    * Which sidebar group this page sits in, and therefore where it saves.
    *
@@ -73,7 +77,10 @@ export type SettingsGroup = {
   id: SettingsGroupId;
   /** Null means "use the repository's own name", resolved by the renderer. */
   label: string | null;
-  /** The scope this group's pages save at, for the header chip. */
+  /**
+   * The scope this group's pages save at. No longer drawn as a badge — it
+   * feeds `groupScopeHint`, the sidebar heading's hover line.
+   */
   scope: SettingScope;
 };
 
@@ -101,7 +108,9 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   // ── Preferences ────────────────────────────────────────────────────────
   { id: "appearance", label: "Appearance", description: "Theme and terminal text.", group: "preferences" },
   { id: "chat", label: "Chat", description: "How the chat transcript reads, and what the composer does.", group: "preferences" },
-  { id: "agents", label: "Providers", description: "Which coding agents ADE can use, and how each one signs in.", group: "preferences" },
+  // No description. The page is a list of named providers with their status —
+  // a sentence restating that above it is the caption the owner called out.
+  { id: "agents", label: "Providers", group: "preferences" },
   { id: "lanes-git", label: "Lanes", description: "How lanes start, stay current, and tell you they fell behind.", group: "preferences" },
   { id: "notifications", label: "Notifications", description: "What ADE interrupts you for, and how.", group: "preferences" },
   { id: "activity", label: "Activity", description: "What's running everywhere, and how ADE shows it.", group: "preferences" },
@@ -121,9 +130,9 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
  * buys, and "This computer" is exactly the label a user reads as a warning when
  * it is meant as a fact.
  *
- * The wording is not written here. It is the same `SCOPE_COPY` the scope chip
- * shows, looked up through the group's own scope — three hand-written copies of
- * this sentence had already drifted into disagreeing about what "repo" means.
+ * The wording is not written here. It is `SCOPE_COPY`, looked up through the
+ * group's own scope — three hand-written copies of this sentence had already
+ * drifted into disagreeing about what "repo" means.
  */
 export function groupScopeHint(group: SettingsGroupId): string {
   const scope = SETTINGS_GROUPS.find((entry) => entry.id === group)?.scope ?? "account";
@@ -381,7 +390,18 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   {
     id: "agents.providers",
     label: "AI connections",
-    keywords: ["provider", "api key", "anthropic", "openai", "claude", "codex", "auth", "model"],
+    // Provider accounts and stored API keys are PANELS on each provider's page,
+    // not pages of their own, so they own no anchor and cannot be entries here
+    // (anchors are unique per entry). Their words live on the page that leads
+    // to both, because before this "accounts" and "api keys" matched nothing in
+    // ⌘K and the only way in was already knowing which provider to open.
+    keywords: [
+      "provider", "api key", "api keys", "keys", "byok", "stored key", "token", "openrouter",
+      "anthropic", "openai", "claude", "codex", "auth", "model",
+      "account", "accounts", "provider accounts", "second account", "another account",
+      "multiple accounts", "instance", "switch account", "default account", "smart balance",
+      "endpoint", "base url", "custom provider",
+    ],
     tab: "agents",
     anchor: "ai-providers",
     scope: "account",
@@ -395,7 +415,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   {
     id: "agents.provider.claude",
     label: "Claude Code",
-    keywords: ["anthropic", "claude", "provider", "sign in", "api key", "model", "permission"],
+    keywords: ["anthropic", "claude", "provider", "sign in", "api key", "model", "permission", "account", "accounts", "instance"],
     tab: "agents",
     anchor: "ai-provider-claude",
     scope: "account",
@@ -405,7 +425,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   {
     id: "agents.provider.codex",
     label: "Codex CLI",
-    keywords: ["openai", "chatgpt", "codex", "provider", "sign in", "api key", "model", "permission"],
+    keywords: ["openai", "chatgpt", "codex", "provider", "sign in", "api key", "model", "permission", "account", "accounts", "instance"],
     tab: "agents",
     anchor: "ai-provider-codex",
     scope: "account",
@@ -496,6 +516,22 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "agents",
     anchor: "ai-provider-copilot",
     scope: "account",
+    web: "hidden",
+    group: "Connections",
+  },
+  {
+    // The id and anchor keep the old word: they are storage and deeplinks, and
+    // renaming them would break every saved link. Only the label is copy.
+    id: "agents.harnesses",
+    label: "Custom",
+    // "harness"/"harnesses" stay as keywords: the label is Custom now, but
+    // that is the word in the docs, the CLI flags and every older screenshot.
+    keywords: ["custom", "harness", "harnesses", "preset", "body", "brain", "profile", "combination", "subagent", "launch", "logo"],
+    tab: "agents",
+    anchor: "ai-harnesses",
+    scope: "account",
+    // A custom setup names a provider account and a stored key, both of which
+    // are machine-local facts the hosted client cannot read or write.
     web: "hidden",
     group: "Connections",
   },

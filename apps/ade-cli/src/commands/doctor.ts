@@ -147,7 +147,7 @@ export type DoctorDiagnosticsSharing = Pick<
 >;
 
 export type DoctorCommandOptions = {
-  role: "cto" | "orchestrator" | "agent" | "external" | "evaluator";
+  role: "cto" | "agent" | "external" | "evaluator";
   socketPath: string | null;
 };
 

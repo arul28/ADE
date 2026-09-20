@@ -189,7 +189,6 @@ export function NotificationsSection() {
           anchor="notification-events"
           title="Notify me about"
           description="Ambient events appear in Activity without interrupting. Notify sends a real notification."
-          scope="machine"
           stacked
         >
           <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
@@ -246,7 +245,6 @@ export function NotificationsSection() {
           anchor="quiet-hours"
           title="Quiet hours"
           description="Everything drops to ambient during this window."
-          scope="machine"
           control={
             <SettingsToggle
               label="Quiet hours"

@@ -9,6 +9,7 @@ import type {
   BuiltInBrowserRemoteRequestAck,
 } from "../shared/types/builtInBrowserRemote";
 import type { EditorTarget, OpenPathInEditorRemote, OpenPathTarget } from "../shared/editorTargets";
+import type { MachineInventoryDetail } from "../shared/types/machineInventory";
 import type {
   AdeCleanupResult,
   AdeProjectEvent,
@@ -29,6 +30,21 @@ import type {
   ProjectSecretSetArgs,
   ProjectSecretSummary,
   ProjectSecretValueResult,
+  ProviderInstance,
+  ProviderInstanceCreateArgs,
+  ProviderInstanceCreateResult,
+  ProviderInstanceGetSettingsArgs,
+  ProviderInstanceListArgs,
+  ProviderInstanceLoginCommand,
+  ProviderInstanceLoginCommandArgs,
+  ProviderInstanceRefreshArgs,
+  ProviderInstanceRemoveArgs,
+  ProviderInstanceRemoveResult,
+  ProviderInstanceRenameArgs,
+  ProviderInstanceSetAccentArgs,
+  ProviderInstanceSetDefaultArgs,
+  ProviderInstanceSetSettingsArgs,
+  ProviderInstanceSettings,
   BatchAssessmentResult,
   ApplyConflictProposalArgs,
   AppInfo,
@@ -168,6 +184,7 @@ import type {
   AgentChatModelsArgs,
   AgentChatParallelLaunchState,
   AgentChatParallelLaunchStateArgs,
+  AgentChatDismissPendingInputArgs,
   AgentChatRespondToInputArgs,
   AgentChatSendArgs,
   AgentChatSetParallelLaunchStateArgs,
@@ -611,6 +628,12 @@ import type {
   PortConflict,
   PortAllocationEvent,
   ProxyStatus,
+  SubscriptionProxyStatus,
+  SubscriptionProxySignInArgs,
+  SubscriptionProxySignInResult,
+  SubscriptionProxySignOutArgs,
+  SubscriptionProxySetDisabledArgs,
+  SubscriptionProxyMutationResult,
   ProxyRoute,
   LanePreviewInfo,
   LaneProxyEvent,
@@ -826,6 +849,13 @@ import type {
   SearchQueryResult,
   SearchRebuildResult,
 } from "../shared/types";
+import type {
+  ApiCredentialGetArgs,
+  ApiCredentialListArgs,
+  ApiCredentialRemoveArgs,
+  ApiCredentialStoreArgs,
+  ApiCredentialSummary,
+} from "../shared/types/apiCredentials";
 import type { GitHubIssueLike } from "../shared/laneGitHubIssue";
 import type {
   AgentChatCopyTempAttachmentArgs,
@@ -1600,6 +1630,16 @@ declare global {
         refresh: () => Promise<UsageSnapshot | null>;
         refreshHistory: () => Promise<UsageSnapshot | null>;
         noteDemand: () => Promise<UsageSnapshot | null>;
+        /**
+         * Spend one banked reset credit for an account.
+         *
+         * Optional on the bridge: the web client and older preloads do not
+         * expose it, and the row that offers "Use reset" checks for it rather
+         * than assuming every host can.
+         */
+        consumeResetCredit?: (args: {
+          accountId: string;
+        }) => Promise<import("../shared/types").UsageResetCreditResult>;
         checkBudget: (args: BudgetCheckArgs) => Promise<BudgetCheckResult>;
         getCumulativeUsage: (args: {
           scope: BudgetCapScope;
@@ -1613,100 +1653,6 @@ declare global {
         getBudgetConfig: () => Promise<BudgetCapConfig>;
         saveBudgetConfig: (config: BudgetCapConfig) => Promise<BudgetCapConfig>;
         onUpdate: (cb: (snapshot: UsageSnapshot) => void) => () => void;
-      };
-      orchestration: {
-        runCreate: (args: {
-          laneId: string;
-          leadSessionId: string;
-          title?: string;
-          goalSummary?: string;
-        }, pin?: OpenProjectBinding | null) => Promise<{
-          runId: string;
-          manifest: import("../shared/types/orchestration").OrchestrationManifest;
-          etag: string;
-        }>;
-        bundleRead: (args: { runId: string; laneId: string }) => Promise<{
-          manifest: import("../shared/types/orchestration").OrchestrationManifest;
-          planMd: string;
-          etag: string;
-        }>;
-        manifestReadSection: (args: {
-          runId: string;
-          laneId: string;
-          section: import("../shared/types/orchestration").ManifestSection;
-        }) => Promise<{
-          section: import("../shared/types/orchestration").ManifestSection;
-          data: unknown;
-          etag: string;
-        }>;
-        manifestPatch: (
-          args: import("../shared/types/orchestration").OrchestrationManifestPatchRequest & {
-            laneId: string;
-          },
-        ) => Promise<import("../shared/types/orchestration").OrchestrationManifestPatchResponse>;
-        planAppend: (
-          args: import("../shared/types/orchestration").OrchestrationPlanAppendRequest & {
-            laneId: string;
-          },
-        ) => Promise<{ planMd: string; etag: string }>;
-        planWrite: (
-          args: import("../shared/types/orchestration").OrchestrationPlanWriteRequest & {
-            laneId: string;
-          },
-        ) => Promise<{ planMd: string; etag: string } | { error: "etag_conflict"; etag: string }>;
-        spawnAgent: (
-          args: import("../shared/types/orchestration").OrchestrationSpawnAgentRequest & {
-            laneId: string;
-            leadSessionId: string;
-          },
-        ) => Promise<{ sessionId: string; etag: string }>;
-        agentInject: (
-          args: import("../shared/types/orchestration").OrchestrationAgentInjectRequest,
-        ) => Promise<void>;
-        assetRegister: (
-          args: import("../shared/types/orchestration").OrchestrationAssetRegisterRequest & {
-            laneId: string;
-          },
-        ) => Promise<{
-          asset: import("../shared/types/orchestration").OrchestrationAsset;
-          etag: string;
-        }>;
-        claimTask: (
-          args: import("../shared/types/orchestration").OrchestrationClaimTaskRequest & {
-            laneId: string;
-          },
-        ) => Promise<
-          | {
-              ok: true;
-              manifest: import("../shared/types/orchestration").OrchestrationManifest;
-              etag: string;
-            }
-          | {
-              ok: false;
-              reason: string;
-              manifest: import("../shared/types/orchestration").OrchestrationManifest;
-              etag: string;
-            }
-        >;
-        releaseTask: (
-          args: import("../shared/types/orchestration").OrchestrationReleaseTaskRequest & {
-            laneId: string;
-          },
-        ) => Promise<{
-          manifest: import("../shared/types/orchestration").OrchestrationManifest;
-          etag: string;
-        }>;
-        runList: (args?: {
-          laneId?: string;
-        }) => Promise<
-          import("../shared/types/orchestration").OrchestrationRunSummary[]
-        >;
-        subscribe: (
-          args: { runId: string; laneId?: string },
-          callback: (
-            payload: import("../shared/types/orchestration").OrchestrationEventPayload,
-          ) => void,
-        ) => () => void;
       };
       lanes: {
         list: (
@@ -2059,6 +2005,15 @@ declare global {
         ) => Promise<void>;
         respondToInput: (
           args: AgentChatRespondToInputArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<void>;
+        /**
+         * Throw away a non-blocking provider question. Rejects for any card the
+         * provider is actually waiting on — see the host's
+         * `dismissPendingInput`.
+         */
+        dismissPendingInput: (
+          args: AgentChatDismissPendingInputArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<void>;
         models: (
@@ -2938,6 +2893,66 @@ declare global {
         unwatchDetail: (args: { watchId: string }) => Promise<{ ok: true }>;
         onDetailUpdated: (cb: (ev: ExternalSessionDetailUpdatedEvent) => void) => () => void;
       };
+      /**
+       * Provider API keys, several per provider. Local IPC only, and never a
+       * read path for the secret — `get` answers with the same non-secret
+       * summary `list` does.
+       */
+      apiCredentials: {
+        list: (args?: ApiCredentialListArgs) => Promise<ApiCredentialSummary[]>;
+        get: (args: ApiCredentialGetArgs) => Promise<ApiCredentialSummary | null>;
+        store: (args: ApiCredentialStoreArgs) => Promise<ApiCredentialSummary | null>;
+        remove: (args: ApiCredentialRemoveArgs) => Promise<void>;
+      };
+      proxy?: {
+        status: () => Promise<SubscriptionProxyStatus>;
+        ensureRunning: () => Promise<SubscriptionProxyStatus>;
+        signIn: (args: SubscriptionProxySignInArgs) => Promise<SubscriptionProxySignInResult>;
+        signOut: (args: SubscriptionProxySignOutArgs) => Promise<SubscriptionProxyMutationResult>;
+        setDisabled: (args: SubscriptionProxySetDisabledArgs) => Promise<SubscriptionProxyMutationResult>;
+      };
+      providerInstances: {
+        list: (
+          args?: ProviderInstanceListArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ProviderInstance[]>;
+        create: (
+          args: ProviderInstanceCreateArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ProviderInstanceCreateResult>;
+        remove: (
+          args: ProviderInstanceRemoveArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ProviderInstanceRemoveResult>;
+        rename: (
+          args: ProviderInstanceRenameArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ProviderInstance>;
+        setDefault: (
+          args: ProviderInstanceSetDefaultArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ProviderInstance>;
+        setAccent: (
+          args: ProviderInstanceSetAccentArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ProviderInstance>;
+        getSettings: (
+          args: ProviderInstanceGetSettingsArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ProviderInstanceSettings>;
+        setSettings: (
+          args: ProviderInstanceSetSettingsArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ProviderInstanceSettings>;
+        loginCommand: (
+          args: ProviderInstanceLoginCommandArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ProviderInstanceLoginCommand>;
+        refresh: (
+          args?: ProviderInstanceRefreshArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ProviderInstance[]>;
+      };
       pty: {
         create: (args: PtyCreateArgs, pin?: OpenProjectBinding | null) => Promise<PtyCreateResult>;
         resumeSession: (
@@ -3375,6 +3390,10 @@ declare global {
         cancelDeviceLogin: (args: { sessionId: string }) => Promise<AdeAccountStatus>;
         signOut: () => Promise<AdeAccountStatus>;
         listMachines: () => Promise<AdeAccountMachinesResult>;
+        getMachineInventory?: (
+          machineKey?: string,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MachineInventoryDetail>;
         renameMachine: (
           machineKey: string,
           customName: string | null,

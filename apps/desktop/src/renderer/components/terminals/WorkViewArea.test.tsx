@@ -426,11 +426,10 @@ describe("WorkViewArea", () => {
 
     expect(screen.getByRole("button", { name: "Chat" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "CLI" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Orchestrator" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Shell" })).toBeNull();
   });
 
-  it("keeps the Chat start mode selected for orchestrator drafts", () => {
+  it("keeps the Chat start mode selected for chat drafts", () => {
     render(
       <WorkViewArea
         lanes={[{
@@ -455,7 +454,6 @@ describe("WorkViewArea", () => {
         visibleSessions={[]}
         activeItemId={null}
         draftKind="chat"
-        orchestratorEnabled
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}

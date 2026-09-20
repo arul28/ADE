@@ -42,11 +42,17 @@ import {
   isFiredOneShotWakeup,
   scheduledNextFireLabel,
 } from "../../../shared/chatScheduledWork";
-import type { AgentChatEventEnvelope, ClaudeActiveGoal, CodexThreadGoal } from "../../../shared/types";
+import type {
+  AgentChatEventEnvelope,
+  AgentChatSessionStatus,
+  ClaudeActiveGoal,
+  CodexThreadGoal,
+} from "../../../shared/types";
 import type { SubagentCapability } from "../../../shared/subagentCapabilities";
 import { BottomDrawerSection } from "./BottomDrawerSection";
 import { GoalCard } from "./GoalCard";
 import { ChatSubagentGlyph, chatSubagentColor, chatSubagentDisplayName } from "./chatSubagentIdentity";
+import { selfHealBackgroundSnapshots, selfHealSubagentSnapshots } from "./chatPaneSelfHeal";
 import { navigateToSpawnedChat } from "./spawnNavigation";
 import { ChatWorkflowActiveCard } from "./ChatWorkflowActiveCard";
 
@@ -1141,6 +1147,8 @@ export function ChatSubagentsPanel({
   onStopBackgroundTask,
   onStopSubagent,
   sessionModelLabel = null,
+  runtimeAlive,
+  childChatStatuses,
 }: {
   sessionId?: string | null;
   snapshots: ChatSubagentSnapshot[];
@@ -1185,6 +1193,16 @@ export function ChatSubagentsPanel({
   onStopBackgroundTask?: (snapshot: ChatScheduledWorkSnapshot) => void;
   onStopSubagent?: (snapshot: ChatSubagentSnapshot) => void;
   sessionModelLabel?: string | null;
+  /**
+   * Whether the host still holds a provider runtime for this chat. `false`
+   * heals every "running" row in this pane; `undefined` (older host) heals
+   * nothing. See `chatPaneSelfHeal.ts` — the SDK emits no terminal event for a
+   * subagent or background task when the parent process exits, so without this
+   * the pane reads "running" for as long as the chat is kept.
+   */
+  runtimeAlive?: boolean;
+  /** Session status by spawned-chat session id, for rows that are ADE chats. */
+  childChatStatuses?: ReadonlyMap<string, AgentChatSessionStatus>;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [paneUi, setPaneUi] = useState<PaneUiStorageState>(() => readPaneUiState(sessionId));
@@ -1269,6 +1287,17 @@ export function ChatSubagentsPanel({
 
   const plan = useMemo(() => derivePlan(events), [events]);
 
+  // Self-heal first, so every count, cap, grouping and label below reads the
+  // truthful status rather than a "running" the event stream never closed.
+  const healedSnapshots = useMemo(
+    () => selfHealSubagentSnapshots(snapshots, { runtimeAlive, childChatStatuses }),
+    [snapshots, runtimeAlive, childChatStatuses],
+  );
+  const healedBackgroundItems = useMemo(
+    () => selfHealBackgroundSnapshots(backgroundItems, { runtimeAlive }),
+    [backgroundItems, runtimeAlive],
+  );
+
   const { subagents, runningCount, completedCount, bgRunningCount } = useMemo(() => {
     // ONE merged subagent list — foreground + background-run agents together.
     // Filter OUT historical command-as-subagent snapshots (old chats persisted
@@ -1278,7 +1307,7 @@ export function ChatSubagentsPanel({
     let running = 0;
     let completed = 0;
     let bgRunning = 0;
-    for (const snap of snapshots) {
+    for (const snap of healedSnapshots) {
       if (isBackgroundShellCommand({
         taskType: snap.taskType,
         agentType: snap.agentType,
@@ -1302,7 +1331,7 @@ export function ChatSubagentsPanel({
       completedCount: completed,
       bgRunningCount: bgRunning,
     };
-  }, [snapshots]);
+  }, [healedSnapshots]);
 
   const [expandedFinishedIds, setExpandedFinishedIds] = useState<Set<string>>(() => new Set());
   const annotatedSubagents = useMemo(() => annotateSubagentTree(subagents), [subagents]);
@@ -1369,11 +1398,11 @@ export function ChatSubagentsPanel({
       earlier: visible(grouped.earlier),
     };
   }, [clearedSubagentIds, hiddenDescendantIds, pinnedSubagentIds, subagents]);
-  const backgroundGroups = useMemo(() => groupPaneSectionItems(backgroundItems, {
+  const backgroundGroups = useMemo(() => groupPaneSectionItems(healedBackgroundItems, {
     isEarlier: isEarlierBackgroundItem,
     isCleared: (snapshot) => clearedBackgroundIds.has(snapshot.id),
     isPinned: () => false,
-  }), [backgroundItems, clearedBackgroundIds]);
+  }), [healedBackgroundItems, clearedBackgroundIds]);
   const scheduleGroups = useMemo(() => groupPaneSectionItems(scheduleItems, {
     isEarlier: isEarlierScheduleItem,
     isCleared: (snapshot) => clearedScheduleIds.has(snapshot.id),
@@ -1542,7 +1571,7 @@ export function ChatSubagentsPanel({
   const hasClaudeGoal = Boolean(claudeGoal?.condition?.trim());
   const hasTasks = todoItems.length > 0;
   const hasSubagents = subagents.length > 0;
-  const hasBackground = backgroundItems.length > 0;
+  const hasBackground = healedBackgroundItems.length > 0;
   const hasScheduled = scheduleItems.length > 0;
   const hasAnything = hasGoal || hasClaudeGoal || Boolean(plan) || hasTasks || hasSubagents || hasBackground || hasScheduled;
   const renderSubagentPaneRow = (snap: ChatSubagentSnapshot) => (
@@ -1553,7 +1582,7 @@ export function ChatSubagentsPanel({
       probing={probingTaskId === snap.taskId}
       canViewFullTranscript={canTakeover}
       category={snap.background ? "background" : "subagent"}
-      depth={treeById.get(subagentIdentity(snap))?.depth ?? subagentTreeDepth(snap, snapshots)}
+      depth={treeById.get(subagentIdentity(snap))?.depth ?? subagentTreeDepth(snap, healedSnapshots)}
       treePrefix={treeById.get(subagentIdentity(snap))?.prefix ?? ""}
       collapsedDescendantCount={collapsedCountById.get(subagentIdentity(snap)) ?? 0}
       onToggleCollapsedSubtree={() => {

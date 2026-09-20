@@ -850,23 +850,13 @@ func adeUsageLimitCards(
   .sorted { rank($0.label) < rank($1.label) }
 }
 
-/// A stable accent for an account chip, drawn from the existing provider
-/// fallback palette rather than a second colour system.
-/// Hoisted: `adeUsageAccountAccent` is called twice per account chip per render
-/// by the Work limits rows, and this array was rebuilt on every one of them.
-private let adeUsageAccountAccentPalette: [Color] = [
-  ADEColor.providerBrand(for: "codex"),
-  ADEColor.providerBrand(for: "claude"),
-  ADEColor.providerBrand(for: "gemini"),
-  ADEColor.providerBrand(for: "opencode"),
-  ADEColor.providerBrand(for: "droid"),
-  ADEColor.providerBrand(for: "cursor"),
-]
-
-func adeUsageAccountAccent(_ accountId: String) -> Color {
-  var hash: UInt32 = 0
-  for byte in accountId.lowercased().unicodeScalars {
-    hash = hash &* 31 &+ byte.value
-  }
-  return adeUsageAccountAccentPalette[Int(hash % UInt32(adeUsageAccountAccentPalette.count))]
+/// The colour a usage bar is drawn in: the PROVIDER's brand, always.
+///
+/// This replaces an account accent that hashed the account id into a six-entry
+/// palette of other providers' brands — so a Claude account could be drawn in
+/// Gemini's blue, and two accounts of one provider never agreed with each
+/// other. Accounts are told apart by their email, which every row now carries;
+/// colour is identity, and the identity here is the provider.
+func adeUsageProviderColor(_ provider: String) -> Color {
+  ADEColor.providerBrand(for: provider)
 }

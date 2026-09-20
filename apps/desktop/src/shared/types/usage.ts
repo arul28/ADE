@@ -647,11 +647,33 @@ export type UsageAccountMachine = {
 };
 
 export type UsageAccount = {
-  /** Stable within a snapshot: the email when known, else `<provider>:local`. */
+  /**
+   * Stable within a snapshot.
+   *
+   * For the providers that can hold several local logins (`claude`, `codex`)
+   * this is `<provider>:<instanceId>` — the ADE provider account the reading
+   * came from, which is the only identity that stays stable when two logins
+   * share an email or a login has no readable email at all. Providers with one
+   * identity per machine keep the older `<provider>:<email>` / `<provider>:local`
+   * shape.
+   */
   id: string;
   provider: UsageProvider;
   email?: string;
   plan?: string;
+  /**
+   * The ADE provider account ("instance") this reading came from.
+   *
+   * Optional and additive: absent on providers that have exactly one local
+   * identity, and on hosts that predate provider accounts. `id` already encodes
+   * it, but the clients need the bare id to line a usage row up with the
+   * account row in Settings without re-parsing a composite key.
+   */
+  instanceId?: string;
+  /** The account's user-facing name, e.g. "Default" or "Work". */
+  label?: string;
+  /** `#rrggbb` the user picked to tell their accounts apart. */
+  accentColor?: string;
   /** Every machine reporting this account, freshest first. */
   machines: UsageAccountMachine[];
   /**
@@ -662,6 +684,37 @@ export type UsageAccount = {
    * made `email`/`plan`/`accountUrl` read as three different provenances.
    */
   url?: string;
+  /**
+   * Banked reset credits for this account, when the provider grants them and
+   * the host tracks them.
+   *
+   * Optional and additive: a host that does not know about reset credits omits
+   * it, and every client reads that as "no credit to spend", which is what the
+   * absence of the field means. `availableCount` is what the clients gate the
+   * "Use reset" action on; `nextExpiresAt` is when the soonest credit lapses.
+   */
+  resetCredits?: { availableCount: number; nextExpiresAt?: string };
+};
+
+/**
+ * What spending a reset credit did, said once for every client.
+ *
+ * `status` is the outcome the UI phrases; `message` is a host sentence for the
+ * cases the status vocabulary does not cover (an older host that cannot spend
+ * credits at all). A client that gets neither treats it as a plain failure —
+ * never as a success, because a fake "reset applied" is worse than an error.
+ */
+export type UsageResetCreditStatus =
+  | "reset"
+  | "nothingToReset"
+  | "noCredit"
+  | "alreadyRedeemed"
+  | "failure";
+
+export type UsageResetCreditResult = {
+  ok: boolean;
+  status?: UsageResetCreditStatus;
+  message?: string;
 };
 
 export type UsageSnapshot = {

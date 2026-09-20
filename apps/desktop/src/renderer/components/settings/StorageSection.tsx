@@ -766,7 +766,7 @@ function StoragePolicyPanel({
   // The rules are an editable policy, so they are a preference page: one
   // `SettingsCard` owning the `lane-storage-rules` anchor. The card draws the
   // title, the description and — crucially — the scope chip, which used to be
-  // a hand-passed `<ScopeChip scope="account-repo" />` that could drift from
+  // a hand-passed scope that could drift from
   // the manifest. The four fields stay one control cluster inside it, because
   // splitting them into four cards would mint four anchors the manifest does
   // not know and settings search would hide them.

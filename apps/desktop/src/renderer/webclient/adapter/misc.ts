@@ -50,7 +50,6 @@ export type MiscNamespaces = {
   rebase: AdeNamespace<"rebase">;
   history: AdeNamespace<"history">;
   cto: NonNullable<Window["ade"]["cto"]>;
-  orchestration: Partial<Window["ade"]["orchestration"]>;
   projectSecrets: AdeNamespace<"projectSecrets">;
   transcription: AdeNamespace<"transcription">;
   agentTools: AdeNamespace<"agentTools">;
@@ -762,7 +761,6 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     rebase: rebase as AdeNamespace<"rebase">,
     history: history as AdeNamespace<"history">,
     cto: createCtoNamespace(call),
-    orchestration: createOrchestrationNamespace(call, infra),
     projectSecrets: createProjectSecretsNamespace(),
     transcription: createTranscriptionNamespace(),
     agentTools: { detect: async () => [] } as AdeNamespace<"agentTools">,
@@ -915,18 +913,6 @@ function createCtoNamespace(
     getLinearIssuePickerData: () => call("cto.getLinearIssuePickerData", {}, null),
     searchLinearIssues: (args?: unknown) => call("cto.searchLinearIssues", args, { issues: [] }),
   } as unknown as NonNullable<Window["ade"]["cto"]>;
-}
-
-function createOrchestrationNamespace(
-  call: MiscCall,
-  infra: AdapterInfra,
-): Partial<Window["ade"]["orchestration"]> {
-  return {
-    runCreate: async (args: unknown, pin?: RuntimePinArg) => {
-      assertWebRuntimePinRoutable("orchestration.runCreate", pin, infra);
-      return await call("orchestration.runCreate", args, { ok: false, error: "unsupported" }, false);
-    },
-  } as unknown as Partial<Window["ade"]["orchestration"]>;
 }
 
 function createProjectSecretsNamespace(): AdeNamespace<"projectSecrets"> {

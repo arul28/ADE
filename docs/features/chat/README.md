@@ -72,6 +72,10 @@ for its separate RPC, sync, storage, and UI contracts.
 | `apps/desktop/src/main/services/chat/codexMcpElicitation.ts` | Converts Codex app-server MCP elicitation JSON Schemas into pending-input questions and coerces accepted form answers back to boolean/number/array/object values. Persistent consent is gated by request metadata. |
 | `apps/desktop/src/main/utils/codexComputerUse.ts` | Resolves and strictly verifies the OpenAI-signed standalone Computer Use client after explicit user opt-in, then supplies the canonical `computer_use` MCP config to Work chat and tracked Codex CLI launch/resume paths. |
 | `apps/desktop/src/main/services/chat/sessionRecovery.ts` | Version-2 persisted-state reconstruction when sessions resume from disk. |
+| `apps/desktop/src/main/services/chat/chatRuntimeOwnership.ts` | ADE-home ownership stamp and live-owner checks that let a legacy or dead-owner brain adopt a home while refusing to let one live brain relaunch, interrupt, or mutate another brain's chat runtime. |
+| `apps/desktop/src/main/services/chat/chatOrphanRunReconcile.ts` | Pure decisions for terminalizing stale subagent and background-task rows after their owner process is gone, distinguishing a child chat that finished or failed from one that is still genuinely alive. |
+| `apps/desktop/src/main/services/chat/turnDiffSummary.ts` | Turn-level before/after fingerprinting, including working-tree and untracked-file changes when a turn has no commit delta. |
+| `apps/desktop/src/main/services/chat/turnFileDiff.ts` | Shared file-diff reader that chooses committed or working-tree sides, enforces path containment, and bounds binary/large-file results for local and runtime-backed chat actions. |
 | `apps/desktop/src/main/services/chat/cursorSdkPool.ts` | Cursor SDK adapter: spawns and pools `cursorSdkWorker.ts` Node workers per session, sends turns, brokers permission/hook callbacks, maps SDK events to chat events, and handles teardown. Worker env construction sanitizes ADE/runtime ownership variables while preserving packaged `NODE_PATH` entries through the shared runtime helper so workers copied under `Resources/ade-cli/` can still resolve unpacked app dependencies such as `@cursor/sdk`. The connection envelope carries stable durable-state keys, model parameters, worker request ids, SDK request ids, and structured `CursorSdkErrorDetail` so service logs can correlate ADE chat sessions with Cursor SDK/backend failures. Hook sockets are per worker instance (`…/ade-cursor-sdk-<uid>/<pool+instanceHash>/hook.sock`, unique named pipes on Windows) so a recycle cannot unlink the replacement's policy gate. Pool and instance are hashed into **one** directory segment, and the derivation falls back to a `/tmp` root when the platform tmpdir is too deep: POSIX `sun_path` holds 104 bytes on macOS and libuv rejects a longer bind with a bare `EINVAL`, so a second directory level put the default macOS tmpdir path (111 bytes) past the limit and broke every Cursor chat on macOS. `MAX_CURSOR_SDK_SOCKET_PATH_BYTES` bounds it and a test binds a real listener on the derived path. That instance directory is reclaimed whenever its worker goes away — on a failed init as well as a teardown — independently of `cleanupStateRoot`, which governs only the durable Cursor state that has to survive a recycle; gating both on one flag leaked an empty directory per worker into the tmpdir for the life of the machine. `poisonCursorSdkConnection(poolKey, generation?)` force-evicts a pooled worker regardless of refcount so the next acquire forks a brand-new one after waiting for the previous process to exit (and fails rather than overlapping if that wait times out; `CURSOR_SDK_REPLACE_WAIT_MS` is derived from the dispose grace **plus** the SIGTERM→SIGKILL escalation, because the worker this wait exists for is wedged and answers neither, so a budget covering only the grace expired before the process could exit and failed the very turn the recycle was recovering): process liveness (`isCursorSdkPooledAlive`) is not connection health, because a run that dies on a transport error leaves the worker process alive while the server-side Cursor agent thread is wedged, and a refcount cannot express that. Pool keys embed the session id, so the lease a refcount decrement would preserve belongs to the same session, never another chat. Cloud oneshot RPCs (`runCursorSdkCloudRequest`) share one `cloud-oneshot:<workspace>` worker whose idle timer lives on the pool entry (60 s, cancelled on the next acquire) so overlapping list/conversation/watch polls cannot collide with Windows named-pipe / state-dir cleanup. `runCursorSdkLocalPrompt` is the same shape for ADE's one-off Cursor model calls — titles, status lines, lane names, summaries, commit messages, PR descriptions — so no caller runs the SDK in the host process. It shares one `local-oneshot:<workspace>` worker on the same 60 s idle window, serializes the prompts on that key (a worker holds one run), sends `resetConversation` so each prompt starts a fresh agent instead of following up on the previous one-shot, denies every tool call through the bridge, and poisons the worker after a timeout rather than handing the next caller one mid-cancel. |
 | `apps/desktop/src/main/services/chat/cursorCloudConversation.ts` | Cursor Cloud conversation unwrap, turn fingerprints, live-run status, and presence-gated inbound-sync helpers. `run.conversation()` is per-run, not full agent history; fingerprints plus prefix/suffix matching let hydrate skip turns ADE already has. `nextCursorCloudMirrorDelay` walks `3s → 8s → 20s → 45s` while a watched chat is quiet and resets to 3 s on new turns. `releaseCursorCloudAttachLease` drops a failed `cloud.run.attach` so watches can poll again. |
 | `apps/desktop/src/main/services/chat/cursorCloudMirrorWatch.ts` | Per-session watch refcount + backoff scheduler extracted from `agentChatService`. First watch hydrates immediately; later ticks poll only that session; last unwatch clears the timer. Clients call `ai.watchCursorCloudMirror` (`cursorCloudWatchMirror` in preload). Desktop watches while the selected cloud chat is visible, TUI while that session is active, iOS while the scene is active. The sync host registers `ai.watchCursorCloudMirror` and `ai.openCursorCloudChat` so a web/remote client watching a cloud chat on that machine is a real host command, not an adapter fallback. Cursor Cloud has no create-time webhook, so this poll is the inbound path for an **open cloud chat**. The account-level **fleet view** deliberately does not join this timer: its freshness comes from the Cursor Cloud ingress relay (`cursorCloudIngressService`) re-broadcasting each terminal FINISHED/ERROR delivery as the `ade.ai.cursorCloud.fleetEvent` project event (`main.ts` dispatch), so open fleet surfaces refresh when agents finish and otherwise wait for the manual refresh button. |
@@ -349,8 +353,8 @@ image.
 
 `work_tools` reads are lane-scoped **deny-by-default**. `getLaneState` and
 `readObservationPreview` are denied outright when the caller is not a user
-client and no lane can be resolved from its chat session — an orchestration
-step identified only by `runId`/`stepId`/`attemptId`, or a bound chat whose
+client and no lane can be resolved from its chat session — a caller identified
+only by `runId`/`stepId`/`attemptId`, or a bound chat whose
 session record the daemon cannot resolve, previously fell through unscoped and
 could read any lane's tab list and any lane's observation bytes. A
 caller-supplied `callerLaneId` is stripped unconditionally rather than being
@@ -486,8 +490,7 @@ An external embedder (the ADE SDK, or `ade chat create --arg-json`) can hand
 ADE a set of MCP servers when it creates a chat, plus a tristate
 `strictMcpConfig` that asks ADE to withhold the *user's* own MCP configuration
 from that chat. The servers merge with (never replace) ADE-managed servers
-the session already receives — CTO and orchestration leases keep working
-alongside them.
+the session already receives — the CTO lease keeps working alongside them.
 
 `strictMcpConfig` is a request, not a uniform guarantee:
 
@@ -503,8 +506,7 @@ alongside them.
 Absent `strictMcpConfig` means today's behavior, except on the lightweight
 session profile every SDK/personal chat uses, which is strict by default to
 stay lean. An explicit `false` overrides that default and loads the user's
-MCP — that is how an embedder sets `loadUserMcpServers: true`. Orchestration
-leads stay strict regardless; their isolation is a policy, not a preference.
+MCP — that is how an embedder sets `loadUserMcpServers: true`.
 
 The created session carries `mcpCapability` (`level`, `mechanism`, `residual`,
 `delivered`, `strictRequested`). Read `strictRequested` first, then branch on
@@ -513,7 +515,7 @@ surface. `CALLER_MCP_SUPPORT` in `shared/callerMcpServers.ts` is the source of
 truth; the table above is a summary. See [ADE SDK](../sdk/README.md#strict-mcp-honesty).
 
 Create refuses a payload it cannot honor: an invalid server, a reserved ADE
-name (`computer_use`, `ade-cto`, `ade-orchestration`), a transport the
+name (`computer_use`, `ade-cto`), a transport the
 provider cannot express (Codex has no SSE client), more than 32 servers, or
 injected servers on Pi. An empty `mcpServers` map is not a request — it is
 omitted entirely so a capability report is not invented for a chat that asked
@@ -895,6 +897,40 @@ Three rules are specific to the schedule itself:
   The older quota card remains the transcript evidence and fork entry point; it
   does not duplicate the schedule controls.
 
+### Codex reset credits
+
+A Codex reset credit is a single-use token that clears an account's rate-limit
+windows. It is **not** `CreditsSnapshot`, which is the account's billing balance
+— reading that as "you have credits to reset with" would offer a reset the API
+refuses. Credits arrive on `account/rateLimits/read` under
+`rateLimitResetCredits`, and only `status: "available"` counts: a credit
+mid-redemption or already spent is visible in the same array.
+
+The HTTP quota poll cannot see them at all, so ADE runs a bounded probe — a
+short-lived `codex app-server` per Codex account home, at most once per account
+per 15 minutes, forced on an explicit Refresh and after spending a credit. The
+provider poll's fast path stays spawn-free; the probe runs at the account
+stamping step. A machine with no Codex binary simply reports no credits.
+
+Spending one (`usage.consumeResetCredit`) is single-flight per account home and
+holds its idempotency key until an outcome arrives: a spend that timed out may
+already have applied, and a retry with a fresh key would burn a second credit.
+The four outcomes are phrased once in `shared/usageResetCredit.ts` so the usage
+popup and the chat notice cannot tell the user two different things about one
+server answer.
+
+When a Codex turn is stopped by a rate limit and that account has a credit
+banked, the chat emits one `system_notice` (`noticeKind: "rate_limit"`, `status:
+"reset_credit_available"`, `detail.accountId`) reading "Codex hit its limit. A
+reset credit is banked." Once per five-hour window per chat, re-armed on a
+window rollover by the same rule as the approaching-limit notice — a reading
+back under the threshold IS the rollover signal. Desktop renders a "Use reset"
+button on that row; the usage popup's account row carries the same action;
+ADE Code shows "reset credit banked" with `r` to spend it, and iOS shows a
+"Use reset" row under the provider card. Every surface shows the outcome in
+place of the button afterwards, because the credit is gone either way and a
+still-live button invites a second spend.
+
 ## Key concepts
 
 - **Claude Agent SDK pipeline.** The Claude adapter is built on the
@@ -1241,7 +1277,7 @@ Three rules are specific to the schedule itself:
   (`callPinnedRuntimeAction`, see [Remote runtime internal
   architecture](../remote-runtime/internal-architecture.md#local-runtime-routing))
   to branch discovery, lane create/rename, session start, prompt send,
-  orchestration bundle allocation, and CLI PTY create. That lets the
+  and CLI PTY create. That lets the
   launch keep running against the project that started it even after
   the active project changes. Only
   the legacy fallback where no binding is available aborts with
@@ -1771,7 +1807,7 @@ happen to begin with `User request:`.
    but no useful model/tool event arrives, ADE reconciles the same app-server
    thread with `thread/read` and `thread/turns/list`, attempts at most one
    restart + thread resume, then publishes provider-neutral `turn_health` when
-   manual recovery is still needed. Parent/orchestrator sessions receive the
+   manual recovery is still needed. Parent sessions receive the
    structured event with `sourceSessionId` and target the owning child.
 5. On completion the service emits `status: "completed" | "failed" |
    "interrupted"`, optionally emits a `turn_diff_summary`, flushes
@@ -2148,7 +2184,7 @@ A chat can spawn another chat. New relationships use `spawnKind = "subagent" |
 "peer"` on the session
 (`apps/desktop/src/shared/types/chat.ts`), which rides the same session
 lineage field bag as `orchestrationParentSessionId` (persisted, hydrated,
-and projected onto summaries through `ORCHESTRATION_SESSION_FIELD_NAMES` in
+and projected onto summaries through `SPAWN_LINEAGE_FIELD_NAMES` in
 `agentChatService.ts`). Hydration ignores legacy `none` values, and every new
 parented session rejects missing or `none` types.
 
@@ -2168,11 +2204,9 @@ Where it is set:
   `start_cli_session`, which stores them in `TerminalResumeMetadata` for
   lineage UI; plain shell launches omit them, and CLI lineage never populates
   `chatSessionId` because that field means attached-terminal ownership.
-- The orchestrator `spawnAgent` tool
-  (`apps/desktop/src/main/services/ai/tools/orchestrationTools.ts`) and the
-  orchestration domain's `spawnAgent`
-  (`orchestration/orchestrationDomain.ts`) set it, defaulting to
-  `"subagent"`.
+- `ade chat create --type subagent --provider <p> --model <m> [--instance <id>]
+  [--preset <id>]` is how a coordinating agent spawns its own helpers from any
+  thread. There is no separate orchestration mode.
 - The CTO's `spawnChat` tool sets `orchestrationParentSessionId` to the calling
   CTO session unconditionally and defaults `spawnKind` to `"subagent"` — twice,
   in the zod schema and again in the tool body, because the host rejects a
@@ -2339,14 +2373,18 @@ replaced with guidance not to report back.
 
 ### Inline card vs. quiet pill
 
-A plain (non-orchestration) spawn also emits an inline `subagent_started` /
-`subagent_result` card pair anchored in the transcript, so the
-`subagent_spawned` notice sets `hasInlineCard: true` and the renderer
-suppresses the redundant deep-link pill (the card is the surface). An
-orchestration-run child emits the notice but no inline card
-(`hasInlineCard` absent/false), so the quiet navigable pill is kept. Either
-way the completion report is chosen by `spawnKind`, independent of whether
-an inline card was emitted.
+A spawn emits an inline `subagent_started` / `subagent_result` card pair
+anchored in the transcript, so the `subagent_spawned` notice sets
+`hasInlineCard: true` and the renderer suppresses the redundant deep-link pill
+(the card is the surface). The completion report is chosen by `spawnKind`,
+independent of whether an inline card was emitted.
+
+Stopped subagent cards preserve the host-provided stop source and plain-language
+cause: only a user stop says **Stopped — interrupted**; a system, foreign-brain,
+or provider stop names its cause, and an unknown stop stays neutral. Individual
+stopped cards also show the last activity and whether the report landed or work
+was lost. Runs of two or more adjacent stopped results fold only when their
+source and cause match, so a lone casualty keeps the same attribution.
 
 ### Navigation and lineage surfacing
 
@@ -2398,6 +2436,8 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 | `ade.agentChat.setScheduledWorkPaused` | invoke | Pause or resume every durable wakeup/cron/loop schedule for one eligible session. Returns the resulting pause state and recomputed `nextWakeAt`; overdue work follows the one-late-fire rule after resume. |
 | `ade.agentChat.resumeUsageLimitNow` | invoke | Send the usage-limit continue prompt now instead of waiting for the published reset: cancels the `auto-resume:<sessionId>` row, resets the two-arm streak, dismisses the quota card, and sends `AUTO_RESUME_PROMPT` as an ordinary user turn tagged `metadata.usageLimitResume: "manual"`. Because it spends a real turn it refuses rather than fires when the chat has no live limit (`{ok: false, reason: "no_live_usage_limit"}`) or the row is already due and delivering (`"resume_in_flight"`); both refusals send and mutate nothing and carry a ready-to-render `message`. The row cancellation is awaited before the dispatch, and a dispatch that fails or is refused downstream throws after restoring the armed state, its mirror and the durable row. |
 | `ade.agentChat.getEventHistory` | invoke | Return `AgentChatEventHistorySnapshot` for a session. Runtime clients use one object argument (`{ sessionId, maxEvents?, maxBytes? }`); the registry temporarily accepts the legacy positional call for packaged-client compatibility. `sessionFound: false` is the explicit stale-session signal used by renderer surfaces to clear dead locked panes; `unavailable: true` means the bound runtime could not be reached and is **not** an authoritative miss (clients keep what they have). `hasOlderHistory` is the authoritative "there is more to scroll back to" bit — derived from the tail read, not from cursor bookkeeping — and `tailStartOffset` is the `beforeOffset` cursor for paging older. See [History snapshots, scroll-back, and misses](transcript-and-turns.md#history-snapshots-scroll-back-and-misses). |
+| `ade.agentChat.dismissPendingInput` | invoke | Throw away one non-blocking provider question without answering it (`{ sessionId, itemId }`). Allowed only when the request carries `providerMetadata.dismissible: true`; anything else is rejected with "This question needs an answer. Answer it or stop the turn." Emits `pending_input_resolved` with `resolution: "cancelled"` plus a "Question dismissed" notice, so the card cannot be redrawn by the next re-derivation. Mirrored as the `chat.dismissPendingInput` runtime action and sync command (`viewerAllowed: true`). |
+| `ade.usage.consumeResetCredit` | invoke | Spend one banked Codex reset credit for `{ accountId }`, clearing that account's rate-limit windows. Single-flight per account with the idempotency key HELD across a timeout, so a retry after a timed-out spend cannot burn a second credit. Returns `{ ok, status: "reset" \| "nothingToReset" \| "noCredit" \| "alreadyRedeemed" \| "failure", message? }` and forces a quota refresh before returning. Mirrored as the `usage.consumeResetCredit` runtime action and sync command (`viewerAllowed: false` — it changes the account, not this machine's view of it). |
 | `ade.agentChat.getEventHistoryPage` | invoke | Page older transcript events with one object argument (`{ sessionId, beforeOffset, maxBytes? }`), returning `AgentChatEventHistoryPage`. `startOffset` strictly decreases while `hasMore` is true, which is what makes client paging loops terminate; a non-decreasing cursor is a retryable protocol failure rather than exhaustion. Carries the same `sessionFound` / `unavailable` distinction as the snapshot; an unreachable-runtime page echoes the caller's cursor back as `startOffset` so it does not also claim the head of the transcript was reached. |
 | `ade.agentChat.create` | invoke | Create a new session; returns the `AgentChatSession`. Accepts `codexFastMode?: boolean` as the legacy-named Fast Mode bit for any provider/model descriptor that advertises `serviceTiers: ["fast"]`. Also accepts caller-injected `mcpServers` and tristate `strictMcpConfig`; the created session reports what the provider could honor as `mcpCapability`. See [Caller-injected MCP](#caller-injected-mcp). |
 | `ade.agentChat.suggestLaneName` | invoke | Derive a slug-safe lane name from a Work launch prompt using the session-intelligence title prompt, with a prompt-slug + optional unique temporary fallback. |
@@ -2458,8 +2498,135 @@ Provider connection management lives on the `ade.ai.*` surface (handled in `regi
 | `ade.ai.cursorCloud.pullIntoLane` / `.resolveLane` / `.stopRun` | invoke | Fleet row actions. Pull merges a finished agent's pushed branch into its owning/matching/new lane (dirty worktrees refused; conflicts abort the merge); resolve maps an unlinked agent to a lane without touching git; stop cancels the agent's latest run host-side. |
 | `ade.ai.cursorCloud.fleetEvent` | push | Per-project re-broadcast of Cursor Cloud relay deliveries carrying terminal statuses (FINISHED/ERROR). Wakes open fleet surfaces (no polling timer), lights the top-bar unread-finishes badge while the modal is closed, and carries `agentId`, `status`, `summary`, `branchName`, `prUrl`, and relay event identity. |
 
+## Async questions and provider dialogs
+
+Two provider features raise a card ADE renders but is **not** blocked on. Both
+leave the composer live, and both are listed here per provider so "not supported
+on this adapter" is a recorded decision rather than silence.
+
+### Async questions (a card you may ignore)
+
+Codex 0.153.4 can attach questions to an `agentMessage` item: `delivery:
+"async"` plus `questions: [{ title, options }]`. There is no question id, no
+multi-select flag, and free text is always accepted, so ADE keys the questions
+positionally and marks every one `allowsFreeform`.
+
+| Provider | Async questions | Reply channel | Dismissible |
+|---|---|---|---|
+| Codex | Yes (`agentMessage` `delivery: "async"`) | An ordinary user message — `turn/steer` while a turn runs, else `turn/start` | Yes |
+| Claude | No — `AskUserQuestion` is a blocking tool gate | `canUseTool` result | No |
+| Cursor | No | — | No |
+| OpenCode | No | — | No |
+| Droid | No | — | No |
+| Pi / ACP | No | — | No |
+
+The reply is formatted `"<question title>\n<answer>"` per answered question,
+blocks separated by a blank line, and sent on the session's normal send path.
+Nothing is waiting on a JSON-RPC response, which is why the request carries
+`providerMetadata.responseMode: "message"`: `deliverInputResponse` sends rather
+than answers.
+
+**Dismiss** (`chat.dismissPendingInput`) is local — Codex has no dismiss RPC.
+It is allowed only for a request the provider marked
+`providerMetadata.dismissible: true`; anything else is refused with "This
+question needs an answer. Answer it or stop the turn." Codex *steering* is also
+non-blocking and is **not** dismissible: it holds an open app-server request
+that a local dismissal would strand. Every dismissal writes a
+`pending_input_resolved` (`resolution: "cancelled"`) plus a "Question dismissed"
+notice; desktop, ADE Code, hosted web, and iOS all render a receipt for
+`accepted` / `declined` / `cancelled`.
+
+### Claude dialog kinds (capability gate)
+
+Agent SDK 0.3.258 can ask the host to render a dialog
+(`Options.onUserDialog` + `Options.supportedDialogKinds`). The CLI **fails
+closed**: a kind ADE does not declare is never emitted, and the flow behind it
+degrades to its no-dialog behavior. Declaring a kind ADE cannot draw parks a
+dialog nobody can answer, so the list is a capability claim.
+
+| Dialog kind | ADE declares it | Decision |
+|---|---|---|
+| `resume_return` | Yes | Rendered as a blocking ADE question card: "Compact and continue" / "Keep full history" / "Don't ask again", mapped to the SDK's `compact` / `continue` / `never`. |
+| `refusal_fallback_prompt` | No | Its no-dialog behavior is the classic refusal error ending the turn, which ADE already renders. Offering a fallback model mid-turn would silently change which model answered a turn ADE attributes to one model. Revisit only with a card that says what it is switching to. |
+| anything else | No | The handler answers `{behavior: "cancelled"}`, which is what the SDK requires of a host sent a kind it did not declare. |
+
+`resume_return`'s payload is `{ sessionAgeMinutes, estimatedTokens }`; the
+question text is built by `shared/claudeCompaction.ts`. "Don't ask again"
+persists `claudeResumeReturnDismissed` in machine-level `globalState` and ADE
+stops declaring the kind on later sessions of this machine — the callback stays
+wired, only the declaration is withheld. Every dialog logs
+`chat.claude.user_dialog` with its kind and result. Dialogs are scoped to the
+same sessions as the tool gate: a lightweight or embedder-owned personal chat
+declares no kinds.
+
 ## Fragile and tricky wiring
 
+- **A Codex async question is a card, not a waiter.** It lives in
+  `managed.asyncQuestions` (mirrored to `PersistedChatState.asyncQuestions` so a
+  restart keeps it), never in `localPendingInputs` or `runtime.approvals` —
+  everything in those is something teardown has to settle and
+  `hasLivePendingInput` has to count. So `hasLivePendingInput` returns false for
+  it, `summarizeSessionRow` sets the live-only `asyncQuestion: true` instead of
+  `awaitingInput` / `pendingInputItemId`, and
+  `latestPendingInputItemIdFromEvents` skips any `approval_request` whose
+  request is `blocking: false`. Get any one of those wrong and the composer
+  locks on a question the user was invited to ignore.
+- **An unanswered `approval_request` is never trimmed out of history.** Every
+  window keeps the newest N events, which is right for prose and wrong for a
+  control: aging a card out deletes it from the screen while the backend goes on
+  counting the session as blocked, so `send` is refused with nothing on screen
+  to answer. `shared/chatPendingInputRetention.ts` is the one rule, applied in
+  the two places that window a transcript — main's `getChatEventHistory` and the
+  renderer's `trimChatEventHistory` (which the hosted web client shares). A card
+  with a `pending_input_resolved` receipt is ordinary history and trims normally.
+- **Provider-account injection lives in `buildAgentRuntimeEnv`, and that is
+  load-bearing.** Every Claude/Codex process a chat starts derives its env from
+  that one function, which is why one `Object.assign` covers the SDK query, the
+  background CLI, the app-server spawn, and the helper lookups. Adding a launch
+  path that builds its env from `process.env` instead silently runs that chat as
+  the machine's default account — the failure is a turn that works and writes to
+  the wrong account, not an error. The lookups that must not pay for
+  `buildAgentRuntimeEnv` (it issues a browser capability token and writes a
+  Linear context file as side effects) use `sessionProviderLookupEnv` instead;
+  that is the only reason for the second helper.
+- **Claude slash-command and skill discovery is NOT per-account.**
+  `claudeSlashCommandDiscovery.ts` walks ancestor `.claude` directories and
+  never consulted `CLAUDE_CONFIG_DIR`, so a non-default Claude account sees the
+  machine's command files. Codex's equivalent does take the account env. This is
+  a known boundary, not an oversight — fixing it means changing what
+  `ancestorConfigRoots` means for every caller.
+- **Pointer reconciliation probes one Codex home.**
+  `reconcileThreadPointerFromRedundantSources` runs when the persisted chat
+  state is gone, and reads the account from whatever persisted state it can
+  still find. If that is also gone, it probes the default account's rollouts;
+  a non-default Codex chat then starts fresh instead of resuming — the same
+  silent fallback the removed-account path takes.
+- **An unchanged head sha is not an empty turn.** `emitTurnDiffSummaryIfChanged`
+  used to return when `beforeSha === afterSha`, which is every turn that edited
+  files without committing — the most common shape of agent turn.
+  `collectTurnDiffSummary` compares against the working tree in that case and
+  adds untracked files, which a diff against a commit cannot see at all. The
+  renderer already stands its entry-derived fallback down whenever a
+  `turn_diff_summary` exists for the turn, so this does not double-render.
+- **`normalizePendingInputAnswers` must key answers by question id.** Claude's
+  `question.reply` takes one answer array per ASKED question, so a synthetic
+  `"response"` key matches nothing and the user's reply is dropped on the floor.
+  A shared `responseText` (which the CLI and mobile send alongside the per
+  question `answers` map) is appended to the last ANSWERED question, or the
+  first when none is answered. Only a request with no questions at all still
+  uses `"response"`.
+- **The Codex plan-limit notice re-arms on a low reading.** The armed flag used
+  to be set and never cleared, so a chat open across a five-hour rollover warned
+  for the first window and never again. A five-hour percent back under
+  `CODEX_PLAN_LIMIT_NOTICE_PERCENT` IS the rollover signal; a `null` percent is
+  an absent measurement and must not re-arm, or the notice fires twice in one
+  window.
+- **`disable-model-invocation` skills are withheld from the injected prompt.**
+  ADE's "Project slash commands and skills" section tells the model to read a
+  skill's file and use it when relevant. Listing a skill whose author disabled
+  model invocation would be the opposite instruction from a louder place. The
+  user can still invoke it: `/<name>` is expanded before the message reaches the
+  model, so that path does not read this list.
 - **Cursor local chats Read images from two paths outside a lane worktree.**
   ADE inlines attachment bytes into the Cursor SDK send, and Cursor then
   copies them to `~/.cursor/projects/<lane-slug>/assets/` and tells the
@@ -3154,6 +3321,110 @@ Provider connection management lives on the `ade.ai.*` surface (handled in `regi
   removals impossible — absent keeps the existing list, `[]` clears it.
   Add any future `ai.*` field to both functions, plus `AiConfig` in
   `shared/types/config.ts`.
+
+## Provider accounts
+
+Claude and Codex each keep an entire signed-in identity inside one config
+directory, and each honours an environment variable that names that directory:
+`CLAUDE_CONFIG_DIR` and `CODEX_HOME`. An ADE **provider account** (an
+"instance") is that directory plus a label, so switching accounts is switching
+one path. `HOME`/`USERPROFILE` is never rewritten and `process.env` is never
+mutated — a per-launch env object carries the one variable, because rewriting
+`HOME` would move every other tool's config at the same time.
+
+Only `claude` and `codex` participate. Cursor, Droid, OpenCode, Pi, and the ACP
+providers either have no config-home override or no local account file, so they
+have exactly one identity per machine and are deliberately absent rather than
+represented by a synthetic single entry.
+
+- **The registry** is a machine-local JSON file, `provider-instances.json`,
+  beside `projects.json` under the ADE home (`~/.ade`, or `ADE_HOME`). Created
+  accounts get a config home at
+  `<adeHome>/provider-homes/<provider>/<instanceId>/`.
+- **The default account is synthesized, not migrated.** Whatever login the
+  machine already had is the default account: its id IS the provider slug
+  (`claude`, `codex`) and its config home is whatever
+  `main/services/shared/providerConfigHomes.ts` resolves right now — recomputed
+  on every read, so a `CLAUDE_CONFIG_DIR` set in a shell profile moves it. A
+  machine that has never created an account and one that has both describe the
+  same state, and deleting the registry file is a complete reset.
+- **A chat's account is chosen in Settings.** The session carries an optional
+  `instanceId` next to `piProfileId`; absent means the provider's default.
+  `ade chat create --instance <id>` and `ade new chat --instance <id>` set it;
+  an `--instance` for any other provider is refused rather than stored as a
+  pointer nothing will resolve.
+- **Launch injection happens once, in `buildAgentRuntimeEnv`.** Every process a
+  chat starts — the Claude SDK query, the Claude background CLI, the Codex
+  app-server, slash-command discovery, rollout lookup — inherits the same
+  account, because they all build their environment from that one function.
+- **A removed account falls back silently.** If a session's `instanceId` no
+  longer names an account, the chat resolves to the provider's default, drops
+  the stale id, and forgets its provider thread pointer so the next turn starts
+  a fresh thread. There is no notice. The thread is forgotten because it lives
+  inside a config home that is gone: resuming it would either fail or resume
+  someone else's conversation in the default account. The id is dropped at the
+  same time so the reset happens once rather than on every turn.
+- **Removing an account deletes nothing on disk.** The config home holds
+  credentials the provider's own CLI wrote; ADE did not create that login and
+  cannot revoke it, so `remove` forgets the account and returns the path that is
+  still there. The machine's own default login cannot be removed at all, and
+  neither can whichever account is currently the default.
+- **Signing in is a command ADE hands back, not a flow it drives.**
+  `provider_instances.loginCommand` returns `{ command, args, env }` — the
+  resolved provider binary plus the one env var pointing at that account's
+  config home. `ade providers accounts add` prints it.
+
+CLI: `ade providers accounts list|add|remove|rename|default`, with `--text` and
+`--json`.
+
+## Harness presets
+
+A **harness preset** is the account idea generalised: a saved pairing of the
+harness ADE runs with where that harness gets its intelligence — a provider
+account, a stored API key, or a Claude/Codex subscription borrowed through
+ADE's proxy — carrying the model, the effort, the permission mode and the
+subagent pins as one value. Full feature doc:
+`docs/features/onboarding-and-settings/harness-presets.md`.
+
+For chat, three things matter.
+
+- **One id travels.** `presetId` (or `credentialId` for a stored key with no
+  preset) rides `AgentChatCreateArgs`, the session, its persisted state, the
+  summary, `PtyCreateArgs.runtimeCliLaunch` and the CLI resume metadata. The
+  runtime that owns the lane resolves it —
+  `main/services/chat/harnessPresetLaunch.ts` — because it is the only process
+  that can read that machine's preset list, key store and accounts. No key and
+  no config path ever crosses IPC or sync.
+- **Injection happens once, in `buildAgentRuntimeEnv`,** immediately after the
+  provider-account patch and on top of it, so a preset that owns its own config
+  home outranks the account. That places the same brain under the Claude SDK
+  query, the Codex app-server, the ACP spawn plan and slash-command discovery.
+  Claude's `agents` entries and the model-id passthrough are read separately in
+  `buildClaudeQueryOptions`; OpenCode's provider block is merged into the
+  session's config, since OpenCode has no env var for an endpoint-plus-key.
+- **Unsupported is a value, not a throw.** The resolver answers either a plan or
+  `{ unsupported: "<reason>" }`, and the chat then runs on the harness's own
+  sign-in with a notice. A deleted preset, a removed key, a proxy with no login,
+  and a harness that cannot take an outside key all take that path.
+
+### Capability gate
+
+| Harness | Key source | Subscription source | Preset in CLI mode | Subagent model |
+|---|---|---|---|---|
+| Claude Code | Yes | Yes | Yes | Yes (`CLAUDE_CODE_SUBAGENT_MODEL` + `_FORCE`, plus per-built-in `agents` pins) |
+| Codex CLI | Yes (preset-owned `CODEX_HOME` + `config.toml`) | Yes | Yes | No |
+| OpenCode | Yes (config provider block; needs an endpoint) | Yes | Yes | No |
+| Droid | Yes (`FACTORY_HOME_OVERRIDE` + `custom_models`) | No | Yes | No |
+| Qwen Code | Yes | No | Yes | No |
+| Kimi | Yes | No | **No** — native CLI | No |
+| Grok | Yes | No | **No** — native CLI | No |
+| GitHub Copilot | Yes | No | **No** — native CLI | No |
+| Cursor | No — one key in its own store | No | **No** — native CLI | No |
+| Pi | No — its own `models.json` | No | Yes (no effect) | No |
+
+The CLI-mode column is the locked gate: those four binaries take no key from the
+launch, so a preset is dropped with its reason and the native CLI starts rather
+than the launch failing. CLI-mode surfaces do not list presets at all.
 
 ## Configuration
 

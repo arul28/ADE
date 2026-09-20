@@ -30,16 +30,10 @@ export type CursorSdkPermissionPolicy = {
   fullAuto: boolean;
   hardGuards: boolean;
   /**
-   * Orchestrator-lead sessions may only ever run read-risk tools. Carried on
-   * the policy (rather than derived at the hook) so it reaches the out-of-band
-   * hook server in `cursorSdkWorker` through the existing policy plumbing.
-   */
-  orchestrationLead: boolean;
-  /**
    * An external embedder asked to withhold the user's own MCP configuration
    * from this chat. Cursor has no "managed servers only" switch, so this rides
-   * the same trimmed `local.settingSources` an orchestrator lead uses. Optional
-   * so every existing policy literal stays valid and unchanged.
+   * a trimmed `local.settingSources`. Optional so every existing policy literal
+   * stays valid and unchanged.
    */
   strictMcpConfig?: boolean;
   /**

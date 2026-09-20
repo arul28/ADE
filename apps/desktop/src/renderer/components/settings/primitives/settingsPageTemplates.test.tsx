@@ -14,10 +14,9 @@ import { SettingsDashboardPage, SettingsDashboardStat } from "./SettingsDashboar
 
 /**
  * The seam these templates sit on is navigation, not looks: `?tab=x#anchor`
- * and ⌘K both land by scrolling to `id={anchor}`, and the scope chip is only
- * trustworthy while it is read from the manifest rather than hand-passed.
- * Those two properties, plus the slots adopters actually fill, are what this
- * file pins; the pixels are deliberately not asserted.
+ * and ⌘K both land by scrolling to `id={anchor}`. That property, the absence of
+ * the scope badge these headers used to wear, and the slots adopters actually
+ * fill are what this file pins; the pixels are deliberately not asserted.
  */
 
 const UNREGISTERED_ANCHOR = "not-a-real-settings-anchor";
@@ -43,24 +42,23 @@ describe("settings page templates", () => {
       expect(root!.getAttribute("data-settings-anchor")).toBe("secrets");
     });
 
-    it("reads the scope chip from the manifest", () => {
+    it("wears no scope badge, registered anchor or not", () => {
       const { container } = render(
         <SettingsManagerPage anchor="secrets" title="Secrets" description="Keys and tokens.">
           <div>body</div>
         </SettingsManagerPage>,
       );
+      expect(container.querySelector("[data-scope]")).toBeNull();
+      expect(container.textContent).not.toContain("Account");
 
-      expect(container.querySelector('[data-scope="account-repo"]')).toBeTruthy();
-    });
+      cleanup();
 
-    it("shows no chip for an anchor the manifest does not know", () => {
-      const { container } = render(
+      const { container: unregistered } = render(
         <SettingsManagerPage anchor={UNREGISTERED_ANCHOR} title="Unregistered">
           <div>body</div>
         </SettingsManagerPage>,
       );
-
-      expect(container.querySelector("[data-scope]")).toBeNull();
+      expect(unregistered.querySelector("[data-scope]")).toBeNull();
     });
 
     it("renders the toolbar slot", () => {
@@ -123,22 +121,14 @@ describe("settings page templates", () => {
       expect(root!.getAttribute("data-settings-anchor")).toBe("secrets");
     });
 
-    it("reads the scope chip from the manifest, and omits it otherwise", () => {
-      const { container: registered } = render(
+    it("wears no scope badge either", () => {
+      const { container } = render(
         <SettingsDashboardPage anchor="secrets" title="Usage">
           <div>body</div>
         </SettingsDashboardPage>,
       );
-      expect(registered.querySelector('[data-scope="account-repo"]')).toBeTruthy();
-
-      cleanup();
-
-      const { container: unregistered } = render(
-        <SettingsDashboardPage anchor={UNREGISTERED_ANCHOR} title="Usage">
-          <div>body</div>
-        </SettingsDashboardPage>,
-      );
-      expect(unregistered.querySelector("[data-scope]")).toBeNull();
+      expect(container.querySelector("[data-scope]")).toBeNull();
+      expect(container.textContent).not.toContain("Account");
     });
 
     it("renders a stat's label, value and hint", () => {

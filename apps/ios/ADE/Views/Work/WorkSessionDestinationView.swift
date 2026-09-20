@@ -2059,6 +2059,7 @@ struct WorkSessionDestinationView: View {
       onRespondToQuestion: respondToQuestion,
       onSubmitQuestionAnswers: submitQuestionAnswers,
       onDeclineQuestion: declineQuestion,
+      onDismissQuestion: dismissPendingQuestion,
       onRespondToPermission: respondToPermission,
       onRetryLoad: load,
       onOpenFile: openFileReference,

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  buildCliIdentityResumeMetadata,
   buildTrackedCliLaunchCommand,
   isLaunchProfile,
   LAUNCH_PROFILE_TITLE,
@@ -11,6 +12,8 @@ import type {
 } from "../../../shared/types/chat";
 import type { createLaneService } from "../lanes/laneService";
 import type { createPtyService } from "../pty/ptyService";
+import { resolveProviderInstanceForLaunch } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
+import { resolveTrackedCliPreset } from "./harnessPresetLaunch";
 import { resolveCodexComputerUseMcpConfig } from "../../utils/codexComputerUse";
 
 type LaneServiceForCliLaunch = Pick<
@@ -84,17 +87,29 @@ export async function launchAgentChatCli(
   const sessionId = randomUUID();
   const permissionMode = arg.permissionMode ?? "full-auto";
 
+  const trackedPreset = resolveTrackedCliPreset(providerKey, {
+    presetId: arg.presetId ?? null,
+    credentialId: arg.credentialId ?? null,
+  });
+  const presetPlan = trackedPreset?.preset;
+  if (trackedPreset?.gateReason) {
+    deps.logger?.info("agentChat.launchCli.preset_gated", {
+      provider: providerKey,
+      reason: trackedPreset.gateReason,
+    });
+  }
+
   const issues = Array.isArray(arg.linearIssues) ? arg.linearIssues : [];
   const attachedLinearIssueIds = issues
     .map((issue) => issue?.id)
     .filter((id): id is string => typeof id === "string" && id.length > 0);
 
+  const instance = resolveProviderInstanceForLaunch(providerKey, arg.instanceId);
   const launch = buildTrackedCliLaunchCommand({
     provider,
     permissionMode,
-    orchestrationRole: arg.orchestrationRole ?? null,
     ...(provider === "claude" ? { sessionId } : {}),
-    model: arg.model ?? null,
+    model: trackedPreset?.model || arg.model || null,
     reasoningEffort: arg.reasoningEffort ?? null,
     ...((provider === "codex" || provider === "claude" || provider === "opencode") && (arg.fastMode ?? arg.codexFastMode) !== undefined
       ? { fastMode: arg.fastMode ?? arg.codexFastMode }
@@ -102,6 +117,30 @@ export async function launchAgentChatCli(
     initialPrompt: kickoffPrompt,
     laneWorktreePath: worktreePath,
     ...(provider === "codex" ? { codexComputerUse: await resolveCodexComputerUseMcpConfig() } : {}),
+    // Handing a chat to a CLI must not also hand it to a different account.
+    // Resolution (including the silent fallback for a removed account) lives in
+    // `resolveProviderInstanceForLaunch`, so this path cannot drift from the
+    // one the PTY service and the sync surface use.
+    instance,
+    // A harness preset for a tracked CLI. The gate is locked: on a harness
+    // whose CLI cannot take a key from outside, ADE launches the NATIVE CLI
+    // rather than a half-configured one — the preset is dropped with a reason,
+    // not silently ignored and not turned into a launch failure.
+    ...(presetPlan ? { preset: presetPlan } : {}),
+  });
+  // Keep the already-materialized command/env intact (notably Codex Computer
+  // Use settings); the structured metadata is the durable identity seam that
+  // resume and reattach re-resolve on the machine that owns the lane.
+  const resumeMetadata = buildCliIdentityResumeMetadata({
+    provider,
+    targetId: provider === "claude" ? sessionId : null,
+    permissionMode,
+    model: trackedPreset?.model || arg.model || null,
+    reasoningEffort: arg.reasoningEffort ?? null,
+    fastMode: arg.fastMode ?? arg.codexFastMode ?? null,
+    ...(instance ? { instanceId: instance.id } : {}),
+    ...(arg.presetId ? { presetId: arg.presetId } : {}),
+    ...(arg.credentialId ? { credentialId: arg.credentialId } : {}),
   });
 
   const result = await deps.ptyService.create({
@@ -125,6 +164,7 @@ export async function launchAgentChatCli(
       ? { initialInputDelayMs: launch.initialInputDelayMs }
       : {}),
     ...(launch.env ? { env: launch.env } : {}),
+    ...(resumeMetadata ? { resumeMetadata } : {}),
   });
 
   deps.logger?.info("agentChat.launchCli.created", {

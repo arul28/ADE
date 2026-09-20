@@ -236,6 +236,7 @@ extension WorkChatSessionView {
             return errorMessage == nil
           }
         },
+        onDismiss: timelineQuestionDismissHandler(question.id, dismissible: question.dismissible),
         onFreeformFocusChange: { focused in
           guard focused else { return }
           // Wait for the keyboard to start animating in so the ScrollView's
@@ -364,6 +365,8 @@ extension WorkChatSessionView {
         // The card title doubles as the divider's accessibility label.
         accessibilityLabel: card.title
       )
+    } else if card.kind == "resetCredit" {
+      WorkResetCreditNoticeView(card: card)
     } else if card.kind == "turnDiagnostics" {
       WorkTurnDiagnosticsDisclosureView(
         card: card,
@@ -717,6 +720,38 @@ extension WorkChatSessionView {
     .accessibilityHint("Expand to answer.")
   }
 
+  /// The Dismiss handler for a question card in the timeline, or nil when the
+  /// host did not mark it dismissible or no dismiss action is wired. Built here
+  /// rather than as a `cond ? { … } : nil` argument: a multi-statement async
+  /// closure inside a ternary, inside a large builder body, is exactly the
+  /// expression the type checker gives up on ("failed to produce diagnostic").
+  private func timelineQuestionDismissHandler(
+    _ questionId: String,
+    dismissible: Bool
+  ) -> (@MainActor () async -> Bool)? {
+    guard dismissible, let dismiss = onDismissQuestion else { return nil }
+    return {
+      await runSessionAction { () async -> Bool in
+        await dismiss(questionId)
+        return errorMessage == nil
+      }
+    }
+  }
+
+  /// Same as above for the consolidated pending-input strip, where the answer
+  /// goes through the optimistic dispatch path.
+  private func pendingQuestionDismissHandler(
+    _ itemId: String,
+    dismissible: Bool
+  ) -> (@MainActor () async -> Bool)? {
+    guard dismissible, let dismiss = onDismissQuestion else { return nil }
+    return {
+      await dispatchPendingInputAnswer(itemId: itemId) {
+        await dismiss(itemId)
+      }
+    }
+  }
+
   @ViewBuilder
   private func consolidatedPendingInputBody(_ item: WorkPendingInputItem) -> some View {
     // The question card budgets itself (its footer has to stay pinned outside
@@ -789,6 +824,7 @@ extension WorkChatSessionView {
             await onDeclineQuestion(model.id)
           }
         },
+        onDismiss: pendingQuestionDismissHandler(model.id, dismissible: model.dismissible),
         fallbackProvider: chatSummaryContext.provider,
         maxCardHeight: pendingInputMaxHeight
       )

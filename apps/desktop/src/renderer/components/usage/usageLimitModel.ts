@@ -26,8 +26,12 @@ export type UsageAccountView = {
   provider: UsageProvider;
   email?: string;
   plan?: string;
+  /** The account's user-facing name, e.g. "Personal" or "Work". */
+  label?: string;
   machines: UsageAccountMachine[];
   url?: string;
+  /** Banked reset credits, when the host tracks them. */
+  resetCredits?: { availableCount: number; nextExpiresAt?: string };
   /** Two letters for the chip, derived from the email (or the machine). */
   initials: string;
 };
@@ -75,8 +79,10 @@ export function poolAccounts(accounts: UsageAccount[] | undefined): UsageAccount
         provider: account.provider,
         ...(account.email ? { email: account.email } : {}),
         ...(account.plan ? { plan: account.plan } : {}),
+        ...(account.label ? { label: account.label } : {}),
         machines: [...account.machines],
         ...(account.url ? { url: account.url } : {}),
+        ...(account.resetCredits ? { resetCredits: account.resetCredits } : {}),
         initials: emailInitials(account.email, account.machines[0]?.label),
       });
       continue;
@@ -86,6 +92,12 @@ export function poolAccounts(accounts: UsageAccount[] | undefined): UsageAccount
       existing.machines.push(machine);
     }
     if (!existing.plan && account.plan) existing.plan = account.plan;
+    if (!existing.label && account.label) existing.label = account.label;
+    // Credits belong to the login, not the machine that noticed them, so the
+    // first machine to report any is enough.
+    if (!existing.resetCredits && account.resetCredits) {
+      existing.resetCredits = account.resetCredits;
+    }
   }
   for (const account of byKey.values()) {
     account.machines.sort((a, b) => machineFreshness(b) - machineFreshness(a));
@@ -201,4 +213,70 @@ function nextRestore(segments: LimitSegment[]): LimitCard["forecast"] {
   const together = restoring.filter((segment) => Math.abs(segment.resetsInMs - soonest) < 60_000);
   const percent = together.reduce((sum, segment) => sum + segment.restoresPercentOfPool, 0);
   return { percent, resetsInMs: soonest };
+}
+
+// ── account rows ─────────────────────────────────────────────────
+
+/** 5-hour before Weekly before Monthly; anything else keeps provider order. */
+export function orderLimitCards<T extends { label: string }>(cards: T[]): T[] {
+  const rank = (label: string) => {
+    if (/-min$|-hour$/.test(label)) return 0;
+    if (label === "Weekly") return 1;
+    if (label === "Monthly") return 2;
+    return 3;
+  };
+  return [...cards].sort((a, b) => rank(a.label) - rank(b.label));
+}
+
+/** One window of one account: the card it belongs to, and this account's slice. */
+export type AccountWindowCell = { card: LimitCard; segment: LimitSegment };
+
+export type AccountLimitRow = {
+  /** Stable per account, so React keys and open/close state agree. */
+  key: string;
+  provider: UsageProvider;
+  /** `null` for a host that reports windows with no account directory. */
+  account: UsageAccountView | null;
+  /** This account's windows, short one first. */
+  cells: AccountWindowCell[];
+};
+
+/**
+ * Transpose the window cards into one row per ACCOUNT.
+ *
+ * The popover used to stack one card per window, each with a row of account
+ * segments inside it — five rows of chrome for two providers, and the email
+ * nowhere. A reader asks "how much has THIS login got left", so the account is
+ * the row and its windows sit side by side within it.
+ *
+ * Built on `buildLimitCards` rather than beside it: the pooled percentages, the
+ * per-segment `restoresPercentOfPool`, and the account fallback for hosts that
+ * send no `accountId` are all decided there, and a second implementation of
+ * that arithmetic is how two surfaces start disagreeing about one number.
+ */
+export function buildAccountRows(
+  provider: UsageProvider,
+  windows: UsageWindow[],
+  accounts: UsageAccountView[],
+  nowMs: number,
+): AccountLimitRow[] {
+  const cards = orderLimitCards(buildLimitCards(provider, windows, accounts, nowMs));
+  const rows = new Map<string, AccountLimitRow>();
+  for (const card of cards) {
+    for (const segment of card.segments) {
+      const key = segment.account?.id ?? `${provider}:this-machine`;
+      const row = rows.get(key) ?? { key, provider, account: segment.account, cells: [] };
+      row.cells.push({ card, segment });
+      rows.set(key, row);
+    }
+  }
+  // Rows follow the account directory, not whichever window the provider
+  // happened to list first — otherwise two logins swap places between polls.
+  const rank = new Map<string, number>();
+  accounts
+    .filter((account) => account.provider === provider)
+    .forEach((account, index) => rank.set(account.id, index));
+  return [...rows.values()].sort(
+    (a, b) => (rank.get(a.key) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.key) ?? Number.MAX_SAFE_INTEGER),
+  );
 }

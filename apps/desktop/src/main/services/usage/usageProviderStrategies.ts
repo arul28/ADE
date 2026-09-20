@@ -4,6 +4,7 @@ import type {
   UsageProviderErrorKind,
   UsageProviderMessage,
   UsageProviderSource,
+  UsageSnapshot,
   UsageWindow,
 } from "../../../shared/types";
 
@@ -11,6 +12,8 @@ export type UsageRefreshReason = "automatic" | "remote" | "user";
 
 export type UsageProviderPollContext = {
   reason: UsageRefreshReason;
+  /** Last published snapshot, used to retain facts for a preserved account. */
+  previousSnapshot?: UsageSnapshot;
 };
 
 export type FreshUsageProviderPollResult = {

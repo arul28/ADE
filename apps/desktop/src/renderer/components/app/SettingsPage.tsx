@@ -63,7 +63,6 @@ import {
 import { isWebClientMode } from "../../lib/webClientMode";
 import { useAppStore } from "../../state/appStore";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
-import { ScopeChip } from "../settings/primitives/ScopeChip";
 import { COLORS, SANS_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
 
 /**
@@ -158,6 +157,9 @@ function decodeSettingsHash(hash: string): string {
 /** `#ai-provider-<id>` — the deeplink form of one provider's page. */
 const PROVIDER_ANCHOR_PREFIX = "ai-provider-";
 
+/** `#ai-harnesses` — the deeplink form of the harnesses page. */
+const HARNESSES_ANCHOR = "ai-harnesses";
+
 function providerIdFromHash(hash: string): string | null {
   const raw = decodeSettingsHash(hash);
   if (!raw.startsWith(PROVIDER_ANCHOR_PREFIX)) return null;
@@ -178,11 +180,14 @@ function AgentsTabContent() {
   const [searchParams] = useSearchParams();
   const requested = searchParams.get("provider")?.trim() || providerIdFromHash(location.hash);
   const providerId = requested && providerDescriptor(requested) ? requested : null;
+  const harnessesOpen =
+    searchParams.get("harnesses") === "1" || decodeSettingsHash(location.hash) === HARNESSES_ANCHOR;
 
   const handleProviderChange = useCallback((next: string | null) => {
     const nextParams = new URLSearchParams(searchParams);
     if (next) nextParams.set("provider", next);
     else nextParams.delete("provider");
+    nextParams.delete("harnesses");
     navigate(
       {
         pathname: location.pathname,
@@ -192,6 +197,36 @@ function AgentsTabContent() {
       { replace: true },
     );
   }, [location.pathname, navigate, searchParams]);
+
+  // Harnesses is the tab's second sub-view. It carries its own search param so
+  // the back button leaves it, and the manifest anchor still deeplinks to it.
+  const handleHarnessesChange = useCallback((next: boolean) => {
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.delete("provider");
+    if (next) nextParams.set("harnesses", "1");
+    else nextParams.delete("harnesses");
+    navigate(
+      {
+        pathname: location.pathname,
+        search: `?${nextParams.toString()}`,
+        hash: next ? `#${HARNESSES_ANCHOR}` : "",
+      },
+      { replace: true },
+    );
+  }, [location.pathname, navigate, searchParams]);
+
+  if (harnessesOpen) {
+    return (
+      <WebSettingsSection entryIds={["agents.harnesses"]}>
+        <ProvidersSection
+          providerParam={null}
+          onProviderChange={handleProviderChange}
+          harnessesParam
+          onHarnessesChange={handleHarnessesChange}
+        />
+      </WebSettingsSection>
+    );
+  }
 
   if (providerId) {
     return (
@@ -204,7 +239,13 @@ function AgentsTabContent() {
   return (
     <>
       <WebSettingsSection entryIds={["agents.providers"]}>
-        <ProvidersSection forceRefreshOnMount providerParam={null} onProviderChange={handleProviderChange} />
+        <ProvidersSection
+          forceRefreshOnMount
+          providerParam={null}
+          onProviderChange={handleProviderChange}
+          harnessesParam={false}
+          onHarnessesChange={handleHarnessesChange}
+        />
       </WebSettingsSection>
       <WebSettingsSection entryIds={["agents.openai-key"]}>
         <OpenAiKeySection />
@@ -644,8 +685,6 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
   const activeTab = tabs.find((tab) => tab.id === section)
     ?? tabs.find((tab) => tab.id === defaultTab)
     ?? tabs[0];
-  const activeGroupScope = SETTINGS_GROUPS
-    .find((group) => group.id === activeTab?.group)?.scope ?? "account";
   const tabEntryCount = settingsEntriesForTab(section).length;
   const noMatchesHere = trimmedQuery.length > 0 && (matchesThisTab?.length ?? 0) === 0;
 
@@ -711,7 +750,7 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
           <div
             style={{
               display: "flex",
-              alignItems: "flex-end",
+              alignItems: "center",
               justifyContent: "space-between",
               gap: 16,
               flexWrap: "wrap",
@@ -730,15 +769,15 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
               >
                 {activeTab.label}
               </h1>
-              {/* The page repeats its group's scope, so a deep link that drops
-                  a user straight onto a page still answers "where does this
-                  save" without them scrolling back to the sidebar. */}
-              <div style={{ marginTop: 6 }}>
-                <ScopeChip scope={activeGroupScope} />
-              </div>
-              <p style={{ margin: "4px 0 0", fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>
-                {activeTab.description}
-              </p>
+              {/* No scope badge and no caption. The sidebar already files each
+                  page under where it saves, and a one-line restatement of the
+                  page's own title is the kind of copy that reads as
+                  scaffolding. The search box sits on this same row. */}
+              {activeTab.description ? (
+                <p style={{ margin: "4px 0 0", fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>
+                  {activeTab.description}
+                </p>
+              ) : null}
             </div>
 
             <label

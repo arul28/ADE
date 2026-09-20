@@ -987,6 +987,13 @@ struct WorkStructuredQuestionCard: View {
   /// `onSelectOption`.
   let onSubmitAll: @MainActor ([String: AgentChatInputAnswerValue], String?) async -> Bool
   let onDecline: @MainActor () async -> Bool
+  /// Throw the question away without answering it.
+  ///
+  /// Supplied only when the host marked the card `dismissible` — a card the
+  /// provider is still waiting on has no local "never mind", and the host
+  /// refuses one. Absent means no Dismiss button, which is also what every
+  /// older host means.
+  var onDismiss: (@MainActor () async -> Bool)? = nil
   var onFreeformFocusChange: ((Bool) -> Void)? = nil
   /// Provider to fall back on when the parsed question carries no `source`
   /// (legacy `structured_question` envelopes). Usually the session provider.
@@ -1469,6 +1476,16 @@ struct WorkStructuredQuestionCard: View {
       .tint(ADEColor.danger)
       .disabled(busy)
 
+      if onDismiss != nil {
+        Button("Dismiss") {
+          Task { await dismissQuestion() }
+        }
+        .buttonStyle(.glass)
+        .tint(ADEColor.textSecondary)
+        .disabled(busy)
+        .accessibilityHint("Closes the question without answering it.")
+      }
+
       Spacer(minLength: 8)
 
       Button(submitLabel) {
@@ -1516,31 +1533,16 @@ struct WorkStructuredQuestionCard: View {
 
   @MainActor
   private func submitAll() async {
-    var answers: [String: AgentChatInputAnswerValue] = [:]
-    for q in question.questions {
-      let selected = selections[q.questionId] ?? []
-      let ordered = q.options.map(\.value).filter { selected.contains($0) }
-      if !ordered.isEmpty {
-        if q.multiSelect {
-          answers[q.questionId] = .strings(ordered)
-        } else if let first = ordered.first {
-          answers[q.questionId] = .string(first)
-        }
-        continue
-      }
-      let freeform = (freeformByQuestion[q.questionId] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-      if !freeform.isEmpty {
-        answers[q.questionId] = .string(freeform)
-      }
-    }
-    let sharedFreeform: String? = {
-      if isPaged { return nil }
-      let shared = singleQuestionFreeformText.trimmingCharacters(in: .whitespacesAndNewlines)
-      return shared.isEmpty ? nil : shared
-    }()
+    let payload = WorkQuestionAnswerBuilder.build(
+      questions: question.questions,
+      selections: selections,
+      freeformByQuestion: freeformByQuestion,
+      sharedFreeform: singleQuestionFreeformText,
+      isPaged: isPaged
+    )
     // Only discard the answers once the host has accepted them. A failed send
     // restores the card; it must come back with the user's work intact.
-    if await onSubmitAll(answers, sharedFreeform) {
+    if await onSubmitAll(payload.answers, payload.sharedFreeform) {
       clearQuestionDrafts()
     }
   }
@@ -1548,6 +1550,14 @@ struct WorkStructuredQuestionCard: View {
   @MainActor
   private func declineQuestion() async {
     if await onDecline() {
+      clearQuestionDrafts()
+    }
+  }
+
+  @MainActor
+  private func dismissQuestion() async {
+    guard let onDismiss else { return }
+    if await onDismiss() {
       clearQuestionDrafts()
     }
   }

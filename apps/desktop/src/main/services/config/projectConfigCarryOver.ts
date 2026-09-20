@@ -80,7 +80,6 @@ export function sanitizeCarryOverAiConfig(value: unknown): CarryOverAiResult {
     "sessionIntelligence",
     "localProviders",
     "taskRouting",
-    "orchestrator",
     "customModelSlugs",
     "modelId",
     "model",
@@ -221,30 +220,6 @@ export function sanitizeCarryOverAiConfig(value: unknown): CarryOverAiResult {
     if (Object.keys(safeRouting).length) out.taskRouting = safeRouting;
   } else if (taskRouting !== undefined) {
     collectSkippedConfigPaths(taskRouting, "ai.taskRouting", skipped);
-  }
-
-  const orchestrator = value.orchestrator;
-  if (isRecord(orchestrator)) {
-    const rawModel = orchestrator.defaultOrchestratorModel;
-    if (isRecord(rawModel) && typeof rawModel.modelId === "string" && rawModel.modelId.trim()) {
-      out.orchestrator = { defaultOrchestratorModel: { modelId: rawModel.modelId.trim() } };
-    }
-    for (const [field, child] of Object.entries(orchestrator)) {
-      if (field !== "defaultOrchestratorModel") {
-        collectSkippedConfigPaths(child, `ai.orchestrator.${field}`, skipped);
-      }
-    }
-    if (rawModel !== undefined) {
-      if (!isRecord(rawModel) || typeof rawModel.modelId !== "string" || !rawModel.modelId.trim()) {
-        collectSkippedConfigPaths(rawModel, "ai.orchestrator.defaultOrchestratorModel", skipped);
-      } else {
-        for (const [field, child] of Object.entries(rawModel)) {
-          if (field !== "modelId") collectSkippedConfigPaths(child, `ai.orchestrator.defaultOrchestratorModel.${field}`, skipped);
-        }
-      }
-    }
-  } else if (orchestrator !== undefined) {
-    collectSkippedConfigPaths(orchestrator, "ai.orchestrator", skipped);
   }
 
   return { value: Object.keys(out).length ? out : undefined, skipped };

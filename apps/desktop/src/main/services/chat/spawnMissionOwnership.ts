@@ -12,7 +12,7 @@ import type { AgentChatEvent, AgentChatEventEnvelope, AgentChatEventMetadata } f
  * can read the transcript before following up.
  *
  * `isHumanChildMessage` counts those human messages. Parent dispatches,
- * scheduled wakes, relays, host continuations, and any orchestration origin
+ * scheduled wakes, relays, host continuations, and any agent-origin marker
  * are not human messages.
  *
  * Every host-authored marker is persisted host state. `spawnDispatch` is
@@ -71,8 +71,8 @@ const NON_DIRECTIVE_METADATA_KEYS = [
  */
 export const HOST_AUTHORED_MESSAGE_PROVENANCE_KEYS = [
   "spawnDispatch",
-  // Written in-process by the orchestration service, never accepted from a
-  // chat caller. Any orchestration origin is excluded from the human-message
+  // Written in-process only, never accepted from a chat caller. Any
+  // agent-origin marker is excluded from the human-message
   // count above.
   "orchestrationOrigin",
   // Stamped by `session.moveOnBoard` from the column the row was actually in

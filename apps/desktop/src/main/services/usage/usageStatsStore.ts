@@ -126,7 +126,6 @@ const MEANINGFUL_ACTIONS = new Set([
   "git.stashPush",
   "git.stashApply",
   "git.stashPop",
-  "orchestration.runCreate",
   "prs.createFromLane",
   "prs.land",
   "prs.updateDescription",

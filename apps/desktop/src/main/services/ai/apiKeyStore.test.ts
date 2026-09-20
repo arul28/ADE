@@ -401,6 +401,149 @@ describe("apiKeyStore", () => {
     expect(JSON.parse(credentialStore.values.get("ai.api_key.index.v1") ?? "[]")).toEqual(["cursor"]);
   });
 
+  it("synthesizes a default credential summary from the legacy provider index", async () => {
+    delete process.env.OPENAI_API_KEY;
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("ai.api_key.index.v1", JSON.stringify(["openai"]));
+    credentialStore.setSync("ai.api_key.openai.v1", "sk-legacy-key");
+    const store = await loadStoreModule();
+    store.initApiKeyStore(tempRoot, { credentialStore });
+
+    expect(store.getApiCredentialKey("openai", "default")).toBe("sk-legacy-key");
+    expect(store.getApiCredentialSummary("openai", "default")).toEqual(expect.objectContaining({
+      provider: "openai",
+      credentialId: "default",
+      source: "store",
+      maskedTail: "••••-key",
+    }));
+    expect(JSON.parse(credentialStore.values.get("ai.api_credentials.index.v1") ?? "[]")).toEqual([
+      expect.objectContaining({ provider: "openai", credentialId: "default" }),
+    ]);
+  });
+
+  it("stores and removes a second credential without exposing its secret in metadata", async () => {
+    delete process.env.OPENAI_API_KEY;
+    const credentialStore = new MemoryCredentialStore();
+    const store = await loadStoreModule();
+    store.initApiKeyStore(tempRoot, { credentialStore });
+
+    store.storeApiKey("openai", "sk-default-secret");
+    const credentialId = store.storeApiCredential({
+      provider: " OpenAI ",
+      label: "Open Router",
+      key: "sk-secondary-secret",
+      baseUrl: "https://openrouter.ai/api/v1",
+      protocol: "openai-compatible",
+      models: ["openai/gpt-4o", " openai/gpt-4o "],
+    });
+
+    expect(credentialId).toMatch(/^open-router-[0-9a-f]{6}$/);
+    expect(store.getApiCredentialKey("openai", credentialId)).toBe("sk-secondary-secret");
+    expect(store.getApiKey("openai")).toBe("sk-default-secret");
+    expect(store.listStoredProviders()).toEqual(["openai"]);
+    expect(store.getAllApiKeys()).toEqual({ openai: "sk-default-secret" });
+    expect(store.getApiCredentialSummary("openai", credentialId)).toEqual(expect.objectContaining({
+      provider: "openai",
+      credentialId,
+      label: "Open Router",
+      baseUrl: "https://openrouter.ai/api/v1",
+      protocol: "openai-compatible",
+      models: ["openai/gpt-4o"],
+      source: "store",
+      maskedTail: "••••cret",
+    }));
+    const metadata = credentialStore.values.get("ai.api_credentials.index.v1") ?? "";
+    expect(metadata).toContain("openrouter.ai");
+    expect(JSON.parse(credentialStore.values.get("ai.api_key.index.v1") ?? "[]")).toEqual(["openai"]);
+    expect(metadata).not.toContain("sk-secondary-secret");
+    expect(metadata).not.toContain("sk-default-secret");
+    expect(credentialStore.values.get(`ai.api_key.openai#${credentialId}.v1`)).toBe("sk-secondary-secret");
+
+    store.removeApiCredential("openai", credentialId);
+
+    expect(store.getApiCredentialKey("openai", credentialId)).toBeNull();
+    expect(store.getApiCredentialSummary("openai", credentialId)).toBeNull();
+    expect(store.getApiKey("openai")).toBe("sk-default-secret");
+    expect(credentialStore.values.has(`ai.api_key.openai#${credentialId}.v1`)).toBe(false);
+  });
+
+  it("only reports a credential removal that actually removed something", async () => {
+    const captured: Array<Record<string, unknown>> = [];
+    const analytics = { captureInternal: (input: unknown) => { captured.push(input as Record<string, unknown>); } };
+    const credentialStore = new MemoryCredentialStore();
+    const store = await loadStoreModule();
+    store.initApiKeyStore(tempRoot, { credentialStore, analytics });
+
+    // Removing what was never stored is a no-op, not a completed removal:
+    // capturing it would inflate the funnel with phantom events.
+    store.removeApiCredential("openai", "never-stored");
+    expect(captured).toEqual([]);
+
+    store.storeApiKey("openai", "sk-real-secret");
+    store.removeApiCredential("openai");
+    expect(captured).toHaveLength(1);
+    expect(captured[0]).toMatchObject({
+      properties: { feature: "api_credentials", action: "credential_removed", outcome: "completed" },
+    });
+
+    // The cleanup is idempotent, so a second remove must stay silent.
+    store.removeApiCredential("openai");
+    expect(captured).toHaveLength(1);
+  });
+
+  it("exports one canonical storage key so other packages cannot re-derive it", async () => {
+    const store = await loadStoreModule();
+    expect(store.credentialStorageKey("OpenAI")).toBe("openai");
+    expect(store.credentialStorageKey("openai", "open-router-a1b2c3")).toBe("openai#open-router-a1b2c3");
+    // Unsafe or separator-bearing ids resolve to no key at all rather than to
+    // a key that would address a different credential.
+    expect(store.credentialStorageKey("openai", "a#b")).toBe("");
+    expect(store.credentialStorageKey("openai", "../escape")).toBe("");
+    expect(store.credentialStorageKey("", "default")).toBe("");
+    expect(store.API_CREDENTIALS_INDEX_KEY).toBe("ai.api_credentials.index.v1");
+  });
+
+  it("rejects credential ids that collide case-insensitively for one provider", async () => {
+    delete process.env.OPENAI_API_KEY;
+    const credentialStore = new MemoryCredentialStore();
+    const store = await loadStoreModule();
+    store.initApiKeyStore(tempRoot, { credentialStore });
+
+    store.storeApiCredential({
+      provider: "openai",
+      credentialId: "Work",
+      label: "Work",
+      key: "sk-work",
+    });
+
+    expect(() => store.storeApiCredential({
+      provider: "OPENAI",
+      credentialId: "work",
+      label: "Another Work",
+      key: "sk-another-work",
+    })).toThrow(/case-insensitive/);
+    expect(store.getApiCredentialKey("openai", "Work")).toBe("sk-work");
+  });
+
+
+  it("attributes environment fallback only to the default credential", async () => {
+    process.env.OPENAI_API_KEY = "sk-from-env";
+    const credentialStore = new MemoryCredentialStore();
+    const store = await loadStoreModule();
+    store.initApiKeyStore(tempRoot, { credentialStore });
+
+    expect(store.listApiCredentials("openai")).toEqual([
+      expect.objectContaining({
+        provider: "openai",
+        credentialId: "default",
+        source: "env",
+        envVar: "OPENAI_API_KEY",
+      }),
+    ]);
+    expect(store.getApiCredentialSummary("openai", "default")?.source).toBe("env");
+    expect(store.getApiCredentialSummary("openai", "alternate")).toBeNull();
+  });
+
   it("does not treat malformed credential migration metadata as a decryption failure", async () => {
     const credentialStore = new MemoryCredentialStore();
     credentialStore.setSync("ai.api_key.index.v1", JSON.stringify(["cursor"]));
@@ -498,30 +641,6 @@ describe("apiKeyStore", () => {
     expect(vault.set).not.toHaveBeenCalled();
   });
 
-  it("binds hydrated API keys to their account and purges only account-origin values", async () => {
-    const credentialStore = new MemoryCredentialStore();
-    const store = await loadStoreModule();
-    let accountUserId: string | null = "account-a";
-    store.initApiKeyStore(tempRoot, {
-      credentialStore,
-      getAccountUserId: () => accountUserId,
-    });
-
-    store.storeApiKey("cursor", "device-key", { deviceOnly: true });
-    store.storeApiKey("openai", "hydrated-key", {
-      deviceOnly: true,
-      source: "account",
-      accountUserId: "account-a",
-    });
-    expect(store.getApiKeyProvenance("cursor")).toEqual({ source: "device", accountUserId: null });
-    expect(store.getApiKeyProvenance("openai")).toEqual({ source: "account", accountUserId: "account-a" });
-
-    accountUserId = null;
-    store.purgeAccountApiKeys();
-
-    expect(store.getApiKey("cursor")).toBe("device-key");
-    expect(store.getApiKey("openai")).toBeNull();
-  });
 
   it("hydrates only provider keys missing from the local store", async () => {
     delete process.env.ANTHROPIC_API_KEY;
@@ -556,6 +675,46 @@ describe("apiKeyStore", () => {
     expect(vault.get).toHaveBeenCalledWith("all", "provider_api_key", "anthropic");
     expect(vault.set).not.toHaveBeenCalled();
   });
+
+  it("returns and logs case-insensitive credential collisions without replacing the local key", async () => {
+    const credentialStore = new MemoryCredentialStore();
+    const vault = createVaultMock();
+    const logger = { warn: vi.fn() };
+    vault.list.mockResolvedValue({
+      ok: true,
+      value: [{ scope: "all", kind: "provider_api_key", key: "openai#work", value: "sk-vault", updatedAt: "now" }],
+    } as never);
+    const store = await loadStoreModule();
+    store.initApiKeyStore(tempRoot, {
+      credentialStore,
+      getAccountVault: () => vault as never,
+      getAccountUserId: () => "account-a",
+      logger,
+    });
+    store.storeApiCredential({
+      provider: "openai",
+      credentialId: "Work",
+      label: "Work",
+      key: "sk-local",
+      deviceOnly: true,
+    });
+
+    const result = await store.hydrateApiKeysFromVault();
+
+    expect(result.collisions).toEqual([{
+      provider: "openai",
+      credentialId: "work",
+      existingCredentialId: "Work",
+      storageKey: "openai#work",
+    }]);
+    expect(store.getApiCredentialKey("openai", "Work")).toBe("sk-local");
+    expect(logger.warn).toHaveBeenCalledWith("ai.api_key_vault_sync_failed", expect.objectContaining({
+      operation: "hydrate",
+      provider: "openai#work",
+      error: "credential id collides case-insensitively with an existing local credential; skipped",
+    }));
+  });
+
 
   it("removes a provider API key from both local storage and the account vault", async () => {
     const credentialStore = new MemoryCredentialStore();
@@ -596,7 +755,7 @@ describe("apiKeyStore", () => {
 
     const unavailable = await loadStoreModule();
     unavailable.initApiKeyStore(tempRoot, { credentialStore });
-    await expect(unavailable.hydrateApiKeysFromVault()).resolves.toBeUndefined();
+    await expect(unavailable.hydrateApiKeysFromVault()).resolves.toEqual({ collisions: [] });
   });
 });
 

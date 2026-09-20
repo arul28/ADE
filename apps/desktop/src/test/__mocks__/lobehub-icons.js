@@ -38,3 +38,11 @@ export const OpenAI = brand("OpenAI");
 export const OpenCode = brand("OpenCode");
 export const OpenRouter = brand("OpenRouter");
 export const XAI = brand("xAI");
+// ProviderLogos.tsx imports these too. Without them a component that renders
+// every provider mark (the harness wizard's card grid) crashes on the first
+// ACP or local-runtime logo, which is why several test files used to carry
+// their own copy of this stub.
+export const GithubCopilot = brand("GitHub Copilot");
+export const LmStudio = brand("LM Studio");
+export const Ollama = brand("Ollama");
+export const Qwen = brand("Qwen");

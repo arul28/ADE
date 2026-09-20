@@ -133,6 +133,10 @@ describe("SubagentResultCard", () => {
       status: "completed",
       summaryPreview: "Kickoff turn finished.",
       error: null,
+      stopSource: "unknown",
+      stopReason: null,
+      lastActivity: null,
+      resultLanded: false,
       startedAt: "2026-07-14T10:00:00.000Z",
       endedAt: "2026-07-14T10:01:00.000Z",
       durationMs: 60_000,
@@ -185,6 +189,43 @@ describe("SubagentResultCard", () => {
       <SubagentResultCard event={resultEvent({ toolUseCount: null, totalTokens: null })} provider="codex" />,
     );
     expect(container.querySelector("[data-subagent-provider]")?.getAttribute("data-subagent-provider")).toBe("codex");
+  });
+
+  it.each([
+    ["user", null, "Stopped — interrupted"],
+    ["system", "the ADE brain restarted", "Stopped: the ADE brain restarted"],
+    ["foreign-brain", "another ADE brain took over this chat", "Stopped: another ADE brain took over this chat"],
+    ["provider", "the provider ended the turn", "Stopped: the provider ended the turn"],
+    ["unknown", null, "Stopped"],
+  ] as const)("uses the stop source in the lone card headline (%s)", (stopSource, stopReason, expected) => {
+    const { container } = render(
+      <SubagentResultCard
+        event={resultEvent({
+          description: null,
+          status: "stopped",
+          summaryPreview: null,
+          stopSource,
+          stopReason,
+        })}
+      />,
+    );
+    expect(container.textContent).toContain(expected);
+  });
+
+  it("shows the stopped agent's last activity and report outcome", () => {
+    const { container } = render(
+      <SubagentResultCard
+        event={resultEvent({
+          status: "stopped",
+          stopSource: "system",
+          stopReason: "the ADE brain restarted",
+          lastActivity: "Writing the report",
+          resultLanded: true,
+        })}
+      />,
+    );
+    expect(container.textContent).toContain("Writing the report");
+    expect(container.textContent).toContain("report landed");
   });
 });
 
@@ -252,16 +293,22 @@ describe("BackgroundJobLine", () => {
 });
 
 describe("SubagentStoppedGroupCard", () => {
-  function groupEvent(cause: SubagentStoppedGroupEvent["cause"]): SubagentStoppedGroupEvent {
+  function groupEvent(
+    cause: SubagentStoppedGroupEvent["cause"],
+    overrides: Partial<SubagentStoppedGroupEvent> = {},
+  ): SubagentStoppedGroupEvent {
     return {
       type: "subagent_stopped_group",
       cause,
+      stopSource: "user",
+      stopReason: null,
       count: 3,
       items: [
-        { agentKey: "a", title: "Explore auth flow", jumpToStartRowKey: "subagent-result:a" },
-        { agentKey: "b", title: "Explore sync flow", jumpToStartRowKey: "subagent-result:b" },
-        { agentKey: "c", title: "Explore the UI", jumpToStartRowKey: "subagent-result:c" },
+        { agentKey: "a", title: "Explore auth flow", lastActivity: "reading authRouter.ts", resultLanded: false },
+        { agentKey: "b", title: "Explore sync flow", lastActivity: null, resultLanded: true },
+        { agentKey: "c", title: "Explore the UI", lastActivity: null, resultLanded: false },
       ],
+      ...overrides,
     };
   }
 
@@ -287,6 +334,57 @@ describe("SubagentStoppedGroupCard", () => {
   it("does not offer jump-to-start when the list omits a scroller (folded rows are gone)", () => {
     render(<SubagentStoppedGroupCard event={groupEvent("interrupt")} />);
     expect(screen.queryByRole("button", { name: "Explore auth flow jump to start" })).toBeNull();
-    expect(screen.getByTitle("Explore auth flow")).toBeTruthy();
+    expect(screen.getByTitle(/Explore auth flow/u)).toBeTruthy();
+  });
+
+  it("blames an ADE brain restart on the restart, not on the reader", () => {
+    const { container } = render(
+      <SubagentStoppedGroupCard
+        event={groupEvent("interrupt", { stopSource: "system", stopReason: "the ADE brain restarted" })}
+      />,
+    );
+    expect(container.textContent).toContain("3 agents stopped: the ADE brain restarted");
+    expect(container.textContent).not.toContain("when you interrupted");
+  });
+
+  it("names a sibling brain takeover as a takeover", () => {
+    const { container } = render(
+      <SubagentStoppedGroupCard
+        event={groupEvent("interrupt", {
+          stopSource: "foreign-brain",
+          stopReason: "another ADE brain took over this chat",
+        })}
+      />,
+    );
+    expect(container.textContent).toContain("3 agents stopped: another ADE brain took over this chat");
+    expect(container.textContent).not.toContain("when you interrupted");
+  });
+
+  it("names a provider-ended turn as the provider's doing", () => {
+    const { container } = render(
+      <SubagentStoppedGroupCard
+        event={groupEvent("interrupt", { stopSource: "provider", stopReason: "the provider ended the turn" })}
+      />,
+    );
+    expect(container.textContent).toContain("3 agents stopped: the provider ended the turn");
+  });
+
+  it("claims nothing at all when a legacy event carries no source or reason", () => {
+    const { container } = render(
+      <SubagentStoppedGroupCard event={groupEvent("interrupt", { stopSource: "unknown", stopReason: null })} />,
+    );
+    expect(container.textContent).toContain("3 agents stopped");
+    expect(container.textContent).not.toContain("when you interrupted");
+  });
+
+  it("shows each agent's last activity and whether its report landed", () => {
+    const { container } = render(
+      <SubagentStoppedGroupCard
+        event={groupEvent("interrupt", { stopSource: "system", stopReason: "the ADE brain restarted" })}
+      />,
+    );
+    expect(container.textContent).toContain("Explore auth flow · reading authRouter.ts");
+    expect(container.textContent).toContain("work lost");
+    expect(container.textContent).toContain("report landed");
   });
 });
