@@ -2506,7 +2506,7 @@ on this adapter" is a recorded decision rather than silence.
 
 ### Async questions (a card you may ignore)
 
-Codex 0.153.4 can attach questions to an `agentMessage` item: `delivery:
+Codex 0.155.1 can attach questions to an `agentMessage` item: `delivery:
 "async"` plus `questions: [{ title, options }]`. There is no question id, no
 multi-select flag, and free text is always accepted, so ADE keys the questions
 positionally and marks every one `allowsFreeform`.
