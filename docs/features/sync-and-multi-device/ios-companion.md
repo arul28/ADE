@@ -2453,9 +2453,12 @@ above the field is gone, and the row with it. (The structured-question card
 keeps its own separate chevron footer.) The swipe rides alongside the field's
 own recognizers rather than replacing them, so text selection and the tray's
 horizontal scroll still work, and only a mostly-vertical drag past 40 pt is
-claimed (`workComposerFoldGesture`). Inside a draft long enough for the field to
-scroll, `keyboardDismissMode = .interactive` drags the keyboard down with the
-finger as well.
+claimed (`workComposerFoldGesture`). Once a draft grows past the field, the
+`UITextView` is scrolling and will not let a foreign recognizer run beside its
+own pan, so the composer observes that pan instead of competing with it: a
+downward swipe that starts at the top of the draft folds the card, one that
+starts mid-draft still scrolls the draft, and `keyboardDismissMode =
+.interactive` takes the keyboard down with the finger either way.
 
 Folding does not re-measure the field. The `UITextView` keeps the height it
 measured for the full draft and the folded card clips it to one line from the
