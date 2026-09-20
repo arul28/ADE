@@ -150,7 +150,7 @@ final class WorkChatScrollBenchUITests: XCTestCase {
     let app = launch(extra: ["-adeBenchStream", "160", "-adeBenchStreamIntervalMs", "140"])
     sleep(5)
     for _ in 0..<2 {
-      drag(app, fromY: 0.25, toY: 0.75, duration: 0.5)
+      slowDrag(app, fromY: 0.25, toY: 0.75, velocity: 320)
       usleep(500_000)
     }
     sleep(32)
