@@ -88,6 +88,9 @@ struct WorkToolCardModel: Identifiable, Equatable {
   /// Session this card came from. Needed only to fetch a truncated result, so
   /// it is optional: a card built without one simply cannot offer the fetch.
   let sessionId: String?
+  /// Transcript sequence for the result. Retry events may reuse `itemId`, so
+  /// the sequence is part of the remote-result cache identity.
+  let resultSequence: Int?
 
   init(
     id: String,
@@ -100,7 +103,8 @@ struct WorkToolCardModel: Identifiable, Equatable {
     webSearchActions: [CodexWebSearchAction]? = nil,
     webSearchResults: [CodexWebSearchResult]? = nil,
     remoteResultBytes: Int? = nil,
-    sessionId: String? = nil
+    sessionId: String? = nil,
+    resultSequence: Int? = nil
   ) {
     self.id = id
     self.toolName = toolName
@@ -113,6 +117,7 @@ struct WorkToolCardModel: Identifiable, Equatable {
     self.webSearchResults = webSearchResults
     self.remoteResultBytes = remoteResultBytes
     self.sessionId = sessionId
+    self.resultSequence = resultSequence
   }
 }
 
@@ -629,6 +634,36 @@ struct WorkActiveSendCapability: Equatable {
       return WorkActiveSendCapability(modes: [.queue], agentLabel: "the agent", interruptContinues: false)
     }
   }
+}
+
+struct WorkQueuedSteerDisposition: Equatable {
+  let shortText: String
+  let detailText: String
+}
+
+/// Shared wording for the staged-message strip and its detail sheet. Keeping
+/// the capability decision here prevents the two surfaces from drifting when
+/// a provider gains or loses inline steering.
+func workQueuedSteerDisposition(
+  capability: WorkActiveSendCapability,
+  turnActive: Bool
+) -> WorkQueuedSteerDisposition {
+  guard turnActive else {
+    return WorkQueuedSteerDisposition(
+      shortText: "after turn",
+      detailText: "It sends as soon as \(capability.agentLabel) is ready."
+    )
+  }
+  if capability.modes.contains(.inline) {
+    return WorkQueuedSteerDisposition(
+      shortText: "sends at next step",
+      detailText: "\(capability.agentLabel) picks it up after the current tool step."
+    )
+  }
+  return WorkQueuedSteerDisposition(
+    shortText: "sends when turn ends",
+    detailText: "\(capability.agentLabel) can't take a message mid-turn, so it sends when this turn ends."
+  )
 }
 
 /// Work-board columns, as they are written on screen.
@@ -1693,6 +1728,12 @@ struct WorkChatEnvelope: Identifiable, Equatable {
   /// the slim mobile wire sent, nil when the result is complete. Drives the
   /// Result block's on-demand fetch.
   let toolResultFullBytes: Int?
+  /// Raw Claude queue lifecycle metadata. `WorkChatEvent` intentionally maps
+  /// non-terminal lifecycle frames to no visible card, but pending-steer
+  /// derivation still needs the status to clear a staged row when the host
+  /// reports `started`/`completed` without a delivered user-message frame.
+  let commandLifecycleStatus: String?
+  let commandLifecycleSteerId: String?
 
   init(
     sessionId: String,
@@ -1709,7 +1750,9 @@ struct WorkChatEnvelope: Identifiable, Equatable {
     isLegacySubagentCompletedFrame: Bool = false,
     stopSource: String? = nil,
     stopReason: String? = nil,
-    toolResultFullBytes: Int? = nil
+    toolResultFullBytes: Int? = nil,
+    commandLifecycleStatus: String? = nil,
+    commandLifecycleSteerId: String? = nil
   ) {
     self.sessionId = sessionId
     self.timestamp = timestamp
@@ -1726,6 +1769,8 @@ struct WorkChatEnvelope: Identifiable, Equatable {
     self.stopSource = stopSource
     self.stopReason = stopReason
     self.toolResultFullBytes = toolResultFullBytes
+    self.commandLifecycleStatus = commandLifecycleStatus
+    self.commandLifecycleSteerId = commandLifecycleSteerId
   }
 }
 

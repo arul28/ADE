@@ -115,13 +115,7 @@ struct WorkQueuedSteerDetailSheet: View {
   /// strip's one-line disposition had no room to say so.
   private var stateDetail: String {
     let staged = "Staged \(relativeTimestamp(steer.timestamp))."
-    guard turnActive else {
-      return "\(staged) It sends as soon as \(capability.agentLabel) is ready."
-    }
-    if capability.modes.contains(.inline) {
-      return "\(staged) \(capability.agentLabel) picks it up after the current tool step."
-    }
-    return "\(staged) \(capability.agentLabel) can't take a message mid-turn, so it sends when this turn ends."
+    return "\(staged) \(workQueuedSteerDisposition(capability: capability, turnActive: turnActive).detailText)"
   }
 
   private var sendNowRow: some View {

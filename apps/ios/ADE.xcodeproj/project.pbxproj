@@ -85,6 +85,7 @@
 		1A0D93D06509796A389A4CAA /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 31EC445F22FD38F90C16343E /* Foundation.framework */; };
 		26C8992F8D661707E9360503 /* Database.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51942BAC0965C7D0CCE6E8B8 /* Database.swift */; };
 		28CFE3D489EA1B208D231519 /* SyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66B5024B0A05F3D9754101F1 /* SyncService.swift */; };
+		F10000000000000000000101 /* ChatToolResultCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000102 /* ChatToolResultCache.swift */; };
 		B70000000000000000000002 /* SyncRecoveryPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000000000000000000001 /* SyncRecoveryPolicy.swift */; };
 		B70000000000000000000004 /* SyncRecoveryPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000000000000000000003 /* SyncRecoveryPolicyTests.swift */; };
 		B7000000000000000000002F /* PairedHostCredentialStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7000000000000000000001F /* PairedHostCredentialStateTests.swift */; };
@@ -116,6 +117,7 @@
 		E1000000000000000000002B /* WorkChatSessionView+Actions.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002B /* WorkChatSessionView+Actions.swift */; };
 		E1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */; };
 		E1000000000000000000002D /* WorkChatRichCardViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002D /* WorkChatRichCardViews.swift */; };
+		F10000000000000000000103 /* WorkRemoteToolResultAffordance.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000104 /* WorkRemoteToolResultAffordance.swift */; };
 		E10000000000000000000055 /* WorkChatPrViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000055 /* WorkChatPrViews.swift */; };
 		E10000000000000000000054 /* WorkPlanComposerViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000054 /* WorkPlanComposerViews.swift */; };
 		E10000000000000000000050 /* WorkChatAttachmentTray.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000050 /* WorkChatAttachmentTray.swift */; };
@@ -208,6 +210,7 @@
 		D31000000000000000000019 /* WorkPromptStashTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3000000000000000000000A /* WorkPromptStashTests.swift */; };
 		DCF01D0000000000000002 /* WorkComposerFoldStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCF01D0000000000000001 /* WorkComposerFoldStateTests.swift */; };
 		D31000000000000000000F0D /* WorkToolsContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000F0D /* WorkToolsContractTests.swift */; };
+		F10000000000000000000105 /* WorkChatToolResultCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000106 /* WorkChatToolResultCacheTests.swift */; };
 		D31000000000000000000F20 /* WorkProofRowModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000F20 /* WorkProofRowModelTests.swift */; };
 		FB000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift */; };
 		FB000000000000000000C2C3 /* WorkAssistantRenderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000C2C3 /* WorkAssistantRenderingTests.swift */; };
@@ -451,6 +454,7 @@
 		D1000000000000000000002B /* WorkChatSessionView+Actions.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkChatSessionView+Actions.swift"; path = "ADE/Views/Work/WorkChatSessionView+Actions.swift"; sourceTree = "<group>"; };
 		D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatHeaderAndMessageViews.swift; path = ADE/Views/Work/WorkChatHeaderAndMessageViews.swift; sourceTree = "<group>"; };
 		D1000000000000000000002D /* WorkChatRichCardViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatRichCardViews.swift; path = ADE/Views/Work/WorkChatRichCardViews.swift; sourceTree = "<group>"; };
+		F10000000000000000000104 /* WorkRemoteToolResultAffordance.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkRemoteToolResultAffordance.swift; path = ADE/Views/Work/WorkRemoteToolResultAffordance.swift; sourceTree = "<group>"; };
 		D10000000000000000000055 /* WorkChatPrViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatPrViews.swift; path = ADE/Views/Work/WorkChatPrViews.swift; sourceTree = "<group>"; };
 		D10000000000000000000054 /* WorkPlanComposerViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkPlanComposerViews.swift; path = ADE/Views/Work/WorkPlanComposerViews.swift; sourceTree = "<group>"; };
 		D10000000000000000000050 /* WorkChatAttachmentTray.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatAttachmentTray.swift; path = ADE/Views/Work/WorkChatAttachmentTray.swift; sourceTree = "<group>"; };
@@ -553,6 +557,7 @@
 		D3000000000000000000000A /* WorkPromptStashTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkPromptStashTests.swift; path = ADETests/WorkPromptStashTests.swift; sourceTree = "<group>"; };
 		DCF01D0000000000000001 /* WorkComposerFoldStateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkComposerFoldStateTests.swift; path = ADETests/WorkComposerFoldStateTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000F0D /* WorkToolsContractTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkToolsContractTests.swift; path = ADETests/WorkToolsContractTests.swift; sourceTree = "<group>"; };
+		F10000000000000000000106 /* WorkChatToolResultCacheTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatToolResultCacheTests.swift; path = ADETests/WorkChatToolResultCacheTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000F20 /* WorkProofRowModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkProofRowModelTests.swift; path = ADETests/WorkProofRowModelTests.swift; sourceTree = "<group>"; };
 		FA000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSessionCanonicalStateTests.swift; path = ADETests/WorkSessionCanonicalStateTests.swift; sourceTree = "<group>"; };
 		27A125DE2C17BA32F9291513 /* ADE.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ADE.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -571,6 +576,7 @@
 		51942BAC0965C7D0CCE6E8B8 /* Database.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = Database.swift; path = ADE/Services/Database.swift; sourceTree = "<group>"; };
 		5EE4D463D21266B62B422D11 /* PRsTabView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PRsTabView.swift; path = ADE/Views/PRsTabView.swift; sourceTree = "<group>"; };
 		66B5024B0A05F3D9754101F1 /* SyncService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncService.swift; path = ADE/Services/SyncService.swift; sourceTree = "<group>"; };
+		F10000000000000000000102 /* ChatToolResultCache.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChatToolResultCache.swift; path = ADE/Services/ChatToolResultCache.swift; sourceTree = "<group>"; };
 		B70000000000000000000001 /* SyncRecoveryPolicy.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncRecoveryPolicy.swift; path = ADE/Services/SyncRecoveryPolicy.swift; sourceTree = "<group>"; };
 		B70000000000000000000003 /* SyncRecoveryPolicyTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncRecoveryPolicyTests.swift; path = ADETests/SyncRecoveryPolicyTests.swift; sourceTree = "<group>"; };
 		B7000000000000000000001F /* PairedHostCredentialStateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PairedHostCredentialStateTests.swift; path = ADETests/PairedHostCredentialStateTests.swift; sourceTree = "<group>"; };
@@ -1002,6 +1008,7 @@
 				D10000000000000000000F01 /* WorkLaneOrder.swift */,
 				D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */,
 				D1000000000000000000002D /* WorkChatRichCardViews.swift */,
+				F10000000000000000000104 /* WorkRemoteToolResultAffordance.swift */,
 				D10000000000000000000055 /* WorkChatPrViews.swift */,
 				D10000000000000000000054 /* WorkPlanComposerViews.swift */,
 				D10000000000000000000050 /* WorkChatAttachmentTray.swift */,
@@ -1282,6 +1289,7 @@
 				D3000000000000000000000A /* WorkPromptStashTests.swift */,
 				DCF01D0000000000000001 /* WorkComposerFoldStateTests.swift */,
 				D30000000000000000000F0D /* WorkToolsContractTests.swift */,
+				F10000000000000000000106 /* WorkChatToolResultCacheTests.swift */,
 				D30000000000000000000F20 /* WorkProofRowModelTests.swift */,
 				FA000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift */,
 				FA000000000000000000C2C3 /* WorkAssistantRenderingTests.swift */,
@@ -1633,6 +1641,7 @@
 				26C8992F8D661707E9360503 /* Database.swift in Sources */,
 				0375D32BA5870617FA1758C6 /* KeychainService.swift in Sources */,
 				28CFE3D489EA1B208D231519 /* SyncService.swift in Sources */,
+				F10000000000000000000101 /* ChatToolResultCache.swift in Sources */,
 				C5B000000000000000000001 /* MobileTrustResetPolicy.swift in Sources */,
 				C5B00000000000000000001F /* PairedHostCredentialState.swift in Sources */,
 				C5B000000000000000000002 /* SSHBootstrapModels.swift in Sources */,
@@ -1797,6 +1806,7 @@
 				E10000000000000000000F01 /* WorkLaneOrder.swift in Sources */,
 				E1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift in Sources */,
 				E1000000000000000000002D /* WorkChatRichCardViews.swift in Sources */,
+				F10000000000000000000103 /* WorkRemoteToolResultAffordance.swift in Sources */,
 				E10000000000000000000055 /* WorkChatPrViews.swift in Sources */,
 				E10000000000000000000054 /* WorkPlanComposerViews.swift in Sources */,
 				E10000000000000000000050 /* WorkChatAttachmentTray.swift in Sources */,
@@ -1880,6 +1890,7 @@
 				D31000000000000000000019 /* WorkPromptStashTests.swift in Sources */,
 				DCF01D0000000000000002 /* WorkComposerFoldStateTests.swift in Sources */,
 				D31000000000000000000F0D /* WorkToolsContractTests.swift in Sources */,
+				F10000000000000000000105 /* WorkChatToolResultCacheTests.swift in Sources */,
 				D31000000000000000000F20 /* WorkProofRowModelTests.swift in Sources */,
 				FB000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift in Sources */,
 				FB000000000000000000C2C3 /* WorkAssistantRenderingTests.swift in Sources */,

@@ -29,6 +29,7 @@ import {
   SYNC_INVALIDATION_BATCH_MAX_ENVELOPE_BYTES,
   SYNC_INVALIDATION_TABLE_MAX_BYTES,
   SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
+  SYNC_MOBILE_CHAT_SLIM_CAPABILITY,
   SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
 } from "../../../../desktop/src/shared/types";
 import {
@@ -11577,6 +11578,357 @@ describe("chat_subscribe snapshots", () => {
       expect(delivered.payload).toMatchObject({ seq: 1 });
     } finally {
       bufferedAmountSpy?.mockRestore();
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("retries a slim progress event after a backpressured live send", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const transcriptPath = path.join(projectRoot, "transcripts", "chat-slim-retry.chat.jsonl");
+    fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+    fs.writeFileSync(transcriptPath, "", "utf8");
+    const session = {
+      id: "chat-slim-retry",
+      laneId: "lane-1",
+      transcriptPath,
+      status: "running",
+      runtimeState: "running",
+      lastOutputPreview: "",
+    };
+    const chatEventEmitter: { current?: (event: AgentChatEventEnvelope) => void } = {};
+    const base = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...base,
+      pollIntervalMs: 60_000,
+      projectId: "project-1",
+      db: {
+        sync: {
+          getSiteId: () => "site-host-chat-slim-retry",
+          getDbVersion: () => 0,
+          exportChangesSince: () => [],
+          applyChanges: () => ({ appliedCount: 0 }),
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+      sessionService: {
+        list: () => [session],
+        get: (id: string) => (id === "chat-slim-retry" ? session : null),
+        readTranscriptTail: async () => "",
+      },
+      agentChatService: {
+        subscribeToEvents: vi.fn((callback: (event: AgentChatEventEnvelope) => void) => {
+          chatEventEmitter.current = callback;
+          return () => {};
+        }),
+        getChatEventHistory: vi.fn().mockReturnValue({
+          sessionId: "chat-slim-retry",
+          events: [],
+          truncated: false,
+          transcriptTruncated: false,
+          windowTruncated: false,
+          sessionFound: true,
+        }),
+        getSessionSummary: vi.fn().mockResolvedValue({ status: "active" }),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let bufferedAmountSpy: { mockRestore(): void } | null = null;
+    const emitChatEvent = (event: AgentChatEventEnvelope): void => {
+      const callback = chatEventEmitter.current;
+      if (!callback) throw new Error("chat event subscription was not installed");
+      callback(event);
+    };
+
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-chat-slim-retry", {
+        capabilities: [SYNC_MOBILE_CHAT_SLIM_CAPABILITY],
+      });
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "chat-slim-retry-initial",
+        payload: { sessionId: "chat-slim-retry" },
+      }));
+      await waitForEnvelope(peer.envelopes, "chat_subscribe", "chat-slim-retry-initial");
+
+      let bufferedAmountReads = 0;
+      bufferedAmountSpy = vi
+        .spyOn(WebSocket.prototype, "bufferedAmount", "get")
+        .mockImplementation(() => {
+          bufferedAmountReads += 1;
+          return bufferedAmountReads === 1 ? 0 : 4 * 1024 * 1024;
+        });
+      emitChatEvent({
+        sessionId: "chat-slim-retry",
+        timestamp: "2026-04-23T10:00:03.000Z",
+        sequence: 1,
+        event: {
+          type: "subagent_progress",
+          taskId: "agent-1",
+          agentId: "agent-1",
+          summary: "working",
+        },
+      });
+      await waitForValue(
+        () => bufferedAmountReads >= 2 ? true : undefined,
+        "backpressured slim chat event send",
+      );
+      bufferedAmountSpy.mockRestore();
+      bufferedAmountSpy = null;
+      expect(peer.envelopes.filter((envelope) => envelope.type === "chat_event")).toHaveLength(0);
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "chat-slim-retry-resume",
+        payload: { sessionId: "chat-slim-retry", sinceSeq: 0 },
+      }));
+      await waitForEnvelope(peer.envelopes, "chat_subscribe", "chat-slim-retry-resume");
+      const retried = await waitForValue(
+        () => peer?.envelopes.find((envelope) => envelope.type === "chat_event"),
+        "retried slim chat event",
+      );
+      expect(retried.payload).toMatchObject({
+        sequence: 1,
+        event: { type: "subagent_progress", summary: "working" },
+      });
+
+      bufferedAmountReads = 0;
+      bufferedAmountSpy = vi
+        .spyOn(WebSocket.prototype, "bufferedAmount", "get")
+        .mockImplementation(() => {
+          bufferedAmountReads += 1;
+          return bufferedAmountReads === 1 ? 0 : 4 * 1024 * 1024;
+        });
+      emitChatEvent({
+        sessionId: "chat-slim-retry",
+        timestamp: "2026-04-23T10:00:04.000Z",
+        sequence: 2,
+        event: { type: "text", text: "retry this text" },
+      });
+      await waitForValue(
+        () => bufferedAmountReads >= 2 ? true : undefined,
+        "backpressured slim non-progress send",
+      );
+      bufferedAmountSpy.mockRestore();
+      bufferedAmountSpy = null;
+      expect(peer.envelopes.filter((envelope) =>
+        envelope.type === "chat_event"
+        && (envelope.payload as { event?: { type?: string } }).event?.type === "text"
+      )).toHaveLength(0);
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "chat-slim-retry-text-resume",
+        payload: { sessionId: "chat-slim-retry", sinceSeq: 1 },
+      }));
+      await waitForEnvelope(peer.envelopes, "chat_subscribe", "chat-slim-retry-text-resume");
+      const retriedText = await waitForValue(
+        () => peer?.envelopes.find((envelope) =>
+          envelope.type === "chat_event"
+          && (envelope.payload as { event?: { type?: string } }).event?.type === "text"
+        ),
+        "retried slim non-progress event",
+      );
+      expect(retriedText.payload).toMatchObject({
+        sequence: 2,
+        event: { type: "text", text: "retry this text" },
+      });
+      expect(peer.envelopes.filter((envelope) =>
+        envelope.type === "chat_event"
+        && (envelope.payload as { event?: { type?: string } }).event?.type === "text"
+      )).toHaveLength(1);
+
+      bufferedAmountReads = 0;
+      bufferedAmountSpy = vi
+        .spyOn(WebSocket.prototype, "bufferedAmount", "get")
+        .mockImplementation(() => {
+          bufferedAmountReads += 1;
+          return bufferedAmountReads === 1 ? 0 : 4 * 1024 * 1024;
+        });
+      emitChatEvent({
+        sessionId: "chat-slim-retry",
+        timestamp: "2026-04-23T10:00:05.000Z",
+        sequence: 3,
+        event: {
+          type: "subagent_progress",
+          taskId: "agent-2",
+          agentId: "agent-2",
+          summary: "stale progress",
+        },
+      });
+      await waitForValue(
+        () => bufferedAmountReads >= 2 ? true : undefined,
+        "backpressured second slim progress send",
+      );
+      bufferedAmountSpy.mockRestore();
+      bufferedAmountSpy = null;
+
+      bufferedAmountReads = 0;
+      bufferedAmountSpy = vi
+        .spyOn(WebSocket.prototype, "bufferedAmount", "get")
+        .mockImplementation(() => {
+          bufferedAmountReads += 1;
+          return bufferedAmountReads === 1 ? 0 : 4 * 1024 * 1024;
+        });
+      emitChatEvent({
+        sessionId: "chat-slim-retry",
+        timestamp: "2026-04-23T10:00:06.000Z",
+        sequence: 4,
+        event: {
+          type: "subagent_result",
+          taskId: "agent-2",
+          agentId: "agent-2",
+          status: "completed",
+          summary: "done",
+        },
+      });
+      await waitForValue(
+        () => bufferedAmountReads >= 2 ? true : undefined,
+        "backpressured slim terminal send",
+      );
+      bufferedAmountSpy.mockRestore();
+      bufferedAmountSpy = null;
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "chat-slim-retry-terminal-resume",
+        payload: { sessionId: "chat-slim-retry", sinceSeq: 2 },
+      }));
+      await waitForEnvelope(peer.envelopes, "chat_subscribe", "chat-slim-retry-terminal-resume");
+      await waitForValue(
+        () => peer?.envelopes.find((envelope) =>
+          envelope.type === "chat_event"
+          && (envelope.payload as { event?: { type?: string; agentId?: string } }).event?.type === "subagent_result"
+          && (envelope.payload as { event?: { agentId?: string } }).event?.agentId === "agent-2"
+        ),
+        "retried slim terminal event",
+      );
+      expect(peer.envelopes.filter((envelope) =>
+        envelope.type === "chat_event"
+        && (envelope.payload as { event?: { type?: string; agentId?: string } }).event?.type === "subagent_progress"
+        && (envelope.payload as { event?: { agentId?: string } }).event?.agentId === "agent-2"
+      )).toHaveLength(0);
+    } finally {
+      bufferedAmountSpy?.mockRestore();
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("serves a mobile tool-result head slice and the scoped full-result fetch", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const sessionId = "chat-tool-result";
+    const itemId = "tool-result-item";
+    const transcriptPath = path.join(projectRoot, "transcripts", "chat-tool-result.chat.jsonl");
+    fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+    const fullResult = "x".repeat(8_000);
+    const event: AgentChatEventEnvelope = {
+      sessionId,
+      timestamp: "2026-09-20T10:00:00.000Z",
+      sequence: 1,
+      event: {
+        type: "tool_result",
+        tool: "Bash",
+        result: fullResult,
+        itemId,
+        status: "completed",
+      },
+    };
+    fs.writeFileSync(transcriptPath, `${JSON.stringify(event)}\n`, "utf8");
+    const session = {
+      id: sessionId,
+      laneId: "lane-1",
+      transcriptPath,
+      status: "exited",
+      runtimeState: "exited",
+      lastOutputPreview: "",
+    };
+    const base = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...base,
+      projectId: "project-1",
+      db: {
+        sync: {
+          getSiteId: () => "site-host-chat-tool-result",
+          getDbVersion: () => 0,
+          exportChangesSince: () => [],
+          applyChanges: () => ({ appliedCount: 0 }),
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+      sessionService: {
+        list: () => [session],
+        get: (id: string) => (id === sessionId ? session : null),
+        readTranscriptTail: async () => "",
+      },
+      agentChatService: {
+        subscribeToEvents: vi.fn().mockReturnValue(() => {}),
+        getChatEventHistory: vi.fn().mockReturnValue({
+          sessionId,
+          events: [event],
+          truncated: false,
+          transcriptTruncated: false,
+          windowTruncated: false,
+          sessionFound: true,
+        }),
+        getSessionSummary: vi.fn().mockResolvedValue({ status: "inactive" }),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-chat-tool-result", {
+        capabilities: [SYNC_MOBILE_CHAT_SLIM_CAPABILITY],
+      });
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "chat-tool-result-subscribe",
+        payload: { sessionId },
+      }));
+      const snapshot = await waitForEnvelope(peer.envelopes, "chat_subscribe", "chat-tool-result-subscribe");
+      const snapshotEvent = (snapshot.payload as { events: AgentChatEventEnvelope[] }).events[0]!;
+      expect(snapshotEvent.event).toMatchObject({
+        type: "tool_result",
+        resultTruncatedForMobile: true,
+        resultOriginalBytes: fullResult.length,
+      });
+      expect((snapshotEvent.event as { result: string }).result).not.toBe(fullResult);
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_tool_result",
+        requestId: "chat-tool-result-fetch",
+        payload: { sessionId, itemId },
+      }));
+      const response = await waitForEnvelope(peer.envelopes, "chat_tool_result", "chat-tool-result-fetch");
+      expect(response.payload).toMatchObject({
+        sessionId,
+        itemId,
+        found: true,
+        result: fullResult,
+        status: "completed",
+        tool: "Bash",
+      });
+    } finally {
       try {
         peer?.ws.close();
       } catch {

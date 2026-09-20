@@ -41,11 +41,6 @@ final class WorkChatScrollBenchUITests: XCTestCase {
     return app
   }
 
-  /// Transcript area of the window: below the header, above the composer.
-  private func transcript(_ app: XCUIApplication) -> XCUIElement {
-    app.scrollViews.firstMatch.exists ? app.scrollViews.firstMatch : app.windows.firstMatch
-  }
-
   private func drag(
     _ app: XCUIApplication,
     fromY: CGFloat,

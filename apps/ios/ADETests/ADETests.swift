@@ -20579,6 +20579,28 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(steers.isEmpty)
   }
 
+  func testMakeWorkChatTranscriptClearsQueuedSteerWhenCommandLifecycleStarts() throws {
+    let json = """
+    {
+      "sessionId": "chat-1",
+      "capturedAt": "2026-09-20T00:00:00.000Z",
+      "events": [
+        {"sessionId":"chat-1","timestamp":"2026-09-20T00:00:01.000Z","sequence":1,"event":{"type":"user_message","text":"start the queued request","turnId":"turn-1","steerId":"steer-1","deliveryState":"queued"}},
+        {"sessionId":"chat-1","timestamp":"2026-09-20T00:00:02.000Z","sequence":2,"event":{"type":"command_lifecycle","commandUuid":"command-1","status":"started","steerId":"steer-1","turnId":"turn-1"}}
+      ],
+      "truncated": false
+    }
+    """
+
+    let snapshot = try JSONDecoder().decode(AgentChatEventHistorySnapshot.self, from: Data(json.utf8))
+    let transcript = makeWorkChatTranscript(from: snapshot.events)
+
+    XCTAssertEqual(transcript.last?.commandLifecycleStatus, "started")
+    XCTAssertEqual(transcript.last?.commandLifecycleSteerId, "steer-1")
+    XCTAssertTrue(derivePendingWorkSteers(from: transcript).isEmpty)
+    XCTAssertEqual(pruneResolvedQueuedSteerEnvelopes(transcript).count, 1)
+  }
+
   /// The staged strip is now the "you queued this" surface and nothing else. An
   /// atomically dispatched send writes a user message with an immediate
   /// delivery state (or none at all) and must never produce a strip entry —

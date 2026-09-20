@@ -960,10 +960,7 @@ struct WorkQueuedSteerRow: View {
   /// Says what happens next, not when it was typed: a queued message's
   /// timestamp is always "a moment ago" and carried no information.
   private var dispositionText: String {
-    guard turnActive else { return "after turn" }
-    // A provider that takes a message mid-turn is not parking this one until
-    // the turn ends — Claude picks it up at the next tool step.
-    return capability.modes.contains(.inline) ? "sends at next step" : "sends when turn ends"
+    workQueuedSteerDisposition(capability: capability, turnActive: turnActive).shortText
   }
 
   // Icon-only tap target with an accessibility label so the row's actions stay

@@ -114,7 +114,7 @@ const stringifyResult = (value: unknown): { text: string; measurable: boolean } 
  */
 export function compactToolResultForMobile(
   event: Extract<AgentChatEvent, { type: "tool_result" }>,
-): AgentChatEvent {
+): Extract<AgentChatEvent, { type: "tool_result" }> {
   const serialized = stringifyResult(event.result);
   const totalBytes = serialized.measurable ? utf8Bytes(serialized.text) : 0;
   // An already-capped result whose original size is known keeps that number:
@@ -164,6 +164,29 @@ const trimmed = (value: unknown): string | null => {
   return text.length > 0 ? text : null;
 };
 
+type SubagentProgressEvent = Extract<
+  AgentChatEvent,
+  { type: "subagent_progress" | "subagent.progress" }
+>;
+
+type SubagentCompletionEvent = Extract<
+  AgentChatEvent,
+  { type: "subagent_result" | "subagent.completed" }
+>;
+
+function asSubagentProgressEvent(value: unknown): SubagentProgressEvent | null {
+  if (!value || typeof value !== "object") return null;
+  const type = (value as { type?: unknown }).type;
+  if (type !== "subagent_progress" && type !== "subagent.progress") return null;
+  return value as SubagentProgressEvent;
+}
+
+function subagentCompletionAgentKey(event: SubagentCompletionEvent): string | null {
+  return event.type === "subagent_result"
+    ? trimmed(event.agentId) ?? trimmed(event.taskId)
+    : trimmed(event.agentId);
+}
+
 /**
  * Identify a subagent PROGRESS event and the agent it belongs to.
  *
@@ -172,16 +195,15 @@ const trimmed = (value: unknown): string | null => {
  * lose a subagent, not a redraw.
  */
 export function subagentProgressIdentity(event: unknown): SubagentProgressIdentity | null {
-  if (!event || typeof event !== "object") return null;
-  const record = event as Record<string, unknown>;
-  const type = typeof record.type === "string" ? record.type : "";
-  if (type !== "subagent_progress" && type !== "subagent.progress") return null;
+  const progress = asSubagentProgressEvent(event);
+  if (!progress) return null;
   // `agentId` is the stable identity on both families; the underscore family
   // falls back to `taskId`, which is what it keys its own snapshot map on
   // (`subagentAgentKey` in agentChatService).
-  const agentKey = trimmed(record.agentId) ?? trimmed(record.taskId);
+  const agentKey = trimmed(progress.agentId)
+    ?? (progress.type === "subagent_progress" ? trimmed(progress.taskId) : null);
   if (!agentKey) return null;
-  return { agentKey, family: type === "subagent.progress" ? "dot" : "underscore" };
+  return { agentKey, family: progress.type === "subagent.progress" ? "dot" : "underscore" };
 }
 
 /**
@@ -260,6 +282,10 @@ export const MOBILE_SUBAGENT_PROGRESS_INTERVAL_MS = 1_000;
 export type CoalescedChatEvent = {
   event: AgentChatEventEnvelope;
   seq: number | null;
+  /** The host replay sequence, retained so a failed send can be retried. */
+  sourceSeq: number;
+  /** Progress entries intentionally superseded by this terminal event. */
+  superseded?: readonly AgentChatEventEnvelope[];
 };
 
 export type SubagentProgressCoalescer = {
@@ -272,6 +298,8 @@ export type SubagentProgressCoalescer = {
   flushDue(nowMs: number): CoalescedChatEvent[];
   /** Emit everything pending — unsubscribe, disconnect, end of turn. */
   flushAll(nowMs: number): CoalescedChatEvent[];
+  /** Put progress back after the transport rejected an outbound event. */
+  requeue(entries: readonly CoalescedChatEvent[]): void;
   /** Earliest ms at which `flushDue` could produce anything, or null. */
   nextDueAtMs(): number | null;
   readonly pendingCount: number;
@@ -281,7 +309,13 @@ export function createSubagentProgressCoalescer(options: {
   intervalMs?: number;
 } = {}): SubagentProgressCoalescer {
   const intervalMs = Math.max(0, Math.floor(options.intervalMs ?? MOBILE_SUBAGENT_PROGRESS_INTERVAL_MS));
-  const pending = new Map<string, { event: AgentChatEventEnvelope; seq: number; family: SubagentProgressFamily }>();
+  const pending = new Map<string, {
+    event: AgentChatEventEnvelope;
+    seq: number;
+    family: SubagentProgressFamily;
+    superseded?: readonly AgentChatEventEnvelope[];
+  }>();
+  const pendingOutbound: CoalescedChatEvent[] = [];
   const lastSentAtMs = new Map<string, number>();
   const dueAtMs = new Map<string, number>();
   let lastEmittedSeq = 0;
@@ -290,7 +324,7 @@ export function createSubagentProgressCoalescer(options: {
   const emit = (entry: { event: AgentChatEventEnvelope; seq: number }): CoalescedChatEvent => {
     if (entry.seq > lastEmittedSeq) {
       lastEmittedSeq = entry.seq;
-      return { event: entry.event, seq: entry.seq };
+      return { event: entry.event, seq: entry.seq, sourceSeq: entry.seq };
     }
     // The window closed after a newer event for a DIFFERENT agent already went
     // out, so this agent's latest state now carries a seq below the client's
@@ -303,7 +337,7 @@ export function createSubagentProgressCoalescer(options: {
     // with no seq (its drop rule is `if let seq`), its resume watermark stays
     // on the newer event, and a reconnect that replays this one again is a
     // no-op because progress never creates a row.
-    return { event: entry.event, seq: null };
+    return { event: entry.event, seq: null, sourceSeq: entry.seq };
   };
 
   const flushAgent = (agentKey: string, nowMs: number): CoalescedChatEvent[] => {
@@ -312,11 +346,15 @@ export function createSubagentProgressCoalescer(options: {
     pending.delete(agentKey);
     dueAtMs.delete(agentKey);
     lastSentAtMs.set(agentKey, nowMs);
-    return [emit(entry)];
+    const emitted = emit(entry);
+    return entry.superseded && entry.superseded.length > 0
+      ? [{ ...emitted, superseded: entry.superseded }]
+      : [emitted];
   };
 
   return {
     admit(event, seq, nowMs) {
+      const queued = pendingOutbound.splice(0);
       const identity = subagentProgressIdentity(event?.event);
       if (!identity) {
         // A non-progress event does not flush pending progress. It cannot:
@@ -327,33 +365,45 @@ export function createSubagentProgressCoalescer(options: {
         //
         // The one case that does flush is a subagent ending: its result is the
         // last word on that card, so the progress behind it has no reader.
-        const type = typeof (event?.event as { type?: unknown })?.type === "string"
-          ? (event.event as { type: string }).type
-          : "";
-        const ending = type === "subagent_result" || type === "subagent.completed";
-        const before: CoalescedChatEvent[] = [];
+        const endingEvent = event.event as AgentChatEvent;
+        const ending = endingEvent.type === "subagent_result" || endingEvent.type === "subagent.completed";
+        const superseded: AgentChatEventEnvelope[] = [];
         if (ending) {
-          const record = event.event as unknown as Record<string, unknown>;
-          const agentKey = trimmed(record.agentId) ?? trimmed(record.taskId);
+          const agentKey = subagentCompletionAgentKey(endingEvent as SubagentCompletionEvent);
           // Drop rather than emit: the result that follows in this same call
           // supersedes it, and emitting first would put a lower seq ahead of
           // a higher one for no visible gain.
-          if (agentKey && pending.delete(agentKey)) {
-            dueAtMs.delete(agentKey);
-            lastSentAtMs.delete(agentKey);
+          const pendingEntry = agentKey ? pending.get(agentKey) : undefined;
+          if (pendingEntry) {
+            superseded.push(...(pendingEntry.superseded ?? []), pendingEntry.event);
+            pending.delete(agentKey!);
+            dueAtMs.delete(agentKey!);
+            lastSentAtMs.delete(agentKey!);
           }
           lastProgressIdentity = null;
         } else {
           lastProgressIdentity = null;
         }
         if (seq > lastEmittedSeq) lastEmittedSeq = seq;
-        return [...before, { event, seq }];
+        // A transcript pump can present the same source event again after its
+        // live send was rejected. Keep the queued copy as the single retry;
+        // otherwise a non-progress event would be sent twice.
+        const alreadyQueued = queued.some((entry) =>
+          entry.event.sessionId === event.sessionId && entry.sourceSeq === seq,
+        );
+        const outbound: CoalescedChatEvent = {
+          event,
+          seq,
+          sourceSeq: seq,
+          ...(superseded.length > 0 ? { superseded } : {}),
+        };
+        return alreadyQueued ? queued : [...queued, outbound];
       }
 
       if (isMirroredSubagentProgress(lastProgressIdentity, identity)) {
         // The underscore original was just delivered (or just coalesced) for
         // this agent. The twin carries nothing new.
-        return [];
+        return queued;
       }
       lastProgressIdentity = identity;
 
@@ -361,22 +411,31 @@ export function createSubagentProgressCoalescer(options: {
       if (existing && existing.family === "underscore" && identity.family === "dot") {
         // Same reason as the snapshot fold: never downgrade a pending
         // underscore event to its thinner twin.
-        return [];
+        return queued;
       }
-      pending.set(identity.agentKey, { event, seq, family: identity.family });
+      const sameSource = existing?.seq === seq && existing.event.sessionId === event.sessionId;
+      const superseded = existing
+        ? [...(existing.superseded ?? []), ...(sameSource ? [] : [existing.event])]
+        : undefined;
+      pending.set(identity.agentKey, {
+        event,
+        seq,
+        family: identity.family,
+        ...(superseded && superseded.length > 0 ? { superseded } : {}),
+      });
 
       const lastSent = lastSentAtMs.get(identity.agentKey);
       if (lastSent == null || nowMs - lastSent >= intervalMs) {
-        return flushAgent(identity.agentKey, nowMs);
+        return [...queued, ...flushAgent(identity.agentKey, nowMs)];
       }
       if (!dueAtMs.has(identity.agentKey)) {
         dueAtMs.set(identity.agentKey, lastSent + intervalMs);
       }
-      return [];
+      return queued;
     },
 
     flushDue(nowMs) {
-      const out: CoalescedChatEvent[] = [];
+      const out = pendingOutbound.splice(0);
       for (const [agentKey, due] of [...dueAtMs]) {
         if (nowMs < due) continue;
         out.push(...flushAgent(agentKey, nowMs));
@@ -385,7 +444,7 @@ export function createSubagentProgressCoalescer(options: {
     },
 
     flushAll(nowMs) {
-      const out: CoalescedChatEvent[] = [];
+      const out = pendingOutbound.splice(0);
       for (const agentKey of [...pending.keys()]) {
         out.push(...flushAgent(agentKey, nowMs));
       }
@@ -393,7 +452,32 @@ export function createSubagentProgressCoalescer(options: {
       return out;
     },
 
+    requeue(entries) {
+      const retryOutbound: CoalescedChatEvent[] = [];
+      for (const entry of entries) {
+        const identity = subagentProgressIdentity(entry.event.event);
+        if (!identity) {
+          retryOutbound.push(entry);
+          continue;
+        }
+        pending.set(identity.agentKey, {
+          event: entry.event,
+          seq: entry.sourceSeq,
+          family: identity.family,
+          ...(entry.superseded && entry.superseded.length > 0
+            ? { superseded: entry.superseded }
+            : {}),
+        });
+        dueAtMs.set(identity.agentKey, 0);
+        lastSentAtMs.delete(identity.agentKey);
+      }
+      if (retryOutbound.length > 0) {
+        pendingOutbound.unshift(...retryOutbound);
+      }
+    },
+
     nextDueAtMs() {
+      if (pendingOutbound.length > 0) return 0;
       let earliest: number | null = null;
       for (const due of dueAtMs.values()) {
         if (earliest == null || due < earliest) earliest = due;
@@ -402,7 +486,7 @@ export function createSubagentProgressCoalescer(options: {
     },
 
     get pendingCount() {
-      return pending.size;
+      return pending.size + pendingOutbound.length;
     },
   };
 }

@@ -897,7 +897,8 @@ func buildWorkToolCards(
         // block can offer the fetch instead of pretending the slice is all
         // there was.
         remoteResultBytes: envelope.toolResultFullBytes,
-        sessionId: envelope.sessionId
+        sessionId: envelope.sessionId,
+        resultSequence: envelope.sequence
       )
     case .webSearch(let query, let action, let actions, let results, let status, let itemId, _):
       // Web searches are tool calls — render them as tool cards so they're

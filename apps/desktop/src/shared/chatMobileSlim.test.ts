@@ -136,16 +136,22 @@ describe("createSubagentProgressCoalescer", () => {
   it("passes every non-progress event straight through, in order", () => {
     const coalescer = createSubagentProgressCoalescer({ intervalMs: 1_000 });
     const text = envelope({ type: "text", text: "hi" }, 1);
-    expect(coalescer.admit(text, 1, 0)).toEqual([{ event: text, seq: 1 }]);
+    expect(coalescer.admit(text, 1, 0)).toEqual([{ event: text, seq: 1, sourceSeq: 1 }]);
   });
 
   it("drops pending progress when the agent's result supersedes it", () => {
     const coalescer = createSubagentProgressCoalescer({ intervalMs: 1_000 });
     coalescer.admit(envelope(underscoreProgress("a", "1"), 1), 1, 0);
-    coalescer.admit(envelope(underscoreProgress("a", "2"), 2), 2, 100);
+    const pending = envelope(underscoreProgress("a", "2"), 2);
+    coalescer.admit(pending, 2, 100);
     expect(coalescer.pendingCount).toBe(1);
     const result = envelope({ type: "subagent_result", taskId: "a", agentId: "a", status: "completed", summary: "done" }, 3);
-    expect(coalescer.admit(result, 3, 200)).toEqual([{ event: result, seq: 3 }]);
+    expect(coalescer.admit(result, 3, 200)).toEqual([{
+      event: result,
+      seq: 3,
+      sourceSeq: 3,
+      superseded: [pending],
+    }]);
     expect(coalescer.pendingCount).toBe(0);
     expect(coalescer.flushDue(5_000)).toEqual([]);
   });
@@ -190,6 +196,54 @@ describe("createSubagentProgressCoalescer", () => {
     expect(coalescer.flushAll(20)).toHaveLength(1);
     expect(coalescer.pendingCount).toBe(0);
     expect(coalescer.nextDueAtMs()).toBeNull();
+  });
+
+  it("requeues progress when the transport rejects a flush", () => {
+    const coalescer = createSubagentProgressCoalescer({ intervalMs: 1_000 });
+    coalescer.admit(envelope(underscoreProgress("a", "1"), 1), 1, 0);
+    coalescer.admit(envelope(underscoreProgress("a", "2"), 2), 2, 100);
+    const due = coalescer.flushDue(1_000);
+    expect(due).toHaveLength(1);
+    coalescer.requeue(due);
+    const retry = coalescer.flushDue(1_000);
+    expect(retry).toHaveLength(1);
+    expect((retry[0]!.event.event as { summary: string }).summary).toBe("2");
+    expect(retry[0]!.seq).toBeNull();
+    expect(retry[0]!.sourceSeq).toBe(2);
+  });
+
+  it("requeues non-progress events when the transport rejects them", () => {
+    const coalescer = createSubagentProgressCoalescer({ intervalMs: 1_000 });
+    const text = envelope({ type: "text", text: "retry me" }, 1);
+    const outbound = coalescer.admit(text, 1, 0);
+    coalescer.requeue(outbound);
+    expect(coalescer.flushAll(1)).toEqual(outbound);
+  });
+
+  it("carries a failed progress event as superseded when its result succeeds", () => {
+    const coalescer = createSubagentProgressCoalescer({ intervalMs: 1_000 });
+    const progress = envelope(underscoreProgress("a", "stale"), 1);
+    coalescer.requeue(coalescer.admit(progress, 1, 0));
+    const result = envelope({ type: "subagent_result", taskId: "a", agentId: "a", status: "completed", summary: "done" }, 2);
+    expect(coalescer.admit(result, 2, 1)).toEqual([{
+      event: result,
+      seq: 2,
+      sourceSeq: 2,
+      superseded: [progress],
+    }]);
+  });
+
+  it("carries an overwritten failed progress event into the replacement", () => {
+    const coalescer = createSubagentProgressCoalescer({ intervalMs: 1_000 });
+    const failed = envelope(underscoreProgress("a", "failed"), 1);
+    coalescer.requeue(coalescer.admit(failed, 1, 0));
+    const replacement = envelope(underscoreProgress("a", "replacement"), 2);
+    expect(coalescer.admit(replacement, 2, 1)).toEqual([{
+      event: replacement,
+      seq: 2,
+      sourceSeq: 2,
+      superseded: [failed],
+    }]);
   });
 });
 

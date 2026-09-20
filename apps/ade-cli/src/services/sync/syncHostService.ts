@@ -123,6 +123,7 @@ import {
   createSubagentProgressCoalescer,
   foldSubagentProgressForSnapshot,
   MOBILE_SUBAGENT_PROGRESS_INTERVAL_MS,
+  type CoalescedChatEvent,
   type SubagentProgressCoalescer,
 } from "../../../../desktop/src/shared/chatMobileSlim";
 import { readTranscriptHistoryPage } from "../../../../desktop/src/main/services/chat/chatTranscriptHistoryPager";
@@ -5711,17 +5712,19 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
    */
   const compactedSyncEnvelopes = new WeakMap<AgentChatEventEnvelope, AgentChatEventEnvelope>();
   const compactedMobileSyncEnvelopes = new WeakMap<AgentChatEventEnvelope, AgentChatEventEnvelope>();
-  function compactChatEventEnvelopeOnce(
-    event: AgentChatEventEnvelope,
-    slim: boolean,
-  ): AgentChatEventEnvelope {
-    const cache = slim ? compactedMobileSyncEnvelopes : compactedSyncEnvelopes;
-    const cached = cache.get(event);
+  function compactChatEventEnvelopeOnce(event: AgentChatEventEnvelope): AgentChatEventEnvelope {
+    const cached = compactedSyncEnvelopes.get(event);
     if (cached) return cached;
-    const compacted = slim
-      ? compactChatEventEnvelopeForMobileSync(event)
-      : compactChatEventEnvelopeForSync(event);
-    cache.set(event, compacted);
+    const compacted = compactChatEventEnvelopeForSync(event);
+    compactedSyncEnvelopes.set(event, compacted);
+    return compacted;
+  }
+
+  function compactMobileChatEventEnvelopeOnce(event: AgentChatEventEnvelope): AgentChatEventEnvelope {
+    const cached = compactedMobileSyncEnvelopes.get(event);
+    if (cached) return cached;
+    const compacted = compactChatEventEnvelopeForMobileSync(event);
+    compactedMobileSyncEnvelopes.set(event, compacted);
     return compacted;
   }
 
@@ -5748,11 +5751,46 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     event: AgentChatEventEnvelope,
     seq: number | null,
   ): boolean {
-    const syncEvent = compactChatEventEnvelopeOnce(event, peerWantsSlimChat(peer));
+    const syncEvent = peerWantsSlimChat(peer)
+      ? compactMobileChatEventEnvelopeOnce(event)
+      : compactChatEventEnvelopeOnce(event);
     return send(peer.ws, "chat_event", {
       ...syncEvent,
       ...(seq == null ? {} : { seq }),
     } satisfies SyncChatEventPayload);
+  }
+
+  function markDeliveredCoalescedChatEvent(peer: PeerState, entry: CoalescedChatEvent): void {
+    markChatEventSent(peer, entry.event);
+    for (const superseded of entry.superseded ?? []) {
+      markChatEventSent(peer, superseded);
+    }
+  }
+
+  function deliverCoalescedChatEvents(
+    peer: PeerState,
+    coalescer: SubagentProgressCoalescer,
+    entries: readonly CoalescedChatEvent[],
+  ): boolean {
+    // A terminal event can be queued after its progress was rejected. If the
+    // transcript pump presents that same progress again before the terminal
+    // retry drains, the batch contains both; the terminal's superseded list
+    // is the authoritative answer, so never resurrect the stale progress.
+    const supersededKeys = new Set(
+      entries.flatMap((entry) =>
+        (entry.superseded ?? []).map((event) => chatEventDeliveryKey(event)),
+      ),
+    );
+    const deliverable = entries.filter((entry) => !supersededKeys.has(chatEventDeliveryKey(entry.event)));
+    for (let index = 0; index < deliverable.length; index += 1) {
+      const entry = deliverable[index]!;
+      if (!deliverChatEvent(peer, entry.event, entry.seq)) {
+        coalescer.requeue(deliverable.slice(index));
+        return false;
+      }
+      markDeliveredCoalescedChatEvent(peer, entry);
+    }
+    return true;
   }
 
   function sendChatEvent(peer: PeerState, event: AgentChatEventEnvelope, seq: number): "sent" | "already-sent" | "failed" {
@@ -5762,16 +5800,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       if (sent) markChatEventSent(peer, event);
       return sent ? "sent" : "failed";
     }
-    // Coalescing decides what actually goes out. Mark the offered event
-    // delivered either way: an event the coalescer dropped as a mirror or
-    // superseded by a newer one for the same agent has been accounted for, and
-    // leaving it unmarked would let the transcript pump offer it again on the
-    // next tick — re-entering the coalescer forever.
-    const outbound = chatEventCoalescerFor(peer, event.sessionId).admit(event, seq, Date.now());
+    // Coalescing owns a progress event after admission. A dropped mirror or a
+    // progress waiting in the one-second window can be marked immediately;
+    // anything selected for the wire is marked only after its send succeeds.
+    const coalescer = chatEventCoalescerFor(peer, event.sessionId);
+    const outbound = coalescer.admit(event, seq, Date.now());
+    if (!deliverCoalescedChatEvents(peer, coalescer, outbound)) return "failed";
+    // This also accounts for a mirror or a progress event that was folded
+    // into a pending state instead of being emitted in this call.
     markChatEventSent(peer, event);
-    for (const entry of outbound) {
-      if (!deliverChatEvent(peer, entry.event, entry.seq)) return "failed";
-    }
     return "sent";
   }
 
@@ -5784,9 +5821,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     if (peer.subagentProgressCoalescers.size === 0) return;
     const nowMs = Date.now();
     for (const coalescer of peer.subagentProgressCoalescers.values()) {
-      for (const entry of coalescer.flushDue(nowMs)) {
-        if (!deliverChatEvent(peer, entry.event, entry.seq)) return;
-      }
+      const due = coalescer.flushDue(nowMs);
+      if (!deliverCoalescedChatEvents(peer, coalescer, due)) return;
     }
   }
 
@@ -8749,9 +8785,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           // A resume is a catch-up burst, not a live stream: nothing the
           // coalescer is holding should wait a further second behind it.
           if (peerWantsSlimChat(peer)) {
-            for (const entry of chatEventCoalescerFor(peer, sessionId).flushAll(Date.now())) {
-              if (!deliverChatEvent(peer, entry.event, entry.seq)) break;
-            }
+            const coalescer = chatEventCoalescerFor(peer, sessionId);
+            const pending = coalescer.flushAll(Date.now());
+            deliverCoalescedChatEvents(peer, coalescer, pending);
           }
           args.logger.debug("sync_host.chat_subscribe_resumed", {
             sessionId,

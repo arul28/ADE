@@ -876,7 +876,15 @@ func makeWorkChatTranscript(from entries: [AgentChatEventEnvelope]) -> [WorkChat
       isLegacySubagentCompletedFrame: entry.isLegacySubagentCompletedFrame,
       stopSource: entry.stopSource,
       stopReason: entry.stopReason,
-      toolResultFullBytes: entry.toolResultFullBytes
+      toolResultFullBytes: entry.toolResultFullBytes,
+      commandLifecycleStatus: {
+        guard case .commandLifecycle(_, let status, _, _, _) = entry.event else { return nil }
+        return status
+      }(),
+      commandLifecycleSteerId: {
+        guard case .commandLifecycle(_, _, _, let steerId, _) = entry.event else { return nil }
+        return steerId
+      }()
     )
   }
   .sorted(by: workChatEnvelopeOrderedBefore)
@@ -1355,12 +1363,17 @@ private func duplicateWorkTextEnvelopeCount(_ transcript: [WorkChatEnvelope]) ->
 }
 
 /// Drop stale queued `user_message` rows once the same steerId has graduated
-/// to delivered/inline/failed or been resolved by a steer system notice.
+/// to delivered/inline/failed, been resolved by a steer system notice, or has
+/// a non-queued Claude command lifecycle frame.
 func pruneResolvedQueuedSteerEnvelopes(_ transcript: [WorkChatEnvelope]) -> [WorkChatEnvelope] {
   guard !transcript.isEmpty else { return transcript }
   var resolvedSteerIds = Set<String>()
   var queuedSteerIdsByText: [String: Set<String>] = [:]
   for envelope in sortedWorkChatEnvelopes(transcript) {
+    if let steerId = envelope.commandLifecycleSteerId,
+       envelope.commandLifecycleStatus != "queued" {
+      resolvedSteerIds.insert(steerId)
+    }
     switch envelope.event {
     case .userMessage(let text, _, _, let steerId, let deliveryState, _):
       if let steerId, deliveryState == "queued" {
@@ -2181,6 +2194,11 @@ func derivePendingWorkSteers(from transcript: [WorkChatEnvelope]) -> [WorkPendin
   var resolved = Set<String>()
   var queuedSteerIdsByText: [String: Set<String>] = [:]
   for envelope in sortedWorkChatEnvelopes(transcript) {
+    if let steerId = envelope.commandLifecycleSteerId,
+       envelope.commandLifecycleStatus != "queued" {
+      queue.removeValue(forKey: steerId)
+      resolved.insert(steerId)
+    }
     switch envelope.event {
     case .userMessage(let text, let attachments, let turnId, let steerId, let deliveryState, _):
       if let steerId, deliveryState == "queued", !resolved.contains(steerId) {

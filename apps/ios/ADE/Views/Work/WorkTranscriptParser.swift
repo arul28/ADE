@@ -1091,6 +1091,23 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
             turnId: turnId
           )
         )
+      case "command_lifecycle":
+        let status = optionalString(eventDict["status"])
+        let steerId = optionalString(eventDict["steerId"] ?? eventDict["steer_id"])
+        if status == "cancelled" || status == "discarded" {
+          let verb = status == "discarded" ? "discarded" : "cancelled"
+          event = .systemNotice(
+            kind: "command_lifecycle",
+            message: optionalString(eventDict["preview"]).map { "Queued message \(verb): \($0)" } ?? "Queued message \(verb)",
+            detail: nil,
+            turnId: turnId,
+            steerId: steerId
+          )
+        } else {
+          // The lifecycle still matters to the pending-steer fold, but it is
+          // not a visible timeline card for queued/started/completed states.
+          event = .unknown(type: type)
+        }
       case "model_handoff":
         // Must produce the exact same shape as the live path in
         // `WorkEventMapping` — a replayed transcript and a streamed event have
@@ -1122,7 +1139,11 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         apiErrorStatus: apiErrorStatus,
         isLegacySubagentCompletedFrame: type == "subagent.completed",
         stopSource: stopSource,
-        stopReason: stopReason
+        stopReason: stopReason,
+        commandLifecycleStatus: type == "command_lifecycle" ? optionalString(eventDict["status"]) : nil,
+        commandLifecycleSteerId: type == "command_lifecycle"
+          ? optionalString(eventDict["steerId"] ?? eventDict["steer_id"])
+          : nil
       )
     }
     .sorted(by: workChatEnvelopeOrderedBefore)

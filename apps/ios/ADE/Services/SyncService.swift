@@ -13803,26 +13803,22 @@ final class SyncService: ObservableObject {
     return page
   }
 
-  /// Full tool results already fetched on this device, keyed
-  /// `sessionId|itemId`.
-  ///
-  /// A tool result is immutable once written, so a hit is always correct and
-  /// re-expanding a row never pays for the round trip twice. Lives here rather
-  /// than in the row so it survives the LazyVStack recycling the row, and so
-  /// the inline card and the turn-activity sheet share one copy. Bounded: a
-  /// long thread must not accumulate every result the user ever opened.
-  private var chatToolResultCache: [String: String] = [:]
-  private var chatToolResultCacheOrder: [String] = []
-  private var chatToolResultInFlight: [String: Task<String, Error>] = [:]
-  private static let chatToolResultCacheLimit = 32
-
-  private func chatToolResultCacheKey(sessionId: String, itemId: String) -> String {
-    "\(sessionId)|\(itemId)"
-  }
+  /// Full tool results already fetched on this device. The bounded cache is
+  /// shared by the inline card and the turn-activity sheet, and keys include
+  /// the transcript sequence so a retried item id cannot reuse an older result.
+  private let chatToolResultCache = WorkChatToolResultCache()
 
   /// The cached full result, if this row has already been expanded once.
-  func cachedFullToolResult(sessionId: String, itemId: String) -> String? {
-    chatToolResultCache[chatToolResultCacheKey(sessionId: sessionId, itemId: itemId)]
+  func cachedFullToolResult(
+    sessionId: String,
+    itemId: String,
+    eventSequence: Int? = nil
+  ) -> String? {
+    chatToolResultCache.cachedFullToolResult(
+      sessionId: sessionId,
+      itemId: itemId,
+      eventSequence: eventSequence
+    )
   }
 
   /// Fetch (or return the cached) full text of one truncated tool result.
@@ -13830,11 +13826,16 @@ final class SyncService: ObservableObject {
   /// Concurrent expands of the same row share one request: a double tap, or an
   /// inline card and the turn-activity sheet showing the same result, must not
   /// become two reads of the same transcript.
-  func fullToolResult(sessionId: String, itemId: String) async throws -> String {
-    let key = chatToolResultCacheKey(sessionId: sessionId, itemId: itemId)
-    if let cached = chatToolResultCache[key] { return cached }
-    if let inFlight = chatToolResultInFlight[key] { return try await inFlight.value }
-    let task = Task<String, Error> { [weak self] in
+  func fullToolResult(
+    sessionId: String,
+    itemId: String,
+    eventSequence: Int? = nil
+  ) async throws -> String {
+    try await chatToolResultCache.fullToolResult(
+      sessionId: sessionId,
+      itemId: itemId,
+      eventSequence: eventSequence
+    ) { [weak self] in
       guard let self else { throw CancellationError() }
       let response = try await self.fetchChatToolResult(sessionId: sessionId, itemId: itemId)
       if response.unavailable == true {
@@ -13853,16 +13854,6 @@ final class SyncService: ObservableObject {
       }
       return prettyPrintedRemoteJSONValue(result)
     }
-    chatToolResultInFlight[key] = task
-    defer { chatToolResultInFlight[key] = nil }
-    let text = try await task.value
-    chatToolResultCache[key] = text
-    chatToolResultCacheOrder.append(key)
-    while chatToolResultCacheOrder.count > Self.chatToolResultCacheLimit {
-      let evicted = chatToolResultCacheOrder.removeFirst()
-      chatToolResultCache[evicted] = nil
-    }
-    return text
   }
 
   /// Fetch one tool result in full, for a row the slim mobile wire delivered
