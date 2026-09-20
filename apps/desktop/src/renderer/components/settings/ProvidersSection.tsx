@@ -45,7 +45,7 @@ import {
 } from "./primitives/SettingsManagerPage";
 import { HarnessesPage } from "./harnesses/HarnessesPage";
 import { useHarnessPresets } from "./harnesses/useHarnessPresets";
-import { CustomHammerMark } from "../shared/CustomHammerMark";
+import { CustomToolMark } from "../shared/CustomToolMark";
 import { HelpHint } from "./primitives/HelpHint";
 
 /** The one sentence behind the "?" on the Custom section. */
@@ -255,7 +255,7 @@ function ProviderManagerRow({
  * It sat as a last row inside the providers table, where it read as an eleventh
  * provider: a thing you sign in to. It is not. It is the combinations *you*
  * saved of the ten above, which is a different kind of thing and belongs below
- * them with its own heading and its own mark — a purple hammer, so the one
+ * them with its own heading and its own mark — a purple gear and wrench, so the one
  * entry that is yours is not wearing a vendor's logo or the app's own.
  *
  * The count is the whole status: a saved setup has no connection to probe.
@@ -265,7 +265,7 @@ function CustomPresetsCard({ count, onOpen }: { count: number; onOpen: () => voi
     <SettingsManagerPage
       anchor="ai-harnesses-entry"
       title="Custom"
-      leading={<CustomHammerMark size={18} />}
+      leading={<CustomToolMark size={18} />}
       titleAdornment={<HelpHint text={CUSTOM_ENTRY_HELP} />}
       toolbar={
         <button type="button" style={outlineButton()} onClick={onOpen}>
@@ -295,7 +295,7 @@ function CustomPresetsCard({ count, onOpen }: { count: number; onOpen: () => voi
         }}
       >
         <span style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-          <CustomHammerMark size={20} />
+          <CustomToolMark size={20} />
           <span style={{ fontFamily: SANS_FONT, fontSize: 12 }}>
             {count === 0 ? "Nothing custom yet" : `${count} saved`}
           </span>

@@ -1,6 +1,6 @@
 import React from "react";
 import type { HarnessPresetLogo } from "../../../shared/harnessPresets";
-import { CustomHammerMark } from "./CustomHammerMark";
+import { CustomToolMark } from "./CustomToolMark";
 import { ProviderLogo } from "./ProviderLogos";
 
 /**
@@ -12,7 +12,7 @@ import { ProviderLogo } from "./ProviderLogos";
  * recognised by its logo, and a coloured disc behind ten different marks makes
  * them all read as the same badge.
  *
- * The default is the Custom hammer, in the preset's own accent. It used to be
+ * The default is the Custom mark, in the preset's own accent. It used to be
  * the ADE app logo, which made every unbranded preset look like a copy of the
  * title-bar mark rather than like something you built — and left the settings
  * row, the rail tab and the wizard's default tile wearing three different
@@ -64,11 +64,11 @@ export function HarnessLogo({
 
   return (
     <span
-      data-harness-logo="ade"
+      data-harness-logo={logo.kind}
       className={className}
       style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", ...ring }}
     >
-      <CustomHammerMark size={size} {...(accentColor ? { color: accentColor } : {})} />
+      <CustomToolMark size={size} {...(accentColor ? { color: accentColor } : {})} />
     </span>
   );
 }

@@ -79,7 +79,17 @@ import type {
 import type { FeedbackPreparedDraft, FeedbackSubmission } from "../../../desktop/src/shared/types/feedback";
 import type { ProjectSecretsListResult, ProjectSecretValueResult } from "../../../desktop/src/shared/types/projectSecrets";
 import type { SearchQueryResult, SearchResultItem } from "../../../desktop/src/shared/types/search";
-import type { ChatTerminalPreviewResult, ChatTerminalSession, UsageSnapshot } from "../../../desktop/src/shared/types";
+import type {
+  ChatTerminalPreviewResult,
+  ChatTerminalSession,
+  UsageResetCreditResult,
+  UsageSnapshot,
+} from "../../../desktop/src/shared/types";
+import {
+  resetCreditApplied,
+  resetCreditOutcomeText,
+} from "../../../desktop/src/shared/usageResetCredit";
+import { launchIdentityFields, resolveLaunchIdentity, sameLaunchIdentity } from "./launchIdentity";
 import { rollupPrChecks } from "../../../desktop/src/shared/prChecksRollup";
 import type { GitHubPrStackMembership, PrChecksStatus } from "../../../desktop/src/shared/types/prs";
 import {
@@ -1157,9 +1167,7 @@ export function chatSessionToOptimisticSummary(
     provider: session.provider,
     model: session.model,
     ...(session.modelId ? { modelId: session.modelId } : {}),
-    ...(session.instanceId ? { instanceId: session.instanceId } : {}),
-    ...(session.presetId ? { presetId: session.presetId } : {}),
-    ...(session.credentialId ? { credentialId: session.credentialId } : {}),
+    ...launchIdentityFields(resolveLaunchIdentity(session)),
     ...(session.sessionProfile ? { sessionProfile: session.sessionProfile } : {}),
     title: title?.trim() || "New chat",
     ...(session.reasoningEffort ? { reasoningEffort: session.reasoningEffort } : {}),
@@ -8314,31 +8322,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     if (nextTerminalSession) {
       const current = modelStateRef.current;
       const terminalProvider = terminalSessionProvider(nextTerminalSession) ?? "claude";
-      const terminalInstanceId = nextTerminalSession.instanceId
-        ?? nextTerminalSession.resumeMetadata?.instanceId
-        ?? nextTerminalSession.resumeMetadata?.launch?.instanceId
-        ?? null;
-      const terminalPresetId = nextTerminalSession.presetId
-        ?? nextTerminalSession.resumeMetadata?.presetId
-        ?? nextTerminalSession.resumeMetadata?.launch?.presetId
-        ?? null;
-      const terminalCredentialId = nextTerminalSession.credentialId
-        ?? nextTerminalSession.resumeMetadata?.credentialId
-        ?? nextTerminalSession.resumeMetadata?.launch?.credentialId
-        ?? null;
+      const terminalIdentity = resolveLaunchIdentity(nextTerminalSession);
       if (
         current.provider !== terminalProvider
-        || (current.instanceId ?? null) !== terminalInstanceId
-        || (current.presetId ?? null) !== terminalPresetId
-        || (current.credentialId ?? null) !== terminalCredentialId
+        || !sameLaunchIdentity(resolveLaunchIdentity(current), terminalIdentity)
       ) {
         setModelState((prev) => {
           const next = {
             ...prev,
             ...fallbackModelStatePatch(terminalProvider),
-            instanceId: terminalInstanceId,
-            presetId: terminalPresetId,
-            credentialId: terminalCredentialId,
+            ...terminalIdentity,
             permissionMode: nextTerminalSession.resumeMetadata?.launch?.permissionMode ?? prev.permissionMode,
             claudePermissionMode: nextTerminalSession.resumeMetadata?.launch?.claudePermissionMode ?? prev.claudePermissionMode,
           };
@@ -8367,9 +8360,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           codexConfigSource: configSession.codexConfigSource ?? prev.codexConfigSource,
           opencodePermissionMode: configSession.opencodePermissionMode ?? prev.opencodePermissionMode,
           droidPermissionMode: configSession.droidPermissionMode ?? prev.droidPermissionMode,
-          instanceId: configSession.instanceId ?? null,
-          presetId: configSession.presetId ?? null,
-          credentialId: configSession.credentialId ?? null,
+          ...resolveLaunchIdentity(configSession),
           // `null` is an intentional clear for the legacy permission-only
           // paths. Only an omitted field should fall back to the snapshot or
           // the previous chat's value; `??` would leak the previous Cursor
@@ -15399,18 +15390,20 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const conn = connectionRef.current;
       if (accountId && conn && resetCreditSpendInFlightRef.current == null) {
         resetCreditSpendInFlightRef.current = accountId;
-        void conn.action<{ ok?: boolean; status?: string; message?: string }>(
+        void conn.action<UsageResetCreditResult>(
           "usage",
           "consumeResetCredit",
           { accountId },
         ).then(async (result) => {
-          addNotice(
-            result?.ok
-              ? "Reset applied."
-              : result?.message ?? "Could not spend the reset credit.",
-            result?.ok ? "success" : "error",
-          );
-          if (result?.ok) {
+          // Same sentence the desktop usage popup and the chat notice use for
+          // the same server answer, so the two surfaces never disagree — and
+          // the tone and the optimistic removal both read that one verdict, so
+          // a `{ok: true, status: "failure"}` answer cannot say "could not use
+          // the reset credit" in green while dropping the credit row.
+          const text = resetCreditOutcomeText(result ?? null);
+          const applied = resetCreditApplied(result ?? null);
+          addNotice(text, applied ? "success" : "error");
+          if (applied) {
             setRightPane((previous) => previous.kind === "usage"
               ? {
                 ...previous,

@@ -2,13 +2,19 @@ import { describe, expect, it } from "vitest";
 import type { AgentChatSessionStatus } from "../../../shared/types";
 import type { ChatScheduledWorkSnapshot, ChatSubagentSnapshot } from "./chatExecutionSummary";
 import {
-  PANE_SELF_HEAL_CHAT_ENDED_SUMMARY,
-  PANE_SELF_HEAL_CHAT_IDLE_SUMMARY,
-  PANE_SELF_HEAL_RUNTIME_GONE_SUMMARY,
+  ORPHAN_BACKGROUND_SUMMARY,
+  ORPHAN_SUBAGENT_CHAT_ENDED_SUMMARY,
+  ORPHAN_SUBAGENT_NO_REPORT_SUMMARY,
+} from "../../../shared/chatOrphanRunReconcile";
+import { CHAT_STOP_REASON_RUNTIME_EXITED } from "../../../shared/types";
+import {
   paneRowChildSessionId,
   selfHealBackgroundSnapshots,
   selfHealSubagentSnapshots,
 } from "./chatPaneSelfHeal";
+
+/** What a row with no second source of truth says when the runtime is gone. */
+const RUNTIME_GONE_SUMMARY = `Stopped: ${CHAT_STOP_REASON_RUNTIME_EXITED}`;
 
 function subagent(overrides: Partial<ChatSubagentSnapshot> = {}): ChatSubagentSnapshot {
   return {
@@ -52,7 +58,7 @@ describe("selfHealSubagentSnapshots", () => {
   it("stops every running row once the host says the runtime is gone", () => {
     const [healed] = selfHealSubagentSnapshots([subagent()], { runtimeAlive: false });
     expect(healed?.status).toBe("stopped");
-    expect(healed?.summary).toBe(PANE_SELF_HEAL_RUNTIME_GONE_SUMMARY);
+    expect(healed?.summary).toBe(RUNTIME_GONE_SUMMARY);
   });
 
   it("leaves already-terminal rows exactly as they are", () => {
@@ -70,23 +76,46 @@ describe("selfHealSubagentSnapshots", () => {
     expect(healed?.status).toBe("running");
   });
 
-  it("stops a delegate whose chat went idle even while the parent runtime is alive", () => {
+  // A delegate reads `idle` for the seconds its own runtime takes to launch, so
+  // an idle child alone is not evidence of anything while the parent is alive.
+  it("keeps a just-spawned idle delegate running while the parent runtime is alive", () => {
+    const row = subagent({ taskId: "chat:child-1", childSessionId: "child-1" });
+    const input = [row];
+    expect(selfHealSubagentSnapshots(input, {
+      runtimeAlive: true,
+      childChatStatuses: statuses({ "child-1": "idle" }),
+    })).toBe(input);
+  });
+
+  it("stops an idle delegate that reported nothing once the parent runtime is gone too", () => {
     const row = subagent({ taskId: "chat:child-1", childSessionId: "child-1" });
     const [healed] = selfHealSubagentSnapshots([row], {
-      runtimeAlive: true,
+      runtimeAlive: false,
       childChatStatuses: statuses({ "child-1": "idle" }),
     });
     expect(healed?.status).toBe("stopped");
-    expect(healed?.summary).toBe(PANE_SELF_HEAL_CHAT_IDLE_SUMMARY);
+    expect(healed?.summary).toBe(ORPHAN_SUBAGENT_NO_REPORT_SUMMARY);
   });
 
-  it("names an ended subagent chat as the reason", () => {
-    const row = subagent({ taskId: "chat:child-1" });
+  // The shared decision table: an ended chat that left a report is a finished
+  // delegate, not a casualty — the renderer must not call that one "stopped".
+  it("completes an ended delegate that left a report", () => {
+    const row = subagent({ taskId: "chat:child-1", childSessionId: "child-1", summary: "Ported the pane" });
     const [healed] = selfHealSubagentSnapshots([row], {
       runtimeAlive: false,
       childChatStatuses: statuses({ "child-1": "ended" }),
     });
-    expect(healed?.summary).toBe(PANE_SELF_HEAL_CHAT_ENDED_SUMMARY);
+    expect(healed?.status).toBe("completed");
+    expect(healed?.summary).toBe("Ported the pane");
+  });
+
+  it("names an ended subagent chat as the reason, even with the runtime unknown", () => {
+    const row = subagent({ taskId: "chat:child-1" });
+    const [healed] = selfHealSubagentSnapshots([row], {
+      childChatStatuses: statuses({ "child-1": "ended" }),
+    });
+    expect(healed?.status).toBe("stopped");
+    expect(healed?.summary).toBe(ORPHAN_SUBAGENT_CHAT_ENDED_SUMMARY);
   });
 
   it("preserves a summary the agent actually wrote", () => {
@@ -117,7 +146,7 @@ describe("selfHealBackgroundSnapshots", () => {
       { runtimeAlive: false },
     );
     expect(healed.map((item) => item.status)).toEqual(["stopped", "stopped", "stopped"]);
-    expect(healed[0]?.summary).toBe(PANE_SELF_HEAL_RUNTIME_GONE_SUMMARY);
+    expect(healed[0]?.summary).toBe(ORPHAN_BACKGROUND_SUMMARY);
   });
 
   it("leaves completed rows alone", () => {
@@ -135,7 +164,13 @@ describe("paneRowChildSessionId", () => {
     expect(paneRowChildSessionId(subagent({ taskId: "chat:child-2" }))).toBe("child-2");
   });
 
-  it("returns null for a plain SDK task row", () => {
-    expect(paneRowChildSessionId(subagent({ taskId: "toolu_123" }))).toBeNull();
+  // Same forms the host's `orphanRowChildSessionCandidate` accepts: a bare id
+  // is a candidate the caller confirms by looking it up, not a rejection.
+  it("passes a bare task id through as a candidate", () => {
+    expect(paneRowChildSessionId(subagent({ taskId: "toolu_123" }))).toBe("toolu_123");
+  });
+
+  it("returns null for an empty task id", () => {
+    expect(paneRowChildSessionId(subagent({ taskId: "" }))).toBeNull();
   });
 });

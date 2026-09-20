@@ -846,7 +846,7 @@ import {
 import { createAccountSettingsSyncService } from "../account/accountSettingsSync";
 import { pruneOrphanedPresetConfigHomesFromMachine } from "../chat/harnessPresetConfigHomes";
 import { readHarnessPresetsFromMachine } from "../chat/harnessPresetSettings";
-import { capturePresetAnalytics } from "../analytics/featureProductAnalytics";
+import { capturePresetAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
 import type {
   AccountSettingRow,
   AccountSettingsResult,
@@ -6559,17 +6559,29 @@ export function registerIpc({
     );
   });
 
+  // The desktop UI's own entry point for provider-account analytics; see
+  // `providerAccountAnalyticsCapture` for why the capture lives here.
+  const captureProviderAccount = providerAccountAnalyticsCapture(productAnalyticsService, "desktop");
+
   ipcMain.handle(IPC.providerInstancesCreate, async (_event, arg: unknown): Promise<ProviderInstanceCreateResult> => {
     const record = providerInstanceArgs(arg);
-    return getMachineProviderInstanceStore().create({
+    const result = getMachineProviderInstanceStore().create({
       provider: record.provider,
       label: record.label,
       accentColor: record.accentColor,
     });
+    captureProviderAccount("account_created", "completed", result.instance.provider);
+    return result;
   });
 
   ipcMain.handle(IPC.providerInstancesRemove, async (_event, arg: unknown): Promise<ProviderInstanceRemoveResult> => {
-    return getMachineProviderInstanceStore().remove(providerInstanceId(arg));
+    const store = getMachineProviderInstanceStore();
+    const id = providerInstanceId(arg);
+    // Read the provider before the removal: afterwards the record is gone.
+    const provider = store.get(id)?.provider;
+    const result = store.remove(id);
+    captureProviderAccount("account_removed", "completed", provider);
+    return result;
   });
 
   ipcMain.handle(IPC.providerInstancesRename, async (_event, arg: unknown): Promise<ProviderInstance> => {
@@ -6577,7 +6589,9 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.providerInstancesSetDefault, async (_event, arg: unknown): Promise<ProviderInstance> => {
-    return getMachineProviderInstanceStore().setDefault(providerInstanceId(arg));
+    const instance = getMachineProviderInstanceStore().setDefault(providerInstanceId(arg));
+    captureProviderAccount("default_selected", "completed", instance.provider);
+    return instance;
   });
 
   ipcMain.handle(IPC.providerInstancesSetAccent, async (_event, arg: unknown): Promise<ProviderInstance> => {
@@ -6599,8 +6613,15 @@ export function registerIpc({
     const settings = record.settings && typeof record.settings === "object" && !Array.isArray(record.settings)
       ? record.settings as Partial<ProviderInstanceSettings>
       : {};
-    return getMachineProviderInstanceStore()
-      .setProviderSettings(providerInstanceProvider(record.provider), settings);
+    const provider = providerInstanceProvider(record.provider);
+    const result = getMachineProviderInstanceStore().setProviderSettings(provider, settings);
+    if (typeof settings.smartBalance === "boolean") {
+      captureProviderAccount("balance_changed", settings.smartBalance ? "enabled" : "disabled", provider);
+    }
+    if (typeof settings.autoStartWindows === "boolean") {
+      captureProviderAccount("auto_start_changed", settings.autoStartWindows ? "enabled" : "disabled", provider);
+    }
+    return result;
   });
 
   ipcMain.handle(IPC.providerInstancesLoginCommand, async (_event, arg: unknown): Promise<ProviderInstanceLoginCommand> => {

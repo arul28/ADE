@@ -92,10 +92,10 @@ describe("model picker custom tab", () => {
    * The rail's own mark, not the app's. The tab used to wear the ADE logo,
    * which read as "ADE the product" beside nine vendor marks.
    */
-  it("marks the Custom tab with the hammer, at the provider logos' size", () => {
+  it("marks the Custom tab with the Custom mark, at the provider logos' size", () => {
     renderPicker();
     const tab = screen.getByRole("tab", { name: "Custom" });
-    const mark = tab.querySelector("[data-custom-hammer]");
+    const mark = tab.querySelector("[data-custom-mark]");
     expect(mark).toBeTruthy();
     expect(mark!.getAttribute("width")).toBe("18");
   });

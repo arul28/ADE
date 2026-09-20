@@ -1,3 +1,4 @@
+import { launchIdentityFields, resolveLaunchIdentity } from "./launchIdentity";
 import {
   getDefaultModelDescriptor,
   getModelById,
@@ -307,9 +308,7 @@ export function enrichTerminalSessionsWithLifecycle(
       ...session,
       ...lifecycleFields(summary),
       lastActivityAt: summary?.lastActivityAt ?? null,
-      ...(summary?.instanceId !== undefined ? { instanceId: summary.instanceId } : {}),
-      ...(summary?.presetId !== undefined ? { presetId: summary.presetId } : {}),
-      ...(summary?.credentialId !== undefined ? { credentialId: summary.credentialId } : {}),
+      ...launchIdentityFields(resolveLaunchIdentity(summary)),
     };
   });
 }
@@ -565,18 +564,7 @@ export type StartCliTerminalSessionResult = {
 };
 
 function terminalSummaryToChatSession(session: TerminalSessionSummary): TuiChatTerminalSession {
-  const instanceId = session.instanceId
-    ?? session.resumeMetadata?.instanceId
-    ?? session.resumeMetadata?.launch?.instanceId
-    ?? null;
-  const presetId = session.presetId
-    ?? session.resumeMetadata?.presetId
-    ?? session.resumeMetadata?.launch?.presetId
-    ?? null;
-  const credentialId = session.credentialId
-    ?? session.resumeMetadata?.credentialId
-    ?? session.resumeMetadata?.launch?.credentialId
-    ?? null;
+  const launchIdentity = resolveLaunchIdentity(session);
   return {
     terminalId: session.id,
     ptyId: session.ptyId,
@@ -598,9 +586,7 @@ function terminalSummaryToChatSession(session: TerminalSessionSummary): TuiChatT
     lastOutputPreview: session.lastOutputPreview,
     summary: session.summary,
     lastActivityAt: session.lastActivityAt ?? null,
-    ...(instanceId ? { instanceId } : {}),
-    ...(presetId ? { presetId } : {}),
-    ...(credentialId ? { credentialId } : {}),
+    ...launchIdentityFields(launchIdentity),
     ...lifecycleFields(session),
   };
 }
@@ -627,6 +613,7 @@ export async function startCliTerminalSession(args: {
   model?: string | null;
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /** Which brain the session launches as; see `./launchIdentity`. */
   instanceId?: string | null;
   presetId?: string | null;
   credentialId?: string | null;
@@ -644,9 +631,7 @@ export async function startCliTerminalSession(args: {
     model: args.model ?? undefined,
     reasoningEffort: args.reasoningEffort ?? undefined,
     ...(args.fastMode !== undefined ? { fastMode: args.fastMode } : {}),
-    ...(args.instanceId !== undefined ? { instanceId: args.instanceId } : {}),
-    ...(args.presetId !== undefined ? { presetId: args.presetId } : {}),
-    ...(args.credentialId !== undefined ? { credentialId: args.credentialId } : {}),
+    ...launchIdentityFields(resolveLaunchIdentity(args)),
     permissionMode: args.permissionMode ?? "default",
     initialInput: args.initialInput ?? undefined,
     cols: args.cols,
@@ -867,6 +852,7 @@ export async function createChatSession(args: {
   modelId?: string | null;
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /** Which brain the session launches as; see `./launchIdentity`. */
   instanceId?: string | null;
   presetId?: string | null;
   credentialId?: string | null;
@@ -905,9 +891,7 @@ export async function createChatSession(args: {
     ...(args.title?.trim() ? { title: args.title.trim() } : {}),
     ...(reasoningEffort ? { reasoningEffort } : {}),
     ...(args.fastMode === true ? { fastMode: true } : {}),
-    ...(args.instanceId ? { instanceId: args.instanceId } : {}),
-    ...(args.presetId ? { presetId: args.presetId } : {}),
-    ...(args.credentialId ? { credentialId: args.credentialId } : {}),
+    ...launchIdentityFields(resolveLaunchIdentity(args)),
     ...(args.permissionMode ? { permissionMode: args.permissionMode } : {}),
     ...(provider === "claude" && args.interactionMode ? { interactionMode: args.interactionMode } : {}),
     ...(provider === "claude" && args.claudePermissionMode ? { claudePermissionMode: args.claudePermissionMode } : {}),

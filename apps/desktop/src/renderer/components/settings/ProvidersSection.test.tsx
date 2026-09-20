@@ -655,10 +655,10 @@ describe("ProvidersSection", () => {
    *
    * It sat as the last row INSIDE the providers table, where it read as a
    * thing you sign in to. It is the combinations you saved of the ten above,
-   * so it is its own section, below them, with its own mark — a purple hammer,
+   * so it is its own section, below them, with its own mark — a purple gear-and-wrench mark,
    * not the ADE logo it used to wear and not a vendor's.
    */
-  it("puts Custom in its own section below the provider table, under a hammer", async () => {
+  it("puts Custom in its own section below the provider table, under the Custom mark", async () => {
     const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
     getStatusMock.mockReset();
     getStatusMock.mockResolvedValue(buildStatus(true, []));
@@ -679,7 +679,7 @@ describe("ProvidersSection", () => {
     expect(providerTable!.compareDocumentPosition(customSection!) & Node.DOCUMENT_POSITION_FOLLOWING)
       .toBeTruthy();
     expect(providerTable!.contains(customSection!)).toBe(false);
-    expect(customSection!.querySelector("[data-custom-hammer]")).toBeTruthy();
+    expect(customSection!.querySelector("[data-custom-mark]")).toBeTruthy();
     expect(entry.querySelector("[data-harness-logo]")).toBeNull();
   });
 

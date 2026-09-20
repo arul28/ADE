@@ -44,6 +44,7 @@ import {
   _testing,
 } from "./usageTrackingService";
 import type { AdeUsageRollup, UsageSnapshot } from "../../../shared/types/usage";
+import type { ProductAnalyticsCapture } from "../../../shared/types/productAnalytics";
 import type { UsageLedgerScanResult } from "./usageLedgerWorkerClient";
 import { tokenPriceSource, _testing as _pricingTesting } from "./usagePricing";
 import { encodeActiveDayBits } from "../lanes/laneUsageTombstone";
@@ -6594,14 +6595,30 @@ describe("per-account quota attribution", () => {
     expect(result.windows.map((window) => window.accountId)).toEqual(["codex:work"]);
   });
 
-  it("spends a reset credit against a promoted secondary default's own home", async () => {
-    const baseCodexHome = path.join(tempHome, ".codex");
+  /**
+   * A usage service wired for the reset-credit tests: a non-default `codex`
+   * account plus a promoted `work` default, with every Codex launch answered by
+   * a `reset` outcome.
+   *
+   * Both tests drive the same three calls through it and differ only in what
+   * they read back, so the twelve-scanner dependency bag is declared once here.
+   * `consumeResetCredit` is reached off the action domain, where the argument
+   * is whatever an RPC caller sent: `undefined as never` is a missing account
+   * id, and it must come back as a failure result rather than a throw.
+   */
+  function resetCreditService(): {
+    service: ReturnType<typeof createUsageTrackingService>;
+    workCodexHome: string;
+    launches: Array<{ env: NodeJS.ProcessEnv | undefined; written: string[] }>;
+    analyticsEvents: ProductAnalyticsCapture[];
+  } {
     const workCodexHome = path.join(tempHome, "provider-homes", "codex", "work");
     const instances = [
-      { id: "codex", label: "Default", configHome: baseCodexHome, isDefault: false },
+      { id: "codex", label: "Default", configHome: path.join(tempHome, ".codex"), isDefault: false },
       { id: "work", label: "Work", configHome: workCodexHome, isDefault: true },
     ];
     const launches: Array<{ env: NodeJS.ProcessEnv | undefined; written: string[] }> = [];
+    const analyticsEvents: ProductAnalyticsCapture[] = [];
     mockState.resolveCodexExecutable.mockReturnValue({ path: "codex", source: "path" });
     mockState.spawn.mockImplementation((_command: string, _args: string[], options: { env?: NodeJS.ProcessEnv }) => {
       const fake = createFakeCodexChild({
@@ -6613,6 +6630,9 @@ describe("per-account quota attribution", () => {
     const service = createUsageTrackingService({
       logger,
       dependencies: {
+        captureInternalAnalytics: (input) => {
+          analyticsEvents.push(input);
+        },
         pollClaudeUsage: vi.fn(async () => ({ windows: [], errors: [] })),
         pollCodexUsage: vi.fn(async () => ({ windows: [], errors: [] })),
         listProviderInstances: (provider) => provider === "codex" ? instances : [],
@@ -6627,6 +6647,11 @@ describe("per-account quota attribution", () => {
         scanGeminiLogs: vi.fn(async () => []),
       },
     });
+    return { service, workCodexHome, launches, analyticsEvents };
+  }
+
+  it("spends a reset credit against a promoted secondary default's own home", async () => {
+    const { service, workCodexHome, launches } = resetCreditService();
 
     const result = await service.consumeResetCredit({ accountId: "codex:work" });
     const consumeLaunch = launches.find((launch) => launch.written.some((line) => (
@@ -6636,8 +6661,6 @@ describe("per-account quota attribution", () => {
     expect(result).toEqual({ ok: true, status: "reset" });
     expect(consumeLaunch?.env?.CODEX_HOME).toBe(workCodexHome);
 
-    // Reached off the action domain, where the argument is whatever an RPC
-    // caller sent: a missing account id is a failure result, never a throw.
     await expect(service.consumeResetCredit(undefined as never)).resolves.toEqual({
       ok: false,
       status: "failure",
@@ -6647,6 +6670,23 @@ describe("per-account quota attribution", () => {
       ok: false,
       status: "failure",
     });
+  });
+
+  it("records one analytics outcome per reset-credit verdict", async () => {
+    const { service, analyticsEvents } = resetCreditService();
+
+    await service.consumeResetCredit({ accountId: "codex:work" });
+    await service.consumeResetCredit(undefined as never);
+    await service.consumeResetCredit({ accountId: "  " });
+
+    // Analytics keys off the shared outcome classifier, so what is recorded is
+    // the same verdict every client renders its sentence from: the real spend
+    // is `completed`, and a result that only carries the host's own sentence
+    // is `failed` rather than an unrecognized status silently going missing.
+    const outcomes = analyticsEvents
+      .filter((event) => event.properties?.action === "reset_credit_consumed")
+      .map((event) => event.properties?.outcome);
+    expect(outcomes).toEqual(["completed", "failed", "failed"]);
   });
 
   it("emits one account per signed-in instance and keeps accountEmail on the default", async () => {

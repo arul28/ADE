@@ -173,7 +173,7 @@ import {
 } from "../sessions/chatSessionProjection";
 import { createAccountActionDomainService } from "../../../../../ade-cli/src/services/account/accountAuthService";
 import { createProxyActionDomainService } from "../../../../../ade-cli/src/services/proxy/proxyService";
-import { captureProviderAccountAnalytics } from "../analytics/featureProductAnalytics";
+import { providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
 
 // The names themselves live in `./domains`, which has no imports, so consumers
 // that need only the vocabulary (the analytics policy) do not have to load this
@@ -3259,19 +3259,7 @@ function buildProviderInstancesDomainService(runtime: AdeRuntime): OpaqueService
   // the runtime graph. The runtime is used only for the brain-owned analytics
   // sink; every machine still has at least its own default account.
   const store = getMachineProviderInstanceStore();
-  const capture = (
-    action: Parameters<typeof captureProviderAccountAnalytics>[0]["action"],
-    outcome: Parameters<typeof captureProviderAccountAnalytics>[0]["outcome"],
-    provider: unknown,
-  ): void => {
-    captureProviderAccountAnalytics({
-      analytics: runtime.productAnalyticsService,
-      surface: "api",
-      action,
-      outcome,
-      provider,
-    });
-  };
+  const capture = providerAccountAnalyticsCapture(runtime.productAnalyticsService, "api");
   // The registry file caches each account's email and plan from its last
   // refresh. A brain that has never refreshed would list every account as
   // "not signed in" until something else asked, which is what the Accounts

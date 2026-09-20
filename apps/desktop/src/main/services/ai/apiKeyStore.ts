@@ -126,7 +126,8 @@ const MACOS_KEYCHAIN_MISSING_PATTERNS = [
 ];
 const SECURITY_TIMEOUT_MS = 5_000;
 const CREDENTIAL_PROVIDER_INDEX_KEY = "ai.api_key.index.v1";
-const API_CREDENTIALS_INDEX_KEY = "ai.api_credentials.index.v1";
+/** Credential-store key holding the summary index for every stored credential. */
+export const API_CREDENTIALS_INDEX_KEY = "ai.api_credentials.index.v1";
 const CREDENTIAL_PROVIDER_PROVENANCE_KEY = "ai.api_key.provenance.v1";
 const PROVENANCE_FILE_SUFFIX = ".provenance";
 const DEFAULT_CREDENTIAL_ID = DEFAULT_API_CREDENTIAL_ID;
@@ -293,7 +294,13 @@ function normalizeCredentialId(credentialId: string): string {
   return normalized;
 }
 
-function credentialStorageKey(provider: string, credentialId = DEFAULT_CREDENTIAL_ID): string {
+/**
+ * Canonical storage key for one credential. The single source of truth for the
+ * `provider` / `provider#credentialId` shape — other packages (the CLI launch
+ * preview) must call this rather than re-deriving it, so normalization and the
+ * identifier safety check cannot drift.
+ */
+export function credentialStorageKey(provider: string, credentialId = DEFAULT_CREDENTIAL_ID): string {
   const normalizedProvider = normalizeProvider(provider);
   const normalizedCredentialId = normalizeCredentialId(credentialId);
   if (!normalizedProvider || !isSafeIdentifier(normalizedProvider) || !normalizedCredentialId) return "";
@@ -1654,19 +1661,24 @@ export function getApiCredentialSummary(
     .find((summary) => summary.credentialId === normalizedCredentialId) ?? null;
 }
 
+/** @returns true when a credential actually existed and was removed. */
 function removeApiCredentialIn(
   scope: ApiKeyScopeState,
   provider: string,
   credentialId = DEFAULT_CREDENTIAL_ID,
-): void {
+): boolean {
   const normalizedProvider = normalizeProvider(provider);
   const normalizedCredentialId = normalizeCredentialId(credentialId);
   const storageKey = credentialStorageKey(normalizedProvider, normalizedCredentialId);
-  if (!storageKey) return;
+  if (!storageKey) return false;
   invalidatePeerScopeCache(scope);
   ensureStore(scope);
-  if (scope === projectScope && purgeForeignAccountApiKeys(scope).has(storageKey)) return;
+  if (scope === projectScope && purgeForeignAccountApiKeys(scope).has(storageKey)) return false;
   const store = ensureStore(scope);
+  // Captured before the removal runs: the cleanup below is deliberately
+  // idempotent, so only this tells a real removal from a no-op.
+  const existed = Object.prototype.hasOwnProperty.call(store, storageKey)
+    || (scope.summaries ?? []).some((summary) => summaryStorageKey(summary) === storageKey);
   if (normalizedCredentialId === DEFAULT_CREDENTIAL_ID && normalizedProvider === "cursor") cursorKeyOrigin = null;
   scope.summaries = (scope.summaries ?? []).filter((summary) => summaryStorageKey(summary) !== storageKey);
   if (scope.credentialStore) {
@@ -1705,10 +1717,14 @@ function removeApiCredentialIn(
       (vault) => vault.remove("all", "provider_api_key", storageKey),
     );
   }
+  return existed;
 }
 
 export function removeApiCredential(provider: string, credentialId = DEFAULT_CREDENTIAL_ID): void {
-  removeApiCredentialIn(projectScope, provider, credentialId);
+  const removed = removeApiCredentialIn(projectScope, provider, credentialId);
+  // Removing a credential that was never stored is a no-op, not a completed
+  // removal: capturing it would inflate the funnel with phantom events.
+  if (!removed) return;
   captureApiCredentialAnalytics({
     analytics: productAnalytics,
     surface: "api",

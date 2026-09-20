@@ -1,4 +1,4 @@
-import type { AgentChatStopSource } from "../../../shared/types";
+import type { AgentChatStopSource } from "./types";
 
 /**
  * Terminalizing rows the event stream never closed.
@@ -30,14 +30,14 @@ export type OrphanChildChatState =
   /** There is no such chat any more. */
   | "missing";
 
-/** The bits of a session row this decision needs. Structural on purpose. */
+/**
+ * The bits of a session row this decision reads — nothing else, so a caller
+ * hands the row straight in instead of hand-copying a shape that drifts.
+ */
 export type OrphanChildChatRow = {
-  id: string;
   status: "running" | "completed" | "failed" | "disposed" | "detached";
   endedAt?: string | null;
   lastTurnFailedAt?: string | null;
-  summary?: string | null;
-  statusNote?: string | null;
 };
 
 /**
@@ -60,13 +60,13 @@ export function deriveOrphanChildChatState(
   return ownerLive ? "active" : "idle";
 }
 
-/** A still-"running" subagent row, as derived from the transcript. */
+/**
+ * A still-"running" subagent row. Only what the verdict reads: the caller keeps
+ * ownership of ids, parent tool use and turn scoping when it emits.
+ */
 export type OrphanSubagentRow = {
-  id: string;
   name: string;
-  summary: string;
-  parentToolUseId: string | null;
-  turnId?: string;
+  summary?: string | null;
 };
 
 export type OrphanStopAttribution = {
@@ -157,13 +157,10 @@ export function decideOrphanSubagentTerminal(args: {
     : stopped(ORPHAN_SUBAGENT_NO_REPORT_SUMMARY);
 }
 
-/** A still-open background command row, as derived from the transcript. */
-export type OrphanBackgroundRow = {
-  id: string;
+/** A still-open background command row. Only what the verdict reads. */
+type OrphanBackgroundRow = {
   title: string;
-  summary: string | null;
-  sourceTaskId?: string;
-  sourceToolUseId?: string;
+  summary?: string | null;
 };
 
 export type OrphanBackgroundTerminal = {

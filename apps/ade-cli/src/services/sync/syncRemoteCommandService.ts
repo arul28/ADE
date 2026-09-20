@@ -6284,7 +6284,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
 
   // Spending a credit changes the ACCOUNT's limits, not just this machine's
   // view of them, so it is not viewer-allowed the way reading the meter is.
-  register("usage.consumeResetCredit", { viewerAllowed: false }, async (payload) => {
+  register("usage.consumeResetCredit", { viewerAllowed: false, controllerAllowed: true }, async (payload) => {
     const service = args.usageTrackingService;
     if (!service) {
       throw new Error("Reset credits are not available in this runtime.");

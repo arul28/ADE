@@ -127,8 +127,15 @@ import {
 } from "./accountUsageRollup";
 import { buildTranscriptSource, type UsageSourceFsApi } from "./accountUsageSource";
 import type { ProductAnalyticsCapture } from "../../../shared/types/productAnalytics";
+import {
+  resetCreditOutcomeKey,
+  type ResetCreditOutcomeKey,
+} from "../../../shared/usageResetCredit";
 import { usageScopeSelectedCapture } from "../analytics/usageScopeAnalytics";
-import { captureResetCreditAnalytics } from "../analytics/featureProductAnalytics";
+import {
+  captureResetCreditAnalytics,
+  type ResetCreditAnalyticsOutcome,
+} from "../analytics/featureProductAnalytics";
 import { getOrCreateLocalAccountMachineIdentity } from "../account/localMachineIdentity";
 import {
   createAccountUsageRollupStore,
@@ -1438,6 +1445,24 @@ const codexResetCreditConsumeInFlight = new Map<string, Promise<UsageResetCredit
 const codexResetCreditIdempotencyKeys = new Map<string, string>();
 
 type CodexResetCreditOutcome = Exclude<UsageResetCreditStatus, "failure">;
+
+/**
+ * One analytics outcome per outcome key. Keyed by the shared classifier's
+ * verdict, not by the raw wire status, so analytics and the sentence every
+ * client shows can never disagree about what happened. A table rather than a
+ * chain so adding an outcome is a compile error here instead of a silent
+ * "failed".
+ */
+const RESET_CREDIT_ANALYTICS_OUTCOME: Record<ResetCreditOutcomeKey, ResetCreditAnalyticsOutcome> = {
+  reset: "completed",
+  nothingToReset: "nothing_to_reset",
+  noCredit: "no_credit",
+  alreadyRedeemed: "already_redeemed",
+  failure: "failed",
+  // The host explained itself instead of naming an outcome; that is a spend
+  // that did not happen.
+  hostMessage: "failed",
+};
 
 function codexResetCreditOutcomeStatus(value: unknown): CodexResetCreditOutcome | null {
   return value === "reset"
@@ -4432,27 +4457,14 @@ export function createUsageTrackingService({
     }
   }
 
-  /**
-   * Spend one banked reset credit for `accountId`.
-   *
-   * Single-flight per config home, with the idempotency key held across a
-   * timeout: a reset that timed out may already have applied, and a retry that
-   * minted a fresh key would burn a second credit for one user intent.
-   *
-   * The windows are re-read afterwards because the outcome alone is not the
-   * user-visible fact — "reset" is only believable once the meter says so, and
-   * the poll is what makes the popup stop showing the old numbers.
-   */
-  function captureResetCreditOutcome(status: UsageResetCreditStatus | undefined): void {
-    const outcome = status === "reset"
-      ? "completed"
-      : status === "nothingToReset"
-        ? "nothing_to_reset"
-        : status === "noCredit"
-          ? "no_credit"
-          : status === "alreadyRedeemed"
-            ? "already_redeemed"
-            : "failed";
+  function captureResetCreditOutcome(result: UsageResetCreditResult): void {
+    // `resetCreditOutcomeKey` is the one classifier: it already rejects an
+    // unrecognized (or inherited, like `toString`) wire status, so the key it
+    // returns can index the table directly. Reading the same verdict the user's
+    // sentence is rendered from is the point — analytics that re-derived the
+    // outcome would eventually report a different story than the popup showed.
+    const outcome: ResetCreditAnalyticsOutcome =
+      RESET_CREDIT_ANALYTICS_OUTCOME[resetCreditOutcomeKey(result)];
     const sink = dependencies?.captureInternalAnalytics;
     if (!sink) return;
     try {
@@ -4466,6 +4478,17 @@ export function createUsageTrackingService({
     }
   }
 
+  /**
+   * Spend one banked reset credit for `accountId`.
+   *
+   * Single-flight per config home, with the idempotency key held across a
+   * timeout: a reset that timed out may already have applied, and a retry that
+   * minted a fresh key would burn a second credit for one user intent.
+   *
+   * The windows are re-read afterwards because the outcome alone is not the
+   * user-visible fact — "reset" is only believable once the meter says so, and
+   * the poll is what makes the popup stop showing the old numbers.
+   */
   async function consumeResetCredit(
     args: { accountId: string },
   ): Promise<UsageResetCreditResult> {
@@ -4474,12 +4497,13 @@ export function createUsageTrackingService({
     // rather than throwing a TypeError out of the RPC.
     const accountId = typeof args?.accountId === "string" ? args.accountId.trim() : "";
     if (!accountId) {
-      captureResetCreditOutcome("failure");
-      return {
+      const failure: UsageResetCreditResult = {
         ok: false,
         status: "failure",
         message: "Name the Codex account whose reset credit to spend.",
       };
+      captureResetCreditOutcome(failure);
+      return failure;
     }
     // Use the injected account registry too, so reset spending targets the same
     // selected account that polling and credit probing use.
@@ -4488,12 +4512,13 @@ export function createUsageTrackingService({
     if (!instance) {
       // Deliberately specific: the caller named an account this machine does
       // not have, which is different from a spend that failed.
-      captureResetCreditOutcome("failure");
-      return {
+      const failure: UsageResetCreditResult = {
         ok: false,
         status: "failure",
         message: "That Codex account is not signed in on this computer.",
       };
+      captureResetCreditOutcome(failure);
+      return failure;
     }
     const configHome = scopedConfigHome("codex", instance);
     const result = await consumeCodexResetCredit({
@@ -4507,24 +4532,20 @@ export function createUsageTrackingService({
       ...(configHome ? { configHome } : {}),
       force: true,
     });
-    let finalResult = result;
     try {
       await forceRefresh({ allowInteractiveAuth: false });
     } catch (error) {
-      // The credit was still spent. Saying otherwise because the follow-up
-      // poll failed would be the one lie this path must not tell.
+      // The credit was still spent, and the answer is returned unchanged.
+      // Every client phrases a `reset` status itself (shared
+      // `resetCreditOutcomeText`, and `workResetCreditOutcomeText` on iOS), so
+      // a `message` added here would never be shown; the stale meter is what
+      // the log is for.
       logger.warn("usage.codex_reset_credit_refresh_failed", {
         error: getErrorMessage(error),
       });
-      if (result.ok) {
-        finalResult = {
-          ...result,
-          message: "Reset applied. The meter will catch up on the next refresh.",
-        };
-      }
     }
-    captureResetCreditOutcome(finalResult.status);
-    return finalResult;
+    captureResetCreditOutcome(result);
+    return result;
   }
 
   async function refreshHistory(

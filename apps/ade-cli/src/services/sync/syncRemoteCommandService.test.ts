@@ -758,6 +758,14 @@ describe("createSyncRemoteCommandService", () => {
     }));
     const { service } = createService({ usageTrackingService: { consumeResetCredit } });
 
+    // Spending a credit is a controller-only mutation: viewers must not reach
+    // it, but a paired phone pressing "Use reset" is an interactive controller
+    // and the host rejects every peer when `controllerAllowed` is missing.
+    expect(service.getDescriptor("usage.consumeResetCredit")).toEqual({
+      action: "usage.consumeResetCredit",
+      scope: "runtime",
+      policy: { viewerAllowed: false, controllerAllowed: true },
+    });
     await expect(service.execute(makePayload("usage.consumeResetCredit", { accountId: "codex:work" })))
       .resolves.toEqual({ ok: true, accountId: "codex:work" });
     expect(consumeResetCredit).toHaveBeenCalledWith({ accountId: "codex:work" });

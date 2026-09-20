@@ -185,10 +185,7 @@ struct SettingsUsagePaceProvider: View {
   var resetCredits: [MobileUsageAccount] = []
 
   @Environment(\.openURL) private var openURL
-  @EnvironmentObject private var syncService: SyncService
   @State private var detail: ADEUsageLimitSegment?
-  @State private var spendingAccountIds: Set<String> = []
-  @State private var resetOutcomes: [String: String] = [:]
 
   private var cards: [ADEUsageLimitCard] {
     adeUsageLimitCards(provider: provider, windows: windows, accounts: accounts)
@@ -218,44 +215,7 @@ struct SettingsUsagePaceProvider: View {
         }
       }
 
-      // A banked credit with no way to spend it is the state this row removes.
-      // The outcome replaces the button rather than sitting beside it: the
-      // credit is gone either way, and a live button invites a second spend.
-      ForEach(resetCredits) { account in
-        HStack(spacing: 6) {
-          Text("Reset credit banked")
-            .font(ADEUsageType.microFont())
-            .foregroundStyle(ADEColor.textSecondary)
-          Text(account.email ?? account.label ?? account.id)
-            .font(ADEUsageType.microFont())
-            .foregroundStyle(ADEColor.textMuted)
-            .lineLimit(1)
-            .truncationMode(.middle)
-          Spacer(minLength: 4)
-          if let outcome = workUsageResetOutcome(accountId: account.id, outcomes: resetOutcomes) {
-            Text(outcome)
-              .font(ADEUsageType.microFont())
-              .foregroundStyle(ADEColor.textMuted)
-              .lineLimit(2)
-          } else if syncService.canInvokeRemoteAction("usage.consumeResetCredit") {
-            Button("Use reset") {
-              Task { await spendResetCredit(accountId: account.id) }
-            }
-            .buttonStyle(.plain)
-            .font(ADEUsageType.microFont(.semibold))
-            .foregroundStyle(ADEColor.textPrimary)
-            .disabled(spendingAccountIds.contains(account.id))
-            .adeTapTarget(visual: 16)
-            .accessibilityHint("Clears this account's limit windows now.")
-          } else {
-            Text("Use reset on the host device.")
-              .font(ADEUsageType.microFont())
-              .foregroundStyle(ADEColor.textMuted)
-              .lineLimit(2)
-          }
-        }
-        .frame(minHeight: 44)
-      }
+      ADEResetCreditRows(accounts: resetCredits)
 
       if let message = statusMessage {
         Text(message)
@@ -271,24 +231,6 @@ struct SettingsUsagePaceProvider: View {
         segment: segment,
         fallbackAccountUrl: status?.accountUrl
       )
-    }
-  }
-
-  /// The host names the outcome; the phone only phrases it — the same helper
-  /// the Work Limits module and the chat notice use, so one server answer never
-  /// reads two different ways across the three surfaces that can spend a credit.
-  @MainActor
-  private func spendResetCredit(accountId: String) async {
-    spendingAccountIds.insert(accountId)
-    resetOutcomes[accountId] = nil
-    defer { spendingAccountIds.remove(accountId) }
-    do {
-      resetOutcomes[accountId] = workResetCreditOutcomeText(
-        try await syncService.consumeUsageResetCredit(accountId: accountId)
-      )
-    } catch {
-      ADEHaptics.error()
-      resetOutcomes[accountId] = error.localizedDescription
     }
   }
 

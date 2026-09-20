@@ -1596,7 +1596,7 @@ app.whenReady().then(async () => {
     if (!subscriptionProxyService) {
       subscriptionProxyService = createProxyService({
         adeHome: machineAdeLayout.adeDir,
-        analytics: productAnalyticsService,
+        getAnalytics: () => productAnalyticsService,
       });
     }
     return subscriptionProxyService;

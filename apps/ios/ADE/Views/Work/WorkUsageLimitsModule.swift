@@ -31,19 +31,28 @@ func workUsageResetOutcome(accountId: String, outcomes: [String: String]) -> Str
 /// status falls through to the host's own sentence and then to a plain failure:
 /// a reset that did not happen is never reported as one.
 func workResetCreditOutcomeText(_ result: UsageConsumeResetCreditResponse) -> String {
+  let resetApplied = "Reset applied. Your windows have cleared."
+  let genericFailure = "Could not use the reset credit."
+  // `failure` is the host's catch-all bucket, so it is deliberately absent from
+  // this switch: the four real outcomes always phrase themselves, while a
+  // failure falls through to the host's own sentence and then to the generic
+  // line. Same order as the TypeScript.
   switch result.status {
-  case "reset": return "Reset applied. Your windows have cleared."
+  case "reset": return resetApplied
   case "nothingToReset": return "Nothing to reset right now."
   case "noCredit": return "No reset credit left."
   case "alreadyRedeemed": return "That credit was already redeemed."
-  default:
-    if let message = result.message?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty {
-      return message
-    }
-    return result.ok == true
-      ? "Reset applied. Your windows have cleared."
-      : "Could not use the reset credit."
+  default: break
   }
+  if result.ok != true,
+     let message = result.message?.trimmingCharacters(in: .whitespacesAndNewlines),
+     !message.isEmpty {
+    return message
+  }
+  // Only a host that really spent the credit sets `ok`; `{ok: true, status:
+  // "failure"}` is contradictory, and the safe reading is the failure.
+  if result.ok == true, result.status != "failure" { return resetApplied }
+  return genericFailure
 }
 
 /// Live limits: one group per provider, one card per window, one row per
@@ -73,11 +82,7 @@ struct WorkUsageQuotaCompact: View {
               ),
               status: snapshot.providerStatus?[provider],
               spendControlReached: provider == "codex" && snapshot.spendControlReached == true,
-              // Codex is the only provider that grants reset credits today, so
-              // every other provider gets an empty list and renders nothing.
-              resetCredits: (snapshot.accounts ?? []).filter {
-                $0.provider == provider && ($0.resetCredits?.availableCount ?? 0) > 0
-              },
+              resetCredits: resetCreditAccounts(in: snapshot, provider: provider),
               onSelect: { segment in
                 detail = WorkUsageQuotaDetail(
                   provider: provider,
@@ -133,9 +138,6 @@ private struct WorkUsageQuotaProviderCard: View {
   let onSelect: (ADEUsageLimitSegment) -> Void
 
   @Environment(\.openURL) private var openURL
-  @EnvironmentObject private var syncService: SyncService
-  @State private var spendingAccountIds: Set<String> = []
-  @State private var resetOutcomes: [String: String] = [:]
 
   var body: some View {
     VStack(alignment: .leading, spacing: 5) {
@@ -193,66 +195,12 @@ private struct WorkUsageQuotaProviderCard: View {
           .foregroundStyle(ADEColor.warning)
       }
 
-      // A banked credit with no way to spend it is the state this row removes.
-      // The outcome replaces the button rather than sitting beside it: the
-      // credit is gone either way, and a live button invites a second spend.
-      ForEach(resetCredits) { account in
-        HStack(spacing: 6) {
-          Text("Reset credit banked")
-            .font(ADEUsageType.microFont())
-            .foregroundStyle(ADEColor.textSecondary)
-          Text(account.email ?? account.label ?? account.id)
-            .font(ADEUsageType.microFont())
-            .foregroundStyle(ADEColor.textMuted)
-            .lineLimit(1)
-            .truncationMode(.middle)
-          Spacer(minLength: 4)
-          if let resetOutcome = workUsageResetOutcome(accountId: account.id, outcomes: resetOutcomes) {
-            Text(resetOutcome)
-              .font(ADEUsageType.microFont())
-              .foregroundStyle(ADEColor.textMuted)
-              .lineLimit(2)
-          } else if syncService.canInvokeRemoteAction("usage.consumeResetCredit") {
-            Button("Use reset") {
-              Task { await spendResetCredit(accountId: account.id) }
-            }
-            .buttonStyle(.plain)
-            .font(ADEUsageType.microFont(.semibold))
-            .foregroundStyle(ADEColor.textPrimary)
-            .disabled(spendingAccountIds.contains(account.id))
-            .adeTapTarget(visual: 16)
-            .accessibilityHint("Clears this account's limit windows now.")
-          } else {
-            Text("Use reset on the host device.")
-              .font(ADEUsageType.microFont())
-              .foregroundStyle(ADEColor.textMuted)
-              .lineLimit(2)
-          }
-        }
-        .frame(minHeight: 44)
-      }
+      ADEResetCreditRows(accounts: resetCredits)
     }
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 
   private var accountSubtitle: String? { adeUsageAccountSubtitle(status) }
-
-  /// The host names the outcome; the phone only phrases it. A reset that did
-  /// not happen is never reported as one — an unrecognized answer falls through
-  /// to the generic failure line rather than to "applied".
-  @MainActor
-  private func spendResetCredit(accountId: String) async {
-    spendingAccountIds.insert(accountId)
-    resetOutcomes[accountId] = nil
-    defer { spendingAccountIds.remove(accountId) }
-    do {
-      let result = try await syncService.consumeUsageResetCredit(accountId: accountId)
-      resetOutcomes[accountId] = workResetCreditOutcomeText(result)
-    } catch {
-      ADEHaptics.error()
-      resetOutcomes[accountId] = error.localizedDescription
-    }
-  }
 }
 
 private struct WorkUsageQuotaWindowRow: View {

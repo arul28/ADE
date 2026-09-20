@@ -17,16 +17,14 @@ const RESTART = { stopSource: "system", stopReason: "the ADE brain restarted" } 
 
 function row(overrides: Partial<OrphanSubagentRow> = {}): OrphanSubagentRow {
   return {
-    id: "task-1",
     name: "Audit chat renderer",
     summary: "Audit chat renderer",
-    parentToolUseId: null,
     ...overrides,
   };
 }
 
 function childRow(overrides: Partial<OrphanChildChatRow> = {}): OrphanChildChatRow {
-  return { id: "chat-child", status: "running", ...overrides };
+  return { status: "running", ...overrides };
 }
 
 describe("deriveOrphanChildChatState", () => {
@@ -149,7 +147,7 @@ describe("decideOrphanSubagentTerminal", () => {
 describe("decideOrphanBackgroundTerminal", () => {
   it("stops an open background command with the sweep's attribution", () => {
     expect(decideOrphanBackgroundTerminal({
-      row: { id: "bg-1", title: "npm run dev", summary: null },
+      row: { title: "npm run dev", summary: null },
       attribution: RESTART,
     })).toEqual({
       status: "stopped",
@@ -161,7 +159,7 @@ describe("decideOrphanBackgroundTerminal", () => {
 
   it("keeps a summary the command actually produced", () => {
     expect(decideOrphanBackgroundTerminal({
-      row: { id: "bg-1", title: "npm run dev", summary: "listening on 5173" },
+      row: { title: "npm run dev", summary: "listening on 5173" },
       attribution: RESTART,
     }).summary).toBe("listening on 5173");
   });

@@ -22,6 +22,8 @@ export const CHAT_STOP_REASON_BRAIN_RESTARTED = "the ADE brain restarted";
 export const CHAT_STOP_REASON_FOREIGN_BRAIN = "another ADE brain took over this chat";
 export const CHAT_STOP_REASON_RUNTIME_EXITED = "the runtime process exited";
 export const CHAT_STOP_REASON_PROVIDER_ENDED_TURN = "the provider ended the turn";
+/** A workflow reached its end with agent rows still open — nothing crashed. */
+export const CHAT_STOP_REASON_WORKFLOW_ENDED = "the workflow ended";
 export const CHAT_STOP_REASON_CHAT_HANDED_OFF = "this chat was handed off to another model";
 
 /**

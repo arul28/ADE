@@ -56,6 +56,7 @@ import {
   shouldAttemptDesktopSocketConnection,
   summarizeExecution,
   unwrapToolResult,
+  findFlagName,
 } from "./cli";
 import {
   DEVELOPMENT_ADE_CLERK_ISSUER,
@@ -209,6 +210,27 @@ function expectStaticPlan(
   return plan;
 }
 
+/**
+ * Run the enclosing block with no ambient `ADE_CHAT_SESSION_ID`.
+ *
+ * Plan builders read the spawn-lineage flags before anything else, so a suite
+ * that runs inside an ADE-tracked agent shell would otherwise get the lineage
+ * default (or its usage error) instead of the behaviour under test. Captures
+ * the value inside `beforeEach` so nested blocks that set their own id still
+ * see it restored.
+ */
+function useNoAmbientChatSession(): void {
+  let ambientChatSessionId: string | undefined;
+  beforeEach(() => {
+    ambientChatSessionId = process.env.ADE_CHAT_SESSION_ID;
+    delete process.env.ADE_CHAT_SESSION_ID;
+  });
+  afterEach(() => {
+    if (ambientChatSessionId === undefined) delete process.env.ADE_CHAT_SESSION_ID;
+    else process.env.ADE_CHAT_SESSION_ID = ambientChatSessionId;
+  });
+}
+
 function writeSyncHostSingletonLock(args: {
   lockPath: string;
   pid: number;
@@ -297,14 +319,7 @@ function killChildQuietly(child: ChildProcess | null, signal: NodeJS.Signals): v
 }
 
 describe("ADE CLI", () => {
-  const ambientChatSessionId = process.env.ADE_CHAT_SESSION_ID;
-  beforeEach(() => {
-    delete process.env.ADE_CHAT_SESSION_ID;
-  });
-  afterEach(() => {
-    if (ambientChatSessionId === undefined) delete process.env.ADE_CHAT_SESSION_ID;
-    else process.env.ADE_CHAT_SESSION_ID = ambientChatSessionId;
-  });
+  useNoAmbientChatSession();
 
   it("includes the system host in the mobile catalog without exposing other system projects", () => {
     const projects = [
@@ -3338,11 +3353,6 @@ describe("ADE CLI", () => {
   });
 
   it("builds chat create with both model and modelId plus explicit reasoning and fast-mode args", () => {
-    // This strict-equality assertion must not absorb the ambient parent
-    // default when the test itself runs inside an ADE-tracked agent shell.
-    const savedParentEnv = process.env.ADE_CHAT_SESSION_ID;
-    delete process.env.ADE_CHAT_SESSION_ID;
-    try {
     const plan = buildCliPlan([
       "chat",
       "create",
@@ -3374,7 +3384,9 @@ describe("ADE CLI", () => {
           model: "anthropic/claude-opus-4-8",
           modelId: "anthropic/claude-opus-4-8",
           permissionMode: "full-auto",
-          droidPermissionMode: null,
+          // No `droidPermissionMode` key at all: an unset Droid tier is dropped
+          // during the merged-arg normalisation rather than sent as a null the
+          // runtime would have to re-interpret.
           title: null,
           surface: "work",
           fastMode: false,
@@ -3384,10 +3396,6 @@ describe("ADE CLI", () => {
         },
       },
     });
-    } finally {
-      if (savedParentEnv === undefined) delete process.env.ADE_CHAT_SESSION_ID;
-      else process.env.ADE_CHAT_SESSION_ID = savedParentEnv;
-    }
   });
 
   it("chains chat create --prompt into a first chat send", () => {
@@ -3726,7 +3734,596 @@ describe("ADE CLI", () => {
         "--provider",
         "mystery",
       ]),
-    ).toThrow(/Provider must be claude, codex, cursor, droid, opencode, pi, qwen, kimi, grok, copilot, or shell/);
+    ).toThrow(/provider must be one of/);
+  });
+
+  it("rejects `shell` as a chat-create provider", () => {
+    expect(() =>
+      buildCliPlan([
+        "chat",
+        "create",
+        "--lane",
+        "lane-1",
+        "--provider",
+        "shell",
+        "--print-config",
+      ]),
+    ).toThrow(/provider must be one of claude, codex, cursor, droid, opencode, pi, qwen, kimi, grok, or copilot/);
+  });
+
+  it("accepts a mis-cased provider when starting a CLI session", () => {
+    const plan = buildCliPlan([
+      "shell",
+      "create",
+      "--lane",
+      "lane-1",
+      "--provider",
+      "CODEX",
+    ]);
+    const executePlan = expectExecutePlan(plan);
+    expect(executePlan.steps[0]?.params).toMatchObject({
+      name: "start_cli_session",
+      arguments: { provider: "codex" },
+    });
+  });
+
+  it("re-checks a provider that arrives via --arg against the --instance rule", () => {
+    expect(() =>
+      buildCliPlan([
+        "chat",
+        "create",
+        "--lane",
+        "lane-1",
+        "--instance",
+        "work",
+        "--arg",
+        "provider=cursor",
+        "--print-config",
+      ]),
+    ).toThrow(/--instance names a Claude or Codex account/);
+  });
+
+  it("applies the same --arg provider re-check to ade new chat", () => {
+    // Every launch builder merges `--arg`/`--input-json` over the flags, so the
+    // account rule has to be re-run on all of them — not just `chat create`.
+    expect(() =>
+      buildCliPlan([
+        "new",
+        "chat",
+        "--lane",
+        "lane-1",
+        "--arg",
+        "provider=Cursor",
+        "--instance",
+        "work",
+      ]),
+    ).toThrow(/--instance names a Claude or Codex account/);
+  });
+
+  it("rejects an instance that arrives via --arg for a single-identity provider", () => {
+    // The merged instance id counts too: naming the account through the generic
+    // arg bag is the same request as `--instance`.
+    expect(() =>
+      buildCliPlan([
+        "chat",
+        "create",
+        "--lane",
+        "lane-1",
+        "--provider",
+        "cursor",
+        "--arg",
+        "instanceId=work",
+        "--print-config",
+      ]),
+    ).toThrow(/--instance names a Claude or Codex account/);
+  });
+
+  it("re-checks Droid autonomy against a provider that arrives via --arg", () => {
+    // `--arg provider=` wins the merge, so checking the flag's provider would
+    // ship a Droid autonomy tier on a Claude launch.
+    expect(() =>
+      buildCliPlan([
+        "new",
+        "chat",
+        "--lane",
+        "lane-1",
+        "--provider",
+        "droid",
+        "--droid-autonomy",
+        "auto-medium",
+        "--arg",
+        "provider=claude",
+      ]),
+    ).toThrow(/Droid autonomy is only supported for Droid sessions/);
+  });
+
+  it("applies the Droid autonomy provider rule to chat create too", () => {
+    expect(() =>
+      buildCliPlan([
+        "chat",
+        "create",
+        "--lane",
+        "lane-1",
+        "--provider",
+        "droid",
+        "--droid-autonomy",
+        "auto-medium",
+        "--arg",
+        "provider=claude",
+        "--print-config",
+      ]),
+    ).toThrow(/Droid autonomy is only supported for Droid sessions/);
+  });
+
+  it("rejects spawn lineage when --arg turns the launch into a plain shell", () => {
+    // The spawn-lineage rule is read off the flag provider, so the merged
+    // provider has to be re-checked or a shell terminal ships a spawn type.
+    expect(() =>
+      buildCliPlan([
+        "new",
+        "chat",
+        "--mode",
+        "cli",
+        "--lane",
+        "lane-1",
+        "--provider",
+        "codex",
+        "--parent",
+        "parent-session-1",
+        "--type",
+        "subagent",
+        "--arg",
+        "provider=shell",
+        "--print-config",
+      ]),
+    ).toThrow(/plain shell terminals do not record spawn lineage/);
+  });
+
+  it("rejects a smuggled shell provider for shell start-cli spawn lineage", () => {
+    expect(() =>
+      buildCliPlan([
+        "shell",
+        "start-cli",
+        "codex",
+        "--lane",
+        "lane-1",
+        "--parent",
+        "parent-chat-1",
+        "--type",
+        "subagent",
+        "--arg",
+        "provider=shell",
+      ]),
+    ).toThrow(/plain shell terminals do not record spawn lineage/);
+  });
+
+  // The flag readers enum-check their own values, so the arg bag is the only
+  // way a made-up tier or spawn kind can reach the runtime. It is checked on
+  // the merged bag, where `--arg` has already won.
+  it("rejects a made-up Droid autonomy tier that arrives via --arg", () => {
+    expect(() =>
+      buildCliPlan([
+        "chat",
+        "create",
+        "--lane",
+        "lane-1",
+        "--provider",
+        "droid",
+        "--arg",
+        "droidPermissionMode=bogus",
+        "--print-config",
+      ]),
+    ).toThrow(/droidPermissionMode must be one of/);
+  });
+
+  it("rejects a made-up spawn kind that arrives via --arg", () => {
+    expect(() =>
+      buildCliPlan([
+        "chat",
+        "create",
+        "--lane",
+        "lane-1",
+        "--provider",
+        "codex",
+        "--arg",
+        "spawnKind=bogus",
+        "--print-config",
+      ]),
+    ).toThrow(/--type must be subagent or peer/);
+  });
+
+  // The permission mode is checked against the *merged* profile, so a mode the
+  // flag provider supports cannot ride into a profile that does not.
+  it("rejects a permission mode the smuggled shell provider cannot run", () => {
+    expect(() =>
+      buildCliPlan([
+        "new",
+        "chat",
+        "--mode",
+        "cli",
+        "--lane",
+        "lane-1",
+        "--provider",
+        "codex",
+        "--permissions",
+        "config-toml",
+        "--arg",
+        "provider=shell",
+        "--print-config",
+      ]),
+    ).toThrow(/permissionMode config-toml is not supported for shell sessions/);
+  });
+
+  // The mirror of the shell spawn-lineage rule: naming `shell` on the flag
+  // makes the lineage reader drop the ambient parent, so turning the launch
+  // back into an agent session with `--arg` would orphan it silently.
+  it("rejects a shell-flagged launch that --arg turns back into an agent spawn", () => {
+    process.env.ADE_CHAT_SESSION_ID = "parent-session-1";
+    expect(() =>
+      buildCliPlan([
+        "new",
+        "chat",
+        "--mode",
+        "cli",
+        "--lane",
+        "lane-1",
+        "--provider",
+        "shell",
+        "--arg",
+        "provider=codex",
+        "--print-config",
+      ]),
+    ).toThrow(/Name the agent provider with --provider codex/);
+  });
+
+  // Same bag plus a spawn kind: it also trips the "a kind with no parent"
+  // pairing rule, whose advice ("remove --no-parent") names a flag this caller
+  // never wrote. The dropped-ambient diagnosis is the one they can act on.
+  it("names the dropped lineage, not --no-parent, when the bag also carries a spawn kind", () => {
+    process.env.ADE_CHAT_SESSION_ID = "parent-session-1";
+    expect(() =>
+      buildCliPlan([
+        "new",
+        "chat",
+        "--mode",
+        "cli",
+        "--lane",
+        "lane-1",
+        "--provider",
+        "shell",
+        "--arg",
+        "provider=codex",
+        "--arg",
+        "spawnKind=subagent",
+        "--print-config",
+      ]),
+    ).toThrow(/Name the agent provider with --provider codex/);
+  });
+
+  // ...but `--no-parent` is the caller saying "no lineage" out loud, so nothing
+  // was dropped and there is nothing to refuse: the agent session launches
+  // deliberately parentless.
+  it("accepts a shell-flagged agent spawn that opted out with --no-parent", () => {
+    process.env.ADE_CHAT_SESSION_ID = "parent-session-1";
+    const plan = buildCliPlan([
+      "new",
+      "chat",
+      "--mode",
+      "cli",
+      "--lane",
+      "lane-1",
+      "--provider",
+      "shell",
+      "--no-parent",
+      "--arg",
+      "provider=codex",
+      "--print-config",
+    ]);
+    const launch = (expectStaticPlan(plan).value as { launch: Record<string, unknown> }).launch;
+    expect(launch.provider).toBe("codex");
+    expect(launch).not.toHaveProperty("orchestrationParentSessionId");
+  });
+
+  it("rejects a made-up permission mode that arrives via --arg", () => {
+    expect(() =>
+      buildCliPlan([
+        "chat",
+        "create",
+        "--lane",
+        "lane-1",
+        "--provider",
+        "codex",
+        "--arg",
+        "permissionMode=yolo",
+        "--print-config",
+      ]),
+    ).toThrow(/permissionMode must be one of default, auto, plan, edit, full-auto, or config-toml\./);
+  });
+
+  it("rejects a non-string permission mode that arrives via --arg-json", () => {
+    expect(() =>
+      buildCliPlan([
+        "chat",
+        "create",
+        "--lane",
+        "lane-1",
+        "--provider",
+        "codex",
+        "--arg-json",
+        "permissionMode=123",
+        "--print-config",
+      ]),
+    ).toThrow(/permissionMode must be one of default, auto, plan, edit, full-auto, or config-toml\./);
+  });
+
+  // A falsy-but-present parent id used to slip past the shell lineage rule,
+  // because the rule tested truthiness. It is a shape error first: `0` is not
+  // the id of anything.
+  it("rejects a non-string orchestrationParentSessionId that arrives via --arg-json", () => {
+    expect(() =>
+      buildCliPlan([
+        "new",
+        "chat",
+        "--mode",
+        "cli",
+        "--lane",
+        "lane-1",
+        "--provider",
+        "shell",
+        "--arg-json",
+        "orchestrationParentSessionId=0",
+        "--print-config",
+      ]),
+    ).toThrow(/orchestrationParentSessionId must be the id of the parent chat session\./);
+  });
+
+  // `null` means "unset" for every launch-identity field, not "send a null the
+  // runtime has to re-interpret".
+  it("drops an explicit null droidPermissionMode and spawnKind instead of sending them", () => {
+    const plan = buildCliPlan([
+      "chat",
+      "create",
+      "--lane",
+      "lane-1",
+      "--provider",
+      "codex",
+      "--arg",
+      "droidPermissionMode=null",
+      "--arg",
+      "spawnKind=null",
+      "--print-config",
+    ]);
+    const input = (expectStaticPlan(plan).value as { input: Record<string, unknown> }).input;
+    expect(input).not.toHaveProperty("droidPermissionMode");
+    expect(input).not.toHaveProperty("spawnKind");
+  });
+
+  // The same two rules reached through a real command line, on both surfaces
+  // that build a launch bag.
+  it("rejects an --arg parent with no spawn kind on new chat", () => {
+    expect(() =>
+      buildCliPlan([
+        "new",
+        "chat",
+        "--mode",
+        "cli",
+        "--lane",
+        "lane-1",
+        "--provider",
+        "codex",
+        "--no-parent",
+        "--arg",
+        "orchestrationParentSessionId=sess-x",
+        "--print-config",
+      ]),
+    ).toThrow(/--type is required for a parented agent spawn/);
+  });
+
+  it("rejects an --arg parent with no spawn kind on chat create", () => {
+    expect(() =>
+      buildCliPlan([
+        "chat",
+        "create",
+        "--lane",
+        "lane-1",
+        "--provider",
+        "codex",
+        "--no-parent",
+        "--arg",
+        "orchestrationParentSessionId=sess-x",
+        "--print-config",
+      ]),
+    ).toThrow(/--type is required for a parented agent spawn/);
+  });
+
+  it("rejects an --arg spawn kind with no parent", () => {
+    expect(() =>
+      buildCliPlan([
+        "chat",
+        "create",
+        "--lane",
+        "lane-1",
+        "--provider",
+        "codex",
+        "--no-parent",
+        "--arg",
+        "spawnKind=subagent",
+        "--print-config",
+      ]),
+    ).toThrow(/--type requires a parent session/);
+  });
+
+  // The arg bag is untyped JSON, so a provider can arrive as a number or an
+  // array. `["claude"]` used to stringify to `claude`; a bag value that is not
+  // a string is a typo, not a profile, and is as unlaunchable as a misspelt
+  // one — it must fail the same way rather than skipping the gate.
+  it.each([
+    { label: "a number on ade new cli", command: ["new", "cli"], provider: 123 },
+    { label: "an array on chat create", command: ["chat", "create"], provider: ["claude"] },
+  ])("rejects $label arriving via --input-json", ({ command, provider }) => {
+    expect(() =>
+      buildCliPlan([
+        ...command,
+        "--lane",
+        "lane-1",
+        "--print-config",
+        "--input-json",
+        JSON.stringify({ provider }),
+      ]),
+    ).toThrow(/provider must be one of/);
+  });
+
+  it("rejects a non-string instanceId that arrives via --arg-json", () => {
+    expect(() =>
+      buildCliPlan([
+        "chat",
+        "create",
+        "--lane",
+        "lane-1",
+        "--provider",
+        "claude",
+        "--arg-json",
+        "instanceId=123",
+        "--print-config",
+      ]),
+    ).toThrow(/instanceId must be the id of a provider account/);
+  });
+
+  it("drops a whitespace-only instanceId instead of sending it", () => {
+    // "  " is nobody's account id. Sending it would have the runtime hunt for
+    // an account by that name instead of using the provider's default.
+    const plan = buildCliPlan([
+      "chat",
+      "create",
+      "--lane",
+      "lane-1",
+      "--provider",
+      "claude",
+      "--arg",
+      "instanceId=  ",
+      "--print-config",
+    ]);
+    expect((expectStaticPlan(plan).value as { input: Record<string, unknown> }).input)
+      .not.toHaveProperty("instanceId");
+  });
+
+  it("treats an explicit null provider as unset rather than a way past the rules", () => {
+    // `--arg provider=null` is the same request as `--arg provider=`: it means
+    // "unset", so the flag's provider is restored and the single-identity rule
+    // still sees the `cursor` this command actually launches under.
+    expect(() =>
+      buildCliPlan([
+        "chat",
+        "create",
+        "--lane",
+        "lane-1",
+        "--provider",
+        "cursor",
+        "--instance",
+        "work",
+        "--arg",
+        "provider=null",
+        "--print-config",
+      ]),
+    ).toThrow(/--instance names a Claude or Codex account/);
+  });
+
+  it("drops an explicit null instanceId instead of sending it", () => {
+    const plan = buildCliPlan([
+      "chat",
+      "create",
+      "--lane",
+      "lane-1",
+      "--provider",
+      "claude",
+      "--arg",
+      "instanceId=null",
+      "--print-config",
+    ]);
+    expect((expectStaticPlan(plan).value as { input: Record<string, unknown> }).input)
+      .not.toHaveProperty("instanceId");
+  });
+
+  it("omits provider entirely when chat create names none", () => {
+    // Same omit-when-unset convention as instanceId: no key at all, not a null
+    // the runtime would have to re-interpret.
+    const plan = buildCliPlan([
+      "chat",
+      "create",
+      "--lane",
+      "lane-1",
+      "--print-config",
+    ]);
+    expect((expectStaticPlan(plan).value as { input: Record<string, unknown> }).input)
+      .not.toHaveProperty("provider");
+  });
+
+  it("restores the flag's provider when --arg provider= blanks the bag", () => {
+    // `--arg provider=` means "unset", not "launch under the empty provider".
+    // The account the command also named stays, because `claude` can use it.
+    const plan = buildCliPlan([
+      "chat",
+      "create",
+      "--lane",
+      "lane-1",
+      "--provider",
+      "claude",
+      "--instance",
+      "work",
+      "--arg",
+      "provider=",
+      "--print-config",
+    ]);
+    expect((expectStaticPlan(plan).value as { input: Record<string, unknown> }).input)
+      .toMatchObject({ provider: "claude", instanceId: "work" });
+  });
+
+  it("restores ade new chat's default provider when --arg provider= blanks the bag", () => {
+    const plan = buildCliPlan([
+      "new",
+      "chat",
+      "--lane",
+      "lane-1",
+      "--arg",
+      "provider=",
+      "--print-config",
+    ]);
+    expect((expectStaticPlan(plan).value as { launch: Record<string, unknown> }).launch.provider)
+      .toBe("codex");
+  });
+
+  it("lets --arg instanceId= clear an --instance a provider could not use", () => {
+    // The bag wins the merge, so blanking the account leaves nothing for the
+    // Claude/Codex-only rule to reject.
+    const plan = buildCliPlan([
+      "chat",
+      "create",
+      "--lane",
+      "lane-1",
+      "--provider",
+      "cursor",
+      "--instance",
+      "work",
+      "--arg",
+      "instanceId=",
+      "--print-config",
+    ]);
+    const input = (expectStaticPlan(plan).value as { input: Record<string, unknown> }).input;
+    expect(input).not.toHaveProperty("instanceId");
+    expect(input.provider).toBe("cursor");
+  });
+
+  it("normalizes a provider that arrives via --input-json on ade new cli", () => {
+    const plan = buildCliPlan([
+      "new",
+      "cli",
+      "--lane",
+      "lane-1",
+      "--print-config",
+      "--input-json",
+      JSON.stringify({ provider: "CODEX" }),
+    ]);
+    expect(plan).toMatchObject({ value: { launch: { provider: "codex" } } });
   });
 
   it("accepts ACP providers for new chat", () => {
@@ -3905,12 +4502,6 @@ describe("ADE CLI", () => {
   });
 
   describe("chat create parent lineage", () => {
-    const savedParentEnv = process.env.ADE_CHAT_SESSION_ID;
-    afterEach(() => {
-      if (savedParentEnv === undefined) delete process.env.ADE_CHAT_SESSION_ID;
-      else process.env.ADE_CHAT_SESSION_ID = savedParentEnv;
-    });
-
     const dryRunCreate = (...extra: string[]) =>
       buildCliPlan([
         "chat", "create",
@@ -4094,6 +4685,36 @@ describe("ADE CLI", () => {
         },
       ],
     });
+  });
+
+  it("canonicalises the create provider and rejects one that is not a launch profile", () => {
+    // The brain compares provider literals, so a mis-cased name has to be
+    // normalised here or the session launches as an unknown provider.
+    const plan = buildCliPlan([
+      "chat",
+      "create",
+      "--lane",
+      "lane-1",
+      "--provider",
+      "Claude",
+      "--instance",
+      "work",
+      "--print-config",
+    ]);
+    expect(expectStaticPlan(plan).value).toMatchObject({
+      action: "chat.createSession",
+      input: { provider: "claude", instanceId: "work" },
+    });
+
+    expect(() => buildCliPlan([
+      "chat",
+      "create",
+      "--lane",
+      "lane-1",
+      "--provider",
+      "claud",
+      "--print-config",
+    ])).toThrow(/provider must be one of/);
   });
 
   it("previews the Cursor mode a create actually persists", () => {
@@ -9882,6 +10503,74 @@ describe("ADE CLI", () => {
     });
   });
 
+  // `--start-chat` is the one launch surface outside `ade new`/`ade cli
+  // create`/`ade chat create`, so it runs the same merged-launch-arg rules:
+  // an unknown or mis-cased provider, a shell, a permission mode the provider
+  // has no answer for, and a Droid tier on a non-Droid chat are all refused
+  // here exactly as they are there.
+  it("runs the shared launch-arg rules for create-from-linear --start-chat", () => {
+    const baseArgs = [
+      "lanes",
+      "create-from-linear",
+      "--linear-issue-json",
+      '{"id":"issue-1","identifier":"ENG-431","title":"Fix OAuth"}',
+      "--start-chat",
+    ];
+    expect(() => buildCliPlan([...baseArgs, "--provider", "bogus"])).toThrow(
+      /provider must be one of/,
+    );
+    // A chat is never a shell session, the same way `ade chat create` refuses one.
+    expect(() => buildCliPlan([...baseArgs, "--provider", "shell"])).toThrow(
+      /provider must be one of/,
+    );
+    expect(() =>
+      buildCliPlan([...baseArgs, "--provider", "claude", "--droid-autonomy", "agi"]),
+    ).toThrow(/Droid autonomy is only supported for Droid sessions/);
+    expect(() =>
+      buildCliPlan([...baseArgs, "--provider", "claude", "--permission-mode", "bogus"]),
+    ).toThrow(/permissionMode must be one of/);
+
+    // The brain compares provider literals, so a mis-cased spelling has to
+    // reach the wire canonicalised rather than verbatim.
+    const plan = expectExecutePlan(buildCliPlan([...baseArgs, "--provider", "Claude"]));
+    const chatParams = (plan.steps[1]?.params as (v: Record<string, unknown>) => Record<string, unknown>)({
+      lane: { domain: "lane", action: "create", result: { lane: { id: "lane-new" } } },
+    });
+    expect(chatParams).toMatchObject({
+      arguments: { args: { provider: "claude" } },
+    });
+  });
+
+  // Without `--start-chat` this command launches nothing, so a lineage flag
+  // has no session to record. Silently ignoring it loses the parentage the
+  // caller asked for.
+  it("rejects create-from-linear spawn-lineage flags without --start-chat", () => {
+    const baseArgs = [
+      "lanes",
+      "create-from-linear",
+      "--linear-issue-json",
+      '{"id":"issue-1","identifier":"ENG-431","title":"Fix OAuth"}',
+    ];
+    // The error names the flag the caller actually wrote, not a fixed two of
+    // the five spellings it covers.
+    expect(() => buildCliPlan([...baseArgs, "--type", "subagent"])).toThrow(
+      /^--type requires --start-chat: without a chat to launch/,
+    );
+    expect(() => buildCliPlan([...baseArgs, "--chat-parent", "parent-chat-1"])).toThrow(
+      /^--chat-parent requires --start-chat: without a chat to launch/,
+    );
+    expect(() => buildCliPlan([...baseArgs, "--spawn-type", "peer"])).toThrow(
+      /^--spawn-type requires --start-chat/,
+    );
+    // `--flag=value` is refused by the same scan, and the message names the
+    // flag without the value glued to it.
+    expect(() => buildCliPlan([...baseArgs, "--parent-session-id=chat-1"])).toThrow(
+      /^--parent-session-id requires --start-chat/,
+    );
+    // `--parent` on this command is the parent LANE, which needs no chat.
+    expect(() => buildCliPlan([...baseArgs, "--parent", "lane-parent"])).not.toThrow();
+  });
+
   it("builds a per-issue create_lane step for batch-create-from-linear", () => {
     const plan = buildCliPlan([
       "lanes",
@@ -15551,13 +16240,17 @@ describe("ade providers accounts", () => {
 });
 
 describe("--instance threads a provider account into chat launches", () => {
+  // The spawn-lineage flags are read before the --instance rule, so an ambient
+  // parent session id would answer these commands with the lineage usage error
+  // instead of the one under test.
+  useNoAmbientChatSession();
+
   it("carries instanceId into chat create and both ade new chat modes", () => {
     const create = expectStaticPlan(buildCliPlan([
       "chat", "create",
       "--lane", "lane-1",
       "--provider", "claude",
       "--instance", "work",
-      "--no-parent",
       "--print-config",
     ]));
     expect((create.value as { input: Record<string, unknown> }).input.instanceId).toBe("work");
@@ -15568,7 +16261,6 @@ describe("--instance threads a provider account into chat launches", () => {
       "--lane", "lane-1",
       "--provider", "claude",
       "--instance", "work",
-      "--no-parent",
       "--print-config",
     ]));
     expect((chatMode.value as { launch: Record<string, unknown> }).launch.instanceId).toBe("work");
@@ -15579,7 +16271,6 @@ describe("--instance threads a provider account into chat launches", () => {
       "--lane", "lane-1",
       "--provider", "codex",
       "--instance", "work",
-      "--no-parent",
       "--print-config",
     ]));
     expect((cliMode.value as { launch: Record<string, unknown> }).launch.instanceId).toBe("work");
@@ -15590,7 +16281,27 @@ describe("--instance threads a provider account into chat launches", () => {
       "new", "chat", "--mode", "cli", "--lane", "lane-1", "--provider", "cursor", "--instance", "work",
     ])).toThrow(/single identity per machine/);
     expect(() => buildCliPlan([
-      "chat", "create", "--lane", "lane-1", "--provider", "droid", "--instance", "work", "--no-parent",
+      "chat", "create", "--lane", "lane-1", "--provider", "droid", "--instance", "work",
+    ])).toThrow(/single identity per machine/);
+  });
+
+  it("applies one provider check to every launch command", () => {
+    // `ade new`, `ade shell start-cli`, and `ade chat create` all
+    // read the selectors through the same helper, so the provider they
+    // validate against cannot drift apart between them.
+    const launches = [
+      ["new", "chat", "--mode", "chat", "--lane", "lane-1", "--provider", "opencode", "--instance", "work"],
+      ["shell", "start-cli", "opencode", "--lane", "lane-1", "--instance", "work"],
+      ["chat", "create", "--lane", "lane-1", "--provider", "opencode", "--instance", "work"],
+    ];
+    for (const args of launches) {
+      expect(() => buildCliPlan([...args])).toThrow(/single identity per machine/);
+    }
+  });
+
+  it("checks the provider chat create was actually given, whatever its casing", () => {
+    expect(() => buildCliPlan([
+      "chat", "create", "--lane", "lane-1", "--provider", "Cursor", "--instance", "work",
     ])).toThrow(/single identity per machine/);
   });
 
@@ -15599,7 +16310,6 @@ describe("--instance threads a provider account into chat launches", () => {
       "chat", "create",
       "--lane", "lane-1",
       "--provider", "claude",
-      "--no-parent",
       "--print-config",
     ]));
     expect((create.value as { input: Record<string, unknown> }).input)
@@ -15804,5 +16514,74 @@ describe("--preset and --credential thread a harness brain into chat launches", 
     } finally {
       fs.rmSync(adeHome, { recursive: true, force: true });
     }
+  });
+});
+
+describe("tracked CLI session titles follow the merged provider", () => {
+  const argumentsOf = (argv: string[]): Record<string, unknown> => {
+    const plan = buildCliPlan(argv);
+    if (plan.kind !== "execute") throw new Error(`expected an execute plan, got ${plan.kind}`);
+    for (const step of plan.steps) {
+      const raw = step.params;
+      const params = (typeof raw === "function" ? raw({}) : raw) as
+        | { name?: unknown; arguments?: Record<string, unknown> }
+        | undefined;
+      if (params?.name === "start_cli_session") return params.arguments ?? {};
+    }
+    throw new Error("plan has no start_cli_session step");
+  };
+
+  it("titles `shell start-cli` from the provider --arg won the merge with", () => {
+    expect(argumentsOf(["shell", "start-cli", "shell", "--lane", "lane-1"]).title).toBe("Shell");
+    expect(
+      argumentsOf([
+        "shell", "start-cli", "shell", "--lane", "lane-1", "--no-parent",
+        "--arg", "provider=codex",
+      ]).title,
+    ).toBe("Codex");
+  });
+
+  it("titles `new chat --mode cli` from the merged provider too", () => {
+    expect(
+      argumentsOf([
+        "new", "chat", "--mode", "cli", "--lane", "lane-1", "--provider", "shell",
+      ]).title,
+    ).toBe("Shell");
+    expect(
+      argumentsOf([
+        "new", "chat", "--mode", "cli", "--lane", "lane-1", "--provider", "shell",
+        "--no-parent", "--arg", "provider=codex",
+      ]).title,
+    ).toBe("Codex");
+  });
+
+  it("keeps an explicit title from either channel", () => {
+    expect(
+      argumentsOf([
+        "shell", "start-cli", "shell", "--lane", "lane-1", "--title", "Deploy box",
+        "--no-parent", "--arg", "provider=codex",
+      ]).title,
+    ).toBe("Deploy box");
+    expect(
+      argumentsOf([
+        "shell", "start-cli", "shell", "--lane", "lane-1", "--arg", "title=Deploy box",
+      ]).title,
+    ).toBe("Deploy box");
+  });
+});
+
+describe("findFlagName", () => {
+  it("returns the matched flag NAME for a bare and a joined spelling", () => {
+    expect(findFlagName(["--type", "subagent"], ["--type", "--spawn-type"])).toBe("--type");
+    expect(findFlagName(["--type=subagent"], ["--type", "--spawn-type"])).toBe("--type");
+    expect(findFlagName(["--spawn-type=peer"], ["--type", "--spawn-type"])).toBe("--spawn-type");
+  });
+
+  it("does not match a longer flag that merely starts with the name", () => {
+    expect(findFlagName(["--typeface", "serif"], ["--type"])).toBeNull();
+  });
+
+  it("returns null when no spelling is written", () => {
+    expect(findFlagName(["--provider", "codex"], ["--type", "--chat-parent"])).toBeNull();
   });
 });

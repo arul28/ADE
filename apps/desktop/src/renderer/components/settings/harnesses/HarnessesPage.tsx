@@ -15,7 +15,7 @@ import {
   type HarnessPresetMissing,
 } from "../../../../shared/harnessPresets";
 import { COLORS, SANS_FONT, formatTimestamp, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
-import { CustomHammerMark } from "../../shared/CustomHammerMark";
+import { CustomToolMark } from "../../shared/CustomToolMark";
 import { HarnessLogo } from "../../shared/HarnessLogo";
 import { HelpHint } from "../primitives/HelpHint";
 import {
@@ -246,7 +246,7 @@ export function HarnessesPage({ onBack }: { onBack?: () => void }) {
               <ArrowLeft size={13} weight="bold" />
             </button>
           ) : null}
-          <CustomHammerMark size={18} />
+          <CustomToolMark size={18} />
         </span>
       }
       titleAdornment={<HelpHint text={CUSTOM_HELP} />}

@@ -53,6 +53,30 @@ const connection: ProxySubscriptionProviderConnection = {
  * HTTP-fixture management-client test and the supervisor keep their own files.
  */
 describe("proxy action handlers", () => {
+  it("reads its analytics sink at capture time, not at wiring time", async () => {
+    // The brain builds the proxy lazily, before its analytics service exists.
+    // A sink captured when the service was wired would be null forever.
+    const captured: Array<Record<string, unknown>> = [];
+    let analytics: { captureInternal: (input: unknown) => void } | null = null;
+    let running = false;
+    const service = createProxyService({
+      supervisor: {
+        getStatus: () => ({ ...makeStatus(), running }),
+        ensureRunning: async () => { running = true; return { ...makeStatus(), running: true }; },
+        stop: async () => undefined,
+      },
+      managementClientFactory: () => ({ listAuthFiles: async () => [] } as never),
+      getAnalytics: () => analytics,
+    });
+    analytics = { captureInternal: (input) => { captured.push(input as Record<string, unknown>); } };
+    await service.ensureRunning();
+    expect(captured).toHaveLength(1);
+    expect(captured[0]).toMatchObject({
+      surface: "api",
+      properties: { feature: "proxy", action: "start", outcome: "completed" },
+    });
+  });
+
   it("uses the mocked management client for status, OAuth, logout, and disable", async () => {
     let clock = 0;
     let files: CliProxyApiAuthFile[] = [];

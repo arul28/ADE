@@ -13,7 +13,7 @@ import { harnessPermissionLabel } from "../../settings/harnesses/harnessPermissi
 import { harnessModelLabel } from "../../settings/harnesses/harnessModels";
 import { loadHarnessAccounts } from "../../settings/harnesses/harnessSources";
 import { bodyLogoFamily, PresetAgent, PresetModels } from "../../settings/harnesses/presetFacts";
-import { CustomHammerMark } from "../CustomHammerMark";
+import { CustomToolMark } from "../CustomToolMark";
 import { HarnessLogo } from "../HarnessLogo";
 import { ProviderLogo } from "../ProviderLogos";
 import { cn } from "../../ui/cn";
@@ -235,7 +235,7 @@ export function HarnessPresetEmptyState({
       data-harness-preset-empty=""
       className="flex h-full min-h-[200px] flex-col items-center justify-center gap-1.5 px-4 py-6 text-center"
     >
-      <CustomHammerMark size={22} />
+      <CustomToolMark size={22} />
       <span className="text-[12px] font-semibold text-fg/80">
         {searchActive ? "Nothing custom matches your search." : "Nothing custom yet"}
       </span>

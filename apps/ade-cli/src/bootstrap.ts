@@ -827,7 +827,8 @@ export async function createAdeRuntime(args: {
     if (!proxyService) {
       proxyService = createProxyService({
         adeHome: resolveMachineAdeLayout().adeDir,
-        analytics: productAnalyticsForProxy,
+        // `productAnalyticsForProxy` is assigned further below.
+        getAnalytics: () => productAnalyticsForProxy,
       });
       teardown.push(() => proxyService?.dispose() ?? Promise.resolve());
     }

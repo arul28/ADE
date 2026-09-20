@@ -5,6 +5,10 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { findSmartLinks } from "../../../../desktop/src/shared/smartLinks";
 import {
+  RESET_CREDIT_OUTCOME_TEXT,
+  resetCreditOutcomeText,
+} from "../../../../desktop/src/shared/usageResetCredit";
+import {
   CLAUDE_TERMINAL_SUBMIT_CONFIRM_DELAY_MS,
   clampChatScrollOffsetRows,
   cycleLaneDeleteScope,
@@ -601,6 +605,28 @@ describe("usage reset credit selection", () => {
     expect(selectedUsageResetCreditAccountId(rows, 1)).toBe("codex:two");
     expect(selectedUsageResetCreditAccountId(rows, 99)).toBe("codex:two");
     expect(selectedUsageResetCreditAccountId([], 0)).toBeNull();
+  });
+
+  it("reports the outcome in the same words the desktop usage popup uses", () => {
+    // The TUI notice is rendered from the shared helper rather than its own
+    // copy, so a person who presses `r` here and clicks Use reset there is
+    // told the same thing about the same server answer.
+    expect(resetCreditOutcomeText({ ok: true, status: "reset" }))
+      .toBe(RESET_CREDIT_OUTCOME_TEXT.reset);
+    expect(resetCreditOutcomeText({ ok: false, status: "nothingToReset" }))
+      .toBe(RESET_CREDIT_OUTCOME_TEXT.nothingToReset);
+    expect(resetCreditOutcomeText({ ok: false, status: "noCredit" }))
+      .toBe(RESET_CREDIT_OUTCOME_TEXT.noCredit);
+    expect(resetCreditOutcomeText({ ok: false, status: "alreadyRedeemed" }))
+      .toBe(RESET_CREDIT_OUTCOME_TEXT.alreadyRedeemed);
+    // A host that cannot spend credits answers with prose and no status.
+    expect(resetCreditOutcomeText({ ok: false, message: "This machine cannot spend credits." }))
+      .toBe("This machine cannot spend credits.");
+    expect(resetCreditOutcomeText(null)).toBe(RESET_CREDIT_OUTCOME_TEXT.failure);
+    // The notice tone and the optimistic credit-row removal are both derived
+    // from this text, so a contradictory `ok` must not read as a reset.
+    expect(resetCreditOutcomeText({ ok: true, status: "failure" }))
+      .toBe(RESET_CREDIT_OUTCOME_TEXT.failure);
   });
 });
 

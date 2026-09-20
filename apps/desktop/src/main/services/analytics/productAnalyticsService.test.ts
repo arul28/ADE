@@ -21,7 +21,7 @@ import {
   captureFeatureUsedAnalytics,
   capturePendingInputDismissedAnalytics,
   capturePresetAnalytics,
-  captureProviderAccountAnalytics,
+  providerAccountAnalyticsCapture,
   captureResetCreditAnalytics,
   coarseProviderFamily,
 } from "./featureProductAnalytics";
@@ -1601,13 +1601,7 @@ describe("product analytics producers", () => {
     const captures: ProductAnalyticsCapture[] = [];
     const analytics = settledAnalytics(captures);
 
-    captureProviderAccountAnalytics({
-      analytics,
-      surface: "api",
-      action: "account_created",
-      outcome: "completed",
-      provider: "claude",
-    });
+    providerAccountAnalyticsCapture(analytics, "api")("account_created", "completed", "claude");
     captureApiCredentialAnalytics({
       analytics,
       surface: "desktop",

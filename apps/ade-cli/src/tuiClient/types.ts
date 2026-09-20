@@ -1,3 +1,4 @@
+import type { LaunchIdentity } from "./launchIdentity";
 import type { AppNavigationRequest, AppNavigationResult } from "../../../desktop/src/shared/types/core";
 import type {
   AgentChatClaudePermissionMode,
@@ -116,12 +117,8 @@ export type AdeCodeProvider =
  */
 export type AdeCodeInterfaceMode = "chat" | "cli";
 
-export type AdeCodeModelState = {
+export type AdeCodeModelState = Partial<LaunchIdentity> & {
   provider: AdeCodeProvider;
-  /** Provider account/preset/credential selected for the next launch. */
-  instanceId?: string | null;
-  presetId?: string | null;
-  credentialId?: string | null;
   /** Draft-only: whether the next chat launches as an SDK chat or a tracked CLI terminal. */
   interfaceMode: AdeCodeInterfaceMode;
   model: string;

@@ -389,11 +389,7 @@ struct SettingsUsagePage: View {
               accounts: pooledAccounts(snapshot),
               status: snapshot.providerStatus?[provider],
               spendControlReached: provider == "codex" && snapshot.spendControlReached == true,
-              // Codex is the only provider that grants reset credits today, so
-              // every other provider gets an empty list and renders nothing.
-              resetCredits: (snapshot.accounts ?? []).filter {
-                $0.provider == provider && ($0.resetCredits?.availableCount ?? 0) > 0
-              }
+              resetCredits: resetCreditAccounts(in: snapshot, provider: provider)
             )
           }
         }

@@ -467,6 +467,42 @@ describe("apiKeyStore", () => {
     expect(credentialStore.values.has(`ai.api_key.openai#${credentialId}.v1`)).toBe(false);
   });
 
+  it("only reports a credential removal that actually removed something", async () => {
+    const captured: Array<Record<string, unknown>> = [];
+    const analytics = { captureInternal: (input: unknown) => { captured.push(input as Record<string, unknown>); } };
+    const credentialStore = new MemoryCredentialStore();
+    const store = await loadStoreModule();
+    store.initApiKeyStore(tempRoot, { credentialStore, analytics });
+
+    // Removing what was never stored is a no-op, not a completed removal:
+    // capturing it would inflate the funnel with phantom events.
+    store.removeApiCredential("openai", "never-stored");
+    expect(captured).toEqual([]);
+
+    store.storeApiKey("openai", "sk-real-secret");
+    store.removeApiCredential("openai");
+    expect(captured).toHaveLength(1);
+    expect(captured[0]).toMatchObject({
+      properties: { feature: "api_credentials", action: "credential_removed", outcome: "completed" },
+    });
+
+    // The cleanup is idempotent, so a second remove must stay silent.
+    store.removeApiCredential("openai");
+    expect(captured).toHaveLength(1);
+  });
+
+  it("exports one canonical storage key so other packages cannot re-derive it", async () => {
+    const store = await loadStoreModule();
+    expect(store.credentialStorageKey("OpenAI")).toBe("openai");
+    expect(store.credentialStorageKey("openai", "open-router-a1b2c3")).toBe("openai#open-router-a1b2c3");
+    // Unsafe or separator-bearing ids resolve to no key at all rather than to
+    // a key that would address a different credential.
+    expect(store.credentialStorageKey("openai", "a#b")).toBe("");
+    expect(store.credentialStorageKey("openai", "../escape")).toBe("");
+    expect(store.credentialStorageKey("", "default")).toBe("");
+    expect(store.API_CREDENTIALS_INDEX_KEY).toBe("ai.api_credentials.index.v1");
+  });
+
   it("rejects credential ids that collide case-insensitively for one provider", async () => {
     delete process.env.OPENAI_API_KEY;
     const credentialStore = new MemoryCredentialStore();

@@ -5,8 +5,8 @@
 > wizard. "Harness preset" is the internal name and stays in the ids, the
 > types, the file format (`.ade-harness.json`) and this document's headings,
 > because renaming storage to match copy breaks every saved link and every
-> exported file. The mark is a purple hammer
-> (`renderer/components/shared/CustomHammerMark.tsx`), never the ADE logo.
+> exported file. The mark is a purple gear-and-wrench mark
+> (`renderer/components/shared/CustomToolMark.tsx`), never the ADE logo.
 
 A harness is a saved pairing of a **body** — the agent ADE runs — and a
 **brain** — where that agent gets its intelligence. It carries the model, the
@@ -58,7 +58,7 @@ The wizard is three steps.
    Pinning a built-in to a specific model shows the note that the agent now
    runs on ADE's copy of Anthropic's prompt and stops tracking Claude Code.
 3. **Name it.** Name, accent colour, and a logo tile — Default (the purple
-   hammer), provider logo,
+   gear-and-wrench mark), provider logo,
    Upload (which opens a round crop with drag and zoom and writes a 256×256
    PNG), and Generate when the host exposes a generator. A live preview chip
    shows the result.
@@ -102,7 +102,7 @@ it.
 ## Choosing one
 
 Every model picker has a **Custom** rail entry above Favorites and Recents,
-marked with the purple hammer at the same size as the provider logos beside it.
+marked with the purple gear-and-wrench mark at the same size as the provider logos beside it.
 The rows are drawn exactly like the provider model rows — mark, name, a chip
 naming the agent, one muted subtitle — and the caret expands each into a
 labelled panel: agent, source, models by role, built-in pins, and permission

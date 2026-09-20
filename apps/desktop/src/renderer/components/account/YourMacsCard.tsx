@@ -60,7 +60,7 @@ import {
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
-import { CustomHammerMark } from "../shared/CustomHammerMark";
+import { CustomToolMark } from "../shared/CustomToolMark";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { providerColor } from "../usage/providerColors";
 
@@ -1297,7 +1297,7 @@ export function YourMacsCard() {
                         </div>
                         <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
                           <InventoryGroupLabel>
-                            <CustomHammerMark size={13} />
+                            <CustomToolMark size={13} />
                             Custom
                           </InventoryGroupLabel>
                           {inventoryState.detail.presets.length === 0 ? (

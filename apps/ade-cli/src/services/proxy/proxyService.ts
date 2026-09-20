@@ -53,8 +53,13 @@ export type ProxyServiceOptions = {
   sleep?: (milliseconds: number) => Promise<void>;
   authTimeoutMs?: number;
   pollIntervalMs?: number;
-  /** Main/brain-owned product analytics; omitted in isolated CLI tests. */
-  analytics?: FeatureAnalytics | null;
+  /**
+   * Main/brain-owned product analytics, read at capture time. The accessor form
+   * is the only form: a caller that builds the proxy service lazily, before its
+   * analytics service exists, would otherwise capture the `null` that was in
+   * scope at wiring time. Omitted in isolated CLI tests.
+   */
+  getAnalytics?: () => FeatureAnalytics | null | undefined;
 };
 
 export type ProxyService = {
@@ -177,7 +182,7 @@ export function createProxyService(options: ProxyServiceOptions = {}): ProxyServ
     provider?: SubscriptionProxyProvider,
   ): void => {
     captureFeatureUsedAnalytics({
-      analytics: options.analytics,
+      analytics: options.getAnalytics?.(),
       surface: "api",
       feature: "proxy",
       action,

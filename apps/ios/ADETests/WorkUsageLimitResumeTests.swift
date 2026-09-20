@@ -1338,6 +1338,41 @@ final class WorkResetCreditNoticeTests: XCTestCase {
       workResetCreditOutcomeText(UsageConsumeResetCreditResponse(ok: false, status: "futureStatus", message: nil)),
       "Could not use the reset credit."
     )
+    // `failure` is the host's own name for "it did not happen", so a
+    // contradictory `ok: true` alongside it never reads as a reset; the host's
+    // sentence still outranks the generic line.
+    XCTAssertEqual(
+      workResetCreditOutcomeText(UsageConsumeResetCreditResponse(ok: true, status: "failure", message: nil)),
+      "Could not use the reset credit."
+    )
+    XCTAssertEqual(
+      workResetCreditOutcomeText(
+        UsageConsumeResetCreditResponse(
+          ok: false,
+          status: "failure",
+          message: "That Codex account is not signed in on this computer."
+        )
+      ),
+      "That Codex account is not signed in on this computer."
+    )
+    // ...and a contradictory `ok: true` alongside `failure` does not promote
+    // the host's sentence either: the message only outranks the generic line
+    // when the host also said the spend did not succeed. Mirrors the
+    // TypeScript, where the message branch is gated on `!result.ok`.
+    XCTAssertEqual(
+      workResetCreditOutcomeText(
+        UsageConsumeResetCreditResponse(ok: true, status: "failure", message: "X")
+      ),
+      "Could not use the reset credit."
+    )
+    // An unknown status with `ok: true` still reads as applied even when the
+    // host attached prose, exactly as the TypeScript does.
+    XCTAssertEqual(
+      workResetCreditOutcomeText(
+        UsageConsumeResetCreditResponse(ok: true, status: "future", message: "X")
+      ),
+      "Reset applied. Your windows have cleared."
+    )
   }
 
   // MARK: - Timeline card
@@ -1385,5 +1420,52 @@ final class WorkResetCreditNoticeTests: XCTestCase {
      "message":"Approaching the weekly limit."}
     """))
     XCTAssertNil(cards.first { $0.kind == "resetCredit" })
+  }
+
+  // MARK: - Shared account filter
+
+  /// `resetCreditAccounts(in:provider:)` is the single filter behind both the
+  /// Work Limits module and the Settings Usage page. It was copied between the
+  /// two, so this pins the rule once: the provider must match AND a credit must
+  /// actually be available — a zero count, a missing `resetCredits` block, and
+  /// another provider's banked credit all render nothing.
+  func testResetCreditAccountsFiltersByProviderAndAvailability() throws {
+    let snapshot = try JSONDecoder().decode(
+      MobileUsageQuotaSnapshot.self,
+      from: Data("""
+      {"windows":[],"lastPolledAt":"2026-07-08T00:00:00.000Z","errors":[],
+       "accounts":[
+         {"id":"codex:one","provider":"codex","machines":[],
+          "resetCredits":{"availableCount":1}},
+         {"id":"codex:spent","provider":"codex","machines":[],
+          "resetCredits":{"availableCount":0}},
+         {"id":"codex:legacy","provider":"codex","machines":[]},
+         {"id":"claude:one","provider":"claude","machines":[],
+          "resetCredits":{"availableCount":2}}
+       ]}
+      """.utf8)
+    )
+
+    XCTAssertEqual(
+      resetCreditAccounts(in: snapshot, provider: "codex").map(\.id),
+      ["codex:one"]
+    )
+    XCTAssertEqual(
+      resetCreditAccounts(in: snapshot, provider: "claude").map(\.id),
+      ["claude:one"]
+    )
+    XCTAssertTrue(resetCreditAccounts(in: snapshot, provider: "gemini").isEmpty)
+  }
+
+  /// A host that predates the account directory sends no `accounts` at all.
+  /// That is not an error and not a credit — it is an empty list.
+  func testResetCreditAccountsIsEmptyWhenTheHostSendsNoAccounts() throws {
+    let snapshot = try JSONDecoder().decode(
+      MobileUsageQuotaSnapshot.self,
+      from: Data("""
+      {"windows":[],"lastPolledAt":"2026-07-08T00:00:00.000Z","errors":[]}
+      """.utf8)
+    )
+    XCTAssertTrue(resetCreditAccounts(in: snapshot, provider: "codex").isEmpty)
   }
 }

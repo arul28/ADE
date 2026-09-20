@@ -15926,7 +15926,9 @@ describe("createAgentChatService", () => {
         status: "stopped",
         finalSummary: "Workflow ended before this agent finished.",
         stopSource: "system",
-        stopReason: "the runtime process exited",
+        // The workflow reached its end; nothing crashed. This row used to read
+        // "the runtime process exited" because the helper defaulted to it.
+        stopReason: "the workflow ended",
       });
 
       // The terminal parent result carries a reconciled workflow snapshot even
@@ -19241,6 +19243,14 @@ describe("createAgentChatService", () => {
           type: "subagent_started", taskId: "sub-restart", agentId: "sub-restart",
           agentType: "Explore", parentToolUseId: "toolu_sub_r", description: "look", turnId: "turn-old",
         } as any },
+        // A backgrounded delegate is just as dead as a foreground one. The
+        // restart path used to skip these and leave them "running" forever,
+        // while the timer sweep closed the identical row.
+        { sessionId: session.id, timestamp: new Date().toISOString(), sequence: 4, event: {
+          type: "subagent_started", taskId: "sub-restart-bg", agentId: "sub-restart-bg",
+          agentType: "Explore", parentToolUseId: "toolu_sub_bg", description: "watch",
+          background: true, turnId: "turn-old",
+        } as any },
       ];
       vi.mocked(parseAgentChatTranscript).mockReturnValue(orphanTail);
 
@@ -19273,6 +19283,12 @@ describe("createAgentChatService", () => {
       expect(subStopped?.event).toMatchObject({
         stopSource: "system",
         stopReason: "the ADE brain restarted",
+      });
+      expect(events2.find((e) =>
+        e.event.type === "subagent_result"
+        && (e.event as any).taskId === "sub-restart-bg")?.event).toMatchObject({
+        status: "stopped",
+        stopSource: "system",
       });
 
       // Exactly one compact reconciliation system_notice, counting background tasks.

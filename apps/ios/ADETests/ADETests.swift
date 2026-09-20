@@ -7748,6 +7748,57 @@ final class ADETests: XCTestCase {
     }
   }
 
+  /// A controller device must be able to spend a banked reset credit.
+  ///
+  /// The host registers `usage.consumeResetCredit` as `viewerAllowed: false,
+  /// controllerAllowed: true`. Dropping `controllerAllowed` — which is exactly
+  /// what happened — leaves the gate reading "viewer only" for every paired
+  /// device, so the phone hides the "Use reset" button from the one device
+  /// class that is allowed to press it. Both halves are pinned here: the
+  /// controller grant opens the gate, and the bare `viewerAllowed: false`
+  /// still closes it.
+  @MainActor
+  func testUsageResetCreditIsInvokableForAControllerPolicy() async throws {
+    func service(policy: [String: Any]) throws -> SyncService {
+      let service = SyncService(database: makeControllerHydrationDatabase(baseURL: makeTemporaryDirectory()))
+      try service.applyHelloPayloadForTesting([
+        "brain": [
+          "deviceId": "host-1",
+          "deviceName": "Mac Studio",
+        ],
+        "features": [
+          "projectCatalog": false,
+          "commandRouting": [
+            "mode": "allowlisted",
+            "actions": [
+              [
+                "action": "usage.consumeResetCredit",
+                "policy": policy,
+              ],
+            ],
+          ],
+        ],
+      ])
+      service.configureConnectedTransportForTesting()
+      return service
+    }
+
+    let controller = try service(policy: ["viewerAllowed": false, "controllerAllowed": true])
+    XCTAssertTrue(controller.supportsRemoteAction("usage.consumeResetCredit"))
+    XCTAssertTrue(controller.supportsViewerRemoteAction("usage.consumeResetCredit"))
+    XCTAssertTrue(
+      controller.canInvokeRemoteAction("usage.consumeResetCredit"),
+      "A controller-allowed reset credit must stay tappable — hiding it is the regression."
+    )
+
+    // The same descriptor without the controller grant is still closed, so a
+    // host that really does mean host-only keeps the affordance hidden.
+    let viewerOnly = try service(policy: ["viewerAllowed": false])
+    XCTAssertTrue(viewerOnly.supportsRemoteAction("usage.consumeResetCredit"))
+    XCTAssertFalse(viewerOnly.supportsViewerRemoteAction("usage.consumeResetCredit"))
+    XCTAssertFalse(viewerOnly.canInvokeRemoteAction("usage.consumeResetCredit"))
+  }
+
   /// Dismissing a pending chat question is a host mutation too: keep the card
   /// visible to a viewer, but reject the tap before it reaches the transport.
   @MainActor

@@ -91,36 +91,6 @@ export const PROVIDER_COLOR_TABLE = {
     grok: "#DC2626",
     groq: "#06B6D4",
   },
-  modelDescriptor: {
-    "anthropic/claude-fable-5-1": "#D97706",
-    "anthropic/claude-opus-5": "#D97706",
-    "anthropic/claude-sonnet-5": "#8B5CF6",
-    "anthropic/claude-haiku-4-5": "#06B6D4",
-    "anthropic/claude-opus-4-8": "#D97706",
-    "openai/gpt-6-astra": "#10A37F",
-    "openai/gpt-5.6-sol": "#10A37F",
-    "openai/gpt-5.6-terra": "#22B88A",
-    "openai/gpt-5.6-luna": "#34D399",
-    "openai/gpt-5.5": "#10A37F",
-    "openai/gpt-5.4": "#10A37F",
-    "openai/gpt-5.4-mini": "#34D399",
-    "openai/gpt-5.3-codex": "#10B981",
-    "openai/gpt-5.3-codex-spark": "#22C55E",
-    "openai/gpt-5.2": "#059669",
-    "qwen/qwen3-coder-plus": "#6D4AFF",
-    "qwen/qwen3-coder-next": "#6D4AFF",
-    "qwen/qwen3.7-plus": "#5B3EE8",
-    "moonshot/k3": "#1F1F1F",
-    "moonshot/kimi-for-coding": "#1F1F1F",
-    "moonshot/kimi-for-coding-highspeed": "#3F3F46",
-    "xai/grok-4-6": "#DC2626",
-    "xai/grok-4-5": "#B91C1C",
-    "github-copilot/claude-sonnet-4.6": "#8B5CF6",
-    "github-copilot/claude-opus-4.6": "#7C3AED",
-    "github-copilot/gpt-5.4": "#6D28D9",
-    "github-copilot/gpt-5.3-codex": "#5B21B6",
-    "ollama/llama-3.3": "#71717A",
-  },
   localModel: {
     ollama: "#71717A",
     lmstudio: "#64748B",
@@ -190,7 +160,6 @@ export const PROVIDER_USAGE_FALLBACK_PALETTE = PROVIDER_COLOR_TABLE.usageFallbac
 export const PROVIDER_BADGE_COLORS = PROVIDER_COLOR_TABLE.badge;
 export const PROVIDER_GROUP_COLORS = PROVIDER_COLOR_TABLE.group;
 export const PROVIDER_CHAT_ACCENTS = PROVIDER_COLOR_TABLE.chat;
-export const MODEL_DESCRIPTOR_COLORS = PROVIDER_COLOR_TABLE.modelDescriptor;
 export const LOCAL_PROVIDER_MODEL_COLORS = PROVIDER_COLOR_TABLE.localModel;
 export const OPENCODE_PROVIDER_MODEL_COLORS: Record<string, string> = PROVIDER_COLOR_TABLE.openCodeProvider;
 export const ACP_PROVIDER_MODEL_COLORS = PROVIDER_COLOR_TABLE.acp;

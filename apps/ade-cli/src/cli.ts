@@ -145,6 +145,10 @@ import {
   AUTOMATIONS_COMING_SOON_MESSAGE,
   readAutomationsEnvOverride,
 } from "../../desktop/src/shared/automationAvailability";
+import {
+  API_CREDENTIALS_INDEX_KEY,
+  credentialStorageKey,
+} from "../../desktop/src/main/services/ai/apiKeyStore";
 import { DEFAULT_BUILT_IN_BROWSER_HANDOFF_TIMEOUT_MS } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserHandoff";
 import { parseLinearGraphQLInput } from "../../desktop/src/main/services/cto/linearGraphQLInput";
 import { longRunningLocalRuntimeActionTimeoutMs } from "../../desktop/src/main/services/localRuntime/localRuntimeTimeoutPolicy";
@@ -201,14 +205,26 @@ import {
   isTrackedCliPermissionMode,
   LAUNCH_PROFILE_TITLE,
   providerInstanceLaunchEnv,
-  validateLaunchProfilePermissionMode,
-  type LaunchProfile,
 } from "../../desktop/src/shared/cliLaunch";
+import {
+  collectLaunchArgs,
+  normalizeLaunchArgs,
+  readAgentSpawnLineage,
+  requireLaunchProfile,
+  spawnLineageLaunchArgs,
+  DROID_PERMISSION_MODE_ENUM_MESSAGE,
+  PERMISSION_MODE_ENUM_MESSAGE,
+} from "./launchArgs";
+import {
+  CHAT_PARENT_FLAGS,
+  DEFAULT_PARENT_FLAGS,
+  SPAWN_TYPE_FLAGS,
+} from "./launchFlagNames";
 import {
   previewHarnessLaunchPlan,
   type HarnessPresetLaunchDeps,
 } from "../../desktop/src/main/services/chat/harnessPresetLaunch";
-import { DEFAULT_API_CREDENTIAL_ID, type ApiCredentialSummary } from "../../desktop/src/shared/types/apiCredentials";
+import type { ApiCredentialSummary } from "../../desktop/src/shared/types/apiCredentials";
 import {
   createSyncAccountDirectoryHealth,
   type SyncMobileProjectSummary,
@@ -302,7 +318,7 @@ import {
 import type { BrainMemoryRestartGuard } from "./services/runtime/brainMemoryRestart";
 import { startBrainHeartbeat } from "./services/runtime/brainHeartbeat";
 
-type JsonObject = Record<string, unknown>;
+export type JsonObject = Record<string, unknown>;
 
 type SyncWebPairingCliOutput = {
   pairingUrl: string | null;
@@ -573,7 +589,19 @@ type CliConnection = {
   close: () => Promise<void> | void;
 };
 
-class CliUsageError extends Error {}
+export class CliUsageError extends Error {}
+
+/**
+ * Re-dress an error a shared validator threw as the usage error the CLI answers
+ * with, so a rule enforced by `@ade/shared` reads like every other usage error.
+ * Anything that is not an `Error` carries no message worth showing and is a
+ * programmer bug rather than a usage mistake, so it is rethrown untouched
+ * instead of being flattened into a string the user cannot act on.
+ */
+export function asCliUsageError(error: unknown): CliUsageError {
+  if (error instanceof Error) return new CliUsageError(error.message);
+  throw error;
+}
 
 class CliToolError extends Error {
   details: unknown;
@@ -3790,12 +3818,37 @@ function readDroidPermissionMode(args: string[]): AgentChatDroidPermissionMode |
   if (isAgentChatDroidPermissionMode(normalized)) {
     return normalized;
   }
-  throw new CliUsageError(
-    "droidPermissionMode must be one of read-only, auto-low, auto-medium, auto-high, or agi.",
-  );
+  throw new CliUsageError(DROID_PERMISSION_MODE_ENUM_MESSAGE);
 }
 
-function readValue(args: string[], names: string[]): string | null {
+/**
+ * The non-consuming half of `readValue`: the NAME from `names` that the first
+ * matching token in `args` spells, whether it was written bare (`--type`) or
+ * joined (`--type=peer`), or `null` when no token matches.
+ *
+ * Two callers need to know a flag was WRITTEN without taking it out of argv —
+ * `readAgentSpawnLineage` distinguishing an explicit parent from an ambient
+ * one, and `lanes create-from-linear` naming a lineage flag stranded without
+ * `--start-chat`. Both had their own inline `args.some(...)` / `args.find(...)`
+ * with the same bare-or-`=` shape, which is exactly how one of them ends up
+ * matching a prefix the other does not.
+ *
+ * The matched NAME is returned rather than a boolean so the stranded-flag error
+ * can name the spelling the caller typed, and rather than the raw token so no
+ * caller has to re-derive the name with `.split("=")[0]`.
+ */
+export function findFlagName(args: string[], names: readonly string[]): string | null {
+  for (const token of args) {
+    if (!token) continue;
+    const matched = names.find(
+      (name) => token === name || token.startsWith(`${name}=`),
+    );
+    if (matched) return matched;
+  }
+  return null;
+}
+
+export function readValue(args: string[], names: readonly string[]): string | null {
   for (let index = 0; index < args.length; index += 1) {
     const token = args[index];
     if (!token) continue;
@@ -3818,7 +3871,7 @@ function readValue(args: string[], names: string[]): string | null {
 }
 
 /** Repeatable option (`--file a --file b`), consumed like `readValue`. */
-function readRepeatedValues(args: string[], names: string[]): string[] {
+function readRepeatedValues(args: string[], names: readonly string[]): string[] {
   const values: string[] = [];
   for (;;) {
     const value = readValue(args, names);
@@ -3828,7 +3881,7 @@ function readRepeatedValues(args: string[], names: string[]): string[] {
   return values;
 }
 
-function readFlag(args: string[], names: string[]): boolean {
+export function readFlag(args: string[], names: readonly string[]): boolean {
   for (let index = 0; index < args.length; index += 1) {
     if (!names.includes(args[index]!)) continue;
     args.splice(index, 1);
@@ -3884,7 +3937,7 @@ function resolveSnoozeUntilIso(
   return resolved.untilIso;
 }
 
-function readCommandTextValue(args: string[], names: string[]): string | null {
+function readCommandTextValue(args: string[], names: readonly string[]): string | null {
   for (let index = 0; index < args.length; index += 1) {
     const token = args[index];
     if (!token) continue;
@@ -4088,7 +4141,7 @@ function buildAppControlHelp(args: string[]): string {
   return focused;
 }
 
-function collectGenericObjectArgs(
+export function collectGenericObjectArgs(
   args: string[],
   base: JsonObject = {},
 ): JsonObject {
@@ -4149,77 +4202,6 @@ function readChatStopMode(args: string[]): AgentChatStopMode {
   if (stopBackground) return "stop_and_background";
   if (keepQueue) return "stop_only";
   return "stop_and_clear";
-}
-
-/**
- * Parent chat-session lineage for spawned chat and agent-provider CLI
- * sessions. Defaults to the spawning agent's own session — ADE injects
- * ADE_CHAT_SESSION_ID into every tracked agent shell (chat runtimes and
- * tracked CLI/PTY sessions). `--parent <sessionId>` overrides the default;
- * `--no-parent` opts out entirely. CLI callers keep chatSessionId separate
- * because that field represents attached-terminal ownership, not lineage.
- */
-function readParentSessionId(
-  args: string[],
-  overrideFlags: string[] = ["--parent", "--parent-session", "--parent-session-id"],
-): string | undefined {
-  const override = readValue(args, overrideFlags);
-  const noParent = readFlag(args, ["--no-parent"]);
-  if (override && noParent) {
-    throw new CliUsageError("--parent cannot be combined with --no-parent.");
-  }
-  if (noParent) return undefined;
-  const explicit = override?.trim();
-  if (explicit) return explicit;
-  const env = process.env.ADE_CHAT_SESSION_ID?.trim();
-  return env?.length ? env : undefined;
-}
-
-type CliAgentSpawnKind = "subagent" | "peer";
-
-function readAgentSpawnLineage(
-  args: string[],
-  options: {
-    parentFlags?: string[];
-    missingParentMessage?: string;
-    allowSpawnType?: boolean;
-  } = {},
-): {
-  orchestrationParentSessionId: string | undefined;
-  spawnKind: CliAgentSpawnKind | undefined;
-} {
-  const parentFlags = options.parentFlags ?? ["--parent", "--parent-session", "--parent-session-id"];
-  const hasExplicitParentSessionId = args.some((token) =>
-    parentFlags.some((flag) => token === flag || token.startsWith(`${flag}=`)),
-  );
-  const orchestrationParentSessionId = readParentSessionId(args, parentFlags);
-  const spawnTypeArg = readValue(args, ["--type", "--spawn-type"]);
-  const normalizedSpawnKind = spawnTypeArg?.trim().toLowerCase();
-  if (normalizedSpawnKind && normalizedSpawnKind !== "subagent" && normalizedSpawnKind !== "peer") {
-    throw new CliUsageError("--type must be subagent or peer; silent spawn type 'none' is no longer supported.");
-  }
-  const spawnKind = normalizedSpawnKind as CliAgentSpawnKind | undefined;
-  if (options.allowSpawnType === false && spawnKind) {
-    throw new CliUsageError("--type applies only to agent providers; plain shell terminals do not record spawn lineage.");
-  }
-  if (options.allowSpawnType === false && hasExplicitParentSessionId) {
-    throw new CliUsageError("--parent applies only to agent providers; plain shell terminals do not record spawn lineage.");
-  }
-  if (options.allowSpawnType === false) {
-    return { orchestrationParentSessionId: undefined, spawnKind: undefined };
-  }
-  if (orchestrationParentSessionId && !spawnKind) {
-    throw new CliUsageError(
-      "--type is required for a parented agent spawn. Use --type subagent when you will need, join, or review the result (including parallel work); use --type peer only for fire-and-forget work. Use --no-parent only for an independent top-level session.",
-    );
-  }
-  if (!orchestrationParentSessionId && spawnKind) {
-    throw new CliUsageError(
-      options.missingParentMessage
-        ?? "--type requires a parent session. Remove --no-parent or omit --type for an independent top-level session.",
-    );
-  }
-  return { orchestrationParentSessionId, spawnKind };
 }
 
 type LaneNudgeGitResult = {
@@ -4608,7 +4590,7 @@ function parseReviewerRequestValues(args: string[]): {
 
 function readIntOption(
   args: string[],
-  names: string[],
+  names: readonly string[],
   fallback?: number,
 ): number | undefined {
   const value = readValue(args, names);
@@ -4663,7 +4645,7 @@ function readJsonFileOption(
   return parseJson(text, label);
 }
 
-function readTextFileOption(args: string[], names: string[], label: string): string | null {
+function readTextFileOption(args: string[], names: readonly string[], label: string): string | null {
   const filePath = readValue(args, names);
   if (filePath == null) return null;
   const resolvedPath = path.resolve(filePath);
@@ -4922,7 +4904,7 @@ function normalizeLinearGraphQLInput(input: JsonObject): JsonObject {
   try {
     return parseLinearGraphQLInput(input) as JsonObject;
   } catch (error) {
-    throw new CliUsageError(error instanceof Error ? error.message : String(error));
+    throw asCliUsageError(error);
   }
 }
 
@@ -5929,6 +5911,33 @@ function readChatLaunchConfig(args: string[]): JsonObject {
   return config;
 }
 
+
+/**
+ * The three launch-identity selectors every session-creating command accepts:
+ * which provider account signs in (`--instance`), and which saved brain the
+ * session launches under (`--preset` XOR `--credential`).
+ *
+ * One reader so the parsing, the flag aliases, and the usage error cannot drift
+ * between `ade new`, `ade shell start-cli`, and `ade chat create`. Call it AFTER
+ * `takeArgsAfterTerminator`, so a selector written after `--` stays part of the
+ * prompt rather than being consumed as a flag. The `--instance`/provider rule
+ * is not checked here: `collectLaunchArgs` owns it, because only the merged
+ * args know the provider the session actually launches under. Callers read the
+ * spawn-lineage flags first, so a command that gets both wrong is answered with
+ * the lineage error before the `--instance` one.
+ */
+function readLaunchIdentitySelectors(
+  args: string[],
+): { instanceId: string | null; presetId: string | null; credentialId: string | null } {
+  const instanceId = readValue(args, ["--instance", "--instance-id"])?.trim() || null;
+  const presetId = readValue(args, ["--preset", "--preset-id"])?.trim() || null;
+  const credentialId = readValue(args, ["--credential", "--credential-id"])?.trim() || null;
+  if (presetId && credentialId) {
+    throw new CliUsageError("--preset and --credential name two different brains. Pass one.");
+  }
+  return { instanceId, presetId, credentialId };
+}
+
 function readFastModeFlag(args: string[]): boolean | undefined {
   const fastRequested = readFlag(args, ["--fast", "--codex-fast"]);
   const standardRequested = readFlag(args, [
@@ -6040,47 +6049,52 @@ function buildNewPlan(args: string[]): CliPlan {
   return buildNewChatPlan(args, surface === "cli" ? "cli" : "chat");
 }
 
+/**
+ * Fill in the default session title from the MERGED provider.
+ *
+ * `--arg provider=…` wins the merge inside `collectLaunchArgs`, so a title
+ * picked from the FLAG provider beforehand names a launch that no longer
+ * happens: `ade shell start-cli shell --arg provider=codex` came out titled
+ * "Shell". Reading the provider back off the merged bag is the only reading
+ * that matches what the runtime is actually about to start.
+ *
+ * An explicit title always wins, from either channel: `--title` puts it in the
+ * base and `--arg title=…` puts it in the merge, and this only fills a blank.
+ */
+function applyMergedProviderTitle(input: JsonObject): void {
+  const existing = input.title;
+  if (typeof existing === "string" && existing.trim()) return;
+  const provider = input.provider;
+  if (typeof provider !== "string" || !isLaunchProfile(provider)) return;
+  const title = LAUNCH_PROFILE_TITLE[provider];
+  if (title) input.title = title;
+}
+
 function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan {
   const mode = readNewChatMode(args, defaultMode);
   const prompt = readNewChatPrompt(args);
   const lane = resolveNewChatLaneArgs(args, prompt);
-  const provider = readValue(args, ["--provider"])?.trim().toLowerCase() || "codex";
+  const providerRaw = readValue(args, ["--provider"]);
   const modelArg = readValue(args, ["--model", "--model-id"]);
   const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort", "--reasoning"]);
   const permissionMode = readValue(args, ["--permission-mode", "--permissions"]);
   const droidPermissionMode = readDroidPermissionMode(args);
   const fastMode = readFastModeFlag(args);
   const title = readValue(args, ["--title"]);
-  const instanceId = readValue(args, ["--instance", "--instance-id"])?.trim() || null;
-  const presetId = readValue(args, ["--preset", "--preset-id"])?.trim() || null;
-  const credentialId = readValue(args, ["--credential", "--credential-id"])?.trim() || null;
   const printConfig = readFlag(args, ["--print-config", "--dry-run"]);
 
-  if (!isLaunchProfile(provider)) {
-    throw new CliUsageError("Provider must be claude, codex, cursor, droid, opencode, pi, qwen, kimi, grok, copilot, or shell.");
-  }
-  if (mode === "chat" && provider === "shell") {
-    throw new CliUsageError("Chat mode provider must be claude, codex, cursor, droid, opencode, pi, qwen, kimi, grok, or copilot.");
-  }
-  if (droidPermissionMode && provider !== "droid") {
-    throw new CliUsageError("Droid autonomy is only supported for Droid chat sessions.");
-  }
-  if (instanceId && provider !== "claude" && provider !== "codex") {
-    throw new CliUsageError(
-      "--instance names a Claude or Codex account on this machine; other providers have a single identity per machine.",
-    );
-  }
-  if (presetId && credentialId) {
-    throw new CliUsageError("--preset and --credential name two different brains. Pass one.");
-  }
+  // One options object per surface, so the profile the flag is checked against
+  // and the profile the merged arg bag is checked against cannot drift.
+  const launchOpts = { allowShell: mode !== "chat" };
+  const provider = requireLaunchProfile(providerRaw, launchOpts) ?? "codex";
+  const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args);
   if (mode === "cli") {
     const effectivePermissionMode = permissionMode ?? "default";
     if (!isTrackedCliPermissionMode(effectivePermissionMode)) {
-      throw new CliUsageError(
-        "permissionMode must be one of default, auto, plan, edit, full-auto, or config-toml.",
-      );
+      throw new CliUsageError(PERMISSION_MODE_ENUM_MESSAGE);
     }
-    validateLaunchProfilePermissionMode(provider, effectivePermissionMode);
+    // The profile/mode pairing itself is checked on the merged bag inside
+    // `collectLaunchArgs`, where `--arg provider=…` can no longer slip past it.
   }
 
   const laneIdFor = (values: JsonObject): string => {
@@ -6095,18 +6109,16 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
   // Consume the flags in both modes so they never leak into the generic arg
   // bag. Both chat and CLI modes record the same spawn lineage fields; CLI
   // sessions keep chatSessionId free for true attached-terminal ownership.
-  const { orchestrationParentSessionId, spawnKind } = readAgentSpawnLineage(args, {
-    allowSpawnType: provider !== "shell",
-  });
+  const lineage = readAgentSpawnLineage(args, { allowSpawnType: provider !== "shell" });
+  const { base: lineageArgs, launchOptions } = spawnLineageLaunchArgs(lineage, launchOpts);
   const launchArgs = mode === "chat"
-    ? collectGenericObjectArgs(args, {
+    ? collectLaunchArgs(args, {
         provider,
         model: modelArg,
         modelId: modelArg,
         reasoningEffort,
         permissionMode,
-        ...(orchestrationParentSessionId ? { orchestrationParentSessionId } : {}),
-        ...(spawnKind ? { spawnKind } : {}),
+        ...lineageArgs,
         ...(droidPermissionMode ? { droidPermissionMode } : {}),
         title,
         surface: readValue(args, ["--surface"]) ?? "work",
@@ -6117,8 +6129,8 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
         ...(presetId ? { presetId } : {}),
         ...(credentialId ? { credentialId } : {}),
         ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
-      })
-    : collectGenericObjectArgs(args, {
+      }, launchOptions)
+    : collectLaunchArgs(args, {
         provider,
         permissionMode: permissionMode ?? "default",
         title,
@@ -6132,14 +6144,19 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
         ...(credentialId ? { credentialId } : {}),
         ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
         // Spawn lineage rides on resume metadata, which only agent providers
-        // have — plain shell terminals can't persist it, so don't pretend.
-        ...(provider !== "shell" && orchestrationParentSessionId ? { orchestrationParentSessionId } : {}),
-        ...(provider !== "shell" && spawnKind ? { spawnKind } : {}),
+        // have — plain shell terminals can't persist it, so don't pretend. A
+        // shell launch read the lineage with `allowSpawnType: false`, so
+        // `lineageArgs` is already empty for one.
+        ...lineageArgs,
         cols: readIntOption(args, ["--cols"], 120),
         rows: readIntOption(args, ["--rows"], 36),
         cwd: readValue(args, ["--cwd"]),
         tracked: !readFlag(args, ["--untracked"]),
-      });
+      }, launchOptions);
+  // Same reason as `shell start-cli`: a tracked CLI session is titled after the
+  // provider it actually starts under, which is only known once `--arg
+  // provider=…` has merged.
+  if (mode === "cli") applyMergedProviderTitle(launchArgs);
 
   if (printConfig) {
     const launchPreview = previewLaunchConfig(launchArgs, { mode });
@@ -6338,27 +6355,21 @@ type LaunchConfigPreview = {
   presetId: string | null;
 };
 
-const CLI_API_CREDENTIALS_INDEX_KEY = "ai.api_credentials.index.v1";
-
-function cliCredentialStorageKey(provider: string, credentialId: string): string {
-  return credentialId === DEFAULT_API_CREDENTIAL_ID
-    ? provider
-    : `${provider}#${credentialId}`;
-}
-
 function cliHarnessPreviewDeps(): HarnessPresetLaunchDeps {
   const adeHome = resolveMachineAdeDir();
   const store = new EncryptedFileCredentialStore({ secretsDir: resolveMachineAdeLayout().secretsDir });
   const readKey = (provider: string, credentialId: string): string | null => {
     try {
-      return store.getSync(`ai.api_key.${cliCredentialStorageKey(provider, credentialId)}.v1`)?.trim() || null;
+      const storageKey = credentialStorageKey(provider, credentialId);
+      if (!storageKey) return null;
+      return store.getSync(`ai.api_key.${storageKey}.v1`)?.trim() || null;
     } catch {
       return null;
     }
   };
   const readSummaries = (): ApiCredentialSummary[] => {
     try {
-      const raw = store.getSync(CLI_API_CREDENTIALS_INDEX_KEY);
+      const raw = store.getSync(API_CREDENTIALS_INDEX_KEY);
       if (!raw) return [];
       const parsed: unknown = JSON.parse(raw);
       return Array.isArray(parsed) ? parsed as ApiCredentialSummary[] : [];
@@ -6478,6 +6489,16 @@ function buildChatCreateConfigPreview(
  * message. Steps share results through the executor's `values` map (step.key),
  * so the chat session is created against the lane that step one just made.
  */
+/**
+ * The chat-only spawn-lineage flags. Without `--start-chat`, `lanes
+ * create-from-linear` creates a lane and launches nothing, so a lineage flag
+ * has no session to hang on — refuse it instead of silently dropping the
+ * parentage the caller asked for. `--parent` is deliberately absent: on that
+ * command the flag names the parent LANE, which is meaningful with or without
+ * a chat.
+ */
+const CHAT_ONLY_LINEAGE_FLAGS = [...SPAWN_TYPE_FLAGS, ...CHAT_PARENT_FLAGS];
+
 function buildCreateLaneFromLinearPlan(args: string[], issue: JsonObject): CliPlan {
   const explicitName = readValue(args, ["--name"]);
   const derivedName =
@@ -6498,16 +6519,40 @@ function buildCreateLaneFromLinearPlan(args: string[], issue: JsonObject): CliPl
   const kickoff =
     readValue(args, ["--prompt", "--kickoff", "--kickoff-prompt"]) ??
     deriveLinearKickoffPrompt(issue);
+  if (!startChat) {
+    const stranded = findFlagName(args, CHAT_ONLY_LINEAGE_FLAGS);
+    if (stranded) {
+      // Name the flag the caller actually wrote: the list is five spellings
+      // long, so naming two of them leaves a `--parent-session-id` caller
+      // reading an error about flags they never typed.
+      throw new CliUsageError(
+        `${stranded} requires --start-chat: without a chat to launch there is no session to record spawn lineage on.`,
+      );
+    }
+  }
   // Launch config is read before collectGenericObjectArgs sees the lane-create
   // args so `--provider`/`--model`/`--fast` go to the chat, not the lane.
-  const launchConfig = startChat ? readChatLaunchConfig(args) : {};
+  const chatLaunchFlags = startChat ? readChatLaunchConfig(args) : {};
   const surface = startChat ? readValue(args, ["--surface"]) ?? "work" : null;
-  const { orchestrationParentSessionId, spawnKind } = startChat
+  const startChatLineage = startChat
     ? readAgentSpawnLineage(args, {
-        parentFlags: ["--chat-parent", "--parent-session", "--parent-session-id"],
+        parentFlags: CHAT_PARENT_FLAGS,
         missingParentMessage: "--type requires a parent session. Use --chat-parent <session>, remove --no-parent, or omit --type for an independent top-level session.",
       })
-    : { orchestrationParentSessionId: undefined, spawnKind: undefined };
+    : null;
+  const { base: lineageArgs, launchOptions } = spawnLineageLaunchArgs(
+    startChatLineage,
+    { allowShell: false },
+  );
+  // The same merged-arg rules every other launch surface runs, so this one
+  // cannot be the way `--provider Claude`, `--provider shell`,
+  // `--permission-mode config-toml` on a Claude chat, or `--droid-autonomy agi`
+  // on a non-Droid chat reaches the runtime unchecked. This surface normalises
+  // a bag it built itself rather than collecting one: on THIS command
+  // `--arg`/`--input-json` fill the lane-create payload below, not the chat.
+  const launchConfig = startChat
+    ? normalizeLaunchArgs({ ...chatLaunchFlags, ...lineageArgs }, launchOptions)
+    : {};
 
   const steps: InvocationStep[] = [
     actionCallStep("lane", "create_lane", collectGenericObjectArgs(args, createInput)),
@@ -6531,8 +6576,6 @@ function buildCreateLaneFromLinearPlan(args: string[], issue: JsonObject): CliPl
               laneId,
               surface,
               ...launchConfig,
-              ...(orchestrationParentSessionId ? { orchestrationParentSessionId } : {}),
-              ...(spawnKind ? { spawnKind } : {}),
             },
           },
         };
@@ -8134,51 +8177,33 @@ function buildCliSessionStartPlan(
       firstStandalonePositional(args),
     "provider",
   );
-  if (!isLaunchProfile(rawProvider)) {
-    throw new CliUsageError(
-      "provider must be one of claude, codex, cursor, droid, opencode, pi, qwen, kimi, grok, copilot, or shell.",
-    );
-  }
-  const provider: LaunchProfile = rawProvider;
+  const launchOpts = { allowShell: true };
+  const provider = requireLaunchProfile(rawProvider, launchOpts);
+  if (!provider) throw new CliUsageError("provider is required.");
   const promptArgs = takeArgsAfterTerminator(args);
   const initialInput = promptArgs
     ? promptArgs.join(" ").trim()
     : readValue(args, ["--message", "--prompt", "--initial-input"]);
-  const instanceId = readValue(args, ["--instance", "--instance-id"])?.trim() || null;
-  const presetId = readValue(args, ["--preset", "--preset-id"])?.trim() || null;
-  const credentialId = readValue(args, ["--credential", "--credential-id"])?.trim() || null;
-  if (instanceId && provider !== "claude" && provider !== "codex") {
-    throw new CliUsageError(
-      "--instance names a Claude or Codex account on this machine; other providers have a single identity per machine.",
-    );
-  }
-  if (presetId && credentialId) {
-    throw new CliUsageError("--preset and --credential name two different brains. Pass one.");
-  }
+  const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args);
   const permissionMode =
     readValue(args, ["--permission-mode", "--permissions"]) ?? "default";
   const droidPermissionMode = readDroidPermissionMode(args);
-  if (droidPermissionMode && provider !== "droid") {
-    throw new CliUsageError("Droid autonomy is only supported for Droid CLI sessions.");
-  }
   if (!isTrackedCliPermissionMode(permissionMode)) {
-    throw new CliUsageError(
-      "permissionMode must be one of default, auto, plan, edit, full-auto, or config-toml.",
-    );
+    throw new CliUsageError(PERMISSION_MODE_ENUM_MESSAGE);
   }
-  validateLaunchProfilePermissionMode(provider, permissionMode);
-  const { orchestrationParentSessionId, spawnKind } = readAgentSpawnLineage(args, {
-    allowSpawnType: provider !== "shell",
-  });
+  // The profile/mode pairing is checked on the merged bag in
+  // `collectLaunchArgs`; checking it here as well would only answer first for a
+  // launch the merged check rejects anyway.
+  const lineage = readAgentSpawnLineage(args, { allowSpawnType: provider !== "shell" });
+  const { base: lineageArgs, launchOptions } = spawnLineageLaunchArgs(lineage, launchOpts);
 
-  const input = collectGenericObjectArgs(args, {
+  const input = collectLaunchArgs(args, {
     laneId,
     provider,
     permissionMode,
-    title:
-      readValue(args, ["--title"]) ??
-      LAUNCH_PROFILE_TITLE[provider] ??
-      undefined,
+    // No `LAUNCH_PROFILE_TITLE[provider]` fallback here: `--arg provider=…`
+    // has not merged yet. `applyMergedProviderTitle` fills it in below.
+    title: readValue(args, ["--title"]) ?? undefined,
     initialInput,
     model: readValue(args, ["--model"]),
     modelId: readValue(args, ["--model-id"]),
@@ -8188,14 +8213,14 @@ function buildCliSessionStartPlan(
     rows: readIntOption(args, ["--rows"], 36),
     cwd: readValue(args, ["--cwd"]),
     chatSessionId: readValue(args, ["--chat-session", "--chat-session-id"]),
-    ...(orchestrationParentSessionId ? { orchestrationParentSessionId } : {}),
-    ...(spawnKind ? { spawnKind } : {}),
+    ...lineageArgs,
     ...(droidPermissionMode ? { droidPermissionMode } : {}),
     ...(instanceId ? { instanceId } : {}),
     ...(presetId ? { presetId } : {}),
     ...(credentialId ? { credentialId } : {}),
     tracked: !readFlag(args, ["--untracked"]),
-  });
+  }, launchOptions);
+  applyMergedProviderTitle(input);
 
   return {
     kind: "execute",
@@ -9037,58 +9062,47 @@ function buildChatPlan(args: string[]): CliPlan {
       throw new CliUsageError("--no-kickoff cannot be used with --prompt/--kickoff.");
     }
     const attachmentFlags = linearIssue ? readLinearAttachmentFlags(args) : {};
-    const { orchestrationParentSessionId, spawnKind } = readAgentSpawnLineage(args);
-    const instanceId = readValue(args, ["--instance", "--instance-id"])?.trim() || null;
-    const presetId = readValue(args, ["--preset", "--preset-id"])?.trim() || null;
-    const credentialId = readValue(args, ["--credential", "--credential-id"])?.trim() || null;
-    if (presetId && credentialId) {
-      throw new CliUsageError("--preset and --credential name two different brains. Pass one.");
-    }
-    const createStep = actionStep(
-      "result",
-      "chat",
-      "createSession",
-      collectGenericObjectArgs(args, {
-        laneId: readLaneId(args),
-        ...(orchestrationParentSessionId ? { orchestrationParentSessionId } : {}),
-        ...(spawnKind ? { spawnKind } : {}),
-        provider: readValue(args, ["--provider"]),
-        model: modelArg,
-        modelId: modelArg,
-        reasoningEffort,
-        permissionMode: readValue(args, [
-          "--permission-mode",
-          "--permissions",
-        ]),
-        droidPermissionMode: readDroidPermissionMode(args),
-        title: readValue(args, ["--title"]),
-        surface: readValue(args, ["--surface"]) ?? "work",
-        // Which of this machine's provider accounts the session signs in as.
-        // Omitted (not sent as null) when unset, so the runtime keeps its own
-        // "use the provider's default account" rule instead of receiving a
-        // second, CLI-shaped way of saying the same thing.
-        ...(instanceId ? { instanceId } : {}),
-        // Which saved harness preset the chat launches under. Same omit-when-
-        // unset rule as the account: the runtime keeps its own default instead
-        // of receiving a second, CLI-shaped way to say "no preset".
-        ...(presetId ? { presetId } : {}),
-        ...(credentialId ? { credentialId } : {}),
-        ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
-        ...(createRuntimeMode ? { runtimeMode: createRuntimeMode } : {}),
-      }),
-    );
-    const createArgs = (createStep.params as JsonObject).arguments as JsonObject;
-    const actionArgs = createArgs.args as JsonObject;
-    if (
-      instanceId
-      && typeof actionArgs.provider === "string"
-      && actionArgs.provider !== "claude"
-      && actionArgs.provider !== "codex"
-    ) {
-      throw new CliUsageError(
-        "--instance names a Claude or Codex account on this machine; other providers have a single identity per machine.",
-      );
-    }
+    // `chat create` never launches a shell (no `allowSpawnType` option here,
+    // and `allowShell: false` below), so this read always records lineage;
+    // there is no dropped ambient parent to forward.
+    const lineage = readAgentSpawnLineage(args);
+    // Read once: `readValue` consumes the flag it matches, so the value has to
+    // be captured here and reused for both the validation and the action args.
+    // Canonical lower-case profile name. Both the account check and the wire
+    // use it. A chat is never a shell session, so `shell` is rejected here the
+    // same way `ade new chat --mode chat` rejects it.
+    const launchOpts = { allowShell: false };
+    const provider = requireLaunchProfile(readValue(args, ["--provider"]), launchOpts);
+    const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args);
+    const { base: lineageArgs, launchOptions } = spawnLineageLaunchArgs(lineage, launchOpts);
+    const actionArgs = collectLaunchArgs(args, {
+      laneId: readLaneId(args),
+      ...lineageArgs,
+      provider,
+      model: modelArg,
+      modelId: modelArg,
+      reasoningEffort,
+      permissionMode: readValue(args, [
+        "--permission-mode",
+        "--permissions",
+      ]),
+      droidPermissionMode: readDroidPermissionMode(args),
+      title: readValue(args, ["--title"]),
+      surface: readValue(args, ["--surface"]) ?? "work",
+      // Which of this machine's provider accounts the session signs in as.
+      // Omitted (not sent as null) when unset, so the runtime keeps its own
+      // "use the provider's default account" rule instead of receiving a
+      // second, CLI-shaped way of saying the same thing.
+      ...(instanceId ? { instanceId } : {}),
+      // Which saved harness preset the chat launches under. Same omit-when-
+      // unset rule as the account: the runtime keeps its own default instead
+      // of receiving a second, CLI-shaped way to say "no preset".
+      ...(presetId ? { presetId } : {}),
+      ...(credentialId ? { credentialId } : {}),
+      ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
+      ...(createRuntimeMode ? { runtimeMode: createRuntimeMode } : {}),
+    }, launchOptions);
+    const createStep = actionStep("result", "chat", "createSession", actionArgs);
     const kickoffText =
       explicitKickoff ??
       (linearIssue && !noKickoff ? deriveLinearKickoffPrompt(linearIssue) : null);
@@ -15863,7 +15877,9 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "--output",
   "--oid",
   "--params-json",
-  "--parent",
+  // `--parent` is not re-spelled here: it is a member of
+  // `DEFAULT_PARENT_FLAGS`, spread in below. `--parent-lane`/`--parent-lane-id`
+  // are not in any lineage table — they name the parent LANE — so they stay.
   "--parent-lane",
   "--parent-lane-id",
   "--path",
@@ -15911,7 +15927,6 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "--since",
   "--source",
   "--source-lane",
-  "--spawn-type",
   "--stack",
   "--stack-base",
   "--stack-base-branch",
@@ -15946,7 +15961,6 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "--title",
   "--tool-type",
   "--title-query",
-  "--type",
   "--udid",
   "--url",
   "--until",
@@ -15961,6 +15975,13 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "--x",
   "--xcodeproj",
   "--y",
+  // The launch-surface lineage spellings, spread from the leaf flag-name
+  // module rather than re-spelled here. They carry a value exactly like
+  // `--parent`, so leaving them out let `ade lanes create-from-linear
+  // --parent-session s1 <positional>` dispatch on "s1".
+  ...SPAWN_TYPE_FLAGS,
+  ...CHAT_PARENT_FLAGS,
+  ...DEFAULT_PARENT_FLAGS,
 ]);
 
 /**

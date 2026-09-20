@@ -1412,7 +1412,9 @@ describe("ChatSubagentsPanel stale-run self-heal", () => {
     expect(screen.getByText("running")).toBeTruthy();
   });
 
-  it("halts a delegate whose subagent chat went idle even while the parent runtime is alive", () => {
+  // A delegate reads "idle" for the seconds its own runtime takes to launch, so
+  // an idle child while the parent is alive is not evidence that it stopped.
+  it("keeps a just-spawned idle delegate running while the parent runtime is alive", () => {
     render(
       <ChatSubagentsPanel
         snapshots={[{ ...orphanAgent, taskId: "chat:child-1", childSessionId: "child-1" }]}
@@ -1420,6 +1422,20 @@ describe("ChatSubagentsPanel stale-run self-heal", () => {
         variant="pane"
         runtimeAlive
         childChatStatuses={new Map([["child-1", "idle" as const]])}
+      />,
+    );
+
+    expect(screen.getByText("running")).toBeTruthy();
+  });
+
+  it("halts a delegate whose subagent chat ended, even with the parent runtime alive", () => {
+    render(
+      <ChatSubagentsPanel
+        snapshots={[{ ...orphanAgent, taskId: "chat:child-1", childSessionId: "child-1" }]}
+        events={[]}
+        variant="pane"
+        runtimeAlive
+        childChatStatuses={new Map([["child-1", "ended" as const]])}
       />,
     );
 

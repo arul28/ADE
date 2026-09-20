@@ -510,6 +510,7 @@ import {
   CHAT_STOP_REASON_FOREIGN_BRAIN,
   CHAT_STOP_REASON_PROVIDER_ENDED_TURN,
   CHAT_STOP_REASON_RUNTIME_EXITED,
+  CHAT_STOP_REASON_WORKFLOW_ENDED,
   type AgentChatStopSource,
   droidPermissionModeFromLegacyPermissionMode,
   isAcpChatProvider,
@@ -1057,12 +1058,9 @@ import {
 } from "./personalSession";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import {
-  decideOrphanBackgroundTerminal,
-  decideOrphanSubagentTerminal,
-  deriveOrphanChildChatState,
-  orphanRowChildSessionCandidate,
-  type OrphanChildChatState,
-} from "./chatOrphanRunReconcile";
+  createStaleRunSweep,
+  type StaleRunSweepChatRow,
+} from "./chatStaleRunSweep";
 
 export function restartRecoveryStopAttribution(args: {
   ownerSocketPath?: string | null;
@@ -4308,16 +4306,6 @@ const SESSION_INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const OPENCODE_SESSION_INACTIVITY_TIMEOUT_MS = 60 * 1000; // 1 minute
 const SESSION_CLEANUP_INTERVAL_MS = 15 * 1000; // check every 15 seconds
 
-/**
- * Stale-run sweep cadence. Cheap by construction: a pass only reads transcripts
- * for chats it has never swept in this process, and never more than
- * `SESSIONS_PER_PASS` of them, so a large backlog drains over minutes instead
- * of stalling the brain at start.
- */
-const STALE_RUN_SWEEP_INTERVAL_MS = 60 * 1000;
-const STALE_RUN_SWEEP_START_DELAY_MS = 5 * 1000;
-const STALE_RUN_SWEEP_SESSION_SCAN_LIMIT = 200;
-const STALE_RUN_SWEEP_SESSIONS_PER_PASS = 8;
 const MAX_RECENT_CONVERSATION_ENTRIES = 50;
 const MAX_SESSION_MAP_ENTRIES = 200;
 const CODEX_GOAL_BUDGET_CLEAR_RETRY_BACKOFF_MS = 30_000;
@@ -16189,6 +16177,12 @@ export function createAgentChatService(args: {
   const chatRuntimeAdoptable = (
     sessionId: string,
     persisted?: PersistedChatState | null,
+    /**
+     * `quiet` skips the denial warn. For callers that re-probe the same chats
+     * on a timer (the stale-run sweep, every session summary): a foreign owner
+     * is a steady state, and one warn per chat per pass buries the log.
+     */
+    options?: { quiet?: boolean },
   ): boolean => {
     const owner = persisted === undefined
       ? readPersistedState(sessionId)?.runtimeOwner ?? null
@@ -16199,7 +16193,7 @@ export function createAgentChatService(args: {
       isProcessIdentityLive: (pid, startedAt) =>
         processRegistry?.isProcessIdentityLive(pid, startedAt) ?? false,
     });
-    if (!decision.adoptable) {
+    if (!decision.adoptable && options?.quiet !== true) {
       logger.warn("agent_chat.runtime_owned_by_other_brain", {
         sessionId,
         ownerPid: owner?.pid ?? null,
@@ -23040,6 +23034,8 @@ export function createAgentChatService(args: {
       closeClaudeWorkflowAgentTracker(managed, runtime, taskId, {
         workflowName,
         turnId,
+        stopSource: "system",
+        stopReason: CHAT_STOP_REASON_WORKFLOW_ENDED,
       });
       return true;
     }
@@ -23074,6 +23070,8 @@ export function createAgentChatService(args: {
         workflowName,
         turnId,
         summary,
+        stopSource: "system",
+        stopReason: CHAT_STOP_REASON_WORKFLOW_ENDED,
       });
       return true;
     }
@@ -23118,6 +23116,8 @@ export function createAgentChatService(args: {
         workflowName,
         turnId,
         summary,
+        stopSource: "system",
+        stopReason: CHAT_STOP_REASON_WORKFLOW_ENDED,
       });
       return true;
     }
@@ -25128,6 +25128,8 @@ export function createAgentChatService(args: {
               workflowName,
               turnId,
               summary,
+              stopSource: "system",
+              stopReason: CHAT_STOP_REASON_WORKFLOW_ENDED,
             });
             continue;
           }
@@ -25172,6 +25174,8 @@ export function createAgentChatService(args: {
               workflowName,
               turnId,
               summary,
+              stopSource: "system",
+              stopReason: CHAT_STOP_REASON_WORKFLOW_ENDED,
             });
           } else {
             runtime.activeSubagents.set(taskId, {
@@ -25490,7 +25494,7 @@ export function createAgentChatService(args: {
             workflowName,
             turnId,
             stopSource: "system",
-            stopReason: CHAT_STOP_REASON_RUNTIME_EXITED,
+            stopReason: CHAT_STOP_REASON_WORKFLOW_ENDED,
           });
           continue;
         }
@@ -30121,8 +30125,12 @@ export function createAgentChatService(args: {
       workflowName?: string;
       turnId?: string;
       summary?: string;
-      /** Who closed the rows; ADE itself unless a caller says otherwise. */
-      stopSource?: AgentChatStopSource;
+      /**
+       * Why these rows closed. Required: the default used to hand every
+       * happy-path caller "the runtime process exited", so a workflow that
+       * finished normally told the reader its process had died.
+       */
+      stopSource: AgentChatStopSource;
       stopReason?: string;
     },
   ): void {
@@ -30142,7 +30150,7 @@ export function createAgentChatService(args: {
         status: "stopped",
         summary: terminalSummary,
         finalSummary: terminalSummary,
-        stopSource: context.stopSource ?? "system",
+        stopSource: context.stopSource,
         ...(context.stopReason ? { stopReason: context.stopReason } : {}),
         taskType: "subagent",
         ...(context.workflowName ? { workflowName: context.workflowName } : {}),
@@ -36117,83 +36125,46 @@ export function createAgentChatService(args: {
     return unsettled.turnId;
   };
 
-  const reconcileClaudeSessionAfterRestart = (
-    managed: ManagedChatSession,
-    runtime: ClaudeRuntime,
-  ): void => {
+  /**
+   * Heal a chat that is being re-bound after its owning process went away.
+   *
+   * The stale rows themselves are the shared sweep's job — same verdicts, same
+   * copy, same attribution as the chat nobody reopens. What is restart-specific
+   * and stays here: the one system_notice, and the parent turn the SDK never
+   * settled.
+   */
+  const reconcileClaudeSessionAfterRestart = (managed: ManagedChatSession): void => {
     try {
       const envelopes = readFullTranscriptEnvelopesForSessionId(managed.session.id);
       if (envelopes.length === 0) return;
 
       const orphanParentTurn = findUnsettledParentTurn(managed, envelopes);
-
-      const orphanBackground = deriveBackgroundItems(envelopes).filter(
-        (snapshot) => snapshot.status === "scheduled" || snapshot.status === "running",
-      );
-      const orphanSubagents = subagentSnapshotsFromEvents(envelopes).filter(
-        (snapshot) => snapshot.kind === "subagent"
-          && snapshot.status === "running"
-          && snapshot.background !== true,
+      const outcome = staleRunSweep.terminalizeStaleRowsForSession(
+        managed,
+        getRestartRecoveryStopAttribution(readPersistedState(managed.session.id)),
+        envelopes,
       );
 
-      if (orphanBackground.length === 0 && orphanSubagents.length === 0 && !orphanParentTurn) return;
-
-      const restartTurnId = `claude-restart-reconcile-${randomUUID()}`;
-
-      for (const snapshot of orphanBackground) {
-        emitClaudeScheduledWorkUpdate(managed, runtime, {
-          type: "scheduled_work_update",
-          id: snapshot.id,
-          kind: "background_task",
-          status: "stopped",
-          origin: "background_task",
-          title: snapshot.title,
-          summary: snapshot.summary ?? "lost on ADE restart",
-          ...(snapshot.sourceTaskId ? { sourceTaskId: snapshot.sourceTaskId } : {}),
-          ...(snapshot.sourceToolUseId ? { sourceToolUseId: snapshot.sourceToolUseId } : {}),
-          turnId: restartTurnId,
-        });
-      }
-
-      const restartAttribution = getRestartRecoveryStopAttribution(readPersistedState(managed.session.id));
-      for (const snapshot of orphanSubagents) {
-        const summary = snapshot.summary && snapshot.summary !== snapshot.name
-          ? snapshot.summary
-          : "Stopped: lost on ADE restart";
-        emitChatEvent(managed, {
-          type: "subagent_result",
-          taskId: snapshot.id,
-          ...(snapshot.parentToolUseId ? { parentToolUseId: snapshot.parentToolUseId } : { parentToolUseId: null }),
-          status: "stopped",
-          summary,
-          finalSummary: summary,
-          // NOT the user. This sweep runs on a brain that just came up (or a
-          // sibling that took the chat over) and blaming the reader for it is
-          // the bug this field exists to close.
-          stopSource: restartAttribution.stopSource,
-          stopReason: restartAttribution.stopReason,
-          ...(snapshot.turnId ? { turnId: snapshot.turnId } : {}),
-        });
-      }
-
-      if (orphanBackground.length > 0) {
+      if (outcome.backgroundStopped > 0) {
         emitChatEvent(managed, {
           type: "system_notice",
           noticeKind: "info",
-          message: `Reconciled after restart: ${orphanBackground.length} background task${orphanBackground.length === 1 ? "" : "s"} stopped`,
-          turnId: restartTurnId,
+          message: `Reconciled after restart: ${outcome.backgroundStopped} background task${outcome.backgroundStopped === 1 ? "" : "s"} stopped`,
+          turnId: `claude-restart-reconcile-${randomUUID()}`,
         });
       }
 
       // Keep the parent terminal pair last. Renderer turn state is derived in
       // event order, so no later reconciliation row may revive the stopped turn.
       const orphanTurnId = terminalizeUnsettledClaudeParentTurn(managed, "restart", orphanParentTurn);
+      if (!orphanTurnId && outcome.backgroundStopped === 0 && outcome.subagentsTerminalized === 0) return;
 
       logger.info("agent_chat.claude_restart_reconciled", {
         sessionId: managed.session.id,
         orphanTurnId,
-        backgroundTasksStopped: orphanBackground.length,
-        subagentsStopped: orphanSubagents.length,
+        backgroundTasksStopped: outcome.backgroundStopped,
+        subagentsStopped: outcome.subagentsTerminalized,
+        subagentsLeftRunning: outcome.subagentsLeftRunning,
       });
     } catch (error) {
       logger.warn("agent_chat.claude_restart_reconcile_failed", {
@@ -36313,7 +36284,7 @@ export function createAgentChatService(args: {
     // writes a stopped subagent + an interrupted parent turn into a turn that
     // is still streaming somewhere else.
     if (chatRuntimeAdoptable(managed.session.id, persisted)) {
-      reconcileClaudeSessionAfterRestart(managed, runtime);
+      reconcileClaudeSessionAfterRestart(managed);
     }
 
     return runtime;
@@ -49620,10 +49591,15 @@ export function createAgentChatService(args: {
       ...(activeBackgroundTaskCount > 0 ? { backgroundWork } : {}),
       ...(activeBackgroundTaskCount > 0 && backgroundWorkSince ? { backgroundWorkSince } : {}),
       ...(runtimeProcesses.length ? { runtimeProcesses } : {}),
-      // Always present, unlike the optional fields around it: the pane needs to
-      // tell "no runtime" apart from "this host did not say", and an omitted
-      // field cannot carry that difference.
-      runtimeAlive: Boolean(liveManaged?.runtime),
+      // `true` is this brain's own runtime; `false` is only honest when no
+      // other live brain holds the chat, because this brain having no runtime
+      // says nothing about a sibling that does. Neither → omitted, which the
+      // type documents as "this host cannot say".
+      ...(liveManaged?.runtime
+        ? { runtimeAlive: true }
+        : chatRuntimeAdoptable(row.id, persisted, { quiet: true })
+          ? { runtimeAlive: false }
+          : {}),
       scheduledWorkPaused,
       scheduledWork,
       ...(sessionHasPendingInput ? { awaitingInput: true } : {}),
@@ -52647,8 +52623,7 @@ export function createAgentChatService(args: {
     runtimeBudget.unregister(runtimeBudgetParticipant);
     hostSleepChips.dispose();
     clearInterval(sessionCleanupTimer);
-    if (staleRunSweepTimer) clearInterval(staleRunSweepTimer);
-    if (staleRunSweepKickoff) clearTimeout(staleRunSweepKickoff);
+    staleRunSweep.dispose();
     clearCursorCloudMirrorWatches();
     clearAllCursorCloudHydrationState();
     scheduledWorkScheduler?.dispose();
@@ -52756,221 +52731,57 @@ export function createAgentChatService(args: {
 
   // --- Stale-run reconcile (dead runtime → terminal pane rows) ---
   /**
-   * Close pane rows whose owning process is gone.
+   * Close pane rows whose owning process is gone, for a chat nobody reopens.
    *
-   * `reconcileClaudeSessionAfterRestart` already does this, but only for a chat
-   * somebody reopens: it runs off `ensureClaudeSessionRuntime`. A chat nobody
-   * touches again keeps its "running" subagent and background rows forever —
-   * the 17-24 hour rows in the owner's screenshot. This sweep is the same
-   * reconcile with no runtime required, run at brain start and on a bounded
-   * timer, so a dead chat heals whether or not it is ever opened again.
-   *
-   * Idempotent twice over: a swept session is remembered for this process, and
-   * the emitted terminal events are themselves what a re-derivation reads, so a
-   * second pass (or another brain's pass) finds no running rows to close.
+   * `reconcileClaudeSessionAfterRestart` heals a chat somebody re-binds — it
+   * runs off `ensureClaudeSessionRuntime`. A chat nobody touches again keeps
+   * its "running" subagent and background rows forever (the 17-24 hour rows in
+   * the owner's screenshot), so the same reconcile also runs with no runtime
+   * required, at brain start and on a bounded timer. Both paths are the one
+   * module below, so the two incidents never read differently again.
    */
-  const staleRunSweptSessionIds = new Set<string>();
-
-  const chatRuntimeOwnerLive = (sessionId: string): boolean => {
-    const owner = readPersistedState(sessionId)?.runtimeOwner ?? null;
-    if (!owner) return false;
-    return processRegistry?.isProcessIdentityLive(owner.pid, owner.startedAt ?? null) ?? false;
-  };
-
-  /** The spawned ADE chat behind a subagent row, when the row really is one. */
-  const resolveOrphanChildChat = (
-    parentSessionId: string,
-    rowId: string,
-  ): { state: OrphanChildChatState; report: string | null } | null => {
-    const candidate = orphanRowChildSessionCandidate(rowId);
-    if (!candidate || candidate === parentSessionId) return null;
-    let row: ReturnType<typeof sessionService.get> = null;
-    try {
-      row = sessionService.get(candidate);
-    } catch {
-      return null;
-    }
-    if (!row) {
-      // Only a row that looked like a chat pointer earns the "gone" verdict; a
-      // plain SDK task id is not a deleted chat.
-      return rowId.trim().startsWith("chat:")
-        ? { state: "missing", report: null }
-        : null;
-    }
-    if (!isChatToolType(row.toolType)) return null;
-    const state = deriveOrphanChildChatState(
-      {
-        id: row.id,
-        status: row.status,
-        endedAt: row.endedAt,
-        lastTurnFailedAt: row.lastTurnFailedAt ?? null,
-        summary: row.summary,
-        statusNote: row.statusNote ?? null,
-      },
-      chatRuntimeOwnerLive(row.id),
-    );
-    return { state, report: row.statusNote?.trim() || row.summary?.trim() || null };
-  };
-
-  /**
-   * Reconcile one chat whose runtime process is not alive. Returns the number
-   * of rows terminalized (0 when the transcript held nothing stale).
-   */
-  const reconcileStaleRunsForSession = (sessionId: string): number => {
-    const envelopes = readFullTranscriptEnvelopesForSessionId(sessionId);
-    if (envelopes.length === 0) return 0;
-
-    const staleBackground = deriveBackgroundItems(envelopes).filter(
-      (snapshot) => snapshot.status === "scheduled" || snapshot.status === "running",
-    );
-    const staleSubagents = subagentSnapshotsFromEvents(envelopes).filter(
-      (snapshot) => snapshot.kind === "subagent" && snapshot.status === "running",
-    );
-    if (staleBackground.length === 0 && staleSubagents.length === 0) return 0;
-
-    const attribution = getRestartRecoveryStopAttribution(readPersistedState(sessionId));
-    const decisions = staleSubagents.map((snapshot) => {
-      const child = resolveOrphanChildChat(sessionId, snapshot.id);
-      return {
-        snapshot,
-        terminal: decideOrphanSubagentTerminal({
-          row: {
-            id: snapshot.id,
-            name: snapshot.name,
-            summary: snapshot.summary,
-            parentToolUseId: snapshot.parentToolUseId ?? null,
-            ...(snapshot.turnId ? { turnId: snapshot.turnId } : {}),
-          },
-          childState: child?.state ?? null,
-          childReport: child?.report ?? null,
-          attribution,
-        }),
-      };
-    });
-    const emittable = decisions.filter((entry) => entry.terminal !== null);
-    if (staleBackground.length === 0 && emittable.length === 0) return 0;
-
-    let managed: ManagedChatSession;
-    try {
-      managed = ensureManagedSession(sessionId);
-    } catch {
-      return 0;
-    }
-    // A live runtime appeared between the scan and here: it owns these rows.
-    if (managed.runtime || managed.closed) return 0;
-
-    for (const snapshot of staleBackground) {
-      const terminal = decideOrphanBackgroundTerminal({ row: snapshot, attribution });
-      emitChatEvent(managed, {
-        type: "scheduled_work_update",
-        id: snapshot.id,
-        kind: "background_task",
-        status: terminal.status,
-        origin: "background_task",
-        title: snapshot.title,
-        summary: terminal.summary,
-        stopSource: terminal.stopSource,
-        stopReason: terminal.stopReason,
-        ...(snapshot.sourceTaskId ? { sourceTaskId: snapshot.sourceTaskId } : {}),
-        ...(snapshot.sourceToolUseId ? { sourceToolUseId: snapshot.sourceToolUseId } : {}),
-        ...(snapshot.turnId ? { turnId: snapshot.turnId } : {}),
-      });
-    }
-    for (const { snapshot, terminal } of emittable) {
-      if (!terminal) continue;
-      emitChatEvent(managed, {
-        type: "subagent_result",
-        taskId: snapshot.id,
-        parentToolUseId: snapshot.parentToolUseId ?? null,
-        status: terminal.status,
-        summary: terminal.summary,
-        finalSummary: terminal.finalSummary,
-        ...(terminal.stopSource ? { stopSource: terminal.stopSource } : {}),
-        ...(terminal.stopReason ? { stopReason: terminal.stopReason } : {}),
-        ...(snapshot.turnId ? { turnId: snapshot.turnId } : {}),
-      });
-    }
-    persistChatState(managed);
-    logger.info("agent_chat.stale_run_rows_reconciled", {
-      sessionId,
-      backgroundTasksStopped: staleBackground.length,
-      subagentRowsTerminalized: emittable.length,
-      subagentRowsLeftRunning: decisions.length - emittable.length,
-      stopSource: attribution.stopSource,
-    });
-    return staleBackground.length + emittable.length;
-  };
-
-  /** Chats this brain should look at, newest first, already cheaply filtered. */
-  const staleRunSweepCandidates = (): string[] => {
-    let rows: ReturnType<typeof sessionService.list>;
-    try {
-      rows = sessionService.list({ limit: STALE_RUN_SWEEP_SESSION_SCAN_LIMIT });
-    } catch {
-      return [];
-    }
-    const candidates: string[] = [];
-    for (const row of rows) {
-      if (!isChatToolType(row.toolType)) continue;
-      if (staleRunSweptSessionIds.has(row.id)) continue;
-      // This brain is driving it; its own teardown paths settle these rows.
-      if (managedSessions.get(row.id)?.runtime) continue;
-      // Another live brain owns the runtime. Its rows are not stale, and
-      // terminalizing them is exactly the cross-brain stomp `chatRuntimeAdoptable`
-      // exists to prevent.
-      if (!chatRuntimeAdoptable(row.id)) continue;
-      candidates.push(row.id);
-    }
-    return candidates;
-  };
-
-  const runStaleRunSweep = (): void => {
-    // A session that regained a runtime must be eligible again the next time
-    // that runtime dies, so drop its "already swept" mark while it is live.
-    for (const [id, managed] of managedSessions) {
-      if (managed.runtime) staleRunSweptSessionIds.delete(id);
-    }
-    let processed = 0;
-    for (const sessionId of staleRunSweepCandidates()) {
-      if (processed >= STALE_RUN_SWEEP_SESSIONS_PER_PASS) break;
-      processed += 1;
-      staleRunSweptSessionIds.add(sessionId);
-      try {
-        reconcileStaleRunsForSession(sessionId);
-      } catch (error) {
-        logger.warn("agent_chat.stale_run_reconcile_failed", {
-          sessionId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-    if (staleRunSweptSessionIds.size > STALE_RUN_SWEEP_SESSION_SCAN_LIMIT * 4) {
-      staleRunSweptSessionIds.clear();
-    }
-  };
-
+  const staleRunSweep = createStaleRunSweep<ManagedChatSession>({
+    readFullTranscriptEnvelopesForSessionId,
+    listChatSessionIds: (limit) => sessionService
+      // Scoped to chat tool types so the scan cap is spent on chats: unscoped,
+      // a fleet of terminal sessions ordered by start time fills all 200 rows
+      // and the sweep never reaches a single chat.
+      .list({ limit, toolTypes: CHAT_SESSION_TOOL_TYPES })
+      .filter((row) => isChatToolType(row.toolType))
+      .map((row) => row.id),
+    getChatSessionRow: (sessionId) => {
+      const row = sessionService.get(sessionId);
+      if (!row || !isChatToolType(row.toolType)) return null;
+      return row satisfies StaleRunSweepChatRow;
+    },
+    chatRuntimeOwnerLive: (sessionId) => {
+      const owner = readPersistedState(sessionId)?.runtimeOwner ?? null;
+      if (!owner) return false;
+      return processRegistry?.isProcessIdentityLive(owner.pid, owner.startedAt ?? null) ?? false;
+    },
+    chatRuntimeAdoptable: (sessionId, options) => chatRuntimeAdoptable(sessionId, undefined, options),
+    peekManagedSession: (sessionId) => managedSessions.get(sessionId),
+    ensureManagedSession,
+    liveRuntimeSessionIds: () => [...managedSessions]
+      .filter(([, managed]) => managed.runtime)
+      .map(([id]) => id),
+    restartRecoveryStopAttribution: (sessionId) =>
+      getRestartRecoveryStopAttribution(readPersistedState(sessionId)),
+    emitChatEvent: (managed, event) => emitChatEvent(managed, event),
+    // A restart-path close still has a runtime, and that runtime's row
+    // bookkeeping (kind, task/tool aliases, dedupe signature) has to see the
+    // terminal row; a swept chat has no runtime and goes straight out.
+    emitScheduledWorkUpdate: (managed, event) => {
+      if (managed.runtime?.kind === "claude") emitClaudeScheduledWorkUpdate(managed, managed.runtime, event);
+      else emitChatEvent(managed, event);
+    },
+    persistChatState: (managed) => { persistChatState(managed); },
+    logger,
+  });
   // Autonomous scheduling is off under test: a background pass firing partway
   // through an unrelated suite would inject reconciliation events into that
   // test's stream. Tests drive `reconcileStaleRuns()` directly instead.
-  const staleRunSweepScheduled = process.env.VITEST !== "true" && process.env.NODE_ENV !== "test";
-  const staleRunSweepTimer = staleRunSweepScheduled
-    ? setInterval(runStaleRunSweep, STALE_RUN_SWEEP_INTERVAL_MS)
-    : null;
-  if (staleRunSweepTimer?.unref) staleRunSweepTimer.unref();
-  // Brain start: the first pass runs off the event loop so service construction
-  // never waits on transcript reads.
-  const staleRunSweepKickoff = staleRunSweepScheduled
-    ? setTimeout(() => {
-      try {
-        runStaleRunSweep();
-      } catch (error) {
-        logger.warn("agent_chat.stale_run_sweep_start_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }, STALE_RUN_SWEEP_START_DELAY_MS)
-    : null;
-  if (staleRunSweepKickoff?.unref) staleRunSweepKickoff.unref();
+  if (process.env.VITEST !== "true" && process.env.NODE_ENV !== "test") staleRunSweep.start();
 
   // --- Warm-runtime budget participation ---
   /**
@@ -56358,7 +56169,7 @@ export function createAgentChatService(args: {
      * and the tests that prove a dead owner terminalizes exactly once — can
      * drive it deterministically.
      */
-    reconcileStaleRuns: () => runStaleRunSweep(),
+    reconcileStaleRuns: () => staleRunSweep.reconcileStaleRuns(),
     dismissPendingInput,
     importExternalChatSession,
     launchHeadless,

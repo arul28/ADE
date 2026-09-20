@@ -2,7 +2,7 @@ import { memo, useCallback, useRef } from "react";
 import { Star, Clock } from "@phosphor-icons/react";
 import type { ProviderFamily } from "../../../../shared/modelRegistry";
 import { ProviderLogo } from "../ProviderLogos";
-import { CustomHammerMark } from "../CustomHammerMark";
+import { CustomToolMark } from "../CustomToolMark";
 import { cn } from "../../ui/cn";
 
 export type RailEntry =
@@ -137,7 +137,7 @@ const RailButton = memo(function RailButton({
     // mark, at the same 18px the provider logos beside it use — the tiny ADE
     // glyph that used to sit here read as the app's own badge, not as a tab.
     entry.kind === "harnesses" ? (
-      <CustomHammerMark size={18} />
+      <CustomToolMark size={18} />
     ) : entry.kind === "favorites" ? (
       <Star size={16} weight={isSelected ? "fill" : "regular"} className="text-amber-400" />
     ) : entry.kind === "recents" ? (

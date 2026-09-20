@@ -105,14 +105,46 @@ export function captureFeatureUsedAnalytics(args: {
   } satisfies ProductAnalyticsCapture);
 }
 
-export function captureProviderAccountAnalytics(args: {
-  analytics: FeatureAnalytics | null | undefined;
-  surface: ProductAnalyticsSurface;
-  action: Extract<FeatureAnalyticsAction, "account_created" | "account_removed" | "default_selected" | "balance_changed" | "auto_start_changed">;
-  outcome: Extract<FeatureAnalyticsOutcome, "completed" | "enabled" | "disabled">;
-  provider: unknown;
-}): void {
-  captureFeatureUsedAnalytics({ ...args, feature: "provider_accounts" });
+type ProviderAccountAnalyticsAction = Extract<
+  FeatureAnalyticsAction,
+  "account_created" | "account_removed" | "default_selected" | "balance_changed" | "auto_start_changed"
+>;
+
+type ProviderAccountAnalyticsOutcome = Extract<
+  FeatureAnalyticsOutcome,
+  "completed" | "enabled" | "disabled"
+>;
+
+/**
+ * Provider-account analytics is captured per entry point rather than inside the
+ * store: the store lives in the CLI package and cannot reach the desktop
+ * analytics sink. The two entry points are the desktop UI's own IPC handlers
+ * (surface "desktop") and the ADE actions domain (surface "api"); neither runs
+ * through the other, so there is no double capture. Each binds its own surface
+ * once here and then captures with a three-argument call, which is why the two
+ * call sites cannot drift apart. It is the only feature with a surface-bound
+ * factory because it is the only one captured from two entry points with
+ * distinct surfaces; every other wrapper below has a single surface per call
+ * and takes it as a plain argument.
+ */
+export function providerAccountAnalyticsCapture(
+  analytics: FeatureAnalytics | null | undefined,
+  surface: ProductAnalyticsSurface,
+): (
+  action: ProviderAccountAnalyticsAction,
+  outcome: ProviderAccountAnalyticsOutcome,
+  provider: unknown,
+) => void {
+  return (action, outcome, provider) => {
+    captureFeatureUsedAnalytics({
+      analytics,
+      surface,
+      feature: "provider_accounts",
+      action,
+      outcome,
+      provider,
+    });
+  };
 }
 
 export function captureApiCredentialAnalytics(args: {
@@ -141,10 +173,16 @@ export function capturePresetAnalytics(args: {
   });
 }
 
+/** The outcomes a reset-credit spend can report, named for its callers. */
+export type ResetCreditAnalyticsOutcome = Extract<
+  FeatureAnalyticsOutcome,
+  "completed" | "nothing_to_reset" | "no_credit" | "already_redeemed" | "failed"
+>;
+
 export function captureResetCreditAnalytics(args: {
   analytics: FeatureAnalytics | null | undefined;
   surface: ProductAnalyticsSurface;
-  outcome: Extract<FeatureAnalyticsOutcome, "completed" | "nothing_to_reset" | "no_credit" | "already_redeemed" | "failed">;
+  outcome: ResetCreditAnalyticsOutcome;
 }): void {
   captureFeatureUsedAnalytics({
     ...args,
