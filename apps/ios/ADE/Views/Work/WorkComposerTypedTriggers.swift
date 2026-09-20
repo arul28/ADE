@@ -1667,6 +1667,10 @@ struct WorkComposerTextView: UIViewRepresentable {
   var acceptsPastedImages = true
   var onPasteImages: (([UIImage]) -> Void)? = nil
   var maxLines = 6
+  /// Folded composer. The field keeps its measured height and is clipped to one
+  /// line by the SwiftUI frame above it; here it only means "pin the draft to
+  /// its first line", so the clip never lands mid-scroll.
+  var collapsed = false
   /// Called when the field's own scroll pan is a fold swipe. Observing the text
   /// view's recognizer rather than adding one is what keeps the fold from
   /// fighting the draft's internal scroll: a scrollable `UITextView` never lets
@@ -1761,6 +1765,7 @@ struct WorkComposerTextView: UIViewRepresentable {
     }
     context.coordinator.applyFocusRequest(draftState.isFocused, to: textView)
     context.coordinator.updateHeight()
+    context.coordinator.pinFoldedOffset(on: textView)
   }
 
   @MainActor
@@ -1816,6 +1821,27 @@ struct WorkComposerTextView: UIViewRepresentable {
       default:
         break
       }
+    }
+
+    /// Folded means "the start of the draft". A draft typed past the bottom of
+    /// the field is scrolled when the fold lands, and a clip window over a
+    /// scrolled field shows a sliced line.
+    func pinFoldedOffset(on textView: UITextView) {
+      guard let y = workComposerFoldedContentOffsetY(
+        collapsed: parent.collapsed,
+        current: textView.contentOffset.y
+      ) else { return }
+      textView.setContentOffset(CGPoint(x: 0, y: y), animated: false)
+    }
+
+    /// Holds the pin for the life of the fold: resigning the responder and the
+    /// height change both re-scroll the text view after `updateUIView` ran.
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+      guard let y = workComposerFoldedContentOffsetY(
+        collapsed: parent.collapsed,
+        current: scrollView.contentOffset.y
+      ) else { return }
+      scrollView.contentOffset = CGPoint(x: 0, y: y)
     }
 
     func textViewDidBeginEditing(_ textView: UITextView) {

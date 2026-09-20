@@ -4396,14 +4396,17 @@ private struct WorkChatComposerTextField: View {
   var onFoldSwipeDown: (() -> Void)? = nil
   @State private var measuredHeight: CGFloat = 24
 
-  /// One line of body text plus the same 8pt slack `WorkComposerTextView` adds
-  /// to its own line-count clamp.
-  private var singleLineHeight: CGFloat {
-    ceil(UIFont.preferredFont(forTextStyle: .body).lineHeight) + 8
+  /// Exactly one whole line of body text. Deliberately without the 8pt slack
+  /// `WorkComposerTextView` adds to its own clamp: that slack is what sliced
+  /// the next line across the bottom of the folded card.
+  private var foldedHeight: CGFloat {
+    workComposerFoldedFieldHeight(
+      lineHeight: UIFont.preferredFont(forTextStyle: .body).lineHeight
+    )
   }
 
   private var displayHeight: CGFloat {
-    collapsed ? min(measuredHeight, singleLineHeight) : measuredHeight
+    collapsed ? min(measuredHeight, foldedHeight) : measuredHeight
   }
 
   var body: some View {
@@ -4416,6 +4419,7 @@ private struct WorkChatComposerTextField: View {
       acceptsPastedImages: acceptsPastedImages,
       onPasteImages: onPasteImages,
       maxLines: maxLines,
+      collapsed: collapsed,
       onFoldSwipeDown: onFoldSwipeDown
     )
     .frame(height: measuredHeight)

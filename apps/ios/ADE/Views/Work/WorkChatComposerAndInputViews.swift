@@ -39,6 +39,26 @@ func workComposerFoldGesture(
   return collapsed ? .expand : .ignore
 }
 
+/// Height the folded card shows of the field: whole lines, never a sliced one.
+///
+/// The fold clips the field rather than re-measuring it, so the clip window has
+/// to land on a line boundary itself — a window sized from a padded height cuts
+/// the next line in half and shows a band of glyph tops under the first line.
+func workComposerFoldedFieldHeight(lineHeight: CGFloat, lines: Int = 1) -> CGFloat {
+  ceil(lineHeight) * CGFloat(max(1, lines))
+}
+
+/// Where the folded field's scroll offset belongs, or `nil` to leave it alone.
+///
+/// A draft that was typed past the bottom of the field is scrolled when the
+/// fold lands, and clipping a scrolled field shows whatever half-line the
+/// offset happens to sit on. Folded means "the start of the draft", so the
+/// offset goes back to the top and stays there until the card expands again.
+func workComposerFoldedContentOffsetY(collapsed: Bool, current: CGFloat) -> CGFloat? {
+  guard collapsed, current > 0.5 else { return nil }
+  return 0
+}
+
 /// The composer's fold state: what the card shows and whether the keyboard is
 /// up. Collapsed is a view mode only — nothing is unstaged, and the draft is
 /// untouched.

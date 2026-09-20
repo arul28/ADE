@@ -106,6 +106,38 @@ final class WorkComposerFoldStateTests: XCTestCase {
     XCTAssertEqual(next, WorkComposerFoldState(collapsed: false, focused: false))
   }
 
+  // MARK: Folded presentation
+
+  func testFoldedHeightIsWholeLines() {
+    // A fractional line height still yields a window a whole line tall: one
+    // full line, and not one pixel of the next one.
+    let lineHeight: CGFloat = 20.33
+    let height = workComposerFoldedFieldHeight(lineHeight: lineHeight)
+    XCTAssertEqual(height, 21)
+    XCTAssertGreaterThanOrEqual(height, lineHeight, "the folded line is sliced from below")
+    XCTAssertLessThan(height, lineHeight * 2, "the folded card shows part of a second line")
+  }
+
+  func testFoldedHeightScalesByWholeLines() {
+    XCTAssertEqual(workComposerFoldedFieldHeight(lineHeight: 20.33, lines: 3), 63)
+    XCTAssertEqual(workComposerFoldedFieldHeight(lineHeight: 20.33, lines: 0), 21)
+  }
+
+  func testFoldingPinsAScrolledDraftBackToItsFirstLine() {
+    // The complaint this fixes: a draft typed past the bottom of the field was
+    // still scrolled when the fold landed, so the folded card showed a line
+    // sliced through the middle instead of the start of the message.
+    XCTAssertEqual(workComposerFoldedContentOffsetY(collapsed: true, current: 412), 0)
+  }
+
+  func testAnAlreadyPinnedFoldedDraftIsLeftAlone() {
+    XCTAssertNil(workComposerFoldedContentOffsetY(collapsed: true, current: 0))
+  }
+
+  func testAnExpandedDraftKeepsItsScrollPosition() {
+    XCTAssertNil(workComposerFoldedContentOffsetY(collapsed: false, current: 412))
+  }
+
   func testFoldSurvivesAFocusDropWhileFolded() {
     let next = workComposerFoldTransition(
       WorkComposerFoldState(collapsed: true, focused: false),
