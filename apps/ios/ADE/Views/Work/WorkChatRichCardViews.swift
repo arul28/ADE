@@ -4068,6 +4068,7 @@ struct WorkSubagentStoppedGroupCardView: View {
     }
   }
 
+  @ViewBuilder
   private func stoppedItemLabel(_ row: WorkSubagentTimelineRow) -> some View {
     let title = workSubagentMeaningfulName(row.snapshot)
     let lastActivity = row.snapshot.lastActivity?.trimmingCharacters(in: .whitespacesAndNewlines)
