@@ -101,18 +101,6 @@ enum WorkChatScrollTrace {
     #endif
   }
 
-  /// A write site that decided not to write. Counting the refusals is how a
-  /// "nothing happened when I asked" complaint gets separated from a jump.
-  @MainActor
-  static func writeSuppressed(reason: String, site: String, cause: String) {
-    #if DEBUG
-    guard enabled else { return }
-    logger.log(
-      "suppressed reason=\(reason, privacy: .public) site=\(site, privacy: .public) cause=\(cause, privacy: .public)"
-    )
-    #endif
-  }
-
   /// One per scroll geometry frame. The offset delta between consecutive
   /// samples is the ground truth for "the reader moved"; a large delta with no
   /// `write` line in front of it is SwiftUI's own re-measurement.
@@ -412,7 +400,7 @@ struct WorkChatScrollBenchScreen: View {
     let started = ProcessInfo.processInfo.systemUptime
     var envelopes = WorkChatScrollBenchLoader.load(path: path, limit: options.limit)
     guard !envelopes.isEmpty else {
-      WorkChatScrollTrace.note("bench loaded 0 envelopes from \(path)")
+      WorkChatScrollTrace.note("bench loaded 0 envelopes")
       return
     }
     if options.streamCount > 0, envelopes.count > options.streamCount {

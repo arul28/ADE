@@ -195,7 +195,6 @@ describe("createSubagentProgressCoalescer", () => {
     expect(coalescer.pendingCount).toBe(1);
     expect(coalescer.flushAll(20)).toHaveLength(1);
     expect(coalescer.pendingCount).toBe(0);
-    expect(coalescer.nextDueAtMs()).toBeNull();
   });
 
   it("requeues progress when the transport rejects a flush", () => {

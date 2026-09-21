@@ -172,6 +172,164 @@ final class WorkComposerDraftAttachmentTests: XCTestCase {
     XCTAssertTrue(WorkComposerDraftAttachmentCache.read(stored, for: draftKey).isEmpty)
   }
 
+  /// A navigation teardown persists bytes while the host upload may still be
+  /// running. Restoring the same attachment id lets the singleton tracker
+  /// recognize that work instead of starting a duplicate upload. Old cache
+  /// records without an id remain readable and receive a new identity.
+  @MainActor
+  func testCachedAttachmentKeepsUploadIdentityAcrossRestore() async throws {
+    let previousDraftKey = key()
+    let nextDraftKey = key()
+    defer {
+      WorkComposerDraftStore.clear(previousDraftKey)
+      WorkComposerDraftStore.clear(nextDraftKey)
+    }
+    let id = UUID()
+    let attachment = WorkChatInputAttachment(
+      id: id,
+      uploadData: Data("bytes".utf8),
+      filename: "note.txt",
+      mimeType: "text/plain",
+      kind: .file,
+      state: .ready
+    )
+
+    let uploads = WorkComposerAttachmentUploads.shared
+    var uploadCount = 0
+    var release: CheckedContinuation<Void, Never>?
+    defer {
+      release?.resume()
+      uploads.release([id])
+    }
+    uploads.begin(id: id) {
+      uploadCount += 1
+      await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+        release = continuation
+      }
+      return AgentChatFileRef(path: "/never", type: "file")
+    }
+    workChatPersistComposerAttachments([attachment], for: previousDraftKey)
+    // Model the session view switching to another chat: the old composer is
+    // torn down, but its host task is still active and the old draft remains.
+    WorkComposerDraftStore.save("next chat", for: nextDraftKey)
+    guard let entry = WorkComposerDraftStore.loadEntry(previousDraftKey),
+          let stored = entry.localFiles.first else {
+      return XCTFail("draft did not persist the in-flight attachment")
+    }
+
+    let resolution = await uploads.resolve(id, timeoutNanoseconds: 50_000_000)
+    XCTAssertEqual(resolution, .abandoned)
+    let restored = WorkComposerDraftAttachmentCache.read(entry.localFiles, for: previousDraftKey)
+    XCTAssertEqual(restored.first?.id, id)
+
+    let legacyData = try JSONSerialization.data(withJSONObject: [
+      "name": stored.name,
+      "filename": stored.filename,
+      "mimeType": stored.mimeType,
+      "kind": stored.kind,
+    ])
+    let legacy = try JSONDecoder().decode(
+      WorkComposerDraftAttachmentCache.StoredFile.self,
+      from: legacyData
+    )
+    XCTAssertNil(legacy.id)
+
+    guard let restoredAttachment = restored.first else {
+      return XCTFail("cache restore lost the attachment")
+    }
+    uploads.begin(id: restoredAttachment.id) {
+      uploadCount += 1
+      return AgentChatFileRef(path: "/duplicate", type: "file")
+    }
+    XCTAssertEqual(uploadCount, 1, "restoring an in-flight attachment must not duplicate its upload")
+  }
+
+  /// Tracker capacity may evict settled refs, but it must never cancel an
+  /// upload whose host command can continue after the local Task is cancelled.
+  /// Otherwise a later restore could begin a second upload for the same bytes.
+  @MainActor
+  func testActiveUploadSurvivesTrackerCapacityEviction() async {
+    let firstID = UUID()
+    let uploads = WorkComposerAttachmentUploads.shared
+    var uploadCount = 0
+    var release: CheckedContinuation<Void, Never>?
+    var settledIDs: [UUID] = []
+    defer {
+      release?.resume()
+      uploads.release([firstID] + settledIDs)
+    }
+
+    uploads.begin(id: firstID) {
+      uploadCount += 1
+      await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+        release = continuation
+      }
+      return AgentChatFileRef(path: "/never", type: "file")
+    }
+    let firstResolution = await uploads.resolve(firstID, timeoutNanoseconds: 50_000_000)
+    XCTAssertEqual(firstResolution, .abandoned)
+
+    // Add forty settled entries after the pending upload. The bounded tracker
+    // must evict those settled entries first and retain the active first one.
+    for index in 0..<40 {
+      let id = UUID()
+      settledIDs.append(id)
+      uploads.adopt(
+        id: id,
+        ref: AgentChatFileRef(path: "/settled-\(index)", type: "file")
+      )
+    }
+
+    uploads.begin(id: firstID) {
+      uploadCount += 1
+      return AgentChatFileRef(path: "/duplicate", type: "file")
+    }
+    XCTAssertEqual(uploadCount, 1, "capacity eviction must not duplicate an active upload")
+  }
+
+  /// If every tracked upload is still active, the tracker intentionally grows
+  /// past the settled-entry cap until host work settles. A pending upload must
+  /// remain addressable rather than being cancelled and duplicated.
+  @MainActor
+  func testAllActiveUploadsRemainTrackedBeyondSettledCapacity() async {
+    let uploads = WorkComposerAttachmentUploads.shared
+    var activeIDs: [UUID] = []
+    var continuations: [UUID: CheckedContinuation<Void, Never>] = [:]
+    var startedCount = 0
+    defer {
+      for continuation in continuations.values {
+        continuation.resume()
+      }
+      uploads.release(activeIDs)
+    }
+
+    for _ in 0...40 {
+      let id = UUID()
+      activeIDs.append(id)
+      uploads.begin(id: id) {
+        startedCount += 1
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+          continuations[id] = continuation
+        }
+        return AgentChatFileRef(path: "/never-\(id)", type: "file")
+      }
+    }
+    for _ in 0..<100 where startedCount < activeIDs.count {
+      await Task.yield()
+    }
+    XCTAssertEqual(startedCount, activeIDs.count)
+
+    uploads.begin(id: activeIDs[0]) {
+      startedCount += 1
+      return AgentChatFileRef(path: "/duplicate", type: "file")
+    }
+    XCTAssertEqual(
+      startedCount,
+      activeIDs.count,
+      "the oldest active upload must survive capacity pressure"
+    )
+  }
+
   /// The cache directory token has to be the SAME on the next launch.
   ///
   /// It used to be `String(format:)` over `draftKey.hashValue`, which Swift
@@ -247,16 +405,66 @@ final class WorkComposerDraftAttachmentTests: XCTestCase {
   func testAStuckStagedUploadIsAbandonedInsteadOfHangingTheSend() async {
     let id = UUID()
     let uploads = WorkComposerAttachmentUploads.shared
-    defer { uploads.release([id]) }
+    var release: CheckedContinuation<Void, Never>?
+    defer {
+      release?.resume()
+      uploads.release([id])
+    }
 
     uploads.begin(id: id) {
       // Never lands: the wedged leg this bug was made of.
-      try await Task.sleep(nanoseconds: 60_000_000_000)
+      await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+        release = continuation
+      }
       return AgentChatFileRef(path: "/never", type: "image")
     }
 
     let resolution = await uploads.resolve(id, timeoutNanoseconds: 50_000_000)
     XCTAssertEqual(resolution, .abandoned)
+    // The original task is still running, so a retry must not fall through to
+    // a second inline upload for the same attachment.
+    let retryResolution = await uploads.resolve(id, timeoutNanoseconds: 50_000_000)
+    XCTAssertEqual(retryResolution, .abandoned)
+  }
+
+  @MainActor
+  func testTimedOutUploadBecomesInlineRetryableAfterTheOriginalFails() async {
+    let id = UUID()
+    let uploads = WorkComposerAttachmentUploads.shared
+    defer { uploads.release([id]) }
+    var release: CheckedContinuation<Void, Never>?
+
+    uploads.begin(id: id) {
+      await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+        release = continuation
+      }
+      throw NSError(domain: "ADE", code: 1, userInfo: [NSLocalizedDescriptionKey: "no route"])
+    }
+    for _ in 0..<20 where release == nil {
+      await Task.yield()
+    }
+    XCTAssertNotNil(release)
+
+    let firstResolution = await uploads.resolve(id, timeoutNanoseconds: 50_000_000)
+    XCTAssertEqual(firstResolution, .abandoned)
+    let retryWhilePending = await uploads.resolve(id, timeoutNanoseconds: 50_000_000)
+    XCTAssertEqual(
+      retryWhilePending,
+      .abandoned,
+      "an upload that is still in flight must not start a duplicate"
+    )
+
+    release?.resume()
+    for _ in 0..<20 where uploads.failure(for: id) != "no route" {
+      await Task.yield()
+    }
+    XCTAssertEqual(uploads.failure(for: id), "no route")
+    let retryAfterFailure = await uploads.resolve(id, timeoutNanoseconds: 50_000_000)
+    XCTAssertEqual(
+      retryAfterFailure,
+      .stageInline,
+      "once the original upload fails, retry may stage the cached bytes inline"
+    )
   }
 
   /// The ordinary path: a send that arrives while the upload is still moving

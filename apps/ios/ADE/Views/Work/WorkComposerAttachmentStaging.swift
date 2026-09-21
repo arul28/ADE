@@ -258,8 +258,10 @@ func workChatPersistComposerAttachments(
 ///   array being snapshotted and cleared by the send, which a per-element flag
 ///   would not.
 ///
-/// Bounded: finished entries are dropped by `release`, and the map is trimmed to
-/// `maxEntries` oldest-first so an abandoned composer cannot grow it.
+/// Settled entries are trimmed to `maxEntries` oldest-first. Active entries may
+/// temporarily take the map over that cap: cancelling one is not a reliable
+/// host abort, and evicting it would let a restored draft duplicate its upload.
+/// They become eligible for pruning as soon as their host task settles.
 @MainActor
 final class WorkComposerAttachmentUploads {
   static let shared = WorkComposerAttachmentUploads()
@@ -268,6 +270,8 @@ final class WorkComposerAttachmentUploads {
     var task: Task<AgentChatFileRef, Error>
     var ref: AgentChatFileRef?
     var failure: String?
+    var abandoned: Bool
+    var settled: Bool
     var startedAt: Date
   }
 
@@ -290,14 +294,17 @@ final class WorkComposerAttachmentUploads {
 
   func isUploading(_ id: UUID) -> Bool {
     guard let entry = entries[id] else { return false }
-    return entry.ref == nil && entry.failure == nil
+    return !entry.settled
   }
 
   /// Ref for a restored attachment that was uploaded in a previous session, so
   /// a send after a restore does not re-upload the same bytes.
   func adopt(id: UUID, ref: AgentChatFileRef) {
     guard entries[id] == nil else { return }
-    insert(id, Entry(task: Task { ref }, ref: ref, failure: nil, startedAt: Date()))
+    insert(
+      id,
+      Entry(task: Task { ref }, ref: ref, failure: nil, abandoned: false, settled: true, startedAt: Date())
+    )
   }
 
   /// Starts the upload for one ready attachment. No-op when one is already
@@ -336,10 +343,15 @@ final class WorkComposerAttachmentUploads {
     let task = Task { @MainActor () throws -> AgentChatFileRef in
       try await upload()
     }
-    insert(id, Entry(task: task, ref: nil, failure: nil, startedAt: Date()))
+    insert(
+      id,
+      Entry(task: task, ref: nil, failure: nil, abandoned: false, settled: false, startedAt: Date())
+    )
     Task { @MainActor in
       do {
         let ref = try await task.value
+        entries[id]?.abandoned = false
+        entries[id]?.settled = true
         entries[id]?.ref = ref
       } catch is CancellationError {
         entries[id] = nil
@@ -347,6 +359,8 @@ final class WorkComposerAttachmentUploads {
       } catch {
         // A failed upload is not fatal: the send path retries inline, and the
         // draft falls back to the on-disk byte cache.
+        entries[id]?.abandoned = false
+        entries[id]?.settled = true
         entries[id]?.failure = error.localizedDescription
       }
     }
@@ -366,6 +380,7 @@ final class WorkComposerAttachmentUploads {
   ) async -> WorkComposerAttachmentUploadResolution {
     guard let entry = entries[id] else { return .stageInline }
     if let ref = entry.ref { return .ref(ref) }
+    if entry.abandoned { return .abandoned }
     if entry.failure != nil { return .stageInline }
     let task = entry.task
     let settled = await workAwaitWithDeadline(timeoutNanoseconds: timeoutNanoseconds) {
@@ -380,6 +395,7 @@ final class WorkComposerAttachmentUploads {
       return .stageInline
     case .none:
       entries[id]?.failure = workChatAttachmentUploadTimedOutMessage
+      entries[id]?.abandoned = true
       return .abandoned
     }
   }
@@ -396,7 +412,8 @@ final class WorkComposerAttachmentUploads {
     entries[id] = entry
     order.append(id)
     while order.count > Self.maxEntries {
-      let oldest = order.removeFirst()
+      guard let index = order.firstIndex(where: { entries[$0]?.settled == true }) else { break }
+      let oldest = order.remove(at: index)
       entries[oldest]?.task.cancel()
       entries[oldest] = nil
     }
@@ -418,10 +435,45 @@ enum WorkComposerDraftAttachmentCache {
   static let maxBytesPerKey = 10 * 1024 * 1024
 
   struct StoredFile: Codable, Equatable {
+    /// The composer's identity, persisted so a navigation restore can reuse an
+    /// upload that is still in flight. Optional for files written before this
+    /// field existed; `read` gives those legacy records a fresh identity.
+    var id: UUID?
     var name: String
     var filename: String
     var mimeType: String
     var kind: String
+
+    init(
+      id: UUID? = nil,
+      name: String,
+      filename: String,
+      mimeType: String,
+      kind: String
+    ) {
+      self.id = id
+      self.name = name
+      self.filename = filename
+      self.mimeType = mimeType
+      self.kind = kind
+    }
+
+    private enum CodingKeys: String, CodingKey {
+      case id
+      case name
+      case filename
+      case mimeType
+      case kind
+    }
+
+    init(from decoder: Decoder) throws {
+      let container = try decoder.container(keyedBy: CodingKeys.self)
+      id = try container.decodeIfPresent(UUID.self, forKey: .id)
+      name = try container.decode(String.self, forKey: .name)
+      filename = try container.decode(String.self, forKey: .filename)
+      mimeType = try container.decode(String.self, forKey: .mimeType)
+      kind = try container.decode(String.self, forKey: .kind)
+    }
   }
 
   private static var root: URL? {
@@ -485,6 +537,7 @@ enum WorkComposerDraftAttachmentCache {
       }
       totalBytes += data.count
       stored.append(StoredFile(
+        id: attachment.id,
         name: name,
         filename: attachment.filename,
         mimeType: attachment.mimeType,
@@ -501,6 +554,7 @@ enum WorkComposerDraftAttachmentCache {
             data.count <= maxBytesPerKey else { return nil }
       let kind = WorkChatInputAttachmentKind(rawValue: file.kind) ?? .file
       return WorkChatInputAttachment(
+        id: file.id ?? UUID(),
         image: kind == .image ? UIImage(data: data) : nil,
         uploadData: data,
         filename: file.filename,

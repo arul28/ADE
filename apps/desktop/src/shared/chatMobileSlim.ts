@@ -300,8 +300,6 @@ export type SubagentProgressCoalescer = {
   flushAll(nowMs: number): CoalescedChatEvent[];
   /** Put progress back after the transport rejected an outbound event. */
   requeue(entries: readonly CoalescedChatEvent[]): void;
-  /** Earliest ms at which `flushDue` could produce anything, or null. */
-  nextDueAtMs(): number | null;
   readonly pendingCount: number;
 };
 
@@ -474,15 +472,6 @@ export function createSubagentProgressCoalescer(options: {
       if (retryOutbound.length > 0) {
         pendingOutbound.unshift(...retryOutbound);
       }
-    },
-
-    nextDueAtMs() {
-      if (pendingOutbound.length > 0) return 0;
-      let earliest: number | null = null;
-      for (const due of dueAtMs.values()) {
-        if (earliest == null || due < earliest) earliest = due;
-      }
-      return earliest;
     },
 
     get pendingCount() {

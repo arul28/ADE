@@ -3076,7 +3076,11 @@ private struct WorkChatComposerDraftInput: View {
       // The visible attachments belong to the chat we just left. Flush them
       // under that key and clear, exactly as `bind` does for the text.
       persistDraftAttachments(for: previousKey)
-      WorkComposerAttachmentUploads.shared.release(inputAttachments.map(\.id))
+      // Keep upload entries alive across navigation. Cancelling this local
+      // Task does not abort the host's chunked command, so releasing here
+      // would let the restored draft start a duplicate upload under the same
+      // bytes. The persisted id lets the next composer reuse the entry; the
+      // bounded tracker drops old entries when it reaches its cap.
       inputAttachments = []
     }
     guard !key.isEmpty, inputAttachments.isEmpty,
