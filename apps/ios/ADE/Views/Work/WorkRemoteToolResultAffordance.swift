@@ -28,8 +28,12 @@ struct WorkRemoteToolResultAffordance: View {
     fetchedFullResult ?? resultText
   }
 
+  /// Same fields the cache and the host key on, so a row that switches
+  /// generation resets its fetched state instead of keeping the old output.
   private var resultIdentity: String {
-    "\(sessionId)|\(itemId)|\(eventSequence.map(String.init) ?? "latest")"
+    let sequence = eventSequence.map(String.init) ?? "latest"
+    let timestamp = eventTimestamp.flatMap { $0.isEmpty ? nil : $0 } ?? "-"
+    return "\(sessionId)|\(itemId)|\(sequence)|\(timestamp)"
   }
 
   var body: some View {
@@ -190,7 +194,8 @@ struct WorkRemoteToolResultAffordance: View {
     fetchedFullResult = syncService.cachedFullToolResult(
       sessionId: sessionId,
       itemId: itemId,
-      eventSequence: eventSequence
+      eventSequence: eventSequence,
+      eventTimestamp: eventTimestamp
     )
   }
 }

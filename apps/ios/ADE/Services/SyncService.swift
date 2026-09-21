@@ -13812,12 +13812,14 @@ final class SyncService: ObservableObject {
   func cachedFullToolResult(
     sessionId: String,
     itemId: String,
-    eventSequence: Int? = nil
+    eventSequence: Int? = nil,
+    eventTimestamp: String? = nil
   ) -> String? {
     chatToolResultCache.cachedFullToolResult(
       sessionId: sessionId,
       itemId: itemId,
-      eventSequence: eventSequence
+      eventSequence: eventSequence,
+      eventTimestamp: eventTimestamp
     )
   }
 
@@ -13835,7 +13837,8 @@ final class SyncService: ObservableObject {
     try await chatToolResultCache.fullToolResult(
       sessionId: sessionId,
       itemId: itemId,
-      eventSequence: eventSequence
+      eventSequence: eventSequence,
+      eventTimestamp: eventTimestamp
     ) { [weak self] in
       guard let self else { throw CancellationError() }
       let response = try await self.fetchChatToolResult(
