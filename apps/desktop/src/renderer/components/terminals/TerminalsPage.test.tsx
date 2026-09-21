@@ -454,6 +454,11 @@ vi.mock("./SessionContextMenu", () => ({
       session: TerminalSessionSummary,
       binding?: OpenProjectBinding | null,
     ) => void;
+    onOpenChatHandoff: (
+      session: TerminalSessionSummary,
+      intent: "local" | "remote",
+      binding?: OpenProjectBinding | null,
+    ) => void;
     onClose: () => void;
   }) => {
     if (!props.menu) return null;
@@ -480,6 +485,15 @@ vi.mock("./SessionContextMenu", () => ({
           onClick={() => props.onSettle(session, props.menu?.binding)}
         >
           context settle {session.id}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            props.onOpenChatHandoff(session, "local", props.menu?.binding);
+            props.onClose();
+          }}
+        >
+          context handoff local {session.id}
         </button>
       </>
     );
@@ -2232,6 +2246,41 @@ describe("TerminalsPage chat session activation", () => {
       );
     });
     confirmSpy.mockRestore();
+  });
+
+  it("clears a foreign row's woke marker on its own machine when opened via Hand off", async () => {
+    // Hand off… selects the row like a plain click, so it must clear the woke
+    // marker through the row's own binding. Dropping the binding cleared it
+    // against the tab's bound runtime instead, leaving the foreign row "woke".
+    const foreignChat = workMocks.makeTerminalSession("chat-foreign-handoff", "lane-foreign", "codex-chat", {
+      ptyId: null,
+    });
+    const clearWokeMarker = vi.fn().mockResolvedValue(undefined);
+    mountForeignMachine([foreignChat]);
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: {
+        agentChat: { delete: vi.fn() },
+        builtInBrowser: { onEvent: vi.fn(() => vi.fn()) },
+        sessions: { delete: vi.fn(), clearWokeMarker },
+      },
+    });
+
+    render(<TerminalsPage />);
+    await screen.findByTestId("session-list-pane");
+
+    const event = { shiftKey: false, metaKey: false, ctrlKey: false } as React.MouseEvent;
+    act(() => {
+      sessionListPaneProps.latest?.onContextMenu(foreignChat, event, studioBindingForDelete);
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "context handoff local chat-foreign-handoff" }));
+
+    await waitFor(() => {
+      expect(clearWokeMarker).toHaveBeenCalledWith(
+        "chat-foreign-handoff",
+        expect.objectContaining({ key: studioBindingForDelete.key }),
+      );
+    });
   });
 
   it("mass-deletes selected rows that live on another machine", async () => {

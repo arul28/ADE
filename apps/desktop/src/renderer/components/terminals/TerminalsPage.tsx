@@ -387,7 +387,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       // cannot drop the entry and fall back to the tab's bound machine.
       if (binding) machineRouter.rememberSessionPin(session, binding);
       openChatHandoff(session.id, intent);
-      handleSelectSession(session.id);
+      // Pass the row's binding through: selecting a foreign-machine chat must
+      // clear its woke marker on that machine, exactly like a plain row click.
+      handleSelectSession(session.id, undefined, undefined, binding);
     },
     [handleSelectSession, machineRouter],
   );

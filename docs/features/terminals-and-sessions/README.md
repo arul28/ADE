@@ -922,7 +922,9 @@ Renderer surfaces:
   `selectAutoHandoffRulesForSession`, `staleAutoHandoffRuleIds`,
   `autoHandoffFormIsValid`), then the dialog. `loadAutoHandoffRulesForSession`
   is the one canonical async read both entry points use to seed the editor with
-  a chat's existing rules (`[]` when the automations surface is unreadable), and
+  a chat's existing rules (`null` when the automations surface is unreadable or
+  the read fails — deliberately distinct from `[]`, "authoritatively no rules",
+  so a failed read can never delete rules it never saw), and
   the `AutoHandoffSession` prop shape is the minimal chat identity the editor
   reads, so the chat pane's `AgentChatSession` and a `TerminalSessionSummary`
   both fit without widening either. It writes **one rule per

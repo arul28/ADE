@@ -5010,8 +5010,16 @@ export function AgentChatPane({
   useEffect(() => {
     autoHandoffRequestRef.current += 1;
     pendingHandoffDestinationRef.current = null;
+    pendingHandoffPrefillRef.current = null;
     setAutoHandoffOpen(false);
     setAutoHandoffRules(null);
+    // The local handoff form is scoped to the chat being handed off. The
+    // one-shot open effect only re-seeds it on a closed→open transition, so a
+    // session switch that leaves the Handoff tab open would otherwise carry the
+    // previous chat's note and lane choice into this chat's handoff.
+    setHandoffNote("");
+    setHandoffView("menu");
+    setHandoffTargetLaneId("");
   }, [selectedSessionId]);
 
   // Handoff intents queued by the session context menu. The menu can run before

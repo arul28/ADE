@@ -1513,8 +1513,10 @@ carries a 13px duotone Phosphor glyph so the list is scannable:
   it on another model". The modal is hosted at the `SessionContextMenu` level
   rather than inside the panel, because opening it closes the menu and a modal
   mounted in the panel would unmount in the same tick. The existing-rule list is
-  fetched asynchronously and `null` means "not answered yet": a context menu
-  that waits on IPC before it appears is a broken context menu.
+  fetched asynchronously; `null` (a failed or unavailable read) keeps the item
+  disabled rather than opening the editor on defaults that would delete rules
+  the read never saw, because a context menu that waits on IPC before it appears
+  is a broken context menu.
 - Chat metadata generation makes one structured request for all three visible
   fields and applies only the selected fields. A status-only refresh sends the
   lane name, chat title, worktree folder, and last assistant paragraphs — not
