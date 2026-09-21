@@ -2312,6 +2312,7 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
       title?: string | null;
       devinMode?: DevinCloudMode | null;
       projectId?: string | null;
+      platform?: string | null;
       bypassApproval?: boolean;
     }) =>
       requireService(runtime.agentChatService, "Agent chat service not available.").createDevinCloudSessionForLane({
@@ -2321,6 +2322,7 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
         ...(args?.title ? { title: args.title } : {}),
         ...(args?.devinMode !== undefined ? { devinMode: args.devinMode } : {}),
         ...(args?.projectId ? { projectId: args.projectId } : {}),
+        ...(args?.platform !== undefined ? { platform: args.platform } : {}),
         ...(args?.bypassApproval !== undefined ? { bypassApproval: args.bypassApproval } : {}),
       }),
   };

@@ -24,14 +24,14 @@ import { cn } from "../ui/cn";
 import { DevinLogo } from "../shared/ProviderLogos";
 import { SmartTooltip } from "../ui/SmartTooltip";
 
-const TERMINAL_STATUSES: ReadonlySet<DevinCloudFleetStatus> = new Set([
-  "finished",
-  "error",
-  "archived",
+const ACTIVE_STATUSES: ReadonlySet<DevinCloudFleetStatus> = new Set([
+  "starting",
+  "working",
+  "needs_you",
 ]);
 
 function isActiveStatus(status: DevinCloudFleetStatus): boolean {
-  return !TERMINAL_STATUSES.has(status);
+  return ACTIVE_STATUSES.has(status);
 }
 
 export const DEVIN_CLOUD_MODES: readonly DevinCloudMode[] = [

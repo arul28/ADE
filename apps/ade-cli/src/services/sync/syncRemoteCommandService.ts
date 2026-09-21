@@ -5997,6 +5997,7 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
     const sessionId = asTrimmedString(payload.sessionId);
     const title = asTrimmedString(payload.title);
     const projectId = asTrimmedString(payload.projectId);
+    const platform = asTrimmedString(payload.platform);
     const result = await requireService(args.agentChatService, "Agent chat service not available.").createDevinCloudSessionForLane({
       laneId: requireString(payload.laneId, "ai.createDevinCloudSession requires laneId."),
       prompt: requireString(payload.prompt, "ai.createDevinCloudSession requires prompt."),
@@ -6004,6 +6005,7 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
       ...(title ? { title } : {}),
       ...(devinMode !== undefined ? { devinMode } : {}),
       ...(projectId ? { projectId } : {}),
+      ...(platform ? { platform } : {}),
       ...(typeof payload.bypassApproval === "boolean" ? { bypassApproval: payload.bypassApproval } : {}),
     });
     args.devinCloudFleetService?.invalidateCache();

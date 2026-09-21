@@ -886,7 +886,9 @@ import {
   DEVIN_CLOUD_MESSAGES_RETRY_ATTEMPTS,
   DEVIN_CLOUD_MESSAGES_RETRY_MS,
   DEVIN_CLOUD_PLACEHOLDER_NAME_READ_LIMIT,
+  DEVIN_CLOUD_REMOTE_MESSAGE_ID_PREFIX,
   DEVIN_CLOUD_REMOTE_NAME_READ_TTL_MS,
+  consumeDevinEchoFingerprint,
   devinCloudMessageFingerprint,
   isDevinCloudSessionLive,
 } from "./devinCloudConversation";
@@ -45072,23 +45074,45 @@ export function createAgentChatService(args: {
     meta: { turnId: string },
   ): boolean => {
     if (!messages.length) return false;
-    const existingFingerprints = transcriptCloudFingerprints([
+    const hydratedIds = devinCloudHydratedEventIds.get(managed.session.id) ?? new Set<string>();
+    // Remote rows dedupe on event_id — mirrored events carry it in messageId,
+    // so a restarted host re-reads it from the persisted transcript. Text
+    // fingerprints are reserved for the local-send echo (the user_message the
+    // composer emits over REST comes back in the next poll under a fresh
+    // event id) and are consumed on match, so repeated identical remote
+    // messages still print.
+    const localEchoes = new Map<string, number>();
+    for (const envelope of [
       ...(eventHistoryBySession.get(managed.session.id) ?? []),
       ...readTranscriptEnvelopes(managed),
-    ]);
-    const hydratedIds = devinCloudHydratedEventIds.get(managed.session.id) ?? new Set<string>();
+    ]) {
+      const event = envelope.event;
+      if (
+        (event.type === "user_message" || event.type === "text")
+        && event.messageId?.startsWith(DEVIN_CLOUD_REMOTE_MESSAGE_ID_PREFIX)
+      ) {
+        hydratedIds.add(event.messageId.slice(DEVIN_CLOUD_REMOTE_MESSAGE_ID_PREFIX.length));
+        continue;
+      }
+      if (event.type === "user_message" && event.text?.trim()) {
+        const fingerprint = `user:${event.text.trim()}`;
+        localEchoes.set(fingerprint, (localEchoes.get(fingerprint) ?? 0) + 1);
+      }
+    }
     let emittedVisible = false;
     for (const message of messages) {
       if (!message.eventId || !message.message) continue;
       if (hydratedIds.has(message.eventId)) continue;
       hydratedIds.add(message.eventId);
-      const fingerprint = devinCloudMessageFingerprint(message);
-      if (fingerprint && fingerprintAlreadyHydrated(existingFingerprints, fingerprint)) continue;
-      if (fingerprint) existingFingerprints.add(fingerprint);
+      if (message.source === "user") {
+        const fingerprint = devinCloudMessageFingerprint(message);
+        if (fingerprint && consumeDevinEchoFingerprint(localEchoes, fingerprint)) continue;
+      }
       emittedVisible = true;
       emitChatEvent(managed, {
         type: message.source === "user" ? "user_message" : "text",
         text: message.message,
+        messageId: `${DEVIN_CLOUD_REMOTE_MESSAGE_ID_PREFIX}${message.eventId}`,
         turnId: meta.turnId,
         runtime: "cloud",
       });
