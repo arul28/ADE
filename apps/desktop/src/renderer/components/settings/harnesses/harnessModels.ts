@@ -1,16 +1,24 @@
 /**
- * Which models a chosen brain can actually run.
+ * Which models a chosen source can actually run.
  *
- * The brain, not the harness, decides the model list: a Claude account offers
+ * The source, not the harness, decides the model list: a Claude account offers
  * Anthropic models whichever harness is driving it, and an OpenRouter key
  * offers OpenRouter's. Filtering by the harness instead is what produced the
  * old "pick Droid, get Claude-only models" confusion, so the mapping below goes
- * from source → provider family and the registry filter follows it.
+ * from source → provider family and the list follows it.
  *
- * A key pointing at a custom OpenAI-compatible endpoint has no registry entry
- * at all. Those get free text, because the only list of their models is the one
- * the endpoint itself declares, and ADE refuses to guess an id on the user's
- * behalf.
+ * Two lists feed that mapping, in this order:
+ *
+ * 1. The LIVE runtime catalog — the same `chat.modelCatalog` the composer's
+ *    ModelPicker reads. Cursor, OpenCode, Pi and the ACP CLIs enumerate their
+ *    models at run time and have no static rows, so the static registry alone
+ *    reported "no models" for them and the wizard fell back to a text box.
+ *    Reading the catalog the composer already warms is what closes that seam.
+ *    The caller passes the catalog in; fetching it belongs to
+ *    `ModelPicker/useRuntimeCatalogForFamily`, so this module stays pure.
+ * 2. The static `MODEL_REGISTRY` — the fallback for an older host with no
+ *    `agentChat.modelCatalog` bridge, and for a catalog request that fails. A
+ *    shorter list is still a list; dropping to free text is not.
  */
 
 import {
@@ -19,6 +27,15 @@ import {
   type ModelDescriptor,
   type ProviderFamily,
 } from "../../../../shared/modelRegistry";
+import type { AgentChatModelCatalog } from "../../../../shared/types";
+import {
+  descriptorsFromAgentChatModelCatalog,
+  resolveModelDescriptorWithRuntimeCatalog,
+} from "../../shared/ModelPicker/modelCatalog";
+// Settings has no bound machine, so it reads the default bucket — the same one
+// an unpinned composer fills. Sharing the bucket is the point: a wizard opened
+// after a composer has already listed models does not fetch again.
+import { DEFAULT_RUNTIME_CATALOG_SCOPE } from "../../shared/ModelPicker/runtimeCatalogCache";
 import type { HarnessPresetSource } from "../../../../shared/harnessPresets";
 import type { HarnessKeySource } from "./harnessSources";
 
@@ -65,58 +82,88 @@ export function providerFamilyForSource(source: HarnessPresetSource | null | und
 }
 
 /** Live, non-deprecated models for a family, ordered the way the registry is. */
-export function modelsForFamily(family: ProviderFamily | null): ModelDescriptor[] {
+function modelsForFamily(family: ProviderFamily | null): ModelDescriptor[] {
   if (!family) return [];
   return MODEL_REGISTRY.filter((model) => model.family === family && !model.deprecated);
 }
 
 /**
- * Whether the source's models must be typed rather than picked.
+ * Whether the source's model id must be typed rather than picked.
  *
- * True for a custom endpoint that declares no models of its own, for a key
- * whose provider the registry has never heard of, and for a key whose family
- * the registry names but holds no live model for (DeepSeek and Mistral keys are
- * filed by vendor while their catalog rows route through OpenCode). A select
- * with nothing but "Choose a model" in it is a dead end, so any empty list
- * becomes a text box.
+ * Typing is the last resort, not a shortcut: the owner's complaint was a text
+ * box shown next to a provider ADE could enumerate perfectly well. So this
+ * answers from the same resolution the select uses — if anything can list a
+ * model for this source, the user picks from that list.
+ *
+ * Two cases survive. A key pointing at a custom OpenAI-compatible endpoint that
+ * declares no models of its own: nothing enumerates that endpoint, not the
+ * registry and not the runtime catalog. And a first-class key provider that
+ * neither list covers — OpenRouter, Google, DeepSeek, Mistral, Groq and
+ * Together have no static registry rows and no catalog group that maps back to
+ * them, so without this branch the wizard would offer an empty select and the
+ * preset could never be finished.
  */
 export function sourceNeedsFreeTextModel(
   source: HarnessPresetSource | null | undefined,
   keyRow?: HarnessKeySource | null,
+  catalog?: AgentChatModelCatalog | null,
 ): boolean {
-  if (!source) return false;
-  if (source.kind !== "key") return false;
+  if (source?.kind !== "key") return false;
   if (keyRow?.models && keyRow.models.length > 0) return false;
   if (keyRow?.baseUrl) return true;
-  const family = providerFamilyForSource(source);
-  return family === null || modelsForFamily(family).length === 0;
+  return modelChoicesForSource(source, keyRow, catalog).length === 0;
 }
 
-/** The model ids a source offers, custom-endpoint models included. */
+/** Rows the live catalog reports for one family, in catalog order. */
+function runtimeModelChoices(
+  catalog: AgentChatModelCatalog | null | undefined,
+  family: ProviderFamily | null,
+): Array<{ id: string; label: string }> {
+  if (!catalog || !family) return [];
+  const { models } = descriptorsFromAgentChatModelCatalog(
+    catalog,
+    (model) => model.family === family,
+    DEFAULT_RUNTIME_CATALOG_SCOPE,
+  );
+  return models.map((model) => ({ id: model.id, label: model.displayName }));
+}
+
+/**
+ * The model ids a source offers.
+ *
+ * A custom endpoint's own declared models win, then the live catalog, then the
+ * static registry. `catalog` is optional so the pure callers (tests, any future
+ * non-React surface) keep working on the registry alone.
+ */
 export function modelChoicesForSource(
   source: HarnessPresetSource | null | undefined,
   keyRow?: HarnessKeySource | null,
+  catalog?: AgentChatModelCatalog | null,
 ): Array<{ id: string; label: string }> {
   if (source?.kind === "key" && keyRow?.models && keyRow.models.length > 0) {
     return keyRow.models.map((id) => ({ id, label: id }));
   }
-  return modelsForFamily(providerFamilyForSource(source)).map((model) => ({
+  const family = providerFamilyForSource(source);
+  const runtime = runtimeModelChoices(catalog, family);
+  if (runtime.length > 0) return runtime;
+  return modelsForFamily(family).map((model) => ({
     id: model.id,
     label: model.displayName,
   }));
 }
 
-/** Display name for a model id, falling back to the id the user typed. */
-export function harnessModelLabel(modelId: string): string {
-  return getModelById(modelId)?.displayName ?? modelId;
-}
-
-/** Models a subagent can be pinned to — the same list the main model comes from. */
-export function subagentModelChoices(
-  source: HarnessPresetSource | null | undefined,
-  keyRow?: HarnessKeySource | null,
-): Array<{ id: string; label: string }> {
-  return modelChoicesForSource(source, keyRow);
+/**
+ * Display name for a model id.
+ *
+ * The live catalog answers first, because a runtime-only model (a Cursor or
+ * OpenCode row) has no registry entry and would otherwise read as its raw slug
+ * in the summary chip. The registry answers next, and the id itself last.
+ */
+export function harnessModelLabel(
+  modelId: string,
+  scopeKey: string = DEFAULT_RUNTIME_CATALOG_SCOPE,
+): string {
+  return resolveModelDescriptorWithRuntimeCatalog(modelId, scopeKey)?.displayName ?? modelId;
 }
 
 /**

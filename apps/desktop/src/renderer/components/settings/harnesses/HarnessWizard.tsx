@@ -1,21 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CaretLeft, CaretRight, Check, UploadSimple, Warning } from "@phosphor-icons/react";
+import { CaretLeft, CaretRight, Check, Warning } from "@phosphor-icons/react";
 import type { AiSettingsStatus } from "../../../../shared/types";
 import type { ApiCredentialSummary } from "../../../../shared/types/apiCredentials";
 import {
   DEFAULT_HARNESS_PRESET_ACCENT,
-  HARNESS_PRESET_AGENT_KEYS,
-  HARNESS_PRESET_AGENT_LABELS,
   HARNESS_PRESET_BODIES,
-  HARNESS_PRESET_NAME_MAX_LENGTH,
   HARNESS_PRESET_SUBAGENT_INHERIT,
   harnessBodyLabel,
-  harnessPresetAgentOverrideNote,
   harnessPresetMissingCopy,
   validateHarnessPreset,
   type HarnessPresetBody,
   type HarnessPresetDraft,
-  type HarnessPresetLogo,
   type HarnessPresetMissing,
   type HarnessPresetSource,
 } from "../../../../shared/harnessPresets";
@@ -23,43 +18,44 @@ import { COLORS, SANS_FONT, outlineButton, primaryButton } from "../../lanes/lan
 import { providerColor } from "../../usage/providerColors";
 import { ProviderLogo } from "../../shared/ProviderLogos";
 import { HarnessLogo } from "../../shared/HarnessLogo";
-import { PermissionModePicker } from "../../shared/PermissionModePicker";
-import { ReasoningEffortPicker } from "../../shared/ModelPicker/ReasoningEffortPicker";
-import { SettingsDisclosure } from "../primitives/SettingsDisclosure";
-import { SettingsSelect, SettingsTextField } from "../primitives/SettingsControls";
 import { harnessAvailabilityMap } from "./harnessAvailability";
-import { harnessModelLabel, modelChoicesForSource, sourceNeedsFreeTextModel } from "./harnessModels";
 import {
-  coerceHarnessPermissionMode,
-  defaultHarnessPermissionMode,
-  harnessPermissionOptions,
-} from "./harnessPermissionModes";
+  harnessModelLabel,
+  modelChoicesForSource,
+  providerFamilyForSource,
+  sourceNeedsFreeTextModel,
+} from "./harnessModels";
+import { useRuntimeCatalogForFamily } from "../../shared/ModelPicker/useRuntimeCatalogForFamily";
 import {
   EMPTY_HARNESS_SOURCE_INVENTORY,
-  HARNESS_PROXY_SIGN_IN_UNAVAILABLE,
-  harnessSourceRowDetail,
-  harnessSourceRowTitle,
   loadHarnessAccounts,
   proxySignInAvailable,
   readStoredKeySources,
   sourceFromInventoryRow,
-  sourceMatchesRow,
   subscriptionSources,
-  type HarnessBrainSource,
   type HarnessKeySource,
+  type HarnessModelSource,
   type HarnessSourceInventory,
 } from "./harnessSources";
 import { HarnessLogoCropper } from "./HarnessLogoCropper";
+import { StepModel } from "./HarnessWizardStepModel";
+import { StepIdentity } from "./HarnessWizardStepIdentity";
 
 /**
- * Building a harness: pick the body, pick the brain, name it.
+ * Building a custom provider: pick the harness, pick the model provider and
+ * model, name it.
  *
  * Three steps because there are exactly three decisions, and separating them is
  * what lets the middle step show a model list that already knows which provider
- * it is listing. The build animation is the point of the shape: the body card
- * slides in, and the brain card snaps onto it in the preset's accent, so the
- * thing you are assembling is visible the whole way through rather than being a
- * form you fill in and a row that appears afterwards.
+ * it is listing. The build animation is the point of the shape: the harness
+ * card slides in, and the model card snaps onto it in the preset's accent, so
+ * the thing you are assembling is visible the whole way through rather than
+ * being a form you fill in and a row that appears afterwards.
+ *
+ * A permission tier is deliberately NOT part of a custom provider. It belongs
+ * to the harness and is chosen at launch in the composer, the same as for every
+ * built-in provider; storing a second copy here would let the composer and the
+ * custom provider disagree about the same run.
  *
  * Unavailable harnesses stay selectable on purpose — see `harnessAvailability`.
  * A sign-in the host cannot perform is shown as a disabled button with the
@@ -67,8 +63,6 @@ import { HarnessLogoCropper } from "./HarnessLogoCropper";
  */
 
 type Step = 1 | 2 | 3;
-
-const ADVANCED_FOLLOWS = "follows";
 
 /** Honour the user's motion setting without pulling in a hook library. */
 function usePrefersReducedMotion(): boolean {
@@ -102,7 +96,6 @@ export function emptyHarnessDraft(harness: HarnessPresetBody = "claude"): Harnes
     model: "",
     subagentModel: HARNESS_PRESET_SUBAGENT_INHERIT,
     agentOverrides: {},
-    permissionMode: defaultHarnessPermissionMode(harness),
     accentColor: DEFAULT_HARNESS_PRESET_ACCENT,
     logo: { kind: "ade" },
   };
@@ -138,7 +131,6 @@ export function HarnessWizard({
   const [cropSrc, setCropSrc] = useState<string | null>(null);
   const [logoError, setLogoError] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const objectUrlRef = useRef<string | null>(null);
 
   const availability = useMemo(() => harnessAvailabilityMap(status), [status]);
@@ -169,10 +161,15 @@ export function HarnessWizard({
     if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
   }, []);
 
-  const sources: HarnessBrainSource[] = useMemo(
-    () => [...inventory.accounts, ...keySources, ...inventory.subscriptions],
-    [inventory.accounts, inventory.subscriptions, keySources],
+  // Two groups, not one list: an account or a key is something this computer
+  // already holds, and a proxy subscription is a sign-in ADE holds elsewhere.
+  // The old flat list put a row with a Sign in button beside rows without one
+  // and left the reader to work out why.
+  const ownedSources: HarnessModelSource[] = useMemo(
+    () => [...inventory.accounts, ...keySources],
+    [inventory.accounts, keySources],
   );
+  const proxySources: HarnessModelSource[] = inventory.subscriptions;
 
   const selectedKeyRow: HarnessKeySource | null = useMemo(() => {
     if (draft.source.kind !== "key") return null;
@@ -180,11 +177,24 @@ export function HarnessWizard({
     return keySources.find((row) => row.provider === source.provider && row.credentialId === source.credentialId) ?? null;
   }, [draft.source, keySources]);
 
-  const modelChoices = useMemo(
-    () => modelChoicesForSource(draft.source, selectedKeyRow),
-    [draft.source, selectedKeyRow],
+  // The live catalog is the same one the composer's model picker reads, through
+  // the same shared cache, and it is only asked for while step 2 is showing.
+  const sourceFamily = useMemo(() => providerFamilyForSource(draft.source), [draft.source]);
+  const { catalog: runtimeCatalog, loading: catalogLoading } = useRuntimeCatalogForFamily(
+    step === 2,
+    sourceFamily,
   );
-  const freeTextModel = sourceNeedsFreeTextModel(draft.source, selectedKeyRow);
+  const modelChoices = useMemo(
+    () => modelChoicesForSource(draft.source, selectedKeyRow, runtimeCatalog),
+    [draft.source, runtimeCatalog, selectedKeyRow],
+  );
+  // A custom endpoint needs the text box whatever the catalog says, so it gets
+  // it immediately. Every other source waits for the catalog to settle: a
+  // provider whose models are still arriving must not flash a text box and
+  // then replace it with a select, and the reverse flash is just as bad.
+  const endpointNeedsTypedId = Boolean(selectedKeyRow?.baseUrl) && !selectedKeyRow?.models?.length;
+  const freeTextModel = endpointNeedsTypedId
+    || (!catalogLoading && sourceNeedsFreeTextModel(draft.source, selectedKeyRow, runtimeCatalog));
 
   const errors = validateHarnessPreset(draft);
   // A blank name is only wrong once the person has touched the field: step 3
@@ -203,7 +213,6 @@ export function HarnessWizard({
     setDraft((prev) => ({
       ...prev,
       harness,
-      permissionMode: coerceHarnessPermissionMode(harness, prev.permissionMode),
       // Advanced only exists for Claude; leaving pins behind on another harness
       // would save settings nothing reads.
       agentOverrides: harness === "claude" ? prev.agentOverrides : {},
@@ -214,15 +223,19 @@ export function HarnessWizard({
     }));
   }, []);
 
-  const chooseSource = useCallback((row: HarnessBrainSource) => {
+  const chooseSource = useCallback((row: HarnessModelSource) => {
     const source = sourceFromInventoryRow(row);
-    setDraft((prev) => ({
-      ...prev,
-      source,
-      // A model from the previous provider is meaningless under the new one.
-      model: sourceKeepsModel(prev.source, source) ? prev.model : "",
-      ...(sourceKeepsModel(prev.source, source) ? {} : { subagentModel: HARNESS_PRESET_SUBAGENT_INHERIT }),
-    }));
+    setDraft((prev) => {
+      // A model from the previous provider is meaningless under the new one,
+      // and so is a subagent model picked from the same list.
+      const keepsModel = sourceKeepsModel(prev.source, source);
+      return {
+        ...prev,
+        source,
+        model: keepsModel ? prev.model : "",
+        subagentModel: keepsModel ? prev.subagentModel : HARNESS_PRESET_SUBAGENT_INHERIT,
+      };
+    });
   }, []);
 
   const handleFile = useCallback((file: File | null | undefined) => {
@@ -313,7 +326,7 @@ export function HarnessWizard({
       <BuildPreview draft={draft} step={step} reducedMotion={reducedMotion} />
 
       {step === 1 ? (
-        <StepBody
+        <StepHarness
           selected={draft.harness}
           availability={availability}
           onSelect={chooseHarness}
@@ -321,10 +334,12 @@ export function HarnessWizard({
       ) : null}
 
       {step === 2 ? (
-        <StepBrain
+        <StepModel
           draft={draft}
-          sources={sources}
+          ownedSources={ownedSources}
+          proxySources={proxySources}
           modelChoices={modelChoices}
+          modelsLoading={catalogLoading}
           freeTextModel={freeTextModel}
           freeTextPlaceholder={selectedKeyRow?.baseUrl ? "Model id this endpoint accepts" : "Model id this key can use"}
           proxyAvailable={inventory.proxySignInAvailable}
@@ -342,7 +357,6 @@ export function HarnessWizard({
           nameError={nameTouched ? errors.name : undefined}
           onNameTouched={() => setNameTouched(true)}
           accentError={errors.accentColor}
-          fileInputRef={fileInputRef}
           onPatch={patch}
           onPickFile={handleFile}
           onGenerate={handleGenerate}
@@ -416,12 +430,18 @@ export function HarnessWizard({
   );
 }
 
-/** Keep the chosen model when the source still points at the same provider. */
+/**
+ * Keep the chosen model when the source still points at the same provider.
+ *
+ * The kind of source does not matter: an account, a stored key and a proxy
+ * subscription all name a provider, and a model belongs to the provider rather
+ * than to the identity paying for it. Swapping a Claude account for the Claude
+ * subscription keeps the model; swapping Claude for Cursor cannot. An account
+ * and a key never match here, because the two vocabularies spell the same
+ * provider differently — `claude` against `anthropic`.
+ */
 function sourceKeepsModel(previous: HarnessPresetSource, next: HarnessPresetSource): boolean {
-  if (previous.kind === "key" && next.kind === "key") return previous.provider === next.provider;
-  const providerOf = (source: HarnessPresetSource) =>
-    source.kind === "key" ? source.provider : source.provider;
-  return providerOf(previous) === providerOf(next);
+  return previous.provider === next.provider;
 }
 
 function normalizeHex(value: string): string {
@@ -430,8 +450,14 @@ function normalizeHex(value: string): string {
 }
 
 const STEP_TITLES: Record<Step, { title: string; description: string }> = {
-  1: { title: "Pick an agent", description: "The agent ADE runs. You can pick one that is not set up yet." },
-  2: { title: "Pick a brain", description: "Where it gets its intelligence, and which model it uses." },
+  1: {
+    title: "Pick a harness",
+    description: "Your custom provider starts with the harness that runs it. Next you pick its model.",
+  },
+  2: {
+    title: "Pick a model provider",
+    description: "Choose the account or key that pays for it, then the model.",
+  },
   3: { title: "Name it", description: "What it is called, and how it looks in a list." },
 };
 
@@ -481,9 +507,13 @@ function WizardHeader({ step, editing, onCancel }: { step: Step; editing: boolea
 /**
  * The thing being assembled.
  *
- * The body card is always drawn; the brain card only exists once a source has
+ * The harness card is always drawn; the model card only exists once a model has
  * been chosen, and it arrives with a short snap so the join reads as an
  * assembly rather than as a second field appearing.
+ *
+ * Each pill carries its own noun. Two bare names side by side made the reader
+ * guess which one was the harness and which one was the model, and the empty
+ * state said "No model yet" without ever saying what the filled state would be.
  */
 function BuildPreview({
   draft,
@@ -494,7 +524,7 @@ function BuildPreview({
   step: Step;
   reducedMotion: boolean;
 }) {
-  const hasBrain = Boolean(draft.model);
+  const hasModel = Boolean(draft.model);
   const accent = draft.accentColor;
   const transition = reducedMotion ? "none" : "transform 260ms cubic-bezier(0.2, 0.9, 0.3, 1), opacity 200ms ease";
   return (
@@ -527,6 +557,7 @@ function BuildPreview({
       >
         <ProviderLogo family={draft.harness} size={20} />
         <span style={{ fontSize: 12, fontWeight: 600, color: COLORS.textPrimary }}>
+          <span style={{ fontWeight: 400, color: COLORS.textMuted }}>Harness · </span>
           {harnessBodyLabel(draft.harness)}
         </span>
       </div>
@@ -540,24 +571,25 @@ function BuildPreview({
           gap: 8,
           padding: "8px 12px",
           borderRadius: 10,
-          border: `1px solid ${hasBrain ? accent : COLORS.borderMuted}`,
-          background: hasBrain ? `color-mix(in srgb, ${accent} 14%, transparent)` : "transparent",
-          opacity: hasBrain ? 1 : 0.45,
-          transform: hasBrain || reducedMotion ? "translateX(0) scale(1)" : "translateX(14px) scale(0.96)",
+          border: `1px solid ${hasModel ? accent : COLORS.borderMuted}`,
+          background: hasModel ? `color-mix(in srgb, ${accent} 14%, transparent)` : "transparent",
+          opacity: hasModel ? 1 : 0.45,
+          transform: hasModel || reducedMotion ? "translateX(0) scale(1)" : "translateX(14px) scale(0.96)",
           transition,
           minWidth: 0,
         }}
       >
-        <HarnessLogo logo={draft.logo} size={18} accentColor={hasBrain ? accent : null} />
+        <HarnessLogo logo={draft.logo} size={18} accentColor={hasModel ? accent : null} />
         <span style={{ fontSize: 12, fontWeight: 600, color: COLORS.textPrimary, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-          {hasBrain ? harnessModelLabel(draft.model) : "No model yet"}
+          <span style={{ fontWeight: 400, color: COLORS.textMuted }}>Model · </span>
+          {hasModel ? harnessModelLabel(draft.model) : "not picked yet"}
         </span>
       </div>
     </div>
   );
 }
 
-function StepBody({
+function StepHarness({
   selected,
   availability,
   onSelect,
@@ -569,7 +601,7 @@ function StepBody({
   return (
     <div
       role="radiogroup"
-      aria-label="Agent"
+      aria-label="Harness"
       style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(168px, 1fr))", gap: 8 }}
     >
       {HARNESS_PRESET_BODIES.map((harness) => {
@@ -611,416 +643,6 @@ function StepBody({
           </button>
         );
       })}
-    </div>
-  );
-}
-
-function StepBrain({
-  draft,
-  sources,
-  modelChoices,
-  freeTextModel,
-  freeTextPlaceholder,
-  proxyAvailable,
-  onChooseSource,
-  onPatch,
-}: {
-  draft: HarnessPresetDraft;
-  sources: HarnessBrainSource[];
-  modelChoices: Array<{ id: string; label: string }>;
-  freeTextModel: boolean;
-  freeTextPlaceholder: string;
-  proxyAvailable: boolean;
-  onChooseSource: (row: HarnessBrainSource) => void;
-  onPatch: (next: Partial<HarnessPresetDraft>) => void;
-}) {
-  const permissionOptions = harnessPermissionOptions(draft.harness);
-  const subagentOptions = useMemo(
-    () => [
-      { value: HARNESS_PRESET_SUBAGENT_INHERIT, label: "Same as main" },
-      ...modelChoices.map((choice) => ({ value: choice.id, label: choice.label })),
-    ],
-    [modelChoices],
-  );
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0 }}>
-      <section aria-label="Source" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        <SectionLabel>Source</SectionLabel>
-        <div role="radiogroup" aria-label="Source" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {sources.map((row) => {
-            const isSelected = sourceMatchesRow(draft.source, row);
-            const key =
-              row.kind === "account" ? `account:${row.instanceId}`
-                : row.kind === "key" ? `key:${row.provider}:${row.credentialId}`
-                  : `subscription:${row.provider}`;
-            const accent = row.kind === "account" && row.accentColor ? row.accentColor : providerColor(row.provider);
-            return (
-              <div
-                key={key}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  padding: "9px 11px",
-                  borderRadius: 9,
-                  border: `1px solid ${isSelected ? accent : COLORS.outlineBorder}`,
-                  background: isSelected ? `color-mix(in srgb, ${accent} 10%, transparent)` : COLORS.cardBg,
-                }}
-              >
-                <button
-                  type="button"
-                  role="radio"
-                  aria-checked={isSelected}
-                  data-harness-source={key}
-                  onClick={() => onChooseSource(row)}
-                  style={{
-                    display: "flex",
-                    flex: 1,
-                    minWidth: 0,
-                    alignItems: "center",
-                    gap: 10,
-                    background: "transparent",
-                    border: "none",
-                    padding: 0,
-                    cursor: "pointer",
-                    textAlign: "left",
-                    fontFamily: SANS_FONT,
-                  }}
-                >
-                  <ProviderLogo family={row.provider} size={18} />
-                  <span style={{ minWidth: 0 }}>
-                    <span style={{ display: "block", fontSize: 12, fontWeight: 600, color: COLORS.textPrimary }}>
-                      {harnessSourceRowTitle(row)}
-                    </span>
-                    <span style={{ display: "block", fontSize: 10.5, color: COLORS.textMuted }}>
-                      {harnessSourceRowDetail(row)}
-                    </span>
-                  </span>
-                </button>
-                {row.kind === "subscription" ? (
-                  <button
-                    type="button"
-                    data-harness-proxy-sign-in={row.provider}
-                    disabled={!proxyAvailable}
-                    title={proxyAvailable ? undefined : HARNESS_PROXY_SIGN_IN_UNAVAILABLE}
-                    onClick={() => {
-                      const signIn = (window as unknown as {
-                        ade?: { proxy?: { signIn?: (args: { provider: string }) => Promise<unknown> } };
-                      }).ade?.proxy?.signIn;
-                      if (typeof signIn === "function") void signIn({ provider: row.provider });
-                    }}
-                    style={outlineButton({
-                      opacity: proxyAvailable ? 1 : 0.55,
-                      cursor: proxyAvailable ? "pointer" : "not-allowed",
-                    })}
-                  >
-                    Sign in
-                  </button>
-                ) : null}
-              </div>
-            );
-          })}
-          {sources.length === 0 ? (
-            <p style={{ margin: 0, fontSize: 11.5, color: COLORS.textMuted }}>
-              No accounts or keys yet. Add one on the AI providers page, then come back.
-            </p>
-          ) : null}
-        </div>
-        {!proxyAvailable ? (
-          <p style={{ margin: 0, fontSize: 10.5, color: COLORS.textMuted }}>
-            {HARNESS_PROXY_SIGN_IN_UNAVAILABLE}
-          </p>
-        ) : null}
-      </section>
-
-      <Row label="Model" htmlFor="harness-model">
-        {freeTextModel ? (
-          <SettingsTextField
-            id="harness-model"
-            value={draft.model}
-            onChange={(value) => onPatch({ model: value })}
-            placeholder={freeTextPlaceholder}
-            ariaLabel="Model"
-            mono
-            fullWidth={false}
-          />
-        ) : (
-          <SettingsSelect
-            id="harness-model"
-            ariaLabel="Model"
-            value={draft.model}
-            options={[{ value: "", label: "Choose a model" }, ...modelChoices.map((choice) => ({ value: choice.id, label: choice.label }))]}
-            onChange={(value) => onPatch({ model: value })}
-          />
-        )}
-      </Row>
-
-      {draft.model ? (
-        <Row label="Effort">
-          <ReasoningEffortPicker
-            modelId={draft.model}
-            reasoningEffort={draft.reasoningEffort ?? null}
-            useFamilyDefaults={false}
-            onChange={(effort) =>
-              onPatch(effort ? { reasoningEffort: effort } : { reasoningEffort: undefined })
-            }
-          />
-        </Row>
-      ) : null}
-
-      <Row label="Permission mode">
-        <PermissionModePicker
-          ariaLabel="Permission mode"
-          selectedValue={draft.permissionMode}
-          options={permissionOptions}
-          onSelect={(value) => onPatch({ permissionMode: value })}
-        />
-      </Row>
-
-      <Row label="Subagents" htmlFor="harness-subagent-model">
-        <SettingsSelect
-          id="harness-subagent-model"
-          ariaLabel="Subagent model"
-          value={draft.subagentModel}
-          options={subagentOptions}
-          onChange={(value) => onPatch({ subagentModel: value })}
-        />
-      </Row>
-
-      {draft.harness === "claude" ? (
-        <SettingsDisclosure summary="Advanced" gap={12}>
-          {HARNESS_PRESET_AGENT_KEYS.map((agent) => {
-            const value = draft.agentOverrides[agent] ?? ADVANCED_FOLLOWS;
-            const pinned = value !== ADVANCED_FOLLOWS;
-            return (
-              <div key={agent} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                <Row label={HARNESS_PRESET_AGENT_LABELS[agent]} htmlFor={`harness-agent-${agent}`}>
-                  <SettingsSelect
-                    id={`harness-agent-${agent}`}
-                    ariaLabel={`${HARNESS_PRESET_AGENT_LABELS[agent]} model`}
-                    value={value}
-                    options={[
-                      { value: ADVANCED_FOLLOWS, label: "Follows subagents" },
-                      ...modelChoices.map((choice) => ({ value: choice.id, label: choice.label })),
-                    ]}
-                    onChange={(next) => {
-                      const overrides = { ...draft.agentOverrides };
-                      if (next === ADVANCED_FOLLOWS) delete overrides[agent];
-                      else overrides[agent] = next;
-                      onPatch({ agentOverrides: overrides });
-                    }}
-                  />
-                </Row>
-                {pinned ? (
-                  <p
-                    data-harness-agent-note={agent}
-                    style={{ margin: 0, fontSize: 10.5, lineHeight: 1.5, color: COLORS.textMuted }}
-                  >
-                    {harnessPresetAgentOverrideNote(agent)}
-                  </p>
-                ) : null}
-              </div>
-            );
-          })}
-        </SettingsDisclosure>
-      ) : null}
-    </div>
-  );
-}
-
-function StepIdentity({
-  draft,
-  generateAvailable,
-  generating,
-  logoError,
-  nameError,
-  onNameTouched,
-  accentError,
-  fileInputRef,
-  onPatch,
-  onPickFile,
-  onGenerate,
-}: {
-  draft: HarnessPresetDraft;
-  generateAvailable: boolean;
-  generating: boolean;
-  logoError: string | null;
-  nameError?: string;
-  onNameTouched: () => void;
-  accentError?: string;
-  fileInputRef: React.MutableRefObject<HTMLInputElement | null>;
-  onPatch: (next: Partial<HarnessPresetDraft>) => void;
-  onPickFile: (file: File | null | undefined) => void;
-  onGenerate: () => void;
-}) {
-  const tiles: Array<{ id: HarnessPresetLogo["kind"]; label: string; onSelect: () => void }> = [
-    { id: "ade", label: "Default", onSelect: () => onPatch({ logo: { kind: "ade" } }) },
-    {
-      id: "provider",
-      label: "Provider logo",
-      onSelect: () => onPatch({ logo: { kind: "provider", providerId: draft.harness } }),
-    },
-    { id: "upload", label: "Upload", onSelect: () => fileInputRef.current?.click() },
-  ];
-  if (generateAvailable) {
-    tiles.push({ id: "generated", label: generating ? "Generating…" : "Generate", onSelect: onGenerate });
-  }
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0 }}>
-      <Row label="Name" htmlFor="harness-name">
-        <SettingsTextField
-          id="harness-name"
-          value={draft.name}
-          onChange={(value) => onPatch({ name: value.slice(0, HARNESS_PRESET_NAME_MAX_LENGTH) })}
-          onBlur={onNameTouched}
-          placeholder="Opus on work"
-          ariaLabel="Name"
-          fullWidth={false}
-        />
-      </Row>
-      {nameError ? <FieldError>{nameError}</FieldError> : null}
-
-      <Row label="Accent" htmlFor="harness-accent">
-        <input
-          id="harness-accent"
-          type="color"
-          aria-label="Accent"
-          value={draft.accentColor}
-          onChange={(event) => onPatch({ accentColor: event.target.value.toLowerCase() })}
-          style={{
-            width: 42,
-            height: 28,
-            padding: 0,
-            border: `1px solid ${COLORS.outlineBorder}`,
-            borderRadius: 8,
-            background: "transparent",
-            cursor: "pointer",
-          }}
-        />
-      </Row>
-      {accentError ? <FieldError>{accentError}</FieldError> : null}
-
-      <section aria-label="Logo" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        <SectionLabel>Logo</SectionLabel>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {tiles.map((tile) => {
-            const isSelected = draft.logo.kind === tile.id;
-            return (
-              <button
-                key={tile.id}
-                type="button"
-                data-harness-logo-tile={tile.id}
-                aria-pressed={isSelected}
-                onClick={tile.onSelect}
-                disabled={tile.id === "generated" && generating}
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                  gap: 6,
-                  width: 96,
-                  padding: 10,
-                  borderRadius: 10,
-                  cursor: "pointer",
-                  fontFamily: SANS_FONT,
-                  fontSize: 10.5,
-                  color: COLORS.textPrimary,
-                  border: `1px solid ${isSelected ? draft.accentColor : COLORS.outlineBorder}`,
-                  background: isSelected ? `color-mix(in srgb, ${draft.accentColor} 12%, transparent)` : COLORS.cardBg,
-                }}
-              >
-                {tile.id === "upload" ? (
-                  <UploadSimple size={20} />
-                ) : (
-                  <HarnessLogo
-                    logo={
-                      tile.id === "provider"
-                        ? { kind: "provider", providerId: draft.harness }
-                        : tile.id === "generated" && draft.logo.kind === "generated"
-                          ? draft.logo
-                          : { kind: "ade" }
-                    }
-                    size={20}
-                  />
-                )}
-                {tile.label}
-              </button>
-            );
-          })}
-        </div>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/png,image/jpeg,image/webp"
-          aria-label="Upload a logo"
-          style={{ display: "none" }}
-          onChange={(event) => {
-            onPickFile(event.target.files?.[0]);
-            // Reset so picking the same file twice still fires a change.
-            event.target.value = "";
-          }}
-        />
-        {logoError ? <FieldError>{logoError}</FieldError> : null}
-      </section>
-
-      <section aria-label="Preview" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        <SectionLabel>Preview</SectionLabel>
-        <span
-          data-harness-preview-chip=""
-          style={{
-            display: "inline-flex",
-            alignSelf: "flex-start",
-            alignItems: "center",
-            gap: 8,
-            padding: "6px 12px",
-            borderRadius: 999,
-            border: `1px solid ${draft.accentColor}`,
-            background: `color-mix(in srgb, ${draft.accentColor} 12%, transparent)`,
-            fontSize: 12,
-            fontWeight: 600,
-            color: COLORS.textPrimary,
-          }}
-        >
-          <HarnessLogo logo={draft.logo} size={18} accentColor={draft.accentColor} />
-          {draft.name.trim() || harnessBodyLabel(draft.harness)}
-          <span style={{ fontWeight: 400, color: COLORS.textMuted }}>
-            {harnessBodyLabel(draft.harness)} · {draft.model ? harnessModelLabel(draft.model) : "no model"}
-          </span>
-        </span>
-      </section>
-    </div>
-  );
-}
-
-function SectionLabel({ children }: { children: React.ReactNode }) {
-  return (
-    <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: COLORS.textMuted }}>
-      {children}
-    </span>
-  );
-}
-
-function FieldError({ children }: { children: React.ReactNode }) {
-  return (
-    <p role="alert" style={{ margin: 0, fontSize: 10.5, color: COLORS.danger }}>{children}</p>
-  );
-}
-
-function Row({
-  label,
-  htmlFor,
-  children,
-}: {
-  label: string;
-  htmlFor?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, minWidth: 0 }}>
-      <label htmlFor={htmlFor} style={{ fontSize: 12, fontWeight: 600, color: COLORS.textPrimary }}>{label}</label>
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>{children}</div>
     </div>
   );
 }

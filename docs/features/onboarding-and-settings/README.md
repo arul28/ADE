@@ -1473,9 +1473,10 @@ banner):
   `projectConfigService`; types in `shared/types/config.ts`.
 - [first-run.md](./first-run.md) — first launch lands on Work. There is
   no blocking project-setup dashboard; optional integrations live in Settings.
-- [harness-presets.md](./harness-presets.md) — saved pairings of an agent
-  (the body) and a model source (the brain), managed in Settings › Providers ›
-  Harnesses and selectable from the Harnesses tab of every model picker.
+- [harness-presets.md](./harness-presets.md) — saved pairings of a harness
+  (the program ADE runs) and a model provider (the account, key, or
+  subscription that answers for it), managed in Settings › Providers › Custom
+  and selectable from the Custom tab of every model picker.
 
 ## Onboarding responsibilities
 
