@@ -21,6 +21,7 @@
     "build:notch": "node ./scripts/build-attention-notch.mjs",
     "test:notch": "swift test --package-path ./native/ADEAttentionNotch",
     "build:capture-helper": "node ./scripts/build-capture-helper.mjs",
+    "build:mac-native": "npm run build:notch && npm run build:capture-helper && npm run build:sim-helper",
     "build:capture-helper:win": "node ./scripts/build-capture-helper-win.mjs",
     "test:capture-helper": "swift test --package-path ./native/ADECaptureHelper",
     "build:sim-helper": "node ./scripts/build-sim-helper.mjs",
