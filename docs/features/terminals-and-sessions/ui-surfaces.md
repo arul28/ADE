@@ -726,12 +726,13 @@ catalogue owns the hint string so the card and its tooltip can never
 disagree about how much it says.
 
 A tool that cannot run in this context renders as a **disabled card with
-the reason as its status line** rather than disappearing: "Runs on this
-computer only" (Simulator / App Control on a remote project), "Desktop
-app only" (Simulator in the hosted web client), and "macOS only"
-(Simulator off a Mac). Only those two tools are local-only — the browser
-is hosted by this desktop's main process and a remote lane drives that
-same window, so it stays available on remote lanes. In the hosted web
+the reason as its status line** rather than disappearing: "Desktop
+app only" (Simulator in the hosted web client) and "macOS only"
+(Simulator off a Mac). Simulator and App Control follow the session's
+machine, including a remote Mac; they are not hidden just because the
+pin is remote. The browser is hosted by this desktop's main process
+and a remote lane drives that same window, so it stays available on
+remote lanes. In the hosted web
 client the browser and App Control render **read-only** — the tab list,
 attached app, and latest screenshot, with no way to drive them
 (`isReadOnlyWorkTool`). Availability is decided by

@@ -558,6 +558,7 @@ describe("TerminalsPage chat session activation", () => {
     workViewAreaProps.latest = null;
     forgetWorkPtyLaunchPin({ sessionId: "shell-foreign", ptyId: "pty-shell-foreign" });
     forgetWorkPtyLaunchPin({ sessionId: "shell-now-active", ptyId: "pty-shell-now-active" });
+    forgetWorkPtyLaunchPin({ sessionId: "chat-foreign" });
     vi.clearAllMocks();
   });
 
@@ -941,13 +942,7 @@ describe("TerminalsPage chat session activation", () => {
     expect(workViewAreaProps.latest?.resolveSessionRuntimePin?.(session)).toBeNull();
   });
 
-  it("falls back to switching projects when the foreign shell's binding is not open", async () => {
-    let resolveSwitch!: () => void;
-    workMocks.fns.switchRemoteProject.mockImplementationOnce(
-      () => new Promise<void>((resolve) => {
-        resolveSwitch = resolve;
-      }),
-    );
+  it("opens a foreign CLI session in place even when that checkout is not an open tab", async () => {
     Object.defineProperty(window, "ade", {
       configurable: true,
       value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
@@ -957,58 +952,31 @@ describe("TerminalsPage chat session activation", () => {
 
     const session = workMocks.makeTerminalSession("shell-foreign", "lane-foreign", "shell");
     const event = { shiftKey: false, metaKey: false, ctrlKey: false } as React.MouseEvent;
+    const studioBinding: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:target-studio:project-a",
+      targetId: "target-studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-a",
+      rootPath: "/remote/repo-a",
+      displayName: "repo-a",
+    };
     sessionListPaneProps.latest?.onSelectForeignRuntimeSession?.(
       session,
-      {
-        kind: "remote",
-        key: "remote:target-studio:project-a",
-        targetId: "target-studio",
-        runtimeName: "Mac Studio",
-        projectId: "project-a",
-        rootPath: "/remote/repo-a",
-        displayName: "repo-a",
-      },
+      studioBinding,
       event,
       [session.id],
     );
 
-    expect(workMocks.fns.switchRemoteProject).toHaveBeenCalledWith("target-studio", "project-a");
-    expect(workMocks.currentWork.setSelectedSessionId).not.toHaveBeenCalled();
-    expect(workMocks.currentWork.openSessionTab).not.toHaveBeenCalled();
-
-    resolveSwitch();
-    await waitFor(() => {
-      expect(workMocks.fns.setWorkViewState).toHaveBeenCalledWith(
-        "remote:target-studio:project-a",
-        expect.any(Function),
-      );
-    });
-    expect(workMocks.currentWork.setSelectedSessionId).not.toHaveBeenCalled();
-    expect(workMocks.currentWork.openSessionTab).not.toHaveBeenCalled();
-
-    const updateDestination = workMocks.fns.setWorkViewState.mock.calls[0]?.[1] as
-      | ((previous: {
-          openItemIds: string[];
-          selectedItemId: string | null;
-          activeItemId: string | null;
-        }) => {
-          openItemIds: string[];
-          selectedItemId: string | null;
-          activeItemId: string | null;
-        })
-      | undefined;
-    expect(updateDestination?.({
-      openItemIds: ["existing-session"],
-      selectedItemId: null,
-      activeItemId: null,
-    })).toEqual({
-      openItemIds: ["existing-session", "shell-foreign"],
-      selectedItemId: "shell-foreign",
-      activeItemId: "shell-foreign",
-    });
+    expect(workMocks.fns.switchRemoteProject).not.toHaveBeenCalled();
+    expect(workMocks.fns.switchProjectToPath).not.toHaveBeenCalled();
+    expect(workMocks.fns.setWorkViewState).not.toHaveBeenCalled();
+    expect(workMocks.currentWork.setSelectedSessionId).toHaveBeenCalledWith("shell-foreign");
+    expect(workMocks.currentWork.openSessionTab).toHaveBeenCalledWith("shell-foreign");
+    expect(workViewAreaProps.latest?.resolveSessionRuntimePin?.(session)).toEqual(studioBinding);
   });
 
-  it("switches back to This computer before selecting its shell from a remote-bound tab", async () => {
+  it("opens This computer's shell in place from a remote-bound tab", async () => {
     Object.defineProperty(window, "ade", {
       configurable: true,
       value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
@@ -1018,24 +986,22 @@ describe("TerminalsPage chat session activation", () => {
 
     const session = workMocks.makeTerminalSession("shell-local", "lane-local", "shell");
     const event = { shiftKey: false, metaKey: false, ctrlKey: false } as React.MouseEvent;
+    const localBinding: OpenProjectBinding = {
+      kind: "local",
+      key: "local:/repo-a",
+      rootPath: "/repo-a",
+      displayName: "repo-a",
+    };
     sessionListPaneProps.latest?.onSelectForeignRuntimeSession?.(
       session,
-      {
-        kind: "local",
-        key: "local:/repo-a",
-        rootPath: "/repo-a",
-        displayName: "repo-a",
-      },
+      localBinding,
       event,
       [session.id],
     );
 
-    expect(workMocks.fns.switchProjectToPath).toHaveBeenCalledWith("/repo-a");
-    await waitFor(() => {
-      expect(workMocks.fns.setWorkViewState).toHaveBeenCalledWith("/repo-a", expect.any(Function));
-    });
-    expect(workMocks.currentWork.setSelectedSessionId).not.toHaveBeenCalled();
-    expect(workMocks.currentWork.openSessionTab).not.toHaveBeenCalled();
+    expect(workMocks.fns.switchProjectToPath).not.toHaveBeenCalled();
+    expect(workMocks.currentWork.setSelectedSessionId).toHaveBeenCalledWith("shell-local");
+    expect(workMocks.currentWork.openSessionTab).toHaveBeenCalledWith("shell-local");
   });
 
   it("focuses chats selected through the Work select-session event", async () => {
@@ -1131,7 +1097,7 @@ describe("TerminalsPage chat session activation", () => {
     expect(workMocks.currentWork.setSelectedSessionId).toHaveBeenCalledWith(foreign.id);
   });
 
-  it("writes a foreign select-session event into the destination project state", async () => {
+  it("pins a foreign select-session event in place without rebinding the tab", async () => {
     Object.defineProperty(window, "ade", {
       configurable: true,
       value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
@@ -1158,37 +1124,14 @@ describe("TerminalsPage chat session activation", () => {
       }),
     );
 
-    await waitFor(() => {
-      expect(workMocks.fns.switchRemoteProject).toHaveBeenCalledWith("target-studio", "project-a");
-      expect(workMocks.fns.setWorkViewState).toHaveBeenCalledWith(
-        binding.key,
-        expect.any(Function),
-      );
-    });
-    expect(workMocks.fns.selectLane).toHaveBeenCalledWith("lane-foreign");
+    expect(workMocks.fns.switchRemoteProject).not.toHaveBeenCalled();
+    expect(workMocks.fns.switchProjectToPath).not.toHaveBeenCalled();
+    expect(workMocks.fns.setWorkViewState).not.toHaveBeenCalled();
+    expect(workMocks.fns.selectLane).not.toHaveBeenCalled();
     expect(workMocks.fns.focusSession).toHaveBeenCalledWith("chat-foreign");
-    expect(workMocks.currentWork.openSessionTab).not.toHaveBeenCalledWith("chat-foreign");
-    expect(workMocks.currentWork.setSelectedSessionId).not.toHaveBeenCalledWith("chat-foreign");
-
-    const updateDestination = workMocks.fns.setWorkViewState.mock.calls.at(-1)?.[1] as
-      (previous: {
-        openItemIds: string[];
-        selectedItemId: string | null;
-        activeItemId: string | null;
-      }) => {
-        openItemIds: string[];
-        selectedItemId: string | null;
-        activeItemId: string | null;
-      };
-    expect(updateDestination({
-      openItemIds: [],
-      selectedItemId: null,
-      activeItemId: null,
-    })).toMatchObject({
-      openItemIds: ["chat-foreign"],
-      selectedItemId: "chat-foreign",
-      activeItemId: "chat-foreign",
-    });
+    expect(workMocks.currentWork.openSessionTab).toHaveBeenCalledWith("chat-foreign");
+    expect(workMocks.currentWork.setSelectedSessionId).toHaveBeenCalledWith("chat-foreign");
+    expect(workPtyLaunchPinFor({ sessionId: "chat-foreign" })).toEqual(binding);
   });
 
   it("opens the Browser sidebar only for matching project open requests", async () => {
@@ -1232,7 +1175,7 @@ describe("TerminalsPage chat session activation", () => {
     );
   });
 
-  it("ignores Browser sidebar open requests for remote projects", async () => {
+  it("opens Browser from an open-request on a remote session", async () => {
     workMocks.projectRoot = "/repo-one";
     workMocks.projectBinding = {
       kind: "remote",
@@ -1265,9 +1208,11 @@ describe("TerminalsPage chat session activation", () => {
       type: "open-request",
       status: { collectionProjectRoot: "/repo-one" },
     });
-    // (work-tab viewMode/grid was removed by this lane's overhaul; the remote
-    // guard now just suppresses the browser-sidebar open.)
-    expect(workMocks.fns.setLaneWorkViewState).not.toHaveBeenCalled();
+    expect(workMocks.fns.setLaneWorkViewState).toHaveBeenCalledWith(
+      "remote:target-one:project-one",
+      "lane-primary",
+      { workSidebarTool: "browser", workSidebarOpenTools: ["browser"] },
+    );
   });
 
   it("opens and closes the Work Terminal sidebar from the Work surface", async () => {

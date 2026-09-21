@@ -802,6 +802,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         draftKind: nextKind,
         activeItemId: null,
         selectedItemId: null,
+        // New chat has no Tools toggle; a leftover pane from the previous
+        // session would sit on an empty draft and look like a second routing
+        // mode. Close it with the session, silently.
+        workSidebarOpen: false,
       }));
     },
     [setProjectViewState],

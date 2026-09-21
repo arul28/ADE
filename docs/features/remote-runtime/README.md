@@ -914,8 +914,8 @@ dimension inside it, switched from a dropdown on the tab. There is no separate
 "remote" tab, and "remote" is not a machine name: machines are named absolutely
 ("This computer", "MacBook Pro (97)").
 
-The tab's machine is the global execution context — Lanes, PRs, Files, Git, and
-Run all follow it. Two things are deliberately wider than that:
+The tab's machine is the global execution context — Lanes, PRs, the Files
+page, and Run all follow it. Two things are deliberately wider than that:
 
 - **The Work sidebar is a union.** It shows chats in flight on *every* connected
   machine for this repository, regardless of which machine the tab is bound to.
@@ -932,13 +932,26 @@ Run all follow it. Two things are deliberately wider than that:
   Local wins the tie, matching where a click resolves. A slice only claims
   sessions on lanes that same machine reports, so a session naming a lane a
   machine does not have cannot suppress the machine that does have it.
-- **A session runs on its own lane's machine.** Opening a chat, CLI, or shell
-  session from the union streams it from the machine that owns its lane, with its
-  calls pinned to that machine's runtime; the tab stays bound where it was. A row
-  whose owning binding this window does not have open is the exception — there is
-  nothing to pin to, so the tab switches. Clicking a foreign *lane* (rather than
-  a session) is the explicit move: it switches the tab's machine, the same thing
-  opening a remote project does.
+- **A session owns its Work tools.** Git, Files, Terminal, Browser, Simulator,
+  and App Control in the Work tools pane follow the focused chat's machine, not
+  the tab dropdown. Opening a chat, CLI, or shell from the union streams it from
+  the machine that owns its lane, with its calls pinned to that machine's
+  runtime; the tab stays bound where it was. Switching the dropdown under an
+  open session does not remount or retarget those tools — a Studio chat keeps
+  Studio git and Studio shells while you sit on a MacBook. New chat has no
+  Tools toggle; opening a draft closes any leftover pane. Clicking a session
+  never rebinds the tab: the row already carries a complete binding, so Work
+  pins the call even after the dropdown released that checkout. The command
+  palette and `ade:work:select-session` follow the same rule. Same-repo
+  machine switches keep the union's session slices; a different git origin
+  wipes them. Clicking a
+  foreign *lane* (rather than a session) is the explicit move: it switches the
+  tab's machine, the same thing opening a remote project does.
+
+Hosted web still cannot drive Simulator (no capture stream) and shows App
+Control read-only. iOS switches host rather than pinning a foreign runtime. The
+TUI hops machines separately. Windows uses the same session-owned routing;
+Simulator stays macOS-only.
 
 Machine selection also appears at lane creation: the create-lane dialog picks
 which machine the new worktree is created on, matching each machine's checkout of

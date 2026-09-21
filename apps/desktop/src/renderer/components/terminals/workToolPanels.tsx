@@ -10,8 +10,9 @@ import type {
   OpenProjectBinding,
   TerminalSessionSummary,
 } from "../../../shared/types";
-import type { WorkSidebarTab } from "../../state/appStore";
+import { useAppStore, type WorkSidebarTab } from "../../state/appStore";
 import { formatToolTypeLabel } from "../../lib/sessions";
+import { workRuntimeScopeKey } from "../../lib/chatMachineRouting";
 import { ChatAppControlPanel } from "../chat/ChatAppControlPanel";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
 import { ChatIosSimulatorPanel } from "../chat/ChatIosSimulatorPanel";
@@ -78,6 +79,11 @@ export type WorkToolPanelProps = {
   onToolChange: (tool: WorkSidebarTab | null) => void;
   onClose: () => void;
 };
+
+function useWorkToolMountScope(runtimePin: OpenProjectBinding | null): string {
+  const bound = useAppStore((s) => s.projectBinding);
+  return workRuntimeScopeKey(runtimePin, bound);
+}
 
 /* ── Shared chrome ────────────────────────────────────────────────────────── */
 
@@ -146,6 +152,7 @@ function WorkTerminalTool({
   onResumeEndedSession,
   onClose,
 }: WorkToolPanelProps) {
+  const mountScope = useWorkToolMountScope(runtimePin);
   if (!laneId) {
     return <WorkToolEmptyState title="Select a lane to open shells" />;
   }
@@ -192,14 +199,15 @@ function WorkTerminalTool({
   }
   return (
     <ChatTerminalDrawer
-      // Remount on a machine change so a foreign machine's tabs can never paint
-      // into the machine you just switched to.
-      key={`work-terminal:${runtimePin?.key ?? "bound"}:${terminalOwnerSessionId}`}
+      // Remount when the session's *effective* machine changes, not when the
+      // pin flips from null (bound) to an explicit pin for the same machine.
+      key={`work-terminal:${mountScope}:${terminalOwnerSessionId}`}
       open
       onToggle={onClose}
       laneId={laneId}
       chatSessionId={terminalOwnerSessionId}
       runtimePin={runtimePin}
+      runtimeScopeKey={mountScope}
     />
   );
 }
@@ -217,6 +225,7 @@ function WorkBrowserTool(props: WorkToolPanelProps) {
     onAddBuiltInBrowserContext,
     onInsertDraft,
   } = props;
+  const mountScope = useWorkToolMountScope(runtimePin);
   // A surface that cannot drive the tool shows what the desktop is doing with
   // it instead. Checked before the native panel so it never mounts a stubbed
   // namespace it would only fail against.
@@ -226,7 +235,7 @@ function WorkBrowserTool(props: WorkToolPanelProps) {
   return (
     <NativePanelFrame warningReason={warningReason}>
       <ChatBuiltInBrowserPanel
-        key={`work-browser:${runtimePin?.key ?? "bound"}`}
+        key={`work-browser:${mountScope}`}
         sessionId={panelSessionId}
         runtimePin={runtimePin}
         onAddAttachment={shouldPersistPanelAttachment ? onAddAttachment : undefined}
@@ -250,6 +259,7 @@ function WorkGitTool({
   onClearDiffSelection,
 }: WorkToolPanelProps) {
   const navigate = useNavigate();
+  const mountScope = useWorkToolMountScope(runtimePin);
   if (!laneId) return <NoLaneNotice />;
   if (pinnedMachineOffline) {
     return <WorkToolEmptyState title={`${pinnedMachineName} is offline`} />;
@@ -259,7 +269,7 @@ function WorkGitTool({
     <div className="flex h-full min-h-0 flex-col">
       <div className={cn("min-h-0 overflow-auto", hasDiffSelection ? "max-h-[58%] shrink-0" : "flex-1")}>
         <LaneGitActionsPane
-          key={`work-git:${runtimePin?.key ?? "bound"}:${laneId}`}
+          key={`work-git:${mountScope}:${laneId}`}
           laneId={laneId}
           runtimePin={runtimePin}
           variant="pane"
@@ -291,10 +301,11 @@ function WorkGitTool({
 }
 
 function WorkFilesTool({ laneId, runtimePin }: WorkToolPanelProps) {
+  const mountScope = useWorkToolMountScope(runtimePin);
   if (!laneId) return <NoLaneNotice />;
   return (
     <FilesTab
-      key={`work-files:${runtimePin?.key ?? "bound"}`}
+      key={`work-files:${mountScope}`}
       preferredLaneId={laneId}
       pin={runtimePin}
       embedded
@@ -314,11 +325,12 @@ function WorkIosTool({
   onAddIosContext,
   onInsertDraft,
 }: WorkToolPanelProps) {
+  const mountScope = useWorkToolMountScope(runtimePin);
   if (!laneId) return <NoLaneNotice />;
   return (
     <NativePanelFrame warningReason={warningReason} padded>
       <ChatIosSimulatorPanel
-        key={`work-ios:${runtimePin?.key ?? "bound"}`}
+        key={`work-ios:${mountScope}`}
         sessionId={panelSessionId}
         laneId={laneId}
         runtimePin={runtimePin}
@@ -346,6 +358,7 @@ function WorkAppControlTool({
   onAddAppControlContext,
   onInsertDraft,
 }: WorkToolPanelProps) {
+  const mountScope = useWorkToolMountScope(runtimePin);
   // Before the lane gate, and before the panel: a read-only surface has
   // something to say whether or not a lane is selected, and must not mount a
   // stubbed namespace.
@@ -356,7 +369,7 @@ function WorkAppControlTool({
   return (
     <NativePanelFrame warningReason={warningReason} padded>
       <ChatAppControlPanel
-        key={`work-appcontrol:${runtimePin?.key ?? "bound"}`}
+        key={`work-appcontrol:${mountScope}`}
         sessionId={panelSessionId}
         laneId={laneId}
         runtimePin={runtimePin}

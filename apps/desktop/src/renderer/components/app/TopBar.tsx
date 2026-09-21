@@ -28,6 +28,7 @@ import { useAppStore } from "../../state/appStore";
 import { useGithubProjectRemote } from "../../lib/useGithubProjectRemote";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
+import { rememberProjectOriginSummaries } from "../lanes/laneMachines";
 import {
   ZOOM_LEVEL_KEY,
   MIN_ZOOM_LEVEL,
@@ -165,6 +166,7 @@ function consumeRecentProjectTabDropHandled(
 
 function rememberRecentProjects(rows: RecentProjectSummary[]): void {
   recentProjectsCache = { rows, fetchedAtMs: Date.now() };
+  rememberProjectOriginSummaries(rows);
 }
 
 function listRecentProjectsCached(options?: {

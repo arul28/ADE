@@ -165,6 +165,11 @@ export type ChatScopeDerivationInput = {
   chatMachineRouter: { pinForLane: (laneId: string | null) => OpenProjectBinding | null };
   /** The tab's binding — the machine an unpinned chat runs on. */
   projectBinding: OpenProjectBinding | null;
+  /**
+   * Host-resolved pin for a locked Work chat. `undefined` derives from the
+   * lane as before. `null` means this chat is on the tab's bound machine.
+   */
+  pinOverride?: OpenProjectBinding | null;
   /** The tab machine's lanes, and the pane's preferred picker list. */
   lanes: LaneSummary[];
   availableLanes?: ChatScopeLaneOption[];
@@ -204,6 +209,7 @@ export function useChatScopeDerivation({
   projectBinding,
   lanes,
   availableLanes,
+  pinOverride,
 }: ChatScopeDerivationInput): ChatScopeDerivation {
   const foreignSelectedLaneId = useForeignSessionLaneId(
     selectedSessionId,
@@ -211,8 +217,8 @@ export function useChatScopeDerivation({
   );
   const chatScopeLaneId = selectedSession?.laneId ?? foreignSelectedLaneId ?? laneId ?? null;
   const chatRuntimePin = useMemo(
-    () => chatMachineRouter.pinForLane(chatScopeLaneId),
-    [chatMachineRouter, chatScopeLaneId],
+    () => (pinOverride !== undefined ? pinOverride : chatMachineRouter.pinForLane(chatScopeLaneId)),
+    [chatMachineRouter, chatScopeLaneId, pinOverride],
   );
   /**
    * The binding this chat actually runs on. Handoff is a fact about the chat's

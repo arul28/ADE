@@ -52,6 +52,7 @@ import {
 } from "../../shared/laneDivergence";
 import {
   deriveLaneMachineOptions,
+  rememberProjectOriginSummaries,
   type LaneMachineOption,
 } from "../components/lanes/laneMachines";
 import {
@@ -156,6 +157,7 @@ export function resolveThisMachineBindingForOrigin(
     key: `local:${localProject.rootPath}`,
     rootPath: localProject.rootPath,
     displayName: localProject.displayName,
+    gitOriginUrl: localProject.gitOriginUrl ?? null,
   };
 }
 
@@ -2021,6 +2023,7 @@ export function useCrossMachineLaneUnion(
     }
     const loadIdentity = async () => {
       const projects = await listRecent();
+      rememberProjectOriginSummaries(projects);
       if (!boundTargetId || !boundProjectId) {
         const project = projects.find((candidate) => candidate.rootPath === projectRoot);
         return {
@@ -2035,6 +2038,21 @@ export function useCrossMachineLaneUnion(
       const boundProject = connection?.projects?.find(
         (candidate) => candidate.projectId === boundProjectId,
       );
+      if (connection) {
+        rememberProjectOriginSummaries(
+          (connection.projects ?? []).map((project) => ({
+            rootPath: project.rootPath,
+            kind: "remote" as const,
+            remote: {
+              targetId: connection.target.id,
+              projectId: project.projectId,
+              runtimeName: connection.target.name,
+              hostname: connection.target.hostname,
+            },
+            gitOriginUrl: project.gitOriginUrl,
+          })),
+        );
+      }
       return {
         originUrl: boundProject?.gitOriginUrl ?? null,
         thisMachineBinding: resolveThisMachineBindingForOrigin(

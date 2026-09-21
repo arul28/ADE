@@ -228,10 +228,10 @@ export function WorkSidebar({
   /**
    * The strip as the header draws it.
    *
-   * Two rules, both defensive: a tab this surface cannot open is dropped (a
-   * remote lane's persisted Simulator tab would answer nothing when clicked),
-   * and the tool on screen is always in the strip — a pane showing a tool with
-   * no tab for it would have no mark anywhere saying what you are looking at.
+   * Two rules, both defensive: a tab this surface cannot open is dropped
+   * (web client's Simulator), and the tool on screen is always in the strip —
+   * a pane showing a tool with no tab for it would have no mark anywhere
+   * saying what you are looking at.
    */
   const availableOpenTools = useMemo(() => {
     const strip = openTools.filter((entry) => isAvailableWorkSidebarTab(entry, toolContext));

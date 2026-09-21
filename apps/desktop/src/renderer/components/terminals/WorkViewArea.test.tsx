@@ -133,10 +133,12 @@ vi.mock("../chat/AgentChatPane", async () => {
       lockSessionId,
       isTileActive,
       isTileVisible,
+      runtimePin,
     }: {
       lockSessionId?: string | null;
       isTileActive?: boolean;
       isTileVisible?: boolean;
+      runtimePin?: { key?: string } | null;
     }) => {
       const sessionId = lockSessionId ?? "draft";
       React.useEffect(() => {
@@ -151,6 +153,7 @@ vi.mock("../chat/AgentChatPane", async () => {
           data-session-id={sessionId}
           data-tile-active={String(isTileActive)}
           data-tile-visible={String(isTileVisible)}
+          data-runtime-pin-key={runtimePin?.key ?? ""}
         />
       );
     },
@@ -1509,6 +1512,41 @@ describe("WorkViewArea", () => {
     expect(pane.getAttribute("data-tile-visible")).toBe("false");
     expect(chatPaneLifecycle.mounts.get("chat-1")).toBe(1);
     expect(chatPaneLifecycle.unmounts.get("chat-1")).toBeUndefined();
+  });
+
+  it("pins a locked Work chat to the session machine instead of re-deriving from the lane", () => {
+    vi.mocked(isChatToolType).mockImplementation((toolType) => toolType === "codex-chat");
+    const session = makeChatSession("chat-studio");
+    const runtimePin = {
+      kind: "remote" as const,
+      key: "remote:target-studio:project-a",
+      targetId: "target-studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-a",
+      rootPath: "/remote/repo-a",
+      displayName: "Repo A",
+    };
+
+    const view = render(
+      <WorkViewArea
+        lanes={[]}
+        sessions={[session]}
+        visibleSessions={[session]}
+        activeItemId={session.id}
+        draftKind="chat"
+        onSelectItem={() => {}}
+        onCloseItem={() => {}}
+        onOpenChatSession={() => {}}
+        onLaunchPtySession={resolvePtyLaunch}
+        onShowDraftKind={() => {}}
+        closingPtyIds={new Set()}
+        resolveSessionRuntimePin={() => runtimePin}
+      />,
+    );
+
+    const pane = within(view.container).getByTestId("agent-chat-pane");
+    expect(pane.getAttribute("data-session-id")).toBe("chat-studio");
+    expect(pane.getAttribute("data-runtime-pin-key")).toBe(runtimePin.key);
   });
 
   it("parks hidden chat tabs while switching the active tab", () => {

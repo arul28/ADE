@@ -343,7 +343,7 @@ function withFeeds(runtimePin: OpenProjectBinding | null, children: ReactNode) {
 }
 
 function renderSidebar(args: {
-  tab: WorkSidebarTab;
+  tab: WorkSidebarTab | null;
   contextTarget: WorkSidebarContextTarget | null;
   contextDisabledReason?: string | null;
   laneId?: string;
@@ -709,7 +709,7 @@ describe("WorkSidebar context targets", () => {
     }));
   });
 
-  it("disables only the this-computer tools for remote projects and falls back to the picker", async () => {
+  it("keeps Simulator and App Control available for a remote session instead of falling back to the picker", async () => {
     const onTabChange = vi.fn();
     useAppStore.setState({
       projectBinding: {
@@ -729,23 +729,35 @@ describe("WorkSidebar context targets", () => {
       onTabChange,
     });
 
-    // Every tool still has a card — an unavailable one says why rather than
-    // vanishing — but only the remote-capable ones are clickable.
+    expect(onTabChange).not.toHaveBeenCalled();
+    expect(screen.getByTestId("ios-panel")).toBeTruthy();
+  });
+
+  it("offers Simulator and App Control on a remote session's tool picker", () => {
+    useAppStore.setState({
+      projectBinding: {
+        kind: "remote",
+        key: "remote:target-1:project-1",
+        targetId: "target-1",
+        runtimeName: "Mac Studio",
+        projectId: "project-1",
+        rootPath: "/repo",
+        displayName: "Repo",
+      },
+    } as any);
+
+    renderSidebar({
+      tab: null,
+      contextTarget: { kind: "chat", sessionId: "chat-1" },
+    });
+
     expect(cardFor("Git").disabled).toBe(false);
     expect(cardFor("Files").disabled).toBe(false);
     expect(cardFor("Terminal").disabled).toBe(false);
-    expect(cardFor("Simulator").disabled).toBe(true);
-    expect(cardFor("App Control").disabled).toBe(true);
-    // The browser is NOT a this-computer tool. It is hosted by this window
-    // whatever the lane is bound to, and a remote lane is exactly what the
-    // loopback port-forward exists for.
+    expect(cardFor("Simulator").disabled).toBe(false);
+    expect(cardFor("App Control").disabled).toBe(false);
     expect(cardFor("Browser").disabled).toBe(false);
-    expect(screen.getAllByText("Runs on this computer only").length).toBeGreaterThan(0);
-    // The picker, not some other tool: being dumped into Git because the
-    // simulator is unavailable would be a non-sequitur.
-    await waitFor(() => expect(onTabChange).toHaveBeenCalledWith(null));
-    expect(window.ade.iosSimulator.getStatus).not.toHaveBeenCalled();
-    expect(window.ade.appControl.getStatus).not.toHaveBeenCalled();
+    expect(screen.queryByText("Runs on this computer only")).toBeNull();
   });
 
   it("opens the browser on a remote project rather than falling back to the picker", async () => {

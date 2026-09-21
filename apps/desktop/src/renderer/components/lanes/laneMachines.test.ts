@@ -5,7 +5,10 @@ import {
   defaultLaneMachineId,
   deriveLaneMachineOptions,
   isLowLaneMachineDisk,
+  originUrlForBinding,
+  rememberProjectOriginSummaries,
   resetGitRemoteIdentityCache,
+  resetProjectOriginMemory,
   THIS_MACHINE_ID,
 } from "./laneMachines";
 import type {
@@ -63,6 +66,7 @@ function connection(
 
 beforeEach(() => {
   resetGitRemoteIdentityCache();
+  resetProjectOriginMemory();
 });
 
 describe("deriveLaneMachineOptions", () => {
@@ -319,5 +323,40 @@ describe("isLowLaneMachineDisk", () => {
     expect(isLowLaneMachineDisk(412 * 1024 ** 3)).toBe(false);
     expect(isLowLaneMachineDisk(12 * 1024 ** 3)).toBe(true);
     expect(isLowLaneMachineDisk(3 * 1024 ** 3)).toBe(true);
+  });
+});
+
+describe("project origin memory", () => {
+  it("fills in origin for a local binding that has none stamped", () => {
+    rememberProjectOriginSummaries([
+      {
+        rootPath: "/Users/x/ADE",
+        kind: "local",
+        gitOriginUrl: "git@github.com:acme/ADE.git",
+      },
+    ]);
+    expect(originUrlForBinding({
+      kind: "local",
+      key: "local:/Users/x/ADE",
+      rootPath: "/Users/x/ADE",
+      displayName: "ADE",
+    })).toBe("git@github.com:acme/ADE.git");
+  });
+
+  it("prefers a stamped origin over recents", () => {
+    rememberProjectOriginSummaries([
+      {
+        rootPath: "/Users/x/ADE",
+        kind: "local",
+        gitOriginUrl: "git@github.com:acme/other.git",
+      },
+    ]);
+    expect(originUrlForBinding({
+      kind: "local",
+      key: "local:/Users/x/ADE",
+      rootPath: "/Users/x/ADE",
+      displayName: "ADE",
+      gitOriginUrl: "git@github.com:acme/ADE.git",
+    })).toBe("git@github.com:acme/ADE.git");
   });
 });

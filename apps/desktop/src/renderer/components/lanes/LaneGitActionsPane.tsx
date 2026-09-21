@@ -2,10 +2,12 @@ import React, { useCallback, useEffect, useMemo, useRef, useState, type CSSPrope
 import { ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, CaretDown, CaretRight, Check, DotsThree, Folder, GitCommit, Stack, Trash, Upload, Warning } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import {
-  selectActiveProjectStateKey,
+  projectStateKeyForBinding,
   useAppStore,
 } from "../../state/appStore";
+import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
 import { selectOtherMachineBranchStates, useLanesForPin } from "../../state/crossMachineLanes";
+import { stripElectronErrorWrapper } from "../../../shared/codedError";
 
 const EMPTY_CROSS_MACHINE_LANES: Record<string, never> = {};
 import { modifierKeyLabel } from "../../lib/platform";
@@ -78,6 +80,16 @@ const AUTO_GENERATE_COMMIT_ACTION = "generate commit message";
  */
 const LOCAL_ONLY_ACTION_MESSAGE = "This action only works on the machine this project tab is connected to.";
 const MAX_RENDERED_CHANGE_ROWS_PER_SECTION = 300;
+
+function formatLaneGitError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err ?? "");
+  const message = stripElectronErrorWrapper(raw);
+  if (/connection closed/i.test(message)) {
+    return "That machine disconnected. Stay on this chat or switch back to reconnect.";
+  }
+  return message || "Git action failed.";
+}
+
 type LaneGitActionRuntimeState = {
   version: number;
   busyAction: string | null;
@@ -758,17 +770,22 @@ export function LaneGitActionsPane({
   const skin = SKIN[variant];
   const lanes = useAppStore((s) => s.lanes);
   const projectBinding = useAppStore((s) => s.projectBinding);
+  const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
   // Cross-machine lane union, produced by `crossMachineLanes`. Feeds the push
   // divergence guard below; the slice is reference-stable while unchanged.
   const crossMachineLanesByMachineId = useAppStore((s) => s.crossMachineLanesByMachineId ?? EMPTY_CROSS_MACHINE_LANES);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const selectLane = useAppStore((s) => s.selectLane);
-  const activeProjectStateKey = useAppStore(selectActiveProjectStateKey);
   const pin = runtimePin ?? null;
   // Lane ids are only unique per machine, so a pinned panel gets its own cache
-  // namespace. Without this, two machines' same-named lanes share one entry and
-  // a tab switch paints the wrong machine's changes.
-  const projectStateKey = pin ? `pin:${pin.kind}:${pin.key}` : activeProjectStateKey;
+  // namespace. Always key through `projectStateKeyForBinding` of the effective
+  // session machine: local stays on the checkout path across a bound→pinned
+  // flip, remote stays on `binding.key`. Comparing `pin.key` to the tab key
+  // used `local:${path}` once the pin stuck and emptied the cache.
+  const projectStateKey = projectStateKeyForBinding(
+    effectiveRuntimeBinding(pin, projectBinding),
+    projectRoot,
+  );
 
   // A foreign lane is absent from the local `lanes` array; resolve it against
   // the pinned machine's own slice of the cross-machine union. Never against
@@ -1032,10 +1049,11 @@ export function LaneGitActionsPane({
   }, []);
 
   const formatActionError = useCallback((actionName: string, rawMessage: string): string => {
-    if ((actionName === "push" || actionName === "force push") && isNonFastForwardError(rawMessage)) {
+    const message = stripElectronErrorWrapper(rawMessage);
+    if ((actionName === "push" || actionName === "force push") && isNonFastForwardError(message)) {
       return "Push rejected because remote history changed. Use Force Push (lease) after a rebase, amend, or other rewritten history.";
     }
-    return rawMessage;
+    return formatLaneGitError(message);
   }, [isNonFastForwardError]);
 
   const runAction = async (actionName: string, fn: () => Promise<void>) => {
@@ -1209,7 +1227,7 @@ export function LaneGitActionsPane({
     Promise.all([refreshChanges(laneId), refreshGitMeta(laneId)]).catch((err) => {
       patchLaneGitActionRuntimeState(laneGitActionScopeKey, {
         notice: null,
-        error: err instanceof Error ? err.message : String(err),
+        error: formatLaneGitError(err),
       });
     });
   }, [active, laneGitActionScopeKey, laneId, lane?.branchRef, projectStateKey]);
@@ -1429,7 +1447,7 @@ export function LaneGitActionsPane({
       patchLaneGitActionRuntimeStateIfCurrent(actionScopeKey, actionVersion, {
         busyAction: null,
         notice: null,
-        error: err instanceof Error ? err.message : String(err),
+        error: formatLaneGitError(err),
       });
     }
   }, [

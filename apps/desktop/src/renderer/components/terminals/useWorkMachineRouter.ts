@@ -4,6 +4,7 @@ import {
   buildChatMachineRoutingState,
   collectOpenProjectBindings,
   createChatMachineRouter,
+  effectiveRuntimeBinding,
   isLivePinnedBinding,
   type ChatMachineRouter,
   type LaneBindingSource,
@@ -14,6 +15,7 @@ import {
   useRootAppStore,
   type CrossMachineMachineLanes,
 } from "../../state/appStore";
+import { cachedGitRemoteIdentity, originUrlForBinding } from "../lanes/laneMachines";
 import {
   forgetWorkPtyLaunchPin,
   rememberWorkPtyLaunchPin,
@@ -41,10 +43,16 @@ export type WorkMachineRouter = ChatMachineRouter & {
 
 type RetainedCrossMachineSlices = {
   projectStateKey: string | null;
+  /** Normalized git origin, or null when this checkout has none yet. */
+  repoKey: string | null;
   machinesById: Map<string, CrossMachineMachineLanes>;
   /** Fallback for older callers that have not supplied authoritative scope intent yet. */
   pendingMachineIds: Set<string> | null;
 };
+
+function repoKeyForBinding(binding: OpenProjectBinding | null | undefined): string | null {
+  return cachedGitRemoteIdentity(originUrlForBinding(binding));
+}
 
 /**
  * One retained cross-machine slice lifecycle for both Work rows and runtime pins.
@@ -57,22 +65,46 @@ type RetainedCrossMachineSlices = {
  */
 export function useRetainedCrossMachineSlices(): readonly CrossMachineMachineLanes[] {
   const projectStateKey = useAppStore(selectActiveProjectStateKey);
+  const projectBinding = useAppStore((s) => s.projectBinding);
   const crossMachineLanesByMachineId = useRootAppStore((s) => s.crossMachineLanesByMachineId);
   const intendedMachineIds = useRootAppStore((s) => s.crossMachineLaneIntendedMachineIds);
   const retainedRef = useRef<RetainedCrossMachineSlices>({
     projectStateKey: null,
+    repoKey: null,
     machinesById: new Map(),
     pendingMachineIds: null,
   });
 
   return useMemo(() => {
     let retained = retainedRef.current;
+    const nextRepoKey = repoKeyForBinding(projectBinding);
     if (retained.projectStateKey !== projectStateKey) {
-      retained = {
-        projectStateKey,
-        machinesById: new Map(),
-        pendingMachineIds: null,
-      };
+      // The project state key is the tab's binding key, so a same-repo machine
+      // switch changes it and also clears the live store. Keep slices only when
+      // both sides resolve to the same origin (binding stamp or recents).
+      // Local tabs do not carry gitOriginUrl; guessing "unknown means same
+      // repo" leaked repo A's PTYs into repo B. Fail closed unless the
+      // identities match.
+      const sameKnownRepo = nextRepoKey != null
+        && retained.repoKey != null
+        && nextRepoKey === retained.repoKey;
+      if (intendedMachineIds != null && sameKnownRepo) {
+        retained = {
+          ...retained,
+          projectStateKey,
+          repoKey: nextRepoKey ?? retained.repoKey,
+        };
+      } else {
+        retained = {
+          projectStateKey,
+          repoKey: nextRepoKey,
+          machinesById: new Map(),
+          pendingMachineIds: null,
+        };
+      }
+      retainedRef.current = retained;
+    } else if (nextRepoKey && retained.repoKey !== nextRepoKey) {
+      retained = { ...retained, repoKey: nextRepoKey };
       retainedRef.current = retained;
     }
 
@@ -111,7 +143,7 @@ export function useRetainedCrossMachineSlices(): readonly CrossMachineMachineLan
     }
 
     return Array.from(retained.machinesById.values());
-  }, [crossMachineLanesByMachineId, intendedMachineIds, projectStateKey]);
+  }, [crossMachineLanesByMachineId, intendedMachineIds, projectBinding, projectStateKey]);
 }
 
 /**
@@ -126,6 +158,8 @@ export function useRetainedCrossMachineSlices(): readonly CrossMachineMachineLan
  * This exists so a CLI/shell session is routed exactly like a chat. The Work
  * sidebar is a union across machines, and clicking a row must reach ITS machine
  * without rebinding the tab (rebinding would drag Lanes/PRs/Files along).
+ * Work tools follow that same session machine: a sticky effective pin survives
+ * the tab dropdown moving underneath an open session.
  */
 export function useWorkMachineRouter(
   crossMachineSlices: readonly CrossMachineMachineLanes[],
@@ -215,7 +249,15 @@ export function useWorkMachineRouter(
         return rememberedPin;
       },
       rememberSessionPin: (session, pin) => {
-        rememberWorkPtyLaunchPin(session, pin);
+        const existing = workPtyLaunchPinFor(session);
+        const effective = effectiveRuntimeBinding(pin, projectBinding);
+        if (!effective) return;
+        // A null pin means "the bound path", not "forget this machine". After
+        // the tab dropdown moves, callers still pass null for a session that
+        // was on the old bound machine; replacing the sticky foreign pin with
+        // the new tab would silently retarget Git/Terminal/Browser.
+        if (existing && !pin && existing.key !== effective.key) return;
+        rememberWorkPtyLaunchPin(session, effective);
       },
       forgetSessionPin: (session) => {
         forgetWorkPtyLaunchPin(session);

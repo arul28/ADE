@@ -146,9 +146,29 @@ Preload consumes that as an optional trailing pin on chat/session APIs and on th
 
 The same trailing pin covers the domains a chat-scoped tool drives — the iOS simulator, App Control, and computer-use artifact actions, routed through the domain-bound wrappers `callIosSimulatorActionOr` / `callAppControlActionOr` / `callComputerUseArtifactActionOr` so the domain string is not retyped at every call site — plus the cross-machine handoff trio `agentChat.prepareCrossMachineHandoff` / `validateCrossMachineSource` / `markCrossMachineHandoff`. `iosSimulator.onEvent` and `appControl.onEvent` take the pin too, so a pinned panel's live updates follow its reads rather than describing the bound machine's simulator. `builtInBrowser.onEvent` is the deliberate exception: the built-in browser is hosted by this desktop's main process (it owns a `WebContentsView`) and the daemon only proxies calls into it over the desktop bridge socket, so a pin on another *local* checkout still drives this machine's browser and keeps the local IPC stream; only a `kind: "remote"` pin switches to the pinned runtime stream. Preload's short read caches are namespaced by binding (`boundReadCacheKey()`) because one preload process serves every machine a window talks to, and a pinned `iosSimulator.getStatus` / `listDevices` bypasses the cache entirely. The exposed object is declared `satisfies Window["ade"]` before `contextBridge.exposeInMainWorld`, so a signature that drops a `pin` parameter fails to compile instead of silently talking to the wrong machine.
 
-The Work tools pane (Terminal / Git / Files / iOS / App Control / Browser) honors the pin the same way, through a `runtimePin` prop taken from the active Work session's router entry.
+The Work tools pane (Terminal / Git / Files / iOS / App Control / Browser)
+honors the pin the same way, through a `runtimePin` prop taken from the active
+Work session's router entry. Tool React keys and drawer UI state use
+`workRuntimeScopeKey(pin, bound)` — the session's effective machine — so a
+dropdown switch that turns a null (bound) pin into an explicit pin for the same
+machine does not remount the pane onto the new tab. Git caches use
+`projectStateKeyForBinding` of that same effective binding so a local pin
+keeps the checkout path as its key. Simulator and App Control
+follow that session machine too, including a remote one; they are not hidden
+just because the pin is remote. The hosted web client still cannot drive
+Simulator. Opening New chat closes the tools pane.
 
-The tab's binding is never rewritten by opening a session — rebinding would move Lanes, PRs, Files, Git, and Run with it. The one exception is a row whose owning binding this window does not have open: there is nothing to pin to, so the tab switches. Switching the tab's machine otherwise stays an explicit action (the tab's machine menu, or clicking a foreign *lane*).
+The tab's binding is never rewritten by opening a session — rebinding would move
+Lanes, PRs, the Files page, and Run with it. Clicking a session always pins in
+place, even after the tab dropdown released that checkout from the strip. The
+command palette and `ade:work:select-session` follow the same rule. The on-screen
+chat takes that same sticky pin so send/history stay on the session machine
+after a dropdown switch. Switching the tab's machine stays an explicit action
+(the tab's machine menu, or clicking a foreign *lane*). Cross-machine Work
+slices survive a same-repo dropdown switch by matching git origin from the
+binding or from recents — local tabs often have no `gitOriginUrl` of their
+own. A different origin, or an origin that cannot be proven, wipes the
+slices so repo A's sessions cannot land in repo B.
 
 ## Sync command scoping
 

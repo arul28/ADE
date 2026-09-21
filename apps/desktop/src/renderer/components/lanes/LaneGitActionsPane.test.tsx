@@ -58,6 +58,13 @@ vi.mock("../../state/appStore", () => ({
     if (state.projectBinding?.kind === "remote") return state.projectBinding.key?.trim() || null;
     return state.project?.rootPath?.trim() || null;
   },
+  projectStateKeyForBinding: (
+    binding?: { kind?: string; key?: string | null; rootPath?: string | null } | null,
+    fallbackRoot?: string | null,
+  ) => {
+    if (binding?.kind === "remote") return binding.key?.trim() || "";
+    return (binding?.rootPath ?? fallbackRoot)?.trim() || "";
+  },
   useAppStore: (selector: (state: typeof mockStoreState) => unknown) => selector(mockStoreState),
   // The pinned-lane hooks read the union from the ROOT store; this harness has
   // exactly one store, so both readings resolve to the same mock state.

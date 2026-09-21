@@ -18,6 +18,7 @@ import type {
 } from "../../../shared/types";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { useMachineEntryForBinding } from "../../state/crossMachineLanes";
+import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
 import { isMacPlatform } from "../../lib/platform";
 import { isWebClientMode } from "../../lib/webClientMode";
 import type { WorkToolContext } from "./workTools";
@@ -130,21 +131,22 @@ export function NativeToolFeedsProvider({
   children: ReactNode;
 }) {
   const projectRoot = useAppStore(selectActiveProjectRoot);
-  const isRemoteProject = useAppStore((state) => state.projectBinding?.kind === "remote");
+  const projectBinding = useAppStore((state) => state.projectBinding);
   const pinnedMachine = useMachineEntryForBinding(runtimePin);
 
   // Capability flags, never a platform sniff: the hosted web client renders
-  // these same components with stubbed native namespaces.
+  // these same components with stubbed native namespaces. Simulator is macOS
+  // only; App Control follows the session machine, including a remote pin.
   const context = useMemo<WorkToolContext>(() => ({
-    isRemoteProject,
     supportsIosSimulator: isMacPlatform(),
     isWebClient: isWebClientMode(),
-  }), [isRemoteProject]);
+  }), []);
 
-  // The browser view is owned by THIS window's main process. A pin on another
-  // checkout of this computer still drives that view, just under the pinned
-  // checkout's tab collection.
-  const browserViewRoot = runtimePin?.kind === "local" ? runtimePin.rootPath : projectRoot;
+  // Collection identity follows the session machine. A Studio pin must keep
+  // Studio's checkout after the tab dropdown moves, including `kind: "remote"`
+  // — using the tab root here mixed hide/status onto the laptop.
+  const browserViewRoot =
+    effectiveRuntimeBinding(runtimePin, projectBinding)?.rootPath ?? projectRoot;
   // Pinned calls have no local fallback, so a machine that is not answering is
   // never read from — by either consumer, because there is only one value.
   const offline = Boolean(runtimePin) && pinnedMachine?.online === false;
