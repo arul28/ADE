@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { pathKey } from "../shared/pathCompare";
+import { isPathInside, pathKey } from "../shared/pathCompare";
 
 /**
  * Cursor's own agent-skill discovery, fed from an ADE-owned private directory.
@@ -57,7 +57,7 @@ export type CursorAgentSkillShimOutcome =
   | ({ ok: true } & CursorAgentSkillShim)
   | { ok: false; reason: string };
 
-type DiscoveredSkill = { name: string; dir: string };
+type DiscoveredSkill = { name: string; dir: string; root: string };
 
 type StampFile = { version?: number; hash?: string; names?: unknown };
 
@@ -120,10 +120,52 @@ function discoverSkills(roots: readonly string[]): DiscoveredSkill[] {
       } catch {
         continue;
       }
-      byName.set(name, { name, dir });
+      byName.set(name, { name, dir, root });
     }
   }
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * Copy one skill directory into the shim, refusing to follow any link that
+ * resolves outside the skill's own source root.
+ *
+ * `fs.cpSync(..., { dereference: true })` copies whatever a symlink points at.
+ * A skill directory comes from a repo-controlled root (the lane's
+ * `.agents/skills`), so a nested link to `~/.ssh/id_rsa` would otherwise be
+ * materialized into the shim — a directory Cursor is then allowed to read.
+ * Top-level skill directories may be links (that is why the copy dereferences),
+ * so containment is checked against the root rather than banning links.
+ */
+function copySkillTree(sourceDir: string, destDir: string, rootRealPath: string): void {
+  const sourceReal = fs.realpathSync(sourceDir);
+  if (!isPathInside(sourceReal, rootRealPath)) {
+    throw new Error(`skill '${path.basename(sourceDir)}' resolves outside its skill root`);
+  }
+  fs.mkdirSync(destDir, { recursive: true });
+  for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
+    const source = path.join(sourceDir, entry.name);
+    const dest = path.join(destDir, entry.name);
+    // Resolve before touching the entry: a link out of the root is rejected,
+    // not followed.
+    let real: string;
+    try {
+      real = fs.realpathSync(source);
+    } catch {
+      throw new Error(`skill '${path.basename(sourceDir)}' has an unresolvable link at '${entry.name}'`);
+    }
+    if (!isPathInside(real, rootRealPath)) {
+      throw new Error(`skill '${path.basename(sourceDir)}' links '${entry.name}' outside its skill root`);
+    }
+    const stat = fs.statSync(source);
+    if (stat.isDirectory()) {
+      copySkillTree(source, dest, rootRealPath);
+      continue;
+    }
+    // A link to a directory is already recursed above; only regular files are
+    // copied. Sockets/devices are skipped.
+    if (stat.isFile()) fs.copyFileSync(source, dest);
+  }
 }
 
 function hashSkillDir(hash: crypto.Hash, dir: string, relative: string): void {
@@ -230,12 +272,11 @@ export function prepareCursorAgentSkillShim(args: {
     fs.rmSync(skillsDir, { recursive: true, force: true });
     fs.mkdirSync(skillsDir, { recursive: true });
     for (const skill of skills) {
-      fs.cpSync(skill.dir, path.join(skillsDir, skill.name), {
-        recursive: true,
-        // Resolve links at copy time: Cursor drops any skill whose realpath
-        // escapes the roots it was given, and Windows cannot recreate them.
-        dereference: true,
-      });
+      // Real copies, resolved link-by-link with containment: Cursor drops any
+      // skill whose realpath escapes the roots it was given, and Windows cannot
+      // recreate symlinks — but a link that escapes the skill's own root is
+      // refused rather than materialized into a Cursor-readable directory.
+      copySkillTree(skill.dir, path.join(skillsDir, skill.name), fs.realpathSync(skill.root));
     }
     fs.writeFileSync(
       stampPath,

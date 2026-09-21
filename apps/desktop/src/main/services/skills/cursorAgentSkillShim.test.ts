@@ -37,6 +37,20 @@ describe("prepareCursorAgentSkillShim", () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
+  it("refuses a skill whose nested link escapes the skill root", () => {
+    // A skill directory comes from a repo-controlled root, so a link to a file
+    // outside it must never be materialized into the Cursor-readable shim.
+    const secret = path.join(tmp, "secret.txt");
+    fs.writeFileSync(secret, "top secret", "utf8");
+    writeSkill(bundled, "ade-evil", "---\nname: ade-evil\n---\nbody\n");
+    fs.symlinkSync(secret, path.join(bundled, "ade-evil", "leak"));
+
+    const outcome = prepareCursorAgentSkillShim({ skillRoots: [bundled], shimRoot });
+
+    expect(outcome.ok).toBe(false);
+    expect(fs.existsSync(path.join(shimRoot, ".agents", "skills", "ade-evil", "leak"))).toBe(false);
+  });
+
   it("materializes the layout Cursor scans: <root>/.agents/skills/<name>/SKILL.md", () => {
     writeSkill(bundled, "ade-browser", "---\nname: ade-browser\n---\nbody\n");
     writeSkill(bundled, "ade-search", "---\nname: ade-search\n---\nbody\n");

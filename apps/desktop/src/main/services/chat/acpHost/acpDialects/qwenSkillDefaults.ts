@@ -116,12 +116,35 @@ export function qwenNativeSystemDefaultsPath(
   return path.join("/etc", "qwen-code", "system-defaults.json");
 }
 
-function readJsonObject(file: string): Record<string, unknown> {
+type BaseRead =
+  | { ok: true; value: Record<string, unknown> }
+  | { ok: false; reason: string };
+
+/**
+ * Read the machine's own system-defaults file for layering.
+ *
+ * Only a MISSING file is an empty base. A file that exists but cannot be read
+ * or parsed is a real machine configuration, and pointing Qwen at ADE's
+ * replacement would silently hide it — so that is a delivery failure, not an
+ * empty base.
+ */
+function readJsonObject(file: string): BaseRead {
+  let text: string;
   try {
-    const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
-    return isRecord(parsed) ? parsed : {};
-  } catch {
-    return {};
+    text = fs.readFileSync(file, "utf8");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException)?.code;
+    if (code === "ENOENT") return { ok: true, value: {} };
+    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+  }
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (!isRecord(parsed)) {
+      return { ok: false, reason: "native defaults file is not a JSON object" };
+    }
+    return { ok: true, value: parsed };
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -187,9 +210,17 @@ export function ensureQwenAdeSkillDefaultsFile(args: {
   // the merge depend on launch history instead of on the machine's real
   // configuration, so the self-reference is dropped.
   const nativeDefaults = qwenNativeSystemDefaultsPath(args.env);
-  const base = pathKey(path.resolve(nativeDefaults)) === pathKey(target)
-    ? {}
-    : readJsonObject(nativeDefaults);
+  let base: Record<string, unknown> = {};
+  if (pathKey(path.resolve(nativeDefaults)) !== pathKey(target)) {
+    const read = readJsonObject(nativeDefaults);
+    // A native file that exists but cannot be read or parsed must not be
+    // replaced: Qwen has to keep seeing its own configuration, and the caller
+    // reports why ADE's skills were not delivered.
+    if (!read.ok) {
+      return { path: null, roots, reason: `native_defaults_unreadable: ${read.reason}` };
+    }
+    base = read.value;
+  }
 
   try {
     fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });

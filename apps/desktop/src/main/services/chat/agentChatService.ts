@@ -13267,7 +13267,7 @@ export function createAgentChatService(args: {
       .filter((section) => section.length > 0)
       .join("\n\n");
     target.pendingReconstructionContext = nextContext.length ? nextContext : null;
-    clearLaneDirectiveKey(target);
+    clearDeliveredDirectiveEpoch(target);
   };
 
   const stageTranscriptReplayOnSession = (
@@ -13407,7 +13407,7 @@ export function createAgentChatService(args: {
     if (!fit.turnCount || !fit.text.trim().length) {
       // Nothing to carry: a header that announces restored context with no
       // context attached just lies to the model.
-      clearLaneDirectiveKey(managed);
+      clearDeliveredDirectiveEpoch(managed);
       return;
     }
     stageCursorSdkContinuityHeader(managed, [
@@ -20907,7 +20907,7 @@ export function createAgentChatService(args: {
     if (!managed.runtime) {
       if (!reasonAllowsPreservation) {
         managed.runtimeInvalidated = true;
-        clearLaneDirectiveKey(managed);
+        clearDeliveredDirectiveEpoch(managed);
       }
       return;
     }
@@ -21102,7 +21102,7 @@ export function createAgentChatService(args: {
     managed.runtimeInvalidated = !preserveProviderResumeState;
     managed.acpReasoningEffortInvalidated = false;
     if (!preserveProviderResumeState) {
-      clearLaneDirectiveKey(managed);
+      clearDeliveredDirectiveEpoch(managed);
     }
   };
 
@@ -21610,8 +21610,16 @@ export function createAgentChatService(args: {
     persistChatState(managed);
   };
 
-  const clearLaneDirectiveKey = (managed: ManagedChatSession): void => {
+  /**
+   * Forget what this session's provider threads have been told, so a
+   * replacement runtime (model switch, thread recycle, resume) is re-announced
+   * to. Both the lane directive and the computer-use directive are epoch-scoped
+   * and would otherwise be suppressed for the new thread by a key the old one
+   * set.
+   */
+  const clearDeliveredDirectiveEpoch = (managed: ManagedChatSession): void => {
     managed.lastLaneDirectiveKey = null;
+    managed.lastComputerUseDirectiveKey = null;
     persistChatState(managed);
   };
 
@@ -26616,7 +26624,7 @@ export function createAgentChatService(args: {
           );
           if (runtime.sdkSessionId === staleSdkSessionId) runtime.sdkSessionId = null;
           managed.runtimeInvalidated = true;
-          clearLaneDirectiveKey(managed);
+          clearDeliveredDirectiveEpoch(managed);
           void maybeRefreshIdentityContinuitySummary(managed, "provider_reset");
           // The provider thread is gone and the next send opens a new one, so
           // the once-per-thread sections have to be said again. Without this
@@ -35503,7 +35511,7 @@ export function createAgentChatService(args: {
       restageSectionsForNewProviderThread(managed);
       refreshReconstructionContext(managed);
       void maybeRefreshIdentityContinuitySummary(managed, "provider_reset");
-      clearLaneDirectiveKey(managed);
+      clearDeliveredDirectiveEpoch(managed);
       persistChatState(managed);
     }
   };
@@ -53446,7 +53454,7 @@ export function createAgentChatService(args: {
         delete managed.session.threadId;
         managed.runtimeInvalidated = true;
         managed.acpReasoningEffortInvalidated = false;
-        clearLaneDirectiveKey(managed);
+        clearDeliveredDirectiveEpoch(managed);
         stageTranscriptReplayOnSession(
           managed,
           readTranscriptEnvelopes(managed, { includeBuffered: true }),
@@ -53457,7 +53465,7 @@ export function createAgentChatService(args: {
         delete managed.session.threadId;
         managed.runtimeInvalidated = true;
         managed.acpReasoningEffortInvalidated = false;
-        clearLaneDirectiveKey(managed);
+        clearDeliveredDirectiveEpoch(managed);
       }
       sessionService.updateMeta({
         sessionId,
@@ -53560,7 +53568,7 @@ export function createAgentChatService(args: {
           });
           delete managed.session.threadId;
           managed.runtimeInvalidated = true;
-          clearLaneDirectiveKey(managed);
+          clearDeliveredDirectiveEpoch(managed);
           teardownRuntime(managed, "model_switch");
           refreshReconstructionContext(managed);
         }

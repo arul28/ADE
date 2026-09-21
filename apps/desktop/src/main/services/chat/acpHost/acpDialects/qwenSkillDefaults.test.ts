@@ -41,12 +41,13 @@ function makeSkillRoot(name: string, skillName: string): string {
   return root;
 }
 
-function skillEnv(roots: readonly string[]): NodeJS.ProcessEnv {
+function skillEnv(roots: readonly string[], extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return {
     [ADE_AGENT_SKILLS_DIRS_ENV]: joinAdeAgentSkillRoots(roots),
     // The user's real qwen home, so a test that writes there would be caught.
     QWEN_HOME: qwenConfigHome,
     HOME: userHome,
+    ...extra,
   };
 }
 
@@ -89,6 +90,43 @@ describe("qwen skill defaults file", () => {
       { [QWEN_SYSTEM_DEFAULTS_PATH_ENV]: "/custom/system.json" },
       "win32",
     )).toBe("/custom/system.json");
+  });
+
+  it("refuses to replace a native defaults file it cannot parse", () => {
+    // Redirecting Qwen at ADE's file would otherwise hide a machine settings
+    // file that exists but is unreadable or malformed — the one case where ADE
+    // must leave the env var unset and let Qwen report its own configuration.
+    const bundled = makeSkillRoot("bundled-skills", "ship");
+    const nativeFile = path.join(tempRoot, "native-system-defaults.json");
+    fs.writeFileSync(nativeFile, "{ not valid json", "utf8");
+
+    const result = ensureQwenAdeSkillDefaultsFile({
+      projectRoot,
+      laneWorktreePath,
+      env: skillEnv([bundled], { [QWEN_SYSTEM_DEFAULTS_PATH_ENV]: nativeFile }),
+      personalSession: false,
+    });
+
+    expect(result.path).toBeNull();
+    expect(result.reason).toContain("native_defaults_unreadable");
+    // The native file is left exactly as it was.
+    expect(fs.readFileSync(nativeFile, "utf8")).toBe("{ not valid json");
+  });
+
+  it("still layers on a readable native defaults file", () => {
+    const bundled = makeSkillRoot("bundled-skills", "ship");
+    const nativeFile = path.join(tempRoot, "native-system-defaults.json");
+    fs.writeFileSync(nativeFile, JSON.stringify({ skills: { directories: ["/company/skills"] } }), "utf8");
+
+    const result = ensureQwenAdeSkillDefaultsFile({
+      projectRoot,
+      laneWorktreePath,
+      env: skillEnv([bundled], { [QWEN_SYSTEM_DEFAULTS_PATH_ENV]: nativeFile }),
+      personalSession: false,
+    });
+
+    expect(result.path).toBeTruthy();
+    expect(directoriesOf(result.path!)).toEqual(["/company/skills", bundled]);
   });
 
   it("puts the existing roots under skills.directories in an ADE-owned file", () => {
