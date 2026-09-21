@@ -1,4 +1,5 @@
 import type * as DroidSdkTypes from "@factory/droid-sdk";
+import type * as DroidSdkNodeTypes from "@factory/droid-sdk/node";
 import type {
   DroidSdkAskUserResponse,
   DroidSdkPermissionDecision,
@@ -10,7 +11,11 @@ import type {
   DroidSdkWorkerRequest,
   DroidSdkWorkerResponse,
 } from "./droidSdkProtocol";
-import { droidInteractionModeValue, droidMcpToolsToDisable } from "./droidSdkProtocol";
+import {
+  droidEditedSpecContentForRequest,
+  droidInteractionModeValue,
+  droidMcpToolsToDisable,
+} from "./droidSdkProtocol";
 import { loadDroidSdk } from "../ai/droidSdkLoader";
 import { summarizeDroidAskUser } from "./droidSdkAskUser";
 import { ensureDroidSpawnsAreWindowless } from "./droidSdkWindowsHide";
@@ -19,7 +24,9 @@ import { materializeWorkerImages } from "./workerAttachmentImages";
 // Must run before the SDK spawns `droid`; see droidSdkWindowsHide.ts.
 ensureDroidSpawnsAreWindowless();
 
-type DroidSdkModule = typeof DroidSdkTypes;
+// Session APIs live on the `/node` entrypoint (0.9.x); handler payload/result and
+// content-block types stay on the browser-safe package root.
+type DroidSdkModule = typeof DroidSdkNodeTypes;
 type DroidSession = Awaited<ReturnType<DroidSdkModule["createSession"]>>;
 
 let sdkModule: DroidSdkModule | null = null;
@@ -27,14 +34,15 @@ let initState: DroidSdkWorkerInit | null = null;
 let session: DroidSession | null = null;
 /**
  * Set when ADE put THIS session into Spec mode — on create, on the
- * resume-failure fallback, or in applySettings. It is the only way back out,
- * because the SDK has no exitSpecMode.
+ * resume-failure fallback, or in applySettings. 0.9.x exposes `exitSpecMode()`,
+ * but the SDK still cannot tell ADE's Spec from one the user configured in
+ * `~/.factory/settings.json`, so this flag is what authorizes leaving it.
  *
  * Known limit: a session resumed into a fresh worker that a PREVIOUS worker had
- * put into Spec starts with the flag false, and the SDK exposes no way to read
- * the live mode back. Reaching that case needs a plan session, a worker
- * restart, plan turned off, and no chosen permission mode — and the alternative
- * (assuming Spec on every resume) would state a mode ADE does not own.
+ * put into Spec starts with the flag false, and there is no way to read the live
+ * mode back. Reaching that case needs a plan session, a worker restart, plan
+ * turned off, and no chosen permission mode — and the alternative (assuming Spec
+ * on every resume) would exit a mode ADE does not own.
  */
 let enteredSpecMode = false;
 const activeAborts = new Set<AbortController>();
@@ -64,15 +72,15 @@ async function getSdk(): Promise<DroidSdkModule> {
 
 // Still accepts null: settings cross a process boundary as JSON, so the
 // protocol type is a contract with the sender rather than a runtime guarantee.
-function coerceReasoning(value: DroidSdkReasoningEffort | null | undefined): DroidSdkTypes.ReasoningEffort | undefined {
-  return value?.trim() ? value as DroidSdkTypes.ReasoningEffort : undefined;
+function coerceReasoning(value: DroidSdkReasoningEffort | null | undefined): DroidSdkNodeTypes.ReasoningEffort | undefined {
+  return value?.trim() ? value as DroidSdkNodeTypes.ReasoningEffort : undefined;
 }
 
 function sessionOptions(
   sdk: DroidSdkModule,
   init: DroidSdkWorkerInit,
   settings: DroidSdkSessionSettings,
-): DroidSdkTypes.CreateSessionOptions {
+): DroidSdkNodeTypes.CreateSessionOptions {
   const interactionMode = droidInteractionModeValue(sdk.DroidInteractionMode, settings.interactionMode);
   return {
     cwd: init.laneRoot,
@@ -80,14 +88,26 @@ function sessionOptions(
     modelId: settings.modelId,
     // Omitted, not defaulted: both keys are optional in the SDK and each
     // resolves independently from the user's settings.json when absent.
-    ...(settings.autonomyLevel ? { autonomyLevel: settings.autonomyLevel as DroidSdkTypes.AutonomyLevel } : {}),
+    ...(settings.autonomyLevel ? { autonomyLevel: settings.autonomyLevel as DroidSdkNodeTypes.AutonomyLevel } : {}),
     ...(interactionMode ? { interactionMode } : {}),
     reasoningEffort: coerceReasoning(settings.reasoningEffort),
     specModeModelId: settings.specModeModelId?.trim() || undefined,
     specModeReasoningEffort: coerceReasoning(settings.specModeReasoningEffort),
-    ...(init.mcpServers?.length ? { mcpServers: init.mcpServers as DroidSdkTypes.CreateSessionOptions["mcpServers"] } : {}),
+    ...(init.mcpServers?.length ? { mcpServers: init.mcpServers as DroidSdkNodeTypes.CreateSessionOptions["mcpServers"] } : {}),
     permissionHandler: requestPermission,
     askUserHandler: requestAskUser,
+  };
+}
+
+function resumeSessionOptions(init: DroidSdkWorkerInit): DroidSdkNodeTypes.ResumeSessionOptions {
+  return {
+    // 0.9.x `resumeSession` no longer accepts `cwd`: the session's persisted
+    // working directory is authoritative, and the spawned CLI runs in this
+    // worker's cwd (the lane root) regardless.
+    execPath: init.droidPath,
+    permissionHandler: requestPermission,
+    askUserHandler: requestAskUser,
+    ...(init.mcpServers?.length ? { mcpServers: init.mcpServers as DroidSdkNodeTypes.ResumeSessionOptions["mcpServers"] } : {}),
   };
 }
 
@@ -199,10 +219,25 @@ async function requestPermission(
     post({ type: "permission_request", requestId: waiterId, request: requestWithId });
   });
   permissionWaiters.delete(waiterId);
+  const comment = decision.comment?.trim();
+  if (decision.selectedOption === "proceed_edit") {
+    const editedSpecContent = droidEditedSpecContentForRequest(params.toolUses);
+    if (editedSpecContent != null) {
+      return {
+        selectedOption: "proceed_edit",
+        ...(comment ? { comment } : {}),
+        editedSpecContent,
+      } as DroidSdkTypes.RequestPermissionHandlerResult;
+    }
+    return {
+      selectedOption: "cancel",
+      comment: comment ?? "ADE has no plan editor for this confirmation; the request was cancelled.",
+    } as DroidSdkTypes.RequestPermissionHandlerResult;
+  }
   return {
     selectedOption: decision.selectedOption as DroidSdkTypes.RequestPermissionSelection,
-    ...(decision.comment?.trim() ? { comment: decision.comment.trim() } : {}),
-  };
+    ...(comment ? { comment } : {}),
+  } as DroidSdkTypes.RequestPermissionHandlerResult;
 }
 
 async function requestAskUser(params: DroidSdkTypes.AskUserRequestParams): Promise<DroidSdkTypes.AskUserResult> {
@@ -217,67 +252,42 @@ async function requestAskUser(params: DroidSdkTypes.AskUserRequestParams): Promi
   return response as DroidSdkTypes.AskUserResult;
 }
 
-function normalizeAvailableModels(initResult: unknown): DroidSdkReady["availableModels"] {
-  const record = initResult && typeof initResult === "object" ? initResult as Record<string, unknown> : null;
-  const raw = Array.isArray(record?.availableModels) ? record.availableModels : [];
-  return raw.flatMap((entry) => {
-    const model = entry && typeof entry === "object" ? entry as Record<string, unknown> : null;
-    if (!model) return [];
-    const id = typeof model?.id === "string" ? model.id.trim() : "";
-    if (!id.length) return [];
-    return [{
-      id,
-      modelId: typeof model.modelId === "string" ? model.modelId : null,
-      displayName: typeof model.displayName === "string" ? model.displayName : null,
-      shortDisplayName: typeof model.shortDisplayName === "string" ? model.shortDisplayName : null,
-      supportedReasoningEfforts: Array.isArray(model.supportedReasoningEfforts)
-        ? model.supportedReasoningEfforts.filter((v): v is string => typeof v === "string")
-        : undefined,
-      defaultReasoningEffort: typeof model.defaultReasoningEffort === "string" ? model.defaultReasoningEffort : null,
-      isCustom: model.isCustom === true,
-    }];
-  });
-}
-
 /**
- * The model Droid actually resolved for this session.
+ * The model Droid resolved for this session.
  *
- * `initResult.currentModelId` does not exist — @factory/droid-sdk reports the
- * resolved settings under `initResult.settings`.
+ * `DroidSession` in @factory/droid-sdk 0.9.x exposes the live settings through
+ * `session.settings` (and the session id through `session.id`); the old
+ * `initResult.currentModelId`/`initResult.availableModels` surface is gone. The
+ * model *list* is discovered separately via the CLI (`droidModelsDiscovery`), so
+ * `availableModels` is intentionally empty here.
  */
-function readResolvedModelId(initResult: unknown): string | null {
-  const record = initResult && typeof initResult === "object" ? initResult as Record<string, unknown> : null;
-  const settings = record?.settings && typeof record.settings === "object"
-    ? record.settings as Record<string, unknown>
-    : null;
-  const modelId = typeof settings?.modelId === "string" ? settings.modelId.trim() : "";
-  return modelId.length ? modelId : null;
-}
-
 function buildReady(): DroidSdkReady {
   if (!session) throw new Error("Droid SDK worker is not initialized.");
-  const initResult = session.initResult as unknown;
+  // `modelId` is required on the SDK's `SessionSettings`.
+  const modelId = session.settings.modelId.trim();
   return {
-    sessionId: session.sessionId,
-    currentModelId: readResolvedModelId(initResult),
-    availableModels: normalizeAvailableModels(initResult),
+    sessionId: session.id,
+    currentModelId: modelId.length ? modelId : null,
+    availableModels: [],
   };
 }
 
 /**
- * DroidSession exposes MCP enumeration publicly, but @factory/droid-sdk
- * 0.2.0 exposes `toggleMcpTool` only on its low-level client. Keep the
- * private-field bridge in one place and fail closed if a future SDK removes it.
+ * DroidSession exposes MCP enumeration publicly, but @factory/droid-sdk 0.9.x
+ * still exposes the per-tool enable switch (`toggleMcpTool`) only on its
+ * low-level client. Keep the private-field bridge in one place and fail closed
+ * if a future SDK removes it.
  */
 async function disableUnmanagedMcpTools(): Promise<void> {
   const allowedServerNames = initState?.allowedMcpServerNames;
   if (!session || !allowedServerNames) return;
+  // 0.9.x `listMcpTools()` returns `McpToolInfo[]` directly (0.2 wrapped it in
+  // `{ tools }`).
   const listed = await session.listMcpTools();
-  if (!listed || !Array.isArray(listed.tools)) {
+  if (!Array.isArray(listed)) {
     throw new Error("Droid did not return a valid MCP tool list for the strict MCP sweep.");
   }
-  const tools = listed.tools;
-  const toDisable = droidMcpToolsToDisable(tools, allowedServerNames);
+  const toDisable = droidMcpToolsToDisable(listed, allowedServerNames);
   if (!toDisable.length) return;
   const client = (session as unknown as {
     _client?: {
@@ -318,18 +328,31 @@ async function applySettings(settings: DroidSdkSessionSettings): Promise<void> {
     enteredSpecMode = true;
     return;
   }
-  // Omitting the mode leaves Droid's own setting alone, which is the point —
-  // except when ADE is the one that put this session into Spec. The SDK has no
-  // exitSpecMode, so the only way back out is to state a mode, and a plan
-  // session that later turns plan off states nothing. Say it once, for a spec
-  // ADE itself entered, then go back to saying nothing.
-  const updateInteractionMode = droidInteractionModeValue(sdk.DroidInteractionMode, settings.interactionMode)
-    ?? (enteredSpecMode ? sdk.DroidInteractionMode.Auto : undefined);
-  if (updateInteractionMode) enteredSpecMode = false;
+  // Omitting the mode leaves Droid's own setting alone, which is the point.
+  // 0.9.x exposes `exitSpecMode()`, so a Spec ADE itself entered is left
+  // explicitly instead of restating Auto over whatever the user configured.
+  const statedInteractionMode = droidInteractionModeValue(sdk.DroidInteractionMode, settings.interactionMode);
+  if (enteredSpecMode && !statedInteractionMode) {
+    // Clear the flag only on success so a failed exit is retried by the next
+    // settings push instead of leaving ADE believing the session left Spec.
+    try {
+      await session.exitSpecMode();
+      enteredSpecMode = false;
+    } catch (error) {
+      post({
+        type: "log",
+        level: "warn",
+        message: "Droid exitSpecMode failed; leaving the session in its current mode.",
+        detail: { error: errorMessage(error) },
+      });
+    }
+  } else if (statedInteractionMode) {
+    enteredSpecMode = false;
+  }
   await session.updateSettings({
     modelId: settings.modelId,
-    ...(settings.autonomyLevel ? { autonomyLevel: settings.autonomyLevel as DroidSdkTypes.AutonomyLevel } : {}),
-    ...(updateInteractionMode ? { interactionMode: updateInteractionMode } : {}),
+    ...(settings.autonomyLevel ? { autonomyLevel: settings.autonomyLevel as DroidSdkNodeTypes.AutonomyLevel } : {}),
+    ...(statedInteractionMode ? { interactionMode: statedInteractionMode } : {}),
     reasoningEffort: coerceReasoning(settings.reasoningEffort),
   });
 }
@@ -341,13 +364,10 @@ async function initWorker(init: DroidSdkWorkerInit): Promise<DroidSdkReady> {
   const resumeId = init.resumeSessionId?.trim();
   if (resumeId) {
     try {
-      session = await sdk.resumeSession(resumeId, {
-        cwd: init.laneRoot,
-        execPath: init.droidPath,
-        permissionHandler: requestPermission,
-        askUserHandler: requestAskUser,
-        ...(init.mcpServers?.length ? { mcpServers: init.mcpServers as DroidSdkTypes.ResumeSessionOptions["mcpServers"] } : {}),
-      });
+      // 0.9.x `resumeSession` no longer accepts `cwd`: the session's persisted
+      // working directory is authoritative, and the spawned CLI runs in this
+      // worker's cwd (the lane root) regardless.
+      session = await sdk.resumeSession(resumeId, resumeSessionOptions(init));
       // Deliberately NOT seeded from the mode Droid reports here. That reading
       // cannot tell a Spec this ADE entered from one the user configured in
       // ~/.factory/settings.json, and exiting the latter would be exactly the
@@ -381,6 +401,7 @@ async function sendPrompt(payload: DroidSdkWorkerRequest & { type: "send" }): Pr
   activeAborts.add(controller);
   let tokenUsage: unknown = null;
   let firstError: unknown = null;
+  let resultSuccess = true;
   try {
     const materialized = await materializeWorkerImages(payload.payload.images, { label: "Droid SDK" });
     const images = materialized.map((image) => {
@@ -393,21 +414,34 @@ async function sendPrompt(payload: DroidSdkWorkerRequest & { type: "send" }): Pr
         mediaType: image.mimeType as DroidSdkTypes.Base64ImageSource["mediaType"],
       };
     });
-    for await (const event of session.stream(payload.payload.promptText, {
-      ...(images.length ? { images } : {}),
+    // `includePartialMessages` is required to keep receiving assistant/thinking
+    // text deltas, `tool_progress`, `working_state_changed`, `token_usage_update`,
+    // and the mission events — the default 0.9.x stream yields only complete
+    // messages. The terminal event is `result` (0.2's `turn_complete` is gone).
+    // The literal `true` selects the `DroidStreamEvent` overload, so `event` is
+    // discriminated and needs no casts.
+    const streamOptions: {
+      images?: DroidSdkTypes.Base64ImageSource[];
+      abortSignal: AbortSignal;
+      includePartialMessages: true;
+    } = {
       abortSignal: controller.signal,
-    })) {
-      if ((event as { type?: string }).type === "token_usage_update") tokenUsage = event;
-      if ((event as { type?: string }).type === "turn_complete") {
-        tokenUsage = (event as { tokenUsage?: unknown }).tokenUsage ?? tokenUsage;
+      includePartialMessages: true,
+      ...(images.length ? { images } : {}),
+    };
+    for await (const event of session.stream(payload.payload.promptText, streamOptions)) {
+      if (event.type === "token_usage_update") tokenUsage = event;
+      if (event.type === "result") {
+        tokenUsage = event.tokenUsage ?? tokenUsage;
+        if (event.success === false) resultSuccess = false;
       }
-      if ((event as { type?: string }).type === "error" && firstError == null) firstError = event;
+      if (event.type === "error" && firstError == null) firstError = event;
       post({ type: "sdk_event", event });
     }
     return {
-      sessionId: session.sessionId,
+      sessionId: session.id,
       tokenUsage,
-      success: firstError == null,
+      success: firstError == null && resultSuccess,
       ...(firstError ? { error: firstError } : {}),
     };
   } finally {
@@ -417,7 +451,7 @@ async function sendPrompt(payload: DroidSdkWorkerRequest & { type: "send" }): Pr
 
 // Terminate a single AGI mission worker. killWorkerSession lives only on the
 // low-level DroidClient — DroidSession (what createSession/resumeSession return)
-// exposes no public getter at @factory/droid-sdk 0.2.0 — so reach the underlying
+// exposes no public getter at @factory/droid-sdk 0.9.x — so reach the underlying
 // client via its (TS-private, runtime-present) `_client` field.
 async function killWorker(workerSessionId: string): Promise<void> {
   if (!session) throw new Error("Droid SDK worker is not initialized.");
@@ -433,11 +467,34 @@ async function killWorker(workerSessionId: string): Promise<void> {
 }
 
 async function forkSession(): Promise<{ newSessionId: string }> {
-  if (!session) throw new Error("Droid SDK worker is not initialized.");
-  const result = await session.forkSession();
-  const newSessionId = typeof result?.newSessionId === "string" ? result.newSessionId.trim() : "";
+  if (!session || !initState) throw new Error("Droid SDK worker is not initialized.");
+  const sdk = await getSdk();
+  const sourceSessionId = session.id;
+  // 0.9.x `fork()` returns the forked session and retires the source handle —
+  // any later use of the source throws `SessionReplacedError`. ADE keeps the
+  // source chat open after a fork, so once the fork id is captured, close the
+  // fork handle and re-open the original branch to keep the source usable. The
+  // new chat resumes the fork id in its own worker.
+  const forked = await session.fork();
+  const newSessionId = typeof forked?.id === "string" ? forked.id.trim() : "";
   if (!newSessionId) {
-    throw new Error("Droid forkSession returned no newSessionId.");
+    throw new Error("Droid fork returned no session id.");
+  }
+  await forked.close().catch(() => undefined);
+  try {
+    session = await sdk.resumeSession(sourceSessionId, resumeSessionOptions(initState));
+    await applySettings(initState.settings);
+  } catch (error) {
+    // The source handle is already retired; leaving it in place would make every
+    // later call throw a stale `SessionReplacedError`. Null it so the state is
+    // explicit instead of latent.
+    session = null;
+    post({
+      type: "log",
+      level: "warn",
+      message: "Droid fork succeeded but the source session could not be re-opened.",
+      detail: { sourceSessionId, error: errorMessage(error) },
+    });
   }
   return { newSessionId };
 }

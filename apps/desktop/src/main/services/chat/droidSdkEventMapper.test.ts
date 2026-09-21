@@ -112,20 +112,54 @@ describe("mapDroidSdkMessageToChatEvents — AGI mission control", () => {
 });
 
 describe("mapDroidSdkMessageToChatEvents — structured assistant content", () => {
+  it("does not re-emit text a delta already streamed from the completed assistant message", () => {
+    // The CLI streams `assistant_text_delta` and then the complete `assistant`
+    // message for the same block; the completed message must not duplicate the
+    // streamed text (a real 0.9.x regression when block ids are used as keys).
+    const state = createDroidSdkEventMapperState();
+    const mapWithState = (message: unknown) => mapDroidSdkMessageToChatEvents(message, {
+      turnId: "turn-1",
+      cwd: "/work",
+      state,
+    });
+
+    expect(mapWithState({
+      type: "assistant_text_delta",
+      messageId: "m-1",
+      blockIndex: 0,
+      text: "Hello",
+    })).toEqual([
+      { type: "text", text: "Hello", itemId: "m-1:text:0", turnId: "turn-1" },
+    ]);
+
+    expect(mapWithState({
+      type: "assistant",
+      message: {
+        id: "m-1",
+        role: "assistant",
+        content: [{ type: "text", id: "block-uuid-1", text: "Hello" }],
+      },
+      text: "Hello",
+    })).toEqual([]);
+  });
+
   it("maps assistant image blocks to the shared compact image event and dedupes replay", () => {
     const state = createDroidSdkEventMapperState();
     const message = {
-      type: "create_message",
-      role: "assistant",
-      messageId: "message-1",
-      content: [
-        { type: "text", text: "Here is the diagram." },
-        {
-          type: "image",
-          id: "image-1",
-          source: { type: "base64", mediaType: "image/png", data: "AAAA" },
-        },
-      ],
+      type: "assistant",
+      message: {
+        id: "message-1",
+        role: "assistant",
+        content: [
+          { type: "text", text: "Here is the diagram." },
+          {
+            type: "image",
+            id: "image-1",
+            source: { type: "base64", mediaType: "image/png", data: "AAAA" },
+          },
+        ],
+      },
+      text: "Here is the diagram.",
     };
     const mapWithState = () => mapDroidSdkMessageToChatEvents(message, {
       turnId: "turn-1",
@@ -153,14 +187,16 @@ describe("mapDroidSdkMessageToChatEvents — structured assistant content", () =
     const imageData = "A".repeat(80 * 1024);
 
     const events = map({
-      type: "create_message",
-      role: "assistant",
-      messageId: "message-large-image",
-      content: [{
-        type: "image",
-        id: "image-large",
-        source: { type: "base64", mediaType: "image/png", data: imageData },
-      }],
+      type: "assistant",
+      message: {
+        id: "message-large-image",
+        role: "assistant",
+        content: [{
+          type: "image",
+          id: "image-large",
+          source: { type: "base64", mediaType: "image/png", data: imageData },
+        }],
+      },
     });
 
     expect(events).toEqual([{
@@ -175,10 +211,10 @@ describe("mapDroidSdkMessageToChatEvents — structured assistant content", () =
 
   it("does not infer MCP identity from generic Droid tool names", () => {
     expect(map({
-      type: "tool_use",
+      type: "tool_call",
       toolUseId: "tool-1",
-      toolName: "search_issues",
-      toolInput: { query: "bug" },
+      name: "search_issues",
+      input: { query: "bug" },
     })).toEqual([{
       type: "tool_call",
       tool: "search_issues",
