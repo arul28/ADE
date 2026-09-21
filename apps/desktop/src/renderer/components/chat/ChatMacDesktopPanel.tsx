@@ -1,4 +1,14 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  type WheelEvent as ReactWheelEvent,
+} from "react";
 import { createPortal } from "react-dom";
 import {
   ArrowSquareIn,
@@ -612,6 +622,71 @@ export function ChatMacDesktopPanel({
     if (!iHaveControl) realInput.clearInputError();
   }, [iHaveControl, realInput.clearInputError]);
 
+  /*
+    Input reaches the surface as DOM events, on purpose.
+
+    The decoder's canvas is a React portal into a host node that is parked
+    inside the surface. A portal's synthetic events bubble through the React
+    tree, to the portal's owner, and never through the surface that is its DOM
+    parent. With React handlers on the surface, every click and every hover on
+    the picture itself vanished, and only the letterbox responded: the takeover
+    looked dead and the hover cursor never appeared. Native listeners follow
+    the DOM, where the canvas really is.
+  */
+  const takeControlRef = useRef(takeControl);
+  takeControlRef.current = takeControl;
+  const realInputRef = useRef(realInput);
+  realInputRef.current = realInput;
+  const controlStateRef = useRef({ iHaveControl, busy });
+  controlStateRef.current = { iHaveControl, busy };
+  useEffect(() => {
+    const node = surfaceNode;
+    if (!node) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const state = controlStateRef.current;
+      if (!state.iHaveControl) {
+        // The first click on the screen takes control; the strip button is
+        // the same action. Right-click is a menu, not a claim.
+        if (!state.busy && event.button !== 2) void takeControlRef.current();
+        return;
+      }
+      realInputRef.current.onPointerDown(event as unknown as ReactPointerEvent<HTMLDivElement>);
+    };
+    const onPointerMove = (event: PointerEvent) => {
+      realInputRef.current.onPointerMove(event as unknown as ReactPointerEvent<HTMLDivElement>);
+    };
+    const onPointerUp = (event: PointerEvent) => {
+      realInputRef.current.onPointerUp(event as unknown as ReactPointerEvent<HTMLDivElement>);
+    };
+    const onPointerLeave = () => realInputRef.current.onPointerLeave();
+    const onWheel = (event: WheelEvent) => {
+      realInputRef.current.onWheel(event as unknown as ReactWheelEvent<HTMLDivElement>);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      realInputRef.current.onKeyDown(event as unknown as ReactKeyboardEvent<HTMLDivElement>);
+    };
+    const onContextMenu = (event: MouseEvent) => {
+      if (controlStateRef.current.iHaveControl) event.preventDefault();
+    };
+    node.addEventListener("pointerdown", onPointerDown);
+    node.addEventListener("pointermove", onPointerMove);
+    node.addEventListener("pointerup", onPointerUp);
+    node.addEventListener("pointerleave", onPointerLeave);
+    // Non-passive: a scroll forwarded to the lane must not also scroll the pane.
+    node.addEventListener("wheel", onWheel, { passive: false });
+    node.addEventListener("keydown", onKeyDown);
+    node.addEventListener("contextmenu", onContextMenu);
+    return () => {
+      node.removeEventListener("pointerdown", onPointerDown);
+      node.removeEventListener("pointermove", onPointerMove);
+      node.removeEventListener("pointerup", onPointerUp);
+      node.removeEventListener("pointerleave", onPointerLeave);
+      node.removeEventListener("wheel", onWheel);
+      node.removeEventListener("keydown", onKeyDown);
+      node.removeEventListener("contextmenu", onContextMenu);
+    };
+  }, [surfaceNode]);
+
   /* ── Recording and presenting ────────────────────────────────────────── */
 
   const recording = status?.recording ?? null;
@@ -1210,25 +1285,8 @@ export function ChatMacDesktopPanel({
           iHaveControl ? MAC_DESKTOP_TAKEOVER_CURSOR_HIDDEN_CLASS : "cursor-pointer",
         )}
         title={iHaveControl ? undefined : "Click to take control"}
-        onPointerDown={(event) => {
-          // The first click on the screen takes control; the strip button is
-          // the same action. A picture you have to arm before it responds is a
-          // picture that looks broken.
-          if (!iHaveControl) {
-            // Right-click is a menu, not a claim; anything else claims.
-            if (active && !busy && event.button !== 2) void takeControl();
-            return;
-          }
-          realInput.onPointerDown(event);
-        }}
-        onPointerUp={realInput.onPointerUp}
-        onPointerLeave={realInput.onPointerLeave}
-        onPointerMove={realInput.onPointerMove}
-        onWheel={realInput.onWheel}
-        onKeyDown={realInput.onKeyDown}
-        onContextMenu={(event) => {
-          if (iHaveControl) event.preventDefault();
-        }}
+        /* Pointer, wheel and key handling are native listeners bound to this
+           node while it is the active copy — see the effect on `surfaceNode`. */
       >
         {/* Where the decoder's canvas is parked while this copy is the one on
             screen. Empty in the other copy, which is behind an opaque overlay

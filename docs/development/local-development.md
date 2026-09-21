@@ -202,11 +202,17 @@ ADE_DESKTOP_BRIDGE_SOCKET_PATH=/tmp/ade-desktop-bridge-<lane>.sock \
 The dev app runs the Electron binary from `node_modules`, which carries
 Electron's own stable code signature, so macOS keeps its Screen Recording and
 Accessibility grants across rebuilds; grant them once for "Electron" in System
-Settings. The dev brain on the per-lane socket must not host sync (it is not
-the machine's sync host, so it never publishes to the account), which is why
-the Connections card is not testable this way; everything on the Mac Desktop
-pane is. Use `ADE_PROJECT_ROOT` to point the dev app at a throwaway project so
-the lane's displays never touch real work.
+Settings. An unpackaged app always starts its brain with `--no-sync`
+(`main.ts`, `disableSync`), so a dev brain can never take the machine-wide sync
+host lease from the installed ADE. On 2026-09-21 one did, before that guard
+existed, and the agents running under the installed brain died with the lease.
+Set `ADE_DEV_RUNTIME_SYNC=1` only when a dev brain must host sync on purpose,
+and never on a machine whose installed ADE is doing real work. Because the dev
+brain does not host sync it never publishes to the account, which is why the
+Connections card is not testable this way; everything on the Mac Desktop pane
+is. Use `--project-root` to point the dev app at a throwaway project so the
+lane's displays never touch real work. The floating corner preview only shows
+for chat sessions, so test it from a chat, not from a shell session.
 
 To test auto-runtime creation, use the default dev commands after stopping the dev runtime:
 

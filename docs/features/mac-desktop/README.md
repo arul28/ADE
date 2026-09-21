@@ -332,13 +332,20 @@ the lane's desktop; a chat that is neither a viewer nor the lease holder does
 not get the lane's screen as a corner card.
 
 The corner card is itself a viewer, not a picture someone else happens to
-leave on screen. The first click on the picture takes control (the strip's
+leave on screen. Pointer, wheel and key input are bound to the surface as
+native DOM listeners, never React props: the decoder's canvas is a React portal
+into a host node parked inside the surface, and a portal's synthetic events
+bubble to the portal's owner, not to the surface that is its DOM parent, which
+is how every click and hover on the picture itself was lost while the letterbox
+still responded. The first click on the picture takes control (the strip's
 "Take over" button is the same action), and the picture shows a pointer cursor
 until it does. Inside the Work sidebar, "full screen" is the pane's own
-maximise (`workToolsMaximize`): the whole tools pane fills the window with its
-tab strip, so Browser and Terminal stay one click away, and Esc or the header
-button restores it. The panel's own overlay is only the fallback where no
-sidebar hosts it. The pane, full screen and the card share one decoder per lane
+maximise (`workToolsMaximize`): the Work page hides the columns beside the
+pane and lets it grow to the page, tab strip included, so Browser and Terminal
+stay one click away, and Esc or the header button restores it. The state is
+page-owned and nothing remounts (a portal did, and restarted the stream on
+every toggle). The panel's own overlay is only the fallback where no sidebar
+hosts it. The pane, full screen and the card share one decoder per lane
 through a renderer-side ref-counted lease (`macDesktopLiveViewLease.ts`): the
 first holder starts the stream, the last release stops it, and the decoder
 belongs to the highest-priority holder — the pane (and with it full screen)

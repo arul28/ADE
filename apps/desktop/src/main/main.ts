@@ -1945,6 +1945,11 @@ app.whenReady().then(async () => {
     && process.env.NODE_ENV !== "test"
     && process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL !== "1";
   const localRuntimePool = new LocalRuntimeConnectionPool(app.getVersion(), localRuntimeLogger, {
+    // A dev app's brain must never compete for the machine-wide sync host
+    // lease: on 2026-09-21 a lane dev brain on a custom socket took the lease
+    // from the installed ADE twice, and the agents running under that brain
+    // died with it. Set ADE_DEV_RUNTIME_SYNC=1 to opt a dev brain in on purpose.
+    disableSync: !app.isPackaged && process.env.ADE_DEV_RUNTIME_SYNC !== "1",
     preferServiceRepair: shouldRepairRuntimeServiceOnFallback,
     desktopBridgeAuthToken: builtInBrowserBridgeServer?.authToken ?? null,
     onRuntimeStatusChange: (status) => {

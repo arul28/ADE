@@ -8,6 +8,7 @@ import { WorkViewArea } from "./WorkViewArea";
 import { WorkHeaderSidebarToggle } from "../work/WorkHeaderPaneToggles";
 import { WorkLiveCornerCard } from "../work/WorkLiveCornerCard";
 import { WorkSidebar, type WorkSidebarContextTarget } from "./WorkSidebar";
+import { cn } from "../ui/cn";
 import { NativeToolFeedsProvider } from "./NativeToolFeedsContext";
 import { useWorkSidebarTool } from "./useWorkSidebarTool";
 import {
@@ -1069,6 +1070,13 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   }
 
   const workSidebarVisible = active && work.workSidebarOpen;
+  // The tools pane at page size, its tab strip included. Page-owned so the
+  // columns beside it can be hidden without remounting the pane. Closing the
+  // pane always restores the columns.
+  const [workToolsMaximized, setWorkToolsMaximized] = useState(false);
+  useEffect(() => {
+    if (!workSidebarVisible) setWorkToolsMaximized(false);
+  }, [workSidebarVisible]);
   // Which tool the tools pane shows is per LANE, so it hangs off the lane this
   // page has resolved rather than off the project-wide work view state.
   const {
@@ -1454,10 +1462,18 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         is the single owner; both children read `useNativeToolFeeds()`.
       */
       <NativeToolFeedsProvider active={active} runtimePin={activeWorkSessionRuntimePin}>
-        <div className="relative flex h-full min-h-0 min-w-0 overflow-hidden">
+        <div
+          className="relative flex h-full min-h-0 min-w-0 overflow-hidden"
+          data-work-tools-maximized={workToolsMaximized ? "true" : undefined}
+        >
           <div
             ref={workContentPaneRef}
-            className="relative min-h-0 min-w-0 flex-1 basis-0 overflow-hidden"
+            className={cn(
+              "relative min-h-0 min-w-0 flex-1 basis-0 overflow-hidden",
+              // Hidden, not unmounted: the chat and its terminals stay alive
+              // under a maximised tools pane and come straight back.
+              workToolsMaximized && "hidden",
+            )}
             style={{ flexGrow: 100 - work.workSidebarWidthPct }}
           >
             {workViewArea}
@@ -1481,7 +1497,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             />
           </div>
           {/* Resize handle stays a row-level sibling so its width math is correct. */}
-          {workSidebarVisible ? (
+          {workSidebarVisible && !workToolsMaximized ? (
             <div
               role="separator"
               aria-orientation="vertical"
@@ -1511,9 +1527,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
                 // 55% is the taste ceiling; the `max()` keeps the pane's own
                 // 280px floor reachable in a window too narrow for both, which is
                 // the case where the ceiling would otherwise clip its close button.
-                style={{ maxWidth: "max(55%, 280px)" }}
+                style={{ maxWidth: workToolsMaximized ? "100%" : "max(55%, 280px)" }}
                 initial={{ flexGrow: 0 }}
-                animate={{ flexGrow: work.workSidebarWidthPct }}
+                animate={{ flexGrow: workToolsMaximized ? 100 : work.workSidebarWidthPct }}
                 exit={{ flexGrow: 0 }}
                 transition={paneTransition}
               >
@@ -1530,6 +1546,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
                   contextTarget={contextTarget}
                   contextDisabledReason={contextDisabledReason}
                   runtimePin={activeWorkSessionRuntimePin}
+                  maximized={workToolsMaximized}
+                  onMaximizedChange={setWorkToolsMaximized}
                 />
               </motion.div>
             ) : null}
@@ -1566,6 +1584,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       workSidebarOpenTools,
       work.workSidebarWidthPct,
       workSidebarVisible,
+      workToolsMaximized,
       workViewArea,
       activeLaneDeleteProgress,
     ],

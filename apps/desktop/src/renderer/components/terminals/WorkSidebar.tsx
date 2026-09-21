@@ -6,7 +6,6 @@ import {
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
-import { createPortal } from "react-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type {
   AgentChatFileRef,
@@ -38,7 +37,8 @@ import { isChatToolType, isPtyContextInsertableToolType } from "../../lib/sessio
 import { revealTransition } from "../../lib/motion";
 import { showToast } from "../app/toast/toastStore";
 import { WorkToolHeader, workToolPanelId } from "./WorkToolHeader";
-import { WORK_TOOLS_MAXIMIZED_Z, WorkToolsMaximizeContext } from "./workToolsMaximize";
+import { WorkToolsMaximizeContext } from "./workToolsMaximize";
+import { cn } from "../ui/cn";
 import { WorkToolPicker } from "./WorkToolPicker";
 import { useWorkToolStatuses } from "./useWorkToolStatuses";
 import { useNativeToolFeeds } from "./NativeToolFeedsContext";
@@ -181,6 +181,8 @@ export function WorkSidebar({
   contextTarget,
   contextDisabledReason: targetDisabledReason,
   runtimePin = null,
+  maximized = false,
+  onMaximizedChange,
 }: {
   active?: boolean;
   laneId: string | null;
@@ -202,6 +204,9 @@ export function WorkSidebar({
    * another machine gets THAT machine's git, terminals, and files.
    */
   runtimePin?: OpenProjectBinding | null;
+  /** The pane fills the Work page, tabs and all. Owned by the page. */
+  maximized?: boolean;
+  onMaximizedChange?: (next: boolean) => void;
 }) {
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [selectedMode, setSelectedMode] = useState<"staged" | "unstaged" | null>(null);
@@ -357,26 +362,16 @@ export function WorkSidebar({
   const floatableTool = effectiveTool && isWorkLiveScreenTool(effectiveTool) ? effectiveTool : null;
   const companionUi = useChatCompanionUiState(panelSessionId);
   const floating = floatableTool ? companionUi.workLiveCardFloating.includes(floatableTool) : false;
-  // The whole pane at window size, tabs included. See `workToolsMaximize`.
-  const [maximized, setMaximized] = useState(false);
-  const maximizeContext = useMemo(() => ({ maximized, setMaximized }), [maximized]);
+  // The whole pane at window size, tabs included. The page owns the state so
+  // it can hide the columns beside the pane without this subtree remounting
+  // (a portal did remount it, which restarted the Mac Desktop stream on every
+  // toggle). See `workToolsMaximize`.
+  const setMaximized = useCallback((next: boolean) => onMaximizedChange?.(next), [onMaximizedChange]);
+  const maximizeContext = useMemo(() => ({ maximized, setMaximized }), [maximized, setMaximized]);
+  // Losing every tool always restores the window.
   useEffect(() => {
-    if (!maximized || typeof document === "undefined") return;
-    const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key !== "Escape" || event.defaultPrevented) return;
-      // A menu or a dialog inside the pane owns its own Esc; only a bare one
-      // restores the pane.
-      if (document.querySelector('[role="menu"], [role="dialog"], [role="listbox"]')) return;
-      event.preventDefault();
-      setMaximized(false);
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [maximized]);
-  // Closing the pane, or losing every tool, always restores the window.
-  useEffect(() => {
-    if (!effectiveTool) setMaximized(false);
-  }, [effectiveTool]);
+    if (!effectiveTool && maximized) setMaximized(false);
+  }, [effectiveTool, maximized, setMaximized]);
   const floatActivePreview = useCallback(() => {
     if (!floatableTool || !panelSessionId) return;
     floatWorkLiveCardForChat(panelSessionId, floatableTool);
@@ -694,8 +689,18 @@ export function WorkSidebar({
     // for keys pressed inside this pane, and never while a modal layer is up.
     if (!target || !sidebarRef.current?.contains(target)) return;
     const targetElement = target instanceof Element ? target : target.parentElement;
+    // A maximised pane gives Escape back first: it restores the window and
+    // leaves the tool where it was, instead of also walking back to the
+    // picker. A menu, a dialog or a claimed field still owns its own Escape.
+    if (maximized && event.key === "Escape" && !aModalLayerIsOpen()
+      && !(targetElement && escapeIsClaimedInside(targetElement))) {
+      event.preventDefault();
+      event.stopPropagation();
+      setMaximized(false);
+      return;
+    }
     applyPickerBinding(event.nativeEvent, targetElement);
-  }, [active, applyPickerBinding]);
+  }, [active, applyPickerBinding, maximized, setMaximized]);
 
   /**
    * Which surface the pointer last committed to.
@@ -785,14 +790,12 @@ export function WorkSidebar({
       ? { duration: 0.12, ease: "easeOut" as const }
       : revealTransition;
 
-  const aside = (
+  return (
+    <WorkToolsMaximizeContext.Provider value={maximizeContext}>
     <aside
       ref={sidebarRef}
       onKeyDownCapture={handleKeyDownCapture}
       data-maximized={maximized ? "true" : undefined}
-      style={maximized
-        ? { position: "fixed", inset: 0, width: "100vw", height: "100vh", zIndex: WORK_TOOLS_MAXIMIZED_Z, borderLeft: "none" }
-        : undefined}
       // Focusable only programmatically (`selectTool`), and never ringed for
       // it: this is a focus fallback, not a stop on the tab order.
       tabIndex={-1}
@@ -801,7 +804,12 @@ export function WorkSidebar({
       // overflow is then clipped by the window — which is how the ✕ and the
       // browser's ⋮ ended up unreachable. The drag is what enforces 280px
       // (`clampWorkSidebarWidthPct`); the pane itself just never escapes.
-      className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden border-l border-white/[0.08] bg-surface/85 outline-none"
+      className={cn(
+        "flex h-full min-h-0 min-w-0 flex-col overflow-hidden outline-none",
+        // Opaque when it is the whole page: the columns it covers are hidden,
+        // and a translucent pane over nothing reads as a broken overlay.
+        maximized ? "bg-bg" : "border-l border-white/[0.08] bg-surface/85",
+      )}
     >
       {/* One bar for both states. The strip does not disappear when the picker
           comes up — the tabs are still open, and a picker page that hid them
@@ -823,7 +831,7 @@ export function WorkSidebar({
         floating={floating}
         onFloat={floatActivePreview}
         maximized={maximized}
-        onToggleMaximize={() => setMaximized((current) => !current)}
+        onToggleMaximize={() => setMaximized(!maximized)}
       />
       {/* A true crossfade, so the two surfaces overlap rather than the pane
           blanking between them: both children are absolutely positioned and
@@ -858,13 +866,6 @@ export function WorkSidebar({
         </AnimatePresence>
       </div>
     </aside>
-  );
-
-  return (
-    <WorkToolsMaximizeContext.Provider value={maximizeContext}>
-      {maximized && typeof document !== "undefined"
-        ? createPortal(aside, document.documentElement)
-        : aside}
     </WorkToolsMaximizeContext.Provider>
   );
 }

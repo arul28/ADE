@@ -269,6 +269,23 @@ describe("ChatMacDesktopPanel actions on a pinned machine", () => {
     ));
   });
 
+  it("takes control from a click on the canvas slot inside the surface, not only the letterbox", async () => {
+    macDesktop.takeControl.mockResolvedValue({
+      holder: "user",
+      holderId: CONTROLLER_ID,
+      expiresAt: "2026-09-18T19:10:00.000Z",
+    });
+
+    renderPanel();
+    const surface = await screen.findByTestId("mac-desktop-surface");
+    // The decoder canvas lives in a portal parked in this child; a React
+    // handler on the surface never heard its events, a DOM listener does.
+    const slot = surface.firstElementChild as HTMLElement;
+    fireEvent.pointerDown(slot, { button: 0 });
+
+    await waitFor(() => expect(macDesktop.takeControl).toHaveBeenCalledTimes(1));
+  });
+
   it("returns control on the focused chat's machine", async () => {
     macDesktop.getStatus.mockResolvedValue(makeStatus({
       lease: {
