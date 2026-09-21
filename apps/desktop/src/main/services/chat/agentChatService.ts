@@ -45501,6 +45501,10 @@ export function createAgentChatService(args: {
       turnId,
     });
     devinCloudSendInFlight.add(managed.session.id);
+    // A fresh send means the remote turn is live again — reset completion so
+    // the mirror can emit `done` for this turn, not just the first one.
+    devinCloudDoneAnnounced.delete(managed.session.id);
+    devinCloudPendingDoneTurn.delete(managed.session.id);
     try {
       await aiIntegrationService.sendDevinCloudMessage({
         devinSessionId,

@@ -348,7 +348,9 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
           );
         }
         if (items.length > 1) {
-          args.logger?.warn?.("devin_cloud.multi_org_defaulting_to_first", { orgId: id });
+          throw new Error(
+            "Your Devin account belongs to multiple orgs. Add the org id (org-...) for the one you want in Settings > Devin.",
+          );
         }
         return id;
       })().catch((error) => {

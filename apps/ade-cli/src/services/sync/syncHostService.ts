@@ -136,6 +136,7 @@ import type { AccountAttestationConfig } from "../account/sharedAccountAuthServi
 import { verifyClerkAccountAttestation } from "../account/accountAttestationVerifier";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
 import type { createCursorCloudFleetService } from "../../../../desktop/src/main/services/chat/cursorCloudFleetService";
+import type { createDevinCloudFleetService } from "../../../../desktop/src/main/services/chat/devinCloudFleetService";
 import type { createAiIntegrationService } from "../../../../desktop/src/main/services/ai/aiIntegrationService";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
 import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
@@ -1133,6 +1134,7 @@ type SyncHostServiceArgs = {
   ptyService: ReturnType<typeof createPtyService>;
   agentChatService?: ReturnType<typeof createAgentChatService>;
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
+  devinCloudFleetService?: ReturnType<typeof createDevinCloudFleetService> | null;
   personalChatScope?: Pick<
     PersonalChatScopeContract,
     "call" | "streamEvents" | "transcriptPath" | "isTurnActive"
@@ -2254,6 +2256,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     operationService: args.operationService,
     agentChatService: args.agentChatService,
     cursorCloudFleetService: args.cursorCloudFleetService,
+    devinCloudFleetService: args.devinCloudFleetService,
     personalChatScope: args.personalChatScope,
     aiIntegrationService: args.aiIntegrationService,
     accountSettingsStore: args.accountSettingsStore,

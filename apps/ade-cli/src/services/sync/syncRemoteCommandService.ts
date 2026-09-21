@@ -258,6 +258,8 @@ import { buildAiSettingsStatus, getUnavailableAiStatus, isDatabaseClosedError } 
 import type { createAiIntegrationService } from "../../../../desktop/src/main/services/ai/aiIntegrationService";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
 import type { createCursorCloudFleetService } from "../../../../desktop/src/main/services/chat/cursorCloudFleetService";
+import type { createDevinCloudFleetService } from "../../../../desktop/src/main/services/chat/devinCloudFleetService";
+import type { DevinCloudMode } from "../../../../desktop/src/shared/types/config";
 import { resolveSmartLinkPreview } from "../../../../desktop/src/main/services/chat/smartLinkPreviewService";
 import {
   createPromptStash,
@@ -370,6 +372,7 @@ type SyncRemoteCommandServiceArgs = {
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
   agentChatService?: ReturnType<typeof createAgentChatService>;
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
+  devinCloudFleetService?: ReturnType<typeof createDevinCloudFleetService> | null;
   personalChatScope?: Pick<PersonalChatScopeContract, "call" | "streamEvents">;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   ctoMemoryService?: CtoMemoryService | null;
@@ -528,6 +531,13 @@ function asOptionalCursorCloudServiceTier(value: unknown): "fast" | "standard" |
   if (value === null) return null;
   if (value === "fast" || value === "standard") return value;
   throw new Error("Cursor Cloud serviceTier must be 'fast', 'standard', null, or omitted.");
+}
+
+function asOptionalDevinCloudMode(value: unknown): DevinCloudMode | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (value === "normal" || value === "fast" || value === "lite" || value === "ultra" || value === "fusion") return value;
+  throw new Error("Devin Cloud devinMode must be 'normal', 'fast', 'lite', 'ultra', 'fusion', null, or omitted.");
 }
 
 function asOptionalNumber(value: unknown): number | undefined {
@@ -5912,6 +5922,92 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
     return fleetService.stopAgentRun(
       requireString(payload.agentId, "ai.cursorCloudStopRun requires agentId."),
     );
+  });
+
+  register("ai.getDevinCloudAuthStatus", { viewerAllowed: true }, async () =>
+    requireService(args.aiIntegrationService, "AI integration service not available.").getDevinCloudAuthStatus());
+  register("ai.setDevinCloudCredentials", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
+    const status = await requireService(args.aiIntegrationService, "AI integration service not available.").setDevinCloudCredentials({
+      apiKey: requireString(payload.apiKey, "ai.setDevinCloudCredentials requires apiKey."),
+      ...(typeof payload.orgId === "string" ? { orgId: payload.orgId } : {}),
+    });
+    args.devinCloudFleetService?.invalidateCache();
+    return status;
+  });
+  register("ai.getDevinCloudFleet", { viewerAllowed: true }, async (payload) => {
+    const fleetService = requireService(args.devinCloudFleetService, "Devin Cloud fleet not available.");
+    return fleetService.getFleet({
+      force: payload.force === true,
+      includeArchived: payload.includeArchived === true,
+    });
+  });
+  // Pull mutates host lane worktrees (fetch + merge or lane import), so like the
+  // Cursor equivalent it is refused for read-only viewers and runs immediately.
+  register("ai.pullDevinCloudSessionIntoLane", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.devinCloudFleetService, "Devin Cloud fleet not available.").pullIntoLane(
+      requireString(payload.devinSessionId, "ai.pullDevinCloudSessionIntoLane requires devinSessionId."),
+    ));
+  register("ai.terminateDevinCloudSession", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
+    await requireService(args.aiIntegrationService, "AI integration service not available.").terminateDevinCloudSession({
+      devinSessionId: requireString(payload.devinSessionId, "ai.terminateDevinCloudSession requires devinSessionId."),
+      ...(typeof payload.archive === "boolean" ? { archive: payload.archive } : {}),
+    });
+    args.devinCloudFleetService?.invalidateCache();
+  });
+  register("ai.archiveDevinCloudSession", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
+    await requireService(args.aiIntegrationService, "AI integration service not available.").archiveDevinCloudSession(
+      requireString(payload.devinSessionId, "ai.archiveDevinCloudSession requires devinSessionId."),
+    );
+    args.devinCloudFleetService?.invalidateCache();
+  });
+  register("ai.unarchiveDevinCloudSession", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
+    await requireService(args.aiIntegrationService, "AI integration service not available.").unarchiveDevinCloudSession(
+      requireString(payload.devinSessionId, "ai.unarchiveDevinCloudSession requires devinSessionId."),
+    );
+    args.devinCloudFleetService?.invalidateCache();
+  });
+  register("ai.devinCloudFollowUp", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
+    await requireService(args.agentChatService, "Agent chat service not available.").devinCloudFollowUp({
+      devinSessionId: requireString(payload.devinSessionId, "ai.devinCloudFollowUp requires devinSessionId."),
+      message: requireString(payload.message, "ai.devinCloudFollowUp requires message."),
+    });
+    args.devinCloudFleetService?.invalidateCache();
+  });
+  register("ai.openDevinCloudChat", { viewerAllowed: true, queueable: false }, async (payload) => {
+    const sessionId = asTrimmedString(payload.sessionId);
+    const devinMode = asOptionalDevinCloudMode(payload.devinMode);
+    return requireService(args.agentChatService, "Agent chat service not available.").openDevinCloudChat({
+      devinSessionId: requireString(payload.devinSessionId, "ai.openDevinCloudChat requires devinSessionId."),
+      laneId: requireString(payload.laneId, "ai.openDevinCloudChat requires laneId."),
+      ...(sessionId ? { sessionId } : {}),
+      ...(devinMode !== undefined ? { devinMode } : {}),
+    });
+  });
+  register("ai.watchDevinCloudMirror", { viewerAllowed: true, queueable: false }, async (payload) => {
+    if (typeof payload.watching !== "boolean") {
+      throw new Error("ai.watchDevinCloudMirror requires watching to be a boolean.");
+    }
+    requireService(args.agentChatService, "Agent chat service not available.").watchDevinCloudMirror({
+      sessionId: requireString(payload.sessionId, "ai.watchDevinCloudMirror requires sessionId."),
+      watching: payload.watching,
+    });
+  });
+  register("ai.createDevinCloudSession", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
+    const devinMode = asOptionalDevinCloudMode(payload.devinMode);
+    const sessionId = asTrimmedString(payload.sessionId);
+    const title = asTrimmedString(payload.title);
+    const projectId = asTrimmedString(payload.projectId);
+    const result = await requireService(args.agentChatService, "Agent chat service not available.").createDevinCloudSessionForLane({
+      laneId: requireString(payload.laneId, "ai.createDevinCloudSession requires laneId."),
+      prompt: requireString(payload.prompt, "ai.createDevinCloudSession requires prompt."),
+      ...(sessionId ? { sessionId } : {}),
+      ...(title ? { title } : {}),
+      ...(devinMode !== undefined ? { devinMode } : {}),
+      ...(projectId ? { projectId } : {}),
+      ...(typeof payload.bypassApproval === "boolean" ? { bypassApproval: payload.bypassApproval } : {}),
+    });
+    args.devinCloudFleetService?.invalidateCache();
+    return result;
   });
 }
 
