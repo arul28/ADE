@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, type ReactNode } from "react";
 import {
   Alarm,
+  ArrowBendUpRight,
   ArrowCounterClockwise,
   ArrowDown,
   ArrowsLeftRight,
@@ -8,7 +9,9 @@ import {
   CheckCircle,
   ClockCountdown,
   Copy,
+  Desktop,
   GitBranch,
+  GitFork,
   Globe,
   Hash,
   Lightning,
@@ -50,7 +53,6 @@ import { OpenInSubmenu } from "../ui/OpenInSubmenu";
 import type { OpenInTarget } from "../../../shared/editorTargets";
 import {
   automationRulesReadable,
-  listAutomationRules,
   removeAutomationRules,
   setSessionSettleOverride,
   setChatSpawnKind,
@@ -60,8 +62,9 @@ import {
 } from "./sessionLifecycleActions";
 import {
   AutoHandoffModal,
-  selectAutoHandoffRulesForSession,
+  loadAutoHandoffRulesForSession,
 } from "./AutoHandoffModal";
+import type { ChatHandoffIntent } from "../../lib/chatHandoffIntent";
 
 /* `hover:bg-muted/40` used to be the hover here and read as nothing at all:
    `--color-muted` is #1E1B28, a near-black purple, so 40% of it over an already
@@ -197,6 +200,16 @@ type SessionContextMenuProps = {
     session: TerminalSessionSummary,
     binding?: OpenProjectBinding | null,
   ) => void;
+  /**
+   * Opens this chat's Handoff surface in the chat pane — the same two
+   * destinations the Chat actions → Handoff tab offers. The menu cannot open
+   * those views itself: they are stateful inside `AgentChatPane`, so it records
+   * the intent and the pane acts on it (see `chatHandoffIntent`).
+   */
+  onOpenChatHandoff: (
+    session: TerminalSessionSummary,
+    intent: ChatHandoffIntent,
+  ) => void;
   pinnedSessionIds?: string[];
   /** Session ids currently in any work grid (drives the "Remove from grid" item). */
   gridSessionIds?: string[];
@@ -269,6 +282,7 @@ function SessionContextMenuPanel({
   onOpenSessionInWeb,
   onTogglePinned,
   onSettle,
+  onOpenChatHandoff,
   pinnedSessionIds,
   gridSessionIds,
   onRemoveFromGrid,
@@ -347,9 +361,9 @@ function SessionContextMenuPanel({
     }
     let cancelled = false;
     setScopedHandoffRules(null);
-    void listAutomationRules().then((rules) => {
+    void loadAutoHandoffRulesForSession(session.id).then((rules) => {
       if (cancelled) return;
-      setScopedHandoffRules(selectAutoHandoffRulesForSession(rules, session.id));
+      setScopedHandoffRules(rules);
     });
     return () => { cancelled = true; };
   }, [isChat, session.id]);
@@ -679,37 +693,70 @@ function SessionContextMenuPanel({
 
         {settleRow}
 
-        {/* Auto handoff. A chat that hits its provider's limit, fails, or ends
-            with nothing to show is the moment a handoff is worth automating, so
-            the offer lives here rather than three tabs away. The rules are
-            ordinary automations — removal never needs the Automations tab. */}
+        {/* Handoff. One submenu, the same three destinations the Chat actions →
+            Handoff tab offers: a fresh chat here, one of your other machines, or
+            a rule that fires on limit/failure/end. Auto handoff used to be a
+            bare row here; folding it in keeps "where should this chat go" in a
+            single place instead of split across the menu. */}
         {isChat ? (
-          <button
-            type="button"
-            data-testid="session-menu-auto-handoff"
+          <MenuSubmenu
+            label="Hand off…"
+            icon={<MenuRowIcon icon={ArrowBendUpRight} />}
             className={MENU_ITEM_CLASS}
-            onClick={() => {
-              onOpenAutoHandoff({ session, binding, existingRules: scopedHandoffRules ?? [] });
-              onClose();
-            }}
+            data-testid="session-menu-handoff"
           >
-            <MenuRowIcon icon={ArrowsLeftRight} />
-            {scopedHandoffRules?.length ? "Edit auto handoff…" : "Auto handoff…"}
-          </button>
-        ) : null}
-        {isChat && scopedHandoffRules?.length ? (
-          <button
-            type="button"
-            data-testid="session-menu-remove-auto-handoff"
-            className={MENU_ITEM_CLASS}
-            onClick={() => {
-              void removeAutomationRules(scopedHandoffRules.map((rule) => rule.id));
-              onClose();
-            }}
-          >
-            <MenuRowIcon icon={Prohibit} />
-            Remove auto handoff
-          </button>
+            <button
+              type="button"
+              data-testid="session-menu-handoff-local"
+              className={MENU_ITEM_CLASS}
+              onClick={() => {
+                onOpenChatHandoff(session, "local");
+                onClose();
+              }}
+            >
+              <MenuRowIcon icon={GitFork} />
+              Local handoff
+            </button>
+            <button
+              type="button"
+              data-testid="session-menu-handoff-remote"
+              className={MENU_ITEM_CLASS}
+              onClick={() => {
+                onOpenChatHandoff(session, "remote");
+                onClose();
+              }}
+            >
+              <MenuRowIcon icon={Desktop} />
+              Another machine
+            </button>
+            <MenuSeparator />
+            <button
+              type="button"
+              data-testid="session-menu-auto-handoff"
+              className={MENU_ITEM_CLASS}
+              onClick={() => {
+                onOpenAutoHandoff({ session, binding, existingRules: scopedHandoffRules ?? [] });
+                onClose();
+              }}
+            >
+              <MenuRowIcon icon={ArrowsLeftRight} />
+              {scopedHandoffRules?.length ? "Edit auto handoff…" : "Auto handoff…"}
+            </button>
+            {scopedHandoffRules?.length ? (
+              <button
+                type="button"
+                data-testid="session-menu-remove-auto-handoff"
+                className={MENU_ITEM_CLASS}
+                onClick={() => {
+                  void removeAutomationRules(scopedHandoffRules.map((rule) => rule.id));
+                  onClose();
+                }}
+              >
+                <MenuRowIcon icon={Prohibit} />
+                Remove auto handoff
+              </button>
+            ) : null}
+          </MenuSubmenu>
         ) : null}
 
         {isChat && session.orchestrationParentSessionId && session.spawnKind === "subagent" ? (

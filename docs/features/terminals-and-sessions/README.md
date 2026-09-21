@@ -914,12 +914,18 @@ Renderer surfaces:
   own `renderCardCore`, so click, context menu, hover card, PR pill, provider
   glyph, and lineage chip are literally the same component in both views.
 - `apps/desktop/src/renderer/components/terminals/AutoHandoffModal.tsx` —
-  the chat menu's front door to the automation platform: it arms rules that hand
-  a chat to another model when it dies. Pure layer first
+  the front door to the automation platform from the chat context menu and the
+  Chat actions → Handoff tab: it arms rules that hand a chat to another model
+  when it dies. Pure layer first
   (`AUTO_HANDOFF_CONDITIONS`, `AUTO_HANDOFF_LANE_TARGETS`,
   `autoHandoffRuleId`, `buildAutoHandoffDrafts`, `formFromRules`,
   `selectAutoHandoffRulesForSession`, `staleAutoHandoffRuleIds`,
-  `autoHandoffFormIsValid`), then the dialog. It writes **one rule per
+  `autoHandoffFormIsValid`), then the dialog. `loadAutoHandoffRulesForSession`
+  is the one canonical async read both entry points use to seed the editor with
+  a chat's existing rules (`[]` when the automations surface is unreadable), and
+  the `AutoHandoffSession` prop shape is the minimal chat identity the editor
+  reads, so the chat pane's `AgentChatSession` and a `TerminalSessionSummary`
+  both fit without widening either. It writes **one rule per
   condition**, because both the draft normalizer and the runtime normalizer
   collapse a rule to a single trigger; rule ids are deterministic so a second
   Save upserts instead of appending `-2`. Its default target model is the first
@@ -1620,7 +1626,11 @@ Renderer surfaces:
   overlay. The context menu sections identity, Lifecycle, Go to, Copy, optional
   **Open in**, optional singleton-lane actions, and fenced destructive rows;
   chat rows also expose a `Name & status` submenu for inline Rename and the
-  three metadata-generation choices, while Copy, Snooze, Lane, and Open in
+  three metadata-generation choices, and a `Hand off…` submenu (Local handoff /
+  Another machine / Auto handoff…, plus Remove auto handoff once rules exist)
+  whose Local and Another-machine rows queue the destination through
+  `renderer/lib/chatHandoffIntent.ts` and select the row so the chat pane can
+  open the matching surface, while Copy, Snooze, Lane, and Open in
   remain pointer/keyboard submenus. Every action row carries a duotone glyph.
   `openIn` is an `OpenInTarget` from
   `resolveOpenInTarget`. Local and headerless foreign singleton rows omit

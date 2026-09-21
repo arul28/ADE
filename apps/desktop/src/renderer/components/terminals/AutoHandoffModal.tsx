@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowsLeftRight, CaretDown, CaretRight, X } from "@phosphor-icons/react";
+import { ArrowsLeftRight, CaretDown, CaretRight, Flag, Timer, WarningCircle, X, type Icon } from "@phosphor-icons/react";
 import type {
   AutomationAction,
   AutomationRule,
@@ -20,7 +20,7 @@ import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPick
 import { cn } from "../ui/cn";
 import { getFocusableElements } from "../ui/dialogFocus";
 import { LaneCombobox, type LaneComboboxLane } from "./LaneCombobox";
-import { saveAutoHandoffRules } from "./sessionLifecycleActions";
+import { automationRulesReadable, listAutomationRules, saveAutoHandoffRules } from "./sessionLifecycleActions";
 
 /**
  * "Auto handoff" — the chat-menu front door to the automation platform.
@@ -44,6 +44,8 @@ export const AUTO_HANDOFF_CONDITIONS: ReadonlyArray<{
   /** Rule-name fragment; this one is read on its own in the Automations list. */
   ruleLabel: string;
   hint: string;
+  /** Chip glyph; the sentence reads as marks plus words, not a wall of text. */
+  icon: Icon;
 }> = [
   {
     key: "limit",
@@ -51,6 +53,7 @@ export const AUTO_HANDOFF_CONDITIONS: ReadonlyArray<{
     label: "usage limit",
     ruleLabel: "usage limit",
     hint: "The provider's usage window closed mid-chat.",
+    icon: Timer,
   },
   {
     key: "failure",
@@ -58,6 +61,7 @@ export const AUTO_HANDOFF_CONDITIONS: ReadonlyArray<{
     label: "API failure",
     ruleLabel: "API failure",
     hint: "The provider or the runtime failed the turn.",
+    icon: WarningCircle,
   },
   {
     key: "ended",
@@ -65,6 +69,7 @@ export const AUTO_HANDOFF_CONDITIONS: ReadonlyArray<{
     label: "chat ends",
     ruleLabel: "chat ends",
     hint: "The chat ended without opening a PR.",
+    icon: Flag,
   },
 ];
 
@@ -162,6 +167,17 @@ export function selectAutoHandoffRulesForSession(
 ): AutomationRuleSummary[] {
   if (!rules?.length || !sessionId) return [];
   return rules.filter((rule) => rule.scope?.sessionId === sessionId && handoffActionOf(rule) != null);
+}
+
+/**
+ * The rules a chat's Auto handoff editor should open with, or `[]` when the
+ * automations surface is unavailable or the read fails. One canonical read so
+ * the session menu and the Handoff tab cannot disagree about what is scoped to
+ * a chat.
+ */
+export async function loadAutoHandoffRulesForSession(sessionId: string): Promise<AutomationRuleSummary[]> {
+  if (!sessionId || !automationRulesReadable()) return [];
+  return selectAutoHandoffRulesForSession(await listAutomationRules(), sessionId);
 }
 
 /** Rebuilds the form from the rules already saved for this chat. */
@@ -356,11 +372,24 @@ function FocusTrapDialog({
 }
 
 export type AutoHandoffModalProps = {
-  session: TerminalSessionSummary;
+  /**
+   * Minimal shape the editor needs. Deliberately not `TerminalSessionSummary`:
+   * the Handoff tab in `AgentChatPane` has an `AgentChatSession`, and both carry
+   * the same identity fields — widening here beats inventing a fake terminal row.
+   */
+  session: AutoHandoffSession;
   binding?: OpenProjectBinding | null;
   /** Rules already scoped to this chat, read by the menu before it opened. */
   existingRules: readonly AutomationRuleSummary[];
   onClose: () => void;
+};
+
+/** Identity the Auto handoff editor reads off a chat. */
+export type AutoHandoffSession = {
+  id: string;
+  title: string;
+  laneId?: string | null;
+  modelId?: string | null;
 };
 
 export function AutoHandoffModal({ session, binding = null, existingRules, onClose }: AutoHandoffModalProps) {
@@ -466,7 +495,7 @@ export function AutoHandoffModal({ session, binding = null, existingRules, onClo
         onClose={onClose}
         onSubmit={() => { void save(true); }}
       >
-        <header className="flex items-start justify-between gap-4 border-b border-border/60 px-5 py-4">
+        <header className="flex items-start justify-between gap-4 border-b border-border/60 bg-[linear-gradient(150deg,color-mix(in_srgb,var(--color-accent)_13%,transparent),transparent_78%)] px-5 py-4">
           <div className="flex min-w-0 items-start gap-3">
             <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-[color:color-mix(in_srgb,var(--color-accent)_30%,transparent)] bg-[color:color-mix(in_srgb,var(--color-accent)_14%,transparent)] text-accent">
               <ArrowsLeftRight size={18} weight="duotone" />
@@ -492,7 +521,7 @@ export function AutoHandoffModal({ session, binding = null, existingRules, onClo
 
         <div className="min-h-0 overflow-y-auto px-5 py-4">
           {/* The sentence. One card, read left to right, not a form grid. */}
-          <div className="rounded-xl border border-border/60 bg-[color:color-mix(in_srgb,var(--color-fg)_3%,transparent)] px-4 py-3.5">
+          <div className="rounded-xl border border-[color:color-mix(in_srgb,var(--color-accent)_22%,transparent)] bg-[linear-gradient(150deg,color-mix(in_srgb,var(--color-accent)_8%,transparent),color-mix(in_srgb,var(--color-fg)_3%,transparent)_62%)] px-4 py-3.5">
             <div className="flex flex-wrap items-center gap-x-2 gap-y-2 text-[12px] leading-6 text-fg/70">
               <span>When</span>
               {AUTO_HANDOFF_CONDITIONS.map((condition, index) => {
@@ -507,12 +536,18 @@ export function AutoHandoffModal({ session, binding = null, existingRules, onClo
                     title={condition.hint}
                     onClick={() => setCondition(condition.key, !active)}
                     className={cn(
-                      "inline-flex h-7 items-center rounded-md border px-2.5 font-sans text-[11.5px] font-medium transition-colors",
+                      "inline-flex h-7 items-center gap-1.5 rounded-md border px-2.5 font-sans text-[11.5px] font-medium transition-colors",
                       active
                         ? "border-[color:color-mix(in_srgb,var(--color-accent)_46%,transparent)] bg-[color:color-mix(in_srgb,var(--color-accent)_18%,transparent)] text-fg"
                         : "border-border/60 text-muted-fg hover:border-border hover:text-fg/80",
                     )}
                   >
+                    <condition.icon
+                      size={12}
+                      weight="bold"
+                      aria-hidden
+                      className={cn("shrink-0", active ? "text-accent" : "text-muted-fg/70")}
+                    />
                     {condition.label}
                   </button>
                 );

@@ -109,6 +109,7 @@ function renderMenu(
     laneActions,
     onRegenerateMetadata,
     laneType,
+    onOpenChatHandoff = vi.fn(),
   }: {
     onSetChatTag?: ReturnType<typeof vi.fn>;
     onSettle?: ReturnType<typeof vi.fn>;
@@ -116,6 +117,7 @@ function renderMenu(
     laneActions?: SessionContextMenuLaneActions | null;
     onRegenerateMetadata?: ReturnType<typeof vi.fn>;
     laneType?: LaneSummary["laneType"] | null;
+    onOpenChatHandoff?: ReturnType<typeof vi.fn>;
   } = {},
 ) {
   const onClose = vi.fn();
@@ -140,6 +142,7 @@ function renderMenu(
         onRegenerateMetadata={onRegenerateMetadata}
         onSetChatTag={onSetChatTag}
         onSettle={onSettle}
+        onOpenChatHandoff={onOpenChatHandoff}
       />
     </MemoryRouter>,
   );
@@ -152,6 +155,7 @@ function renderMenu(
     onGoToLane,
     onRename,
     onRegenerateMetadata,
+    onOpenChatHandoff,
   };
 }
 
@@ -759,6 +763,51 @@ describe("SessionContextMenu spawn kind", () => {
   });
 });
 
+describe("SessionContextMenu handoff submenu", () => {
+  beforeEach(() => {
+    (window as unknown as { ade: unknown }).ade = {
+      automations: {
+        list: vi.fn().mockResolvedValue([]),
+        deleteRule: vi.fn().mockResolvedValue([]),
+        saveDraft: vi.fn(),
+      },
+      sessions: {},
+    };
+  });
+
+  afterEach(() => {
+    delete (window as unknown as { ade?: unknown }).ade;
+    vi.clearAllMocks();
+  });
+
+  it("routes Local handoff to the chat pane and closes", () => {
+    const onOpenChatHandoff = vi.fn();
+    const { onClose } = renderMenu(makeSession(), { onOpenChatHandoff });
+
+    fireEvent.click(screen.getByTestId("session-menu-handoff"));
+    fireEvent.click(screen.getByTestId("session-menu-handoff-local"));
+
+    expect(onOpenChatHandoff).toHaveBeenCalledWith(expect.objectContaining({ id: "chat-1" }), "local");
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("routes Another machine to the chat pane and closes", () => {
+    const onOpenChatHandoff = vi.fn();
+    const { onClose } = renderMenu(makeSession(), { onOpenChatHandoff });
+
+    fireEvent.click(screen.getByTestId("session-menu-handoff"));
+    fireEvent.click(screen.getByTestId("session-menu-handoff-remote"));
+
+    expect(onOpenChatHandoff).toHaveBeenCalledWith(expect.objectContaining({ id: "chat-1" }), "remote");
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("hides the whole handoff submenu on a non-chat row", () => {
+    renderMenu(makeSession({ toolType: "shell", status: "disposed", endedAt: "2026-07-10T13:00:00.000Z" }));
+    expect(screen.queryByTestId("session-menu-handoff")).toBeNull();
+  });
+});
+
 describe("SessionContextMenu auto handoff", () => {
   let list: ReturnType<typeof vi.fn>;
   let deleteRule: ReturnType<typeof vi.fn>;
@@ -791,6 +840,7 @@ describe("SessionContextMenu auto handoff", () => {
 
   it("offers the add form when this chat has no scoped rule", async () => {
     renderMenu(makeSession());
+    fireEvent.click(screen.getByTestId("session-menu-handoff"));
     // The row paints before the lookup answers, so the add label is correct
     // immediately and never flickers into existence.
     expect(screen.getByTestId("session-menu-auto-handoff").textContent).toContain("Auto handoff…");
@@ -802,6 +852,7 @@ describe("SessionContextMenu auto handoff", () => {
   it("settles into the edit label once a scoped rule comes back", async () => {
     list.mockResolvedValue([handoffRule("auto-handoff-chat-1-limit", "chat-1")]);
     renderMenu(makeSession());
+    fireEvent.click(screen.getByTestId("session-menu-handoff"));
 
     expect(screen.getByTestId("session-menu-auto-handoff").textContent).toContain("Auto handoff…");
     await waitFor(() => {
@@ -813,11 +864,14 @@ describe("SessionContextMenu auto handoff", () => {
     list.mockResolvedValue([handoffRule("auto-handoff-other-limit", "some-other-chat")]);
     renderMenu(makeSession());
     await waitFor(() => expect(list).toHaveBeenCalled());
+    fireEvent.click(screen.getByTestId("session-menu-handoff"));
     expect(screen.queryByTestId("session-menu-remove-auto-handoff")).toBeNull();
 
     cleanup();
     list.mockResolvedValue([handoffRule("auto-handoff-chat-1-limit", "chat-1")]);
     const { onClose } = renderMenu(makeSession());
+    await waitFor(() => expect(list).toHaveBeenCalled());
+    fireEvent.click(screen.getByTestId("session-menu-handoff"));
     const remove = await screen.findByTestId("session-menu-remove-auto-handoff");
 
     fireEvent.click(remove);
@@ -829,6 +883,7 @@ describe("SessionContextMenu auto handoff", () => {
 
   it("offers nothing on a non-chat row", async () => {
     renderMenu(makeSession({ toolType: "shell", status: "disposed", endedAt: "2026-07-10T13:00:00.000Z" }));
+    expect(screen.queryByTestId("session-menu-handoff")).toBeNull();
     expect(screen.queryByTestId("session-menu-auto-handoff")).toBeNull();
     expect(list).not.toHaveBeenCalled();
   });

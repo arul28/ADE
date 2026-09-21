@@ -46,6 +46,7 @@ import {
   isPtyContextInsertableToolType,
 } from "../../lib/sessions";
 import { addSessionBesideTarget, removeSessionFromGrids } from "../../lib/workGrid";
+import { openChatHandoff, type ChatHandoffIntent } from "../../lib/chatHandoffIntent";
 import { buildWorkSessionTilingTree } from "./workSessionTiling";
 import {
   getSessionMetadataGenerating,
@@ -366,6 +367,21 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       handleSelectSession(session.id, event, visibleSessionIds, binding);
     },
     [handleSelectSession, machineRouter],
+  );
+
+  /**
+   * Opens the selected chat's Handoff surface from the session context menu.
+   * The intent is queued before the selection so `AgentChatPane` can pick it up
+   * whether it was already showing this chat or mounts a render later; selecting
+   * the row also dives out of the board, which is where a handoff has room to
+   * render.
+   */
+  const handleOpenChatHandoff = useCallback(
+    (session: TerminalSessionSummary, intent: ChatHandoffIntent) => {
+      openChatHandoff(session.id, intent);
+      handleSelectSession(session.id);
+    },
+    [handleSelectSession],
   );
 
   const handleInfoClick = useCallback(
@@ -1753,6 +1769,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         onGoToLane={handleGoToLane}
         onCopySessionId={(id) => navigator.clipboard.writeText(id).catch(() => {})}
         onSettle={handleSettleSession}
+        onOpenChatHandoff={handleOpenChatHandoff}
         onCopySessionDeepLink={(session) => {
           void (async () => {
             const lane = work.lanes.find((candidate) => candidate.id === session.laneId) ?? null;

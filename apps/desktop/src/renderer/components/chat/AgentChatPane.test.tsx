@@ -25,6 +25,7 @@ import type {
   TerminalSessionSummary,
 } from "../../../shared/types";
 import { createDynamicCursorCliModelDescriptor, getModelById } from "../../../shared/modelRegistry";
+import { openChatHandoff } from "../../lib/chatHandoffIntent";
 import { invalidateAgentChatSessionListCache } from "../../lib/agentChatSessionListCache";
 import { invalidateAgentChatSlashCommandsCache } from "../../lib/agentChatSlashCommandsCache";
 import {
@@ -5729,6 +5730,43 @@ describe("AgentChatPane submit recovery", () => {
     expect(screen.queryByText("Local handoff")).toBeNull();
   });
 
+  it("opens the local handoff view from a queued context-menu intent", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    installAdeMocks({ sessions: [session] });
+
+    renderPane(session);
+    await screen.findByRole("button", { name: "Open chat actions drawer" });
+
+    // Right-click → Hand off… → Local handoff arrives with the drawer closed;
+    // the pane must land on the local view, not reset to the landing menu.
+    await act(async () => {
+      openChatHandoff(session.sessionId, "local");
+    });
+
+    expect(await screen.findByTestId("handoff-local")).toBeTruthy();
+  });
+
+  it("refuses a context-menu handoff intent while a turn is active", async () => {
+    const session = buildSession("session-1");
+    installAdeMocks({
+      transcript: buildStatusStartedTranscript(session.sessionId),
+    });
+
+    renderPane(session);
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+    await screen.findByText(/A turn is running — wait for it to finish/i);
+
+    // The menu names a destination without seeing the pane's gate; the pane
+    // must refuse it exactly as the disabled card would, not deep-link past it.
+    await act(async () => {
+      openChatHandoff(session.sessionId, "local");
+    });
+
+    expect(screen.getByTestId("handoff-menu")).toBeTruthy();
+    expect(screen.queryByTestId("handoff-local")).toBeNull();
+  });
+
   it("creates a sibling handoff chat and opens the returned work tab", async () => {
     const session = buildSession("session-1", { status: "idle" });
     const onSessionCreated = vi.fn().mockResolvedValue(undefined);
@@ -6284,6 +6322,20 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Continue on another machine/i }));
 
     expect(await screen.findByRole("heading", { name: /Continue on another computer/i })).toBeTruthy();
+  });
+
+  it("opens the auto handoff editor from the third handoff card", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    installAdeMocks({ sessions: [session] });
+
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Auto handoff/i }));
+
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Auto handoff" })).toBeTruthy();
   });
 
   it("does not wait for onSessionCreated before sending the first message in a new chat", async () => {
