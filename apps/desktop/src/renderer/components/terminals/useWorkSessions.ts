@@ -57,6 +57,7 @@ import {
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { setPendingSessionAnchor } from "./pendingSessionAnchors";
 import { seedCrossMachineOptimisticSession, useRetainedCrossMachineSlices } from "../../state/crossMachineLanes";
+import { cachedGitRemoteIdentity, originUrlForBinding } from "../lanes/laneMachines";
 import { useWorkMachineRouter } from "./useWorkMachineRouter";
 
 type WorkStatusNavigation = "all" | "running" | "awaiting-input" | "ended" | "settled";
@@ -539,6 +540,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const appStore = useAppStoreApi();
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const projectStateKey = useAppStore(selectActiveProjectStateKey);
+  const projectBinding = useAppStore((s) => s.projectBinding);
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const activeBindingKey = useAppStore((s) => s.projectBinding?.key ?? null);
   const lanes = useAppStore((s) => s.lanes);
@@ -642,6 +644,83 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     },
     [projectStateKey, setWorkViewState],
   );
+
+  const workSelectionRepoKey = cachedGitRemoteIdentity(originUrlForBinding(projectBinding));
+  const lastWorkSelectionRef = useRef<{
+    projectStateKey: string | null;
+    repoKey: string | null;
+    activeItemId: string | null;
+    selectedItemId: string | null;
+    openItemIds: string[];
+    workSidebarOpen: boolean;
+    workSidebarTool: WorkProjectViewState["workSidebarTool"];
+    workSidebarOpenTools: WorkProjectViewState["workSidebarOpenTools"];
+  }>({
+    projectStateKey: null,
+    repoKey: null,
+    activeItemId: null,
+    selectedItemId: null,
+    openItemIds: [],
+    workSidebarOpen: false,
+    workSidebarTool: null,
+    workSidebarOpenTools: [],
+  });
+  useLayoutEffect(() => {
+    const previous = lastWorkSelectionRef.current;
+    const keyChanged = previous.projectStateKey !== projectStateKey;
+    const sameRepo = previous.repoKey != null
+      && workSelectionRepoKey != null
+      && previous.repoKey === workSelectionRepoKey;
+    const selectionDrifted = previous.activeItemId !== projectViewState.activeItemId
+      || previous.selectedItemId !== projectViewState.selectedItemId
+      || previous.workSidebarOpen !== projectViewState.workSidebarOpen
+      || previous.workSidebarTool !== projectViewState.workSidebarTool;
+    if (
+      keyChanged
+      && sameRepo
+      && previous.activeItemId
+      && selectionDrifted
+    ) {
+      setProjectViewState({
+        activeItemId: previous.activeItemId,
+        selectedItemId: previous.selectedItemId ?? previous.activeItemId,
+        openItemIds: Array.from(new Set([
+          ...projectViewState.openItemIds,
+          ...previous.openItemIds,
+          previous.activeItemId,
+        ])),
+        workSidebarOpen: previous.workSidebarOpen,
+        workSidebarTool: previous.workSidebarTool,
+        workSidebarOpenTools: [...previous.workSidebarOpenTools],
+      });
+      lastWorkSelectionRef.current = {
+        ...previous,
+        projectStateKey: projectStateKey ?? null,
+        repoKey: workSelectionRepoKey,
+      };
+    } else {
+      lastWorkSelectionRef.current = {
+        projectStateKey: projectStateKey ?? null,
+        repoKey: workSelectionRepoKey,
+        activeItemId: projectViewState.activeItemId,
+        selectedItemId: projectViewState.selectedItemId,
+        openItemIds: [...projectViewState.openItemIds],
+        workSidebarOpen: projectViewState.workSidebarOpen,
+        workSidebarTool: projectViewState.workSidebarTool,
+        workSidebarOpenTools: [...(projectViewState.workSidebarOpenTools ?? [])],
+      };
+    }
+  }, [
+    projectStateKey,
+    projectViewState.activeItemId,
+    projectViewState.openItemIds,
+    projectViewState.selectedItemId,
+    projectViewState.workSidebarOpen,
+    projectViewState.workSidebarOpenTools,
+    projectViewState.workSidebarTool,
+    setProjectViewState,
+    workSelectionRepoKey,
+  ]);
 
   /**
    * Re-asserts the user's own view over a deeplink's temporary framing. Called

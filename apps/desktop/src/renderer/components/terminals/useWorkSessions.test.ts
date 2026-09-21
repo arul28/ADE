@@ -169,7 +169,10 @@ import {
   resetProjectOriginMemory,
 } from "../lanes/laneMachines";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
-import { seedCrossMachineOptimisticSession } from "../../state/crossMachineLanes";
+import {
+  resetCrossMachineLaneSyncForTest,
+  seedCrossMachineOptimisticSession,
+} from "../../state/crossMachineLanes";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 import { isChatToolType } from "../../lib/sessions";
 
@@ -237,6 +240,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     vi.clearAllMocks();
     resetFakeAppStoreState();
     resetProjectOriginMemory();
+    resetCrossMachineLaneSyncForTest();
     installWindowAde();
     listSessionsCachedMock.mockResolvedValue([]);
     useSearchParamsMock.mockReturnValue([new URLSearchParams(), vi.fn()]);
@@ -1477,6 +1481,126 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
 
     expect(result.current.sessionsById.get(session.id)).toBe(session);
     expect(result.current.resolveSessionRuntimePin(session)?.key).toBe(studioBinding.key);
+  });
+
+  it("keeps the focused session selected across a same-repo tab machine switch", async () => {
+    const studioBinding = {
+      kind: "remote" as const,
+      key: "remote:target-studio:project-a",
+      targetId: "target-studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-a",
+      rootPath: "/remote/repo-a",
+      displayName: "Repo A",
+      gitOriginUrl: "git@github.com:acme/repo-a.git",
+    };
+    const macbookBinding = {
+      kind: "local" as const,
+      key: "local:/fake/project",
+      rootPath: "/fake/project",
+      displayName: "MacBook",
+      gitOriginUrl: "git@github.com:acme/repo-a.git",
+    };
+    const session = makeSession("studio-focused", "lane-studio", {
+      toolType: "claude-chat",
+    });
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      projectBinding: studioBinding,
+      crossMachineLaneIntendedMachineIds: ["target-studio"],
+      crossMachineLanesByMachineId: {
+        "target-studio": {
+          machineId: "target-studio",
+          machineName: "Mac Studio",
+          binding: studioBinding,
+          lanes: [{ id: "lane-studio" }],
+          sessions: [session],
+          prs: [],
+        },
+      },
+      workViewByProject: {
+        [studioBinding.key]: {
+          ...createDefaultWorkProjectViewState(),
+          activeItemId: session.id,
+          selectedItemId: session.id,
+          openItemIds: [session.id],
+          workSidebarOpen: true,
+          workSidebarTool: "git",
+          workSidebarOpenTools: ["git"],
+        },
+      },
+    };
+
+    const { rerender } = renderHook(() => useWorkSessions());
+    await waitFor(() => expect(listSessionsCachedMock).toHaveBeenCalled());
+    setWorkViewStateSpy.mockClear();
+
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      projectBinding: macbookBinding,
+    };
+    rerender();
+
+    expect(setWorkViewStateSpy).toHaveBeenCalledWith(
+      "/fake/project",
+      expect.objectContaining({
+        activeItemId: session.id,
+        selectedItemId: session.id,
+        workSidebarOpen: true,
+        workSidebarTool: "git",
+      }),
+    );
+  });
+
+  it("does not copy Work selection onto a different repository", async () => {
+    const studioBinding = {
+      kind: "remote" as const,
+      key: "remote:target-studio:project-a",
+      targetId: "target-studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-a",
+      rootPath: "/remote/repo-a",
+      displayName: "Repo A",
+      gitOriginUrl: "git@github.com:acme/repo-a.git",
+    };
+    const otherRepoBinding = {
+      kind: "local" as const,
+      key: "local:/other/project",
+      rootPath: "/other/project",
+      displayName: "Other repo",
+      gitOriginUrl: "git@github.com:acme/repo-b.git",
+    };
+    const session = makeSession("studio-focused", "lane-studio", {
+      toolType: "claude-chat",
+    });
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      project: { rootPath: "/other/project" },
+      projectBinding: studioBinding,
+      workViewByProject: {
+        [studioBinding.key]: {
+          ...createDefaultWorkProjectViewState(),
+          activeItemId: session.id,
+          selectedItemId: session.id,
+          openItemIds: [session.id],
+        },
+      },
+    };
+
+    const { rerender } = renderHook(() => useWorkSessions());
+    await waitFor(() => expect(listSessionsCachedMock).toHaveBeenCalled());
+    setWorkViewStateSpy.mockClear();
+
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      projectBinding: otherRepoBinding,
+    };
+    rerender();
+
+    expect(setWorkViewStateSpy).not.toHaveBeenCalledWith(
+      "/other/project",
+      expect.objectContaining({ activeItemId: session.id }),
+    );
   });
 
   it("drops retained slices when the tab moves to a different repository", async () => {

@@ -168,7 +168,11 @@ after a dropdown switch. Switching the tab's machine stays an explicit action
 slices survive a same-repo dropdown switch by matching git origin from the
 binding or from recents — local tabs often have no `gitOriginUrl` of their
 own. A different origin, or an origin that cannot be proven, wipes the
-slices so repo A's sessions cannot land in repo B.
+slices so repo A's sessions cannot land in repo B. Every pin reader shares
+one retain slot per proven origin, so mounting Git during refill cannot erase
+Work's snapshot and a second project tab cannot prune this repo's slices.
+The focused Work session and open tools pane copy onto the destination tab
+key when origin matches; they stay behind when it does not.
 
 ## Sync command scoping
 

@@ -473,7 +473,14 @@ relay payload E2E encryption is planned security work. See the trust boundary in
     a pin carries its routing target from the moment a chat is selected. The
     React hook also consults the retained Work slices: a same-repo tab switch
     replace-clears the live map, and Git/Files must keep answering from the
-    Studio slice that is still on screen rather than the empty refill.
+    Studio slice that is still on screen rather than the empty refill. Retain
+    lives in one slot per proven origin (per tab when origin is unknown) so a
+    Git pane that mounts during refill cannot start empty and wipe Work's
+    snapshot, and a second project tab cannot prune this repo's Studio slice. `useWorkSessions` also copies
+    the focused session (and the open tools pane) onto the destination
+    `workViewByProject` key when git origin proves the same repo — otherwise
+    the MacBook key's empty selection would unfocus the Studio chat and the
+    tools would follow the laptop.
   - `useForeignSessionLaneId(sessionId, presentLocally)` — a chat selected from
     another machine is absent from this tab's session list, so its lane, and
     with it its machine, is knowable only from the union (live, then retained).

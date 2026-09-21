@@ -2285,6 +2285,29 @@ describe("pinned lane resolution reads the store that owns the union", () => {
     expect(result.current?.map((lane) => lane.id)).toEqual(["lane-foreign"]);
   });
 
+  it("keeps pinned lanes for a newly mounted reader after the live union is cleared", () => {
+    useAppStore.getState().mergeCrossMachineLanes({
+      machineId: "target-studio",
+      machineName: "Mac Studio (12)",
+      targetId: "target-studio",
+      projectId: "project-a",
+      binding: pin,
+      online: true,
+      lanes: [makeLane({ id: "lane-foreign", name: "Foreign Lane" })],
+      sessions: [],
+    });
+
+    const { wrapper } = scopedWrapper();
+    const first = renderHook(() => useLanesForPin(pin), { wrapper });
+    expect(first.result.current?.map((lane) => lane.id)).toEqual(["lane-foreign"]);
+    first.unmount();
+
+    useAppStore.getState().applyCrossMachineLaneScope("refill");
+    const second = renderHook(() => useLanesForPin(pin), { wrapper });
+    expect(useAppStore.getState().crossMachineLanesByMachineId).toEqual({});
+    expect(second.result.current?.map((lane) => lane.id)).toEqual(["lane-foreign"]);
+  });
+
   it("finds a foreign session's lane from the retained slice after the live union is cleared", () => {
     useAppStore.getState().mergeCrossMachineLanes({
       machineId: "target-studio",

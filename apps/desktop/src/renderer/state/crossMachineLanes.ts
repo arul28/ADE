@@ -266,13 +266,60 @@ function repoKeyForBinding(binding: OpenProjectBinding | null | undefined): stri
   return cachedGitRemoteIdentity(originUrlForBinding(binding));
 }
 
+function emptyRetainedSlices(
+  projectStateKey: string | null,
+  repoKey: string | null,
+): RetainedCrossMachineSlices {
+  return {
+    projectStateKey,
+    repoKey,
+    machinesById: new Map(),
+    pendingMachineIds: null,
+  };
+}
+
+function retainSlotKey(repoKey: string | null, projectStateKey: string | null): string {
+  if (repoKey) return `repo:${repoKey}`;
+  if (projectStateKey) return `tab:${projectStateKey}`;
+  return "unknown";
+}
+
 /**
- * Last retain pass from a mounted Work surface. Git/Files/chat-scope hooks can
- * miss a live-union wipe if they mount after the refill has already emptied
- * the store; the Work retain hook runs first in the same tree and leaves this
- * for them.
+ * Last retain pass, one slot per proven origin (or per tab when origin is
+ * unknown). Git mounting during refill reads the same slot Work already filled,
+ * instead of starting empty and wiping it. A second project tab cannot prune
+ * this repo's Studio slice: it writes a different slot.
  */
-let retainedSlicesSnapshot: readonly CrossMachineMachineLanes[] = [];
+const retainedSlots = new Map<string, RetainedCrossMachineSlices>();
+
+function retainedEntryForPin(pin: OpenProjectBinding): CrossMachineMachineLanes | null {
+  for (const retained of retainedSlots.values()) {
+    for (const entry of retained.machinesById.values()) {
+      if (entry.binding?.key === pin.key) return entry;
+    }
+  }
+  return null;
+}
+
+function retainedSlotFor(
+  repoKey: string | null,
+  projectStateKey: string | null,
+): RetainedCrossMachineSlices {
+  const key = retainSlotKey(repoKey, projectStateKey);
+  const existing = retainedSlots.get(key);
+  if (existing) return existing;
+  const tabKey = retainSlotKey(null, projectStateKey);
+  const pending = repoKey && tabKey !== key ? retainedSlots.get(tabKey) : undefined;
+  if (pending) {
+    retainedSlots.delete(tabKey);
+    pending.repoKey = repoKey;
+    retainedSlots.set(key, pending);
+    return pending;
+  }
+  const created = emptyRetainedSlices(projectStateKey, repoKey);
+  retainedSlots.set(key, created);
+  return created;
+}
 
 /**
  * One retained cross-machine slice lifecycle for both Work rows and runtime pins.
@@ -288,16 +335,10 @@ export function useRetainedCrossMachineSlices(): readonly CrossMachineMachineLan
   const projectBinding = useAppStore((s) => s.projectBinding);
   const crossMachineLanesByMachineId = useRootAppStore((s) => s.crossMachineLanesByMachineId) ?? {};
   const intendedMachineIds = useRootAppStore((s) => s.crossMachineLaneIntendedMachineIds);
-  const retainedRef = useRef<RetainedCrossMachineSlices>({
-    projectStateKey: null,
-    repoKey: null,
-    machinesById: new Map(),
-    pendingMachineIds: null,
-  });
 
   return useMemo(() => {
-    let retained = retainedRef.current;
     const nextRepoKey = repoKeyForBinding(projectBinding);
+    let retained = retainedSlotFor(nextRepoKey, projectStateKey);
     if (retained.projectStateKey !== projectStateKey) {
       // The project state key is the tab's binding key, so a same-repo machine
       // switch changes it and also clears the live store. Keep slices only when
@@ -315,17 +356,9 @@ export function useRetainedCrossMachineSlices(): readonly CrossMachineMachineLan
           repoKey: nextRepoKey ?? retained.repoKey,
         };
       } else {
-        retained = {
-          projectStateKey,
-          repoKey: nextRepoKey,
-          machinesById: new Map(),
-          pendingMachineIds: null,
-        };
+        retained = emptyRetainedSlices(projectStateKey, nextRepoKey);
       }
-      retainedRef.current = retained;
-    } else if (nextRepoKey && retained.repoKey !== nextRepoKey) {
-      retained = { ...retained, repoKey: nextRepoKey };
-      retainedRef.current = retained;
+      retainedSlots.set(retainSlotKey(retained.repoKey, projectStateKey), retained);
     }
 
     const machines = Object.values(crossMachineLanesByMachineId);
@@ -363,7 +396,6 @@ export function useRetainedCrossMachineSlices(): readonly CrossMachineMachineLan
     }
 
     const slices = Array.from(retained.machinesById.values());
-    retainedSlicesSnapshot = slices;
     return slices;
   }, [crossMachineLanesByMachineId, intendedMachineIds, projectBinding, projectStateKey]);
 }
@@ -376,7 +408,7 @@ function pickPinnedMachineEntry(
   if (!pin) return null;
   if (live && live.lanes.length > 0) return live;
   const kept = retained.find((entry) => entry.binding?.key === pin.key)
-    ?? retainedSlicesSnapshot.find((entry) => entry.binding?.key === pin.key)
+    ?? retainedEntryForPin(pin)
     ?? null;
   if (kept) return kept;
   return live;
@@ -2086,7 +2118,7 @@ export function resetCrossMachineLaneSyncForTest(): void {
   runtime.refCount = 0;
   runtime.connections = [];
   pendingForeignOptimisticSessionsByBinding.clear();
-  retainedSlicesSnapshot = [];
+  retainedSlots.clear();
   runtime.scope = {
     scopeKey: null,
     repoDisplayName: null,
