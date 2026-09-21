@@ -161,6 +161,12 @@ export type WorkToolContext = {
    * showing it and letting the panel state its own error.
    */
   supportsMacDesktop?: boolean | null;
+  /**
+   * The host's own words for a `false` above, e.g. the driver is missing from
+   * this install. Shown in place of the generic "isn't a Mac" line, which is
+   * wrong on a Mac whose driver did not ship.
+   */
+  macDesktopUnsupportedReason?: string | null;
 };
 
 export type WorkToolAvailability =
@@ -226,7 +232,8 @@ export function workToolAvailability(
   // The HOST's platform, not this one. The reason says so, because "macOS only"
   // on a Mac desktop watching a Linux runtime reads as a bug in ADE.
   if (id === "mac-desktop" && context.supportsMacDesktop === false) {
-    return { available: false, reason: "This lane's host isn't a Mac" };
+    const reason = context.macDesktopUnsupportedReason?.trim();
+    return { available: false, reason: reason || "This lane's host isn't a Mac" };
   }
   return AVAILABLE;
 }

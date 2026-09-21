@@ -31,6 +31,15 @@ describe("Mac Desktop tool availability", () => {
     expect(availability.reason).toBe("This lane's host isn't a Mac");
   });
 
+  it("shows the host's own reason when it has one, so a Mac with no driver is not called 'not a Mac'", () => {
+    const availability = workToolAvailability("mac-desktop", context({
+      supportsMacDesktop: false,
+      macDesktopUnsupportedReason: "The native desktop driver is missing from this ADE installation. Reinstall or update ADE, then restart it.",
+    }));
+    expect(availability.available).toBe(false);
+    expect(availability.reason).toContain("driver is missing");
+  });
+
   it("shows the tab before the host has answered", () => {
     expect(workToolAvailability("mac-desktop", context()).available).toBe(true);
     expect(workToolAvailability("mac-desktop", context({ supportsMacDesktop: null })).available).toBe(true);

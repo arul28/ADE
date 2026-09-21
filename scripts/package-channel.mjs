@@ -425,6 +425,11 @@ function buildChannel(repoRoot, channel, options) {
   }
 
   ensureHostRuntimeResources(repoRoot, options, env);
+  // The native helpers (attention notch, Mac Desktop driver, capture helper)
+  // are gitignored build outputs. `dist:mac` builds them; a channel package
+  // must too, or the app ships without the driver and every lane reports
+  // "Mac Desktop needs reinstalling" on a Mac that has it installed.
+  run("npm", ["--prefix", "apps/desktop", "run", "build:mac-native"], { cwd: repoRoot, env, dryRun: options.dryRun });
   run("npm", ["--prefix", "apps/desktop", "run", "build"], { cwd: repoRoot, env, dryRun: options.dryRun });
   run("npx", [
     "electron-builder",

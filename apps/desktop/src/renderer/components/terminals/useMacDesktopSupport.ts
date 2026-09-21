@@ -18,7 +18,14 @@ import type { OpenProjectBinding } from "../../../shared/types";
  * event subscriptions for three tools, and this needs no subscription at all.
  */
 
-const cache = new Map<string, boolean>();
+/**
+ * The host's answer: whether it can host a display and, when it cannot, its
+ * own reason. A driver missing from the install and a Linux host are both
+ * "no", and the pane must say which — "isn't a Mac" on a Mac is a lie.
+ */
+export type MacDesktopSupport = { supported: boolean; reason: string | null };
+
+const cache = new Map<string, MacDesktopSupport>();
 
 /** Test-only reset for the module-level capability cache. */
 export function resetMacDesktopSupportCache(): void {
@@ -29,9 +36,9 @@ export function useMacDesktopSupport(args: {
   runtimePin: OpenProjectBinding | null;
   /** The Work route is on screen. Nothing is read otherwise. */
   enabled: boolean;
-}): boolean | null {
+}): MacDesktopSupport | null {
   const key = args.runtimePin?.key ?? "bound";
-  const [supported, setSupported] = useState<boolean | null>(() => cache.get(key) ?? null);
+  const [supported, setSupported] = useState<MacDesktopSupport | null>(() => cache.get(key) ?? null);
   const pinRef = useRef(args.runtimePin);
   pinRef.current = args.runtimePin;
 
@@ -51,8 +58,12 @@ export function useMacDesktopSupport(args: {
     void api
       .getStatus({}, pinRef.current)
       .then((status) => {
-        cache.set(key, status.supported);
-        if (!cancelled) setSupported(status.supported);
+        const answer: MacDesktopSupport = {
+          supported: status.supported,
+          reason: status.supported ? null : (status.unsupportedReason ?? null),
+        };
+        cache.set(key, answer);
+        if (!cancelled) setSupported(answer);
       })
       .catch(() => {
         // An unreachable host is not a "no". Leaving it unknown keeps the tool
