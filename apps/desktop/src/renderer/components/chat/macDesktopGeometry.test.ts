@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   displayFrameToViewRect,
   displayPointToViewPoint,
+  macDesktopAdvanceLockedPoint,
   macDesktopContentBox,
+  macDesktopDisplayCentre,
   viewPointToDisplayPoint,
 } from "./macDesktopGeometry";
 
@@ -100,5 +102,55 @@ describe("displayFrameToViewRect", () => {
       rect,
       display: { width: 1600, height: 900, origin: { x: 3000, y: 500 } },
     })).toEqual({ left: 0, top: 75, width: 80, height: 45 });
+  });
+});
+
+
+describe("macDesktopAdvanceLockedPoint", () => {
+  const display = { width: 1600, height: 900, origin: { x: 3000, y: 500 } };
+
+  it("turns view-pixel movement into display points at the picture's scale", () => {
+    // Half scale: the picture is drawn at half size, so a 40px hand movement
+    // is 80 points on the lane's screen — the same ground it appears to cover.
+    expect(macDesktopAdvanceLockedPoint({
+      from: { x: 3100, y: 600 },
+      movementX: 40,
+      movementY: -20,
+      display,
+      scale: 0.5,
+    })).toEqual({ x: 3180, y: 560 });
+  });
+
+  it("holds at the edges instead of wandering off the display", () => {
+    // A locked pointer has no edge to stop at: the person can push in one
+    // direction forever, and a point off the display reaches no window.
+    expect(macDesktopAdvanceLockedPoint({
+      from: { x: 3010, y: 510 },
+      movementX: -9999,
+      movementY: -9999,
+      display,
+      scale: 1,
+    })).toEqual({ x: 3000, y: 500 });
+    expect(macDesktopAdvanceLockedPoint({
+      from: { x: 4000, y: 1000 },
+      movementX: 9999,
+      movementY: 9999,
+      display,
+      scale: 1,
+    })).toEqual({ x: 4600, y: 1400 });
+  });
+
+  it("treats a zero scale as one rather than dividing by it", () => {
+    expect(macDesktopAdvanceLockedPoint({
+      from: { x: 3100, y: 600 },
+      movementX: 10,
+      movementY: 10,
+      display,
+      scale: 0,
+    })).toEqual({ x: 3110, y: 610 });
+  });
+
+  it("starts a takeover in the middle when nothing was hovered", () => {
+    expect(macDesktopDisplayCentre(display)).toEqual({ x: 3800, y: 950 });
   });
 });

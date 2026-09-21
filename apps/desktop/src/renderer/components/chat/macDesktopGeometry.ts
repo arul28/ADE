@@ -127,3 +127,50 @@ export function displayFrameToViewRect(args: {
     height: clippedBottom - clippedTop,
   };
 }
+
+/**
+ * The next point of a pointer the viewer has LOCKED.
+ *
+ * A locked pointer reports movement, not position: the browser hides the
+ * cursor and pins it, so `clientX`/`clientY` stop meaning anything and the
+ * only truth is a delta per event. That is what a takeover needs. macOS has
+ * one system cursor for every display, so driving a lane's display with real
+ * events and leaving the person's own pointer free means the two fight over
+ * it — which is what stranded the cursor on the lane's display with the local
+ * glyph frozen where it was abandoned.
+ *
+ * Deltas arrive in view pixels, so they are divided by the content box's scale
+ * to become display points: a hand movement covers the same distance on the
+ * lane's screen as it appears to cover in the picture.
+ *
+ * Clamped to the display rather than refused. A locked pointer has no edge to
+ * stop at — the person can push in one direction forever — so the position has
+ * to be held at the boundary or it wanders off into coordinates no window
+ * occupies and the picture stops responding.
+ */
+export function macDesktopAdvanceLockedPoint(args: {
+  from: { x: number; y: number };
+  movementX: number;
+  movementY: number;
+  display: MacDesktopGeometryDisplay;
+  /** View pixels per display point. `ContentBox.scale`. */
+  scale: number;
+}): { x: number; y: number } {
+  const scale = args.scale > 0 ? args.scale : 1;
+  const maxX = args.display.origin.x + args.display.width;
+  const maxY = args.display.origin.y + args.display.height;
+  return {
+    x: Math.min(maxX, Math.max(args.display.origin.x, args.from.x + args.movementX / scale)),
+    y: Math.min(maxY, Math.max(args.display.origin.y, args.from.y + args.movementY / scale)),
+  };
+}
+
+/** The middle of the display, where a takeover starts before the first move. */
+export function macDesktopDisplayCentre(
+  display: MacDesktopGeometryDisplay,
+): { x: number; y: number } {
+  return {
+    x: display.origin.x + display.width / 2,
+    y: display.origin.y + display.height / 2,
+  };
+}

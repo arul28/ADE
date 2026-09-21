@@ -187,7 +187,15 @@ extension DriverRuntime {
         // the call outright when it is absent, so a replayed line stripped of
         // its holder cannot move the pointer.
         let holderId = request.object("lease")?["holderId"]?.stringValue
-        let restoreCursor = payload["restoreCursor"]?.boolValue ?? false
+        // A person driving with their viewer's pointer locked keeps the system
+        // cursor on this display for the whole takeover; see `cursorHold`.
+        // Warping it home after every event is what made a wheel turn land
+        // seconds late and left the pointer stranded mid-gesture.
+        let holdCursor = payload["holdCursor"]?.boolValue ?? false
+        if holdCursor { realInput.beginCursorHold(laneId: laneId) }
+        let restoreCursor = !holdCursor
+            && !realInput.isHoldingCursor(laneId: laneId)
+            && (payload["restoreCursor"]?.boolValue ?? false)
         var resolvedIndex: JSONValue = .null
         // Every real event is a global `CGEvent`: the window server delivers it
         // wherever the coordinate points, including the user's own screen. So
@@ -200,11 +208,23 @@ extension DriverRuntime {
                 message: "Lane \(laneId) has no display to post real input on."
             )
         }
-        // The lane's windows, front to back, for routing: a real event lands
-        // on the process under the point (`WindowHitTest`), so the one system
-        // cursor stays with the user. Read once per command.
-        let hitCandidates = windows.listWindows(laneId: laneId).map {
-            WindowHitCandidate(pid: $0.pid, frame: $0.frame, minimized: $0.minimized)
+        // The lane's windows, front to back, for routing a KEYSTROKE to the
+        // app that is frontmost on this display. Mouse events no longer need
+        // it — they go through the window server, which does its own hit test.
+        //
+        // Read lazily, and that is the point: `listWindows` is a
+        // `CGWindowListCopyWindowInfo` sweep plus an accessibility read per
+        // app plus an icon encode, and it was running on EVERY real event. A
+        // person driving sends sixty pointer moves a second; paying for a full
+        // window sweep on each one is most of what made a takeover feel slow.
+        var cachedHitCandidates: [WindowHitCandidate]?
+        func hitCandidates() -> [WindowHitCandidate] {
+            if let cachedHitCandidates { return cachedHitCandidates }
+            let fresh = windows.listWindows(laneId: laneId).map {
+                WindowHitCandidate(pid: $0.pid, frame: $0.frame, minimized: $0.minimized)
+            }
+            cachedHitCandidates = fresh
+            return fresh
         }
         func point(_ key: String) throws -> CGPoint {
             let raw: CGPoint
@@ -266,6 +286,8 @@ extension DriverRuntime {
                 restoreCursor: restoreCursor,
                 verify: laneBoundsCheck(laneId: laneId)
             )
+        case "releaseCursor":
+            try realInput.endCursorHold(laneId: laneId, holderId: holderId)
         case "scroll":
             let target = try point("at")
             try realInput.scroll(
@@ -282,14 +304,14 @@ extension DriverRuntime {
                 holderId: holderId,
                 key: payload["key"]?.stringValue ?? "",
                 modifiers: payload["modifiers"]?.arrayValue?.compactMap(\.stringValue) ?? [],
-                targetPid: WindowHitTest.frontmostPid(in: hitCandidates)
+                targetPid: WindowHitTest.frontmostPid(in: hitCandidates())
             )
         case "type":
             try realInput.text(
                 laneId: laneId,
                 holderId: holderId,
                 text: payload["text"]?.stringValue ?? "",
-                targetPid: WindowHitTest.frontmostPid(in: hitCandidates)
+                targetPid: WindowHitTest.frontmostPid(in: hitCandidates())
             )
         default:
             throw DriverError(

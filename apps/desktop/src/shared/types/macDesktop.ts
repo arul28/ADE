@@ -446,6 +446,18 @@ export type MacDesktopMoveArgs = MacDesktopControllerArgs & MacDesktopSilentArgs
   chatSessionId?: string | null;
 };
 
+/**
+ * Ending a takeover, not an event.
+ *
+ * While a person drives, their viewer locks its pointer and the driver keeps
+ * the one system cursor on the lane's display. This is what puts the cursor
+ * back where the takeover found it.
+ */
+export type MacDesktopReleaseCursorArgs = MacDesktopControllerArgs & MacDesktopSilentArgs & {
+  laneId: string;
+  chatSessionId?: string | null;
+};
+
 export type MacDesktopWaitArgs = {
   laneId: string;
   /** Wait until an element matching this text exists. */
@@ -1039,6 +1051,20 @@ export type DesktopSeatProvider = {
 export const MAC_DESKTOP_IDLE_RELEASE_MS = 10 * 60_000;
 
 /** A lease with no renewal inside this window lapses. */
+/**
+ * Everything a human takeover may post straight to the driver.
+ *
+ * `releaseCursor` is not an event: it is how a takeover ends. While a person
+ * drives, their viewer locks its pointer and the driver keeps the one system
+ * cursor on the lane's display, instead of warping it home after every event.
+ * This is the call that puts it back.
+ */
+export const MAC_DESKTOP_REAL_INPUT_COMMANDS = [
+  "move", "click", "drag", "scroll", "press", "type", "releaseCursor",
+] as const;
+
+export type MacDesktopRealInputCommand = (typeof MAC_DESKTOP_REAL_INPUT_COMMANDS)[number];
+
 export const MAC_DESKTOP_LEASE_TTL_MS = 60_000;
 
 /** Full frame rate while something is happening. */

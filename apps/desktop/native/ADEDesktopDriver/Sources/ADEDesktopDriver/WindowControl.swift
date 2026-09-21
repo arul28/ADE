@@ -255,6 +255,14 @@ final class WindowControl {
                     minimized = true
                 }
             }
+            // A window this lane does not own, and that is not on screen, is
+            // not on this desktop — whatever its last frame says. Listing it
+            // filled the Apps list with rows for windows nobody could see:
+            // four untitled "minimized" Tailscale rows and four Messages, for
+            // a display showing one Finder window. An OWNED window keeps its
+            // minimized row, because ADE parked it here and the person can
+            // still release it.
+            if let laneId, ownedBy != laneId, minimized { continue }
             var iconPng: String?
             let iconKey = bundleId ?? appName
             if !iconSentFor.contains(iconKey),

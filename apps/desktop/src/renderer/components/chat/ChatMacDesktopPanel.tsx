@@ -48,7 +48,9 @@ import { useWorkToolsMaximize } from "../terminals/workToolsMaximize";
 import {
   displayFrameToViewRect,
   displayPointToViewPoint,
+  macDesktopAdvanceLockedPoint,
   macDesktopContentBox,
+  macDesktopDisplayCentre,
   viewPointToDisplayPoint,
 } from "./macDesktopGeometry";
 import { useMacDesktopFrame } from "./macDesktopFrameStore";
@@ -57,7 +59,11 @@ import {
   macDesktopUserHasControl,
 } from "./macDesktopLease";
 import { useMacDesktopLiveView } from "./useMacDesktopLiveView";
-import { createMacDesktopFastInputSender, useMacDesktopRealInput } from "./useMacDesktopRealInput";
+import {
+  createMacDesktopFastInputSender,
+  useMacDesktopRealInput,
+  type MacDesktopPoint,
+} from "./useMacDesktopRealInput";
 import { useMacDesktopStatus } from "./useMacDesktopStatus";
 import { MacDesktopClaimPicker } from "./MacDesktopClaimPicker";
 import {
@@ -300,6 +306,27 @@ export function ChatMacDesktopPanel({
    * landing at pane coordinates over a full-screen picture.
    */
   const [surfaceNode, setSurfaceNode] = useState<HTMLDivElement | null>(null);
+  /**
+   * The viewer's pointer is locked to the picture, so this pane is driving.
+   *
+   * macOS has one system cursor for every display, including this lane's. A
+   * takeover posts real events at points on that display, which moves that one
+   * cursor there — so with the person's own pointer still free, the two fight
+   * over it: the cursor was left stranded on the lane's display, this pane
+   * stopped receiving pointer events, and the local glyph froze where it had
+   * been abandoned. Warping it home after every event was the previous answer,
+   * and it cost four warps and three main-queue hops per event, which is where
+   * a wheel turn arriving seconds later came from.
+   *
+   * Locking is what every remote desktop does instead: the browser hides and
+   * pins the local cursor, movement arrives as deltas, and the lane's cursor
+   * is simply left on the lane's display until control goes back. Esc unlocks.
+   */
+  const [pointerLocked, setPointerLocked] = useState(false);
+  const pointerLockedRef = useRef(false);
+  pointerLockedRef.current = pointerLocked;
+  /** Where the lane's pointer is, in display points, while locked. */
+  const lockedPointRef = useRef<MacDesktopPoint | null>(null);
 
   /**
    * The decoder's home, which is a node and not a place in the tree.
@@ -449,6 +476,9 @@ export function ChatMacDesktopPanel({
 
   const toDisplayPoint = useCallback((clientX: number, clientY: number) => {
     if (!display) return null;
+    // While locked the browser pins the cursor, so `clientX`/`clientY` stop
+    // moving. The tracked point, advanced from movement deltas, is the pointer.
+    if (pointerLockedRef.current) return lockedPointRef.current;
     return viewPointToDisplayPoint({ clientX, clientY, rect: viewRect, display });
   }, [display, viewRect]);
 
@@ -568,7 +598,10 @@ export function ChatMacDesktopPanel({
 
   // Local takeover goes over the stream's loopback port, not the brain RPC:
   // one request per event instead of a full IPC → brain → service hop.
-  const fastSender = useMemo(() => createMacDesktopFastInputSender(live.url), [live.url]);
+  const fastSender = useMemo(
+    () => createMacDesktopFastInputSender(live.url, { holdCursor: () => pointerLockedRef.current }),
+    [live.url],
+  );
   const realInput = useMacDesktopRealInput({
     laneId,
     sessionId,
@@ -577,6 +610,10 @@ export function ChatMacDesktopPanel({
     toDisplayPoint,
     runtimePin,
     sender: fastSender,
+    // Hover moves are posted only while locked. Unlocked, a hover `CGEvent`
+    // teleports the one system cursor onto the lane's display for no gain —
+    // the local glyph is the pointer the person sees.
+    forwardPointerMoves: pointerLocked,
   });
 
   useEffect(() => {
@@ -594,6 +631,82 @@ export function ChatMacDesktopPanel({
     looked dead and the hover cursor never appeared. Native listeners follow
     the DOM, where the canvas really is.
   */
+  /* ── Pointer lock: the takeover's grip on the pointer ─────────────────── */
+
+  const hoverPointRef = useRef<MacDesktopPoint | null>(null);
+  const toDisplayPointRef = useRef(toDisplayPoint);
+  toDisplayPointRef.current = toDisplayPoint;
+
+  /** Where a lock begins: the last hovered point, else the middle. */
+  const lockedSeedRef = useRef<() => MacDesktopPoint | null>(() => null);
+  lockedSeedRef.current = () =>
+    hoverPointRef.current ?? (display ? macDesktopDisplayCentre(display) : null);
+
+  const geometryRef = useRef({ display, viewRect });
+  geometryRef.current = { display, viewRect };
+
+  const advanceLockedPointRef = useRef<(dx: number, dy: number) => void>(() => {});
+  advanceLockedPointRef.current = (dx, dy) => {
+    const { display: locked, viewRect: rect } = geometryRef.current;
+    const from = lockedPointRef.current;
+    if (!locked || !from) return;
+    lockedPointRef.current = macDesktopAdvanceLockedPoint({
+      from,
+      movementX: dx,
+      movementY: dy,
+      display: locked,
+      scale: macDesktopContentBox(rect, locked)?.scale ?? 1,
+    });
+  };
+
+  const requestPointerLockRef = useRef<(node: HTMLElement) => Promise<void>>(async () => {});
+  requestPointerLockRef.current = async (node) => {
+    try {
+      await node.requestPointerLock?.();
+    } catch {
+      // Denied, or the document lost focus between the click and the request.
+      // The pane still shows the picture and the lease is still held; the next
+      // click asks again.
+    }
+  };
+
+  useEffect(() => {
+    const node = surfaceNode;
+    if (!node || typeof document === "undefined") return;
+    const onChange = () => {
+      const locked = document.pointerLockElement === node;
+      const was = pointerLockedRef.current;
+      pointerLockedRef.current = locked;
+      setPointerLocked(locked);
+      if (locked || !was) return;
+      // Esc, a click outside, or the window losing focus. Control is kept —
+      // only the driving stops — so the lane's cursor goes home and the next
+      // click picks the grip back up.
+      lockedPointRef.current = null;
+      realInputRef.current.releaseCursor();
+    };
+    const onError = () => {
+      pointerLockedRef.current = false;
+      setPointerLocked(false);
+    };
+    document.addEventListener("pointerlockchange", onChange);
+    document.addEventListener("pointerlockerror", onError);
+    return () => {
+      document.removeEventListener("pointerlockchange", onChange);
+      document.removeEventListener("pointerlockerror", onError);
+    };
+  }, [surfaceNode]);
+
+  // Giving the lease back, or the pane going away, must not leave the person's
+  // pointer captured by a picture they are no longer driving.
+  useEffect(() => {
+    if (iHaveControl) return;
+    if (typeof document !== "undefined" && document.pointerLockElement) document.exitPointerLock();
+  }, [iHaveControl]);
+  useEffect(() => () => {
+    if (typeof document !== "undefined" && document.pointerLockElement) document.exitPointerLock();
+  }, []);
+
   const takeControlRef = useRef(takeControl);
   takeControlRef.current = takeControl;
   const realInputRef = useRef(realInput);
@@ -611,9 +724,19 @@ export function ChatMacDesktopPanel({
         if (!state.busy && event.button !== 2) void takeControlRef.current();
         return;
       }
+      // Driving needs the lock, and a lock needs a user gesture — this is it.
+      // Seeded from where the person was pointing, so the lane's cursor does
+      // not jump when the picture stops following their hand.
+      if (!pointerLockedRef.current) {
+        lockedPointRef.current = lockedSeedRef.current();
+        void requestPointerLockRef.current(node);
+        return;
+      }
       realInputRef.current.onPointerDown(event as unknown as ReactPointerEvent<HTMLDivElement>);
     };
     const onPointerMove = (event: PointerEvent) => {
+      if (pointerLockedRef.current) advanceLockedPointRef.current(event.movementX, event.movementY);
+      else hoverPointRef.current = toDisplayPointRef.current(event.clientX, event.clientY);
       realInputRef.current.onPointerMove(event as unknown as ReactPointerEvent<HTMLDivElement>);
     };
     const onPointerUp = (event: PointerEvent) => {
@@ -1142,6 +1265,20 @@ export function ChatMacDesktopPanel({
           >
             {macDesktopErrorText(live.error) ?? (live.url ? "Starting display…" : "Connecting to the lane's screen…")}
           </p>
+        ) : null}
+
+        {/*
+          What the pointer is doing, because a locked pointer is a mode and an
+          unexplained mode is a trap: the cursor vanishes, the mouse stops
+          reaching the rest of the screen, and nothing says how to get out.
+        */}
+        {active && iHaveControl && live.status === "playing" ? (
+          <span
+            className="pointer-events-none absolute bottom-2 left-1/2 z-10 -translate-x-1/2 rounded-full bg-black/60 px-2.5 py-1 text-[11px] text-white/85 backdrop-blur-sm"
+            data-testid={`mac-desktop-pointer-hint-${scope}`}
+          >
+            {pointerLocked ? "Driving · press Esc to let go" : "Click the screen to drive"}
+          </span>
         ) : null}
 
         {/*

@@ -24,6 +24,7 @@ import {
   type MacDesktopMoveArgs,
   type MacDesktopObservation,
   type MacDesktopObserveArgs,
+  type MacDesktopRealInputCommand,
   type MacDesktopPressArgs,
   type MacDesktopScreenshotArgs,
   type MacDesktopScreenshotResult,
@@ -347,7 +348,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     laneId: string;
     controllerId: string;
     chatSessionId?: string | null;
-    command: "move" | "click" | "drag" | "scroll" | "press" | "type";
+    command: MacDesktopRealInputCommand;
     payload: Record<string, unknown>;
   }): Promise<void> => {
     const laneId = args.laneId.trim();
@@ -361,7 +362,12 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         laneId,
         command: args.command,
         mode: "real",
-        payload: { ...args.payload, restoreCursor: true },
+        // The takeover decides what happens to the system cursor, not this
+        // line: a viewer driving with a locked pointer sends `holdCursor` and
+        // the driver keeps the cursor on the lane's display until the
+        // `releaseCursor` that ends the session. Forcing a warp home after
+        // every event here is what made a wheel turn arrive seconds late.
+        payload: args.payload,
         lease: { holderId },
       });
     } catch (error) {

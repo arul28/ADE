@@ -12,6 +12,7 @@ import type {
   MacDesktopInputResult,
   MacDesktopMoveArgs,
   MacDesktopPressArgs,
+  MacDesktopReleaseCursorArgs,
   MacDesktopScrollArgs,
   MacDesktopTypeArgs,
 } from "../../../shared/types/macDesktop";
@@ -51,7 +52,9 @@ export type MacDesktopInputCall =
   | { kind: "drag"; args: MacDesktopDragArgs }
   | { kind: "scroll"; args: MacDesktopScrollArgs }
   | { kind: "type"; args: MacDesktopTypeArgs }
-  | { kind: "press"; args: MacDesktopPressArgs };
+  | { kind: "press"; args: MacDesktopPressArgs }
+  /** Not an event: the end of a takeover. See {@link MacDesktopReleaseCursorArgs}. */
+  | { kind: "releaseCursor"; args: MacDesktopReleaseCursorArgs };
 
 /** A press and release more than a few points apart is a drag, not a click. */
 export const MAC_DESKTOP_DRAG_SLOP_PX = 4;
@@ -220,6 +223,20 @@ export function macDesktopMoveCall(
   };
 }
 
+export function macDesktopReleaseCursorCall(
+  context: MacDesktopInputContext,
+): MacDesktopInputCall {
+  return {
+    kind: "releaseCursor",
+    args: {
+      laneId: context.laneId,
+      silent: true,
+      controllerId: context.controllerId,
+      chatSessionId: context.chatSessionId,
+    },
+  };
+}
+
 /** Pointer moves forwarded per second while the user drives. */
 export const MAC_DESKTOP_MOVE_HZ = 60;
 export const MAC_DESKTOP_MOVE_INTERVAL_MS = Math.round(1_000 / MAC_DESKTOP_MOVE_HZ);
@@ -314,6 +331,11 @@ export type UseMacDesktopRealInput = {
   /** Null while the host is accepting input. */
   inputError: string | null;
   clearInputError: () => void;
+  /**
+   * Ends a locked takeover: puts the lane's system cursor back where the
+   * takeover found it. Safe to call when no hold was ever started.
+   */
+  releaseCursor: () => void;
 };
 
 /**
@@ -329,30 +351,46 @@ export type MacDesktopInputSender = (
   call: MacDesktopInputCall,
 ) => Promise<MacDesktopInputResult | null>;
 
-/** What the driver reads for each real-input command. Mirrors `macDesktopInput.ts`. */
-export function macDesktopDriverPayload(call: MacDesktopInputCall): Record<string, unknown> {
+/**
+ * What the driver reads for each real-input command. Mirrors `macDesktopInput.ts`.
+ *
+ * `holdCursor` is set for the life of a locked takeover. It tells the driver
+ * to leave the one system cursor on the lane's display instead of warping it
+ * home after every event: that warp is four `CGWarpMouseCursorPosition` calls
+ * and three main-queue hops per event, and a single wheel turn is twenty
+ * events, which is where a scroll that landed seconds late came from.
+ */
+export function macDesktopDriverPayload(
+  call: MacDesktopInputCall,
+  options?: { holdCursor?: boolean },
+): Record<string, unknown> {
+  const hold = options?.holdCursor ? { holdCursor: true } : {};
   switch (call.kind) {
     case "move":
-      return { to: { x: call.args.x, y: call.args.y } };
+      return { ...hold, to: { x: call.args.x, y: call.args.y } };
     case "click":
       return {
+        ...hold,
         at: { x: call.args.x, y: call.args.y },
         button: call.args.button ?? "left",
         count: Math.max(1, Math.min(3, Math.round(call.args.count ?? 1))),
       };
     case "drag":
-      return { from: call.args.from, to: call.args.to, durationMs: call.args.durationMs ?? 300 };
+      return { ...hold, from: call.args.from, to: call.args.to, durationMs: call.args.durationMs ?? 300 };
     case "scroll":
       return {
+        ...hold,
         x: call.args.x,
         y: call.args.y,
         direction: call.args.direction,
         amount: Math.max(1, Math.min(50, Math.round(call.args.amount ?? 3))),
       };
     case "type":
-      return { text: call.args.text };
+      return { ...hold, text: call.args.text };
     case "press":
-      return { key: call.args.key, modifiers: call.args.modifiers ?? [] };
+      return { ...hold, key: call.args.key, modifiers: call.args.modifiers ?? [] };
+    case "releaseCursor":
+      return {};
   }
 }
 
@@ -363,7 +401,10 @@ export function macDesktopDriverPayload(call: MacDesktopInputCall): Record<strin
  * Returns null when there is no transport yet, so the caller falls back to
  * the IPC dispatch.
  */
-export function createMacDesktopFastInputSender(streamUrl: string | null | undefined): MacDesktopInputSender | null {
+export function createMacDesktopFastInputSender(
+  streamUrl: string | null | undefined,
+  options?: { holdCursor?: () => boolean },
+): MacDesktopInputSender | null {
   if (!streamUrl) return null;
   let target: URL;
   try {
@@ -378,7 +419,7 @@ export function createMacDesktopFastInputSender(streamUrl: string | null | undef
     // The driver's own payload shapes, the same translation the service
     // applies on the RPC path. Forwarding the renderer's flat args (`x`, `y`,
     // `button`) as-is left `click` and `scroll` unrecognised at the driver.
-    const payload = macDesktopDriverPayload(call);
+    const payload = macDesktopDriverPayload(call, { holdCursor: options?.holdCursor?.() ?? false });
     const response = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -400,6 +441,11 @@ function sendMacDesktopInputCall(
   runtimePin: OpenProjectBinding | null,
 ): Promise<MacDesktopInputResult> {
   const api = macDesktopApi();
+  // Nothing to release: only the fast path ever asks the driver to hold the
+  // cursor, so a takeover that fell back to IPC never started a hold.
+  if (call.kind === "releaseCursor") {
+    return Promise.resolve({ ok: true, action: "releaseCursor", mode: "real", silent: true, resolved: null, observation: null, trace: null });
+  }
   return call.kind === "move" ? api.move(call.args, runtimePin)
     : call.kind === "click" ? api.click(call.args, runtimePin)
     : call.kind === "drag" ? api.drag(call.args, runtimePin)
@@ -569,6 +615,18 @@ export function useMacDesktopRealInput(args: {
     setInputError(null);
   }, []);
 
+  // Read through the same refs the pump uses: a release fires while the pane
+  // is being torn down, when `send` may already belong to a closed transport.
+  const releaseCursor = useCallback(() => {
+    const context = contextRef.current;
+    movePumpRef.current?.stop();
+    sendRef.current(macDesktopReleaseCursorCall({
+      laneId: context.laneId,
+      chatSessionId: context.sessionId,
+      controllerId: context.controllerId,
+    }));
+  }, []);
+
   return {
     onPointerDown,
     onPointerMove,
@@ -579,5 +637,6 @@ export function useMacDesktopRealInput(args: {
     cursorFeed,
     inputError,
     clearInputError,
+    releaseCursor,
   };
 }

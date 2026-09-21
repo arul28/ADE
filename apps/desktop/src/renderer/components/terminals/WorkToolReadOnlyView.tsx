@@ -558,6 +558,11 @@ function MacDesktopPanel({
     if (!api?.input) {
       return Promise.reject(new Error("The host does not accept input from this client."));
     }
+    // A remote controller does not lock its pointer, so it never asks the
+    // driver to hold the lane's cursor and has nothing to put back. The call
+    // exists for the desktop takeover; here it is a no-op rather than a wire
+    // message the host would have to understand.
+    if (call.kind === "releaseCursor") return Promise.resolve(null);
     return api.input({ laneId, call });
   }, [api, laneId]);
 

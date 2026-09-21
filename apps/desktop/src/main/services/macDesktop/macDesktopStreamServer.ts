@@ -45,7 +45,9 @@ import {
   MAC_DESKTOP_ACTIVE_FPS,
   MAC_DESKTOP_IDLE_FPS,
   MAC_DESKTOP_IDLE_STREAM_AFTER_MS,
+  MAC_DESKTOP_REAL_INPUT_COMMANDS,
   MAC_DESKTOP_STREAM_PATH,
+  type MacDesktopRealInputCommand,
 } from "../../../shared/types/macDesktop";
 
 export type MacDesktopStreamTransportWithSecret = {
@@ -103,14 +105,14 @@ export type MacDesktopStreamServerDeps = {
     laneId: string;
     controllerId: string;
     chatSessionId?: string | null;
-    command: "move" | "click" | "drag" | "scroll" | "press" | "type";
+    command: MacDesktopRealInputCommand;
     payload: Record<string, unknown>;
   }) => Promise<void>;
 };
 
 export const MAC_DESKTOP_INPUT_PATH = "/mac-desktop/input";
 const MAX_INPUT_BODY_BYTES = 16 * 1024;
-const INPUT_COMMANDS = new Set(["move", "click", "drag", "scroll", "press", "type"]);
+const INPUT_COMMANDS = new Set<string>(MAC_DESKTOP_REAL_INPUT_COMMANDS);
 
 type LaneClient = {
   response: ServerResponse;
@@ -297,7 +299,7 @@ export function createMacDesktopStreamServer(deps: MacDesktopStreamServerDeps) {
         laneId,
         controllerId,
         chatSessionId: typeof body.chatSessionId === "string" ? body.chatSessionId : null,
-        command: command as "move",
+        command: command as MacDesktopRealInputCommand,
         payload,
       }).then(
         () => { response.writeHead(204).end(); },

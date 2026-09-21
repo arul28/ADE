@@ -11,7 +11,10 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { OpenProjectBinding } from "../../../shared/types";
-import type { MacDesktopInputResult } from "../../../shared/types/macDesktop";
+import {
+  MAC_DESKTOP_REAL_INPUT_COMMANDS,
+  type MacDesktopInputResult,
+} from "../../../shared/types/macDesktop";
 import {
   macDesktopDriverPayload,
   MAC_DESKTOP_DRAG_SLOP_PX,
@@ -21,6 +24,7 @@ import {
   macDesktopKeyCall,
   macDesktopMoveCall,
   macDesktopPointerUpCall,
+  macDesktopReleaseCursorCall,
   macDesktopWheelCall,
   useMacDesktopRealInput,
   type MacDesktopInputCall,
@@ -599,14 +603,15 @@ describe("the driver's real-input contract", () => {
     const start = body.lastIndexOf("switch command {");
     expect(start).toBeGreaterThan(-1);
     return new Set(
-      [...body.slice(start).matchAll(/^\s*case\s+"([a-z]+)":/gm)].map((match) => match[1]),
+      [...body.slice(start).matchAll(/^\s*case\s+"([A-Za-z]+)":/gm)].map((match) => match[1]),
     );
   };
 
   it("handles every command a takeover can send", () => {
-    const sent: Array<MacDesktopInputCall["kind"]> = ["move", "click", "drag", "scroll", "type", "press"];
+    // Read from the shared set the route also guards with, so a command added
+    // to one and not the other cannot pass.
     const handled = realInputCommands();
-    expect([...sent].filter((kind) => !handled.has(kind))).toEqual([]);
+    expect(MAC_DESKTOP_REAL_INPUT_COMMANDS.filter((kind) => !handled.has(kind))).toEqual([]);
   });
 
   it("reads every payload key the renderer writes", () => {
@@ -630,6 +635,7 @@ describe("the driver's real-input contract", () => {
       type: macDesktopDriverPayload(
         macDesktopKeyCall(context, { key: "a", metaKey: false, shiftKey: false, altKey: false, ctrlKey: false })!,
       ),
+      releaseCursor: macDesktopDriverPayload(macDesktopReleaseCursorCall(context)),
     };
     // `x`/`y` are read by the driver's `point(_:)` fallback rather than by
     // name, so a payload that carries them is asking for that fallback.
@@ -644,5 +650,36 @@ describe("the driver's real-input contract", () => {
       }
     }
     expect(missing).toEqual([]);
+  });
+});
+
+
+describe("a locked takeover", () => {
+  const context = { laneId: "l", chatSessionId: null, controllerId: "ade-window:x" };
+
+  it("asks the driver to hold the lane's cursor on every event", () => {
+    // The whole set: an event that forgets the flag makes the driver warp the
+    // pointer home mid-gesture, which is the stranded-cursor bug.
+    const calls = [
+      macDesktopMoveCall(context, { x: 1, y: 1 }),
+      macDesktopPointerUpCall(context, { from: null, to: { x: 1, y: 1 }, button: 0, detail: 1 }),
+      macDesktopPointerUpCall(context, { from: { x: 0, y: 0 }, to: { x: 90, y: 90 }, button: 0, detail: 1 }),
+      macDesktopWheelCall(context, { point: { x: 1, y: 1 }, deltaX: 0, deltaY: 60 }),
+      macDesktopKeyCall(context, { key: "a", metaKey: false, shiftKey: false, altKey: false, ctrlKey: false })!,
+      macDesktopKeyCall(context, { key: "Enter", metaKey: false, shiftKey: false, altKey: false, ctrlKey: false })!,
+    ];
+    for (const call of calls) {
+      expect(macDesktopDriverPayload(call, { holdCursor: true })).toMatchObject({ holdCursor: true });
+      expect(macDesktopDriverPayload(call)).not.toHaveProperty("holdCursor");
+    }
+  });
+
+  it("ends with a release that names the controller holding the lease", () => {
+    const call = macDesktopReleaseCursorCall(context);
+    expect(call.kind).toBe("releaseCursor");
+    expect(call.args.controllerId).toBe("ade-window:x");
+    expect(call.args.silent).toBe(true);
+    // Nothing to shape: the driver reads only the lane and the holder.
+    expect(macDesktopDriverPayload(call)).toEqual({});
   });
 });

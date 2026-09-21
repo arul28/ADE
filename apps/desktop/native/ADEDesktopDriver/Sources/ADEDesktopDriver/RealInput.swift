@@ -66,6 +66,42 @@ final class RealInput {
         }
     }
 
+    /// Where the user's own pointer was when a takeover began, per lane.
+    ///
+    /// A takeover drives the lane's display with the one system cursor, so
+    /// every posted event moves the person's real pointer there. Warping it
+    /// home after each event — which is what this file used to do — costs four
+    /// `CGWarpMouseCursorPosition` calls and three main-queue hops per event,
+    /// and a wheel turn is twenty events: that is where "the scroll arrives
+    /// five seconds later" came from. It also loses the race constantly, which
+    /// is how the pointer ended up stranded on the lane's display with the
+    /// local glyph frozen where it was abandoned.
+    ///
+    /// So a takeover holds instead: the position is saved once, the cursor is
+    /// left on the lane's display for the whole session, and it is put back
+    /// once when the person gives control back. The viewer locks its own
+    /// pointer for the duration, so there is no second cursor to fight.
+    private var cursorHold: [String: CGPoint] = [:]
+
+    /// Saves the pointer's home, once per takeover. Later calls are no-ops.
+    func beginCursorHold(laneId: String) {
+        guard cursorHold[laneId] == nil, let saved = quartzCursorLocation() else { return }
+        cursorHold[laneId] = saved
+    }
+
+    /// True while this lane is driving with the cursor held.
+    func isHoldingCursor(laneId: String) -> Bool { cursorHold[laneId] != nil }
+
+    /// Puts the pointer back where the takeover found it.
+    func endCursorHold(laneId: String, holderId: String?) throws {
+        try authorize(laneId: laneId, holderId: holderId)
+        guard let saved = cursorHold.removeValue(forKey: laneId) else { return }
+        warpCursorBack(to: saved)
+    }
+
+    /// Drops a hold without warping. For a lane whose display is going away.
+    func forgetCursorHold(laneId: String) { cursorHold.removeValue(forKey: laneId) }
+
     /// The gate. Called first by every method below, and by nothing else.
     @discardableResult
     func authorize(laneId: String, holderId: String?, now: Date = Date()) throws -> InputLease {
