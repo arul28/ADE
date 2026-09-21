@@ -231,6 +231,20 @@ describe("githubPollingService — first poll", () => {
     expect(dispatchCalls).toEqual([]);
   });
 
+  it("does not hydrate reviews for every historical PR on the first poll", async () => {
+    const { service, githubService } = makeHarness({
+      issuesByCall: [[]],
+      pullsByCall: [
+        [{ number: 1, updatedAt: "2026-04-23T10:00:00Z", createdAt: "2026-04-23T10:00:00Z" }],
+      ],
+      reviewsByCall: [[{ id: 200, submittedAt: "2026-04-23T10:00:00Z", state: "COMMENTED" }]],
+    });
+
+    await service.pollNow();
+
+    expect(githubService.listPullRequestReviews).not.toHaveBeenCalled();
+  });
+
   it("writes a cursor after the first poll so subsequent polls get a `since` filter", async () => {
     const { service, cursors } = makeHarness({
       issuesByCall: [[{ number: 10, updatedAt: "2026-04-23T10:00:00Z" }]],
@@ -511,7 +525,6 @@ describe("githubPollingService — PR diffing", () => {
         [{ number: 42, updatedAt: "2026-04-23T11:00:00Z" }],
       ],
       reviewsByCall: [
-        [{ id: 200, submittedAt: "2026-04-23T10:00:00Z", state: "COMMENTED" }],
         [
           { id: 200, submittedAt: "2026-04-23T10:00:00Z", state: "COMMENTED" },
           { id: 201, submittedAt: "2026-04-23T11:00:00Z", state: "APPROVED", body: "ship it" },

@@ -265,6 +265,12 @@ duplicate IO and occasional `SQLITE_BUSY` retry noise in logs.
   every branch visible from the repo, so indexing per lane would duplicate the
   whole branch list N times. `processLaneGit` only indexes branches when the
   lane is `primary`; commits are per lane (capped at 100 recent).
+- **PR documents are local rows only.** `processPr` indexes the PR title,
+  number, and URL already on `listAll()`. It must not call `getDetail` or
+  `getComments` — those are live GitHub REST reads (the pull itself plus issue
+  comments plus review comments), and a backfill or `prs-updated` fan-out over
+  hundreds of historical rows exhausts the hourly quota. Comment/body search
+  stays on the PR surface that already paid for those reads.
 - **Delegated sources are best-effort.** Every delegation (lanes, files,
   artifacts, Linear) is wrapped so an unavailable source (missing worktree,
   no file index, Linear not connected) yields no candidates rather than
@@ -280,8 +286,8 @@ duplicate IO and occasional `SQLITE_BUSY` retry noise in logs.
 - [Chat](../chat/README.md) — chat transcripts are the FTS `chat` source.
 - [Terminals and Sessions](../terminals-and-sessions/README.md) — terminal /
   CLI-session scrollback is the FTS `terminal` source.
-- [Pull requests](../pull-requests/README.md) — PR title/body/comments are the
-  `pr` source.
+- [Pull requests](../pull-requests/README.md) — local PR titles and numbers are
+  the `pr` source. Live GitHub body/comment fetches are not part of indexing.
 - [Deeplinks](../deeplinks/README.md) — every result carries an `ade://` deep
   link built through the shared deeplink contract; session results carry
   `event` / `offset` anchors, and file / commit / artifact results use the

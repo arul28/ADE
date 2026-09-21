@@ -5,6 +5,7 @@ import type {
   AutomationTriggerType,
 } from "../../../shared/types";
 import type { GithubService, GitHubIssue, GitHubPullRequest } from "../github/githubService";
+import { GITHUB_REST_ISSUE_PR_LIST_MAX_PAGES } from "../github/githubRestPagination";
 
 type AutomationServiceHandle = {
   hasEnabledGithubRules?: () => boolean;
@@ -43,6 +44,8 @@ type GithubPollingServiceArgs = {
 };
 
 const DEFAULT_POLL_INTERVAL_MS = 30_000;
+const GITHUB_POLLING_LIST_PER_PAGE = 100;
+const GITHUB_POLLING_LIST_MAX_PAGES = Math.min(3, GITHUB_REST_ISSUE_PR_LIST_MAX_PAGES);
 
 function labelsToStrings(raw: GitHubIssue["labels"] | GitHubPullRequest["labels"]): string[] {
   if (!Array.isArray(raw)) return [];
@@ -307,6 +310,8 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
       state: "all",
       sort: "updated",
       since,
+      perPage: GITHUB_POLLING_LIST_PER_PAGE,
+      maxPages: GITHUB_POLLING_LIST_MAX_PAGES,
     });
     // GitHub's `issues` endpoint mixes PRs in. Filter those out.
     const realIssues = issues.filter((row) => !row.pull_request);
@@ -406,6 +411,9 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
     const pulls = await githubService.listRepoPulls(repo.owner, repo.name, {
       state: "all",
       sort: "updated",
+      perPage: GITHUB_POLLING_LIST_PER_PAGE,
+      maxPages: GITHUB_POLLING_LIST_MAX_PAGES,
+      updatedSince: since,
     });
     // The pulls endpoint doesn't accept `since`; filter client-side.
     const filtered = since ? pulls.filter((pr) => pr.updated_at > since) : pulls;
@@ -430,7 +438,13 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
         if ((pr.comments ?? 0) > 0) {
           await pollComments(repo, pr.number, since, ctx, /* isPr */ true, /* emit */ since !== undefined);
         }
-        await pollReviews(repo, pr.number, ctx, /* emit */ since !== undefined, since);
+        // Cold start (no durable cursor): snapshot only. Walking reviews for
+        // every historical PR spends the hourly quota before any rule can fire.
+        if (since !== undefined) {
+          await pollReviews(repo, pr.number, ctx, /* emit */ true, since);
+        } else if (pr.updated_at) {
+          reviewCursors.set(`${repoSlug(repo)}:${pr.number}`, pr.updated_at);
+        }
         snapshotByRepo.set(pr.number, currentSnapshot);
         continue;
       }

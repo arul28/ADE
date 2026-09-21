@@ -93,6 +93,10 @@ import {
 } from "./githubCredentialHealth";
 
 import { nowIso, asString } from "../shared/utils";
+import {
+  GITHUB_REST_ISSUE_PR_LIST_MAX_PAGES,
+  collectGithubRestPages,
+} from "./githubRestPagination";
 
 export { fetchAdeLatestRelease } from "./adeReleaseFeed";
 
@@ -1697,21 +1701,39 @@ export function createGithubService({
     path: string;
     query?: Record<string, string | number | boolean | undefined | null>;
     token?: string;
+    maxPages?: number;
+    stopWhenUpdatedBefore?: string | null;
   }): Promise<T[]> => {
-    const first = await apiRequest<T[]>({ method: "GET", ...args });
-    const out = Array.isArray(first.data) ? [...first.data] : [];
-    let nextUrl = parseNextLink(first.linkHeader ?? first.response?.headers.get("link") ?? null);
-    while (nextUrl) {
-      const url = new URL(nextUrl);
-      const next = await apiRequest<T[]>({
-        method: "GET",
-        path: `${url.pathname}${url.search}`,
-        token: args.token,
-      });
-      if (Array.isArray(next.data)) out.push(...next.data);
-      nextUrl = parseNextLink(next.linkHeader ?? next.response?.headers.get("link") ?? null);
-    }
-    return out;
+    return collectGithubRestPages<T>({
+      maxPages: args.maxPages,
+      stopWhenUpdatedBefore: args.stopWhenUpdatedBefore,
+      sort: args.query?.sort,
+      direction: args.query?.direction,
+      fetchFirst: async () => {
+        const first = await apiRequest<T[]>({
+          method: "GET",
+          path: args.path,
+          query: args.query,
+          token: args.token,
+        });
+        return {
+          data: first.data,
+          nextUrl: parseNextLink(first.linkHeader ?? first.response?.headers.get("link") ?? null),
+        };
+      },
+      fetchNext: async (nextUrl) => {
+        const url = new URL(nextUrl);
+        const next = await apiRequest<T[]>({
+          method: "GET",
+          path: `${url.pathname}${url.search}`,
+          token: args.token,
+        });
+        return {
+          data: next.data,
+          nextUrl: parseNextLink(next.linkHeader ?? next.response?.headers.get("link") ?? null),
+        };
+      },
+    });
   };
 
   let cachedStatus: GitHubStatus | null = null;
@@ -2119,7 +2141,13 @@ export function createGithubService({
   const listRepoIssues = async (
     owner: string,
     name: string,
-    opts: { since?: string; state?: "open" | "closed" | "all"; sort?: "created" | "updated"; perPage?: number } = {}
+    opts: {
+      since?: string;
+      state?: "open" | "closed" | "all";
+      sort?: "created" | "updated";
+      perPage?: number;
+      maxPages?: number;
+    } = {}
   ): Promise<GitHubIssue[]> => {
     const data = await apiRequestAllPages<GitHubIssue>({
       path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues`,
@@ -2129,6 +2157,7 @@ export function createGithubService({
         per_page: opts.perPage ?? 50,
         ...(opts.since ? { since: opts.since } : {}),
       },
+      maxPages: opts.maxPages ?? GITHUB_REST_ISSUE_PR_LIST_MAX_PAGES,
     });
     return Array.isArray(data) ? data : [];
   };
@@ -2184,7 +2213,13 @@ export function createGithubService({
   const listRepoPulls = async (
     owner: string,
     name: string,
-    opts: { state?: "open" | "closed" | "all"; sort?: "created" | "updated"; perPage?: number } = {}
+    opts: {
+      state?: "open" | "closed" | "all";
+      sort?: "created" | "updated";
+      perPage?: number;
+      maxPages?: number;
+      updatedSince?: string;
+    } = {}
   ): Promise<GitHubPullRequest[]> => {
     const data = await apiRequestAllPages<GitHubPullRequest>({
       path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls`,
@@ -2194,6 +2229,8 @@ export function createGithubService({
         direction: "desc",
         per_page: opts.perPage ?? 50,
       },
+      maxPages: opts.maxPages ?? GITHUB_REST_ISSUE_PR_LIST_MAX_PAGES,
+      stopWhenUpdatedBefore: opts.updatedSince,
     });
     return Array.isArray(data) ? data : [];
   };

@@ -71,6 +71,10 @@ import {
   type GithubRequestTokenSource,
 } from "../../desktop/src/main/services/github/githubRequestAccounting";
 import {
+  GITHUB_REST_ISSUE_PR_LIST_MAX_PAGES,
+  collectGithubRestPages,
+} from "../../desktop/src/main/services/github/githubRestPagination";
+import {
   classifyGitHubAuthFailure,
   classifyGitHubGraphqlCredentialFailure,
   GitHubRateLimitError,
@@ -1582,23 +1586,43 @@ export function createHeadlessGitHubService(
     path: string;
     query?: Record<string, string | number | boolean | undefined | null>;
     token?: string;
+    maxPages?: number;
+    stopWhenUpdatedBefore?: string | null;
   }): Promise<T[]> => {
-    const first = await apiRequest<T[]>({ method: "GET", ...args });
-    const out = Array.isArray(first.data) ? [...first.data] : [];
-    let nextUrl = parseNextGitHubLink(
-      first.linkHeader ?? first.response?.headers.get("link") ?? null,
-    );
-    while (nextUrl) {
-      const url = new URL(nextUrl);
-      const next = await apiRequest<T[]>({
-        method: "GET",
-        path: `${url.pathname}${url.search}`,
-        token: args.token,
-      });
-      if (Array.isArray(next.data)) out.push(...next.data);
-      nextUrl = parseNextGitHubLink(next.linkHeader ?? next.response?.headers.get("link") ?? null);
-    }
-    return out;
+    return collectGithubRestPages<T>({
+      maxPages: args.maxPages,
+      stopWhenUpdatedBefore: args.stopWhenUpdatedBefore,
+      sort: args.query?.sort,
+      direction: args.query?.direction,
+      fetchFirst: async () => {
+        const first = await apiRequest<T[]>({
+          method: "GET",
+          path: args.path,
+          query: args.query,
+          token: args.token,
+        });
+        return {
+          data: first.data,
+          nextUrl: parseNextGitHubLink(
+            first.linkHeader ?? first.response?.headers.get("link") ?? null,
+          ),
+        };
+      },
+      fetchNext: async (nextUrl) => {
+        const url = new URL(nextUrl);
+        const next = await apiRequest<T[]>({
+          method: "GET",
+          path: `${url.pathname}${url.search}`,
+          token: args.token,
+        });
+        return {
+          data: next.data,
+          nextUrl: parseNextGitHubLink(
+            next.linkHeader ?? next.response?.headers.get("link") ?? null,
+          ),
+        };
+      },
+    });
   };
 
   const normalizeAutolink = (raw: unknown) => {
@@ -1626,6 +1650,7 @@ export function createHeadlessGitHubService(
         per_page: opts.perPage ?? 50,
         ...(opts.since ? { since: opts.since } : {}),
       },
+      maxPages: opts.maxPages ?? GITHUB_REST_ISSUE_PR_LIST_MAX_PAGES,
     });
     return Array.isArray(data) ? data : [];
   };
@@ -1681,6 +1706,8 @@ export function createHeadlessGitHubService(
         direction: "desc",
         per_page: opts.perPage ?? 50,
       },
+      maxPages: opts.maxPages ?? GITHUB_REST_ISSUE_PR_LIST_MAX_PAGES,
+      stopWhenUpdatedBefore: opts.updatedSince,
     });
     return Array.isArray(data) ? data : [];
   };
