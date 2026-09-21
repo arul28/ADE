@@ -29,6 +29,7 @@ export function ChatSurfaceShell({
   autoHeight = false,
   paneReserveLeft = "0px",
   paneReserveRight = "0px",
+  canvasFill,
   dropOverlay,
   onDragOverCapture,
   onDropCapture,
@@ -53,6 +54,11 @@ export function ChatSurfaceShell({
   /** Horizontal space the chat reserves for open floating side panes (CSS length). */
   paneReserveLeft?: string;
   paneReserveRight?: string;
+  /**
+   * Fill behind the transcript. Transparent on the Work new-chat surface so
+   * the shared mesh shows through; everywhere else the chat canvas token.
+   */
+  canvasFill?: string;
   /** Optional whole-surface drag/drop hooks for hosts such as Work Chat. */
   dropOverlay?: ReactNode;
   onDragOverCapture?: DragEventHandler<HTMLElement>;
@@ -73,6 +79,7 @@ export function ChatSurfaceShell({
       }
     : undefined;
 
+  const fill = canvasFill ?? "var(--chat-canvas-bg)";
   const inner = (
     <>
       {header ? (
@@ -101,7 +108,7 @@ export function ChatSurfaceShell({
             "relative w-full min-w-0 max-w-full overflow-hidden px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-0 sm:px-3 sm:pb-2",
             footerClassName,
           )}
-          style={{ background: "var(--chat-canvas-bg)" }}
+          style={{ background: fill }}
         >
           {footer}
         </div>
@@ -129,7 +136,7 @@ export function ChatSurfaceShell({
         )}
         style={{
           ...chatSurfaceVars(mode, accentColor, { chromeTint }),
-          background: "var(--chat-canvas-bg)",
+          background: fill,
           ["--chat-pane-reserve-left" as string]: paneReserveLeft,
           ["--chat-pane-reserve-right" as string]: paneReserveRight,
         } as CSSProperties}
