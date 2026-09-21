@@ -16,7 +16,7 @@ filtering before exposing the final list.
 | `apps/ade-cli/src/cli.ts` | User-facing `ade` command, text/JSON formatters, command plans, runtime-socket client wiring, and explicit headless fallback. |
 | `apps/ade-cli/src/jsonrpc.ts` | JSON-RPC server and socket transport helpers. |
 | `apps/desktop/src/main/services/localRuntime/localRuntimeConnectionPool.ts` | Desktop-side client for the local machine runtime at `~/.ade/sock/ade.sock`; registers projects and dispatches runtime-backed actions. |
-| `apps/desktop/src/main/services/ai/tools/` | In-process tool implementations (universal, workflow, CTO operator, Linear, and orchestration lead/worker/validator tools). `orchestrationTools.ts` holds the lead/worker/validator tool set (including `awaitAgent` and the read-only capability tools); `orchestrationOutbox.ts` is the event-driven `drainOutbox` that flushes the run's durable chat-delivery queue. |
+| `apps/desktop/src/main/services/ai/tools/` | In-process tool implementations (universal, workflow, CTO operator, and Linear tools). |
 | `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | Shared provider-runtime prompt assembly. Injects the same timezone-safe scheduled-work guidance into Claude, Codex, Cursor, Droid, and OpenCode sessions. |
 | `apps/desktop/src/main/services/adeActions/registry.ts` | Runtime action contracts and examples, including the mutually exclusive `cron` / `runAt` / `delaySeconds` scheduling inputs. |
 | `apps/desktop/src/main/services/agentTools/agentToolsService.ts` | External CLI detection (Claude Code, Codex, Cursor, Aider, Continue). |
@@ -29,8 +29,8 @@ filtering before exposing the final list.
 ### In-process path
 
 The chat runtime (`agentChatService.ts`) instantiates tool objects
-directly from `universalTools.ts`, `ctoOperatorTools.ts`, and
-`orchestrationTools.ts`, then hands them to the provider adapter:
+directly from `universalTools.ts` and `ctoOperatorTools.ts`, then hands
+them to the provider adapter:
 
 - **Claude Agent SDK:** the SDK `query()` stream receives ADE tools as
   SDK tool definitions alongside the runtime options for that session.
@@ -44,8 +44,8 @@ directly from `universalTools.ts`, `ctoOperatorTools.ts`, and
   the `ade` CLI.
 - **CTO sessions:** `createCtoRuntimeToolMap` (gated on
   `identityKey === "cto"`) registers `ctoOperatorTools.ts` on the live
-  session through the same per-provider transports the orchestration set
-  uses. Both sets are described by one `HTTP_MCP_TOOL_SETS` table (server
+  session through the per-provider transports below. Every set is
+  described by one `HTTP_MCP_TOOL_SETS` table (server
   name, Codex namespace, tool factory), and the CTO entry resolves to an
   `ade-cto` SDK MCP server for Claude (injected without
   `allowManagedMcpServersOnly`, so the user's own MCP servers survive), the
@@ -65,87 +65,11 @@ directly from `universalTools.ts`, `ctoOperatorTools.ts`, and
   providers with no native mechanism get the trimmed descriptions alone. See
   [CTO › Tool packs](../cto/README.md#tool-packs) and
   [chat/tool-system.md](../chat/tool-system.md#cto-operator-tools).
-- **Orchestration sessions:** `interactionMode` selects
-  `orchestrator-lead`, `orchestrator-worker`, or
-  `orchestrator-validator`. The lead receives a read-mostly base plus
-  gated orchestration tools (`recordCodebaseIntake`,
-  `askPlanningRound`, `proposeValidationSteps`, model selection, plan
-  approval, spawning, and stale-task recovery). The lead also gets a
-  blocking `awaitAgent` tool that resolves when the named worker(s) reach
-  a settled turn (completion is delivered durably through the run outbox,
-  so `awaitAgent` is a convenience rather than the only signal — no
-  transcript polling) and a set of read-only capability tools
-  (`searchWorkspace`, `readLinearIssue`, `readPr`, `listProofArtifacts`,
-  `mintDeeplink`) that are injected null-safely: `agentChatService`'s
-  `buildOrchestrationLeadReadServices` wires each to the matching service
-  when present and omits it otherwise (runtime-backed-null-services
-  safety), and none of them mutate anything. Workers and validators keep
-  their edit-capable base tools plus task/validation reporting tools.
-
-`spawnAgent` and `messageAgent` are idempotent: each accepts an optional
-`requestId` (defaulted deterministically from the tool input when the
-caller omits it). The service records a `pending` receipt before acting,
-completes it with the tool result, and replays that stored result if the
-same `requestId` is emitted again — so a retried spawn never creates a
-second worker. The delivery side effects (`brief`/`ping`/`lead_status`/
-`cancel_interrupt`/`completion`) are written into the manifest `outbox`
-transactionally with the receipt completion, then flushed by the
-event-driven `drainOutbox` (`orchestrationOutbox.ts`) with bounded
-backoff. Both records are service-owned: the lead is denied raw
-`/receipts` and `/outbox` patches in `patchPolicy`, and a pending receipt
-that never completes is reaped by a 15-minute TTL in the stale sweep.
-
-Orchestration planning state is server-enforced. The lead must record
-codebase intake, run the functional/UI/extras planning rounds, derive
-validation steps, and capture model routing before approval or spawning
-unlocks. Raw manifest patches cannot write `leadState.planning` or
-`planSpec`; those fields only change through privileged service methods.
-
-The planning state machine also carries two rigor-preserving shortcuts.
-When the lead classifies the goal as low-risk / single-worker and the user
-accepts, the run takes the condensed **light-plan** path
-(`intake → light_plan → ready`, a plain-language two-step ask that
-collapses the three deliberation rounds while keeping the same approval
-gate). When intake reports the change touches no UI surface
-(`touchesUiSurface: false`), the UI round is auto-skipped and recorded in
-`autoSkippedRounds` (system-derived, distinct from a user-waived round)
-rather than forced as an empty ceremony. Runs end in a **finishing** phase
-that honours the per-run `finishing` decision — captured during planning
-through its own question card — of either stopping at validated code in
-the worktree or spawning a finishing worker to push the branch, open/update
-the PR, update the attached Linear issue, and register the resulting
-`pr_link` / `linear_issue` / `deeplink` evidence assets.
-The planning→developing transition is likewise the sole province of
-`setPlanApprovalState` (which stamps `currentPhase = developing` and
-`planApprovedAt` together): manifest normalization and task-release
-phase-transition logic in `manifestNormalization.ts` explicitly refuse
-to auto-advance the `planning` phase, so a completed planning-phase task
-can never bypass plan approval.
-
-#### Delegation lineage ledger
-
-The manifest carries an optional `lineage: DelegationEdge[]` ledger
-(`apps/desktop/src/shared/types/orchestration.ts`) that records the
-otherwise-implicit "who spawned whom, for what, and what came back" as
-first-class state — the agent row itself has no parent link. Each
-`DelegationEdge` captures the `parentSessionId` (the lead today),
-`childSessionId`, `childRole`, a `briefDigest` (sha256 of the dispatched
-brief), the `spawnFingerprint` (provider / model / reasoning effort / fast
-mode / routing key), and a `status` that moves `running` →
-`completed`/`failed` with a contract-level `resultSummary`. Edges are
-written only by service methods: `recordDelegationSpawn` at spawn time
-(best-effort — it never fails the spawn, since the agent row is the source
-of truth and the edge is supplementary provenance), the result side is
-recorded eagerly in `releaseTask`, and `releaseStaleClaims` is the
-lead-triggered reconcile backstop for validators or any missed terminal
-transition. The lead is denied raw `/lineage` patches in `patchPolicy`
-(the `/lineage` and `/lineage/**` deny patterns), so edges are
-authoritative coordination state rather than lead-authored prose. The
-field is additive and optional for back-compat — `manifestNormalization.ts`
-defaults it to `[]` on load and drops malformed edges, so an in-memory
-runtime manifest always has a lineage array. Scope is deliberately
-lead↔worker/validator only: a worker's own provider-native subagents stay
-in the observability pane and are not ingested here.
+- **Spawned helpers:** there is no separate orchestration mode. A
+  coordinating agent spawns its own helpers from any thread with
+  `ade chat create --type subagent --provider <p> --model <m>
+  [--instance <id>] [--preset <id>]`, and each child is an ordinary agent
+  with the same runtime, permissions, and tools.
 
 ### ADE CLI path
 
@@ -247,7 +171,7 @@ to detect stale runtimes:
 the caller context and then branching on role:
 
 - `cto` — base tools + CTO operator tools + Linear sync tools.
-- `agent`, `external`, `orchestrator`, `evaluator` — base tools only.
+- `agent`, `external`, `evaluator` — base tools only.
 
 A visibility filter removes computer-use tools when those backends are
 unavailable or when the caller lacks local-computer-use permission.
@@ -264,7 +188,6 @@ the list.
 | `external` | Yes | No |
 | `agent` | Yes | No |
 | `cto` | Yes | CTO operator + Linear sync tools |
-| `orchestrator` | Yes | No (base tools only) |
 | `evaluator` | Yes | No |
 
 ## Rate limits

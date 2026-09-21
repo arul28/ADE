@@ -24,13 +24,14 @@ import { refreshLinkedPrCoalesced } from "../../lib/prReadCache";
 import { rollupPrChecks } from "../../../shared/prChecksRollup";
 import type { PrChecksStatus } from "../../../shared/types/prs";
 import {
+  pickPrimaryPr,
   lanePrAggregateAttention,
   lanePrAttentionColor,
-  lanePrsForLane,
   openLanePr,
   selectPrimaryLanePr,
 } from "../../lib/lanePrBadge";
-import { selectPrsForChat } from "../../lib/prChatScope";
+import { selectPrsForChatInLane } from "../../lib/prChatScope";
+import { selectChatPrs } from "../lanes/lanePageModel";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 
 // ---------------------------------------------------------------------------
@@ -210,8 +211,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
       let lanePrs: PrSummary[];
       if (typeof window.ade.prs.listAll === "function") {
         const allPrs = await window.ade.prs.listAll(runtimePinRef.current);
-        const ownedPrs = allPrs.filter((pr) => pr.laneId === laneId && !pr.detached);
-        lanePrs = selectPrsForChat(ownedPrs, sessionId);
+        lanePrs = selectPrsForChatInLane(allPrs, laneId, sessionId);
       } else {
         // Older web-preview/test bridges only expose the original single-PR
         // lookup. Keep that compatibility path while the desktop bridge rolls
@@ -219,8 +219,8 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
         const legacy = await window.ade.prs.getForLane(laneId, runtimePinRef.current);
         lanePrs = legacy ? [legacy] : [];
       }
-      const visibleLanePrs = lanePrsForLane(laneForPr, lanePrs);
-      const pr = selectPrimaryLanePr(laneForPr, lanePrs);
+      const visibleLanePrs = selectChatPrs(laneForPr, lanePrs, sessionId);
+      const pr = pickPrimaryPr(visibleLanePrs) ?? selectPrimaryLanePr(laneForPr, lanePrs);
       if (!requestIsCurrent()) return null;
       // Keep the aggregate badge attention scoped to the same current-branch
       // rows as the primary badge. A compact legacy row may have no branch

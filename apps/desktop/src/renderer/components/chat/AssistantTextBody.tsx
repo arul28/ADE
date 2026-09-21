@@ -23,12 +23,22 @@ export const AssistantTextBody = React.memo(function AssistantTextBody({
   onOpenWorkspacePath,
   mosaic,
   mosaicScopeKey,
+  sceneScopeKey,
+  sceneLive,
 }: {
   text: string;
   paced: boolean;
   onOpenWorkspacePath?: (path: string | WorkspacePathLocation) => void;
   mosaic?: MosaicRenderContext;
   mosaicScopeKey?: string;
+  /** What names this row on disk for a scene's still; see `MarkdownBlock`. */
+  sceneScopeKey?: string;
+  /**
+   * True while this body's turn is still streaming. A scene runs for the turn
+   * that drew it and freezes when that turn ends, so without this every scene
+   * in the transcript would freeze before it had painted.
+   */
+  sceneLive?: boolean;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const revealedLength = useRevealedLength(text, paced, hostRef);
@@ -60,6 +70,8 @@ export const AssistantTextBody = React.memo(function AssistantTextBody({
         onOpenWorkspacePath={onOpenWorkspacePath}
         mosaic={mosaic}
         mosaicScopeKey={mosaicScopeKey}
+        sceneScopeKey={sceneScopeKey}
+        sceneLive={sceneLive}
       />
     </div>
   );

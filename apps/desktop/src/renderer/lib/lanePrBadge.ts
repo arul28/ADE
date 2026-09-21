@@ -13,52 +13,12 @@ import { COLORS } from "../components/lanes/laneDesignTokens";
  * Merged and closed PRs share the terminal rank so their activity timestamps
  * decide which history is most useful. Lower rank wins.
  */
-export function primaryPrStateRank(state: PrState): number {
-  switch (state) {
-    case "open":
-      return 0;
-    case "draft":
-      return 1;
-    case "merged":
-      return 2;
-    default:
-      return 2; // closed
-  }
-}
-
-type PrimaryPrComparable = {
-  state: PrSummary["state"];
-  updatedAt?: string | null;
-  githubPrNumber: number;
-};
-
-function comparePrimaryPr(a: PrimaryPrComparable, b: PrimaryPrComparable): number {
-  const byRank = primaryPrStateRank(a.state) - primaryPrStateRank(b.state);
-  if (byRank !== 0) return byRank;
-  const aUpdated = Date.parse(a.updatedAt ?? "");
-  const bUpdated = Date.parse(b.updatedAt ?? "");
-  const aHasUpdated = Number.isFinite(aUpdated);
-  const bHasUpdated = Number.isFinite(bUpdated);
-  if (aHasUpdated !== bHasUpdated) return aHasUpdated ? -1 : 1;
-  if (aHasUpdated && aUpdated !== bUpdated) {
-    return bUpdated - aUpdated;
-  }
-  return b.githubPrNumber - a.githubPrNumber;
-}
-
-/**
- * Pick the single PR that best represents a set of PRs: prefer open over draft
- * over terminal history; among equals the most recently updated (then highest
- * number) wins. Returns null for an empty list. Pure — the caller pre-filters
- * to a lane's PRs.
- */
-export function pickPrimaryPr<T extends PrimaryPrComparable>(prs: readonly T[]): T | null {
-  let best: T | null = null;
-  for (const pr of prs) {
-    if (best === null || comparePrimaryPr(pr, best) < 0) best = pr;
-  }
-  return best;
-}
+// The ordering rule itself lives in `shared/primaryPr.ts` so the CLI and the
+// TUI pick the same row as this badge. Re-exported here because these names
+// were this module's API first, and every caller already imports them here.
+import { pickPrimaryPr } from "../../shared/primaryPr";
+export { pickPrimaryPr, primaryPrStateRank } from "../../shared/primaryPr";
+export type { PrimaryPrComparable } from "../../shared/primaryPr";
 
 /**
  * Choose the PR represented by a lane badge. The collapsed card should point
@@ -84,13 +44,6 @@ export function selectPrimaryLanePr(
     && (!laneBranch || !normalizeLanePrBranch(pr.headBranch))
   ));
   return pickPrimaryPr(candidates);
-}
-
-export function lanePrsForLane(
-  lane: Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef">,
-  prs: PrSummary[],
-): PrSummary[] {
-  return selectLanePrs(lane, prs);
 }
 
 export type LanePrAttention = "danger" | "warning" | "active" | "success" | "muted";

@@ -226,7 +226,7 @@ describe("ReasoningEffortPicker", () => {
 
   it("renders the GPT-5.6 Ultra tier with a multi-agent usage warning", async () => {
     const user = userEvent.setup();
-    render(
+    const { container } = render(
       <ReasoningEffortPicker
         modelId="openai/gpt-5.6-sol"
         reasoningEffort="ultra"
@@ -238,11 +238,44 @@ describe("ReasoningEffortPicker", () => {
     expect(trigger.textContent).toContain("ULTRA");
     await user.click(trigger);
 
-    expect(screen.getAllByRole("radio")).toHaveLength(6);
-    expect(screen.getByRole("radio", { name: "Max" })).toBeTruthy();
+    const radios = screen.getAllByRole("radio");
+    expect(radios).toHaveLength(6);
+    expect(radios.map((radio) => radio.getAttribute("aria-label"))).toEqual([
+      "Light",
+      "Medium",
+      "High",
+      "Extra High",
+      "Max",
+      "Ultra",
+    ]);
     expect(screen.getByRole("radio", { name: "Light" })).toBeTruthy();
     expect(screen.getByRole("radio", { name: "Ultra" })).toBeTruthy();
-    expect(screen.getByText(/automatically delegates work to multiple agents/i)).toBeTruthy();
+    expect(screen.getByText(/automatically delegates work across multiple agents/i)).toBeTruthy();
+    expect(trigger.getAttribute("data-reasoning-ultra")).toBe("true");
+    expect(container.querySelector(".ade-reasoning-effort-trigger-ultra")).toBeTruthy();
+    expect(screen.getByText(/automatically delegates work across multiple agents/i).getAttribute("data-reasoning-ultra-warning")).toBe("true");
+  });
+
+  it("gives Claude Ultracode the top-tier visual treatment and workflow warning", async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <ReasoningEffortPicker
+        modelId="anthropic/claude-fable-5-1"
+        reasoningEffort="ultracode"
+        onChange={vi.fn()}
+      />,
+    );
+
+    const trigger = screen.getByRole("button", { name: /Reasoning effort/i });
+    expect(trigger.textContent).toContain("ULTRA");
+    expect(trigger.getAttribute("data-reasoning-ultra")).toBe("true");
+    expect(container.querySelector(".ade-reasoning-effort-trigger-ultra")).toBeTruthy();
+
+    await user.click(trigger);
+
+    expect(screen.getByRole("radio", { name: "Ultracode" }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByText(/automatically delegates work across multiple agents/i)).toBeTruthy();
+    expect(screen.getByText(/automatically delegates work across multiple agents/i).getAttribute("data-reasoning-ultra-warning")).toBe("true");
   });
 
   it("labels GPT-5.6 low effort as Light", () => {
@@ -431,6 +464,7 @@ describe("ReasoningEffortPicker", () => {
     expect(gradient).toContain("96 165 250");
     expect(gradient).toContain("167 139 250");
     expect(gradient).toContain("192 132 252");
+    expect(gradient).toContain("232 121 249");
     expect(fill?.className).toContain("ade-reasoning-slider-fill-max");
   });
 

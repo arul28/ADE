@@ -1082,6 +1082,12 @@ function isMachineEligibleNow(machineId: string): boolean {
   return resolveEligibleMachines().some((option) => option.id === machineId);
 }
 
+/** The two lane-read clocks are one fact; they are never forgotten separately. */
+function forgetLaneReads(machineId: string): void {
+  runtime.laneReadAtMsByMachineId.delete(machineId);
+  runtime.laneStatusReadAtMsByMachineId.delete(machineId);
+}
+
 /**
  * Whether this tick should re-read a machine's lanes as well as its chats.
  * First read always does; after that the lane list has its own slow cadence.
@@ -1742,8 +1748,7 @@ function applyReachability(): void {
   if (forgotten.length > 0) {
     for (const machineId of forgotten) {
       runtime.dropsByMachineId.delete(machineId);
-      runtime.laneReadAtMsByMachineId.delete(machineId);
-      runtime.laneStatusReadAtMsByMachineId.delete(machineId);
+      forgetLaneReads(machineId);
       runtime.unresolvedLaneIdsByMachineId.delete(machineId);
     }
     store.dropCrossMachineLanes(forgotten);
@@ -1864,6 +1869,27 @@ function detach(): void {
       // A subscription that already tore itself down is not an error here.
     }
   }
+}
+
+/**
+ * Re-read one machine's lanes as soon as the union can, instead of waiting for
+ * `FOREIGN_LANE_REFRESH_MS` to come round.
+ *
+ * The foreign cadence is deliberately slow because lane rows change on the
+ * scale of minutes — but a surface that is ABOUT to route a launch at a machine
+ * needs that machine's lane catalog now, not in thirty seconds. Clearing the
+ * machine's lane-read timestamp makes the next tick pay for it; the tick itself
+ * is still the shared, coalesced one, so this can be called from a render
+ * effect without fanning out reads.
+ *
+ * No-op when nothing is subscribed: a refresh outside a live scope would read
+ * against an empty scope and publish rows nobody asked for.
+ */
+export function requestCrossMachineLanesForMachine(machineId: string): void {
+  const trimmed = machineId.trim();
+  if (!trimmed || runtime.refCount === 0) return;
+  forgetLaneReads(trimmed);
+  scheduleRefresh("status");
 }
 
 /**

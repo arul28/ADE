@@ -15,6 +15,11 @@ import { ADE_DEEPLINK_HTTPS_BASE_URL } from "../../../shared/deeplinks";
 import { COLORS, SANS_FONT, MONO_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
 import { Button } from "../ui/Button";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
+import {
+  SettingsManagerPage,
+  SettingsManagerRow,
+  SettingsManagerTable,
+} from "./primitives/SettingsManagerPage";
 
 const LINEAR_BRAND = "#5E6AD2";
 const LINEAR_API_SETTINGS_URL = "https://linear.app/settings/api";
@@ -448,38 +453,18 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
   }, [githubRepo, loadGithubAutolinks]);
 
   return (
-    <div style={{ display: "flex", maxWidth: embedded ? undefined : 780, flexDirection: "column", gap: 20 }}>
-
-      {/* ── Connected State ── */}
-      {isConnected ? (
-        <div style={{
-          padding: 20,
-          background: `linear-gradient(135deg, color-mix(in srgb, var(--color-success) 8%, transparent), color-mix(in srgb, var(--color-success) 4%, transparent))`,
-          border: "1px solid color-mix(in srgb, var(--color-success) 25%, transparent)",
-          borderRadius: 14,
-        }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <div style={{
-                width: 36, height: 36, borderRadius: 10,
-                background: `linear-gradient(135deg, ${LINEAR_BRAND}, ${LINEAR_BRAND}CC)`,
-                display: "flex", alignItems: "center", justifyContent: "center",
-              }}>
-                <CheckCircle size={18} weight="fill" color="#fff" />
-              </div>
-              <div>
-                <div style={{ fontSize: 15, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-                  Connected to Linear
-                </div>
-                <div style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textSecondary, marginTop: 2 }}>
-                  {connection?.viewerName ? `Signed in as ${connection.viewerName}` : "Signed in"}
-                  {authModeLabel ? ` via ${authModeLabel}` : ""}
-                  {workspaceLabel ? ` · ${workspaceLabel}` : ""}
-                  {connection?.projectCount ? ` · ${connection.projectCount} project${connection.projectCount === 1 ? "" : "s"}` : ""}
-                </div>
-              </div>
-            </div>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", flexWrap: "wrap", gap: 8 }}>
+    <div style={{ maxWidth: embedded ? undefined : 780 }}>
+      <SettingsManagerPage
+        anchor="linear-connection"
+        title="Linear connection"
+        description={
+          embedded
+            ? undefined
+            : "Connect Linear for issue routing, lane context, PR linkage, and CTO workflows."
+        }
+        toolbar={
+          isConnected ? (
+            <>
               {!isRemoteRuntime ? (
                 <Button
                   type="button"
@@ -508,72 +493,77 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
               >
                 Disconnect
               </button>
-            </div>
-          </div>
+            </>
+          ) : null
+        }
+      >
+        {/* ── Connected State ── */}
+        {isConnected ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <SettingsManagerTable
+              columns={[
+                { label: "Workspace" },
+                { label: "Signed in as" },
+                { label: "Connection" },
+                { label: "Projects", align: "right" },
+              ]}
+              minWidth={560}
+            >
+              <SettingsManagerRow>
+                <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                  <LinearWorkspaceAvatar
+                    organizationName={connection?.organizationName}
+                    logoUrl={connection?.organizationLogoUrl}
+                  />
+                  <span style={{ minWidth: 0 }}>
+                    <span style={{ display: "block", fontWeight: 600, color: COLORS.textPrimary }}>
+                      {workspaceLabel ?? "Linear"}
+                    </span>
+                    {connection?.organizationUrlKey ? (
+                      <span style={{ display: "block", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
+                        {connection.organizationUrlKey}
+                      </span>
+                    ) : null}
+                  </span>
+                </span>
+                <span style={{ color: COLORS.textSecondary }}>
+                  {connection?.viewerName ? `Signed in as ${connection.viewerName}` : "Signed in"}
+                </span>
+                <span style={{ color: COLORS.textSecondary }}>{authModeLabel ?? "Connected"}</span>
+                <span style={{ textAlign: "right", color: COLORS.textSecondary }}>
+                  {connection?.projectCount ?? projects.length}
+                </span>
+              </SettingsManagerRow>
+            </SettingsManagerTable>
 
-          {workspaceLabel ? (
-            <div style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              flexWrap: "wrap",
-              gap: 12,
-              padding: "10px 12px",
-              marginBottom: 14,
-              borderRadius: 8,
-              background: "color-mix(in srgb, var(--color-fg) 4%, transparent)",
-              border: `1px solid ${COLORS.border}`,
-            }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <LinearWorkspaceAvatar
-                  organizationName={connection?.organizationName}
-                  logoUrl={connection?.organizationLogoUrl}
-                />
-                <div>
-                  <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim, marginBottom: 2 }}>
-                    Workspace
-                  </div>
-                  <div style={{ fontSize: 13, fontWeight: 600, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-                    {workspaceLabel}
-                  </div>
-                </div>
-              </div>
-              {connection?.organizationUrlKey ? (
-                <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
-                  {connection.organizationUrlKey}
-                </div>
-              ) : null}
-              <div style={{ flexBasis: "100%", fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
+            {workspaceLabel ? (
+              <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
                 To connect a different workspace, switch workspaces in Linear first, then reconnect here.
               </div>
-            </div>
-          ) : null}
+            ) : null}
 
-          {/* Project list */}
-          {projects.length > 0 ? (
-            <div>
-              <div style={{ ...LABEL_STYLE, fontSize: 10, marginBottom: 8 }}>
-                PROJECTS ({projects.length})
+            {/* Project list */}
+            {projects.length > 0 ? (
+              <div>
+                <div style={{ ...LABEL_STYLE, fontSize: 10, marginBottom: 8 }}>
+                  PROJECTS ({projects.length})
+                </div>
+                <SettingsManagerTable
+                  columns={[{ label: "Project" }, { label: "Team", align: "right" }]}
+                  minWidth={320}
+                >
+                  {projects.map((p) => (
+                    <SettingsManagerRow key={p.id}>
+                      <span style={{ color: COLORS.textPrimary }}>{p.name}</span>
+                      <span style={{ textAlign: "right", color: COLORS.textDim }}>{p.teamName}</span>
+                    </SettingsManagerRow>
+                  ))}
+                </SettingsManagerTable>
               </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {projects.map((p) => (
-                  <span key={p.id} style={{
-                    display: "inline-flex", alignItems: "center", gap: 4,
-                    padding: "3px 10px", borderRadius: 6,
-                    background: "rgba(255,255,255,0.04)", border: `1px solid ${COLORS.border}`,
-                    fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary,
-                  }}>
-                    {p.name}
-                    <span style={{ fontSize: 10, color: COLORS.textDim }}>{p.teamName}</span>
-                  </span>
-                ))}
-              </div>
-            </div>
-          ) : null}
-        </div>
-      ) : (
-        <>
-          {/* ── Disconnected: Connection Methods ── */}
+            ) : null}
+          </div>
+        ) : (
+          /* ── Disconnected: Connection Methods ── */
           <div style={{
             display: "grid",
             gridTemplateColumns: "1fr 1fr",
@@ -723,183 +713,174 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
               </div>
             </div>
           </div>
-        </>
-      )}
+        )}
 
-      <div style={{
-        padding: 18,
-        background: COLORS.cardBg,
-        border: `1px solid ${COLORS.border}`,
-        borderRadius: 14,
-      }}>
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 12 }}>
-          <div>
-            <div style={{ ...LABEL_STYLE, fontSize: 10, marginBottom: 6, letterSpacing: "0.06em" }}>
-              GITHUB REFERENCE LINKS
+        {/* ── GitHub reference links ── */}
+        <div>
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 12 }}>
+            <div>
+              <div style={{ ...LABEL_STYLE, fontSize: 10, marginBottom: 6, letterSpacing: "0.06em" }}>
+                GITHUB REFERENCE LINKS
+              </div>
+              <div style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "17px" }}>
+                GitHub autolinks make Linear issue keys (like ENG-123) and ADE PR refs clickable wherever they appear in PRs, commits, and comments — no full URLs needed. Applies to the repo below for this project.
+              </div>
             </div>
-            <div style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "17px" }}>
-              GitHub autolinks make Linear issue keys (like ENG-123) and ADE PR refs clickable wherever they appear in PRs, commits, and comments — no full URLs needed. Applies to the repo below for this project.
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => void loadGithubAutolinks()}
+              disabled={autolinksLoading || creatingAutolinkId !== null}
+            >
+              {autolinksLoading ? <CircleNotch size={12} className="animate-spin" /> : null}
+              Refresh
+            </Button>
+          </div>
+          <div style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+            padding: "9px 11px",
+            borderRadius: 8,
+            background: "rgba(255,255,255,0.03)",
+            border: `1px solid ${COLORS.border}`,
+            marginBottom: 10,
+          }}>
+            <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary }}>
+              Repository
+            </div>
+            <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, minWidth: 0, overflowWrap: "anywhere" }}>
+              {githubRepoSlug ?? "No GitHub origin detected"}
             </div>
           </div>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => void loadGithubAutolinks()}
-            disabled={autolinksLoading || creatingAutolinkId !== null}
+          <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim, lineHeight: "15px", marginBottom: 8 }}>
+            Click <strong style={{ color: COLORS.textSecondary, fontWeight: 600 }}>Create</strong> to add a link to this repo automatically, or copy the <code style={{ fontFamily: MONO_FONT }}>gh</code> command below it to run it yourself.
+          </div>
+          <SettingsManagerTable
+            columns={[
+              { label: "Reference", width: "minmax(220px, 1.4fr)" },
+              { label: "Prefix", width: "minmax(90px, 0.5fr)" },
+              { label: "Command", width: "minmax(220px, 1.6fr)" },
+              { label: "Actions", width: "minmax(110px, auto)", align: "right" },
+            ]}
+            minWidth={680}
           >
-            {autolinksLoading ? <CircleNotch size={12} className="animate-spin" /> : null}
-            Refresh
-          </Button>
-        </div>
-        <div style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 12,
-          padding: "9px 11px",
-          borderRadius: 8,
-          background: "rgba(255,255,255,0.03)",
-          border: `1px solid ${COLORS.border}`,
-          marginBottom: 10,
-        }}>
-          <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary }}>
-            Repository
-          </div>
-          <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, minWidth: 0, overflowWrap: "anywhere" }}>
-            {githubRepoSlug ?? "No GitHub origin detected"}
-          </div>
-        </div>
-        <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim, lineHeight: "15px", marginBottom: 8 }}>
-          Click <strong style={{ color: COLORS.textSecondary, fontWeight: 600 }}>Create</strong> to add a link to this repo automatically, or copy the <code style={{ fontFamily: MONO_FONT }}>gh</code> command below it to run it yourself.
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {autolinkCandidates.map((candidate) => {
-            const busy = creatingAutolinkId === candidate.id;
-            return (
-              <div
-                key={candidate.id}
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "minmax(0, 1fr) auto",
-                  gap: 10,
-                  alignItems: "start",
-                  padding: "10px 12px",
-                  borderRadius: 10,
-                  border: `1px solid ${candidate.configured ? "color-mix(in srgb, var(--color-success) 22%, transparent)" : COLORS.border}`,
-                  background: candidate.configured
-                    ? "color-mix(in srgb, var(--color-success) 6%, transparent)"
-                    : "rgba(255,255,255,0.025)",
-                }}
-              >
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 3 }}>
-                    {candidate.configured ? <CheckCircle size={13} weight="fill" style={{ color: COLORS.success }} /> : null}
-                    <div style={{ fontSize: 12, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-                      {candidate.title}
-                    </div>
-                    <code style={{
-                      fontSize: 10,
-                      fontFamily: MONO_FONT,
-                      color: COLORS.textDim,
-                      padding: "2px 5px",
-                      borderRadius: 5,
-                      background: "rgba(255,255,255,0.04)",
-                    }}>
-                      {candidate.keyPrefix}
-                    </code>
-                  </div>
-                  <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "15px", marginBottom: 6 }}>
-                    {candidate.desc}
-                  </div>
-                  <div style={{
+            {autolinkCandidates.map((candidate) => {
+              const busy = creatingAutolinkId === candidate.id;
+              return (
+                <SettingsManagerRow
+                  key={candidate.id}
+                  actions={
+                    <Button
+                      type="button"
+                      variant={candidate.configured ? "ghost" : "outline"}
+                      size="sm"
+                      onClick={() => void handleCreateAutolink(candidate)}
+                      disabled={!githubRepo || candidate.configured || autolinksLoading || creatingAutolinkId !== null}
+                      style={{ whiteSpace: "nowrap" }}
+                    >
+                      {busy ? <CircleNotch size={12} className="animate-spin" /> : null}
+                      {candidate.configured ? "Configured" : "Create"}
+                    </Button>
+                  }
+                >
+                  <span style={{ minWidth: 0 }}>
+                    <span style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 3 }}>
+                      {candidate.configured ? <CheckCircle size={13} weight="fill" style={{ color: COLORS.success }} /> : null}
+                      <span style={{ fontSize: 12, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
+                        {candidate.title}
+                      </span>
+                    </span>
+                    <span style={{ display: "block", fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "15px" }}>
+                      {candidate.desc}
+                    </span>
+                  </span>
+                  <code style={{
+                    fontSize: 10,
+                    fontFamily: MONO_FONT,
+                    color: COLORS.textDim,
+                    padding: "2px 5px",
+                    borderRadius: 5,
+                    background: "rgba(255,255,255,0.04)",
+                    justifySelf: "start",
+                  }}>
+                    {candidate.keyPrefix}
+                  </code>
+                  <span style={{
                     fontSize: 10,
                     fontFamily: MONO_FONT,
                     color: COLORS.textDim,
                     lineHeight: "15px",
                     overflowWrap: "anywhere",
+                    minWidth: 0,
                   }}>
                     {candidate.command}
+                  </span>
+                </SettingsManagerRow>
+              );
+            })}
+          </SettingsManagerTable>
+          {!teamKeys.length ? (
+            <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim, lineHeight: "15px", marginTop: 10 }}>
+              Connect Linear and load projects to add team-key references such as TEAM-123 for this workspace.
+            </div>
+          ) : null}
+          {autolinkError ? (
+            <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.danger, lineHeight: "15px", marginTop: 10 }}>
+              {autolinkError}
+            </div>
+          ) : null}
+        </div>
+
+        {/* ── Error ── */}
+        {error ? (
+          <div style={{
+            display: "flex", alignItems: "center", gap: 8,
+            padding: "10px 14px", borderRadius: 10,
+            background: "color-mix(in srgb, var(--color-error) 8%, transparent)", border: "1px solid color-mix(in srgb, var(--color-error) 20%, transparent)",
+            fontSize: 11, fontFamily: SANS_FONT, color: COLORS.danger, lineHeight: "17px",
+          }}>
+            <XCircle size={14} weight="fill" style={{ flexShrink: 0 }} />
+            {error}
+          </div>
+        ) : null}
+
+        {/* ── Feature Preview ── */}
+        <div>
+          <div style={{ ...LABEL_STYLE, fontSize: 10, marginBottom: 12, letterSpacing: "0.06em" }}>
+            WHAT LINEAR INTEGRATION ENABLES
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10 }}>
+            {FEATURES.map(({ icon: Icon, title, desc }) => (
+              <div key={title} style={{
+                display: "flex", alignItems: "flex-start", gap: 10,
+                padding: "10px 12px",
+                background: `${LINEAR_BRAND}06`,
+                borderRadius: 10,
+                border: `1px solid ${LINEAR_BRAND}12`,
+              }}>
+                <div style={{
+                  width: 28, height: 28, borderRadius: 7, flexShrink: 0,
+                  background: `${LINEAR_BRAND}14`,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                }}>
+                  <Icon size={14} weight="duotone" style={{ color: LINEAR_BRAND }} />
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600, fontFamily: SANS_FONT, color: COLORS.textPrimary, marginBottom: 2 }}>
+                    {title}
+                  </div>
+                  <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "15px" }}>
+                    {desc}
                   </div>
                 </div>
-                <Button
-                  type="button"
-                  variant={candidate.configured ? "ghost" : "outline"}
-                  size="sm"
-                  onClick={() => void handleCreateAutolink(candidate)}
-                  disabled={!githubRepo || candidate.configured || autolinksLoading || creatingAutolinkId !== null}
-                  style={{ whiteSpace: "nowrap" }}
-                >
-                  {busy ? <CircleNotch size={12} className="animate-spin" /> : null}
-                  {candidate.configured ? "Configured" : "Create"}
-                </Button>
               </div>
-            );
-          })}
-        </div>
-        {!teamKeys.length ? (
-          <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim, lineHeight: "15px", marginTop: 10 }}>
-            Connect Linear and load projects to add team-key references such as TEAM-123 for this workspace.
+            ))}
           </div>
-        ) : null}
-        {autolinkError ? (
-          <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.danger, lineHeight: "15px", marginTop: 10 }}>
-            {autolinkError}
-          </div>
-        ) : null}
-      </div>
-
-      {/* ── Error ── */}
-      {error ? (
-        <div style={{
-          display: "flex", alignItems: "center", gap: 8,
-          padding: "10px 14px", borderRadius: 10,
-          background: "color-mix(in srgb, var(--color-error) 8%, transparent)", border: "1px solid color-mix(in srgb, var(--color-error) 20%, transparent)",
-          fontSize: 11, fontFamily: SANS_FONT, color: COLORS.danger, lineHeight: "17px",
-        }}>
-          <XCircle size={14} weight="fill" style={{ flexShrink: 0 }} />
-          {error}
         </div>
-      ) : null}
-
-      {/* ── Feature Preview ── */}
-      <div style={{
-        padding: 18,
-        background: COLORS.cardBg,
-        border: `1px solid ${COLORS.border}`,
-        borderRadius: 14,
-      }}>
-        <div style={{ ...LABEL_STYLE, fontSize: 10, marginBottom: 12, letterSpacing: "0.06em" }}>
-          WHAT LINEAR INTEGRATION ENABLES
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10 }}>
-          {FEATURES.map(({ icon: Icon, title, desc }) => (
-            <div key={title} style={{
-              display: "flex", alignItems: "flex-start", gap: 10,
-              padding: "10px 12px",
-              background: `${LINEAR_BRAND}06`,
-              borderRadius: 10,
-              border: `1px solid ${LINEAR_BRAND}12`,
-            }}>
-              <div style={{
-                width: 28, height: 28, borderRadius: 7, flexShrink: 0,
-                background: `${LINEAR_BRAND}14`,
-                display: "flex", alignItems: "center", justifyContent: "center",
-              }}>
-                <Icon size={14} weight="duotone" style={{ color: LINEAR_BRAND }} />
-              </div>
-              <div>
-                <div style={{ fontSize: 12, fontWeight: 600, fontFamily: SANS_FONT, color: COLORS.textPrimary, marginBottom: 2 }}>
-                  {title}
-                </div>
-                <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "15px" }}>
-                  {desc}
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
+      </SettingsManagerPage>
     </div>
   );
 }

@@ -126,13 +126,14 @@ describe("thinking levels", () => {
     ]);
   });
 
-  it("CODEX_THINKING_LEVELS matches the product-facing 5.6 ladder", () => {
-    expect(CODEX_THINKING_LEVELS).toHaveLength(5);
+  it("CODEX_THINKING_LEVELS keeps Ultra above Max", () => {
+    expect(CODEX_THINKING_LEVELS).toHaveLength(6);
     expect(CODEX_THINKING_LEVELS).toEqual([
       { value: "low", label: "Light" },
       { value: "medium", label: "Medium" },
       { value: "high", label: "High" },
       { value: "xhigh", label: "Extra High" },
+      { value: "max", label: "Max" },
       { value: "ultra", label: "Ultra" },
     ]);
   });

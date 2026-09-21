@@ -44,7 +44,7 @@ Ground rules used to compile this list:
 ## MEDIUM (unnecessary work)
 
 ### 5. Collapse filter→map chains on step/status derivations
-- **Where**: `orchestratorService.ts:~4620`, `aiOrchestratorService.ts:~2424`, `coordinatorTools.ts:~394`.
+- **Where**: `coordinatorTools.ts:~394` (the `orchestratorService.ts` / `aiOrchestratorService.ts` call sites went away with the orchestration mode).
 - **Issue**: `graph.steps.filter(s => s.status === "running").map(s => s.stepKey)` on every graph tick.
 - **Fix**: Single `reduce` or pre-computed status index.
 - **Risk**: Low.
@@ -104,9 +104,9 @@ Ground rules used to compile this list:
 - **Estimated gain**: 100–400 ms on 50+ item lists.
 
 ### 13. Move shared types out of service imports
-- **Where**: `orchestratorService` types referenced directly in renderer.
+- **Where**: main-process service types referenced directly in renderer modules.
 - **Issue**: Type-only re-parse; potential bundle bloat.
-- **Fix**: Centralize in `shared/orchestratorTypes.ts` (or existing `shared/types/`).
+- **Fix**: Centralize in `shared/types/`.
 - **Risk**: Low.
 - **Estimated gain**: 50–150 ms bundle parse.
 

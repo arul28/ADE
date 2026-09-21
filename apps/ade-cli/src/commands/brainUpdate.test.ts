@@ -10,6 +10,7 @@ import {
   readBrainUpdateStatus,
   runBrainUpdateCommand,
 } from "./brainUpdate";
+import { releaseTagForVersion } from "../lib/releaseAssets";
 
 const tempRoots: string[] = [];
 
@@ -83,6 +84,10 @@ describe("brain update command", () => {
       .toBe("https://github.com/arul28/ADE/releases/latest/download/ade-darwin-arm64");
     expect(brainUpdateAssetUrl("arul28/ADE", "v1.2.13", "ade-darwin-arm64"))
       .toBe("https://github.com/arul28/ADE/releases/download/v1.2.13/ade-darwin-arm64");
+    // A bare app version (what the desktop's "Update & restart" sends) must map
+    // onto the `v`-prefixed release tag instead of a 404 URL.
+    expect(brainUpdateAssetUrl("arul28/ADE", "1.2.74", "ade-darwin-arm64"))
+      .toBe("https://github.com/arul28/ADE/releases/download/v1.2.74/ade-darwin-arm64");
     expect(() => brainUpdateAssetUrl("../nope", "latest", "ade-darwin-arm64")).toThrow(/owner\/repo/);
   });
 
@@ -681,5 +686,27 @@ describe("brain update command", () => {
       target: "linux-arm64",
       error: expect.stringContaining("checksum mismatch"),
     });
+  });
+});
+
+describe("releaseTagForVersion", () => {
+  // ADE release tags are `v<semver>`; these inputs are exactly what the regex
+  // discriminates. The prerelease row is load-bearing — a real semver tail must
+  // ride along with the `v` prefix — but the shape is anchored, so trailing
+  // junk is NOT a semver and must pass through untouched rather than becoming a
+  // tag nobody published.
+  it.each([
+    ["a bare semver is prefixed", "1.2.74", "v1.2.74"],
+    ["an already-tagged version is left alone", "v1.2.13", "v1.2.13"],
+    ["a prerelease suffix carries through", "1.2.74-beta.1", "v1.2.74-beta.1"],
+    ["build metadata carries through", "1.2.74+build.5", "v1.2.74+build.5"],
+    ["trailing junk is not a semver", "1.2.74foo", "1.2.74foo"],
+    ["a non-semver ref is untouched", "whisper-models-v1", "whisper-models-v1"],
+    // Near-misses that a looser character class waved through. These are legal
+    // custom tag names, so rewriting them would request a tag nobody published.
+    ["a leading zero is not a semver", "01.2.3", "01.2.3"],
+    ["an empty prerelease identifier is not a semver", "1.2.3-.", "1.2.3-."],
+  ])("%s", (_label, input, expected) => {
+    expect(releaseTagForVersion(input)).toBe(expected);
   });
 });

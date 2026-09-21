@@ -1,7 +1,7 @@
 /**
- * Codex 0.153.4 `plugin/list` (`PluginListResponse`: marketplaces → PluginSummary).
+ * Codex 0.155.1 `plugin/list` (`PluginListResponse`: marketplaces → PluginSummary).
  * Settings shows installed / enabled plugins only — no marketplace, no toggle.
- * https://raw.githubusercontent.com/openai/codex/rust-v0.153.4/codex-rs/app-server-protocol/schema/json/v2/PluginListResponse.json
+ * https://raw.githubusercontent.com/openai/codex/rust-v0.155.1/codex-rs/app-server-protocol/schema/json/v2/PluginListResponse.json
  */
 
 import type { AgentChatCodexPlugin, AgentChatCodexPluginOrigin } from "./types/chat";

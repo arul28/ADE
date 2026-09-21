@@ -17,7 +17,6 @@ import type {
 
 type WorkStartSurfaceProps = {
   draftKind: WorkDraftKind;
-  orchestratorEnabled?: boolean;
   draftLaneId?: string | null;
   draftMachineId?: string | null;
   draftContextTargetId?: string | null;
@@ -44,7 +43,6 @@ type WorkStartSurfaceProps = {
 
 export function WorkStartSurface({
   draftKind,
-  orchestratorEnabled = false,
   draftLaneId = null,
   draftMachineId = null,
   draftContextTargetId = null,
@@ -198,7 +196,6 @@ export function WorkStartSurface({
           embeddedWorkLayout
           suppressDraftLaunchNavigation={suppressDraftLaunchNavigation}
           workDraftKind={draftKind}
-          orchestratorEnabled={orchestratorEnabled}
           initialLinearIssueContext={initialLinearIssueContext}
           initialLinearIssueContextSource={initialLinearIssueContextSource}
           initialModelId={initialModelId}

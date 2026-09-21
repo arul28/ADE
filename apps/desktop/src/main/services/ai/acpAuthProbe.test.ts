@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { AcpRpcError } from "../chat/acpHost/acpConnection";
 import { createMockAcpAgent } from "../chat/acpHost/mockAcpAgent";
-import { isAcpAuthError, probeAcpProviderAuth, resetAcpAuthProbeCache } from "./acpAuthProbe";
+import { acpProbeConfigHome, isAcpAuthError, probeAcpProviderAuth, resetAcpAuthProbeCache } from "./acpAuthProbe";
 
 describe("isAcpAuthError", () => {
-  it("matches the live Qwen 0.22.3 session/new message", () => {
+  it("matches the live Qwen 0.24.0 session/new message", () => {
     expect(
       isAcpAuthError("Authentication required: Use Qwen Code CLI to authenticate first."),
     ).toBe(true);
@@ -78,5 +78,11 @@ describe("probeAcpProviderAuth", () => {
     });
     expect(result.state).toBe("auth-failed");
     expect(agent.methodsReceived()).not.toContain("authenticate");
+  });
+});
+
+describe("acpProbeConfigHome", () => {
+  it("uses Grok's vendor-supported GROK_HOME override", () => {
+    expect(acpProbeConfigHome("grok", { GROK_HOME: "/tmp/grok-home" })).toBe("/tmp/grok-home");
   });
 });

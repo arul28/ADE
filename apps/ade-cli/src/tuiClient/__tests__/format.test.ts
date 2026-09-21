@@ -11,6 +11,8 @@ import {
   webSearchResultDomain,
   webSearchResultPreviewLines,
 } from "../format";
+import { aggregateChatBlocks } from "../aggregate";
+import type { AgentChatEvent, AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
 import { formatRelativePastTime } from "../relativeTime";
 import { terminalReasonLabel } from "../terminalReason";
 import { spawnParentGoneNoticeMessage } from "../../../../desktop/src/shared/types/chat";
@@ -1097,21 +1099,11 @@ describe("renderChatLines", () => {
     expect(body).toContain("[delegation] state");
   });
 
-  it("suppresses pending_input_resolved and tokens events from the chat transcript", () => {
+  it("suppresses tokens events from the chat transcript", () => {
     const lines = renderChatLines({
       activeSession: null,
       notices: [],
       events: [
-        {
-          sessionId: "s1",
-          timestamp: "2026-01-01T12:00:00.000Z",
-          sequence: 1,
-          event: {
-            type: "pending_input_resolved",
-            itemId: "q1",
-            resolution: "accepted",
-          } as never,
-        },
         {
           sessionId: "s1",
           timestamp: "2026-01-01T12:00:01.000Z",
@@ -1127,6 +1119,32 @@ describe("renderChatLines", () => {
       ],
     });
     expect(lines).toHaveLength(0);
+  });
+
+  it("renders one receipt row for every pending-input resolution", () => {
+    // A card that vanishes with no row leaves the transcript unable to say
+    // whether the question was answered, declined, or thrown away — and the
+    // desktop and the phone both draw all three.
+    for (const [resolution, verb] of [
+      ["accepted", "Answered"],
+      ["declined", "Declined"],
+      ["cancelled", "Dismissed"],
+    ] as const) {
+      const lines = renderChatLines({
+        activeSession: null,
+        notices: [],
+        events: [
+          {
+            sessionId: "s1",
+            timestamp: "2026-01-01T12:00:00.000Z",
+            sequence: 1,
+            event: { type: "pending_input_resolved", itemId: "q1", resolution } as never,
+          },
+        ],
+      });
+      expect(lines).toHaveLength(1);
+      expect(lines[0]!.body).toBe(`[input] ${verb}`);
+    }
   });
 
   it("fixes the system_notice continue regression (does not duplicate subsequent rows)", () => {
@@ -2039,5 +2057,96 @@ describe("ade_card (TUI)", () => {
     expect(body).toContain("report-5.md");
     expect(body).not.toContain("report-6.md");
     expect(body).toContain("+5 more");
+  });
+});
+
+describe("CTO voice call runs", () => {
+  const voiceEnvelope = (
+    sequence: number,
+    timestamp: string,
+    event: AgentChatEvent,
+    callId: string | null,
+  ): AgentChatEventEnvelope => ({
+    sessionId: "cto",
+    timestamp,
+    sequence,
+    event,
+    ...(callId ? { provenance: { voiceCallId: callId } } : {}),
+  });
+
+  const callEvents = (): AgentChatEventEnvelope[] => [
+    voiceEnvelope(1, "2026-01-01T12:00:00.000Z", { type: "user_message", text: "[voice call] long preamble the user never said", displayText: "where is the PR" }, "call-1"),
+    voiceEnvelope(2, "2026-01-01T12:00:05.000Z", { type: "text", text: "It is in review." }, "call-1"),
+    voiceEnvelope(3, "2026-01-01T12:01:12.000Z", { type: "user_message", text: "[voice call] more preamble", displayText: "merge it" }, "call-1"),
+    voiceEnvelope(4, "2026-01-01T12:01:20.000Z", { type: "text", text: "Merged." }, "call-1"),
+  ];
+
+  it("heads a call's turns with one dim line and never prints the spoken preamble", () => {
+    const lines = renderChatLines({ activeSession: null, notices: [], events: callEvents() });
+    const marker = lines.find((line) => line.id === "voice-call:call-1");
+    expect(marker?.tone).toBe("notice");
+    expect(marker?.body).toBe("[voice call] 2 exchanges · 1m 20s");
+    // Exactly one marker for the whole run, not one per turn.
+    expect(lines.filter((line) => line.id === "voice-call:call-1")).toHaveLength(1);
+    // The turns themselves still render, and the model-facing preamble does not.
+    const bodies = lines.map((line) => line.body).join("\n");
+    expect(bodies).toContain("where is the PR");
+    expect(bodies).toContain("It is in review.");
+    expect(bodies).not.toContain("long preamble");
+  });
+
+  it("notes an approval and counts a single exchange in the singular", () => {
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        voiceEnvelope(1, "2026-01-01T12:00:00.000Z", { type: "user_message", text: "push it", displayText: "push it" }, "call-2"),
+        voiceEnvelope(2, "2026-01-01T12:00:03.000Z", {
+          type: "approval_request",
+          itemId: "a1",
+          kind: "command",
+          description: "git push",
+        }, "call-2"),
+      ],
+    });
+    expect(lines.find((line) => line.id === "voice-call:call-2")?.body)
+      .toBe("[voice call] 1 exchange · 3.0s · approval");
+  });
+
+  it("gives two calls in one thread their own lines, and typed turns none", () => {
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        voiceEnvelope(1, "2026-01-01T12:00:00.000Z", { type: "user_message", text: "call one" }, "call-1"),
+        voiceEnvelope(2, "2026-01-01T12:05:00.000Z", { type: "user_message", text: "typed by hand" }, null),
+        voiceEnvelope(3, "2026-01-01T12:09:00.000Z", { type: "user_message", text: "call two" }, "call-2"),
+      ],
+    });
+    expect(lines.filter((line) => line.id.startsWith("voice-call:")).map((line) => line.id))
+      .toEqual(["voice-call:call-1", "voice-call:call-2"]);
+  });
+
+  it("leaves a chat that was never on a call untouched", () => {
+    const events: AgentChatEventEnvelope[] = [
+      { sessionId: "s1", timestamp: "2026-01-01T12:00:00.000Z", sequence: 1, event: { type: "user_message", text: "hello" } },
+      { sessionId: "s1", timestamp: "2026-01-01T12:00:01.000Z", sequence: 2, event: { type: "text", text: "hi" } },
+    ];
+    const lines = renderChatLines({ activeSession: null, notices: [], events });
+    expect(lines.some((line) => line.id.startsWith("voice-call:"))).toBe(false);
+  });
+
+  it("carries the marker into the aggregated blocks ChatView renders", () => {
+    const blocks = aggregateChatBlocks({
+      events: callEvents(),
+      notices: [],
+      activeSession: null,
+    });
+    const marker = blocks.find((block) => block.id === "voice-call:call-1");
+    expect(marker?.kind).toBe("notice");
+    expect(blocks.filter((block) => block.id === "voice-call:call-1")).toHaveLength(1);
+    // The call's own turns are still there — the terminal marks, it does not fold.
+    expect(blocks.some((block) => block.kind === "user-bubble")).toBe(true);
+    expect(blocks.some((block) => block.kind === "assistant-text")).toBe(true);
   });
 });

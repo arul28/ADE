@@ -22,10 +22,11 @@ rather than being inferred from the name.
 1. Sign in to the same ADE account on the phone and computer. This is the
    primary path: the computer appears through the account directory and the
    phone adopts it through Relay without a PIN.
-2. For a direct connection without an account, open the computer's
+2. For an explicitly paired/direct recovery connection, open the computer's
    **Connections** panel. The **This Mac** card owns the pairing PIN and QR.
    On the phone, scan that QR or choose the Mac from Nearby; there is no
-   pairing-link paste or manual address + PIN entry.
+   pairing-link paste or manual address + PIN entry. Fresh app access still
+   begins at the account gate.
 3. Enter the 6-digit PIN for a new QR/Nearby pairing. The phone receives a
    durable per-device secret and stores it in Keychain, so future reconnects
    do not ask for the PIN again.
@@ -34,12 +35,26 @@ rather than being inferred from the name.
    host owns the connection, and the user-facing model stays
    machine -> projects.
 
-Every fresh signed-out launch shows the account choice before the app. Signing
-in is not required for local-first use: **Continue without an account** keeps
-QR + PIN, Nearby + PIN, and the advanced SSH bootstrap available. If
-the phone already has a direct pairing, continuing resumes its ordinary saved
-reconnect without asking for the PIN again. A signed-in launch enters the app
-directly.
+Every fresh signed-out launch shows the account choice before the app. ADE
+requires an account, so a phone with no saved pairing has no account-less
+pass-through. A phone with an existing paired host may choose **Continue to
+your work** to recover cached/local work while signed out; a saved pairing whose
+credential cannot be read instead offers **Pair again** and explains the fault.
+Signing in enters the app and enables account-directory/Relay adoption; direct
+QR/Nearby/SSH pairing remains an explicit connection flow rather than a guest
+mode.
+
+### Account settings and vault boundary
+
+The account settings store is the non-secret, per-key account preference store;
+the brain and Push Relay own its account copy, while a host keeps an immediate
+local cache. iOS uses only the settings and push-preference commands the host
+advertises and never receives raw vault values. Provider API keys, Linear OAuth
+refresh credentials, and repository account secrets stay in the host's
+encrypted account vault and are hydrated there after sign-in. The host performs
+the silent, receipt-backed migration from device-local credentials; the phone
+does not copy or migrate secrets. Sign-out closes Relay and clears account
+authorization while preserving explicit direct pairing trust for recovery.
 
 Choosing a signed-in account machine performs first-time adoption through the
 directory using LAN, Tailscale, then Relay. LAN/Tailscale adoption is allowed
@@ -161,6 +176,87 @@ listings and network failures stay silent. Settings diagnostics shows the
 current version, the latest available version when known, and a manual check
 action.
 
+## Slim mobile chat wire
+
+A phone used to download the same chat bytes a desktop does. On a real 16.1 MB
+/ 21,665-event thread from a four-lane program, three families own most of it:
+`tool_result` 23.1%, `subagent_progress` 19.8% (7,775 events), and
+`subagent.progress` a further 15.2% — a second copy of the same 7,775 facts.
+
+The phone announces `mobileChatSlimV1` in its hello capabilities. A host that
+sees it applies three rules, in `apps/desktop/src/shared/chatMobileSlim.ts`.
+Every other client — desktop, hosted web, the TUI, the CLI — receives exactly
+the wire it received before, and nothing here changes what is written to the
+transcript or what an agent does.
+
+**The `subagent.progress` mirror is dropped.** The host commits a dot-family
+twin beside every underscore subagent lifecycle event
+(`buildCanonicalAgentChatRuntimeEvent`), so both cross the wire; in the
+measured thread the pair is written 1 ms apart with identical ids, and iOS
+decodes both into the same `.subagentProgress` case. The twin is dropped only
+where it *is* a twin — the underscore original for that agent was the previous
+progress event delivered. A transcript that carries dot-family progress with no
+underscore original (an older build) keeps every event, so no subagent loses
+its card.
+
+**Progress is state, not history.** A `subagent_progress` event is a snapshot
+of one agent's summary, tokens and last tool, and iOS never makes a timeline row
+from one — it "enriches the folded snapshot" and nothing else. So the
+`chat_subscribe` snapshot keeps only the latest progress per agent, and the
+live stream sends at most one per agent per second (last write wins, dropped
+when a result supersedes it). `subagent_started` and `subagent_result` are
+never folded: they are what the card's existence and outcome are made of. A
+progress event whose window closes after a newer event already went out is sent
+without a `seq`, because the client drops `seq <= lastSeq` — the event is card
+state, not a new point in the ordered stream, and the resume watermark stays on
+the newer event.
+
+**Tool results are fetched, not pushed.** The shared wire cap is 16 KB; a
+capable phone gets 2 KB — about one screen — plus the true size and
+`resultTruncatedForMobile`. Expanding the row sends `chat_tool_result`
+(`sessionId` + `itemId`, scoped exactly like `chat_history`: the peer must
+already be subscribed and the chat scope must match), which reads the stored
+result back out of the transcript. The row shows a spinner while it loads and
+`SyncService` caches the result per item, so re-expanding it — or opening it
+again from the turn-activity sheet — costs nothing. "Could not read it" and
+"it is no longer in the transcript" are different answers and the row says
+which.
+
+### Before and after, on the measured thread
+
+| | legacy phone | `mobileChatSlimV1` |
+|---|---|---|
+| `chat_subscribe` snapshot, events | 498 | 91 (81.7% fewer) |
+| `chat_subscribe` snapshot, bytes | 237.4 KiB | 86.2 KiB (63.7% smaller) |
+| whole live stream, events | 21,937 | 14,046 (36.0% fewer) |
+| whole live stream, bytes | 14,367.5 KiB | 10,859.0 KiB (24.4% smaller) |
+
+The snapshot is what the phone pays every time it opens a thread, which is why
+it is the number that matters most. In the live stream the mirror is the
+biggest single saving (2,489.8 KiB → 0) and tool results the next
+(2,036.7 → 1,070.8 KiB); the one-per-second coalescing removes only 116 events
+on this thread, because a single subagent already reports more slowly than once
+a second — it bounds a burst rather than thinning a steady stream.
+
+## In-thread subagents have a card, not a transcript
+
+A subagent that runs INSIDE a main thread — a Claude or Codex native Task —
+has no transcript to open. Its card carries the label, model, status, latest
+summary and final result, which is everything a phone can act on. Opening the
+transcript replaced the thread the user was reading with a read-only copy they
+had to back out of, and kept a one-and-a-half-second transcript poll running
+for as long as it was open, for content that is the parent's own work seen one
+level down.
+
+The in-transcript spawn/result rows are therefore flat rows, not buttons.
+Stopping a running spawn is the one action left on them. Tapping a roster row
+in the Chat Info sheet still expands that agent's details in place, which is
+the only surface that expansion was ever visible on.
+
+This is only about in-thread subagents. A `--type subagent` chat and a child
+lane are full chats with their own rows, their own composer and their own lane,
+and they open exactly as they always have.
+
 ## Project layout
 
 > The same Xcode project also ships `apps/ios/ADE/Debug/ADEInspectorKit/`,
@@ -179,7 +275,8 @@ apps/ios/
 │   │   ├── ADEAppDelegate.swift     # UIApplicationDelegate: APNs device-token
 │   │   │                            # callbacks + notification presentation,
 │   │   │                            # feeds PushNotificationService
-│   │   ├── ContentView.swift        # signed-in-or-continue launch gate, then
+│   │   ├── ContentView.swift        # account-required launch gate with an
+│   │   │                            # explicit paired-host recovery path, then
 │   │   │                            # 5-tab TabView with a custom
 │   │   │                            # `ADERootBottomTabBar` overlay
 │   │   │                            # (Work/Lanes/PRs/Files/CTO + Work
@@ -231,7 +328,7 @@ apps/ios/
 │   │   │                            # ensureColumn migrations for upgrades)
 │   │   └── VoiceGlossary.json       # shared dictation cleanup glossary
 │   ├── Services/
-│   │   ├── AccountService.swift     # Clerk-backed optional account identity,
+│   │   ├── AccountService.swift     # Clerk-backed account identity,
 │   │   │                            # transferable social auth outcomes,
 │   │   │                            # durable sign-out/device-ownership epochs,
 │   │   │                            # serialized account push registration,
@@ -599,9 +696,10 @@ apps/ios/
 │   │   │                            # CreatePrWizardView, PrRebaseScreen,
 │   │   │                            # PrTargetBranchPickerDropdown,
 │   │   │                            # PrDetailOverviewPreviews (preview fixtures)
-│   │   ├── Settings/                # ConnectionSettingsView (account card →
-│   │   │                            #   connection status → machines list → ways
-│   │   │                            #   to add one), SettingsMachinesSection
+│   │   ├── Settings/                # ConnectionSettingsView (connection header
+│   │   │                            #   plus Account, Preferences, repository,
+│   │   │                            #   and this-device groups),
+│   │   │                            # SettingsMachinesSection
 │   │   │                            #   (reachable-machine list: top 3 + See all),
 │   │   │                            # SettingsMachineRenameSheet (account-wide
 │   │   │                            #   custom name set/clear),
@@ -759,8 +857,10 @@ without. Image sends echo *before* the upload: the composer's downscaled
 `UIImage` renders behind an uploading state under an `ade-pending-upload://`
 placeholder ref (`WorkPendingUploadPreviewStore`), swapped for the real host
 path before the message is sent so the echo's dedupe key still matches the
-transcript row that returns. `sending` releases when the host accepts the
-message; the transcript/artifact/summary/session refresh runs behind the
+transcript row that returns. The wait for those bytes is bounded (see the
+composer-draft rules below), so an upload that never lands fails the send and
+offers a retry instead of holding the echo at "Sending". `sending` releases when
+the host accepts the message; the transcript/artifact/summary/session refresh runs behind the
 composer, chained so two quick sends cannot interleave two transcript loads.
 
 Because that makes back-to-back identical sends easy, echo suppression counts
@@ -768,48 +868,79 @@ represented rows rather than testing set membership — two sends of "continue"
 share one dedupe key, and one matching transcript row must retire exactly one of
 them (`workUnrepresentedLocalEchoMessages`).
 
-**Prepended history does not move the reader.** Older pages insert above the
-viewport, so the `LazyVStack` grows upward while `contentOffset` stays put. The
-correction is measured on the row that led the list before the insert, via a
-single geometry probe that rides that row (`WorkChatPrependProbePreferenceKey`),
-and is applied through `ScrollPosition` in a non-animated transaction.
-Deliberately not total content height: a reply streaming into the tail grows the
-content at the same time, and a reader scrolled back through history is exactly
-when that happens, so a total-height correction would add the tail's growth and
-overshoot. Bottom-follow and the jump-to-latest pill are untouched.
+**The transcript is a `UICollectionView`, not a `ScrollView`.**
+`WorkChatTranscriptCollectionView` hosts a compositional list layout with a
+diffable data source keyed by the timeline's own row ids, and every existing
+SwiftUI row — bubbles, tool cards, subagent cards, the earlier-messages header,
+the bottom gutter — renders unchanged inside a `UIHostingConfiguration` cell.
+The reason is one property SwiftUI does not offer: UIKit compensates its own
+content offset when a cell self-sizes away from its estimate, so a row
+re-measuring above the viewport does not move the row the reader is looking at.
+A `LazyVStack` has no such writer, and that missing writer was 88% of the
+transcript's measured displacement. `WorkChatTranscriptHeightCache` keys a
+measured height by row id + width + content revision, so a row scrolled back
+into view is restored to the height the layout already believes it has instead
+of re-measuring; the width changing (rotation) drops the cache wholesale.
 
-Three rules keep that correction from becoming a teleport. A probe sample that
-describes a *different* row than the armed anchor is no measurement at all, so
-it waits rather than falling through with a zero row shift — that would reduce
-the correction to the reader's own scroll delta and apply it twice. Overlapping
-prepends keep the *first* anchor rather than re-arming on the new leading row:
-its row was pushed down by both insertions, so the displacement measured on it
-already accumulates them. And a correction is a scroll write, so like every
-other one it defers to the reader for the whole interaction — finger-down
-through the end of the fling (`workChatMayWriteScrollOffset`, fed by
-`onScrollPhaseChange`, not by the drag gesture, which ends at finger-up).
+Row identity is the collection view's identity. A row whose content changed
+carries a new *revision* and is reconfigured — never deleted and re-inserted —
+because an insert would take the measured height and the reader's anchor with
+it. `workChatTranscriptRowRevision` computes that revision, and the timeline
+presentation's own signature is built from the same function, so "did the list
+change" and "is this cell's measured height still valid" cannot drift apart.
 
-**A chat opens where it was left, not at a random offset.** The transcript opens
-at the tail through `defaultScrollAnchor(.bottom, for: .initialOffset)` —
-scoped to the initial offset because the `.sizeChanges` anchor is the
-total-height correction the paragraph above exists to avoid. The force-pin
-remains as belt-and-braces, but it now stays armed until the content size has
-been quiet for 600ms rather than firing on a fixed retry ladder, because
-hydration routinely lands after that ladder ends. It stands down early only for
-a deliberate scroll (the 2pt stickiness deadband — finger jitter and keyboard
-`.interacting` do not count). A transcript shorter than the viewport renders from
-the top, desktop-style; a one-entry chat skips the pin entirely.
+**One latch decides every scroll write.** `workChatFollowLatch` is a pure
+function over `{following, inUserSession}` and a handful of events —
+`reset`, `userScrollBegin`, `userScrollEnd`, `scroll`, `disclosureSettled`,
+`sendMessage`, `jumpToLatest` — and is unit-tested on its own. A scroll frame
+may only break follow *inside* a user session, which spans finger-down through
+the end of momentum (with a 160 ms settle for a drag that reported none), so a
+pin, a jump animation, and UIKit's own layout compensation cannot feed back
+into the decision that authorized them. Exactly one function,
+`performScrollWrite`, moves the viewport, and it refuses any write under 0.5 pt
+— which is what makes the corrections below idempotent rather than a fight.
 
-**Follow survives the keyboard the same way a terminal does.** Opening the
-composer or the system keyboard shrinks the transcript window. A reader who was
-glued to the live tail stays glued: the content-size observer re-pins to
-`chat-end` after that pass (`workChatLayoutScrollAdjustment`), and the
-keyboard's `.interacting` phase is not treated as the reader taking over —
-consulting `distanceFromBottom` there is the same predicate flip the terminal
-refuses to use on a layout resize. A reader who had scrolled up keeps that
-place; the pre-keyboard offset is restored and clamped so a shorter window
-cannot overscroll into blank. The same following re-pin runs when a finishing
-turn collapses cards and the tape shrinks under the viewport.
+**Content inserted above the reader keeps the reader's row in place.** While
+not following, the transcript holds an anchor: the topmost visible row and how
+far its top sat from the viewport's top edge. It is re-sampled only from the
+reader's own scrolling — never from a frame UIKit produced while compensating a
+re-measure, which is the very displacement the anchor exists to undo. After a
+snapshot apply, and again on every layout pass, the anchor is restored by
+setting the offset so that row lands where it was. The restore is absolute
+rather than incremental, so when UIKit has already compensated correctly it
+writes nothing. The pass is caught by a `UICollectionView` subclass that
+reports its own `layoutSubviews`: a cell self-sizing re-lays the list without
+ever changing the controller's view bounds, and that is exactly the pass that
+can move a row above the reader.
+
+**A chat opens at the tail in one frame.** The first non-empty snapshot is
+applied, laid out, and pinned to the bottom in the same pass — there is no
+retry ladder and no quiescence timer. Hydration that lands afterwards is an
+ordinary content change while following, and each one re-pins once. A
+transcript shorter than the viewport renders from the top, which the collection
+view does by construction.
+
+**Follow survives the keyboard the same way a terminal does.** The keyboard,
+the composer growing, and a card collapsing all arrive as a bounds change on
+the transcript. Following stays glued to the tail; a reader who had scrolled up
+has their anchored row put back, which survives a re-measure that a saved
+offset would not. A pin is the app moving the viewport, so it waits out the
+reader's whole interaction even when the latch says they are still on the tail
+— writing an offset under a live finger is what killed flings.
+
+**Revealing buffered history is scroll-back.** The near-top trigger requires
+that the transcript is *not* following. Without that, the first geometry frames
+— which report the top, and a content height that trivially "fits", because the
+opening pin has not landed and the transcript has one row in it — spent the
+whole buffered page before anything was on screen.
+
+The eight bench cases in `ADEUITests/WorkChatScrollBenchUITests.swift` are the
+acceptance test, reduced from the `com.ade.ios.scrollbench` trace. The trace's
+`viewport row=<id> y=<pt>` line is the one that matters: `contentOffset` stopped
+being a usable proxy for "did anything move" the moment UIKit started
+compensating its own self-sizing, and it is emitted after the layout pass, not
+from the `didScroll` UIKit raises mid-pass from a state no frame is composited
+from.
 
 **Assistant messages render whole.** There is no line or character budget, no
 head/tail anchor to pick, no budget floor to preserve, and no "Show more" step —
@@ -2348,6 +2479,37 @@ stored choice. `WorkNewChatScreen` captures the active project id when pushed;
 changes so a hub-created session cannot accidentally launch with the previous
 project's interface mode.
 
+The Work chat composer folds by gesture, not by a control. A downward swipe
+anywhere on the composer card — the field, the controls row, or the card's own
+padding — folds the field to one line and lowers the keyboard in one spring; an
+upward swipe on the folded card, a tap into the field, or a tap on the compact
+attachment tray brings both back. The card carries no collapse row: the
+dedicated `keyboard.chevron.compact.down` button that used to sit in its own row
+above the field is gone, and the row with it. (The structured-question card
+keeps its own separate chevron footer.) The swipe rides alongside the field's
+own recognizers rather than replacing them, so text selection and the tray's
+horizontal scroll still work, and only a mostly-vertical drag past 40 pt is
+claimed (`workComposerFoldGesture`). Once a draft grows past the field, the
+`UITextView` is scrolling and will not let a foreign recognizer run beside its
+own pan, so the composer observes that pan instead of competing with it: a
+downward swipe that starts at the top of the draft folds the card, one that
+starts mid-draft still scrolls the draft, and `keyboardDismissMode =
+.interactive` takes the keyboard down with the finger either way.
+
+Folding does not re-measure the field. The `UITextView` keeps the height it
+measured for the full draft and the folded card clips it to one line from the
+top, so a forty-line draft folds as a single animated container height instead
+of re-laying the text out on a background hop that lands outside the animation.
+One spring drives it, applied where the collapsed state changes rather than as
+an `.animation(_:value:)` modifier, so nothing animates the fold twice. The
+composer's fold switches the tray to 24 pt chips without unstaging anything, and
+it changes only its own height: no fold path scrolls the transcript, because a
+reader who folds the composer mid-sentence is folding it *to read*, and moving
+their place is the one thing that makes the gesture useless. The rules live in
+`workComposerFoldTransition` / `workComposerFoldGesture`
+(`WorkChatComposerAndInputViews.swift`) rather than in the view, so expanding
+while a pending question has locked the field never raises a keyboard over it.
+
 Submitting a valid prompt dismisses the keyboard across every mobile chat
 composer: Work session chat clears the observable `UITextView` focus request,
 Work new-chat and personal new-chat clear their focus bindings, and the Hub
@@ -2389,8 +2551,8 @@ Staged non-image attachments preview in place
 `chat.getAttachmentChunk` and render in QuickLook, with video played from the
 reassembled file. Attachment chips are kind-aware
 (`WorkChatInputAttachmentKind` → `photo` / `film` / `doc` glyphs), and the
-composer's collapse control switches the tray to 24 pt chips without unstaging
-anything. Hub, Work new-session, and in-session composers open attach, dictate,
+composer's fold gesture switches the tray to 24 pt chips without unstaging
+anything, and a tap on that compact row expands the composer again. Hub, Work new-session, and in-session composers open attach, dictate,
 and per-project prompt stash from `WorkComposerOverflowButton` (a three-dot
 menu) rather than a plus control or idle mic. Their `UITextView` inputs also
 advertise Paste for image-only clipboards and stage pasted images through the
@@ -2437,6 +2599,41 @@ and written back to `WorkComposerPreferences` so the phone's composer and its
 imports stay consistent. Those arguments are sent only for `target: "chat"`; a
 CLI import sends none of them so the resumed session keeps its provider state.
 See [External session import](../terminals-and-sessions/external-session-import.md).
+
+### Chips on the phone
+
+iOS re-implements the desktop chip model in Swift — it cannot import
+`apps/desktop/src/shared/chips.ts` — so mention chips, sent-message pills, and
+copy behave the same on both devices:
+
+- **Composer mentions draw as pills.** `WorkComposerTypedTriggers.swift` detects
+  `@` / `/` / `#` cursor-relatively and `WorkSmartLink` parses URL-shaped text,
+  including `ade://` deeplinks, into the same typed labels the desktop uses
+  (`ade://pr/owner/repo/1237` → `#1237`). An unrecognised `ade://` shape keeps
+  its descriptive path form rather than collapsing to a bare "ADE link".
+- **Sent messages draw their chips.** The transcript
+  (`WorkChatHeaderAndMessageViews.swift`) renders the same pills the composer
+  did, over the unchanged stored text.
+- **Copy still yields tokens.** Copying a message puts the canonical tokens on
+  the pasteboard, not the display labels, so a chip pasted anywhere else is
+  still a re-parseable pointer.
+- **N PRs per chat.** `LaneHelpers.swift` mirrors `selectLanePrs` (strictly
+  lane-owned) and `selectChatPrs` (the union with this chat's cross-lane links),
+  and `workChatPrTag` feeds the chat's PR switcher the same badge and sheet the
+  Lanes tab draws. See
+  [Multi-PR lane ownership and chat edges](../pull-requests/README.md#multi-pr-lane-ownership-and-chat-edges).
+- **Attachments while a question is open.** The paperclip stays live during a
+  structured question; files staged while answering ride the turn the answer
+  unblocks.
+
+Parity is enforced rather than asserted. `apps/desktop/src/shared/__fixtures__/chipCases.json`
+is read by `shared/chips.test.ts` **and**, from disk relative to `#filePath`, by
+`ADETests/WorkComposerTriggerDetectorTests.testMatchesSharedChipFixture`. Adding
+a row fails the iOS suite until Swift matches, and `.github/workflows/ci.yml`'s
+`test-ios` gate watches that fixture directory alongside `apps/ios/**`, so a
+desktop-only PR that adds a case cannot skip the Swift suite and break main.
+Hand-written twin tests prove today's parity and nothing about tomorrow's — two
+divergences had already been caught by review rather than by a failing test.
 
 ### Settled lifecycle and attention parity
 
@@ -2805,6 +3002,10 @@ release. `WorkToolsSheet` carries the matching `previewState` / `previewFrame`
 seam: when set, `refresh` installs them instead of asking the sync socket.
 
 ### Shipped
+
+Settings keeps the connection header outside four scope groups: Account,
+Preferences, this repository, and this device. Fresh access is account-required;
+the existing paired-host recovery path is the only account-less continuation.
 
 | Tab | Icon | Desktop equivalent | Capabilities |
 |---|---|---|---|
@@ -3222,9 +3423,11 @@ The usage commands are viewer-allowed project actions:
   quota-only refresh with interactive host authentication disabled. Work shows
   a compact provider-icon summary using the host's percent-used values directly.
   Live limits mirror the desktop band as headroom cards — one group per
-  provider, one card per window, one segment per account — with provider icons,
-  pressure colors, reset countdowns, source/freshness/error state, explicit
-  refresh, and the provider limits link. The snapshot carries `accounts[]` and a
+  provider, one card per window, and **one named row per account, always**
+  (the email is no longer hidden when a provider has a single login) — with
+  provider icons, provider brand colours from `ADESharedTheme` rather than a
+  per-account hash, pressure colors, reset countdowns, source/freshness/error
+  state, explicit refresh, and the provider limits link. The snapshot carries `accounts[]` and a
   per-window `accountId`; the link comes from `MobileUsageProviderStatus.accountUrl`
   stamped by the host, so the URL lives in exactly one place and an older host
   simply hides it. The arithmetic is `adeUsagePoolAccounts` /
@@ -3652,13 +3855,19 @@ the stats and shows update guidance.
   `WorkModels.swift` — a hand-mirrored copy of the desktop's canonical
   `ACTIVE_TURN_DISPATCH_MODES` table in `apps/desktop/src/shared/types/chat.ts`,
   kept in step by hand because iOS cannot import the TS. Modes are in menu order
-  and the first is the default, so Claude mirrors desktop's three choices
-  (**Send during turn**, **Send after turn**, **Interrupt & send**, defaulting to
-  *Send during turn*) and Cursor gets two (**Interrupt & continue**, **Send after
-  turn**, defaulting to *Interrupt & continue*). `interruptContinues` is mirrored
-  alongside the table, so Cursor's button and hint say "continue" — its SDK has
-  no mid-run message API, and the redirect cancels and resends on the same agent
-  thread. Every provider name in the option titles, details, hints and VoiceOver
+  and the first is the default; read the table for the per-provider lists rather
+  than a copy here, and the mirror for the iOS copy. Claude and Cursor both
+  carry all three choices (**Send during turn**, **Send after turn**, and an
+  interrupt), and `interruptContinues` is mirrored alongside the table so
+  Cursor's button and hint read **Interrupt & continue** — its interrupt cancels
+  the run and resends on the same agent thread rather than folding into a live
+  query, which is the one thing its inline channel (`Run.steer()`) did not
+  change. A Cursor **Cloud** session withholds *Send during turn* the same way
+  the desktop pane does: `workChatCursorSessionRunsInCloud` is the iOS half of
+  `cursorSessionRunsInCloud`, and it reads `cursorRuntime` when the host sent
+  it so a leftover `cursorCloudAgentId` cannot hide inline on a local chat.
+  Older hosts omit `cursorRuntime`; those still key off a non-empty agent id.
+  Every provider name in the option titles, details, hints and VoiceOver
   strings comes from the capability's `agentLabel` rather than hard-coded
   "Claude". The primary button's icon/label communicates the selected behavior,
   the chevron opens a custom SwiftUI popover, and selection dismisses it
@@ -3726,11 +3935,25 @@ the stats and shows update guidance.
   provider with no such channel, and for a brain that does not advertise
   `chat.dispatchSteer` — the same gate the staged strip's buttons read, so the
   composer can never request a promotion the strip is hiding the recovery for.
-  A host old enough to advertise `chat.dispatchSteer` but too old to accept
-  `dispatchMode` on `chat.steer` answers `queued: true`; that one case falls
-  back to the legacy two-step promotion rather than dropping the user's choice,
-  and if the promotion fails the single queued message remains and the draft is
-  not restored as a duplicate.
+  A `queued: true` answer now has two causes: a host old enough to advertise
+  `chat.dispatchSteer` but too old to accept `dispatchMode` on `chat.steer`, and
+  a current host that staged the row on purpose because the live run refused an
+  inline steer. Both fall back to the legacy two-step promotion — right for the
+  first, harmless for the second — rather than dropping the user's choice, and
+  if the promotion fails the single queued message remains and the draft is not
+  restored as a duplicate.
+- **A non-throwing `chat.dispatchSteer` is not a delivery.** The host answers
+  `{ dispatchedAt: null }` without throwing when the running turn refused the
+  message, which a Cursor inline dispatch can hit at any time, so
+  `SyncService.dispatchChatSteer` returns a `Bool` read off `dispatchedAt`
+  instead of discarding the result. The staged chip and the queued echo are
+  cleared only when that reads true; otherwise the row keeps its queued display
+  until the turn boundary sends it. A durably queued command carries no
+  `dispatchedAt` key at all (the machine has not answered yet) and reads as
+  not-dispatched, which is the safe side — reconciliation corrects it. Both the
+  composer's promotion path and the staged strip's **Send now** / **Interrupt**
+  buttons go through the one private `dispatchSteer(_:mode:)` helper so they
+  cannot disagree about what a null answer means.
 - **The staged strip is only ever "you queued this".** With active-turn sends
   atomic, `WorkQueuedSteerStrip` renders exclusively messages the user chose to
   queue, so it no longer hides behind an accordion: one queued message is a
@@ -3738,9 +3961,24 @@ the stats and shows update guidance.
   disposition beneath, and **Send now** / **Interrupt** / **Edit** / **Cancel**
   as visible icon-only buttons with 44pt-tall touch areas. Only a pile-up gets
   a slim `N queued` count above the rows. While a turn is running the clock
-  glyph breathes and the disposition reads "sends when turn ends"; on an idle
-  session it sits still and reads "after turn". The pulse goes through
-  `ADEMotion.pulse`, so Reduce Motion simply draws the glyph at full strength.
+  glyph breathes and the disposition reads "sends at next step" on a provider
+  that takes a message mid-turn and "sends when turn ends" on one that does
+  not; on an idle session it sits still and reads "after turn". The pulse goes
+  through `ADEMotion.pulse`, so Reduce Motion simply draws the glyph at full
+  strength.
+- **Tapping a staged row opens its detail sheet.** A truncated line and four
+  unlabelled glyphs cannot show a long message or say what each option does, so
+  the row's summary is a 44pt tap target (the icon buttons keep their own) that
+  presents `WorkQueuedSteerDetailSheet`. The sheet shows the whole message
+  selectable, its attachments, when it was staged, and what happens to it next,
+  then lists every delivery option as a full-width row: **Send now**,
+  **Interrupt & send** / **Interrupt & continue** (the label follows
+  `capability.interruptContinues`), **Edit**, and **Cancel**. Options this
+  provider cannot do are disabled with the reason on the row rather than
+  hidden, so the option set reads the same on every provider. The capability
+  comes from `workChatActiveSendCapability` — the same per-provider table the
+  composer's send-mode picker reads — and every action calls the closure the
+  inline buttons already use, then dismisses.
 - **The Work context meter treats completed compaction as a usage boundary.**
   `RemoteModels.swift`, `WorkEventMapping.swift`, and the persisted JSONL parser
   retain `context_compact.postTokens` plus the automatic `context_usage.state`.
@@ -3889,6 +4127,21 @@ the stats and shows update guidance.
   neither is whole — keeping only the longer one silently dropped part of the
   answer. Fix disagreements on the host, not with a client rule that has to
   guess what a sequence-less envelope contains.
+- **A graduated steer is pruned before the idle rebuild filters anything.**
+  The host writes a steered message twice: a `deliveryState: "queued"` row when
+  it is staged and a non-queued row when the provider consumes it. An idle
+  session prefers the canonical `chat.getTranscript` text and keeps only tool /
+  notice / queued-steer envelopes from the live stream, so a stale queued row
+  that outlived its delivered twin would be the one row the filter kept — the
+  bubble disappeared from the thread and the message reappeared in the staged
+  strip after it had already been sent. `workChatIdleCanonicalEventTranscript`
+  runs `pruneResolvedQueuedSteerEnvelopes` first and filters second, and
+  `preferredWorkTranscript` prunes the merged live transcript before the
+  fallback backfill so `shouldSkipBackfillPlainUserMessage` never suppresses a
+  canonical bubble on the strength of a resolved queued row. A still-pending
+  queued steer has no graduating row, so both prunes leave it exactly where it
+  is. The host half of the same fix is in `transcriptEntriesFromEnvelopes`,
+  which now emits a graduated steer once.
 - **CLI launcher provider IDs are runtime-validated.** The Work
   new-session screen sends `provider` strings that
   `parseCliProvider` matches verbatim against
@@ -4019,11 +4272,10 @@ the stats and shows update guidance.
   on a 400 ms debounce and flushed on disappear because a cancelled `.task`
   throws out of its sleep before the write. Three rules are load-bearing:
   restore only into an empty field (a failed send that put its text back, or
-  a card already mid-edit, is fresher than disk); clear synchronously on send
-  rather than letting the debounce get there, or a jetsam inside that window
-  resurrects an already-sent message and invites a duplicate; and never write
-  an `isSecret` answer, because that defaults suite is shared with the widget
-  extension and would hold a credential in plaintext. Clearing a host profile
+  a card already mid-edit, is fresher than disk); **a send owns the stored
+  draft until the host confirms it**; and never write an `isSecret` answer,
+  because that defaults suite is shared with the widget extension and would
+  hold a credential in plaintext. Clearing a host profile
   deliberately does **not** touch these stores — `forgetHost()` has no UI
   caller and fires automatically from `handleReconnectFailure` on an
   attributed auth failure, and the stores are keyed by session id rather than
@@ -4036,6 +4288,38 @@ the stats and shows update guidance.
   in-flight task. When the host is unreachable there is no ref to persist, so
   the bytes go to a purgeable `Caches/ade-composer-drafts/<key>` directory
   bounded at 5 files and 10 MB, purged on send, on clear, and on LRU eviction.
+- **An unconfirmed send keeps its whole message, text and attachments.**
+  Tapping send writes the outgoing text (`WorkChatComposerDraftState
+  .beginPendingSend`) and the outgoing attachment refs or cached bytes
+  (`workChatPersistComposerAttachments`) under the chat's draft key *before* the
+  field and tray are emptied, and `finishPendingSend(sent:)` drops the stored
+  copy only once the host has taken the message. While that send is in flight
+  the composer's autosave and its attachment persist both stand down, so the
+  emptied field cannot be written over the payload they are holding. Leaving the
+  chat, switching chats, or relaunching therefore restores the message — the
+  case that used to lose it outright. The reverse cost is explicit: a kill
+  between the host accepting and the confirmation returning restores an
+  already-sent message as a draft, which is what the
+  `SyncRequestTimeout.chatSendMessage` copy already tells the user to check the
+  transcript for.
+- **Waiting for a staged upload is bounded, and a send that cannot complete says
+  so.** `WorkComposerAttachmentUploads.resolve` waits at most
+  `workComposerAttachmentUploadTimeoutNanoseconds` (=
+  `SyncRequestTimeout.chatSendTimeoutNanoseconds`) for the upload that started
+  when the attachment was staged, and reports one of three answers: the host's
+  ref, "stage inline" (nothing tracked, or the upload failed — the send uploads
+  the bytes itself), or "abandoned" (the deadline passed; the send fails rather
+  than queueing a second copy behind a wedged leg). `workAwaitWithDeadline`
+  abandons the *wait*, not the upload, because a task group only returns once
+  every child has finished and the upload legs park in non-cancellable
+  continuations. A failed send restores the composer and shows one retry row
+  above the field — "Couldn't send. Tap to retry." — whose tap runs the same
+  `performSend` the button does, in the same send mode. The upload the tracker
+  runs calls `workChatStageAttachmentOnHost` (the raw host call) and never
+  `workChatSaveInputAttachments`: that wrapper resolves through this tracker, so
+  routing the upload through it made the task await its own completion and every
+  message carrying an image sat at "Sending" forever, with no error, no retry,
+  and the draft already cleared.
 - **The fallback transcript is built lazily, and the guard order that makes
   that work is load-bearing.** `WorkSessionDestinationView` keeps a
   cached-entry fallback alongside the live event transcript, but materializing

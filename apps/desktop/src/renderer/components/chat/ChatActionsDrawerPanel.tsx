@@ -27,9 +27,9 @@ const SOURCES_TAB: GlowMenuItem<ChatActionsTab> = {
   ...NEUTRAL_INDICATOR,
 };
 
-// Missions tab — surfaced only for Droid AGI orchestrator sessions that have an
+// Missions tab — surfaced only for Droid AGI sessions that have an
 // active mission (feature checklist / state / progress). Leads the strip so the
-// orchestrator's plan is the first thing you see.
+// mission plan is the first thing you see.
 const MISSIONS_TAB: GlowMenuItem<ChatActionsTab> = {
   id: "missions",
   label: "Missions",

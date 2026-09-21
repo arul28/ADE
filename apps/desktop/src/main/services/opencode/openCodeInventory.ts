@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
 import type { Logger } from "../logging/logger";
-import type { EffectiveProjectConfig, ProjectConfigFile } from "../../../shared/types";
+import type { EffectiveProjectConfig, OpenCodeProviderSummary, ProjectConfigFile } from "../../../shared/types";
 import {
   createDynamicOpenCodeModelDescriptor,
   isLocalProviderFamily,
@@ -26,13 +26,73 @@ const TTL_MS = 60_000;
 const SERVER_IDLE_TTL_MS = 10_000;
 
 /** Metadata for an OpenCode provider as returned by provider.list(). */
-export type OpenCodeProviderInfo = {
-  id: string;
-  name: string;
-  connected: boolean;
-  modelCount: number;
-  availableModelCount?: number;
-};
+export type OpenCodeProviderInfo = OpenCodeProviderSummary;
+
+function normalizeOpenCodeProviderEnvVars(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const envVars = [...new Set(
+    value
+      .filter((entry): entry is string => typeof entry === "string")
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0),
+  )];
+  return envVars.length > 0 ? envVars : undefined;
+}
+
+function hasConfiguredOpenCodeApiKey(
+  projectConfig: ProjectConfigFile | EffectiveProjectConfig,
+  providerId: string,
+): boolean {
+  const normalizedProviderId = providerId.trim().toLowerCase();
+  const configured = projectConfig.ai?.apiKeys ?? {};
+  if (Object.entries(configured).some(([id, key]) => (
+    id.trim().toLowerCase() === normalizedProviderId
+    && typeof key === "string"
+    && key.trim().length > 0
+  ))) {
+    return true;
+  }
+
+  // The normal OpenCode server preserves user-supplied config content. It is
+  // safe to inspect the shape here, but never carry the value across the
+  // status boundary.
+  const inheritedContent = process.env.OPENCODE_CONFIG_CONTENT?.trim();
+  if (!inheritedContent) return false;
+  try {
+    const parsed = JSON.parse(inheritedContent) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+    const provider = (parsed as Record<string, unknown>).provider;
+    if (!provider || typeof provider !== "object" || Array.isArray(provider)) return false;
+    const entry = (provider as Record<string, unknown>)[providerId]
+      ?? (provider as Record<string, unknown>)[normalizedProviderId];
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+    const options = (entry as Record<string, unknown>).options;
+    return Boolean(
+      options
+      && typeof options === "object"
+      && !Array.isArray(options)
+      && typeof (options as Record<string, unknown>).apiKey === "string"
+      && ((options as Record<string, unknown>).apiKey as string).trim().length > 0,
+    );
+  } catch {
+    return false;
+  }
+}
+
+function resolveOpenCodeCredentialSource(
+  projectConfig: ProjectConfigFile | EffectiveProjectConfig,
+  providerId: string,
+  envVars: string[] | undefined,
+): OpenCodeProviderInfo["credentialSource"] {
+  if (hasConfiguredOpenCodeApiKey(projectConfig, providerId)) return "config";
+  if (envVars?.some((envVar) => {
+    const value = process.env[envVar];
+    return typeof value === "string" && value.trim().length > 0;
+  })) {
+    return "env";
+  }
+  return undefined;
+}
 
 type CacheEntry = {
   cachedAt: number;
@@ -58,6 +118,11 @@ const probeInFlightMap = new Map<string, Promise<OpenCodeInventoryResult>>();
 // ---------------------------------------------------------------------------
 
 type PersistedInventoryFile = Record<string, { providers: OpenCodeProviderInfo[]; savedAt: number }>;
+
+function stripEphemeralCredentialSource(provider: OpenCodeProviderInfo): OpenCodeProviderInfo {
+  const { credentialSource: _credentialSource, ...stable } = provider;
+  return stable;
+}
 
 type ElectronLikeApp = { app?: { getPath(name: string): string } };
 
@@ -90,25 +155,44 @@ function readPersistedInventoryFile(): PersistedInventoryFile {
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       persistedInventoryMemo = {};
     } else {
+      const validEntries = Object.entries(parsed).filter(([, entry]) => {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+        const record = entry as Record<string, unknown>;
+        if (typeof record.savedAt !== "number" || !Number.isFinite(record.savedAt)) return false;
+        if (!Array.isArray(record.providers)) return false;
+        return record.providers.every((provider) => {
+          if (!provider || typeof provider !== "object" || Array.isArray(provider)) return false;
+          const info = provider as Record<string, unknown>;
+          return typeof info.id === "string"
+            && typeof info.name === "string"
+            && typeof info.connected === "boolean"
+            && typeof info.modelCount === "number"
+            && Number.isFinite(info.modelCount)
+            && (
+              info.availableModelCount === undefined
+              || (typeof info.availableModelCount === "number" && Number.isFinite(info.availableModelCount))
+            )
+            && (
+              info.envVars === undefined
+              || (
+                Array.isArray(info.envVars)
+                && info.envVars.every((envVar) => typeof envVar === "string" && envVar.trim().length > 0)
+              )
+            )
+            && (
+              info.credentialSource === undefined
+              || info.credentialSource === "config"
+              || info.credentialSource === "env"
+            );
+        });
+      });
       persistedInventoryMemo = Object.fromEntries(
-        Object.entries(parsed).filter(([, entry]) => {
-          if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
-          const record = entry as Record<string, unknown>;
-          if (typeof record.savedAt !== "number" || !Number.isFinite(record.savedAt)) return false;
-          if (!Array.isArray(record.providers)) return false;
-          return record.providers.every((provider) => {
-            if (!provider || typeof provider !== "object" || Array.isArray(provider)) return false;
-            const info = provider as Record<string, unknown>;
-            return typeof info.id === "string"
-              && typeof info.name === "string"
-              && typeof info.connected === "boolean"
-              && typeof info.modelCount === "number"
-              && Number.isFinite(info.modelCount)
-              && (
-                info.availableModelCount === undefined
-                || (typeof info.availableModelCount === "number" && Number.isFinite(info.availableModelCount))
-              );
-          });
+        validEntries.map(([projectRoot, entry]) => {
+          const record = entry as { providers: OpenCodeProviderInfo[]; savedAt: number };
+          return [projectRoot, {
+            savedAt: record.savedAt,
+            providers: record.providers.map(stripEphemeralCredentialSource),
+          }];
         }),
       ) as PersistedInventoryFile;
     }
@@ -122,7 +206,10 @@ function readPersistedInventoryFile(): PersistedInventoryFile {
 export function persistOpenCodeInventory(projectRoot: string, providers: OpenCodeProviderInfo[]): void {
   try {
     const all = { ...readPersistedInventoryFile() };
-    all[projectRoot] = { providers, savedAt: Date.now() };
+    all[projectRoot] = {
+      providers: providers.map(stripEphemeralCredentialSource),
+      savedAt: Date.now(),
+    };
     persistedInventoryMemo = all;
     const filePath = resolvePersistedInventoryPath();
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -372,6 +459,7 @@ export async function probeOpenCodeProviderInventory(args: {
               all: Array<{
                 id: string;
                 name?: string;
+                env?: unknown;
                 models?: Record<string, Record<string, unknown>>;
               }>;
             }
@@ -489,16 +577,23 @@ export async function probeOpenCodeProviderInventory(args: {
         const providerInfos: OpenCodeProviderInfo[] = data.all.map((p: {
           id: string;
           name?: string;
+          env?: unknown;
           models?: Record<string, Record<string, unknown>>;
-        }) => ({
-          id: p.id,
-          name: typeof p.name === "string" ? p.name : p.id,
-          connected: connected.has(p.id),
-          modelCount: isLocalProviderFamily(p.id)
-            ? catalogCounts.get(p.id) ?? 0
-            : Object.keys(p.models ?? {}).length,
-          availableModelCount: availableProviderModelCounts.get(p.id) ?? 0,
-        }));
+        }) => {
+          const envVars = normalizeOpenCodeProviderEnvVars(p.env);
+          const credentialSource = resolveOpenCodeCredentialSource(args.projectConfig, p.id, envVars);
+          return {
+            id: p.id,
+            name: typeof p.name === "string" ? p.name : p.id,
+            connected: connected.has(p.id),
+            modelCount: isLocalProviderFamily(p.id)
+              ? catalogCounts.get(p.id) ?? 0
+              : Object.keys(p.models ?? {}).length,
+            availableModelCount: availableProviderModelCounts.get(p.id) ?? 0,
+            ...(envVars ? { envVars } : {}),
+            ...(credentialSource ? { credentialSource } : {}),
+          };
+        });
         inventoryCache = {
           cachedAt: Date.now(),
           projectRoot: args.projectRoot,

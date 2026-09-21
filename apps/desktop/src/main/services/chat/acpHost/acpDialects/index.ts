@@ -26,7 +26,15 @@ export function acpDialectFor(providerId: AcpProviderId): AcpDialect {
 }
 
 export { copilotDialect, devinDialect, grokDialect, kimiDialect, qwenDialect };
-export { COPILOT_TUI_ONLY_COMMANDS, includeCopilotSlashCommand } from "./copilot";
+export {
+  COPILOT_CONFIG_OPTION_IDS,
+  COPILOT_NATIVE_MODE_IDS,
+  COPILOT_TUI_ONLY_COMMANDS,
+  copilotPermissionModeDegradationNote,
+  copilotNativeModeValue,
+  copilotSupervisionPermissionMode,
+  includeCopilotSlashCommand,
+} from "./copilot";
 export {
   GROK_CLAUDE_MARKER_OVERRIDE_ENV,
   GROK_MINIMUM_VERSION,
@@ -36,5 +44,9 @@ export {
   grokSupervisionEnv,
   readGrokPromptUsage,
 } from "./grok";
-export { KIMI_USAGE_DEGRADATION_NOTE, KIMI_WINDOWS_DEGRADATION_NOTE } from "./kimi";
+export {
+  KIMI_CONFIG_OPTION_IDS,
+  KIMI_USAGE_DEGRADATION_NOTE,
+  KIMI_WINDOWS_DEGRADATION_NOTE,
+} from "./kimi";
 export { QWEN_CONFIG_OPTION_IDS } from "./qwen";

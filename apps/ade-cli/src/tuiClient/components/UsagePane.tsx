@@ -11,22 +11,28 @@ type QuotaWindow = NonNullable<UsageContent["quotaWindows"]>[number];
 type ProviderStatus = NonNullable<UsageContent["providerStatuses"]>[number];
 
 /**
- * Which account a quota window belongs to, when saying so adds anything.
+ * Which account a quota window belongs to.
  *
- * One account per provider is the normal case and needs no tag — a row that
- * says "Claude weekly · dev@example.com" when there is only one Claude account
- * is noise. More than one, and the row has to name which. Desktop encodes the
- * same rule in `buildLimitCards`/`poolAccounts`; the two bundles share no code,
- * so this lives next to the pane that renders it rather than inline in the
- * 17 900-line `app.tsx`.
+ * Every row names its login, always. The previous rule suppressed the email
+ * whenever a provider had one account — which is the case where the row is
+ * *about* that account, and a terminal shared between two machines gives no
+ * other clue whose quota is on screen. Desktop's popover carried the same
+ * suppression and dropped it for the same reason.
+ *
+ * A host that predates account attribution sends windows with no `accountId`;
+ * those fall back to the provider's single account, exactly as
+ * `buildLimitCards` does on desktop. The two bundles share no code, so this
+ * lives next to the pane that renders it rather than inline in the 17 900-line
+ * `app.tsx`.
  */
 export function usageWindowAccountLabel(
   accounts: UsageAccount[] | undefined,
   window: Pick<UsageWindow, "provider" | "accountId">,
 ): string | undefined {
   const providerAccounts = (accounts ?? []).filter((account) => account.provider === window.provider);
-  if (providerAccounts.length <= 1) return undefined;
-  return providerAccounts.find((candidate) => candidate.id === window.accountId)?.email;
+  const match = providerAccounts.find((candidate) => candidate.id === window.accountId)
+    ?? (providerAccounts.length === 1 ? providerAccounts[0] : undefined);
+  return match?.email;
 }
 
 /**
@@ -170,7 +176,15 @@ function QuotaWindowRow({
   );
 }
 
-export function UsagePane({ content, width }: { content: UsageContent; width: number }) {
+export function UsagePane({
+  content,
+  width,
+  selectedIndex = 0,
+}: {
+  content: UsageContent;
+  width: number;
+  selectedIndex?: number;
+}) {
   const inner = Math.max(12, width - 4);
   // Read the clock once per render. The hook only changes value while the spin
   // tick is advancing (streaming / connecting), so an idle /usage pane consumes
@@ -201,9 +215,31 @@ export function UsagePane({ content, width }: { content: UsageContent; width: nu
   const providerStatuses = content.providerStatuses ?? [];
   const session = content.session ?? null;
   const spendControlReached = content.spendControlReached === true;
+  const resetCredits = content.resetCredits ?? [];
+  const selectedResetCreditIndex = resetCredits.length
+    ? Math.min(Math.max(0, selectedIndex), resetCredits.length - 1)
+    : 0;
 
   return (
     <Box flexDirection="column">
+      {resetCredits.length ? (
+        <Box marginBottom={1} flexDirection="column">
+          <Text color={theme.color.t2} wrap="wrap">
+            reset credits banked
+          </Text>
+          {resetCredits.map((credit, index) => (
+            <Text
+              key={credit.accountId}
+              color={index === selectedResetCreditIndex ? theme.color.violet : theme.color.t3}
+              bold={index === selectedResetCreditIndex}
+              wrap="truncate-end"
+            >
+              {`${index === selectedResetCreditIndex ? theme.rail : " "} ${credit.label} · ${credit.availableCount}`}
+            </Text>
+          ))}
+          <Text color={theme.color.t4} dimColor>↑↓ choose · r to use</Text>
+        </Box>
+      ) : null}
       {spendControlReached ? (
         <Box marginBottom={providerStatuses.length > 0 || windows.length > 0 ? 1 : 0}>
           <Text color={theme.color.warning} wrap="wrap">Codex spending cap reached</Text>

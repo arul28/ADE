@@ -7,6 +7,15 @@
 export const ACP_PROVIDER_IDS = ["qwen", "kimi", "grok", "copilot", "devin"] as const;
 export type AcpProviderId = (typeof ACP_PROVIDER_IDS)[number];
 
+/**
+ * Copilot ACP compatibility baseline validated against the live CLI.
+ *
+ * ACP is still a public preview in Copilot CLI, so this is a tested baseline
+ * rather than a promise that every future vendor release is wire-compatible.
+ */
+export const COPILOT_ACP_COMPATIBILITY_BASELINE = "1.0.86" as const;
+export const COPILOT_NPM_PACKAGE_SPEC = `@github/copilot@${COPILOT_ACP_COMPATIBILITY_BASELINE}` as const;
+
 export type AcpProviderMetadata = {
   readonly label: string;
   readonly statusLabel: string;
@@ -20,7 +29,7 @@ export const ACP_PROVIDER_METADATA: Readonly<Record<AcpProviderId, AcpProviderMe
     label: "Qwen Code",
     statusLabel: "Qwen",
     loginCommand: "qwen --auth-type=openai",
-    loginHint: "configure Qwen Code (`qwen --auth-type=openai` or OPENAI_API_KEY / OPENAI_BASE_URL)",
+    loginHint: "configure Qwen Code (`qwen --auth-type=openai` or `qwen --auth-type=openai-responses`, or OPENAI_API_KEY / OPENAI_BASE_URL)",
     configHomeEnv: "QWEN_HOME",
   },
   kimi: {
@@ -35,7 +44,7 @@ export const ACP_PROVIDER_METADATA: Readonly<Record<AcpProviderId, AcpProviderMe
     statusLabel: "Grok",
     loginCommand: "grok login",
     loginHint: "grok login or set XAI_API_KEY",
-    configHomeEnv: null,
+    configHomeEnv: "GROK_HOME",
   },
   copilot: {
     label: "GitHub Copilot",

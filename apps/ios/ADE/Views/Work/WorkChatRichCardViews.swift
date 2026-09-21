@@ -171,15 +171,32 @@ struct WorkToolCardView: View, Equatable {
             WorkStructuredOutputBlock(title: "Arguments", text: argsText)
           }
           if let resultText = toolCard.resultText, !resultText.isEmpty {
-            let result = workToolResultBlockText(resultText, expanded: resultExpanded)
-            // The block displays a slice; Copy and the viewer get the whole
-            // result.
-            WorkStructuredOutputBlock(title: "Result", text: result.displayed, copyText: result.copy)
-            toolResultAffordances(
-              resultText: result.copy,
-              displayedText: result.displayed,
-              didTruncate: result.didTruncate
-            )
+            if let remoteResultBytes = toolCard.remoteResultBytes,
+               let sessionId = toolCard.sessionId {
+              WorkRemoteToolResultAffordance(
+                toolName: toolDisplayName(toolCard.toolName),
+                itemId: toolCard.id,
+                sessionId: sessionId,
+                resultText: resultText,
+                remoteResultBytes: remoteResultBytes,
+                eventSequence: toolCard.resultSequence,
+                // The result envelope's own timestamp: `completedAt` is set
+                // from it on the same pass that stamps `resultSequence`, so
+                // the pair always names one generation.
+                eventTimestamp: toolCard.completedAt,
+                sourceOffset: toolCard.resultSourceOffset
+              )
+            } else {
+              let result = workToolResultBlockText(resultText, expanded: resultExpanded)
+              // The block displays a slice; Copy and the viewer get the whole
+              // result.
+              WorkStructuredOutputBlock(title: "Result", text: result.displayed, copyText: result.copy)
+              toolResultAffordances(
+                resultText: result.copy,
+                displayedText: result.displayed,
+                didTruncate: result.didTruncate
+              )
+            }
           }
         }
       }
@@ -877,6 +894,14 @@ func workToolResultBlockText(
 
 /// Short "N chars" label used in the "Show all" affordance. Uses the raw
 /// character count — this is display copy, not a byte-precise measurement.
+/// Size label for a result this device has not downloaded, so it is measured
+/// in the host's bytes rather than in characters this device does not have.
+func workToolResultRemoteByteLabel(_ bytes: Int) -> String {
+  if bytes < 1_024 { return "\(bytes) bytes" }
+  if bytes < 1_024 * 1_024 { return String(format: "%.1f KB", Double(bytes) / 1_024.0) }
+  return String(format: "%.1f MB", Double(bytes) / (1_024.0 * 1_024.0))
+}
+
 func workToolResultByteLabel(_ text: String) -> String {
   let count = text.count
   if count < 1000 { return "\(count) chars" }
@@ -2824,8 +2849,6 @@ struct WorkChatInfoDetailsSheet: View {
   let scheduledWorkPaused: Bool
   let nextWakeAt: String?
   let provider: String?
-  let selectedTaskId: String?
-  let probingTaskId: String?
   let sessionModel: String?
   @Binding var expandedTaskIds: Set<String>
   let onSelect: @MainActor (WorkSubagentSnapshot) async -> Void
@@ -2853,8 +2876,6 @@ struct WorkChatInfoDetailsSheet: View {
     scheduledWorkPaused: Bool,
     nextWakeAt: String?,
     provider: String?,
-    selectedTaskId: String?,
-    probingTaskId: String?,
     expandedTaskIds: Binding<Set<String>>,
     sessionModel: String? = nil,
     onSelect: @escaping @MainActor (WorkSubagentSnapshot) async -> Void,
@@ -2868,8 +2889,6 @@ struct WorkChatInfoDetailsSheet: View {
     self.scheduledWorkPaused = scheduledWorkPaused
     self.nextWakeAt = nextWakeAt
     self.provider = provider
-    self.selectedTaskId = selectedTaskId
-    self.probingTaskId = probingTaskId
     self.sessionModel = sessionModel
     self._expandedTaskIds = expandedTaskIds
     self.onSelect = onSelect
@@ -3014,7 +3033,7 @@ struct WorkChatInfoDetailsSheet: View {
 
   private func partitionSubagents(_ items: [WorkSubagentSnapshot]) -> (active: [WorkSubagentSnapshot], earlier: [WorkSubagentSnapshot], clearedCount: Int) {
     let cleared = clearedIds("subagents")
-    let pinned = Set([selectedTaskId].compactMap { $0 }).union(expandedTaskIds)
+    let pinned = expandedTaskIds
     var active: [WorkSubagentSnapshot] = []
     var earlier: [WorkSubagentSnapshot] = []
     var clearedCount = 0
@@ -3070,7 +3089,7 @@ struct WorkChatInfoDetailsSheet: View {
     let backgroundPartition = partitionScheduled(backgroundItems, section: "background", isEarlier: workBackgroundItemIsEarlier)
     let schedulePartition = partitionScheduled(scheduleItems, section: "schedule", isEarlier: workScheduleItemIsEarlier)
     let visibleSubagents = capped(subagentPartition.active, cap: subagentsCap, showAll: showAllSections.contains("subagents")) {
-      $0.status == .failed || selectedTaskId == $0.taskId || expandedTaskIds.contains($0.taskId)
+      $0.status == .failed || expandedTaskIds.contains($0.taskId)
     }
     let visibleBackground = capped(backgroundPartition.active, cap: backgroundCap, showAll: showAllSections.contains("background")) {
       $0.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "failed"
@@ -3189,8 +3208,6 @@ struct WorkChatInfoDetailsSheet: View {
   private func subagentRow(_ snapshot: WorkSubagentSnapshot) -> some View {
     WorkChatInfoSubagentRow(
       snapshot: snapshot,
-      selected: selectedTaskId == snapshot.taskId,
-      probing: probingTaskId == snapshot.taskId,
       expanded: expandedTaskIds.contains(snapshot.taskId),
       sessionModel: sessionModel,
       treePrefix: workSubagentTreePrefix(snapshot, in: subagents),
@@ -3364,8 +3381,6 @@ private struct WorkSquareStopButton: View {
 
 private struct WorkChatInfoSubagentRow: View {
   let snapshot: WorkSubagentSnapshot
-  let selected: Bool
-  let probing: Bool
   let expanded: Bool
   let sessionModel: String?
   var treePrefix: String = ""
@@ -3417,12 +3432,9 @@ private struct WorkChatInfoSubagentRow: View {
             }
             Spacer(minLength: 0)
             HStack(spacing: 8) {
-              if probing {
-                ProgressView().controlSize(.small)
-              }
               WorkSubagentStatusChip(status: snapshot.status)
               if showsDisclosure {
-                Image(systemName: selected ? "arrow.uturn.left" : "chevron.right")
+                Image(systemName: "chevron.right")
                   .font(.system(size: 12, weight: .bold))
                   .foregroundStyle(ADEColor.textMuted)
               }
@@ -3450,11 +3462,11 @@ private struct WorkChatInfoSubagentRow: View {
         .padding(.vertical, 9)
         .background(
           RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .fill(selected ? ADEColor.accent.opacity(0.12) : ADEColor.cardBackground.opacity(0.52))
+            .fill(ADEColor.cardBackground.opacity(0.52))
         )
         .overlay(
           RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .stroke(selected ? ADEColor.accent.opacity(0.45) : ADEColor.glassBorder, lineWidth: 1)
+            .stroke(ADEColor.glassBorder, lineWidth: 1)
         )
       }
       .buttonStyle(.plain)
@@ -3939,11 +3951,13 @@ private let workSubagentIsoFallbackFormatter: ISO8601DateFormatter = {
 /// spawn/result/background-chip rows produced by `deriveSubagentTimelineRows`
 /// (chatSubagents.ts). These rows are hard timeline boundaries anchored where
 /// the subagent started and ended; the full roster lives in Chat Info.
+///
+/// The rows themselves are not tappable. Opening an in-thread subagent's
+/// transcript was removed on the phone (see `handleSubagentSelection`), so the
+/// card IS the surface — a button that only toggled hidden Chat Info state read
+/// as a dead affordance. Stopping a running spawn is the one action left.
 struct WorkSubagentTimelineRowView: View {
   let row: WorkSubagentTimelineRow
-  /// Tapping a real spawn/result row opens the subagent detail/transcript, the
-  /// same surface the Chat Info roster row opens. Background chips are inert.
-  let onOpen: (@MainActor (WorkSubagentSnapshot) async -> Void)?
   var onStop: (@MainActor (WorkSubagentSnapshot) async -> Void)? = nil
 
   var body: some View {
@@ -3954,9 +3968,9 @@ struct WorkSubagentTimelineRowView: View {
       // The stop button is a layout sibling inside the row's own HStack, not a
       // trailing overlay: an overlay takes no space and landed on top of the
       // status capsule the row already put at the trailing edge.
-      tappable { WorkSubagentSpawnRow(row: row, stopAction: spawnStopAction) }
+      WorkSubagentSpawnRow(row: row, stopAction: spawnStopAction)
     case .result:
-      tappable { WorkSubagentResultRow(row: row) }
+      WorkSubagentResultRow(row: row)
     }
   }
 
@@ -3964,34 +3978,16 @@ struct WorkSubagentTimelineRowView: View {
     guard let onStop, workSubagentCanStopTask(row.snapshot) else { return nil }
     return { Task { await onStop(row.snapshot) } }
   }
-
-  @ViewBuilder
-  private func tappable<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-    if let onOpen {
-      Button {
-        Task { await onOpen(row.snapshot) }
-      } label: {
-        content()
-      }
-      .buttonStyle(.plain)
-    } else {
-      content()
-    }
-  }
 }
 
-/// Folded card for a run of 2+ interrupt-stopped subagents — desktop parity with
-/// `SubagentStoppedGroupCard`. A mass interrupt renders as one calm amber line,
-/// "N agents stopped when you interrupted", that expands to a per-agent list;
-/// tapping a row reopens that subagent's detail (the iOS analog of the desktop
-/// "jump to start"). Never a red error block.
+/// Folded card for a run of 2+ same-cause, same-source stopped subagents —
+/// desktop parity with `SubagentStoppedGroupCard`. A mass stop renders as one
+/// calm line whose attribution is honest about who stopped the work, then
+/// expands to a per-agent list with title, last activity, and outcome.
 struct WorkSubagentStoppedGroupCardView: View {
   let model: WorkSubagentStoppedGroupModel
   let isExpanded: Bool
   let onToggle: () -> Void
-  /// Same opener the result rows use; nil in previews/offline renders leaves the
-  /// list inert (and hides the per-row open affordance).
-  let onOpen: (@MainActor (WorkSubagentSnapshot) async -> Void)?
 
   private var headline: String { model.headline }
 
@@ -4055,35 +4051,45 @@ struct WorkSubagentStoppedGroupCardView: View {
     .contentShape(Rectangle())
   }
 
+  /// Flat rows, not buttons: the phone has no in-thread subagent drill-in to
+  /// open, and the list already carries each agent's title, last activity and
+  /// outcome.
   @ViewBuilder
   private func stoppedItem(_ row: WorkSubagentTimelineRow) -> some View {
-    if let onOpen {
-      Button {
-        Task { await onOpen(row.snapshot) }
-      } label: {
-        stoppedItemLabel(row)
-      }
-      .buttonStyle(.plain)
-    } else {
-      stoppedItemLabel(row)
-    }
-  }
-
-  private func stoppedItemLabel(_ row: WorkSubagentTimelineRow) -> some View {
+    let title = workSubagentMeaningfulName(row.snapshot)
+    let lastActivity = row.snapshot.lastActivity?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let outcome = workSubagentStoppedOutcomeLabel(row.snapshot)
     HStack(spacing: 8) {
-      Text(workSubagentMeaningfulName(row.snapshot))
-        .font(.caption)
-        .foregroundStyle(ADEColor.textSecondary)
-        .lineLimit(1)
-        .truncationMode(.tail)
+      VStack(alignment: .leading, spacing: 2) {
+        Text(title)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(1)
+          .truncationMode(.tail)
+        if let lastActivity, !lastActivity.isEmpty {
+          Text(lastActivity)
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+            .truncationMode(.tail)
+        }
+      }
       Spacer(minLength: 6)
-      Image(systemName: "arrow.up.right")
-        .font(.system(size: 10, weight: .semibold))
-        .foregroundStyle(ADEColor.textMuted)
-        .opacity(onOpen == nil ? 0 : 1)
+      Text(outcome)
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(row.snapshot.resultLanded ? ADEColor.success : ADEColor.warning)
     }
     .padding(.vertical, 5)
     .contentShape(Rectangle())
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(
+      [title, lastActivity, outcome]
+        .compactMap { value in
+          guard let value, !value.isEmpty else { return nil }
+          return value
+        }
+        .joined(separator: ", ")
+    )
   }
 }
 
@@ -4140,7 +4146,7 @@ private struct WorkSubagentResultRow: View {
 
   private var statusLine: String {
     switch snapshot.status {
-    case .stopped: return "stopped — interrupted"
+    case .stopped: return workSubagentStoppedStatusLine(snapshot)
     case .failed: return "failed"
     case .succeeded: return "completed"
     case .running: return "running"
@@ -4179,6 +4185,20 @@ private struct WorkSubagentResultRow: View {
           .foregroundStyle(snapshot.status == .failed ? ADEColor.danger : ADEColor.textSecondary)
           .lineLimit(2)
           .frame(maxWidth: .infinity, alignment: .leading)
+      }
+      if snapshot.status == .stopped {
+        VStack(alignment: .leading, spacing: 2) {
+          if let lastActivity = snapshot.lastActivity?.trimmingCharacters(in: .whitespacesAndNewlines), !lastActivity.isEmpty {
+            Text(lastActivity)
+              .font(.caption2)
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(1)
+              .truncationMode(.tail)
+          }
+          Text(workSubagentStoppedOutcomeLabel(snapshot))
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(snapshot.resultLanded ? ADEColor.success : ADEColor.warning)
+        }
       }
     }
     .padding(.horizontal, 12)

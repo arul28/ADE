@@ -3,7 +3,7 @@
 // `/command` or `@` query that ends exactly at the cursor, so suggestion menus
 // can open anywhere in the draft — not just at position 0.
 
-export type ComposerTriggerType = "slash" | "at";
+export type ComposerTriggerType = "slash" | "at" | "hash";
 
 export type ComposerTrigger = {
   type: ComposerTriggerType;
@@ -13,7 +13,7 @@ export type ComposerTrigger = {
   start: number;
 };
 
-export type ComposerSelectionKind = "file" | "mention";
+export type ComposerSelectionKind = "file" | "mention" | "pr";
 
 // Both triggers must sit at a word boundary (start of text or after
 // whitespace) and their token must run to the cursor. The slash token is a
@@ -23,6 +23,11 @@ export type ComposerSelectionKind = "file" | "mention";
 // another `@` or a newline, so emails and cross-line prose never trigger.
 const AT_TRIGGER_RE = /(?:^|[ \t\r\n])(@([^@\r\n]*))$/;
 const SLASH_TRIGGER_RE = /(?:^|\s)(\/([^\s/]*))$/;
+// `#` opens the pull-request menu. The token is a number or a short text query
+// with no whitespace, so a markdown heading (`# Title`) never triggers: the
+// space after `#` ends the token immediately. A `#` inside a word, such as
+// `owner/repo#12`, is not a trigger either — that text is already a chip.
+const HASH_TRIGGER_RE = /(?:^|[ \t\r\n])(#([^\s#]*))$/;
 // A path with a recognizable extension can be separated from prose without
 // making the same assumption for ordinary multiword chat titles. Extensionless
 // paths are kept intact; the file index resolves a leading path prefix when
@@ -34,10 +39,16 @@ export function detectComposerTrigger(text: string, cursorPos: number): Composer
   const before = text.slice(0, cursor);
   const at = AT_TRIGGER_RE.exec(before);
   const slash = SLASH_TRIGGER_RE.exec(before);
+  const hash = HASH_TRIGGER_RE.exec(before);
   const atStart = at ? before.length - at[1]!.length : -1;
   const slashStart = slash ? before.length - slash[1]!.length : -1;
-  if (atStart < 0 && slashStart < 0) return null;
-  // When both match (e.g. "run /a@b"), the trigger typed closest to the cursor wins.
+  const hashStart = hash ? before.length - hash[1]!.length : -1;
+  if (atStart < 0 && slashStart < 0 && hashStart < 0) return null;
+  // When several match (e.g. "run /a@b"), the one typed closest to the cursor
+  // wins, so the menu always answers the token the user is still typing.
+  if (hashStart >= atStart && hashStart >= slashStart) {
+    return { type: "hash", query: hash![2] ?? "", start: hashStart };
+  }
   if (atStart >= slashStart) {
     return { type: "at", query: at![2] ?? "", start: atStart };
   }

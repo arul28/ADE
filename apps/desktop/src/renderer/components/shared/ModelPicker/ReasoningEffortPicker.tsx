@@ -52,7 +52,7 @@ function tierLabel(tier: string, useCodex56Labels = false): string {
   return tier.charAt(0).toUpperCase() + tier.slice(1);
 }
 
-type ReasoningToneKey = "auto" | "low" | "steady" | "smart" | "deep" | "max";
+type ReasoningToneKey = "auto" | "low" | "steady" | "smart" | "deep" | "max" | "ultra";
 
 const REASONING_TONE_STYLES: Record<
   ReasoningToneKey,
@@ -113,6 +113,14 @@ const REASONING_TONE_STYLES: Record<
     thumb: "border-fuchsia-50 bg-fuchsia-100 text-fuchsia-950",
     ridge: "bg-fuchsia-100",
   },
+  ultra: {
+    color: "#F5D0FE",
+    rgb: "232 121 249",
+    trigger: "border-fuchsia-200/45 bg-fuchsia-500/[0.14] text-fuchsia-50 hover:border-fuchsia-100/60 hover:bg-fuchsia-500/[0.2]",
+    chip: "border-fuchsia-100/45 bg-fuchsia-400/[0.22] text-fuchsia-50",
+    thumb: "border-white bg-fuchsia-100 text-fuchsia-950",
+    ridge: "bg-fuchsia-100",
+  },
 };
 
 function reasoningToneKeyForIndex(index: number, total: number): ReasoningToneKey {
@@ -121,7 +129,7 @@ function reasoningToneKeyForIndex(index: number, total: number): ReasoningToneKe
   const ratio = index / (total - 1);
   if (ratio <= 0.12) return "low";
   if (ratio <= 0.38) return "steady";
-  if (ratio <= 0.62) return "smart";
+  if (ratio <= 0.52) return "smart";
   if (ratio < 1) return "deep";
   return "max";
 }
@@ -152,10 +160,17 @@ function setSliderTrackPosition(track: HTMLDivElement, percent: number, hasFill 
   track.style.setProperty("--reasoning-slider-fill-position", hasFill ? position : "0%");
 }
 
-function reasoningProgressiveGradient(total: number): string {
+function reasoningToneKeyForTier(tier: string | null | undefined, index: number, total: number): ReasoningToneKey {
+  if (tier === "ultra" || tier === "ultracode") return "ultra";
+  if (tier === "max") return "max";
+  return reasoningToneKeyForIndex(index, total);
+}
+
+function reasoningProgressiveGradient(tiers: readonly string[]): string {
+  const total = tiers.length;
   if (total <= 0) return "linear-gradient(90deg, transparent, transparent)";
-  const stops = Array.from({ length: total }, (_, index) => {
-    const tone = REASONING_TONE_STYLES[reasoningToneKeyForIndex(index, total)];
+  const stops = tiers.map((tier, index) => {
+    const tone = REASONING_TONE_STYLES[reasoningToneKeyForTier(tier, index, total)];
     const percent = tierPercent(index, total);
     const opacity = 0.58 + (index / Math.max(1, total - 1)) * 0.34;
     return `rgba(${tone.rgb} / ${opacity.toFixed(2)}) ${percent}%`;
@@ -216,18 +231,12 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
   const family = descriptor?.family;
   const useCodex56Labels = usesCodexNamedEffortLabels(descriptor?.providerModelId);
 
-  const displayedEffort = useMemo<string | null>(() => {
-    const modelDefault = descriptor?.defaultReasoningEffort;
-    const validModelDefault = modelDefault && tiers.includes(modelDefault) ? modelDefault : null;
-    if (reasoningEffort) {
-      return tiers.includes(reasoningEffort) ? reasoningEffort : validModelDefault;
-    }
-    if (useFamilyDefaults && family) {
-      const remembered = getReasoningForFamily(family);
-      if (remembered) return tiers.includes(remembered) ? remembered : validModelDefault;
-    }
-    return null;
-  }, [descriptor?.defaultReasoningEffort, family, getReasoningForFamily, reasoningEffort, tiers, useFamilyDefaults]);
+  const displayedEffort = useMemo<string | null>(() => resolveDisplayedReasoningEffort({
+    tiers,
+    explicitEffort: reasoningEffort,
+    rememberedForFamily: useFamilyDefaults && family ? getReasoningForFamily(family) ?? null : null,
+    modelDefault: descriptor?.defaultReasoningEffort ?? null,
+  }), [descriptor?.defaultReasoningEffort, family, getReasoningForFamily, reasoningEffort, tiers, useFamilyDefaults]);
 
   const activeIndex = displayedEffort ? tiers.findIndex((tier) => tier === displayedEffort) : -1;
   const previousActiveIndexRef = useRef(activeIndex);
@@ -239,12 +248,15 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
   useEffect(() => {
     previousActiveIndexRef.current = activeIndex;
   }, [activeIndex]);
-  const activeTone = REASONING_TONE_STYLES[reasoningToneKeyForIndex(activeIndex, tiers.length)];
+  const activeTone = REASONING_TONE_STYLES[
+    reasoningToneKeyForTier(displayedEffort, activeIndex, tiers.length)
+  ];
   const activeLabel = activeIndex >= 0 ? tierLabel(tiers[activeIndex]!, useCodex56Labels) : "Auto";
+  const isUltraActive = displayedEffort === "ultra" || displayedEffort === "ultracode";
   const thumbPercent = activeIndex < 0 ? 0 : tierPercent(activeIndex, tiers.length);
   const thumbLeft = activeIndex < 0 ? "8px" : sliderThumbPosition(thumbPercent);
   const fillPosition = activeIndex < 0 ? "0%" : thumbLeft;
-  const progressiveGradient = useMemo(() => reasoningProgressiveGradient(tiers.length), [tiers.length]);
+  const progressiveGradient = useMemo(() => reasoningProgressiveGradient(tiers), [tiers]);
 
   const commitEffort = useCallback(
     (tier: string | null) => {
@@ -435,6 +447,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
           compact={compact}
           disabled={disabled}
           open={open}
+          ultra={isUltraActive}
           className={cn(triggerClassName, className)}
         />
       </Popover.Trigger>
@@ -453,9 +466,11 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
           <div
             data-reasoning-effort-picker-content="true"
             className={cn(
-              "flex w-[232px] flex-col overflow-hidden rounded-xl border border-white/[0.08]",
+              "ade-reasoning-effort-content relative isolate flex w-[232px] flex-col overflow-hidden rounded-xl border border-white/[0.08]",
               "bg-[#17151A]/96 p-3 shadow-[0_18px_48px_rgba(0,0,0,0.58)] backdrop-blur-md",
+              isUltraActive && "ade-reasoning-effort-content-ultra",
             )}
+            data-reasoning-ultra={isUltraActive ? "true" : undefined}
             role="radiogroup"
             aria-label="Reasoning effort"
             style={{
@@ -479,9 +494,12 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
               <span>Faster</span>
               <span>Smarter</span>
             </div>
-            {displayedEffort === "ultra" ? (
-              <p className="mt-3 font-sans text-[10px] leading-4 text-fuchsia-100/65">
-                Automatically delegates work to multiple agents and can use limits faster.
+            {isUltraActive ? (
+              <p
+                className="ade-reasoning-ultra-warning mt-3 font-sans text-[10px] leading-4 text-fuchsia-100/75"
+                data-reasoning-ultra-warning="true"
+              >
+                Automatically delegates work across multiple agents and can consume task limits faster.
               </p>
             ) : null}
             <div
@@ -512,7 +530,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
                 {tiers.map((tier, index) => {
                   const percent = tierPercent(index, tiers.length);
                   const isActive = displayedEffort === tier;
-                  const tone = REASONING_TONE_STYLES[reasoningToneKeyForIndex(index, tiers.length)];
+                  const tone = REASONING_TONE_STYLES[reasoningToneKeyForTier(tier, index, tiers.length)];
                   return (
                     <button
                       key={tier}
@@ -566,13 +584,14 @@ type TriggerProps = {
   compact: boolean;
   disabled: boolean;
   open: boolean;
+  ultra: boolean;
   className?: string;
 };
 
 const ReasoningEffortTrigger = memo(
   forwardRef<HTMLButtonElement, TriggerProps & React.ButtonHTMLAttributes<HTMLButtonElement>>(
     function ReasoningEffortTrigger(
-      { label, shortLabel, tone, compact, disabled, open, className, ...rest },
+      { label, shortLabel, tone, compact, disabled, open, ultra, className, ...rest },
       ref,
     ) {
       return (
@@ -582,6 +601,7 @@ const ReasoningEffortTrigger = memo(
           type="button"
           data-state={open ? "open" : "closed"}
           data-reasoning-effort-picker-trigger="true"
+          data-reasoning-ultra={ultra ? "true" : undefined}
           disabled={disabled}
           aria-label="Reasoning effort"
           title="Reasoning effort"
@@ -593,6 +613,7 @@ const ReasoningEffortTrigger = memo(
               ? "h-6 px-1 text-[9px]"
               : "h-8 px-2 text-[11px] sm:text-[12px]",
             tone.trigger,
+            ultra && "ade-reasoning-effort-trigger-ultra",
             open && "ring-1 ring-white/[0.06]",
             disabled && "cursor-not-allowed opacity-60 hover:border-white/[0.06] hover:bg-white/[0.03]",
             className,
@@ -622,3 +643,33 @@ const ReasoningEffortTrigger = memo(
     },
   ),
 );
+
+/**
+ * The effort this control WOULD display for a model when no explicit value is
+ * set: the remembered effort for that model's family, validated against the
+ * model's own tiers.
+ *
+ * Exported so the owner of the value can resolve it BEFORE sending. The picker
+ * used to display this fallback while the send path read the unset value, so
+ * the trigger said "High" and the request went out on the model default. The
+ * fix belongs here, not in an effect that writes its parent's state on mount —
+ * this control renders at a dozen call sites, several of which persist every
+ * onChange straight to the backend.
+ */
+export function resolveDisplayedReasoningEffort(args: {
+  tiers: readonly string[];
+  explicitEffort: string | null;
+  rememberedForFamily: string | null;
+  modelDefault: string | null;
+}): string | null {
+  const validModelDefault = args.modelDefault && args.tiers.includes(args.modelDefault)
+    ? args.modelDefault
+    : null;
+  if (args.explicitEffort) {
+    return args.tiers.includes(args.explicitEffort) ? args.explicitEffort : validModelDefault;
+  }
+  if (args.rememberedForFamily) {
+    return args.tiers.includes(args.rememberedForFamily) ? args.rememberedForFamily : validModelDefault;
+  }
+  return null;
+}

@@ -10,7 +10,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { CaretRight, CheckCircle, MagnifyingGlass, X } from "@phosphor-icons/react";
 import { ProviderLogo } from "../shared/ProviderLogos";
-import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, SANS_FONT, SECTION_LABEL_STYLE } from "../lanes/laneDesignTokens";
 
 export function panel(overrides?: React.CSSProperties): React.CSSProperties {
   return {
@@ -19,6 +19,67 @@ export function panel(overrides?: React.CSSProperties): React.CSSProperties {
     padding: 12,
     ...overrides,
   };
+}
+
+/**
+ * The three panels of a provider page: Accounts, API keys, Models.
+ *
+ * They were three hand-drawn sections with three different header heights,
+ * three different gaps, and their primary action in three different places —
+ * API keys put Add in the header, Accounts put it at the bottom right, Models
+ * put a search field where the others had a button. Side by side in one column
+ * that reads as three unfinished pages rather than one.
+ *
+ * One header strip, one padding, actions always top right.
+ */
+export function ProviderPanel({
+  title,
+  count,
+  actions,
+  bodyStyle,
+  children,
+}: {
+  title: string;
+  /** Appended as "· N". Omitted where a count would be meaningless. */
+  count?: number;
+  /** Top-right controls — an Add button, a search field, header toggles. */
+  actions?: React.ReactNode;
+  /** Merged over the body's flex column. */
+  bodyStyle?: React.CSSProperties;
+  children: React.ReactNode;
+}) {
+  return (
+    <section style={panel({ padding: 0, display: "flex", flexDirection: "column", minWidth: 0 })}>
+      <header
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 10,
+          flexWrap: "wrap",
+          minHeight: 40,
+          padding: "6px 14px",
+          borderBottom: `1px solid ${COLORS.border}`,
+        }}
+      >
+        <div style={SECTION_LABEL_STYLE}>
+          {title}
+          {count != null ? ` · ${count}` : ""}
+        </div>
+        {actions ? (
+          <div
+            data-provider-panel-actions=""
+            style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}
+          >
+            {actions}
+          </div>
+        ) : null}
+      </header>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: 14, minWidth: 0, ...bodyStyle }}>
+        {children}
+      </div>
+    </section>
+  );
 }
 
 export function ProviderGrid({

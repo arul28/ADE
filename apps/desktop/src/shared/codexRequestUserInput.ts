@@ -1,7 +1,7 @@
 /**
  * Codex app-server `item/tool/requestUserInput` `isBlocking`.
  *
- * Wire default (rust-v0.153.4 `request_user_input.rs`):
+ * Wire default (rust-v0.155.1 `request_user_input.rs`):
  * `is_blocking: wire.is_blocking.unwrap_or(true)`.
  * Only an explicit JSON `false` is non-blocking steering.
  */

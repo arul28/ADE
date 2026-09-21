@@ -70,7 +70,7 @@ enum WorkToolCardStatus: String, Equatable {
   case failed
 }
 
-struct WorkToolCardModel: Identifiable, Equatable {
+struct WorkToolCardModel: Identifiable, Hashable {
   let id: String
   let toolName: String
   let status: WorkToolCardStatus
@@ -80,6 +80,21 @@ struct WorkToolCardModel: Identifiable, Equatable {
   let resultText: String?
   let webSearchActions: [CodexWebSearchAction]?
   let webSearchResults: [CodexWebSearchResult]?
+  /// Size of the stored result when `resultText` is only the head slice the
+  /// slim mobile wire delivered. nil means the card already has everything,
+  /// which is the case for every host and every client that does not use that
+  /// wire.
+  let remoteResultBytes: Int?
+  /// Session this card came from. Needed only to fetch a truncated result, so
+  /// it is optional: a card built without one simply cannot offer the fetch.
+  let sessionId: String?
+  /// Transcript sequence for the result. Retry events may reuse `itemId`, so
+  /// the sequence is part of the remote-result cache identity.
+  let resultSequence: Int?
+  /// Where the result row sits in the host transcript, when the phone read it
+  /// off a history page. Turns the fetch into an exact read rather than a
+  /// bounded scan that may not reach back this far.
+  let resultSourceOffset: Int?
 
   init(
     id: String,
@@ -90,7 +105,11 @@ struct WorkToolCardModel: Identifiable, Equatable {
     argsText: String?,
     resultText: String?,
     webSearchActions: [CodexWebSearchAction]? = nil,
-    webSearchResults: [CodexWebSearchResult]? = nil
+    webSearchResults: [CodexWebSearchResult]? = nil,
+    remoteResultBytes: Int? = nil,
+    sessionId: String? = nil,
+    resultSequence: Int? = nil,
+    resultSourceOffset: Int? = nil
   ) {
     self.id = id
     self.toolName = toolName
@@ -101,6 +120,10 @@ struct WorkToolCardModel: Identifiable, Equatable {
     self.resultText = resultText
     self.webSearchActions = webSearchActions
     self.webSearchResults = webSearchResults
+    self.remoteResultBytes = remoteResultBytes
+    self.sessionId = sessionId
+    self.resultSequence = resultSequence
+    self.resultSourceOffset = resultSourceOffset
   }
 }
 
@@ -179,7 +202,7 @@ struct WorkPendingApprovalModel: Identifiable, Equatable {
   var title: String? = nil
 }
 
-struct WorkPendingQuestionOption: Equatable {
+struct WorkPendingQuestionOption: Hashable {
   let label: String
   let value: String
   let description: String?
@@ -188,7 +211,7 @@ struct WorkPendingQuestionOption: Equatable {
   var previewFormat: String? = nil
 }
 
-struct WorkPendingQuestion: Identifiable, Equatable {
+struct WorkPendingQuestion: Identifiable, Hashable {
   let questionId: String
   let question: String
   let options: [WorkPendingQuestionOption]
@@ -202,7 +225,7 @@ struct WorkPendingQuestion: Identifiable, Equatable {
   var id: String { questionId }
 }
 
-struct WorkPendingQuestionModel: Identifiable, Equatable {
+struct WorkPendingQuestionModel: Identifiable, Hashable {
   let id: String
   let questions: [WorkPendingQuestion]
   var title: String? = nil
@@ -214,6 +237,12 @@ struct WorkPendingQuestionModel: Identifiable, Equatable {
   var source: String? = nil
   /// Codex `isBlocking: false` steering. Missing/true locks the composer.
   var blocking: Bool = true
+  /// The host marked this card throw-away-able (`providerMetadata.dismissible`).
+  ///
+  /// Not the same as `blocking == false`: Codex steering is also non-blocking
+  /// and still holds an open app-server request, so dismissing it locally would
+  /// strand the turn. Only the host's explicit flag earns the Dismiss button.
+  var dismissible: Bool = false
 
   var primary: WorkPendingQuestion { questions.first ?? WorkPendingQuestion(questionId: "response", question: "", options: [], allowsFreeform: true) }
   var questionId: String { primary.questionId }
@@ -224,6 +253,78 @@ struct WorkPendingQuestionModel: Identifiable, Equatable {
   var impact: String? { primary.impact }
   var multiSelect: Bool { primary.multiSelect }
   var isSecret: Bool { primary.isSecret }
+}
+
+/// The payload a structured question card sends: the per-question `answers`
+/// map and the single-question `sharedFreeform` that rides `responseText`.
+struct WorkQuestionAnswerPayload: Equatable {
+  var answers: [String: AgentChatInputAnswerValue]
+  var sharedFreeform: String?
+}
+
+/// Builds a structured question card's answer payload.
+///
+/// Mirrors desktop `buildAnswers` (`apps/desktop/src/shared/pendingInputAnswers.ts`):
+///
+/// 1. A question's option values come first and its own trimmed note last, so a
+///    pick and the note typed beside it travel together instead of the `continue`
+///    dropping the note. A question with neither contributes no key.
+/// 2. On a paged (multi-question) card the shared note is appended to the last
+///    answered question's values, or to the first question when none is
+///    answered, rather than being discarded.
+/// 3. On a single-question card the shared note stays the request's
+///    `responseText`.
+enum WorkQuestionAnswerBuilder {
+  static func build(
+    questions: [WorkPendingQuestion],
+    selections: [String: Set<String>],
+    freeformByQuestion: [String: String],
+    sharedFreeform: String,
+    isPaged: Bool
+  ) -> WorkQuestionAnswerPayload {
+    var answers: [String: AgentChatInputAnswerValue] = [:]
+    var answeredIds: [String] = []
+    for question in questions {
+      let selected = selections[question.questionId] ?? []
+      let ordered = question.options.map(\.value).filter { selected.contains($0) }
+      var values = ordered
+      let note = (freeformByQuestion[question.questionId] ?? "")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      if !note.isEmpty { values.append(note) }
+      guard !values.isEmpty else { continue }
+      answers[question.questionId] = values.count == 1 ? .string(values[0]) : .strings(values)
+      answeredIds.append(question.questionId)
+    }
+
+    let shared = sharedFreeform.trimmingCharacters(in: .whitespacesAndNewlines)
+    if isPaged {
+      if !shared.isEmpty, let targetId = answeredIds.last ?? questions.first?.questionId {
+        appendSharedNote(shared, to: targetId, in: &answers)
+      }
+      return WorkQuestionAnswerPayload(answers: answers, sharedFreeform: nil)
+    }
+    return WorkQuestionAnswerPayload(
+      answers: answers,
+      sharedFreeform: shared.isEmpty ? nil : shared
+    )
+  }
+
+  private static func appendSharedNote(
+    _ note: String,
+    to questionId: String,
+    in answers: inout [String: AgentChatInputAnswerValue]
+  ) {
+    if let existing = answers[questionId] {
+      switch existing {
+      case .string(let value):
+        answers[questionId] = .strings([value, note])
+      case .strings(let values):
+        answers[questionId] = .strings(values + [note])
+      }
+    } else {
+      answers[questionId] = .string(note)
+    }
+  }
 }
 
 /// Shared provider-display-name mapping for chat-surface card headers, mirroring
@@ -330,7 +431,7 @@ extension WorkPendingPlanApprovalModel {
   }
 }
 
-struct WorkPendingPermissionModel: Identifiable, Equatable {
+struct WorkPendingPermissionModel: Identifiable, Hashable {
   let id: String
   let tool: String
   let description: String
@@ -341,7 +442,7 @@ struct WorkPendingPermissionModel: Identifiable, Equatable {
 /// with `request.kind == "plan_approval"` — desktop's `ChatProposedPlanCard`
 /// equivalent on iOS. Carries the full plan text so the card can render a
 /// scrollable formatted block, plus the source label (e.g. "claude", "codex").
-struct WorkPendingPlanApprovalModel: Identifiable, Equatable {
+struct WorkPendingPlanApprovalModel: Identifiable, Hashable {
   let id: String
   let source: String
   let planText: String
@@ -396,7 +497,7 @@ struct WorkModelSelectionChoice: Codable, Equatable {
   }
 }
 
-struct WorkPendingModelSelectionModel: Identifiable, Equatable {
+struct WorkPendingModelSelectionModel: Identifiable, Hashable {
   let id: String
   let role: String
   let tag: String
@@ -414,7 +515,7 @@ struct WorkPendingModelSelectionModel: Identifiable, Equatable {
   }
 }
 
-struct WorkUsageSummary: Equatable {
+struct WorkUsageSummary: Hashable {
   var turnCount: Int
   var inputTokens: Int
   var outputTokens: Int
@@ -466,11 +567,13 @@ enum WorkActiveSendMode: String, Equatable {
 ///
 /// Claude folds a message into the live query, so it has all three. Codex takes
 /// the app-server's `turn/steer` request into the running turn, so it has "send
-/// during turn" — but no cancel-and-resend, so it stops there. Cursor's SDK has
-/// no mid-run message API: its interrupt cancels the run and resends on the
-/// same agent thread, so it has no "send during turn" and its button says
-/// "continue". Everything else is queue-only, which leaves nothing to pick
-/// between, so the picker stays hidden.
+/// during turn" — but no cancel-and-resend, so it stops there. Cursor has all
+/// three too since `@cursor/sdk` 1.0.31 added `Run.steer()`, but its interrupt
+/// keeps its own meaning — it cancels the run and resends on the same agent
+/// thread — so its button still says "continue". OpenCode's v2 session prompt
+/// admits `delivery: "steer"` into the live agent loop, so it also has "send
+/// during turn" and no interrupt. Everything else is queue-only,
+/// which leaves nothing to pick between, so the picker stays hidden.
 struct WorkActiveSendCapability: Equatable {
   let modes: [WorkActiveSendMode]
   let agentLabel: String
@@ -483,6 +586,21 @@ struct WorkActiveSendCapability: Equatable {
   /// the staged-message strip can offer as buttons.
   var atomicDispatchModes: [WorkActiveSendMode] { modes.filter { $0 != .queue } }
 
+  /// Drops `.inline` for a Cursor run that executes in cloud.
+  ///
+  /// `Run.steer()` is a local-run API: a cloud run implements it and refuses
+  /// every call, so offering "Send during turn" there names an action the host
+  /// will not perform. The desktop pane withholds the same handler for the same
+  /// reason; this is the mobile half of that rule.
+  func withholdingInlineIfNeeded(runsInCloud: Bool, provider: String) -> WorkActiveSendCapability {
+    guard runsInCloud, providerFamilyKey(provider) == "cursor", modes.contains(.inline) else { return self }
+    return WorkActiveSendCapability(
+      modes: modes.filter { $0 != .inline },
+      agentLabel: agentLabel,
+      interruptContinues: interruptContinues
+    )
+  }
+
   static func forProvider(_ provider: String) -> WorkActiveSendCapability {
     // Normalized through the same family collapse the rest of Work uses, so a
     // session labelled "claude-code" or "cursor-agent" is not silently demoted
@@ -493,7 +611,19 @@ struct WorkActiveSendCapability: Equatable {
     case "codex":
       return WorkActiveSendCapability(modes: [.inline, .queue], agentLabel: "Codex", interruptContinues: false)
     case "cursor":
-      return WorkActiveSendCapability(modes: [.interrupt, .queue], agentLabel: "Cursor", interruptContinues: true)
+      // Cursor gained `.inline` when `@cursor/sdk` 1.0.31 added `Run.steer()`.
+      // `interruptContinues` stays true: its interrupt still cancels the run and
+      // resends on the same thread, which Claude's does not.
+      //
+      // This arm is provider-keyed, matching desktop's table. The cloud
+      // carve-out is a SESSION fact, so it lives in
+      // `withholdingInlineIfNeeded` and is applied by the caller that knows the
+      // session.
+      return WorkActiveSendCapability(modes: [.inline, .queue, .interrupt], agentLabel: "Cursor", interruptContinues: true)
+    case "opencode":
+      // OpenCode's v2 session prompt admits `delivery: "steer"` into the live
+      // agent loop. No interrupt: like Codex there is no cancel-and-resend.
+      return WorkActiveSendCapability(modes: [.inline, .queue], agentLabel: "OpenCode", interruptContinues: false)
     // The four ACP providers are queue-only in `ACTIVE_TURN_DISPATCH_MODES`,
     // which is what the default arm already gives them. They are listed anyway
     // so the label reads with the provider's name instead of "the agent", and
@@ -510,6 +640,36 @@ struct WorkActiveSendCapability: Equatable {
       return WorkActiveSendCapability(modes: [.queue], agentLabel: "the agent", interruptContinues: false)
     }
   }
+}
+
+struct WorkQueuedSteerDisposition: Equatable {
+  let shortText: String
+  let detailText: String
+}
+
+/// Shared wording for the staged-message strip and its detail sheet. Keeping
+/// the capability decision here prevents the two surfaces from drifting when
+/// a provider gains or loses inline steering.
+func workQueuedSteerDisposition(
+  capability: WorkActiveSendCapability,
+  turnActive: Bool
+) -> WorkQueuedSteerDisposition {
+  guard turnActive else {
+    return WorkQueuedSteerDisposition(
+      shortText: "after turn",
+      detailText: "It sends as soon as \(capability.agentLabel) is ready."
+    )
+  }
+  if capability.modes.contains(.inline) {
+    return WorkQueuedSteerDisposition(
+      shortText: "sends at next step",
+      detailText: "\(capability.agentLabel) picks it up after the current tool step."
+    )
+  }
+  return WorkQueuedSteerDisposition(
+    shortText: "sends when turn ends",
+    detailText: "\(capability.agentLabel) can't take a message mid-turn, so it sends when this turn ends."
+  )
 }
 
 /// Work-board columns, as they are written on screen.
@@ -666,7 +826,7 @@ struct WorkCompletionArtifactModel: Equatable {
   let reference: String?
 }
 
-struct WorkCodexStallContext: Equatable {
+struct WorkCodexStallContext: Hashable {
   let reason: String
   let detectedAt: String?
   let turnStartedAt: String?
@@ -684,7 +844,7 @@ struct WorkUserMessageResolution: Equatable {
   let replacementMessageId: String?
 }
 
-struct WorkCodexRecoveryReceipt: Equatable {
+struct WorkCodexRecoveryReceipt: Hashable {
   let action: String
   let state: String
   let automatic: Bool
@@ -694,7 +854,7 @@ struct WorkCodexRecoveryReceipt: Equatable {
   var providerNeutral: Bool = false
 }
 
-struct WorkCommandCardModel: Identifiable, Equatable {
+struct WorkCommandCardModel: Identifiable, Hashable {
   let id: String
   let command: String
   let cwd: String
@@ -705,7 +865,7 @@ struct WorkCommandCardModel: Identifiable, Equatable {
   let durationMs: Int?
 }
 
-struct WorkFileChangeCardModel: Identifiable, Equatable {
+struct WorkFileChangeCardModel: Identifiable, Hashable {
   let id: String
   let path: String
   let diff: String
@@ -741,20 +901,20 @@ enum WorkAdeCardIcon: String, Equatable {
   case file
 }
 
-struct WorkAdeCardMetric: Equatable {
+struct WorkAdeCardMetric: Hashable {
   let label: String
   let value: String
   let tone: WorkAdeCardTone
 }
 
-struct WorkAdeCardRow: Equatable {
+struct WorkAdeCardRow: Hashable {
   let icon: WorkAdeCardIcon?
   let text: String
   let detail: String?
   let tone: WorkAdeCardTone
 }
 
-struct WorkAdeCardProgress: Equatable {
+struct WorkAdeCardProgress: Hashable {
   let passed: Int
   let failed: Int
   let running: Int
@@ -765,7 +925,7 @@ struct WorkAdeCardProgress: Equatable {
   }
 }
 
-struct WorkAdeCardAction: Equatable {
+struct WorkAdeCardAction: Hashable {
   let id: String
   let label: String
   let isPrimary: Bool
@@ -775,7 +935,7 @@ struct WorkAdeCardAction: Equatable {
 /// Kinds with no URL form (`route`, `files-external`, or anything a newer host
 /// invents) parse to `nil`, which degrades the card to fallback text without a
 /// link rather than dropping the payload.
-enum WorkAdeCardNavTarget: Equatable {
+enum WorkAdeCardNavTarget: Hashable {
   case session(sessionId: String, laneId: String?)
   case file(path: String, line: Int?, laneId: String?)
   case commit(sha: String, laneId: String?)
@@ -797,7 +957,7 @@ enum WorkAdeCardNavTarget: Equatable {
 /// same id merges into this card (see `buildWorkAdeCards`) instead of appending
 /// a second row, so a long-running card stays one chronological entry as it
 /// progresses.
-struct WorkAdeCardModel: Identifiable, Equatable {
+struct WorkAdeCardModel: Identifiable, Hashable {
   /// Variants this build knows how to render richly. Anything else degrades to
   /// `fallbackText` + deeplink — that is what makes one wire contract safe to
   /// ship across desktop auto-update, App Store review, and npm.
@@ -896,10 +1056,9 @@ enum WorkTimelinePayload: Equatable {
   /// spawn/result rows hard timeline boundaries that tool/activity folding
   /// cannot absorb.
   case subagent(WorkSubagentTimelineRow)
-  /// A run of 2+ consecutive interrupt-stopped subagent result rows, folded into
-  /// one calm "N agents stopped when you interrupted" card (desktop parity:
-  /// `subagent_stopped_group`). Keeps a mass interrupt from rendering as a wall
-  /// of identical stopped rows.
+  /// A run of 2+ consecutive same-source stopped subagent result rows, folded
+  /// into one calm attributed card (desktop parity: `subagent_stopped_group`).
+  /// Keeps a mass stop from rendering as a wall of identical rows.
   case subagentStoppedGroup(WorkSubagentStoppedGroupModel)
   /// Cluster of consecutive read-only tool-like entries (tool cards,
   /// commands) collapsed into a single header-only row. Tap to reveal the
@@ -928,9 +1087,84 @@ enum WorkTimelinePayload: Equatable {
   /// Plan-approval gate: agent has finished planning and is waiting for the
   /// user to Approve & Implement or Reject & Revise before it acts.
   case pendingPlanApproval(WorkPendingPlanApprovalModel)
-  /// Orchestration model routing gate: desktop asks the user to choose a
-  /// provider/model/reasoning tuple before workers can be spawned.
+  /// Model routing gate: the host asks the user to choose a
+  /// provider/model/reasoning tuple before the agent continues.
   case pendingModelSelection(WorkPendingModelSelectionModel)
+}
+
+extension WorkTimelinePayload: Hashable {
+  /// Content hash for change detection: every field that can change what a card
+  /// draws, for every card kind.
+  ///
+  /// Cards update in place under a stable row id — a tool card goes running →
+  /// completed and gains a result, a subagent card gains a summary, a
+  /// pending-input card gains a resolution — so a revision built from ids and
+  /// timestamps alone leaves the visible cell showing the old content. Hashing
+  /// the model itself keeps this aligned with payload equality by construction.
+  ///
+  /// `.message` is the one case that hashes only its identity here: assistant
+  /// markdown is long and re-hashed several times a second during a streaming
+  /// turn, so `workChatTranscriptRowRevision` covers messages through the
+  /// digest-based fast path instead. Hashing fewer fields than `==` compares is
+  /// always safe (it can only collide, never falsely separate).
+  func hash(into hasher: inout Hasher) {
+    switch self {
+    case .message(let message):
+      hasher.combine(0)
+      hasher.combine(message.id)
+    case .toolCard(let model):
+      hasher.combine(1)
+      hasher.combine(model)
+    case .commandCard(let model):
+      hasher.combine(2)
+      hasher.combine(model)
+    case .fileChangeCard(let model):
+      hasher.combine(3)
+      hasher.combine(model)
+    case .subagent(let model):
+      hasher.combine(4)
+      hasher.combine(model)
+    case .subagentStoppedGroup(let model):
+      hasher.combine(5)
+      hasher.combine(model)
+    case .toolGroup(let model):
+      hasher.combine(6)
+      hasher.combine(model)
+    case .changedFiles(let model):
+      hasher.combine(7)
+      hasher.combine(model)
+    case .eventCard(let model):
+      hasher.combine(8)
+      hasher.combine(model)
+    case .adeCard(let model):
+      hasher.combine(9)
+      hasher.combine(model)
+    case .usageSummary(let model):
+      hasher.combine(10)
+      hasher.combine(model)
+    case .artifact(let model):
+      hasher.combine(11)
+      hasher.combine(model)
+    case .turnSeparator(let model):
+      hasher.combine(12)
+      hasher.combine(model)
+    case .turnEndMarker(let model):
+      hasher.combine(13)
+      hasher.combine(model)
+    case .pendingQuestion(let model):
+      hasher.combine(14)
+      hasher.combine(model)
+    case .pendingPermission(let model):
+      hasher.combine(15)
+      hasher.combine(model)
+    case .pendingPlanApproval(let model):
+      hasher.combine(16)
+      hasher.combine(model)
+    case .pendingModelSelection(let model):
+      hasher.combine(17)
+      hasher.combine(model)
+    }
+  }
 }
 
 struct WorkAssistantMarkdownBlockRenderModel: Identifiable, Equatable {
@@ -991,7 +1225,7 @@ struct WorkTimelineRenderEntry: Identifiable, Equatable {
 /// One member of a `WorkToolGroupModel`. Carries enough context for the
 /// collapsed mini-row (icon, title, status) and hands the full payload back
 /// when the group expands into per-entry cards.
-enum WorkToolGroupMember: Equatable, Identifiable {
+enum WorkToolGroupMember: Hashable, Identifiable {
   case tool(WorkToolCardModel)
   case command(WorkCommandCardModel)
   case fileChange(WorkFileChangeCardModel)
@@ -1021,7 +1255,7 @@ enum WorkToolGroupMember: Equatable, Identifiable {
   }
 }
 
-struct WorkToolGroupModel: Identifiable, Equatable {
+struct WorkToolGroupModel: Identifiable, Hashable {
   let id: String
   let members: [WorkToolGroupMember]
 
@@ -1032,7 +1266,7 @@ struct WorkToolGroupModel: Identifiable, Equatable {
 /// Stats are summed across every event that touched the same path during the
 /// cluster, so a file edited by both an `Edit` tool and a `file_change` event
 /// renders as a single row.
-struct WorkChangedFileEntry: Identifiable, Equatable {
+struct WorkChangedFileEntry: Identifiable, Hashable {
   let id: String
   let path: String
   let kind: String
@@ -1042,21 +1276,21 @@ struct WorkChangedFileEntry: Identifiable, Equatable {
   let status: WorkToolCardStatus
 }
 
-struct WorkChangedFilesGroupModel: Identifiable, Equatable {
+struct WorkChangedFilesGroupModel: Identifiable, Hashable {
   let id: String
   let files: [WorkChangedFileEntry]
 
   var count: Int { files.count }
 }
 
-struct WorkTurnSeparator: Equatable {
+struct WorkTurnSeparator: Hashable {
   let time: String
   let provider: String
   let modelLabel: String
   let modelId: String?
 }
 
-struct WorkTurnEndMarker: Equatable {
+struct WorkTurnEndMarker: Hashable {
   let turnId: String
   let time: String
   let workedDurationLabel: String
@@ -1111,7 +1345,7 @@ struct WorkTimelineEntry: Identifiable, Equatable {
   let payload: WorkTimelinePayload
 }
 
-struct WorkSubagentSnapshot: Identifiable, Equatable {
+struct WorkSubagentSnapshot: Identifiable, Hashable {
   enum Status: Equatable { case running, succeeded, failed, stopped }
 
   let taskId: String
@@ -1137,11 +1371,20 @@ struct WorkSubagentSnapshot: Identifiable, Equatable {
   var parentAgentId: String? = nil
   var spawnDepth: Int? = nil
   var resourceLinks: [AgentChatResourceLink] = []
+  /// Who ended this agent's work. Older events omit it; the stopped-group fold
+  /// treats that as `unknown` and never claims the user interrupted it.
+  var stopSource: String? = nil
+  /// Plain-language cause for a non-user stop, when the host supplied one.
+  var stopReason: String? = nil
+  /// True when a real result arrived before a later stop event.
+  var resultLanded: Bool = false
+  /// Last progress/activity text observed before the terminal result.
+  var lastActivity: String? = nil
 
   var id: String { taskId }
 }
 
-struct WorkSubagentTimelineRow: Identifiable, Equatable {
+struct WorkSubagentTimelineRow: Identifiable, Hashable {
   enum Kind: String, Equatable {
     case spawn
     case result
@@ -1160,10 +1403,10 @@ struct WorkSubagentTimelineRow: Identifiable, Equatable {
   }
 }
 
-/// Folded run of 2+ interrupt-stopped subagent result rows (desktop parity:
-/// `SubagentStoppedGroupEvent`). Carries the original result rows so the card
-/// can list each agent's title and reopen its detail on tap.
-struct WorkSubagentStoppedGroupModel: Identifiable, Equatable {
+/// Folded run of 2+ same-cause, same-source subagent result rows (desktop
+/// parity: `SubagentStoppedGroupEvent`). Carries the original result rows so
+/// the card can list each agent's title, last activity, and outcome.
+struct WorkSubagentStoppedGroupModel: Identifiable, Hashable {
   /// Why the run stopped. The two causes read differently and must not be
   /// merged: an interrupt is something you did, a usage limit is something that
   /// happened to every agent at once.
@@ -1175,16 +1418,43 @@ struct WorkSubagentStoppedGroupModel: Identifiable, Equatable {
   let id: String
   let rows: [WorkSubagentTimelineRow]
   var reason: Reason = .interrupted
+  /// Normalized source (`unknown` when the host omitted `stopSource`).
+  var stopSource: String = "unknown"
+  /// Shared plain-language cause for a non-user stop.
+  var stopReason: String? = nil
 
   var count: Int { rows.count }
 
   var headline: String {
     let noun = count == 1 ? "agent" : "agents"
     switch reason {
-    case .interrupted: return "\(count) \(noun) stopped when you interrupted"
     case .usageLimit: return "\(count) \(noun) stopped · usage limit"
+    case .interrupted:
+      if stopSource == "user" {
+        return "\(count) \(noun) stopped when you interrupted"
+      }
+      if let stopReason = stopReason?.trimmingCharacters(in: .whitespacesAndNewlines), !stopReason.isEmpty {
+        return "\(count) \(noun) stopped: \(stopReason)"
+      }
+      return "\(count) \(noun) stopped"
     }
   }
+}
+
+/// Status line for an individual stopped result row. A missing source or cause
+/// stays deliberately neutral instead of blaming the person reading the chat.
+func workSubagentStoppedStatusLine(_ snapshot: WorkSubagentSnapshot) -> String {
+  if snapshot.stopSource == "user" {
+    return "stopped — interrupted"
+  }
+  if let stopReason = snapshot.stopReason?.trimmingCharacters(in: .whitespacesAndNewlines), !stopReason.isEmpty {
+    return "stopped: \(stopReason)"
+  }
+  return "stopped"
+}
+
+func workSubagentStoppedOutcomeLabel(_ snapshot: WorkSubagentSnapshot) -> String {
+  snapshot.resultLanded ? "report landed" : "work lost"
 }
 
 struct WorkSubagentSelection: Identifiable, Equatable {
@@ -1324,7 +1594,7 @@ struct WorkPlanStep: Equatable, Hashable {
   let status: String
 }
 
-struct WorkEventCardModel: Identifiable, Equatable {
+struct WorkEventCardModel: Identifiable, Hashable {
   let id: String
   let kind: String
   let title: String
@@ -1530,6 +1800,25 @@ struct WorkChatEnvelope: Identifiable, Equatable {
   /// `.subagentResult`, so only this flag can tell an old host's duplicate twin
   /// apart from two genuine results for the same agent.
   let isLegacySubagentCompletedFrame: Bool
+  /// Optional stop attribution carried by `subagent_result`. Kept beside the
+  /// normalized event so older hosts and the raw transcript path can omit it
+  /// without changing the broad WorkChatEvent associated-value surface.
+  let stopSource: String?
+  let stopReason: String?
+  /// Size of the stored tool result when this row carries only the head slice
+  /// the slim mobile wire sent, nil when the result is complete. Drives the
+  /// Result block's on-demand fetch.
+  let toolResultFullBytes: Int?
+  /// Raw Claude queue lifecycle metadata. `WorkChatEvent` intentionally maps
+  /// non-terminal lifecycle frames to no visible card, but pending-steer
+  /// derivation still needs the status to clear a staged row when the host
+  /// reports `started`/`completed` without a delivered user-message frame.
+  let commandLifecycleStatus: String?
+  let commandLifecycleSteerId: String?
+  /// Byte offset of this row in the host's transcript, when it came off a
+  /// `chat_history` page. Lets a "show full result" fetch name the exact
+  /// location instead of relying on the host's bounded tail scan.
+  let sourceOffset: Int?
 
   init(
     sessionId: String,
@@ -1543,7 +1832,13 @@ struct WorkChatEnvelope: Identifiable, Equatable {
     subagentSpawnDepth: Int? = nil,
     subagentResourceLinks: [AgentChatResourceLink] = [],
     apiErrorStatus: Int? = nil,
-    isLegacySubagentCompletedFrame: Bool = false
+    isLegacySubagentCompletedFrame: Bool = false,
+    stopSource: String? = nil,
+    stopReason: String? = nil,
+    toolResultFullBytes: Int? = nil,
+    commandLifecycleStatus: String? = nil,
+    commandLifecycleSteerId: String? = nil,
+    sourceOffset: Int? = nil
   ) {
     self.sessionId = sessionId
     self.timestamp = timestamp
@@ -1557,6 +1852,12 @@ struct WorkChatEnvelope: Identifiable, Equatable {
     self.subagentResourceLinks = subagentResourceLinks
     self.apiErrorStatus = apiErrorStatus
     self.isLegacySubagentCompletedFrame = isLegacySubagentCompletedFrame
+    self.stopSource = stopSource
+    self.stopReason = stopReason
+    self.toolResultFullBytes = toolResultFullBytes
+    self.commandLifecycleStatus = commandLifecycleStatus
+    self.commandLifecycleSteerId = commandLifecycleSteerId
+    self.sourceOffset = sourceOffset
   }
 }
 

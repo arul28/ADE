@@ -20,7 +20,6 @@ import type {
   CursorSdkAuthStatus,
   ProjectConfigSnapshot,
 } from "../../../../shared/types";
-import type { AgentChatPermissionMode } from "../../../../shared/types";
 import type {
   AiProviderPermissions,
   OpenCodeProviderAuthMethods,
@@ -96,8 +95,6 @@ export type ProvidersViewContext = {
   hasKeyFor: (providerId: string) => boolean;
   verificationByProvider: Record<string, AiApiKeyVerificationResult>;
   verifyingProvider: string | null;
-  editingProvider: string | null;
-  editValue: string;
 
   cursorAuth: CursorSdkAuthStatus | null;
   cursorLoginBusy: boolean;
@@ -117,7 +114,6 @@ export type ProvidersViewContext = {
   editingLocalProvider: LocalProviderFamily | null;
   savingLocalProvider: LocalProviderFamily | null;
 
-  customProviderDraft: CustomProviderDraft;
   customModelSlugs: string;
   savingAdvanced: boolean;
 
@@ -137,12 +133,6 @@ export type ProvidersViewContext = {
   acpDoctorBusy: AcpSettingsProviderId | null;
   acpDiagnosticsError: Partial<Record<AcpSettingsProviderId, string>>;
 
-  /** Abstract permission defaults as persisted in `ai.permissions.providers`. */
-  permissionDefaults: AiProviderPermissions;
-  savingPermissionFor: SettingsProviderId | null;
-  defaultModelId: string | null;
-  savingDefaultModel: boolean;
-
   actions: ProvidersActions;
 };
 
@@ -156,13 +146,9 @@ export type ProvidersActions = {
   setError: (message: string | null) => void;
   setNotice: (message: string | null) => void;
 
-  beginEditing: (provider: string) => void;
-  cancelEditing: () => void;
-  setEditValue: (value: string) => void;
   deleteApiKey: (provider: string, options?: { alsoOpenCode?: boolean }) => Promise<void>;
   verifyApiKey: (provider: string) => Promise<void>;
 
-  saveCursorApiKey: () => Promise<void>;
   loginWithCursor: () => Promise<void>;
   logoutCursor: () => Promise<void>;
   cancelCursorLogin: () => Promise<void>;
@@ -176,13 +162,9 @@ export type ProvidersActions = {
   cancelEditingLocalRuntime: () => void;
   saveLocalProvider: (provider: LocalProviderFamily) => Promise<void>;
 
-  setCustomProviderDraft: React.Dispatch<React.SetStateAction<CustomProviderDraft>>;
   setCustomModelSlugs: (value: string) => void;
-  saveAdvancedProvider: () => Promise<void>;
   saveCustomModelSlugs: () => Promise<void>;
 
-  setPermissionDefault: (provider: SettingsProviderId, mode: AgentChatPermissionMode) => Promise<void>;
-  setDefaultModel: (modelId: string | null) => Promise<void>;
 
   revealClaudeLoginTerminal: (terminal: { terminalId: string; laneId: string }) => void;
 
@@ -224,15 +206,6 @@ export type LocalRuntimeRow = {
   detected: { type: "local"; provider: LocalProviderFamily; endpoint: string } | null;
   modelIds: string[];
   hasModels: boolean;
-};
-
-export type CustomProviderDraft = {
-  id: string;
-  name: string;
-  baseUrl: string;
-  npm: string;
-  slugs: string;
-  apiKey: string;
 };
 
 /** A model row on a detail page. */

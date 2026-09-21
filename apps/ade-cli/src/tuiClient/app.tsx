@@ -17,6 +17,7 @@ import { getAgentSkillRootCandidates } from "../../../desktop/src/shared/agentSk
 import {
   activeTurnInterruptContinues,
   supportsActiveTurnDispatchMode,
+  cursorSessionRunsInCloud,
   unsupportedActiveTurnDispatchModeMessage,
 } from "../../../desktop/src/shared/types/chat";
 import { providerDisplayLabel } from "../../../desktop/src/shared/pendingInputLabels";
@@ -36,6 +37,7 @@ import {
   isComposerTriggerDismissed,
   replaceComposerTriggerSpan,
   type ComposerTokenRange,
+  type ComposerTrigger,
   type ComposerTriggerDismissal,
 } from "../../../desktop/src/shared/composerTriggers";
 import { isChatMentionTokenBody, scoreChatMentionCandidate } from "../../../desktop/src/shared/chatMentions";
@@ -77,9 +79,24 @@ import type {
 import type { FeedbackPreparedDraft, FeedbackSubmission } from "../../../desktop/src/shared/types/feedback";
 import type { ProjectSecretsListResult, ProjectSecretValueResult } from "../../../desktop/src/shared/types/projectSecrets";
 import type { SearchQueryResult, SearchResultItem } from "../../../desktop/src/shared/types/search";
-import type { ChatTerminalPreviewResult, ChatTerminalSession, UsageSnapshot } from "../../../desktop/src/shared/types";
+import type {
+  ChatTerminalPreviewResult,
+  ChatTerminalSession,
+  UsageResetCreditResult,
+  UsageSnapshot,
+} from "../../../desktop/src/shared/types";
+import {
+  resetCreditApplied,
+  resetCreditOutcomeText,
+} from "../../../desktop/src/shared/usageResetCredit";
+import { launchIdentityFields, resolveLaunchIdentity, sameLaunchIdentity } from "./launchIdentity";
 import { rollupPrChecks } from "../../../desktop/src/shared/prChecksRollup";
 import type { GitHubPrStackMembership, PrChecksStatus } from "../../../desktop/src/shared/types/prs";
+import {
+  pickPrimaryPrRecord,
+  prRecordNumber,
+  secondaryPrRecordLabels,
+} from "../lib/primaryPr";
 import {
   approveToolUse,
   archiveChatSession,
@@ -143,6 +160,7 @@ import {
   resumeTerminalSession,
   resizeTerminal,
   reloadClaudePlugins,
+  dismissPendingInput,
   respondToInput,
   resumeUsageLimitNow,
   runDefaultLaneSetup,
@@ -168,6 +186,7 @@ import {
   updateChatModel,
   writeTerminal,
   type TuiChatSessionSummary,
+  type TuiChatTerminalSession,
   type TokenStats,
 } from "./adeApi";
 import { aggregateChatBlocks, derivePendingSteers, type AggregatedBlock } from "./aggregate";
@@ -426,6 +445,7 @@ import {
   ensurePendingQuestionSelectionState,
   latestPendingApproval,
   pendingApprovalCapturesPrompt,
+  pendingApprovalIsDismissible,
   pendingApprovalOwnsQuestionKeys,
   movePendingQuestionFocus,
   movePendingQuestionOption,
@@ -1147,6 +1167,7 @@ export function chatSessionToOptimisticSummary(
     provider: session.provider,
     model: session.model,
     ...(session.modelId ? { modelId: session.modelId } : {}),
+    ...launchIdentityFields(resolveLaunchIdentity(session)),
     ...(session.sessionProfile ? { sessionProfile: session.sessionProfile } : {}),
     title: title?.trim() || "New chat",
     ...(session.reasoningEffort ? { reasoningEffort: session.reasoningEffort } : {}),
@@ -1187,13 +1208,8 @@ export function chatSessionToOptimisticSummary(
     nextWakeAt: null,
     ...(session.threadId ? { threadId: session.threadId } : {}),
     ...(session.requestedCwd !== undefined ? { requestedCwd: session.requestedCwd } : {}),
-    ...(session.orchestrationRunId ? { orchestrationRunId: session.orchestrationRunId } : {}),
-    ...(session.orchestrationRole ? { orchestrationRole: session.orchestrationRole } : {}),
     ...(session.orchestrationParentSessionId ? { orchestrationParentSessionId: session.orchestrationParentSessionId } : {}),
     ...(session.spawnKind ? { spawnKind: session.spawnKind } : {}),
-    ...(session.orchestrationTag ? { orchestrationTag: session.orchestrationTag } : {}),
-    ...(session.orchestrationStepId ? { orchestrationStepId: session.orchestrationStepId } : {}),
-    ...(session.orchestrationBundlePath ? { orchestrationBundlePath: session.orchestrationBundlePath } : {}),
   };
 }
 
@@ -1224,7 +1240,7 @@ export function mergeOptimisticChatSessions(
 export function mergeOptimisticTerminalSessions(
   sessions: ChatTerminalSession[],
   optimistic: Map<string, ChatTerminalSession>,
-): ChatTerminalSession[] {
+): TuiChatTerminalSession[] {
   if (optimistic.size === 0) return sessions;
   for (const session of sessions) optimistic.delete(session.terminalId);
   const pending = [...optimistic.values()];
@@ -2681,7 +2697,7 @@ function loginCommandsForProvider(provider: AdeCodeProvider): ProviderLoginComma
   if (provider === "codex") return [{ command: "codex", args: ["login"], label: "codex login" }];
   if (provider === "opencode") return [{ command: "opencode", args: ["auth", "login"], label: "opencode auth login" }];
   if (provider === "pi") return [{ command: "pi", args: [], label: "pi (then /login)" }];
-  // 0.22.3 removed `qwen auth`. Sign-in is the OpenAI-compatible key path.
+  // 0.24.0 removed `qwen auth`. Sign-in is the OpenAI-compatible key path.
   if (provider === "qwen") return [{ command: "qwen", args: ["--auth-type=openai"], label: "qwen --auth-type=openai" }];
   if (provider === "kimi") return [{ command: "kimi", args: ["login"], label: "kimi login" }];
   if (provider === "grok") return [{ command: "grok", args: ["login"], label: "grok login" }];
@@ -2770,7 +2786,7 @@ export function rankMentionSuggestions(
 }
 
 type MentionRemoteCacheEntry = {
-  filesByQuery: Map<string, Array<{ path: string }>>;
+  filesByQuery: Map<string, Array<{ path: string; isDirectory?: boolean }>>;
   commits: Array<Record<string, unknown>> | null;
   prs: Array<Record<string, unknown>> | null;
 };
@@ -2878,6 +2894,23 @@ function decodeMouseButton(code: number, x: number | null, y: number | null, pre
   if ((code & 32) && (code & 3) === 0) return withMouseModifiers({ kind: "drag", x, y }, code);
   if ((code & 3) === 0) return withMouseModifiers({ kind: "click", x, y }, code);
   return withMouseModifiers({ kind: "other", x, y }, code);
+}
+
+export type UsageResetCreditRow = { accountId: string };
+
+export function cycleUsageResetCreditIndex(currentIndex: number, rowCount: number, direction: -1 | 1): number {
+  if (rowCount <= 0) return 0;
+  const index = Number.isInteger(currentIndex) ? currentIndex : 0;
+  return ((index % rowCount) + direction + rowCount) % rowCount;
+}
+
+export function selectedUsageResetCreditAccountId(
+  rows: readonly UsageResetCreditRow[],
+  selectedIndex: number,
+): string | null {
+  if (rows.length === 0) return null;
+  const index = Math.min(Math.max(0, Number.isInteger(selectedIndex) ? selectedIndex : 0), rows.length - 1);
+  return rows[index]?.accountId ?? null;
 }
 
 export function parseTerminalMouseInput(input: string): TerminalMouseInput | null {
@@ -3458,6 +3491,39 @@ function resolveRightPaneWidth(columns: number, rightOpen: boolean, drawerOpen: 
   );
 }
 
+/**
+ * True when the TUI can actually open a menu for this trigger.
+ *
+ * The shared detector also reports the desktop composer's `#` pull-request
+ * trigger, which the TUI has no palette for. Letting one through made the
+ * prompt report a trigger as "open" with nothing on screen, and Esc then spent
+ * itself dismissing that invisible menu instead of doing its usual job. A
+ * markdown heading — `# Title` — never reaches here at all: the space after the
+ * `#` ends the token in the detector.
+ */
+export function composerTriggerServedByTui(trigger: Pick<ComposerTrigger, "type">): boolean {
+  return trigger.type === "at" || trigger.type === "slash";
+}
+
+/**
+ * Mentions that become real file attachments. A FOLDER row is a pointer: it has
+ * no bytes to upload, and attaching it reaches the model as "Attachment
+ * unavailable: <dir>" or a bogus CLI manifest row. Shared by the submit and the
+ * background-launch paths, which are otherwise identical and drifted apart —
+ * the folder guard reached only one of them.
+ */
+function attachableFileMentions(
+  selectedMentions: readonly MentionSuggestion[],
+  text: string,
+): MentionSuggestion[] {
+  return selectedMentions.filter((mention) => (
+    mention.kind === "file"
+    && Boolean(mention.filePath)
+    && mention.isDirectory !== true
+    && (mention.attachment || (mention.insertText.length > 0 && text.includes(mention.insertText)))
+  ));
+}
+
 function resolveCenterPaneWidth(columns: number, drawerOpen: boolean, rightPaneWidth: number): number {
   return Math.max(
     MIN_CENTER_PANE_WIDTH,
@@ -3819,6 +3885,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   // Full right-pane mirror so async draft-commit paths (first send) can check
   // the CURRENT pane without stale-closure state (see showChatInfoAfterDraftCommit).
   const rightPaneRef = useRef<RightPaneContent>({ kind: "empty" });
+  const resetCreditSpendInFlightRef = useRef<string | null>(null);
   const externalSessionListGenerationRef = useRef(0);
   // Claim imports synchronously, before React has mirrored importingKey into
   // rightPaneRef. This prevents a rapid double-Enter from creating two copies.
@@ -5406,7 +5473,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const liveComposerTrigger = useMemo(() => {
     if (activePane !== "chat") return null;
     const trigger = detectComposerTrigger(prompt, promptCursor);
-    if (!trigger) return null;
+    if (!trigger || !composerTriggerServedByTui(trigger)) return null;
     const confirmedFile = (body: string) => selectedMentions.some(
       (mention) => mention.kind === "file" && mention.insertText === `@${body}`,
     );
@@ -5443,16 +5510,22 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const slashComposerTrigger = activeComposerTrigger?.type === "slash" ? activeComposerTrigger : null;
   const slashRows = useMemo(() => (
     slashComposerTrigger
-      ? paletteCommands(`/${slashComposerTrigger.query}`, slashCommands, { provider: activeCommandProvider })
+      ? paletteCommands(`/${slashComposerTrigger.query}`, slashCommands, {
+        provider: activeCommandProvider,
+        inlineSteerWithheld: cursorSessionRunsInCloud(activeSession),
+      })
       : []
-  ), [activeCommandProvider, slashComposerTrigger, slashCommands]);
+  ), [activeCommandProvider, activeSession, slashComposerTrigger, slashCommands]);
   // Mid-sentence slash triggers complete into the draft on Enter instead of
   // submitting/running, mirroring the desktop command menu.
   const slashTriggerMidSentence = slashComposerTrigger != null
     && !composerTriggerSpansWholeDraft(prompt, slashComposerTrigger);
   const commandPaletteItems = useMemo<CommandPaletteItem[]>(() => {
     if (!commandPaletteOpen) return [];
-    const commandItems = paletteCommands("", slashCommands, { provider: activeCommandProvider }).map((command) => ({
+    const commandItems = paletteCommands("", slashCommands, {
+      provider: activeCommandProvider,
+      inlineSteerWithheld: cursorSessionRunsInCloud(activeSession),
+    }).map((command) => ({
       key: `command:${command.name}`,
       kind: "command" as const,
       label: command.argumentHint ? `${command.name} ${command.argumentHint}` : command.name,
@@ -5500,7 +5573,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       });
     }
     return [...localItems, ...searchItems];
-  }, [activeCommandProvider, commandPaletteOpen, commandPaletteQuery, displaySessions, lanes, paletteSearchResults, slashCommands]);
+  }, [activeCommandProvider, activeSession, commandPaletteOpen, commandPaletteQuery, displaySessions, lanes, paletteSearchResults, slashCommands]);
   useEffect(() => {
     if (!commandPaletteOpen) return;
     setCommandPaletteIndex((index) => Math.max(0, Math.min(index, Math.max(0, commandPaletteItems.length - 1))));
@@ -5888,8 +5961,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       recents: modelPickerRecents,
       settingsRows: modelWizardSettingsRows,
       activeModelId: modelState.modelId,
+      activeCredentialId: modelState.credentialId,
     };
-  }, [modelPickerRecents, modelState.modelId, modelWizardEntries, modelWizardSettingsRows, rightPane]);
+  }, [modelPickerRecents, modelState.credentialId, modelState.modelId, modelWizardEntries, modelWizardSettingsRows, rightPane]);
   const modelWizardView = useMemo(
     () => (modelWizardInput ? buildModelWizardView(modelWizardInput) : null),
     [modelWizardInput],
@@ -6642,7 +6716,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         const files = [...fileMap.values()];
         const laneDiffStats = diffByLaneId[laneId];
 
-        const activePr = prsRes[0] ?? null;
+        const activePr = pickPrimaryPrRecord(prsRes);
         let pr: {
           number: number;
           state: "open" | "closed" | "merged";
@@ -6654,11 +6728,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           checksFailed: number;
         } | null = null;
         if (activePr) {
-          const number = typeof activePr.githubPrNumber === "number"
-            ? activePr.githubPrNumber
-            : typeof activePr.number === "number"
-              ? activePr.number
-              : null;
+          // The selector reads three aliases; re-parsing only two here made a
+          // validly selected PR vanish from the badge.
+          const numberValue = prRecordNumber(activePr);
+          const number = numberValue > 0 ? numberValue : null;
           const url = typeof activePr.githubUrl === "string"
             ? activePr.githubUrl
             : typeof activePr.url === "string"
@@ -7780,6 +7853,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         entries: modelWizardEntries,
         provider,
         activeModelId: modelState.modelId,
+        activeCredentialId: modelState.credentialId,
         ...(options.startAtSettings ? { startAtSettings: true } : {}),
       });
       setRightPane({
@@ -7807,6 +7881,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       lanes,
       loadProviderModels,
       modelPickerRows,
+      modelState.credentialId,
       modelState.modelId,
       modelState.provider,
       modelWizardEntries,
@@ -7910,11 +7985,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         // so "" caches like any typed query.
         const filesPromise = cache.filesByQuery.get(fileQuery)
           ? Promise.resolve(cache.filesByQuery.get(fileQuery)!)
-          : Promise.resolve(conn.action<Array<{ path: string }>>("file", "quickOpen", {
+          : Promise.resolve(conn.action<Array<{ path: string; isDirectory?: boolean }>>("file", "quickOpen", {
             workspaceId: laneId,
             query: fileQuery,
             limit: MENTION_FILE_ROWS,
             allowComposerPrefixFallback: true,
+            // The TUI `@` menu mirrors the desktop composer, folders included.
+            includeDirectories: true,
           }))
             .then((files) => {
               const safeFiles = Array.isArray(files) ? files : [];
@@ -7944,13 +8021,26 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             })
             .catch(() => []);
         const [files, commits, prs] = await Promise.all([filesPromise, commitsPromise, prsPromise]);
-        remote.push(...files.map((file) => ({
-          kind: "file" as const,
-          label: file.path,
-          insertText: `@file:${file.path}`,
-          detail: "file",
-          filePath: file.path,
-        })));
+        remote.push(...files.map((file) => {
+          // A folder is a POINTER, not an attachment: it has no bytes to
+          // upload, and the desktop composer deliberately inserts a chip and
+          // attaches nothing. The trailing slash matches `chipFromPath`.
+          const isDirectory = file.isDirectory === true;
+          const path = isDirectory ? `${file.path.replace(/\/+$/, "")}/` : file.path;
+          return {
+            kind: "file" as const,
+            label: path,
+            // `@<path>`, NOT `@file:<path>`. This was the only `@file:` token in
+            // the repo: the desktop and iOS composers both insert the bare
+            // path, so the TUI was sending a different spelling of the same
+            // intent, and the shared chip parser — which forbids `:` so the
+            // entity grammar keeps `@chat:` — could never pill it.
+            insertText: `@${path}`,
+            detail: isDirectory ? "folder" : "file",
+            filePath: path,
+            isDirectory,
+          };
+        }));
         remote.push(...commits
           .filter((commit) => {
             const subject = String(commit.subject ?? commit.message ?? "");
@@ -8232,11 +8322,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     if (nextTerminalSession) {
       const current = modelStateRef.current;
       const terminalProvider = terminalSessionProvider(nextTerminalSession) ?? "claude";
-      if (current.provider !== terminalProvider) {
+      const terminalIdentity = resolveLaunchIdentity(nextTerminalSession);
+      if (
+        current.provider !== terminalProvider
+        || !sameLaunchIdentity(resolveLaunchIdentity(current), terminalIdentity)
+      ) {
         setModelState((prev) => {
           const next = {
             ...prev,
             ...fallbackModelStatePatch(terminalProvider),
+            ...terminalIdentity,
             permissionMode: nextTerminalSession.resumeMetadata?.launch?.permissionMode ?? prev.permissionMode,
             claudePermissionMode: nextTerminalSession.resumeMetadata?.launch?.claudePermissionMode ?? prev.claudePermissionMode,
           };
@@ -8265,6 +8360,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           codexConfigSource: configSession.codexConfigSource ?? prev.codexConfigSource,
           opencodePermissionMode: configSession.opencodePermissionMode ?? prev.opencodePermissionMode,
           droidPermissionMode: configSession.droidPermissionMode ?? prev.droidPermissionMode,
+          ...resolveLaunchIdentity(configSession),
           // `null` is an intentional clear for the legacy permission-only
           // paths. Only an omitted field should fall back to the snapshot or
           // the previous chat's value; `??` would leak the previous Cursor
@@ -9540,6 +9636,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       modelId: normalized.modelId,
       reasoningEffort: normalized.reasoningEffort,
       fastMode: normalized.fastMode,
+      instanceId: normalized.instanceId,
+      presetId: normalized.presetId,
+      credentialId: normalized.credentialId,
       permissionMode: normalized.permissionMode,
       interactionMode: normalized.interactionMode,
       claudePermissionMode: normalized.claudePermissionMode,
@@ -10140,6 +10239,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       model: launchModel,
       reasoningEffort: normalized.reasoningEffort,
       fastMode: normalized.fastMode,
+      instanceId: normalized.instanceId,
+      presetId: normalized.presetId,
+      credentialId: normalized.credentialId,
       permissionMode: normalized.permissionMode,
       initialInput: text.trim() ? text : null,
       cols,
@@ -10279,7 +10381,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     setRightPane({
       kind: "list",
       title: "Secrets",
-      rows: secrets.map((secret) => `${secret.name} · •••• · ${secret.valueLength} chars`),
+      rows: secrets.map((secret) => `${secret.name} · ${secret.storage === "account" ? "Account" : "This device"} · •••• · ${secret.valueLength} chars`),
       emptyText: "No secrets saved.",
       action: { kind: "copy-secret", ids: secrets.map((secret) => secret.name) },
     });
@@ -11006,6 +11108,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return;
     }
     if (name === "/usage") {
+      setRightSelectionIndex(0);
       // Session tokens/cost come straight off the local event stream — always
       // available even when the daemon snapshot carries no quota window. Mirror
       // the token-summary effect's fallback-context resolution.
@@ -11048,7 +11151,26 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             ...(account ? { account } : {}),
           };
         });
-        setRightPane({ kind: "usage", title: "Usage", providerStatuses, quotaWindows, session: sessionBlock, spendControlReached: snapshot.spendControlReached === true });
+        // Codex-only today: Claude grants no reset credits, so the field is
+        // simply absent there rather than reported as zero.
+        const resetCredits = (snapshot.accounts ?? []).flatMap((account) => {
+          const availableCount = account.resetCredits?.availableCount ?? 0;
+          if (availableCount <= 0) return [];
+          return [{
+            accountId: account.id,
+            label: account.email || account.label || account.id,
+            availableCount,
+          }];
+        });
+        setRightPane({
+          kind: "usage",
+          title: "Usage",
+          providerStatuses,
+          quotaWindows,
+          session: sessionBlock,
+          spendControlReached: snapshot.spendControlReached === true,
+          ...(resetCredits.length ? { resetCredits } : {}),
+        });
       } catch (error) {
         setRightPane({
           kind: "usage",
@@ -11155,11 +11277,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     if (name === "/steer") {
       // Which dispatch commands this pane advertises comes off the canonical
       // per-provider table (desktop shared/types/chat.ts), the same source the
-      // /steer commands and the desktop staged strip read — Claude offers both,
-      // Cursor only the interrupt, everything else stages until the turn ends.
+      // /steer commands and the desktop staged strip read — Claude and Cursor
+      // both offer the two atomic modes, everything else stages until the turn
+      // ends.
       const steerProvider = activeSession?.provider;
+      // A Cursor CLOUD run refuses every inline steer, so advertising
+      // "/steer send" there would offer a command that always falls back to the
+      // queue. The table stays per-provider; only this advert knows the session.
+      const steerRunsInCloud = cursorSessionRunsInCloud(activeSession);
       const dispatchHint = [
-        supportsActiveTurnDispatchMode(steerProvider, "inline") ? "/steer send" : null,
+        supportsActiveTurnDispatchMode(steerProvider, "inline") && !steerRunsInCloud ? "/steer send" : null,
         supportsActiveTurnDispatchMode(steerProvider, "interrupt") ? "/steer interrupt" : null,
       ].filter((entry): entry is string => entry != null);
       const hintLine = pendingSteers.length
@@ -11462,7 +11589,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
       }
       const prs = await conn.action<Array<Record<string, unknown>>>("pr", "listAll", laneId ? { laneId } : {});
-      const activePr = prs[0] ?? null;
+      const activePr = pickPrimaryPrRecord(prs);
       const prId = activePr ? String(activePr.id ?? activePr.prId ?? "") : "";
       if (name === "/pr") {
         const ahead = activeLane?.status?.ahead ?? 0;
@@ -11486,8 +11613,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
               conn.actionList("pr", "getStatus", [prId]).catch(() => null),
             ])
           : [null, null];
+        // A lane can own more than one PR now, and this pane shows exactly one.
+        // Naming the rest is the difference between "this is the PR" and "this
+        // is the one I am showing you" — without it the pane silently
+        // under-reports a follow-up PR cut from the same chat.
+        // The detached rule lives with the primary picker: `detached` is a
+        // RECORD on the wire (`PrDetachedLane | null`), never the boolean it
+        // reads like, so the local `!== true` test this replaced matched every
+        // row and printed PRs whose lane is gone as current lane work.
+        const otherPrs = secondaryPrRecordLabels(prs, activePr);
         const sections = [
           formatPrSummary(activePr),
+          ...(otherPrs.length > 0 ? ["", `Also on this lane: ${otherPrs.join(" · ")}`] : []),
           ...(status ? ["", formatPrMergeState(status)] : []),
           ...(checks ? ["", formatPrChecks(checks)] : []),
           "",
@@ -12663,15 +12800,27 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         // it continues rather than starting something new — same wording the
         // desktop composer and iOS use, off the same shared fact.
         const interruptContinues = activeTurnInterruptContinues(provider);
-        await dispatchSteerMessage(conn, sessionId, latestSteer.steerId, mode);
-        addNotice(
-          mode === "inline"
-            ? `Sent staged message into the active ${agentLabel} turn.`
-            : interruptContinues
-              ? `Interrupting ${agentLabel} and continuing with the staged message.`
-              : `Interrupting ${agentLabel} to run the staged message.`,
-          "info",
-        );
+        // Read the result rather than treating a non-throwing call as delivery.
+        // BOTH modes can answer `dispatchedAt: null` without throwing: an inline
+        // steer the live run refused, and either mode aimed at a row that has
+        // already left the queue (no runtime, or no match in `pendingSteers`).
+        // Claiming delivery there contradicts the host's own notice on the
+        // inline path, and invents an interrupt that never happened on the
+        // other. iOS reads the same flag for both modes.
+        const dispatched = await dispatchSteerMessage(conn, sessionId, latestSteer.steerId, mode);
+        // Names no culprit, for the same reason the host's notice does not: most
+        // refusals are ADE's own (attachments, a cloud run, no live turn) and the
+        // agent is never asked.
+        const notDispatched = dispatched?.dispatchedAt == null;
+        const inlineNotice = notDispatched
+          ? "The message couldn't go into the running turn; it is still queued."
+          : `Sent staged message into the active ${agentLabel} turn.`;
+        const interruptNotice = notDispatched
+          ? "The staged message couldn't be promoted into the running turn; it is still queued."
+          : interruptContinues
+            ? `Interrupting ${agentLabel} and continuing with the staged message.`
+            : `Interrupting ${agentLabel} to run the staged message.`;
+        addNotice(mode === "inline" ? inlineNotice : interruptNotice, "info");
         await refreshState();
         return;
       }
@@ -13240,12 +13389,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     const submittedValue = value;
     const draftImageAttachments = promptImageAttachmentsRef.current;
     const promptAttachments: AgentChatFileRef[] = [
-      ...selectedMentions
-        .filter((mention) => (
-          mention.kind === "file"
-          && mention.filePath
-          && (mention.attachment || (mention.insertText.length > 0 && text.includes(mention.insertText)))
-        ))
+      ...attachableFileMentions(selectedMentions, text)
         .map((mention) => ({
           type: isImageFilePath(mention.filePath!) ? ("image" as const) : ("file" as const),
           path: mention.filePath!,
@@ -13455,12 +13599,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     const submittedValue = value;
     const draftImageAttachments = promptImageAttachmentsRef.current;
     const promptAttachments: AgentChatFileRef[] = [
-      ...selectedMentions
-        .filter((mention) => (
-          mention.kind === "file"
-          && mention.filePath
-          && (mention.attachment || (mention.insertText.length > 0 && text.includes(mention.insertText)))
-        ))
+      ...attachableFileMentions(selectedMentions, text)
         .map((mention) => ({
           type: isImageFilePath(mention.filePath!) ? ("image" as const) : ("file" as const),
           path: mention.filePath!,
@@ -13575,6 +13714,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           modelId: normalized.modelId,
           reasoningEffort: normalized.reasoningEffort,
           fastMode: normalized.fastMode,
+          instanceId: normalized.instanceId,
+          presetId: normalized.presetId,
+          credentialId: normalized.credentialId,
           permissionMode: normalized.permissionMode,
           interactionMode: normalized.interactionMode,
           claudePermissionMode: normalized.claudePermissionMode,
@@ -13667,13 +13809,20 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   // model state and push it onto the cross-surface recents list. Defined here
   // (after applyModelState) so the closure captures a live binding.
 	  const commitModelPickerSelection = useCallback(
-	    (modelId: string) => {
+	    (modelId: string, credentialId?: string | null) => {
+	      const requestedCredentialId = credentialId === undefined
+	        ? undefined
+	        : credentialId?.trim() || null;
 	      let catalogModel: AgentChatModelCatalogModel | null = null;
 	      let catalogProvider: AdeCodeProvider | null = null;
 	      for (const group of modelCatalogRef.current?.groups ?? modelCatalog?.groups ?? []) {
 	        for (const provider of group.providers) {
 	          for (const subsection of provider.subsections) {
-	            const found = subsection.models.find((entry) => entry.id === modelId || entry.modelId === modelId);
+	            const matches = subsection.models.filter((entry) => entry.id === modelId || entry.modelId === modelId);
+	            const found = matches.find((entry) => (
+	              requestedCredentialId === undefined
+	              || (entry.credentialId?.trim() || null) === requestedCredentialId
+	            ));
 		            if (found) {
 		              catalogModel = found;
 		              catalogProvider = normalizeCatalogProvider(group.key);
@@ -13684,8 +13833,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 	        }
 	        if (catalogModel) break;
 	      }
-	      const target = models.find((entry) => (entry.modelId ?? entry.id) === modelId)
-	        ?? (catalogModel?.isAvailable === true ? catalogModel as AgentChatModelInfo : null)
+	      const target = (catalogModel?.isAvailable === true ? catalogModel as AgentChatModelInfo : null)
+	        ?? models.find((entry) => (entry.modelId ?? entry.id) === modelId)
           ?? modelInfoFromDescriptor(modelId);
 	      if (!target) {
 	        addNotice(`Model ${modelId} is not available right now.`, "error");
@@ -13707,6 +13856,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
 	      }
 	      const previousModelState = modelStateRef.current;
+	      const selectedCredentialId = catalogModel?.credentialId?.trim()
+	        || (requestedCredentialId ?? null);
 	      if (provider === "cursor" && !cursorModelAvailableForInterface(target, previousModelState.interfaceMode)) {
 	        addNotice(
 	          previousModelState.interfaceMode === "cli"
@@ -13719,6 +13870,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const nextModelState: AdeCodeModelState = {
         ...previousModelState,
         ...modelStatePatchForModel(provider, target),
+        instanceId: provider === previousModelState.provider ? previousModelState.instanceId ?? null : null,
+        presetId: null,
+        credentialId: selectedCredentialId,
       };
       modelStateRef.current = nextModelState;
       setModelState(nextModelState);
@@ -13789,6 +13943,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return {
         ...prev,
         ...patch,
+        instanceId: null,
+        presetId: null,
+        credentialId: null,
       };
     });
     void loadProviderModels(provider, { applyDefault: false }).catch(() => undefined);
@@ -13814,6 +13971,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     applyModelState((prev) => ({
       ...prev,
       ...modelStatePatchForModel(modelState.provider, nextModel),
+      presetId: null,
+      credentialId: null,
     }));
   }, [applyModelState, modelState.modelId, modelState.provider, models]);
 
@@ -15197,6 +15356,76 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return;
     }
 
+    if (
+      rightPane.kind === "usage"
+      && !key.ctrl
+      && !key.meta
+      && prompt.length === 0
+      && (key.upArrow || key.downArrow)
+      && (rightPane.resetCredits?.length ?? 0) > 0
+    ) {
+      setRightSelectionIndex((index) => cycleUsageResetCreditIndex(
+        index,
+        rightPane.resetCredits?.length ?? 0,
+        key.upArrow ? -1 : 1,
+      ));
+      return;
+    }
+
+    // `r` spends the selected banked Codex reset credit while the usage pane is
+    // open. Gated on an empty prompt so it never eats a letter someone is
+    // typing, and only offered when a credit actually exists.
+    if (
+      rightPane.kind === "usage"
+      && !key.ctrl
+      && !key.meta
+      && prompt.length === 0
+      && input === "r"
+      && (rightPane.resetCredits?.length ?? 0) > 0
+    ) {
+      const accountId = selectedUsageResetCreditAccountId(
+        rightPane.resetCredits ?? [],
+        rightSelectionIndex,
+      );
+      const conn = connectionRef.current;
+      if (accountId && conn && resetCreditSpendInFlightRef.current == null) {
+        resetCreditSpendInFlightRef.current = accountId;
+        void conn.action<UsageResetCreditResult>(
+          "usage",
+          "consumeResetCredit",
+          { accountId },
+        ).then(async (result) => {
+          // Same sentence the desktop usage popup and the chat notice use for
+          // the same server answer, so the two surfaces never disagree — and
+          // the tone and the optimistic removal both read that one verdict, so
+          // a `{ok: true, status: "failure"}` answer cannot say "could not use
+          // the reset credit" in green while dropping the credit row.
+          const text = resetCreditOutcomeText(result ?? null);
+          const applied = resetCreditApplied(result ?? null);
+          addNotice(text, applied ? "success" : "error");
+          if (applied) {
+            setRightPane((previous) => previous.kind === "usage"
+              ? {
+                ...previous,
+                resetCredits: (previous.resetCredits ?? []).filter((credit) => credit.accountId !== accountId),
+              }
+              : previous);
+            setRightSelectionIndex(0);
+            if (rightPaneRef.current.kind === "usage") {
+              await runRightCommand("/usage", "");
+            }
+          }
+        })
+          .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"))
+          .finally(() => {
+            if (resetCreditSpendInFlightRef.current === accountId) {
+              resetCreditSpendInFlightRef.current = null;
+            }
+          });
+        return;
+      }
+    }
+
     if (commandPaletteOpen && !isCtrlInput(input, key, "c")) {
       // Ctrl/Cmd+K toggles the palette shut (mirrors Esc) so the same chord
       // opens and closes it — no need to reach for Escape.
@@ -15573,7 +15802,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             return;
           }
           case "select-model":
-            commitModelPickerSelection(advance.modelId);
+            commitModelPickerSelection(advance.modelId, advance.credentialId);
             applyWizardSelection(advance.selection);
             return;
           case "sign-in":
@@ -15941,6 +16170,22 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 	          return result.state;
 	        });
 	        if (cancelled) return;
+	      }
+	      // Esc on a dismissible card throws the question away. Only after the
+	      // digit-selection cancel above, so Esc still means "undo my pick" while
+	      // a pick is live.
+	      if (key.escape && pendingApprovalIsDismissible(pendingQuestionApproval)) {
+	        const conn = connectionRef.current;
+	        const sessionId = activeSessionIdRef.current;
+	        if (conn && sessionId) {
+	          void dismissPendingInput({ connection: conn, sessionId, itemId: pendingQuestionApproval.itemId })
+	            .then(() => {
+	              addNotice("Question dismissed.", "info");
+	              return refreshState();
+	            })
+	            .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
+	          return;
+	        }
 	      }
 	      if (key.upArrow || key.downArrow) {
         updateQuestionState((state) => {
@@ -17360,7 +17605,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
                   return;
                 }
                 case "select-model":
-                  commitModelPickerSelection(advance.modelId);
+                  commitModelPickerSelection(advance.modelId, advance.credentialId);
                   setRightPane({
                     ...wizard,
                     step: advance.selection.step,
@@ -17814,6 +18059,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     favorites: modelPickerFavorites,
     recents: modelPickerRecents,
     activeModelId: modelState.modelId,
+    activeCredentialId: modelState.credentialId,
     activeReasoningEffort: footerReasoningLabel,
     aiStatus,
     interfaceMode: modelState.interfaceMode,
@@ -17824,6 +18070,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     modelCatalogRefreshingProvider,
     modelPickerFavorites,
     modelPickerRecents,
+    modelState.credentialId,
     modelState.interfaceMode,
     modelState.modelId,
     footerReasoningLabel,
@@ -18171,6 +18418,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
               userCommands={slashCommands}
               selectedIndex={slashIndex}
               provider={activeCommandProvider}
+              inlineSteerWithheld={cursorSessionRunsInCloud(activeSession)}
               width={paletteOverlayWidth}
               maxRows={slashPaletteHeightBudget}
             />

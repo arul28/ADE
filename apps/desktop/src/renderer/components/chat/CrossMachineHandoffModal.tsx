@@ -1108,7 +1108,6 @@ export function CrossMachineHandoffModal({
                           if (options) onFastModeChange?.(options.fastMode);
                           onModelChange(nextModelId);
                         }}
-                        surfaceKey="cross-machine-handoff"
                         compact
                         {...(modelIdsForMode ? { availableModelIds: modelIdsForMode } : {})}
                         {...(mode === "fork" ? { filter: forkModelFilter } : {})}

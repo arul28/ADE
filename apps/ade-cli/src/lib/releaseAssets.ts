@@ -84,13 +84,38 @@ export class ReleaseAssetDownloadError extends Error {
   }
 }
 
+/**
+ * ADE release tags are `v<semver>`. Clients often carry the bare app version
+ * (`1.2.74` from the desktop's package version or the update feed), so a bare
+ * semver is mapped onto its tag here rather than producing a 404 download URL.
+ *
+ * This is the official SemVer 2.0.0 pattern, anchored at both ends. Anything
+ * that is not a whole, VALID semver is passed through untouched, because
+ * prefixing it would request a tag nobody published while the caller's own
+ * string may well exist as a custom tag. That rules out both a partial match
+ * (`1.2.74foo`) and the near-misses a looser character class would wave
+ * through — `01.2.3` (leading zero) and `1.2.3-.` (empty prerelease
+ * identifier) are legal custom tag names, not versions to rewrite.
+ *
+ * The optional prerelease and build segments are deliberate: `1.2.74-beta.1`
+ * must still map to `v1.2.74-beta.1`, and ADE does not publish `+build` tags
+ * but accepting the segment beats silently rewriting such input.
+ */
+const BARE_SEMVER =
+  /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\+[0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*)?$/;
+
+export function releaseTagForVersion(version: string): string {
+  const trimmed = version.trim();
+  return BARE_SEMVER.test(trimmed) ? `v${trimmed}` : trimmed;
+}
+
 export function releaseAssetUrl(repo: string, version: string, assetName: string): string {
   const trimmedRepo = repo.trim();
   const trimmedVersion = version.trim();
   if (!trimmedVersion || trimmedVersion === "latest") {
     return `https://github.com/${trimmedRepo}/releases/latest/download/${assetName}`;
   }
-  return `https://github.com/${trimmedRepo}/releases/download/${trimmedVersion}/${assetName}`;
+  return `https://github.com/${trimmedRepo}/releases/download/${releaseTagForVersion(trimmedVersion)}/${assetName}`;
 }
 
 /** Canonical published asset name for a runtime binary, e.g. `ade-linux-arm64`. */

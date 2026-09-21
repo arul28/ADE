@@ -19,6 +19,8 @@ export type DiscoveredCursorSlashCommand = {
   argumentHint?: string;
   source: "command" | "skill" | "subagent";
   filePath?: string;
+  /** False when the skill declares `disable-model-invocation`; see the base type. */
+  modelInvocable: boolean;
 };
 
 export type ResolvedCursorSlashCommandInvocation = {
@@ -35,16 +37,19 @@ const CURSOR_BUILT_IN_SUBAGENT_COMMANDS: DiscoveredCursorSlashCommand[] = [
     name: "/explore",
     description: "Use Cursor's built-in codebase exploration subagent.",
     source: "subagent",
+    modelInvocable: true,
   },
   {
     name: "/bash",
     description: "Use Cursor's built-in shell command subagent.",
     source: "subagent",
+    modelInvocable: true,
   },
   {
     name: "/browser",
     description: "Use Cursor's built-in browser automation subagent.",
     source: "subagent",
+    modelInvocable: true,
   },
 ];
 const moduleDir =

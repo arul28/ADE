@@ -6,11 +6,11 @@ import type { ViewerProps } from "./types";
 import { ViewerModeToggleButton } from "./ViewerModeToggle";
 import { readViewerMode, rememberViewerMode } from "./viewerModeMemory";
 
-// Same renderer the orchestration / plan.md views use (react-markdown + remark-gfm
+// Document-grade markdown renderer (react-markdown + remark-gfm
 // + rehype-raw/sanitize, styled headings/tables/code, shiki, mermaid). Lazy-loaded
 // so its mermaid dependency stays out of the main bundle.
-const PlanMarkdown = lazy(() =>
-  import("../../../orchestration/PlanMarkdown").then((m) => ({ default: m.PlanMarkdown })),
+const RichMarkdown = lazy(() =>
+  import("./RichMarkdown").then((m) => ({ default: m.RichMarkdown })),
 );
 
 type Mode = "preview" | "source";
@@ -45,7 +45,7 @@ export function MarkdownViewer(props: ViewerProps) {
           <Suspense fallback={<div className="px-6 py-4 text-xs" style={{ color: COLORS.textDim }}>Rendering markdown…</div>}>
             {/* break-words so long inline code / URLs wrap to the pane instead of clipping */}
             <div className="min-w-0 break-words [&_pre]:overflow-x-auto" style={{ maxWidth: "100%" }}>
-              <PlanMarkdown source={previewText} className="px-6 py-4" />
+              <RichMarkdown source={previewText} className="px-6 py-4" />
             </div>
           </Suspense>
         )}

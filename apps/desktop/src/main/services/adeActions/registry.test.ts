@@ -1,17 +1,19 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import type { LaneListSnapshot, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import {
   ADE_ACTION_ALLOWLIST,
   getAdeActionInputContract,
   getAdeActionDomainServices,
+  getTurnFileDiffFromGit,
   isCtoOnlyAdeAction,
   isAllowedAdeAction,
   listAllowedAdeActionNames,
   scopeAccountStatusForRole,
 } from "./registry";
+import { runGit } from "../git/git";
 
 function withEnv<T>(updates: Record<string, string | undefined>, run: () => T): T {
   const previous = new Map<string, string | undefined>();
@@ -67,6 +69,70 @@ describe("work_tools runtime action domain", () => {
   });
 });
 
+
+describe("machine-scoped API keys on the ai domain", () => {
+  it("exposes the machine key trio, so the renderer can write the store the RUNTIME reads", () => {
+    // Desktop main writes through Electron safeStorage; the runtime reads
+    // through EncryptedFileCredentialStore. With the trio on desktop IPC only,
+    // a key saved in Settings was invisible to the runtime — which is how the
+    // runtime-hosted voice call answered "no OpenAI key on this machine" with a
+    // key the UI reported as configured.
+    const services = getAdeActionDomainServices({
+      aiIntegrationService: { listApiKeys: () => [] },
+      projectConfigService: {},
+    } as never);
+    const names = listAllowedAdeActionNames("ai", services.ai as Record<string, unknown>);
+    expect(names).toContain("getMachineApiKeyStatus");
+    expect(names).toContain("storeMachineApiKey");
+    expect(names).toContain("deleteMachineApiKey");
+  });
+});
+
+describe("the cto_voice domain", () => {
+  it("exposes the runtime's single call service, and nothing when there is none", () => {
+    // The brain is a singleton on the runtime because it owns a live socket, a
+    // confirm-first hold and an audio queue that outlive one action call —
+    // `getAdeActionDomainServices` runs per call, so it can only forward.
+    const ctoVoiceCallService = {
+      getState: () => ({ phase: "idle" }),
+      hasKey: async () => true,
+      start: async () => ({ ok: true }),
+      end: async () => ({ ok: true }),
+      setMuted: async () => ({ ok: true }),
+      pushAudio: () => ({ ok: true }),
+      pullAudio: () => ({ ok: true, chunks: [], dropped: 0 }),
+      resolveApproval: async () => ({ ok: true }),
+      sendCapture: async () => ({ ok: true }),
+      subscribeState: () => () => {},
+      dispose: () => {},
+    };
+    const services = getAdeActionDomainServices({ ctoVoiceCallService } as never);
+    expect(listAllowedAdeActionNames(
+      "cto_voice",
+      services.cto_voice as Record<string, unknown>,
+    )).toEqual([
+      "end",
+      "getState",
+      "hasKey",
+      "pullAudio",
+      "pushAudio",
+      "resolveApproval",
+      "sendCapture",
+      "setMuted",
+      "start",
+    ]);
+
+    // `subscribeState` and `dispose` are in-process only — a remote caller
+    // could neither receive a callback nor be trusted to tear the call down.
+    const exposed = Object.keys(services.cto_voice as Record<string, unknown>);
+    expect(exposed).not.toContain("subscribeState");
+    expect(exposed).not.toContain("dispose");
+
+    // A runtime that never built one must leave the domain absent rather than
+    // present-and-throwing.
+    expect(getAdeActionDomainServices({} as never).cto_voice ?? null).toBeNull();
+  });
+});
 
 describe("getAdeActionDomainServices feature gates", () => {
   it("keeps Automations domains available in packaged builds by default", () => {
@@ -1976,6 +2042,107 @@ describe("runtime computer-use artifact actions", () => {
     expect(broker.getBackendStatus).toHaveBeenCalledTimes(1);
     expect(broker.readArtifactPreview).toHaveBeenCalledWith({ uri: ".ade/artifacts/a.png" });
   });
+
+  /**
+   * The scene Proof button's only route home in a runtime-backed build, where
+   * the desktop process has no broker and no chat service at all. It is a
+   * deliberately narrow exception to "ingestion never rides the action bus":
+   * CTO-only, no bytes on the wire, and a path that must already be inside this
+   * project's artifact store.
+   */
+  describe("ingestSceneSnapshot", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-scene-proof-"));
+    const artifactsDir = path.join(projectRoot, ".ade", "artifacts", "computer-use");
+    fs.mkdirSync(artifactsDir, { recursive: true });
+    const snapshotPath = path.join(artifactsDir, "scene.png");
+    fs.writeFileSync(snapshotPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+    const buildService = (agentChatService: unknown) => {
+      const broker = { ingest: vi.fn(), listArtifacts: vi.fn() };
+      const runtime = {
+        projectRoot,
+        computerUseArtifactBrokerService: broker,
+        agentChatService,
+      } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+      const service = getAdeActionDomainServices(runtime).computer_use_artifacts as Record<
+        string,
+        (args?: unknown) => Promise<{ filed: boolean; ownerSessionId: string | null }>
+      >;
+      return { broker, service };
+    };
+
+    it("is exposed on the domain but reserved to the CTO role", () => {
+      expect(isAllowedAdeAction("computer_use_artifacts", "ingestSceneSnapshot")).toBe(true);
+      expect(isCtoOnlyAdeAction("computer_use_artifacts", "ingestSceneSnapshot")).toBe(true);
+      // The general ingestion path is still closed.
+      expect(isAllowedAdeAction("computer_use_artifacts", "ingest")).toBe(false);
+      expect(getAdeActionInputContract("computer_use_artifacts", "ingestSceneSnapshot")).toBeTruthy();
+    });
+
+    it("files a snapshot and attributes it to a chat this project owns", async () => {
+      const { broker, service } = buildService({
+        getSessionSummary: vi.fn(async (id: string) => (id === "chat-1" ? { id } : null)),
+      });
+      await expect(service.ingestSceneSnapshot({
+        path: snapshotPath,
+        title: "Merged pull requests",
+        sessionId: "chat-1",
+      })).resolves.toEqual({ filed: true, ownerSessionId: "chat-1", artifactId: null });
+      expect(broker.ingest).toHaveBeenCalledTimes(1);
+      const payload = broker.ingest.mock.calls[0][0] as {
+        owners?: { kind: string; id: string }[];
+        inputs: { path: string }[];
+      };
+      expect(payload.owners).toEqual([{ kind: "chat_session", id: "chat-1" }]);
+      // The REAL path: the jail resolves links before it checks them, so the
+      // broker records the file that was actually read.
+      expect(payload.inputs[0].path).toBe(fs.realpathSync(snapshotPath));
+    });
+
+    it("drops an unownable chat id rather than the artifact", async () => {
+      const { broker, service } = buildService({
+        getSessionSummary: vi.fn(async () => null),
+      });
+      await expect(service.ingestSceneSnapshot({ path: snapshotPath, sessionId: "other-project-chat" }))
+        .resolves.toEqual({ filed: true, ownerSessionId: null, artifactId: null });
+      expect((broker.ingest.mock.calls[0][0] as { owners?: unknown }).owners).toBeUndefined();
+    });
+
+    /**
+     * The jail has to agree with the read. A string-only containment check
+     * passes a symlink that merely SITS under the artifact store, and the
+     * stat/ingest that follow resolve it — filing any file this runtime can
+     * read into the proof drawer.
+     */
+    it("refuses a symlink under the artifact store that escapes it", async () => {
+      const secret = path.join(projectRoot, "secret.png");
+      fs.writeFileSync(secret, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+      const link = path.join(artifactsDir, "innocent.png");
+      try {
+        fs.symlinkSync(secret, link);
+      } catch {
+        return; // No symlink privilege on this host (bare Windows); nothing to assert.
+      }
+      const { broker, service } = buildService(null);
+      await expect(service.ingestSceneSnapshot({ path: link })).rejects.toThrow(/artifact store/);
+      expect(broker.ingest).not.toHaveBeenCalled();
+    });
+
+    it("refuses a snapshot that is not there at all", async () => {
+      const { broker, service } = buildService(null);
+      await expect(service.ingestSceneSnapshot({ path: path.join(artifactsDir, "gone.png") }))
+        .rejects.toThrow(/missing/);
+      expect(broker.ingest).not.toHaveBeenCalled();
+    });
+
+    it("refuses a path outside this project's artifact store", async () => {
+      const { broker, service } = buildService(null);
+      await expect(service.ingestSceneSnapshot({ path: path.join(projectRoot, "escape.png") }))
+        .rejects.toThrow(/artifact store/);
+      await expect(service.ingestSceneSnapshot({})).rejects.toThrow(/path is required/);
+      expect(broker.ingest).not.toHaveBeenCalled();
+    });
+  });
 });
 
 const TEST_NOW = "2026-05-10T00:00:00.000Z";
@@ -2374,6 +2541,81 @@ describe("runtime AI actions", () => {
       dailyUsage: 2,
       dailyLimit: 5,
     });
+  });
+
+  it("forwards harness presets and provider accounts to the agent-facing AI status", async () => {
+    // The `ade-harnesses` skill tells agents to read these two arrays from
+    // `ade actions run ai getStatus`. This projection is that call's only
+    // source, so an omitted field silently breaks the documented contract
+    // while the renderer's own IPC status still shows them.
+    const getStatus = vi.fn(async () => ({
+      mode: "subscription",
+      availableProviders: {
+        claude: { binary: { present: true, source: "path", path: null }, auth: { ready: true, mode: "oauth", detail: null } },
+        codex: false,
+        cursor: false,
+        droid: false,
+      },
+      models: { claude: [], codex: [], cursor: [], droid: [] },
+      harnessPresets: [
+        { id: "hp_opus_work", name: "Opus (Work)", harness: "claude", model: "anthropic/claude-opus-5", source: "Claude account · Work" },
+      ],
+      providerAccounts: [
+        { id: "work", provider: "claude", label: "Work", isDefault: false, signedIn: true },
+      ],
+    }));
+    const runtime = {
+      aiIntegrationService: {
+        getStatus,
+        getDailyUsageBatch: vi.fn(() => new Map<string, number>()),
+        getFeatureFlag: vi.fn(() => true),
+        getDailyBudgetLimit: vi.fn(() => null),
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const aiService = getAdeActionDomainServices(runtime).ai as {
+      getStatus(): Promise<{
+        harnessPresets?: Array<{ id: string; source: string }>;
+        providerAccounts?: Array<{ id: string; label: string }>;
+      }>;
+    };
+
+    const status = await aiService.getStatus();
+
+    expect(status.harnessPresets).toEqual([
+      { id: "hp_opus_work", name: "Opus (Work)", harness: "claude", model: "anthropic/claude-opus-5", source: "Claude account · Work" },
+    ]);
+    expect(status.providerAccounts).toEqual([
+      { id: "work", provider: "claude", label: "Work", isDefault: false, signedIn: true },
+    ]);
+  });
+
+  it("omits harness presets and provider accounts when the machine has none", async () => {
+    const getStatus = vi.fn(async () => ({
+      mode: "guest",
+      availableProviders: {
+        claude: { binary: { present: false, source: "missing", path: null }, auth: { ready: false, mode: "none", detail: null } },
+        codex: false,
+        cursor: false,
+        droid: false,
+      },
+      models: { claude: [], codex: [], cursor: [], droid: [] },
+    }));
+    const runtime = {
+      aiIntegrationService: {
+        getStatus,
+        getDailyUsageBatch: vi.fn(() => new Map<string, number>()),
+        getFeatureFlag: vi.fn(() => true),
+        getDailyBudgetLimit: vi.fn(() => null),
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const aiService = getAdeActionDomainServices(runtime).ai as {
+      getStatus(): Promise<Record<string, unknown>>;
+    };
+
+    const status = await aiService.getStatus();
+
+    expect(status).not.toHaveProperty("harnessPresets");
+    expect(status).not.toHaveProperty("providerAccounts");
   });
 
   it("delegates AI key mutations to the runtime service", () => {
@@ -2871,5 +3113,124 @@ describe("search domain", () => {
       "query",
       "rebuildIndex",
     ]);
+  });
+});
+
+
+describe("getTurnFileDiffFromGit", () => {
+  const repos: string[] = [];
+
+  const git = async (cwd: string, args: string[]): Promise<void> => {
+    const result = await runGit(args, { cwd, timeoutMs: 20_000 });
+    if (result.exitCode !== 0) {
+      throw new Error(`git ${args.join(" ")} failed: ${result.stderr || result.stdout}`);
+    }
+  };
+
+  const headSha = async (cwd: string): Promise<string> => {
+    const result = await runGit(["rev-parse", "HEAD"], { cwd, timeoutMs: 20_000 });
+    return result.stdout.trim();
+  };
+
+  const makeRepo = async (): Promise<string> => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "ade-turn-file-diff-"));
+    repos.push(cwd);
+    await git(cwd, ["init", "--initial-branch=main"]);
+    await git(cwd, ["config", "user.email", "test@example.com"]);
+    await git(cwd, ["config", "user.name", "ADE Test"]);
+    await git(cwd, ["config", "commit.gpgsign", "false"]);
+    fs.writeFileSync(path.join(cwd, "app.ts"), "before\n", "utf8");
+    await git(cwd, ["add", "."]);
+    await git(cwd, ["commit", "-m", "base"]);
+    return cwd;
+  };
+
+  afterAll(() => {
+    for (const cwd of repos.splice(0)) {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("reads both sides from commits when the turn moved HEAD", async () => {
+    const repo = await makeRepo();
+    const before = await headSha(repo);
+    fs.writeFileSync(path.join(repo, "app.ts"), "after\n", "utf8");
+    await git(repo, ["commit", "-am", "turn"]);
+    const after = await headSha(repo);
+
+    const diff = await getTurnFileDiffFromGit(repo, {
+      sessionId: "s1",
+      beforeSha: before,
+      afterSha: after,
+      filePath: "app.ts",
+    });
+
+    expect(diff.original).toMatchObject({ exists: true, text: "before\n" });
+    expect(diff.modified).toMatchObject({ exists: true, text: "after\n" });
+  });
+
+  // The bug: an uncommitted turn reports the same sha on both sides, so both
+  // sides were read from the same commit and every listed file opened as a
+  // diff of a file against itself.
+  it("regression: reads the modified side from the working tree when the turn never committed", async () => {
+    const repo = await makeRepo();
+    const head = await headSha(repo);
+    fs.writeFileSync(path.join(repo, "app.ts"), "uncommitted edit\n", "utf8");
+
+    const diff = await getTurnFileDiffFromGit(repo, {
+      sessionId: "s1",
+      beforeSha: head,
+      afterSha: head,
+      filePath: "app.ts",
+    });
+
+    expect(diff.original).toMatchObject({ exists: true, text: "before\n" });
+    expect(diff.modified).toMatchObject({ exists: true, text: "uncommitted edit\n" });
+  });
+
+  it("shows a file created this turn as an addition", async () => {
+    const repo = await makeRepo();
+    const head = await headSha(repo);
+    fs.writeFileSync(path.join(repo, "created.ts"), "brand new\n", "utf8");
+
+    const diff = await getTurnFileDiffFromGit(repo, {
+      sessionId: "s1",
+      beforeSha: head,
+      afterSha: head,
+      filePath: "created.ts",
+    });
+
+    expect(diff.original.exists).toBe(false);
+    expect(diff.modified).toMatchObject({ exists: true, text: "brand new\n" });
+  });
+
+  it("shows a file deleted this turn as a deletion", async () => {
+    const repo = await makeRepo();
+    const head = await headSha(repo);
+    fs.rmSync(path.join(repo, "app.ts"));
+
+    const diff = await getTurnFileDiffFromGit(repo, {
+      sessionId: "s1",
+      beforeSha: head,
+      afterSha: head,
+      filePath: "app.ts",
+    });
+
+    expect(diff.original).toMatchObject({ exists: true, text: "before\n" });
+    expect(diff.modified.exists).toBe(false);
+  });
+
+  it("refuses a worktree path that escapes the project", async () => {
+    const repo = await makeRepo();
+    const head = await headSha(repo);
+
+    const diff = await getTurnFileDiffFromGit(repo, {
+      sessionId: "s1",
+      beforeSha: head,
+      afterSha: head,
+      filePath: "../outside.ts",
+    });
+
+    expect(diff.modified.exists).toBe(false);
   });
 });

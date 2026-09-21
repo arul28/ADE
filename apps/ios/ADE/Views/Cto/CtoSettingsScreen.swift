@@ -1,9 +1,8 @@
 import SwiftUI
 
-/// CTO settings sheet: identity, live model selection, a
-/// read-only Linear connection status, a "what the CTO remembers" memory
-/// summary, and an advanced re-run-onboarding action. Presented as a sheet
-/// from the CTO tab's gear button.
+/// CTO settings sheet: identity, live model selection, a read-only Linear
+/// connection status, and a "what the CTO remembers" memory summary. Presented
+/// as a sheet from the CTO tab's gear button.
 struct CtoSettingsScreen: View {
   @EnvironmentObject private var syncService: SyncService
   @Environment(\.dismiss) private var dismiss
@@ -15,7 +14,6 @@ struct CtoSettingsScreen: View {
   @State private var memory: CtoMemory?
   @State private var memoryUnavailable = false
   @State private var isLoading = false
-  @State private var isResettingOnboarding = false
   @State private var errorMessage: String?
   @State private var showingIdentityEditor = false
   @State private var showingModelPicker = false
@@ -56,7 +54,6 @@ struct CtoSettingsScreen: View {
 
           integrationsSection
           memorySection
-          advancedSection
 
           Color.clear.frame(height: 24)
         }
@@ -289,59 +286,6 @@ struct CtoSettingsScreen: View {
     }
   }
 
-  // MARK: - Advanced
-
-  private var advancedSection: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      SectionHeader(title: "Advanced")
-      VStack(spacing: 0) {
-        Button {
-          Task { await rerunOnboarding() }
-        } label: {
-          HStack(spacing: 8) {
-            Text("Re-run setup")
-              .font(.system(size: 13.5, weight: .medium))
-              .foregroundStyle(ADEColor.textPrimary)
-              .frame(maxWidth: .infinity, alignment: .leading)
-            if isResettingOnboarding {
-              ProgressView().controlSize(.mini)
-            } else {
-              Image(systemName: "arrow.counterclockwise")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(ADEColor.textMuted)
-            }
-          }
-          .padding(.horizontal, 14)
-          .padding(.vertical, 12)
-          .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(isResettingOnboarding)
-        .accessibilityLabel("Re-run CTO setup")
-      }
-      .adeListCard(padding: 0)
-    }
-  }
-
-  /// Resets onboarding to incomplete so the tab flips back to the setup card.
-  /// The desktop only requires the "identity" step, so an empty
-  /// `completedSteps` (and no `completedAt`) reads as incomplete.
-  private func rerunOnboarding() async {
-    guard !isResettingOnboarding else { return }
-    isResettingOnboarding = true
-    defer { isResettingOnboarding = false }
-    var patch = CtoIdentityPatch()
-    patch.onboardingState = CtoOnboardingState(completedSteps: [], dismissedAt: nil, completedAt: nil)
-    do {
-      let updated = try await syncService.updateCtoIdentity(patch: patch)
-      snapshot = updated
-      onSnapshotChanged(updated)
-      dismiss()
-    } catch {
-      errorMessage = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
-    }
-  }
-
   // MARK: - Data loading
 
   private func reload() async {
@@ -493,8 +437,13 @@ private struct IdentityCard: View {
             )
           RoundedRectangle(cornerRadius: 13, style: .continuous)
             .stroke(ADEColor.ctoAccent.opacity(0.3), lineWidth: 0.5)
-          Text(initials)
-            .font(.system(size: 20, weight: .heavy))
+          // The mark, not a letter: the same drawing as the desktop rail and
+          // the tab icon, and it does not change when the CTO is renamed.
+          Image("CtoMark")
+            .renderingMode(.template)
+            .resizable()
+            .scaledToFit()
+            .frame(width: 22, height: 22)
             .foregroundStyle(ADEColor.textPrimary)
         }
         .frame(width: 44, height: 44)
@@ -538,12 +487,6 @@ private struct IdentityCard: View {
     .adeListCard()
   }
 
-  private var initials: String {
-    let name = identity.name.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard let first = name.first else { return "C" }
-    return String(first).uppercased()
-  }
-
   private var providerModelText: String {
     guard let preferences = identity.modelPreferences else { return "No model picked yet" }
     return "\(preferences.provider) · \(preferences.model)"
@@ -555,8 +498,7 @@ private struct IdentityCard: View {
     }
     let persona = identity.persona?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     if !persona.isEmpty { return persona }
-    return ctoPersonalityPresetOptions.first { $0.id == identity.personality }?.description
-      ?? ctoPersonalityPresetOptions[0].description
+    return "Your project's CTO. Knows the work, drives ADE."
   }
 }
 

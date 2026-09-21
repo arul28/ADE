@@ -1463,6 +1463,7 @@ export function createFileService({
         limit,
         includeIgnored: Boolean(args.includeIgnored),
         allowComposerPrefixFallback: Boolean(args.allowComposerPrefixFallback),
+        includeDirectories: Boolean(args.includeDirectories),
         shouldIgnore: shouldIgnoreForRoot(workspace.rootPath),
         primeIgnoreCache: primeIgnoreCacheForRoot(workspace.rootPath)
       });

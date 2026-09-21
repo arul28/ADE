@@ -119,8 +119,6 @@ function handleImageAttachmentKeyDown(
   args.onFocusPrompt?.();
 }
 
-type OrchestrationAnnotationContextAttachment = Extract<AgentChatContextAttachment, { type: "orchestration_annotation" }>;
-
 function ContextAttachmentChip({
   attachment,
   onRemove,
@@ -135,56 +133,7 @@ function ContextAttachmentChip({
       return <LinearIssueContextChip attachment={attachment} onRemove={onRemove} onOpen={onOpen} />;
     case "github_issue":
       return <GitHubIssueContextChip attachment={attachment} onRemove={onRemove} onOpen={onOpen} />;
-    case "orchestration_annotation":
-      return <OrchestrationAnnotationContextChip attachment={attachment} onRemove={onRemove} />;
   }
-}
-
-function OrchestrationAnnotationContextChip({
-  attachment,
-  onRemove,
-}: {
-  attachment: OrchestrationAnnotationContextAttachment;
-  onRemove?: (key: string) => void;
-}) {
-  const item = attachment.item;
-  const anchorKind = item.anchor.kind;
-  const previewLabel = item.anchor.preview.trim();
-  const commentLabel = item.comment.trim();
-  const title = commentLabel.length
-    ? `Annotation (${anchorKind}) — ${commentLabel}`
-    : `Annotation (${anchorKind}) — ${previewLabel.slice(0, 80)}`;
-  return (
-    <span
-      className={cn(
-        "ade-liquid-glass-pill group inline-flex max-w-full items-center gap-2 rounded-[var(--chat-radius-pill)] border px-2.5 py-1.5 text-[10px] transition-colors",
-        "border-violet-400/22 bg-violet-500/8 text-violet-100/85",
-      )}
-      title={title}
-      data-testid="orchestration-annotation-context-chip"
-    >
-      <span
-        className="shrink-0 rounded font-mono text-[9px] font-semibold uppercase tracking-wider"
-        style={{ background: "rgba(168,130,255,0.16)", color: "rgba(220,210,255,0.92)", padding: "1px 4px" }}
-      >
-        {anchorKind}
-      </span>
-      <span className="min-w-0 max-w-[260px] truncate font-sans text-[11px] font-medium text-fg/90">
-        {commentLabel.length ? commentLabel : previewLabel || "(no comment)"}
-      </span>
-      {onRemove ? (
-        <button
-          type="button"
-          className="rounded-full text-current/55 transition-colors hover:bg-white/[0.06] hover:text-current"
-          title="Remove annotation"
-          aria-label="Remove annotation"
-          onClick={() => onRemove(chatContextAttachmentKey(attachment))}
-        >
-          <X size={10} weight="bold" />
-        </button>
-      ) : null}
-    </span>
-  );
 }
 
 function LinearIssueContextChip({

@@ -37,7 +37,7 @@ slash-command allowlist.
 |---|---|---|
 | qwen | first-class | cleanest surface |
 | kimi | first-class | two holes, absorbed (below) |
-| grok | preview (Settings-only label) | **blocker CLEARED 2026-08-31, tier decision pending.** A real `session/request_permission` was observed in a host-driven ACP session on 1.0.13 once both halves of §3's neutralization were applied. Graduating to first-class is a product call, not a technical one; the remaining caveat is that the kill switch is an undocumented vendor hatch (§3 rule 3) |
+| grok | first-class | **Graduated 2026-09-18.** A real `session/request_permission` was observed in a host-driven ACP session on 1.0.13 once both halves of §3's neutralization were applied. The undocumented vendor hatch remains a compatibility risk, so the preflight and runtime supervision invariant stay load-bearing. |
 | copilot | preview (Settings-only label) | graduates when GitHub fixes cancel + drops preview |
 
 Preview labels appear ONLY in Settings (tile + detail page). Pickers render all
@@ -45,18 +45,18 @@ providers identically.
 
 ## 3. Per-provider dialects (verified facts — do not re-derive)
 
-### Qwen (`qwen --acp`, npm `@qwen-code/qwen-code` **0.22.3**)
+### Qwen (`qwen --acp`, npm `@qwen-code/qwen-code` **0.24.0**)
 - Caps: loadSession, session list/resume, image **and audio** prompts, MCP
   http/sse. Slash via `available_commands_update`. **`session/close` is not
   advertised and answers -32601.** ADE ends the process (one process per
   session). Default `qwen --help` hides `--acp`, `--approval-mode`,
   `--session-id`, `--yolo`, and `--append-system-prompt`; they exist (error-path
   help lists them).
-- Auth: `qwen auth` is **removed**. Advertised ACP method is `openai`
-  (`OPENAI_API_KEY`, optional `OPENAI_BASE_URL`, `--auth-type=openai`, or a
-  custom provider already saved in `~/.qwen/settings.json`). ADE does **not**
-  write that file — it reuses the Qwen CLI the user already configured, including
-  a local OpenAI-compatible proxy. Unauthenticated `session/new` is
+- Auth: `qwen auth` is **removed**. Advertised ACP methods are `openai` and
+  `openai-responses` (both use `OPENAI_API_KEY`; `OPENAI_BASE_URL` and a custom
+  provider in `~/.qwen/settings.json` remain supported). ADE does **not** write
+  that file — it reuses the Qwen CLI the user already configured, including a
+  local OpenAI-compatible proxy. Unauthenticated `session/new` is
   `-32000 Authentication required: Use Qwen Code CLI to authenticate first.`
   `authenticate` with `openai` and no key is `-32603 Internal error` whose
   `data.details` say "Missing API key" even when the key already lives in
@@ -66,7 +66,9 @@ providers identically.
 - Config home: `QWEN_HOME` names the config dir (CODEX_HOME shape). Runtime
   state axis: `QWEN_RUNTIME_DIR`. Live probe: `QWEN_HOME` relocates
   `installation_id`, extensions, `output-language.md`.
-- Session config via `session/set_config_option` (mode/model/thinking).
+- Session config via `session/set_config_option` (mode/model/reasoning_effort).
+  Qwen 0.24.0 also advertises `openai-responses` alongside `openai`; both
+  use `OPENAI_API_KEY`, and ADE keeps `openai` as its non-interactive probe.
   Approval modes: plan|default|auto-edit|auto|yolo.
 - Tracked CLI: `qwen -i "<prompt>" -m <model> --approval-mode=<m> --session-id
   <uuid>`; resume `--resume <id>` / `--continue`; NEVER pass `--yolo` together
@@ -76,13 +78,21 @@ providers identically.
 - Windows: npm `.cmd` shim → prompt rides PTY (`promptRidesInArgv = platform
   !== "win32"`), same rule as Claude.
 
-### Kimi (`kimi acp`, native binary **0.39.1**, repo MoonshotAI/kimi-code — NOT the
-deprecated Python kimi-cli)
+### Kimi (`kimi acp`, compatibility target **2.0.0**, captured baseline **0.39.1**,
+repo MoonshotAI/kimi-code — NOT the deprecated Python kimi-cli)
 - Caps: loadSession, list, resume, **`session/close` (implemented; dummy id
   returns `{}`)**, plus delete/fork/additionalDirectories. Image prompts yes,
   audio no. MCP http/sse. `agentCapabilities.auth.logout` is advertised; ADE
   has no ACP logout yet. **Usage on the wire still unverified** (hidden meter
   + degradation note until an authenticated turn proves otherwise).
+- ACP v1 config: Kimi Code 2.0.0 documents `session/set_config_option` for the
+  `mode`, `model`, and `thinking` options. ADE forwards those options to the
+  native ACP session and surfaces the agent's returned values in the generic
+  ACP composer controls. The captured 0.39.1 fixture remains the compatibility
+  baseline; a live authenticated 2.0.0 turn is still required to validate
+  usage and cancellation behavior end to end.
+- Vendor references: [Kimi ACP reference](https://moonshotai.github.io/kimi-code/en/reference/kimi-acp) and
+  [Kimi Code 2.0.0 release](https://github.com/MoonshotAI/kimi-code/releases/tag/%40moonshot-ai%2Fkimi-code%402.0.0).
 - Auth: `kimi login` / `kimi acp --login` device-code; region
   `mainland-cn` (kimi.com) or `global` (kimi.ai). ADE does **not** write
   `~/.kimi-code/config.toml`. `authenticate` method id
@@ -255,35 +265,52 @@ Rust, Apache-2.0)
   text fs and corrupts assets). `terminal` capability optional.
 - Slash: `available_commands_update`, re-emitted repeatedly → dedupe.
 - Config home: `GROK_HOME` IS a valid env override (`xai-dirs` reads it;
-  earlier "no override" text was wrong). ADE still sets nothing and reuses the
-  user's `~/.grok`, because a private home would hide their `grok login`
-  credential and rules. That is a choice, not a limitation.
+  earlier "no override" text was wrong). ADE passes the resolved value to the
+  ACP child and auth probe, defaulting to the user's `~/.grok`; it never writes
+  the directory. This keeps custom credential homes first-class without
+  changing the default login path.
 - Tracked CLI: positional prompt `grok "<p>"`, `-s <uuid>` assign, `-r <id>` /
   `-c` resume, `--permission-mode {default,acceptEdits,auto,dontAsk,
   bypassPermissions,plan}`, `--reasoning-effort`, `--rules` (append guidance),
   `--no-alt-screen`. NEVER pass `-w/--worktree` (collides with lanes).
 - Auth: reuse `grok login` (`~/.grok/auth.json`) or `XAI_API_KEY`; stored
   session token outranks env key. No free tier.
-- Version churn ~daily; record binary version in diagnostics; floor ≥1.0.13.
+- Version churn ~daily; record the binary version in diagnostics; compatibility
+  baseline remains ≥1.0.13. The npm `latest` release is 1.0.34, published
+  2026-09-16 04:15:07 UTC; its release notes add generally available Memory and
+  Markdown heading theme colors without changing the ACP launch contract. ADE's
+  setup/error copy recommends `@xai-official/grok@1.0.34` for this baseline.
 
-### Copilot (`copilot --acp`, npm `@github/copilot`, PREVIEW)
-- Caps on 1.0.82 (ACP agent 1.0.4): `loadSession`, image prompts, session
-  list. `session/resume` and `session/close` are **not** advertised and
-  answer -32601. Slash as ordinary prompts + `available_commands_update`;
-  TUI-only commands (`/diff`, `/resume`, `/login`, `/undo`…) must be filtered
-  from the picker or they hit the model.
-- KNOWN BUG: `session/cancel` as a REQUEST answers -32601. Send it as a
-  notification. Live 1.0.82 cancel mid-count returned `stopReason:"end_turn"`
-  with partial text `"1\n2\n3\n4\n5"` (github/copilot-cli #4561) → client-side
-  cancel accounting is mandatory. ADE still attempts `session/close` and
-  degrades, keeping the process for pooling. Real `session/prompt` turns work
-  (`"ping"`, usage on the prompt result + `usage_update`). ACP model selection
-  is not a `session/new` config option: ADE uses Copilot's native
-  `session/set_model` request when the installed CLI supports it. Older ACP
-  builds accepted that request without changing inference and stayed on Auto,
-  so the runtime must tolerate a provider-side fallback. Config options use
-  `currentValue` and nested `value`, which ADE canonicalizes onto `value` /
-  `options[].id`.
+### Copilot (`copilot --acp`, npm `@github/copilot@1.0.86`, PREVIEW)
+- The 1.0.86 compatibility baseline (ACP agent 1.0.86, captured
+  2026-09-18) advertises `loadSession`, image prompts, HTTP/SSE MCP, and
+  session list/close. It does not advertise `session/resume`. ADE checks the
+  handshake before sending lifecycle methods, and older 1.0.x binaries that
+  omit close release a shared lease without killing other chats.
+- ACP mode controls are live: `agent`, `plan`, and `autopilot`, plus the
+  `allow_all` option. ADE maps its abstract permission ladder to those native
+  mode ids and normalizes Copilot's `currentValue` / nested `value` shape.
+  Copilot has no intermediate auto-edit mode, so ADE deliberately maps
+  `auto-edit` and `auto` down to approval-gated Agent mode and tells the user
+  about that downgrade.
+- Slash commands arrive as ordinary prompts plus `available_commands_update`;
+  TUI-only commands (`/diff`, `/resume`, `/login`, `/undo`…) are filtered from
+  the picker or they hit the model.
+- KNOWN BUG: `session/cancel` as a REQUEST answers -32601 on the observed
+  compatibility path. Send it as a notification. Historical live 1.0.82
+  cancellation returned `stopReason:"end_turn"` with partial text
+  `"1\n2\n3\n4\n5"` (github/copilot-cli #4561), so client-side cancel accounting
+  remains mandatory until GitHub documents a fix.
+- `--model` and `--effort` are process-global ACP launch flags. ADE passes the
+  selected model and effort at launch and folds both into the pool identity;
+  `session/new` cannot override them. Usage arrives on the prompt result and
+  `usage_update`.
+- ACP model selection is not a `session/new` config option: ADE passes the
+  selected model at launch and uses Copilot's native `session/set_model` when
+  that method is advertised. Older ACP builds accepted that request without
+  changing inference and stayed on Auto, so the runtime tolerates a
+  provider-side fallback. Config options use `currentValue` and nested
+  `value`, which ADE canonicalizes onto `value` / `options[].id`.
 - Server-start flags (`--effort`, `--available-tools`, `--excluded-tools`) are
   process-global; `session/new` cannot override.
 - **Trust pre-seed: REMOVED. ADE does not write Copilot's config.** There was
@@ -346,8 +373,9 @@ From the internal audit (all file:line refs verified 2026-08-30):
   auth probe; Jean pattern: spawn, `initialize`+`authenticate`, map JSON-RPC
   error to "Run `<cli> login` first").
 - `main/services/shared/providerConfigHomes.ts`: `qwenConfigHome` (QWEN_HOME),
-  `copilotConfigHome` (COPILOT_HOME), `kimiCodeConfigHome` (KIMI_CODE_HOME) —
-  CODEX_HOME shape. Grok: none (use `~/.grok`).
+  `copilotConfigHome` (COPILOT_HOME), `kimiCodeConfigHome` (KIMI_CODE_HOME),
+  and `grokConfigHome` (GROK_HOME) — config-directory env overrides. Grok
+  defaults to `~/.grok`.
 - `shared/cliLaunch.ts`: `CliProvider` + four; launch/resume builders. Template:
   claude branch for qwen/grok/copilot, cursor branch (initialInput) for kimi.
 - `renderer/lib/sessions.ts`: `KnownChatProvider` + four; both maps + tool types.

@@ -1,8 +1,11 @@
 /**
  * Dialect claims vs captured initialize responses from real binaries.
  *
- * These fixtures were recorded on 2026-08-31 against Copilot CLI 1.0.82
- * (ACP agent 1.0.4), Grok 1.0.13, Qwen Code 0.22.3, and Kimi Code 0.39.1.
+ * These fixtures were recorded on 2026-09-18 against Copilot CLI 1.0.86,
+ * ACP agent 1.0.4, Grok 1.0.13, Qwen Code 0.24.0, and the Kimi Code 0.39.1
+ * compatibility baseline. Kimi Code 2.0.0's current ACP reference is covered
+ * by the dialect contract assertions below.
+ * Qwen Code 0.24.0 was captured separately on 2026-09-18.
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -17,24 +20,26 @@ function loadFixture<T>(name: string): T {
 }
 
 describe("captured initialize fixtures", () => {
-  it("copilot 1.0.82 advertises loadSession and image, not close or resume", () => {
+  it("copilot 1.0.86 advertises load, close, MCP, and image, not resume", () => {
     const init = loadFixture<AcpInitializeResponse>("copilot.initialize.json");
     expect(init.protocolVersion).toBe(1);
+    expect(init.agentInfo?.version).toBe("1.0.86");
     expect(init.agentCapabilities?.loadSession).toBe(true);
+    expect(init.agentCapabilities?.mcpCapabilities).toEqual({ http: true, sse: true });
     expect(init.agentCapabilities?.promptCapabilities?.image).toBe(true);
-    expect(init.agentCapabilities?.sessionCapabilities?.list).toEqual({});
-    expect(init.agentCapabilities?.sessionCapabilities).not.toHaveProperty("close");
+    expect(init.agentCapabilities?.sessionCapabilities).toMatchObject({ close: {}, list: {} });
     expect(init.agentCapabilities?.sessionCapabilities).not.toHaveProperty("resume");
-    // ADE still declares close and degrades on -32601 rather than killing the
-    // process (Copilot can host more than one session). Resume stays unclaimed.
+    expect(copilotDialect.sessionConfig.declared).toBe(true);
+    expect(copilotDialect.configOptionIds).toEqual(["mode", "allow_all"]);
     expect(copilotDialect.closeStyle).toBe("close_request");
     expect(copilotDialect.loadPolicy).toBe("load_only");
     expect(copilotDialect.resumeSession.declared).toBe(false);
     expect(copilotDialect.cancelStyle).toBe("notification");
     expect(copilotDialect.imagePrompts.declared).toBe(true);
+    expect(copilotDialect.mcpInjection.declared).toBe(true);
   });
 
-  it("grok 1.0.13 advertises load/resume/close, no images, and MCP http/sse", () => {
+  it("grok remains first-class while preserving its honest capability gates", () => {
     const init = loadFixture<AcpInitializeResponse>("grok.initialize.json");
     expect(init.protocolVersion).toBe(1);
     expect(init.agentCapabilities?.loadSession).toBe(true);
@@ -46,6 +51,7 @@ describe("captured initialize fixtures", () => {
       close: {},
     });
     expect(grokDialect.loadPolicy).toBe("resume_preferred");
+    expect(grokDialect.tier).toBe("first_class");
     expect(grokDialect.closeStyle).toBe("close_request");
     expect(grokDialect.imagePrompts.declared).toBe(false);
     expect(grokDialect.mcpInjection.declared).toBe(true);
@@ -114,14 +120,15 @@ describe("captured initialize fixtures", () => {
     expect(mode?.options?.map((entry) => entry.id)).toEqual([
       "https://agentclientprotocol.com/protocol/session-modes#agent",
       "https://agentclientprotocol.com/protocol/session-modes#plan",
+      "https://agentclientprotocol.com/protocol/session-modes#autopilot",
     ]);
     expect(options.find((option) => option.id === "allow_all")?.value).toBe("off");
   });
 
-  it("qwen 0.22.3 advertises resume and image/audio, not close", () => {
+  it("qwen 0.24.0 advertises resume and image/audio, not close", () => {
     const init = loadFixture<AcpInitializeResponse>("qwen.initialize.json");
     expect(init.protocolVersion).toBe(1);
-    expect(init.agentInfo?.version).toBe("0.22.3");
+    expect(init.agentInfo?.version).toBe("0.24.0");
     expect(init.agentCapabilities?.loadSession).toBe(true);
     expect(init.agentCapabilities?.promptCapabilities).toEqual({
       image: true,
@@ -131,7 +138,7 @@ describe("captured initialize fixtures", () => {
     expect(init.agentCapabilities?.mcpCapabilities).toEqual({ sse: true, http: true });
     expect(init.agentCapabilities?.sessionCapabilities).toEqual({ list: {}, resume: {} });
     expect(init.agentCapabilities?.sessionCapabilities).not.toHaveProperty("close");
-    expect(init.authMethods?.map((method) => method.id)).toEqual(["openai"]);
+    expect(init.authMethods?.map((method) => method.id)).toEqual(["openai", "openai-responses"]);
     expect(qwenDialect.closeStyle).toBe("kill_process");
     expect(qwenDialect.oneProcessPerSession).toBe(true);
     expect(qwenDialect.loadPolicy).toBe("resume_preferred");
@@ -139,7 +146,7 @@ describe("captured initialize fixtures", () => {
     expect(qwenDialect.authProbe.methodId).toBe("openai");
   });
 
-  it("kimi 0.39.1 advertises close, login terminal-auth, and no usage", () => {
+  it("kimi 0.39.1 baseline advertises close, login terminal-auth, and no usage", () => {
     const init = loadFixture<AcpInitializeResponse>("kimi.initialize.json");
     expect(init.protocolVersion).toBe(1);
     expect(init.agentInfo?.version).toBe("0.39.1");
@@ -164,5 +171,7 @@ describe("captured initialize fixtures", () => {
     expect(kimiDialect.usageSource).toBe("none");
     expect(kimiDialect.authProbe.methodId).toBe("login");
     expect(kimiDialect.imagePrompts.declared).toBe(true);
+    expect(kimiDialect.sessionConfig.declared).toBe(true);
+    expect([...kimiDialect.configOptionIds]).toEqual(["mode", "model", "thinking"]);
   });
 });

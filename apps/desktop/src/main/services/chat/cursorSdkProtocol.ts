@@ -30,16 +30,10 @@ export type CursorSdkPermissionPolicy = {
   fullAuto: boolean;
   hardGuards: boolean;
   /**
-   * Orchestrator-lead sessions may only ever run read-risk tools. Carried on
-   * the policy (rather than derived at the hook) so it reaches the out-of-band
-   * hook server in `cursorSdkWorker` through the existing policy plumbing.
-   */
-  orchestrationLead: boolean;
-  /**
    * An external embedder asked to withhold the user's own MCP configuration
    * from this chat. Cursor has no "managed servers only" switch, so this rides
-   * the same trimmed `local.settingSources` an orchestrator lead uses. Optional
-   * so every existing policy literal stays valid and unchanged.
+   * a trimmed `local.settingSources`. Optional so every existing policy literal
+   * stays valid and unchanged.
    */
   strictMcpConfig?: boolean;
   /**
@@ -214,11 +208,26 @@ export type CursorSdkCloudRunStartedResult = {
   status?: string;
 };
 
+/**
+ * What `Run.steer()` did with a message pushed into a live local run.
+ *
+ * `complete_delivered` means the turn took ownership: the host must drop its
+ * staged row. `revert_to_followup` means the turn refused it and the host still
+ * owns it, so it has to go out as an ordinary next-turn message.
+ *
+ * `unsupported` is ADE's own third value, not the SDK's, and it is
+ * diagnostics-only: every caller treats it exactly as `revert_to_followup`. The
+ * distinction exists so a log line can tell a missing steer channel from a live
+ * refusal. Do not add a branch for it.
+ */
+export type CursorSdkSteerOutcome = "complete_delivered" | "revert_to_followup" | "unsupported";
+
 export type CursorSdkWorkerRequest =
   | { type: "init"; requestId: string; payload: CursorSdkWorkerInit }
   | { type: "send"; requestId: string; payload: CursorSdkSendPrompt }
   | { type: "policy_update"; requestId: string; payload: CursorSdkPermissionPolicy }
   | { type: "cancel"; requestId: string }
+  | { type: "steer"; requestId: string; payload: { text: string } }
   | { type: "dispose"; requestId: string }
   | { type: "catalog.models"; requestId: string; payload: { apiKey?: string | null } }
   | { type: "catalog.repositories"; requestId: string; payload: { apiKey?: string | null } }

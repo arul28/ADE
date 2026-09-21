@@ -1175,4 +1175,152 @@ describe("createCtoOperatorTools", () => {
       }
     });
   });
+
+  // A project-wide listScheduledWork returned every field of every job with
+  // full prompts — one real call came back at 50 KB and tipped a live CTO
+  // thread into provider auto-compaction mid-voice-call.
+  describe("listScheduledWork result size", () => {
+    const makeItem = (index: number) => ({
+      id: `sched-${index}`,
+      sessionId: `chat-${index}`,
+      kind: "cron" as const,
+      status: "scheduled" as const,
+      title: `Job ${index}`,
+      prompt: `Job ${index}: ${"x".repeat(4000)}`,
+      reason: "y".repeat(500),
+      outcomeSummary: "z".repeat(2000),
+      cron: "0 9 * * *",
+      nextRunAt: "2026-09-17T09:00:00.000Z",
+      createdAt: "2026-09-01T09:00:00.000Z",
+      durable: true,
+      cancellable: true,
+    });
+
+    const listTool = (items: unknown[]) => createCtoOperatorTools(buildDeps({
+      scheduledWorkService: {
+        create: vi.fn(),
+        list: vi.fn().mockResolvedValue(items),
+        getState: vi.fn(),
+        cancel: vi.fn(),
+        setPaused: vi.fn(),
+      },
+    } as Partial<CtoOperatorToolDeps>)).listScheduledWork!;
+
+    it("truncates prompts and drops the bulky fields", async () => {
+      const result = await listTool([makeItem(1)]).execute({ includeTerminal: true } as never) as {
+        success: boolean;
+        count: number;
+        truncated: boolean;
+        result: Array<Record<string, unknown>>;
+      };
+
+      expect(result.success).toBe(true);
+      expect(result.count).toBe(1);
+      expect(result.truncated).toBe(false);
+      const row = result.result[0]!;
+      expect(row.id).toBe("sched-1");
+      expect(row.sessionId).toBe("chat-1");
+      expect(row.kind).toBe("cron");
+      expect(row.status).toBe("scheduled");
+      expect(row.cron).toBe("0 9 * * *");
+      expect(row.nextRunAt).toBe("2026-09-17T09:00:00.000Z");
+      expect(String(row.prompt).length).toBeLessThanOrEqual(120);
+      expect(String(row.prompt).startsWith("Job 1:")).toBe(true);
+      expect(row).not.toHaveProperty("reason");
+      expect(row).not.toHaveProperty("outcomeSummary");
+      expect(JSON.stringify(result).length).toBeLessThan(1_000);
+    });
+
+    // The compact record spreads its optional fields in conditionally. If any of
+    // them ever leaked as an explicit `undefined`, the key would still show up
+    // in the model's view of the job and read as a field it should reason about.
+    it("emits only the populated keys for a minimal record", async () => {
+      const result = await listTool([{
+        id: "sched-min",
+        sessionId: "chat-min",
+        kind: "wakeup" as const,
+        status: "scheduled" as const,
+        title: "Minimal job",
+        prompt: "wake up",
+        createdAt: "2026-09-01T09:00:00.000Z",
+        durable: true,
+        cancellable: true,
+      }]).execute({ includeTerminal: true } as never) as {
+        result: Array<Record<string, unknown>>;
+      };
+
+      expect(result.result[0]).toEqual({
+        id: "sched-min",
+        sessionId: "chat-min",
+        kind: "wakeup",
+        status: "scheduled",
+        prompt: "wake up",
+      });
+      expect(Object.keys(result.result[0]!)).toEqual([
+        "id",
+        "sessionId",
+        "kind",
+        "status",
+        "prompt",
+      ]);
+    });
+
+    // The row type promises a `prompt`, but these rows arrive over the runtime
+    // RPC and the type is a promise about the sender, not about the bytes. A
+    // row from an older brain without one threw and took the whole listing down.
+    it("survives a row that arrived without a prompt at all", async () => {
+      const result = await listTool([{
+        id: "sched-old",
+        sessionId: "chat-old",
+        kind: "wakeup" as const,
+        status: "scheduled" as const,
+        title: "From an older brain",
+        createdAt: "2026-09-01T09:00:00.000Z",
+        durable: true,
+        cancellable: true,
+      }]).execute({ includeTerminal: true } as never) as {
+        success: boolean;
+        result: Array<Record<string, unknown>>;
+      };
+
+      expect(result.success).toBe(true);
+      expect(result.result[0]).not.toHaveProperty("prompt");
+      expect(result.result[0]!.id).toBe("sched-old");
+    });
+
+    it("caps the list at 50 items and says so", async () => {
+      const result = await listTool(
+        Array.from({ length: 200 }, (_unused, index) => makeItem(index)),
+      ).execute({ includeTerminal: true } as never) as {
+        count: number;
+        truncated: boolean;
+        result: unknown[];
+      };
+
+      expect(result.count).toBe(200);
+      expect(result.result).toHaveLength(50);
+      expect(result.truncated).toBe(true);
+      // 200 uncapped rows with full prompts is the ~50 KB blob that caused the
+      // compaction; the capped answer has to stay small enough to be harmless.
+      expect(JSON.stringify(result).length).toBeLessThan(16_000);
+    });
+
+    it("reports a service failure as a recoverable tool error", async () => {
+      const tools = createCtoOperatorTools(buildDeps({
+        scheduledWorkService: {
+          create: vi.fn(),
+          list: vi.fn().mockRejectedValue(new Error("scheduler offline")),
+          getState: vi.fn(),
+          cancel: vi.fn(),
+          setPaused: vi.fn(),
+        },
+      } as Partial<CtoOperatorToolDeps>));
+      const result = await tools.listScheduledWork!.execute({} as never) as {
+        success: boolean;
+        error: string;
+      };
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("scheduler offline");
+    });
+  });
 });

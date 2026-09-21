@@ -63,7 +63,7 @@ export function fallbackUnprojectedChatSession(
 }
 
 /**
- * Project chat runtime state and orchestration identity onto its terminal row.
+ * Project chat runtime state and spawn lineage onto its terminal row.
  * All desktop surfaces use this mapping so list, detail, and lane summaries do
  * not disagree about whether an agent is running or waiting.
  */
@@ -71,7 +71,7 @@ export function projectChatOntoSession(
   session: TerminalSessionSummary,
   chat: AgentChatSessionSummary,
   /**
-   * Identity key of this chat's orchestration parent, when the parent IS an
+   * Identity key of this chat's spawn parent, when the parent IS an
    * identity session (today: the CTO). Resolved by the caller from HOST state —
    * the same `listSessions` answer this projection is built from — because the
    * parent's identity is a fact about the parent row, and a renderer-side cache
@@ -105,13 +105,15 @@ export function projectChatOntoSession(
     ...(chat.model?.trim() ? { model: chat.model.trim() } : {}),
     ...(chat.modelId?.trim() ? { modelId: chat.modelId.trim() } : {}),
     ...(chat.claudeTag !== undefined ? { claudeTag: chat.claudeTag } : {}),
-    ...(chat.orchestrationRunId
-      ? {
-          orchestrationRunId: chat.orchestrationRunId,
-          orchestrationRole: chat.orchestrationRole,
-          orchestrationTag: chat.orchestrationTag,
-        }
-      : {}),
+    // Absent stays absent: a chat on the provider's default account has no id
+    // to report, and writing an explicit null would make every row carry the
+    // field so "default account" and "unknown" read the same.
+    ...(chat.instanceId?.trim() ? { instanceId: chat.instanceId.trim() } : {}),
+    // Same rule for the brain a preset named: absent stays absent, so a row
+    // with no preset and a row whose preset could not be read are not made to
+    // look alike by an explicit null.
+    ...(chat.presetId?.trim() ? { presetId: chat.presetId.trim() } : {}),
+    ...(chat.credentialId?.trim() ? { credentialId: chat.credentialId.trim() } : {}),
     ...(chat.orchestrationParentSessionId
       ? { orchestrationParentSessionId: chat.orchestrationParentSessionId }
       : {}),
@@ -127,8 +129,10 @@ export function projectChatOntoSession(
       : {}),
     ...(chat.spawnKind ? { spawnKind: chat.spawnKind } : {}),
     ...(chat.steeringInput ? { steeringInput: true } : {}),
+    ...(chat.asyncQuestion ? { asyncQuestion: true } : {}),
     lastActivityAt: chat.lastActivityAt ?? session.lastActivityAt ?? null,
     ...(chat.cursorCloudAgentId ? { cursorCloudAgentId: chat.cursorCloudAgentId } : {}),
+    ...(chat.cursorRuntime ? { cursorRuntime: chat.cursorRuntime } : {}),
   };
   if (chat.awaitingInput) {
     const pendingInputItemId = chat.pendingInputItemId ?? session.pendingInputItemId ?? null;

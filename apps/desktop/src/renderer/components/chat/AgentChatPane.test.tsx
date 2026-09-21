@@ -529,37 +529,6 @@ function buildCodexSteeringTranscript(sessionId: string): string {
   })}\n`;
 }
 
-function buildOrchestrationPlanApprovalTranscript(sessionId: string): string {
-  return `${JSON.stringify({
-    sessionId,
-    timestamp: "2026-03-24T05:57:45.700Z",
-    event: {
-      type: "approval_request",
-      itemId: "approval-1",
-      kind: "tool_call",
-      description: "Plan ready for approval",
-      turnId: "turn-1",
-      detail: {
-        request: {
-          requestId: "approval-1",
-          itemId: "approval-1",
-          source: "ade",
-          kind: "plan_approval",
-          title: "Plan ready",
-          description: "1. Inspect\n2. Patch\n3. Verify",
-          questions: [],
-          allowsFreeform: true,
-          blocking: true,
-          canProceedWithoutAnswer: false,
-          providerMetadata: {
-            orchestrationPlanApproval: true,
-          },
-        },
-      },
-    },
-  })}\n`;
-}
-
 function installAdeMocks(options?: {
   transcript?: string;
   sendError?: Error;
@@ -896,9 +865,6 @@ function installAdeMocks(options?: {
     appControl: {
       getStatus: vi.fn().mockResolvedValue({ supported: true }),
       onEvent: vi.fn().mockImplementation(() => () => undefined),
-    },
-    orchestration: {
-      runCreate: vi.fn().mockResolvedValue({ runId: "run-1" }),
     },
   } as any;
 
@@ -1325,7 +1291,6 @@ function renderAutoCreateDraftPane(args?: {
     options?: AgentChatSessionCreatedOptions,
   ) => void | Promise<void>;
   workDraftKind?: "chat" | "cli";
-  orchestratorEnabled?: boolean;
   onLaunchCliSession?: React.ComponentProps<typeof AgentChatPane>["onLaunchCliSession"];
   onLaneChange?: React.ComponentProps<typeof AgentChatPane>["onLaneChange"];
   onDraftMachineChange?: React.ComponentProps<typeof AgentChatPane>["onDraftMachineChange"];
@@ -1372,7 +1337,6 @@ function renderAutoCreateDraftPane(args?: {
                 forceDraftMode
                 embeddedWorkLayout
                 workDraftKind={args?.workDraftKind}
-                orchestratorEnabled={args?.orchestratorEnabled}
                 availableLanes={lanes}
                 onLaneChange={args?.onLaneChange ?? vi.fn()}
                 onDraftMachineChange={args?.onDraftMachineChange}
@@ -1572,6 +1536,7 @@ describe("AgentChatPane remote startup", () => {
           sessions: [],
           prs: [],
           lastSyncedAtMs: Date.now(),
+          lanesSyncedAtMs: Date.now(),
           error: null,
         },
       } as any,
@@ -2519,15 +2484,10 @@ describe("AgentChatPane submit recovery", () => {
           displayText: "Retry this exact prompt",
           attachments: [{ path: "docs/auth.md", type: "file" }],
           contextAttachments: [{
-            type: "orchestration_annotation",
-            item: {
-              type: "orchestration_annotation",
-              runId: "run-auth",
-              anchor: { kind: "plan_step", id: "step-auth", preview: "login recovery" },
-              selectionExcerpt: "login recovery",
-              comment: "Use this selected plan note.",
-              capturedAt: "2026-03-24T05:57:47.500Z",
-            },
+            type: "github_issue",
+            issue: { id: "gh-1", number: 1, title: "login recovery", url: "https://github.com/o/r/issues/1" },
+            source: "manual",
+            attachedAt: "2026-03-24T05:57:47.500Z",
           }],
           metadata: { source: "auth-retry-test" },
           turnId: "turn-2",
@@ -2585,15 +2545,10 @@ describe("AgentChatPane submit recovery", () => {
         displayText: "Retry this exact prompt",
         attachments: [{ path: "docs/auth.md", type: "file" }],
         contextAttachments: [{
-          type: "orchestration_annotation",
-          item: {
-            type: "orchestration_annotation",
-            runId: "run-auth",
-            anchor: { kind: "plan_step", id: "step-auth", preview: "login recovery" },
-            selectionExcerpt: "login recovery",
-            comment: "Use this selected plan note.",
-            capturedAt: "2026-03-24T05:57:47.500Z",
-          },
+          type: "github_issue",
+          issue: { id: "gh-1", number: 1, title: "login recovery", url: "https://github.com/o/r/issues/1" },
+          source: "manual",
+          attachedAt: "2026-03-24T05:57:47.500Z",
         }],
         metadata: { source: "auth-retry-test" },
       }, null);
@@ -2616,15 +2571,10 @@ describe("AgentChatPane submit recovery", () => {
         displayText: "Retry into active turn",
         attachments: [{ path: "docs/race.md", type: "file" }],
         contextAttachments: [{
-          type: "orchestration_annotation",
-          item: {
-            type: "orchestration_annotation",
-            runId: "run-race",
-            anchor: { kind: "plan_step", id: "step-race", preview: "active turn fallback" },
-            selectionExcerpt: "active turn fallback",
-            comment: "Retry with this fallback context.",
-            capturedAt: "2026-03-24T05:57:47.500Z",
-          },
+          type: "github_issue",
+          issue: { id: "gh-2", number: 2, title: "active turn fallback", url: "https://github.com/o/r/issues/2" },
+          source: "manual",
+          attachedAt: "2026-03-24T05:57:47.500Z",
         }],
         metadata: { source: "auth-retry-steer-test" },
         turnId: "turn-2",
@@ -3295,9 +3245,12 @@ describe("AgentChatPane submit recovery", () => {
 
     const steering = await screen.findByTestId("codex-steering-question");
     expect(await screen.findByText("Which branch should I use?")).toBeTruthy();
+    // The composer's answer field is the rich contentEditable editor now, not a
+    // textarea: it takes typed text through an input event, not a value setter.
     const composerInput = screen.getAllByRole("textbox").find((node) => !steering.contains(node));
     expect(composerInput).toBeTruthy();
-    fireEvent.change(composerInput!, { target: { value: "main" } });
+    composerInput!.textContent = "main";
+    fireEvent.input(composerInput!);
     const composerSend = screen.getAllByTestId("ask-question-send").find((button) => !steering.contains(button));
     expect(composerSend).toBeTruthy();
     fireEvent.click(composerSend!);
@@ -3324,10 +3277,12 @@ describe("AgentChatPane submit recovery", () => {
 
     expect(await screen.findByTestId("ask-question-composer")).toBeTruthy();
     expect(screen.getByText("Which branch should I use?")).toBeTruthy();
-    const answerInput = screen.getByRole("textbox") as HTMLInputElement;
+    const answerInput = screen.getByRole("textbox");
     const sendAnswer = screen.getByTestId("ask-question-send") as HTMLButtonElement;
 
-    expect(answerInput.disabled).toBe(false);
+    // The one textbox on screen is the composer's own editor, re-homed inside
+    // the card and fully live — a question locks sending, not typing.
+    expect(answerInput.getAttribute("contenteditable")).toBe("true");
     expect(sendAnswer.disabled).toBe(true);
 
     fireEvent.keyDown(answerInput, { key: "Enter" });
@@ -3336,39 +3291,6 @@ describe("AgentChatPane submit recovery", () => {
     expect(send).not.toHaveBeenCalled();
     expect(steer).not.toHaveBeenCalled();
     expect(window.ade.agentChat.respondToInput).not.toHaveBeenCalled();
-  });
-
-  it("lets a typed follow-up revise an orchestration plan-ready gate", async () => {
-    const session = buildSession("session-1", {
-      awaitingInput: true,
-    });
-    const { send, steer } = installAdeMocks({
-      sessions: [session],
-      transcript: buildOrchestrationPlanApprovalTranscript(session.sessionId),
-    });
-
-    renderPane(session);
-
-    expect(await screen.findByRole("button", { name: "Implement" })).toBeTruthy();
-    expect((await screen.findAllByText("Inspect")).length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Patch").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Verify").length).toBeGreaterThan(0);
-    const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
-    expect(textbox.disabled).toBe(false);
-
-    fireEvent.change(textbox, { target: { value: "Add the rollback risks before implementation." } });
-    fireEvent.click(screen.getByRole("button", { name: "Send" }));
-
-    await waitFor(() => {
-      expect(window.ade.agentChat.respondToInput).toHaveBeenCalledWith({
-        sessionId: session.sessionId,
-        itemId: "approval-1",
-        decision: "decline",
-        responseText: "Add the rollback risks before implementation.",
-      }, null);
-    });
-    expect(send).not.toHaveBeenCalled();
-    expect(steer).not.toHaveBeenCalled();
   });
 
   it("falls back to the session summary when a chat is awaiting input", async () => {
@@ -3491,18 +3413,20 @@ describe("AgentChatPane submit recovery", () => {
 
   it("restores the backend summary and composer after steer dispatch fails", async () => {
     // Queue-only provider, so the single "Send steer message" affordance is the
-    // one on screen. Codex now has an inline channel and renders the split
-    // button instead.
+    // one on screen. Codex, Cursor and OpenCode all have an inline channel now
+    // and render the split button instead.
     const activeSession = buildSession("session-1", {
       status: "active",
-      provider: "opencode",
-      modelId: "opencode/openai/gpt-5.4",
+      provider: "droid",
+      model: "claude-sonnet-4-5",
+      modelId: "droid/claude-sonnet-4-5",
     });
     const idleSession = buildSession("session-1", {
       status: "idle",
       currentTurnStartedAt: null,
-      provider: "opencode",
-      modelId: "opencode/openai/gpt-5.4",
+      provider: "droid",
+      model: "claude-sonnet-4-5",
+      modelId: "droid/claude-sonnet-4-5",
     });
     const { list, steer } = installAdeMocks({
       sessions: [activeSession],
@@ -3678,10 +3602,11 @@ describe("AgentChatPane submit recovery", () => {
   });
 
   it("keeps the draft cleared after steer succeeds even if session refresh fails", async () => {
-    // Queue-only provider: the plain steer button, not Codex's split send.
+    // Queue-only provider: the plain steer button, not the split send.
     const session = buildSession("session-1", {
-      provider: "opencode",
-      modelId: "opencode/openai/gpt-5.4",
+      provider: "droid",
+      model: "claude-sonnet-4-5",
+      modelId: "droid/claude-sonnet-4-5",
     });
     const { steer } = installAdeMocks({
       sessions: [session],
@@ -4655,8 +4580,9 @@ describe("AgentChatPane submit recovery", () => {
   it("falls back to a normal send when the active-turn marker is stale", async () => {
     // Queue-only provider: the plain steer button, not Codex's split send.
     const session = buildSession("session-1", {
-      provider: "opencode",
-      modelId: "opencode/openai/gpt-5.4",
+      provider: "droid",
+      model: "claude-sonnet-4-5",
+      modelId: "droid/claude-sonnet-4-5",
     });
     const { send, steer } = installAdeMocks({
       sessions: [session],
@@ -6165,6 +6091,7 @@ describe("AgentChatPane submit recovery", () => {
           sessions: [],
           prs: [],
           lastSyncedAtMs: Date.now(),
+          lanesSyncedAtMs: Date.now(),
           error: null,
         },
       } as any,
@@ -6218,6 +6145,7 @@ describe("AgentChatPane submit recovery", () => {
           sessions: [],
           prs: [],
           lastSyncedAtMs: Date.now(),
+          lanesSyncedAtMs: Date.now(),
           error: null,
         },
       } as any,
@@ -6273,6 +6201,7 @@ describe("AgentChatPane submit recovery", () => {
           sessions: [],
           prs: [],
           lastSyncedAtMs: Date.now(),
+          lanesSyncedAtMs: Date.now(),
           error: null,
         },
       } as any,
@@ -7062,6 +6991,7 @@ describe("AgentChatPane submit recovery", () => {
           sessions: [],
           prs: [],
           lastSyncedAtMs: Date.now(),
+          lanesSyncedAtMs: Date.now(),
           error: null,
         },
       },
@@ -7155,118 +7085,6 @@ describe("AgentChatPane submit recovery", () => {
       );
     });
     expect(screen.queryByText(/Open this repository on this computer first/i)).toBeNull();
-  });
-
-  it("keeps orchestrator lead mode on the first Claude draft send", async () => {
-    const { send, create } = installAdeMocks({ sessions: [], includeClaudeModel: true });
-
-    renderAutoCreateDraftPane({ orchestratorEnabled: true });
-
-    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const claudeLabel = getModelById("anthropic/claude-sonnet-5")?.displayName ?? "Claude Sonnet 5";
-    fireEvent.pointerDown(modelTrigger, { button: 0 });
-    fireEvent.click(modelTrigger);
-    fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
-    await clickEnabledModelOption(new RegExp(escapeRegExp(claudeLabel), "i"));
-
-    const textbox = await screen.findByRole("textbox");
-    fireEvent.change(textbox, { target: { value: "Coordinate the release checklist." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
-
-    await waitFor(() => {
-      expect(create).toHaveBeenCalledWith(expect.objectContaining({
-        interactionMode: "orchestrator-lead",
-        provider: "claude",
-      }), LOCAL_PROJECT_BINDING);
-      expect(window.ade.orchestration.runCreate).toHaveBeenCalledWith({
-        laneId: "lane-1",
-        leadSessionId: "created-session",
-      }, LOCAL_PROJECT_BINDING);
-      expect(send).toHaveBeenCalledWith(expect.objectContaining({
-        sessionId: "created-session",
-        interactionMode: "orchestrator-lead",
-      }), LOCAL_PROJECT_BINDING);
-    });
-  });
-
-  it("pins orchestrator bundle allocation to the originating project binding", async () => {
-    const binding = {
-      kind: "local" as const,
-      key: "local:/tmp/project-under-test",
-      rootPath: "/tmp/project-under-test",
-      displayName: "project-under-test",
-    };
-    const { send, create } = installAdeMocks({ sessions: [], includeClaudeModel: true });
-    useAppStore.setState({ projectBinding: binding as any });
-
-    renderAutoCreateDraftPane({ orchestratorEnabled: true, projectBinding: binding });
-
-    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const claudeLabel = getModelById("anthropic/claude-sonnet-5")?.displayName ?? "Claude Sonnet 5";
-    fireEvent.pointerDown(modelTrigger, { button: 0 });
-    fireEvent.click(modelTrigger);
-    fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
-    await clickEnabledModelOption(new RegExp(escapeRegExp(claudeLabel), "i"));
-
-    const textbox = await screen.findByRole("textbox");
-    fireEvent.change(textbox, { target: { value: "Coordinate the release checklist." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
-
-    await waitFor(() => {
-      expect(create).toHaveBeenCalledWith(expect.objectContaining({
-        interactionMode: "orchestrator-lead",
-        provider: "claude",
-      }), binding);
-      expect(window.ade.orchestration.runCreate).toHaveBeenCalledWith({
-        laneId: "lane-1",
-        leadSessionId: "created-session",
-      }, binding);
-      expect(send).toHaveBeenCalledWith(expect.objectContaining({
-        sessionId: "created-session",
-        interactionMode: "orchestrator-lead",
-      }), binding);
-    });
-  });
-
-  it("does not send an orchestrator draft prompt when bundle allocation fails", async () => {
-    const { send, create, deleteChat } = installAdeMocks({ sessions: [], includeClaudeModel: true });
-    vi.mocked(window.ade.orchestration.runCreate).mockRejectedValueOnce(new Error("disk full"));
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    try {
-      renderAutoCreateDraftPane({ orchestratorEnabled: true });
-
-      const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-      const claudeLabel = getModelById("anthropic/claude-sonnet-5")?.displayName ?? "Claude Sonnet 5";
-      fireEvent.pointerDown(modelTrigger, { button: 0 });
-      fireEvent.click(modelTrigger);
-      fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
-      await clickEnabledModelOption(new RegExp(escapeRegExp(claudeLabel), "i"));
-
-      const textbox = await screen.findByRole("textbox");
-      fireEvent.change(textbox, { target: { value: "Coordinate the release checklist." } });
-      fireEvent.click(await screen.findByRole("button", { name: "Send" }));
-
-      await waitFor(() => {
-        expect(create).toHaveBeenCalledWith(expect.objectContaining({
-          interactionMode: "orchestrator-lead",
-          provider: "claude",
-        }), LOCAL_PROJECT_BINDING);
-        expect(window.ade.orchestration.runCreate).toHaveBeenCalledWith({
-          laneId: "lane-1",
-          leadSessionId: "created-session",
-        }, LOCAL_PROJECT_BINDING);
-      });
-      expect(send).not.toHaveBeenCalled();
-      // Orchestrator lead rollback stays pinned to the originating project.
-      expect(deleteChat).toHaveBeenCalledWith(
-        { sessionId: "created-session" },
-        LOCAL_PROJECT_BINDING,
-      );
-      expect(await screen.findByText("Orchestration bundle could not be allocated: disk full")).toBeTruthy();
-      expect(warnSpy).toHaveBeenCalled();
-    } finally {
-      warnSpy.mockRestore();
-    }
   });
 
   it("background auto-create reports the new chat without stealing focus and shows a dismissible notice", async () => {
@@ -7719,7 +7537,7 @@ describe("AgentChatPane submit recovery", () => {
       ],
       contextAttachments: [
         { type: "linear_issue", issue: { id: null } },
-        { type: "orchestration_annotation", item: { runId: "run-1", anchor: {}, capturedAt: "now" } },
+        { type: "not_a_context_attachment_kind", item: { runId: "run-1" } },
       ],
       iosContextItems: [{ kind: "ios_element", id: "bad" }],
       appControlContextItems: [{ kind: "app_control_element", componentId: "missing-id" }],
@@ -11637,6 +11455,7 @@ describe("AgentChatPane per-chat runtime routing", () => {
           sessions: [],
           prs: [],
           lastSyncedAtMs: Date.now(),
+          lanesSyncedAtMs: Date.now(),
           error: null,
         },
       },
@@ -12742,6 +12561,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
           sessions: [],
           prs: [],
           lastSyncedAtMs: Date.now(),
+          lanesSyncedAtMs: Date.now(),
           error: null,
         },
       },

@@ -106,14 +106,6 @@ vi.mock("./useAuthOnlyFilter", () => ({
   }),
 }));
 
-vi.mock("./usePerSurfaceModelDefaults", () => ({
-  usePerSurfaceModelDefaults: () => ({
-    defaults: {} as Record<string, string>,
-    setDefault: () => {},
-    getDefault: () => null,
-  }),
-}));
-
 vi.mock("./useReasoningByFamily", () => ({
   useReasoningByFamily: () => ({
     byFamily: { ...reasoningByFamilyStore },
@@ -299,7 +291,6 @@ function renderPicker(overrides: Partial<React.ComponentProps<typeof ModelPicker
     <ModelPicker
       value={SONNET.id}
       onChange={onChange}
-      surfaceKey="test-surface"
       models={MODELS}
       {...overrides}
     />,
@@ -348,6 +339,26 @@ describe("composeModelPickerTriggerLabel", () => {
     expect(composeModelPickerTriggerLabel({ model: undefined, value: "  ", fastMode: true }))
       .toBe("Select model");
   });
+
+  it("names a preset chat by the preset and suffixes nothing onto it", () => {
+    // The trigger is 152px wide. "<preset> - <model> Fast" truncates to
+    // neither, and the preset is the thing the user chose and recognises; the
+    // model reaches them through the trigger's title instead.
+    expect(composeModelPickerTriggerLabel({
+      model: FAST_GPT,
+      value: FAST_GPT.id,
+      fastMode: true,
+      presetName: "Opus on work",
+    })).toBe("Opus on work");
+  });
+
+  it("falls back to the model when the preset name is blank or absent", () => {
+    // A preset the user deleted or renamed to nothing must not blank the chip.
+    expect(composeModelPickerTriggerLabel({ model: OPUS, value: OPUS.id, presetName: "  " }))
+      .toBe(OPUS.displayName);
+    expect(composeModelPickerTriggerLabel({ model: OPUS, value: OPUS.id, presetName: null }))
+      .toBe(OPUS.displayName);
+  });
 });
 
 describe("ModelPicker", () => {
@@ -382,7 +393,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={SONNET.id}
         onChange={vi.fn()}
-        surfaceKey="test-surface"
         models={MODELS}
         openRequestKey={undefined}
         onOpenRequestHandled={onOpenRequestHandled}
@@ -609,6 +619,48 @@ describe("ModelPicker", () => {
     expect(favoriteStore.has(OPUS.id)).toBe(true);
   });
 
+  it("gives every row one line of detail under the name", async () => {
+    const user = userEvent.setup();
+    render(
+      <ModelPicker value={SONNET.id} onChange={vi.fn()} models={[SONNET, OPUS]} />,
+    );
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+
+    // The complaint this answers: rows were a name and nothing else, so two
+    // models that differ only in what they can hold looked identical.
+    expect((await findModelRow(SONNET.id)).textContent).toContain("Anthropic · 200K context · reasoning");
+    expect((await findModelRow(OPUS.id)).textContent).toContain("Anthropic · 1M context · reasoning");
+  });
+
+  it("names the route a model actually takes on its detail line", async () => {
+    const user = userEvent.setup();
+    render(
+      <ModelPicker
+        value={OPENCODE_MODEL.id}
+        onChange={vi.fn()}
+        models={[OPENCODE_MODEL]}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+
+    expect((await findModelRow(OPENCODE_MODEL.id)).textContent)
+      .toContain("OpenCode · Anthropic · 200K context · reasoning");
+  });
+
+  it("names the Pi provider on a pi/ row whose descriptor carries no pi-sdk route", async () => {
+    const user = userEvent.setup();
+    // The shape that regressed: the rail grouped this as Pi (it matches on the
+    // id) while the detail line matched on `providerRoute` alone and dropped
+    // the provider entirely.
+    const routeless: ModelDescriptor = { ...PI_MODEL, providerRoute: "openai-responses" };
+    render(
+      <ModelPicker value={routeless.id} onChange={vi.fn()} models={[routeless]} />,
+    );
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+
+    expect((await findModelRow(routeless.id)).textContent).toContain("OpenAI · OpenAI Codex · work");
+  });
+
   it("does not render popover content when closed", () => {
     renderPicker();
     expect(screen.queryByRole("listbox", { name: /models/i })).toBeNull();
@@ -640,7 +692,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={FAST_GPT.id}
         onChange={vi.fn()}
-        surfaceKey="test"
         models={[FAST_GPT, SLOW_GPT]}
         fastMode={false}
         onFastModeChange={onFastModeChange}
@@ -673,7 +724,6 @@ describe("ModelPicker", () => {
     const props = {
       value: tiered.id,
       onChange: vi.fn(),
-      surfaceKey: "cursor-cloud-tier-test",
       models: [tiered],
       serviceTierMode: true,
       onServiceTierChange,
@@ -705,7 +755,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={FAST_GPT.id}
         onChange={vi.fn()}
-        surfaceKey="test"
         models={[FAST_GPT, SONNET]}
         fastMode
       />,
@@ -725,7 +774,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={FAST_GPT.id}
         onChange={onChange}
-        surfaceKey="test"
         models={[FAST_GPT, SONNET]}
         fastMode={false}
         onFastModeChange={onFastModeChange}
@@ -749,7 +797,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={FAST_GPT.id}
         onChange={vi.fn()}
-        surfaceKey="test"
         models={[FAST_GPT, SONNET]}
         fastMode
         onFastModeChange={onFastModeChange}
@@ -773,7 +820,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={FAST_GPT.id}
         onChange={vi.fn()}
-        surfaceKey="test"
         models={[FAST_GPT, FAST_GPT_ALT]}
         fastMode
         onFastModeChange={vi.fn()}
@@ -797,7 +843,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={FAST_GPT.id}
         onChange={onChange}
-        surfaceKey="test"
         models={[FAST_GPT, FAST_GPT_ALT]}
         fastMode={false}
         onFastModeChange={onFastModeChange}
@@ -821,7 +866,6 @@ describe("ModelPicker", () => {
     const props = {
       value: FAST_GPT.id,
       onChange,
-      surfaceKey: "test",
       models: [FAST_GPT, FAST_GPT_ALT],
       onFastModeChange,
     };
@@ -852,7 +896,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={FAST_GPT.id}
         onChange={onChange}
-        surfaceKey="test"
         models={[FAST_GPT, SLOW_GPT]}
         fastMode
         onFastModeChange={onFastModeChange}
@@ -875,7 +918,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={FAST_GPT.id}
         onChange={vi.fn()}
-        surfaceKey="test"
         models={[FAST_GPT]}
         fastMode={false}
         onFastModeChange={vi.fn()}
@@ -888,7 +930,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={FAST_GPT.id}
         onChange={vi.fn()}
-        surfaceKey="test"
         models={[FAST_GPT]}
         fastMode
         onFastModeChange={vi.fn()}
@@ -909,7 +950,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={FAST_GPT.id}
         onChange={vi.fn()}
-        surfaceKey="test"
         models={[FAST_GPT, SLOW_GPT]}
         fastModeActive
         onFastModeToggle={onToggle}
@@ -929,7 +969,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={FAST_GPT.id}
         onChange={vi.fn()}
-        surfaceKey="test"
         models={[FAST_GPT, SONNET]}
         fastMode
         onFastModeChange={vi.fn()}
@@ -979,7 +1018,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={cursorFast.id}
         onChange={vi.fn()}
-        surfaceKey="test"
         models={[cursorFast]}
         fastMode
         onFastModeChange={onToggle}
@@ -999,7 +1037,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value=""
         onChange={vi.fn()}
-        surfaceKey="test"
         models={MODELS}
       />,
     );
@@ -1256,7 +1293,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={SONNET.id}
         onChange={vi.fn()}
-        surfaceKey="test-surface"
         models={MODELS}
         runtimePin={foreignPin as never}
       />,
@@ -1311,12 +1347,12 @@ describe("ModelPicker", () => {
       runtimeName: "Studio",
     });
     rerender(
-      <ModelPicker value={SONNET.id} onChange={vi.fn()} surfaceKey="test-surface" models={MODELS} runtimePin={pinOf() as never} />,
+      <ModelPicker value={SONNET.id} onChange={vi.fn()} models={MODELS} runtimePin={pinOf() as never} />,
     );
     await waitFor(() => expect(modelCatalog).toHaveBeenCalledTimes(2));
     for (let i = 0; i < 3; i += 1) {
       rerender(
-        <ModelPicker value={SONNET.id} onChange={vi.fn()} surfaceKey="test-surface" models={MODELS} runtimePin={pinOf() as never} />,
+        <ModelPicker value={SONNET.id} onChange={vi.fn()} models={MODELS} runtimePin={pinOf() as never} />,
       );
     }
     await Promise.resolve();
@@ -1494,7 +1530,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={SONNET.id}
         onChange={vi.fn()}
-        surfaceKey="test-surface"
         models={MODELS}
         catalogScopeKey="machine-a"
         onRuntimeCatalogRefreshed={onRuntimeCatalogRefreshed}
@@ -1516,7 +1551,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={SONNET.id}
         onChange={vi.fn()}
-        surfaceKey="test-surface"
         models={MODELS}
         catalogScopeKey="machine-b"
         onRuntimeCatalogRefreshed={onRuntimeCatalogRefreshed}
@@ -1612,7 +1646,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={SONNET.id}
         onChange={vi.fn()}
-        surfaceKey="test"
         models={MODELS}
         onOpenSignIn={onOpenSignIn}
       />,
@@ -1864,7 +1897,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={SONNET.id}
         onChange={vi.fn()}
-        surfaceKey="test"
         models={MODELS}
         onOpenSignIn={vi.fn()}
       />,
@@ -1880,7 +1912,6 @@ describe("ModelPicker", () => {
       <ModelPicker
         value={SONNET.id}
         onChange={vi.fn()}
-        surfaceKey="test"
         models={MODELS}
       />,
     );
@@ -2172,7 +2203,6 @@ describe("ModelPicker", () => {
         <ModelPicker
           value={SONNET.id}
           onChange={vi.fn()}
-          surfaceKey="test"
           models={MODELS}
           onOpenSignIn={onOpenSignIn}
         />,
@@ -2193,7 +2223,6 @@ describe("ModelPicker", () => {
         <ModelPicker
           value={SONNET.id}
           onChange={vi.fn()}
-          surfaceKey="test"
           models={MODELS}
           onOpenSignIn={onOpenSignIn}
         />,
@@ -2231,6 +2260,9 @@ describe("ModelPicker", () => {
       const railKeys = Array.from(document.querySelectorAll("[data-rail-selection]"))
         .map((entry) => entry.getAttribute("data-rail-selection"));
       const expectedRailKeys = [
+        // Harnesses leads the rail: a saved preset is a whole launch
+        // configuration, so it sits above the model-level views.
+        "harnesses",
         "favorites",
         "recents",
         "provider:anthropic",
@@ -2248,6 +2280,21 @@ describe("ModelPicker", () => {
         "provider:lmstudio",
       ].filter((key) => key !== "provider:cursor" || cursorProviderAvailable());
       expect(railKeys).toEqual(expectedRailKeys);
+    });
+
+    it("drops the Harnesses rail entry when the surface launches a CLI", async () => {
+      // The locked CLI gate has two halves. This is the one that stops the
+      // choice being offered: four harnesses take no key from the launch, so a
+      // preset picked here would be dropped, and a choice that is then ignored
+      // is worse than no choice. The launch path enforces the other half.
+      const user = userEvent.setup();
+      renderPicker({ listsHarnessPresets: false });
+      await user.click(screen.getByRole("button", { name: /Select model/i }));
+      const railKeys = Array.from(document.querySelectorAll("[data-rail-selection]"))
+        .map((entry) => entry.getAttribute("data-rail-selection"));
+      expect(railKeys).not.toContain("harnesses");
+      expect(railKeys[0]).toBe("favorites");
+      expect(screen.queryByRole("tab", { name: /^Harnesses$/i })).toBeNull();
     });
 
     it("lists curated Qwen models when the Qwen rail is selected", async () => {

@@ -6,6 +6,7 @@ import type { CtoAttentionState, KeybindingsSnapshot, LaneDeleteProgress, LaneLi
 import { recentProjectStateKey } from "../../shared/projectIdentity";
 import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
 import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry";
+import { normalizeHarnessPresetList, type HarnessPreset } from "../../shared/harnessPresets";
 import { parseCodedErrorMessage } from "../lib/codedError";
 import { toAdeRecoveryErrorCode, type AdeRecoveryErrorCode } from "../../shared/types/recovery";
 import { isWebClientMode } from "../lib/webClientMode";
@@ -186,13 +187,6 @@ export type WorkProjectViewState = {
   /** The grid set currently shown in the work area (derived-from/synced-with the focused session). */
   activeGridSetId: string | null;
   draftKind: WorkDraftKind;
-  /**
-   * Whether the new-chat composer launches an orchestrator (lead) run. This is
-   * an orthogonal flag on the single unified draft — not a third `draftKind` —
-   * so toggling chat↔cli↔orchestrator never splits the prompt/model/lane state.
-   * CLI mode forces this off (orchestrator has no CLI form).
-   */
-  orchestratorEnabled: boolean;
   draftLaneId: string | null;
   /** Machine that owns `draftLaneId`; null means the project tab's bound machine. */
   draftMachineId: string | null;
@@ -322,7 +316,6 @@ export function createDefaultWorkProjectViewState(): WorkProjectViewState {
     gridSets: [],
     activeGridSetId: null,
     draftKind: "chat",
-    orchestratorEnabled: false,
     draftLaneId: null,
     draftMachineId: null,
     laneFilter: "all",
@@ -430,13 +423,6 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     gridSets: normalizeWorkGridSets(candidate.gridSets),
     activeGridSetId: normalizeOptionalString(candidate.activeGridSetId),
     draftKind: candidate.draftKind === "cli" ? "cli" : "chat",
-    // Legacy persisted state stored orchestrator as a third draftKind
-    // ("chat-orchestrator"); migrate it onto the orthogonal boolean. CLI mode
-    // forces orchestrator off, so never resolve both at once.
-    orchestratorEnabled:
-      candidate.draftKind !== "cli"
-      && (candidate.orchestratorEnabled === true
-        || (candidate as { draftKind?: unknown }).draftKind === "chat-orchestrator"),
     draftLaneId: normalizeOptionalString(candidate.draftLaneId),
     draftMachineId: normalizeOptionalString(candidate.draftMachineId),
     laneFilter: normalizeOptionalString(candidate.laneFilter) ?? "all",
@@ -958,6 +944,14 @@ type PersistedUserPreferences = {
   chatTranscriptDensity: ChatTranscriptDensity;
   chatChromeTint: ChatChromeTint;
   chatShellGeometry: ChatShellGeometry;
+  /**
+   * Saved harness presets — a body (the harness) plus a brain (the model
+   * source), named and given a logo. They live in the preferences blob rather
+   * than in their own store because they are an account preference like any
+   * other: `accountSettingsSync` registers `harnessPresets` and every machine
+   * you sign in on converges on the same list.
+   */
+  harnessPresets: HarnessPreset[];
   /** Set true the first time the user changes the chat font size; locks the
    *  large-screen auto-size so it never overrides their choice again. */
   userOverrodeChatFontSize: boolean;
@@ -1023,6 +1017,7 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
       chatTranscriptDensity: normalizeChatTranscriptDensity(parsed.chatTranscriptDensity),
       chatChromeTint: coercePersistedChatChromeTint(parsed as Record<string, unknown>),
       chatShellGeometry: normalizeChatShellGeometry(parsed.chatShellGeometry),
+      harnessPresets: normalizeHarnessPresetList(parsed.harnessPresets),
       userOverrodeChatFontSize: parsed.userOverrodeChatFontSize === true,
     };
   } catch {
@@ -1067,6 +1062,7 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
     chatTranscriptDensity: "comfortable",
     chatChromeTint: "colored",
     chatShellGeometry: "default",
+    harnessPresets: [],
     userOverrodeChatFontSize: false,
   };
 }
@@ -1097,6 +1093,7 @@ function persistUserPreferencesFrom(state: {
   chatTranscriptDensity: ChatTranscriptDensity;
   chatChromeTint: ChatChromeTint;
   chatShellGeometry: ChatShellGeometry;
+  harnessPresets: HarnessPreset[];
   userOverrodeChatFontSize: boolean;
 }) {
   persistUserPreferences({
@@ -1116,6 +1113,7 @@ function persistUserPreferencesFrom(state: {
     chatTranscriptDensity: state.chatTranscriptDensity,
     chatChromeTint: state.chatChromeTint,
     chatShellGeometry: state.chatShellGeometry,
+    harnessPresets: state.harnessPresets,
     userOverrodeChatFontSize: state.userOverrodeChatFontSize,
   });
 }
@@ -1221,6 +1219,14 @@ export type CrossMachineMachineLanes = {
    */
   prs: PrSummary[];
   lastSyncedAtMs: number | null;
+  /**
+   * When this machine's LANE list was last read. Separate from
+   * `lastSyncedAtMs` because a sessions-only or PR-only update must not be
+   * mistaken for a lane read — an optimistic foreign launch writes a
+   * sessions-only slice, and treating that as "lanes were read" makes an empty
+   * lane list look authoritative.
+   */
+  lanesSyncedAtMs: number | null;
   /** Last read failure, kept alongside (not instead of) the retained lanes. */
   error: string | null;
 };
@@ -1268,6 +1274,8 @@ export type AppState = {
   chatTranscriptDensity: ChatTranscriptDensity;
   chatChromeTint: ChatChromeTint;
   chatShellGeometry: ChatShellGeometry;
+  /** Saved harness presets, newest edit last. See `shared/harnessPresets.ts`. */
+  harnessPresets: HarnessPreset[];
   providerMode: ProviderMode;
   availableModels: ModelDescriptor[];
   laneInspectorTabs: Record<string, LaneInspectorTab>;
@@ -1415,6 +1423,14 @@ export type AppState = {
   setChatTranscriptDensity: (density: ChatTranscriptDensity) => void;
   setChatChromeTint: (tint: ChatChromeTint) => void;
   setChatShellGeometry: (geometry: ChatShellGeometry) => void;
+  /**
+   * Replace the whole preset list. Whole-list rather than per-preset because
+   * the account store syncs one value under one key, and a per-row setter
+   * would need its own merge rule on top of the registry's newer-wins one.
+   */
+  setHarnessPresets: (
+    next: HarnessPreset[] | ((prev: HarnessPreset[]) => HarnessPreset[]),
+  ) => void;
   /** Resets only theme + chat font size (narrow restore — per product spec). */
   resetThemeAndChatFontDefaults: () => void;
   setTerminalPreferences: (
@@ -1707,6 +1723,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   chatTranscriptDensity: initialUserPreferences.chatTranscriptDensity,
   chatChromeTint: initialUserPreferences.chatChromeTint,
   chatShellGeometry: initialUserPreferences.chatShellGeometry,
+  harnessPresets: initialUserPreferences.harnessPresets,
   providerMode: "guest",
   availableModels: [...MODEL_REGISTRY].filter((m) => !m.deprecated),
   laneInspectorTabs: {},
@@ -2006,6 +2023,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           entry.lanes || entry.sessions || entry.prs
             ? Date.now()
             : previous?.lastSyncedAtMs ?? null,
+        // Lane-specific on purpose: only an actual lane read advances this, so a
+        // sessions-only or PR-only merge cannot pass itself off as a lane read.
+        lanesSyncedAtMs: entry.lanes ? Date.now() : previous?.lanesSyncedAtMs ?? null,
         error: entry.error !== undefined ? entry.error : previous?.error ?? null,
       };
       const sliceUnchanged = (
@@ -2019,6 +2039,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         && previous.sessions === next.sessions
         && previous.prs === next.prs
         && previous.lastSyncedAtMs === next.lastSyncedAtMs
+        && previous.lanesSyncedAtMs === next.lanesSyncedAtMs
         && previous.error === next.error
       );
       if (sliceUnchanged && !intendedChanged) return {};
@@ -2180,6 +2201,13 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       const value = normalizeChatShellGeometry(geometry);
       persistUserPreferencesFrom({ ...prev, chatShellGeometry: value });
       return { chatShellGeometry: value };
+    }),
+  setHarnessPresets: (next) =>
+    set((prev) => {
+      const resolved = typeof next === "function" ? next(prev.harnessPresets) : next;
+      const value = normalizeHarnessPresetList(resolved);
+      persistUserPreferencesFrom({ ...prev, harnessPresets: value });
+      return { harnessPresets: value };
     }),
   resetThemeAndChatFontDefaults: () =>
     set((prev) => {
@@ -3095,6 +3123,7 @@ export function createProjectAppStore(
     chatTranscriptDensity: rootState.chatTranscriptDensity,
     chatChromeTint: rootState.chatChromeTint,
     chatShellGeometry: rootState.chatShellGeometry,
+    harnessPresets: rootState.harnessPresets,
     smartTooltipsEnabled: rootState.smartTooltipsEnabled,
     launchPromptClipboardEnabled: rootState.launchPromptClipboardEnabled,
     launchPromptClipboardNoticeEnabled: rootState.launchPromptClipboardNoticeEnabled,
@@ -3111,6 +3140,7 @@ export function createProjectAppStore(
     setChatTranscriptDensity: rootState.setChatTranscriptDensity,
     setChatChromeTint: rootState.setChatChromeTint,
     setChatShellGeometry: rootState.setChatShellGeometry,
+    setHarnessPresets: rootState.setHarnessPresets,
     resetThemeAndChatFontDefaults: rootState.resetThemeAndChatFontDefaults,
     setSmartTooltipsEnabled: rootState.setSmartTooltipsEnabled,
     setLaunchPromptClipboardEnabled: rootState.setLaunchPromptClipboardEnabled,

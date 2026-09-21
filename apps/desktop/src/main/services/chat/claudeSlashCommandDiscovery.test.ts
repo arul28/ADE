@@ -218,6 +218,58 @@ describe("discoverClaudeSlashCommands", () => {
     ]));
   });
 
+  it("hides skills whose user-invocable flag uses YAML 1.1 boolean spellings", () => {
+    const skillsDir = path.join(tmpRoot, ".claude", "skills");
+    const spellings: Array<[string, string]> = [
+      ["no", "no"],
+      ["off", "off"],
+      ["zero", "0"],
+      ["false", "false"],
+      ["quoted", "\"false\""],
+    ];
+    for (const [label, value] of spellings) {
+      const skillDir = path.join(skillsDir, `hidden-${label}`);
+      fs.mkdirSync(skillDir, { recursive: true });
+      fs.writeFileSync(path.join(skillDir, "SKILL.md"), [
+        "---",
+        `name: hidden-${label}`,
+        "description: Hidden",
+        `user-invocable: ${value}`,
+        "---",
+        "",
+        "Hidden body.",
+        "",
+      ].join("\n"));
+    }
+
+    const commands = discoverClaudeSlashCommands(tmpRoot);
+    for (const [label] of spellings) {
+      expect(commands).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: `/hidden-${label}` }),
+      ]));
+    }
+  });
+
+  it("exposes modelInvocable from disable-model-invocation without hiding the skill", () => {
+    const skillDir = path.join(tmpRoot, ".claude", "skills", "internal-only");
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, "SKILL.md"), [
+      "---",
+      "name: internal-only",
+      "description: Model may not invoke this",
+      "disable-model-invocation: yes",
+      "---",
+      "",
+      "Tool-only body.",
+      "",
+    ].join("\n"));
+
+    const command = discoverClaudeSlashCommands(tmpRoot)
+      .find((entry) => entry.name === "/internal-only");
+    expect(command).toBeDefined();
+    expect(command?.modelInvocable).toBe(false);
+  });
+
   it("discovers cross-client project skills from .cursor, .agents, .ade, and .codex roots", () => {
     const cursorSkill = path.join(tmpRoot, ".cursor", "skills", "cursor-audit");
     const agentsSkill = path.join(tmpRoot, ".agents", "skills", "ios-lab");

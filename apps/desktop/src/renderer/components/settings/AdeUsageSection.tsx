@@ -44,6 +44,7 @@ import {
   USAGE_TEXT,
 } from "../usage/usageDesign";
 import { formatUpdatedAge } from "../usage/usageWindowFormat";
+import { SettingsDashboardPage, SettingsDashboardStat } from "./primitives/SettingsDashboardPage";
 
 const SCOPE_STORAGE_KEY = "ade.stats.scope.v1";
 const RANGE_STORAGE_KEY = "ade.stats.range.v1";
@@ -268,7 +269,12 @@ function formatRangeLabel(stats: AdeUsageStats | null): string {
  */
 type MetricSource = "Providers" | "GitHub" | "Local git";
 
-/** One cell of the metric strip. */
+/**
+ * One cell of the metric strip — `SettingsDashboardStat`, the tile every
+ * settings dashboard uses, with the source label kept as its own element
+ * beside the metric's name so a reader can still tell provider-ledger tokens
+ * from GitHub's pull-request counts at a glance.
+ */
 function Metric({
   label,
   value,
@@ -281,19 +287,16 @@ function Metric({
   source?: MetricSource;
 }) {
   return (
-    <div
-      className={cn(
-        "flex flex-col gap-1 bg-surface-raised px-5 py-4 hover:bg-muted",
-        USAGE_HOVER_ROW_CLASS,
-      )}
-    >
-      <span className={cn(USAGE_TEXT.micro, "flex items-baseline justify-between gap-2 text-muted-fg")}>
-        <span className="min-w-0 truncate">{label}</span>
-        {source ? <span className="shrink-0 text-muted-fg/70">{source}</span> : null}
-      </span>
-      <span className={cn(USAGE_TEXT.title, USAGE_NUMERIC_CLASS, "text-fg")}>{value}</span>
-      <span className={cn(USAGE_TEXT.micro, "text-muted-fg")}>{detail}</span>
-    </div>
+    <SettingsDashboardStat
+      label={
+        <span className="flex items-baseline justify-between gap-2">
+          <span className="min-w-0 truncate">{label}</span>
+          {source ? <span className="shrink-0 opacity-70">{source}</span> : null}
+        </span>
+      }
+      value={value}
+      hint={detail}
+    />
   );
 }
 
@@ -933,7 +936,13 @@ export function AdeUsageSection() {
     : null;
 
   return (
-    <div className="flex flex-col gap-6">
+    // Read-only figures end to end, so this is a dashboard page. It also gives
+    // `#ade-usage` — the anchor the manifest, ⌘K and the header usage control
+    // all link to — somewhere to land: before this, nothing in the DOM carried
+    // it and the deeplink scrolled nowhere. The title is the manifest's own
+    // label ("Usage & spend"), not a second copy of the shell's "Usage".
+    <SettingsDashboardPage anchor="ade-usage" title="Usage & spend">
+      <div className="flex flex-col gap-6">
       {/* The Settings shell already prints "Usage" and its one-line
           description above this component, so the page does not print them a
           second time. What the shell cannot know — which range is on screen and
@@ -1050,15 +1059,10 @@ export function AdeUsageSection() {
             </Panel>
           </div>
 
-          <section
-            className={cn(
-              "grid grid-cols-2 gap-px overflow-hidden md:grid-cols-5",
-              USAGE_CARD_CLASS,
-              // The seams between cells are the card's own hairline showing
-              // through a 1px grid gap, not a second, harder rule.
-              "bg-[color:color-mix(in_srgb,var(--color-border)_75%,var(--color-surface-raised))]",
-            )}
-          >
+          {/* The strip is five dashboard stats. Each tile is self-contained and
+              bordered by the template, so the grid just spaces them — the old
+              hairline-through-a-1px-gap trick belonged to a hand-drawn card. */}
+          <section className="grid grid-cols-2 gap-3 md:grid-cols-5">
             <Metric
               label="Processed tokens"
               source="Providers"
@@ -1120,6 +1124,7 @@ export function AdeUsageSection() {
           ) : null}
         </>
       )}
-    </div>
+      </div>
+    </SettingsDashboardPage>
   );
 }

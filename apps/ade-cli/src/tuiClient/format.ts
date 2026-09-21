@@ -8,6 +8,7 @@ import {
   isHostSleepNoticeEvent,
 } from "../../../desktop/src/shared/hostSleepNotice";
 import { readChatErrorPresentation } from "../../../desktop/src/shared/chatErrorPresentation";
+import { isDataUri } from "../../../desktop/src/shared/chatImageUrls";
 import { approvalRequestKind, isQuestionKind } from "../../../desktop/src/shared/pendingInputAnswers";
 import { providerDisplayLabel } from "../../../desktop/src/shared/pendingInputLabels";
 import { isLegacyProviderRetryNotice } from "../../../desktop/src/shared/providerRetryPresentation";
@@ -18,6 +19,7 @@ import type { LocalNotice } from "./types";
 import { appendStreamingText, isCodexSubagentMessageId, shouldMergeAssistantText } from "./assistantTextIdentity";
 import { formatUserMessageTranscriptBody } from "./composerDrafts";
 import { terminalReasonLabel } from "./terminalReason";
+import { voiceCallLineId, voiceCallMarkerBody, voiceCallRunsByStartIndex } from "./voiceCallRuns";
 
 export type { HighlightedToken } from "./highlightCache";
 
@@ -735,6 +737,10 @@ export function renderChatLines(args: {
     }
   }
 
+  // Keyed by the index of each run's first envelope; empty for every chat that
+  // has never been on a call, which is every chat but the CTO's.
+  const voiceCallRuns = voiceCallRunsByStartIndex(args.events);
+
   const pushLine = (line: RenderedChatLine): void => {
     const last = lines[lines.length - 1];
     if (
@@ -776,6 +782,17 @@ export function renderChatLines(args: {
 
     const { envelope, index } = entry;
     const event = envelope.event;
+    // A CTO voice call's turns are real turns on the CTO's real thread; they are
+    // headed by one dim line saying a call happened and then render normally.
+    // See `voiceCallRuns.ts` for why the terminal marks rather than folds.
+    const voiceRun = voiceCallRuns.get(index);
+    if (voiceRun) {
+      pushLine({
+        id: voiceCallLineId(voiceRun.callId),
+        tone: "notice",
+        body: voiceCallMarkerBody(voiceRun),
+      });
+    }
     const id = chatEventLineId(envelope, index);
     const expanded = args.expandedLineIds?.has(id) ?? false;
     if (event.type === "user_message") {
@@ -1054,9 +1071,12 @@ export function renderChatLines(args: {
     }
     if (event.type === "codex_image_generation" || event.type === "codex_image_view") {
       const isGeneration = event.type === "codex_image_generation";
-      const title = isGeneration
-        ? event.revisedPrompt ?? event.prompt ?? "image"
-        : event.title ?? event.url ?? event.path ?? "image";
+      // A data URI is not a name — a tool-returned image can arrive nameless,
+      // and printing its base64 into a truncating line is worse than "image".
+      const rawTitle = isGeneration
+        ? event.revisedPrompt ?? event.prompt
+        : event.title ?? event.url ?? event.path;
+      const title = rawTitle && !isDataUri(rawTitle) ? rawTitle : "image";
       lines.push({
         id,
         tone: event.status === "failed" ? "error" : "tool",
@@ -1294,6 +1314,13 @@ export function renderChatLines(args: {
       continue;
     }
     if (event.type === "pending_input_resolved") {
+      // The receipt, not silence. A card that vanishes with no row leaves the
+      // transcript unable to say whether the question was answered, declined,
+      // or thrown away — and the desktop and phone both draw all three.
+      const verb = event.resolution === "accepted"
+        ? "Answered"
+        : event.resolution === "declined" ? "Declined" : "Dismissed";
+      lines.push({ id, tone: "notice", body: `[input] ${verb}` });
       continue;
     }
     if (event.type === "delegation_state") {
@@ -1424,7 +1451,6 @@ export function formatLaneLabel(lane: LaneSummary | null): string {
 
 export function formatSessionLabel(session: AgentChatSessionSummary): string {
   const label = (session.title ?? session.goal ?? session.summary ?? session.sessionId).trim();
-  const tag = session.orchestrationTag ? ` #${session.orchestrationTag}` : "";
   const completion = session.completion?.status;
   const state = session.archivedAt
     ? " ×"
@@ -1439,7 +1465,7 @@ export function formatSessionLabel(session: AgentChatSessionSummary): string {
             : completion === "completed"
               ? " ✓"
               : "";
-  return `${label}${tag}${state}`;
+  return `${label}${state}`;
 }
 
 export function renderObject(value: unknown, maxLines = 24): string {

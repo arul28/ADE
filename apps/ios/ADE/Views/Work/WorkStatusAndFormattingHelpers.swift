@@ -110,6 +110,52 @@ func workChatComposerPlaceholder(pendingInputs: [WorkPendingInputItem], sessionS
   return "Type to vibecode..."
 }
 
+/// What the composer may still do while a blocking pending input is open.
+///
+/// Three answers, not one, because they are not the same question. A pending
+/// question locks TEXT and SEND — those replies have to go through the
+/// structured card the runtime is awaiting — but it does NOT lock FILES.
+/// Attaching while you answer is the one moment you most want it (the agent
+/// just asked which of two screenshots to use), and no provider adapter carries
+/// a file inside a structured answer, so a staged file rides the NEXT user turn
+/// instead. Mirrors the desktop `AskQuestionComposer`, whose paperclip is gated
+/// on `canAttach` rather than on the pending-input gate.
+///
+/// Every other reason composing is unavailable — no host, a subagent transcript
+/// being read, a chat that cannot send at all — still closes attaching, because
+/// those are facts about the chat rather than about the open question.
+struct WorkComposerInputGate: Equatable {
+  /// Typing into the main composer field.
+  let canCompose: Bool
+  /// Staging photos, videos, and files for the next turn.
+  let canAttach: Bool
+  /// Dispatching the composed message.
+  let canSend: Bool
+}
+
+func workChatComposerInputGate(
+  canComposeMessages: Bool,
+  canSendMessages: Bool,
+  sending: Bool,
+  sendWillQueue: Bool,
+  hasPendingInputGate: Bool
+) -> WorkComposerInputGate {
+  WorkComposerInputGate(
+    canCompose: canComposeMessages && !hasPendingInputGate,
+    canAttach: canComposeMessages,
+    canSend: canSendMessages && (!sending || sendWillQueue) && !hasPendingInputGate
+  )
+}
+
+/// Note shown over the composer's attach rows when files are still stageable
+/// but text is locked — i.e. a blocking question is open. Says where the file
+/// goes, because a live paperclip over a dead text field otherwise reads like a
+/// bug. Nil whenever typing and attaching agree, which needs no explanation.
+func workChatComposerAttachHint(canCompose: Bool, canAttach: Bool) -> String? {
+  guard canAttach, !canCompose else { return nil }
+  return "Files ride your next message"
+}
+
 func workMobileShowsToolCardInTimeline(_: WorkToolCardModel) -> Bool {
   true
 }
@@ -119,19 +165,24 @@ struct WorkToolActivityPresentation: Equatable {
   let detail: String?
 }
 
+/// What this provider's in-thread subagents support on a phone.
+///
+/// There is only one capability left. Opening an in-thread subagent's
+/// transcript was removed (see `handleSubagentSelection`): the phone shows the
+/// subagent card — label, model, status, latest summary, result — and never
+/// replaces the thread with a read-only copy of the agent's own work. Separate
+/// subagent chats (`--type subagent`) and child lanes are unaffected; they are
+/// full chats with their own rows.
 struct WorkSubagentCapability: Equatable {
   let canList: Bool
-  let canViewFullTranscript: Bool
 
-  static let none = WorkSubagentCapability(canList: false, canViewFullTranscript: false)
+  static let none = WorkSubagentCapability(canList: false)
 }
 
 func workResolveSubagentCapability(provider: String?) -> WorkSubagentCapability {
   switch providerFamilyKey(provider ?? "") {
-  case "codex", "claude", "opencode":
-    return WorkSubagentCapability(canList: true, canViewFullTranscript: true)
-  case "cursor", "droid", "factory":
-    return WorkSubagentCapability(canList: true, canViewFullTranscript: false)
+  case "codex", "claude", "opencode", "cursor", "droid", "factory":
+    return WorkSubagentCapability(canList: true)
   default:
     return .none
   }

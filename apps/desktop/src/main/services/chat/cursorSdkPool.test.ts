@@ -31,7 +31,6 @@ const TEST_POLICY = {
   approvalPolicy: "on-request",
   fullAuto: false,
   hardGuards: true,
-  orchestrationLead: false,
   autoReview: true,
 } as const;
 const tempDirs: string[] = [];
@@ -1285,6 +1284,52 @@ describe("Cursor SDK pool paths", () => {
         requestId: "req-cursor-1",
       },
     });
+
+    releaseCursorSdkConnection(poolKey, acquired.generation);
+  });
+
+  it("carries a steer request and its outcome over worker IPC", async () => {
+    /** Answers `steer` with the outcome the SDK's `Run.steer()` reports. */
+    class SteeringChild extends FakeSdkChild {
+      steerTexts: string[] = [];
+
+      override send(message: { type?: string; requestId?: string; payload?: unknown }): boolean {
+        if (message.type === "steer" && message.requestId) {
+          this.sent.push(message);
+          this.steerTexts.push((message.payload as { text: string }).text);
+          const requestId = message.requestId;
+          queueMicrotask(() => {
+            this.emit("message", {
+              type: "response",
+              requestId,
+              ok: true,
+              result: { outcome: "complete_delivered" },
+            });
+          });
+          return true;
+        }
+        return super.send(message);
+      }
+    }
+
+    const child = new SteeringChild();
+    forkMock.mockReturnValue(child);
+    const poolKey = `test-steer:${Date.now()}:${Math.random()}`;
+    const acquired = await acquireCursorSdkConnection({
+      poolKey,
+      projectRoot: path.join(os.tmpdir(), "ade-project"),
+      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
+      modelSdkId: "cursor-model",
+      sessionId: "session-1",
+      policy: { ...TEST_POLICY },
+    });
+
+    await expect(acquired.pooled.steer("redirect this turn")).resolves.toEqual({
+      outcome: "complete_delivered",
+    });
+    // The text travels in the payload, not the request type, so the worker can
+    // hand it to `Run.steer()` unchanged.
+    expect(child.steerTexts).toEqual(["redirect this turn"]);
 
     releaseCursorSdkConnection(poolKey, acquired.generation);
   });

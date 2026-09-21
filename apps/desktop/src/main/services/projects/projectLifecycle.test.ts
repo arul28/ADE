@@ -164,7 +164,9 @@ describe("initializeOrRepairAdeProject", () => {
     expect(adeGitignore).not.toContain("!cto/identity.yaml");
     expect(adeGitignore).toContain("!workflows/linear/**");
     expect(adeGitignore).toContain("!project-icons/**");
-    expect(fs.readFileSync(path.join(layout.adeDir, "ade.yaml"), "utf8")).toContain("version: 1");
+    // No `ade.yaml`: the committed shared config is retired, so repair must
+    // not recreate a file the carry-over deletes.
+    expect(fs.existsSync(path.join(layout.adeDir, "ade.yaml"))).toBe(false);
     expect(fs.readFileSync(path.join(layout.ctoDir, "identity.yaml"), "utf8")).toContain("name: CTO");
     expect(fs.existsSync(path.join(layout.templatesDir, ".gitkeep"))).toBe(true);
     expect(fs.existsSync(path.join(layout.skillsDir, ".gitkeep"))).toBe(true);
@@ -185,7 +187,7 @@ describe("initializeOrRepairAdeProject", () => {
     expect(second.cleanup.actions).toHaveLength(0);
   });
 
-  it("does not overwrite an existing shared ade.yaml", () => {
+  it("leaves a legacy ade.yaml untouched (carry-over owns its removal)", () => {
     const root = createRepoFixture();
     const layout = resolveAdeLayout(root);
     fs.mkdirSync(layout.adeDir, { recursive: true });
@@ -254,43 +256,14 @@ describe("initializeOrRepairAdeProject", () => {
     expect(result.cleanup.actions.some((action) => action.kind === "scrub_exclude")).toBe(true);
     expect(fs.readFileSync(path.join(root, ".git", "info", "exclude"), "utf8")).not.toContain(".ade");
     expect(fs.readFileSync(path.join(root, ".gitignore"), "utf8")).not.toContain("/.ade");
-    expect(fs.existsSync(layout.sharedConfigPath)).toBe(true);
+    expect(fs.existsSync(layout.sharedConfigPath)).toBe(false);
     const status = git(root, ["status", "--porcelain=v1", "--untracked-files=all"]);
     expect(status).toContain("?? .ade/.gitignore");
-    expect(status).toContain("?? .ade/ade.yaml");
     expect(status).not.toContain(".ade/cto/identity.yaml");
   });
 
-  it("promotes local-only ADE state when shared project config is saved", () => {
-    const root = makeTempDir("ade-project-config-promote-");
-    git(root, ["init"]);
-    const layout = resolveAdeLayout(root);
-    initializeOrRepairAdeProject(root);
-
-    const service = createProjectConfigService({
-      projectRoot: root,
-      adeDir: layout.adeDir,
-      projectId: "project-config-promote",
-      db: makeProjectConfigDb(),
-      logger: createLogger(),
-    });
-
-    service.save({
-      shared: {
-        version: 1,
-        testSuites: [{ id: "unit", name: "Unit", command: ["npm", "test"], cwd: "." }],
-        laneOverlayPolicies: [],
-        automations: [],
-      },
-      local: {},
-    });
-
-    expect(fs.readFileSync(path.join(root, ".git", "info", "exclude"), "utf8")).not.toContain(".ade/");
-    const status = git(root, ["status", "--porcelain=v1", "--untracked-files=all"]);
-    expect(status).toContain("?? .ade/.gitignore");
-    expect(status).toContain("?? .ade/ade.yaml");
-    expect(status).not.toContain(".ade/local.yaml");
-  });
+  // Retired with the committed file: `save` no longer has a shared scope to
+  // write, so saving project config can never promote `.ade/` into Git.
 
   it("keeps local-only project config saves out of Git", () => {
     const root = makeTempDir("ade-project-local-config-");

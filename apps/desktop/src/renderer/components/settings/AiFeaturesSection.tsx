@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type {
   AiConfig,
   AgentChatScheduledWorkItem,
@@ -7,44 +7,16 @@ import {
   COLORS,
   MONO_FONT,
   SANS_FONT,
-  cardStyle,
 } from "../lanes/laneDesignTokens";
-import { Alarm } from "@phosphor-icons/react";
+import { SettingsCard, SettingsGroup, SettingsToggle } from "./primitives";
 
-function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <button
-      type="button"
-      onClick={() => onChange(!checked)}
-      style={{
-        position: "relative",
-        width: 36,
-        height: 20,
-        borderRadius: 10,
-        border: "none",
-        background: checked ? COLORS.accent : COLORS.outlineBorder,
-        cursor: "pointer",
-        padding: 0,
-        flexShrink: 0,
-        transition: "background 150ms ease",
-      }}
-    >
-      <span
-        style={{
-          position: "absolute",
-          top: 2,
-          left: checked ? 18 : 2,
-          width: 16,
-          height: 16,
-          borderRadius: 8,
-          background: COLORS.textPrimary,
-          transition: "left 150ms ease",
-        }}
-      />
-    </button>
-  );
-}
-
+/**
+ * Background work settings.
+ *
+ * One card — the global scheduled-work pause — with the live job list as its
+ * children, because inspecting a job and pausing every job are the same
+ * decision seen from two distances.
+ */
 export function AiFeaturesSection() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -136,42 +108,32 @@ export function AiFeaturesSection() {
     );
   }
 
-  const featureRowHoverCss = `.ai-feature-row:hover { background: ${COLORS.hoverBg}; }`;
-
   return (
-    <>
-      <style>{featureRowHoverCss}</style>
-      <div>
+    <SettingsGroup
+      title="Background work"
+      description="Background naming, idle status lines, and commit suggestions follow the ADE provider of the session that needs them. Pause or inspect durable scheduled work here."
+    >
+      <SettingsCard
+        anchor="scheduled-work"
+        title="Pause all scheduled work"
+        description="Wakeups, cron tasks, and loops stay armed. Overdue work fires once when you resume."
+        control={
+          <SettingsToggle
+            label="Pause all scheduled work"
+            checked={scheduledWorkPaused}
+            onChange={(paused) => void handleScheduledWorkPaused(paused)}
+          />
+        }
+      >
         <div
           style={{
-            fontSize: 12,
-            fontWeight: 700,
-            color: COLORS.textPrimary,
-            fontFamily: SANS_FONT,
-            marginBottom: 12,
-            lineHeight: 1.4,
+            border: `1px solid ${COLORS.borderMuted}`,
+            borderRadius: 10,
+            background: COLORS.recessedBg,
+            overflow: "hidden",
           }}
         >
-          Background naming, idle status lines, and commit suggestions follow the ADE provider of the session that needs them. Pause or inspect durable scheduled work here.
-        </div>
-
-        <div style={{ ...cardStyle({ padding: 0 }), marginBottom: 12 }}>
-          <div className="ai-feature-row" style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px" }}>
-            <Toggle checked={scheduledWorkPaused} onChange={(paused) => void handleScheduledWorkPaused(paused)} />
-            <Alarm size={18} weight="duotone" style={{ color: scheduledWorkPaused ? COLORS.warning : COLORS.accent, flexShrink: 0 }} />
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 12, fontFamily: SANS_FONT, fontWeight: 600, color: COLORS.textPrimary }}>
-                Pause all scheduled work
-              </div>
-              <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textDim, marginTop: 2, lineHeight: 1.4 }}>
-                Wakeups, cron tasks, and loops stay armed. Overdue work fires once when you resume.
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div style={{ ...cardStyle({ padding: 0 }), marginBottom: 12 }}>
-          <div style={{ padding: "10px 16px", borderBottom: scheduledWork.length ? `1px solid ${COLORS.border}` : undefined }}>
+          <div style={{ padding: "10px 12px", borderBottom: `1px solid ${COLORS.borderMuted}` }}>
             <div style={{ fontSize: 12, fontFamily: SANS_FONT, fontWeight: 600, color: COLORS.textPrimary }}>
               Active scheduled work
             </div>
@@ -180,14 +142,20 @@ export function AiFeaturesSection() {
             </div>
           </div>
           {scheduledWorkError ? (
-            <div style={{ padding: "12px 16px", fontSize: 11, fontFamily: SANS_FONT, color: COLORS.warning }}>
+            <div style={{ padding: "12px", fontSize: 11, fontFamily: SANS_FONT, color: COLORS.warning }}>
               Scheduled work is unavailable: {scheduledWorkError}
             </div>
-          ) : scheduledWork.length ? scheduledWork.map((item) => (
+          ) : scheduledWork.length ? scheduledWork.map((item, index) => (
             <div
               key={`${item.sessionId}:${item.id}`}
-              className="ai-feature-row"
-              style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 12, alignItems: "center", padding: "10px 16px", borderBottom: `1px solid ${COLORS.border}` }}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "minmax(0, 1fr) auto",
+                gap: 12,
+                alignItems: "center",
+                padding: "10px 12px",
+                borderTop: index === 0 ? undefined : `1px solid ${COLORS.borderMuted}`,
+              }}
             >
               <div style={{ minWidth: 0 }}>
                 <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
@@ -217,12 +185,12 @@ export function AiFeaturesSection() {
               </button>
             </div>
           )) : (
-            <div style={{ padding: "12px 16px", fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textDim }}>
+            <div style={{ padding: "12px", fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textDim }}>
               No active durable jobs.
             </div>
           )}
         </div>
-      </div>
-    </>
+      </SettingsCard>
+    </SettingsGroup>
   );
 }

@@ -196,7 +196,7 @@ const MUTATING_BASH_RE = /\b(?:rm|mv|cp|mkdir|touch|chmod|chown|patch|install|un
 const MUTATING_CMD_RE = /\b(?:copy|xcopy|robocopy|move|del|erase|rd|rmdir|md|mkdir|ren|rename)\b|>>?|tee\b/i;
 /**
  * Interpreters that can stage filesystem writes through a `-c` / `-e` flag.
- * Used by the orchestration sandbox to force path-inspection on commands like
+ * Used by the worker sandbox to force path-inspection on commands like
  *   python -c "open('/etc/passwd', 'w')"
  *   node -e "require('fs').writeFileSync('manifest.json', '')"
  * `perl` already has its own `perl -i` match in `MUTATING_BASH_RE`; the
@@ -866,7 +866,7 @@ function bashCommandLikelyMutates(
 /**
  * Heuristic check whether a command is an interpreter invocation that includes
  * a script payload (i.e. would bypass argv-based path inspection). Exported
- * for use by the orchestration worker hardening in checkWorkerSandbox.
+ * for use by the worker sandbox hardening in checkWorkerSandbox.
  */
 export function commandUsesInterpreterPayload(command: string): boolean {
   if (!INTERPRETER_RE.test(command)) return false;

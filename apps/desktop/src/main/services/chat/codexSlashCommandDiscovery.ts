@@ -35,11 +35,12 @@ function samePath(left: string, right: string): boolean {
     : left === right;
 }
 
-function codexPromptRoots(cwd: string): string[] {
+function codexPromptRoots(cwd: string, env: NodeJS.ProcessEnv = process.env): string[] {
   // Codex resolves its user-level prompt directory under CODEX_HOME, which its
   // own installers set and which is commonly relocated off the roaming profile
-  // on Windows. Only the per-project `.codex/prompts` walk is cwd-relative.
-  const roots: string[] = [path.join(codexHomeDir(), "prompts")];
+  // on Windows, and which ADE also sets per provider account. Only the
+  // per-project `.codex/prompts` walk is cwd-relative.
+  const roots: string[] = [path.join(codexHomeDir(env), "prompts")];
   const seen = new Set<string>(roots);
   const home = os.homedir();
   let current = path.resolve(cwd);
@@ -59,9 +60,12 @@ function codexPromptRoots(cwd: string): string[] {
   return roots;
 }
 
-export function discoverCodexSlashCommands(cwd: string): DiscoveredCodexSlashCommand[] {
+export function discoverCodexSlashCommands(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): DiscoveredCodexSlashCommand[] {
   const byName = new Map<string, DiscoveredCodexSlashCommand>();
-  for (const root of codexPromptRoots(cwd)) {
+  for (const root of codexPromptRoots(cwd, env)) {
     for (const command of discoverMarkdownCommandFiles(root, {
       lowercaseNames: true,
       useFrontmatterDescription: false,
@@ -79,6 +83,7 @@ export function discoverCodexSlashCommands(cwd: string): DiscoveredCodexSlashCom
 export function resolveCodexSlashCommandInvocation(
   cwd: string,
   input: string,
+  env: NodeJS.ProcessEnv = process.env,
 ): ResolvedCodexSlashCommandInvocation | null {
   const parsed = parseSlashCommandInput(input);
   if (!parsed) return null;
@@ -86,7 +91,7 @@ export function resolveCodexSlashCommandInvocation(
   const { argumentsText } = parsed;
 
   let promptFile: string | null = null;
-  for (const root of codexPromptRoots(cwd)) {
+  for (const root of codexPromptRoots(cwd, env)) {
     promptFile = resolveMarkdownCommandFile(root, name, {
       lowercaseNames: true,
       matchBasename: false,

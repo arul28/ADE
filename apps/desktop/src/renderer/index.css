@@ -33,6 +33,17 @@
 
   --chat-radius-shell: 18px;
   --chat-radius-card: 16px;
+  /*
+   * Chat surfaces overwrite both of these per pane. They are declared here so a
+   * chat component rendered OUTSIDE a pane still computes: an undefined var in
+   * `calc(var(--chat-font-size) * 13 / 14)` makes the whole declaration invalid,
+   * which silently fell back to the document size, and an undefined
+   * `--chat-accent` fell back to the operating system's accent colour.
+   * 14px is the base every `* n / 14` ratio in the chat components is written
+   * against.
+   */
+  --chat-font-size: 14px;
+  --chat-accent: var(--color-accent);
   --chat-radius-pill: 9999px;
 }
 
@@ -4745,6 +4756,114 @@ button:active, [role="button"]:active {
   box-shadow: 0 0 24px rgba(167, 139, 250, 0.34);
 }
 
+@keyframes ade-reasoning-ultra-ring {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes ade-reasoning-ultra-sheen {
+  0%, 28% { transform: translateX(-135%) rotate(18deg); opacity: 0; }
+  45% { opacity: 0.7; }
+  72%, 100% { transform: translateX(135%) rotate(18deg); opacity: 0; }
+}
+
+/* Ultra is intentionally unmistakable, but the effect is opt-in to the
+   selected highest tier so ordinary effort changes stay quiet. */
+.ade-reasoning-effort-trigger-ultra {
+  position: relative;
+  isolation: isolate;
+  overflow: visible;
+  background:
+    linear-gradient(120deg, rgba(139, 92, 246, 0.2), rgba(217, 70, 239, 0.16) 48%, rgba(34, 211, 238, 0.12));
+  box-shadow:
+    0 0 0 1px rgba(232, 121, 249, 0.24),
+    0 0 16px rgba(217, 70, 239, 0.26),
+    0 0 30px rgba(34, 211, 238, 0.1);
+}
+
+.ade-reasoning-effort-trigger-ultra::before,
+.ade-reasoning-effort-content-ultra::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  z-index: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  padding: 1px;
+  background: conic-gradient(
+    from 0deg,
+    rgba(34, 211, 238, 0.1),
+    rgba(232, 121, 249, 0.95),
+    rgba(167, 139, 250, 0.82),
+    rgba(34, 211, 238, 0.8),
+    rgba(232, 121, 249, 0.95)
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  animation: ade-reasoning-ultra-ring 5s linear infinite;
+}
+
+.ade-reasoning-effort-trigger-ultra::after,
+.ade-reasoning-effort-content-ultra::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background:
+    radial-gradient(circle at 14% 30%, rgba(255, 255, 255, 0.7) 0 0.7px, transparent 1.5px),
+    radial-gradient(circle at 84% 68%, rgba(103, 232, 249, 0.72) 0 0.7px, transparent 1.5px),
+    linear-gradient(105deg, transparent 30%, rgba(255, 255, 255, 0.28) 48%, transparent 62%);
+  background-size: auto, auto, 220% 100%;
+  background-position: center, center, 0 0;
+  background-repeat: no-repeat;
+  animation: ade-reasoning-ultra-sheen 3.8s ease-in-out infinite;
+}
+
+.ade-reasoning-effort-trigger-ultra > *,
+.ade-reasoning-effort-content-ultra > * {
+  position: relative;
+  z-index: 1;
+}
+
+.ade-reasoning-effort-content-ultra {
+  border-color: rgba(232, 121, 249, 0.38);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(217, 70, 239, 0.2), transparent 42%),
+    radial-gradient(circle at 0% 100%, rgba(34, 211, 238, 0.12), transparent 45%),
+    rgba(23, 21, 26, 0.96);
+  box-shadow:
+    0 18px 48px rgba(0, 0, 0, 0.58),
+    0 0 28px rgba(217, 70, 239, 0.2),
+    0 0 42px rgba(34, 211, 238, 0.08);
+}
+
+.ade-reasoning-effort-content-ultra .ade-reasoning-slider-fill-max {
+  box-shadow:
+    0 0 24px rgba(232, 121, 249, 0.44),
+    0 0 12px rgba(34, 211, 238, 0.24);
+}
+
+/* Workflow activity card: one restrained sweep keeps a live orchestration
+   run discoverable without turning the whole Work pane into a dashboard. */
+@keyframes ade-workflow-card-sheen {
+  0%, 34% { transform: translateX(-135%) rotate(16deg); opacity: 0; }
+  48% { opacity: 0.42; }
+  68%, 100% { transform: translateX(135%) rotate(16deg); opacity: 0; }
+}
+
+.ade-workflow-active-card__sheen {
+  position: absolute;
+  inset: -55% auto -55% -28%;
+  width: 34%;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.12), transparent);
+  filter: blur(4px);
+  animation: ade-workflow-card-sheen 3.8s ease-in-out infinite;
+}
+
 /* Project and route surfaces stay mounted for fast switching. Pause their CSS
    animations while parked so hidden keep-alive trees cannot keep rendering. */
 [data-ade-animation-state="paused"],
@@ -4767,7 +4886,12 @@ button:active, [role="button"]:active {
   .ade-reasoning-effort-word[data-direction="up"],
   .ade-reasoning-effort-word[data-direction="down"],
   .ade-reasoning-slider-fill::after,
-  .ade-reasoning-slider-fill-max {
+  .ade-reasoning-slider-fill-max,
+  .ade-workflow-active-card__sheen,
+  .ade-reasoning-effort-trigger-ultra::before,
+  .ade-reasoning-effort-trigger-ultra::after,
+  .ade-reasoning-effort-content-ultra::before,
+  .ade-reasoning-effort-content-ultra::after {
     animation: none;
   }
   .ade-reasoning-slider-fill { transition: none; }

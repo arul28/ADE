@@ -2,7 +2,7 @@ import type { ProjectInfo } from "../../../shared/types";
 import type { SyncMobileProjectSummary } from "../../../shared/types/sync";
 import type { AdeSyncClient } from "../sync";
 import { BrowserAccountClient } from "../account/client";
-import { createAccountNamespace } from "./account";
+import { createAccountNamespace, createAccountSettingsNamespace } from "./account";
 import { createAgentChatNamespace } from "./agentChat";
 import { createAnalyticsNamespace } from "./analytics";
 import { createAttentionNamespace } from "./attention";
@@ -101,6 +101,7 @@ export function createAdeWebAdapter(
   const surface = {
     app: createAppNamespace(infra),
     account: createAccountNamespace(accountClient),
+    accountSettings: createAccountSettingsNamespace(),
     attention: createAttentionNamespace(infra, accountClient),
     analytics: createAnalyticsNamespace(infra),
     project: createProjectNamespace(infra),
@@ -137,7 +138,6 @@ export function createAdeWebAdapter(
     tests: misc.tests,
     projectConfig: misc.projectConfig,
     cto: misc.cto,
-    orchestration: misc.orchestration,
     computerUse: misc.computerUse,
     iosSimulator: misc.iosSimulator,
     appControl: misc.appControl,

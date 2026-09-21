@@ -103,9 +103,12 @@ function readLinearVisibilityCached({
 }
 
 export function LinearQuickViewButton({
+  onOpenHarnessSettings,
   variant = "icon",
   onMenuActivate,
 }: {
+  /** Forwarded to the batch launch modal so its model picker can reach Settings. */
+  onOpenHarnessSettings?: () => void;
   variant?: "icon" | "menu-row";
   onMenuActivate?: () => void;
 } = {}) {
@@ -775,6 +778,7 @@ export function LinearQuickViewButton({
       ) : null}
 
       <BatchLaunchModal
+        onOpenHarnessSettings={onOpenHarnessSettings}
         open={batchModalOpen}
         projectRoot={project?.rootPath}
         issues={batchIssues}

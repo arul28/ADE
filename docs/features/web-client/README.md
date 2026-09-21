@@ -8,7 +8,8 @@ ADE Relay. Localhost pages retain direct `ws://` for development.
 Sign-in is mandatory, not optional. Relay routing requires the account, so a
 signed-out hosted client has nothing it can show: `LaunchGate` renders the
 sign-in card with no skip until the account is signed in. Desktop keeps its
-**Continue without an account** path.
+**Continue to your work** path only when a prior desktop account session is
+recoverable; a fresh desktop launch has no account-less pass-through either.
 
 Hosted Relay connections require the browser and machine to be signed in to the
 same ADE account. The browser sends a fresh short-lived account proof with each
@@ -694,7 +695,7 @@ Machine runtime and sync host:
 - `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts` - remote
   command registry. It carries the web-parity `register("...")` entries for
   Work, chat, terminal, files/git, PRs, project config, AI status, GitHub
-  status, history, orchestration, rebase, and safe smart-link preview surfaces.
+  status, history, rebase, and safe smart-link preview surfaces.
   The legacy runtime-scoped
   `sync.getWebPairingInfo` descriptor remains in the protocol, but no current
   iOS or hosted-web UI uses it to create browser pairings.

@@ -140,9 +140,8 @@ describe("useWorkLaneContextMenu", () => {
 
     expect(setWorkViewState).toHaveBeenCalledWith("/remote/project", expect.any(Function));
     const updater = setWorkViewState.mock.calls[0]?.[1] as (prev: Record<string, unknown>) => Record<string, unknown>;
-    expect(updater({ draftKind: "cli", orchestratorEnabled: true, activeItemId: "session-1" })).toMatchObject({
+    expect(updater({ draftKind: "cli", activeItemId: "session-1" })).toMatchObject({
       draftKind: "chat",
-      orchestratorEnabled: false,
       draftLaneId: "lane-remote",
       draftMachineId: null,
       activeItemId: null,
@@ -220,7 +219,6 @@ describe("useWorkLaneContextMenu", () => {
     ) => Record<string, unknown>;
     expect(updater({})).toMatchObject({
       draftKind: "chat",
-      orchestratorEnabled: false,
       draftLaneId: "lane-remote",
       draftMachineId: "studio",
       activeItemId: null,

@@ -2,7 +2,6 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
 import type { ModelDescriptor } from "../../../shared/modelRegistry";
 import type { EffectiveProjectConfig, ProjectConfigFile } from "../../../shared/types";
 import type { DetectedAuth } from "./authDetector";
@@ -258,7 +257,7 @@ function extractClaudeText(stdout: string): string {
 
 async function runClaudeTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {
   const prompt = appendStructuredOutputInstruction(args.prompt, args.jsonSchema);
-  const sessionId = args.sessionId?.trim() || (args.feature === "orchestrator" ? randomUUID() : null);
+  const sessionId = args.sessionId?.trim() || null;
   const cliArgs = [
     "--model",
     resolveClaudeCliModel(args.descriptor.providerModelId),

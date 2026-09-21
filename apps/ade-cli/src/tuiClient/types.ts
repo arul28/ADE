@@ -1,3 +1,4 @@
+import type { LaunchIdentity } from "./launchIdentity";
 import type { AppNavigationRequest, AppNavigationResult } from "../../../desktop/src/shared/types/core";
 import type {
   AgentChatClaudePermissionMode,
@@ -117,7 +118,7 @@ export type AdeCodeProvider =
  */
 export type AdeCodeInterfaceMode = "chat" | "cli";
 
-export type AdeCodeModelState = {
+export type AdeCodeModelState = Partial<LaunchIdentity> & {
   provider: AdeCodeProvider;
   /** Draft-only: whether the next chat launches as an SDK chat or a tracked CLI terminal. */
   interfaceMode: AdeCodeInterfaceMode;
@@ -410,6 +411,12 @@ export type RightPaneContent =
       session?: { input: number | null; output: number | null; cost: number | null } | null;
       /** Codex account-level spend control tripped — surfaces a terse cap marker. */
       spendControlReached?: boolean;
+      /**
+       * Codex accounts with a banked reset credit, so the pane can say a reset
+       * is available and `r` can spend one. Absent on a host that does not know
+       * about reset credits, which every client reads as "none".
+       */
+      resetCredits?: Array<{ accountId: string; label: string; availableCount: number }>;
     }
   | {
       kind: "form";
@@ -514,6 +521,8 @@ export type MentionSuggestion = {
   detail?: string;
   filePath?: string;
   attachment?: boolean;
+  /** True when this row is a folder: a pointer, never an attachment. */
+  isDirectory?: boolean;
 };
 
 export type PendingApproval = {

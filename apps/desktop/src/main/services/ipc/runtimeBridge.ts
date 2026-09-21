@@ -48,6 +48,7 @@ import type {
   RuntimeEventsReleaseResult,
   SyncWebPairingInfo,
 } from "../../../shared/types";
+import { isRemoteRuntimeEventCategory } from "../../../shared/types/remoteRuntime";
 import type { ChatAttachmentStagingMode } from "../../../shared/types/chat";
 import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../../../shared/chatAttachmentLimits";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
@@ -147,13 +148,23 @@ function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function isRemoteRuntimeEventCategory(value: unknown): value is RemoteRuntimeEventCategory {
-  return (
-    value === "orchestrator" ||
-    value === "dag_mutation" ||
-    value === "runtime" ||
-    value === "pty"
-  );
+/**
+ * Categories a RENDERER may name when it subscribes.
+ *
+ * Derived from the shared list rather than restated, so a category added there
+ * reaches renderers by default and only a deliberate exclusion has to be
+ * written down. `cto_voice` is that exclusion.
+ *
+ * This is one of FOUR places that exclusion has to hold, because refusing the
+ * name alone lets an uncategorised subscription through: `shouldForwardRuntimeEvent`
+ * drops pushed events on the way out, `withRendererVisibleEvents` strips polled
+ * batches, and the preload drops them again on both paths inbound. No renderer
+ * consumes them — the voice router subscribes in the main process and pushes
+ * `IPC.ctoVoiceState` — so all four are closed doors rather than one door and
+ * three open windows.
+ */
+function isRendererRuntimeEventCategory(value: unknown): value is RemoteRuntimeEventCategory {
+  return isRemoteRuntimeEventCategory(value) && value !== "cto_voice";
 }
 
 function normalizeRuntimeStreamEventsRequest(value: unknown): RemoteRuntimeStreamEventsRequest {
@@ -165,7 +176,15 @@ function normalizeRuntimeStreamEventsRequest(value: unknown): RemoteRuntimeStrea
   if (typeof value.limit === "number" && Number.isFinite(value.limit)) {
     request.limit = value.limit;
   }
-  if (isRemoteRuntimeEventCategory(value.category)) {
+  if (value.category !== undefined && value.category !== null) {
+    // REFUSED, not dropped. Silently discarding the category turned a
+    // subscription for one category into an UNCATEGORISED one — every category
+    // the buffer carries, which is the opposite of what the caller asked for
+    // and, for `cto_voice`, the exact stream this guard exists to withhold.
+    // A renderer naming a category it may not have gets an error it can see.
+    if (!isRendererRuntimeEventCategory(value.category)) {
+      throw new Error("Unknown runtime event category.");
+    }
     request.category = value.category;
   }
   if (typeof value.replay === "boolean") {
@@ -585,10 +604,32 @@ export function registerRuntimeBridge({
       request.replay === false ? "live" : "replay"
     }`;
 
+  /**
+   * Strip the categories a renderer may not see from a POLLED batch.
+   *
+   * `streamEventsForRoot` returns whatever the buffer drained, and the preload
+   * casts the result rather than normalizing it — so the pushed path's guard
+   * does not cover this one. Cheap, and it means the exclusion holds on every
+   * route out of main rather than on the one that happens to be watched.
+   */
+  const withRendererVisibleEvents = (
+    batch: RemoteRuntimeStreamEventsResult,
+  ): RemoteRuntimeStreamEventsResult => ({
+    ...batch,
+    events: batch.events.filter((event) => isRendererRuntimeEventCategory(event.category)),
+  });
+
   const shouldForwardRuntimeEvent = (
     sender: WebContents,
     event: RemoteRuntimeBufferedEvent,
   ): boolean => {
+    // The other half of the `cto_voice` exclusion. Refusing the SUBSCRIPTION is
+    // not enough: an uncategorised subscription receives every category, so a
+    // call's state — phase, captions, the running transcript — would reach any
+    // renderer watching runtime events at all. Nothing in the renderer consumes
+    // it; the voice router subscribes in the main process and pushes
+    // `IPC.ctoVoiceState` to the windows that should see it.
+    if (event.category === "cto_voice") return false;
     if (event.category !== "pty") return true;
     if (event.payload.type !== "pty_data") return true;
     const ptyEvent = isObjectRecord(event.payload.event)
@@ -1444,9 +1485,8 @@ export function registerRuntimeBridge({
           ...(typeof subscriptionInit?.oldestCursor === "number" ? { oldestCursor: subscriptionInit.oldestCursor } : {}),
         };
       }
-      return await localRuntimeConnectionPool.streamEventsForRoot(
-        rootPath,
-        request,
+      return withRendererVisibleEvents(
+        await localRuntimeConnectionPool.streamEventsForRoot(rootPath, request),
       );
     },
   );
@@ -1505,10 +1545,8 @@ export function registerRuntimeBridge({
           ...(typeof subscriptionInit?.oldestCursor === "number" ? { oldestCursor: subscriptionInit.oldestCursor } : {}),
         };
       }
-      const result = await remoteConnectionService.streamEvents(
-        target.id,
-        projectId,
-        request,
+      const result = withRendererVisibleEvents(
+        await remoteConnectionService.streamEvents(target.id, projectId, request),
       );
       void ensureRuntimeEventSubscription(
         event.sender,
@@ -1565,7 +1603,7 @@ export function registerRuntimeBridge({
       // so it can own both key variants. Release the whole (binding, category).
       const prefix = runtimeEventRequestKeyPrefix(
         bindingKey,
-        isRemoteRuntimeEventCategory(arg?.category) ? arg.category : undefined,
+        isRendererRuntimeEventCategory(arg?.category) ? arg.category : undefined,
       );
       const released = cleanupRuntimeEventSubscriptions(
         event.sender.id,

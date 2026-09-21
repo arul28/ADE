@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildRendererCspPolicy, shouldApplyRendererCsp } from "./rendererCsp";
+import {
+  buildRendererCspPolicy,
+  isRendererFrameNavigationAllowed,
+  shouldApplyRendererCsp,
+} from "./rendererCsp";
 
 describe("buildRendererCspPolicy", () => {
   it("allows packaged renderer fetches to local simulator stream URLs without blanket HTTPS", () => {
@@ -32,7 +36,22 @@ describe("buildRendererCspPolicy", () => {
   it("frames built-in browser content from local servers and about:blank in packaged builds", () => {
     const policy = buildRendererCspPolicy(false);
 
-    expect(policy).toContain("frame-src 'self' file: app: http://localhost:* http://127.0.0.1:* about:");
+    expect(policy).toContain("frame-src 'self' file: app: http://localhost:* http://127.0.0.1:* ade-scene: blob: about:");
+  });
+
+  it("frames agent-authored scenes over ade-scene:, and lets them in nowhere else", () => {
+    const policy = buildRendererCspPolicy(false);
+    const directives = Object.fromEntries(
+      policy.split("; ").map((directive) => {
+        const [name, ...tokens] = directive.split(/\s+/);
+        return [name, tokens];
+      }),
+    ) as Record<string, string[]>;
+
+    expect(directives["frame-src"]).toContain("ade-scene:");
+    for (const name of ["default-src", "img-src", "media-src", "connect-src", "script-src", "style-src", "font-src"]) {
+      expect(directives[name] ?? [], name).not.toContain("ade-scene:");
+    }
   });
 
   it("allows no external frame sources -- the welcome video is a thumbnail link, not an embed", () => {
@@ -154,6 +173,93 @@ describe("shouldApplyRendererCsp", () => {
         { url: "file:///Applications/ADE/index.html" },
         { isDevMode: false },
       ),
+    ).toBe(false);
+  });
+});
+
+/**
+ * `will-frame-navigate` is the second door on the same allowlist the CSP is
+ * the first door on, so the thing worth pinning is that it is not NARROWER:
+ * the handler first shipped without `file:`/`app:`, which in a packaged build
+ * is every renderer-framed local document preview going blank.
+ */
+describe("isRendererFrameNavigationAllowed", () => {
+  const options = {
+    rendererUrl: "file:///Applications/ADE.app/renderer/index.html",
+    devServerUrl: "http://localhost:5173",
+  };
+
+  it("allows every scheme the CSP's frame-src names, in both modes", () => {
+    const packagedFrameSrc = buildRendererCspPolicy(false)
+      .split("; ")
+      .find((directive) => directive.startsWith("frame-src "));
+    // Guards the list below against the CSP quietly gaining a source.
+    expect(packagedFrameSrc).toBe(
+      "frame-src 'self' file: app: http://localhost:* http://127.0.0.1:* ade-scene: blob: about:",
+    );
+
+    for (const url of [
+      options.rendererUrl,
+      "file:///Applications/ADE.app/Contents/Resources/spec-preview.html",
+      // The same door on Windows: a packaged spec preview is a drive-letter
+      // file URL, and a scheme check has to let it through unchanged.
+      "file:///C:/Users/ada/AppData/Local/ADE/resources/spec-preview.html",
+      "app://ade/spec.html",
+      "ade-scene:scene-1",
+      "blob:file:///abcd",
+      "about:blank",
+      "about:srcdoc",
+    ]) {
+      for (const devServerUrl of [options.devServerUrl, null]) {
+        expect([
+          url,
+          devServerUrl,
+          isRendererFrameNavigationAllowed(url, { rendererUrl: options.rendererUrl, devServerUrl }),
+        ]).toEqual([url, devServerUrl, true]);
+      }
+    }
+  });
+
+  it("still refuses the exfiltration navigation the door exists for", () => {
+    for (const url of [
+      "https://elsewhere.example/?secret=1",
+      "http://elsewhere.example/?secret=1",
+      "http://localhost.evil.example/",
+      "data:text/html,<script>fetch(1)</script>",
+      "",
+    ]) {
+      expect([url, isRendererFrameNavigationAllowed(url, options)]).toEqual([url, false]);
+    }
+  });
+
+  /**
+   * `frame-src` carries `http://localhost:*` in BOTH modes because the local
+   * sources are one shared string, but nothing in a packaged renderer frames
+   * an http URL. This door is deliberately tighter than the header: without a
+   * dev server, a scene cannot navigate itself at whatever local server the
+   * user happens to be running.
+   */
+  it("allows local http frames only while a dev server is configured", () => {
+    for (const url of [
+      "http://localhost:5173/work",
+      "http://localhost:7654/stream",
+      "http://127.0.0.1:7654/stream",
+    ]) {
+      expect([url, isRendererFrameNavigationAllowed(url, options)]).toEqual([url, true]);
+      expect([
+        url,
+        isRendererFrameNavigationAllowed(url, {
+          rendererUrl: options.rendererUrl,
+          devServerUrl: null,
+        }),
+      ]).toEqual([url, false]);
+    }
+
+    expect(
+      isRendererFrameNavigationAllowed("https://vite.example/work", {
+        rendererUrl: options.rendererUrl,
+        devServerUrl: null,
+      }),
     ).toBe(false);
   });
 });

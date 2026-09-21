@@ -287,7 +287,7 @@ describe("AdeCodeApp polling", () => {
       {
         kind: "file",
         label: "apps/desktop/src/shared/chatMentions.ts",
-        insertText: "@file:apps/desktop/src/shared/chatMentions.ts",
+        insertText: "@apps/desktop/src/shared/chatMentions.ts",
         filePath: "apps/desktop/src/shared/chatMentions.ts",
       },
       { kind: "chat", label: "chat", insertText: "@chat:c1", detail: "Primary" },

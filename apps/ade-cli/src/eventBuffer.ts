@@ -1,9 +1,12 @@
 import { randomUUID } from "node:crypto";
 
+import type { RemoteRuntimeEventCategory } from "../../desktop/src/shared/types/remoteRuntime";
+
 export type BufferedEvent = {
   id: number;
   timestamp: string;
-  category: "orchestrator" | "dag_mutation" | "runtime" | "pty";
+  /** See `REMOTE_RUNTIME_EVENT_CATEGORIES` for the list and what each carries. */
+  category: RemoteRuntimeEventCategory;
   payload: Record<string, unknown>;
 };
 

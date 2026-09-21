@@ -9,6 +9,7 @@ import type {
   BuiltInBrowserRemoteRequestAck,
 } from "../shared/types/builtInBrowserRemote";
 import type { EditorTarget, OpenPathInEditorRemote, OpenPathTarget } from "../shared/editorTargets";
+import type { MachineInventoryDetail } from "../shared/types/machineInventory";
 import type {
   AdeCleanupResult,
   AdeProjectEvent,
@@ -29,6 +30,21 @@ import type {
   ProjectSecretSetArgs,
   ProjectSecretSummary,
   ProjectSecretValueResult,
+  ProviderInstance,
+  ProviderInstanceCreateArgs,
+  ProviderInstanceCreateResult,
+  ProviderInstanceGetSettingsArgs,
+  ProviderInstanceListArgs,
+  ProviderInstanceLoginCommand,
+  ProviderInstanceLoginCommandArgs,
+  ProviderInstanceRefreshArgs,
+  ProviderInstanceRemoveArgs,
+  ProviderInstanceRemoveResult,
+  ProviderInstanceRenameArgs,
+  ProviderInstanceSetAccentArgs,
+  ProviderInstanceSetDefaultArgs,
+  ProviderInstanceSetSettingsArgs,
+  ProviderInstanceSettings,
   BatchAssessmentResult,
   ApplyConflictProposalArgs,
   AppInfo,
@@ -168,6 +184,7 @@ import type {
   AgentChatModelsArgs,
   AgentChatParallelLaunchState,
   AgentChatParallelLaunchStateArgs,
+  AgentChatDismissPendingInputArgs,
   AgentChatRespondToInputArgs,
   AgentChatSendArgs,
   AgentChatSetParallelLaunchStateArgs,
@@ -265,6 +282,7 @@ import type {
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
+  MachineApiKeyStatus,
   OpenCodeOAuthStartResult,
   OpenCodeOAuthStatusEvent,
   OpenCodeProviderAuthMethods,
@@ -320,6 +338,8 @@ import type {
   CtoListSessionLogsArgs,
   CtoSnapshot,
   CtoSessionLogEntry,
+  CtoStartFreshSessionResult,
+  CtoThreadHealth,
   CtoUpdateIdentityArgs,
   CtoMemorySnapshot,
   CtoUpdateMemoryArgs,
@@ -394,6 +414,9 @@ import type {
   AdeAccountMachineRemovalResult,
   AdeAccountMachinePairingRepairResult,
   AdeAccountSessionRepairResult,
+  AccountSettingRow,
+  AccountSettingsResult,
+  AccountSettingsWriteOptions,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
   AdeAccountPairMachineProgress,
@@ -614,6 +637,12 @@ import type {
   PortConflict,
   PortAllocationEvent,
   ProxyStatus,
+  SubscriptionProxyStatus,
+  SubscriptionProxySignInArgs,
+  SubscriptionProxySignInResult,
+  SubscriptionProxySignOutArgs,
+  SubscriptionProxySetDisabledArgs,
+  SubscriptionProxyMutationResult,
   ProxyRoute,
   LanePreviewInfo,
   LaneProxyEvent,
@@ -829,6 +858,13 @@ import type {
   SearchQueryResult,
   SearchRebuildResult,
 } from "../shared/types";
+import type {
+  ApiCredentialGetArgs,
+  ApiCredentialListArgs,
+  ApiCredentialRemoveArgs,
+  ApiCredentialStoreArgs,
+  ApiCredentialSummary,
+} from "../shared/types/apiCredentials";
 import type { GitHubIssueLike } from "../shared/laneGitHubIssue";
 import type {
   AgentChatCopyTempAttachmentArgs,
@@ -1215,6 +1251,17 @@ declare global {
         storeApiKey: (provider: string, key: string) => Promise<void>;
         deleteApiKey: (provider: string) => Promise<void>;
         listApiKeys: () => Promise<string[]>;
+        /**
+         * Machine-scoped keys: stored in this machine's ADE home, not the open
+         * project, so a key pasted once is still there in the next repo. Each
+         * returns the resulting status — never the key.
+         *
+         * Optional: shipped after this group did, so an older preload will not
+         * have it and callers must guard before reaching for it.
+         */
+        getMachineApiKeyStatus?: (provider: string) => Promise<MachineApiKeyStatus>;
+        storeMachineApiKey?: (provider: string, key: string) => Promise<MachineApiKeyStatus>;
+        deleteMachineApiKey?: (provider: string) => Promise<MachineApiKeyStatus>;
         verifyApiKey: (provider: string) => Promise<AiApiKeyVerificationResult>;
         updateConfig: (config: Partial<AiConfig>) => Promise<void>;
         /**
@@ -1378,6 +1425,10 @@ declare global {
         ) => () => void;
         requestMicAccess: () => Promise<{
           status: "granted" | "denied" | "not-determined" | "restricted" | "unknown";
+          /** Why it was refused, when it was. Absent on older hosts. */
+          block?: "os-denied" | "dev-build" | "no-device" | "in-use" | "unavailable" | null;
+          /** What a later `NotAllowedError` would mean on this build. */
+          deniedBlock?: "os-denied" | "dev-build" | "no-device" | "in-use" | "unavailable";
         }>;
       };
       modelPicker: {
@@ -1549,6 +1600,37 @@ declare global {
           item: import("../shared/types").AttentionItem,
         ) => Promise<void>;
       };
+      /**
+       * The global capture gesture. Optional on the whole namespace, like
+       * `cto`: the hosted web client has no main process to run a native helper
+       * in, so every call site must optional-chain through it rather than
+       * assume a desktop bridge.
+       */
+      captureGesture?: {
+        updateSettings: (
+          settings: import("../shared/types/captureGesture").CaptureGestureSettings,
+        ) => Promise<import("../shared/types/captureGesture").CaptureGestureHealth>;
+        getHealth: () => Promise<
+          import("../shared/types/captureGesture").CaptureGestureHealth
+        >;
+        retry: () => Promise<
+          import("../shared/types/captureGesture").CaptureGestureHealth
+        >;
+        /**
+         * Take a shot now, without a chord. `started: false` means the request
+         * was refused (gesture off, helper not up, capture already running) and
+         * a `onFailure` event carries the reason.
+         */
+        captureNow: () => Promise<{ started: boolean }>;
+        onShot: (
+          cb: (shot: import("../shared/types/captureGesture").CaptureGestureShot) => void,
+        ) => () => void;
+        onFailure: (
+          cb: (
+            failure: import("../shared/types/captureGesture").CaptureGestureFailure,
+          ) => void,
+        ) => () => void;
+      };
       attentionNotch: {
         publishSnapshot: (
           snapshot: import("../shared/types").AttentionSnapshot,
@@ -1587,6 +1669,16 @@ declare global {
         refresh: () => Promise<UsageSnapshot | null>;
         refreshHistory: () => Promise<UsageSnapshot | null>;
         noteDemand: () => Promise<UsageSnapshot | null>;
+        /**
+         * Spend one banked reset credit for an account.
+         *
+         * Optional on the bridge: the web client and older preloads do not
+         * expose it, and the row that offers "Use reset" checks for it rather
+         * than assuming every host can.
+         */
+        consumeResetCredit?: (args: {
+          accountId: string;
+        }) => Promise<import("../shared/types").UsageResetCreditResult>;
         checkBudget: (args: BudgetCheckArgs) => Promise<BudgetCheckResult>;
         getCumulativeUsage: (args: {
           scope: BudgetCapScope;
@@ -1600,100 +1692,6 @@ declare global {
         getBudgetConfig: () => Promise<BudgetCapConfig>;
         saveBudgetConfig: (config: BudgetCapConfig) => Promise<BudgetCapConfig>;
         onUpdate: (cb: (snapshot: UsageSnapshot) => void) => () => void;
-      };
-      orchestration: {
-        runCreate: (args: {
-          laneId: string;
-          leadSessionId: string;
-          title?: string;
-          goalSummary?: string;
-        }, pin?: OpenProjectBinding | null) => Promise<{
-          runId: string;
-          manifest: import("../shared/types/orchestration").OrchestrationManifest;
-          etag: string;
-        }>;
-        bundleRead: (args: { runId: string; laneId: string }) => Promise<{
-          manifest: import("../shared/types/orchestration").OrchestrationManifest;
-          planMd: string;
-          etag: string;
-        }>;
-        manifestReadSection: (args: {
-          runId: string;
-          laneId: string;
-          section: import("../shared/types/orchestration").ManifestSection;
-        }) => Promise<{
-          section: import("../shared/types/orchestration").ManifestSection;
-          data: unknown;
-          etag: string;
-        }>;
-        manifestPatch: (
-          args: import("../shared/types/orchestration").OrchestrationManifestPatchRequest & {
-            laneId: string;
-          },
-        ) => Promise<import("../shared/types/orchestration").OrchestrationManifestPatchResponse>;
-        planAppend: (
-          args: import("../shared/types/orchestration").OrchestrationPlanAppendRequest & {
-            laneId: string;
-          },
-        ) => Promise<{ planMd: string; etag: string }>;
-        planWrite: (
-          args: import("../shared/types/orchestration").OrchestrationPlanWriteRequest & {
-            laneId: string;
-          },
-        ) => Promise<{ planMd: string; etag: string } | { error: "etag_conflict"; etag: string }>;
-        spawnAgent: (
-          args: import("../shared/types/orchestration").OrchestrationSpawnAgentRequest & {
-            laneId: string;
-            leadSessionId: string;
-          },
-        ) => Promise<{ sessionId: string; etag: string }>;
-        agentInject: (
-          args: import("../shared/types/orchestration").OrchestrationAgentInjectRequest,
-        ) => Promise<void>;
-        assetRegister: (
-          args: import("../shared/types/orchestration").OrchestrationAssetRegisterRequest & {
-            laneId: string;
-          },
-        ) => Promise<{
-          asset: import("../shared/types/orchestration").OrchestrationAsset;
-          etag: string;
-        }>;
-        claimTask: (
-          args: import("../shared/types/orchestration").OrchestrationClaimTaskRequest & {
-            laneId: string;
-          },
-        ) => Promise<
-          | {
-              ok: true;
-              manifest: import("../shared/types/orchestration").OrchestrationManifest;
-              etag: string;
-            }
-          | {
-              ok: false;
-              reason: string;
-              manifest: import("../shared/types/orchestration").OrchestrationManifest;
-              etag: string;
-            }
-        >;
-        releaseTask: (
-          args: import("../shared/types/orchestration").OrchestrationReleaseTaskRequest & {
-            laneId: string;
-          },
-        ) => Promise<{
-          manifest: import("../shared/types/orchestration").OrchestrationManifest;
-          etag: string;
-        }>;
-        runList: (args?: {
-          laneId?: string;
-        }) => Promise<
-          import("../shared/types/orchestration").OrchestrationRunSummary[]
-        >;
-        subscribe: (
-          args: { runId: string; laneId?: string },
-          callback: (
-            payload: import("../shared/types/orchestration").OrchestrationEventPayload,
-          ) => void,
-        ) => () => void;
       };
       lanes: {
         list: (
@@ -2048,6 +2046,15 @@ declare global {
           args: AgentChatRespondToInputArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<void>;
+        /**
+         * Throw away a non-blocking provider question. Rejects for any card the
+         * provider is actually waiting on — see the host's
+         * `dismissPendingInput`.
+         */
+        dismissPendingInput: (
+          args: AgentChatDismissPendingInputArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<void>;
         models: (
           args: AgentChatModelsArgs,
           pin?: OpenProjectBinding | null,
@@ -2255,9 +2262,59 @@ declare global {
           since?: string;
         }) => Promise<unknown>;
       };
+      /**
+       * CTO voice call. Absent on a build without the main-process half, which
+       * is how `voiceAvailable()` decides whether to offer the feature.
+       *
+       * The shape is NOT restated here. `CtoVoiceBridge` exists so the voice
+       * surface and the capture surface cannot drift into two shapes of
+       * `attachImage`, and a second copy of it in this file had already drifted
+       * — `onAudio` was required here and optional there.
+       */
+      ctoVoice?: import("../shared/types/ctoVoice").CtoVoiceBridge;
+      /**
+       * Agent-authored scenes. Local-only; see `shared/chatScene.ts`.
+       * Absent on a host without the scene protocol; SceneFrame falls back.
+       */
+      scene?: {
+        /** Store a scene document; resolves an `ade-scene://view/<id>` URL. */
+        prepare: (html: string) => Promise<string>;
+        /** PNG data URL of the frame's rect, or null when it cannot be captured. */
+        snapshot: (rect: {
+          x: number;
+          y: number;
+          width: number;
+          height: number;
+        }) => Promise<string | null>;
+        /** File a snapshot in the proof drawer. False when there was nothing to file. */
+        attachProof: (args: {
+          dataUrl?: string | null;
+          title: string;
+          /** The chat that drew the scene; proof is chat-scoped. */
+          sessionId?: string | null;
+        }) => Promise<boolean>;
+        /**
+         * Keep the settle-time still. Resolves the stored record, or null when
+         * there is no project, no bytes, or no capture route.
+         */
+        storeStill: (args: {
+          dataUrl: string;
+          title: string;
+          sessionId?: string | null;
+          /**
+           * Identity of the scene this is a picture of. One still is kept per
+           * key — a scene that settles again supersedes its own picture — and
+           * it is how a reopened window finds the bytes back.
+           */
+          scopeKey?: string | null;
+          /** Set when the scene was drawn on a voice call; the call card reads by it. */
+          voiceCallId?: string | null;
+        }) => Promise<import("../shared/chatScene").SceneStillRecord | null>;
+      };
       computerUse: {
         listArtifacts: (
           args?: ComputerUseArtifactListArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<ComputerUseArtifactView[]>;
         getOwnerSnapshot: (
           args: ComputerUseOwnerSnapshotArgs,
@@ -2875,6 +2932,66 @@ declare global {
         unwatchDetail: (args: { watchId: string }) => Promise<{ ok: true }>;
         onDetailUpdated: (cb: (ev: ExternalSessionDetailUpdatedEvent) => void) => () => void;
       };
+      /**
+       * Provider API keys, several per provider. Local IPC only, and never a
+       * read path for the secret — `get` answers with the same non-secret
+       * summary `list` does.
+       */
+      apiCredentials: {
+        list: (args?: ApiCredentialListArgs) => Promise<ApiCredentialSummary[]>;
+        get: (args: ApiCredentialGetArgs) => Promise<ApiCredentialSummary | null>;
+        store: (args: ApiCredentialStoreArgs) => Promise<ApiCredentialSummary | null>;
+        remove: (args: ApiCredentialRemoveArgs) => Promise<void>;
+      };
+      proxy?: {
+        status: () => Promise<SubscriptionProxyStatus>;
+        ensureRunning: () => Promise<SubscriptionProxyStatus>;
+        signIn: (args: SubscriptionProxySignInArgs) => Promise<SubscriptionProxySignInResult>;
+        signOut: (args: SubscriptionProxySignOutArgs) => Promise<SubscriptionProxyMutationResult>;
+        setDisabled: (args: SubscriptionProxySetDisabledArgs) => Promise<SubscriptionProxyMutationResult>;
+      };
+      providerInstances: {
+        list: (
+          args?: ProviderInstanceListArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ProviderInstance[]>;
+        create: (
+          args: ProviderInstanceCreateArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ProviderInstanceCreateResult>;
+        remove: (
+          args: ProviderInstanceRemoveArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ProviderInstanceRemoveResult>;
+        rename: (
+          args: ProviderInstanceRenameArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ProviderInstance>;
+        setDefault: (
+          args: ProviderInstanceSetDefaultArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ProviderInstance>;
+        setAccent: (
+          args: ProviderInstanceSetAccentArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ProviderInstance>;
+        getSettings: (
+          args: ProviderInstanceGetSettingsArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ProviderInstanceSettings>;
+        setSettings: (
+          args: ProviderInstanceSetSettingsArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ProviderInstanceSettings>;
+        loginCommand: (
+          args: ProviderInstanceLoginCommandArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ProviderInstanceLoginCommand>;
+        refresh: (
+          args?: ProviderInstanceRefreshArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ProviderInstance[]>;
+      };
       pty: {
         create: (args: PtyCreateArgs, pin?: OpenProjectBinding | null) => Promise<PtyCreateResult>;
         resumeSession: (
@@ -3312,6 +3429,10 @@ declare global {
         cancelDeviceLogin: (args: { sessionId: string }) => Promise<AdeAccountStatus>;
         signOut: () => Promise<AdeAccountStatus>;
         listMachines: () => Promise<AdeAccountMachinesResult>;
+        getMachineInventory?: (
+          machineKey?: string,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MachineInventoryDetail>;
         renameMachine: (
           machineKey: string,
           customName: string | null,
@@ -3330,6 +3451,23 @@ declare global {
          * background service. Optional because older preloads lack it.
          */
         repairSession?: () => Promise<AdeAccountSessionRepairResult>;
+      };
+      /**
+       * The account settings store (the `account_settings` action domain),
+       * which is what makes "stored in your ADE account" true for the
+       * account-scoped preferences in Settings.
+       *
+       * Optional because the hosted web client and older preloads do not
+       * expose it; callers treat its absence exactly like an unavailable
+       * result and keep the machine-local copy.
+       */
+      accountSettings?: {
+        list: (args?: { scope?: string | null }) => Promise<AccountSettingsResult<AccountSettingRow[]>>;
+        get: (args: { scope: string; key: string }) => Promise<AccountSettingsResult<unknown>>;
+        set: (
+          args: { scope: string; key: string; value: unknown } & AccountSettingsWriteOptions,
+        ) => Promise<AccountSettingsResult<null>>;
+        sync: () => Promise<AccountSettingsResult<null>>;
       };
       prs: {
         createFromLane: (args: CreatePrFromLaneArgs) => Promise<PrSummary>;
@@ -3595,9 +3733,6 @@ declare global {
           candidate: ProjectConfigCandidate,
         ) => Promise<ProjectConfigSnapshot>;
         diffAgainstDisk: () => Promise<ProjectConfigDiff>;
-        confirmTrust: (arg?: {
-          sharedHash?: string;
-        }) => Promise<ProjectConfigTrust>;
       };
       zoom: {
         getLevel: () => number;
@@ -3614,6 +3749,8 @@ declare global {
         ensureSession: (
           args?: CtoEnsureSessionArgs,
         ) => Promise<AgentChatSession>;
+        startFreshSession: () => Promise<CtoStartFreshSessionResult>;
+        getThreadHealth: () => Promise<CtoThreadHealth>;
         listSessionLogs: (
           args?: CtoListSessionLogsArgs,
         ) => Promise<CtoSessionLogEntry[]>;
@@ -3630,8 +3767,6 @@ declare global {
         completeOnboardingStep: (args: {
           stepId: string;
         }) => Promise<CtoOnboardingState>;
-        dismissOnboarding: () => Promise<CtoOnboardingState>;
-        resetOnboarding: () => Promise<CtoOnboardingState>;
         previewSystemPrompt: (args?: {
           identityOverride?: Record<string, unknown>;
         }) => Promise<CtoSystemPromptPreview>;

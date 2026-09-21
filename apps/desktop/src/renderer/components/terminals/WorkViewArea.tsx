@@ -1127,7 +1127,6 @@ export function WorkViewArea({
   visibleSessions,
   activeItemId,
   draftKind,
-  orchestratorEnabled = false,
   draftLaneId = null,
   draftMachineId = null,
   draftContextTargetId = null,
@@ -1170,8 +1169,6 @@ export function WorkViewArea({
   visibleSessions: TerminalSessionSummary[];
   activeItemId: string | null;
   draftKind: WorkDraftKind;
-  /** Orthogonal orchestrator flag for the chat draft (forwarded to the composer). */
-  orchestratorEnabled?: boolean;
   draftLaneId?: string | null;
   draftMachineId?: string | null;
   draftContextTargetId?: string | null;
@@ -1336,7 +1333,6 @@ export function WorkViewArea({
         <div className="min-h-0 flex-1">
           <WorkStartSurface
             draftKind={draftKind}
-            orchestratorEnabled={orchestratorEnabled}
             draftLaneId={draftLaneId}
             draftMachineId={draftMachineId}
             draftContextTargetId={draftContextTargetId}

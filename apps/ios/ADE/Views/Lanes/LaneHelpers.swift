@@ -433,6 +433,13 @@ func selectGithubLanePrTag(lane: LaneSummary, githubPrs: [GitHubPrListItem]) -> 
     .first
 }
 
+/// Tag for one specific ADE-mapped PR. Public because the chat's PR switcher
+/// hands the user's pick to the same badge and sheet that `selectLaneTabPrTag`
+/// feeds, and both must draw it identically.
+func workChatPrTag(from pr: PullRequestListItem) -> LanePrTag {
+  lanePrTag(from: pr)
+}
+
 private func lanePrTag(from pr: PullRequestListItem) -> LanePrTag {
   LanePrTag(
     source: .ade,
@@ -523,6 +530,122 @@ func selectLaneTabPrTag(
     return tag
   }
   return mappedTag
+}
+
+// MARK: - Every PR a chat should show
+
+/// Non-empty chat links for a PR, trimmed. Empty means "legacy row": it predates
+/// the link table, so it falls back to the branch rule.
+private func lanePrChatSessionIds(_ pr: PullRequestListItem) -> [String] {
+  (pr.chatSessionIds ?? [])
+    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+    .filter { !$0.isEmpty }
+}
+
+/// Every PR this LANE owns, mirroring desktop `selectLanePrs`.
+///
+/// Lane ownership is not negotiable: callers pass the project-wide list, and
+/// skipping the lane check would put one lane's PR on every lane in the project.
+/// Only the BRANCH half is relaxed — a PR this lane owns and a chat deliberately
+/// linked stays visible even once the lane moves to another branch, which is
+/// what lifts a lane's cap of one visible PR.
+func selectLanePrs(lane: LaneSummary, pullRequests: [PullRequestListItem]) -> [PullRequestListItem] {
+  pullRequests
+    .filter { pr in
+      if pr.detached != nil { return false }
+      guard pr.laneId == lane.id else { return false }
+      if !lanePrChatSessionIds(pr).isEmpty { return true }
+      return lanePrMatchesCurrentBranch(lane: lane, pr: pr)
+    }
+    .sorted(by: lanePrTagPrecedes)
+}
+
+/// Every PR a CHAT should show: what the lane owns, plus any PR this chat
+/// explicitly linked even though another lane owns it. Mirrors desktop
+/// `selectChatPrs`.
+///
+/// The two rules have to live apart. Lane surfaces stay strictly lane-owned;
+/// chat surfaces must not, because linking a PR to a chat deliberately leaves
+/// `lane_id` on the ORIGINAL owning lane.
+func selectChatPrs(
+  lane: LaneSummary,
+  pullRequests: [PullRequestListItem],
+  sessionId: String?
+) -> [PullRequestListItem] {
+  let owned = selectLanePrs(lane: lane, pullRequests: pullRequests)
+  let seen = Set(owned.map(\.id))
+  let trimmedSession = sessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  let linkedElsewhere: [PullRequestListItem]
+  if trimmedSession.isEmpty {
+    linkedElsewhere = []
+  } else {
+    linkedElsewhere = pullRequests.filter { pr in
+      pr.detached == nil
+        && pr.laneId != lane.id
+        && !seen.contains(pr.id)
+        && lanePrChatSessionIds(pr).contains(trimmedSession)
+    }
+  }
+  return (owned + linkedElsewhere).sorted(by: lanePrTagPrecedes)
+}
+
+/// Scope a set of PRs to one chat. A row with no link at all is legacy data and
+/// may use the lane fallback; that fallback is decided PER PR, so one linked row
+/// does not hide every older row in the same lane. Mirrors `selectPrsForChat`.
+func selectPrsForChat(
+  _ pullRequests: [PullRequestListItem],
+  sessionId: String?
+) -> [PullRequestListItem] {
+  let trimmed = sessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  guard !trimmed.isEmpty else { return pullRequests }
+  return pullRequests.filter { pr in
+    let linked = lanePrChatSessionIds(pr)
+    return linked.isEmpty || linked.contains(trimmed)
+  }
+}
+
+/// Open before draft before terminal history; among equals the most recently
+/// updated, then the highest number. Mirrors desktop `pickPrimaryPr`, whose
+/// rank differs from `lanePrTagPrecedes`: the badge separates open from DRAFT,
+/// the lane tag does not.
+private func primaryPrStateRank(_ state: String) -> Int {
+  switch state {
+  case "open": return 0
+  case "draft": return 1
+  default: return 2
+  }
+}
+
+private func primaryPrPrecedes(_ a: PullRequestListItem, _ b: PullRequestListItem) -> Bool {
+  let byRank = primaryPrStateRank(a.state) - primaryPrStateRank(b.state)
+  if byRank != 0 { return byRank < 0 }
+  if a.updatedAt != b.updatedAt { return a.updatedAt > b.updatedAt }
+  return a.githubPrNumber > b.githubPrNumber
+}
+
+func pickPrimaryPr(_ pullRequests: [PullRequestListItem]) -> PullRequestListItem? {
+  var best: PullRequestListItem?
+  for pr in pullRequests {
+    if best == nil || primaryPrPrecedes(pr, best!) { best = pr }
+  }
+  return best
+}
+
+/// The chat's PR list, newest-open first — what the chat's PR surfaces render.
+/// One function so the badge, the details sheet, and the switcher can never
+/// disagree about which PR is primary or which rows exist at all.
+func workChatPullRequests(
+  lane: LaneSummary?,
+  pullRequests: [PullRequestListItem],
+  sessionId: String?
+) -> [PullRequestListItem] {
+  guard let lane else { return [] }
+  let visible = selectPrsForChat(
+    selectChatPrs(lane: lane, pullRequests: pullRequests, sessionId: sessionId),
+    sessionId: sessionId
+  )
+  guard let primary = pickPrimaryPr(visible) else { return visible }
+  return [primary] + visible.filter { $0.id != primary.id }
 }
 
 func lanePrTagByLaneId(

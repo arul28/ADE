@@ -2547,6 +2547,83 @@ describe("preload OAuth bridge", () => {
     expect(invoke).not.toHaveBeenCalledWith(IPC.filesListWorkspaces, expect.anything());
   });
 
+  it("drops a cto_voice event that arrives in a polled batch", async () => {
+    // The polled path casts the batch rather than normalizing it, so the guard
+    // on the PUSHED path does not cover it. Without the same filter here, the
+    // poller simply walks around the door the push path closes.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-10T12:00:00.000Z"));
+    try {
+      const binding = {
+        kind: "local",
+        key: "local:/repo",
+        rootPath: "/repo",
+        displayName: "Project",
+      };
+      const conflictEvent = { type: "rebase-started", laneId: "lane-1", timestamp: "now" };
+      const batch = {
+        events: [
+          {
+            id: 1,
+            timestamp: "2026-05-10T12:00:01.000Z",
+            category: "cto_voice",
+            payload: { type: "conflict_event", event: conflictEvent },
+          },
+          {
+            id: 2,
+            timestamp: "2026-05-10T12:00:02.000Z",
+            category: "dag_mutation",
+            payload: { type: "conflict_event", event: conflictEvent },
+          },
+        ],
+        nextCursor: 2,
+        hasMore: false,
+        eventEpoch: "epoch-1",
+      };
+      let served = false;
+      const invoke = vi.fn(async (channel: string) => {
+        if (channel === IPC.appGetWindowSession) {
+          return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
+        }
+        if (channel === IPC.localRuntimeStreamEvents) {
+          if (served) return { ...batch, events: [] };
+          served = true;
+          return batch;
+        }
+        throw new Error(`unexpected IPC: ${channel}`);
+      });
+      const exposeInMainWorld = vi.fn((_name: string, value: unknown) => {
+        (globalThis as any).__adeBridge = value;
+      });
+      vi.doMock("electron", () => ({
+        contextBridge: { exposeInMainWorld },
+        ipcRenderer: { invoke, on: vi.fn(), removeListener: vi.fn() },
+        webFrame: {
+          getZoomLevel: vi.fn(() => 0),
+          setZoomLevel: vi.fn(),
+          getZoomFactor: vi.fn(() => 1),
+        },
+      }));
+
+      await import("./preload");
+      const bridge = (globalThis as any).__adeBridge;
+      const conflicts = vi.fn();
+      const stopConflicts = bridge.conflicts.onEvent(conflicts);
+      // Subscribing to project state is what starts the poller.
+      const stopPolling = bridge.project.onStateEvent(vi.fn());
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      // The `dag_mutation` twin proves the batch was processed at all; the
+      // `cto_voice` one carries the identical payload and must not arrive.
+      expect(conflicts).toHaveBeenCalledTimes(1);
+      expect(conflicts).toHaveBeenCalledWith(conflictEvent);
+      stopConflicts();
+      stopPolling();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps polling local runtime events after a stream timeout", async () => {
     vi.useFakeTimers();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -5137,6 +5214,16 @@ describe("preload OAuth bridge", () => {
     expect(computerUse).toHaveBeenCalledWith(computerUseEvent);
     expect(iosSimulator).toHaveBeenCalledWith(iosEvent);
     expect(appControl).toHaveBeenCalledWith(appControlEvent);
+
+    // `cto_voice` is the one category a renderer may NOT receive, and the two
+    // halves of this boundary have to agree: main refuses renderer
+    // subscriptions to it and nothing pushes it down this pipe, so admitting it
+    // inbound would only open a path for a call's transcript to reach a
+    // renderer. The dispatch is category-agnostic, so the guard is the whole
+    // enforcement — the event is dropped entire.
+    conflicts.mockClear();
+    emit(12, { type: "conflict_event", event: conflictEvent }, "cto_voice");
+    expect(conflicts).not.toHaveBeenCalled();
 
     const localUsageListener = on.mock.calls.find(([channel]) => channel === IPC.usageEvent)?.[1];
     expect(typeof localUsageListener).toBe("function");
@@ -8780,10 +8867,7 @@ describe("per-chat runtime routing", () => {
         throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
       });
 
-      const unsubscribe = bridge.orchestration.subscribe(
-        { runId: "run-1" },
-        vi.fn(),
-      );
+      const unsubscribe = bridge.review.onEvent(vi.fn());
       await vi.advanceTimersByTimeAsync(0);
       const releaseCalls = () =>
         invoke.mock.calls
@@ -8825,6 +8909,12 @@ describe("per-chat runtime routing", () => {
       });
 
       await bridge.pty.setDataSubscriptions({ ptyIds: ["pty-a"] });
+      // Measure the pump's OWN timer against a baseline, not the whole
+      // environment's count. `getTimerCount()` is global: it counts every
+      // pending fake timer, so any unrelated one shifts the total and fails
+      // this test for a reason it is not about. That is what happened on CI
+      // while it passed locally.
+      const timersBeforePump = vi.getTimerCount();
       const onData = vi.fn();
       const onExit = vi.fn();
       const removeData = bridge.pty.onData(onData, machineB);
@@ -8834,10 +8924,13 @@ describe("per-chat runtime routing", () => {
       expect(streamCalls).toBe(1);
 
       removeData();
-      expect(vi.getTimerCount()).toBe(1);
+      // The exit listener still holds the pump, so its timer must survive.
+      expect(vi.getTimerCount()).toBe(timersBeforePump + 1);
       removeExit();
       await Promise.resolve();
-      expect(vi.getTimerCount()).toBe(0);
+      // Last listener gone: the pump releases its timer and leaves nothing of
+      // its own pending.
+      expect(vi.getTimerCount()).toBe(timersBeforePump);
       expect(
         invoke.mock.calls
           .filter(([channel]) => channel === IPC.ptyDataSubscriptions)
@@ -9403,7 +9496,6 @@ describe("preload remote runtime event fanout table", () => {
     "sync-status": { type: "sync-status", snapshot: { role: "host" } },
     usage: { type: "usage", snapshot: { windows: [] } },
     automations_event: { source: "automations", type: "runs-updated" },
-    orchestration_event: { runId: "run-1", etag: "etag-1", kind: "manifest" },
   };
 
   it("delivers every listed domain to its own subscriber", async () => {
@@ -9518,5 +9610,224 @@ describe("preload native-menu command bridge", () => {
 
     expect(menu).toEqual(["close-tab"]);
     expect(zoom).toEqual(["in"]);
+  });
+});
+
+describe("preload machine-scoped API key routing", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    delete (globalThis as any).__adeBridge;
+  });
+
+  afterEach(() => {
+    vi.resetModules();
+    vi.doUnmock("electron");
+    delete (globalThis as any).__adeBridge;
+  });
+
+  const status = {
+    provider: "openai",
+    configured: true,
+    source: "store",
+    envVar: "OPENAI_API_KEY",
+  };
+
+  function mockElectron(invoke: ReturnType<typeof vi.fn>) {
+    vi.doMock("electron", () => ({
+      contextBridge: {
+        exposeInMainWorld: vi.fn((_name: string, value: unknown) => {
+          (globalThis as any).__adeBridge = value;
+        }),
+      },
+      ipcRenderer: { invoke, on: vi.fn(), removeListener: vi.fn() },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+  }
+
+  it("writes and reads the machine key through the LOCAL runtime when one is bound", async () => {
+    // The store desktop main writes (Electron safeStorage) is not the store the
+    // runtime reads (EncryptedFileCredentialStore), so a key saved through
+    // desktop IPC is invisible to the runtime-hosted voice call. One process
+    // has to own both ends.
+    const binding = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "Project" };
+    const invoke = vi.fn(async (channel: string, arg?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
+      }
+      if (channel === IPC.localRuntimeCallAction) {
+        const request = (arg as { request?: { domain?: string; action?: string } }).request;
+        expect(request?.domain).toBe("ai");
+        return { result: status };
+      }
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    mockElectron(invoke);
+    await import("./preload");
+    const bridge = (globalThis as any).__adeBridge;
+
+    await expect(bridge.ai.storeMachineApiKey("openai", "sk-test")).resolves.toEqual(status);
+    await expect(bridge.ai.getMachineApiKeyStatus("openai")).resolves.toEqual(status);
+    await expect(bridge.ai.deleteMachineApiKey("openai")).resolves.toEqual(status);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo",
+      request: { domain: "ai", action: "storeMachineApiKey", args: { provider: "openai", key: "sk-test" } },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo",
+      request: { domain: "ai", action: "getMachineApiKeyStatus", args: { provider: "openai" } },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo",
+      request: { domain: "ai", action: "deleteMachineApiKey", args: { provider: "openai" } },
+    });
+    // Desktop main is the fallback, not the destination.
+    expect(invoke).not.toHaveBeenCalledWith(IPC.aiStoreMachineApiKey, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.aiGetMachineApiKeyStatus, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.aiDeleteMachineApiKey, expect.anything());
+  });
+
+  it("never sends this machine's key to a remote runtime", async () => {
+    // The key follows THIS machine's ADE home, so a remote brain is the wrong
+    // store — the one thing the original routing got right, and the reason
+    // these use the local-only helper instead of callProjectRuntimeActionOr.
+    const binding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-1",
+      rootPath: "/remote/repo",
+      displayName: "Project",
+    };
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding };
+      }
+      if (
+        channel === IPC.aiStoreMachineApiKey
+        || channel === IPC.aiGetMachineApiKeyStatus
+        || channel === IPC.aiDeleteMachineApiKey
+      ) {
+        return status;
+      }
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    mockElectron(invoke);
+    await import("./preload");
+    const bridge = (globalThis as any).__adeBridge;
+
+    await expect(bridge.ai.storeMachineApiKey("openai", "sk-test")).resolves.toEqual(status);
+    await expect(bridge.ai.getMachineApiKeyStatus("openai")).resolves.toEqual(status);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.aiStoreMachineApiKey, { provider: "openai", key: "sk-test" });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.localRuntimeCallAction, expect.anything());
+  });
+
+  it("falls back to desktop IPC when no project is bound", async () => {
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding: null };
+      }
+      if (channel === IPC.aiGetMachineApiKeyStatus) return status;
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    mockElectron(invoke);
+    await import("./preload");
+    const bridge = (globalThis as any).__adeBridge;
+
+    await expect(bridge.ai.getMachineApiKeyStatus("openai")).resolves.toEqual(status);
+    expect(invoke).toHaveBeenCalledWith(IPC.aiGetMachineApiKeyStatus, { provider: "openai" });
+  });
+});
+
+describe("preload provider API credential bridge", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    delete (globalThis as any).__adeBridge;
+  });
+
+  afterEach(() => {
+    vi.resetModules();
+    vi.doUnmock("electron");
+    delete (globalThis as any).__adeBridge;
+  });
+
+  const summary = {
+    provider: "anthropic",
+    credentialId: "default",
+    label: "Anthropic",
+    envVar: "ANTHROPIC_API_KEY",
+    source: "store",
+    createdAt: "2026-09-01T00:00:00.000Z",
+    updatedAt: "2026-09-01T00:00:00.000Z",
+    maskedTail: "••••3c1x",
+  };
+
+  function mockElectron(invoke: ReturnType<typeof vi.fn>) {
+    vi.doMock("electron", () => ({
+      contextBridge: {
+        exposeInMainWorld: vi.fn((_name: string, value: unknown) => {
+          (globalThis as any).__adeBridge = value;
+        }),
+      },
+      ipcRenderer: { invoke, on: vi.fn(), removeListener: vi.fn() },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+  }
+
+  it("routes every call at local IPC, and never at a remote runtime", async () => {
+    // The store desktop main writes is THIS machine's Electron safeStorage, so
+    // a key filed through a remote runtime would land on a computer the harness
+    // does not run on.
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return {
+          windowId: 1,
+          project: { rootPath: "/repo", displayName: "Project" },
+          binding: { kind: "remote", key: "remote:host/repo", rootPath: "/repo", displayName: "Project" },
+        };
+      }
+      if (channel === IPC.apiCredentialsList) return [summary];
+      if (channel === IPC.apiCredentialsGet) return summary;
+      if (channel === IPC.apiCredentialsStore) return summary;
+      if (channel === IPC.apiCredentialsRemove) return undefined;
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    mockElectron(invoke);
+    await import("./preload");
+    const bridge = (globalThis as any).__adeBridge;
+
+    await expect(bridge.apiCredentials.list()).resolves.toEqual([summary]);
+    await expect(bridge.apiCredentials.get({ provider: "anthropic" })).resolves.toEqual(summary);
+    await expect(
+      bridge.apiCredentials.store({ provider: "anthropic", label: "Anthropic", key: "sk-1" }),
+    ).resolves.toEqual(summary);
+    await expect(
+      bridge.apiCredentials.remove({ provider: "anthropic", credentialId: "default" }),
+    ).resolves.toBeUndefined();
+
+    expect(invoke).toHaveBeenCalledWith(IPC.apiCredentialsList, {});
+    expect(invoke).toHaveBeenCalledWith(IPC.apiCredentialsGet, { provider: "anthropic" });
+    expect(invoke).toHaveBeenCalledWith(IPC.apiCredentialsStore, {
+      provider: "anthropic",
+      label: "Anthropic",
+      key: "sk-1",
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.apiCredentialsRemove, {
+      provider: "anthropic",
+      credentialId: "default",
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.localRuntimeCallAction, expect.anything());
   });
 });

@@ -4,7 +4,6 @@ import {
   type AgentChatSession,
   type AiConfig,
   type CtoAttentionState,
-  type CtoOnboardingState,
   type CtoSnapshot,
   type CursorAgentUsage,
   type CursorCloudAgentSummary,
@@ -51,7 +50,6 @@ export type MiscNamespaces = {
   rebase: AdeNamespace<"rebase">;
   history: AdeNamespace<"history">;
   cto: NonNullable<Window["ade"]["cto"]>;
-  orchestration: Partial<Window["ade"]["orchestration"]>;
   projectSecrets: AdeNamespace<"projectSecrets">;
   transcription: AdeNamespace<"transcription">;
   agentTools: AdeNamespace<"agentTools">;
@@ -724,10 +722,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
       localChanged: false,
       sharedHash: "",
       localHash: "",
-      approvedSharedHash: null,
-      requiresSharedTrust: false,
     }),
-    confirmTrust: async () => projectConfigSnapshot(state.getProject()?.rootPath ?? "").trust,
   };
 
   const zoom = createZoomNamespace(infra);
@@ -765,8 +760,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     workTools: createWorkToolsNamespace(call),
     rebase: rebase as AdeNamespace<"rebase">,
     history: history as AdeNamespace<"history">,
-    cto: createCtoNamespace(call, localState),
-    orchestration: createOrchestrationNamespace(call, infra),
+    cto: createCtoNamespace(call),
     projectSecrets: createProjectSecretsNamespace(),
     transcription: createTranscriptionNamespace(),
     agentTools: { detect: async () => [] } as AdeNamespace<"agentTools">,
@@ -872,32 +866,6 @@ type MiscCall = <T>(
   idempotent?: boolean,
 ) => Promise<T>;
 
-// The onboarding wizard is a desktop-first flow — the host registers no
-// `cto.*Onboarding` descriptors, and the wizard itself writes through
-// cto.updateIdentity, which this namespace deliberately leaves unwired. Left to
-// the fallback proxy the reads resolve to null, and CtoPage then parks forever:
-// its ensure-session effect bails while onboardingState is null, so the chat
-// never starts. Synthesize a completed state in browser-local storage instead,
-// so the web CTO opens straight into the chat.
-const WEB_CTO_ONBOARDING_KEY = "ctoOnboarding";
-
-function createCtoOnboardingShims(localState: AdapterInfra["localState"]): Record<string, unknown> {
-  // "identity" is the step CtoPage treats as completing onboarding, so the
-  // default reads as done without inventing a completion timestamp.
-  const read = (): CtoOnboardingState =>
-    localState.get<CtoOnboardingState>(WEB_CTO_ONBOARDING_KEY, { completedSteps: ["identity"] });
-  const write = (next: CtoOnboardingState): CtoOnboardingState => {
-    localState.set(WEB_CTO_ONBOARDING_KEY, next);
-    return next;
-  };
-  return {
-    getOnboardingState: async (): Promise<CtoOnboardingState> => read(),
-    dismissOnboarding: async (): Promise<CtoOnboardingState> =>
-      write({ ...read(), dismissedAt: new Date().toISOString() }),
-    resetOnboarding: async (): Promise<CtoOnboardingState> => write({ completedSteps: [] }),
-  };
-}
-
 // Wired method-by-method on purpose. The host registers every `cto.*` action as
 // viewerAllowed, including `setLinearToken`/`clearLinearToken`, so completing
 // this namespace mechanically would hand any connected browser write access to
@@ -905,10 +873,8 @@ function createCtoOnboardingShims(localState: AdapterInfra["localState"]): Recor
 // wired; identity/token writes stay with the fallback proxy.
 function createCtoNamespace(
   call: MiscCall,
-  localState: AdapterInfra["localState"],
 ): NonNullable<Window["ade"]["cto"]> {
   return {
-    ...createCtoOnboardingShims(localState),
     getState: (args?: unknown) => call<CtoSnapshot>(
       "cto.getState",
       { recentLimit: asRecord(args).recentLimit ?? 20 },
@@ -947,18 +913,6 @@ function createCtoNamespace(
     getLinearIssuePickerData: () => call("cto.getLinearIssuePickerData", {}, null),
     searchLinearIssues: (args?: unknown) => call("cto.searchLinearIssues", args, { issues: [] }),
   } as unknown as NonNullable<Window["ade"]["cto"]>;
-}
-
-function createOrchestrationNamespace(
-  call: MiscCall,
-  infra: AdapterInfra,
-): Partial<Window["ade"]["orchestration"]> {
-  return {
-    runCreate: async (args: unknown, pin?: RuntimePinArg) => {
-      assertWebRuntimePinRoutable("orchestration.runCreate", pin, infra);
-      return await call("orchestration.runCreate", args, { ok: false, error: "unsupported" }, false);
-    },
-  } as unknown as Partial<Window["ade"]["orchestration"]>;
 }
 
 function createProjectSecretsNamespace(): AdeNamespace<"projectSecrets"> {
@@ -1153,7 +1107,7 @@ function projectConfigSnapshot(rootPath: string): Record<string, unknown> {
     local: file,
     effective: { providerMode: "guest", rootPath },
     validation: { ok: true, errors: [], warnings: [] },
-    trust: { trusted: true, sharedHash: "", approvedSharedHash: "" },
+    trust: { sharedHash: "", localHash: "" },
     paths: {
       sharedPath: rootPath ? `${rootPath}/.ade/config.json` : "",
       localPath: rootPath ? `${rootPath}/.ade/local.json` : "",

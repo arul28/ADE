@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope, AgentChatEventHistoryPage } from "../../../shared/types";
-import { readOlderHistoryBatch } from "./chatHistoryWindow";
+import { readOlderHistoryBatch, trimChatEventHistory } from "./chatHistoryWindow";
 
 const SESSION_ID = "session-1";
 
@@ -199,5 +199,38 @@ describe("readOlderHistoryBatch turn anchoring", () => {
     await expect(
       readOlderHistoryBatch({ sessionId: SESSION_ID, beforeOffset: 300, readPage, isCurrent }),
     ).rejects.toThrow(/cursor did not advance/);
+  });
+});
+
+describe("trimChatEventHistory pending-input carve-out", () => {
+  const approvalRequest = (index: number, itemId: string): AgentChatEventEnvelope => ({
+    sessionId: SESSION_ID,
+    timestamp: `2026-03-17T10:00:${String(index).padStart(2, "0")}.000Z`,
+    event: { type: "approval_request", itemId, kind: "tool_call", description: "?" },
+  } as never);
+  const receipt = (index: number, itemId: string): AgentChatEventEnvelope => ({
+    sessionId: SESSION_ID,
+    timestamp: `2026-03-17T10:00:${String(index).padStart(2, "0")}.000Z`,
+    event: { type: "pending_input_resolved", itemId, resolution: "accepted" },
+  } as never);
+
+  it("keeps an unanswered card past the event budget", () => {
+    // The card is the control the user has to click. Trimming it away leaves
+    // the composer blocked with nothing on screen to answer.
+    const events = [approvalRequest(0, "a"), envelope("text", 1), envelope("text", 2)];
+    const trimmed = trimChatEventHistory(events, 1);
+    expect(trimmed).toHaveLength(2);
+    expect(trimmed[0]).toBe(events[0]);
+  });
+
+  it("keeps an unanswered card past the byte budget", () => {
+    const events = [approvalRequest(0, "a"), envelope("text", 1), envelope("text", 2)];
+    const trimmed = trimChatEventHistory(events, 100, 1);
+    expect(trimmed).toContain(events[0]);
+  });
+
+  it("trims an answered card like ordinary history", () => {
+    const events = [approvalRequest(0, "a"), receipt(1, "a"), envelope("text", 2)];
+    expect(trimChatEventHistory(events, 1)).toEqual([events[2]]);
   });
 });

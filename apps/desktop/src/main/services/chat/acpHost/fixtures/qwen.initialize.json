@@ -3,7 +3,7 @@
   "agentInfo": {
     "name": "qwen-code",
     "title": "Qwen Code",
-    "version": "0.22.3"
+    "version": "0.24.0"
   },
   "authMethods": [
     {
@@ -14,6 +14,17 @@
         "type": "terminal",
         "args": [
           "--auth-type=openai"
+        ]
+      }
+    },
+    {
+      "id": "openai-responses",
+      "name": "Use OpenAI Responses API key",
+      "description": "Requires setting the `OPENAI_API_KEY` environment variable",
+      "_meta": {
+        "type": "terminal",
+        "args": [
+          "--auth-type=openai-responses"
         ]
       }
     }

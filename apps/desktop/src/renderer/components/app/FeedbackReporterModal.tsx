@@ -654,7 +654,6 @@ function NewReportTab({
               setReasoningEffort(null);
               clearPreparedDraft();
             }}
-            surfaceKey="feedback-reporter"
             availableModelIds={availableModelIds}
             onOpenSignIn={openProviderSignIn}
           />

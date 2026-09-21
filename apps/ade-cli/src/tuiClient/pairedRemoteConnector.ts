@@ -54,19 +54,19 @@ export async function pairedRouteAccountProof(args: {
     proof = await args.getAccountRelayProof();
   } catch (error) {
     throw new PairedRuntimeRelayAuthRequiredError(
-      "Sign in to ADE to connect through Relay. Local network and Tailscale connections still work without an account.",
+      "Sign in to ADE to connect through Relay. Direct local network and Tailscale routes stay reachable meanwhile.",
       error,
     );
   }
   if (!proof?.userId.trim() || !proof.token.trim()) {
     throw new PairedRuntimeRelayAuthRequiredError(
-      "Sign in to ADE to connect through Relay. Local network and Tailscale connections still work without an account.",
+      "Sign in to ADE to connect through Relay. Direct local network and Tailscale routes stay reachable meanwhile.",
     );
   }
   const expectedOwnerUserId = args.credentials.accountOwnerUserId?.trim() ?? "";
   if (expectedOwnerUserId && proof.userId.trim() !== expectedOwnerUserId) {
     throw new PairedRuntimeRelayAuthRequiredError(
-      "Sign in with the same ADE account as this computer to connect through Relay. Local network and Tailscale connections still work without an account.",
+      "Sign in with the same ADE account as this computer to connect through Relay. Direct local network and Tailscale routes stay reachable meanwhile.",
     );
   }
   return { userId: proof.userId.trim(), token: proof.token.trim() };

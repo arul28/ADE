@@ -312,10 +312,10 @@ describe("ApprovalPrompt", () => {
     expect(frame).toContain("8 Option 8");
   });
 
-  it("renders orchestration model-selection briefing metadata", () => {
+  it("renders model-selection briefing metadata", () => {
     const approval: PendingApproval = {
       itemId: "model-1",
-      description: "Build the orchestration roster.",
+      description: "Build the agent roster.",
       highStakes: false,
       mode: "question",
       request: {
@@ -323,15 +323,15 @@ describe("ApprovalPrompt", () => {
         source: "ade",
         kind: "model_selection",
         title: "Pick a model for the web-ui worker",
-        description: "Build the orchestration roster.",
+        description: "Build the agent roster.",
         allowsFreeform: true,
         blocking: true,
         canProceedWithoutAnswer: false,
         providerMetadata: {
           role: "worker",
           tag: "web-ui",
-          workDescription: "Build the orchestration roster.",
-          filesHint: [" OrchestrationPanel.tsx ", "TaskCard.tsx"],
+          workDescription: "Build the agent roster.",
+          filesHint: [" TaskPanel.tsx ", "TaskCard.tsx"],
           dependsOn: [" planning-rounds ", "model-routing"],
         },
         questions: [
@@ -353,8 +353,8 @@ describe("ApprovalPrompt", () => {
     ).lastFrame() ?? "");
 
     expect(frame).toContain("MODEL SELECTION");
-    expect(frame).toContain("Description: Build the orchestration roster.");
-    expect(frame).toContain("Files: OrchestrationPanel.tsx, TaskCard.tsx");
+    expect(frame).toContain("Description: Build the agent roster.");
+    expect(frame).toContain("Files: TaskPanel.tsx, TaskCard.tsx");
     expect(frame).toContain("Runs after: planning-rounds, model-routing");
     expect(frame).toContain("Which model should the web-ui worker use?");
   });
@@ -375,7 +375,6 @@ describe("ApprovalPrompt", () => {
         blocking: true,
         canProceedWithoutAnswer: false,
         providerMetadata: {
-          orchestrationPlanApproval: true,
           planContent: "# Plan\n\n## Goal\nShip the work.\n\n## Validation plan\nRun the focused checks.",
         },
         questions: [],

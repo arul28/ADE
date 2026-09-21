@@ -8,6 +8,7 @@ import {
   primaryPrStateRank,
   selectPrimaryLanePr,
 } from "./lanePrBadge";
+import { prStateTone, selectPrsForChatInLane } from "./prChatScope";
 
 type TestPr = { id: string; state: PrState; updatedAt?: string | null; githubPrNumber: number };
 
@@ -29,6 +30,26 @@ describe("pickPrimaryPr", () => {
       name: "empty list -> null",
       prs: [],
       expected: null,
+    },
+    {
+      // `github_pr_number` has no positive-value constraint, so a 0 can reach
+      // the picker. The CLI picker refused such a row first while this one
+      // ranked only by state and recency, so the lane badge and a CLI-minted
+      // deeplink could name DIFFERENT PRs. The rule now lives in the shared
+      // comparator, which is the only reason both agree.
+      name: "a readable number beats a live state with no number",
+      prs: [pr("no-number", "open", "2026-07-09T00:00:00Z", 0), pr("real", "merged", "2026-07-01T00:00:00Z", 7)],
+      expected: "real",
+    },
+    {
+      name: "among numbered rows the state rule still decides",
+      prs: [pr("merged", "merged", "2026-07-09T00:00:00Z", 9), pr("open", "open", "2026-07-01T00:00:00Z", 3)],
+      expected: "open",
+    },
+    {
+      name: "a numberless row is still answered when it is all there is",
+      prs: [pr("only", "open", "2026-07-01T00:00:00Z", 0)],
+      expected: "only",
     },
     {
       name: "open beats draft",
@@ -270,5 +291,54 @@ describe("openLanePr", () => {
       "_blank",
       "noopener,noreferrer",
     );
+  });
+});
+
+describe("prStateTone", () => {
+  // Three copies of this mapping existed and two of them rendered a DRAFT pull
+  // request GREEN — so one PR read amber in the pane header and green in the
+  // pane's own selector and in the command menu.
+  it("gives a draft its own amber tone, never the open green", () => {
+    expect(prStateTone("draft").dot).not.toBe(prStateTone("open").dot);
+    expect(prStateTone("draft").label).toBe("Draft");
+  });
+
+  it("distinguishes every state it is given", () => {
+    const dots = (["open", "draft", "merged", "closed"] as PrState[]).map((state) => prStateTone(state).dot);
+    expect(new Set(dots).size).toBe(4);
+  });
+
+  it("falls back rather than throwing on an unknown state", () => {
+    const tone = prStateTone("something-new" as PrState);
+    expect(tone.dot).toBeTruthy();
+    expect(tone.label).toBe("something-new");
+  });
+});
+
+describe("selectPrsForChatInLane", () => {
+  const row = (id: string, laneId: string, sessions?: string[], detached?: boolean) => ({
+    id, laneId, detached, chatSessionIds: sessions,
+  } as unknown as Parameters<typeof selectPrsForChatInLane>[0][number]);
+
+  it("takes lane-owned rows and rows this chat linked from another lane", () => {
+    const ids = selectPrsForChatInLane(
+      [row("own", "lane-1"), row("linked", "lane-2", ["sess-a"]), row("other", "lane-2", ["sess-b"])],
+      "lane-1",
+      "sess-a",
+    ).map((pr) => pr.id);
+
+    expect(ids).toContain("own");
+    expect(ids).toContain("linked");
+    expect(ids).not.toContain("other");
+  });
+
+  it("drops detached rows whichever arm they arrive on", () => {
+    const ids = selectPrsForChatInLane(
+      [row("own", "lane-1", undefined, true), row("linked", "lane-2", ["sess-a"], true)],
+      "lane-1",
+      "sess-a",
+    ).map((pr) => pr.id);
+
+    expect(ids).toEqual([]);
   });
 });

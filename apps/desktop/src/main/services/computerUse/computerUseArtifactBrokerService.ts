@@ -15,6 +15,7 @@ import type {
   ComputerUseArtifactKind,
   ComputerUseArtifactLink,
   ComputerUseArtifactListArgs,
+  ComputerUseArtifactMetadataKind,
   ComputerUseArtifactOwner,
   ComputerUseArtifactRecord,
   ComputerUseArtifactReviewArgs,
@@ -389,6 +390,78 @@ function normalizeInputKind(input: ComputerUseArtifactInput): ComputerUseArtifac
   return "browser_verification";
 }
 
+/**
+ * The `metadata.kind` half of a list query, as SQL.
+ *
+ * `json_extract` rather than a column: the tag lives in the metadata blob every
+ * artifact already carries, and a tag that only the filer and the filters read
+ * does not earn a migration. Two things the expression has to survive:
+ *
+ *  - A row whose `metadata_json` is not valid JSON. `json_extract` does not
+ *    return null for one, it RAISES — and this table is CRR-replicated, so a
+ *    single malformed blob from any peer emptied the whole listing, which is
+ *    the proof drawer's hot path. `json_valid` first; an unreadable blob is an
+ *    artifact with no tag.
+ *  - A null tag on the exclude side, spelled out, because `!=` is unknown
+ *    against null and would silently drop every untagged row — nearly all of
+ *    them.
+ */
+/**
+ * The include/exclude tag a list query filters on.
+ *
+ * Read through one function so the SQL filter and the in-memory one below
+ * cannot drift: they answer the same question about the same args, and a guard
+ * spelled differently on each side is how an absent exclude starts matching
+ * every untagged row.
+ */
+function resolveMetadataKindFilters(args: ComputerUseArtifactListArgs): {
+  included: ComputerUseArtifactMetadataKind | null;
+  excluded: ComputerUseArtifactMetadataKind | null;
+} {
+  return {
+    included: args.metadataKind ?? null,
+    excluded: args.excludeMetadataKind ?? null,
+  };
+}
+
+function buildMetadataKindFilter(args: ComputerUseArtifactListArgs): {
+  sql: (prefix: string) => string;
+  params: string[];
+} {
+  const { included, excluded } = resolveMetadataKindFilters(args);
+  const params: string[] = [
+    ...(included ? [included] : []),
+    ...(excluded ? [excluded] : []),
+  ];
+  return {
+    sql: (prefix: string) => {
+      const blob = `${prefix}metadata_json`;
+      const tag = `(case when json_valid(${blob}) then json_extract(${blob}, '$.kind') end)`;
+      const clauses: string[] = [];
+      if (included) clauses.push(`and ${tag} = ?`);
+      if (excluded) clauses.push(`and (${tag} is null or ${tag} != ?)`);
+      return clauses.join("\n              ");
+    },
+    params,
+  };
+}
+
+/** The same filter in memory, for the single-record read that skips the query. */
+function matchesMetadataKindFilter(
+  record: ComputerUseArtifactRecord,
+  args: ComputerUseArtifactListArgs,
+): boolean {
+  const tag = isRecord(record.metadata) && typeof record.metadata.kind === "string"
+    ? record.metadata.kind
+    : null;
+  const { included, excluded } = resolveMetadataKindFilters(args);
+  if (included && tag !== included) return false;
+  // Guarded on the ARGUMENT, the same shape as the include above: an absent
+  // exclude must not start matching every untagged row.
+  if (excluded && tag === excluded) return false;
+  return true;
+}
+
 export function createComputerUseArtifactBrokerService(args: {
   db: AdeDb;
   projectId: string;
@@ -665,7 +738,9 @@ export function createComputerUseArtifactBrokerService(args: {
    * is the same one `readArtifactPreview` and the `ade-artifact://` protocol
    * handler enforce — delete must never be able to unlink outside it.
    */
-  const resolveArtifactFilePath = (record: ComputerUseArtifactRecord): string | null => {
+  const resolveArtifactFilePath = (
+    record: Pick<ComputerUseArtifactRecord, "storageKind" | "uri">,
+  ): string | null => {
     if (record.storageKind !== "file") return null;
     const uri = record.uri?.trim();
     if (!uri || isHttpUrl(uri)) return null;
@@ -940,6 +1015,41 @@ export function createComputerUseArtifactBrokerService(args: {
     const missing: string[] = [];
     const failed: Array<{ artifactId: string; reason: string }> = [];
 
+    /**
+     * How many records point at each stored file, counted ONCE for the call.
+     *
+     * Two records can point at one file (an ingest of a path that is already
+     * in the store), and unlinking the bytes out from under the survivor would
+     * leave the drawer showing a row whose picture is gone. Answering that per
+     * id meant a full scan of every file-backed row per id, so pruning a
+     * session's stills — which deletes in batches — scanned the table dozens
+     * of times for one bound. Each delete below decrements its own path, so
+     * the last reference in a batch still unlinks the bytes.
+     */
+    const referencesByFilePath = new Map<string, number>();
+    // One column, not a whole record: the only question is how many rows point
+    // at each path, and hydrating every file-backed artifact in the project —
+    // metadata blob included — to count them was the expensive part.
+    for (const candidate of db.all<{ uri: string | null }>(
+      `
+        select uri
+        from computer_use_artifacts
+        where project_id = ?
+          and storage_kind = 'file'
+      `,
+      [projectId],
+    )) {
+      const candidatePath = resolveArtifactFilePath({
+        // The query already filters `storage_kind = 'file'`, so the literal is
+        // the value every row has; reading the column back only to cast it
+        // invited a default that could disagree with the where clause.
+        storageKind: "file",
+        uri: candidate.uri ?? "",
+      });
+      if (!candidatePath) continue;
+      referencesByFilePath.set(candidatePath, (referencesByFilePath.get(candidatePath) ?? 0) + 1);
+    }
+
     for (const artifactId of ids) {
       const record = readArtifactById(artifactId);
       if (!record) {
@@ -959,18 +1069,8 @@ export function createComputerUseArtifactBrokerService(args: {
         const filePath = resolveArtifactFilePath(record);
         let fileRemoved = false;
         let freedBytes = 0;
-        const sharedReference = filePath && record.storageKind === "file"
-          ? readArtifactRows(
-              `
-                select ${ARTIFACT_SELECT_COLUMNS}
-                from computer_use_artifacts
-                where project_id = ?
-                  and storage_kind = 'file'
-                  and id <> ?
-              `,
-              [projectId, artifactId],
-            ).some((candidate) => resolveArtifactFilePath(candidate) === filePath)
-          : false;
+        const references = filePath ? referencesByFilePath.get(filePath) ?? 0 : 0;
+        const sharedReference = references > 1;
         if (filePath && !sharedReference) {
           try {
             const stat = fs.statSync(filePath);
@@ -989,6 +1089,9 @@ export function createComputerUseArtifactBrokerService(args: {
         }
         db.run("delete from computer_use_artifact_links where artifact_id = ?", [artifactId]);
         db.run("delete from computer_use_artifacts where id = ? and project_id = ?", [artifactId, projectId]);
+        // This row no longer holds the file, so a later id in the same batch
+        // pointing at it is the last reference and may unlink the bytes.
+        if (filePath) referencesByFilePath.set(filePath, Math.max(0, references - 1));
         deleted.push({
           artifactId,
           title: record.title,
@@ -1155,11 +1258,16 @@ export function createComputerUseArtifactBrokerService(args: {
       // maintenance may request up to the broken-record audit ceiling so it
       // can authorize a bounded batch without one lookup per artifact.
       const limit = Math.max(1, Math.min(2000, Math.floor(args.limit ?? 50)));
+      // The metadata-kind filters run IN THE QUERY, not over its result: they
+      // interact with `limit`, and filtering afterwards would let 50 scene
+      // stills push every proof row out of a drawer listing that then showed
+      // nothing.
+      const metadataFilter = buildMetadataKindFilter(args);
       let artifacts: ComputerUseArtifactRecord[] = [];
       const artifactId = toOptionalString(args.artifactId);
       if (artifactId) {
         const record = readArtifactById(artifactId);
-        artifacts = record ? [record] : [];
+        artifacts = record && matchesMetadataKindFilter(record, args) ? [record] : [];
       } else {
       const ownerKind = args.owner?.kind ?? args.ownerKind ?? null;
       const ownerId = args.owner?.id ?? toOptionalString(args.ownerId);
@@ -1179,12 +1287,21 @@ export function createComputerUseArtifactBrokerService(args: {
                 or (? = 'lane' and a.lane_id = ?)
               )
               ${args.kind ? "and a.artifact_kind = ?" : ""}
+              ${metadataFilter.sql("a.")}
             order by a.created_at desc
             limit ?
           `,
-          args.kind
-            ? [projectId, projectId, ownerKind, ownerId, ownerKind, ownerId, args.kind, limit]
-            : [projectId, projectId, ownerKind, ownerId, ownerKind, ownerId, limit],
+          [
+            projectId,
+            projectId,
+            ownerKind,
+            ownerId,
+            ownerKind,
+            ownerId,
+            ...(args.kind ? [args.kind] : []),
+            ...metadataFilter.params,
+            limit,
+          ],
         );
       } else {
         artifacts = readArtifactRows(
@@ -1193,10 +1310,11 @@ export function createComputerUseArtifactBrokerService(args: {
             from computer_use_artifacts
             where project_id = ?
               ${args.kind ? "and artifact_kind = ?" : ""}
+              ${metadataFilter.sql("")}
             order by created_at desc
             limit ?
           `,
-          args.kind ? [projectId, args.kind, limit] : [projectId, limit],
+          [projectId, ...(args.kind ? [args.kind] : []), ...metadataFilter.params, limit],
         );
       }
       }

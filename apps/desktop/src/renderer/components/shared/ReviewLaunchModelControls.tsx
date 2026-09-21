@@ -64,7 +64,6 @@ export function ReviewLaunchModelControls({
       <ModelPicker
         value={modelId}
         onChange={handleModelChange}
-        surfaceKey="review-launch"
         availableModelIds={availableModelIds}
         disabled={disabled}
         fastModeActive={fastMode}

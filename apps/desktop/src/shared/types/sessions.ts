@@ -18,7 +18,6 @@ import type {
 } from "./chat";
 import type { ModelId } from "./core";
 import type { LaneLinearIssue } from "./lanes";
-import type { OrchestrationRole } from "./orchestration";
 import type { SessionBackgroundWork } from "../sessionCanonicalState";
 
 /**
@@ -99,7 +98,7 @@ export function isPtySendPreDeliveryError(
  * Is this terminal running an agent CLI ADE tracks?
  *
  * "Tracked" buys the session the whole agent-CLI apparatus: TUI turn markers,
- * resume-target capture, scheduled turns, orchestration lineage — and two
+ * resume-target capture, scheduled turns, spawn lineage — and two
  * safety behaviours that are easy to miss, because both are about what
  * *stops*. A tracked launch is refused when the disk is exhausted, and a
  * tracked session's built-in-browser actor token is revoked when it closes.
@@ -204,6 +203,22 @@ export type TerminalResumeLaunchConfig = {
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy | null;
   codexSandbox?: AgentChatCodexSandbox | null;
   codexConfigSource?: AgentChatCodexConfigSource | null;
+  /**
+   * Provider account ("instance") this tracked CLI launched under, for
+   * `claude` and `codex` only. A resume re-resolves it through the machine
+   * instance store so the terminal lands in the same account; an id that no
+   * longer names an account silently falls back to the provider's default.
+   */
+  instanceId?: string | null;
+  /**
+   * Saved harness preset this tracked CLI launched under. A resume re-resolves
+   * it through the account's preset list and this machine's key store, so the
+   * terminal comes back on the same brain; a preset that no longer exists falls
+   * back to the harness's own sign-in rather than stranding the session.
+   */
+  presetId?: string | null;
+  /** Stored API credential this tracked CLI launched under, when no preset. */
+  credentialId?: string | null;
 };
 
 export type TerminalResumeMetadata = {
@@ -211,6 +226,17 @@ export type TerminalResumeMetadata = {
   targetKind: TerminalResumeTargetKind;
   targetId: string | null;
   launch: TerminalResumeLaunchConfig;
+  /**
+   * Mirror of `launch.instanceId`, so a reader that only holds the metadata
+   * (not the rebuilt launch) can still name the account. Writers set both.
+   */
+  instanceId?: string | null;
+  /**
+   * Mirror of `launch.presetId` / `launch.credentialId`, so a reader holding
+   * only the metadata can name the preset without rebuilding the launch.
+   */
+  presetId?: string | null;
+  credentialId?: string | null;
   /** Chat that spawned this tracked CLI session, independent of terminal ownership. */
   orchestrationParentSessionId?: string;
   /** Cosmetic/reporting relationship declared by the spawning chat. */
@@ -282,6 +308,8 @@ export type TerminalSessionSummary = {
   pendingInputItemId?: string | null;
   /** Live-only Codex steering pip. Never persisted. */
   steeringInput?: boolean;
+  /** Live-only Codex async-question pip. Never persisted; never blocks. */
+  asyncQuestion?: boolean;
   /**
    * Settled-lifecycle columns (terminal_sessions.settled_at / status_note /
    * attention_requested_at / attention_message / last_turn_failed_at). All
@@ -366,19 +394,20 @@ export type TerminalSessionSummary = {
   runtimeProcesses?: RuntimeProcessSummary[];
   /** First tag mirrored from the backing Claude SDK session pointer. */
   claudeTag?: string | null;
+  /**
+   * Provider account ("instance") this row's session runs under, for `claude`
+   * and `codex` only. Absent means the provider's default account.
+   */
+  instanceId?: string | null;
+  /** Saved harness preset this row's session runs under, when there is one. */
+  presetId?: string | null;
+  /** Stored API credential this row's session runs under, when there is one. */
+  credentialId?: string | null;
   /** Owner session id for attached terminals, historically a parent chat id and now also a tracked CLI session id. */
   chatSessionId?: string | null;
   /**
-   * Orchestration-mode fields. Populated only when the underlying chat session
-   * is part of an orchestration run; the sidebar renders role pills from these.
-   * All optional for migration tolerance.
-   */
-  orchestrationRunId?: string;
-  orchestrationRole?: OrchestrationRole;
-  orchestrationTag?: string;
-  /**
    * Spawn lineage for chat- and tracked CLI-backed sessions, projected from the
-   * chat record or CLI resume metadata (independent of any orchestration run).
+   * chat record or CLI resume metadata.
    * `orchestrationParentSessionId` marks work spawned by another chat; `spawnKind`
    * is the spawner-declared relationship (subagent/peer) the sidebar renders as
    * a pill and uses to count a spawner's live children. Both optional
@@ -387,7 +416,7 @@ export type TerminalSessionSummary = {
   orchestrationParentSessionId?: string;
   spawnKind?: AgentChatSpawnKind;
   /**
-   * Identity key of the orchestration parent, when the parent is an IDENTITY
+   * Identity key of the spawn parent, when the parent is an IDENTITY
    * session rather than an ordinary chat (today the only one is the CTO, whose
    * key is `"cto"`). Stamped host-side by `chatSessionProjection`, never derived
    * in a renderer: identity rows are filtered out of every session roster, so a
@@ -399,6 +428,11 @@ export type TerminalSessionSummary = {
   parentIdentityKey?: string | null;
   /** Cursor Cloud agent id when this chat is a live view of a cloud agent. */
   cursorCloudAgentId?: string | null;
+  /**
+   * `"cloud"` or `"local"`. When present it wins over a leftover
+   * `cursorCloudAgentId`, matching `cursorSessionRunsInCloud`.
+   */
+  cursorRuntime?: "local" | "cloud" | null;
 };
 
 export type SessionAttentionSource = "agent_explicit" | "provider_structured" | "user";
@@ -520,12 +554,25 @@ export type PtyCreateArgs = {
     provider: AgentChatCliLaunchProvider;
     permissionMode: AgentChatPermissionMode;
     droidPermissionMode?: AgentChatDroidPermissionMode | null;
-    orchestrationRole?: OrchestrationRole | null;
     sessionId?: string;
     model?: string | null;
     reasoningEffort?: string | null;
     fastMode?: boolean | null;
     initialPrompt?: string | null;
+    /**
+     * Provider account ("instance") to launch under, for `claude` and `codex`
+     * only. The runtime that owns the lane resolves it against its own machine
+     * instance store — the id travels, the config path does not.
+     */
+    instanceId?: string;
+    /**
+     * Saved harness preset the tracked CLI launches under. The runtime that
+     * owns the lane resolves it against its own account settings and key store
+     * — the id travels, the resolved environment does not.
+     */
+    presetId?: string;
+    /** Stored API credential to launch under, when no preset is named. */
+    credentialId?: string;
   };
   /** Optional provider continuation metadata to persist for externally imported sessions. */
   resumeMetadata?: TerminalResumeMetadata | null;

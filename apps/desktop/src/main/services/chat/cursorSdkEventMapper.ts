@@ -107,6 +107,62 @@ function extractExitCode(result: unknown): number | null {
   return readNumber(record?.exitCode) ?? readNumber(record?.exit_code) ?? readNumber(record?.code);
 }
 
+type CursorTodoItem = {
+  text: string;
+  todoStatus: "pending" | "in_progress" | "completed";
+  planStatus: "pending" | "in_progress" | "completed" | "failed";
+};
+
+/**
+ * Cursor's published todo vocabulary, mapped to ADE's two.
+ *
+ * The four keys are the SDK's own enum, not guesses: 1.0.31 converts the proto
+ * todo status to exactly `pending | inProgress | completed | cancelled`. Keyed
+ * on those spellings so a grep for the wire value finds this table.
+ *
+ * Both targets sit on one row because they disagree for exactly one value: a
+ * `todo_update` row has no failure state, so a cancelled step reads as pending
+ * there while the plan step — which does have one — records it as failed. That
+ * does NOT mean the model failed the step.
+ */
+const CURSOR_TODO_STATUS: Readonly<Record<string, Omit<CursorTodoItem, "text">>> = {
+  pending: { todoStatus: "pending", planStatus: "pending" },
+  inProgress: { todoStatus: "in_progress", planStatus: "in_progress" },
+  completed: { todoStatus: "completed", planStatus: "completed" },
+  cancelled: { todoStatus: "pending", planStatus: "failed" },
+};
+
+/**
+ * Read the todo list out of an `updateTodos` call.
+ *
+ * The result is preferred over the arguments: the arguments are what the model
+ * asked for, the result is what the tool recorded. The argument shape is
+ * `{ todos: [...] }` and the result wraps the same list as
+ * `{ status, value: { todos: [...] } }`, which is why the result is unwrapped
+ * one level further.
+ *
+ * A status outside the published enum maps to `pending` rather than dropping
+ * the row: an unrecognised status must never remove a step the model planned.
+ */
+function cursorTodoItems(args: unknown, result: unknown): CursorTodoItem[] {
+  const resultValue = asRecord(asRecord(result)?.value);
+  const source = Array.isArray(resultValue?.todos) ? resultValue.todos : asRecord(args)?.todos;
+  if (!Array.isArray(source)) return [];
+  const items: CursorTodoItem[] = [];
+  for (const entry of source) {
+    const record = asRecord(entry);
+    const text = readString(record?.content) ?? readString(record?.text);
+    if (!text) continue;
+    // `Object.hasOwn`, not a bare index: `status` is model-controlled, and
+    // "constructor" or "toString" would otherwise return an inherited value that
+    // is truthy, skip the default, and spread no status at all.
+    const raw = readString(record?.status) ?? "";
+    const mapped = Object.hasOwn(CURSOR_TODO_STATUS, raw) ? CURSOR_TODO_STATUS[raw] : CURSOR_TODO_STATUS.pending;
+    items.push({ text, ...mapped });
+  }
+  return items;
+}
+
 function cursorMcpSource(args: unknown): {
   source: NonNullable<Extract<AgentChatEvent, { type: "tool_call" }>["mcp"]>;
   args: unknown;
@@ -270,6 +326,53 @@ export function mapCursorSdkMessageToChatEvents(
             status: failed ? "failed" : "completed",
           }, runtime)];
         }
+      }
+      if (lowerTool === "updatetodos" || lowerTool === "update_todos") {
+        // Cursor's own plan tool. It streams one event per item added, each
+        // carrying the whole list so far, then repeats the final list with a
+        // terminal status. Only the terminal event is mapped: emitting the
+        // partials would redraw the plan card once per item, and the last two
+        // events observed on the wire carry identical lists.
+        //
+        // The raw tool row is suppressed on purpose. The plan card IS the
+        // rendering of this call, and showing both puts the same list on screen
+        // twice.
+        if (status === "running") return [];
+        // A failed call is a failure, not a plan. `result.value.todos` is absent
+        // on an error, so the `args` fallback would otherwise render the list
+        // the model ASKED for as though the tool had recorded it — and drop the
+        // failure row entirely.
+        if (status === "error") {
+          return [tagRuntime({
+            type: "tool_result" as const,
+            tool,
+            result,
+            itemId: callId,
+            turnId,
+            status: "failed" as const,
+          }, runtime)];
+        }
+        const todos = cursorTodoItems(args, result);
+        if (!todos.length) return [];
+        return [
+          tagRuntime({
+            type: "todo_update" as const,
+            items: todos.map((todo, index) => ({
+              // Stable across calls, like `normalizeClaudeTodoItems`. A per-call
+              // prefix would make every item look new to the transcript's todo
+              // diff, so each plan update would redraw the whole list.
+              id: `todo-${index}`,
+              description: todo.text,
+              status: todo.todoStatus,
+            })),
+            turnId,
+          }, runtime),
+          tagRuntime({
+            type: "plan" as const,
+            steps: todos.map((todo) => ({ text: todo.text, status: todo.planStatus })),
+            turnId,
+          }, runtime),
+        ];
       }
       if (lowerTool === "generateimage" || lowerTool === "generate_image") {
         const input = asRecord(args);
@@ -507,6 +610,15 @@ export function mapCursorSdkMessageToChatEvents(
       });
       return tokens ? [tokens] : [];
     }
+    // ADE emits its own `user_message` row on every send path, local and cloud,
+    // so a `user` event off the stream is always a second copy of something
+    // already in the transcript. A steered message echoed back by `Run.steer()`
+    // is one instance of that, not the reason.
+    //
+    // Stated as a case rather than left to the default so a later reader cannot
+    // "fix" the silence by adding a mapping.
+    case "user":
+      return [];
     default:
       return [];
   }

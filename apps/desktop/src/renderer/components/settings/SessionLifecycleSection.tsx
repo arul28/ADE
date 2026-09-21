@@ -1,11 +1,9 @@
-import React, { useEffect, useId, useState } from "react";
-import { GitMerge } from "@phosphor-icons/react";
+import React, { useEffect, useState } from "react";
 import type { SessionLifecycleSettings } from "../../../shared/types";
-import { COLORS, SANS_FONT, cardStyle } from "../lanes/laneDesignTokens";
-import { SettingsSectionShell, SettingsToggle } from "./settingsSectionUi";
+import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
+import { SettingsCard, SettingsGroup, SettingsToggle } from "./primitives";
 
 export function SessionLifecycleSection() {
-  const toggleId = useId();
   const [settings, setSettings] = useState<SessionLifecycleSettings | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -40,47 +38,29 @@ export function SessionLifecycleSection() {
   };
 
   return (
-    <SettingsSectionShell
-      id="session-lifecycle"
+    <SettingsGroup
       title="Session lifecycle"
       description="Control when completed lane work moves into the quiet Settled section."
-      icon={GitMerge}
-      brandColor="#6EE7B7"
     >
-      <div style={cardStyle({ padding: 16, maxWidth: 720 })}>
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16 }}>
-          <div style={{ minWidth: 0, flex: 1 }}>
-            <label
-              htmlFor={toggleId}
-              style={{
-                display: "block",
-                color: COLORS.textPrimary,
-                cursor: "pointer",
-                fontFamily: SANS_FONT,
-                fontSize: 14,
-                fontWeight: 600,
-                lineHeight: 1.4,
-              }}
-            >
-              Auto-settle sessions when lane PR merges
-            </label>
-            <p style={{ margin: "6px 0 0", color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.6 }}>
-              A merged PR settles the sessions it covers. ADE waits until a running turn finishes. An interrupted settle leaves the session active, and ADE tries again later.
-            </p>
-            {error ? (
-              <p role="alert" style={{ margin: "8px 0 0", color: COLORS.danger, fontFamily: SANS_FONT, fontSize: 11 }}>
-                {error}
-              </p>
-            ) : null}
-          </div>
+      <SettingsCard
+        anchor="session-lifecycle"
+        title="Auto-settle sessions when lane PR merges"
+        description="A merged PR settles the sessions it covers. ADE waits until a running turn finishes. An interrupted settle leaves the session active, and ADE tries again later."
+        control={
           <SettingsToggle
-            id={toggleId}
+            label="Auto-settle sessions when lane PR merges"
             checked={settings?.autoSettleLaneSessionsOnPrMerge ?? true}
             disabled={!settings || saving}
             onChange={(enabled) => void update(enabled)}
           />
-        </div>
-      </div>
-    </SettingsSectionShell>
+        }
+      >
+        {error ? (
+          <p role="alert" style={{ margin: 0, color: COLORS.danger, fontFamily: SANS_FONT, fontSize: 11 }}>
+            {error}
+          </p>
+        ) : null}
+      </SettingsCard>
+    </SettingsGroup>
   );
 }

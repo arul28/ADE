@@ -7,9 +7,9 @@ import {
   Graph,
   GitPullRequest,
   MagnifyingGlass,
-  ClockCounterClockwise,
+  Clock,
+  HourglassSimple,
   Robot,
-  Brain,
   ChatCircleDots,
   GearSix,
 } from "@phosphor-icons/react";
@@ -33,7 +33,6 @@ import { SmartTooltip, type SmartTooltipContent } from "../ui/SmartTooltip";
 import type { GitHubStatus } from "../../../shared/types";
 import { readStoredPrsRoute } from "../prs/prsRouteState";
 import { readStoredProjectSettingsRoute } from "./projectRouteStorage";
-import { CursorCloudQuickViewButton } from "./CursorCloudQuickViewButton";
 
 type TabNavItem = {
   to: string;
@@ -85,7 +84,7 @@ const mainItems: TabNavItem[] = [
   {
     to: "/cto",
     label: "CTO",
-    icon: Brain,
+    icon: Robot,
     description: "Chat with the persistent project CTO and manage its identity and settings.",
     docUrl: docs.ctoOverview,
   },
@@ -99,14 +98,14 @@ const mainItems: TabNavItem[] = [
   {
     to: "/history",
     label: "History",
-    icon: ClockCounterClockwise,
+    icon: HourglassSimple,
     description: "Explore commit history, lane operations, branch links, and recent project movement.",
     docUrl: docs.historyOverview,
   },
   {
     to: "/automations",
     label: "Automations",
-    icon: Robot,
+    icon: Clock,
     description: "Manage automation rules that trigger ADE work from events, schedules, and guarded actions.",
     docUrl: docs.automationsOverview,
   },
@@ -370,10 +369,6 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
           </>
         ) : null}
 
-        {/* The fleet entries own the same delayed, cached auth gate as the
-            top-bar controls, so a disconnected integration leaves no dead
-            sidebar affordance. */}
-        <CursorCloudQuickViewButton variant="sidebar-row" />
 
         {/* Spacer pushes settings to bottom */}
         <div className="mt-auto" />

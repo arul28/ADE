@@ -96,7 +96,15 @@ struct WorkMarkdownBlockView: View {
     case .table(let headers, let rows):
       WorkMarkdownTable(headers: headers, rows: rows, isStreamingTail: isStreamingTail)
     case .code(let language, let code):
-      WorkCodeBlockView(language: language, code: code)
+      if workIsSceneFenceLanguage(language) {
+        // A scene is HTML the agent wrote for the desktop's sandboxed frame —
+        // up to 96 KB of it. iOS has no frame to run it in, and dumping the
+        // markup into the transcript buries the answer the user asked for, so
+        // the phone collapses it the way the TUI does.
+        WorkSceneFencePlaceholder(source: code)
+      } else {
+        WorkCodeBlockView(language: language, code: code)
+      }
     case .rule:
       Divider()
     }
@@ -145,6 +153,47 @@ struct WorkMarkdownTable: View {
       }
       .background(ADEColor.surfaceBackground.opacity(0.45), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
+  }
+}
+
+/// A scene fence, stood in for rather than rendered.
+///
+/// Parity note: a scene NEVER renders as markup here. iOS has no sandboxed,
+/// opaque-origin frame (`SceneFrame` on desktop), and a `WKWebView` loading
+/// agent-authored HTML inside the app would be exactly the thing the desktop's
+/// CSP and `sandbox="allow-scripts"`-without-`allow-same-origin` pair exist to
+/// prevent. The desktop freezes a scene to a PNG snapshot at the end of its
+/// turn, but that snapshot is chat-scoped proof on the host and is not carried
+/// in the transcript, so the phone has a title and nothing else to show.
+struct WorkSceneFencePlaceholder: View {
+  let source: String
+
+  private var title: String? { workSceneFenceTitle(source) }
+
+  var body: some View {
+    HStack(alignment: .center, spacing: 10) {
+      Image(systemName: "rectangle.on.rectangle.angled")
+        .font(.system(size: 15, weight: .semibold))
+        .foregroundStyle(ADEColor.textMuted)
+      VStack(alignment: .leading, spacing: 2) {
+        Text(title ?? "Generated view")
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        Text("Open this chat on desktop to run it.")
+          .font(.caption)
+          .foregroundStyle(ADEColor.textMuted)
+      }
+      Spacer(minLength: 0)
+    }
+    .padding(12)
+    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+    .background(ADEColor.surfaceBackground.opacity(0.65), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .stroke(ADEColor.glassBorder.opacity(0.7), lineWidth: 0.5)
+    )
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel("Generated view: \(title ?? "untitled"). Open this chat on desktop to run it.")
   }
 }
 

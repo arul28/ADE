@@ -95,7 +95,7 @@ describe("createLocalProject", () => {
     expect(gitignore).toContain(".env");
     expect(gitignore).toContain("*.log");
     expect(fs.existsSync(path.join(result.rootPath, ".ade", ".gitignore"))).toBe(true);
-    expect(fs.existsSync(path.join(result.rootPath, ".ade", "ade.yaml"))).toBe(true);
+    expect(fs.existsSync(path.join(result.rootPath, ".ade", "ade.yaml"))).toBe(false);
     expect(fs.existsSync(path.join(result.rootPath, ".ade", "cto", "identity.yaml"))).toBe(true);
 
     const argsList = runGitMock.mock.calls.map((c) => c[0] as string[]);

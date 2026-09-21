@@ -2,38 +2,20 @@ import { memo, useCallback } from "react";
 import * as ContextMenu from "@radix-ui/react-context-menu";
 import { Star, Lightning } from "@phosphor-icons/react";
 import {
-  formatPiProviderLabel,
   modelSupportsFastMode,
   modelSupportsServiceTier,
-  usesCodexNamedEffortLabels,
   type ModelDescriptor,
 } from "../../../../shared/modelRegistry";
 import type { CursorCloudServiceTier } from "../../../../shared/types/config";
 import { ModelRowLogo } from "../ProviderLogos";
+import {
+  isLocalModel,
+  modelDetailLine,
+  reasoningEffortLabel,
+  subProviderLabel,
+} from "./modelFacts";
 import { cn } from "../../ui/cn";
 import { usePrefersReducedMotion } from "../../../hooks/usePrefersReducedMotion";
-
-const LOCAL_FAMILIES = new Set(["ollama", "lmstudio"]);
-
-function isLocalModel(model: ModelDescriptor): boolean {
-  return LOCAL_FAMILIES.has(model.family) || model.authTypes.includes("local");
-}
-
-function subProviderLabel(model: ModelDescriptor): string | null {
-  const sub = (model as ModelDescriptor & { subProvider?: string }).subProvider;
-  if (typeof sub === "string" && sub.trim().length) return sub.trim();
-  if (model.providerRoute === "pi-sdk" && model.piProviderId) {
-    const label = formatPiProviderLabel(model.piProviderId);
-    const profile = model.piProfileId?.trim();
-    return profile && profile !== "default" ? `${label} · ${profile}` : label;
-  }
-  if (model.providerRoute === "opencode" && model.openCodeProviderId) {
-    // Rows shown inside the OpenCode rail; "via OpenCode" was redundant.
-    const id = model.openCodeProviderId;
-    return id.charAt(0).toUpperCase() + id.slice(1);
-  }
-  return null;
-}
 
 export type InlineReasoningChipState = {
   visible: boolean;
@@ -52,7 +34,6 @@ export type ModelListRowProps = {
   onToggleFavorite: (modelId: string) => void;
   onFocus?: () => void;
   onCopyId?: (modelId: string) => void;
-  onSetSurfaceDefault?: (modelId: string) => void;
   onViewDocs?: (modelId: string) => void;
   onSignIn?: () => void;
   inlineReasoningChip?: InlineReasoningChipState;
@@ -75,23 +56,6 @@ export type ModelListRowProps = {
   onServiceTierChange?: (modelId: string, next: CursorCloudServiceTier | null) => void;
 };
 
-const REASONING_LABELS: Record<string, string> = {
-  minimal: "Minimal",
-  low: "Low",
-  medium: "Medium",
-  high: "High",
-  xhigh: "Extra High",
-  max: "Max",
-  ultra: "Ultra",
-  ultracode: "Ultracode",
-};
-
-function reasoningChipLabel(effort: string | null, model?: ModelDescriptor): string {
-  if (!effort) return "Off";
-  if (effort === "low" && usesCodexNamedEffortLabels(model?.providerModelId)) return "Light";
-  return REASONING_LABELS[effort] ?? effort.charAt(0).toUpperCase() + effort.slice(1);
-}
-
 export const ModelListRow = memo(function ModelListRow({
   model,
   isFavorite,
@@ -102,7 +66,6 @@ export const ModelListRow = memo(function ModelListRow({
   onToggleFavorite,
   onFocus,
   onCopyId,
-  onSetSurfaceDefault,
   onViewDocs,
   onSignIn,
   inlineReasoningChip,
@@ -113,6 +76,7 @@ export const ModelListRow = memo(function ModelListRow({
   onServiceTierChange,
 }: ModelListRowProps) {
   const sub = subProviderLabel(model);
+  const details = modelDetailLine(model);
   const localBadge = isLocalModel(model);
   const showFastChip = !serviceTierMode && Boolean(onFastModeChange) && modelSupportsFastMode(model);
   const showServiceTierChip = serviceTierMode
@@ -328,16 +292,17 @@ export const ModelListRow = memo(function ModelListRow({
                 </span>
               ) : null}
             </span>
-            {sub ? (
-              <span className="block truncate text-[10px] font-normal leading-snug text-muted-fg/55">
-                {sub}
-              </span>
-            ) : null}
+            <span
+              className="block truncate text-[10px] font-normal leading-snug text-muted-fg/55"
+              title={details}
+            >
+              {details}
+            </span>
             {inlineReasoningChip?.visible ? (
               <button
                 type="button"
                 tabIndex={isFocused ? 0 : -1}
-                aria-label={`Reasoning effort: ${reasoningChipLabel(inlineReasoningChip.effort, model)}. Click to cycle.`}
+                aria-label={`Reasoning effort: ${reasoningEffortLabel(inlineReasoningChip.effort, model)}. Click to cycle.`}
                 onClick={handleReasoningChipClick}
                 onKeyDown={handleReasoningChipKeyDown}
                 className={cn(
@@ -347,7 +312,7 @@ export const ModelListRow = memo(function ModelListRow({
                 title="Click to cycle reasoning effort"
               >
                 <span className="h-1 w-1 rounded-full bg-violet-300/80" aria-hidden />
-                <span>{reasoningChipLabel(inlineReasoningChip.effort, model)}</span>
+                <span>{reasoningEffortLabel(inlineReasoningChip.effort, model)}</span>
               </button>
             ) : null}
           </span>
@@ -416,11 +381,6 @@ export const ModelListRow = memo(function ModelListRow({
             onSelect={() => onCopyId?.(model.id)}
             disabled={!onCopyId}
             label="Copy model id"
-          />
-          <ContextMenuItem
-            onSelect={() => onSetSurfaceDefault?.(model.id)}
-            disabled={!onSetSurfaceDefault}
-            label="Set as default for this surface"
           />
           <ContextMenuItem
             onSelect={() => onViewDocs?.(model.id)}

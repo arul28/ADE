@@ -2,6 +2,13 @@
 // Model Registry — single source of truth for all AI models
 // ---------------------------------------------------------------------------
 
+import {
+  ACP_PROVIDER_MODEL_COLORS,
+  DYNAMIC_MODEL_COLORS,
+  LOCAL_PROVIDER_MODEL_COLORS,
+  OPENCODE_PROVIDER_MODEL_COLORS,
+} from "./providerColors";
+
 export type AuthType = "cli-subscription" | "api-key" | "oauth" | "openrouter" | "local";
 
 export type ProviderFamily =
@@ -83,6 +90,17 @@ export type ModelDescriptor = {
   openCodeModelId?: string;
   /** True when the model was injected via a local proxy (e.g. vibeproxy in ~/.factory/config.json). */
   customProxy?: boolean;
+  /**
+   * The stored API credential this row is reachable through.
+   *
+   * Set only on rows synthesized from a provider-card key's declared `models[]`
+   * — a key with no preset is still launchable, and its models belong under
+   * that provider in the picker rather than nowhere. The id is what a launch
+   * carries; the key itself never leaves the store.
+   */
+  credentialId?: string;
+  /** The credential's own label, used as the section heading for its models. */
+  credentialLabel?: string;
   /** Pi dynamic inventory identity; the underlying family remains available for branding. */
   piProfileId?: string;
   piProviderId?: string;
@@ -276,10 +294,6 @@ const BASIC_CAPS: ModelCapabilities = { tools: true, vision: false, reasoning: f
 export const LOCAL_PROVIDER_LABELS: Record<LocalProviderFamily, string> = {
   ollama: "Ollama",
   lmstudio: "LM Studio",
-};
-const LOCAL_PROVIDER_COLORS: Record<LocalProviderFamily, string> = {
-  ollama: "#71717A",
-  lmstudio: "#64748B",
 };
 const LOCAL_PROVIDER_ENDPOINTS: Record<LocalProviderFamily, string> = {
   ollama: "http://localhost:11434",
@@ -775,7 +789,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     isCliWrapped: true,
   },
 
-  // ---- Grok (CLI-wrapped via `grok`, ACP, preview) ----
+  // ---- Grok (CLI-wrapped via `grok`, ACP, first-class) ----
   // Verified against the CLI's own live model cache: two visible models, both
   // 500K context, and `xhigh` effort only on 4.6.
   {
@@ -795,7 +809,6 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     providerModelId: "grok-4.6",
     cliCommand: "grok",
     isCliWrapped: true,
-    previewTier: true,
   },
   {
     id: "xai/grok-4-5",
@@ -814,7 +827,6 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     providerModelId: "grok-4.5",
     cliCommand: "grok",
     isCliWrapped: true,
-    previewTier: true,
   },
 
   // ---- GitHub Copilot (CLI-wrapped via `copilot`, ACP, preview) ----
@@ -1148,7 +1160,7 @@ export function createDynamicLocalModelDescriptor(
     contextWindow: options?.contextWindow ?? 128_000,
     maxOutputTokens: options?.maxOutputTokens ?? 8_192,
     capabilities,
-    color: LOCAL_PROVIDER_COLORS[provider],
+    color: LOCAL_PROVIDER_MODEL_COLORS[provider],
     providerRoute: "openai-compatible",
     providerModelId: normalizedModelId,
     ...(options?.reasoningTiers?.length ? { reasoningTiers: [...options.reasoningTiers] } : {}),
@@ -1272,7 +1284,7 @@ export function createDynamicPiModelDescriptor(
       reasoning: options?.capabilities?.reasoning ?? true,
       streaming: options?.capabilities?.streaming ?? true,
     },
-    color: options?.color ?? "#181C25",
+    color: options?.color ?? DYNAMIC_MODEL_COLORS.pi,
     providerRoute: "pi-sdk",
     providerModelId: `${provider}/${model}`,
     piProfileId: profileId,
@@ -1483,20 +1495,6 @@ const OPENCODE_PROVIDER_FAMILY_MAP: Record<string, ProviderFamily> = {
   together: "together",
 };
 
-const OPENCODE_PROVIDER_COLORS: Record<string, string> = {
-  anthropic: "#D97706",
-  openai: "#10A37F",
-  google: "#F59E0B",
-  mistral: "#F97316",
-  deepseek: "#3B82F6",
-  xai: "#DC2626",
-  openrouter: "#6B7280",
-  ollama: "#71717A",
-  lmstudio: "#64748B",
-  groq: "#06B6D4",
-  together: "#22C55E",
-};
-
 const LOCAL_OPENCODE_PROVIDERS = new Set(["ollama", "lmstudio"]);
 
 export function createDynamicOpenCodeModelDescriptor(
@@ -1538,7 +1536,9 @@ export function createDynamicOpenCodeModelDescriptor(
   const family: ProviderFamily = (opPid && OPENCODE_PROVIDER_FAMILY_MAP[opPid]) || "opencode";
   const isLocal = opPid ? LOCAL_OPENCODE_PROVIDERS.has(opPid) : false;
   const authTypes: AuthType[] = isLocal ? ["local"] : opPid === "openrouter" ? ["openrouter"] : ["api-key"];
-  const color = options?.color ?? (opPid && OPENCODE_PROVIDER_COLORS[opPid]) ?? "#2563EB";
+  const color = options?.color
+    ?? (opPid && OPENCODE_PROVIDER_MODEL_COLORS[opPid])
+    ?? DYNAMIC_MODEL_COLORS.openCodeFallback;
   return {
     id,
     shortId,
@@ -1599,14 +1599,14 @@ const ACP_GROUP_METADATA: Record<
   AcpModelProviderGroup,
   { family: ProviderFamily; providerRoute: string; cliCommand: string; color: string; previewTier: boolean }
 > = {
-  qwen: { family: "qwen", providerRoute: "qwen-acp", cliCommand: "qwen", color: "#6D4AFF", previewTier: false },
-  kimi: { family: "moonshot", providerRoute: "kimi-acp", cliCommand: "kimi", color: "#1F1F1F", previewTier: false },
-  grok: { family: "xai", providerRoute: "grok-acp", cliCommand: "grok", color: "#DC2626", previewTier: true },
+  qwen: { family: "qwen", providerRoute: "qwen-acp", cliCommand: "qwen", color: ACP_PROVIDER_MODEL_COLORS.qwen, previewTier: false },
+  kimi: { family: "moonshot", providerRoute: "kimi-acp", cliCommand: "kimi", color: ACP_PROVIDER_MODEL_COLORS.kimi, previewTier: false },
+  grok: { family: "xai", providerRoute: "grok-acp", cliCommand: "grok", color: ACP_PROVIDER_MODEL_COLORS.grok, previewTier: false },
   copilot: {
     family: "github-copilot",
     providerRoute: "copilot-acp",
     cliCommand: "copilot",
-    color: "#8B5CF6",
+    color: ACP_PROVIDER_MODEL_COLORS.copilot,
     previewTier: true,
   },
   devin: {
@@ -1810,13 +1810,13 @@ function formatCursorSdkFallbackDisplayName(providerModelId: string): string {
 
 function colorForCursorSdkId(providerModelId: string): string {
   const s = providerModelId.toLowerCase();
-  if (s === "auto") return "#A78BFA";
-  if (/claude|fable|sonnet|opus|haiku/.test(s)) return "#D97706";
-  if (/composer/.test(s)) return "#8B5CF6";
-  if (/gemini/.test(s)) return "#4285F4";
-  if (/grok/.test(s)) return "#1DA1F2";
-  if (/gpt|(?:^|[:/])o\d|codex/.test(s)) return "#10A37F";
-  return "#71717A";
+  if (s === "auto") return DYNAMIC_MODEL_COLORS.cursor.auto;
+  if (/claude|fable|sonnet|opus|haiku/.test(s)) return DYNAMIC_MODEL_COLORS.cursor.anthropic;
+  if (/composer/.test(s)) return DYNAMIC_MODEL_COLORS.cursor.composer;
+  if (/gemini/.test(s)) return DYNAMIC_MODEL_COLORS.cursor.google;
+  if (/grok/.test(s)) return DYNAMIC_MODEL_COLORS.cursor.grok;
+  if (/gpt|(?:^|[:/])o\d|codex/.test(s)) return DYNAMIC_MODEL_COLORS.cursor.openai;
+  return DYNAMIC_MODEL_COLORS.cursor.fallback;
 }
 
 export function parseDynamicCursorModelRef(modelId: string): { providerModelId: string } | null {
@@ -1917,10 +1917,10 @@ export function droidCliLineGroupLabel(group: DroidCliLineGroup): string {
 
 function colorForDroidModelId(providerModelId: string): string {
   const s = providerModelId.toLowerCase();
-  if (/claude|fable|sonnet|opus|haiku/.test(s)) return "#D97706";
-  if (/gemini/.test(s)) return "#4285F4";
-  if (/gpt|(?:^|[:/])o\d|codex/.test(s)) return "#10A37F";
-  return "#71717A";
+  if (/claude|fable|sonnet|opus|haiku/.test(s)) return DYNAMIC_MODEL_COLORS.droid.anthropic;
+  if (/gemini/.test(s)) return DYNAMIC_MODEL_COLORS.droid.google;
+  if (/gpt|(?:^|[:/])o\d|codex/.test(s)) return DYNAMIC_MODEL_COLORS.droid.openai;
+  return DYNAMIC_MODEL_COLORS.droid.fallback;
 }
 
 function titleCaseDroidToken(token: string): string {

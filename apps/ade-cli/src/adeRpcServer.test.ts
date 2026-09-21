@@ -14,6 +14,7 @@ import {
 } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserActorCapabilities";
 import { BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM } from "./services/builtInBrowser/desktopBridgeMethods";
 import { ADE_BUNDLED_AGENT_SKILLS_DIR_ENV } from "../../desktop/src/shared/agentSkillRoots";
+import { CTO_VOICE_ACTIONS } from "../../desktop/src/shared/types/ctoVoice";
 
 type RuntimeFixture = ReturnType<typeof createRuntime>;
 const originalPlatform = process.platform;
@@ -772,7 +773,6 @@ async function initialize(
 ) {
   const requestedRole = typeof identity?.role === "string" ? identity.role : null;
   const validRole = requestedRole === "cto"
-    || requestedRole === "orchestrator"
     || requestedRole === "agent"
     || requestedRole === "external"
     || requestedRole === "evaluator";
@@ -1298,7 +1298,7 @@ describe("adeRpcServer", () => {
         params: {
           identity: {
             callerId: "rogue-client",
-            role: "orchestrator",
+            role: "agent",
           },
         },
       });
@@ -1430,6 +1430,11 @@ describe("adeRpcServer", () => {
 
     const listed = await callTool(handler, "list_computer_use_artifacts", {});
     expect(listed.structuredContent.artifacts).toEqual([owned]);
+    // This tool lists PROOF. A scene still is the picture a generated view left
+    // behind, already shown inline in the transcript that drew it, so it is not
+    // an answer to "what evidence exists".
+    expect(fixture.runtime.computerUseArtifactBrokerService.listArtifacts)
+      .toHaveBeenCalledWith(expect.objectContaining({ excludeMetadataKind: "scene_still" }));
 
     const foreignList = await callTool(handler, "list_computer_use_artifacts", {
       ownerKind: "chat_session",
@@ -1512,6 +1517,9 @@ describe("adeRpcServer", () => {
 
     const listed = await callTool(standaloneHandler, "list_computer_use_artifacts", {});
     expect(listed.structuredContent.artifacts).toEqual(artifacts);
+    // Same exclusion on the project-wide branch as on the scoped one.
+    expect(standaloneFixture.runtime.computerUseArtifactBrokerService.listArtifacts)
+      .toHaveBeenCalledWith(expect.objectContaining({ excludeMetadataKind: "scene_still" }));
 
     await callTool(standaloneHandler, "delete_computer_use_artifacts", {
       artifactId: "proof-2",
@@ -1772,14 +1780,14 @@ describe("adeRpcServer", () => {
     });
   });
 
-  it("preserves an explicit orchestrator session under a CTO-capable runtime", async () => {
+  it("preserves an explicit agent session under a CTO-capable runtime", async () => {
     await withEnv({ ADE_DEFAULT_ROLE: "cto", ADE_CHAT_SESSION_ID: undefined }, async () => {
       const { runtime } = createRuntime();
       const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
 
       await initialize(handler, {
         callerId: "coord-1",
-        role: "orchestrator",
+        role: "agent",
         chatSessionId: "coord-1",
         runId: "run-1",
         stepId: "step-1",
@@ -2045,7 +2053,7 @@ describe("adeRpcServer", () => {
     const { runtime } = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
 
-    await initialize(handler, { callerId: "coord-1", role: "orchestrator" });
+    await initialize(handler, { callerId: "coord-1", role: "agent" });
     const response = await callTool(handler, "get_environment_info", {});
 
     expect(response.isError).toBeUndefined();
@@ -2316,26 +2324,6 @@ describe("adeRpcServer", () => {
 
 
 
-  it("does not advertise resources to orchestrator callers", async () => {
-    const { runtime } = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
-    const previousRole = process.env.ADE_DEFAULT_ROLE;
-    process.env.ADE_DEFAULT_ROLE = "orchestrator";
-    try {
-      const response = await handler({
-        jsonrpc: "2.0",
-        id: 99,
-        method: "ade/initialize",
-        params: { identity: { callerId: "coord-1", role: "orchestrator" } }
-      }) as any;
-
-      expect(response.capabilities?.actions).toEqual({ listChanged: true });
-      expect(response.capabilities?.resources).toBeUndefined();
-    } finally {
-      if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
-      else process.env.ADE_DEFAULT_ROLE = previousRole;
-    }
-  });
 
 
 
@@ -2347,7 +2335,7 @@ describe("adeRpcServer", () => {
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
     const response = await withEnv({ PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`, SHELL: "/bin/sh" }, async () => {
-      await initialize(handler, { role: "orchestrator" });
+      await initialize(handler, { role: "agent" });
       return await callTool(handler, "spawn_agent", {
         laneId: "lane-1",
         provider: "claude",
@@ -2404,7 +2392,7 @@ describe("adeRpcServer", () => {
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
     const response = await withEnv({ PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`, SHELL: "/bin/sh" }, async () => {
-      await initialize(handler, { role: "orchestrator" });
+      await initialize(handler, { role: "agent" });
       return await callTool(handler, "spawn_agent", {
         laneId: "lane-1",
         provider: "codex",
@@ -2453,7 +2441,7 @@ describe("adeRpcServer", () => {
     });
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "orchestrator" });
+    await initialize(handler, { role: "agent" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "codex",
@@ -2503,6 +2491,35 @@ describe("adeRpcServer", () => {
     });
   });
 
+  it("persists a requested preset id in resume metadata even when resolution is unavailable", async () => {
+    const fixture = createRuntime();
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-rpc-preset-metadata-"));
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    try {
+      const response = await withEnv({ ADE_HOME: adeHome }, async () => {
+        await initialize(handler, { role: "agent" });
+        return await callTool(handler, "start_cli_session", {
+          laneId: "lane-1",
+          provider: "codex",
+          permissionMode: "default",
+          presetId: "preset-from-request",
+        });
+      });
+
+      expect(response?.isError).toBeUndefined();
+      const createCall = fixture.runtime.ptyService.create.mock.calls.at(-1)?.[0];
+      expect(createCall).toEqual(expect.objectContaining({
+        resumeMetadata: expect.objectContaining({
+          presetId: "preset-from-request",
+          launch: expect.objectContaining({ presetId: "preset-from-request" }),
+        }),
+      }));
+    } finally {
+      fs.rmSync(adeHome, { recursive: true, force: true });
+    }
+  });
+
   it("preserves explicit Droid native autonomy in start_cli_session", async () => {
     const fixture = createRuntime();
     fixture.runtime.sessionService.get.mockReturnValue({
@@ -2518,7 +2535,7 @@ describe("adeRpcServer", () => {
     });
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "orchestrator" });
+    await initialize(handler, { role: "agent" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "droid",
@@ -2563,7 +2580,7 @@ describe("adeRpcServer", () => {
     });
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "orchestrator" });
+    await initialize(handler, { role: "agent" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "codex",
@@ -2596,7 +2613,7 @@ describe("adeRpcServer", () => {
   it("requires subagent or peer for every parented agent CLI session", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-    await initialize(handler, { role: "orchestrator" });
+    await initialize(handler, { role: "agent" });
 
     const missingType = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
@@ -2634,7 +2651,7 @@ describe("adeRpcServer", () => {
     });
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "orchestrator" });
+    await initialize(handler, { role: "agent" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "codex",
@@ -2665,7 +2682,7 @@ describe("adeRpcServer", () => {
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
     const response = await withEnv({ SHELL: "/bin/zsh" }, async () => {
-      await initialize(handler, { role: "orchestrator" });
+      await initialize(handler, { role: "agent" });
       return await callTool(handler, "start_cli_session", {
         laneId: "lane-1",
         provider: "shell",
@@ -2700,7 +2717,7 @@ describe("adeRpcServer", () => {
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
     const response = await withEnv({ PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`, SHELL: "/bin/sh" }, async () => {
-      await initialize(handler, { role: "orchestrator" });
+      await initialize(handler, { role: "agent" });
       return await callTool(handler, "spawn_agent", {
         laneId: "lane-1",
         provider: "codex",
@@ -2735,7 +2752,7 @@ describe("adeRpcServer", () => {
     });
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "orchestrator" });
+    await initialize(handler, { role: "agent" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "claude",
@@ -2775,7 +2792,7 @@ describe("adeRpcServer", () => {
     });
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "orchestrator" });
+    await initialize(handler, { role: "agent" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "claude",
@@ -2804,7 +2821,7 @@ describe("adeRpcServer", () => {
     });
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "orchestrator" });
+    await initialize(handler, { role: "agent" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "claude",
@@ -2836,7 +2853,7 @@ describe("adeRpcServer", () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "orchestrator" });
+    await initialize(handler, { role: "agent" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "cursor",
@@ -2863,7 +2880,7 @@ describe("adeRpcServer", () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "orchestrator" });
+    await initialize(handler, { role: "agent" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "claude",
@@ -2883,7 +2900,7 @@ describe("adeRpcServer", () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "orchestrator" });
+    await initialize(handler, { role: "agent" });
     const response = await callTool(handler, "send_to_session", {
       sessionId: "session-existing",
       text: "continue here",
@@ -2904,7 +2921,7 @@ describe("adeRpcServer", () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "orchestrator" });
+    await initialize(handler, { role: "agent" });
     const response = await callTool(handler, "list_ade_actions", { domain: "pty" });
 
     expect(response?.isError).toBeUndefined();
@@ -2916,7 +2933,7 @@ describe("adeRpcServer", () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "orchestrator" });
+    await initialize(handler, { role: "agent" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "codex",
@@ -2934,7 +2951,7 @@ describe("adeRpcServer", () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "orchestrator" });
+    await initialize(handler, { role: "agent" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "claude",
@@ -2954,7 +2971,7 @@ describe("adeRpcServer", () => {
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
     const response = await withEnv({ PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`, SHELL: "/bin/sh" }, async () => {
-      await initialize(handler, { role: "orchestrator", runId: "run-from-identity" });
+      await initialize(handler, { role: "agent", runId: "run-from-identity" });
       return await callTool(handler, "spawn_agent", {
         laneId: "lane-1",
         provider: "claude",
@@ -2993,7 +3010,7 @@ describe("adeRpcServer", () => {
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
     const response = await withEnv({ PATH: fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-empty-path-")), SHELL: "/bin/sh" }, async () => {
-      await initialize(handler, { role: "orchestrator" });
+      await initialize(handler, { role: "agent" });
       return await callTool(handler, "spawn_agent", {
         laneId: "lane-1",
         provider: "claude",
@@ -3020,7 +3037,7 @@ describe("adeRpcServer", () => {
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
     const response = await withEnv({ PATH: fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-empty-win-path-")) }, async () => {
-      await initialize(handler, { role: "orchestrator" });
+      await initialize(handler, { role: "agent" });
       return await callTool(handler, "spawn_agent", {
         laneId: "lane-1",
         provider: "claude",
@@ -3050,7 +3067,7 @@ describe("adeRpcServer", () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "orchestrator" });
+    await initialize(handler, { role: "agent" });
     const response = await callTool(handler, "spawn_agent", {
       laneId: "lane-1",
       provider: "claude",
@@ -3073,7 +3090,7 @@ describe("adeRpcServer", () => {
     fixture.runtime.laneService.getLaneBaseAndBranch = vi.fn(() => null);
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "orchestrator" });
+    await initialize(handler, { role: "agent" });
     const response = await callTool(handler, "spawn_agent", {
       laneId: "lane-1",
       provider: "claude",
@@ -3104,7 +3121,7 @@ describe("adeRpcServer", () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "orchestrator" });
+    await initialize(handler, { role: "agent" });
     const response = await callTool(handler, "spawn_agent", {
       laneId: "lane-1",
       provider: "codex",
@@ -3141,7 +3158,7 @@ describe("adeRpcServer", () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { callerId: "orchestrator", role: "orchestrator" });
+    await initialize(handler, { callerId: "coord-1", role: "agent" });
 
     const suiteResult = await callTool(handler, "run_tests", {
       laneId: "lane-1",
@@ -3631,7 +3648,6 @@ describe("adeRpcServer", () => {
     const allDomains = await callTool(handler, "list_ade_actions", { domain: "all" });
     expect(allDomains?.isError).toBeUndefined();
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "ai")).toBe(true);
-    expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "orchestrator")).toBe(false);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "orchestrator_core")).toBe(false);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "cto_state")).toBe(true);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "worker_agent")).toBe(false);
@@ -3647,6 +3663,96 @@ describe("adeRpcServer", () => {
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "layout")).toBe(true);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "tiling_tree")).toBe(true);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "graph_state")).toBe(true);
+  });
+
+  it("routes account settings and vault actions through the runtime stores", async () => {
+    const fixture = createRuntime();
+    const accountSettingsStore = {
+      list: vi.fn(() => [{ scope: "all", key: "appearance.theme", value: "dark" }]),
+      get: vi.fn(() => "dark"),
+      set: vi.fn(() => true),
+      remove: vi.fn(() => true),
+      sync: vi.fn(async () => undefined),
+    };
+    const accountVaultStore = {
+      list: vi.fn(() => [{
+        scope: "all",
+        kind: "provider_api_key",
+        key: "openai",
+        updatedAt: "2026-09-17T12:00:00.000Z",
+        readable: true,
+      }]),
+      get: vi.fn(() => "sk-test"),
+      set: vi.fn(() => true),
+      remove: vi.fn(() => true),
+      sync: vi.fn(async () => undefined),
+    };
+    (fixture.runtime as any).accountSettingsStore = accountSettingsStore;
+    (fixture.runtime as any).accountVaultStore = accountVaultStore;
+
+    const agentHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(agentHandler, { callerId: "agent-1", role: "agent" });
+    const settingsInventory = await callTool(agentHandler, "list_ade_actions", { domain: "account_settings" });
+    expect(settingsInventory.structuredContent.actions.map((entry: { name: string }) => entry.name)).toEqual(
+      expect.arrayContaining([
+        "account_settings.list",
+        "account_settings.get",
+        "account_settings.set",
+        "account_settings.remove",
+        "account_settings.sync",
+      ]),
+    );
+
+    const settingsList = await callTool(agentHandler, "run_ade_action", {
+      domain: "account_settings",
+      action: "list",
+      argsList: ["all"],
+    });
+    expect(settingsList?.isError).toBeUndefined();
+    expect(settingsList.structuredContent.result).toEqual([
+      { scope: "all", key: "appearance.theme", value: "dark" },
+    ]);
+    expect(accountSettingsStore.list).toHaveBeenCalledWith("all");
+
+    const settingsSet = await callTool(agentHandler, "run_ade_action", {
+      domain: "account_settings",
+      action: "set",
+      argsList: ["all", "appearance.theme", "light", { expectedAccountUserId: "account-a" }],
+    });
+    expect(settingsSet?.isError).toBeUndefined();
+    expect(accountSettingsStore.set).toHaveBeenCalledWith(
+      "all",
+      "appearance.theme",
+      "light",
+      { expectedAccountUserId: "account-a" },
+    );
+
+    const ctoHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(ctoHandler, { callerId: "cto-1", role: "cto" });
+    const vaultInventory = await callTool(ctoHandler, "list_ade_actions", { domain: "account_vault" });
+    expect(vaultInventory.structuredContent.actions.map((entry: { name: string }) => entry.name)).toEqual(
+      expect.arrayContaining([
+        "account_vault.list",
+        "account_vault.get",
+        "account_vault.set",
+        "account_vault.remove",
+        "account_vault.sync",
+      ]),
+    );
+    const vaultSet = await callTool(ctoHandler, "run_ade_action", {
+      domain: "account_vault",
+      action: "set",
+      argsList: ["all", "provider_api_key", "openai", "sk-test", { expectedAccountUserId: "account-a" }],
+    });
+    expect(vaultSet?.isError).toBeUndefined();
+    expect(vaultSet.structuredContent.result).toBe(true);
+    expect(accountVaultStore.set).toHaveBeenCalledWith(
+      "all",
+      "provider_api_key",
+      "openai",
+      "sk-test",
+      { expectedAccountUserId: "account-a" },
+    );
   });
 
   it("exposes account-wide Attention actions only to CTO callers with discoverable contracts", async () => {
@@ -3786,6 +3892,99 @@ describe("adeRpcServer", () => {
     expect(stalePreferenceWrite.isError).toBe(true);
     expect(stalePreferenceWrite.error?.message).toContain("account changed");
     expect(putAttentionPreferences).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the CTO voice call off every agent-role surface, with contracts for the operator", async () => {
+    const fixture = createRuntime();
+    const start = vi.fn(async () => ({ ok: true }));
+    const getState = vi.fn(() => ({ phase: "idle" }));
+    (fixture.runtime as any).ctoVoiceCallService = {
+      getState,
+      hasKey: vi.fn(() => ({ hasKey: false })),
+      start,
+      end: vi.fn(),
+      setMuted: vi.fn(),
+      pushAudio: vi.fn(),
+      pullAudio: vi.fn(),
+      resolveApproval: vi.fn(),
+      sendCapture: vi.fn(),
+      dispose: vi.fn(),
+    };
+
+    const agentHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(agentHandler, { callerId: "agent-1", role: "agent" });
+    const hidden = await callTool(agentHandler, "list_ade_actions", { domain: "cto_voice" });
+    expect(hidden?.isError).toBeUndefined();
+    expect(hidden.structuredContent).toMatchObject({ count: 0, actions: [] });
+
+    const refused = await callTool(agentHandler, "run_ade_action", {
+      domain: "cto_voice",
+      action: "start",
+      args: { ownerToken: "token-1" },
+    });
+    expect(refused.isError).toBe(true);
+    expect(refused.error?.message).toContain("requires elevated role");
+    expect(start).not.toHaveBeenCalled();
+
+    const ctoHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(ctoHandler, { callerId: "cto-1", role: "cto" });
+    const inventory = await callTool(ctoHandler, "list_ade_actions", { domain: "cto_voice" });
+    expect(inventory?.isError).toBeUndefined();
+    expect(inventory.structuredContent.actions.map((entry: { name: string }) => entry.name)).toEqual(
+      expect.arrayContaining(CTO_VOICE_ACTIONS.map((action) => `cto_voice.${action}`)),
+    );
+    // A blank row here is an operator guessing at `ownerToken`, so every voice
+    // action must reach `ade actions list --text` with a usable contract.
+    for (const entry of inventory.structuredContent.actions as {
+      name: string;
+      description?: string;
+      input?: string;
+    }[]) {
+      expect(entry.description, entry.name).toBeTruthy();
+      expect(entry.input, entry.name).toBeTruthy();
+    }
+
+    const state = await callTool(ctoHandler, "run_ade_action", {
+      domain: "cto_voice",
+      action: "getState",
+      args: {},
+    });
+    expect(state?.isError).toBeUndefined();
+    expect(getState).toHaveBeenCalled();
+  });
+
+  it("withholds cto_voice events from a non-CTO stream_events caller without stalling its cursor", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.eventBuffer.drain = vi.fn((cursor: number) => ({
+      events: [
+        { id: cursor + 1, timestamp: "t", category: "runtime", payload: {} },
+        { id: cursor + 2, timestamp: "t", category: "cto_voice", payload: { caption: "secret" } },
+      ],
+      nextCursor: cursor + 2,
+      hasMore: false,
+    }));
+
+    const agentHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(agentHandler, { callerId: "agent-1", role: "agent" });
+
+    const byName = await callTool(agentHandler, "stream_events", { cursor: 0, category: "cto_voice" });
+    expect(byName.isError).toBe(true);
+    expect(byName.error?.message).toContain("requires the cto role");
+
+    const drained = await callTool(agentHandler, "stream_events", { cursor: 0 });
+    expect(drained?.isError).toBeUndefined();
+    expect(drained.structuredContent.events.map((event: { category: string }) => event.category)).toEqual([
+      "runtime",
+    ]);
+    // Filtered, not refused — and the cursor still advances past what was
+    // withheld, so polling cannot stall on an event the caller cannot see.
+    expect(drained.structuredContent.nextCursor).toBe(2);
+
+    const ctoHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(ctoHandler, { callerId: "cto-1", role: "cto" });
+    const full = await callTool(ctoHandler, "stream_events", { cursor: 0 });
+    expect(full?.isError).toBeUndefined();
+    expect(full.structuredContent.events).toHaveLength(2);
   });
 
   it("invokes ADE actions dynamically and returns status hints", async () => {
@@ -6061,7 +6260,7 @@ describe("adeRpcServer", () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { callerId: "orchestrator", role: "orchestrator" });
+    await initialize(handler, { callerId: "coord-1", role: "agent" });
     const response = await callTool(handler, "create_lane", { name: "new-feature" });
 
     expect(response?.isError).toBeUndefined();
@@ -6086,7 +6285,7 @@ describe("adeRpcServer", () => {
     } as any;
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { callerId: "orchestrator", role: "orchestrator" });
+    await initialize(handler, { callerId: "coord-1", role: "agent" });
     const response = await callTool(handler, "create_lane", { name: "new-feature" });
 
     expect(response?.isError).toBeUndefined();
@@ -6111,7 +6310,7 @@ describe("adeRpcServer", () => {
     } as any;
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { callerId: "orchestrator", role: "orchestrator" });
+    await initialize(handler, { callerId: "coord-1", role: "agent" });
     const response = await callTool(handler, "create_lane", { name: "new-feature" });
 
     expect(response.structuredContent.warning).toBe(
@@ -6136,7 +6335,7 @@ describe("adeRpcServer", () => {
     } as any;
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { callerId: "orchestrator", role: "orchestrator" });
+    await initialize(handler, { callerId: "coord-1", role: "agent" });
     const response = await callTool(handler, "create_lane", { name: "new-feature" });
 
     expect(response.structuredContent.warning).toBe(
@@ -6161,7 +6360,7 @@ describe("adeRpcServer", () => {
     } as any;
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { callerId: "orchestrator", role: "orchestrator" });
+    await initialize(handler, { callerId: "coord-1", role: "agent" });
     const response = await callTool(handler, "run_ade_action", {
       domain: "lane",
       action: "create",
@@ -6185,7 +6384,7 @@ describe("adeRpcServer", () => {
     ]) as any;
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { callerId: "orchestrator", role: "orchestrator" });
+    await initialize(handler, { callerId: "coord-1", role: "agent" });
     await callTool(handler, "create_lane", { name: "explicit-base", baseBranch: "develop" });
     await callTool(handler, "create_lane", { name: "child", parentLaneId: "lane-primary" });
 
@@ -6227,7 +6426,7 @@ describe("adeRpcServer", () => {
       secretToken: "do-not-forward",
     };
 
-    await initialize(handler, { callerId: "orchestrator", role: "orchestrator" });
+    await initialize(handler, { callerId: "coord-1", role: "agent" });
     const response = await callTool(handler, "create_lane", {
       name: "new-feature",
       baseBranch: "main",
@@ -6257,7 +6456,7 @@ describe("adeRpcServer", () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { callerId: "orchestrator", role: "orchestrator" });
+    await initialize(handler, { callerId: "coord-1", role: "agent" });
     const response = await callTool(handler, "create_lane", {
       name: "projectless-linear-lane",
       linearIssue: {
@@ -6322,7 +6521,7 @@ describe("adeRpcServer", () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { callerId: "orchestrator", role: "orchestrator" });
+    await initialize(handler, { callerId: "coord-1", role: "agent" });
     const response = await callTool(handler, "create_integration", {
       sourceLaneIds: ["lane-1"],
       integrationLaneName: "integration-branch",
@@ -6345,7 +6544,7 @@ describe("adeRpcServer", () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { callerId: "orchestrator", role: "orchestrator" });
+    await initialize(handler, { callerId: "coord-1", role: "agent" });
     const response = await callTool(handler, "rebase_lane", {
       laneId: "lane-1",
       aiAssisted: true
@@ -6367,7 +6566,7 @@ describe("adeRpcServer", () => {
     }));
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { callerId: "orchestrator", role: "orchestrator" });
+    await initialize(handler, { callerId: "coord-1", role: "agent" });
     const response = await callTool(handler, "rebase_lane", {
       laneId: "lane-1",
       aiAssisted: true,
@@ -6514,7 +6713,7 @@ describe("adeRpcServer", () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { callerId: "orchestrator", role: "orchestrator" });
+    await initialize(handler, { callerId: "coord-1", role: "agent" });
     const response = await callTool(handler, "run_tests", { laneId: "lane-1" });
 
     expect(response.isError).toBe(true);

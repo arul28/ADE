@@ -854,7 +854,7 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   them, because each scope owns a complete DB/search/chat/automation/PTY
   runtime rather than lightweight catalog metadata. `projectIconResolver.ts`
   (`resolveRemoteProjectIcon`, an electron-free port of the desktop icon
-  resolver: `.ade/ade.yaml` override + conventional icon/logo files +
+  resolver: `.ade/local.yaml` `project.iconPath` override + conventional icon/logo files +
   `index.html` `<link rel="icon">`, best-effort and rendered to a 64 px
   thumbnail capped at 128 KiB on the wire).
 - `apps/ade-cli/scripts/build-static.mjs` — produces the static
@@ -989,12 +989,14 @@ run a local repair against data owned by the remote machine. See
    traffic, but never the sealed credentials. This matches the pre-existing
    direct-route trust boundary; relay routes remain trusted-operator
    plaintext-readable as documented above.
-   Without an account, choose **Find nearby computers**, select a discovered
-   LAN or Tailscale machine, and enter the six-digit PIN shown on that
-   computer's **This computer** Connections card. There is no desktop
-   pairing-link paste/scan or
-   manual address + PIN path. A discovered machine with an existing pairing is
-   upgraded to a paired target automatically.
+   A signed-out desktop may use a saved direct pairing during explicit recovery;
+   a fresh launch has no account-less **Find nearby computers** pass-through.
+   When Nearby + PIN pairing is offered from an account-backed or recoverable
+   Connections flow, select the discovered LAN/Tailscale machine and enter the
+   six-digit PIN shown on that computer's **This computer** Connections card.
+   There is no desktop pairing-link paste/scan or manual address + PIN path.
+   A discovered machine with an existing pairing is upgraded to a paired target
+   automatically.
 3. Connect. ADE dials paired routes in LAN → tailnet → relay order, preferring a
    recently successful endpoint within each class. After authenticated
    `hello_ok`, it requires `features.rpcChannel === true`, opens the runtime

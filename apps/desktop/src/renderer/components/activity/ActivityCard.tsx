@@ -37,7 +37,7 @@ import "./Activity.css";
 
    3. THE ADAPTER WOULD BE FICTION. `SessionCard` reads ~30 fields
       `AttentionItem` does not have (`statusNote`, `lastOutputPreview`, `goal`,
-      `snoozedUntil`, `exitCode`, `runtimeState`, `orchestration*`, a whole
+      `snoozedUntil`, `exitCode`, `runtimeState`, spawn lineage, a whole
       `LaneSummary`, …). It also pulls `useSessionDelta`, `useLaneNaming`, the
       app store's project binding, and a work-grid drag source — every one of
       them scoped to the open project, i.e. wrong for an account-wide feed.

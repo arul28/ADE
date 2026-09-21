@@ -222,7 +222,12 @@ export function resolveDevSpawnInvocation(
 
 export function run(command, args, extraEnv = {}) {
   return new Promise((resolve, reject) => {
-    const env = { ...process.env, ...extraEnv };
+    // Every dev child — the brain AND the desktop — starts from the sanitized
+    // parent env. An ADE chat that launches this script carries
+    // ADE_CHAT_SESSION_ID / ADE_DEFAULT_ROLE=agent; a desktop that inherits
+    // them connects to the brain as a session-bound agent, and every user-only
+    // action ("limited to user clients", "requires elevated role") fails.
+    const env = { ...sanitizeParentEnvForDevRuntime(process.env), ...extraEnv };
     const invocation = resolveDevSpawnInvocation(command, args, env);
     const child = spawn(invocation.command, invocation.args, {
       cwd: repoRoot,
@@ -257,10 +262,16 @@ export function resolveNpmInvocation(
     return { command: "npm", args };
   }
 
+  // `path.win32`, not the host's `path`: this branch describes Windows layout,
+  // and on a POSIX host the generic module resolves `C:\\...\\node.exe` to the
+  // directory "." — so the candidates it built could never match a real
+  // Windows install, and the injected-platform test that is supposed to guard
+  // this failed everywhere except Windows itself.
+  const winPath = path.win32;
   const candidates = [
     env.npm_execpath?.trim(),
-    path.join(path.dirname(execPath), "node_modules", "npm", "bin", "npm-cli.js"),
-    path.join(path.dirname(execPath), "node_modules", "corepack", "dist", "npm.js"),
+    winPath.join(winPath.dirname(execPath), "node_modules", "npm", "bin", "npm-cli.js"),
+    winPath.join(winPath.dirname(execPath), "node_modules", "corepack", "dist", "npm.js"),
   ].filter(Boolean);
   const npmCliPath = candidates.find((candidate) => pathExists(candidate));
   if (!npmCliPath) {
@@ -692,13 +703,35 @@ async function terminateSpawnedRuntime(child) {
   }
 }
 
+/**
+ * The built-in-browser bridge socket that pairs with a dev runtime socket.
+ *
+ * A dev brain and a dev desktop share the machine's ADE home with the live
+ * pair, so without this override both resolve the bridge to
+ * `<adeHome>/sock/desktop-bridge.sock` — the LIVE desktop's. The bridge server
+ * used to unlink that path before listening, which handed the live brain's
+ * browser calls to whichever dev desktop started last. Keep every dev bridge
+ * next to its own runtime socket instead; the brain reads the same variable
+ * (`apps/ade-cli/src/bootstrap.ts`), so the two stay paired.
+ */
+export function devDesktopBridgeSocketPath(socketPath) {
+  if (socketPath.startsWith("\\\\")) return `${socketPath}-bridge`;
+  return `${socketPath.replace(/\.sock$/u, "")}-bridge.sock`;
+}
+
 export function devRuntimeEnv(socketPath, projectRoot, parentEnv = process.env) {
   return {
     ADE_CLI_VERSION: resolveDevAppVersion(),
-    ADE_DEFAULT_ROLE: normalizeDefaultRole(parentEnv.ADE_DEFAULT_ROLE, "cto"),
+    // Read the role from the SANITIZED parent env: an agent shell exports
+    // ADE_DEFAULT_ROLE=agent, and that must never become the dev brain's role.
+    ADE_DEFAULT_ROLE: normalizeDefaultRole(
+      sanitizeParentEnvForDevRuntime(parentEnv).ADE_DEFAULT_ROLE,
+      "cto",
+    ),
     ADE_DEV_RUNTIME_SOCKET_PATH: socketPath,
     ADE_RUNTIME_SOCKET_PATH: socketPath,
     ADE_RPC_SOCKET_PATH: socketPath,
+    ADE_DESKTOP_BRIDGE_SOCKET_PATH: devDesktopBridgeSocketPath(socketPath),
     ...(projectRoot ? { ADE_PROJECT_ROOT: projectRoot } : {}),
     ...runtimeBuildEnv(),
   };

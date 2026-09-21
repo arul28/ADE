@@ -57,6 +57,25 @@ describe("prReadCache", () => {
     expect(listAll).toHaveBeenCalledTimes(2);
   });
 
+  it("does not let two projects share one unpinned in-flight PR read", async () => {
+    // With no pin and no projectRoot, `projectKey` answers the literal
+    // "active", which every project shares. A read still in flight when the
+    // user switched projects was joined by the new project and answered with
+    // the old one's rows. Callers must key by their own root.
+    const projectA = deferred<any[]>();
+    listAll
+      .mockReturnValueOnce(projectA.promise)
+      .mockResolvedValueOnce([{ id: "pr-from-b" }]);
+
+    const a = listPrsCoalesced({ projectRoot: "/repo-a" });
+    const b = listPrsCoalesced({ projectRoot: "/repo-b" });
+
+    expect(listAll).toHaveBeenCalledTimes(2);
+    projectA.resolve([{ id: "pr-from-a" }]);
+    await expect(a).resolves.toEqual([{ id: "pr-from-a" }]);
+    await expect(b).resolves.toEqual([{ id: "pr-from-b" }]);
+  });
+
   it("keeps forced and non-forced GitHub snapshots isolated", async () => {
     const normal = deferred<any>();
     const forced = deferred<any>();

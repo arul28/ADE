@@ -19,7 +19,7 @@ import {
 } from "./cliTools";
 import { ClaudeAuthActions, CodexAuthActions, DroidAuthActions } from "./bodies/CliAuthActions";
 import { CodexBody } from "./bodies/CodexBody";
-import { CursorAuthActions, CursorBody, cursorOauthSignedIn } from "./bodies/CursorBody";
+import { CursorAuthActions, cursorOauthSignedIn } from "./bodies/CursorBody";
 import { PiBody } from "./bodies/PiBody";
 import { OpenCodeBody } from "./bodies/OpenCodeBody";
 import { ACP_PROVIDER_DESCRIPTORS } from "./acpProviders";
@@ -190,7 +190,6 @@ export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
     ],
     credentialLine: (ctx) => credentialLine(ctx, "cursor"),
     AuthActions: CursorAuthActions,
-    Body: CursorBody,
   },
   {
     id: "droid",

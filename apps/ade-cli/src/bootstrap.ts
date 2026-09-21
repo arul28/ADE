@@ -59,6 +59,7 @@ import { createLaneEnvironmentService } from "../../desktop/src/main/services/la
 import { createLaneTemplateService } from "../../desktop/src/main/services/lanes/laneTemplateService";
 import { createPortAllocationService } from "../../desktop/src/main/services/lanes/portAllocationService";
 import { createLaneProxyService } from "../../desktop/src/main/services/lanes/laneProxyService";
+import { createProxyService, type ProxyService } from "./services/proxy/proxyService";
 import {
   releaseLaneRuntimeResources,
   teardownArchivedLaneEnvironment,
@@ -73,7 +74,6 @@ import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../
 import { createAgentChatService } from "../../desktop/src/main/services/chat/agentChatService";
 import { createChatRuntimeBudget } from "../../desktop/src/main/services/chat/chatRuntimeBudget";
 import { borrowSharedMachinePowerSource } from "./services/power/sharedMachinePowerMonitor";
-import { createOrchestrationService } from "../../desktop/src/main/services/orchestration/orchestrationService";
 import type { createPrService } from "../../desktop/src/main/services/prs/prService";
 import {
   emitPrCardsForChange,
@@ -86,6 +86,7 @@ import { chatLivenessReader, createPrMergeAutoSettlementService } from "../../de
 import { createPrSummaryService } from "../../desktop/src/main/services/prs/prSummaryService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
 import { createCtoMemoryService } from "../../desktop/src/main/services/cto/ctoMemoryService";
+import { createCtoVoiceRuntimeService } from "../../desktop/src/main/services/cto/ctoVoiceRuntimeService";
 import type { createLinearCredentialService } from "../../desktop/src/main/services/cto/linearCredentialService";
 import { createLinearOAuthService } from "../../desktop/src/main/services/cto/linearOAuthService";
 import type { createLinearIssueTracker } from "../../desktop/src/main/services/cto/linearIssueTracker";
@@ -146,6 +147,7 @@ import {
   captureClaudeHooksIgnoredAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "../../desktop/src/main/services/analytics/agentTurnProductAnalytics";
+import { capturePendingInputDismissedAnalytics } from "../../desktop/src/main/services/analytics/featureProductAnalytics";
 import { createSessionDeltaService } from "../../desktop/src/main/services/sessions/sessionDeltaService";
 import { createReviewService } from "../../desktop/src/main/services/review/reviewService";
 import { createProcessRegistryService } from "../../desktop/src/main/services/runtime/processRegistryService";
@@ -181,6 +183,9 @@ import { WORK_TOOLS_STATE_CHANGED_EVENT } from "../../desktop/src/shared/types/w
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { createPushRegistrationStore } from "./services/push/pushRegistrationStore";
 import { createPushRelayClient } from "./services/push/pushRelayClient";
+import { createAccountRuntimeLifecycle } from "./services/account/accountRuntimeLifecycle";
+import type { AccountSettingsStore } from "./services/account/accountSettingsStore";
+import type { AccountVaultStore } from "./services/account/accountVaultStore";
 import { getSharedPushPublisherService, resolvePushRelayStateFile, type PushPrNotification, type PushPublisherDeps, type PushPublisherService } from "./services/push/pushPublisherService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import type { AppNavigationRequest, AppNavigationResult, PortLease, SyncRoleSnapshot } from "../../desktop/src/shared/types";
@@ -317,6 +322,9 @@ export type AdeRuntime = {
   laneTemplateService?: ReturnType<typeof createLaneTemplateService> | null;
   portAllocationService?: ReturnType<typeof createPortAllocationService> | null;
   laneProxyService?: ReturnType<typeof createLaneProxyService> | null;
+  /** Machine-scoped subscription proxy; constructed only when a proxy action is used. */
+  proxyService?: ProxyService | null;
+  getProxyService?: () => ProxyService;
   oauthRedirectService?: ReturnType<typeof createOAuthRedirectService> | null;
   runtimeDiagnosticsService?: ReturnType<typeof createRuntimeDiagnosticsService> | null;
   rebaseSuggestionService?: ReturnType<typeof createRebaseSuggestionService> | null;
@@ -325,6 +333,10 @@ export type AdeRuntime = {
   operationService: ReturnType<typeof createOperationService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   projectSecretService?: ReturnType<typeof createProjectSecretService> | null;
+  /** Machine-scoped, so null on a `--no-sync` brain. */
+  accountSettingsStore?: AccountSettingsStore | null;
+  /** Machine-scoped, so null on a `--no-sync` brain. */
+  accountVaultStore?: AccountVaultStore | null;
   conflictService: ReturnType<typeof createConflictService>;
   gitService: ReturnType<typeof createGitOperationsService>;
   diffService: ReturnType<typeof createDiffService>;
@@ -334,12 +346,21 @@ export type AdeRuntime = {
   agentChatService?: ReturnType<typeof createAgentChatService> | null;
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
   devinCloudFleetService?: ReturnType<typeof createDevinCloudFleetService> | null;
-  orchestrationService?: ReturnType<typeof createOrchestrationService> | null;
   prService?: ReturnType<typeof createPrService>;
   prSummaryService?: ReturnType<typeof createPrSummaryService> | null;
   fileService?: ReturnType<typeof createFileService> | null;
   ctoStateService: ReturnType<typeof createCtoStateService>;
   ctoMemoryService?: ReturnType<typeof createCtoMemoryService> | null;
+  /**
+   * The CTO voice call, hosted here rather than in desktop main.
+   *
+   * The call brain needs the chat service, the CTO identity and durable memory,
+   * and in every real build those are THIS process's instances — the desktop
+   * AppContext holds nulls outside `NODE_ENV=test`. Desktop main routes to it
+   * through the `cto_voice` action domain and keeps only the window, the
+   * microphone and the HUD.
+   */
+  ctoVoiceCallService?: ReturnType<typeof createCtoVoiceRuntimeService> | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   linearOAuthService?: ReturnType<typeof createLinearOAuthService> | null;
   linearIssueTracker?: ReturnType<typeof createLinearIssueTracker> | null;
@@ -657,6 +678,8 @@ export function bindIosSimulatorReleaseOnChatEnd(args: {
 
 export async function createAdeRuntime(args: {
   projectRoot: string;
+  /** Control endpoint this runtime actually bound, for chat ownership stamps. */
+  runtimeSocketPath?: string | null;
   workspaceRoot?: string;
   primaryWorktreePath?: string;
   chatRuntime?: "headless-stub" | "agent";
@@ -705,7 +728,9 @@ export async function createAdeRuntime(args: {
   const hadAdeDb = fs.existsSync(path.join(projectRoot, ".ade", "ade.db"));
   const baseRef = await detectDefaultBaseRef(projectRoot);
   const paths = ensureAdePaths(projectRoot);
-  initApiKeyStore(projectRoot, { credentialStore: new EncryptedFileCredentialStore() });
+  const runtimeSocketPath = typeof resolvedArgs.runtimeSocketPath === "string"
+    ? resolvedArgs.runtimeSocketPath.trim() || paths.socketPath
+    : paths.socketPath;
   const logger = createFileLogger(path.join(paths.logsDir, "ade-cli.jsonl"));
   const diskPressureMonitor = createDiskPressureMonitor({
     roots: [projectRoot, resolveMachineAdeLayout().adeDir],
@@ -795,6 +820,23 @@ export async function createAdeRuntime(args: {
     if (staleSessionReconcileTimer) clearTimeout(staleSessionReconcileTimer);
   });
 
+  // The subscription proxy owns a downloaded binary and a machine-level
+  // auth directory. Keep both out of boot and create them only when an
+  // action, CLI command, or sync read actually asks for the proxy.
+  let proxyService: ProxyService | null = null;
+  let productAnalyticsForProxy: ProductAnalyticsService | null = null;
+  const getProxyService = (): ProxyService => {
+    if (!proxyService) {
+      proxyService = createProxyService({
+        adeHome: resolveMachineAdeLayout().adeDir,
+        // `productAnalyticsForProxy` is assigned further below.
+        getAnalytics: () => productAnalyticsForProxy,
+      });
+      teardown.push(() => proxyService?.dispose() ?? Promise.resolve());
+    }
+    return proxyService;
+  };
+
   // Guards every acquisition from the database open onward.
   try {
     const project = toProjectInfo(projectRoot, baseRef);
@@ -817,6 +859,7 @@ export async function createAdeRuntime(args: {
         appVersion: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || "0.0.0",
         runtimeMode: syncRuntimeOptions?.runtimeKind ?? (chatOnlyRuntime ? "chat_runtime" : "project_runtime"),
       }));
+    productAnalyticsForProxy = productAnalyticsService;
     const usageProductAnalyticsExporter = createUsageProductAnalyticsExporter({
       db,
       analytics: productAnalyticsService,
@@ -1009,15 +1052,55 @@ export async function createAdeRuntime(args: {
       db,
       logger,
     });
-    const projectSecretService = createProjectSecretService(projectRoot);
     registerAccountConfigProjectRoot(projectRoot);
     const accountAuthService = getSharedAccountAuthService({
       projectRoots: () => [projectRoot],
       logger,
     });
+    const accountStoreAdeDir = resolveMachineAdeLayout().adeDir;
+    const syncDeviceIdPath = path.join(
+      syncRuntimeOptions?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
+      "sync-device-id",
+    );
+    const pushRelayFilePath = resolvePushRelayStateFile(resolveMachineAdeLayout().secretsDir);
+    let projectSecretServiceForAccount: ReturnType<typeof createProjectSecretService> | null = null;
+    let linearCredentialServiceForAccount: ReturnType<typeof createLinearCredentialService> | null = null;
     const getAccountAccessToken = (
       options?: Parameters<typeof getSignedInAccountAccessToken>[1],
     ) => getSignedInAccountAccessToken(accountAuthService, options);
+    const accountRuntimeLifecycle = createAccountRuntimeLifecycle({
+      enabled: syncRuntimeOptions?.enabled === true,
+      accountStoreAdeDir,
+      pushRelayFilePath,
+      syncDeviceIdPath,
+      receiptDir: accountStoreAdeDir,
+      logger,
+      accountAuthService,
+      getAccountAccessToken,
+      getContexts: () => [{
+        project: { rootPath: projectRoot },
+        linearCredentialService: linearCredentialServiceForAccount,
+        projectSecretService: projectSecretServiceForAccount,
+      }],
+      teardown,
+    });
+    const {
+      accountSettingsStore,
+      accountVaultStore,
+    } = accountRuntimeLifecycle;
+    initApiKeyStore(projectRoot, {
+      credentialStore: new EncryptedFileCredentialStore(),
+      getAccountVault: accountRuntimeLifecycle.getAccountVault,
+      getAccountUserId: () => accountAuthService.getStatus().userId,
+      logger,
+      analytics: productAnalyticsService,
+    });
+    const projectSecretService = createProjectSecretService(projectRoot, {
+      getAccountVault: accountRuntimeLifecycle.getAccountVault,
+      getAccountUserId: () => accountAuthService.getStatus().userId,
+      logger,
+    });
+    projectSecretServiceForAccount = projectSecretService;
     const onboardingService = createOnboardingService({
       db,
       logger,
@@ -1032,9 +1115,6 @@ export async function createAdeRuntime(args: {
       adeDir: paths.adeDir,
       logger,
       broadcastEvent: (event) => pushEvent("runtime", { type: "lane_env_event", event }),
-      // Setup scripts run unrestricted shell and can come from repo-committed
-      // shared config, so the executor gets the same trust gate test suites use.
-      projectConfigService,
     });
 
     const laneTemplateService = createLaneTemplateService({
@@ -1439,7 +1519,17 @@ export async function createAdeRuntime(args: {
       onGitHubStatusChanged: (status) =>
         pushEvent("runtime", { type: "github_status_changed", event: status }),
       getAccountAccessToken,
+      getAccountVault: accountRuntimeLifecycle.getAccountVault,
+      getAccountUserId: () => accountAuthService.getStatus().userId,
+      getDeviceId: () => {
+        try {
+          return fs.readFileSync(syncDeviceIdPath, "utf8").trim() || null;
+        } catch {
+          return null;
+        }
+      },
     });
+    linearCredentialServiceForAccount = headlessLinearServices.linearCredentialService;
     teardown.push(() => headlessLinearServices.dispose());
     linearIssueTrackerRef = headlessLinearServices.linearIssueTracker;
     githubServiceRef = headlessLinearServices.githubService as ReturnType<typeof createGithubService>;
@@ -1467,29 +1557,13 @@ export async function createAdeRuntime(args: {
 
     let automationServiceRef: ReturnType<typeof createAutomationService> | null = null;
 
-    const orchestrationService = createOrchestrationService({
-      resolveLaneWorktree: (laneId: string): string | undefined => {
-        try {
-          return laneService.getLaneWorktreePath(laneId);
-        } catch {
-          return undefined;
-        }
-      },
-    });
-    orchestrationService.on("event", (payload) => {
-      pushEvent("orchestrator", payload as unknown as Record<string, unknown>);
-    });
-    teardown.push(() => {
-      void orchestrationService?.dispose().catch(() => {});
-    });
-
     let agentChatService = headlessLinearServices.agentChatService as unknown as ReturnType<typeof createAgentChatService> | null;
     if (resolvedArgs.chatRuntime === "agent") {
       agentChatService = createAgentChatService({
         runtimeBudget: chatRuntimeBudget,
         browserActorCapabilityIssuer,
-        getOrchestrationService: () => orchestrationService,
         projectRoot,
+        runtimeSocketPath,
         adeDir: paths.adeDir,
         transcriptsDir: paths.transcriptsDir,
         fileService: headlessLinearServices.fileService,
@@ -1546,6 +1620,11 @@ export async function createAdeRuntime(args: {
         onAutoResumeOutcome: (properties) => captureChatAutoResumeAnalytics({
           analytics: productAnalyticsService,
           properties,
+        }),
+        onPendingInputDismissed: ({ provider }) => capturePendingInputDismissedAnalytics({
+          analytics: productAnalyticsService,
+          surface: "api",
+          provider,
         }),
         onSessionEnded: (event) => {
           pushEvent("runtime", { type: "agent_chat_session_ended", ...event });
@@ -1963,11 +2042,6 @@ export async function createAdeRuntime(args: {
       "sync-cloud-relay.json",
     );
     const cloudRelayStore = createSyncCloudRelayStore({ filePath: cloudRelayFilePath });
-    const syncDeviceIdPath = path.join(
-      syncRuntimeOptions?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
-      "sync-device-id",
-    );
-    const pushRelayFilePath = resolvePushRelayStateFile(resolveMachineAdeLayout().secretsDir);
     const pushPublisherService = getSharedPushPublisherService(pushRelayFilePath, () => {
       const store = createPushRegistrationStore({ filePath: pushRelayFilePath, logger });
       return {
@@ -2012,6 +2086,10 @@ export async function createAdeRuntime(args: {
     pushPublisherService.setActivityRosterProvider(
       syncRuntimeOptions?.activityRosterProvider ?? null,
     );
+
+    // The lifecycle performs the first vault pull before it allows the
+    // receipt-backed migration to inspect local credentials.
+    await accountRuntimeLifecycle.initialize();
     const detachPushSources = publishPushEvents
       ? pushPublisherService.attachSources(projectId, {
         // The lightweight no-agent headless chat stub intentionally exposes
@@ -2084,7 +2162,13 @@ export async function createAdeRuntime(args: {
     // windows.
     usageTrackingService = attachSharedUsageTrackingScope(
       resolveMachineAdeLayout().adeDir,
-      () => createUsageTrackingService({ logger, pollIntervalMs: 120_000 }),
+      () => createUsageTrackingService({
+        logger,
+        pollIntervalMs: 120_000,
+        dependencies: {
+          captureInternalAnalytics: (input) => productAnalyticsService.captureInternal(input),
+        },
+      }),
       {
         key: `${projectId}:${projectRoot}`,
         db,
@@ -2200,6 +2284,8 @@ export async function createAdeRuntime(args: {
       syncService = createSyncService({
         db,
         usageTrackingService,
+        getProxyService: () => getProxyService(),
+        accountSettingsStore,
         productAnalyticsService,
         logger,
         getAccountDirectoryHealth: syncRuntimeOptions.getAccountDirectoryHealth,
@@ -2225,8 +2311,7 @@ export async function createAdeRuntime(args: {
         sessionDeltaService,
         ptyService,
         aiIntegrationService,
-        orchestrationService,
-        projectConfigService,
+          projectConfigService,
         portAllocationService,
         laneEnvironmentService,
         laneTemplateService,
@@ -2344,6 +2429,26 @@ export async function createAdeRuntime(args: {
       ...(chatImportedRefsProvider ? { chatImportedRefsProvider } : {}),
     });
 
+    // Constructed below the chat service on purpose: a call reaches the CTO
+    // thread through it, so this must not run while that binding is still null.
+    const ctoVoiceCallService = createCtoVoiceRuntimeService({
+      projectRoot,
+      logger,
+      laneService,
+      ctoStateService,
+      agentChatService,
+      // The views a call drew: it reads its own stills back out of the store
+      // at hang-up, to name them in the durable record.
+      computerUseArtifactBrokerService,
+      ctoMemoryService,
+      // The CTO row's status line during a call is written straight to the
+      // session row: the generated one is always a turn behind on a call.
+      sessionService,
+      productAnalyticsService,
+      eventBuffer,
+    });
+    teardown.push(() => ctoVoiceCallService.dispose());
+
     const runtime: AdeRuntime = {
       projectRoot,
       workspaceRoot,
@@ -2358,6 +2463,10 @@ export async function createAdeRuntime(args: {
       laneTemplateService,
       portAllocationService,
       laneProxyService,
+      get proxyService(): ProxyService | null {
+        return proxyService;
+      },
+      getProxyService,
       oauthRedirectService,
       runtimeDiagnosticsService,
       rebaseSuggestionService,
@@ -2368,6 +2477,8 @@ export async function createAdeRuntime(args: {
       operationService,
       projectConfigService,
       projectSecretService,
+      accountSettingsStore,
+      accountVaultStore,
       conflictService,
       gitService,
       diffService,
@@ -2384,9 +2495,9 @@ export async function createAdeRuntime(args: {
       agentChatService,
       cursorCloudFleetService,
       devinCloudFleetService,
-      orchestrationService,
       ctoStateService,
       ctoMemoryService,
+      ctoVoiceCallService,
       adeProjectService,
       githubService: headlessLinearServices.githubService,
       accountAuthService,

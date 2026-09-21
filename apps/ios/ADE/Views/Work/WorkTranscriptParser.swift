@@ -413,6 +413,8 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
       let subagentSpawnDepth = eventDict["spawn_depth"] as? Int
         ?? eventDict["spawnDepth"] as? Int
       let subagentResourceLinks = parseAgentChatResourceLinksFromEvent(eventDict)
+      let stopSource = optionalString(eventDict["stopSource"])
+      let stopReason = optionalString(eventDict["stopReason"])
       // Host-attached HTTP status on a terminal SDK API error (429 = usage
       // limit). The only limit signal the transcript itself carries; never
       // inferred from assistant prose (`.specs/CONTRACT.md`).
@@ -1089,6 +1091,27 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
             turnId: turnId
           )
         )
+      case "command_lifecycle":
+        let status = optionalString(eventDict["status"])
+        // Per key, never `?? ` on the raw values: an explicit `"steerId": null`
+        // arrives as `NSNull`, wins the coalesce, and hides a snake_case
+        // `steer_id` beside it — the steer id is then lost and its queued row
+        // never graduates. Same rule this file states for `apiErrorStatus`.
+        let steerId = optionalString(eventDict["steerId"]) ?? optionalString(eventDict["steer_id"])
+        if status == "cancelled" || status == "discarded" {
+          let verb = status == "discarded" ? "discarded" : "cancelled"
+          event = .systemNotice(
+            kind: "command_lifecycle",
+            message: optionalString(eventDict["preview"]).map { "Queued message \(verb): \($0)" } ?? "Queued message \(verb)",
+            detail: nil,
+            turnId: turnId,
+            steerId: steerId
+          )
+        } else {
+          // The lifecycle still matters to the pending-steer fold, but it is
+          // not a visible timeline card for queued/started/completed states.
+          event = .unknown(type: type)
+        }
       case "model_handoff":
         // Must produce the exact same shape as the live path in
         // `WorkEventMapping` — a replayed transcript and a streamed event have
@@ -1118,7 +1141,13 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         subagentSpawnDepth: subagentSpawnDepth,
         subagentResourceLinks: subagentResourceLinks,
         apiErrorStatus: apiErrorStatus,
-        isLegacySubagentCompletedFrame: type == "subagent.completed"
+        isLegacySubagentCompletedFrame: type == "subagent.completed",
+        stopSource: stopSource,
+        stopReason: stopReason,
+        commandLifecycleStatus: type == "command_lifecycle" ? optionalString(eventDict["status"]) : nil,
+        commandLifecycleSteerId: type == "command_lifecycle"
+          ? optionalString(eventDict["steerId"]) ?? optionalString(eventDict["steer_id"])
+          : nil
       )
     }
     .sorted(by: workChatEnvelopeOrderedBefore)

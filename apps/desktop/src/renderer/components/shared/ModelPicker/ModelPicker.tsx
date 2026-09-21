@@ -9,8 +9,10 @@ import {
   type ProviderFamily,
 } from "../../../../shared/modelRegistry";
 import { ModelRowLogo } from "../ProviderLogos";
+import { HarnessLogo } from "../HarnessLogo";
+import type { HarnessPresetLogo } from "../../../../shared/harnessPresets";
 import { cn } from "../../ui/cn";
-import { ModelPickerContent } from "./ModelPickerContent";
+import { ModelPickerContent, type ModelPickerSelection } from "./ModelPickerContent";
 import type { AuthStatus } from "./ModelPickerRail";
 import {
   createUnknownModelPlaceholder,
@@ -37,14 +39,30 @@ import {
   refreshProviderForFamily,
   reserveRuntimeCatalogScope,
   DEFAULT_RUNTIME_CATALOG_SCOPE,
-  PERSONAL_CHAT_CATALOG_SCOPE,
   isPersonalChatCatalogScopeKey,
 } from "./runtimeCatalogCache";
 
+/** The saved preset a surface is currently running on, for the trigger. */
+export type ModelPickerActivePreset = {
+  name: string;
+  logo: HarnessPresetLogo;
+};
+
 export type ModelPickerProps = {
   value: string;
-  onChange: (modelId: string, options?: { fastMode: boolean; serviceTier?: CursorCloudServiceTier | null }) => void;
-  surfaceKey: string;
+  /**
+   * The preset this chat launched from. When set, the trigger shows the
+   * preset's logo and name instead of the model's — the preset is what the user
+   * chose, and it names the model, the effort and the permission mode at once.
+   * The model id stays reachable as the trigger's tooltip.
+   */
+  activePreset?: ModelPickerActivePreset | null;
+  /**
+   * `options.presetId` arrives only from the Custom tab. A caller that has
+   * no preset plumbing yet can ignore it — the model id alone still describes
+   * a launchable selection.
+   */
+  onChange: (modelId: string, options?: ModelPickerSelection) => void;
   compact?: boolean;
   disabled?: boolean;
   availableModelIds?: string[];
@@ -97,15 +115,22 @@ export type ModelPickerProps = {
   serviceTier?: CursorCloudServiceTier | null;
   onServiceTierChange?: (next: CursorCloudServiceTier | null) => void;
   allowCliOnlyModels?: boolean;
+  /**
+   * Whether the Custom rail entry is offered. False for a surface launching
+   * a tracked CLI: four harnesses take no key from the launch, so a preset
+   * picked there would be dropped, and offering a choice that is then ignored
+   * is worse than not offering it. See `shared/harnessPresetCliGate.ts`.
+   */
+  listsHarnessPresets?: boolean;
   cursorAvailabilityMode?: "chat" | "cli" | "all";
   /**
-   * When invoked from a `model_selection` pending-input slot
-   * (see `goal.md` §10.9), hide permission-related rail/picker rows. The
-   * orchestrator forces the permission tier server-side (§12), so the user
-   * should only choose model + fast-mode + reasoning. Forwarded to
-   * {@link ModelPickerContent} via the `hidePermissionRail` prop.
+   * Hide permission-related rail/picker rows when the caller already pins the
+   * permission tier, so the user only chooses model + fast-mode + reasoning.
+   * Forwarded to {@link ModelPickerContent} via the `hidePermissionRail` prop.
    */
   hidePermissionRail?: boolean;
+  /** Opens Settings › Providers › Custom from the Custom empty state. */
+  onOpenHarnessSettings?: () => void;
   className?: string;
   triggerClassName?: string;
   openRequestKey?: number;
@@ -115,7 +140,7 @@ export type ModelPickerProps = {
 export const ModelPicker = memo(function ModelPicker({
   value,
   onChange,
-  surfaceKey,
+  activePreset = null,
   compact = false,
   disabled = false,
   availableModelIds,
@@ -136,19 +161,22 @@ export const ModelPicker = memo(function ModelPicker({
   serviceTier = null,
   onServiceTierChange,
   allowCliOnlyModels = false,
+  listsHarnessPresets = true,
   cursorAvailabilityMode = allowCliOnlyModels ? "cli" : "chat",
   hidePermissionRail = false,
+  onOpenHarnessSettings,
   className,
   triggerClassName,
   openRequestKey,
   onOpenRequestHandled,
   catalogScopeKey: catalogScopeKeyOverride,
 }: ModelPickerProps) {
+  // The personal-chat surface passes its own scope key
+  // (`personalChatCatalogScopeKey`), so the third arm that used to infer it
+  // from the removed `surfaceKey` prop had no reachable caller left.
   const catalogScopeKey = catalogScopeKeyOverride
     ?? runtimePin?.key
-    ?? (surfaceKey === PERSONAL_CHAT_CATALOG_SCOPE
-      ? PERSONAL_CHAT_CATALOG_SCOPE
-      : DEFAULT_RUNTIME_CATALOG_SCOPE);
+    ?? DEFAULT_RUNTIME_CATALOG_SCOPE;
   // The scope KEY is the reactive input; the binding object itself is only a
   // routing payload. Reading it through a ref keeps `loadRuntimeCatalog` stable
   // across renders even if a caller hands us a fresh object each time, so an
@@ -391,7 +419,7 @@ export const ModelPicker = memo(function ModelPicker({
   );
 
   const handleSelect = useCallback(
-    (modelId: string, options?: { fastMode: boolean; serviceTier?: CursorCloudServiceTier | null }) => {
+    (modelId: string, options?: ModelPickerSelection) => {
       if (options) {
         onChange(modelId, options);
       } else {
@@ -405,6 +433,16 @@ export const ModelPicker = memo(function ModelPicker({
   const handleRequestClose = useCallback(() => {
     setOpen(false);
   }, []);
+
+  /**
+   * The harnesses empty state's CTA. The picker closes itself first for the
+   * same reason the sign-in CTA does: the destination is a full page, and a
+   * popover left open over it outlives the screen it was anchored to.
+   */
+  const handleOpenHarnessSettings = useCallback(() => {
+    setOpen(false);
+    onOpenHarnessSettings?.();
+  }, [onOpenHarnessSettings]);
 
   const handleOpenSignIn = useCallback((family?: ProviderFamily, authTypes?: readonly AuthType[]) => {
     setOpen(false);
@@ -445,6 +483,7 @@ export const ModelPicker = memo(function ModelPicker({
           <ModelPickerTrigger
             model={selectedModel}
             value={value}
+            {...(activePreset ? { activePreset } : {})}
             compact={compact}
             disabled={disabled}
             open={open}
@@ -469,17 +508,18 @@ export const ModelPicker = memo(function ModelPicker({
             {open ? (
               <ModelPickerContent
                 value={effectiveValue}
-                surfaceKey={surfaceKey}
                 models={modelList}
                 isAvailable={isAvailable}
                 {...(providerAuthStatus ? { providerAuthStatus } : {})}
                 onSelect={handleSelect}
                 onRequestClose={handleRequestClose}
+                {...(onOpenHarnessSettings ? { onOpenHarnessSettings: handleOpenHarnessSettings } : {})}
                 onProviderRailSelect={handleProviderRailSelect}
                 refreshingProvider={refreshingProvider}
                 refreshErrorProvider={refreshErrorProvider}
                 hidePermissionRail={hidePermissionRail}
                 allowCliOnlyModels={allowCliOnlyModels}
+                listsHarnessPresets={listsHarnessPresets}
                 cursorAvailabilityMode={cursorAvailabilityMode}
                 allowRegistryExpansion={!constrainToAvailableModelIds}
                 fastMode={fastModeOn}
@@ -585,6 +625,7 @@ export function composeModelPickerTriggerLabel({
   fastModeSupported,
   serviceTier,
   serviceTierSupported,
+  presetName,
 }: {
   model: ModelDescriptor | undefined;
   value: string;
@@ -592,7 +633,15 @@ export function composeModelPickerTriggerLabel({
   fastModeSupported?: boolean;
   serviceTier?: CursorCloudServiceTier | null;
   serviceTierSupported?: boolean;
+  /** A chat launched from a saved preset is named by the preset, not the model. */
+  presetName?: string | null;
 }): string {
+  // The preset's name replaces the model id outright rather than joining it.
+  // The trigger is 152px; "Opus on work · claude-opus-4-5-20260101" truncates to
+  // neither, while the name alone is the thing the user chose and recognises.
+  // The model still reaches them — it is the trigger's `title`.
+  const preset = presetName?.trim();
+  if (preset) return preset;
   const base = model?.displayName ?? (value.trim() || "Select model");
   if (serviceTier && (serviceTierSupported ?? modelSupportsServiceTier(model, serviceTier))) {
     return `${base} ${serviceTier === "fast" ? "Fast" : "Standard"}`;
@@ -608,6 +657,7 @@ export function composeModelPickerTriggerLabel({
 type TriggerProps = {
   model: ModelDescriptor | undefined;
   value: string;
+  activePreset?: ModelPickerActivePreset | null;
   compact: boolean;
   disabled: boolean;
   open: boolean;
@@ -621,12 +671,13 @@ type TriggerProps = {
 const ModelPickerTrigger = memo(
   forwardRef<HTMLButtonElement, TriggerProps & React.ButtonHTMLAttributes<HTMLButtonElement>>(
     function ModelPickerTrigger(
-      { model, value, compact, disabled, open, fastMode, fastModeSupported, serviceTier, serviceTierSupported, className, ...rest },
+      { model, value, activePreset, compact, disabled, open, fastMode, fastModeSupported, serviceTier, serviceTierSupported, className, ...rest },
       ref,
     ) {
       const label = composeModelPickerTriggerLabel({
         model,
         value,
+        ...(activePreset?.name ? { presetName: activePreset.name } : {}),
         fastMode,
         ...(typeof fastModeSupported === "boolean" ? { fastModeSupported } : {}),
         ...(serviceTierSupported !== undefined ? { serviceTier, serviceTierSupported } : {}),
@@ -645,6 +696,8 @@ const ModelPickerTrigger = memo(
           data-state={open ? "open" : "closed"}
           disabled={disabled}
           aria-label={`Select model (current: ${label})`}
+          // The model the preset runs, where the label had no room for it.
+          {...(activePreset ? { title: `${activePreset.name} — ${model?.displayName ?? value}` } : {})}
           aria-haspopup="dialog"
           aria-expanded={open}
           className={cn(
@@ -659,7 +712,13 @@ const ModelPickerTrigger = memo(
             className,
           )}
         >
-          {model ? (
+          {activePreset ? (
+            <HarnessLogo
+              logo={activePreset.logo}
+              size={compact ? 11 : 13}
+              className="shrink-0"
+            />
+          ) : model ? (
             <ModelRowLogo
               modelFamily={model.family}
               cliCommand={model.cliCommand}

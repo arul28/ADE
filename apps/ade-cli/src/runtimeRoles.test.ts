@@ -16,7 +16,7 @@ describe("resolveSessionBoundRole", () => {
   });
 
   it("preserves explicit lower-privilege session identities", () => {
-    for (const requestedRole of ["orchestrator", "agent", "external", "evaluator"] as const) {
+    for (const requestedRole of ["agent", "external", "evaluator"] as const) {
       expect(resolveSessionBoundRole({
         defaultRole: "cto",
         requestedRole,

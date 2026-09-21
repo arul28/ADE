@@ -334,27 +334,6 @@ describe("PersonalChatScope", () => {
     await scope.dispose();
   });
 
-  it("refuses to create a personal chat as an orchestration lead", async () => {
-    const { service, createRuntime } = fixture();
-    const scope = new PersonalChatScope({ createRuntime });
-
-    // `interactionMode` is forwarded (the orchestration fields are stripped),
-    // and "orchestrator-lead" alone makes the runtime treat the session as a
-    // lead: always-strict MCP isolation. The chat would run strict while its
-    // capability report said strictRequested: false.
-    await expect(scope.call("create", {
-      provider: "claude",
-      model: "sonnet",
-      interactionMode: "orchestrator-lead",
-    })).rejects.toThrow(/orchestration leads/i);
-    await expect(scope.call("create", {
-      provider: "claude",
-      model: "sonnet",
-      orchestrationRole: "lead",
-    })).rejects.toThrow(/orchestration leads/i);
-    expect(service.createSession).not.toHaveBeenCalled();
-    await scope.dispose();
-  });
 
   it("advertises push events and MCP injection in its capabilities", async () => {
     // The SDK reads these flags to choose push over polling and to know whether

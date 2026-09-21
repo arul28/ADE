@@ -1291,3 +1291,76 @@ describe("searchService since: filter on delegated files", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 });
+
+describe("searchService PR-term reindex durability", () => {
+  it("retries the chat PR-term reindex after a failed sweep instead of stranding the docs", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-search-prterms-"));
+    const session = makeSession({ id: "chat-pr", title: "Composer chips lane", toolType: "claude-chat" });
+    // `reindexChatsForChangedPrTerms` is the only reader of sessions.list on
+    // this path (chat indexing goes through sessions.get), so failing the first
+    // call fails the reindex exactly once, the way a runtime that goes away
+    // mid-sweep would.
+    let listCalls = 0;
+    const service = createSearchService({
+      cacheDir: path.join(root, "cache"),
+      transcriptsDir: path.join(root, "transcripts"),
+      chatTranscriptsDir: path.join(root, "transcripts", "chat"),
+      sessions: {
+        list: async () => {
+          listCalls += 1;
+          if (listCalls === 1) throw new Error("runtime went away mid-sweep");
+          return [session];
+        },
+        get: async (id) => (id === session.id ? session : null),
+      },
+      prs: {
+        listAll: async () => [
+          {
+            id: "pr-1",
+            laneId: "lane-1",
+            projectId: "proj-1",
+            repoOwner: "ade",
+            repoName: "ade",
+            githubPrNumber: 4242,
+            githubUrl: "https://github.com/ade/ade/pull/4242",
+            githubNodeId: null,
+            title: "Zebraflux composer defaults",
+            state: "open",
+            baseBranch: "main",
+            headBranch: "ade/zebraflux",
+            checksStatus: "passing",
+            reviewStatus: "none",
+            additions: 1,
+            deletions: 0,
+            lastSyncedAt: null,
+            createdAt: "2026-07-01T00:00:00.000Z",
+            updatedAt: "2026-07-05T00:00:00.000Z",
+            chatSessionIds: [session.id],
+          } as never,
+        ],
+        getDetail: async () => null,
+        getComments: async () => [],
+      },
+      now: () => NOW,
+    });
+
+    // Sweep 1: the reindex throws, the queue logs and drops the entry.
+    service.notifyPrChanged();
+    await service.processPendingNow();
+    expect(listCalls).toBe(1);
+    const afterFailure = await service.query({ query: "zebraflux" });
+    expect(afterFailure.results.some((r) => r.sessionId === session.id)).toBe(false);
+
+    // Sweep 2 must see the SAME changed session again. If the failed sweep had
+    // kept its new map published, this retry would compare that map against
+    // itself, find nothing changed, and the chat doc would never carry the PR
+    // terms for the life of the process.
+    service.notifyPrChanged();
+    await service.processPendingNow();
+    const afterRetry = await service.query({ query: "zebraflux" });
+    expect(afterRetry.results.some((r) => r.kind === "chat" && r.sessionId === session.id)).toBe(true);
+
+    service.dispose();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+});

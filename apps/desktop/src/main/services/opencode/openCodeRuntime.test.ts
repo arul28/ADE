@@ -129,7 +129,6 @@ import {
   buildOpenCodePromptParts,
   getOpenCodeRuntimeSnapshot,
   isOpenCodeNotFoundError,
-  refreshOpenCodeSessionToolSelection,
   runOpenCodeTextPrompt,
   startOpenCodeSession,
 } from "./openCodeRuntime";
@@ -203,27 +202,30 @@ describe("openCodeRuntime", () => {
         }),
       }),
     }));
-    expect(handle.toolSelection).toBeNull();
 
     await handle.close("handle_close");
     expect(mockState.sharedLease.close).toHaveBeenCalledWith("handle_close");
   });
 
-  it("never states external_directory on any ADE ruleset", async () => {
+  it("states external_directory only on full-auto, and only as allow", async () => {
     // OpenCode's own default for this key is
     // `{"*": "ask", <tmp>: "allow", <skill dirs>: "allow", <reference dirs>: "allow"}`.
     // A bare string expands to one `{pattern: "*"}` rule, an agent block's rules
     // are appended after the defaults, and lookup is a `findLast` over the merged
-    // list — so stating `external_directory` at all wins for every path and
-    // silently revokes OpenCode's access to its own temp, skill, and reference
-    // directories, whether ADE spelled it "ask" or "deny". Omitting the key
-    // already means "ask outside the worktree".
+    // list — so stating it "ask" or "deny" wins for every path and silently
+    // revokes OpenCode's access to its own temp, skill, and reference
+    // directories. Omitting the key already means "ask outside the worktree".
+    //
+    // Full auto is the one exception: it exists to never prompt, so it states
+    // "allow" — appending an allow over the built-in allows can only widen
+    // access that was already permitted.
     const config = buildOpenCodeConfig({ projectConfig: { ai: {} } as any }) as Record<string, any>;
     const agents = config.agent as Record<string, { permission: Record<string, unknown> }>;
 
-    for (const agentName of ["ade-edit", "ade-full-auto", "ade-plan", "ade-helper"]) {
+    for (const agentName of ["ade-edit", "ade-plan", "ade-helper"]) {
       expect(agents[agentName]!.permission).not.toHaveProperty("external_directory");
     }
+    expect(agents["ade-full-auto"]!.permission).toMatchObject({ external_directory: "allow" });
     // The rest of each ruleset is unchanged: plan keeps the denials that make plan
     // mean plan. Omitting the key does loosen plan and the helper from "deny" to
     // "ask" for outside-worktree paths — plan raises an approval card, and a
@@ -698,41 +700,6 @@ describe("buildOpenCodeConfig provider injection", () => {
     const provider = providerOf({ customModelSlugs: ["noslash", "mysteryco/model"] });
     expect(provider.noslash).toBeUndefined();
     expect(provider.mysteryco).toBeUndefined();
-  });
-});
-
-describe("refreshOpenCodeSessionToolSelection", () => {
-  const handleOf = () => ({ toolSelection: null } as { toolSelection: Record<string, boolean> | null });
-
-  it("withholds OpenCode's native write and shell tools from an orchestrator lead", async () => {
-    const handle = handleOf();
-    const selection = await refreshOpenCodeSessionToolSelection(
-      handle as never,
-      { orchestrationLead: true },
-    );
-    // These are OpenCode's own built-ins, not ADE's toolset — they are what a
-    // lead could otherwise use to edit code or run shell directly.
-    expect(selection).toMatchObject({
-      bash: false,
-      edit: false,
-      write: false,
-      patch: false,
-      task: false,
-    });
-    // Reads stay available so the lead can still plan.
-    expect(selection).not.toHaveProperty("read");
-    expect(selection).not.toHaveProperty("grep");
-    expect(selection).not.toHaveProperty("glob");
-    // The handle carries the same map, so a resumed prompt cannot drop it.
-    expect(handle.toolSelection).toEqual(selection);
-  });
-
-  it("leaves workers and validators on OpenCode's default toolset", async () => {
-    for (const options of [undefined, { orchestrationLead: false }]) {
-      const handle = handleOf();
-      await expect(refreshOpenCodeSessionToolSelection(handle as never, options)).resolves.toBeNull();
-      expect(handle.toolSelection).toBeNull();
-    }
   });
 });
 

@@ -15,7 +15,8 @@ import type {
 import type { AppResourceUsageSnapshot } from "../../../../shared/types";
 import { appResourcePressureLevel } from "../../../lib/resourcePressure";
 import { COLORS, SANS_FONT, inlineBadge } from "../../lanes/laneDesignTokens";
-import { PANEL_STYLE, STORAGE_BRAND } from "./storageUiConstants";
+import { SettingsDashboardPage, SettingsDashboardStat } from "../primitives/SettingsDashboardPage";
+import { STORAGE_BRAND } from "./storageUiConstants";
 import {
   daemonMemoryBytes,
   dbSizeSamples,
@@ -52,41 +53,33 @@ export function TrendArrow({ trend }: { trend: Trend }) {
   );
 }
 
+/**
+ * One diagnostic figure. The tile itself is `SettingsDashboardStat` — the one
+ * stat tile every dashboard page uses — with an icon glyph tucked in front of
+ * the label, which is the only thing this surface adds over a plain stat.
+ */
 function DiagnosticTile({
   icon,
   label,
   value,
   sub,
-  valueColor,
 }: {
   icon: React.ReactNode;
   label: string;
   value: React.ReactNode;
   sub?: React.ReactNode;
-  valueColor?: string;
 }) {
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 6,
-        padding: 14,
-        borderRadius: 11,
-        border: `1px solid ${COLORS.borderMuted}`,
-        background: "color-mix(in srgb, var(--color-fg) 2.5%, transparent)",
-        minWidth: 0,
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: 7, color: COLORS.textMuted }}>
-        {icon}
-        <span style={{ fontFamily: SANS_FONT, fontSize: 10.5, fontWeight: 600, letterSpacing: 0.3, textTransform: "uppercase" }}>{label}</span>
-      </div>
-      <div style={{ fontFamily: SANS_FONT, fontSize: 16, fontWeight: 650, color: valueColor ?? COLORS.textPrimary, fontVariantNumeric: "tabular-nums" }}>
-        {value}
-      </div>
-      {sub ? <div style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>{sub}</div> : null}
-    </div>
+    <SettingsDashboardStat
+      label={
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
+          {icon}
+          {label}
+        </span>
+      }
+      value={value}
+      hint={sub}
+    />
   );
 }
 
@@ -150,25 +143,20 @@ export function DiagnosticsStrip({
   const notAvailable = <span style={{ color: COLORS.textMuted, fontWeight: 500, fontSize: 13 }}>Not available yet</span>;
 
   return (
-    <section
-      id="diagnostics"
-      style={{ ...PANEL_STYLE, padding: 18, display: "flex", flexDirection: "column", gap: 14, scrollMarginTop: 16 }}
+    // Read-only figures, so this is a dashboard page: the panel, the title and
+    // the scope chip come from the template rather than being drawn here.
+    <SettingsDashboardPage
+      anchor="diagnostics"
+      title="Health & diagnostics"
+      description="How the background service is doing on this computer."
     >
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+      {usageReady && hasPressureSignal ? (
         <div>
-          <h3 style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 13.5, fontWeight: 650, color: COLORS.textPrimary }}>
-            Health & diagnostics
-          </h3>
-          <div style={{ fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textMuted, marginTop: 3 }}>
-            How the background service is doing on this computer.
-          </div>
-        </div>
-        {usageReady && hasPressureSignal ? (
           <span style={{ ...inlineBadge(healthColor, { fontSize: 11, gap: 5 }), display: "inline-flex", alignItems: "center" }}>
             <Gauge size={13} weight="fill" /> {health.label}
           </span>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
         <DiagnosticTile
@@ -211,6 +199,6 @@ export function DiagnosticsStrip({
           value={lastRun ? <span style={{ fontSize: 13 }}>{maintenanceHeadline(lastRun)}</span> : notAvailable}
         />
       </div>
-    </section>
+    </SettingsDashboardPage>
   );
 }

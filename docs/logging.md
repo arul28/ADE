@@ -140,6 +140,26 @@ refuses a recycled pid, and `agent_chat.claude_subprocess_taskkill_failed` on
 Windows. They carry pids and session ids and no command lines, and none is a
 PostHog event.
 
+A CTO voice call and the capture gesture each write their own local structured
+line families, and neither is a PostHog event. `cto_voice.*` covers the call's
+whole life at the runtime that owns it: lifecycle (`start`, `call_end`,
+`end_call_scheduled`, `router_state`, `owner_went_quiet`), the delegation loop
+(`function_call`, `turn_failed`, `turn_interrupted`, `turn_timing`,
+`function_output_dropped`), the transcript gate (`transcript_accepted`,
+`transcript_rejected`, `transcript_valve_tripped` / `_cleared`), the bounded
+audio queues (`preopen_audio_dropped`, `output_audio_dropped`), and the ways a
+socket or a permission hold fails (`socket_error`, `socket_rejected`,
+`session_error`, `read_only_failed`, `confirm_mode_failed`). They carry call
+ids, coarse reasons, counts and durations. They never carry the transcript, the
+spoken words, the model's audio, or any part of the user's OpenAI key — the
+provider's own error text is classified into a house sentence before it is
+logged or read aloud. `capture.*` is the helper supervisor's equivalent
+(`helper_started`, `helper_spawn_failed`, `helper_exited`, `helper_error`,
+`helper_stderr`, `helper_invalid_output`, `helper_output_overflow`,
+`helper_path_outside_output_dir`, `chord_ignored`, `late_answer_dropped`); it
+records why a chord was refused or a shot never arrived and carries no window
+title, app name, or image.
+
 Product analytics records a small number of meaningful product facts such as "an anonymous installation opened the Work screen" or "a chat session started." It must never inherit arbitrary fields from a log record, exception, IPC payload, database row, or UI component props. Log calls and product-analytics calls should remain separate at the call site.
 
 ## Source file map
@@ -149,7 +169,9 @@ Shared desktop/runtime boundary:
 - `apps/desktop/src/shared/types/productAnalytics.ts` defines the closed event, surface, status, and capture contracts.
 - `apps/desktop/src/main/services/analytics/productAnalyticsPolicy.ts` owns property allowlists, coarse value normalization, internal-only events, and the global/per-event/per-minute budgets.
 - `apps/desktop/src/main/services/analytics/productAnalyticsService.ts` owns machine consent, installation identity, salted identifier hashing, persisted deduplication/quota state, and the bounded direct Capture API transport.
-- `apps/desktop/src/main/services/analytics/usageProductAnalyticsExporter.ts`, `dailyUsageAnalytics.ts`, and `agentTurnProductAnalytics.ts` are the durable-ledger, daily-aggregate, and work-session producers. Their focused coverage is consolidated in `productAnalyticsService.test.ts`.
+- `apps/desktop/src/main/services/analytics/usageProductAnalyticsExporter.ts`, `dailyUsageAnalytics.ts`, and `agentTurnProductAnalytics.ts` are the durable-ledger, daily-aggregate, and work-session producers. `agentTurnProductAnalytics.ts` also owns `captureChatHandoffReplayAnalytics`, the handoff-replay outcome described below. Their focused coverage is consolidated in `productAnalyticsService.test.ts`.
+- `apps/desktop/src/main/services/analytics/featureProductAnalytics.ts` owns the closed, content-free `ade_feature_used` producers for provider accounts, API credentials, custom presets, proxy, reset-credit outcomes, and pending-question dismissal. It maps provider-shaped input to the existing coarse provider-family allowlist before capture.
+- `apps/desktop/src/main/services/analytics/captureGestureProductAnalytics.ts` is the capture-gesture producer (`reportCaptureGesture`). It takes a `Pick<ProductAnalyticsService, "captureInternal">` rather than the service, so the one call site cannot reach anything else through it. The CTO voice call's single end-of-call event is emitted inline from `services/cto/ctoVoiceRuntimeService.ts`, the durable owner of a call and the only place that sees every way one can finish.
 - `apps/desktop/src/main/services/ipc/registerIpc.ts`, `apps/desktop/src/preload/preload.ts`, and `apps/desktop/src/renderer/components/analytics/ProductAnalyticsLifecycle.tsx` expose the safe renderer boundary and lifecycle producers. `ProductAnalyticsSection.tsx` is the desktop opt-out UI.
 
 Attached clients and native surfaces:
@@ -201,6 +223,28 @@ The public contract is `apps/desktop/src/shared/types/productAnalytics.ts`. The 
 - `ade_relay_suppressed`
 - `ade_account_session_unreadable`
 - `ade_brain_action_failed`
+
+The new product facts reuse `ade_feature_used`; they do not add an event name or
+raise a ceiling. The taxonomy is closed at the producer and again by
+`productAnalyticsPolicy.ts`:
+
+| feature | action | outcome | provider property |
+| --- | --- | --- | --- |
+| `provider_accounts` | `account_created`, `account_removed`, `default_selected` | `completed` | Claude/Codex family |
+| `provider_accounts` | `balance_changed`, `auto_start_changed` | `enabled`, `disabled` | Claude/Codex family |
+| `api_credentials` | `credential_stored`, `credential_removed` | `completed` | coarse provider family |
+| `presets` | `preset_created`, `preset_deleted` | `completed` | coarse harness/provider family |
+| `proxy` | `sign_in` | `success` | Claude/Codex family |
+| `proxy` | `start`, `stop` | `completed` | omitted; no provider is involved |
+| `usage` | `reset_credit_consumed` | `completed`, `nothing_to_reset`, `no_credit`, `already_redeemed`, `failed` | `codex` |
+| `chat` | `pending_input_dismissed` | `completed` | coarse session provider family |
+
+Every row is passed through `sanitizeProductAnalyticsProperties` in
+`apps/desktop/src/main/services/analytics/productAnalyticsPolicy.ts`, which
+keeps only the event's property keys and closed values; its `safeStringProperty`
+path drops arbitrary strings. Provider mapping is also performed by
+`featureProductAnalytics.ts` before capture, and local dedupe keys are hashed
+by the analytics service rather than transmitted.
 
 The update and reliability events are low-frequency by construction: the five `ade_update_*` events fire at most once per install attempt or idle-apply cycle (daily caps 10–20, minute caps 3–6). `ade_update_install_did_not_land` is emitted once at startup when a requested install relaunched on the old version, so it is bounded by app launches that follow a failed handoff, and carries only a bounded `attempt` counter; `ade_brain_recovered` fires once per wedge recovery at brain startup; `ade_renderer_recovered` fires once per lost renderer and is bounded by the recovery budget itself (three reload attempts per rolling 60 seconds, after which the window stays down rather than looping), carrying only `crash_reason` — Electron's closed enum, normalized to `unknown` for any future value — and whether the reload was still allowed, never the window URL or title; `ade_publish_failing` is edge-triggered once per sustained failure episode (first crossing of two minutes), never per attempt.
 
@@ -293,6 +337,119 @@ operational lines (`agent_chat.auto_resume_scheduled`,
 `agent_chat.auto_resume_cancelled`, `agent_chat.auto_resume_schedule_failed`),
 which do carry session ids, schedule ids, and fire times, are not PostHog
 events.
+
+What becomes of a handoff's transcript replay records one coarse fact on the
+same `ade_feature_used` event with `feature: "chat"` and
+`action: "handoff_replay"`, at the durable owners: `handoffSession` once the
+pre-flight has resolved, and the Claude replay-overflow recovery once per
+terminal. `outcome` is a closed set of five values — `fit` (the whole
+conversation reached the new model), `truncated` (only its newest turns did),
+`refused` (the handoff could not be made at all), `retried` (ADE re-sent the
+message with less history and the model took it), and `gave_up` (it ran out of
+room and handed the turn back). `provider` rides along as the existing coarse
+target-provider slug. The product question is only whether a cross-provider
+handoff carries the conversation, so nothing finer crosses the boundary: no
+model name, no turn counts, no share of the context window, no notice copy, and
+no part of the transcript. A `share_bucket` property was considered and left
+out — no bucket key for a proportion exists, and the five outcomes already
+answer the question.
+
+Volume is bounded by a `chat_handoff_replay:<session>:<outcome>` deduplication
+key (the service salts and hashes it locally; it is never sent) with a one-hour
+minimum interval. A handoff is a deliberate user action that emits once, and the
+recovery emits at most one `retried` or `gave_up` per user message, so worst
+case is five accepted events per chat per hour and realistic volume is single
+digits per installation per day — inside the existing `ade_feature_used`
+140-per-day / 30-per-minute limits and the shared 200-event ceiling. No ceiling
+was raised, and no PostHog definition changed: the provisioning scripts
+enumerate event names, not `action` or `outcome` values. The recovery's local
+operational lines (`agent_chat.claude_replay_overflow_retry`,
+`agent_chat.claude_replay_overflow_gave_up`), which carry session and turn ids
+and turn counts, are not PostHog events.
+
+### Provider accounts, credentials, presets, proxy, and chat decisions
+
+Provider-account mutations are captured at the `provider_instances` action
+domain in `apps/desktop/src/main/services/adeActions/registry.ts`, after the
+machine-local registry write succeeds. `create`, `remove`, and `setDefault`
+use `provider_accounts` with `account_created`, `account_removed`, or
+`default_selected` and `outcome: "completed"`. The two settings carried by
+`setSettings` are split into `balance_changed` and `auto_start_changed`, with
+`outcome: "enabled"` or `"disabled"`. The only other property is the Claude or
+Codex family. A per-action/per-outcome/per-family key with a one-hour minimum
+interval admits at most 336 events in a theoretical two-provider day before
+the event budget applies; the event-level `ade_feature_used` ceiling accepts
+at most 140 per UTC day and 30 per minute (and the shared ceiling remains
+200).
+No account id, label, config-home path, email, plan, or refresh/list activity is
+captured.
+
+API-credential store and remove mutations are captured in
+`apps/desktop/src/main/services/ai/apiKeyStore.ts`, after the multi-credential
+write or removal completes. They use `api_credentials` with
+`credential_stored`/`credential_removed`, `outcome: "completed"`, and the
+coarse provider family. The provider value is mapped before it reaches the
+payload, so arbitrary gateway/provider names become `other`; two actions across
+the eleven closed provider families produce at most 528 one-hour-key slots per
+day before the event budget applies. The event-level 140-per-day /
+30-per-minute `ade_feature_used` ceilings are the hard accepted bound, and the
+shared daily budget remains 200. Legacy secret hydration, credential reads,
+readiness probes, masked summaries, and the secret/key material itself remain
+untracked.
+
+Custom-preset create/delete changes are observed at the main-process
+`accountSettingsSync` write callback in `apps/desktop/src/main/services/ipc/registerIpc.ts`,
+after the account-settings action is confirmed. The callback diffs the
+normalized local list only to identify additions/removals; it sends
+`presets` with `preset_created` or `preset_deleted`, `outcome: "completed"`,
+and the coarse harness/provider family. Updates with the same preset id do not
+look like creates or deletes. Two actions across the eleven closed provider
+families produce at most 528 one-hour-key slots per day; the event-level
+`ade_feature_used` 140-per-day / 30-per-minute limits are the hard accepted
+bound and the shared 200-event ceiling is unchanged. Preset ids, names, logo
+data, model ids, credential ids, labels, paths, URLs, and account-setting
+contents never enter the event. Account-settings list/sync reads and launch
+resolution are not analytics.
+
+Proxy sign-in, start, and stop are captured by the durable service in
+`apps/ade-cli/src/services/proxy/proxyService.ts`. A transition to running
+emits `proxy/start` with `outcome: "completed"`; a successful stop emits
+`proxy/stop` with the same outcome; a successful provider sign-in emits
+`proxy/sign_in` with `outcome: "success"` and the Claude/Codex family. The
+service emits only after the supervisor or auth-file mutation succeeds, and
+never includes authorization URLs, login ids, prefixes, emails, plans,
+management keys, or error text. A one-hour action/outcome/family key limits
+the transition facts to at most 96 accepted events per theoretical two-provider
+day before the existing `ade_feature_used` and shared ceilings; the hard
+event-level bound remains 140 per day and 30 per minute. Proxy status,
+login polling, health probes, and subscription launch reads stay untracked.
+
+Reset-credit consume outcomes are captured in
+`apps/desktop/src/main/services/usage/usageTrackingService.ts` after the
+consume result is known, including invalid/missing-account failures. The event
+is `usage/reset_credit_consumed`, always carries provider `codex`, and maps
+the service statuses to `completed`, `nothing_to_reset`, `no_credit`,
+`already_redeemed`, or `failed`. One key per outcome with a one-hour minimum
+interval admits at most 120 events per day before the existing event-level
+`ade_feature_used` 140-per-day / 30-per-minute ceilings; no polling, quota
+snapshot read, probe, or account id is included. Analytics failures are
+swallowed and never change the reset result.
+
+When a user dismisses a dismissible async question, the chat service emits
+`chat/pending_input_dismissed` with `outcome: "completed"` after the durable
+receipt is written. The provider is reduced to the existing coarse family;
+the pending item id, question text, answers, turn id, session id, transcript,
+and notice copy remain local. The one-hour action/outcome/family key and the
+eleven closed provider families allow at most 264 one-hour-key slots per day
+before budgets. The event-level `ade_feature_used` 140-per-day /
+30-per-minute limits are the hard accepted bound, and the shared daily budget
+remains 200. Approval responses, pending input reads, and provider runtime
+polling do not emit this fact.
+
+These facts intentionally remain out of `scripts/posthog/dashboard-spec.mjs`:
+there is no concrete dashboard question or card for them yet. The existing
+surface/feature volume views continue to include the shared event without a
+dashboard contract change.
 
 Which tool an installation opens in the Work tools pane records the existing
 `ade_feature_used` event at the pane's single writer (`useWorkSidebarTool`'s
@@ -641,6 +798,44 @@ the existing `ade_feature_used` and shared daily ceilings. Hover, right-click,
 snapshot refresh, acknowledgements, delivery retries, APNs/ActivityKit frames,
 and native presentation changes remain untracked because they are either
 high-frequency mechanics or can expose work-specific interaction patterns.
+
+### CTO voice calls and the capture gesture
+
+A CTO voice call records one `ade_feature_used` event when it ENDS, emitted from
+the runtime-hosted call service — the durable owner of the call, and the only
+place that sees every way one can finish. It carries `feature: "cto"`,
+`action: "voice_call"`, one closed `outcome`, and the existing coarse
+`duration_bucket`. The five outcomes are the whole product question: `completed`,
+`rejected_key` (OpenAI refused the key), `connection_failed` (the socket never
+came up), `microphone_unavailable` (the OS would not open a microphone), and
+`ended_early` (the call ended before it got going). They are mapped from the
+teardown reason and the HTTP status, never from the sentence the user read —
+those name a provider and a settings pane. Nothing about the call itself
+crosses: not the transcript, the captions, the spoken words, the project, the
+lane, the CTO's name, the voice, the cost, or any part of a key. The bucket
+reuses the existing `duration_bucket` vocabulary (`under_1m` … `over_2h`)
+rather than a voice-specific spelling, so call length stays comparable with
+every other duration in the taxonomy.
+
+A deduplication key per call id makes the two terminal states one call publishes
+— `failed` then `ended` — a single accepted event. A call is a deliberate,
+attended act that bills by the minute, so the realistic worst case is a handful
+per installation per UTC day; the hard bound is the `ade_feature_used`
+140-per-day / 30-per-minute limits and the shared 200-event ceiling, neither of
+which was raised.
+
+The capture gesture records the same event from the main-process handler that
+delivers or refuses the shot, with `feature: "cto"`,
+`action: "capture_gesture"`, and one of three coarse outcomes: `delivered`,
+`failed`, and `too_large` (a display ADE could not fit into an attachment even
+after four halvings — the one failure that is a product fact rather than an
+environment one). Never the window, its title, the app it belonged to, the temp
+path the PNG passed through, the image, or the helper's error text. A
+per-outcome one-minute deduplication key bounds a chord-mashing loop to at most
+1,440 accepted events per outcome in theory, and the `ade_feature_used`
+30-per-minute and 140-per-day limits bound it in practice; the realistic number
+is single digits. No ceiling was raised, and the dashboard spec is deliberately
+untouched — no card asks either question yet.
 
 ### Native iOS
 

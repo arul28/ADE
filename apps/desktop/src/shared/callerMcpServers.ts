@@ -15,12 +15,9 @@ import type { ShippedProvider } from "./providers";
  * looks like, and what each provider can honestly do with one — deliver it, and
  * enforce strict mode over it.
  *
- * `CALLER_MCP_SUPPORT`'s strict-mode fields are deliberately the same shape as
- * `ORCHESTRATION_LEAD_MCP_ISOLATION` in `orchestrationRuntimePolicy.ts`, and
- * for the providers where the mechanism is identical it says so. The two are
- * separate because they answer different questions: the orchestration table
- * asks "can a lead be denied capability", this one asks "can an embedder be
- * promised a clean MCP surface".
+ * `CALLER_MCP_SUPPORT`'s strict-mode fields answer one question per provider:
+ * can an embedder be promised a clean MCP surface, and what still gets through
+ * when the answer is "best-effort".
  */
 
 export type CallerMcpServers = Record<string, AgentChatMcpServerConfig>;
@@ -79,8 +76,6 @@ export const CALLER_MCP_SUPPORT = {
   },
   codex: {
     level: "best-effort",
-    // Same mechanism as ORCHESTRATION_LEAD_MCP_ISOLATION.codex; kept separate
-    // because this string is reported to the embedder.
     mechanism: "thread config overlay: mcp_servers.<name>.enabled = false per configured server",
     residual:
       "Codex merges the thread `config` overlay into config.toml rather than replacing it, so "
@@ -95,8 +90,6 @@ export const CALLER_MCP_SUPPORT = {
   },
   cursor: {
     level: "best-effort",
-    // Same mechanism as ORCHESTRATION_LEAD_MCP_ISOLATION.cursor; kept separate
-    // because this string is reported to the embedder.
     mechanism: "local.settingSources with the project and plugin layers dropped",
     residual:
       "The Cursor SDK derives includeProjectMcp/includePluginMcp from settingSources, so dropping "
@@ -107,8 +100,6 @@ export const CALLER_MCP_SUPPORT = {
   },
   droid: {
     level: "best-effort",
-    // Same mechanism as ORCHESTRATION_LEAD_MCP_ISOLATION.droid; kept separate
-    // because this string is reported to the embedder.
     mechanism: "session-scoped toggleMcpTool over the live MCP tool list",
     residual:
       "Droid has no config-level MCP switch, so ADE disables non-ADE MCP tools per session after "
@@ -118,8 +109,6 @@ export const CALLER_MCP_SUPPORT = {
   },
   opencode: {
     level: "best-effort",
-    // Same mechanism as ORCHESTRATION_LEAD_MCP_ISOLATION.opencode; kept
-    // separate because this string is reported to the embedder.
     mechanism: "dedicated server with ADE-authored config + OPENCODE_DISABLE_PROJECT_CONFIG=1",
     residual:
       "The project config layer is disabled and the config is ADE-authored, but the dedicated "
@@ -238,16 +227,228 @@ export function resolveCallerMcpCapability(
  * order — silently, and differently per provider. Rejecting the collision is
  * the only outcome that behaves the same everywhere.
  *
- * Mirrors CTO_MCP_SERVER_NAME / ORCHESTRATION_CLAUDE_SERVER_NAME in
- * agentChatService.ts and the `computer_use` key in codexComputerUse.ts. Kept
+ * Mirrors CTO_MCP_SERVER_NAME in agentChatService.ts and the `computer_use`
+ * key in codexComputerUse.ts. Kept
  * here rather than imported because this module is shared and must not pull in
  * the 49k-line service.
  */
 export const ADE_RESERVED_MCP_SERVER_NAMES: readonly string[] = [
   "computer_use",
   "ade-cto",
-  "ade-orchestration",
 ];
+
+// ---------------------------------------------------------------------------
+// Codex config.toml MCP enumeration
+// ---------------------------------------------------------------------------
+
+/**
+ * Extracts the server names declared under Codex's `mcp_servers` config table.
+ *
+ * Codex has no "managed servers only" switch; the only per-server knob is
+ * `mcp_servers.<name>.enabled`, so strict mode is expressed as an explicit
+ * `enabled = false` for every configured server. Handles the three
+ * shapes `config.toml` can use: `[mcp_servers.name]` headers, dotted
+ * `mcp_servers.name.key = …` assignments, and single- or multi-line inline
+ * `mcp_servers = { name = { … } }` tables.
+ */
+export function codexConfiguredMcpServerNames(configText: string): string[] {
+  const names: string[] = [];
+  const add = (raw: string): void => {
+    const name = raw.trim().replace(/^["']|["']$/g, "").trim();
+    if (!name || names.includes(name)) return;
+    names.push(name);
+  };
+  const firstSegment = (path: string): string | null => {
+    const trimmed = path.trim();
+    if (trimmed.startsWith("\"") || trimmed.startsWith("'")) {
+      const quote = trimmed[0]!;
+      const end = trimmed.indexOf(quote, 1);
+      return end > 0 ? trimmed.slice(1, end) : null;
+    }
+    const segment = trimmed.split(".")[0]?.trim() ?? "";
+    return segment.length ? segment : null;
+  };
+
+  const normalizedConfig = configText.replace(/\r\n?/g, "\n");
+  const inlineAssignment = /^\s*mcp_servers\s*=\s*\{/gm;
+  let inBareMcpServersTable = false;
+  let inlineMatch: RegExpExecArray | null;
+  while ((inlineMatch = inlineAssignment.exec(normalizedConfig)) !== null) {
+    const openBrace = normalizedConfig.indexOf("{", inlineMatch.index);
+    const closeBrace = findTomlInlineTableEnd(normalizedConfig, openBrace);
+    if (openBrace < 0 || closeBrace < 0) continue;
+    for (const key of inlineTableKeys(stripTomlComments(
+      normalizedConfig.slice(openBrace + 1, closeBrace),
+    ))) add(key);
+    inlineAssignment.lastIndex = closeBrace + 1;
+  }
+
+  for (const line of normalizedConfig.split("\n")) {
+    const withoutComment = stripTomlComments(line).trim();
+    if (!withoutComment.length) continue;
+
+    const tableHeader = withoutComment.match(/^\[\[?\s*(.*?)\s*\]\]?$/)?.[1]?.trim();
+    if (tableHeader !== undefined) {
+      if (tableHeader === "mcp_servers") {
+        inBareMcpServersTable = true;
+        continue;
+      }
+
+      const header = tableHeader.match(/^mcp_servers\s*\.\s*(.+)$/)?.[1];
+      if (header) {
+        const segment = firstSegment(header);
+        if (segment) add(segment);
+        inBareMcpServersTable = false;
+        continue;
+      }
+
+      inBareMcpServersTable = false;
+      continue;
+    }
+
+    if (inBareMcpServersTable) {
+      const bareAssignment = withoutComment.match(
+        /^((?:"[^"]+"|'[^']+'|[A-Za-z0-9_-]+)(?:\s*\.\s*(?:"[^"]+"|'[^']+'|[A-Za-z0-9_-]+))*)\s*=/,
+      )?.[1];
+      if (bareAssignment) {
+        const segment = firstSegment(bareAssignment);
+        if (segment) add(segment);
+        continue;
+      }
+    }
+
+    const dotted = withoutComment.match(/^mcp_servers\s*\.\s*(.+?)\s*=/)?.[1];
+    if (dotted) {
+      const segment = firstSegment(dotted);
+      if (segment) add(segment);
+      continue;
+    }
+
+    const inline = withoutComment.match(/^mcp_servers\s*=\s*\{(.*)\}\s*$/)?.[1];
+    if (inline !== undefined) {
+      for (const key of inlineTableKeys(stripTomlComments(inline))) add(key);
+    }
+  }
+  return names;
+}
+
+function stripTomlComments(text: string): string {
+  let output = "";
+  let quote: string | null = null;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index]!;
+    if (quote) {
+      output += char;
+      if (quote === '"' && char === "\\") {
+        const next = text[index + 1];
+        if (next !== undefined) output += next;
+        index += 1;
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      output += char;
+    } else if (char === "#") {
+      while (index < text.length && text[index] !== "\n") index += 1;
+      if (index < text.length) output += "\n";
+    } else {
+      output += char;
+    }
+  }
+  return output;
+}
+
+function findTomlInlineTableEnd(text: string, openBrace: number): number {
+  if (openBrace < 0) return -1;
+  let depth = 0;
+  let quote: string | null = null;
+  for (let index = openBrace; index < text.length; index += 1) {
+    const char = text[index]!;
+    if (quote) {
+      if (quote === '"' && char === "\\") {
+        index += 1;
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === "#") {
+      while (index < text.length && text[index] !== "\n") index += 1;
+      continue;
+    }
+    if (char === "{") {
+      depth += 1;
+    } else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
+}
+
+/** Top-level `key =` names of a single-line TOML inline table body. */
+function inlineTableKeys(body: string): string[] {
+  const keys: string[] = [];
+  let depth = 0;
+  let quote: string | null = null;
+  let token = "";
+  for (let index = 0; index < body.length; index += 1) {
+    const char = body[index]!;
+    if (quote) {
+      if (char === quote && body[index - 1] !== "\\") quote = null;
+      else token += char;
+      continue;
+    }
+    if (char === "\"" || char === "'") { quote = char; continue; }
+    if (char === "{" || char === "[") { depth += 1; continue; }
+    if (char === "}" || char === "]") { depth -= 1; continue; }
+    if (depth === 0 && char === "=") {
+      const key = token.trim();
+      if (key.length) keys.push(key);
+      token = "";
+      // Skip the value until the next top-level comma.
+      let valueDepth = 0;
+      let valueQuote: string | null = null;
+      index += 1;
+      for (; index < body.length; index += 1) {
+        const valueChar = body[index]!;
+        if (valueQuote) {
+          if (valueChar === valueQuote && body[index - 1] !== "\\") valueQuote = null;
+          continue;
+        }
+        if (valueChar === "\"" || valueChar === "'") { valueQuote = valueChar; continue; }
+        if (valueChar === "{" || valueChar === "[") { valueDepth += 1; continue; }
+        if (valueChar === "}" || valueChar === "]") { valueDepth -= 1; continue; }
+        if (valueChar === "," && valueDepth === 0) break;
+      }
+      continue;
+    }
+    if (depth === 0) token += char;
+  }
+  return keys;
+}
+
+/**
+ * The `mcp_servers` overlay a strict-MCP Codex thread config carries: every
+ * user-configured server explicitly switched off.
+ */
+export function codexDisabledMcpServerOverrides(
+  configuredServerNames: readonly string[],
+): Record<string, { enabled: false }> {
+  const overrides: Record<string, { enabled: false }> = {};
+  for (const name of configuredServerNames) {
+    const trimmed = name.trim();
+    if (trimmed.length) overrides[trimmed] = { enabled: false };
+  }
+  return overrides;
+}
 
 /** Ceiling on injected servers. Each one costs a connection and a tool catalog. */
 export const MAX_CALLER_MCP_SERVERS = 32;

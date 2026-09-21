@@ -14,6 +14,11 @@
         "value": "https://agentclientprotocol.com/protocol/session-modes#plan",
         "name": "Plan",
         "description": "Plan mode for creating and executing multi-step plans"
+      },
+      {
+        "value": "https://agentclientprotocol.com/protocol/session-modes#autopilot",
+        "name": "Autopilot",
+        "description": "Autonomous mode that enables allow-all and runs until task completion without user interaction (experimental)"
       }
     ],
     "category": "mode"

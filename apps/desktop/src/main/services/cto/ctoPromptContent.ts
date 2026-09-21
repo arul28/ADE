@@ -2,8 +2,10 @@ import { CTO_TOOL_PACK_NAMES, CTO_TOOL_PACK_SCOPES } from "../ai/tools/ctoToolPa
 
 /**
  * Onboarding step id that records the CTO's opening turn. Not a user-facing
- * setup step — it lives in the same list so it is persisted and so
- * `resetOnboarding` clears it alongside the rest.
+ * setup step — there is no setup wizard. It rides the onboarding step list
+ * purely because that list is the durable per-project marker store, and it is
+ * write-once: nothing clears it, so the opening turn is sent exactly once per
+ * project for the life of the identity record.
  */
 export const CTO_INTRO_ONBOARDING_STEP = "intro";
 

@@ -30,7 +30,8 @@ func syncQuickOpenRequestArgs(
   query: String,
   limit: Int,
   includeIgnored: Bool,
-  allowComposerPrefixFallback: Bool
+  allowComposerPrefixFallback: Bool,
+  includeDirectories: Bool = false
 ) -> [String: Any] {
   var args: [String: Any] = [
     "workspaceId": workspaceId,
@@ -40,6 +41,13 @@ func syncQuickOpenRequestArgs(
   ]
   if allowComposerPrefixFallback {
     args["allowComposerPrefixFallback"] = true
+  }
+  // Only the composer's `@` menu wants folders, and it inserts a pointer into
+  // the draft rather than opening or attaching anything. Every other caller
+  // opens what it receives, so the flag stays off by default and is omitted
+  // entirely when false — an older host then ignores nothing it has not seen.
+  if includeDirectories {
+    args["includeDirectories"] = true
   }
   return args
 }
@@ -3573,6 +3581,7 @@ func syncOutboundEnvelopeProjectId(type: String, activeProjectId: String?) -> St
     "chat_subscribe",
     "chat_unsubscribe",
     "chat_history",
+    "chat_tool_result",
   ]
   guard projectScopedTypes.contains(type) else { return nil }
   return syncNormalizedCommandScopeValue(activeProjectId)
@@ -11441,7 +11450,8 @@ final class SyncService: ObservableObject {
     query: String,
     limit: Int = 30,
     includeIgnored: Bool,
-    allowComposerPrefixFallback: Bool = false
+    allowComposerPrefixFallback: Bool = false,
+    includeDirectories: Bool = false
   ) async throws -> [FilesQuickOpenItem] {
     let boundedLimit = min(max(limit, 1), 1000)
     return try decode(
@@ -11452,7 +11462,8 @@ final class SyncService: ObservableObject {
           query: query,
           limit: boundedLimit,
           includeIgnored: includeIgnored,
-          allowComposerPrefixFallback: allowComposerPrefixFallback
+          allowComposerPrefixFallback: allowComposerPrefixFallback,
+          includeDirectories: includeDirectories
         )
       ),
       as: [FilesQuickOpenItem].self
@@ -13792,6 +13803,117 @@ final class SyncService: ObservableObject {
     return page
   }
 
+  /// Full tool results already fetched on this device. The bounded cache is
+  /// shared by the inline card and the turn-activity sheet, and keys include
+  /// the transcript sequence so a retried item id cannot reuse an older result.
+  private let chatToolResultCache = WorkChatToolResultCache()
+
+  /// The cached full result, if this row has already been expanded once.
+  func cachedFullToolResult(
+    sessionId: String,
+    itemId: String,
+    eventSequence: Int? = nil,
+    eventTimestamp: String? = nil
+  ) -> String? {
+    chatToolResultCache.cachedFullToolResult(
+      sessionId: sessionId,
+      itemId: itemId,
+      eventSequence: eventSequence,
+      eventTimestamp: eventTimestamp
+    )
+  }
+
+  /// Fetch (or return the cached) full text of one truncated tool result.
+  ///
+  /// Concurrent expands of the same row share one request: a double tap, or an
+  /// inline card and the turn-activity sheet showing the same result, must not
+  /// become two reads of the same transcript.
+  func fullToolResult(
+    sessionId: String,
+    itemId: String,
+    eventSequence: Int? = nil,
+    eventTimestamp: String? = nil,
+    sourceOffset: Int? = nil
+  ) async throws -> String {
+    try await chatToolResultCache.fullToolResult(
+      sessionId: sessionId,
+      itemId: itemId,
+      eventSequence: eventSequence,
+      eventTimestamp: eventTimestamp
+    ) { [weak self] in
+      guard let self else { throw CancellationError() }
+      let response = try await self.fetchChatToolResult(
+        sessionId: sessionId,
+        itemId: itemId,
+        resultSequence: eventSequence,
+        resultTimestamp: eventTimestamp,
+        sourceOffset: sourceOffset
+      )
+      if response.unavailable == true {
+        throw NSError(
+          domain: "ADE",
+          code: 22,
+          userInfo: [NSLocalizedDescriptionKey: "Could not load the full result from this machine."]
+        )
+      }
+      guard response.found, let result = response.result else {
+        throw NSError(
+          domain: "ADE",
+          code: 23,
+          userInfo: [NSLocalizedDescriptionKey: "This result is no longer in the transcript."]
+        )
+      }
+      return prettyPrintedRemoteJSONValue(result)
+    }
+  }
+
+  /// Fetch one tool result in full, for a row the slim mobile wire delivered
+  /// as a head slice.
+  ///
+  /// Requires an open subscription, exactly like `chat_history`: the host
+  /// scopes the read to the transcript this device is attached to. There is no
+  /// ADE-RPC fallback on purpose — only a host that honoured
+  /// `mobileChatSlimV1` truncates a result in the first place, and that host
+  /// serves `chat_tool_result` by construction.
+  func fetchChatToolResult(
+    sessionId: String,
+    itemId: String,
+    resultSequence: Int? = nil,
+    resultTimestamp: String? = nil,
+    sourceOffset: Int? = nil
+  ) async throws -> AgentChatToolResultResponse {
+    let requestId = makeRequestId()
+    var payload = chatSubscriptionPayload(
+      sessionId: sessionId,
+      maxBytes: nil,
+      includeSinceSeq: false
+    )
+    payload["itemId"] = itemId
+    // The row's transcript sequence, so a retried item id cannot be answered
+    // with a later attempt's output. Omitted when the row has none, which is
+    // the pre-slim-wire shape the host still accepts.
+    if let resultSequence { payload["resultSequence"] = resultSequence }
+    // Paired with the sequence: a legacy transcript can repeat a sequence
+    // across host restarts, and the timestamp tells those generations apart.
+    if let resultTimestamp, !resultTimestamp.isEmpty {
+      payload["resultTimestamp"] = resultTimestamp
+    }
+    // Where this row was read from, when it came off a history page. The host
+    // reads that one row directly instead of scanning back from the tail,
+    // which is what makes a result the reader paged a long way back to
+    // fetchable at all.
+    if let sourceOffset, sourceOffset >= 0 { payload["sourceOffset"] = sourceOffset }
+    let raw = try await awaitResponse(
+      requestId: requestId,
+      disconnectOnTimeout: false,
+      timeoutMessage: "Timed out loading the full tool result.",
+      timeoutNanoseconds: 8_000_000_000
+    ) {
+      self.sendEnvelope(type: "chat_tool_result", requestId: requestId, payload: payload)
+    }
+    return try decode(raw, as: AgentChatToolResultResponse.self)
+  }
+
   func fetchChatEventHistoryPage(
     sessionId: String,
     beforeOffset: Int,
@@ -13817,7 +13939,7 @@ final class SyncService: ObservableObject {
       ) {
         self.sendEnvelope(type: "chat_history", requestId: requestId, payload: payload)
       }
-      let page = try decode(raw, as: AgentChatEventHistoryPage.self)
+      let page = try decode(raw, as: AgentChatEventHistoryPage.self).stampingEnvelopeOffsets()
       recordChatHistoryPageCursor(
         requestedSessionId: sessionId,
         beforeOffset: beforeOffset,
@@ -13838,7 +13960,7 @@ final class SyncService: ObservableObject {
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath,
       as: AgentChatEventHistoryPage.self
-    )
+    ).stampingEnvelopeOffsets()
     recordChatHistoryPageCursor(
       requestedSessionId: sessionId,
       beforeOffset: beforeOffset,
@@ -13887,16 +14009,6 @@ final class SyncService: ObservableObject {
     var totalEntries: Int
     var nextCursor: Int?
     var cursorKind: String?
-  }
-
-  struct AgentChatSubagentTranscriptMessage: Codable, Equatable {
-    var type: String
-    var uuid: String?
-    var sessionId: String
-    var parentToolUseId: String?
-    var message: RemoteJSONValue?
-    var text: String?
-    var subagentMetadata: RemoteJSONValue?
   }
 
   struct AgentChatSubagentSnapshot: Codable, Equatable {
@@ -14001,46 +14113,6 @@ final class SyncService: ObservableObject {
       nextCursor: nextCursor,
       cursorKind: responseDictionary?["cursorKind"] as? String
     )
-  }
-
-  func fetchSubagentTranscript(
-    sessionId: String,
-    agentId: String,
-    taskId: String? = nil,
-    laneId: String? = nil,
-    limit: Int? = nil,
-    offset: Int? = nil
-  ) async throws -> [AgentChatSubagentTranscriptMessage]? {
-    var args: [String: Any] = [
-      "sessionId": sessionId,
-      "agentId": agentId,
-    ]
-    if let taskId, !taskId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-      args["taskId"] = taskId
-    }
-    if let laneId, !laneId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-      args["laneId"] = laneId
-    }
-    if let limit {
-      args["limit"] = limit
-    }
-    if let offset {
-      args["offset"] = offset
-    }
-    let scope = chatCommandScope(for: sessionId)
-    let response = try await sendCommand(
-      action: chatActionName("chat.getSubagentTranscript", sessionId: sessionId),
-      args: args,
-      targetProjectId: scope.projectId,
-      targetProjectRootPath: scope.rootPath
-    )
-    if response is NSNull {
-      return nil
-    }
-    if let payload = response as? [String: Any], payload["queued"] as? Bool == true {
-      throw QueuedRemoteCommandError(action: "chat.getSubagentTranscript")
-    }
-    return try decode(response, as: [AgentChatSubagentTranscriptMessage].self)
   }
 
   func fetchSubagents(sessionId: String) async throws -> [AgentChatSubagentSnapshot] {
@@ -14625,14 +14697,26 @@ final class SyncService: ObservableObject {
     )
   }
 
-  func dispatchChatSteer(sessionId: String, steerId: String, mode: String) async throws {
+  /// Returns true only when the host reports it actually dispatched the row.
+  ///
+  /// `chat.dispatchSteer` answers `{ dispatchedAt: null }` WITHOUT throwing when
+  /// the running turn refused the message — a Cursor inline dispatch that the
+  /// live run declines leaves the row staged. Treating a non-throwing reply as
+  /// delivery would mark a still-queued message as sent.
+  ///
+  /// A durably queued command (no `dispatchedAt` key at all, because the machine
+  /// has not answered yet) reads as not-dispatched, which is the safe side: the
+  /// row keeps its queued display until reconciliation says otherwise.
+  func dispatchChatSteer(sessionId: String, steerId: String, mode: String) async throws -> Bool {
     let scope = chatCommandScope(for: sessionId)
-    _ = try await sendChatCommand(
+    let result = try await sendChatCommand(
       action: chatActionName("chat.dispatchSteer", sessionId: sessionId),
       payload: AgentChatDispatchSteerRequest(sessionId: sessionId, steerId: steerId, mode: mode),
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
     )
+    guard let record = result as? [String: Any] else { return false }
+    return record["dispatchedAt"] != nil && !(record["dispatchedAt"] is NSNull)
   }
 
   func cancelDispatchedChatSteer(sessionId: String, steerId: String) async throws {
@@ -14677,6 +14761,23 @@ final class SyncService: ObservableObject {
         answers: answers,
         responseText: responseText
       ),
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
+  }
+
+  /// Throw a dismissible question away. The host rejects any card the provider
+  /// is still waiting on, and that refusal surfaces as a thrown error rather
+  /// than being quietly swallowed into a decline.
+  func dismissChatPendingInput(
+    sessionId: String,
+    itemId: String
+  ) async throws {
+    try requireInvokableRemoteAction("chat.dismissPendingInput")
+    let scope = chatCommandScope(for: sessionId)
+    _ = try await sendChatCommand(
+      action: chatActionName("chat.dismissPendingInput", sessionId: sessionId),
+      payload: AgentChatDismissPendingInputRequest(sessionId: sessionId, itemId: itemId),
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
     )
@@ -17530,7 +17631,19 @@ final class SyncService: ObservableObject {
       "deviceType": "phone",
       "siteId": database.localSiteId(),
       "dbVersion": latestRemoteDbVersion,
-      "capabilities": ["changesetAck", "chunkedEnvelopes", "relayReauthorizeV1", "binaryEnvelopes", "foldedReplay"],
+      // `mobileChatSlimV1`: the host may fold subagent progress to the latest
+      // per agent, drop the mirrored `subagent.progress` twin, and send tool
+      // results as a bounded slice this app fetches in full on expand (see
+      // `fetchChatToolResult`). Older hosts ignore the capability and keep
+      // sending the full wire, which this app still renders unchanged.
+      "capabilities": [
+        "changesetAck",
+        "chunkedEnvelopes",
+        "relayReauthorizeV1",
+        "binaryEnvelopes",
+        "foldedReplay",
+        "mobileChatSlimV1",
+      ],
     ]
     if let appVersion = (info["CFBundleShortVersionString"] as? String)?
       .trimmingCharacters(in: .whitespacesAndNewlines),
@@ -19381,7 +19494,8 @@ final class SyncService: ObservableObject {
         let message = dict["message"] as? String ?? "Remote command rejected."
         resolve(requestId: requestId, result: .failure(NSError(domain: "ADE", code: 6, userInfo: [NSLocalizedDescriptionKey: message])))
       }
-    case "command_result", "file_response", "terminal_snapshot", "terminal_history", "chat_history":
+    case "command_result", "file_response", "terminal_snapshot", "terminal_history", "chat_history",
+         "chat_tool_result":
       resolve(requestId: requestId, result: .success(payload))
     case "chat_subscribe":
       if supportsChatStreaming,
@@ -20314,6 +20428,22 @@ final class SyncService: ObservableObject {
     )
   }
 
+  /// Spend one banked provider reset credit for `accountId`.
+  ///
+  /// The host names the outcome; the phone only phrases it. A machine that
+  /// predates reset credits does not advertise the action, and the caller shows
+  /// its own "update the machine" line rather than a silent no-op.
+  func consumeUsageResetCredit(accountId: String) async throws -> UsageConsumeResetCreditResponse {
+    try requireInvokableRemoteAction("usage.consumeResetCredit")
+    return try await sendDecodableCommand(
+      action: "usage.consumeResetCredit",
+      args: ["accountId": accountId],
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: 25_000_000_000,
+      as: UsageConsumeResetCreditResponse.self
+    )
+  }
+
   private func sendDecodableCommand<T: Decodable>(
     action: String,
     args: [String: Any] = [:],
@@ -20603,8 +20733,18 @@ final class SyncService: ObservableObject {
         let args = try decodeQueuedArgs(operation)
         switch operation.kind {
         case "command":
-          guard commandPolicy(for: operation.action) != nil else {
+          guard supportsRemoteAction(operation.action) else {
             throw NSError(domain: "ADE", code: 16, userInfo: [NSLocalizedDescriptionKey: "Queued action \(operation.action) is no longer available on this machine."])
+          }
+          guard supportsViewerRemoteAction(operation.action) else {
+            throw NSError(
+              domain: "ADE",
+              code: 17,
+              userInfo: [
+                NSLocalizedDescriptionKey: "This action is not available from a viewer device.",
+                "ADEErrorCode": "unsupported_action",
+              ]
+            )
           }
           // Replay with the operation's stored scope — a queued foreign-project
           // command must not silently retarget to whatever project is active
@@ -21768,6 +21908,16 @@ extension SyncService {
         code: 17,
         userInfo: [
           NSLocalizedDescriptionKey: "This action is not available on this machine version. Update ADE on the machine and reconnect.",
+          "ADEErrorCode": "unsupported_action",
+        ]
+      )
+    }
+    guard supportsViewerRemoteAction(action) else {
+      throw NSError(
+        domain: "ADE",
+        code: 17,
+        userInfo: [
+          NSLocalizedDescriptionKey: "This action is not available from a viewer device.",
           "ADEErrorCode": "unsupported_action",
         ]
       )
@@ -23380,12 +23530,9 @@ extension SyncService {
 
   /// Creates a projectless (machine-scope) chat on the paired host.
   ///
-  /// `interactionMode` is forwarded verbatim, and the host REFUSES the create
-  /// when it is `"orchestrator-lead"` (a personal chat is never an orchestration
-  /// lead — see `personalChatScope.ts`). Every value iOS can produce comes from
-  /// `workRuntimeWireFields`, which only ever emits `"default"` or `"plan"`, so
-  /// this path cannot trip the refusal today. Keep it that way: if a caller ever
-  /// needs a lead-mode chat, create it inside a project instead.
+  /// `interactionMode` is forwarded verbatim. Every value iOS can produce comes
+  /// from `workRuntimeWireFields`, which only ever emits `"default"` or
+  /// `"plan"`.
   func createPersonalChat(
     provider: String,
     model: String,

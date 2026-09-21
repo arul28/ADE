@@ -1,6 +1,8 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 const mockState = vi.hoisted(() => ({
   spawn: vi.fn(),
@@ -11,9 +13,12 @@ vi.mock("node:child_process", () => ({
 }));
 
 import {
+  cacheClaudeCredentials,
   clearClaudeCredentialCache,
+  invalidateCachedClaudeCredentials,
   readClaudeCredentials,
   readClaudeCredentialsWithRefresh,
+  readCodexCredentials,
   refreshClaudeCredentials,
 } from "./providerCredentialSources";
 
@@ -227,5 +232,131 @@ describe("readClaudeCredentialsWithRefresh", () => {
     const background = await readClaudeCredentialsWithRefresh(logger, { allowKeychain: false });
     expect(background?.accessToken).toBe("live-access");
     expect(readFileSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("per-account credential reads", () => {
+  /** A file reader that answers per absolute path, and records what was asked. */
+  function fileReader(byPath: Record<string, unknown>) {
+    const asked: string[] = [];
+    const spy = vi.spyOn(fs.promises, "readFile").mockImplementation(async (file) => {
+      const key = String(file);
+      asked.push(key);
+      const body = byPath[key];
+      if (body === undefined) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      return JSON.stringify(body);
+    });
+    return { asked, spy };
+  }
+
+  function liveClaudeCreds(accessToken: string) {
+    return {
+      claudeAiOauth: {
+        accessToken,
+        refreshToken: `${accessToken}-refresh`,
+        expiresAt: Date.now() + 8 * 60 * 60_000,
+      },
+    };
+  }
+
+  it("reads a scoped account from its own config home and never the Keychain", async () => {
+    setPlatform("darwin");
+    const configHome = path.join(os.tmpdir(), "ade-instance-claude-work");
+    const { asked } = fileReader({
+      [path.join(configHome, ".credentials.json")]: liveClaudeCreds("work-access"),
+      [path.join(os.homedir(), ".claude", ".credentials.json")]: liveClaudeCreds("default-access"),
+    });
+
+    const creds = await readClaudeCredentials({ configHome });
+
+    expect(creds?.accessToken).toBe("work-access");
+    expect(asked).toEqual([path.join(configHome, ".credentials.json")]);
+    // The Keychain item is the machine's default login; a scoped account has no
+    // per-account equivalent and must never be handed the default's token.
+    expect(mockState.spawn).not.toHaveBeenCalled();
+  });
+
+  it("caches each account's token under its own config home", async () => {
+    setPlatform("linux");
+    const workHome = path.join(os.tmpdir(), "ade-instance-claude-work");
+    const { spy } = fileReader({
+      [path.join(workHome, ".credentials.json")]: liveClaudeCreds("work-access"),
+      [path.join(os.homedir(), ".claude", ".credentials.json")]: liveClaudeCreds("default-access"),
+    });
+    const logger = createLogger();
+
+    const first = await readClaudeCredentialsWithRefresh(logger, { allowKeychain: false });
+    const second = await readClaudeCredentialsWithRefresh(logger, {
+      allowKeychain: false,
+      configHome: workHome,
+    });
+    // Both are now cached; neither may answer with the other's token.
+    const firstAgain = await readClaudeCredentialsWithRefresh(logger, { allowKeychain: false });
+    const secondAgain = await readClaudeCredentialsWithRefresh(logger, {
+      allowKeychain: false,
+      configHome: workHome,
+    });
+
+    expect(first?.accessToken).toBe("default-access");
+    expect(second?.accessToken).toBe("work-access");
+    expect(firstAgain?.accessToken).toBe("default-access");
+    expect(secondAgain?.accessToken).toBe("work-access");
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not let one account's missing login suppress another's read", async () => {
+    setPlatform("linux");
+    const emptyHome = path.join(os.tmpdir(), "ade-instance-claude-empty");
+    fileReader({
+      [path.join(os.homedir(), ".claude", ".credentials.json")]: liveClaudeCreds("default-access"),
+    });
+    const logger = createLogger();
+
+    // The scoped account has no credentials file at all: that must record a
+    // miss for THAT home only.
+    await expect(
+      readClaudeCredentialsWithRefresh(logger, { allowKeychain: false, configHome: emptyHome }),
+    ).resolves.toBeNull();
+    await expect(
+      readClaudeCredentialsWithRefresh(logger, { allowKeychain: false }),
+    ).resolves.toEqual(expect.objectContaining({ accessToken: "default-access" }));
+  });
+
+  it("invalidates and clears per account", async () => {
+    const workHome = path.join(os.tmpdir(), "ade-instance-claude-work");
+    cacheClaudeCredentials({ accessToken: "default-access" });
+    cacheClaudeCredentials({ accessToken: "work-access" }, workHome);
+    const logger = createLogger();
+    fileReader({});
+
+    invalidateCachedClaudeCredentials(workHome);
+    await expect(
+      readClaudeCredentialsWithRefresh(logger, { allowKeychain: false, configHome: workHome }),
+    ).resolves.toBeNull();
+    await expect(
+      readClaudeCredentialsWithRefresh(logger, { allowKeychain: false }),
+    ).resolves.toEqual(expect.objectContaining({ accessToken: "default-access" }));
+
+    clearClaudeCredentialCache();
+    await expect(
+      readClaudeCredentialsWithRefresh(logger, { allowKeychain: false }),
+    ).resolves.toBeNull();
+  });
+
+  it("reads Codex auth from the account's home, outranking CODEX_HOME", async () => {
+    const workHome = path.join(os.tmpdir(), "ade-instance-codex-work");
+    const envHome = path.join(os.tmpdir(), "ade-env-codex");
+    vi.stubEnv("CODEX_HOME", envHome);
+    fileReader({
+      [path.join(workHome, "auth.json")]: { tokens: { access_token: "work-token" } },
+      [path.join(envHome, "auth.json")]: { tokens: { access_token: "env-token" } },
+    });
+
+    await expect(readCodexCredentials(workHome)).resolves.toEqual(
+      expect.objectContaining({ accessToken: "work-token" }),
+    );
+    await expect(readCodexCredentials()).resolves.toEqual(
+      expect.objectContaining({ accessToken: "env-token" }),
+    );
   });
 });

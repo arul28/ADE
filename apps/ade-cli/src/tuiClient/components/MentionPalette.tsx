@@ -40,8 +40,13 @@ function extensionFor(path: string | undefined): string {
 
 function useLabel(suggestion: MentionSuggestion): string {
   switch (suggestion.kind) {
-    case "file":
-      return `Adds file context${extensionFor(suggestion.filePath ?? suggestion.label) !== "none" ? ` (${extensionFor(suggestion.filePath ?? suggestion.label)})` : ""}`;
+    case "file": {
+      // A folder is a pointer, not an attachment, so it must not promise that
+      // its contents are being added.
+      if (suggestion.isDirectory === true) return "Adds a folder reference";
+      const extension = extensionFor(suggestion.filePath ?? suggestion.label);
+      return `Adds file context${extension !== "none" ? ` (${extension})` : ""}`;
+    }
     case "commit":
       return "Adds a commit reference";
     case "pr":

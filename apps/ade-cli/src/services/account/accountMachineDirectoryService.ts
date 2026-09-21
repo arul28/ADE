@@ -479,7 +479,7 @@ export class AccountMachineDirectoryService {
   ): Promise<AdeAccountMachinePairResult> {
     const listed = await this.listMachines(options);
     if (listed.state === "signed_out" || listed.state === "auth_expired") {
-      throw new Error("Not signed in — run `ade login`; local and explicit remote paths still work without an account.");
+      throw new Error("Not signed in — run `ade login`. Direct local and SSH routes stay reachable meanwhile.");
     }
     if (listed.state !== "ok") {
       throw new Error(listed.message ?? "The account machine directory is unavailable.");

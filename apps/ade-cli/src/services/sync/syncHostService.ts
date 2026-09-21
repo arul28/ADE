@@ -62,6 +62,8 @@ import type {
   SyncEnvelope,
   SyncChatEventPayload,
   SyncChatHistoryRequestPayload,
+  SyncChatToolResultRequestPayload,
+  SyncChatToolResultResponsePayload,
   SyncChatSubscribePayload,
   SyncChatSubscribeSnapshotPayload,
   SyncChatUnsubscribePayload,
@@ -112,13 +114,24 @@ import {
   SYNC_INVALIDATION_TABLE_MAX_BYTES,
   SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
   SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
+  SYNC_MOBILE_CHAT_SLIM_CAPABILITY,
 } from "../../../../desktop/src/shared/types";
 import { parseAgentChatTranscript } from "../../../../desktop/src/shared/chatTranscript";
 import { foldChatEventEnvelopesForReplay } from "../../../../desktop/src/shared/chatReplayFold";
+import {
+  compactChatEventForMobileWire,
+  createSubagentProgressCoalescer,
+  foldSubagentProgressForSnapshot,
+  MOBILE_SUBAGENT_PROGRESS_INTERVAL_MS,
+  type CoalescedChatEvent,
+  type SubagentProgressCoalescer,
+} from "../../../../desktop/src/shared/chatMobileSlim";
 import { readTranscriptHistoryPage } from "../../../../desktop/src/main/services/chat/chatTranscriptHistoryPager";
+import { findStoredToolResult } from "../../../../desktop/src/main/services/chat/chatToolResultLookup";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
 import type { AccountAuthService } from "../account/accountAuthService";
+import type { AccountSettingsStore } from "../account/accountSettingsStore";
 import type { AccountAttestationConfig } from "../account/sharedAccountAuthService";
 import { verifyClerkAccountAttestation } from "../account/accountAttestationVerifier";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
@@ -141,7 +154,6 @@ import type { createLaneService } from "../../../../desktop/src/main/services/la
 import type { createLaneTemplateService } from "../../../../desktop/src/main/services/lanes/laneTemplateService";
 import type { createPortAllocationService } from "../../../../desktop/src/main/services/lanes/portAllocationService";
 import type { createRebaseSuggestionService } from "../../../../desktop/src/main/services/lanes/rebaseSuggestionService";
-import type { createOrchestrationService } from "../../../../desktop/src/main/services/orchestration/orchestrationService";
 import type { createPtyService } from "../../../../desktop/src/main/services/pty/ptyService";
 import type { createPrService } from "../../../../desktop/src/main/services/prs/prService";
 import type { createPrSummaryService } from "../../../../desktop/src/main/services/prs/prSummaryService";
@@ -873,6 +885,11 @@ type PeerState = {
   nextTerminalSnapshotGeneration: number;
   subscribedChatSessionIds: Set<string>;
   hydratingChatSessionIds: Set<string>;
+  /**
+   * Per-session live subagent-progress coalescers, for peers that announced
+   * `mobileChatSlimV1`. Empty for every other client.
+   */
+  subagentProgressCoalescers: Map<string, SubagentProgressCoalescer>;
   chatSubscriptionBindings: Map<string, ChatSubscriptionBinding>;
   chatTranscriptOffsets: Map<string, number>;
   // Progress while scanning one JSONL record that exceeded a normal bounded
@@ -1121,7 +1138,7 @@ type SyncHostServiceArgs = {
     "call" | "streamEvents" | "transcriptPath" | "isTurnActive"
   >;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
-  orchestrationService?: ReturnType<typeof createOrchestrationService> | null;
+  accountSettingsStore?: AccountSettingsStore | null;
   /** Brain→push-relay publisher; forwarded to the default remote-command service. */
   pushPublisherService?: PushPublisherService | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
@@ -1509,6 +1526,7 @@ const SYNC_HOST_PROJECT_SCOPED_INBOUND_ENVELOPE_TYPES = new Set<SyncEnvelope["ty
   "chat_subscribe",
   "chat_unsubscribe",
   "chat_history",
+  "chat_tool_result",
 ]);
 
 type SyncHostProjectScopeResolution =
@@ -2056,6 +2074,18 @@ export function compactChatEventEnvelopeForSync(
   return event === envelope.event ? envelope : { ...envelope, event };
 }
 
+/**
+ * The same adapter for peers that announced `mobileChatSlimV1`. Everything the
+ * shared wire policy does, plus the phone-only tool-result cap — see
+ * `shared/chatMobileSlim`.
+ */
+export function compactChatEventEnvelopeForMobileSync(
+  envelope: AgentChatEventEnvelope,
+): AgentChatEventEnvelope {
+  const event = compactChatEventForMobileWire(envelope.event);
+  return event === envelope.event ? envelope : { ...envelope, event };
+}
+
 export type ChatEventReplayBufferEntry = {
   seq: number;
   bytes: number;
@@ -2226,7 +2256,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     cursorCloudFleetService: args.cursorCloudFleetService,
     personalChatScope: args.personalChatScope,
     aiIntegrationService: args.aiIntegrationService,
-    orchestrationService: args.orchestrationService,
+    accountSettingsStore: args.accountSettingsStore,
     pushPublisherService: args.pushPublisherService,
     ctoStateService: args.ctoStateService,
     ctoMemoryService: args.ctoMemoryService,
@@ -3428,6 +3458,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       nextTerminalSnapshotGeneration: 0,
       subscribedChatSessionIds: new Set(),
       hydratingChatSessionIds: new Set(),
+      subagentProgressCoalescers: new Map(),
       chatSubscriptionBindings: new Map(),
       chatTranscriptOffsets: new Map(),
       chatTranscriptScanOffsets: new Map(),
@@ -5680,6 +5711,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
    * identity and computed once per event no matter how many peers receive it.
    */
   const compactedSyncEnvelopes = new WeakMap<AgentChatEventEnvelope, AgentChatEventEnvelope>();
+  const compactedMobileSyncEnvelopes = new WeakMap<AgentChatEventEnvelope, AgentChatEventEnvelope>();
   function compactChatEventEnvelopeOnce(event: AgentChatEventEnvelope): AgentChatEventEnvelope {
     const cached = compactedSyncEnvelopes.get(event);
     if (cached) return cached;
@@ -5688,17 +5720,158 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     return compacted;
   }
 
+  function compactMobileChatEventEnvelopeOnce(event: AgentChatEventEnvelope): AgentChatEventEnvelope {
+    const cached = compactedMobileSyncEnvelopes.get(event);
+    if (cached) return cached;
+    const compacted = compactChatEventEnvelopeForMobileSync(event);
+    compactedMobileSyncEnvelopes.set(event, compacted);
+    return compacted;
+  }
+
+  /**
+   * Whether this peer asked for the slim mobile chat wire. Desktop, hosted web
+   * and the TUI never announce it, so their bytes are untouched.
+   */
+  function peerWantsSlimChat(peer: PeerState): boolean {
+    return peer.metadata?.capabilities?.includes(SYNC_MOBILE_CHAT_SLIM_CAPABILITY) === true;
+  }
+
+  function chatEventCoalescerFor(peer: PeerState, sessionId: string): SubagentProgressCoalescer {
+    let coalescer = peer.subagentProgressCoalescers.get(sessionId);
+    if (!coalescer) {
+      coalescer = createSubagentProgressCoalescer({ intervalMs: MOBILE_SUBAGENT_PROGRESS_INTERVAL_MS });
+      peer.subagentProgressCoalescers.set(sessionId, coalescer);
+    }
+    return coalescer;
+  }
+
+  /** Put one already-decided event on the wire. */
+  function deliverChatEvent(
+    peer: PeerState,
+    event: AgentChatEventEnvelope,
+    seq: number | null,
+  ): boolean {
+    const syncEvent = peerWantsSlimChat(peer)
+      ? compactMobileChatEventEnvelopeOnce(event)
+      : compactChatEventEnvelopeOnce(event);
+    return send(peer.ws, "chat_event", {
+      ...syncEvent,
+      ...(seq == null ? {} : { seq }),
+    } satisfies SyncChatEventPayload);
+  }
+
+  function markDeliveredCoalescedChatEvent(peer: PeerState, entry: CoalescedChatEvent): void {
+    markChatEventSent(peer, entry.event);
+    for (const superseded of entry.superseded ?? []) {
+      markChatEventSent(peer, superseded);
+    }
+  }
+
+  function deliverCoalescedChatEvents(
+    peer: PeerState,
+    coalescer: SubagentProgressCoalescer,
+    entries: readonly CoalescedChatEvent[],
+  ): boolean {
+    // A terminal event can be queued after its progress was rejected. If the
+    // transcript pump presents that same progress again before the terminal
+    // retry drains, the batch contains both; the terminal's superseded list
+    // is the authoritative answer, so never resurrect the stale progress.
+    const supersededKeys = new Set(
+      entries.flatMap((entry) =>
+        (entry.superseded ?? []).map((event) => chatEventDeliveryKey(event)),
+      ),
+    );
+    const deliverable = entries.filter((entry) => !supersededKeys.has(chatEventDeliveryKey(entry.event)));
+    for (let index = 0; index < deliverable.length; index += 1) {
+      const entry = deliverable[index]!;
+      if (!deliverChatEvent(peer, entry.event, entry.seq)) {
+        coalescer.requeue(deliverable.slice(index));
+        return false;
+      }
+      markDeliveredCoalescedChatEvent(peer, entry);
+    }
+    return true;
+  }
+
   function sendChatEvent(peer: PeerState, event: AgentChatEventEnvelope, seq: number): "sent" | "already-sent" | "failed" {
     if (chatEventAlreadySent(peer, event)) return "already-sent";
-    const syncEvent = compactChatEventEnvelopeOnce(event);
-    const sent = send(peer.ws, "chat_event", { ...syncEvent, seq } satisfies SyncChatEventPayload);
-    if (sent) markChatEventSent(peer, event);
-    return sent ? "sent" : "failed";
+    if (!peerWantsSlimChat(peer)) {
+      const sent = deliverChatEvent(peer, event, seq);
+      if (sent) markChatEventSent(peer, event);
+      return sent ? "sent" : "failed";
+    }
+    // Coalescing owns a progress event after admission. A dropped mirror or a
+    // progress waiting in the one-second window can be marked immediately;
+    // anything selected for the wire is marked only after its send succeeds.
+    const coalescer = chatEventCoalescerFor(peer, event.sessionId);
+    const outbound = coalescer.admit(event, seq, Date.now());
+    if (!deliverCoalescedChatEvents(peer, coalescer, outbound)) return "failed";
+    // This also accounts for a mirror or a progress event that was folded
+    // into a pending state instead of being emitted in this call.
+    markChatEventSent(peer, event);
+    return "sent";
+  }
+
+  /**
+   * Release subagent progress whose one-second window has closed. Driven by the
+   * existing poll pump (400 ms) rather than a per-peer timer, so a quiet
+   * session costs nothing.
+   */
+  function flushDueChatEvents(peer: PeerState): void {
+    if (peer.subagentProgressCoalescers.size === 0) return;
+    const nowMs = Date.now();
+    for (const coalescer of peer.subagentProgressCoalescers.values()) {
+      const due = coalescer.flushDue(nowMs);
+      if (!deliverCoalescedChatEvents(peer, coalescer, due)) return;
+    }
+  }
+
+  /** Nothing pending may outlive the subscription that produced it. */
+  function discardChatEventCoalescer(peer: PeerState, sessionId: string): void {
+    peer.subagentProgressCoalescers.delete(sessionId);
+  }
+
+  /**
+   * Push every coalesced progress entry still inside its one-second window out
+   * to this peer, before its cursor is handed to another host.
+   *
+   * `sendChatEvent` marks a slim progress event delivered the moment the
+   * coalescer accepts it — coalescing owns it from then on, and this host will
+   * flush it when the window closes. That bargain holds only while the pending
+   * entry stays in this process's memory. A handoff exports the cursor and not
+   * the window, so the adopted host resumes AFTER those sequences and never
+   * re-reads them: the update dies here, and the phone's subagent card keeps
+   * whatever it last showed.
+   *
+   * Returns, per session, the highest sequence still honestly on the wire when
+   * something could not be flushed, so the caller can hold the exported cursor
+   * back to it rather than claiming the whole window went out.
+   */
+  function flushChatEventCoalescersForHandoff(peer: PeerState): Map<string, number> {
+    const cursorCaps = new Map<string, number>();
+    if (peer.subagentProgressCoalescers.size === 0) return cursorCaps;
+    const nowMs = Date.now();
+    for (const [sessionId, coalescer] of peer.subagentProgressCoalescers) {
+      deliverCoalescedChatEvents(peer, coalescer, coalescer.flushAll(nowMs));
+      if (coalescer.pendingCount === 0) continue;
+      // A send failed mid-flush and the rest was requeued. Read what is left
+      // without consuming it, so the cursor can stop short of it.
+      const stranded = coalescer.flushAll(nowMs);
+      if (stranded.length === 0) continue;
+      coalescer.requeue(stranded);
+      const oldest = stranded.reduce(
+        (lowest, entry) => Math.min(lowest, entry.sourceSeq),
+        Number.POSITIVE_INFINITY,
+      );
+      if (Number.isFinite(oldest)) cursorCaps.set(sessionId, oldest - 1);
+    }
+    return cursorCaps;
   }
 
   async function pumpChatEvents(peer: PeerState): Promise<void> {
     if (disposed || !peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) return;
     if (isPeerBackpressured(peer)) return;
+    flushDueChatEvents(peer);
     for (const sessionId of peer.subscribedChatSessionIds) {
       if (peer.hydratingChatSessionIds.has(sessionId)) continue;
       // A foreign quick-look session has no local row; tail its resolved
@@ -6708,6 +6881,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         sessionFound: false,
         unavailable: true,
       } satisfies AgentChatEventHistoryPage, requestId);
+      return;
+    }
+
+    if (type === "chat_tool_result") {
+      const toolPayload = (payload ?? {}) as { sessionId?: string; itemId?: string };
+      sendRequired(peer, "chat_tool_result", {
+        sessionId: toOptionalString(toolPayload.sessionId) ?? "",
+        itemId: toOptionalString(toolPayload.itemId) ?? "",
+        found: false,
+        unavailable: true,
+      } satisfies SyncChatToolResultResponsePayload, requestId);
     }
   }
 
@@ -7907,6 +8091,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         envelope.type === "chat_subscribe"
         || envelope.type === "chat_unsubscribe"
         || envelope.type === "chat_history"
+        || envelope.type === "chat_tool_result"
       )
       && envelopePayload?.chatScope === "personal";
     const projectScope: SyncHostProjectScopeResolution = personalChatEnvelope
@@ -8394,6 +8579,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               sessionId,
               events: read.envelopes,
               startOffset: read.startOffset,
+              // Per-row locations, so a later `chat_tool_result` for a row on
+              // this page can be answered by an exact read instead of a scan
+              // that may not reach back this far.
+              envelopeStartOffsets: read.envelopeStartOffsets,
               hasMore: read.hasMore,
               sessionFound: true,
             };
@@ -8414,6 +8603,116 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             error: error instanceof Error ? error.message : String(error),
           });
           sendRequired(peer, "chat_history", unavailablePage(), envelope.requestId);
+        }
+        break;
+      }
+      case "chat_tool_result": {
+        // The other half of the slim mobile wire: the phone received a bounded
+        // head slice of this tool result and the user expanded the row. Scoped
+        // exactly like `chat_history` — the peer must already be subscribed to
+        // the session, and the requested scope must match the subscription, so
+        // a phone cannot read a personal or foreign-project transcript it is
+        // not attached to.
+        const payload = envelope.payload as SyncChatToolResultRequestPayload | null;
+        const sessionId = toOptionalString(payload?.sessionId);
+        const itemId = toOptionalString(payload?.itemId);
+        // The generation the row was built from. A retry reuses the logical
+        // item id, so without this the newest result answers every row.
+        const requestedResultSequence = typeof payload?.resultSequence === "number"
+          && Number.isFinite(payload.resultSequence)
+          ? payload.resultSequence
+          : null;
+        // Legacy transcripts can repeat a sequence across host restarts; the
+        // timestamp tells those generations apart.
+        const requestedResultTimestamp = toOptionalString(payload?.resultTimestamp);
+        // Where the phone saw the row. A hint, never trusted on its own: the
+        // lookup still verifies the row it finds there is the one asked for.
+        const requestedSourceOffset = typeof payload?.sourceOffset === "number"
+          && Number.isFinite(payload.sourceOffset)
+          && payload.sourceOffset >= 0
+          ? payload.sourceOffset
+          : null;
+        const unavailable = (): SyncChatToolResultResponsePayload => ({
+          sessionId: sessionId ?? "",
+          itemId: itemId ?? "",
+          found: false,
+          unavailable: true,
+        });
+        if (!sessionId || !itemId) {
+          sendRequired(peer, "chat_tool_result", unavailable(), envelope.requestId);
+          break;
+        }
+        const subscribedBinding = peer.chatSubscriptionBindings.get(sessionId);
+        if (
+          !peer.subscribedChatSessionIds.has(sessionId)
+          || !chatSubscriptionMatchesRequest(subscribedBinding, payload, sessionId)
+        ) {
+          args.logger.warn("sync.chat_tool_result_unsubscribed_or_scope_mismatch", {
+            sessionId,
+            subscribedScope: subscribedBinding?.scope ?? null,
+            requestedScope: requestedChatSubscriptionScope(payload),
+          });
+          sendRequired(peer, "chat_tool_result", unavailable(), envelope.requestId);
+          break;
+        }
+        try {
+          const configuredTranscriptPath = peer.resolvedChatTranscriptPaths.get(sessionId)
+            ?? args.sessionService.get(sessionId)?.transcriptPath
+            ?? null;
+          const transcriptPath = configuredTranscriptPath
+            ? resolveReadableHistoryPath(configuredTranscriptPath) ?? configuredTranscriptPath
+            : null;
+          if (!transcriptPath) {
+            sendRequired(peer, "chat_tool_result", unavailable(), envelope.requestId);
+            break;
+          }
+          const hit = await runWithAbortSignal(
+            () => findStoredToolResult({
+              transcriptPath,
+              sessionId,
+              itemId,
+              ...(requestedResultSequence !== null ? { resultSequence: requestedResultSequence } : {}),
+              ...(requestedResultTimestamp ? { resultTimestamp: requestedResultTimestamp } : {}),
+              ...(requestedSourceOffset !== null ? { sourceOffset: requestedSourceOffset } : {}),
+              ...(signal ? { signal } : {}),
+            }),
+            signal,
+            "Sync operation aborted.",
+          );
+          if (!hit) {
+            // Found nothing is not the same as could not look: the phone shows
+            // "no longer available" rather than an error it could retry.
+            sendRequired(peer, "chat_tool_result", {
+              sessionId,
+              itemId,
+              found: false,
+            } satisfies SyncChatToolResultResponsePayload, envelope.requestId);
+            break;
+          }
+          // The stored event, with the shared storage caps already applied to
+          // it — never the raw provider payload. The phone-only cap is the one
+          // thing this response deliberately does not apply.
+          const stored = compactChatEventForWire(hit.event);
+          sendRequired(peer, "chat_tool_result", {
+            sessionId,
+            itemId,
+            found: true,
+            result: stored.type === "tool_result" ? stored.result : undefined,
+            ...(stored.type === "tool_result" && typeof stored.resultOriginalBytes === "number"
+              ? { resultOriginalBytes: stored.resultOriginalBytes }
+              : {}),
+            ...(stored.type === "tool_result" && typeof stored.resultOmittedBytes === "number"
+              ? { resultOmittedBytes: stored.resultOmittedBytes }
+              : {}),
+            ...(stored.type === "tool_result" && stored.status ? { status: stored.status } : {}),
+            ...(stored.type === "tool_result" && stored.tool ? { tool: stored.tool } : {}),
+          } satisfies SyncChatToolResultResponsePayload, envelope.requestId);
+        } catch (error) {
+          args.logger.warn("sync.chat_tool_result_failed", {
+            sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          sendRequired(peer, "chat_tool_result", unavailable(), envelope.requestId);
         }
         break;
       }
@@ -8543,6 +8842,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             // guarantees the peer has (or will get) them.
             if (sendChatEvent(peer, entry.event, entry.seq) === "failed") break;
           }
+          // A resume is a catch-up burst, not a live stream: nothing the
+          // coalescer is holding should wait a further second behind it.
+          if (peerWantsSlimChat(peer)) {
+            const coalescer = chatEventCoalescerFor(peer, sessionId);
+            const pending = coalescer.flushAll(Date.now());
+            deliverCoalescedChatEvents(peer, coalescer, pending);
+          }
           args.logger.debug("sync_host.chat_subscribe_resumed", {
             sessionId,
             sinceSeq: payload?.sinceSeq,
@@ -8591,7 +8897,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           hasOlderHistory = history?.hasOlderHistory
             ?? (history?.truncated === true && tailStartOffset > 0);
         }
-        events = events.map(compactChatEventEnvelopeForSync);
+        const slimChatPeer = peerWantsSlimChat(peer);
+        events = events.map(
+          slimChatPeer ? compactChatEventEnvelopeForMobileSync : compactChatEventEnvelopeForSync,
+        );
         // Fold streaming deltas into the message they belong to. Snapshot-only
         // and capability-gated: the replay-buffer resume path below stays
         // unfolded because its per-event `seq` monotonicity is load-bearing for
@@ -8599,6 +8908,25 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // recent gap. `sourceEvents` keeps the pre-fold envelopes so delivery
         // bookkeeping still marks every collapsed delta as sent.
         let sourceEvents: AgentChatEventEnvelope[] = events;
+        if (slimChatPeer) {
+          // A snapshot is a byte-capped tail; on a subagent-heavy thread most
+          // of it is superseded progress for agents whose card the phone will
+          // draw exactly once. Keep the latest per agent — started and result
+          // are untouched, so every card and every outcome still arrives.
+          const progressFolded = foldSubagentProgressForSnapshot(events);
+          if (progressFolded.foldedAwayCount > 0) {
+            args.logger.debug("sync_host.chat_replay_subagent_progress_folded", {
+              sessionId,
+              beforeCount: events.length,
+              afterCount: progressFolded.events.length,
+              foldedAwayCount: progressFolded.foldedAwayCount,
+            });
+          }
+          events = progressFolded.events;
+          // The snapshot is the phone's new baseline: anything the live
+          // coalescer was holding for this session predates it.
+          discardChatEventCoalescer(peer, sessionId);
+        }
         if (peer.metadata?.capabilities?.includes(SYNC_FOLDED_REPLAY_CAPABILITY)) {
           const folded = foldChatEventEnvelopesForReplay(events);
           if (folded.foldedAwayCount > 0) {
@@ -8609,7 +8937,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               foldedAwayCount: folded.foldedAwayCount,
             });
           }
-          sourceEvents = folded.sources;
+          // `sourceEvents` deliberately keeps the FULL pre-fold list assigned
+          // above rather than `folded.sources`: on the slim wire the subagent
+          // progress fold has already removed envelopes from `events`, and
+          // every one of them still needs its delivery key marked or the
+          // transcript pump re-sends it as live traffic. For every other peer
+          // the two are the same array.
           events = folded.events;
         }
         peer.chatTranscriptOffsets.set(sessionId, hydrationStartOffset);
@@ -8690,6 +9023,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           peer.chatTranscriptScanOffsets.delete(sessionId);
           peer.chatEventIdsSent.delete(sessionId);
           peer.resolvedChatTranscriptPaths.delete(sessionId);
+          discardChatEventCoalescer(peer, sessionId);
         }
         break;
       }
@@ -9100,6 +9434,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             }
             continue;
           }
+          // Anything the coalescer is still holding was already marked
+          // delivered, so it has to reach the wire before the cursor below
+          // tells the next host those sequences are behind it.
+          const chatEventCursorCaps = flushChatEventCoalescersForHandoff(peer);
           const chatSubscriptions = [...peer.subscribedChatSessionIds].flatMap((sessionId) => {
             const scope = peer.chatSubscriptionBindings.get(sessionId)?.scope ?? "project";
             return scope === "foreign-project" ? [] : [{ sessionId, scope }];
@@ -9138,7 +9476,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             chatEventSequences: Object.fromEntries(
               [...handedOffChatSessionIds].flatMap((sessionId) => {
                 const eventSequence = chatEventSequenceHighWaterBySession.get(sessionId);
-                return eventSequence == null ? [] : [[sessionId, eventSequence]];
+                if (eventSequence == null) return [];
+                // Held back to the last sequence that actually reached the
+                // wire when a flush could not complete, so the adopted host
+                // re-reads the stranded window instead of skipping it.
+                const cap = chatEventCursorCaps.get(sessionId);
+                const exported = cap == null ? eventSequence : Math.min(eventSequence, cap);
+                return exported < 0 ? [] : [[sessionId, exported]];
               }),
             ),
             rosterSubscribed: peer.rosterSubscribed,

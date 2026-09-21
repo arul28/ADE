@@ -115,7 +115,6 @@ export function ProjectlessComposer({
           <ModelPicker
             value={modelId}
             onChange={onModelChange}
-            surfaceKey="personal-chat"
             catalogScopeKey={catalogScopeKey}
             models={models}
             availableModelIds={availableModelIds}

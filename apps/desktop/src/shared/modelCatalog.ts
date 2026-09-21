@@ -13,6 +13,12 @@ import {
   type ModelDescriptor,
   type ModelProviderGroup,
 } from "./modelRegistry";
+import {
+  EMPTY_OPENCODE_BADGE_FALLBACK_COLOR,
+  PROVIDER_BADGE_COLORS as SHARED_PROVIDER_BADGE_COLORS,
+  PROVIDER_BADGE_FALLBACK_COLOR,
+  PROVIDER_GROUP_COLORS as SHARED_PROVIDER_GROUP_COLORS,
+} from "./providerColors";
 
 export type ProviderGroupKey = ModelProviderGroup | "ollama" | "lmstudio";
 
@@ -111,29 +117,8 @@ const PROVIDER_LABELS: Record<string, string> = {
   devin: "Devin",
 };
 
-export const PROVIDER_BADGE_COLORS: Record<string, string> = {
-  opencode: "#2563EB",
-  anthropic: "#D97706",
-  openai: "#10A37F",
-  "openai-codex": "#22B88A",
-  cursor: "#A78BFA",
-  factory: "#6B7280",
-  pi: "#F97316",
-  google: "#F59E0B",
-  "github-copilot": "#8B5CF6",
-  deepseek: "#3B82F6",
-  mistral: "#F97316",
-  xai: "#DC2626",
-  openrouter: "#6B7280",
-  ollama: "#71717A",
-  lmstudio: "#64748B",
-  groq: "#06B6D4",
-  together: "#22C55E",
-  devin: "#2563EB",
-  meta: "#3B82F6",
-  qwen: "#6D4AFF",
-  moonshot: "#1F1F1F",
-};
+export const PROVIDER_BADGE_COLORS: Record<string, string> = { ...SHARED_PROVIDER_BADGE_COLORS };
+
 
 export const PROVIDER_ORDER: string[] = [
   "opencode",
@@ -161,26 +146,35 @@ const PROVIDER_GROUP_ORDER = Object.fromEntries(
   MODEL_PICKER_PROVIDER_ORDER.map((groupKey, index) => [groupKey, index]),
 ) as Record<ProviderGroupKey, number>;
 
-export const PROVIDER_GROUP_COLORS: Record<ProviderGroupKey, string> = {
-  claude: "#D97706",
-  codex: "#10A37F",
-  cursor: "#A78BFA",
-  droid: "#6B7280",
-  pi: "#F97316",
-  qwen: "#6D4AFF",
-  kimi: "#1F1F1F",
-  grok: "#DC2626",
-  copilot: "#8B5CF6",
-  devin: "#2563EB",
-  opencode: "#2563EB",
-  ollama: "#71717A",
-  lmstudio: "#64748B",
-};
+/** Provider-group colors are shared with usage, chat, model, and iOS surfaces. */
+export const PROVIDER_GROUP_COLORS = SHARED_PROVIDER_GROUP_COLORS as Record<ProviderGroupKey, string>;
+
 
 const CURSOR_SECTION_PREFIX = "__cursor_line__:";
 const DROID_SECTION_PREFIX = "__droid_line__:";
 const OPENCODE_PROVIDER_PREFIX = "__ocprov__:";
 const PI_PROVIDER_PREFIX = "__piprov__:";
+/**
+ * Models reachable through one stored API key, grouped under their own heading.
+ *
+ * Section-keyed exactly like a Pi profile, and for the same reason: two keys on
+ * the same provider can declare the same model id against different endpoints,
+ * so the key is part of the identity of the row, not a footnote on it.
+ */
+const CREDENTIAL_SECTION_PREFIX = "__credential__:";
+
+export function credentialSubsectionKey(credentialId: string): string {
+  return `${CREDENTIAL_SECTION_PREFIX}${encodeURIComponent(credentialId)}`;
+}
+
+export function credentialIdFromSubsectionKey(key: string): string | null {
+  if (!key.startsWith(CREDENTIAL_SECTION_PREFIX)) return null;
+  try {
+    return decodeURIComponent(key.slice(CREDENTIAL_SECTION_PREFIX.length)) || null;
+  } catch {
+    return key.slice(CREDENTIAL_SECTION_PREFIX.length) || null;
+  }
+}
 
 function piSubsectionParts(key: string): { profileId: string; providerId: string } | null {
   if (!key.startsWith(PI_PROVIDER_PREFIX)) return null;
@@ -204,7 +198,7 @@ export function providerLabel(family: string): string {
 }
 
 export function providerBadgeColor(provider: string, models: ModelDescriptor[]): string {
-  return PROVIDER_BADGE_COLORS[provider] ?? models[0]?.color ?? "#A78BFA";
+  return PROVIDER_BADGE_COLORS[provider] ?? models[0]?.color ?? PROVIDER_BADGE_FALLBACK_COLOR;
 }
 
 export function classifyProviderGroup(model: ModelDescriptor): ProviderGroupKey {
@@ -240,6 +234,9 @@ export function providerGroupLabel(group: ProviderGroupKey): string {
 }
 
 export function subsectionKeyForModel(model: ModelDescriptor, group: ProviderGroupKey): string {
+  // Checked first: a key-backed row belongs under its key on whatever provider
+  // page it came from, including providers that have their own sectioning.
+  if (model.credentialId?.trim()) return credentialSubsectionKey(model.credentialId.trim());
   if (model.family === "cursor" && group === "cursor") {
     return `${CURSOR_SECTION_PREFIX}${cursorCliLineGroupFromSdkId(model.providerModelId)}`;
   }
@@ -258,6 +255,8 @@ export function subsectionKeyForModel(model: ModelDescriptor, group: ProviderGro
 
 export function subsectionLabel(family: string, key: string): string {
   if (key === "__default__") return "";
+  const credentialId = credentialIdFromSubsectionKey(key);
+  if (credentialId) return credentialId;
   const piParts = piSubsectionParts(key);
   if (piParts) {
     const provider = formatPiProviderLabel(piParts.providerId);
@@ -279,6 +278,9 @@ export function subsectionLabel(family: string, key: string): string {
 }
 
 export function subsectionSortOrder(family: string, key: string): number {
+  // Keys sort after the provider's own curated lines: they are an addition the
+  // user made, not part of what the provider ships.
+  if (key.startsWith(CREDENTIAL_SECTION_PREFIX)) return PROVIDER_ORDER.length + 2;
   if (key.startsWith(PI_PROVIDER_PREFIX)) return PROVIDER_ORDER.length + 1;
   if (family === "opencode" && key.startsWith(OPENCODE_PROVIDER_PREFIX)) {
     const pid = key.slice(OPENCODE_PROVIDER_PREFIX.length);
@@ -397,7 +399,10 @@ export function buildProviderGroupBlocks(
       const rawSubsections: ModelSubsection[] = [...subMap.entries()]
         .map(([key, ms]) => ({
           key,
-          label: subsectionLabel(family, key),
+          // A key's own label wins over the derived one: the id is a slug, and
+          // "OpenRouter" is what the user typed on the provider page.
+          label: ms.find((model) => model.credentialLabel?.trim())?.credentialLabel?.trim()
+            || subsectionLabel(family, key),
           models: sortModels(ms, modelOrder),
         }))
         .sort((a, b) => subsectionSortOrder(family, a.key) - subsectionSortOrder(family, b.key));
@@ -434,7 +439,7 @@ export function buildProviderGroupBlocks(
           providers.push({
             key: id,
             label: PROVIDER_LABELS[id] ?? name,
-            badgeColor: PROVIDER_BADGE_COLORS[id] ?? "#6B7280",
+            badgeColor: PROVIDER_BADGE_COLORS[id] ?? EMPTY_OPENCODE_BADGE_FALLBACK_COLOR,
             subsections: [],
             modelCount: 0,
           });

@@ -3,6 +3,8 @@ import {
   type ApnsEnvironment,
   type ApnsSendResult,
 } from "./apns";
+import { handleAccountSettingsRoute } from "./accountSettings";
+import { handleAccountVaultRoute } from "./accountVault";
 import {
   AttentionAuthVerificationUnavailableError,
   inspectAttentionAuthConfiguration,
@@ -3672,6 +3674,16 @@ async function handleAuthorizedAttentionAccountRequest(
   const parts = url.pathname.split("/").filter(Boolean);
   if (parts[0] !== "attention" || parts[1] !== "account") return null;
   const route = parts.slice(2);
+  // Account settings own their own module: they share this Worker's auth and
+  // its D1 binding, but nothing else about Attention. Matched first because it
+  // is a self-contained prefix and returns null when the path is not its own.
+  const settings = await handleAccountSettingsRoute(request, env, url, userId, route);
+  if (settings) return settings;
+  // The vault is a sibling, never a section of settings: it holds ciphertext
+  // this Worker cannot read, and keeping the two routers apart is what keeps a
+  // credential from ever being returned by a settings query.
+  const vault = await handleAccountVaultRoute(request, env, url, userId, route);
+  if (vault) return vault;
   if (route.length === 1 && route[0] === "snapshot" && request.method === "GET") {
     return await handleSnapshot(env, userId, url);
   }

@@ -9,7 +9,7 @@ import {
 import type { ChatMentionSuggestion } from "./types/chatMentions";
 
 export type ComposerAtMenuItem =
-  | { type: "file"; path: string }
+  | { type: "file"; path: string; isDirectory?: boolean }
   | { type: "mention"; mention: ChatMentionSuggestion };
 
 export function composerAtFileRankFields(path: string): { title: string; subtitle: string } {
@@ -31,7 +31,7 @@ const UNMATCHED_FILE_SCORE = 50;
 function toMenuItem(entry: RankableAtItem): ComposerAtMenuItem {
   switch (entry.type) {
     case "file":
-      return { type: "file", path: entry.path };
+      return { type: "file", path: entry.path, ...(entry.isDirectory ? { isDirectory: true } : {}) };
     case "mention":
       return { type: "mention", mention: entry.mention };
     default: {
@@ -42,7 +42,7 @@ function toMenuItem(entry: RankableAtItem): ComposerAtMenuItem {
 }
 
 export function rankComposerAtMenuItems(
-  files: Array<{ path: string }>,
+  files: Array<{ path: string; isDirectory?: boolean }>,
   mentions: ChatMentionSuggestion[],
   query: string,
   limit = CHAT_MENTION_MAX_RESULTS,
@@ -56,6 +56,7 @@ export function rankComposerAtMenuItems(
     const item: RankableAtItem = {
       type: "file",
       path: file.path,
+      ...(file.isDirectory ? { isDirectory: true as const } : {}),
       id: `file:${file.path}`,
       // Full path is the title so `@src/foo.ts about this` still prefix-matches
       // the file after trailing prose. Basename stays a subtitle so a named

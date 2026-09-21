@@ -274,6 +274,140 @@ describe("openCodeInventory", () => {
     expect(result.providers.find((provider) => provider.id === "anthropic")?.connected).toBe(false);
   });
 
+  it("preserves OpenCode credential environment metadata without persisting keys", async () => {
+    const logger = { warn: vi.fn() } as any;
+    mockState.providerList.mockResolvedValueOnce({
+      data: {
+        connected: [],
+        all: [
+          {
+            id: "zai",
+            name: "Z.AI",
+            env: [" ZHIPU_API_KEY ", "ZHIPU_API_KEY"],
+            key: "secret-zai-key",
+            models: {},
+          },
+          {
+            id: "zhipuai",
+            name: "Zhipu AI",
+            env: ["ZHIPU_API_KEY"],
+            key: "secret-zhipu-key",
+            models: {},
+          },
+        ],
+      },
+    } as any);
+
+    const result = await probeOpenCodeProviderInventory({
+      projectRoot: "/repo",
+      projectConfig: { ai: {} },
+      logger,
+      force: true,
+    });
+
+    expect(result.providers).toEqual([
+      { id: "zai", name: "Z.AI", connected: false, modelCount: 0, availableModelCount: 0, envVars: ["ZHIPU_API_KEY"] },
+      { id: "zhipuai", name: "Zhipu AI", connected: false, modelCount: 0, availableModelCount: 0, envVars: ["ZHIPU_API_KEY"] },
+    ]);
+    expect(result.providers[0]).not.toHaveProperty("key");
+    expect(result.providers[1]).not.toHaveProperty("key");
+  });
+
+  it("reports non-secret credential sources for dynamic providers", async () => {
+    const logger = { warn: vi.fn() } as any;
+    const originalEnv = process.env.ZHIPU_API_KEY;
+    process.env.ZHIPU_API_KEY = "test-zhipu-env-key";
+    try {
+      mockState.providerList.mockResolvedValueOnce({
+        data: {
+          connected: ["zai"],
+          all: [{ id: "zai", name: "Z.AI", env: ["ZHIPU_API_KEY"], models: {} }],
+        },
+      } as any);
+
+      const fromEnv = await probeOpenCodeProviderInventory({
+        projectRoot: "/repo",
+        projectConfig: { ai: {} },
+        logger,
+        force: true,
+      });
+      expect(fromEnv.providers[0]).toMatchObject({ id: "zai", connected: true, credentialSource: "env" });
+
+      mockState.providerList.mockResolvedValueOnce({
+        data: {
+          connected: ["zai"],
+          all: [{ id: "zai", name: "Z.AI", env: ["ZHIPU_API_KEY"], models: {} }],
+        },
+      } as any);
+      const fromConfig = await probeOpenCodeProviderInventory({
+        projectRoot: "/repo",
+        projectConfig: { ai: { apiKeys: { zai: "test-zhipu-config-key" } } },
+        logger,
+        force: true,
+      });
+      expect(fromConfig.providers[0]).toMatchObject({ id: "zai", connected: true, credentialSource: "config" });
+    } finally {
+      if (originalEnv === undefined) delete process.env.ZHIPU_API_KEY;
+      else process.env.ZHIPU_API_KEY = originalEnv;
+    }
+  });
+
+  it("surfaces connected OpenRouter and OpenCode Go models in the picker catalog", async () => {
+    const logger = { warn: vi.fn() } as any;
+    mockState.providerList.mockResolvedValueOnce({
+      data: {
+        connected: ["openrouter", "opencode-go"],
+        all: [
+          {
+            id: "openrouter",
+            name: "OpenRouter",
+            env: ["OPENROUTER_API_KEY"],
+            models: {
+              "anthropic/claude-sonnet-4": {
+                id: "anthropic/claude-sonnet-4",
+                name: "Claude Sonnet 4",
+                capabilities: { reasoning: true, toolcall: true },
+              },
+            },
+          },
+          {
+            id: "opencode-go",
+            name: "OpenCode Go",
+            env: ["OPENCODE_API_KEY"],
+            models: {
+              "kimi-k2.6": {
+                id: "kimi-k2.6",
+                name: "Kimi K2.6",
+                capabilities: { reasoning: true, toolcall: true },
+              },
+            },
+          },
+        ],
+      },
+    } as any);
+
+    const result = await probeOpenCodeProviderInventory({
+      projectRoot: "/repo",
+      projectConfig: { ai: {} },
+      logger,
+      force: true,
+    });
+
+    expect(result.providers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "openrouter", connected: true, envVars: ["OPENROUTER_API_KEY"] }),
+      expect.objectContaining({ id: "opencode-go", connected: true, envVars: ["OPENCODE_API_KEY"] }),
+    ]));
+    expect(result.modelIds).toEqual(expect.arrayContaining([
+      "opencode/openrouter/anthropic%2Fclaude-sonnet-4",
+      "opencode/opencode-go/kimi-k2.6",
+    ]));
+    expect(result.descriptors.find((descriptor) => descriptor.id === "opencode/openrouter/anthropic%2Fclaude-sonnet-4")).toMatchObject({
+      openCodeProviderId: "openrouter",
+      openCodeModelId: "anthropic/claude-sonnet-4",
+      providerModelId: "openrouter/anthropic/claude-sonnet-4",
+    });
+  });
+
   it("prefers canonical OpenCode model rows over normalized retired aliases", async () => {
     const logger = { warn: vi.fn() } as any;
     mockState.providerList.mockResolvedValueOnce({
@@ -708,7 +842,7 @@ describe("openCode inventory persistence", () => {
   let cacheFile: string;
 
   const providers: OpenCodeProviderInfo[] = [
-    { id: "openai", name: "OpenAI", connected: true, modelCount: 12 },
+    { id: "openai", name: "OpenAI", connected: true, modelCount: 12, envVars: ["OPENAI_API_KEY"] },
     { id: "moonshotai", name: "Moonshot", connected: false, modelCount: 4 },
   ];
 
@@ -733,6 +867,15 @@ describe("openCode inventory persistence", () => {
     __setOpenCodeInventoryPersistencePathForTests(cacheFile);
 
     expect(loadPersistedOpenCodeInventory("/repo")).toEqual(providers);
+  });
+
+  it("does not persist ephemeral credential source metadata", () => {
+    persistOpenCodeInventory("/repo", [{ ...providers[0], credentialSource: "env" }, providers[1]]);
+    __setOpenCodeInventoryPersistencePathForTests(cacheFile);
+
+    expect(loadPersistedOpenCodeInventory("/repo")).toEqual(providers);
+    const saved = JSON.parse(fs.readFileSync(cacheFile, "utf8")) as Record<string, { providers: Array<Record<string, unknown>> }>;
+    expect(saved["/repo"].providers[0]).not.toHaveProperty("credentialSource");
   });
 
   it("keeps provider lists isolated per project root", () => {

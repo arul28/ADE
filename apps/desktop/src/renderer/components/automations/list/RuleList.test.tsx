@@ -45,7 +45,6 @@ function renderList(rules: AutomationRuleSummary[]) {
       search=""
       loading={false}
       error={null}
-      configTrustRequired={false}
       ingressStatus={null}
       delivery={null}
       onSearch={vi.fn()}
@@ -58,7 +57,6 @@ function renderList(rules: AutomationRuleSummary[]) {
       onOpenTemplates={vi.fn()}
       onUseTemplate={vi.fn()}
       onRefresh={vi.fn()}
-      onConfirmTrust={vi.fn()}
     />,
   );
 }
@@ -288,7 +286,6 @@ describe("RuleList filter chips", () => {
         search="plain"
         loading={false}
         error={null}
-        configTrustRequired={false}
         ingressStatus={null}
         delivery={null}
         onSearch={vi.fn()}
@@ -301,7 +298,6 @@ describe("RuleList filter chips", () => {
         onOpenTemplates={vi.fn()}
         onUseTemplate={vi.fn()}
         onRefresh={vi.fn()}
-        onConfirmTrust={vi.fn()}
       />,
     );
 

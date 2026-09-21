@@ -106,6 +106,8 @@ private func workChatTimelineSnapshotSignature(
     combineOptional(envelope.subagentParentAgentId, into: &hasher)
     hasher.combine(envelope.subagentSpawnDepth ?? Int.min)
     hasher.combine(envelope.subagentResourceLinks)
+    combineOptional(envelope.stopSource, into: &hasher)
+    combineOptional(envelope.stopReason, into: &hasher)
     combineWorkChatEventSignature(envelope.event, into: &hasher)
   }
 
@@ -658,6 +660,16 @@ func preferredWorkSubagentSummary(_ existing: String?, incoming: String?) -> Str
   return next.count >= current.count ? next : current
 }
 
+/// Progress summaries sometimes echo the task description verbatim. Keep that
+/// out of the stopped row's last-activity line, matching the desktop guard.
+private func filteredWorkSubagentLastActivity(_ value: String?, description: String?) -> String? {
+  guard let activity = nonEmptyWorkTimelineText(value),
+        let task = nonEmptyWorkTimelineText(description),
+        activity.caseInsensitiveCompare(task) == .orderedSame
+  else { return value }
+  return nil
+}
+
 private func longerWorkSubagentText(_ existing: String?, _ incoming: String?) -> String? {
   let current = nonEmptyWorkTimelineText(existing)
   let next = nonEmptyWorkTimelineText(incoming)
@@ -898,7 +910,11 @@ func buildWorkSubagentSnapshots(from rawTranscript: [WorkChatEnvelope]) -> [Work
         spawnKind: envelope.subagentSpawnKind ?? existing?.spawnKind,
         parentAgentId: trimmedWorkSubagentText(envelope.subagentParentAgentId) ?? existing?.parentAgentId,
         spawnDepth: envelope.subagentSpawnDepth ?? existing?.spawnDepth,
-        resourceLinks: envelope.subagentResourceLinks.isEmpty ? (existing?.resourceLinks ?? []) : envelope.subagentResourceLinks
+        resourceLinks: envelope.subagentResourceLinks.isEmpty ? (existing?.resourceLinks ?? []) : envelope.subagentResourceLinks,
+        stopSource: existing?.stopSource,
+        stopReason: existing?.stopReason,
+        resultLanded: existing?.resultLanded ?? false,
+        lastActivity: existing?.lastActivity
       ), order: resolved.order)
     case .subagentProgress(let taskId, let agentId, let agentType, let parentToolUseId, let description, let summary, let toolName, let label, let model, let reasoningEffort, let turnId):
       let resolved = resolve(taskId: taskId, agentId: agentId, parentToolUseId: parentToolUseId)
@@ -924,18 +940,24 @@ func buildWorkSubagentSnapshots(from rawTranscript: [WorkChatEnvelope]) -> [Work
         spawnKind: envelope.subagentSpawnKind ?? existing?.spawnKind,
         parentAgentId: trimmedWorkSubagentText(envelope.subagentParentAgentId) ?? existing?.parentAgentId,
         spawnDepth: envelope.subagentSpawnDepth ?? existing?.spawnDepth,
-        resourceLinks: envelope.subagentResourceLinks.isEmpty ? (existing?.resourceLinks ?? []) : envelope.subagentResourceLinks
+        resourceLinks: envelope.subagentResourceLinks.isEmpty ? (existing?.resourceLinks ?? []) : envelope.subagentResourceLinks,
+        stopSource: existing?.stopSource,
+        stopReason: existing?.stopReason,
+        resultLanded: existing?.resultLanded ?? false,
+        lastActivity: preferredWorkSubagentSummary(existing?.lastActivity, incoming: summary)
       ), order: resolved.order)
     case .subagentResult(let taskId, let agentId, let agentType, let parentToolUseId, let status, let summary, let label, let model, let reasoningEffort, let turnId):
       let normalized = workSubagentStatus(from: status)
       let resolved = resolve(taskId: taskId, agentId: agentId, parentToolUseId: parentToolUseId)
       let existing = resolved.existing
+      let description = existing?.description ?? "Subagent"
+      let resultLanded = existing?.resultLanded == true || normalized == .succeeded
       place(resolved.key, WorkSubagentSnapshot(
         taskId: resolved.adoptedPlaceholder ? taskId : existing?.taskId ?? taskId,
         agentId: normalizedWorkSubagentAgentId(agentId) ?? existing?.agentId,
         agentType: normalizedWorkSubagentAgentId(agentType) ?? existing?.agentType,
         parentToolUseId: normalizedWorkSubagentAgentId(parentToolUseId) ?? existing?.parentToolUseId,
-        description: existing?.description ?? "Subagent",
+        description: description,
         background: existing?.background ?? false,
         label: trimmedWorkSubagentText(label) ?? existing?.label,
         model: trimmedWorkSubagentText(model) ?? existing?.model,
@@ -951,7 +973,11 @@ func buildWorkSubagentSnapshots(from rawTranscript: [WorkChatEnvelope]) -> [Work
         spawnKind: envelope.subagentSpawnKind ?? existing?.spawnKind,
         parentAgentId: trimmedWorkSubagentText(envelope.subagentParentAgentId) ?? existing?.parentAgentId,
         spawnDepth: envelope.subagentSpawnDepth ?? existing?.spawnDepth,
-        resourceLinks: envelope.subagentResourceLinks.isEmpty ? (existing?.resourceLinks ?? []) : envelope.subagentResourceLinks
+        resourceLinks: envelope.subagentResourceLinks.isEmpty ? (existing?.resourceLinks ?? []) : envelope.subagentResourceLinks,
+        stopSource: trimmedWorkSubagentText(envelope.stopSource) ?? existing?.stopSource,
+        stopReason: trimmedWorkSubagentText(envelope.stopReason) ?? existing?.stopReason,
+        resultLanded: resultLanded,
+        lastActivity: filteredWorkSubagentLastActivity(existing?.lastActivity, description: description)
       ), order: resolved.order)
     default:
       break
@@ -1465,7 +1491,9 @@ func workSubagentSnapshot(from remote: SyncService.AgentChatSubagentSnapshot) ->
     updatedAt: updatedAt,
     parentAgentId: trimmedWorkSubagentText(remote.parentAgentId),
     spawnDepth: remote.spawnDepth,
-    resourceLinks: remote.resourceLinks ?? []
+    resourceLinks: remote.resourceLinks ?? [],
+    resultLanded: workSubagentStatus(from: remote.status) == .succeeded,
+    lastActivity: filteredWorkSubagentLastActivity(remote.summary, description: remote.description)
   )
 }
 
@@ -1542,7 +1570,11 @@ private func mergedWorkSubagentSnapshot(
     spawnKind: local.spawnKind ?? remote.spawnKind,
     parentAgentId: local.parentAgentId ?? remote.parentAgentId,
     spawnDepth: local.spawnDepth ?? remote.spawnDepth,
-    resourceLinks: local.resourceLinks.isEmpty ? remote.resourceLinks : local.resourceLinks
+    resourceLinks: local.resourceLinks.isEmpty ? remote.resourceLinks : local.resourceLinks,
+    stopSource: local.stopSource ?? remote.stopSource,
+    stopReason: local.stopReason ?? remote.stopReason,
+    resultLanded: remote.resultLanded || local.resultLanded,
+    lastActivity: preferredWorkSubagentSummary(remote.lastActivity, incoming: local.lastActivity)
   )
 }
 
@@ -1878,15 +1910,44 @@ func workSubagentStoppedGroupCause(
   }
 }
 
+/// The source is part of the desktop fold key. Missing or blank fields are an
+/// explicit `unknown`, so an older event never joins a user-interrupt group.
+private func normalizedWorkSubagentStopSource(_ value: String?) -> String {
+  trimmedWorkSubagentText(value) ?? "unknown"
+}
+
+private func workSubagentStoppedGroupSource(_ entry: WorkTimelineEntry) -> String {
+  guard case .subagent(let row) = entry.payload else { return "unknown" }
+  // Desktop attributes failed usage-limit casualties to the provider even
+  // when an older host omitted stopSource. Non-limit failures never reach this
+  // fold, while stopped rows keep their wire source (or `unknown`).
+  if row.snapshot.status == .failed {
+    return "provider"
+  }
+  return normalizedWorkSubagentStopSource(row.snapshot.stopSource)
+}
+
+/// The reason is part of the desktop fold key. Missing or blank fields remain
+/// distinct from a named reason so adjacent system stops cannot inherit the
+/// wrong headline.
+private func normalizedWorkSubagentStopReason(_ value: String?) -> String {
+  trimmedWorkSubagentText(value) ?? "unknown"
+}
+
+private func workSubagentStoppedGroupReason(_ entry: WorkTimelineEntry) -> String {
+  guard case .subagent(let row) = entry.payload else { return "unknown" }
+  return normalizedWorkSubagentStopReason(row.snapshot.stopReason)
+}
+
 /// Fold each run of 2+ ADJACENT subagent result rows that share one foldable
-/// cause into a single expandable `.subagentStoppedGroup` entry — desktop parity
-/// with `groupStoppedSubagentResultCards`.
+/// cause and stop source into a single expandable `.subagentStoppedGroup`
+/// entry — desktop parity with `groupStoppedSubagentResultCards`.
 ///
-/// One pass, not one per cause: a run breaks whenever the cause changes, so an
-/// interrupt casualty and a usage-limit casualty can never land in the same
+/// One pass, not one per cause: a run breaks whenever the cause or source
+/// changes, so a user interrupt and a system stop can never land in the same
 /// group even when they sit next to each other. A lone casualty stays an
 /// ordinary result card — there is no group of one. The group key derives from
-/// the FIRST row's agent so it stays stable as the run grows.
+/// the source, reason, and FIRST row's agent so it stays stable as the run grows.
 func collapseSameCauseSubagentEntries(
   _ entries: [WorkTimelineEntry],
   causeOf: (WorkTimelineEntry) -> WorkSubagentStoppedGroupModel.Reason?
@@ -1900,8 +1961,15 @@ func collapseSameCauseSubagentEntries(
       index += 1
       continue
     }
+    let stopSource = workSubagentStoppedGroupSource(entries[index])
+    let stopReason = workSubagentStoppedGroupReason(entries[index])
     var end = index
-    while end < entries.count, causeOf(entries[end]) == cause { end += 1 }
+    while end < entries.count,
+          causeOf(entries[end]) == cause,
+          workSubagentStoppedGroupSource(entries[end]) == stopSource,
+          workSubagentStoppedGroupReason(entries[end]) == stopReason {
+      end += 1
+    }
     let run = Array(entries[index..<end])
     index = end
     guard run.count >= 2 else {
@@ -1913,10 +1981,13 @@ func collapseSameCauseSubagentEntries(
       return nil
     }
     let firstKey = rows.first.map { $0.snapshot.agentId ?? $0.snapshot.taskId } ?? run[0].id
+    let rawStopReason = rows.first?.snapshot.stopReason
     let model = WorkSubagentStoppedGroupModel(
-      id: "\(workSubagentStoppedGroupIdPrefix(cause))-\(firstKey)",
+      id: "\(workSubagentStoppedGroupIdPrefix(cause))-\(stopSource)-\(stopReason)-\(firstKey)",
       rows: rows,
-      reason: cause
+      reason: cause,
+      stopSource: stopSource,
+      stopReason: rawStopReason
     )
     result.append(WorkTimelineEntry(
       id: model.id,
@@ -2922,6 +2993,26 @@ func workHostSleepId(from detail: String?) -> String? {
   return trimmed.isEmpty ? nil : trimmed
 }
 
+/// The usage-snapshot account id a `reset_credit_available` notice is about,
+/// read out of the notice's `detail` JSON (`AgentChatNoticeDetail.accountId` in
+/// `apps/desktop/src/shared/types/chat.ts`).
+///
+/// Nil when the host omitted it. The card still renders — the sentence is worth
+/// reading — but without a spendable account there is no button, which is the
+/// same rule desktop applies.
+func workResetCreditAccountId(from detail: String?) -> String? {
+  guard let detail,
+        let data = detail.data(using: .utf8),
+        let decoded = try? JSONSerialization.jsonObject(with: data),
+        let object = decoded as? [String: Any],
+        let accountId = object["accountId"] as? String
+  else {
+    return nil
+  }
+  let trimmed = accountId.trimmingCharacters(in: .whitespacesAndNewlines)
+  return trimmed.isEmpty ? nil : trimmed
+}
+
 /// The child chat a `spawn_completed` notice reports on, read out of the
 /// notice's detail JSON (`AgentChatSpawnCompletion` in
 /// `apps/desktop/src/shared/types/chat.ts`), or `nil` for any other notice.
@@ -3420,6 +3511,25 @@ private func eventCard(
           body: nil,
           bullets: [],
           metadata: [providers.from, providers.to]
+        )
+      }
+      // ── Banked reset credit ──
+      // A notice that reports a spendable credit and offers no way to spend it
+      // is the state this card exists to remove, so the action rides the notice
+      // rather than living only in the usage module a tab away. The account id
+      // travels in `metadata` so the card knows WHOSE credit to spend — not
+      // whichever account the usage sheet happens to have open.
+      if kind == AgentChatNoticeKind.resetCreditAvailable.rawValue {
+        return WorkEventCardModel(
+          id: envelope.id,
+          kind: "resetCredit",
+          title: nonEmptyWorkTimelineText(message) ?? "A reset credit is banked.",
+          icon: "arrow.clockwise",
+          tint: .warning,
+          timestamp: envelope.timestamp,
+          body: nil,
+          bullets: [],
+          metadata: workResetCreditAccountId(from: detail).map { [$0] } ?? []
         )
       }
       // ── Host sleep: ONE chip per sleep ──

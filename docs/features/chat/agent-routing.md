@@ -12,11 +12,19 @@ where the machinery lives.
 | `apps/desktop/src/shared/modelProfiles.ts` | Curated selection helpers (task routing, default pickers). |
 | `apps/desktop/src/shared/chatModelSwitching.ts` | `canSwitchChatSessionModel` / `filterChatModelIdsForSession` -- rules for mid-session model changes. |
 | `apps/desktop/src/main/services/chat/agentChatService.ts` | `handoffSession`, permission translation, per-provider adapter. |
+| `apps/desktop/src/shared/permissionLadder.ts` | The four ordered autonomy levels (`plan` → `ask` → `auto-edit` → `full-auto`) and their mapping onto every provider's own vocabulary, so switching model family keeps the level instead of landing on that family's default. Nearest-**lower** on a miss. Deliberately separate from the abstract `AgentChatPermissionMode` words below; see [The permission ladder](#the-permission-ladder). |
+| `apps/desktop/src/main/services/chat/identitySessionPolicy.ts` | The CTO permission pin. `normalizeIdentityPermissionMode` returns `full-auto` for the `cto` identity, or `default` while a voice call holds `beginIdentityConfirmHold(sessionId)`. The holds are a counter per session key, so overlapping calls cannot release each other early and a call on one project does not downgrade every other project's CTO — one brain process hosts every open project's scopes and this module is a singleton across all of them. A hold taken before its session id is known is filed unscoped and still answers for everyone, because a caller that could not name its session cannot be narrowed after the fact. Also owns `isPrimaryPinnedIdentity`, `isIdentityConfirmHeld`, and `resolveIdentityExecutionLane`. |
+| `apps/desktop/src/main/services/chat/crossProviderReplayFork.ts` | The transcript replay budget for a cross-provider handoff: `REPLAY_CHARS_PER_TOKEN` (3), `REPLAY_RESERVE_MIN_TOKENS` (32,000), `REPLAY_RESERVE_WINDOW_FRACTION` (0.15), and `REPLAY_MAX_WINDOW_FRACTION` (0.6), plus the `replayReserveTokens` / `replayBudgetTokens` / `replayBudgetChars` derivations, `CODEX_REPLAY_MAX_CHARS` and `CODEX_APP_SERVER_INPUT_MAX_CHARS`, and the fitters `fitTranscriptReplayToBudget` / `buildFittedTranscriptReplay` that return a `TranscriptReplayFit`. |
+| `apps/desktop/src/main/services/chat/claudeReplayOverflowRecovery.ts` | Claude-only repair for a handoff replay that does not fit, as one factory taking every dependency by injection (`createClaudeReplayOverflowRecovery`). Owns `TranscriptReplayOrigin` + `normalizeTranscriptReplayOrigin`, the `ReplayForkProvenance` shape, the `CLAUDE_REPLAY_OVERFLOW_MIN_BUDGET_CHARS` floor (2,000), and the four entry points the chat service calls: `noteConsumedReplay` / `forgetConsumedReplay`, `recoverFromOverflow`, `noteRetrySucceeded`, and `reportRetryFailed`. The consumed and staged records live in `WeakMap`s keyed by the runtime, so they die with it rather than being persisted or leaking across a rebind. |
+| `apps/desktop/src/main/services/chat/providerThreadContinuity.ts` | Which provider-side thread a chat is talking to, and whether it has moved. `persistedPointerState()` is the one complete pointer mapping across every provider's thread field (`threadId`, `sdkSessionId`, `providerSessionId`, `droidSdkSessionId`, `piSessionId`/`piSessionFile`, `cursorSdkAgentId`/`cursorCloudAgentId`, `acpSessionId`) and is shared with the thread-pointer ledger, so the two cannot disagree; `providerThreadRef()` renders it, with `UNOPENED_PROVIDER_THREAD_REF` (`"none"`) meaning unknown rather than absent, and `providerThreadContinuityChanged()` is the verdict. On top of it sits `StagedSection` and its four operations — `newStagedSection()`, `armIfStale()`, `resetStagedSection()` (the thread is gone; re-stage) and `suppressStagedSection()` — which decide whether a large static block or the conversation tail rides a turn at all. The CTO's ~21 KB context block is the heaviest caller; see [CTO](../cto/README.md). |
+| `apps/desktop/src/main/services/chat/sessionTurnHealth.ts` | A session's durable turn health, as pure functions over plain records — answered from what is already on disk rather than from a provider, so it outlives a restart. `normalizeLastTurnFailure()` and `normalizeSessionContextHealth()` read the persisted records back, `shouldAdviseSessionRotation()` is the occupancy-streak verdict (`AGENT_CHAT_CONTEXT_ROTATION_PCT` / `_TURNS`), and the `nextSessionTurnHealth()` reducer is what `recordSettledTurnHealth` spends on every `done`. It reports whether the record actually moved, compared field by field rather than by `JSON.stringify`, because a false "changed" costs a disk write on every settled turn of every chat. |
+| `apps/desktop/src/main/services/chat/identityThreadRotation.ts` | The way out of an identity thread that is finished, over an injected deps bag (the same shape `claudeReplayOverflowRecovery.ts` uses): `getSessionTurnHealth()`, `getCtoThreadHealth()`, `distilIdentityHandoff()`, and `startFreshIdentitySession()`, which retires a full thread and opens a clean one carrying the distillation. Identity threads are the CTO's; the product behaviour is in [CTO › One thread, and the way out of one that is finished](../cto/README.md#one-thread-and-the-way-out-of-one-that-is-finished). |
 | `apps/desktop/src/shared/cursorModes.ts` | Canonical Cursor mode vocabulary and compatibility mapping from the legacy ADE permission field; permission-only full-auto/plan launches persist the native mode that the UI and later clients read. |
 | `apps/desktop/src/main/utils/codexComputerUse.ts` | macOS-only signed Codex Computer Use MCP resolver. Requires explicit Codex config opt-in and verifies the standalone OpenAI client before it can be injected into a chat or CLI runtime. |
 | `apps/desktop/src/shared/cliLaunch.ts` | Tracked provider CLI start/resume builders, including model/reasoning/permission flags and the canonical `computer_use` MCP overrides for Codex. Reasoning/fast variants are per-provider: Claude/Codex/Droid/Pi keep their flags, but tracked OpenCode launches always run the root TUI (`opencode [-m model] [--agent plan] [--prompt …]`) — no `run --interactive` branch and no `--variant`, because the root command silently drops unknown args; variants remain a chat-runtime feature. |
 | `apps/desktop/src/main/services/ai/providerRuntimeHealth.ts` | Tracks provider readiness/auth/network failures so the UI can surface degraded states. |
 | `apps/desktop/src/main/services/ai/providerOptions.ts` | Normalises provider-native options (Claude permission mode, Codex approval + sandbox, OpenCode permission). |
+| `apps/desktop/src/main/services/ai/apiKeyStore.ts`, `apps/desktop/src/main/services/account/accountVaultBridge.ts` | Encrypts ADE-managed provider keys in machine storage, records account/device provenance, mirrors account-origin keys to the brain-backed vault, and purges account-origin values at sign-out or account switch. |
 | `apps/desktop/src/main/services/shared/providerConfigHomes.ts` | Where each provider CLI keeps its user-level config (`claudeConfigHome`, `codexConfigHome`, `factoryConfigHome`), and the canonical statement of the config-ownership rule below. Every adapter that reads or writes a provider config path goes through it. |
 | `apps/desktop/src/main/services/ai/authDetector.ts` | Discovers available credentials (CLI, API key, OAuth) and reports auth status. |
 | `apps/desktop/src/main/services/ai/codexExecutable.ts` / `droidExecutable.ts` | CLI resolution for runtimes that still need an external binary (looks on PATH, in the app bundle, then in configured install paths where supported). Claude uses the bundled Claude Agent SDK binary; Cursor and Droid run through embedded SDKs (`@cursor/sdk`, `@factory/droid-sdk`). |
@@ -37,8 +45,8 @@ for vendored runtimes without changing the union.
 | Provider | Runtime | Adapter location |
 |---|---|---|
 | `claude` | `@anthropic-ai/claude-agent-sdk` `query()` stream with an ADE async input pump, `startup()` warmup, bundled Claude Code binary, SDK sessions, hooks, output styles, plugins, context usage, rewind, and slash-command dispatch. | `agentChatService.ts` (inline; the file carries the full Claude adapter). |
-| `codex` | Pinned `@openai/codex` 0.153.4 `codex app-server` subprocess, JSON-RPC protocol. Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter and thread config); executable resolution via `services/ai/codexExecutable.ts`. |
-| `opencode` | OpenCode server runtime: Anthropic/OpenAI/Google/Mistral/DeepSeek/xAI/Groq/Together AI API keys, OpenRouter, and local (Ollama, LM Studio, vLLM). | `agentChatService.ts` (OpenCode adapter); model discovery in `localModelDiscovery.ts` and `modelsDevService.ts`. |
+| `codex` | Pinned `@openai/codex` 0.155.1 `codex app-server` subprocess, JSON-RPC protocol. Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter and thread config); executable resolution via `services/ai/codexExecutable.ts`. |
+| `opencode` | OpenCode server runtime: the provider catalog and model list come from OpenCode/Models.dev, with provider-native OAuth, API-key, custom, and local-server paths. | `agentChatService.ts` (OpenCode adapter); inventory in `openCodeInventory.ts`; auth in `openCodeAuthService.ts`. |
 | `cursor` | Official `@cursor/sdk` running in a Node worker pool. ADE owns permissions, hooks, and the system prompt; the SDK owns the model + tool execution. Slash commands are discovered from `.cursor/commands/`, `.cursor/agents/`, built-in subagents, and Agent Skill roots via `cursorSlashCommandDiscovery.ts`. A transport failure can wedge the server-side agent thread while the worker process stays alive, so every local turn carries a 90 s first-event watchdog and one automatic recycle-and-resend — see [Cursor thread recycling and the first-event watchdog](README.md#cursor-thread-recycling-and-the-first-event-watchdog). | `cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`, `cursorSdkErrors.ts`, `cursorSlashCommandDiscovery.ts`. |
 | `devin` | The user's `devin` CLI spawned as `devin acp` over the shared ACP host (JSON-RPC stdio), plus an org-wide cloud fleet over the v3 Sessions API — mirrored transcript chats, lane-bound session creation, terminate/archive, pull-into-lane, attention mapping, and proof sync. The same provider id covers the tracked `devin` CLI for PTY sessions. | `acpHost/acpDialects/devin.ts`; cloud in `services/ai/devinCloudClient.ts`, `services/chat/devinCloudFleetService.ts`, `devinCloudConversation.ts`. |
 | `droid` | Factory Droid models exposed as dynamic `droid/<modelId>` descriptors and driven through the official `@factory/droid-sdk` running in a forked Node worker pool. The legacy ACP bridge (`droidAcpPool.ts`) has been retired. | `droidSdkPool.ts`, `droidSdkWorker.ts`, `droidSdkProtocol.ts`, `droidSdkEventMapper.ts`, `droidModelsDiscovery.ts`; model helpers in `modelRegistry.ts`. |
@@ -136,10 +144,10 @@ high | xhigh | max`; Sol and Terra expose `low | medium | high | xhigh | max |
 ultra`. Desktop, ADE Code, and iOS label those values Light, Medium, High,
 Extra High, Max, and (for Sol/Terra) Ultra. Runtime app-server ladders retain
 their advertised order. `ultra` is the multi-agent tier and carries a usage
-warning. Codex 0.153.4 is the pinned app-server that advertises Astra; older
+warning. Codex 0.155.1 is the pinned app-server that advertises Astra; older
 PATH installs without Astra metadata cannot start it.
 
-On 0.153.4 ADE always enables `tools.update_plan` on `thread/start` and
+On 0.155.1 ADE always enables `tools.update_plan` on `thread/start` and
 `thread/resume`, copies the thread's `model` / `reasoningEffort` into the
 session snapshot, and treats `item/tool/requestUserInput` `isBlocking:
 false` as live steering rather than Needs you. Computer Use appears as a
@@ -170,15 +178,38 @@ host-advertised model metadata over their static compatibility catalogs.
   but ADE now probes `cursor-agent` for CLI-launch model inventory and
   merges those rows with the SDK registry so the picker can distinguish
   SDK chat models from Cursor CLI-only models.
-- API-key providers check the keychain via `apiKeyStore.ts` and then
-  the `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / etc. env vars.
+- API-key providers check encrypted machine storage via `apiKeyStore.ts` and
+  then the `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / etc. env vars. ADE-managed
+  keys can be account-owned (`provider_api_key` in the account vault) or
+  device-only; provenance decides which local values hydrate and which are
+  purged when the account changes.
 - OAuth providers trigger the OAuth redirect flow in
   `services/lanes/oauthRedirectService.ts`.
 - Local providers (`ollama`, `lmstudio`) probe the configured endpoint
   for model availability.
 
+OpenCode's Settings catalog is intentionally dynamic. ADE reads the live
+OpenCode server's `provider.list()` and carries only each provider's advertised
+credential environment-variable names (never the provider's `key` field) and a
+non-secret `env`/`config` source marker to the renderer. A provider with an
+environment-backed API credential therefore gets an API-key editor even when
+OpenCode does not expose an OAuth plugin for it, but ADE does not offer a
+disconnect action for a credential it cannot remove. OAuth methods still come
+from OpenCode's `/provider/auth` endpoint, and API-key writes go through
+OpenCode's `/auth/:providerID` endpoint before ADE mirrors the credential into
+its encrypted key store. ADE shows Verify only for providers with an explicit
+provider-native verifier; dynamic providers remain selectable without a false
+verification result.
+
 Results feed into the UI's `AiProviderConnectionStatus` /
 `AiRuntimeConnectionStatus` (see `providerConnectionStatus.ts`).
+
+ADE's account vault is not a provider SDK config home. The brain owns the
+account refresh boundary and desktop, CLI, and ADE Code request access tokens
+through its refresh broker. The local encrypted key store remains the runtime
+adapter's fast path, while account migration and hydration fill it without
+overwriting a device-origin key. Ambient environment variables, provider-owned
+CLI stores, and Pi's `auth.json` remain local to the machine or provider.
 
 ### Pi sign-in
 
@@ -421,8 +452,8 @@ own `/undo` and `/revert`, whose documented default is `true`. `autoupdate`
 moved out of config into `OPENCODE_DISABLE_AUTOUPDATE=1` on the server env: ADE
 does pin the binary, but that does not need the highest-precedence config slot.
 Both env builders set it — `buildIsolatedOpenCodeEnv` rebuilds the env from
-scratch and drops every inherited `OPENCODE_*` var, so an orchestration lead's
-isolated server would otherwise self-update the binary ADE pinned.
+scratch and drops every inherited `OPENCODE_*` var, so an isolated server would
+otherwise self-update the binary ADE pinned.
 
 Local provider blocks (`ollama`, `lmstudio`) are emitted only when the user
 configured an endpoint or ADE discovered models for that family. An
@@ -449,6 +480,26 @@ silently resetting the thread into a new empty session.
 
 Permission controls are provider-native. The session carries an abstract
 `permissionMode` alongside provider-native fields.
+
+### One source for a configured default
+
+`ai.permissions.providers.*` (`AiProviderPermissions` in
+`shared/types/config.ts`) is the **only** per-provider permission source, for
+every provider. It is what the Settings control writes: one
+`AgentChatPermissionMode` per provider key (`claude`, `codex`, `cursor`,
+`droid`, `opencode`, `pi`, plus one key per ACP provider), with `codexSandbox`
+as Codex's second axis.
+
+`resolveChatConfig` in `agentChatService` used to read it for **Pi alone**.
+Every other provider ignored it and fell through to the legacy shared
+`permissions.cli` / `permissions.inProcess` knobs, so a Claude or Codex default
+chosen in Settings had no effect on a launch. It is now read per provider, and
+every branch ends in a concrete mode — a launch that sends nothing (an
+automation, a CLI start, a session normalize) depends on that. The parallel
+`ai.chat.*` permission keys this path also consulted (`defaultApprovalPolicy`,
+`claudePermissionMode`, `codexSandbox`, `opencodePermissionMode`) have no writer
+anywhere in the repository and are no longer read here; keeping one key per
+provider is what makes the written value and the runtime value the same value.
 
 ### Claude
 
@@ -739,7 +790,7 @@ is `cursor/grok-4.6` (the SDK receives `grok-4.6`), not ACP's `xai/grok-4-6`.
 
 `resolveCursorSdkPolicy` (`services/chat/cursorSdkPolicy.ts`) turns the ADE
 permission mode into a `CursorSdkPermissionPolicy`: chat mode, approval policy,
-hard guards, orchestration-lead flag, and a `fullAuto` marker.
+hard guards, and a `fullAuto` marker.
 Hard guards refuse paths outside the lane. Read-only exceptions are this
 lane's Cursor `terminals`, `agent-transcripts`, and `assets` directories
 under `~/.cursor/projects/<slug>/`, plus the project's `.ade/attachments`
@@ -771,22 +822,119 @@ window) — the same replay staged when a wedged thread is recycled.
 actually happens, and so cross-machine fork excludes it (there is no provider
 artifact to transport).
 
-Cursor is one of two non-Claude providers that can take a message *during*
-a live turn, and it is the one that takes it by stopping. (Codex is the other,
-and the mirror case: its app-server folds a `turn/steer` request into the
-running turn, so `ACTIVE_TURN_DISPATCH_MODES` gives it `inline` and `queue` but
-no `interrupt`.) The Cursor SDK has no mid-run message API, so
-`ACTIVE_TURN_DISPATCH_MODES` (`shared/types/chat.ts`) gives Cursor `interrupt`
-and `queue` but no `inline`: the redirect stops the run, waits for the turn to
-settle, and sends the message as the next turn on the same agent, which keeps
-the thread because the SDK's local agent store holds it. That is what
-`activeTurnInterruptContinues` records, and why every surface labels Cursor's
-affordance "Interrupt & continue" rather than "Interrupt & send". Because that
-stop exists only to resend, it runs in `stop_only` mode with
+Cursor, Codex, and OpenCode are the non-Claude providers that can take a
+message *during* a live turn, each by a different channel. Codex's
+app-server folds a `turn/steer` request into the running turn, so
+`ACTIVE_TURN_DISPATCH_MODES` gives it `inline` and `queue` but no `interrupt` —
+there is no cancel-and-resend. `@cursor/sdk` 1.0.31 added `Run.steer(text)`,
+which folds a message into the live local run, so the same table gives Cursor
+all three modes Claude has — read the table for the list rather than restating
+it here. OpenCode's v2 session prompt admits an input with
+`delivery: "steer"` (`v2.session.prompt`, the same route the server's own
+follow-up steering uses), which the live agent loop picks up at the next model
+step; like Codex it gets `inline` and `queue` and no `interrupt`. What Cursor
+does *not* share is the meaning of its interrupt: it stops
+the run, waits for the turn to settle, and sends the message as the next turn on
+the same agent, which keeps the thread because the SDK's local agent store holds
+it. That is what `activeTurnInterruptContinues` records, and why every surface
+labels Cursor's affordance "Interrupt & continue" rather than "Interrupt &
+send". Because that stop exists only to resend, it runs in `stop_only` mode with
 `preserveQueuedSteersOnInterrupt` armed on the Cursor runtime until the
 interrupted turn's own tail consumes it, so messages the user had already staged
 ride through the redirect instead of being cleared. `interrupt-replace` on
 OpenCode, Pi and Droid keeps its `stop_and_clear` contract.
+
+Inline is a *local*-run capability. A Cursor **Cloud** run implements
+`Run.steer` but refuses every call, so an inline send there would always degrade
+to an ordinary follow-up message. The dispatch table stays keyed by provider — a
+session-shaped rule cannot live in a provider-keyed record — so the carve-out is
+the exported helper `cursorSessionRunsInCloud(session)` beside it, and every
+surface that knows the session reads that one derivation: `agentChatService`,
+the desktop `AgentChatPane`, the hosted web client (same pane, same helper),
+the `ade code` TUI's `/steer` advert, and iOS
+`workChatCursorSessionRunsInCloud`. It checks
+`cursorRuntime` **and** `cursorCloudAgentId` because a session promoted before
+`cursorRuntime` existed carries only the agent id. When the host pins
+`cursorRuntime: "local"`, that wins over a leftover agent id — iOS session
+summaries decode the same field so a returned-to-local Cursor chat keeps
+**Send during turn**.
+
+Two consequences worth stating rather than discovering:
+
+- A cloud Cursor chat's default send-during-turn mode is **Send after turn**,
+  not the **Interrupt & continue** it was before Cursor gained inline. The
+  renderer withholds the inline handler for a cloud session, and an unwired
+  inline pick downgrades to queue — never to interrupt, because a downgrade must
+  not promote someone into cancelling the running agent. Interrupt stays one
+  click away in the send menu.
+- Programmatic delivery makes the opposite choice. `chat.messageSession` kind
+  `auto` on a cloud Cursor session routes to `interrupt`, which is what `auto`
+  meant there before inline existed. A programmatic caller has no menu to fall
+  back to, so that path keeps its previous behaviour.
+
+The service never throws for a refused inline steer. `tryCursorInlineSteer`
+declines up front for attachments, per-message overrides, a cloud session, or a
+dead runtime, and otherwise asks the worker; only a `complete_delivered` outcome
+transfers ownership of the message to the turn (`CursorSdkSteerOutcome` in
+`cursorSdkProtocol.ts` — `revert_to_followup` is the SDK's refusal and
+`unsupported` is ADE's diagnostics-only third value, treated identically). Every
+other outcome stages the row exactly as a queued send would have, emits one
+"couldn't go into the running turn" notice, and — because Cursor drains
+`pendingSteers` only at a turn boundary — runs `drainCursorQueueHeadIfIdle` so a
+row that landed after that boundary already passed is not left waiting for the
+user to send something else.
+
+### The permission ladder
+
+Each agent CLI names its autonomy differently: Claude runs `plan` through
+`bypassPermissions`, Codex splits the question into an approval policy **and** a
+sandbox, Droid counts from `read-only` to `agi`, OpenCode and ACP each have
+their own words. Switching model family therefore dropped the user wherever that
+family's default happened to sit — you could be on the most permissive Claude
+mode, switch to Droid, and silently land on the most cautious one.
+
+`apps/desktop/src/shared/permissionLadder.ts` states the one thing the user
+actually means — how much the agent may do without asking — as four ordered
+levels, and maps each onto every provider's vocabulary.
+
+| Level | Claude | Codex (policy + sandbox) | OpenCode | Droid | ACP | Cursor |
+|---|---|---|---|---|---|---|
+| `plan` | `plan` | `untrusted` + `read-only` | `plan` | `read-only` | `plan` | `ask` |
+| `ask` | `default` | `on-request` + `workspace-write` | `edit` | `auto-low` | `default` | `agent` |
+| `auto-edit` | `acceptEdits` | `on-failure` + `workspace-write` | — | `auto-medium` | `auto-edit` | — |
+| `full-auto` | `bypassPermissions` | `never` + `danger-full-access` | `full-auto` | `auto-high` | `yolo` | `full-auto` |
+
+Two rules keep it honest:
+
+- **Nearest LOWER on a miss.** A family that cannot express the exact level
+  steps *down* the ladder — OpenCode has no separate `auto-edit` tier and
+  Cursor's `agent` spans both `ask` and `auto-edit`, so both resolve
+  `auto-edit` to their `ask` rung and report `downgraded: true`. Rounding up
+  would hand an agent more freedom than the user chose.
+- **The ladder only decides where an UNVISITED family starts.** The user's exact
+  per-family choice is remembered separately, so returning to Droid restores
+  `agi` even though the ladder itself only ever writes `auto-high`.
+
+Reading a level back out of a family (`permissionLevelFor*`) is the same rule in
+reverse, and Codex is where it matters: both axes are required for `full-auto`,
+because "never ask" with `workspace-write` is a user who still wants a sandbox.
+Treating that as `full-auto` would hand Claude `bypassPermissions` on a family
+switch — unsandboxed, in a family with no sandbox axis at all. OpenCode
+`config-toml` reads as `ask` for the same reason: it defers to the user's own
+file, and claiming a freedom that file may not grant is rounding up.
+
+**The ladder is deliberately separate from the abstract permission mode below,
+and the two must not be reconciled.** `AgentChatPermissionMode`
+(`plan | default | edit | full-auto`) is the generic vocabulary that
+`ade --permission-mode`, the CLI launch path, and every persisted session speak,
+and `droidPermissionModeFromLegacyPermissionMode` in `shared/types/chat.ts`
+translates it. In *that* vocabulary `edit` is the **cautious** editing tier
+(Droid `auto-low`) by original intent, so the two tables look inverted on the
+middle rungs. That is fine, because they answer different questions: the ladder
+reads and writes each family's concrete native mode on a model switch, the
+legacy converter maps a generic CLI word to a tier at launch, and **no code path
+converts between them**. "Fixing" the apparent inversion would shift
+`ade --permission-mode edit` and every persisted session carrying it.
 
 ### Abstract-to-native mapping
 
@@ -928,6 +1076,52 @@ on the Claude Agent SDK:
    taken. An empty candidate list still returns that brief — it does
    not throw or skip the handoff.
 
+### Replay budget and the handoff notice
+
+A transcript replay never fills the target model's context window. ADE
+budgets it at three characters per token, holds back the larger of 32,000
+tokens or 15% of the window for the system prompt, the tools and the first
+message, and caps the replay itself at 60% of the window
+(`crossProviderReplayFork.ts`). When that budget drops older turns, the new
+chat opens with a plain notice saying how many of the original turns it
+carried, roughly what share of the model's context they take, and that the
+rest is still in the source chat. A replay can still be rejected as too long, in two shapes: the turn that
+carried it is refused outright, or an earlier turn accepted it into the provider
+session and every later message overflows with nothing left in memory to shrink.
+`claudeReplayOverflowRecovery.ts` repairs both the same way, and ADE does not ask
+Claude to compact a conversation with only one exchange — the SDK answers that
+with "Not enough messages to compact".
+
+ADE records where each replay came from (`transcriptReplayOrigin`: source chat,
+budget chars, turn counts, context window), so a "prompt is too long" halves the
+last budget, re-fits the source chat's transcript to it, and re-sends the message
+once. Halving stops at 2,000 characters; below that a replay carries nothing
+worth sending. The retry always opens a **fresh** provider session rather than
+resuming the old one, which still holds the prompt that did not fit, and clears
+the continuity tail that reset stages — the replay already is the conversation,
+and a second thinner copy of the same turns is the duplication that overflowed
+the chat in the first place.
+
+One automatic retry per message. A second failure is reported rather than
+retried, and the staged replay is put back on the chat so the user's next message
+still carries the conversation: `noteRetrySucceeded` drops that staged copy once
+the retry lands (it is in the provider session now, and the string itself can be
+a megabyte of transcript held per runtime), while `reportRetryFailed` restores it
+and says so. `reportRetryFailed` is idempotent, because several terminal paths
+can notice the same failure. A turn the user **interrupted** is neither: pressing
+Stop is not a prompt that did not fit, the replay is already in the session, and
+blaming its length would be a lie about what just happened.
+
+Chats forked before that marker existed are recovered from the `handoff_fork`
+provenance on their imported envelopes, which carries the same source id — but
+only when `replayFork` says that fork was a replay fork, or, for forks that
+predate the flag, when the source chat's provider was not Claude. A native fork
+keeps its history on the provider, and re-seeding it from the source transcript
+would drop every turn taken since. Replay-overflow recovery is Claude-only:
+every other provider's replay is already capped by a wire limit it cannot
+exceed (`CODEX_REPLAY_MAX_CHARS` for Codex, the equivalent for the rest), so
+none of them can reach this state.
+
 ## Auto-title generation
 
 ADE names chats and auto-created lanes from the ADE provider that owns
@@ -1042,9 +1236,10 @@ CTO sessions (`identityKey: "cto"`) are routed differently:
    `ChatSurfaceProfile` in the UI.
 2. Identity and recent context are reconstructed from `ctoStateService`
    on session start and re-injected via `buildReconstructionContext()`.
-3. The CTO system prompt includes the immutable CTO doctrine,
-   environment knowledge, and active personality overlay
-   (`CtoPersonalityPreset`). See `ctoStateService.ts`.
+3. The CTO system prompt is built from one immutable doctrine plus
+   environment knowledge. The doctrine carries the CTO's voice and its
+   ADE-product-help rules; there is no per-user personality overlay to
+   layer on top. See `ctoStateService.ts`.
 4. Extra tooling: CTO sessions receive `ctoOperatorTools` (including the
    `saveMemory` / `searchMemory` / `readMemory` memory tools) and Linear
    tools when connected. `createCtoRuntimeToolMap` registers them on the
@@ -1052,9 +1247,14 @@ CTO sessions (`identityKey: "cto"`) are routed differently:
    MCP server (Claude), the `ade_cto` dynamic-tool namespace (Codex), or a
    dedicated HTTP MCP lease (Cursor / Droid / OpenCode). See
    [tool-system](tool-system.md#registration-on-a-live-session).
-5. Guarded permission defaults: Claude defaults to `"default"` (ask
-   before dangerous ops); OpenCode defaults to `"edit"`. `full-auto`
-   is only applied when explicitly requested.
+5. Pinned permission mode: `normalizeIdentityPermissionMode` in
+   `identitySessionPolicy.ts` pins the CTO to `full-auto` on every
+   provider. The mode is not a default a caller can override.
+   `ensureIdentitySession` re-normalizes the session before every turn,
+   so a mode written once is snapped back. A live voice call is the one
+   exception: `beginIdentityConfirmHold()` holds the CTO in `default`
+   for the life of the call, so reads run and writes raise an approval.
+   The hold is a counter, so overlapping calls cannot release it early.
 6. Work the CTO launches never lands on the primary lane.
    `resolveCtoExecutionLane` honors an explicit `laneId` and otherwise
    creates a dedicated lane; it has no fallback to the CTO session's

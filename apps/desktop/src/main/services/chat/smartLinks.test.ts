@@ -5,9 +5,8 @@ import {
   deriveSmartLinkPreview,
   findSmartLinks,
   shouldReconcileSmartLinkDraft,
-  smartLinkDisplayLabel,
-  smartLinkProviderGlyph,
 } from "../../../shared/smartLinks";
+import { chipDisplayLabel, chipFromSmartLink, chipGlyph } from "../../../shared/chips";
 import {
   clearSmartLinkPreviewCacheForTesting,
   resolveSmartLinkPreview,
@@ -38,8 +37,11 @@ describe("smart links", () => {
 
     expect(matches).toHaveLength(1);
     expect(generic?.url).toBe("https://example.com/docs?q=1");
-    expect(generic ? smartLinkDisplayLabel(generic) : null).toBe("https://example.com/docs?q=1");
-    expect(generic ? smartLinkProviderGlyph(generic.provider) : null).toBe("↗");
+    // Label and glyph now come from the shared chip model, which is the one
+    // description every surface renders from.
+    const chip = generic ? chipFromSmartLink(generic) : null;
+    expect(chip ? chipDisplayLabel(chip) : null).toBe("https://example.com/docs?q=1");
+    expect(chip ? chipGlyph(chip.kind) : null).toBe("↗");
   });
 
   it("never shares authenticated provider titles through the process cache", async () => {

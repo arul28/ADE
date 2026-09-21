@@ -161,8 +161,15 @@ export function BatchLaunchModal({
   laneOnly = false,
   onOpenChange,
   onLaunch,
+  onOpenHarnessSettings,
 }: {
   open: boolean;
+  /**
+   * Where the model picker's empty Harnesses tab sends the user. Supplied by a
+   * host inside the app router; hosts rendered without one (tests, embedded
+   * launchers) leave it out and the CTA is absent rather than a router crash.
+   */
+  onOpenHarnessSettings?: () => void;
   projectRoot?: string | null;
   issues: LaneLinearIssue[];
   lanes: LaneSummary[];
@@ -181,6 +188,7 @@ export function BatchLaunchModal({
       ?? "",
     [recents],
   );
+
 
   const [defaultConfig, setDefaultConfig] = useState<SessionLaunchModelConfig>(() => ({
     modelId: "",
@@ -413,9 +421,9 @@ export function BatchLaunchModal({
             <span className="mr-1 text-[11px] font-semibold text-fg/80">Default</span>
           ) : null}
           <SessionLaunchModelControls
+                    onOpenHarnessSettings={onOpenHarnessSettings}
             config={defaultConfig}
             onChange={handleDefaultConfigChange}
-            surfaceKey="batch-launch-default"
           />
           {multiIssue ? (
             <button
@@ -487,9 +495,9 @@ export function BatchLaunchModal({
                 </div>
                 {!skipped && !laneOnly && multiIssue ? (
                   <SessionLaunchModelControls
+                    onOpenHarnessSettings={onOpenHarnessSettings}
                     config={toLaunchModelConfig(state)}
                     onChange={(patch) => patchIssue(issue.id, patchFromLaunchModelConfig(state, patch))}
-                    surfaceKey={`batch-launch-${issue.id}`}
                   />
                 ) : null}
                 {conflict ? (

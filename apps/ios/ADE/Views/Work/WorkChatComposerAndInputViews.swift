@@ -2,6 +2,103 @@ import SwiftUI
 import UIKit
 import AVKit
 
+// MARK: - Composer fold
+
+/// The one animation the composer fold rides. A single spring on the collapsed
+/// state, applied where the state changes rather than as an `.animation(_:value:)`
+/// modifier, so the card's height is the only thing interpolated and nothing
+/// animates the change twice.
+let workComposerFoldAnimation: Animation = .snappy(duration: 0.26, extraBounce: 0.02)
+
+/// Minimum downward travel that counts as a fold swipe. Short enough to feel
+/// like a flick, long enough that it is never a mis-read tap or a text
+/// selection drag.
+let workComposerFoldSwipeThreshold: CGFloat = 40
+
+/// What a finished drag on the composer card means.
+enum WorkComposerFoldGesture: Equatable {
+  case collapse
+  case expand
+  case ignore
+}
+
+/// Classifies a drag on the composer card.
+///
+/// A swipe only counts when it is mostly vertical — a mostly horizontal drag is
+/// the attachment tray scrolling or a text selection, and stealing it would
+/// make both unusable. Direction is read against the current state so the same
+/// gesture never toggles back and forth mid-drag.
+func workComposerFoldGesture(
+  translation: CGSize,
+  collapsed: Bool
+) -> WorkComposerFoldGesture {
+  let dy = translation.height
+  let dx = abs(translation.width)
+  guard abs(dy) >= workComposerFoldSwipeThreshold, abs(dy) > dx * 1.5 else { return .ignore }
+  if dy > 0 { return collapsed ? .ignore : .collapse }
+  return collapsed ? .expand : .ignore
+}
+
+/// Height the folded card shows of the field: whole lines, never a sliced one.
+///
+/// The fold clips the field rather than re-measuring it, so the clip window has
+/// to land on a line boundary itself — a window sized from a padded height cuts
+/// the next line in half and shows a band of glyph tops under the first line.
+func workComposerFoldedFieldHeight(lineHeight: CGFloat, lines: Int = 1) -> CGFloat {
+  ceil(lineHeight) * CGFloat(max(1, lines))
+}
+
+/// Where the folded field's scroll offset belongs, or `nil` to leave it alone.
+///
+/// A draft that was typed past the bottom of the field is scrolled when the
+/// fold lands, and clipping a scrolled field shows whatever half-line the
+/// offset happens to sit on. Folded means "the start of the draft", so the
+/// offset goes back to the top and stays there until the card expands again.
+func workComposerFoldedContentOffsetY(collapsed: Bool, current: CGFloat) -> CGFloat? {
+  guard collapsed, current > 0.5 else { return nil }
+  return 0
+}
+
+/// The composer's fold state: what the card shows and whether the keyboard is
+/// up. Collapsed is a view mode only — nothing is unstaged, and the draft is
+/// untouched.
+struct WorkComposerFoldState: Equatable {
+  var collapsed: Bool
+  var focused: Bool
+
+  static let expanded = WorkComposerFoldState(collapsed: false, focused: false)
+}
+
+/// Every way the fold can change.
+enum WorkComposerFoldIntent: Equatable {
+  /// Swipe down on the card: fold to one line and put the keyboard away.
+  case collapse
+  /// Swipe up on the folded card, or a tap on the compact tray.
+  case expand
+  /// The field reported focus (the user tapped into it, or a restore pushed
+  /// focus there). Typing is always an escape from the folded state.
+  case focusChanged(Bool)
+}
+
+/// Pure transition for the composer fold.
+///
+/// `canCompose` is false while a question gates the field; expanding then must
+/// not raise a keyboard over a field that rejects every keystroke.
+func workComposerFoldTransition(
+  _ state: WorkComposerFoldState,
+  intent: WorkComposerFoldIntent,
+  canCompose: Bool
+) -> WorkComposerFoldState {
+  switch intent {
+  case .collapse:
+    return WorkComposerFoldState(collapsed: true, focused: false)
+  case .expand:
+    return WorkComposerFoldState(collapsed: false, focused: canCompose)
+  case .focusChanged(let focused):
+    return WorkComposerFoldState(collapsed: focused ? false : state.collapsed, focused: focused)
+  }
+}
+
 struct WorkTurnUsageSummaryBanner: View {
   let summary: WorkUsageSummary
   /// Retained for call-site compatibility. Model is shown in usage and composer, not the turn line.
@@ -594,6 +691,9 @@ struct WorkQueuedSteerStrip: View {
   @Binding var drafts: [String: String]
   let busy: Bool
   let isLive: Bool
+  /// The provider's active-turn delivery table, so the detail sheet can name
+  /// every option — including the ones this provider cannot do.
+  let capability: WorkActiveSendCapability
   /// Drives the queued card's live indicator: a message waiting behind a
   /// running turn breathes, one waiting on an idle session sits still.
   let turnActive: Bool
@@ -613,6 +713,7 @@ struct WorkQueuedSteerStrip: View {
       ForEach(steers) { steer in
         WorkQueuedSteerRow(
           steer: steer,
+          capability: capability,
           draft: Binding(
             get: { drafts[steer.id] ?? steer.text },
             set: { drafts[steer.id] = $0 }
@@ -686,6 +787,7 @@ private struct WorkQueuedSteerWaitingGlyph: View {
 
 struct WorkQueuedSteerRow: View {
   let steer: WorkPendingSteerModel
+  let capability: WorkActiveSendCapability
   @Binding var draft: String
   let isEditing: Bool
   let busy: Bool
@@ -700,6 +802,7 @@ struct WorkQueuedSteerRow: View {
 
   @StateObject private var dictationCoordinator = DictationInsertionCoordinator()
   @State private var isDictating = false
+  @State private var showingDetail = false
   private var dictationTargetId: String {
     "work-steer:\(steer.id)"
   }
@@ -752,21 +855,36 @@ struct WorkQueuedSteerRow: View {
         // ("Inter-rupt") that the old titleAndIcon chips hit in this
         // non-scrolling HStack; the tap targets stay 44pt tall regardless.
         HStack(spacing: 8) {
-          WorkQueuedSteerWaitingGlyph(waiting: turnActive)
+          // The summary is the tap target for the detail sheet — the icon
+          // buttons keep their own. A truncated line and four unlabelled
+          // glyphs are not enough to read a staged message or its options.
+          Button {
+            showingDetail = true
+          } label: {
+            HStack(spacing: 8) {
+              WorkQueuedSteerWaitingGlyph(waiting: turnActive)
 
-          VStack(alignment: .leading, spacing: 1) {
-            Text(steer.text)
-              .font(.system(size: 13.5))
-              .foregroundStyle(ADEColor.textPrimary)
-              .lineLimit(1)
-              .truncationMode(.tail)
+              VStack(alignment: .leading, spacing: 1) {
+                Text(steer.text)
+                  .font(.system(size: 13.5))
+                  .foregroundStyle(ADEColor.textPrimary)
+                  .lineLimit(1)
+                  .truncationMode(.tail)
 
-            Text(dispositionText)
-              .font(.caption2)
-              .foregroundStyle(ADEColor.textMuted)
-              .lineLimit(1)
+                Text(dispositionText)
+                  .font(.caption2)
+                  .foregroundStyle(ADEColor.textMuted)
+                  .lineLimit(1)
+              }
+              .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .contentShape(Rectangle())
           }
-          .frame(maxWidth: .infinity, alignment: .leading)
+          .buttonStyle(.plain)
+          .accessibilityLabel("Queued message: \(steer.text)")
+          .accessibilityHint("Opens the full message and its send options")
+          .accessibilityIdentifier("Work.Chat.StagedStrip.Open")
 
           HStack(spacing: 0) {
             if let onDispatchInline {
@@ -824,12 +942,25 @@ struct WorkQueuedSteerRow: View {
         .stroke(ADEColor.glassBorder, lineWidth: 0.5)
     )
     .accessibilityElement(children: .contain)
+    .sheet(isPresented: $showingDetail) {
+      WorkQueuedSteerDetailSheet(
+        steer: steer,
+        capability: capability,
+        turnActive: turnActive,
+        isLive: isLive,
+        busy: busy,
+        onDispatchInline: onDispatchInline,
+        onDispatchInterrupt: onDispatchInterrupt,
+        onBeginEdit: onBeginEdit,
+        onCancel: onCancel
+      )
+    }
   }
 
   /// Says what happens next, not when it was typed: a queued message's
   /// timestamp is always "a moment ago" and carried no information.
   private var dispositionText: String {
-    turnActive ? "sends when turn ends" : "after turn"
+    workQueuedSteerDisposition(capability: capability, turnActive: turnActive).shortText
   }
 
   // Icon-only tap target with an accessibility label so the row's actions stay
@@ -987,6 +1118,13 @@ struct WorkStructuredQuestionCard: View {
   /// `onSelectOption`.
   let onSubmitAll: @MainActor ([String: AgentChatInputAnswerValue], String?) async -> Bool
   let onDecline: @MainActor () async -> Bool
+  /// Throw the question away without answering it.
+  ///
+  /// Supplied only when the host marked the card `dismissible` — a card the
+  /// provider is still waiting on has no local "never mind", and the host
+  /// refuses one. Absent means no Dismiss button, which is also what every
+  /// older host means.
+  var onDismiss: (@MainActor () async -> Bool)? = nil
   var onFreeformFocusChange: ((Bool) -> Void)? = nil
   /// Provider to fall back on when the parsed question carries no `source`
   /// (legacy `structured_question` envelopes). Usually the session provider.
@@ -1469,6 +1607,16 @@ struct WorkStructuredQuestionCard: View {
       .tint(ADEColor.danger)
       .disabled(busy)
 
+      if onDismiss != nil {
+        Button("Dismiss") {
+          Task { await dismissQuestion() }
+        }
+        .buttonStyle(.glass)
+        .tint(ADEColor.textSecondary)
+        .disabled(busy)
+        .accessibilityHint("Closes the question without answering it.")
+      }
+
       Spacer(minLength: 8)
 
       Button(submitLabel) {
@@ -1516,31 +1664,16 @@ struct WorkStructuredQuestionCard: View {
 
   @MainActor
   private func submitAll() async {
-    var answers: [String: AgentChatInputAnswerValue] = [:]
-    for q in question.questions {
-      let selected = selections[q.questionId] ?? []
-      let ordered = q.options.map(\.value).filter { selected.contains($0) }
-      if !ordered.isEmpty {
-        if q.multiSelect {
-          answers[q.questionId] = .strings(ordered)
-        } else if let first = ordered.first {
-          answers[q.questionId] = .string(first)
-        }
-        continue
-      }
-      let freeform = (freeformByQuestion[q.questionId] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-      if !freeform.isEmpty {
-        answers[q.questionId] = .string(freeform)
-      }
-    }
-    let sharedFreeform: String? = {
-      if isPaged { return nil }
-      let shared = singleQuestionFreeformText.trimmingCharacters(in: .whitespacesAndNewlines)
-      return shared.isEmpty ? nil : shared
-    }()
+    let payload = WorkQuestionAnswerBuilder.build(
+      questions: question.questions,
+      selections: selections,
+      freeformByQuestion: freeformByQuestion,
+      sharedFreeform: singleQuestionFreeformText,
+      isPaged: isPaged
+    )
     // Only discard the answers once the host has accepted them. A failed send
     // restores the card; it must come back with the user's work intact.
-    if await onSubmitAll(answers, sharedFreeform) {
+    if await onSubmitAll(payload.answers, payload.sharedFreeform) {
       clearQuestionDrafts()
     }
   }
@@ -1548,6 +1681,14 @@ struct WorkStructuredQuestionCard: View {
   @MainActor
   private func declineQuestion() async {
     if await onDecline() {
+      clearQuestionDrafts()
+    }
+  }
+
+  @MainActor
+  private func dismissQuestion() async {
+    guard let onDismiss else { return }
+    if await onDismiss() {
       clearQuestionDrafts()
     }
   }

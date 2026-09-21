@@ -16,18 +16,24 @@ import {
 // whole file: the device-login suite needs the richer shape, and the repair
 // suite never exercises these beyond construction.
 const startLogin = vi.fn();
+// Mutable so the auto-repair suite can put the store into the one state that
+// path exists for. Everything else in this file reads "available".
+const session = vi.hoisted(() => ({
+  readState: "available" as "available" | "missing" | "unreadable",
+  signedIn: true,
+}));
 vi.mock(
   "../../../../../ade-cli/src/services/account/sharedAccountAuthService",
   () => ({
     getSharedAccountAuthService: () => ({
       getStatus: () => ({
-        signedIn: true,
+        signedIn: session.signedIn,
         userId: "user_1",
         email: "ada@example.com",
         name: "Ada",
         expiresAt: null,
       }),
-      getSessionReadState: () => "available",
+      getSessionReadState: () => session.readState,
       startLogin,
       pollLogin: vi.fn(),
       cancelLogin: vi.fn(),
@@ -527,5 +533,94 @@ describe("accountBridge.repairCredentialStore", () => {
       readable: false,
       recoveredKeys: 0,
     });
+  });
+});
+
+// "Can't read your sign-in" is the scariest thing this surface can say, and the
+// overwhelmingly common cause is transient: 1,148 of these in a single day on
+// one machine were all ENOSPC on the lock file. Asking the user a frightening
+// question the machine could have answered itself is the bug.
+describe("accountBridge.status auto-repair", () => {
+  const bridgeFor = (
+    reports: Array<{ state: "available" | "missing" | "unreadable"; recoveredKeys: number }>,
+  ) => {
+    const repairSync = vi.fn(() => {
+      const next = reports.shift() ?? { state: "unreadable", recoveredKeys: 0 };
+      return { ...next, reason: null, quarantine: null };
+    });
+    vi.spyOn(
+      EncryptedFileCredentialStore.prototype,
+      "repairSync",
+    ).mockImplementation(repairSync as never);
+    return { bridge: createAccountBridge({ getProjectRoot: () => "/tmp/project" }), repairSync };
+  };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    session.readState = "available";
+    session.signedIn = true;
+  });
+
+  it("does not touch the store when the session reads fine", () => {
+    const { bridge, repairSync } = bridgeFor([]);
+    bridge.status();
+    expect(repairSync).not.toHaveBeenCalled();
+  });
+
+  it("repairs once and reports the recovered session instead of the scare", () => {
+    session.readState = "unreadable";
+    session.signedIn = false;
+    const { bridge, repairSync } = bridgeFor([{ state: "available", recoveredKeys: 1 }]);
+    // A real repair converges the store, so the re-read that follows it is what
+    // the user actually sees. Modelling that as a side effect of the repair is
+    // the point of the test: flipping it beforehand would never enter the path.
+    repairSync.mockImplementation((() => {
+      session.readState = "available";
+      session.signedIn = true;
+      return { state: "available", recoveredKeys: 1, reason: null, quarantine: null };
+    }) as never);
+
+    expect(bridge.status()).toMatchObject({ signedIn: true, sessionState: "active" });
+    expect(repairSync).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports unreadable honestly when the repair could not fix it", () => {
+    session.readState = "unreadable";
+    session.signedIn = false;
+    const { bridge } = bridgeFor([{ state: "unreadable", recoveredKeys: 0 }]);
+
+    expect(bridge.status()).toMatchObject({ sessionState: "unreadable" });
+  });
+
+  // The flag is set before the attempt on purpose: a store that cannot be
+  // repaired must not turn every later status read into another attempt at the
+  // same broken file, and status is polled.
+  it("tries exactly once per process, even while the store stays unreadable", () => {
+    session.readState = "unreadable";
+    session.signedIn = false;
+    const { bridge, repairSync } = bridgeFor([
+      { state: "unreadable", recoveredKeys: 0 },
+      { state: "unreadable", recoveredKeys: 0 },
+      { state: "unreadable", recoveredKeys: 0 },
+    ]);
+
+    bridge.status();
+    bridge.status();
+    bridge.status();
+    expect(repairSync).toHaveBeenCalledTimes(1);
+  });
+
+  it("survives a repair that throws and still reports the real state", () => {
+    session.readState = "unreadable";
+    session.signedIn = false;
+    vi.spyOn(
+      EncryptedFileCredentialStore.prototype,
+      "repairSync",
+    ).mockImplementation((() => {
+      throw new Error("ENOSPC: no space left on device");
+    }) as never);
+    const bridge = createAccountBridge({ getProjectRoot: () => "/tmp/project" });
+
+    expect(bridge.status()).toMatchObject({ sessionState: "unreadable" });
   });
 });

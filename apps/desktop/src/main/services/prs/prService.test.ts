@@ -4308,6 +4308,65 @@ describe("prService.linkToLane", () => {
       vi.useRealTimers();
     }
   });
+
+  // "Link a PR by number or URL" exists so a chat can reference a pull request
+  // it did not open — including one another lane owns. The row keeps its owning
+  // lane (rebase/settle and `selectLanePrs` key on that), so the ONLY thing
+  // that makes such a PR visible to this chat is the chat-session edge. A guard
+  // that required the row's lane to equal the requesting lane made the whole
+  // feature a silent no-op: success returned, no edge written.
+  it("links another lane's PR to the requesting chat without stealing the row's lane", async () => {
+    const db = makeMockDb();
+    const rows = installPullRequestRowStore(db, [
+      makePrRow({
+        id: "pr-cross-lane",
+        lane_id: "lane-owner",
+        github_pr_number: 90,
+        head_branch: "colleague-branch",
+      }),
+    ]);
+    const pull = makeGitHubPull({
+      number: 90,
+      node_id: "PR_cross_90",
+      html_url: "https://github.com/test-owner/test-repo/pull/90",
+      title: "A colleague's PR",
+      body: "",
+      base: {
+        ref: "main",
+        repo: { owner: { login: REPO.owner }, name: REPO.name },
+      },
+      head: { ref: "colleague-branch" },
+    });
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (args: { method: string; path: string }) => {
+        if (args.method === "GET" && args.path === "/repos/test-owner/test-repo/pulls/90") {
+          return { data: { ...pull } };
+        }
+        if (args.method === "GET" && args.path === "/repos/test-owner/test-repo/pulls/90/reviews") {
+          return { data: [] };
+        }
+        throw new Error(`Unexpected GitHub API request: ${args.method} ${args.path}`);
+      }),
+    });
+    const pullRequestGet = db.get.getMockImplementation();
+    db.get.mockImplementation((sql: string, params: unknown[] = []) => {
+      if (String(sql).includes("from terminal_sessions")) return { id: params[0] };
+      return pullRequestGet?.(sql, params) ?? null;
+    });
+    const { service } = buildService({ db, githubService });
+
+    await service.linkToLane({ laneId: LANE_ID, prUrlOrNumber: "90", sessionId: "chat-cross" });
+
+    const chatLinkInsert = db.run.mock.calls.find(([sql]: [unknown]) =>
+      String(sql).includes("insert into pull_request_chat_sessions")
+    );
+    expect(chatLinkInsert).toBeTruthy();
+    // The EDGE carries the referencing lane…
+    expect(chatLinkInsert?.[1]?.[3]).toBe(LANE_ID);
+    expect(chatLinkInsert?.[1]?.[4]).toBe("chat-cross");
+    // …while the row stays with the lane that opened the PR.
+    expect(rows.find((row) => row.id === "pr-cross-lane")?.lane_id).toBe("lane-owner");
+  });
 });
 
 describe("prService.getChecks", () => {

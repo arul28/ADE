@@ -236,6 +236,22 @@ function normalizeResumeMetadata(raw: unknown): TerminalResumeMetadata | null {
   const codexConfigSource = launchRecord.codexConfigSource === "flags" || launchRecord.codexConfigSource === "config-toml"
     ? launchRecord.codexConfigSource
     : null;
+  // WHY: the launch identity is the whole point of `--instance` / `--preset` /
+  // `--credential`. It is read back on resume (`trackedCliResumePresetId` and
+  // the instance re-resolve), so dropping it here would silently reattach a
+  // terminal to the provider's default account or sign-in — the one failure
+  // mode the mirror fields on `TerminalResumeMetadata` exist to prevent. Both
+  // the `launch` copy and the top-level mirror are normalized, and a writer
+  // that set only one still round-trips with both.
+  const identityField = (key: "instanceId" | "presetId" | "credentialId"): string | null => {
+    const fromLaunch = typeof launchRecord[key] === "string" ? (launchRecord[key] as string).trim() : "";
+    if (fromLaunch) return fromLaunch;
+    const fromRoot = typeof record[key] === "string" ? (record[key] as string).trim() : "";
+    return fromRoot || null;
+  };
+  const instanceId = identityField("instanceId");
+  const presetId = identityField("presetId");
+  const credentialId = identityField("credentialId");
   const importedFromRecord = record.importedFrom != null && typeof record.importedFrom === "object" && !Array.isArray(record.importedFrom)
     ? record.importedFrom as Record<string, unknown>
     : null;
@@ -269,6 +285,9 @@ function normalizeResumeMetadata(raw: unknown): TerminalResumeMetadata | null {
       ...(codexApprovalPolicy ? { codexApprovalPolicy: codexApprovalPolicy as TerminalResumeMetadata["launch"]["codexApprovalPolicy"] } : {}),
       ...(codexSandbox ? { codexSandbox: codexSandbox as TerminalResumeMetadata["launch"]["codexSandbox"] } : {}),
       ...(codexConfigSource ? { codexConfigSource: codexConfigSource as TerminalResumeMetadata["launch"]["codexConfigSource"] } : {}),
+      ...(instanceId ? { instanceId } : {}),
+      ...(presetId ? { presetId } : {}),
+      ...(credentialId ? { credentialId } : {}),
     },
     ...(importedFromProvider && importedFromTargetId && importedFromMode
       ? {
@@ -282,6 +301,9 @@ function normalizeResumeMetadata(raw: unknown): TerminalResumeMetadata | null {
       : {}),
     ...(legacyTarget ? { target: legacyTarget } : {}),
     ...(permissionMode ? { permissionMode } : {}),
+    ...(instanceId ? { instanceId } : {}),
+    ...(presetId ? { presetId } : {}),
+    ...(credentialId ? { credentialId } : {}),
     ...(orchestrationParentSessionId ? { orchestrationParentSessionId } : {}),
     ...(spawnKind ? { spawnKind } : {}),
   };

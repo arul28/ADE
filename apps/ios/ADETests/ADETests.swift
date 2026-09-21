@@ -4580,7 +4580,8 @@ final class ADETests: XCTestCase {
       let status,
       let summary,
       _, let label, _, _,
-      let completionTurnId
+      let completionTurnId,
+      _, _
     ) = spawnCompletionEnvelope.event else {
       return XCTFail("Expected typed subagent completion event.")
     }
@@ -4712,7 +4713,7 @@ final class ADETests: XCTestCase {
     }
     """
     let spawnEnvelope = try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(spawnJSON.utf8))
-    guard case .subagentResult(_, let agentId, _, _, _, let status, _, _, _, _, _, _) = spawnEnvelope.event else {
+    guard case .subagentResult(_, let agentId, _, _, _, let status, _, _, _, _, _, _, _, _) = spawnEnvelope.event else {
       return XCTFail("Expected an object detail to still route to a subagent result.")
     }
     XCTAssertEqual(agentId, "child-1")
@@ -5589,6 +5590,19 @@ final class ADETests: XCTestCase {
 
   @MainActor
   func testRapidFullChatSnapshotRequestsAreCoalesced() async throws {
+    // A host profile left in `UserDefaults` by an earlier test — or by an
+    // earlier run on this device — makes the hello below look like a machine
+    // switch, and `saveProfile` then resets chat state. That reset is correct
+    // behaviour, but it is not what this test measures, so start from no
+    // remembered machine.
+    let profileKey = "ade.sync.hostProfile"
+    let profilesKey = "ade.sync.hostProfiles"
+    UserDefaults.standard.removeObject(forKey: profileKey)
+    UserDefaults.standard.removeObject(forKey: profilesKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: profileKey)
+      UserDefaults.standard.removeObject(forKey: profilesKey)
+    }
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
     try service.applyHelloPayloadForTesting([
       "brain": [
@@ -5602,8 +5616,14 @@ final class ADETests: XCTestCase {
     service.configureConnectedTransportForTesting()
     service.beginOutboundEnvelopeCaptureForTesting()
     defer { service.endOutboundEnvelopeCaptureForTesting() }
+    // Coalescing is a relative contract, so measure it from whatever revision
+    // connecting itself left behind rather than from a fixed number.
+    let connectedRevision = service.localStateRevision
 
     let firstRequestDispatched = try await service.requestFullChatEventSnapshot(sessionId: "session-1")
+    // Only the first request may touch local state, and only once: it is the
+    // one that creates the subscription.
+    let revisionAfterFirstRequest = service.localStateRevision
     let secondRequestCoalesced = try await service.requestFullChatEventSnapshot(sessionId: "session-1")
     let thirdRequestCoalesced = try await service.requestFullChatEventSnapshot(sessionId: "session-1")
     XCTAssertTrue(firstRequestDispatched)
@@ -5612,7 +5632,10 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(service.subscribedChatSessionIds, Set(["session-1"]))
     XCTAssertEqual(service.capturedOutboundEnvelopeCountForTesting(type: "chat_subscribe"), 1)
-    XCTAssertEqual(service.localStateRevision, 1)
+    XCTAssertEqual(revisionAfterFirstRequest, connectedRevision + 1)
+    // The coalesced repeats sent no envelope, so they must not invalidate any
+    // view either.
+    XCTAssertEqual(service.localStateRevision, revisionAfterFirstRequest)
     XCTAssertTrue(service.isFullChatEventSnapshotPending(sessionId: "session-1"))
 
     service.disconnect(clearCredentials: false)
@@ -7683,6 +7706,145 @@ final class ADETests: XCTestCase {
       XCTAssertEqual(nsError.localizedDescription, "This action is not available from a viewer device.")
       XCTAssertFalse(nsError.localizedDescription.contains("Update ADE"))
     }
+  }
+
+  /// Reset spending must use the same viewer capability gate as the rest of
+  /// the host-only command surface, so an advertised but denied action fails
+  /// before it reaches the transport.
+  @MainActor
+  func testUsageResetCreditIsViewerGated() async throws {
+    let service = SyncService(database: makeControllerHydrationDatabase(baseURL: makeTemporaryDirectory()))
+    try service.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-1",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": false,
+        "commandRouting": [
+          "mode": "allowlisted",
+          "actions": [
+            [
+              "action": "usage.consumeResetCredit",
+              "policy": ["viewerAllowed": false, "queueable": false],
+            ],
+          ],
+        ],
+      ],
+    ])
+    service.configureConnectedTransportForTesting()
+
+    XCTAssertTrue(service.supportsRemoteAction("usage.consumeResetCredit"))
+    XCTAssertFalse(service.supportsViewerRemoteAction("usage.consumeResetCredit"))
+    XCTAssertFalse(service.canInvokeRemoteAction("usage.consumeResetCredit"))
+    do {
+      _ = try await service.consumeUsageResetCredit(accountId: "codex:one")
+      XCTFail("A viewer device must not spend a host reset credit")
+    } catch {
+      let nsError = error as NSError
+      XCTAssertEqual(nsError.domain, "ADE")
+      XCTAssertEqual(nsError.code, 15)
+      XCTAssertEqual(nsError.localizedDescription, "This action is not available from a viewer device.")
+    }
+  }
+
+  /// A controller device must be able to spend a banked reset credit.
+  ///
+  /// The host registers `usage.consumeResetCredit` as `viewerAllowed: false,
+  /// controllerAllowed: true`. Dropping `controllerAllowed` — which is exactly
+  /// what happened — leaves the gate reading "viewer only" for every paired
+  /// device, so the phone hides the "Use reset" button from the one device
+  /// class that is allowed to press it. Both halves are pinned here: the
+  /// controller grant opens the gate, and the bare `viewerAllowed: false`
+  /// still closes it.
+  @MainActor
+  func testUsageResetCreditIsInvokableForAControllerPolicy() async throws {
+    func service(policy: [String: Any]) throws -> SyncService {
+      let service = SyncService(database: makeControllerHydrationDatabase(baseURL: makeTemporaryDirectory()))
+      try service.applyHelloPayloadForTesting([
+        "brain": [
+          "deviceId": "host-1",
+          "deviceName": "Mac Studio",
+        ],
+        "features": [
+          "projectCatalog": false,
+          "commandRouting": [
+            "mode": "allowlisted",
+            "actions": [
+              [
+                "action": "usage.consumeResetCredit",
+                "policy": policy,
+              ],
+            ],
+          ],
+        ],
+      ])
+      service.configureConnectedTransportForTesting()
+      return service
+    }
+
+    let controller = try service(policy: ["viewerAllowed": false, "controllerAllowed": true])
+    XCTAssertTrue(controller.supportsRemoteAction("usage.consumeResetCredit"))
+    XCTAssertTrue(controller.supportsViewerRemoteAction("usage.consumeResetCredit"))
+    XCTAssertTrue(
+      controller.canInvokeRemoteAction("usage.consumeResetCredit"),
+      "A controller-allowed reset credit must stay tappable — hiding it is the regression."
+    )
+
+    // The same descriptor without the controller grant is still closed, so a
+    // host that really does mean host-only keeps the affordance hidden.
+    let viewerOnly = try service(policy: ["viewerAllowed": false])
+    XCTAssertTrue(viewerOnly.supportsRemoteAction("usage.consumeResetCredit"))
+    XCTAssertFalse(viewerOnly.supportsViewerRemoteAction("usage.consumeResetCredit"))
+    XCTAssertFalse(viewerOnly.canInvokeRemoteAction("usage.consumeResetCredit"))
+  }
+
+  /// Dismissing a pending chat question is a host mutation too: keep the card
+  /// visible to a viewer, but reject the tap before it reaches the transport.
+  @MainActor
+  func testDismissChatPendingInputIsViewerGated() async throws {
+    let service = SyncService(database: makeControllerHydrationDatabase(baseURL: makeTemporaryDirectory()))
+    try service.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-1",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": false,
+        "commandRouting": [
+          "mode": "allowlisted",
+          "actions": [
+            [
+              "action": "chat.dismissPendingInput",
+              "policy": ["viewerAllowed": false, "queueable": false],
+            ],
+          ],
+        ],
+      ],
+    ])
+    service.configureConnectedTransportForTesting()
+
+    XCTAssertTrue(service.supportsChatRemoteAction("chat.dismissPendingInput", sessionId: "chat-1"))
+    XCTAssertFalse(service.canInvokeChatRemoteAction("chat.dismissPendingInput", sessionId: "chat-1"))
+    do {
+      try await service.dismissChatPendingInput(sessionId: "chat-1", itemId: "item-1")
+      XCTFail("A viewer device must not dismiss a host chat question")
+    } catch {
+      let nsError = error as NSError
+      XCTAssertEqual(nsError.domain, "ADE")
+      XCTAssertEqual(nsError.code, 15)
+      XCTAssertEqual(nsError.localizedDescription, "This action is not available from a viewer device.")
+    }
+  }
+
+  func testWorkUsageResetOutcomeIsKeyedByAccountId() {
+    let outcomes = [
+      "codex:one": "Reset applied.",
+      "codex:two": "No reset credit left.",
+    ]
+    XCTAssertEqual(workUsageResetOutcome(accountId: "codex:one", outcomes: outcomes), "Reset applied.")
+    XCTAssertEqual(workUsageResetOutcome(accountId: "codex:two", outcomes: outcomes), "No reset credit left.")
+    XCTAssertNil(workUsageResetOutcome(accountId: "codex:three", outcomes: outcomes))
   }
 
   /// Owner device, advertised action, but nothing live to send over: the message
@@ -11726,6 +11888,36 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
+  func testFireAndForgetRemoteCommandDropsLocallyWhenViewerPolicyDeniesAction() async throws {
+    let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
+    UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+    }
+
+    let descriptors = [
+      SyncRemoteCommandDescriptor(
+        action: "chat.approve",
+        policy: SyncRemoteCommandPolicy(viewerAllowed: false, requiresApproval: nil, localOnly: nil, queueable: true)
+      ),
+    ]
+    UserDefaults.standard.set(try JSONEncoder().encode(descriptors), forKey: remoteCommandDescriptorsKey)
+
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let delivery = await service.sendRemoteCommand(.approveSession, payload: [
+      "sessionId": "session-1",
+      "itemId": "approval-1",
+    ])
+
+    XCTAssertEqual(
+      delivery,
+      .dropped("This action is not available from a viewer device.")
+    )
+    XCTAssertEqual(service.pendingOperationCount, 0)
+    XCTAssertTrue(service.pendingOperationsForTesting().isEmpty)
+  }
+
+  @MainActor
   func testCodexRecoveryIsGatedWhenLegacyHostDoesNotAdvertiseAction() async throws {
     let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
     UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
@@ -13913,10 +14105,10 @@ final class ADETests: XCTestCase {
     let runningTerminal = makeTerminalSessionSummary(toolType: "codex-chat", runtimeState: "running", status: "running")
     XCTAssertTrue(workChatShouldSteerActiveTurn(session: runningTerminal, summary: nil))
 
-    // Claude can promote a staged row either way. Codex folds a `turn/steer`
+    // Claude can promote a staged row either way, and so can Cursor since
+    // `Run.steer()` arrived in @cursor/sdk 1.0.31. Codex folds a `turn/steer`
     // request into the running turn, so it promotes inline but never
-    // interrupts. Cursor's SDK has no mid-run message API, so it gets interrupt
-    // only. `atomicDispatchModes` drops `.queue`, which is staging, not a
+    // interrupts. `atomicDispatchModes` drops `.queue`, which is staging, not a
     // promotion target.
     let claudeSummary = makeAgentChatSessionSummary(provider: "claude", status: "active")
     XCTAssertEqual(workChatManualSteerDispatchModes(session: nil, summary: claudeSummary), [.inline, .interrupt])
@@ -13934,7 +14126,19 @@ final class ADETests: XCTestCase {
         session: makeTerminalSessionSummary(toolType: "cursor"),
         summary: nil
       ),
+      [.inline, .interrupt]
+    )
+    var cursorCloudSummary = makeAgentChatSessionSummary(provider: "cursor", status: "active")
+    cursorCloudSummary.cursorCloudAgentId = "cloud-agent-1"
+    XCTAssertEqual(
+      workChatManualSteerDispatchModes(session: nil, summary: cursorCloudSummary),
       [.interrupt]
+    )
+    // Host pin wins: leftover agent id on a local session must keep inline.
+    cursorCloudSummary.cursorRuntime = "local"
+    XCTAssertEqual(
+      workChatManualSteerDispatchModes(session: nil, summary: cursorCloudSummary),
+      [.inline, .interrupt]
     )
     XCTAssertEqual(workChatManualSteerDispatchModes(session: nil, summary: nil), [])
   }
@@ -13957,14 +14161,17 @@ final class ADETests: XCTestCase {
     // Queue is the absence of an atomic dispatch, not a third wire value.
     XCTAssertNil(workChatAtomicSteerDispatchMode(deliveryMode: .queue, dispatchModes: claudeModes))
 
-    // Cursor has no inline channel; asking for one must not put a value the host
-    // would reject on the wire.
+    // Cursor honors both atomic modes now, so neither one may be dropped on the
+    // way to the host.
     let cursorModes = WorkActiveSendCapability.forProvider("cursor").atomicDispatchModes
     XCTAssertEqual(
       workChatAtomicSteerDispatchMode(deliveryMode: .interrupt, dispatchModes: cursorModes),
       "interrupt"
     )
-    XCTAssertNil(workChatAtomicSteerDispatchMode(deliveryMode: .inline, dispatchModes: cursorModes))
+    XCTAssertEqual(
+      workChatAtomicSteerDispatchMode(deliveryMode: .inline, dispatchModes: cursorModes),
+      "inline"
+    )
 
     // Codex is the mirror of Cursor: it has inline and no interrupt.
     let codexModes = WorkActiveSendCapability.forProvider("codex").atomicDispatchModes
@@ -14014,15 +14221,17 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(claude.interruptContinues)
 
     let cursor = WorkActiveSendCapability.forProvider("cursor")
-    XCTAssertEqual(cursor.modes, [.interrupt, .queue])
-    XCTAssertEqual(cursor.defaultMode, .interrupt)
+    XCTAssertEqual(cursor.modes, [.inline, .queue, .interrupt])
+    XCTAssertEqual(cursor.defaultMode, .inline)
+    // Cursor keeps its own interrupt meaning even though it now shares Claude's
+    // mode list: it cancels the run and resends on the same thread.
     XCTAssertTrue(cursor.interruptContinues)
     XCTAssertEqual(cursor.agentLabel, "Cursor")
 
     // Family collapse: a labelled variant must not fall through to queue-only.
     XCTAssertEqual(WorkActiveSendCapability.forProvider("claude-code").modes, [.inline, .queue, .interrupt])
     XCTAssertEqual(WorkActiveSendCapability.forProvider("anthropic").modes, [.inline, .queue, .interrupt])
-    XCTAssertEqual(WorkActiveSendCapability.forProvider("cursor-agent").modes, [.interrupt, .queue])
+    XCTAssertEqual(WorkActiveSendCapability.forProvider("cursor-agent").modes, [.inline, .queue, .interrupt])
 
     // Codex accepts `turn/steer` into the running turn, so it has inline — and
     // no cancel-and-resend, so it must not offer interrupt.
@@ -14033,7 +14242,15 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(codex.agentLabel, "Codex")
     XCTAssertEqual(WorkActiveSendCapability.forProvider("openai").modes, [.inline, .queue])
 
-    for provider in ["droid", "opencode", "pi", ""] {
+    // OpenCode admits `delivery: "steer"` into the live agent loop; no
+    // interrupt, because it has no cancel-and-resend.
+    let opencode = WorkActiveSendCapability.forProvider("opencode")
+    XCTAssertEqual(opencode.modes, [.inline, .queue])
+    XCTAssertEqual(opencode.defaultMode, .inline)
+    XCTAssertFalse(opencode.interruptContinues)
+    XCTAssertEqual(opencode.agentLabel, "OpenCode")
+
+    for provider in ["droid", "pi", ""] {
       let capability = WorkActiveSendCapability.forProvider(provider)
       XCTAssertEqual(capability.modes, [.queue], "expected queue-only for \(provider)")
       XCTAssertEqual(capability.atomicDispatchModes, [], "expected no atomic dispatch for \(provider)")
@@ -14041,8 +14258,9 @@ final class ADETests: XCTestCase {
   }
 
   /// Guards the hand mirror of the desktop's `CTO_LIVE_REDIRECT_PROVIDERS`. It
-  /// is a separate list from the dispatch table above on purpose: Cursor has no
-  /// inline channel and is still eligible, through interrupt-and-resend.
+  /// is a separate list from the dispatch table above on purpose: no single
+  /// dispatch mode keys it. Codex is eligible without an interrupt channel, so
+  /// a list derived from either atomic mode would get a provider wrong.
   func testCtoLiveRedirectProvidersMirrorDesktopContract() {
     XCTAssertEqual(ctoLiveRedirectProviders, ["claude", "codex", "cursor"])
     for provider in ["claude", "claude-code", "anthropic", "codex", "openai", "cursor", "cursor-agent"] {
@@ -14051,8 +14269,42 @@ final class ADETests: XCTestCase {
     for provider in ["opencode", "droid", "pi", "qwen", "kimi", "grok", "copilot", ""] {
       XCTAssertFalse(providerSupportsLiveRedirect(provider), "expected \(provider) to be rejected")
     }
-    XCTAssertFalse(WorkActiveSendCapability.forProvider("cursor").modes.contains(.inline))
-    XCTAssertTrue(providerSupportsLiveRedirect("cursor"))
+    XCTAssertFalse(WorkActiveSendCapability.forProvider("codex").modes.contains(.interrupt))
+    XCTAssertTrue(providerSupportsLiveRedirect("codex"))
+  }
+
+  /// A host older than this client advertises `chat.dispatchSteer` but still
+  /// rejects Cursor's `"inline"`. The send must stage rather than fail, so the
+  /// predicate that routes it has to match the host's real rejection sentence.
+  func testUnsupportedDispatchModeErrorIsRecognisedFromTheHostWording() {
+    let hostSentence = "Cursor sessions support only the \"interrupt\" active-turn dispatch mode."
+    XCTAssertTrue(workChatErrorIndicatesUnsupportedDispatchMode(
+      NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: hostSentence])
+    ))
+    let queueOnlySentence = "Droid sessions don't support the \"inline\" active-turn dispatch mode; it can only be staged for the next turn."
+    XCTAssertTrue(workChatErrorIndicatesUnsupportedDispatchMode(
+      NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: queueOnlySentence])
+    ))
+    // An unrelated failure must not be swallowed into the staging fallback.
+    XCTAssertFalse(workChatErrorIndicatesUnsupportedDispatchMode(
+      NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "Session is disposed."])
+    ))
+    XCTAssertTrue(workChatShouldStageAfterUnsupportedDispatchMode(liveRedirectOnly: false))
+    XCTAssertFalse(workChatShouldStageAfterUnsupportedDispatchMode(liveRedirectOnly: true))
+    XCTAssertTrue(workChatCursorSessionRunsInCloud(provider: "cursor", cursorCloudAgentId: "agent-1"))
+    XCTAssertFalse(workChatCursorSessionRunsInCloud(provider: "cursor", cursorCloudAgentId: nil))
+    XCTAssertFalse(workChatCursorSessionRunsInCloud(provider: "cursor", cursorCloudAgentId: ""))
+    XCTAssertFalse(workChatCursorSessionRunsInCloud(provider: "claude", cursorCloudAgentId: "agent-1"))
+    XCTAssertTrue(workChatCursorSessionRunsInCloud(
+      provider: "cursor",
+      cursorRuntime: "cloud",
+      cursorCloudAgentId: nil
+    ))
+    XCTAssertFalse(workChatCursorSessionRunsInCloud(
+      provider: "cursor",
+      cursorRuntime: "local",
+      cursorCloudAgentId: "agent-1"
+    ))
   }
 
   func testWorkChatStopCapabilityMirrorsDesktopStopMatrix() {
@@ -14096,6 +14348,30 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(summary.autoContinueAtUsageLimit, false)
     XCTAssertEqual(summary.usageLimitParkedUntil, "2026-07-08T00:47:00.000Z")
     XCTAssertEqual(summary.activeBackgroundTaskCount, 3)
+  }
+
+  func testAgentChatSessionSummaryDecodesCursorRuntimeOverLeftoverCloudAgentId() throws {
+    let data = Data(#"""
+    {
+      "sessionId":"chat-1",
+      "laneId":"lane-1",
+      "provider":"cursor",
+      "model":"composer-2",
+      "status":"idle",
+      "startedAt":"2026-09-17T00:00:00.000Z",
+      "lastActivityAt":"2026-09-17T00:00:03.000Z",
+      "cursorCloudAgentId":"cloud-agent-1",
+      "cursorRuntime":"local"
+    }
+    """#.utf8)
+    let summary = try JSONDecoder().decode(AgentChatSessionSummary.self, from: data)
+    XCTAssertEqual(summary.cursorCloudAgentId, "cloud-agent-1")
+    XCTAssertEqual(summary.cursorRuntime, "local")
+    XCTAssertFalse(workChatCursorSessionRunsInCloud(
+      provider: summary.provider,
+      cursorRuntime: summary.cursorRuntime,
+      cursorCloudAgentId: summary.cursorCloudAgentId
+    ))
   }
 
   func testAgentChatContextUsageCategoryDecodesKindNotName() throws {
@@ -15986,6 +16262,31 @@ final class ADETests: XCTestCase {
     )
   }
 
+  func testWorkSubagentResultDropsTaskDescriptionEchoFromLastActivity() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:01.000Z","sequence":1,"event":{"type":"subagent_started","taskId":"agent-echo","agentId":"agent-echo","agentType":"Explore","description":"Explore provider lifecycle","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:02.000Z","sequence":2,"event":{"type":"subagent_progress","taskId":"agent-echo","agentId":"agent-echo","summary":"Explore provider lifecycle","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:03.000Z","sequence":3,"event":{"type":"subagent_result","taskId":"agent-echo","agentId":"agent-echo","status":"stopped","summary":"Stopped before finishing","stopSource":"system","stopReason":"the ADE brain restarted","turnId":"turn-1"}}
+    """
+
+    let snapshots = buildWorkSubagentSnapshots(from: parseWorkChatTranscript(raw))
+    XCTAssertEqual(snapshots.count, 1)
+    XCTAssertNil(snapshots.first?.lastActivity)
+  }
+
+  func testRemoteWorkSubagentSnapshotDropsTaskDescriptionEchoFromLastActivity() throws {
+    let json = """
+    {"taskId":"remote-echo","description":"Explore provider lifecycle","status":"stopped","summary":"Explore provider lifecycle"}
+    """
+    let remote = try JSONDecoder().decode(
+      SyncService.AgentChatSubagentSnapshot.self,
+      from: Data(json.utf8)
+    )
+
+    let snapshot = workSubagentSnapshot(from: remote)
+    XCTAssertNil(snapshot.lastActivity)
+  }
+
   // MARK: - Scheduled work partitioning + background lifecycle
 
   func testScheduledWorkExcludesBackgroundTaskFromScheduleAndTimelineCard() {
@@ -16505,426 +16806,127 @@ final class ADETests: XCTestCase {
     ), 0)
   }
 
-  // MARK: - Work chat transcript scroll policy
+  // MARK: - Work chat transcript follow latch
 
-  func testProgrammaticScrollWaitsForTheWholeInteractionNotJustTheDrag() {
-    XCTAssertTrue(workChatMayWriteScrollOffset(dragActive: false, scrollPhaseUserDriven: false))
-    XCTAssertFalse(workChatMayWriteScrollOffset(dragActive: true, scrollPhaseUserDriven: false))
-    // Finger-up ends the drag gesture, but the fling it launched still owns the
-    // offset. Writing here is what killed flings mid-deceleration.
-    XCTAssertFalse(workChatMayWriteScrollOffset(dragActive: false, scrollPhaseUserDriven: true))
+  /// The latch is the transcript's whole scroll authority, so these are the
+  /// rules a jump has to be explained by.
+  func testFollowOpensOnAndIsReleasedOnlyByTheReader() {
+    var state = WorkChatFollowState.initial
+    XCTAssertTrue(state.following)
 
-    XCTAssertTrue(workChatScrollPhaseIsUserDriven(.tracking))
-    XCTAssertTrue(workChatScrollPhaseIsUserDriven(.interacting))
-    XCTAssertTrue(workChatScrollPhaseIsUserDriven(.decelerating))
-    XCTAssertFalse(workChatScrollPhaseIsUserDriven(.idle))
-    // `.animating` is OUR animation. Treating it as the reader's would let one
-    // programmatic scroll suppress the next one.
-    XCTAssertFalse(workChatScrollPhaseIsUserDriven(.animating))
+    // A pin, a jump animation, or UIKit compensating a re-measured cell all
+    // arrive as scroll frames outside a user session. None of them may move
+    // the latch — that feedback loop is what the old machinery could not
+    // close.
+    state = workChatFollowLatch(state, .scroll(isAtEnd: false))
+    XCTAssertTrue(state.following)
+
+    state = workChatFollowLatch(state, .userScrollBegin)
+    XCTAssertFalse(state.following)
+    XCTAssertTrue(state.inUserSession)
   }
 
-  func testFollowingViewportShrinkPinsToLatest() {
-    // Keyboard/composer shrink: same class of bug as
-    // `testKeyboardShrinkFlipsTailPredicateWithUnchangedOffset` on the
-    // terminal. Follow must re-glue rather than consult the inflated distance.
-    let viewportDelta = workChatLayoutViewportDelta(contentDelta: 0, scrollableDelta: 340)
-    XCTAssertEqual(viewportDelta, 340)
-    XCTAssertTrue(workChatLayoutWindowChanged(containerDelta: -340, viewportDelta: viewportDelta))
-    XCTAssertTrue(workChatLayoutWindowChanged(containerDelta: 0, viewportDelta: viewportDelta))
-    XCTAssertEqual(
-      workChatLayoutScrollAdjustment(
-        following: true,
-        mayWriteScrollOffset: true,
-        containerDelta: -340,
-        contentDelta: 0,
-        viewportDelta: viewportDelta,
-        previousOffsetY: 4200,
-        nextScrollableHeight: 4540
-      ),
-      .pinToLatest
-    )
-    XCTAssertEqual(
-      workChatLayoutScrollAdjustment(
-        following: true,
-        mayWriteScrollOffset: true,
-        containerDelta: 0,
-        contentDelta: 0,
-        viewportDelta: viewportDelta,
-        previousOffsetY: 4200,
-        nextScrollableHeight: 4540
-      ),
-      .pinToLatest
-    )
+  func testFollowResumesOnlyWhenTheReaderLetsGoAtTheEnd() {
+    var away = workChatFollowLatch(.initial, .userScrollBegin)
+    away = workChatFollowLatch(away, .scroll(isAtEnd: false))
+    let settledUp = workChatFollowLatch(away, .userScrollEnd(isAtEnd: false))
+    XCTAssertFalse(settledUp.following)
+    XCTAssertFalse(settledUp.inUserSession)
+
+    let settledAtEnd = workChatFollowLatch(away, .userScrollEnd(isAtEnd: true))
+    XCTAssertTrue(settledAtEnd.following)
+    XCTAssertFalse(settledAtEnd.inUserSession)
   }
 
-  func testFollowingViewportGrowPinsToLatest() {
-    // Keyboard hide grows the window; a following viewport re-glues to the
-    // real end rather than sitting on the offset the smaller window left.
-    let viewportDelta = workChatLayoutViewportDelta(contentDelta: 0, scrollableDelta: -340)
-    XCTAssertEqual(
-      workChatLayoutScrollAdjustment(
-        following: true,
-        mayWriteScrollOffset: true,
-        containerDelta: 340,
-        contentDelta: 0,
-        viewportDelta: viewportDelta,
-        previousOffsetY: 4540,
-        nextScrollableHeight: 4200
-      ),
-      .pinToLatest
+  /// Ending a session that never started — which is what a stray settle
+  /// timer or a synthesized end would be — must not hand follow back.
+  func testUserScrollEndOutsideASessionCannotGrantFollow() {
+    let state = workChatFollowLatch(
+      WorkChatFollowState(following: false, inUserSession: false),
+      .userScrollEnd(isAtEnd: true)
     )
+    XCTAssertFalse(state.following)
   }
 
-  func testReadingHistoryViewportShrinkRestoresOffsetWithoutPinning() {
-    let viewportDelta = workChatLayoutViewportDelta(contentDelta: 0, scrollableDelta: 340)
-    XCTAssertEqual(
-      workChatLayoutScrollAdjustment(
-        following: false,
-        mayWriteScrollOffset: true,
-        containerDelta: -340,
-        contentDelta: 0,
-        viewportDelta: viewportDelta,
-        previousOffsetY: 1800,
-        nextScrollableHeight: 4540
-      ),
-      .restoreOffset(1800)
+  func testSendingAndJumpingAlwaysFollow() {
+    let reading = WorkChatFollowState(following: false, inUserSession: false)
+    XCTAssertTrue(workChatFollowLatch(reading, .sendMessage).following)
+    XCTAssertTrue(workChatFollowLatch(reading, .jumpToLatest).following)
+    XCTAssertFalse(workChatFollowLatch(reading, .jumpToLatest).inUserSession)
+  }
+
+  /// A card collapsing can leave the reader sitting on the end without any
+  /// gesture. That re-follows; a card collapsing while they are mid-fling
+  /// does not, because the fling still owns the offset.
+  func testDisclosureSettleOnlyReclaimsFollowOutsideAUserSession() {
+    let reading = WorkChatFollowState(following: false, inUserSession: false)
+    XCTAssertTrue(workChatFollowLatch(reading, .disclosureSettled(isAtEnd: true)).following)
+    XCTAssertFalse(workChatFollowLatch(reading, .disclosureSettled(isAtEnd: false)).following)
+
+    let flinging = WorkChatFollowState(following: false, inUserSession: true)
+    XCTAssertFalse(workChatFollowLatch(flinging, .disclosureSettled(isAtEnd: true)).following)
+  }
+
+  // MARK: - Work chat transcript anchor restore
+
+  private func shouldRestore(
+    anchorRowMinY: CGFloat = 1_000,
+    currentRowMinY: CGFloat = 1_200,
+    isDragging: Bool = false,
+    isDecelerating: Bool = false,
+    contentOffsetY: CGFloat = 800,
+    minContentOffsetY: CGFloat = -9,
+    maxContentOffsetY: CGFloat = 5_000
+  ) -> Bool {
+    workChatShouldRestoreAnchor(
+      anchorRowMinY: anchorRowMinY,
+      currentRowMinY: currentRowMinY,
+      isDragging: isDragging,
+      isDecelerating: isDecelerating,
+      contentOffsetY: contentOffsetY,
+      minContentOffsetY: minContentOffsetY,
+      maxContentOffsetY: maxContentOffsetY
     )
   }
 
-  func testFollowingContentShrinkPinsToLatest() {
-    // Cards collapsing at turn-end shorten the tape under a following
-    // viewport. Pinning to the real end is what avoids the blank-tail look.
-    XCTAssertEqual(
-      workChatLayoutScrollAdjustment(
-        following: true,
-        mayWriteScrollOffset: true,
-        containerDelta: 0,
-        contentDelta: -400,
-        viewportDelta: 0,
-        previousOffsetY: 4200,
-        nextScrollableHeight: 3800
-      ),
-      .pinToLatest
-    )
+  func testAnchorRestoresWhenTheRowMovedAndTheOffsetIsOursToWrite() {
+    XCTAssertTrue(shouldRestore())
+    XCTAssertTrue(shouldRestore(currentRowMinY: 800))
   }
 
-  func testReadingHistoryContentShrinkClampsOffsetToNewRange() {
-    XCTAssertEqual(
-      workChatLayoutScrollAdjustment(
-        following: false,
-        mayWriteScrollOffset: true,
-        containerDelta: 0,
-        contentDelta: -3000,
-        viewportDelta: 0,
-        previousOffsetY: 4000,
-        nextScrollableHeight: 1200
-      ),
-      .restoreOffset(1200)
-    )
+  /// The same rule the follow pin obeys: the reader owns the offset for the
+  /// whole interaction, finger-down through the end of momentum.
+  func testAnchorRestoreDefersToTheReadersInteraction() {
+    XCTAssertFalse(shouldRestore(isDragging: true))
+    XCTAssertFalse(shouldRestore(isDecelerating: true))
   }
 
-  func testReadingHistoryContentGrowthDoesNotMoveOffset() {
-    // Streaming into the tail while the reader is in history must not restore
-    // a stale offset or yank to latest. The prepend machinery owns insertion
-    // above; growth below should leave the reader put.
-    XCTAssertEqual(
-      workChatLayoutScrollAdjustment(
-        following: false,
-        mayWriteScrollOffset: true,
-        containerDelta: 0,
-        contentDelta: 240,
-        viewportDelta: 0,
-        previousOffsetY: 1800,
-        nextScrollableHeight: 4440
-      ),
-      .none
-    )
-    XCTAssertEqual(
-      workChatLayoutScrollAdjustment(
-        following: true,
-        mayWriteScrollOffset: true,
-        containerDelta: 0,
-        contentDelta: 240,
-        viewportDelta: 0,
-        previousOffsetY: 4200,
-        nextScrollableHeight: 4440
-      ),
-      .none
-    )
+  /// Restoring into the rubber band pins it at the anchor's offset instead of
+  /// letting it return to the edge, and every settle frame re-triggers the
+  /// restore that held it there.
+  func testAnchorRestoreLeavesOverscrollToUIKit() {
+    XCTAssertFalse(shouldRestore(contentOffsetY: -18.3))
+    XCTAssertFalse(shouldRestore(contentOffsetY: 5_100))
+    // The edges themselves are at rest, not overscroll.
+    XCTAssertTrue(shouldRestore(contentOffsetY: -9))
+    XCTAssertTrue(shouldRestore(contentOffsetY: 5_000))
   }
 
-  func testLayoutPinDefersToReaderDuringFling() {
-    XCTAssertEqual(
-      workChatLayoutScrollAdjustment(
-        following: true,
-        mayWriteScrollOffset: false,
-        containerDelta: -340,
-        contentDelta: 0,
-        viewportDelta: 340,
-        previousOffsetY: 4200,
-        nextScrollableHeight: 4540
-      ),
-      .none
-    )
+  /// A restore is absolute, so applying it to a sample that is merely stale —
+  /// rather than to a row that actually shifted — writes a displacement that
+  /// was never there, and that write lays out and asks again.
+  func testAnchorRestoreSkipsARowThatDidNotMove() {
+    XCTAssertFalse(shouldRestore(currentRowMinY: 1_000))
+    XCTAssertFalse(shouldRestore(currentRowMinY: 1_002))
+    XCTAssertFalse(shouldRestore(currentRowMinY: 998))
+    XCTAssertTrue(shouldRestore(currentRowMinY: 1_003))
   }
 
-  func testKeyboardUserPhaseDoesNotReleaseFollow() {
-    XCTAssertTrue(
-      workChatShouldIgnoreUserScrollPhaseForLayout(
-        userDrivenPhase: true,
-        layoutAdjustedRecently: true
-      )
-    )
-    XCTAssertFalse(
-      workChatShouldReleaseFollowForUserScroll(
-        following: true,
-        userDrivenPhase: true,
-        layoutAdjustedRecently: true,
-        distanceFromBottom: 300,
-        offsetRetreat: 0
-      )
-    )
-    XCTAssertTrue(
-      workChatShouldReleaseFollowForUserScroll(
-        following: true,
-        userDrivenPhase: true,
-        layoutAdjustedRecently: true,
-        distanceFromBottom: 300,
-        offsetRetreat: 3
-      )
-    )
-    XCTAssertTrue(
-      workChatLayoutAdjustedRecently(
-        lastAdjustmentUptime: 10,
-        now: 10.2,
-        grace: workChatLayoutFollowGraceSeconds
-      )
-    )
-    XCTAssertFalse(
-      workChatLayoutAdjustedRecently(
-        lastAdjustmentUptime: 10,
-        now: 10.5,
-        grace: workChatLayoutFollowGraceSeconds
-      )
-    )
-  }
-
-  func testUserScrollPhaseReleasesFollowOnceLayoutIsStable() {
-    XCTAssertTrue(
-      workChatShouldReleaseFollowForUserScroll(
-        following: true,
-        userDrivenPhase: true,
-        layoutAdjustedRecently: false,
-        distanceFromBottom: 3,
-        offsetRetreat: 0
-      )
-    )
-    XCTAssertFalse(
-      workChatShouldReleaseFollowForUserScroll(
-        following: true,
-        userDrivenPhase: true,
-        layoutAdjustedRecently: false,
-        distanceFromBottom: 0,
-        offsetRetreat: 0
-      )
-    )
-    XCTAssertFalse(
-      workChatShouldReleaseFollowForUserScroll(
-        following: false,
-        userDrivenPhase: true,
-        layoutAdjustedRecently: false,
-        distanceFromBottom: 80,
-        offsetRetreat: 80
-      )
-    )
-    XCTAssertFalse(
-      workChatShouldIgnoreUserScrollPhaseForLayout(
-        userDrivenPhase: true,
-        layoutAdjustedRecently: false
-      )
-    )
-  }
-
-  func testKeyboardDoesNotReclaimFollowOnceTheReaderHasLeftTheTail() {
-    XCTAssertTrue(
-      workChatShouldReclaimFollowAfterWindowChange(
-        following: false,
-        distanceFromPreviousTail: 0
-      )
-    )
-    XCTAssertTrue(
-      workChatShouldReclaimFollowAfterWindowChange(
-        following: false,
-        distanceFromPreviousTail: workChatTouchScrollDeadband
-      )
-    )
-    XCTAssertFalse(
-      workChatShouldReclaimFollowAfterWindowChange(
-        following: false,
-        distanceFromPreviousTail: workChatTouchScrollDeadband + 1
-      )
-    )
-    XCTAssertFalse(
-      workChatShouldReclaimFollowAfterWindowChange(
-        following: true,
-        distanceFromPreviousTail: 0
-      )
-    )
-  }
-
-  func testShortTranscriptRendersFromTheTop() {
-    XCTAssertEqual(workChatTranscriptContentAlignment(contentFitsViewport: true), .topLeading)
-    XCTAssertEqual(workChatTranscriptContentAlignment(contentFitsViewport: false), .bottomLeading)
-  }
-
-  func testPrependCorrectionBailsOutWhenTheProbeDescribesAnotherRow() {
-    let anchor = WorkChatPrependAnchor(
-      rowId: "message-42",
-      rowY: 100,
-      offsetY: 500,
-      remainingAttempts: workChatPrependAnchorAttempts
-    )
-
-    // The probe is measuring some other row, so it says nothing about the
-    // anchored one. Falling through with a zero row shift would reduce the
-    // correction to the reader's own scroll delta and apply it a second time.
-    XCTAssertEqual(
-      workChatPrependCorrection(
-        anchor: anchor,
-        probed: WorkChatPrependProbeSample(rowId: "message-99", y: 340),
-        currentOffsetY: 740,
-        mayWriteScrollOffset: true
-      ),
-      .retry
-    )
-    XCTAssertEqual(
-      workChatPrependCorrection(
-        anchor: anchor,
-        probed: nil,
-        currentOffsetY: 740,
-        mayWriteScrollOffset: true
-      ),
-      .retry
-    )
-  }
-
-  func testPrependCorrectionIsolatesTheInsertionFromTheReadersOwnScrolling() {
-    let anchor = WorkChatPrependAnchor(
-      rowId: "message-42",
-      rowY: 100,
-      offsetY: 500,
-      remainingAttempts: workChatPrependAnchorAttempts
-    )
-    // 900pt inserted above while the reader scrolled 240pt: the row moves
-    // 900 - 240 and the offset moves 240, so the sum is the insertion.
-    XCTAssertEqual(
-      workChatPrependCorrection(
-        anchor: anchor,
-        probed: WorkChatPrependProbeSample(rowId: "message-42", y: 100 + 900 - 240),
-        currentOffsetY: 500 + 240,
-        mayWriteScrollOffset: true
-      ),
-      .apply(900)
-    )
-    // A pure scroll with no prepend sums to zero and correctly restores nothing.
-    XCTAssertEqual(
-      workChatPrependCorrection(
-        anchor: anchor,
-        probed: WorkChatPrependProbeSample(rowId: "message-42", y: 100 - 240),
-        currentOffsetY: 500 + 240,
-        mayWriteScrollOffset: true
-      ),
-      .retry
-    )
-  }
-
-  func testPrependCorrectionWaitsOutTheReaderWithoutSpendingAnAttempt() {
-    let anchor = WorkChatPrependAnchor(
-      rowId: "message-42",
-      rowY: 100,
-      offsetY: 500,
-      remainingAttempts: 1
-    )
-    XCTAssertEqual(
-      workChatPrependCorrection(
-        anchor: anchor,
-        probed: WorkChatPrependProbeSample(rowId: "message-42", y: 1_000),
-        currentOffsetY: 500,
-        mayWriteScrollOffset: false
-      ),
-      .wait
-    )
-  }
-
-  func testOverlappingPrependsKeepTheAnchorThatAccumulatesBoth() {
-    // Second page lands while the first correction is still open. Re-arming on
-    // the new first row would measure only the second insertion and leave the
-    // first one uncorrected.
-    XCTAssertEqual(
-      workChatPrependArmDecision(
-        previousFirstId: "message-20",
-        nextFirstId: "message-10",
-        previousVisibleCount: 40,
-        nextVisibleCount: 60,
-        existingAnchorRowId: "message-42",
-        anchorRowStillVisible: true,
-        previousFirstRowStillVisible: true,
-        probeRowId: "message-42",
-        probeRowY: 220
-      ),
-      .extendExistingAnchorWindow
-    )
-    // Unless the anchored row is gone, in which case there is nothing left to
-    // measure against.
-    XCTAssertEqual(
-      workChatPrependArmDecision(
-        previousFirstId: "message-20",
-        nextFirstId: "message-10",
-        previousVisibleCount: 40,
-        nextVisibleCount: 60,
-        existingAnchorRowId: "message-42",
-        anchorRowStillVisible: false,
-        previousFirstRowStillVisible: true,
-        probeRowId: "message-42",
-        probeRowY: 220
-      ),
-      .retireAnchor
-    )
-  }
-
-  func testPrependAnchorOnlyArmsOnAGenuineInsertionAbove() {
-    func decision(
-      previousFirstId: String? = "message-20",
-      nextFirstId: String? = "message-10",
-      previousVisibleCount: Int = 40,
-      nextVisibleCount: Int = 60,
-      previousFirstRowStillVisible: Bool = true,
-      probeRowId: String? = "message-20",
-      probeRowY: CGFloat? = 180
-    ) -> WorkChatPrependArmDecision {
-      workChatPrependArmDecision(
-        previousFirstId: previousFirstId,
-        nextFirstId: nextFirstId,
-        previousVisibleCount: previousVisibleCount,
-        nextVisibleCount: nextVisibleCount,
-        existingAnchorRowId: nil,
-        anchorRowStillVisible: false,
-        previousFirstRowStillVisible: previousFirstRowStillVisible,
-        probeRowId: probeRowId,
-        probeRowY: probeRowY
-      )
-    }
-
-    XCTAssertEqual(decision(), .arm(rowId: "message-20", rowY: 180))
-    // Appended, not prepended: the list grew but still leads with the same row.
-    XCTAssertEqual(decision(nextFirstId: "message-20"), .ignore)
-    // Rows replaced rather than inserted.
-    XCTAssertEqual(decision(nextVisibleCount: 40), .ignore)
-    // The leading row is gone, so this is not a prepend.
-    XCTAssertEqual(decision(previousFirstRowStillVisible: false), .ignore)
-    // The probe was measuring a different row, so there is no "before" position.
-    XCTAssertEqual(decision(probeRowId: "message-77"), .ignore)
-    XCTAssertEqual(decision(probeRowY: nil), .ignore)
+  func testResetOpensAtTheTailAndClearsAnyUserSession() {
+    let stuck = WorkChatFollowState(following: false, inUserSession: true)
+    let state = workChatFollowLatch(stuck, .reset)
+    XCTAssertTrue(state.following)
+    XCTAssertFalse(state.inUserSession)
   }
 
   func testMobileChatHistoryTriggerAndRenderCapStayBounded() {
@@ -17072,19 +17074,6 @@ final class ADETests: XCTestCase {
       hasHostHistory: true
     ))
 
-    XCTAssertTrue(workChatShouldInstallPrependProbe(
-      distanceFromTop: 0,
-      hasPrependAnchor: false
-    ))
-    XCTAssertFalse(workChatShouldInstallPrependProbe(
-      distanceFromTop: workChatOlderHistoryTriggerDistance + 1,
-      hasPrependAnchor: false
-    ))
-    XCTAssertTrue(workChatShouldInstallPrependProbe(
-      distanceFromTop: workChatOlderHistoryTriggerDistance + 1,
-      hasPrependAnchor: true
-    ))
-
     XCTAssertEqual(
       workTimelineVisibleCountAfterHistoryPrepend(
         currentVisibleCount: workTimelinePageSize,
@@ -17175,48 +17164,14 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(workSubagentRunningCount(snapshots), 0)
   }
 
-  func testWorkSubagentCapabilityMatchesDesktopTakeoverRules() {
-    XCTAssertTrue(workResolveSubagentCapability(provider: "codex").canViewFullTranscript)
-    XCTAssertTrue(workResolveSubagentCapability(provider: "claude").canViewFullTranscript)
-    XCTAssertTrue(workResolveSubagentCapability(provider: "opencode").canViewFullTranscript)
-    XCTAssertFalse(workResolveSubagentCapability(provider: "cursor").canViewFullTranscript)
-    XCTAssertFalse(workResolveSubagentCapability(provider: "droid").canViewFullTranscript)
-  }
-
-  func testWorkSubagentTranscriptMessagesConvertToChatEnvelopes() {
-    let messages = [
-      SyncService.AgentChatSubagentTranscriptMessage(
-        type: "user",
-        uuid: "u-1",
-        sessionId: "child-1",
-        parentToolUseId: nil,
-        message: nil,
-        text: "Inspect this",
-        subagentMetadata: nil
-      ),
-      SyncService.AgentChatSubagentTranscriptMessage(
-        type: "assistant",
-        uuid: "a-1",
-        sessionId: "child-1",
-        parentToolUseId: nil,
-        message: nil,
-        text: "Done",
-        subagentMetadata: nil
-      ),
-    ]
-
-    let envelopes = workSubagentTranscriptToEnvelopes(messages: messages, sessionId: "parent-1")
-
-    XCTAssertEqual(envelopes.count, 2)
-    guard case .userMessage(let userText, _, _, _, _, _) = envelopes[0].event else {
-      return XCTFail("Expected first subagent transcript row to be a user message.")
+  /// Listing is the whole capability now: the in-thread subagent transcript
+  /// drill-in was removed, so no provider opens one on a phone.
+  func testWorkSubagentCapabilityListsForEverySupportedProvider() {
+    for provider in ["codex", "claude", "opencode", "cursor", "droid", "factory"] {
+      XCTAssertTrue(workResolveSubagentCapability(provider: provider).canList, provider)
     }
-    XCTAssertEqual(userText, "Inspect this")
-    guard case .assistantText(let assistantText, _, let itemId) = envelopes[1].event else {
-      return XCTFail("Expected second subagent transcript row to be assistant text.")
-    }
-    XCTAssertEqual(assistantText, "Done")
-    XCTAssertEqual(itemId, "a-1")
+    XCTAssertFalse(workResolveSubagentCapability(provider: "unknown-provider").canList)
+    XCTAssertFalse(workResolveSubagentCapability(provider: nil).canList)
   }
 
   func testWorkChatTranscriptUsesMessageIdToSplitAssistantMessages() {
@@ -19295,32 +19250,44 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(emptyMemory.isEmpty)
   }
 
-  func testCtoOnboardingCompletionMirrorsDesktopRequiredStep() {
-    let incomplete = CtoOnboardingState(completedSteps: [], dismissedAt: nil, completedAt: nil)
-    XCTAssertFalse(incomplete.isComplete)
-
-    let viaStep = CtoOnboardingState(completedSteps: ["identity"], dismissedAt: nil, completedAt: nil)
-    XCTAssertTrue(viaStep.isComplete)
-
-    let viaTimestamp = CtoOnboardingState(completedSteps: [], dismissedAt: nil, completedAt: "2026-07-04T00:00:00Z")
-    XCTAssertTrue(viaTimestamp.isComplete)
-  }
-
-  func testCtoSetupCompletionPreservesHostOnboardingMarkers() {
-    // The host records non-user steps here (e.g. "intro", meaning the CTO's
-    // opening turn was already sent) and updateIdentity replaces the whole
-    // object, so completing setup from iOS must not drop them.
-    XCTAssertEqual(
-      CtoOnboardingState.stepsCompletingSetup(existing: ["intro"]),
-      ["intro", "identity"]
+  func testCtoIdentityPatchPreservesHostOnboardingMarkers() throws {
+    // The host keeps its own non-user markers in `completedSteps` ("intro" =
+    // the CTO's opening turn was already sent, "memory_gardener" = the memory
+    // pass ran) and `cto.updateIdentity` replaces `onboardingState` wholesale.
+    // The phone has no setup flow of its own any more, so the only thing that
+    // keeps those markers alive is a lossless round-trip: whatever the host
+    // sent has to come back out of a patch unchanged.
+    let identity = try JSONDecoder().decode(
+      CtoIdentity.self,
+      from: JSONSerialization.data(withJSONObject: [
+        "name": "CTO",
+        "onboardingState": [
+          "completedSteps": ["intro", "memory_gardener"],
+          // A host that still sends the retired wizard fields must not break
+          // decoding; Swift ignores unknown keys and the markers survive.
+          "dismissedAt": NSNull(),
+          "completedAt": "2026-07-04T00:00:00Z",
+        ],
+      ])
     )
-    XCTAssertEqual(CtoOnboardingState.stepsCompletingSetup(existing: nil), ["identity"])
-    XCTAssertEqual(CtoOnboardingState.stepsCompletingSetup(existing: []), ["identity"])
-    // Idempotent: re-saving setup must not duplicate the required step.
-    XCTAssertEqual(
-      CtoOnboardingState.stepsCompletingSetup(existing: ["identity", "intro"]),
-      ["identity", "intro"]
-    )
+    XCTAssertEqual(identity.onboardingState?.completedSteps, ["intro", "memory_gardener"])
+
+    var patch = CtoIdentityPatch()
+    patch.name = "Ada"
+    patch.onboardingState = identity.onboardingState
+
+    let encoded = try JSONSerialization.jsonObject(
+      with: JSONEncoder().encode(patch)
+    ) as? [String: Any]
+    let state = encoded?["onboardingState"] as? [String: Any]
+    XCTAssertEqual(state?["completedSteps"] as? [String], ["intro", "memory_gardener"])
+    // The retired wizard fields are NOT resurrected on the way back: the host's
+    // `normalizeOnboardingState` keeps `completedSteps` and nothing else, so a
+    // phone echoing `completedAt` would be writing a field with no reader.
+    XCTAssertNil(state?["completedAt"])
+    XCTAssertNil(state?["dismissedAt"])
+    // Nothing on the phone injects a step of its own into the host's list.
+    XCTAssertFalse((state?["completedSteps"] as? [String] ?? []).contains("identity"))
   }
 
   func testCtoAttentionDecodesLegacyAndExplicitStatesAndRetainsUnknownProbe() throws {
@@ -19387,26 +19354,6 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(service.ctoAttention, .idle)
   }
 
-  func testCtoOnboardingDismissedOnDesktopDoesNotBlockIosTab() {
-    func identity(_ state: CtoOnboardingState?) -> CtoIdentity {
-      CtoIdentity(
-        name: "CTO",
-        onboardingState: state,
-        modelPreferences: CtoModelPreferences(provider: "claude", model: "sonnet", reasoningEffort: nil)
-      )
-    }
-    // Never set up and never dismissed → setup blocks the tab.
-    XCTAssertTrue(identity(nil).isOnboardingBlocking)
-    XCTAssertTrue(identity(CtoOnboardingState(completedSteps: [], dismissedAt: nil, completedAt: nil)).isOnboardingBlocking)
-    // Dismissed on desktop ("Set up later") → chat must open, not the setup card.
-    let dismissed = CtoOnboardingState(completedSteps: [], dismissedAt: "2026-07-05T00:00:00Z", completedAt: nil)
-    XCTAssertFalse(identity(dismissed).isOnboardingBlocking)
-    XCTAssertFalse(identity(dismissed).isOnboardingComplete)
-    // Completed → unlocked too.
-    let complete = CtoOnboardingState(completedSteps: ["identity"], dismissedAt: nil, completedAt: nil)
-    XCTAssertFalse(identity(complete).isOnboardingBlocking)
-  }
-
   /// The host writes `modelPreferences: null` whenever the stored pick is on a
   /// provider that cannot steer a live turn, so the decoder has to survive both
   /// a missing key and an explicit null — a force-unwrap here would crash the
@@ -19442,9 +19389,8 @@ final class ADETests: XCTestCase {
   /// the host defaults to, which is exactly what the null preference exists to
   /// prevent. Mirrors desktop `CtoPage`'s `needsModelPick` branch.
   func testCtoRootShowsModelPickerOnlyWhileNoModelIsPicked() {
-    let setUp = CtoOnboardingState(completedSteps: ["identity"], dismissedAt: nil, completedAt: nil)
     func identity(_ preferences: CtoModelPreferences?) -> CtoIdentity {
-      CtoIdentity(name: "CTO", onboardingState: setUp, modelPreferences: preferences)
+      CtoIdentity(name: "CTO", modelPreferences: preferences)
     }
 
     let unpicked = identity(nil)
@@ -19464,14 +19410,6 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(
       ctoRootContent(identity: picked, loadError: nil, hostUnreachable: false),
       .thread
-    )
-
-    // Setup still comes first: an unpicked model behind blocking onboarding
-    // shows the setup card, not the picker.
-    let needsSetup = CtoIdentity(name: "CTO", onboardingState: nil, modelPreferences: nil)
-    XCTAssertEqual(
-      ctoRootContent(identity: needsSetup, loadError: nil, hostUnreachable: false),
-      .onboarding
     )
 
     // No identity yet: the offline case stays on the spinner (the top bar owns
@@ -20373,15 +20311,9 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(cards.first?.metadata, ["Automatic recovery"])
   }
 
-  func testCodexRecoveryRemainsAvailableInSubagentTranscriptWhenHostSupportsIt() {
-    XCTAssertTrue(workChatCodexRecoveryAvailable(
-      hostSupportsRecovery: true,
-      viewingSubagent: true
-    ))
-    XCTAssertFalse(workChatCodexRecoveryAvailable(
-      hostSupportsRecovery: false,
-      viewingSubagent: true
-    ))
+  func testCodexRecoveryFollowsTheHostCapability() {
+    XCTAssertTrue(workChatCodexRecoveryAvailable(hostSupportsRecovery: true))
+    XCTAssertFalse(workChatCodexRecoveryAvailable(hostSupportsRecovery: false))
   }
 
   func testMcpConnectorIdentitySurvivesDecodedAndFallbackToolCards() throws {
@@ -20647,6 +20579,28 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(steers.isEmpty)
   }
 
+  func testMakeWorkChatTranscriptClearsQueuedSteerWhenCommandLifecycleStarts() throws {
+    let json = """
+    {
+      "sessionId": "chat-1",
+      "capturedAt": "2026-09-20T00:00:00.000Z",
+      "events": [
+        {"sessionId":"chat-1","timestamp":"2026-09-20T00:00:01.000Z","sequence":1,"event":{"type":"user_message","text":"start the queued request","turnId":"turn-1","steerId":"steer-1","deliveryState":"queued"}},
+        {"sessionId":"chat-1","timestamp":"2026-09-20T00:00:02.000Z","sequence":2,"event":{"type":"command_lifecycle","commandUuid":"command-1","status":"started","steerId":"steer-1","turnId":"turn-1"}}
+      ],
+      "truncated": false
+    }
+    """
+
+    let snapshot = try JSONDecoder().decode(AgentChatEventHistorySnapshot.self, from: Data(json.utf8))
+    let transcript = makeWorkChatTranscript(from: snapshot.events)
+
+    XCTAssertEqual(transcript.last?.commandLifecycleStatus, "started")
+    XCTAssertEqual(transcript.last?.commandLifecycleSteerId, "steer-1")
+    XCTAssertTrue(derivePendingWorkSteers(from: transcript).isEmpty)
+    XCTAssertEqual(pruneResolvedQueuedSteerEnvelopes(transcript).count, 1)
+  }
+
   /// The staged strip is now the "you queued this" surface and nothing else. An
   /// atomically dispatched send writes a user message with an immediate
   /// delivery state (or none at all) and must never produce a strip entry —
@@ -20740,6 +20694,58 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(derivePendingWorkSteers(from: pruned).isEmpty)
   }
 
+  /// Regression: a `command_lifecycle` frame whose `status` is missing is an
+  /// off-contract host (the wire type requires it). Comparing `!= "queued"`
+  /// against a nil status treated "unknown" as "no longer queued" and dropped a
+  /// steer row the user can still see waiting.
+  func testPruneResolvedQueuedSteerEnvelopesKeepsQueuedRowWithoutALifecycleStatus() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .userMessage(text: "ship it", attachments: nil, turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil),
+        commandLifecycleStatus: nil,
+        commandLifecycleSteerId: nil
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:02.000Z",
+        sequence: 2,
+        event: .unknown(type: "command_lifecycle"),
+        commandLifecycleStatus: nil,
+        commandLifecycleSteerId: "steer-1"
+      ),
+    ]
+
+    let pruned = pruneResolvedQueuedSteerEnvelopes(transcript)
+    XCTAssertEqual(pruned.count, 2, "a statusless lifecycle frame must not resolve the steer")
+    XCTAssertEqual(derivePendingWorkSteers(from: pruned).count, 1)
+  }
+
+  /// The contract case still resolves: an explicit non-queued status graduates
+  /// the row.
+  func testPruneResolvedQueuedSteerEnvelopesDropsQueuedRowOnStartedLifecycle() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .userMessage(text: "ship it", attachments: nil, turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:02.000Z",
+        sequence: 2,
+        event: .unknown(type: "command_lifecycle"),
+        commandLifecycleStatus: "started",
+        commandLifecycleSteerId: "steer-1"
+      ),
+    ]
+
+    XCTAssertTrue(derivePendingWorkSteers(from: pruneResolvedQueuedSteerEnvelopes(transcript)).isEmpty)
+  }
+
   func testPreferredWorkTranscriptPreservesQueuedSteerAfterPlainFallbackBackfill() {
     let fallback = [
       WorkChatEnvelope(
@@ -20766,6 +20772,87 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(buildWorkChatMessages(from: preferred).map(\.markdown), [])
     XCTAssertEqual(derivePendingWorkSteers(from: preferred).map(\.id), ["steer-1"])
+  }
+
+  func testGraduatedQueuedSteerRendersOnceAndLeavesNoPendingSteer() {
+    // Regression (chat 67757bac, 2026-09-19): the host writes a steered message
+    // twice — `queued` when staged, `inline` when the SDK consumes it — and the
+    // canonical text transcript returned both as plain user rows. The idle
+    // rebuild kept only the stale queued row, so the bubble vanished from the
+    // thread and the message reappeared in the staged strip ~10s after it had
+    // already been delivered.
+    let live = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-09-19T00:00:01.000Z",
+        sequence: 1,
+        event: .userMessage(text: "also run the linter", attachments: nil, turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-09-19T00:00:03.000Z",
+        sequence: 3,
+        event: .userMessage(text: "also run the linter", attachments: nil, turnId: "turn-1", steerId: "steer-1", deliveryState: "inline", processed: nil)
+      ),
+    ]
+    // What `chat.getTranscript` really returns today: both rows flattened to
+    // plain user entries with no steer metadata.
+    let fallback = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-09-19T00:00:01.000Z",
+        sequence: nil,
+        event: .userMessage(text: "also run the linter", attachments: nil, turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-09-19T00:00:03.000Z",
+        sequence: nil,
+        event: .userMessage(text: "also run the linter", attachments: nil, turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil)
+      ),
+    ]
+
+    for current in [[WorkChatEnvelope](), live] {
+      let preferred = preferredWorkTranscript(
+        current: current,
+        fallback: fallback,
+        eventTranscript: live
+      )
+      XCTAssertEqual(buildWorkChatMessages(from: preferred).map(\.markdown), ["also run the linter"])
+      XCTAssertTrue(derivePendingWorkSteers(from: preferred).isEmpty)
+    }
+
+    // The idle rebuild path: prune runs before the canonical filter, so the
+    // stale queued row never survives into the merge.
+    XCTAssertTrue(workChatShouldPreferFallbackTranscript(
+      fallbackTranscript: { fallback },
+      sessionStatus: "idle",
+      liveTranscript: live
+    ))
+    let canonical = workChatIdleCanonicalEventTranscript(live)
+    XCTAssertTrue(canonical.isEmpty)
+    for current in [[WorkChatEnvelope](), live] {
+      let idle = preferredWorkTranscript(
+        current: current,
+        fallback: fallback,
+        eventTranscript: canonical
+      )
+      XCTAssertEqual(buildWorkChatMessages(from: idle).map(\.markdown), ["also run the linter"])
+      XCTAssertTrue(derivePendingWorkSteers(from: idle).isEmpty)
+    }
+  }
+
+  func testIdleCanonicalEventTranscriptKeepsStillPendingQueuedSteer() {
+    let live = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-09-19T00:00:01.000Z",
+        sequence: 1,
+        event: .userMessage(text: "stage me", attachments: nil, turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil)
+      ),
+    ]
+    let canonical = workChatIdleCanonicalEventTranscript(live)
+    XCTAssertEqual(derivePendingWorkSteers(from: canonical).map(\.id), ["steer-1"])
   }
 
   func testWorkTimelineHidesLocalEchoWhenQueuedSteerCoversSameText() {
@@ -21404,6 +21491,59 @@ final class ADETests: XCTestCase {
       ["Build", "", "ADE"],
       ["Ship", "done", ""],
     ])
+  }
+
+  /// A ```scene fence is agent-authored HTML for the desktop's sandboxed frame.
+  /// iOS has no frame to run it in, so the transcript must collapse it to a
+  /// placeholder — never render, and never dump, up to 96 KB of markup.
+  func testSceneFenceCollapsesToAPlaceholderInsteadOfMarkup() {
+    let markdown = """
+    Here is the shape of it.
+
+    ```scene
+    <!-- @scene title="Lane throughput" -->
+    <div style="color:red">burn chart</div>
+    ```
+    """
+    let blocks = parseMarkdownBlocks(markdown)
+    guard case .code(let language, let code) = blocks.last?.kind else {
+      return XCTFail("Expected the scene fence to parse as a fenced block.")
+    }
+    XCTAssertTrue(workIsSceneFenceLanguage(language))
+    // The source survives in the model (the view is what collapses it), so the
+    // title the placeholder shows has to come out of it.
+    XCTAssertEqual(workSceneFenceTitle(code), "Lane throughput")
+    XCTAssertEqual(workSummarizeSceneFence(code), "[scene: Lane throughput]")
+  }
+
+  /// Mirrors desktop `parseSceneFence`: only the first non-blank line may be
+  /// the marker, `@scene` is a whole word, and a scene with no marker falls
+  /// back to the generic label rather than borrowing text from its markup.
+  func testSceneFenceTitleParsingMirrorsDesktopMarkerRules() {
+    XCTAssertEqual(workSceneFenceTitle("\n\n<!--   @scene   title=\"Spaced\"  -->\n<p>x</p>"), "Spaced")
+    XCTAssertNil(workSceneFenceTitle("<div>no marker</div>"))
+    // A marker that is not the FIRST non-blank line is markup, not a title.
+    XCTAssertNil(workSceneFenceTitle("<div>x</div>\n<!-- @scene title=\"Late\" -->"))
+    // `@scene` must be a whole word.
+    XCTAssertNil(workSceneFenceTitle("<!-- @scenery title=\"Nope\" -->"))
+    // An empty title is no title.
+    XCTAssertNil(workSceneFenceTitle("<!-- @scene title=\"  \" -->"))
+    XCTAssertEqual(workSummarizeSceneFence("<div>x</div>"), "[scene: generated view]")
+    // Capped at the desktop's 120 characters.
+    let long = String(repeating: "a", count: 200)
+    XCTAssertEqual(workSceneFenceTitle("<!-- @scene title=\"\(long)\" -->")?.count, 120)
+    // Language matching is trimmed and case-insensitive; nothing else collapses.
+    XCTAssertTrue(workIsSceneFenceLanguage(" Scene "))
+    XCTAssertFalse(workIsSceneFenceLanguage("swift"))
+    XCTAssertFalse(workIsSceneFenceLanguage(nil))
+    // A multi-word info string is a scene on every other surface: desktop reads
+    // rehype's `language-scene` class and the TUI takes the first token. The
+    // phone comparing the WHOLE string meant ```scene generated dumped raw HTML
+    // into the transcript.
+    XCTAssertTrue(workIsSceneFenceLanguage("scene generated"))
+    XCTAssertTrue(workIsSceneFenceLanguage("  Scene  generated view "))
+    XCTAssertFalse(workIsSceneFenceLanguage("scenery generated"))
+    XCTAssertFalse(workIsSceneFenceLanguage(""))
   }
 
   func testParseWorkChatTranscriptUsesDeterministicFallbackItemIds() {
@@ -26242,14 +26382,11 @@ final class ADETests: XCTestCase {
   }
 
   /// A remembered mode is only restorable when the chat's current provider can
-  /// honor it — Cursor has no inline channel, so a mode carried over from a
-  /// Claude chat has to fall back to that provider's default rather than being
-  /// sent and rejected by the host.
+  /// honor it — Codex has no interrupt channel, so an interrupt carried over
+  /// from a Claude chat has to fall back to that provider's default rather than
+  /// being sent and rejected by the host. Cursor stopped demonstrating this
+  /// when it gained the inline channel, so the case is stated against Codex.
   func testRememberedSendModeFallsBackWhenProviderCannotHonorIt() {
-    let cursor = WorkActiveSendCapability.forProvider("cursor")
-    XCTAssertFalse(cursor.modes.contains(.inline))
-    XCTAssertEqual(cursor.defaultMode, .interrupt)
-
     let codex = WorkActiveSendCapability.forProvider("codex")
     XCTAssertEqual(codex.modes, [.inline, .queue])
     XCTAssertFalse(codex.modes.contains(.interrupt))
@@ -26258,7 +26395,7 @@ final class ADETests: XCTestCase {
     // And the wire value for an unhonorable mode is always nil, so nothing the
     // fallback misses can still reach the host.
     XCTAssertNil(
-      workChatAtomicSteerDispatchMode(deliveryMode: .inline, dispatchModes: cursor.atomicDispatchModes)
+      workChatAtomicSteerDispatchMode(deliveryMode: .interrupt, dispatchModes: codex.atomicDispatchModes)
     )
   }
 
@@ -27256,8 +27393,8 @@ final class ADETests: XCTestCase {
         "providerMetadata": {
           "role": "worker",
           "tag": "web-ui",
-          "workDescription": "Build the orchestration roster.",
-          "filesHint": ["OrchestrationPanel.tsx", "TaskCard.tsx"],
+          "workDescription": "Build the agent roster.",
+          "filesHint": ["TaskPanel.tsx", "TaskCard.tsx"],
           "dependsOn": ["planning-rounds", "model-routing"],
           "suggested": {
             "provider": "codex",
@@ -27280,8 +27417,8 @@ final class ADETests: XCTestCase {
     }
 
     XCTAssertEqual(model.title, "Pick a model for the \"web-ui\" worker")
-    XCTAssertEqual(model.workDescription, "Build the orchestration roster.")
-    XCTAssertEqual(model.filesHint, ["OrchestrationPanel.tsx", "TaskCard.tsx"])
+    XCTAssertEqual(model.workDescription, "Build the agent roster.")
+    XCTAssertEqual(model.filesHint, ["TaskPanel.tsx", "TaskCard.tsx"])
     XCTAssertEqual(model.dependsOn, ["planning-rounds", "model-routing"])
     XCTAssertEqual(model.availableModelIds, ["gpt-5.4", "claude-sonnet-5"])
     XCTAssertFalse(
@@ -27597,9 +27734,9 @@ final class ADETests: XCTestCase {
     )
   }
 
-  // MARK: - Orchestration session fields forward-compat
+  // MARK: - Spawn lineage session fields forward-compat
 
-  func testAgentChatSessionSummaryDecodesOrchestrationFields() throws {
+  func testAgentChatSessionSummaryDecodesSpawnLineageFields() throws {
     let json = """
     {
       "sessionId": "sess-orch-1",
@@ -27609,26 +27746,16 @@ final class ADETests: XCTestCase {
       "status": "running",
       "startedAt": "2026-05-25T00:00:00.000Z",
       "lastActivityAt": "2026-05-25T00:01:00.000Z",
-      "orchestrationRunId": "run-abc",
-      "orchestrationRole": "worker",
       "orchestrationParentSessionId": "sess-lead-1",
-      "spawnKind": "subagent",
-      "orchestrationTag": "impl-auth",
-      "orchestrationStepId": "step-2",
-      "orchestrationBundlePath": "/tmp/.ade/orchestration/run-abc"
+      "spawnKind": "subagent"
     }
     """.data(using: .utf8)!
     let summary = try JSONDecoder().decode(AgentChatSessionSummary.self, from: json)
-    XCTAssertEqual(summary.orchestrationRunId, "run-abc")
-    XCTAssertEqual(summary.orchestrationRole, "worker")
     XCTAssertEqual(summary.orchestrationParentSessionId, "sess-lead-1")
     XCTAssertEqual(summary.spawnKind, .subagent)
-    XCTAssertEqual(summary.orchestrationTag, "impl-auth")
-    XCTAssertEqual(summary.orchestrationStepId, "step-2")
-    XCTAssertEqual(summary.orchestrationBundlePath, "/tmp/.ade/orchestration/run-abc")
   }
 
-  func testAgentChatSessionSummaryDecodesWithoutOrchestrationFields() throws {
+  func testAgentChatSessionSummaryDecodesWithoutSpawnLineageFields() throws {
     let json = """
     {
       "sessionId": "sess-plain-1",
@@ -27641,37 +27768,8 @@ final class ADETests: XCTestCase {
     }
     """.data(using: .utf8)!
     let summary = try JSONDecoder().decode(AgentChatSessionSummary.self, from: json)
-    XCTAssertNil(summary.orchestrationRunId)
-    XCTAssertNil(summary.orchestrationRole)
     XCTAssertNil(summary.orchestrationParentSessionId)
     XCTAssertNil(summary.spawnKind)
-    XCTAssertNil(summary.orchestrationTag)
-    XCTAssertNil(summary.orchestrationStepId)
-    XCTAssertNil(summary.orchestrationBundlePath)
-  }
-
-  func testTerminalSessionSummaryDecodesOrchestrationFields() throws {
-    let json = """
-    {
-      "id": "term-orch-1",
-      "laneId": "lane-1",
-      "laneName": "Feature",
-      "tracked": true,
-      "pinned": false,
-      "title": "Worker: auth impl",
-      "status": "running",
-      "startedAt": "2026-05-25T00:00:00.000Z",
-      "transcriptPath": "/tmp/transcript.jsonl",
-      "runtimeState": "running",
-      "orchestrationRunId": "run-xyz",
-      "orchestrationRole": "validator",
-      "orchestrationTag": "test-coverage"
-    }
-    """.data(using: .utf8)!
-    let session = try JSONDecoder().decode(TerminalSessionSummary.self, from: json)
-    XCTAssertEqual(session.orchestrationRunId, "run-xyz")
-    XCTAssertEqual(session.orchestrationRole, "validator")
-    XCTAssertEqual(session.orchestrationTag, "test-coverage")
   }
 
   // MARK: - CTO lineage on a Work row
@@ -27701,6 +27799,33 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(session.isCtoChild)
   }
 
+  func testTerminalSessionSummaryDecodesCursorRuntimeOverLeftoverCloudAgentId() throws {
+    let json = """
+    {
+      "id": "term-cursor-local",
+      "laneId": "lane-1",
+      "laneName": "Feature",
+      "tracked": true,
+      "pinned": false,
+      "title": "Cursor chat",
+      "status": "running",
+      "startedAt": "2026-09-17T00:00:00.000Z",
+      "transcriptPath": "/tmp/transcript.jsonl",
+      "runtimeState": "running",
+      "cursorCloudAgentId": "cloud-agent-1",
+      "cursorRuntime": "local"
+    }
+    """.data(using: .utf8)!
+    let session = try JSONDecoder().decode(TerminalSessionSummary.self, from: json)
+    XCTAssertEqual(session.cursorCloudAgentId, "cloud-agent-1")
+    XCTAssertEqual(session.cursorRuntime, "local")
+    XCTAssertFalse(workChatCursorSessionRunsInCloud(
+      provider: "cursor",
+      cursorRuntime: session.cursorRuntime,
+      cursorCloudAgentId: session.cursorCloudAgentId
+    ))
+  }
+
   /// Absent is the no-op value, and it is by far the common case: an older host
   /// omits the field, and so does every chat with no parent or an ordinary chat
   /// parent. None of them may wear the chip.
@@ -27716,9 +27841,7 @@ final class ADETests: XCTestCase {
       "status": "running",
       "startedAt": "2026-09-12T00:00:00.000Z",
       "transcriptPath": "/tmp/transcript.jsonl",
-      "runtimeState": "running",
-      "orchestrationRunId": "run-xyz",
-      "orchestrationRole": "worker"
+      "runtimeState": "running"
     }
     """.data(using: .utf8)!
     let session = try JSONDecoder().decode(TerminalSessionSummary.self, from: json)
@@ -27744,30 +27867,22 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(session.isCtoChild)
   }
 
-  func testAgentChatSessionDecodesOrchestrationFields() throws {
+  func testAgentChatSessionDecodesSpawnLineageFields() throws {
     let json = """
     {
-      "sessionId": "sess-full-orch",
+      "sessionId": "sess-full-spawn",
       "laneId": "lane-2",
       "provider": "claude",
       "model": "claude-sonnet-5",
       "status": "running",
       "createdAt": "2026-05-25T00:00:00.000Z",
       "lastActivityAt": "2026-05-25T00:02:00.000Z",
-      "orchestrationRunId": "run-full",
-      "orchestrationRole": "lead",
-      "spawnKind": "none",
-      "orchestrationTag": "coordinator"
+      "spawnKind": "none"
     }
     """.data(using: .utf8)!
     let session = try JSONDecoder().decode(AgentChatSession.self, from: json)
-    XCTAssertEqual(session.orchestrationRunId, "run-full")
-    XCTAssertEqual(session.orchestrationRole, "lead")
     XCTAssertEqual(session.spawnKind, .legacyUntyped)
-    XCTAssertEqual(session.orchestrationTag, "coordinator")
     XCTAssertNil(session.orchestrationParentSessionId)
-    XCTAssertNil(session.orchestrationStepId)
-    XCTAssertNil(session.orchestrationBundlePath)
   }
 
   func testRoleTransitionActionsAreHiddenWhenSpawnKindUpdateIsUnsupported() {
@@ -28728,7 +28843,7 @@ final class LinearPaneTests: XCTestCase {
 }
 
 /// Parity coverage for the iOS mirror of the desktop `groupStoppedSubagentResultCards`
-/// fold: a mass interrupt collapses a run of 2+ consecutive stopped result rows
+/// fold: a mass stop collapses a run of 2+ consecutive same-source result rows
 /// into one `.subagentStoppedGroup`, while lone stops and non-stopped rows stay
 /// individual and break runs.
 final class WorkSubagentStoppedGroupFoldTests: XCTestCase {
@@ -28736,7 +28851,11 @@ final class WorkSubagentStoppedGroupFoldTests: XCTestCase {
     _ id: String,
     _ title: String,
     status: WorkSubagentSnapshot.Status,
-    rank: Int
+    rank: Int,
+    stopSource: String? = nil,
+    stopReason: String? = nil,
+    resultLanded: Bool = false,
+    lastActivity: String? = nil
   ) -> WorkTimelineEntry {
     let snapshot = WorkSubagentSnapshot(
       taskId: id,
@@ -28753,7 +28872,11 @@ final class WorkSubagentStoppedGroupFoldTests: XCTestCase {
       latestSummary: nil,
       turnId: nil,
       startedAt: nil,
-      updatedAt: nil
+      updatedAt: nil,
+      stopSource: stopSource,
+      stopReason: stopReason,
+      resultLanded: resultLanded,
+      lastActivity: lastActivity
     )
     let row = WorkSubagentTimelineRow(
       kind: .result,
@@ -28766,8 +28889,25 @@ final class WorkSubagentStoppedGroupFoldTests: XCTestCase {
     return WorkTimelineEntry(id: row.id, timestamp: row.timestamp, rank: rank, payload: .subagent(row))
   }
 
-  private func stopped(_ id: String, _ title: String, rank: Int) -> WorkTimelineEntry {
-    resultEntry(id, title, status: .stopped, rank: rank)
+  private func stopped(
+    _ id: String,
+    _ title: String,
+    rank: Int,
+    stopSource: String? = nil,
+    stopReason: String? = nil,
+    resultLanded: Bool = false,
+    lastActivity: String? = nil
+  ) -> WorkTimelineEntry {
+    resultEntry(
+      id,
+      title,
+      status: .stopped,
+      rank: rank,
+      stopSource: stopSource,
+      stopReason: stopReason,
+      resultLanded: resultLanded,
+      lastActivity: lastActivity
+    )
   }
 
   private func isGroup(_ entry: WorkTimelineEntry) -> Bool {
@@ -28788,7 +28928,29 @@ final class WorkSubagentStoppedGroupFoldTests: XCTestCase {
     XCTAssertEqual(model.count, 3)
     XCTAssertEqual(model.rows.map { $0.snapshot.description }, ["Alpha", "Bravo", "Charlie"])
     // Group key derives from the first agent so it stays stable as the run grows.
-    XCTAssertEqual(folded[0].id, "subagent-stopped-group-a")
+    XCTAssertEqual(folded[0].id, "subagent-stopped-group-unknown-unknown-a")
+  }
+
+  func testStoppedGroupsSplitWhenStopReasonChanges() throws {
+    let folded = collapseSameCauseSubagentEntries([
+      stopped("a", "Alpha", rank: 0, stopSource: "system", stopReason: "reason-a"),
+      stopped("b", "Bravo", rank: 1, stopSource: "system", stopReason: "reason-a"),
+      stopped("c", "Charlie", rank: 2, stopSource: "system", stopReason: "reason-b"),
+      stopped("d", "Delta", rank: 3, stopSource: "system", stopReason: "reason-b"),
+    ], causeOf: workSubagentStoppedGroupCause)
+
+    XCTAssertEqual(folded.count, 2)
+    let models = try folded.map { entry -> WorkSubagentStoppedGroupModel in
+      guard case .subagentStoppedGroup(let model) = entry.payload else {
+        throw NSError(domain: "WorkSubagentStoppedGroupFoldTests", code: 2)
+      }
+      return model
+    }
+    XCTAssertEqual(models.map(\.stopReason), ["reason-a", "reason-b"])
+    XCTAssertEqual(folded.map(\.id), [
+      "subagent-stopped-group-system-reason-a-a",
+      "subagent-stopped-group-system-reason-b-c",
+    ])
   }
 
   func testLoneStoppedResultStaysIndividual() {
@@ -28799,6 +28961,27 @@ final class WorkSubagentStoppedGroupFoldTests: XCTestCase {
     ], causeOf: workSubagentStoppedGroupCause)
     XCTAssertEqual(folded.count, 3)
     XCTAssertFalse(folded.contains(where: isGroup))
+  }
+
+  func testLoneStoppedResultUsesAttributionAndKeepsActivityOutcome() throws {
+    let folded = collapseSameCauseSubagentEntries([
+      stopped(
+        "system-a",
+        "System A",
+        rank: 0,
+        stopSource: "system",
+        stopReason: "the ADE brain restarted",
+        resultLanded: true,
+        lastActivity: "Writing the report"
+      ),
+    ], causeOf: workSubagentStoppedGroupCause)
+
+    guard case .subagent(let row) = folded.first?.payload else {
+      return XCTFail("expected a lone stopped result row")
+    }
+    XCTAssertEqual(workSubagentStoppedStatusLine(row.snapshot), "stopped: the ADE brain restarted")
+    XCTAssertEqual(row.snapshot.lastActivity, "Writing the report")
+    XCTAssertEqual(workSubagentStoppedOutcomeLabel(row.snapshot), "report landed")
   }
 
   func testNonStoppedRowBreaksRunIntoSeparateGroups() {
@@ -28818,6 +29001,143 @@ final class WorkSubagentStoppedGroupFoldTests: XCTestCase {
     }
     XCTAssertEqual(first.rows.map { $0.snapshot.description }, ["Alpha", "Bravo"])
     XCTAssertEqual(last.rows.map { $0.snapshot.description }, ["Charlie", "Delta"])
+  }
+
+  func testStoppedGroupsSplitBySourceAndUseExactHeadlines() throws {
+    let folded = collapseSameCauseSubagentEntries([
+      stopped("user-a", "User A", rank: 0, stopSource: "user"),
+      stopped("user-b", "User B", rank: 1, stopSource: "user"),
+      stopped(
+        "system-a",
+        "System A",
+        rank: 2,
+        stopSource: "system",
+        stopReason: "the ADE brain restarted"
+      ),
+      stopped(
+        "system-b",
+        "System B",
+        rank: 3,
+        stopSource: "system",
+        stopReason: "the ADE brain restarted"
+      ),
+      stopped(
+        "foreign-a",
+        "Foreign A",
+        rank: 4,
+        stopSource: "foreign-brain",
+        stopReason: "another ADE brain took over this chat"
+      ),
+      stopped(
+        "foreign-b",
+        "Foreign B",
+        rank: 5,
+        stopSource: "foreign-brain",
+        stopReason: "another ADE brain took over this chat"
+      ),
+      stopped("unknown-a", "Unknown A", rank: 6),
+      stopped("unknown-b", "Unknown B", rank: 7),
+    ], causeOf: workSubagentStoppedGroupCause)
+
+    XCTAssertEqual(folded.count, 4)
+    let models = try folded.map { entry -> WorkSubagentStoppedGroupModel in
+      guard case .subagentStoppedGroup(let model) = entry.payload else {
+        throw NSError(domain: "WorkSubagentStoppedGroupFoldTests", code: 1)
+      }
+      return model
+    }
+    XCTAssertEqual(models.map(\.stopSource), ["user", "system", "foreign-brain", "unknown"])
+    XCTAssertEqual(models.map(\.headline), [
+      "2 agents stopped when you interrupted",
+      "2 agents stopped: the ADE brain restarted",
+      "2 agents stopped: another ADE brain took over this chat",
+      "2 agents stopped",
+    ])
+  }
+
+  func testStoppedGroupRowsKeepLastActivityAndReportOutcome() throws {
+    let folded = collapseSameCauseSubagentEntries([
+      stopped(
+        "landed",
+        "Report agent",
+        rank: 0,
+        stopSource: "system",
+        stopReason: "the ADE brain restarted",
+        resultLanded: true,
+        lastActivity: "Writing the report"
+      ),
+      stopped(
+        "lost",
+        "Research agent",
+        rank: 1,
+        stopSource: "system",
+        stopReason: "the ADE brain restarted",
+        lastActivity: "Reading the source"
+      ),
+    ], causeOf: workSubagentStoppedGroupCause)
+
+    guard case .subagentStoppedGroup(let model) = folded.first?.payload else {
+      return XCTFail("expected a stopped group")
+    }
+    XCTAssertEqual(model.rows.map { $0.snapshot.lastActivity }, ["Writing the report", "Reading the source"])
+    XCTAssertEqual(model.rows.map { workSubagentStoppedOutcomeLabel($0.snapshot) }, ["report landed", "work lost"])
+  }
+
+  func testSubagentResultStopMetadataDecodesOptionalAndMapsToWorkEnvelope() throws {
+    let json = """
+    {
+      "sessionId":"chat-1",
+      "timestamp":"2026-09-19T00:00:00.000Z",
+      "sequence":1,
+      "event":{
+        "type":"subagent_result",
+        "taskId":"agent-1",
+        "agentId":"agent-1",
+        "status":"stopped",
+        "summary":"Stopped before finishing",
+        "stopSource":"system",
+        "stopReason":"the ADE brain restarted",
+        "turnId":"turn-1"
+      }
+    }
+    """
+    let envelope = try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(json.utf8))
+    XCTAssertEqual(envelope.stopSource, "system")
+    XCTAssertEqual(envelope.stopReason, "the ADE brain restarted")
+    guard case .subagentResult(
+      _, _, _, _, _, _, _, _, _, _, _, _,
+      let decodedStopSource,
+      let decodedStopReason
+    ) = envelope.event else {
+      return XCTFail("Expected typed subagent result event.")
+    }
+    XCTAssertEqual(decodedStopSource, "system")
+    XCTAssertEqual(decodedStopReason, "the ADE brain restarted")
+    let workEnvelope = try XCTUnwrap(makeWorkChatTranscript(from: [envelope]).first)
+    XCTAssertEqual(workEnvelope.stopSource, "system")
+    XCTAssertEqual(workEnvelope.stopReason, "the ADE brain restarted")
+
+    let olderHostJSON = """
+    {
+      "sessionId":"chat-1",
+      "timestamp":"2026-09-19T00:00:00.000Z",
+      "sequence":1,
+      "event":{
+        "type":"subagent_result",
+        "taskId":"agent-1",
+        "agentId":"agent-1",
+        "status":"stopped",
+        "summary":"Stopped before finishing",
+        "turnId":"turn-1"
+      }
+    }
+    """
+    let olderEnvelope = try JSONDecoder().decode(
+      AgentChatEventEnvelope.self,
+      from: Data(olderHostJSON.utf8)
+    )
+    XCTAssertNil(olderEnvelope.stopSource)
+    XCTAssertNil(olderEnvelope.stopReason)
   }
 }
 

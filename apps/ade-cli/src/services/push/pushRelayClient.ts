@@ -10,6 +10,31 @@ import type {
 } from "../../../../desktop/src/shared/types/attention";
 import type { PushDeviceRegistration } from "../../../../desktop/src/shared/types/push";
 import type { PushRegistrationStore } from "./pushRegistrationStore";
+import {
+  decodeAccountSettingRecord,
+  decodeAccountVaultItem,
+} from "./accountRelayRows";
+import type {
+  AccountSettingRecord,
+  AccountSettingWrite,
+  AccountSettingsPage,
+  AccountVaultItem,
+  AccountVaultItemKind,
+  AccountVaultPage,
+  AccountVaultWrite,
+} from "./accountRelayRows";
+
+export {
+  decodeAccountSettingRecord,
+  decodeAccountVaultItem,
+  type AccountSettingRecord,
+  type AccountSettingWrite,
+  type AccountSettingsPage,
+  type AccountVaultItem,
+  type AccountVaultItemKind,
+  type AccountVaultPage,
+  type AccountVaultWrite,
+} from "./accountRelayRows";
 
 const DEFAULT_RELAY_URL = "https://ade-push-relay.arulsharma1028.workers.dev";
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -310,6 +335,63 @@ export function createPushRelayClient(args: {
     }
     return response.body ?? {};
   };
+
+  /**
+   * The preamble every account settings/vault call repeats.
+   *
+   * All six owe the same three things: a token and a signed-in account to ask
+   * with, the same `since`/`scope` query builder, and the same ladder of
+   * statuses that mean "I could not ask" rather than "here is the answer". They
+   * are not the same answer to the caller: "nothing changed" lets it advance
+   * its cursor, while "I could not ask" must leave the cursor and the cache
+   * exactly where they were — so `asked: false` is never collapsed into an
+   * empty page.
+   *
+   * The status policy is passed in per call rather than inferred. The vault
+   * fails closed on 503 (the relay has no encryption key: an operator problem,
+   * so it reads as "ask again later"); settings have nothing to encrypt and no
+   * 503 to interpret, and making them share one ladder would be a behaviour
+   * change disguised as a cleanup.
+   */
+  const accountRequest = async (
+    action: string,
+    method: string,
+    pathSuffix: string,
+    options?: {
+      body?: unknown;
+      /** Appended as a query string; blank and absent values are dropped. */
+      query?: Record<string, string | null | undefined>;
+      /** Statuses that mean "could not ask". Always includes 401. */
+      couldNotAsk?: readonly number[];
+      /** Statuses handed back to the caller instead of throwing. */
+      allowStatuses?: readonly number[];
+    },
+  ): Promise<{ asked: false } | { asked: true; status: number; body: Record<string, unknown> }> => {
+    if (!args.getAccountAccessToken) return { asked: false };
+    const expectedAccountUserId = args.getAccountUserId?.() ?? undefined;
+    if (!expectedAccountUserId) return { asked: false };
+    let suffix = pathSuffix;
+    if (options?.query) {
+      const query = new URLSearchParams();
+      for (const [name, value] of Object.entries(options.query)) {
+        const trimmed = value?.trim();
+        if (trimmed) query.set(name, trimmed);
+      }
+      if (query.toString()) suffix += `?${query.toString()}`;
+    }
+    const response = await request(method, suffix, {
+      ...(options?.body === undefined ? {} : { body: options.body }),
+      accountAuthorized: true,
+      expectedAccountUserId,
+    });
+    if (response.status === 401) return { asked: false };
+    if (options?.couldNotAsk?.includes(response.status)) return { asked: false };
+    if (options?.allowStatuses?.includes(response.status)) {
+      return { asked: true, status: response.status, body: response.body ?? {} };
+    }
+    return { asked: true, status: response.status, body: requireOk(action, response) };
+  };
+
 
   const requireAttentionSnapshot = (
     response: RelayResponse,
@@ -672,6 +754,126 @@ export function createPushRelayClient(args: {
         return;
       }
       requireOk("putActivityMachinePreferences", response);
+    },
+
+    /**
+     * Read account settings changed after `since`.
+     *
+     * Returns `null` — never an empty page — when this machine has no account
+     * token. The two answers mean opposite things to the caller: "nothing
+     * changed" lets it advance its cursor, while "I could not ask" must leave
+     * the cursor and the cache exactly where they were.
+     */
+    async getAccountSettings(options?: {
+      since?: string | null;
+      scope?: string | null;
+    }): Promise<AccountSettingsPage | null> {
+      const result = await accountRequest("getAccountSettings", "GET", "/attention/account/settings", {
+        query: { since: options?.since, scope: options?.scope },
+      });
+      if (!result.asked) return null;
+      const body = result.body;
+      return {
+        settings: Array.isArray(body.settings)
+          ? body.settings.map(decodeAccountSettingRecord).filter((row): row is AccountSettingRecord => row !== null)
+          : [],
+        cursor: typeof body.cursor === "string" ? body.cursor : null,
+        truncated: body.truncated === true,
+      };
+    },
+
+    /**
+     * Upload a batch. Returns `null` when there was no token to ask with, so an
+     * offline machine keeps its queue instead of believing it flushed.
+     */
+    async putAccountSettings(
+      settings: AccountSettingWrite[],
+      deviceId: string | null,
+    ): Promise<{ updatedAt: string | null } | null> {
+      if (!args.getAccountAccessToken) return null;
+      if (!(args.getAccountUserId?.() ?? undefined)) return null;
+      if (!settings.length) return { updatedAt: null };
+      const result = await accountRequest("putAccountSettings", "PUT", "/attention/account/settings", {
+        body: { settings, ...(deviceId ? { deviceId } : {}) },
+      });
+      if (!result.asked) return null;
+      return {
+        updatedAt: typeof result.body.updatedAt === "string" ? result.body.updatedAt : null,
+      };
+    },
+
+    /** The way out. A reset that cannot reach the account is not a reset. */
+    async deleteAccountSetting(scope: string, key: string): Promise<boolean | null> {
+      const result = await accountRequest(
+        "deleteAccountSetting",
+        "DELETE",
+        `/attention/account/settings/${encodeURIComponent(scope)}/${encodeURIComponent(key)}`,
+        { allowStatuses: [404] },
+      );
+      if (!result.asked) return null;
+      // Already gone is the desired end state, not a failure.
+      if (result.status === 404) return false;
+      return result.body.deleted === true;
+    },
+
+    /**
+     * Read vault items changed after `since`.
+     *
+     * `null` means this machine had no account token to ask with — or that the
+     * relay has no encryption key and failed closed — which is not the same
+     * answer as an empty page and must not advance a cursor.
+     */
+    async getAccountVault(options?: {
+      since?: string | null;
+      scope?: string | null;
+    }): Promise<AccountVaultPage | null> {
+      const result = await accountRequest("getAccountVault", "GET", "/attention/account/vault", {
+        query: { since: options?.since, scope: options?.scope },
+        couldNotAsk: [503],
+      });
+      if (!result.asked) return null;
+      const body = result.body;
+      return {
+        items: Array.isArray(body.items)
+          ? body.items.map(decodeAccountVaultItem).filter((row): row is AccountVaultItem => row !== null)
+          : [],
+        cursor: typeof body.cursor === "string" ? body.cursor : null,
+        truncated: body.truncated === true,
+      };
+    },
+
+    async putAccountVault(
+      items: AccountVaultWrite[],
+      deviceId: string | null,
+    ): Promise<{ updatedAt: string | null } | null> {
+      if (!args.getAccountAccessToken) return null;
+      if (!(args.getAccountUserId?.() ?? undefined)) return null;
+      if (!items.length) return { updatedAt: null };
+      const result = await accountRequest("putAccountVault", "PUT", "/attention/account/vault", {
+        body: { items, ...(deviceId ? { deviceId } : {}) },
+        couldNotAsk: [503],
+      });
+      if (!result.asked) return null;
+      return {
+        updatedAt: typeof result.body.updatedAt === "string" ? result.body.updatedAt : null,
+      };
+    },
+
+    /** Revoking has to work from any machine, including one you no longer have. */
+    async deleteAccountVaultItem(
+      scope: string,
+      kind: string,
+      key: string,
+    ): Promise<boolean | null> {
+      const result = await accountRequest(
+        "deleteAccountVaultItem",
+        "DELETE",
+        `/attention/account/vault/${encodeURIComponent(scope)}/${encodeURIComponent(kind)}/${encodeURIComponent(key)}`,
+        { couldNotAsk: [503], allowStatuses: [404] },
+      );
+      if (!result.asked) return null;
+      if (result.status === 404) return false;
+      return result.body.deleted === true;
     },
 
     async health(): Promise<PushRelayHealth> {

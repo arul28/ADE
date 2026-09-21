@@ -4,25 +4,29 @@ import SwiftUI
 /// main-app sources directly, so the
 /// provider brand map is duplicated here and must be kept in sync with
 /// `ADEDesignSystem.swift:brandClaude..brandGroq` and `providerBrand(for:)`.
+///
+/// The hexes come from ONE source of truth for the whole product:
+/// `apps/desktop/src/shared/providerColors.ts`, mirrored into this Swift table
+/// for the widget extension. Desktop consumers read the same TypeScript table
+/// directly, so a brand change has one canonical edit site.
 public enum ADESharedTheme {
     // MARK: - Brand colors (mirror of ADEDesignSystem)
-    public static let brandClaude   = Color(red: 0xD9 / 255.0, green: 0x77 / 255.0, blue: 0x06 / 255.0) // #D97706
-    public static let brandCodex    = Color(red: 0x10 / 255.0, green: 0xA3 / 255.0, blue: 0x7F / 255.0) // #10A37F
+    public static let brandClaude   = Color(red: 0xD9 / 255.0, green: 0x77 / 255.0, blue: 0x57 / 255.0) // #D97757
+    public static let brandCodex    = Color(red: 0x2D / 255.0, green: 0xD4 / 255.0, blue: 0xBF / 255.0) // #2DD4BF
     public static let brandPi       = Color(red: 0xF9 / 255.0, green: 0x73 / 255.0, blue: 0x16 / 255.0) // #F97316
-    public static let brandCursor   = Color(red: 0xA7 / 255.0, green: 0x8B / 255.0, blue: 0xFA / 255.0) // #A78BFA
-    public static let brandOpenCode = Color(red: 0x25 / 255.0, green: 0x63 / 255.0, blue: 0xEB / 255.0) // #2563EB
-    public static let brandGoogle   = Color(red: 0xF5 / 255.0, green: 0x9E / 255.0, blue: 0x0B / 255.0) // #F59E0B
-    public static let brandMistral  = Color(red: 0xF9 / 255.0, green: 0x73 / 255.0, blue: 0x16 / 255.0) // #F97316
-    public static let brandDeepSeek = Color(red: 0x3B / 255.0, green: 0x82 / 255.0, blue: 0xF6 / 255.0) // #3B82F6
-    public static let brandXAI      = Color(red: 0xDC / 255.0, green: 0x26 / 255.0, blue: 0x26 / 255.0) // #DC2626
+    public static let brandCursor   = Color(red: 0x93 / 255.0, green: 0xA6 / 255.0, blue: 0xC4 / 255.0) // #93A6C4
+    public static let brandOpenCode = Color(red: 0xA7 / 255.0, green: 0x8B / 255.0, blue: 0xFA / 255.0) // #A78BFA
+    public static let brandGoogle   = Color(red: 0x5B / 255.0, green: 0x93 / 255.0, blue: 0xF5 / 255.0) // #5B93F5
+    public static let brandMistral  = Color(red: 0xFF / 255.0, green: 0x7A / 255.0, blue: 0x1A / 255.0) // #FF7A1A
+    public static let brandDeepSeek = Color(red: 0x6C / 255.0, green: 0x86 / 255.0, blue: 0xFF / 255.0) // #6C86FF
+    public static let brandXAI      = Color(red: 0xB4 / 255.0, green: 0xB4 / 255.0, blue: 0xBD / 255.0) // #B4B4BD
     public static let brandGroq     = Color(red: 0x06 / 255.0, green: 0xB6 / 255.0, blue: 0xD4 / 255.0) // #06B6D4
     public static let brandCTO      = Color(red: 0xC4 / 255.0, green: 0xB5 / 255.0, blue: 0xFD / 255.0) // #C4B5FD
-    // ACP providers. Hexes mirror PROVIDER_GROUP_COLORS in the desktop's
-    // `shared/modelCatalog.ts`; Grok reuses brandXAI, which already carries
-    // that vendor's #DC2626.
+    // ACP providers. Hexes mirror the shared TypeScript table; Grok reuses
+    // brandXAI, which carries the xAI group color.
     public static let brandQwen     = Color(red: 0x6D / 255.0, green: 0x4A / 255.0, blue: 0xFF / 255.0) // #6D4AFF
     public static let brandKimi     = Color(red: 0x1F / 255.0, green: 0x1F / 255.0, blue: 0x1F / 255.0) // #1F1F1F
-    public static let brandCopilot  = Color(red: 0x8B / 255.0, green: 0x5C / 255.0, blue: 0xF6 / 255.0) // #8B5CF6
+    public static let brandCopilot  = Color(red: 0x3F / 255.0, green: 0xB9 / 255.0, blue: 0x50 / 255.0) // #3FB950
 
     /// Neutral fallback when the provider slug is unknown. Keeps parity with
     /// `ADEColor.purpleAccent` in the main design system.

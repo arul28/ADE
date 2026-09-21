@@ -13,7 +13,6 @@ import {
   resolveOpenCodeExecutablePath,
   startOpenCodeSession,
 } from "../opencode/openCodeRuntime";
-import { cursorSdkSettingSources, evaluateCursorSdkHook, summarizeCursorHook } from "./cursorSdkPolicy";
 import { createMockAcpAgent, respondWithSession, type MockAcpAgent } from "./acpHost/mockAcpAgent";
 import { createAcpSessionPool } from "./acpHost/acpSessionPool";
 import type { AcpSessionUpdate } from "./acpHost/acpProtocolTypes";
@@ -26,9 +25,60 @@ import {
   probeOpenCodeProviderInventory,
 } from "../opencode/openCodeInventory";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beginIdentityConfirmHold } from "./identitySessionPolicy";
 import { injectFsFault } from "../../../test/faultInjection";
 import { resolveBuiltInBrowserActorCapability } from "../builtInBrowser/builtInBrowserActorCapabilities";
 import { loadQwenUserSettings } from "../ai/qwenUserSettings";
+
+/**
+ * `vi.waitFor` polls on a timer it assumes is real. Under `vi.useFakeTimers`
+ * nothing advances that clock, so a condition still waiting on a queued
+ * continuation never becomes true: the wait burns its whole budget without the
+ * system under test moving at all, and the test dies on the suite timeout or on
+ * a stale assertion rather than on anything it meant to check. Whether it passed
+ * came down to whether the work happened to finish before the first synchronous
+ * probe — which is why these were the flakiest tests in the repo.
+ *
+ * This waits correctly under either clock. With fake timers it drains queued
+ * microtasks and steps the clock in 10ms slices, stopping the moment the
+ * condition holds. The slice is deliberately tiny: the watchdogs these tests
+ * assert about are measured in minutes, so a bounded 500ms of fake time can
+ * settle a pending async chain without ever manufacturing the timeout event
+ * under test. A test that needs a watchdog to fire still advances those minutes
+ * itself, explicitly, before waiting. With real timers there was never a
+ * problem, so it defers to `vi.waitFor` unchanged.
+ */
+function usingFakeTimers(): boolean {
+  try {
+    vi.getTimerCount();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForFakeTimers(
+  assertion: () => unknown,
+  options: { steps?: number; stepMs?: number } = {},
+): Promise<void> {
+  if (!usingFakeTimers()) {
+    await vi.waitFor(assertion);
+    return;
+  }
+  const steps = options.steps ?? 50;
+  const stepMs = options.stepMs ?? 10;
+  let lastError: unknown;
+  for (let step = 0; step <= steps; step += 1) {
+    try {
+      await assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+    await vi.advanceTimersByTimeAsync(step === 0 ? 0 : stepMs);
+  }
+  throw lastError;
+}
 
 const streamText = vi.fn();
 const claudeSdkCreateSessionCompat = vi.hoisted(() => vi.fn());
@@ -85,6 +135,12 @@ const mockState = vi.hoisted(() => ({
     permissionReply: ReturnType<typeof vi.fn>;
   }>(),
   openCodePromptAsyncBarrier: null as Promise<void> | null,
+  /** v2 `session.prompt({ delivery: "steer" })` calls, in call order. */
+  openCodeV2SteerCalls: [] as any[],
+  /** Set to make the mocked v2 steer throw, standing in for a refused steer. */
+  openCodeV2SteerError: null as Error | null,
+  /** When set, the mocked v2 steer waits on this before answering. */
+  openCodeV2SteerBarrier: null as Promise<void> | null,
   openCodeTitleForNextPrompt: null as string | null,
   openCodeQuestionForNextPrompt: null as null | {
     id: string;
@@ -107,6 +163,16 @@ const mockState = vi.hoisted(() => ({
   cursorSdkSendCalls: [] as Array<Record<string, unknown>>,
   cursorSdkPolicyUpdates: [] as Array<Record<string, unknown>>,
   cursorSdkPooled: null as any,
+  /** Text pushed through `Run.steer()`, in call order. */
+  cursorSdkSteerCalls: [] as string[],
+  /** What the mocked `Run.steer()` reports back. */
+  cursorSteerOutcome: "complete_delivered" as "complete_delivered" | "revert_to_followup" | "unsupported",
+  /** Set to make the mocked `Run.steer()` throw, standing in for a dead worker. */
+  cursorSteerError: null as Error | null,
+  /** Runs inside the mocked `Run.steer()`, before it answers. */
+  onCursorSteer: null as null | (() => void),
+  /** When set, the mocked `Run.steer()` waits on this before answering. */
+  cursorSteerGate: null as Promise<void> | null,
   cursorSdkAgentIdForNextAcquire: null as string | null,
   cursorSdkCloudRequests: [] as Array<{ type: string; payload: Record<string, unknown> }>,
   cursorSdkCloudResponses: new Map<string, unknown>(),
@@ -137,7 +203,64 @@ const mockState = vi.hoisted(() => ({
       queueMicrotask(emitResponse);
     }
   },
+  releaseCursorSendPrompt: null as (() => void) | null,
+  releaseCursorSteer: null as (() => void) | null,
+  cursorSendParks: [] as Array<() => void>,
+  cursorSteerParks: [] as Array<() => void>,
 }));
+
+const turnDiffMockState = vi.hoisted(() => ({
+  beforeTreeGates: [] as Array<Promise<Map<string, string> | null>>,
+  collectSummary: null as ((args: any) => unknown) | null,
+}));
+
+/**
+ * Park a Cursor `sendPrompt` on a promise whose resolver lives on
+ * `mockState`, so `afterEach` can settle it. A never-resolving
+ * `new Promise(() => {})` left a live turn hanging; later tests then
+ * hit Vitest's 20s `testTimeout` instead of a `waitFor` assertion.
+ *
+ * Nested parks (a recycle that re-stalls send 3 while send 1 is still
+ * open) must not settle the earlier one. `afterEach` drains the whole
+ * stack.
+ */
+function parkCursorSend(): () => void {
+  let resolveGate = () => {};
+  mockState.cursorSendPromptGate = new Promise<void>((resolve) => {
+    resolveGate = resolve;
+  });
+  const release = () => {
+    resolveGate();
+    if (mockState.cursorSendPromptGate) mockState.cursorSendPromptGate = null;
+    const idx = mockState.cursorSendParks.indexOf(release);
+    if (idx >= 0) mockState.cursorSendParks.splice(idx, 1);
+  };
+  mockState.cursorSendParks.push(release);
+  mockState.releaseCursorSendPrompt = () => {
+    const parks = mockState.cursorSendParks.splice(0);
+    for (const park of parks) park();
+  };
+  return release;
+}
+
+function parkCursorSteer(): () => void {
+  let resolveGate = () => {};
+  mockState.cursorSteerGate = new Promise<void>((resolve) => {
+    resolveGate = resolve;
+  });
+  const release = () => {
+    resolveGate();
+    if (mockState.cursorSteerGate) mockState.cursorSteerGate = null;
+    const idx = mockState.cursorSteerParks.indexOf(release);
+    if (idx >= 0) mockState.cursorSteerParks.splice(idx, 1);
+  };
+  mockState.cursorSteerParks.push(release);
+  mockState.releaseCursorSteer = () => {
+    const parks = mockState.cursorSteerParks.splice(0);
+    for (const park of parks) park();
+  };
+  return release;
+}
 
 // ---------------------------------------------------------------------------
 // vi.mock — external dependencies
@@ -353,10 +476,7 @@ vi.mock("../ai/codexExecutable", () => ({
   resolveCodexExecutable: vi.fn(() => ({ path: "codex", source: "fallback-command" })),
 }));
 
-vi.mock("../opencode/openCodeRuntime", async () => {
-  const { orchestrationLeadOpenCodeToolSelection } = await vi.importActual<
-    typeof import("../../../shared/orchestrationRuntimePolicy")
-  >("../../../shared/orchestrationRuntimePolicy");
+vi.mock("../opencode/openCodeRuntime", () => {
   return {
   // Real implementation, not a stub: it decides whether an incremental text
   // delta rode along on `message.part.updated`, and stubbing it to a constant
@@ -369,13 +489,13 @@ vi.mock("../opencode/openCodeRuntime", async () => {
     { type: "text", text: prompt },
     ...files,
   ]),
-  // Faithful stand-in for the real resolver: the E2E assertions below check the
-  // `tools` map that actually reaches OpenCode's prompt body, and
-  // openCodeRuntime.test.ts covers the real implementation.
-  refreshOpenCodeSessionToolSelection: vi.fn(async (
-    _handle: unknown,
-    options?: { orchestrationLead?: boolean },
-  ) => (options?.orchestrationLead ? orchestrationLeadOpenCodeToolSelection() : null)),
+  // The v2 steer input's file shape; only the inline steer path calls this.
+  buildOpenCodeV2PromptAttachments: vi.fn(
+    (files: Array<{ path: string; filename?: string }>) => files.map((file) => ({
+      uri: `file://${file.path}`,
+      name: file.filename ?? file.path,
+    })),
+  ),
   mapPermissionModeToOpenCodeAgent: vi.fn((mode: string) => {
     if (mode === "plan") return "ade-plan";
     if (mode === "full-auto") return "ade-full-auto";
@@ -435,6 +555,18 @@ vi.mock("../opencode/openCodeRuntime", async () => {
 
     const client = {
       __sessionId: sessionId,
+      // The v2 API ADE uses for inline steering: one admitted input with
+      // `delivery: "steer"` folded into the live agent loop.
+      v2: {
+        session: {
+          prompt: vi.fn(async (params: any) => {
+            mockState.openCodeV2SteerCalls.push(params);
+            if (mockState.openCodeV2SteerBarrier) await mockState.openCodeV2SteerBarrier;
+            if (mockState.openCodeV2SteerError) throw mockState.openCodeV2SteerError;
+            return { data: {} };
+          }),
+        },
+      },
       session: {
         fork: vi.fn(async ({ sessionID }: { sessionID: string }) => {
           const forkedId = `${sessionID}-fork`;
@@ -783,9 +915,20 @@ vi.mock("../git/git", () => ({
   runGit: vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 })),
 }));
 
-vi.mock("../orchestrator/providerOrchestratorAdapter", () => ({
-  resolveOpenCodeRuntimeRoot: vi.fn(() => process.cwd()),
-}));
+vi.mock("./turnDiffSummary", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./turnDiffSummary")>();
+  return {
+    ...actual,
+    captureWorkingTreeFingerprint: (cwd: string) => {
+      const gate = turnDiffMockState.beforeTreeGates.shift();
+      if (!gate) return actual.captureWorkingTreeFingerprint(cwd);
+      return gate;
+    },
+    collectTurnDiffSummary: (args: any) => turnDiffMockState.collectSummary
+      ? turnDiffMockState.collectSummary(args)
+      : actual.collectTurnDiffSummary(args),
+  };
+});
 
 vi.mock("./permissionMapping", () => ({
   mapPermissionToClaude: vi.fn(() => "plan"),
@@ -901,6 +1044,16 @@ vi.mock("./cursorSdkPool", () => ({
       cancel: vi.fn(async () => {
         mockState.onCursorCancel?.();
       }),
+      steer: vi.fn(async (text: string) => {
+        mockState.cursorSdkSteerCalls.push(text);
+        // Lets a test end the live turn from inside the steer call, which is the
+        // real shape of `revert_to_followup`: the turn refuses because it just
+        // finished.
+        mockState.onCursorSteer?.();
+        if (mockState.cursorSteerGate) await mockState.cursorSteerGate;
+        if (mockState.cursorSteerError) throw mockState.cursorSteerError;
+        return { outcome: mockState.cursorSteerOutcome };
+      }),
       dispose: vi.fn(),
     };
     mockState.cursorSdkPooled = pooled;
@@ -998,6 +1151,7 @@ import {
   parseCodexServerVersion,
   writeSessionLinearIssueContextFile,
   createAgentChatService,
+  restartRecoveryStopAttribution,
   CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS,
   CURSOR_SDK_RECYCLE_CANCEL_TIMEOUT_MS,
 } from "./agentChatService";
@@ -1011,7 +1165,6 @@ import {
 import { spawn } from "node:child_process";
 import { detectAllAuth, detectCliAuthStatuses } from "../ai/authDetector";
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
-import { createOrchestrationService } from "../orchestration/orchestrationService";
 import { runGit } from "../git/git";
 import { deriveScheduledWorkSnapshots } from "../../../shared/chatScheduledWork";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
@@ -2016,20 +2169,6 @@ function installCliCaptureMock(
   }) as any);
 }
 
-async function createLoadedOrchestrationRun(leadSessionId = "S-lead") {
-  const orchestrationService = createOrchestrationService({
-    resolveLaneWorktree: () => tmpRoot,
-  });
-  const created = await orchestrationService.runCreate({
-    laneId: "lane-1",
-    leadSessionId,
-    bundleRoot: tmpRoot,
-    title: "test orchestration",
-    goalSummary: "orchestrate the work",
-  });
-  return { orchestrationService, created };
-}
-
 function readPersistedChatState(sessionId: string): Record<string, any> {
   return JSON.parse(
     fs.readFileSync(path.join(tmpRoot, ".ade", "cache", "chat-sessions", `${sessionId}.json`), "utf8"),
@@ -2151,6 +2290,74 @@ async function createClaudeStreamFixture(args: {
   return { ...harness, events, session, send };
 }
 
+/**
+ * Claude fixture that withholds the provider's answer to `/compact` until ADE
+ * has actually sent it. Yielding both results up front lets the turn's own
+ * post-result drain swallow the second one, which is not how the SDK behaves.
+ */
+async function createClaudeCompactionFixture(args: {
+  sdkSessionId: string;
+  first: Array<Record<string, unknown>>;
+  afterCompact: Array<Record<string, unknown>>;
+}) {
+  const events: AgentChatEventEnvelope[] = [];
+  const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+  let resolveCompactSent: () => void = () => {};
+  const compactSent = new Promise<void>((resolve) => { resolveCompactSent = resolve; });
+  const send = vi.fn(async (message: unknown) => {
+    if (claudeInputText(message) === "/compact") resolveCompactSent();
+  });
+  let streamCall = 0;
+
+  const stream = vi.fn(() => (async function* () {
+    streamCall += 1;
+    if (streamCall === 1) {
+      yield {
+        type: "system",
+        subtype: "init",
+        session_id: args.sdkSessionId,
+        slash_commands: [],
+      };
+      return;
+    }
+    for (const message of args.first) yield message;
+    await compactSent;
+    for (const message of args.afterCompact) yield message;
+  })());
+
+  vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+    send,
+    stream,
+    close: vi.fn(),
+    sessionId: args.sdkSessionId,
+    setPermissionMode,
+  } as any);
+
+  const harness = createService({
+    onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+  });
+  const { service } = harness;
+  const session = await service.createSession({
+    laneId: "lane-1",
+    provider: "claude",
+    model: "claude-sonnet-5",
+    modelId: "anthropic/claude-sonnet-5",
+  });
+
+  await service.runSessionTurn({
+    sessionId: session.id,
+    text: "Exercise Claude streaming text.",
+  });
+
+  return { ...harness, events, session, send };
+}
+
+function claudeNoticeMessages(events: AgentChatEventEnvelope[]): string[] {
+  return events.flatMap((entry) => entry.event.type === "system_notice"
+    ? [entry.event.message]
+    : []);
+}
+
 async function runClaudeStreamFixture(args: {
   sdkSessionId: string;
   messages: Array<Record<string, unknown>>;
@@ -2226,6 +2433,8 @@ beforeEach(() => {
   // home dir into tests, while project-local .claude roots remain distinct.
   vi.spyOn(os, "homedir").mockReturnValue(tmpHomeRoot);
   mockState.generation += 1;
+  turnDiffMockState.beforeTreeGates = [];
+  turnDiffMockState.collectSummary = null;
   mockState.sessions.clear();
   mockState.sessionLinearLinks.clear();
   mockState.uuidCounter = 0;
@@ -2236,6 +2445,9 @@ beforeEach(() => {
   mockState.openCodeForkCalls = [];
   mockState.openCodeSessions.clear();
   mockState.openCodePromptAsyncBarrier = null;
+  mockState.openCodeV2SteerCalls = [];
+  mockState.openCodeV2SteerError = null;
+  mockState.openCodeV2SteerBarrier = null;
   mockState.openCodeTitleForNextPrompt = null;
   mockState.openCodeQuestionForNextPrompt = null;
   mockState.droidSessionCounter = 0;
@@ -2249,9 +2461,18 @@ beforeEach(() => {
   mockState.cursorSdkSendCalls = [];
   mockState.cursorSdkPolicyUpdates = [];
   mockState.cursorSdkPooled = null;
+  mockState.cursorSdkSteerCalls = [];
+  mockState.cursorSteerOutcome = "complete_delivered";
+  mockState.cursorSteerError = null;
+  mockState.onCursorSteer = null;
+  mockState.releaseCursorSteer = null;
+  mockState.cursorSteerParks = [];
+  mockState.cursorSteerGate = null;
   mockState.cursorSdkAgentIdForNextAcquire = null;
   mockState.cursorSdkCloudRequests = [];
   mockState.cursorSdkCloudResponses = new Map<string, unknown>();
+  mockState.releaseCursorSendPrompt = null;
+  mockState.cursorSendParks = [];
   mockState.cursorSendPromptGate = null;
   mockState.cursorSendPromptError = null;
   mockState.cursorSendPromptResult = null;
@@ -2303,15 +2524,28 @@ beforeEach(() => {
   replaceDynamicOpenCodeModelDescriptors([]);
 });
 
-afterEach(() => {
-  // Never-resolving send gates from a timed-out Cursor recycle test must not
-  // keep a real watchdog alive into the next case. Resolve whatever we can
-  // and drop the hook before restoring the clock.
+afterEach(async () => {
+  // Never-resolving send/steer parks from a stalled Cursor turn must settle
+  // here. Nulling the gate ref does not unblock an in-flight `await` of the
+  // old promise, which left later tests (the durable-metadata compaction case
+  // in particular) hanging until Vitest's 20s `testTimeout`.
+  //
+  // Restore the real clock first so the drained send settles on the real
+  // event loop. Releasing a park while fake timers are still installed lets
+  // the turn's success/fail tail run on a warped clock and leak into the
+  // next test (the recycle-copy cancel notice becomes "turn failed").
+  vi.useRealTimers();
+  mockState.cursorSendPromptError = null;
+  mockState.cursorSteerError = null;
+  mockState.cursorSteerOutcome = "complete_delivered";
+  mockState.releaseCursorSendPrompt?.();
+  mockState.releaseCursorSteer?.();
+  await new Promise<void>((resolve) => { pumpRealSetImmediate(resolve); });
+  await new Promise<void>((resolve) => { pumpRealSetImmediate(resolve); });
+  await Promise.resolve();
   mockState.onCursorSendPrompt = null;
   mockState.onCursorCancel = null;
-  mockState.cursorSendPromptError = null;
   mockState.droidPromptError = null;
-  vi.useRealTimers();
   vi.restoreAllMocks();
   // `vi.restoreAllMocks()` does not reset factory-created `vi.fn` mocks.
   // Reinstall the default so mode-specific approval tests cannot leak it.
@@ -2551,6 +2785,44 @@ describe("buildLinearSessionDirective", () => {
 // ============================================================================
 // createAgentChatService factory
 // ============================================================================
+
+describe("restartRecoveryStopAttribution", () => {
+  it("marks a different bound socket as a foreign-brain takeover", () => {
+    expect(restartRecoveryStopAttribution({
+      ownerSocketPath: "/tmp/ade-primary.sock",
+      selfSocketPath: "/tmp/ade-secondary.sock",
+    })).toEqual({
+      stopSource: "foreign-brain",
+      stopReason: "another ADE brain took over this chat",
+    });
+  });
+
+  it("marks the same bound socket as a restarted system runtime", () => {
+    expect(restartRecoveryStopAttribution({
+      ownerSocketPath: "/tmp/ade.sock",
+      selfSocketPath: "/tmp/ade.sock",
+    })).toEqual({
+      stopSource: "system",
+      stopReason: "the ADE brain restarted",
+    });
+  });
+
+  it("folds case differences in Windows named-pipe paths", () => {
+    const previousPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    try {
+      expect(restartRecoveryStopAttribution({
+        ownerSocketPath: String.raw`\\.\PIPE\ADE`,
+        selfSocketPath: String.raw`\\.\pipe\ade`,
+      })).toEqual({
+        stopSource: "system",
+        stopReason: "the ADE brain restarted",
+      });
+    } finally {
+      Object.defineProperty(process, "platform", { value: previousPlatform, configurable: true });
+    }
+  });
+});
 
 /** Just past the real watchdog budget, derived rather than mirrored. */
 const CURSOR_SILENCE_WATCHDOG_TRIP_MS = CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS + 1;
@@ -4064,7 +4336,7 @@ describe("createAgentChatService", () => {
       // Project/user setting sources stay enabled so the SDK reads the user's
       // configured MCP servers (.mcp.json / ~/.claude.json) — same as a terminal session.
       expect(opts?.settingSources).toEqual(expect.arrayContaining(["project"]));
-      // ADE does not inject mcpServers into a normal chat (only orchestration does),
+      // ADE does not inject mcpServers into a normal chat,
       // and it no longer locks MCP to managed-only — so the user's servers can load.
       expect(opts).not.toHaveProperty("mcpServers");
       expect(opts?.managedSettings).toBeUndefined();
@@ -4611,7 +4883,7 @@ describe("createAgentChatService", () => {
         expect.objectContaining({ currentSessionId: session.id, defaultLaneId: "lane-1" }),
       );
 
-      // The CTO is a daily-driver chat: it must NOT get the orchestration lead's
+      // The CTO is a daily-driver chat: it must NOT get a strict-MCP session's
       // managed-only MCP lockdown, which would strip the user's own servers.
       expect(opts?.managedSettings?.allowManagedMcpServersOnly).toBeUndefined();
     });
@@ -4840,132 +5112,6 @@ describe("createAgentChatService", () => {
         expect(opts.settingSources).toEqual(["user", "project", "local"]);
         expect(opts.systemPrompt).toMatchObject({ type: "preset", preset: "claude_code" });
       });
-    });
-
-    it("attaches ADE orchestration tools to Claude lead sessions through an SDK MCP server", async () => {
-      const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
-      try {
-        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-          send: vi.fn(),
-          stream: vi.fn(async function* () {
-            return;
-          }),
-          close: vi.fn(),
-          sessionId: "sdk-session-orchestration",
-        } as any);
-
-        const { service } = createService({
-          getOrchestrationService: () => orchestrationService,
-        });
-        await service.createSession({
-          laneId: "lane-1",
-          provider: "claude",
-          model: "sonnet",
-          modelId: "anthropic/claude-sonnet-5",
-          interactionMode: "orchestrator-lead",
-          orchestrationRunId: created.runId,
-          orchestrationRole: "lead",
-          orchestrationBundlePath: created.manifest.bundlePath,
-        });
-
-        await vi.waitFor(() => {
-          expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
-        });
-
-        const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as any;
-        const server = opts?.mcpServers?.["ade-orchestration"];
-        expect(server?.type).toBe("sdk");
-        const toolNames = Object.keys(server?.instance?._registeredTools ?? {});
-        expect(toolNames).toEqual(expect.arrayContaining(["spawnAgent", "messageAgent"]));
-        expect(toolNames).not.toContain("editFile");
-        expect(toolNames).not.toContain("writeFile");
-        expect(toolNames).not.toContain("bash");
-        expect(opts?.managedSettings?.allowedMcpServers).toEqual(
-          expect.arrayContaining([expect.objectContaining({ serverName: "ade-orchestration" })]),
-        );
-        expect(opts?.disallowedTools).toEqual(expect.arrayContaining(["Agent", "Bash", "Edit", "Task", "TodoWrite", "Write"]));
-      } finally {
-        await orchestrationService.dispose();
-      }
-    });
-
-    it("keeps Claude lead sessions read-only even before an orchestration bundle is allocated", async () => {
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send: vi.fn(),
-        stream: vi.fn(async function* () {
-          return;
-        }),
-        close: vi.fn(),
-        sessionId: "sdk-session-orchestrator-draft",
-      } as any);
-
-      const { service } = createService();
-      await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-        modelId: "anthropic/claude-sonnet-5",
-        interactionMode: "orchestrator-lead",
-      });
-
-      await vi.waitFor(() => {
-        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
-      });
-
-      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as any;
-      expect(opts?.mcpServers?.["ade-orchestration"]).toBeUndefined();
-      // Regression guard (removed base MCP lock): a draft lead has no managed MCP block
-      // yet, so strictMcpConfig must isolate it — user/project MCP servers must not restore
-      // tool capability the read-only lead is denied.
-      expect(opts?.strictMcpConfig).toBe(true);
-      expect(opts?.disallowedTools).toEqual(expect.arrayContaining([
-        "Agent",
-        "Bash",
-        "Edit",
-        "MultiEdit",
-        "NotebookEdit",
-        "Task",
-        "TodoRead",
-        "TodoWrite",
-        "Write",
-      ]));
-    });
-
-    it("keeps Claude role-marked lead sessions read-only even when interaction mode is absent", async () => {
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send: vi.fn(),
-        stream: vi.fn(async function* () {
-          return;
-        }),
-        close: vi.fn(),
-        sessionId: "sdk-session-role-lead",
-      } as any);
-
-      const { service } = createService();
-      await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-        modelId: "anthropic/claude-sonnet-5",
-        orchestrationRole: "lead",
-      });
-
-      await vi.waitFor(() => {
-        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
-      });
-
-      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as any;
-      // Role-marked lead (no interactionMode, no bundle) is still a read-only lead, so it
-      // must be MCP-isolated too (regression guard for the removed base MCP lock).
-      expect(opts?.strictMcpConfig).toBe(true);
-      expect(opts?.disallowedTools).toEqual(expect.arrayContaining([
-        "Agent",
-        "Bash",
-        "Edit",
-        "Task",
-        "TodoWrite",
-        "Write",
-      ]));
     });
 
     it("passes Claude subprocess spawns through the reaper", async () => {
@@ -6421,6 +6567,744 @@ describe("createAgentChatService", () => {
       const replayInputChars = textInputs.reduce((total, text) => total + text.length, 0);
       expect(replayInputChars).toBeLessThanOrEqual(CODEX_APP_SERVER_INPUT_MAX_CHARS);
       expect(textInputs.join("\n")).toContain("Continue from the replay.");
+    });
+
+    it("says how much of the handoff the target model received", async () => {
+      installRealTranscriptParser();
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      writeTestTranscriptEnvelopes(source.id, [1, 2, 3].map((sequence) => ({
+        sessionId: source.id,
+        sequence,
+        timestamp: `2026-07-10T11:0${sequence}:00.000Z`,
+        event: { type: "user_message", text: `turn ${sequence} ${"t".repeat(950_000)}` },
+      })) as AgentChatEventEnvelope[]);
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "anthropic/claude-sonnet-5",
+        mode: "fork",
+      });
+
+      expect(result.replayFork).toMatchObject({
+        truncated: true,
+        keptTurnCount: 1,
+        truncatedTurnCount: 2,
+      });
+      const notice = events.find((entry) => entry.sessionId === result.session.id
+        && entry.event.type === "system_notice"
+        && typeof (entry.event as { message?: unknown }).message === "string"
+        && (entry.event as { message: string }).message.startsWith("Handoff carried"));
+      expect(notice?.event).toMatchObject({ noticeKind: "info" });
+      expect((notice?.event as { message: string }).message).toMatch(
+        /^Handoff carried the newest 1 of 3 turns, about \d+% of .+'s context\. Older turns are in the original chat\.$/,
+      );
+    });
+
+    it("retries a too-long handoff replay once with half the transcript", async () => {
+      installRealTranscriptParser();
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      let resolveRetrySent: () => void = () => {};
+      const retrySent = new Promise<void>((resolve) => { resolveRetrySent = resolve; });
+      let promptsSeen = 0;
+      const send = vi.fn(async (message: unknown) => {
+        if (claudeInputText(message).includes("Continue from the replay.")) {
+          promptsSeen += 1;
+          if (promptsSeen >= 2) resolveRetrySent();
+        }
+      });
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-replay-overflow", slash_commands: [] };
+          return;
+        }
+        if (streamCall === 2) {
+          yield {
+            type: "result",
+            subtype: "error_during_execution",
+            is_error: true,
+            terminal_reason: "prompt_too_long",
+            errors: ["prompt is too long for this context window"],
+            usage: { input_tokens: 1, output_tokens: 0 },
+          };
+          await new Promise<void>(() => {});
+          return;
+        }
+        // The retry runs on a fresh provider session, not the one that just
+        // rejected the prompt.
+        yield { type: "system", subtype: "init", session_id: "sdk-replay-overflow-2", slash_commands: [] };
+        await retrySent;
+        yield { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } };
+        await new Promise<void>(() => {});
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-replay-overflow",
+        setPermissionMode,
+      } as any);
+
+      const onChatHandoffReplay = vi.fn();
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        onChatHandoffReplay,
+      });
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      writeTestTranscriptEnvelopes(source.id, [1, 2, 3, 4].map((sequence) => ({
+        sessionId: source.id,
+        sequence,
+        timestamp: `2026-07-10T11:0${sequence}:00.000Z`,
+        event: { type: "user_message", text: `turn ${sequence} ${"t".repeat(20_000)}` },
+      })) as AgentChatEventEnvelope[]);
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "anthropic/claude-sonnet-5",
+        mode: "fork",
+      });
+      expect(readPersistedChatState(result.session.id).pendingTranscriptReplay)
+        .toContain("verbatim replay");
+      onChatHandoffReplay.mockClear();
+
+      const streamCallsBeforeOverflow = stream.mock.calls.length;
+      await service.sendMessage({
+        sessionId: result.session.id,
+        text: "Continue from the replay.",
+      }, { awaitDispatch: true });
+
+      const prompts = await vi.waitFor(() => {
+        const texts = send.mock.calls
+          .map(([message]) => claudeInputText(message))
+          .filter((text) => text.includes("Continue from the replay."));
+        expect(texts).toHaveLength(2);
+        return texts;
+      }, { timeout: 5_000 });
+
+      // Half the budget, so the second attempt carries strictly less history.
+      expect(prompts[1]!.length).toBeLessThan(prompts[0]!.length);
+      // Re-sending onto the session that just rejected the prompt would fail
+      // the same way; the retry needs a fresh one.
+      expect(stream.mock.calls.length).toBeGreaterThan(streamCallsBeforeOverflow);
+      // A single-exchange handoff cannot be compacted; asking would have earned
+      // "Not enough messages to compact" and a notice that lied.
+      expect(send.mock.calls.map(([message]) => claudeInputText(message))).not.toContain("/compact");
+      // The retry re-sends the same message; it must not appear twice in the chat.
+      expect(events.filter((entry) => entry.sessionId === result.session.id
+        && entry.event.type === "user_message"
+        && (entry.event as { text?: string }).text === "Continue from the replay.")).toHaveLength(1);
+      expect(claudeNoticeMessages(events).some((message) =>
+        /^That was too long for .+\. ADE is sending your message again with the newest \d+ turns? of the handoff\.$/.test(message)))
+        .toBe(true);
+      // One coarse product fact when the retry lands, and only then.
+      await vi.waitFor(() => {
+        expect(onChatHandoffReplay).toHaveBeenCalledWith({
+          sessionId: result.session.id,
+          outcome: "retried",
+          provider: "claude",
+        });
+      }, { timeout: 5_000 });
+      expect(onChatHandoffReplay).toHaveBeenCalledTimes(1);
+    });
+
+    it("repairs a chat already stuck on an oversized replay", async () => {
+      installRealTranscriptParser();
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const gate = () => {
+        let resolve: () => void = () => {};
+        const promise = new Promise<void>((r) => { resolve = r; });
+        return { promise, resolve };
+      };
+      const secondSent = gate();
+      const retrySent = gate();
+      let secondSends = 0;
+      const send = vi.fn(async (message: unknown) => {
+        if (!claudeInputText(message).includes("second message")) return;
+        secondSends += 1;
+        if (secondSends === 1) secondSent.resolve();
+        else retrySent.resolve();
+      });
+      let streamCall = 0;
+      let retryServed = false;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-stuck-replay", slash_commands: [] };
+          return;
+        }
+        if (streamCall === 2) {
+          // The first turn swallows the oversized replay and succeeds, so no
+          // in-memory replay record survives into the next message.
+          yield { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } };
+          await secondSent.promise;
+          yield {
+            type: "result",
+            subtype: "error_during_execution",
+            is_error: true,
+            terminal_reason: "prompt_too_long",
+            errors: ["prompt is too long for this context window"],
+            usage: { input_tokens: 1, output_tokens: 0 },
+          };
+          await new Promise<void>(() => {});
+          return;
+        }
+        yield { type: "system", subtype: "init", session_id: "sdk-stuck-replay-2", slash_commands: [] };
+        await retrySent.promise;
+        if (!retryServed) {
+          retryServed = true;
+          yield { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } };
+        }
+        await new Promise<void>(() => {});
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-stuck-replay",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      writeTestTranscriptEnvelopes(source.id, [1, 2, 3, 4].map((sequence) => ({
+        sessionId: source.id,
+        sequence,
+        timestamp: `2026-07-10T11:0${sequence}:00.000Z`,
+        event: { type: "user_message", text: `turn ${sequence} ${"t".repeat(20_000)}` },
+      })) as AgentChatEventEnvelope[]);
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "anthropic/claude-sonnet-5",
+        mode: "fork",
+      });
+      // The durable marker is what makes the repair possible one turn later.
+      expect(readPersistedChatState(result.session.id).transcriptReplayOrigin)
+        .toMatchObject({ sourceSessionId: source.id, keptTurnCount: 4, turnCount: 4 });
+
+      await service.runSessionTurn({ sessionId: result.session.id, text: "first message" });
+      expect(readPersistedChatState(result.session.id).pendingTranscriptReplay).toBeNull();
+
+      const streamCallsBefore = stream.mock.calls.length;
+      await service.runSessionTurn({ sessionId: result.session.id, text: "second message" });
+
+      await vi.waitFor(() => {
+        expect(send.mock.calls
+          .map(([message]) => claudeInputText(message))
+          .filter((text) => text.includes("second message"))).toHaveLength(2);
+      }, { timeout: 5_000 });
+      // A fresh provider session: resuming the over-full one would overflow again.
+      expect(stream.mock.calls.length).toBeGreaterThan(streamCallsBefore);
+      // The retry carries the rebuilt replay, read back from the source chat.
+      const retryPrompt = send.mock.calls
+        .map(([message]) => claudeInputText(message))
+        .filter((text) => text.includes("second message"))[1]!;
+      expect(retryPrompt).toContain("verbatim replay");
+      expect(send.mock.calls.map(([message]) => claudeInputText(message))).not.toContain("/compact");
+      expect(claudeNoticeMessages(events).some((message) =>
+        /^That was too long for .+\. ADE is sending your message again with the newest \d+ turns? of the handoff\.$/.test(message)))
+        .toBe(true);
+      // One automatic retry, not a loop.
+      expect(send.mock.calls
+        .map(([message]) => claudeInputText(message))
+        .filter((text) => text.includes("second message"))).toHaveLength(2);
+    });
+
+    it("repairs a chat forked before ADE recorded the replay marker", async () => {
+      installRealTranscriptParser();
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      let resolveRetrySent: () => void = () => {};
+      const retrySent = new Promise<void>((resolve) => { resolveRetrySent = resolve; });
+      let stuckSends = 0;
+      const send = vi.fn(async (message: unknown) => {
+        if (!claudeInputText(message).includes("stuck message")) return;
+        stuckSends += 1;
+        if (stuckSends > 1) resolveRetrySent();
+      });
+      let streamCall = 0;
+      let retryServed = false;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-legacy-stuck", slash_commands: [] };
+          return;
+        }
+        if (streamCall === 2) {
+          yield {
+            type: "result",
+            subtype: "error_during_execution",
+            is_error: true,
+            terminal_reason: "prompt_too_long",
+            errors: ["prompt is too long for this context window"],
+            usage: { input_tokens: 1, output_tokens: 0 },
+          };
+          await new Promise<void>(() => {});
+          return;
+        }
+        yield { type: "system", subtype: "init", session_id: "sdk-legacy-stuck-2", slash_commands: [] };
+        await retrySent;
+        if (!retryServed) {
+          retryServed = true;
+          yield { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } };
+        }
+        await new Promise<void>(() => {});
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-legacy-stuck",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      writeTestTranscriptEnvelopes(source.id, [1, 2, 3].map((sequence) => ({
+        sessionId: source.id,
+        sequence,
+        timestamp: `2026-07-10T11:0${sequence}:00.000Z`,
+        event: { type: "user_message", text: `source turn ${sequence}` },
+      })) as AgentChatEventEnvelope[]);
+
+      const stuck = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-sonnet-5",
+        modelId: "anthropic/claude-sonnet-5",
+      });
+      // The state on disk before this fix existed: forked envelopes carry the
+      // source id, but no replay marker was ever written.
+      writeTestTranscriptEnvelopes(stuck.id, [1, 2].map((sequence) => ({
+        sessionId: stuck.id,
+        sequence,
+        timestamp: `2026-07-10T12:0${sequence}:00.000Z`,
+        event: { type: "user_message", text: `source turn ${sequence}` },
+        provenance: { providerOrigin: "handoff_fork", sourceSessionId: source.id },
+      })) as AgentChatEventEnvelope[]);
+      expect(readPersistedChatState(stuck.id).transcriptReplayOrigin).toBeUndefined();
+
+      await service.runSessionTurn({ sessionId: stuck.id, text: "stuck message" });
+
+      await vi.waitFor(() => {
+        expect(send.mock.calls
+          .map(([message]) => claudeInputText(message))
+          .filter((text) => text.includes("stuck message"))).toHaveLength(2);
+      }, { timeout: 5_000 });
+      const retryPrompt = send.mock.calls
+        .map(([message]) => claudeInputText(message))
+        .filter((text) => text.includes("stuck message"))[1]!;
+      expect(retryPrompt).toContain("verbatim replay");
+      expect(retryPrompt).toContain("source turn 3");
+      expect(send.mock.calls.map(([message]) => claudeInputText(message))).not.toContain("/compact");
+      expect(readPersistedChatState(stuck.id).transcriptReplayOrigin)
+        .toMatchObject({ sourceSessionId: source.id });
+    });
+
+    it("leaves a natively forked chat alone when it overflows", async () => {
+      installRealTranscriptParser();
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-native-fork", slash_commands: [] };
+          return;
+        }
+        yield {
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          terminal_reason: "prompt_too_long",
+          errors: ["prompt is too long for this context window"],
+          usage: { input_tokens: 1, output_tokens: 0 },
+        };
+        await new Promise<void>(() => {});
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-native-fork",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-sonnet-5",
+        modelId: "anthropic/claude-sonnet-5",
+      });
+      writeTestTranscriptEnvelopes(source.id, [{
+        sessionId: source.id,
+        sequence: 1,
+        timestamp: "2026-07-10T11:01:00.000Z",
+        event: { type: "user_message", text: "source turn one" },
+      }] as AgentChatEventEnvelope[]);
+
+      const forked = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-sonnet-5",
+        modelId: "anthropic/claude-sonnet-5",
+      });
+      // A Claude → Claude fork is native: the history lives on the provider, so
+      // these imported envelopes are a copy, not the thing to re-seed from.
+      writeTestTranscriptEnvelopes(forked.id, [{
+        sessionId: forked.id,
+        sequence: 1,
+        timestamp: "2026-07-10T12:01:00.000Z",
+        event: { type: "user_message", text: "source turn one" },
+        provenance: { providerOrigin: "handoff_fork", sourceSessionId: source.id },
+      }] as AgentChatEventEnvelope[]);
+
+      await service.runSessionTurn({ sessionId: forked.id, text: "native message" });
+
+      // The normal overflow handling runs instead: no rebuild, no reset.
+      await vi.waitFor(() => {
+        expect(send.mock.calls.map(([message]) => claudeInputText(message)).filter((text) => text === "/compact"))
+          .toHaveLength(1);
+      }, { timeout: 5_000 });
+      expect(send.mock.calls
+        .map(([message]) => claudeInputText(message))
+        .filter((text) => text.includes("native message"))).toHaveLength(1);
+      expect(send.mock.calls.map(([message]) => claudeInputText(message))
+        .some((text) => text.includes("verbatim replay"))).toBe(false);
+      expect(readPersistedChatState(forked.id).transcriptReplayOrigin).toBeUndefined();
+    });
+
+    it("reports one coarse outcome when the handoff pre-flight resolves", async () => {
+      installRealTranscriptParser();
+      const onChatHandoffReplay = vi.fn();
+      const { service } = createService({ onChatHandoffReplay });
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      writeTestTranscriptEnvelopes(source.id, [{
+        sessionId: source.id,
+        sequence: 1,
+        timestamp: "2026-07-10T11:01:00.000Z",
+        event: { type: "user_message", text: "short enough to carry whole" },
+      }] as AgentChatEventEnvelope[]);
+
+      const whole = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "anthropic/claude-sonnet-5",
+        mode: "fork",
+      });
+      expect(onChatHandoffReplay).toHaveBeenCalledTimes(1);
+      expect(onChatHandoffReplay).toHaveBeenCalledWith({
+        sessionId: whole.session.id,
+        outcome: "fit",
+        provider: "claude",
+      });
+
+      // A transcript the target cannot hold whole reports the truncation, and
+      // one it cannot hold at all reports the refusal against the source chat,
+      // because no target chat was ever created.
+      onChatHandoffReplay.mockClear();
+      writeTestTranscriptEnvelopes(source.id, [1, 2].map((sequence) => ({
+        sessionId: source.id,
+        sequence,
+        timestamp: `2026-07-10T12:0${sequence}:00.000Z`,
+        event: { type: "user_message", text: `turn ${sequence} ${"t".repeat(950_000)}` },
+      })) as AgentChatEventEnvelope[]);
+      const partial = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "anthropic/claude-sonnet-5",
+        mode: "fork",
+      });
+      expect(onChatHandoffReplay).toHaveBeenCalledWith({
+        sessionId: partial.session.id,
+        outcome: "truncated",
+        provider: "claude",
+      });
+
+      onChatHandoffReplay.mockClear();
+      writeTestTranscriptEnvelopes(source.id, [{
+        sessionId: source.id,
+        sequence: 1,
+        timestamp: "2026-07-10T13:01:00.000Z",
+        event: { type: "user_message", text: "x".repeat(2_400_000) },
+      }] as AgentChatEventEnvelope[]);
+      await expect(service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "anthropic/claude-sonnet-5",
+        mode: "fork",
+      })).rejects.toThrow(/too long to hand off/i);
+      expect(onChatHandoffReplay).toHaveBeenCalledTimes(1);
+      expect(onChatHandoffReplay).toHaveBeenCalledWith({
+        sessionId: source.id,
+        outcome: "refused",
+        provider: "claude",
+      });
+    });
+
+    it("refuses a handoff whose newest turn cannot fit the target model", async () => {
+      installRealTranscriptParser();
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      writeTestTranscriptEnvelopes(source.id, [{
+        sessionId: source.id,
+        sequence: 1,
+        timestamp: "2026-07-10T11:01:00.000Z",
+        event: { type: "user_message", text: "x".repeat(2_400_000) },
+      }] as AgentChatEventEnvelope[]);
+
+      await expect(service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "anthropic/claude-sonnet-5",
+        mode: "fork",
+      })).rejects.toThrow(/too long to hand off/i);
+    });
+
+    it("re-enters the turn cleanly when it retries a too-long handoff replay", async () => {
+      installRealTranscriptParser();
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      let resolveRetrySent: () => void = () => {};
+      const retrySent = new Promise<void>((resolve) => { resolveRetrySent = resolve; });
+      let prompts = 0;
+      const send = vi.fn(async (message: unknown) => {
+        if (!claudeInputText(message).includes("look at this")) return;
+        prompts += 1;
+        if (prompts > 1) resolveRetrySent();
+      });
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-retry-reentry", slash_commands: [] };
+          return;
+        }
+        if (streamCall === 2) {
+          yield {
+            type: "result",
+            subtype: "error_during_execution",
+            is_error: true,
+            terminal_reason: "prompt_too_long",
+            errors: ["prompt is too long for this context window"],
+            usage: { input_tokens: 1, output_tokens: 0 },
+          };
+          await new Promise<void>(() => {});
+          return;
+        }
+        yield { type: "system", subtype: "init", session_id: "sdk-retry-reentry-2", slash_commands: [] };
+        // The retry dispatches, then its stream dies — the ordinary way a turn
+        // fails for a reason that has nothing to do with the replay.
+        await retrySent;
+        throw new Error("claude stream died mid-retry");
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-retry-reentry",
+        setPermissionMode,
+      } as any);
+
+      const onChatHandoffReplay = vi.fn();
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        onChatHandoffReplay,
+      });
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      writeTestTranscriptEnvelopes(source.id, [1, 2, 3, 4].map((sequence) => ({
+        sessionId: source.id,
+        sequence,
+        timestamp: `2026-07-10T11:0${sequence}:00.000Z`,
+        event: { type: "user_message", text: `turn ${sequence} ${"t".repeat(20_000)}` },
+      })) as AgentChatEventEnvelope[]);
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "anthropic/claude-sonnet-5",
+        mode: "fork",
+      });
+      onChatHandoffReplay.mockClear();
+
+      const imagePath = path.join(tmpRoot, "retry-attachment.png");
+      fs.writeFileSync(imagePath, Buffer.from(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489",
+        "hex",
+      ));
+      await service.runSessionTurn({
+        sessionId: result.session.id,
+        text: "look at this",
+        attachments: [{ path: imagePath, type: "image" }],
+      });
+
+      await vi.waitFor(() => {
+        expect(send.mock.calls
+          .map(([message]) => claudeInputText(message))
+          .filter((text) => text.includes("look at this"))).toHaveLength(2);
+      }, { timeout: 5_000 });
+
+      // (a) Re-entering while the first turn is still unwinding must not trip
+      // the "turn already active" guard.
+      const errorMessages = events.flatMap((entry) => entry.event.type === "error"
+        ? [entry.event.message]
+        : []);
+      expect(errorMessages.some((message) => /turn already active/i.test(message))).toBe(false);
+
+      // (b) The retry carries the same attachments as the message it repeats.
+      const attachmentBlocks = send.mock.calls
+        .map(([message]) => (message as { message?: { content?: unknown } })?.message?.content)
+        .filter((content): content is Array<Record<string, unknown>> => Array.isArray(content))
+        .filter((content) => content.some((block) => block?.type === "image"));
+      expect(attachmentBlocks).toHaveLength(2);
+
+      // One user message in the transcript: the retry repeats the send, not the bubble.
+      expect(events.filter((entry) => entry.sessionId === result.session.id
+        && entry.event.type === "user_message"
+        && (entry.event as { text?: string }).text === "look at this")).toHaveLength(1);
+
+      // (c) A retry that dies leaves the chat idle, says so, and hands the
+      // conversation back so the next message still carries it.
+      await vi.waitFor(() => {
+        expect(claudeNoticeMessages(events).some((message) =>
+          /^The handoff transcript is too long for .+\. ADE kept the newest \d+ turns?\. Send your message again\.$/.test(message)))
+          .toBe(true);
+      }, { timeout: 5_000 });
+      await vi.waitFor(() => {
+        expect(readPersistedChatState(result.session.id).pendingTranscriptReplay)
+          .toContain("verbatim replay");
+      }, { timeout: 5_000 });
+      await vi.waitFor(async () => {
+        expect((await service.getSessionSummary(result.session.id))?.status).toBe("idle");
+      }, { timeout: 5_000 });
+      // One coarse product fact for the give-up, and no "retried" claim.
+      expect(onChatHandoffReplay.mock.calls.map(([event]) => event.outcome)).toEqual(["gave_up"]);
+    });
+
+    it("treats a Stop during the retry as a stop, not a length failure", async () => {
+      installRealTranscriptParser();
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      let resolveRetrySent: () => void = () => {};
+      const retrySent = new Promise<void>((resolve) => { resolveRetrySent = resolve; });
+      let prompts = 0;
+      const send = vi.fn(async (message: unknown) => {
+        if (!claudeInputText(message).includes("carry on")) return;
+        prompts += 1;
+        if (prompts > 1) resolveRetrySent();
+      });
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-retry-stop", slash_commands: [] };
+          return;
+        }
+        if (streamCall === 2) {
+          yield {
+            type: "result",
+            subtype: "error_during_execution",
+            is_error: true,
+            terminal_reason: "prompt_too_long",
+            errors: ["prompt is too long for this context window"],
+            usage: { input_tokens: 1, output_tokens: 0 },
+          };
+          await new Promise<void>(() => {});
+          return;
+        }
+        // The retry is dispatched and then simply never answers: the user stops
+        // it by hand.
+        yield { type: "system", subtype: "init", session_id: "sdk-retry-stop-2", slash_commands: [] };
+        await new Promise<void>(() => {});
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-retry-stop",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      writeTestTranscriptEnvelopes(source.id, [1, 2, 3, 4].map((sequence) => ({
+        sessionId: source.id,
+        sequence,
+        timestamp: `2026-07-10T11:0${sequence}:00.000Z`,
+        event: { type: "user_message", text: `turn ${sequence} ${"t".repeat(20_000)}` },
+      })) as AgentChatEventEnvelope[]);
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "anthropic/claude-sonnet-5",
+        mode: "fork",
+      });
+
+      await service.runSessionTurn({ sessionId: result.session.id, text: "carry on" });
+      await retrySent;
+      await service.interrupt({ sessionId: result.session.id });
+
+      await vi.waitFor(async () => {
+        expect((await service.getSessionSummary(result.session.id))?.status).toBe("idle");
+      }, { timeout: 5_000 });
+
+      // A Stop is not a prompt that did not fit. Saying so would be a lie, and
+      // re-staging the replay would duplicate what the session already holds.
+      expect(claudeNoticeMessages(events).some((message) =>
+        /^The handoff transcript is too long for /.test(message))).toBe(false);
+      expect(readPersistedChatState(result.session.id).pendingTranscriptReplay).toBeNull();
     });
 
     it("restores the bounded replay when Codex rejects the first turn", async () => {
@@ -9050,229 +9934,6 @@ describe("createAgentChatService", () => {
       },
     );
 
-    it("adds dynamic orchestration tools to Codex orchestrator threads", async () => {
-      const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
-      try {
-        const { service } = createService({
-          getOrchestrationService: () => orchestrationService,
-        });
-        const session = await service.createSession({
-          laneId: "lane-1",
-          provider: "codex",
-          model: "gpt-5.4",
-          interactionMode: "orchestrator-lead",
-          orchestrationRunId: created.runId,
-          orchestrationRole: "lead",
-          orchestrationBundlePath: created.manifest.bundlePath,
-        });
-
-        await service.sendMessage({
-          sessionId: session.id,
-          text: "Plan the work.",
-        });
-
-        await vi.waitFor(() => {
-          expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(true);
-        });
-
-        const startPayload = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start") as any;
-        const dynamicTools = startPayload?.params?.dynamicTools ?? [];
-        const toolNames = dynamicTools.map((entry: { name?: string }) => entry.name);
-        expect(toolNames).toEqual(expect.arrayContaining(["spawnAgent", "messageAgent", "getAgentTranscript"]));
-        expect(toolNames).not.toContain("editFile");
-        expect(toolNames).not.toContain("writeFile");
-        expect(toolNames).not.toContain("bash");
-        expect(dynamicTools.every((entry: { namespace?: string }) => entry.namespace === "ade_orchestration")).toBe(true);
-        // Codex exposes no tool allow/deny list, so the lead's "no edits, no
-        // shell" invariant is carried by the thread sandbox instead.
-        expect(startPayload?.params).toMatchObject({
-          approvalPolicy: "never",
-          sandbox: "read-only",
-        });
-        const spawnCall = vi.mocked(spawn).mock.calls.find((call) =>
-          call[0] === "codex" && Array.isArray(call[1]) && call[1].includes("app-server")
-        );
-        expect(spawnCall?.[2]).toEqual(expect.objectContaining({
-          env: expect.objectContaining({
-            ADE_DEFAULT_ROLE: "orchestrator",
-          }),
-        }));
-
-        expect(toolNames.length).toBeGreaterThan(5);
-      } finally {
-        await orchestrationService.dispose();
-      }
-    });
-
-    it("wires listProofArtifacts to the broker set via the setter after construction", async () => {
-      const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
-      try {
-        // The computer-use artifact broker is wired AFTER the service is
-        // constructed (via setComputerUseArtifactBrokerService) to break a
-        // circular dependency. The lead read tools must observe the late-bound
-        // ref, not the raw constructor param. Regression guard for that bug:
-        // when the ref is only ever set via the setter, listProofArtifacts must
-        // still reach the broker.
-        const listArtifacts = vi.fn(() => [{ artifactId: "proof-1", kind: "screenshot" }]);
-        const { service } = createService({
-          getOrchestrationService: () => orchestrationService,
-        });
-        service.setComputerUseArtifactBrokerService({
-          listArtifacts,
-          getBackendStatus: vi.fn(() => null),
-          ingest: vi.fn(),
-        } as any);
-
-        const session = await service.createSession({
-          laneId: "lane-1",
-          provider: "codex",
-          model: "gpt-5.4",
-          interactionMode: "orchestrator-lead",
-          orchestrationRunId: created.runId,
-          orchestrationRole: "lead",
-          orchestrationBundlePath: created.manifest.bundlePath,
-        });
-
-        await service.sendMessage({
-          sessionId: session.id,
-          text: "Plan the work.",
-        });
-
-        await vi.waitFor(() => {
-          expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(true);
-        });
-
-        // Simulate the Codex server invoking the lead-only read tool.
-        mockState.emitCodexPayload({
-          jsonrpc: "2.0",
-          id: "proof-tool-call-1",
-          method: "item/tool/call",
-          params: { name: "listProofArtifacts", namespace: "ade_orchestration", arguments: {} },
-        });
-
-        // Bug behavior: services.listProofArtifacts is undefined (closure over the
-        // raw null param) so the broker is never reached. Fixed behavior: called.
-        await vi.waitFor(() => {
-          expect(listArtifacts).toHaveBeenCalled();
-        });
-
-        const response = mockState.codexRequestPayloads.find(
-          (payload) => (payload as { id?: unknown }).id === "proof-tool-call-1",
-        ) as { result?: { success?: boolean; contentItems?: Array<{ text?: string }> } } | undefined;
-        expect(response?.result?.success).toBe(true);
-        expect(response?.result?.contentItems?.[0]?.text ?? "").toContain("proof-1");
-      } finally {
-        await orchestrationService.dispose();
-      }
-    });
-
-    it("attaches ADE orchestration tools to OpenCode orchestrator sessions through MCP", async () => {
-      vi.mocked(streamText).mockReturnValue({
-        fullStream: (async function* () {
-          yield { type: "finish", usage: {} };
-        })(),
-      } as any);
-      const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
-      try {
-        const { service } = createService({
-          getOrchestrationService: () => orchestrationService,
-        });
-        const session = await service.createSession({
-          laneId: "lane-1",
-          provider: "opencode",
-          model: "",
-          modelId: "opencode/openai/gpt-5.4",
-          interactionMode: "orchestrator-lead",
-          orchestrationRunId: created.runId,
-          orchestrationRole: "lead",
-          orchestrationBundlePath: created.manifest.bundlePath,
-        });
-
-        await service.runSessionTurn({
-          sessionId: session.id,
-          text: "Plan the work.",
-        });
-
-        const startArgs = vi.mocked(startOpenCodeSession).mock.calls.at(-1)?.[0] as any;
-        expect(startArgs?.mcp?.["ade-orchestration"]).toMatchObject({
-          type: "remote",
-          enabled: true,
-          url: expect.stringContaining("/mcp"),
-        });
-      } finally {
-        await orchestrationService.dispose();
-      }
-    });
-
-    it("attaches ADE orchestration tools to Cursor SDK orchestrator sessions through MCP", async () => {
-      process.env.CURSOR_API_KEY = "cursor-test-key";
-      const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
-      try {
-        const { service } = createService({
-          getOrchestrationService: () => orchestrationService,
-        });
-        const session = await service.createSession({
-          laneId: "lane-1",
-          provider: "cursor",
-          model: "composer-2",
-          modelId: "cursor/composer-2",
-          interactionMode: "orchestrator-lead",
-          orchestrationRunId: created.runId,
-          orchestrationRole: "lead",
-          orchestrationBundlePath: created.manifest.bundlePath,
-        });
-
-        await service.sendMessage({
-          sessionId: session.id,
-          text: "Plan the work.",
-        }, { awaitDispatch: true });
-
-        expect(mockState.cursorSdkAcquireCalls.at(-1)?.mcpServers).toMatchObject({
-          "ade-orchestration": {
-            type: "http",
-            url: expect.stringContaining("/mcp"),
-          },
-        });
-      } finally {
-        await orchestrationService.dispose();
-      }
-    });
-
-    it("attaches ADE orchestration tools to Droid SDK orchestrator sessions through MCP", async () => {
-      const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
-      try {
-        const { service } = createService({
-          getOrchestrationService: () => orchestrationService,
-        });
-        const session = await service.createSession({
-          laneId: "lane-1",
-          provider: "droid",
-          model: "custom:claude-sonnet-5-thinking-32000",
-          modelId: "droid/custom:claude-sonnet-5-thinking-32000",
-          interactionMode: "orchestrator-lead",
-          orchestrationRunId: created.runId,
-          orchestrationRole: "lead",
-          orchestrationBundlePath: created.manifest.bundlePath,
-        });
-
-        await service.sendMessage({
-          sessionId: session.id,
-          text: "Plan the work.",
-        }, { awaitDispatch: true });
-
-        expect(mockState.droidAcquireCalls.at(-1)?.mcpServers).toEqual([
-          expect.objectContaining({
-            type: "http",
-            name: "ade-orchestration",
-            url: expect.stringContaining("/mcp"),
-          }),
-        ]);
-        expect(mockState.droidAcquireCalls.at(-1)?.allowedMcpServerNames).toEqual(["ade-orchestration"]);
-      } finally {
-        await orchestrationService.dispose();
-      }
-    });
-
     it("passes the selected Codex reasoning effort per thread, not on the process", async () => {
       const laneRootPath = path.join(tmpRoot, "lane-2");
       fs.mkdirSync(laneRootPath, { recursive: true });
@@ -9555,6 +10216,58 @@ describe("createAgentChatService", () => {
         limit: 500,
         toolTypes: expect.arrayContaining(["codex-chat", "claude-chat", "opencode-chat", "cursor", "droid-chat"]),
       }));
+    });
+
+    it("scopes a CTO confirm hold to the session that is on the call", async () => {
+      // The file-wide mapPermissionToClaude mock collapses every mode to
+      // "plan", which would hide the pinned full-auto entirely.
+      vi.mocked(mapPermissionToClaude).mockImplementation((mode) => {
+        if (mode === "full-auto") return "bypassPermissions";
+        if (mode === "edit") return "acceptEdits";
+        if (mode === "default") return "default";
+        return "plan";
+      });
+      const { service } = createService();
+      const onCall = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-sonnet-5",
+        modelId: "anthropic/claude-sonnet-5",
+        identityKey: "cto",
+      });
+      const elsewhere = await service.createSession({
+        laneId: "lane-2",
+        provider: "claude",
+        model: "claude-sonnet-5",
+        modelId: "anthropic/claude-sonnet-5",
+        identityKey: "cto",
+      });
+      expect(onCall.permissionMode).toBe("full-auto");
+      expect(elsewhere.permissionMode).toBe("full-auto");
+
+      const release = beginIdentityConfirmHold(onCall.id);
+      try {
+        // One brain hosts every open project. A call on one CTO chat must not
+        // make a CTO chat in another project ask before it writes.
+        const held = await service.updateSession({
+          sessionId: onCall.id,
+          permissionMode: "full-auto",
+        });
+        const free = await service.updateSession({
+          sessionId: elsewhere.id,
+          permissionMode: "full-auto",
+        });
+        expect(held.permissionMode).toBe("default");
+        expect(free.permissionMode).toBe("full-auto");
+      } finally {
+        release();
+      }
+
+      const afterCall = await service.updateSession({
+        sessionId: onCall.id,
+        permissionMode: "full-auto",
+      });
+      expect(afterCall.permissionMode).toBe("full-auto");
     });
 
     it("excludes identity sessions by default", async () => {
@@ -9921,6 +10634,66 @@ describe("createAgentChatService", () => {
       return { db, ctoStateService, ctoMemoryService };
     }
 
+    /**
+     * The escape hatch from a wedged thread. The owner's CTO chat crossed its
+     * context limit by ordinary accumulation over twenty sessions, every turn
+     * failed with "Prompt is too long", and the fallback compaction refused —
+     * so the only way out is a new thread that does not arrive amnesiac.
+     */
+    it("starts a fresh CTO thread while identity, memory and History all survive", async () => {
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+
+      ctoStateService.updateIdentity({ name: "Ada" });
+      ctoMemoryService.appendMemoryFact("We ship on Fridays.");
+      const first = await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+
+      const result = await service.startFreshIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+
+      // A NEW conversation, and the old one named rather than forgotten.
+      expect(result.session.id).not.toBe(first.id);
+      expect(result.previousSessionId).toBe(first.id);
+      expect(result.session.identityKey).toBe("cto");
+
+      // Nothing the CTO remembers was touched.
+      expect(ctoStateService.getIdentity().name).toBe("Ada");
+      expect(ctoMemoryService.readMemory()).toContain("We ship on Fridays.");
+
+      // The retired thread lands in History with its own row.
+      expect(ctoStateService.getSessionLogs(20).some((entry) => entry.sessionId === first.id)).toBe(true);
+
+      // And the next ensure resolves to the NEW thread, not the retired one.
+      const next = await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+      expect(next.id).toBe(result.session.id);
+
+      db.close();
+    });
+
+    it("distils the outgoing thread into durable memory without asking a model", async () => {
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+
+      const first = await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+      const result = await service.startFreshIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+
+      // No provider was reachable in this fixture, and that is the point: the
+      // thread this feature exists for cannot take the turn that would write
+      // its own note, so the deterministic distillation is the one that has to
+      // work — and it did.
+      expect(result.handoff).toMatchObject({ written: true, source: "deterministic" });
+
+      // The note is durable, dated, and names the thread it came from.
+      const memory = ctoMemoryService.readMemory();
+      expect(memory).toContain("hand-off from retired CTO thread");
+      expect(memory).toContain(first.id);
+
+      // And the rolling working summary the next thread reads first was
+      // refreshed from the same text.
+      expect(ctoMemoryService.getSnapshot().threadState).toContain("Work still scheduled");
+
+      db.close();
+    });
+
     it("persists a CTO model switch back into identity model preferences", async () => {
       const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
       const { service } = createService({ ctoStateService, ctoMemoryService });
@@ -10010,6 +10783,571 @@ describe("createAgentChatService", () => {
       expect(reconstruction).toContain("The build long-pole is the Windows runner.");
       expect(session.identityKey).toBe("cto");
 
+      db.close();
+    });
+
+    /**
+     * The CTO prefix is two halves with very different lifetimes, and only one
+     * of them is worth re-sending. The immutable half (doctrine, the ADE
+     * architecture document, the capability manifest) is ~21 KB that a live
+     * provider thread already holds; re-staging it every turn grew a real CTO
+     * thread from 46k to 237k input tokens in 18 turns and tripped Codex
+     * auto-compaction mid-voice-call.
+     */
+    /**
+     * One Claude SDK double for every test in this block, typed at the seam
+     * rather than cast to `any` at each site: the handle shape is the contract
+     * these tests depend on, and three hand-rolled copies of it drift.
+     */
+    function installClaudeSdkDouble(args: {
+      sessionId: string;
+      send: ReturnType<typeof vi.fn>;
+      stream: ReturnType<typeof vi.fn>;
+    }): void {
+      const sdkHandle = {
+        send: args.send,
+        stream: args.stream,
+        close: vi.fn(),
+        sessionId: args.sessionId,
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as unknown as ReturnType<typeof claudeSdkCreateSessionCompat>;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(sdkHandle);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(sdkHandle);
+    }
+
+    function mockClaudeCtoSdk() {
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-cto-prefix", slash_commands: [] };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "assistant",
+          session_id: "sdk-cto-prefix",
+          message: { content: [{ type: "text", text: "ok" }], usage: { input_tokens: 1, output_tokens: 1 } },
+        };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      installClaudeSdkDouble({ sessionId: "sdk-cto-prefix", send, stream });
+      return send;
+    }
+
+    it("stages the CTO's immutable prefix once per provider thread and the volatile half every turn", async () => {
+      const send = mockClaudeCtoSdk();
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto",
+      });
+      const turn = async (text: string): Promise<string> => {
+        send.mockClear();
+        await service.sendMessage({ sessionId: session.id, text });
+        await vi.waitFor(() => { expect(send).toHaveBeenCalled(); });
+        return String(send.mock.calls.at(-1)?.[0] ?? "");
+      };
+
+      const first = await turn("What is on fire?");
+      expect(first).toContain("CTO Runtime Identity");
+      expect(first).toContain("Immutable ADE doctrine");
+      expect(first).toContain("ADE environment knowledge");
+      expect(first).toContain("ADE Architecture");
+      expect(first).toContain("CTO Context");
+
+      // Turn two talks to the same Claude SDK session, which holds all of the
+      // above verbatim. Only the perishable half rides again.
+      const second = await turn("And now?");
+      expect(second).not.toContain("CTO Runtime Identity");
+      expect(second).not.toContain("Immutable ADE doctrine");
+      expect(second).not.toContain("ADE Architecture");
+      expect(second).toContain("CTO Context");
+      expect(Buffer.byteLength(second)).toBeLessThan(Buffer.byteLength(first) / 2);
+
+      // The other way the block goes stale is the prompt changing under a live
+      // thread. That must re-stage on the very next turn rather than wait for a
+      // rotation that may never come.
+      ctoStateService.updateIdentity({ name: "Ada" });
+      const third = await turn("Who are you?");
+      expect(third).toContain("CTO Runtime Identity");
+      expect(third).toContain("You are Ada.");
+
+      const fourth = await turn("Carry on.");
+      expect(fourth).not.toContain("CTO Runtime Identity");
+      expect(fourth).toContain("CTO Context");
+
+      service.forceDisposeAll();
+      db.close();
+    });
+
+    it("re-stages the CTO's immutable prefix onto a thread that has never seen it", async () => {
+      const send = mockClaudeCtoSdk();
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto",
+      });
+      const turn = async (sessionId: string, text: string): Promise<string> => {
+        send.mockClear();
+        await service.sendMessage({ sessionId, text });
+        await vi.waitFor(() => { expect(send).toHaveBeenCalled(); });
+        return String(send.mock.calls.at(-1)?.[0] ?? "");
+      };
+
+      expect(await turn(session.id, "First.")).toContain("CTO Runtime Identity");
+      expect(await turn(session.id, "Second.")).not.toContain("CTO Runtime Identity");
+
+      // A rotated thread is a model that has been told nothing. The
+      // reconstruction context has to be complete again.
+      const fresh = await service.startFreshIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+      expect(fresh.session.id).not.toBe(session.id);
+      const afterRotation = await turn(fresh.session.id, "Still there?");
+      expect(afterRotation).toContain("CTO Runtime Identity");
+      expect(afterRotation).toContain("ADE Architecture");
+      expect(afterRotation).toContain("CTO Context");
+
+      service.forceDisposeAll();
+      db.close();
+    });
+
+    /**
+     * The doc claims the static block re-stages on "rotation, handoff, resume
+     * onto a new thread, provider/model switch, fresh session". Rotation is
+     * pinned above; these pin the rest, because every one of them is a claim
+     * about a thread that has been told nothing, and an unpinned claim about a
+     * ~21 KB block is how the CTO silently loses its own role on a provider.
+     */
+    it("re-stages the CTO's immutable prefix after a provider handoff", async () => {
+      const send = mockClaudeCtoSdk();
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto",
+      });
+
+      send.mockClear();
+      await service.sendMessage({ sessionId: session.id, text: "First." });
+      await vi.waitFor(() => { expect(send).toHaveBeenCalled(); });
+      expect(String(send.mock.calls.at(-1)?.[0] ?? "")).toContain("CTO Runtime Identity");
+
+      send.mockClear();
+      await service.sendMessage({ sessionId: session.id, text: "Second." });
+      await vi.waitFor(() => { expect(send).toHaveBeenCalled(); });
+      expect(String(send.mock.calls.at(-1)?.[0] ?? "")).not.toContain("CTO Runtime Identity");
+
+      // The handoff moves the same ADE chat onto a codex thread that has never
+      // heard a word of it — including the doctrine that makes it the CTO.
+      mockState.codexRequestPayloads = [];
+      await service.updateSession({ sessionId: session.id, modelId: "openai/gpt-5.5" });
+      await service.sendMessage({ sessionId: session.id, text: "Still there?" });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+      const turnStart = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+      const handedOff = JSON.stringify(turnStart?.params ?? {});
+      expect(handedOff).toContain("CTO Runtime Identity");
+      expect(handedOff).toContain("ADE Architecture");
+
+      service.forceDisposeAll();
+      db.close();
+    });
+
+    /**
+     * A restart wipes the in-memory staging, and the resumed chat may or may
+     * not land on the same provider thread. Re-sending ~21 KB once after a
+     * restart is the cheap side of that bet; leaving a thread believing it was
+     * told its own doctrine is not.
+     */
+    it("re-stages the CTO's immutable prefix on a resume after a restart", async () => {
+      const send = mockClaudeCtoSdk();
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto",
+      });
+
+      send.mockClear();
+      await service.sendMessage({ sessionId: session.id, text: "First." });
+      await vi.waitFor(() => { expect(send).toHaveBeenCalled(); });
+      expect(String(send.mock.calls.at(-1)?.[0] ?? "")).toContain("CTO Runtime Identity");
+      send.mockClear();
+      await service.sendMessage({ sessionId: session.id, text: "Second." });
+      await vi.waitFor(() => { expect(send).toHaveBeenCalled(); });
+      expect(String(send.mock.calls.at(-1)?.[0] ?? "")).not.toContain("CTO Runtime Identity");
+      service.forceDisposeAll();
+
+      const resumed = createService({ ctoStateService, ctoMemoryService }).service;
+      await resumed.resumeSession({ sessionId: session.id });
+      send.mockClear();
+      await resumed.runSessionTurn({ sessionId: session.id, text: "After the restart.", timeoutMs: 15_000 });
+      const afterResume = String(send.mock.calls.at(-1)?.[0] ?? "");
+      expect(afterResume).toContain("CTO Runtime Identity");
+      expect(afterResume).toContain("CTO Context");
+
+      resumed.forceDisposeAll();
+      db.close();
+    });
+
+    /**
+     * A same-provider model switch that keeps the SDK session is NOT a new
+     * thread: the model on the other end still holds the doctrine verbatim, so
+     * the block stays put. This is pinned because the obvious reading of "model
+     * switch re-stages" would have it re-sent on every reasoning-tier change.
+     */
+    it("keeps the CTO's immutable prefix off a model switch that keeps the thread", async () => {
+      const send = mockClaudeCtoSdk();
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto",
+      });
+
+      send.mockClear();
+      await service.sendMessage({ sessionId: session.id, text: "First." });
+      await vi.waitFor(() => { expect(send).toHaveBeenCalled(); });
+      expect(String(send.mock.calls.at(-1)?.[0] ?? "")).toContain("CTO Runtime Identity");
+
+      await service.updateSession({ sessionId: session.id, modelId: "anthropic/claude-opus-4-8" });
+      send.mockClear();
+      await service.sendMessage({ sessionId: session.id, text: "After the switch." });
+      // The switch also fires an initialization probe on the same handle, so the
+      // turn is found by its text rather than by being the last call.
+      await vi.waitFor(() => {
+        expect(send.mock.calls.some((call) => String(call[0] ?? "").includes("After the switch."))).toBe(true);
+      });
+      const afterSwitch = String(
+        send.mock.calls.map((call) => String(call[0] ?? "")).find((text) => text.includes("After the switch.")) ?? "",
+      );
+      expect(afterSwitch).toContain("CTO Context");
+
+      service.forceDisposeAll();
+      db.close();
+    });
+
+    /**
+     * A provider-side conversation reset opens a brand-new Claude conversation
+     * under the SAME runtime handle. Nothing the staging looks at moves — the
+     * handle is the thread's identity of last resort — so the doctrine that
+     * makes this thread the CTO was never re-sent, and it went on answering as
+     * a generic coding agent with nothing in the product saying so.
+     */
+    it("re-stages the CTO's immutable prefix after a provider-side conversation reset", async () => {
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      let emitConversationReset = false;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-cto-reset-1", slash_commands: [] };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        if (emitConversationReset) {
+          emitConversationReset = false;
+          // Claude discarded the conversation and named its replacement.
+          yield { type: "conversation_reset", new_conversation_id: "sdk-cto-reset-2" };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "assistant",
+          session_id: "sdk-cto-reset-1",
+          message: { content: [{ type: "text", text: "ok" }], usage: { input_tokens: 1, output_tokens: 1 } },
+        };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      installClaudeSdkDouble({ sessionId: "sdk-cto-reset-1", send, stream });
+
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto",
+      });
+      const turn = async (text: string): Promise<string> => {
+        send.mockClear();
+        await service.sendMessage({ sessionId: session.id, text });
+        await vi.waitFor(() => { expect(send).toHaveBeenCalled(); });
+        return String(send.mock.calls.at(-1)?.[0] ?? "");
+      };
+
+      expect(await turn("What is on fire?")).toContain("CTO Runtime Identity");
+      expect(await turn("And now?")).not.toContain("CTO Runtime Identity");
+
+      // This turn is the one the provider resets under.
+      emitConversationReset = true;
+      await turn("Carry on.");
+      await vi.waitFor(() => { expect(emitConversationReset).toBe(false); });
+
+      const afterReset = await turn("Who are you?");
+      expect(afterReset).toContain("CTO Runtime Identity");
+      expect(afterReset).toContain("ADE Architecture");
+
+      service.forceDisposeAll();
+      db.close();
+    });
+
+    /**
+     * The other way a Claude thread ends under us: not a reset the provider
+     * announces, but a resume onto a thread that is simply gone. The recovery
+     * clears the SDK session id and the next send opens a brand new
+     * conversation — which has been told none of the doctrine.
+     */
+    it("re-stages the CTO's immutable prefix after Claude's thread goes missing", async () => {
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      let failWithMissingThread = false;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-cto-missing", slash_commands: [] };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        if (failWithMissingThread) {
+          failWithMissingThread = false;
+          throw new Error("No conversation found with session ID sdk-cto-missing");
+        }
+        yield {
+          type: "assistant",
+          session_id: "sdk-cto-missing",
+          message: { content: [{ type: "text", text: "ok" }], usage: { input_tokens: 1, output_tokens: 1 } },
+        };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      installClaudeSdkDouble({ sessionId: "sdk-cto-missing", send, stream });
+
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto",
+      });
+      const turn = async (text: string): Promise<string> => {
+        send.mockClear();
+        await service.sendMessage({ sessionId: session.id, text });
+        await vi.waitFor(() => { expect(send).toHaveBeenCalled(); });
+        return String(send.mock.calls.at(-1)?.[0] ?? "");
+      };
+
+      expect(await turn("What is on fire?")).toContain("CTO Runtime Identity");
+      expect(await turn("And now?")).not.toContain("CTO Runtime Identity");
+
+      // The turn the thread goes missing under. It fails, and the recovery runs.
+      failWithMissingThread = true;
+      try {
+        await service.sendMessage({ sessionId: session.id, text: "Carry on." });
+      } catch {
+        // The failure is the point; the recovery is what is under test.
+      }
+      await vi.waitFor(() => { expect(failWithMissingThread).toBe(false); });
+
+      // The chat is now parked on a recovery card; reconnecting is what the
+      // user presses. Whatever thread that lands on has heard nothing.
+      await service.recoverContinuity({ sessionId: session.id, mode: "retry_original" });
+
+      const afterRecovery = await turn("Who are you?");
+      expect(afterRecovery).toContain("CTO Runtime Identity");
+      expect(afterRecovery).toContain("ADE Architecture");
+
+      service.forceDisposeAll();
+      db.close();
+    });
+
+    /**
+     * Droid can hand back a DIFFERENT session id on a re-ready of a runtime
+     * that otherwise survived — same handle, new conversation on the other end.
+     * Nothing else watches the id, so nothing else would notice.
+     */
+    it("re-stages the CTO's immutable prefix when Droid re-readies onto a new session id", async () => {
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "droid",
+        model: "custom:claude-sonnet-5-thinking-32000",
+        modelId: "droid/custom:claude-sonnet-5-thinking-32000",
+        identityKey: "cto",
+      });
+      const turn = async (text: string): Promise<string> => {
+        const before = mockState.droidPromptCalls.length;
+        await service.sendMessage({ sessionId: session.id, text });
+        await vi.waitFor(() => {
+          expect(mockState.droidPromptCalls.length).toBeGreaterThan(before);
+        });
+        return String(mockState.droidPromptCalls.at(-1)?.promptText ?? "");
+      };
+
+      expect(await turn("What is on fire?")).toContain("CTO Runtime Identity");
+      expect(await turn("And now?")).not.toContain("CTO Runtime Identity");
+
+      // Same pooled connection, new conversation id.
+      const pooled = mockState.droidPooled;
+      pooled.bridge.onReady?.({
+        sessionId: "droid-sdk-session-re-readied",
+        currentModelId: pooled.currentModelId,
+        availableModels: [],
+      });
+
+      expect(await turn("Who are you?")).toContain("CTO Runtime Identity");
+
+      service.forceDisposeAll();
+      db.close();
+    });
+
+    /**
+     * The tail rule, on the provider whose thread id lives on the session
+     * rather than in a runtime handle. A live intact codex thread holds the
+     * conversation verbatim; replaying 40 turns of it every send is what walks
+     * a long CTO thread into auto-compaction.
+     */
+    it("sends no conversation tail to a live intact codex thread", async () => {
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        identityKey: "cto",
+      });
+
+      mockState.codexRequestPayloads = [];
+      const turnStarts = () => mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start");
+      // The mock names turns `turn-<n>`; settling one is what lets the next
+      // send start a turn of its own rather than steer into the live one.
+      const settleCodexTurn = (index: number): void => {
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "turn/completed",
+          params: { turn: { id: `turn-${index}`, status: "completed" } },
+        });
+      };
+
+      await service.sendMessage({ sessionId: session.id, text: "What is on fire?" });
+      await vi.waitFor(() => { expect(turnStarts().length).toBeGreaterThanOrEqual(1); });
+      settleCodexTurn(mockState.codexTurnCounter);
+
+      // Turn two is the one send that can still carry the tail: the thread was
+      // armed while it had no name and turn one had no conversation to put in
+      // it, and arming is sticky until a send actually delivers the section.
+      await service.sendMessage({ sessionId: session.id, text: "And now?" });
+      await vi.waitFor(() => { expect(turnStarts().length).toBeGreaterThanOrEqual(2); });
+      settleCodexTurn(mockState.codexTurnCounter);
+
+      await service.sendMessage({ sessionId: session.id, text: "Carry on." });
+      await vi.waitFor(() => { expect(turnStarts().length).toBeGreaterThanOrEqual(3); });
+      const third = JSON.stringify(turnStarts()[2]?.params ?? {});
+      expect(third).toContain("Carry on.");
+      expect(third).not.toContain("Recent Conversation Tail");
+      // And the doctrine does not ride again either — same thread, same rule.
+      expect(third).not.toContain("CTO Runtime Identity");
+
+      service.forceDisposeAll();
+      db.close();
+    });
+
+    /**
+     * `runSessionTurn` is the headless path, and the CTO voice's `ask_cto`
+     * turns run on it. It used to skip `refreshCtoLiveStateForTurn` entirely,
+     * so a voice turn reached the model with whatever live state the last
+     * interactive send left behind — and with no reconstruction context at all
+     * once that send had consumed it. Stale lanes/PRs/dirty flags are worse
+     * than none here, because the doctrine tells the CTO not to re-derive them.
+     */
+    it("refreshes the CTO's live state on the headless turn path too", async () => {
+      const send = mockClaudeCtoSdk();
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const refreshLiveState = vi.spyOn(ctoStateService, "refreshLiveState");
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto",
+      });
+
+      // Turn one goes through the interactive path and stages everything.
+      send.mockClear();
+      await service.sendMessage({ sessionId: session.id, text: "What is on fire?" });
+      await vi.waitFor(() => { expect(send).toHaveBeenCalled(); });
+      expect(String(send.mock.calls.at(-1)?.[0] ?? "")).toContain("CTO Runtime Identity");
+
+      // Turn two is headless, on the same intact thread.
+      refreshLiveState.mockClear();
+      send.mockClear();
+      await service.runSessionTurn({ sessionId: session.id, text: "And now?", timeoutMs: 15_000 });
+      const headless = String(send.mock.calls.at(-1)?.[0] ?? "");
+
+      expect(refreshLiveState).toHaveBeenCalled();
+      // The volatile half rides the headless turn exactly as it rides an
+      // interactive one.
+      expect(headless).toContain("CTO Context");
+      expect(headless).toContain("Current working context");
+      // And the thread is intact, so the immutable half does not ride again.
+      expect(headless).not.toContain("CTO Runtime Identity");
+      expect(headless).not.toContain("ADE Architecture");
+
+      service.forceDisposeAll();
+      db.close();
+    });
+
+    /**
+     * The tempting shortcut is "codex already gets the doctrine in its
+     * developer instructions, so skip the thread item entirely". It does not:
+     * `buildCodexDeveloperInstructions` builds the generic coding-agent prompt,
+     * and the CTO doctrine and capability manifest exist in exactly one place —
+     * the static context block. Dropping it for codex would have silently taken
+     * the CTO's whole role away on that provider.
+     */
+    it("does not carry the CTO doctrine in codex developer instructions", async () => {
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        identityKey: "cto",
+      });
+      mockState.codexRequestPayloads = [];
+
+      await service.sendMessage({ sessionId: session.id, text: "What is on fire?" });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+
+      const threadStart = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
+      const developerInstructions = String(
+        (threadStart?.params as Record<string, unknown> | undefined)?.developerInstructions ?? "",
+      );
+      expect(developerInstructions.length).toBeGreaterThan(0);
+      expect(developerInstructions).not.toContain("Immutable ADE doctrine");
+      expect(developerInstructions).not.toContain("ADE operator tools");
+
+      const turnStart = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+      expect(JSON.stringify(turnStart?.params ?? {})).toContain("CTO Runtime Identity");
+
+      service.forceDisposeAll();
       db.close();
     });
 
@@ -10425,6 +11763,18 @@ describe("createAgentChatService", () => {
       expect(send).toHaveBeenCalledWith(expect.stringContaining("User: Can you keep the lane warm?"));
       expect(send).toHaveBeenCalledWith(expect.stringContaining("Assistant: Yes, I will keep the lane session alive."));
       expect(send).not.toHaveBeenCalledWith(expect.stringContaining("Continuity Summary"));
+
+      // The tail is re-orientation for a thread that never saw those turns. The
+      // SDK session is unchanged now, so it holds the conversation verbatim and
+      // replaying the tail again is pure duplicated input tokens.
+      send.mockClear();
+      await resumed.runSessionTurn({
+        sessionId: session.id,
+        text: "And now?",
+        timeoutMs: 15_000,
+      });
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send).not.toHaveBeenCalledWith(expect.stringContaining("Recent Conversation Tail"));
     });
 
     it("recreates Claude sessions fresh when a resumed SDK session rejects bypassPermissions", async () => {
@@ -14458,6 +15808,8 @@ describe("createAgentChatService", () => {
       let warmupComplete = false;
       let turnDone: (() => void) | null = null;
       const turnDonePromise = new Promise<void>((resolve) => { turnDone = resolve; });
+      let releaseTerminalNotification: (() => void) | null = null;
+      const terminalNotificationGate = new Promise<void>((resolve) => { releaseTerminalNotification = resolve; });
       const send = vi.fn().mockResolvedValue(undefined);
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
       const stream = vi.fn(() => (async function* () {
@@ -14485,7 +15837,7 @@ describe("createAgentChatService", () => {
           usage: { total_tokens: 100, tool_uses: 1, duration_ms: 50 },
           workflow_progress: [
             { type: "workflow_phase", index: 0, title: "Scan" },
-            { type: "workflow_agent", index: 0, state: "start", startedAt: 1, label: "scan:auth", agentId: "agent-a", tokens: 100 },
+            { type: "workflow_agent", index: 0, state: "start", startedAt: 1, label: "scan:auth", agentId: "agent-a", model: "claude-opus-5", tokens: 100 },
             { type: "workflow_agent", index: 1, state: "start", label: "scan:db" },
           ],
         };
@@ -14498,10 +15850,19 @@ describe("createAgentChatService", () => {
           usage: { total_tokens: 900, tool_uses: 4, duration_ms: 900 },
           workflow_progress: [
             { type: "workflow_phase", index: 0, title: "Scan" },
-            { type: "workflow_agent", index: 0, state: "done", startedAt: 1, label: "scan:auth", agentId: "agent-a", tokens: 900, durationMs: 800 },
+            { type: "workflow_agent", index: 0, state: "done", startedAt: 1, label: "scan:auth", agentId: "agent-a", model: "claude-opus-5", tokens: 900, durationMs: 800 },
             { type: "workflow_agent", index: 1, state: "start", startedAt: 5, label: "scan:db" },
           ],
         };
+        // Some SDK versions publish a completed patch before the richer
+        // notification. The active entry must retain the latest snapshot.
+        yield {
+          type: "system",
+          subtype: "task_updated",
+          task_id: "wf-1",
+          patch: { status: "completed" },
+        };
+        await terminalNotificationGate;
         // Workflow ends while scan:db is still running.
         yield {
           type: "system",
@@ -14531,6 +15892,14 @@ describe("createAgentChatService", () => {
       await waitForEvent(
         events,
         (e): e is AgentChatEventEnvelope =>
+          e.event.type === "subagent_result"
+          && (e.event as any).taskId === "wf-1::a1"
+          && (e.event as any).status === "stopped",
+      );
+      releaseTerminalNotification!();
+      await waitForEvent(
+        events,
+        (e): e is AgentChatEventEnvelope =>
           e.event.type === "subagent_result" && (e.event as any).taskId === "wf-1",
       );
 
@@ -14543,6 +15912,7 @@ describe("createAgentChatService", () => {
       expect((started[0]!.event as any).taskId).toBe("wf-1::a0");
       expect((started[0]!.event as any).description).toBe("scan:auth");
       expect((started[0]!.event as any).workflowName).toBe("review");
+      expect((started[0]!.event as any).model).toBe("claude-opus-5");
       expect((started[0]!.event as any).background).toBe(true);
       expect((results[0]!.event as any).status).toBe("completed");
       expect((results[0]!.event as any).usage?.totalTokens).toBe(900);
@@ -14552,14 +15922,35 @@ describe("createAgentChatService", () => {
       const dbRow = events.filter((e) => (e.event as any).taskId === "wf-1::a1");
       expect(dbRow.some((e) => e.event.type === "subagent_started")).toBe(true);
       const dbResult = dbRow.find((e) => e.event.type === "subagent_result");
-      expect((dbResult?.event as any)?.status).toBe("stopped");
-      expect((dbResult?.event as any)?.finalSummary).toContain("Workflow ended");
+      expect(dbResult?.event).toMatchObject({
+        status: "stopped",
+        finalSummary: "Workflow ended before this agent finished.",
+        stopSource: "system",
+        // The workflow reached its end; nothing crashed. This row used to read
+        // "the runtime process exited" because the helper defaulted to it.
+        stopReason: "the workflow ended",
+      });
 
-      // Parent workflow row derives a phase/count summary when the SDK sends none.
-      const parentProgress = events.find(
-        (e) => e.event.type === "subagent_progress" && (e.event as any).taskId === "wf-1",
+      // The terminal parent result carries a reconciled workflow snapshot even
+      // when the SDK's last progress tick still reports an active agent.
+      const parentResult = events.find(
+        (e) => e.event.type === "subagent_result" && (e.event as any).taskId === "wf-1",
       );
-      expect((parentProgress?.event as any)?.summary).toContain("Scan");
+      expect((parentResult?.event as any)?.summary).toBe("workflow done");
+      expect((parentResult?.event as any)?.workflowProgress).toMatchObject({
+        phases: [{ index: 0, title: "Scan" }],
+        queuedCount: 0,
+        runningCount: 0,
+        doneCount: 1,
+        agents: [
+          expect.objectContaining({ status: "completed" }),
+          expect.objectContaining({ status: "stopped" }),
+        ],
+      });
+      expect((await service.listSubagents({ sessionId: session.id })).find((row) => row.taskId === "wf-1"))
+        .toEqual(expect.objectContaining({
+          workflowProgress: expect.objectContaining({ runningCount: 0, doneCount: 1 }),
+        }));
 
       turnDone!();
       await expect(sendPromise).resolves.toBeUndefined();
@@ -16952,10 +18343,7 @@ describe("createAgentChatService", () => {
 
     it("preserves lifecycle markers when a Cursor user steer is rejected by a full queue", async () => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
-      let finishTurn = () => {};
-      mockState.cursorSendPromptGate = new Promise<void>((resolve) => {
-        finishTurn = resolve;
-      });
+      const finishTurn = parkCursorSend();
       const { service, sessionService } = createService();
       const session = await service.createSession({
         laneId: "lane-1",
@@ -17148,6 +18536,72 @@ describe("createAgentChatService", () => {
         && (e.event as any).status === "stopped");
       expect(events.some((e) =>
         e.event.type === "subagent_result" && (e.event as any).taskId === "task-B")).toBe(false);
+
+      hangResolve!();
+      await expect(sendPromise).resolves.toBeUndefined();
+    });
+
+    it("stops synthetic workflow agents when their parent task is stopped", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let hangResolve: (() => void) | null = null;
+      const hangPromise = new Promise<void>((resolve) => { hangResolve = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stopTask = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-stop-workflow", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "workflow-stop",
+          task_type: "local_workflow",
+          workflow_name: "stop-review",
+          description: "Run stop review",
+        };
+        yield {
+          type: "system",
+          subtype: "task_progress",
+          task_id: "workflow-stop",
+          task_type: "local_workflow",
+          workflow_name: "stop-review",
+          description: "Run stop review",
+          workflow_progress: [
+            { type: "workflow_agent", index: 0, state: "start", startedAt: 1, label: "stop:review" },
+          ],
+        };
+        await hangPromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send, stream, close: vi.fn(), sessionId: "sdk-stop-workflow", setPermissionMode, stopTask,
+      } as any);
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "start a workflow" });
+
+      await waitForEvent(events, (e): e is AgentChatEventEnvelope =>
+        e.event.type === "subagent_started" && (e.event as any).taskId === "workflow-stop::a0");
+
+      await expect(service.stopTask({ sessionId: session.id, taskId: "workflow-stop" }))
+        .resolves.toMatchObject({ stopped: true, taskId: "workflow-stop" });
+      expect(stopTask).toHaveBeenCalledWith("workflow-stop");
+      expect(events).toContainEqual(expect.objectContaining({
+        event: expect.objectContaining({
+          type: "subagent_result",
+          taskId: "workflow-stop::a0",
+          status: "stopped",
+          workflowName: "stop-review",
+        }),
+      }));
 
       hangResolve!();
       await expect(sendPromise).resolves.toBeUndefined();
@@ -17759,7 +19213,7 @@ describe("createAgentChatService", () => {
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
         send, stream, close: vi.fn(), sessionId: "sdk-restart-1", setPermissionMode,
       } as any);
-      const { service } = createService();
+      const { service } = createService({ runtimeSocketPath: "/tmp/ade.sock" });
       const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
       await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
       await service.runSessionTurn({ sessionId: session.id, text: "seed the transcript" });
@@ -17769,6 +19223,7 @@ describe("createAgentChatService", () => {
       const persisted = readPersistedChatState(session.id);
       expect(typeof persisted.sdkSessionId).toBe("string");
       expect(persisted.sdkSessionId.length).toBeGreaterThan(0);
+      expect(persisted.runtimeOwner?.socketPath).toBe("/tmp/ade.sock");
 
       // Process 2 (fresh host): a NEW service instance re-binds the persisted
       // session. Inject an orphaned transcript tail: one still-"running"
@@ -17788,6 +19243,14 @@ describe("createAgentChatService", () => {
           type: "subagent_started", taskId: "sub-restart", agentId: "sub-restart",
           agentType: "Explore", parentToolUseId: "toolu_sub_r", description: "look", turnId: "turn-old",
         } as any },
+        // A backgrounded delegate is just as dead as a foreground one. The
+        // restart path used to skip these and leave them "running" forever,
+        // while the timer sweep closed the identical row.
+        { sessionId: session.id, timestamp: new Date().toISOString(), sequence: 4, event: {
+          type: "subagent_started", taskId: "sub-restart-bg", agentId: "sub-restart-bg",
+          agentType: "Explore", parentToolUseId: "toolu_sub_bg", description: "watch",
+          background: true, turnId: "turn-old",
+        } as any },
       ];
       vi.mocked(parseAgentChatTranscript).mockReturnValue(orphanTail);
 
@@ -17798,7 +19261,10 @@ describe("createAgentChatService", () => {
         close: vi.fn(),
         sessionId: "sdk-restart-1",
       } as any);
-      const { service: service2 } = createService({ onEvent: (event: AgentChatEventEnvelope) => events2.push(event) });
+      const { service: service2 } = createService({
+        runtimeSocketPath: "/tmp/ade.sock",
+        onEvent: (event: AgentChatEventEnvelope) => events2.push(event),
+      });
       await service2.resumeSession({ sessionId: session.id });
 
       // Background_task row settled as stopped with the restart marker.
@@ -17814,6 +19280,16 @@ describe("createAgentChatService", () => {
         && (e.event as any).taskId === "sub-restart"
         && (e.event as any).status === "stopped");
       expect(subStopped).toBeTruthy();
+      expect(subStopped?.event).toMatchObject({
+        stopSource: "system",
+        stopReason: "the ADE brain restarted",
+      });
+      expect(events2.find((e) =>
+        e.event.type === "subagent_result"
+        && (e.event as any).taskId === "sub-restart-bg")?.event).toMatchObject({
+        status: "stopped",
+        stopSource: "system",
+      });
 
       // Exactly one compact reconciliation system_notice, counting background tasks.
       const notices = events2.filter((e) =>
@@ -17851,6 +19327,150 @@ describe("createAgentChatService", () => {
         && e.event.turnId === "turn-old"
         && e.event.status === "interrupted"
       )).toHaveLength(1);
+    });
+
+    /**
+     * The 17-24 hour rows. `reconcileClaudeSessionAfterRestart` only runs when
+     * something re-binds the chat's runtime, so a chat nobody reopens keeps its
+     * "running" subagent and background rows for as long as the transcript is
+     * kept. The stale-run sweep closes them with no runtime involved.
+     */
+    describe("stale-run sweep (no runtime required)", () => {
+      /**
+       * The sweep reads the transcript from disk before it parses anything, so
+       * the file has to exist even though `parseAgentChatTranscript` is mocked.
+       */
+      function writeTranscriptFile(sessionId: string): void {
+        const dir = path.join(tmpRoot, "transcripts");
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, `${sessionId}.chat.jsonl`),
+          `${JSON.stringify({ sessionId, timestamp: "2026-09-18T02:00:00.000Z", event: { type: "system_notice", noticeKind: "info", message: "seed" } })}\n`,
+          "utf8",
+        );
+      }
+
+      function seedOrphanTranscript(sessionId: string, extra: AgentChatEventEnvelope[] = []): void {
+        writeTranscriptFile(sessionId);
+        vi.mocked(parseAgentChatTranscript).mockReturnValue([
+          { sessionId, timestamp: "2026-09-18T02:00:00.000Z", sequence: 1, event: {
+            type: "scheduled_work_update", id: "background:bg-stale", kind: "background_task",
+            status: "running", origin: "background_task", title: "npm run serve", summary: "shell",
+            sourceTaskId: "bg-stale", turnId: "turn-old",
+          } as any },
+          { sessionId, timestamp: "2026-09-18T02:00:01.000Z", sequence: 2, event: {
+            type: "subagent_started", taskId: "sub-stale", agentId: "sub-stale",
+            agentType: "Explore", parentToolUseId: "toolu_stale", description: "look", turnId: "turn-old",
+          } as any },
+          ...extra,
+        ]);
+      }
+
+      it("terminalizes stale subagent and background rows for a chat nobody reopens", async () => {
+        const sessionId = "claude-stale-sweep-1";
+        const events: AgentChatEventEnvelope[] = [];
+        const { service, sessionService } = createService({
+          runtimeSocketPath: "/tmp/ade.sock",
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        sessionService.create({ sessionId, laneId: "lane-1", toolType: "claude-chat", transcriptPath: "" });
+        seedOrphanTranscript(sessionId);
+
+        service.reconcileStaleRuns();
+
+        const bgStopped = events.filter((e) =>
+          e.event.type === "scheduled_work_update"
+          && (e.event as any).id === "background:bg-stale"
+          && (e.event as any).status === "stopped");
+        expect(bgStopped).toHaveLength(1);
+        expect(bgStopped[0]!.event).toMatchObject({ stopSource: "system" });
+
+        const subStopped = events.filter((e) =>
+          e.event.type === "subagent_result"
+          && (e.event as any).taskId === "sub-stale"
+          && (e.event as any).status === "stopped");
+        expect(subStopped).toHaveLength(1);
+        expect(subStopped[0]!.event).toMatchObject({ stopSource: "system", stopReason: "the ADE brain restarted" });
+      });
+
+      it("emits each terminal row exactly once across repeated passes", async () => {
+        const sessionId = "claude-stale-sweep-once";
+        const events: AgentChatEventEnvelope[] = [];
+        const { service, sessionService } = createService({
+          runtimeSocketPath: "/tmp/ade.sock",
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        sessionService.create({ sessionId, laneId: "lane-1", toolType: "claude-chat", transcriptPath: "" });
+        seedOrphanTranscript(sessionId);
+
+        service.reconcileStaleRuns();
+        service.reconcileStaleRuns();
+        service.reconcileStaleRuns();
+
+        expect(events.filter((e) => e.event.type === "subagent_result")).toHaveLength(1);
+        expect(events.filter((e) =>
+          e.event.type === "scheduled_work_update" && (e.event as any).status === "stopped")).toHaveLength(1);
+      });
+
+      it("leaves a chat whose runtime this brain still holds untouched", async () => {
+        let warmupComplete = false;
+        const stream = vi.fn(() => (async function* () {
+          yield { type: "system", subtype: "init", session_id: "sdk-stale-live", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        })());
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send: vi.fn().mockResolvedValue(undefined), stream, close: vi.fn(),
+          sessionId: "sdk-stale-live", setPermissionMode: vi.fn().mockResolvedValue(undefined),
+        } as any);
+        const events: AgentChatEventEnvelope[] = [];
+        const { service } = createService({
+          runtimeSocketPath: "/tmp/ade.sock",
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+        await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+        seedOrphanTranscript(session.id);
+        const before = events.length;
+
+        service.reconcileStaleRuns();
+
+        expect(events.slice(before).filter((e) =>
+          e.event.type === "subagent_result" || e.event.type === "scheduled_work_update")).toHaveLength(0);
+      });
+
+      it("finishes a spawned subagent chat that went idle with a report landed", async () => {
+        const sessionId = "claude-stale-sweep-child";
+        const childId = "child-chat-1";
+        const events: AgentChatEventEnvelope[] = [];
+        const { service, sessionService } = createService({
+          runtimeSocketPath: "/tmp/ade.sock",
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        sessionService.create({ sessionId, laneId: "lane-1", toolType: "claude-chat", transcriptPath: "" });
+        sessionService.create({ sessionId: childId, laneId: "lane-1", toolType: "claude-chat", transcriptPath: "" });
+        // The child chat's own row is the second source of truth: still
+        // "running" in the DB, but no live brain owns it, and it left a report.
+        sessionService.setStatusNote(childId, "Ported the pane, tests green");
+        writeTranscriptFile(sessionId);
+        vi.mocked(parseAgentChatTranscript).mockReturnValue([
+          { sessionId, timestamp: "2026-09-18T02:00:01.000Z", sequence: 1, event: {
+            type: "subagent_started", taskId: `chat:${childId}`, agentType: "subagent",
+            parentToolUseId: "toolu_child", description: "port the pane", turnId: "turn-old",
+          } as any },
+        ]);
+
+        service.reconcileStaleRuns();
+
+        const result = events.find((e) =>
+          e.event.type === "subagent_result" && (e.event as any).taskId === `chat:${childId}`);
+        expect(result?.event).toMatchObject({
+          status: "completed",
+          summary: "Ported the pane, tests green",
+        });
+        expect((result!.event as any).finalSummary).toContain("Finished (report landed)");
+        expect((result!.event as any).stopSource).toBeUndefined();
+      });
     });
 
     it("reconciles before an SDK id exists and emits only a missing terminal half", async () => {
@@ -20361,8 +21981,7 @@ describe("createAgentChatService", () => {
     it("reports active Cursor SDK turns so project switching does not close the chat runtime", async () => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
       const events: AgentChatEventEnvelope[] = [];
-      let finishTurn = () => {};
-      mockState.cursorSendPromptGate = new Promise<void>((resolve) => { finishTurn = resolve; });
+      const finishTurn = parkCursorSend();
       const { service } = createService({
         onEvent: (event: AgentChatEventEnvelope) => events.push(event),
       });
@@ -20542,8 +22161,7 @@ describe("createAgentChatService", () => {
 
     it("expires the abandoned run on the first Cursor send after settlement, and only that one", async () => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
-      let releaseStuckTurn = () => {};
-      mockState.cursorSendPromptGate = new Promise<void>((resolve) => { releaseStuckTurn = resolve; });
+      const releaseStuckTurn = parkCursorSend();
       const { service } = createService();
       const session = await service.createSession({
         laneId: "lane-1",
@@ -21078,7 +22696,7 @@ describe("createAgentChatService", () => {
 
       vi.useFakeTimers();
       try {
-        mockState.cursorSendPromptGate = new Promise<void>(() => {});
+        parkCursorSend();
         void service.sendMessage({
           sessionId: session.id,
           text: "Turn that goes silent.",
@@ -21109,10 +22727,14 @@ describe("createAgentChatService", () => {
     });
 
     /**
-     * Cursor "interrupt & continue". The Cursor SDK has no mid-run message
-     * API, so the redirect can only be cancel + resend on the same agent —
-     * these cover that the cancel happens, the resend lands on the same
-     * thread, and nothing the user already queued is thrown away.
+     * Cursor "interrupt & continue". Unlike Claude's interrupt, and unlike
+     * Cursor's own inline steer, this one cancels the run and resends on the
+     * same agent — these cover that the cancel happens, the resend lands on the
+     * same thread, and nothing the user already queued is thrown away.
+     *
+     * The inline-steer block further down uses its own `startStalledCursorTurn`:
+     * it needs a turn that never settles and a way to end it on demand, while
+     * this one needs the cancel plumbing that drives the redirect.
      */
     const startBusyCursorSession = async (events: AgentChatEventEnvelope[]) => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
@@ -21125,13 +22747,12 @@ describe("createAgentChatService", () => {
         model: "composer-2",
         modelId: "cursor/composer-2",
       });
-      let releaseTurn: (() => void) | null = null;
-      mockState.cursorSendPromptGate = new Promise<void>((resolve) => { releaseTurn = resolve; });
+      const releaseTurn = parkCursorSend();
       void service.sendMessage({
         sessionId: session.id,
         text: "Original turn.",
       }, { awaitDispatch: true }).catch(() => undefined);
-      await vi.waitFor(() => {
+      await waitForFakeTimers(() => {
         expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(1);
       });
       // The worker's cancel is what actually settles the in-flight run.
@@ -21217,7 +22838,11 @@ describe("createAgentChatService", () => {
       expect(readPersistedChatState(session.id).cursorSdkAgentId).toBe("cursor-sdk-agent-1");
     });
 
-    it("routes messageSession kind auto on Cursor through interrupt-and-continue", async () => {
+    it("routes messageSession kind auto on Cursor through the inline steer", async () => {
+      // "auto" reads `defaultActiveTurnDispatchMode`, which is the first entry
+      // in the canonical table. Cursor's first entry became "inline" when
+      // @cursor/sdk 1.0.31 added `Run.steer()`, so auto now folds the message
+      // into the live run instead of cancelling it.
       const events: AgentChatEventEnvelope[] = [];
       const { service, session } = await startBusyCursorSession(events);
 
@@ -21228,13 +22853,14 @@ describe("createAgentChatService", () => {
       });
 
       expect(result.routedAction).toBe("steer");
-      await vi.waitFor(() => {
-        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(2);
-      });
-      expect(String(mockState.cursorSdkSendCalls[1]?.promptText ?? ""))
-        .toContain("Do this instead.");
+      expect(mockState.cursorSdkSteerCalls).toEqual(["Do this instead."]);
+      // The live turn takes the text, so no second turn starts and the first
+      // one is never interrupted.
+      expect(mockState.cursorSdkSendCalls).toHaveLength(1);
       expect(events.some((event) =>
-        event.event.type === "status" && event.event.turnStatus === "interrupted")).toBe(true);
+        event.event.type === "status" && event.event.turnStatus === "interrupted")).toBe(false);
+      expect(events.some((event) =>
+        event.event.type === "user_message" && event.event.deliveryState === "inline")).toBe(true);
     });
 
     it("keeps messageSession kind queue on Cursor queued instead of interrupting", async () => {
@@ -21324,12 +22950,6 @@ describe("createAgentChatService", () => {
           event.event.type === "user_message" && event.event.deliveryState === "queued")).toBe(true);
       });
 
-      await expect(service.dispatchSteer({
-        sessionId: session.id,
-        steerId: staged.steerId,
-        mode: "inline",
-      })).rejects.toThrow(/only the "interrupt" active-turn dispatch mode/);
-
       await service.dispatchSteer({ sessionId: session.id, steerId: staged.steerId, mode: "interrupt" });
 
       await vi.waitFor(() => {
@@ -21343,7 +22963,7 @@ describe("createAgentChatService", () => {
         && event.event.message.includes("Delivering"))).toBe(true);
     });
 
-    it("rejects an inline steer dispatch on Cursor instead of silently downgrading it", async () => {
+    it("accepts an inline steer dispatch on Cursor now that the SDK has a steer channel", async () => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
       const { service } = createService({ onEvent: () => {} });
       const session = await service.createSession({
@@ -21353,11 +22973,13 @@ describe("createAgentChatService", () => {
         modelId: "cursor/composer-2",
       });
 
+      // The table guard no longer refuses the mode. With no live turn the
+      // message simply becomes an ordinary send rather than an error.
       await expect(service.steer({
         sessionId: session.id,
         text: "Fold this into the live run.",
         dispatchMode: "inline",
-      })).rejects.toThrow(/only the "interrupt" active-turn dispatch mode/);
+      })).resolves.toMatchObject({ queued: false });
     });
 
     // Regression (quality A2): the redirect rebuilds the send from scratch, so
@@ -21474,7 +23096,7 @@ describe("createAgentChatService", () => {
       // The run settles late, and its tail runs the cancel the stop earned.
       // The flag is still armed, so the user's other message survives it.
       releaseTurn?.();
-      await vi.waitFor(() => {
+      await waitForFakeTimers(() => {
         expect(events.some((event) =>
           event.event.type === "status" && event.event.turnStatus === "interrupted")).toBe(true);
       });
@@ -21535,7 +23157,7 @@ describe("createAgentChatService", () => {
       try {
         // Neither attempt ever answers, so the steer is carried onto attempt 2's
         // runtime and then abandoned again when that one is recycled too.
-        mockState.cursorSendPromptGate = new Promise<void>(() => {});
+        parkCursorSend();
         void service.sendMessage({
           sessionId: session.id,
           text: "Both attempts go silent.",
@@ -21585,7 +23207,7 @@ describe("createAgentChatService", () => {
 
       vi.useFakeTimers();
       try {
-        mockState.cursorSendPromptGate = new Promise<void>(() => {});
+        parkCursorSend();
         void service.sendMessage({
           sessionId: session.id,
           text: "Silent run the user stops.",
@@ -21631,7 +23253,7 @@ describe("createAgentChatService", () => {
 
       vi.useFakeTimers();
       try {
-        mockState.cursorSendPromptGate = new Promise<void>(() => {});
+        parkCursorSend();
         void service.sendMessage({
           sessionId: session.id,
           text: "Both attempts go silent.",
@@ -21686,13 +23308,13 @@ describe("createAgentChatService", () => {
 
       vi.useFakeTimers();
       try {
-        mockState.cursorSendPromptGate = new Promise<void>(() => {});
+        parkCursorSend();
         // Send 3 is the delivered steer's own turn: it goes silent too, so its
         // nested recycle detaches managed.runtime while the outer wrapper is
         // still holding the carried steer — the false-cancel window.
         mockState.onCursorSendPrompt = () => {
           if (mockState.cursorSdkSendCalls.length !== 3) return;
-          mockState.cursorSendPromptGate = new Promise<void>(() => {});
+          parkCursorSend();
           // The gate is read synchronously right after this hook, so clearing
           // it on a microtask stalls only send 3 and lets its re-send run free.
           queueMicrotask(() => { mockState.cursorSendPromptGate = null; });
@@ -21737,12 +23359,331 @@ describe("createAgentChatService", () => {
       }
     });
 
+    describe("Cursor inline steer", () => {
+      // `pumpUntil` drives fake timers, and every test here parks a turn that
+      // never settles on its own.
+      // The file-level afterEach already restores the clock.
+      beforeEach(() => { vi.useFakeTimers(); });
+      afterEach(() => {
+        // Parks drain in the file-level afterEach, after the real clock is
+        // restored. Draining here would settle the stalled send on the fake
+        // clock this block installed.
+        vi.useRealTimers();
+      });
+
+      /** A Cursor session parked on a turn that never finishes on its own. */
+      const startStalledCursorTurn = async (events: AgentChatEventEnvelope[]) => {
+        process.env.CURSOR_API_KEY = "cursor-test-key";
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "cursor",
+          model: "composer-2",
+          modelId: "cursor/composer-2",
+        });
+        const endTurn = parkCursorSend();
+        void service.sendMessage({
+          sessionId: session.id,
+          text: "A turn that keeps running.",
+        }, { awaitDispatch: true }).catch(() => undefined);
+        await pumpUntil("first cursor send", () => mockState.cursorSdkSendCalls.length >= 1);
+        // `endTurn` lets the turn finish. Without calling it the runtime stays
+        // busy for the whole test, which is what every case below wants except
+        // the two that prove a stranded row still goes out.
+        return { service, session, endTurn };
+      };
+
+      const noticeTexts = (events: AgentChatEventEnvelope[]) => events
+        .filter((event) => event.event.type === "system_notice")
+        .map((event) => (event.event.type === "system_notice" ? event.event.message : ""));
+
+      it("folds the message into the live run when the turn accepts it", async () => {
+        const events: AgentChatEventEnvelope[] = [];
+        const { service, session } = await startStalledCursorTurn(events);
+
+        await service.steer({
+          sessionId: session.id,
+          text: "Do this instead.",
+          dispatchMode: "inline",
+        });
+
+        expect(mockState.cursorSdkSteerCalls).toEqual(["Do this instead."]);
+        // The steered text belongs to the live turn, so it must not start one.
+        expect(mockState.cursorSdkSendCalls).toHaveLength(1);
+        const inline = events.filter((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "inline");
+        expect(inline).toHaveLength(1);
+        // Nothing is left staged, so no chip survives the send.
+        expect(events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued")).toBe(false);
+      });
+
+      it("queues the message and explains why when the turn refuses it", async () => {
+        const events: AgentChatEventEnvelope[] = [];
+        mockState.cursorSteerOutcome = "revert_to_followup";
+        const { service, session } = await startStalledCursorTurn(events);
+
+        await service.steer({
+          sessionId: session.id,
+          text: "Too late for this one.",
+          dispatchMode: "inline",
+        });
+
+        expect(mockState.cursorSdkSteerCalls).toEqual(["Too late for this one."]);
+        // The text is never lost: it falls back to the ordinary staged queue.
+        expect(events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued")).toBe(true);
+        expect(noticeTexts(events).some((text) => text.includes("send as a new message"))).toBe(true);
+      });
+
+      it("keeps the staged chip alive on the fallback notice", async () => {
+        // The renderer retires a chip when a notice names its steer AND the text
+        // matches /cancelled|delivering/i. The fallback leaves the message
+        // queued, so its wording must fail that test or the user loses sight of
+        // a message still waiting to send.
+        const events: AgentChatEventEnvelope[] = [];
+        mockState.cursorSteerOutcome = "revert_to_followup";
+        const { service, session } = await startStalledCursorTurn(events);
+
+        await service.steer({
+          sessionId: session.id,
+          text: "Still mine.",
+          dispatchMode: "inline",
+        });
+
+        const fallback = events.find((event) =>
+          event.event.type === "system_notice" && event.event.message.includes("send as a new message"));
+        expect(fallback).toBeTruthy();
+        const message = fallback?.event.type === "system_notice" ? fallback.event.message : "";
+        expect(/cancelled|delivering/i.test(message)).toBe(false);
+      });
+
+      it("never offers an attachment-bearing message to the text-only steer channel", async () => {
+        // `Run.steer(text)` has no image channel and no file blocks. Sending the
+        // bare text would drop the files while the transcript row still claimed
+        // they went. The staged queue delivers them intact.
+        const events: AgentChatEventEnvelope[] = [];
+        const { service, session } = await startStalledCursorTurn(events);
+
+        const imagePath = path.join(tmpRoot, "cursor-inline-steer.png");
+        fs.writeFileSync(imagePath, "fake-image-bytes");
+        await service.steer({
+          sessionId: session.id,
+          text: "Look at this screenshot.",
+          dispatchMode: "inline",
+          attachments: [{ path: imagePath, type: "image" }],
+        });
+
+        // The steer channel is never even asked, so the notice must not blame
+        // the agent for a refusal ADE made itself.
+        expect(mockState.cursorSdkSteerCalls).toEqual([]);
+        const notice = noticeTexts(events).find((text) => text.includes("send as a new message"));
+        expect(notice).toBeTruthy();
+        expect(notice).not.toMatch(/cursor/i);
+        expect(events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued")).toBe(true);
+      });
+
+      it("does not promise a new message when the queue is full and drops it", async () => {
+        // The fallback notice says the message will send. Emitting it before the
+        // queue-full guard would pair that promise with "Steer dropped".
+        const events: AgentChatEventEnvelope[] = [];
+        mockState.cursorSteerOutcome = "revert_to_followup";
+        const { service, session } = await startStalledCursorTurn(events);
+
+        // Fill until the host itself reports the queue full, so the private cap's
+        // value never leaks in here and a change to it cannot quietly stop this
+        // test from reaching the branch it exists for.
+        let filler = 0;
+        while ((await service.steer({ sessionId: session.id, text: `filler ${filler}` })).reason !== "queue_full") {
+          filler += 1;
+          if (filler > 100) throw new Error("queue never reported full");
+        }
+        const result = await service.steer({
+          sessionId: session.id,
+          text: "One too many.",
+          dispatchMode: "inline",
+        });
+
+        expect(result.reason).toBe("queue_full");
+        const texts = noticeTexts(events);
+        expect(texts.some((text) => text.includes("queue is full"))).toBe(true);
+        expect(texts.some((text) => text.includes("send as a new message"))).toBe(false);
+      });
+
+      it("queues the message rather than losing it when the steer call throws", async () => {
+        const events: AgentChatEventEnvelope[] = [];
+        mockState.cursorSteerError = new Error("Cursor SDK steer failed: worker gone");
+        const { service, session } = await startStalledCursorTurn(events);
+
+        // A dead worker must not take the user's typed text down with it.
+        await service.steer({
+          sessionId: session.id,
+          text: "Survives a dead worker.",
+          dispatchMode: "inline",
+        });
+
+        expect(events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued")).toBe(true);
+      });
+
+      it("sends a stranded row when the refusal is the turn ending", async () => {
+        // The whole reason `drainCursorQueueHeadIfIdle` exists. Cursor drains its
+        // queue at one place only: the end of a turn. When the steer is refused
+        // BECAUSE that turn just ended, the boundary already decided not to
+        // drain (the queue was empty then), so without the flush this row waits
+        // for the user to send something unrelated.
+        const events: AgentChatEventEnvelope[] = [];
+        mockState.cursorSteerOutcome = "revert_to_followup";
+        const { service, session, endTurn } = await startStalledCursorTurn(events);
+        mockState.onCursorSteer = () => {
+          mockState.cursorSendPromptGate = null;
+          endTurn();
+        };
+
+        await service.steer({
+          sessionId: session.id,
+          text: "Stranded without the flush.",
+          dispatchMode: "inline",
+        });
+
+        // Send 2 is the stranded row going out on its own, with no further user
+        // action. Before the flush existed this stayed at 1.
+        await pumpUntil("stranded row delivered", () => mockState.cursorSdkSendCalls.length >= 2);
+        expect(String(mockState.cursorSdkSendCalls[1]?.promptText ?? ""))
+          .toContain("Stranded without the flush.");
+      });
+
+      it("refuses to edit or cancel a row while its dispatch is in flight", async () => {
+        // The inline dispatch keeps the row in `pendingSteers` across the SDK
+        // await and sends the text it read at call time. An edit landing in that
+        // window would put text in the transcript the agent never received, and
+        // a cancel would clear the chip for a message already on its way.
+        const events: AgentChatEventEnvelope[] = [];
+        const { service, session } = await startStalledCursorTurn(events);
+        const staged = await service.steer({ sessionId: session.id, text: "Do not mutate me." });
+        await pumpUntil("staged row", () => events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued"));
+
+        // `onCursorSteer` runs INSIDE the mocked steer, which is exactly the
+        // window the guard protects.
+        const attempts: Promise<unknown>[] = [];
+        mockState.onCursorSteer = () => {
+          attempts.push(
+            service.editSteer({ sessionId: session.id, steerId: staged.steerId, text: "edited" })
+              .then(() => "edit-allowed", (error: Error) => error.message),
+            service.cancelSteer({ sessionId: session.id, steerId: staged.steerId })
+              .then(() => "cancel-allowed", (error: Error) => error.message),
+          );
+        };
+
+        await service.dispatchSteer({
+          sessionId: session.id,
+          steerId: staged.steerId,
+          mode: "inline",
+        });
+        const outcomes = await Promise.all(attempts);
+        expect(outcomes).toHaveLength(2);
+        for (const outcome of outcomes) {
+          expect(String(outcome)).toMatch(/already being dispatched/);
+        }
+        // The delivered text is the text that was staged, not the attempted edit.
+        expect(mockState.cursorSdkSteerCalls).toEqual(["Do not mutate me."]);
+      });
+
+      it("promotes an already staged row into the live run", async () => {
+        const events: AgentChatEventEnvelope[] = [];
+        const { service, session } = await startStalledCursorTurn(events);
+
+        const staged = await service.steer({ sessionId: session.id, text: "Staged first." });
+        await pumpUntil("staged row", () => events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued"));
+
+        const result = await service.dispatchSteer({
+          sessionId: session.id,
+          steerId: staged.steerId,
+          mode: "inline",
+        });
+
+        expect(result.dispatchedAt).toBeTypeOf("number");
+        expect(mockState.cursorSdkSteerCalls).toEqual(["Staged first."]);
+        expect(mockState.cursorSdkSendCalls).toHaveLength(1);
+        expect(events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "inline")).toBe(true);
+      });
+
+      it("does not treat a recycled run's steer ack as delivery of a staged row", async () => {
+        // Recycle copies `pendingSteers` onto the replacement and kills this
+        // run. An ack from the dying run is not ownership on the session that
+        // remains — reporting dispatched would drop the only surviving copy.
+        const events: AgentChatEventEnvelope[] = [];
+        const { service, session } = await startStalledCursorTurn(events);
+        const staged = await service.steer({ sessionId: session.id, text: "Keep me once." });
+        await pumpUntil("staged row", () => events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued"));
+
+        const releaseSteer = parkCursorSteer();
+        const dispatching = service.dispatchSteer({
+          sessionId: session.id,
+          steerId: staged.steerId,
+          mode: "inline",
+        });
+        await pumpUntil("steer in flight", () => mockState.cursorSdkSteerCalls.length >= 1);
+        await tripCursorSdkSilenceWatchAndRecycle();
+        releaseSteer();
+        const result = await dispatching;
+
+        expect(result.dispatchedAt).toBeNull();
+        expect(events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "inline")).toBe(false);
+      });
+
+      it("does not treat a recycled run's steer ack as inline on a fresh send", async () => {
+        const events: AgentChatEventEnvelope[] = [];
+        const { service, session } = await startStalledCursorTurn(events);
+        const releaseSteer = parkCursorSteer();
+        const sending = service.steer({
+          sessionId: session.id,
+          text: "Keep me once.",
+          dispatchMode: "inline",
+        });
+        await pumpUntil("steer in flight", () => mockState.cursorSdkSteerCalls.length >= 1);
+        await tripCursorSdkSilenceWatchAndRecycle();
+        releaseSteer();
+        const result = await sending;
+        expect(result.queued).toBe(true);
+        expect(events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "inline")).toBe(false);
+      });
+
+      it("leaves a promoted row staged when the turn refuses it", async () => {
+        const events: AgentChatEventEnvelope[] = [];
+        const { service, session } = await startStalledCursorTurn(events);
+
+        const staged = await service.steer({ sessionId: session.id, text: "Stays staged." });
+        await pumpUntil("staged row", () => events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued"));
+        mockState.cursorSteerOutcome = "revert_to_followup";
+
+        const result = await service.dispatchSteer({
+          sessionId: session.id,
+          steerId: staged.steerId,
+          mode: "inline",
+        });
+
+        // Not dispatched, so the row keeps its place and the turn boundary
+        // still owns delivering it.
+        expect(result.dispatchedAt).toBeNull();
+        expect(noticeTexts(events).some((text) => text.includes("send as a new message"))).toBe(true);
+        expect(events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "inline")).toBe(false);
+      });
+    });
+
     it("cancels a carried Cursor steer with recycle copy when the re-send cannot start", async () => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
-      mockState.cursorSendPromptError = new Error("Cursor SDK send failed: [internal] write ECANCELED");
-      // Attempt 2 cannot rebuild a runtime, so the carried steer can never be
-      // delivered — the chip must still clear, with an honest reason.
-      mockState.cursorAcquireErrorOnCall = 2;
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
         onEvent: (event: AgentChatEventEnvelope) => events.push(event),
@@ -21754,34 +23695,42 @@ describe("createAgentChatService", () => {
         modelId: "cursor/composer-2",
       });
 
-      let releaseTurn = () => {};
-      mockState.cursorSendPromptGate = new Promise<void>((resolve) => { releaseTurn = resolve; });
-      void service.sendMessage({
-        sessionId: session.id,
-        text: "Turn that dies.",
-      }, { awaitDispatch: true }).catch(() => undefined);
-      await vi.waitFor(() => {
-        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(1);
-        expect(String(mockState.cursorSdkSendCalls[0]?.promptText ?? "")).toContain("Turn that dies.");
-      });
-      expect(mockState.cursorSdkSendCalls).toHaveLength(1);
-      await service.steer({ sessionId: session.id, text: "Queued during the outage." });
-      releaseTurn();
+      vi.useFakeTimers();
+      try {
+        // Keep the first send parked. Completing it with a throw is racy with
+        // leftover Cursor inline parks: the catch path then cancels the steer
+        // as "current turn failed" instead of carrying it through recycle.
+        parkCursorSend();
+        void service.sendMessage({
+          sessionId: session.id,
+          text: "Turn that dies.",
+        }, { awaitDispatch: true }).catch(() => undefined);
+        await pumpUntil("first cursor send", () => mockState.cursorSdkSendCalls.length >= 1);
+        await service.steer({ sessionId: session.id, text: "Queued during the outage." });
+        await pumpUntil("queued steer", () => events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued"));
 
-      await vi.waitFor(() => {
-        expect(events.some((event) =>
-          event.sessionId === session.id && event.event.type === "done")).toBe(true);
-      });
+        // Fail the *next* acquire, armed immediately before recycle so a
+        // leftover acquire from the previous test cannot consume the slot.
+        mockState.cursorAcquireErrorOnCall = mockState.cursorSdkAcquireCalls.length + 1;
+        await tripCursorSdkSilenceWatchAndRecycle();
+        await pumpUntil("carried steer cancelled", () => events.some((event) =>
+          event.event.type === "system_notice"
+          && typeof event.event.steerId === "string"
+          && event.event.message.includes("recycled the Cursor thread")));
 
-      const cancelNotices = events.filter((event) =>
-        event.event.type === "system_notice"
-        && typeof event.event.steerId === "string"
-        && event.event.message.includes("cancelled"));
-      expect(cancelNotices).toHaveLength(1);
-      expect(cancelNotices[0]?.event).toMatchObject({
-        type: "system_notice",
-        message: "Queued message cancelled because ADE recycled the Cursor thread — resend it if still needed.",
-      });
+        const cancelNotices = events.filter((event) =>
+          event.event.type === "system_notice"
+          && typeof event.event.steerId === "string"
+          && event.event.message.includes("cancelled"));
+        expect(cancelNotices).toHaveLength(1);
+        expect(cancelNotices[0]?.event).toMatchObject({
+          type: "system_notice",
+          message: "Queued message cancelled because ADE recycled the Cursor thread — resend it if still needed.",
+        });
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("rotates onto a fresh Cursor agent after a restart when the previous thread was abandoned", async () => {
@@ -21798,7 +23747,7 @@ describe("createAgentChatService", () => {
       try {
         // Both attempts go silent, so the terminal path recycles the rotated
         // agent too and arms a rotation for whatever comes next.
-        mockState.cursorSendPromptGate = new Promise<void>(() => {});
+        parkCursorSend();
         void service.sendMessage({
           sessionId: session.id,
           text: "Both attempts go silent.",
@@ -21936,8 +23885,7 @@ describe("createAgentChatService", () => {
 
     it("still expires the abandoned run when the runtime is evicted between settle and the next send", async () => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
-      let releaseStuckTurn = () => {};
-      mockState.cursorSendPromptGate = new Promise<void>((resolve) => { releaseStuckTurn = resolve; });
+      const releaseStuckTurn = parkCursorSend();
       const { service } = createService();
       const session = await service.createSession({
         laneId: "lane-1",
@@ -22044,7 +23992,7 @@ describe("createAgentChatService", () => {
       vi.useFakeTimers();
       try {
         // The wedged thread: the send never settles and no worker event lands.
-        mockState.cursorSendPromptGate = new Promise<void>(() => {});
+        parkCursorSend();
         void service.sendMessage({
           sessionId: session.id,
           text: "Second Cursor turn.",
@@ -22094,7 +24042,7 @@ describe("createAgentChatService", () => {
 
       vi.useFakeTimers();
       try {
-        mockState.cursorSendPromptGate = new Promise<void>(() => {});
+        parkCursorSend();
         void service.sendMessage({
           sessionId: session.id,
           text: "Both attempts go silent.",
@@ -23946,6 +25894,10 @@ describe("createAgentChatService", () => {
       let finishBackground!: () => void;
       const startBackgroundPromise = new Promise<void>((resolve) => { startBackground = resolve; });
       const finishBackgroundPromise = new Promise<void>((resolve) => { finishBackground = resolve; });
+      let releaseIdleWorkflowNotification!: () => void;
+      const idleWorkflowNotificationGate = new Promise<void>((resolve) => {
+        releaseIdleWorkflowNotification = resolve;
+      });
 
       const stream = vi.fn(() => (async function* () {
         streamCall += 1;
@@ -24015,6 +25967,46 @@ describe("createAgentChatService", () => {
           description: "Check CI again",
           agent_id: "agent-child-1",
           parent_agent_id: "agent-parent-1",
+        };
+
+        yield {
+          type: "system",
+          subtype: "task_started",
+          session_id: "sdk-idle-wakeup",
+          task_id: "idle-workflow-1",
+          task_type: "local_workflow",
+          workflow_name: "idle-review",
+          description: "Review idle changes",
+        };
+        yield {
+          type: "system",
+          subtype: "task_progress",
+          session_id: "sdk-idle-wakeup",
+          task_id: "idle-workflow-1",
+          task_type: "local_workflow",
+          workflow_name: "idle-review",
+          description: "Review idle changes",
+          workflow_progress: [
+            { type: "workflow_agent", index: 0, state: "start", startedAt: 1, label: "idle:review" },
+          ],
+        };
+        // Exercise the idle reader's completed-update preservation before its
+        // terminal notification drains the synthetic workflow agent.
+        yield {
+          type: "system",
+          subtype: "task_updated",
+          session_id: "sdk-idle-wakeup",
+          task_id: "idle-workflow-1",
+          patch: { status: "completed" },
+        };
+        await idleWorkflowNotificationGate;
+        yield {
+          type: "system",
+          subtype: "task_notification",
+          session_id: "sdk-idle-wakeup",
+          task_id: "idle-workflow-1",
+          status: "completed",
+          summary: "Idle review complete",
         };
 
         await finishBackgroundPromise;
@@ -24112,6 +26104,33 @@ describe("createAgentChatService", () => {
         title: "Check CI again",
         sourceToolUseId: "tool-wakeup-1",
         sourceTaskId: "cron-task-1",
+      });
+
+      const idleWorkflowAgentResult = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.sessionId === session.id
+          && event.event.type === "subagent_result"
+          && (event.event as any).taskId === "idle-workflow-1::a0",
+      );
+      expect((idleWorkflowAgentResult.event as any).status).toBe("stopped");
+      releaseIdleWorkflowNotification();
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.sessionId === session.id
+          && event.event.type === "subagent_result"
+          && (event.event as any).taskId === "idle-workflow-1",
+      );
+      const idleWorkflowParentResult = events.find(
+        (event) => event.sessionId === session.id
+          && event.event.type === "subagent_result"
+          && (event.event as any).taskId === "idle-workflow-1",
+      );
+      expect((idleWorkflowParentResult?.event as any)?.workflowProgress).toMatchObject({
+        queuedCount: 0,
+        runningCount: 0,
+        agents: [expect.objectContaining({ status: "stopped" })],
       });
 
       finishBackground();
@@ -26643,7 +28662,7 @@ describe("createAgentChatService", () => {
       await restarted.service.refreshScheduledWork();
 
       await vi.advanceTimersByTimeAsync(150_000);
-      await vi.waitFor(() => {
+      await waitForFakeTimers(() => {
         expect(events.some((event) =>
           event.sessionId === session.id
           && event.event.type === "user_message"
@@ -30039,6 +32058,81 @@ describe("createAgentChatService", () => {
       expect((await service.listSubagents({ sessionId: session.id }))[0]).toMatchObject({
         status: "completed",
         finalSummary: "The renderer lifecycle is correct.",
+      });
+    });
+
+    it("attributes a Codex close_agent result to the provider", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Run a parallel repository scan.",
+      }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/started",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "call-close-1",
+            type: "collabAgentToolCall",
+            tool: "spawn_agent",
+            receiverThreadIds: ["agent-thread-close"],
+            prompt: "Inspect the shared chat renderer",
+          },
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: {
+          threadId: "agent-thread-close",
+          turn: { id: "agent-turn-close", status: "inProgress" },
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          item: {
+            id: "close-call-1",
+            type: "collabAgentToolCall",
+            tool: "close_agent",
+            receiverThreadIds: ["agent-thread-close"],
+            status: "completed",
+          },
+        },
+      });
+
+      const stopped = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "subagent_result"
+          && event.event.taskId === "agent-thread-close"
+          && event.event.status === "stopped",
+      );
+      expect(stopped.event).toMatchObject({
+        summary: "Agent closed",
+        stopSource: "provider",
+        stopReason: "the provider ended the turn",
       });
     });
 
@@ -36185,7 +38279,7 @@ describe("createAgentChatService", () => {
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/interrupt")).toBe(false);
 
         await vi.advanceTimersByTimeAsync(10 * 60_000);
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(events.some((event) => event.event.type === "codex_turn_stalled"
             && event.event.turnId === "turn-1")).toBe(true);
         });
@@ -36317,7 +38411,7 @@ describe("createAgentChatService", () => {
         )).toHaveLength(1);
 
         await vi.advanceTimersByTimeAsync(120_000);
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(events.some((event) =>
             event.event.type === "codex_turn_recovery"
             && event.event.state === "recovered"
@@ -36449,7 +38543,7 @@ describe("createAgentChatService", () => {
         await Promise.resolve();
         await vi.advanceTimersByTimeAsync(10 * 60_000);
 
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(events.some((event) =>
             event.event.type === "codex_turn_stalled"
             && event.event.reason === "no_progress"
@@ -37156,7 +39250,7 @@ describe("createAgentChatService", () => {
           },
         });
 
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(events.some((event) =>
             event.event.type === "approval_request"
             && event.event.itemId === "cmd-1"
@@ -37202,7 +39296,7 @@ describe("createAgentChatService", () => {
             reason: "Run tests",
           },
         });
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(events.some((event) =>
             event.event.type === "approval_request"
             && event.event.itemId === "cmd-rearm-1"
@@ -37211,6 +39305,11 @@ describe("createAgentChatService", () => {
 
         await vi.advanceTimersByTimeAsync(10 * 60_000);
         expect(events.some((event) => event.event.type === "codex_turn_stalled")).toBe(false);
+        // Let the suspended reconcile finish and drop its in-flight lock
+        // before the answer re-arms the timer. Otherwise the second 10-minute
+        // advance can no-op while that first reconcile is still awaiting a
+        // thread/read microtask.
+        for (let tick = 0; tick < 8; tick += 1) await Promise.resolve();
 
         await service.respondToInput({
           sessionId: session.id,
@@ -37218,7 +39317,8 @@ describe("createAgentChatService", () => {
           decision: "accept",
         });
         await vi.advanceTimersByTimeAsync(10 * 60_000);
-        await vi.waitFor(() => {
+        for (let tick = 0; tick < 8; tick += 1) await Promise.resolve();
+        await waitForFakeTimers(() => {
           expect(events.some((event) =>
             event.event.type === "codex_turn_stalled"
             && event.event.turnId === "turn-1"
@@ -37264,7 +39364,7 @@ describe("createAgentChatService", () => {
             reason: "Run tests",
           },
         });
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(events.some((event) =>
             event.event.type === "approval_request"
             && event.event.itemId === "cmd-auto-resolved-1"
@@ -37275,7 +39375,7 @@ describe("createAgentChatService", () => {
           sessionId: session.id,
           permissionMode: "full-auto",
         });
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(events.some((event) =>
             event.event.type === "pending_input_resolved"
             && event.event.itemId === "cmd-auto-resolved-1"
@@ -37284,7 +39384,8 @@ describe("createAgentChatService", () => {
         });
 
         await vi.advanceTimersByTimeAsync(10 * 60_000);
-        await vi.waitFor(() => {
+        for (let tick = 0; tick < 8; tick += 1) await Promise.resolve();
+        await waitForFakeTimers(() => {
           expect(events.some((event) =>
             event.event.type === "codex_turn_stalled"
             && event.event.turnId === "turn-1"
@@ -37323,7 +39424,7 @@ describe("createAgentChatService", () => {
             reason: "Run tests",
           },
         });
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(events.some((event) =>
             event.event.type === "approval_request"
             && event.event.itemId === "cmd-server-resolved-1"
@@ -37342,14 +39443,14 @@ describe("createAgentChatService", () => {
             requestId: "server-resolved-approval-1",
           },
         });
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(events.some((event) =>
             event.event.type === "pending_input_resolved"
             && event.event.itemId === "cmd-server-resolved-1"
           )).toBe(true);
         });
         await vi.advanceTimersByTimeAsync(10 * 60_000);
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(events.some((event) =>
             event.event.type === "codex_turn_stalled"
             && event.event.turnId === "turn-1"
@@ -37397,7 +39498,7 @@ describe("createAgentChatService", () => {
         }, { awaitDispatch: true });
 
         await vi.advanceTimersByTimeAsync(120_000);
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(events.some((event) =>
             event.event.type === "done"
             && event.event.turnId === "turn-1"
@@ -37462,7 +39563,7 @@ describe("createAgentChatService", () => {
         }, { awaitDispatch: true });
 
         await vi.advanceTimersByTimeAsync(120_000);
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(events.some((event) =>
             event.event.type === "tool_call"
             && event.event.itemId === "mcp-1"
@@ -37652,7 +39753,7 @@ describe("createAgentChatService", () => {
         }, { awaitDispatch: true });
 
         await vi.advanceTimersByTimeAsync(120_000);
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(events.some((event) =>
             event.event.type === "reasoning"
             && event.event.text.includes("Recovered partial reasoning.")
@@ -37662,7 +39763,7 @@ describe("createAgentChatService", () => {
 
         await vi.advanceTimersByTimeAsync(0);
         await vi.advanceTimersByTimeAsync(10 * 60_000);
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(events.some((event) =>
             event.event.type === "codex_turn_stalled"
             && event.event.reason === "no_progress"
@@ -37715,7 +39816,7 @@ describe("createAgentChatService", () => {
         }, { awaitDispatch: true });
 
         await vi.advanceTimersByTimeAsync(120_000);
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(mockState.pendingCodexResponses).toHaveLength(1);
         });
 
@@ -37779,7 +39880,7 @@ describe("createAgentChatService", () => {
         }, { awaitDispatch: true });
 
         await vi.advanceTimersByTimeAsync(120_000);
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(mockState.pendingCodexResponses).toHaveLength(1);
         });
 
@@ -37822,7 +39923,7 @@ describe("createAgentChatService", () => {
       }
     });
 
-    it("routes structured Codex stall notices to an orchestration parent without auto-handoff", async () => {
+    it("routes structured Codex stall notices to a spawn parent without auto-handoff", async () => {
       vi.useFakeTimers();
       try {
         const events: AgentChatEventEnvelope[] = [];
@@ -37833,13 +39934,11 @@ describe("createAgentChatService", () => {
           laneId: "lane-1",
           provider: "codex",
           model: "gpt-5.5",
-          orchestrationRole: "lead",
         });
         const child = await service.createSession({
           laneId: "lane-1",
           provider: "codex",
           model: "gpt-5.5",
-          orchestrationRole: "worker",
           orchestrationParentSessionId: parent.id,
           spawnKind: "subagent",
         });
@@ -37855,7 +39954,7 @@ describe("createAgentChatService", () => {
         });
 
         await vi.advanceTimersByTimeAsync(120_000);
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(events.some((event) =>
             event.sessionId === parent.id
             && event.event.type === "codex_turn_stalled"
@@ -38637,7 +40736,7 @@ describe("createAgentChatService", () => {
           text: "/goal status paused",
         }, { awaitDispatch: true });
 
-        await vi.waitFor(() => {
+        await waitForFakeTimers(() => {
           expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/goal/set")).toBe(true);
         });
         await vi.advanceTimersByTimeAsync(10_050);
@@ -44215,6 +46314,486 @@ describe("createAgentChatService", () => {
       );
     });
 
+    it("folds an inline OpenCode steer into the live turn through the v2 delivery", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const firstTurnControl: { release?: () => void } = {};
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          await new Promise<void>((resolve) => {
+            firstTurnControl.release = resolve;
+          });
+          yield { type: "finish", usage: {} };
+        })(),
+      } as any));
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      const firstTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Start the long turn.",
+      });
+      for (let attempt = 0; attempt < 20 && !firstTurnControl.release; attempt += 1) {
+        await Promise.resolve();
+      }
+      expect(firstTurnControl.release).toBeTypeOf("function");
+
+      const steerResult = await service.steer({
+        sessionId: session.id,
+        text: "Fold this into the live turn.",
+        dispatchMode: "inline",
+      });
+      expect(steerResult.queued).toBe(false);
+      expect(mockState.openCodeV2SteerCalls).toHaveLength(1);
+      expect(mockState.openCodeV2SteerCalls[0]).toEqual(expect.objectContaining({
+        sessionID: expect.any(String),
+        delivery: "steer",
+        // The server validates its `msg_` message-ID brand; a bare uuid would
+        // 400 and silently degrade every inline steer to the queue.
+        id: expect.stringMatching(/^msg_/),
+        prompt: expect.objectContaining({ text: expect.stringContaining("Fold this into the live turn.") }),
+      }));
+
+      const delivered = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "user_message"
+          && event.event.text === "Fold this into the live turn."
+          && (event.event as any).deliveryState === "inline",
+      );
+      expect((delivered.event as any).steerId).toBe(steerResult.steerId);
+
+      firstTurnControl.release!();
+      await firstTurn;
+    });
+
+    it("queues an OpenCode steer that carries per-message overrides instead of folding it inline", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const firstTurnControl: { release?: () => void } = {};
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          await new Promise<void>((resolve) => {
+            firstTurnControl.release = resolve;
+          });
+          yield { type: "finish", usage: {} };
+        })(),
+      } as any));
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      const firstTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Start the long turn.",
+      });
+      for (let attempt = 0; attempt < 20 && !firstTurnControl.release; attempt += 1) {
+        await Promise.resolve();
+      }
+
+      // The v2 steer prompt carries text and file parts only, so an execution
+      // override picked for this message cannot ride it. The row must stage
+      // instead, preserving the directive for the turn boundary.
+      const steerResult = await service.steer({
+        sessionId: session.id,
+        text: "Keep my execution override.",
+        dispatchMode: "inline",
+        executionMode: "focused",
+      });
+      expect(steerResult.queued).toBe(true);
+      expect(mockState.openCodeV2SteerCalls).toHaveLength(0);
+      expect(events.some((entry) =>
+        entry.event.type === "user_message"
+        && entry.event.text === "Keep my execution override."
+        && (entry.event as any).deliveryState === "queued"
+      )).toBe(true);
+      expect(events.some((entry) =>
+        entry.event.type === "user_message"
+        && entry.event.text === "Keep my execution override."
+        && (entry.event as any).deliveryState === "inline"
+      )).toBe(false);
+
+      firstTurnControl.release!();
+      await firstTurn;
+    });
+
+    it("keeps a staged OpenCode steer with overrides staged instead of promoting it inline", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const firstTurnControl: { release?: () => void } = {};
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          await new Promise<void>((resolve) => {
+            firstTurnControl.release = resolve;
+          });
+          yield { type: "finish", usage: {} };
+        })(),
+      } as any));
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      const firstTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Start the long turn.",
+      });
+      for (let attempt = 0; attempt < 20 && !firstTurnControl.release; attempt += 1) {
+        await Promise.resolve();
+      }
+
+      const queued = await service.steer({
+        sessionId: session.id,
+        text: "Promote me with my override.",
+        executionMode: "focused",
+      });
+      expect(queued.queued).toBe(true);
+      const queuedRow = events.find((entry) =>
+        entry.event.type === "user_message"
+        && entry.event.text === "Promote me with my override."
+        && (entry.event as any).deliveryState === "queued"
+      );
+      const steerId = (queuedRow!.event as any).steerId as string;
+
+      const dispatchResult = await service.dispatchSteer({
+        sessionId: session.id,
+        steerId,
+        mode: "inline",
+      });
+      expect(dispatchResult.dispatchedAt).toBeNull();
+      expect(mockState.openCodeV2SteerCalls).toHaveLength(0);
+      expect(events.some((entry) =>
+        entry.event.type === "user_message"
+        && entry.event.text === "Promote me with my override."
+        && (entry.event as any).deliveryState === "inline"
+      )).toBe(false);
+
+      firstTurnControl.release!();
+      await firstTurn;
+    });
+
+    it("queues an inline OpenCode steer when the live delivery is refused", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const firstTurnControl: { release?: () => void } = {};
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          await new Promise<void>((resolve) => {
+            firstTurnControl.release = resolve;
+          });
+          yield { type: "finish", usage: {} };
+        })(),
+      } as any));
+      mockState.openCodeV2SteerError = new Error("steer delivery refused");
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      const firstTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Start the long turn.",
+      });
+      for (let attempt = 0; attempt < 20 && !firstTurnControl.release; attempt += 1) {
+        await Promise.resolve();
+      }
+
+      const steerResult = await service.steer({
+        sessionId: session.id,
+        text: "This one has to wait.",
+        dispatchMode: "inline",
+      });
+      expect(steerResult.queued).toBe(true);
+      expect(mockState.openCodeV2SteerCalls).toHaveLength(1);
+      expect(events.some((entry) =>
+        entry.event.type === "user_message"
+        && entry.event.text === "This one has to wait."
+        && (entry.event as any).deliveryState === "queued"
+      )).toBe(true);
+      expect(events.some((entry) =>
+        entry.event.type === "system_notice"
+        && /couldn't go into the running turn/i.test(entry.event.message)
+      )).toBe(true);
+
+      firstTurnControl.release!();
+      await firstTurn;
+    });
+
+    it("promotes a staged OpenCode steer into the live turn", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const firstTurnControl: { release?: () => void } = {};
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          await new Promise<void>((resolve) => {
+            firstTurnControl.release = resolve;
+          });
+          yield { type: "finish", usage: {} };
+        })(),
+      } as any));
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      const firstTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Start the long turn.",
+      });
+      for (let attempt = 0; attempt < 20 && !firstTurnControl.release; attempt += 1) {
+        await Promise.resolve();
+      }
+
+      const queued = await service.steer({
+        sessionId: session.id,
+        text: "Promote me into the live turn.",
+      });
+      expect(queued.queued).toBe(true);
+      const queuedRow = events.find((entry) =>
+        entry.event.type === "user_message"
+        && entry.event.text === "Promote me into the live turn."
+        && (entry.event as any).deliveryState === "queued"
+      );
+      const steerId = (queuedRow!.event as any).steerId as string;
+
+      const dispatchResult = await service.dispatchSteer({
+        sessionId: session.id,
+        steerId,
+        mode: "inline",
+      });
+      expect(dispatchResult.dispatchedAt).not.toBeNull();
+      expect(mockState.openCodeV2SteerCalls).toHaveLength(1);
+      expect(mockState.openCodeV2SteerCalls[0]?.prompt?.text).toContain("Promote me into the live turn.");
+      expect(events.some((entry) =>
+        entry.event.type === "user_message"
+        && entry.event.text === "Promote me into the live turn."
+        && (entry.event as any).deliveryState === "inline"
+      )).toBe(true);
+
+      firstTurnControl.release!();
+      await firstTurn;
+    });
+
+    it("names a non-file attachment in the prompt when the inline OpenCode steer skips it", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const firstTurnControl: { release?: () => void } = {};
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          await new Promise<void>((resolve) => {
+            firstTurnControl.release = resolve;
+          });
+          yield { type: "finish", usage: {} };
+        })(),
+      } as any));
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      const firstTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Start the long turn.",
+      });
+      for (let attempt = 0; attempt < 20 && !firstTurnControl.release; attempt += 1) {
+        await Promise.resolve();
+      }
+
+      const steerResult = await service.steer({
+        sessionId: session.id,
+        text: "Fold in this linked image.",
+        attachments: [{
+          type: "image-url",
+          path: "https://cdn.example.com/reference.png",
+          url: "https://cdn.example.com/reference.png",
+        }],
+        dispatchMode: "inline",
+      });
+      expect(steerResult.queued).toBe(false);
+      const promptText = mockState.openCodeV2SteerCalls[0]?.prompt?.text as string;
+      // The URL cannot be a file part, so it must still reach the model as text.
+      expect(promptText).toContain("Attached context:");
+      expect(promptText).toContain("https://cdn.example.com/reference.png");
+      expect(mockState.openCodeV2SteerCalls[0]?.prompt?.files ?? []).toHaveLength(0);
+
+      firstTurnControl.release!();
+      await firstTurn;
+    });
+
+    it("refuses a cancel while an OpenCode promotion is in flight", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const firstTurnControl: { release?: () => void } = {};
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          await new Promise<void>((resolve) => {
+            firstTurnControl.release = resolve;
+          });
+          yield { type: "finish", usage: {} };
+        })(),
+      } as any));
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      const firstTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Start the long turn.",
+      });
+      for (let attempt = 0; attempt < 20 && !firstTurnControl.release; attempt += 1) {
+        await Promise.resolve();
+      }
+
+      const queued = await service.steer({
+        sessionId: session.id,
+        text: "Do not cancel me mid-flight.",
+      });
+      expect(queued.queued).toBe(true);
+      const queuedRow = events.find((entry) =>
+        entry.event.type === "user_message"
+        && entry.event.text === "Do not cancel me mid-flight."
+        && (entry.event as any).deliveryState === "queued"
+      );
+      const steerId = (queuedRow!.event as any).steerId as string;
+
+      let releaseSteer!: () => void;
+      mockState.openCodeV2SteerBarrier = new Promise<void>((resolve) => {
+        releaseSteer = resolve;
+      });
+      const dispatch = service.dispatchSteer({ sessionId: session.id, steerId, mode: "inline" });
+      for (let attempt = 0; attempt < 20 && mockState.openCodeV2SteerCalls.length < 1; attempt += 1) {
+        await Promise.resolve();
+      }
+      expect(mockState.openCodeV2SteerCalls).toHaveLength(1);
+
+      await expect(service.cancelSteer({ sessionId: session.id, steerId }))
+        .rejects.toThrow("already being dispatched");
+
+      releaseSteer();
+      await expect(dispatch).resolves.toMatchObject({ dispatchedAt: expect.any(Number) });
+      expect(events.some((entry) =>
+        entry.event.type === "user_message"
+        && entry.event.text === "Do not cancel me mid-flight."
+        && (entry.event as any).deliveryState === "inline"
+      )).toBe(true);
+
+      firstTurnControl.release!();
+      await firstTurn;
+    });
+
+    it("sends a refused OpenCode steer as its own turn when the live turn already ended", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const firstTurnControl: { release?: () => void } = {};
+      let streamCallCount = 0;
+      vi.mocked(streamText).mockImplementation(() => {
+        streamCallCount += 1;
+        if (streamCallCount === 1) {
+          return {
+            fullStream: (async function* () {
+              await new Promise<void>((resolve) => {
+                firstTurnControl.release = resolve;
+              });
+              yield { type: "finish", usage: {} };
+            })(),
+          } as any;
+        }
+        return {
+          fullStream: (async function* () {
+            yield { type: "finish", usage: {} };
+          })(),
+        } as any;
+      });
+      vi.mocked(buildOpenCodePromptParts).mockClear();
+      mockState.openCodeV2SteerError = new Error("steer delivery refused");
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      const firstTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Start the long turn.",
+      });
+      for (let attempt = 0; attempt < 20 && !firstTurnControl.release; attempt += 1) {
+        await Promise.resolve();
+      }
+
+      // Hold the refused steer in flight across the turn boundary, so the
+      // queue fallback lands after the tail already drained.
+      let releaseSteer!: () => void;
+      mockState.openCodeV2SteerBarrier = new Promise<void>((resolve) => {
+        releaseSteer = resolve;
+      });
+      const steerResult = service.steer({
+        sessionId: session.id,
+        text: "I should still be delivered.",
+        dispatchMode: "inline",
+      });
+      for (let attempt = 0; attempt < 20 && mockState.openCodeV2SteerCalls.length < 1; attempt += 1) {
+        await Promise.resolve();
+      }
+      expect(mockState.openCodeV2SteerCalls).toHaveLength(1);
+
+      firstTurnControl.release!();
+      await firstTurn;
+      releaseSteer();
+
+      await expect(steerResult).resolves.toMatchObject({ queued: false });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "user_message"
+          && event.event.text === "I should still be delivered."
+          && (event.event as any).deliveryState !== "queued",
+      );
+      expect(vi.mocked(buildOpenCodePromptParts).mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+
     it("bridges OpenCode question events through ADE's question UI", async () => {
       const events: AgentChatEventEnvelope[] = [];
       vi.mocked(streamText).mockImplementation(() => ({
@@ -45931,9 +48510,10 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
         timeoutMs: 15_000,
       });
       await vi.advanceTimersByTimeAsync(1_000);
+      for (let tick = 0; tick < 8; tick += 1) await Promise.resolve();
       await turn;
 
-      await vi.waitFor(() => {
+      await waitForFakeTimers(() => {
         expect(getContextUsage).toHaveBeenCalledWith({ detail: "summary" });
         expect(events.map((entry) => entry.event))
           .toEqual(expect.arrayContaining([
@@ -46162,6 +48742,233 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
     )?.event).toMatchObject({ compactionId: expect.any(String) });
   });
 
+  it("claims a compaction only after the SDK confirms the boundary", async () => {
+    const harness = await createClaudeCompactionFixture({
+      sdkSessionId: "sdk-compact-confirmed",
+      first: [{
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        terminal_reason: "prompt_too_long",
+        errors: ["prompt is too long for this context window"],
+        usage: { input_tokens: 1, output_tokens: 0 },
+      }],
+      afterCompact: [
+        {
+          type: "system",
+          subtype: "compact_boundary",
+          compact_metadata: { trigger: "manual", pre_tokens: 900_000, post_tokens: 120_000 },
+        },
+        { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } },
+      ],
+    });
+
+    await vi.waitFor(() => {
+      expect(claudeNoticeMessages(harness.events))
+        .toContain("context overflowed — compacted; please re-send your last message");
+    }, { timeout: 5_000 });
+    expect(harness.send.mock.calls.map(([message]) => claudeInputText(message)).filter((text) => text === "/compact"))
+      .toHaveLength(1);
+  });
+
+  it("says it could not compact when the SDK has too few messages to compact", async () => {
+    const harness = await createClaudeCompactionFixture({
+      sdkSessionId: "sdk-compact-unavailable",
+      first: [{
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        terminal_reason: "prompt_too_long",
+        errors: ["prompt is too long for this context window"],
+        usage: { input_tokens: 1, output_tokens: 0 },
+      }],
+      afterCompact: [{
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        errors: ["Not enough messages to compact."],
+        usage: { input_tokens: 1, output_tokens: 0 },
+      }],
+    });
+
+    await vi.waitFor(() => {
+      expect(claudeNoticeMessages(harness.events))
+        .toContain("Claude could not compact this conversation. Start a new chat or hand off with a shorter history.");
+    }, { timeout: 5_000 });
+    // The false claim is the bug: ADE told the user to re-send into the same
+    // overflow after a compaction that never happened.
+    expect(claudeNoticeMessages(harness.events))
+      .not.toContain("context overflowed — compacted; please re-send your last message");
+    // One refusal is the answer; ADE must not ask again.
+    expect(harness.send.mock.calls.map(([message]) => claudeInputText(message)).filter((text) => text === "/compact"))
+      .toHaveLength(1);
+  });
+
+  it("re-arms the fallback compaction after a later turn completes normally", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+    const gate = (match: string) => {
+      let resolve: () => void = () => {};
+      const promise = new Promise<void>((r) => { resolve = r; });
+      return { match, promise, resolve };
+    };
+    const compactSent = gate("/compact");
+    const secondTurnSent = gate("turn two");
+    const thirdTurnSent = gate("turn three");
+    const send = vi.fn(async (message: unknown) => {
+      const text = claudeInputText(message);
+      for (const entry of [compactSent, secondTurnSent, thirdTurnSent]) {
+        if (text === entry.match || text.includes(entry.match)) entry.resolve();
+      }
+    });
+    let streamCall = 0;
+    const stream = vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield { type: "system", subtype: "init", session_id: "sdk-compact-rearm", slash_commands: [] };
+        return;
+      }
+      // Turn one overflows, so ADE asks for a compaction.
+      yield {
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        terminal_reason: "prompt_too_long",
+        errors: ["prompt is too long for this context window"],
+        usage: { input_tokens: 1, output_tokens: 0 },
+      };
+      // The SDK refuses: one exchange is not enough to compact.
+      await compactSent.promise;
+      yield {
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        errors: ["Not enough messages to compact."],
+        usage: { input_tokens: 1, output_tokens: 0 },
+      };
+      // Turn two completes normally and the conversation has grown.
+      await secondTurnSent.promise;
+      yield {
+        type: "stream_event",
+        event: {
+          type: "message_start",
+          message: { id: "rearm-low", usage: { input_tokens: 1_000, output_tokens: 0 } },
+        },
+      };
+      yield { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } };
+      // Turn three ends at the fallback threshold.
+      await thirdTurnSent.promise;
+      yield {
+        type: "stream_event",
+        event: {
+          type: "message_start",
+          message: { id: "rearm-high", usage: { input_tokens: 970_000, output_tokens: 0 } },
+        },
+      };
+      yield { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } };
+    })());
+
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+      send,
+      stream,
+      close: vi.fn(),
+      sessionId: "sdk-compact-rearm",
+      setPermissionMode,
+    } as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
+    });
+
+    await service.runSessionTurn({ sessionId: session.id, text: "turn one" });
+    await vi.waitFor(() => {
+      expect(claudeNoticeMessages(events))
+        .toContain("Claude could not compact this conversation. Start a new chat or hand off with a shorter history.");
+    }, { timeout: 5_000 });
+
+    await service.runSessionTurn({ sessionId: session.id, text: "turn two" });
+    await service.runSessionTurn({ sessionId: session.id, text: "turn three" });
+
+    // The refusal described one moment, not the session: a grown conversation
+    // must be compactable again.
+    await vi.waitFor(() => {
+      expect(send.mock.calls.map(([message]) => claudeInputText(message)).filter((text) => text === "/compact"))
+        .toHaveLength(2);
+    }, { timeout: 5_000 });
+  });
+
+  it("reports a compaction the query teardown threw away", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    // The next turn cannot set its permission mode, so ADE rebuilds the query —
+    // closing the input pump the /compact is still queued on.
+    let failPermissionMode = false;
+    const setPermissionMode = vi.fn(async () => {
+      if (!failPermissionMode) return;
+      failPermissionMode = false;
+      throw new Error("claude query is gone");
+    });
+    const send = vi.fn().mockResolvedValue(undefined);
+    let streamCall = 0;
+    const stream = vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield { type: "system", subtype: "init", session_id: "sdk-compact-abandoned", slash_commands: [] };
+        return;
+      }
+      yield {
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        terminal_reason: "prompt_too_long",
+        errors: ["prompt is too long for this context window"],
+        usage: { input_tokens: 1, output_tokens: 0 },
+      };
+      await new Promise<void>(() => {});
+    })());
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+      send,
+      stream,
+      close: vi.fn(),
+      sessionId: "sdk-compact-abandoned",
+      setPermissionMode,
+    } as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
+    });
+
+    await service.runSessionTurn({ sessionId: session.id, text: "first message" });
+    await vi.waitFor(() => {
+      expect(send.mock.calls.map(([message]) => claudeInputText(message)).filter((text) => text === "/compact"))
+        .toHaveLength(1);
+    }, { timeout: 5_000 });
+
+    failPermissionMode = true;
+    await service.runSessionTurn({ sessionId: session.id, text: "second message" }).catch(() => undefined);
+
+    await vi.waitFor(() => {
+      expect(claudeNoticeMessages(events))
+        .toContain("Claude could not compact this conversation. Its session restarted before the compaction ran.");
+    }, { timeout: 5_000 });
+    // The held notice never fires: no compaction happened.
+    expect(claudeNoticeMessages(events))
+      .not.toContain("context overflowed — compacted; please re-send your last message");
+    expect(events.find((entry) => entry.event.type === "context_compact"
+      && entry.event.state === "failed")?.event).toMatchObject({ failReason: "teardown" });
+  });
+
   it("recovers once from prompt_too_long without replaying the failed user message", async () => {
     const harness = await createClaudeStreamFixture({
       sdkSessionId: "sdk-overflow-recovery",
@@ -46179,14 +48986,9 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
       expect(harness.send.mock.calls.map(([message]) => claudeInputText(message)).filter((text) => text === "/compact"))
         .toHaveLength(1);
     });
-    expect(harness.events.find((entry) =>
-      entry.event.type === "system_notice"
-      && entry.event.message === "context overflowed — compacted; please re-send your last message"
-    )?.event).toMatchObject({
-      type: "system_notice",
-      noticeKind: "info",
-      message: "context overflowed — compacted; please re-send your last message",
-    });
+    // The SDK has not confirmed a boundary, so ADE must not say it compacted.
+    expect(claudeNoticeMessages(harness.events))
+      .not.toContain("context overflowed — compacted; please re-send your last message");
     expect(harness.send.mock.calls.map(([message]) => claudeInputText(message)).filter((text) =>
       text.includes("Exercise Claude streaming text."))).toHaveLength(1);
   });
@@ -46286,6 +49088,89 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
       agentProgressSummaries: true,
       forwardSubagentText: false,
     }));
+  });
+
+  it("does not duplicate Claude thinking when the snapshot reports a different content index", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+    const send = vi.fn().mockResolvedValue(undefined);
+    let streamCall = 0;
+
+    const stream = vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-session-thinking-index",
+          slash_commands: [],
+        };
+        return;
+      }
+
+      yield {
+        type: "stream_event",
+        event: {
+          type: "content_block_start",
+          index: 1,
+          content_block: { type: "thinking", thinking: "" },
+        },
+      };
+      yield {
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          index: 1,
+          delta: {
+            type: "thinking_delta",
+            thinking: "Checking both imports before editing.",
+          },
+        },
+      };
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      // The SDK strips a redacted/empty thinking block from the snapshot, so
+      // the completed block lands at index 0 although the stream said 1.
+      yield {
+        type: "assistant",
+        message: {
+          content: [{ type: "thinking", thinking: "Checking both imports before editing." }],
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+      };
+      yield {
+        type: "result",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    })());
+
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+      send,
+      stream,
+      close: vi.fn(),
+      sessionId: "sdk-session-thinking-index",
+      setPermissionMode,
+    } as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
+    });
+
+    await service.runSessionTurn({
+      sessionId: session.id,
+      text: "Resolve the PR comments.",
+    });
+
+    const reasoningEvents = events
+      .map((event) => event.event)
+      .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "reasoning" }> => event.type === "reasoning");
+    expect(reasoningEvents.map((event) => event.text)).toEqual(["Checking both imports before editing."]);
   });
 
   it("groups Claude text deltas by the stable message id and suppresses the repeated snapshot", async () => {
@@ -47706,7 +50591,13 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
     });
   });
 
-  it("does not fan a single freeform reply out across multiple structured questions", async () => {
+  // The reply must not be copied into every question — that is the fan-out this
+  // test was written for. It must also not land under a synthetic "response"
+  // key, which is where it used to go: Claude's `question.reply` takes one
+  // answer array per ASKED question, so that key matched nothing and the user's
+  // reply never reached the model. It answers the first question, and only the
+  // first, which is what the desktop composer produces for the same input.
+  it("lands a single freeform reply on one question rather than fanning it out", async () => {
     const events: AgentChatEventEnvelope[] = [];
     const { service } = createService({
       onEvent: (event: AgentChatEventEnvelope) => events.push(event),
@@ -47757,11 +50648,13 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
       responseText: "Start with the UI planning case.",
     });
 
-    await expect(requestPromise).resolves.toMatchObject({
+    const resolved = await requestPromise;
+    expect(resolved).toMatchObject({
       decision: "accept",
-      answers: { response: ["Start with the UI planning case."] },
+      answers: { plan_focus: ["Start with the UI planning case."] },
       responseText: "Start with the UI planning case.",
     });
+    expect(Object.keys(resolved.answers ?? {})).toEqual(["plan_focus"]);
   });
 
   it("responds to native Codex requestUserInput declines with empty answers instead of interrupting the turn", async () => {
@@ -48639,10 +51532,7 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
       throw previewError;
     });
 
-    let releaseGate: () => void = () => {};
-    mockState.cursorSendPromptGate = new Promise<void>((resolve) => {
-      releaseGate = resolve;
-    });
+    const releaseGate = parkCursorSend();
 
     const pendingTurn = service.sendMessage({
       sessionId: session.id,
@@ -48898,10 +51788,7 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
       cursorModeId: "agent",
     });
 
-    let releaseGate: () => void = () => {};
-    mockState.cursorSendPromptGate = new Promise<void>((resolve) => {
-      releaseGate = resolve;
-    });
+    const releaseGate = parkCursorSend();
     const pendingTurn = service.sendMessage({
       sessionId: session.id,
       text: "Keep this Cursor turn open while I switch modes.",
@@ -48942,10 +51829,7 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
       cursorModeId: "agent",
     });
 
-    let releaseGate: () => void = () => {};
-    mockState.cursorSendPromptGate = new Promise<void>((resolve) => {
-      releaseGate = resolve;
-    });
+    const releaseGate = parkCursorSend();
     const firstPrompt = "Keep this Cursor turn open while I switch models.";
     const matchingFirstPromptCalls = () => mockState.cursorSdkSendCalls.filter((call) =>
       String(call.promptText ?? "").includes(firstPrompt)
@@ -50447,6 +53331,12 @@ describe("suggestLaneNameFromPrompt", () => {
   });
 });
 
+// These tests poll the real filesystem for a write the service performs
+// asynchronously with no completion receipt to await. vitest's default
+// `vi.waitFor` budget is one second, which is simply too tight for that I/O
+// inside a 1150-test file under parallel load — it was the second-largest
+// source of flakes here. The bound below is explicit and generous; a genuine
+// regression still fails the assertion, just later.
 describe("durable chat metadata and transcript continuity", () => {
   const chatSessionsDir = () => path.join(tmpRoot, ".ade", "cache", "chat-sessions");
   const metadataPath = (sessionId: string) => path.join(chatSessionsDir(), `${sessionId}.json`);
@@ -50455,7 +53345,7 @@ describe("durable chat metadata and transcript continuity", () => {
   async function completeCodexTurn(turnPromise: Promise<unknown>, text = "done"): Promise<void> {
     await vi.waitFor(() => {
       expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
-    });
+    }, { timeout: 10_000, interval: 25 });
     const turnNumber = mockState.codexTurnCounter;
     mockState.emitCodexPayload({
       jsonrpc: "2.0",
@@ -50506,7 +53396,7 @@ describe("durable chat metadata and transcript continuity", () => {
         "agent_chat.persist_failed",
         expect.objectContaining({ sessionId: session.id, lkgUpdated: true }),
       );
-    });
+    }, { timeout: 10_000, interval: 25 });
     expect(fs.readFileSync(metadataPath(session.id))).toEqual(before);
     expect(readPersistedChatState(session.id).threadId).toBe("thread-resumed");
     expect(fs.readdirSync(chatSessionsDir()).filter((name) => name.includes(".tmp-"))).toEqual([]);
@@ -50551,7 +53441,7 @@ describe("durable chat metadata and transcript continuity", () => {
     const firstTurn = first.service.runSessionTurn({ sessionId: session.id, text: "start a thread" });
     await vi.waitFor(() => {
       expect(readThreadPointerLedger(chatSessionsDir()).get(session.id)?.pointer).toBe("thread-1");
-    });
+    }, { timeout: 10_000, interval: 25 });
     await completeCodexTurn(firstTurn);
     first.service.forceDisposeAll();
     const lineCountBeforeRestart = fs.readFileSync(ledgerPath(), "utf8").trim().split("\n").length;
@@ -50581,7 +53471,7 @@ describe("durable chat metadata and transcript continuity", () => {
     await vi.waitFor(() => {
       expect(fs.statSync(ledgerPath()).size).toBeLessThanOrEqual(64 * 1024);
       expect(readThreadPointerLedger(chatSessionsDir()).get(session.id)?.pointer).toBeNull();
-    });
+    }, { timeout: 10_000, interval: 25 });
     expect(readThreadPointerLedger(chatSessionsDir()).get("older-session")?.pointer).toBe("new");
   });
 
@@ -50607,7 +53497,7 @@ describe("durable chat metadata and transcript continuity", () => {
       const raw = fs.readFileSync(transcriptFile, "utf8");
       expect(raw).toContain(`${fragment}\n{`);
       expect(raw).toContain("fresh user event");
-    });
+    }, { timeout: 10_000, interval: 25 });
     await completeCodexTurn(turn, "fresh response");
 
     const raw = fs.readFileSync(transcriptFile, "utf8");
@@ -51089,352 +53979,14 @@ describe("explicit provider-thread continuity recovery", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Orchestrator-lead provider-native tool denial
+// Caller MCP isolation (strictMcpConfig)
 //
-// The lead plans and delegates; it never edits code or runs shell. ADE's own
-// orchestration toolset already withholds editFile/writeFile/bash from leads,
-// but that toolset is additive — it rides alongside each provider's built-in
-// tools. Asserting only that ADE's tools are absent proves nothing, so each
-// test below pins the provider-native denial ADE actually sends, and checks a
-// worker on the SAME provider and the SAME permissive profile still has it.
+// A user-configured MCP server (filesystem, shell, git, …) is exactly what an
+// embedder asking for strict mode wants withheld. Each test pins the MCP
+// configuration ADE actually sends when strict mode is on.
 // ---------------------------------------------------------------------------
 
-describe("orchestrator-lead provider-native tool denial", () => {
-  const leadArgs = (created: { runId: string; manifest: { bundlePath: string } }) => ({
-    interactionMode: "orchestrator-lead" as const,
-    orchestrationRunId: created.runId,
-    orchestrationRole: "lead" as const,
-    orchestrationBundlePath: created.manifest.bundlePath,
-  });
-  const workerArgs = (created: { runId: string; manifest: { bundlePath: string } }) => ({
-    interactionMode: "orchestrator-worker" as const,
-    orchestrationRunId: created.runId,
-    orchestrationRole: "worker" as const,
-    orchestrationBundlePath: created.manifest.bundlePath,
-  });
-
-  it("Claude: denies the SDK's own Edit/Write/Bash/Task tools for a lead only", async () => {
-    const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
-    try {
-      const { service } = createService({ getOrchestrationService: () => orchestrationService });
-
-      const lead = await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "claude-opus-4-5",
-        ...leadArgs(created),
-      });
-      await service.sendMessage({ sessionId: lead.id, text: "Plan the work." }, { awaitDispatch: true });
-
-      const leadOptions = vi.mocked(query).mock.calls.at(-1)?.[0]?.options as
-        { disallowedTools?: string[]; canUseTool?: Function } | undefined;
-      expect(leadOptions?.disallowedTools).toEqual(
-        expect.arrayContaining(["Bash", "Edit", "MultiEdit", "Write", "NotebookEdit", "Task", "Agent"]),
-      );
-      // Belt-and-braces: the runtime gate denies the same tools mid-turn.
-      await expect(leadOptions?.canUseTool?.("Write", { file_path: "README.md" }, {}))
-        .resolves.toMatchObject({ behavior: "deny" });
-      await expect(leadOptions?.canUseTool?.("Bash", { command: "echo hi > README.md" }, {}))
-        .resolves.toMatchObject({ behavior: "deny" });
-
-      vi.mocked(query).mockClear();
-      const worker = await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "claude-opus-4-5",
-        ...workerArgs(created),
-      });
-      await service.sendMessage({ sessionId: worker.id, text: "Do the work." }, { awaitDispatch: true });
-
-      const workerOptions = vi.mocked(query).mock.calls.at(-1)?.[0]?.options as
-        { disallowedTools?: string[]; canUseTool?: Function } | undefined;
-      expect(workerOptions?.disallowedTools ?? []).not.toContain("Write");
-      expect(workerOptions?.disallowedTools ?? []).not.toContain("Bash");
-      await expect(workerOptions?.canUseTool?.("Write", { file_path: "README.md" }, {}))
-        .resolves.not.toMatchObject({ behavior: "deny" });
-    } finally {
-      await orchestrationService.dispose();
-    }
-  });
-
-  it("Codex: starts a lead thread read-only with approvals off, workers full-access", async () => {
-    const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
-    try {
-      const { service } = createService({ getOrchestrationService: () => orchestrationService });
-
-      const lead = await service.createSession({
-        laneId: "lane-1",
-        provider: "codex",
-        model: "gpt-5.4",
-        ...leadArgs(created),
-      });
-      await service.sendMessage({ sessionId: lead.id, text: "Plan the work." });
-      await vi.waitFor(() => {
-        expect(mockState.codexRequestPayloads.some((p) => p.method === "thread/start")).toBe(true);
-      });
-
-      // Codex's app-server exposes no tool allow/deny list, so `apply_patch`
-      // and `shell` cannot be removed from the model's toolset. The sandbox is
-      // the enforcement point: read-only blocks every write those tools make,
-      // and `approvalPolicy: never` stops the lead escalating past it.
-      const leadStart = mockState.codexRequestPayloads.find((p) => p.method === "thread/start") as any;
-      expect(leadStart?.params).toMatchObject({ approvalPolicy: "never", sandbox: "read-only" });
-
-      // The per-turn policy resolves through the same path, so a turn cannot
-      // re-grant write access after the thread starts.
-      await vi.waitFor(() => {
-        expect(mockState.codexRequestPayloads.some((p) => p.method === "turn/start")).toBe(true);
-      });
-      const leadTurn = mockState.codexRequestPayloads.find((p) => p.method === "turn/start") as any;
-      expect(leadTurn?.params?.approvalPolicy).toBe("never");
-      expect(leadTurn?.params?.sandboxPolicy?.type).toBe("readOnly");
-
-      mockState.codexRequestPayloads.length = 0;
-      const worker = await service.createSession({
-        laneId: "lane-1",
-        provider: "codex",
-        model: "gpt-5.4",
-        ...workerArgs(created),
-      });
-      await service.sendMessage({ sessionId: worker.id, text: "Do the work." });
-      await vi.waitFor(() => {
-        expect(mockState.codexRequestPayloads.some((p) => p.method === "thread/start")).toBe(true);
-      });
-      const workerStart = mockState.codexRequestPayloads.find((p) => p.method === "thread/start") as any;
-      expect(workerStart?.params).toMatchObject({ approvalPolicy: "never", sandbox: "danger-full-access" });
-    } finally {
-      await orchestrationService.dispose();
-    }
-  });
-
-  it("Droid: withholds Droid's own edit/execute tool categories from a lead only", async () => {
-    const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
-    try {
-      const { service } = createService({ getOrchestrationService: () => orchestrationService });
-
-      const lead = await service.createSession({
-        laneId: "lane-1",
-        provider: "droid",
-        model: "custom:claude-sonnet-5-thinking-32000",
-        modelId: "droid/custom:claude-sonnet-5-thinking-32000",
-        ...leadArgs(created),
-      });
-      await service.sendMessage({ sessionId: lead.id, text: "Plan the work." }, { awaitDispatch: true });
-
-      // `disabledToolCategories` is resolved to concrete `disabledToolIds`
-      // against Droid's live tool list in the worker (see
-      // droidSdkProtocol.test.ts) — ids are build-specific, categories are not.
-      expect(mockState.droidAcquireCalls.at(-1)?.settings).toMatchObject({
-        disabledToolCategories: ["edit", "execute"],
-      });
-      // awaitDispatch returns at onDispatched, which is before sendPrompt.
-      await vi.waitFor(() => {
-        expect(mockState.droidPromptCalls.at(-1)?.settings).toMatchObject({
-          disabledToolCategories: ["edit", "execute"],
-        });
-      });
-
-      const worker = await service.createSession({
-        laneId: "lane-1",
-        provider: "droid",
-        model: "custom:claude-sonnet-5-thinking-32000",
-        modelId: "droid/custom:claude-sonnet-5-thinking-32000",
-        ...workerArgs(created),
-      });
-      await service.sendMessage({ sessionId: worker.id, text: "Do the work." }, { awaitDispatch: true });
-      await vi.waitFor(() => {
-        expect(mockState.droidPromptCalls.at(-1)?.settings)
-          .not.toHaveProperty("disabledToolCategories");
-      });
-    } finally {
-      await orchestrationService.dispose();
-    }
-  });
-
-  it("OpenCode: switches off OpenCode's own bash/edit/write/patch tools for a lead only", async () => {
-    vi.mocked(streamText).mockImplementation(() => ({
-      fullStream: (async function* () {
-        yield { type: "finish", usage: {} };
-      })(),
-    } as any));
-    const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
-    try {
-      const { service } = createService({ getOrchestrationService: () => orchestrationService });
-
-      const lead = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
-        ...leadArgs(created),
-      });
-      await service.sendMessage({ sessionId: lead.id, text: "Plan the work." }, { awaitDispatch: true });
-
-      const leadState = [...mockState.openCodeSessions.values()].at(-1)!;
-      await vi.waitFor(() => {
-        expect(leadState.promptBodies.length).toBeGreaterThan(0);
-      });
-      expect(leadState.promptBodies.at(-1)?.tools).toMatchObject({
-        bash: false,
-        edit: false,
-        write: false,
-        patch: false,
-        task: false,
-      });
-      expect(vi.mocked(buildCodingAgentSystemPrompt).mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({
-        runtime: "opencode",
-        orchestrationRole: "lead",
-      }));
-
-      const worker = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
-        ...workerArgs(created),
-      });
-      await service.sendMessage({ sessionId: worker.id, text: "Do the work." }, { awaitDispatch: true });
-
-      const workerState = [...mockState.openCodeSessions.values()].at(-1)!;
-      await vi.waitFor(() => {
-        expect(workerState.promptBodies.length).toBeGreaterThan(0);
-      });
-      // No `tools` field at all: the worker keeps OpenCode's full default set.
-      expect(workerState.promptBodies.at(-1)).not.toHaveProperty("tools");
-      expect(vi.mocked(buildCodingAgentSystemPrompt).mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({
-        runtime: "opencode",
-        orchestrationRole: "worker",
-      }));
-    } finally {
-      await orchestrationService.dispose();
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Orchestrator-lead MCP isolation
-//
-// Provider-native tool denials only cover each provider's built-in tools. A
-// user-configured MCP server (filesystem, shell, git, …) hands the same
-// capability back through another door, so a lead must see ADE-managed servers
-// only. Each test pins the MCP configuration ADE actually sends for a lead and
-// checks a worker on the SAME provider still receives the user's servers.
-// ---------------------------------------------------------------------------
-
-describe("orchestrator-lead MCP isolation", () => {
-  const leadArgs = (created: { runId: string; manifest: { bundlePath: string } }) => ({
-    interactionMode: "orchestrator-lead" as const,
-    orchestrationRunId: created.runId,
-    orchestrationRole: "lead" as const,
-    orchestrationBundlePath: created.manifest.bundlePath,
-  });
-  const workerArgs = (created: { runId: string; manifest: { bundlePath: string } }) => ({
-    interactionMode: "orchestrator-worker" as const,
-    orchestrationRunId: created.runId,
-    orchestrationRole: "worker" as const,
-    orchestrationBundlePath: created.manifest.bundlePath,
-  });
-
-  it("Claude: ignores ~/.claude.json and project .mcp.json for a lead only", async () => {
-    const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
-    try {
-      const { service } = createService({ getOrchestrationService: () => orchestrationService });
-
-      const lead = await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "claude-opus-4-5",
-        ...leadArgs(created),
-      });
-      await service.sendMessage({ sessionId: lead.id, text: "Plan the work." }, { awaitDispatch: true });
-
-      const leadOptions = vi.mocked(query).mock.calls.at(-1)?.[0]?.options as {
-        strictMcpConfig?: boolean;
-        mcpServers?: Record<string, unknown>;
-        managedSettings?: { allowManagedMcpServersOnly?: boolean; allowedMcpServers?: Array<{ serverName: string }> };
-      } | undefined;
-      // strictMcpConfig drops every on-disk MCP source; the managed allow-list
-      // keeps ADE's own programmatic server reachable.
-      expect(leadOptions?.strictMcpConfig).toBe(true);
-      expect(leadOptions?.managedSettings?.allowManagedMcpServersOnly).toBe(true);
-      expect(leadOptions?.managedSettings?.allowedMcpServers?.map((entry) => entry.serverName))
-        .toContain("ade-orchestration");
-      expect(Object.keys(leadOptions?.mcpServers ?? {})).toEqual(["ade-orchestration"]);
-
-      vi.mocked(query).mockClear();
-      const worker = await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "claude-opus-4-5",
-        ...workerArgs(created),
-      });
-      await service.sendMessage({ sessionId: worker.id, text: "Do the work." }, { awaitDispatch: true });
-
-      const workerOptions = vi.mocked(query).mock.calls.at(-1)?.[0]?.options as {
-        strictMcpConfig?: boolean;
-        settingSources?: string[];
-      } | undefined;
-      // The worker keeps the user's MCP servers: no strict flag, and the
-      // setting sources that load them are still on.
-      expect(workerOptions?.strictMcpConfig).toBeUndefined();
-      expect(workerOptions?.settingSources).toEqual(expect.arrayContaining(["user", "project"]));
-    } finally {
-      await orchestrationService.dispose();
-    }
-  });
-
-  it("Codex: switches off every configured MCP server for a lead only", async () => {
-    const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
-    try {
-      const signedClient = codexComputerUseClientCandidates(path.join(tmpHomeRoot, ".codex"))[0]!;
-      const { service } = createService({
-        getOrchestrationService: () => orchestrationService,
-        resolveCodexComputerUseMcp: async () => ({ command: signedClient, args: ["mcp"], enabled: true }),
-        resolveCodexConfiguredMcpServerNames: () => ["filesystem", "computer_use"],
-      });
-
-      const lead = await service.createSession({
-        laneId: "lane-1",
-        provider: "codex",
-        model: "gpt-5.4",
-        ...leadArgs(created),
-      });
-      await service.sendMessage({ sessionId: lead.id, text: "Plan the work." });
-      await vi.waitFor(() => {
-        expect(mockState.codexRequestPayloads.some((p) => p.method === "thread/start")).toBe(true);
-      });
-
-      // Codex merges this overlay into config.toml rather than replacing it, so
-      // the isolation has to name each server. Computer Use is an MCP server
-      // too, so the lead does not get it either.
-      const leadStart = mockState.codexRequestPayloads.find((p) => p.method === "thread/start") as any;
-      expect(leadStart?.params?.config?.mcp_servers).toEqual({
-        filesystem: { enabled: false },
-        computer_use: { enabled: false },
-      });
-
-      mockState.codexRequestPayloads.length = 0;
-      const worker = await service.createSession({
-        laneId: "lane-1",
-        provider: "codex",
-        model: "gpt-5.4",
-        ...workerArgs(created),
-      });
-      await service.sendMessage({ sessionId: worker.id, text: "Do the work." });
-      await vi.waitFor(() => {
-        expect(mockState.codexRequestPayloads.some((p) => p.method === "thread/start")).toBe(true);
-      });
-      const workerStart = mockState.codexRequestPayloads.find((p) => p.method === "thread/start") as any;
-      // Nothing disabled: the worker keeps the user's Codex MCP config intact
-      // (only ADE's own Computer Use merge is present).
-      expect(workerStart?.params?.config?.mcp_servers).toEqual({
-        computer_use: { command: signedClient, args: ["mcp"], enabled: true },
-      });
-    } finally {
-      await orchestrationService.dispose();
-    }
-  });
-
+describe("caller MCP isolation", () => {
   // Same overlay, different caller: the ADE SDK injects servers into an
   // ordinary chat. Codex has no "replace the config" mode, so both the caller's
   // servers and strict mode's per-server disables ride the same table.
@@ -51533,98 +54085,6 @@ describe("orchestrator-lead MCP isolation", () => {
     expect(servers.embedder).toMatchObject({ enabled: true });
   });
 
-  it("Cursor: runs a lead without the MCP-carrying setting layers, and denies MCP calls", async () => {
-    process.env.CURSOR_API_KEY = "cursor-test-key";
-    const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
-    try {
-      const { service } = createService({ getOrchestrationService: () => orchestrationService });
-      const lead = await service.createSession({
-        laneId: "lane-1",
-        provider: "cursor",
-        model: "composer-2",
-        modelId: "cursor/composer-2",
-        ...leadArgs(created),
-      });
-      await service.sendMessage({ sessionId: lead.id, text: "Plan the work." }, { awaitDispatch: true });
-
-      // The worker turns `policy.orchestrationLead` into the trimmed
-      // `local.settingSources` (cursorSdkSettingSources); the pool call is the
-      // last thing ADE controls in this process.
-      const leadAcquire = mockState.cursorSdkAcquireCalls.at(-1) as any;
-      expect(leadAcquire?.policy?.orchestrationLead).toBe(true);
-      expect(cursorSdkSettingSources(leadAcquire?.policy)).toEqual(["user", "team", "mdm"]);
-      // MCP servers ADE hands Cursor are its own lease only.
-      expect(Object.keys(leadAcquire?.mcpServers ?? {})).toEqual(["ade-orchestration"]);
-
-      // Cursor routes MCP tool calls through the same preToolUse gate as any
-      // other tool, named `MCP:<tool>` — an unknown risk class, denied.
-      const mcpCall = summarizeCursorHook(
-        { toolName: "MCP:write_file", toolInput: { path: "README.md" } },
-        "/tmp/lane",
-      );
-      expect(mcpCall.risk).toBe("unknown");
-      expect(evaluateCursorSdkHook({
-        request: mcpCall,
-        policy: { ...(leadAcquire?.policy as any) },
-        laneRoot: "/tmp/lane",
-        userHomeDir: tmpHomeRoot,
-      })).toBe("deny");
-
-      const worker = await service.createSession({
-        laneId: "lane-1",
-        provider: "cursor",
-        model: "composer-2",
-        modelId: "cursor/composer-2",
-        ...workerArgs(created),
-      });
-      await service.sendMessage({ sessionId: worker.id, text: "Do the work." }, { awaitDispatch: true });
-      const workerAcquire = mockState.cursorSdkAcquireCalls.at(-1) as any;
-      expect(workerAcquire?.policy?.orchestrationLead).toBe(false);
-      expect(cursorSdkSettingSources(workerAcquire?.policy)).toEqual(["all"]);
-    } finally {
-      await orchestrationService.dispose();
-    }
-  });
-
-  it("OpenCode: isolates only leads while ordinary chats keep user config", async () => {
-    vi.mocked(streamText).mockImplementation(() => ({
-      fullStream: (async function* () {
-        yield { type: "finish", usage: {} };
-      })(),
-    } as any));
-    const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
-    try {
-      const { service } = createService({ getOrchestrationService: () => orchestrationService });
-      const lead = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
-        ...leadArgs(created),
-      });
-      await service.sendMessage({ sessionId: lead.id, text: "Plan the work." }, { awaitDispatch: true });
-
-      const leadStart = vi.mocked(startOpenCodeSession).mock.calls.at(-1)?.[0] as any;
-      // The MCP map ADE hands OpenCode for a lead carries ADE's lease only.
-      expect(Object.keys(leadStart?.mcp ?? {})).toEqual(["ade-orchestration"]);
-      expect(leadStart?.leaseKind).toBe("dedicated");
-      expect(leadStart?.isolatedConfig).toBe(true);
-
-      const worker = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
-        ...workerArgs(created),
-      });
-      await service.sendMessage({ sessionId: worker.id, text: "Do the work." }, { awaitDispatch: true });
-      const workerStart = vi.mocked(startOpenCodeSession).mock.calls.at(-1)?.[0] as any;
-      expect(workerStart?.leaseKind).toBe("shared");
-      expect(workerStart?.isolatedConfig).toBe(false);
-    } finally {
-      await orchestrationService.dispose();
-    }
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -52013,6 +54473,196 @@ describe("acp chat runtime", () => {
     expect(statuses).toContain("completed");
   });
 
+  it("configures Copilot's native ACP mode without sending an unsupported model option", async () => {
+    const harness = await openAcpHarness({
+      provider: "copilot",
+      model: "claude-sonnet-4.6",
+      modelId: "github-copilot/claude-sonnet-4.6",
+      sessionOverrides: { permissionMode: "plan" },
+    });
+    scriptPrompt(harness.agent, []);
+
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "plan this" });
+    await vi.waitFor(() => {
+      expect(eventTypes(harness)).toContain("done");
+    });
+
+    const configCalls = harness.agent.received.filter((entry) => entry.method === "session/set_config_option");
+    expect(configCalls).toHaveLength(1);
+    expect(configCalls[0]?.params).toMatchObject({
+      configId: "mode",
+      value: "https://agentclientprotocol.com/protocol/session-modes#plan",
+    });
+    expect(configCalls.some((entry) => (entry.params as { configId?: string }).configId === "model")).toBe(false);
+  });
+
+  it("applies Qwen's selected model and reasoning effort at session startup", async () => {
+    const harness = await openAcpHarness({
+      provider: "qwen",
+      model: "qwen3.7-plus",
+      modelId: "qwen/qwen3.7-plus",
+      sessionOverrides: { reasoningEffort: "high" },
+    });
+    scriptPrompt(harness.agent, []);
+
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "use the selected effort" });
+    await vi.waitFor(() => {
+      expect(eventTypes(harness)).toContain("done");
+    });
+
+    const configCalls = harness.agent.received.filter((entry) => entry.method === "session/set_config_option");
+    const configParams = configCalls.map((entry) => entry.params as { configId?: string; value?: unknown });
+    expect(configParams.map((params) => params.configId)).toEqual(["mode", "model", "reasoning_effort"]);
+    expect(configParams.at(-1)).toMatchObject({ configId: "reasoning_effort", value: "high" });
+  });
+
+  it("sends Qwen's default reasoning sentinel when no effort is selected", async () => {
+    const harness = await openAcpHarness({
+      provider: "qwen",
+      model: "qwen3.7-plus",
+      modelId: "qwen/qwen3.7-plus",
+    });
+    scriptPrompt(harness.agent, []);
+
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "use the provider default" });
+    await vi.waitFor(() => {
+      expect(eventTypes(harness)).toContain("done");
+    });
+
+    const reasoningCalls = harness.agent.received
+      .filter((entry) => entry.method === "session/set_config_option")
+      .map((entry) => entry.params as { configId?: string; value?: unknown })
+      .filter((params) => params.configId === "reasoning_effort");
+    expect(reasoningCalls).toHaveLength(1);
+    expect(reasoningCalls[0]).toMatchObject({ configId: "reasoning_effort", value: "default" });
+  });
+
+  it("does not mark Qwen ready after a transient startup effort failure", async () => {
+    const harness = await openAcpHarness({
+      provider: "qwen",
+      model: "qwen3.7-plus",
+      modelId: "qwen/qwen3.7-plus",
+      sessionOverrides: { reasoningEffort: "high" },
+    });
+    let promptSeen = false;
+    harness.agent.on("session/prompt", async () => {
+      promptSeen = true;
+      return { result: { stopReason: "end_turn" } };
+    });
+    harness.agent.on("session/set_config_option", (params) => {
+      const config = params as { configId?: string; value?: unknown };
+      if (config.configId === "reasoning_effort" && config.value === "high") {
+        return { error: { code: -32001, message: "temporary Qwen ACP failure" } };
+      }
+      return { result: {} };
+    });
+
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "start with high effort" });
+    await vi.waitFor(() => {
+      expect(eventsOfType(harness, "done")).toHaveLength(1);
+    });
+
+    expect(promptSeen).toBe(false);
+    expect(eventsOfType(harness, "done")[0]?.status).toBe("failed");
+    expect(readPersistedChatState(harness.session.id).acpSessionId).toBeUndefined();
+  });
+
+  it("updates Qwen's live reasoning effort when the ACP runtime is reused", async () => {
+    const harness = await openAcpHarness({
+      provider: "qwen",
+      model: "qwen3.7-plus",
+      modelId: "qwen/qwen3.7-plus",
+      sessionOverrides: { reasoningEffort: "low" },
+    });
+    scriptPrompt(harness.agent, []);
+
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "first turn" });
+    await vi.waitFor(() => {
+      expect(eventTypes(harness)).toContain("done");
+    });
+
+    await harness.service.updateSession({ sessionId: harness.session.id, reasoningEffort: "high" });
+    await harness.service.updateSession({ sessionId: harness.session.id, reasoningEffort: null });
+
+    const configCalls = harness.agent.received.filter((entry) => entry.method === "session/set_config_option");
+    const reasoningCalls = configCalls
+      .map((entry) => entry.params as { configId?: string; value?: unknown })
+      .filter((params) => params.configId === "reasoning_effort");
+    expect(reasoningCalls.map((params) => params.value)).toEqual(["low", "high", "default"]);
+    expect(harness.agent.methodsReceived().filter((method) => method === "session/new")).toHaveLength(1);
+  });
+
+  it("retries a transient Qwen effort update before recreating the runtime", async () => {
+    const harness = await openAcpHarness({
+      provider: "qwen",
+      model: "qwen3.7-plus",
+      modelId: "qwen/qwen3.7-plus",
+      sessionOverrides: { reasoningEffort: "low" },
+    });
+    scriptPrompt(harness.agent, []);
+
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "first turn" });
+    await vi.waitFor(() => {
+      expect(eventTypes(harness)).toContain("done");
+    });
+
+    let rejectNextHigh = true;
+    harness.agent.on("session/set_config_option", (params) => {
+      const config = params as { configId?: string; value?: unknown };
+      if (config.configId === "reasoning_effort" && config.value === "high" && rejectNextHigh) {
+        rejectNextHigh = false;
+        return { error: { code: -32001, message: "temporary Qwen ACP failure" } };
+      }
+      return { result: {} };
+    });
+
+    await harness.service.updateSession({ sessionId: harness.session.id, reasoningEffort: "high" });
+    await harness.service.updateSession({ sessionId: harness.session.id, reasoningEffort: "high" });
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "retry turn" });
+    await vi.waitFor(() => {
+      expect(eventsOfType(harness, "done")).toHaveLength(2);
+    });
+
+    const reasoningCalls = harness.agent.received
+      .filter((entry) => entry.method === "session/set_config_option")
+      .map((entry) => entry.params as { configId?: string; value?: unknown })
+      .filter((params) => params.configId === "reasoning_effort");
+    expect(reasoningCalls.map((params) => params.value)).toEqual(["low", "high", "high"]);
+    expect(harness.agent.methodsReceived().filter((method) => method === "session/new")).toHaveLength(1);
+  });
+
+  it("preserves a separate ACP invalidation when a live effort update succeeds", async () => {
+    const harness = await openAcpHarness({
+      provider: "qwen",
+      model: "qwen3.7-plus",
+      modelId: "qwen/qwen3.7-plus",
+      sessionOverrides: { permissionMode: "plan", reasoningEffort: "low" },
+    });
+    let releaseFirstPrompt: (() => void) | null = null;
+    let promptCount = 0;
+    harness.agent.on("session/prompt", async () => {
+      promptCount += 1;
+      if (promptCount === 1) {
+        await new Promise<void>((resolve) => { releaseFirstPrompt = resolve; });
+      }
+      return { result: { stopReason: "end_turn" } };
+    });
+
+    void harness.service.sendMessage({ sessionId: harness.session.id, text: "first turn" });
+    await harness.agent.waitForMethod("session/prompt");
+
+    // A permission-mode change during an active turn owns the invalidation;
+    // the successful reasoning RPC must not erase it before finalization.
+    await harness.service.updateSession({ sessionId: harness.session.id, permissionMode: "full-auto" });
+    expect(harness.session.acpPermissionMode).toBe("yolo");
+    await harness.service.updateSession({ sessionId: harness.session.id, reasoningEffort: "high" });
+    releaseFirstPrompt!();
+    await vi.waitFor(() => {
+      expect(eventsOfType(harness, "done")).toHaveLength(1);
+    });
+    expect((harness.agent.child as unknown as { killed?: boolean }).killed).toBe(true);
+  });
+
   it("forwards image URL attachments in the ACP prompt payload", async () => {
     const harness = await openAcpHarness({
       provider: "qwen",
@@ -52290,8 +54940,8 @@ describe("acp chat runtime", () => {
   });
 
   it("emits no usage for Kimi and says why once", async () => {
-    // Kimi 0.31.x reports nothing on the wire. Fabricating a zero would be a
-    // lie; saying nothing at all reads as a broken meter. So it says so.
+    // Kimi's ACP integration still has no verified usage payload. Fabricating
+    // a zero would be a lie; saying nothing at all reads as a broken meter.
     const harness = await openAcpHarness({
       provider: "kimi",
       model: "kimi-code/k3",
@@ -53166,5 +55816,499 @@ describe("Codex approvals under a host permission policy", () => {
         && event.event.itemId === "perm-deny-1"
         && event.event.resolution === "declined")).toBe(true);
     });
+  });
+});
+
+describe("turn diff capture", () => {
+  it("awaits the per-turn fingerprint before emitting a fast completion summary", async () => {
+    let releaseBeforeTree!: (tree: Map<string, string>) => void;
+    const beforeTree = new Promise<Map<string, string>>((resolve) => {
+      releaseBeforeTree = resolve;
+    });
+    const expectedTree = new Map([["pre-existing.ts", "1:1"]]);
+    const collectSummary = vi.fn(async (args: { beforeTree?: Map<string, string> | null }) => (
+      args.beforeTree
+        ? {
+            files: [{ path: "turn.ts", additions: 1, deletions: 0, status: "A" as const }],
+            totalAdditions: 1,
+            totalDeletions: 0,
+          }
+        : null
+    ));
+    turnDiffMockState.beforeTreeGates = [Promise.resolve(new Map()), beforeTree];
+    turnDiffMockState.collectSummary = collectSummary;
+    vi.mocked(runGit).mockResolvedValue({ stdout: "head-sha\n", stderr: "", exitCode: 0 });
+
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Make a quick change.",
+    }, { awaitDispatch: true });
+    await vi.waitFor(() => {
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+    });
+
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      method: "turn/completed",
+      params: { turn: { id: "turn-1", status: "completed" } },
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(collectSummary).not.toHaveBeenCalled();
+
+    releaseBeforeTree(expectedTree);
+    await vi.waitFor(() => {
+      expect(collectSummary).toHaveBeenCalledTimes(1);
+    });
+    expect(collectSummary.mock.calls[0]?.[0].beforeTree).toEqual(expectedTree);
+    await vi.waitFor(() => {
+      expect(events.some((event) => event.event.type === "turn_diff_summary")).toBe(true);
+    });
+  });
+});
+
+describe("Codex async questions", () => {
+  const emitAsyncQuestion = (itemId: string, questions: unknown[]): void => {
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      method: "item/completed",
+      params: {
+        turnId: "turn-1",
+        item: {
+          id: itemId,
+          type: "agentMessage",
+          threadId: "thread-1",
+          delivery: "async",
+          questions,
+        },
+      },
+    });
+  };
+
+  const startCodexChat = async (events: AgentChatEventEnvelope[]) => {
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Start working.",
+    }, { awaitDispatch: true });
+    return { service, session };
+  };
+
+  it("raises a card instead of rendering the question as assistant prose", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { session } = await startCodexChat(events);
+    emitAsyncQuestion("codex-async-1", [
+      { title: "Postgres or SQLite?", options: ["Postgres", "SQLite"] },
+      { title: "Ship today?", options: null },
+    ]);
+
+    const card = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "approval_request" && event.event.itemId === "codex-async-1",
+    );
+    const request = (card.event as { detail?: { request?: any } }).detail?.request;
+    expect(request.blocking).toBe(false);
+    expect(request.canProceedWithoutAnswer).toBe(true);
+    expect(request.title).toBe("Codex has a question");
+    expect(request.providerMetadata).toMatchObject({ responseMode: "message", dismissible: true });
+    expect(request.questions.map((q: any) => q.id)).toEqual(["0", "1"]);
+    expect(request.questions[0].question).toBe("Postgres or SQLite?");
+    expect(request.questions[0].options.map((o: any) => o.label)).toEqual(["Postgres", "SQLite"]);
+    // Free text is always accepted on this shape; there is no "other" flag.
+    expect(request.questions[1].allowsFreeform).toBe(true);
+    expect(request.questions[1].options).toEqual([]);
+    // The question must never also reach the transcript as prose.
+    expect(events.some((entry) =>
+      entry.event.type === "text" && entry.sessionId === session.id
+      && String((entry.event as { text?: string }).text ?? "").includes("Postgres or SQLite?"),
+    )).toBe(false);
+  });
+
+  it("leaves the composer usable and the row un-blocked", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service, session } = await startCodexChat(events);
+    emitAsyncQuestion("codex-async-2", [{ title: "Keep going?", options: ["Yes"] }]);
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "approval_request" && event.event.itemId === "codex-async-2",
+    );
+
+    const summary = await service.getSessionSummary(session.id);
+    expect(summary?.awaitingInput).toBeUndefined();
+    expect(summary?.pendingInputItemId).toBeUndefined();
+    expect(summary?.asyncQuestion).toBe(true);
+    // Never persisted as a block — the durable record is the banked question.
+    expect(readPersistedChatState(session.id).awaitingInput).toBeUndefined();
+    expect(readPersistedChatState(session.id).asyncQuestions).toHaveLength(1);
+  });
+
+  it("answers by sending an ordinary message and writes an accepted receipt", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service, session } = await startCodexChat(events);
+    emitAsyncQuestion("codex-async-3", [{ title: "Postgres or SQLite?", options: ["Postgres"] }]);
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "approval_request" && event.event.itemId === "codex-async-3",
+    );
+
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: "codex-async-3",
+      decision: "accept",
+      answers: { "0": "Postgres" },
+    });
+
+    const receipt = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "pending_input_resolved" && event.event.itemId === "codex-async-3",
+    );
+    expect((receipt.event as { resolution?: string }).resolution).toBe("accepted");
+    const userMessage = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "user_message"
+        && String((event.event as { text?: string }).text ?? "").includes("Postgres or SQLite?"),
+    );
+    expect((userMessage.event as { text?: string }).text).toContain("Postgres");
+    expect(readPersistedChatState(session.id).asyncQuestions).toBeUndefined();
+  });
+
+  it("keeps an async card and markers when its answer cannot be dispatched", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service, session } = await startCodexChat(events);
+    emitAsyncQuestion("codex-async-live-pending", [{ title: "Keep going?", options: ["Yes"] }]);
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "approval_request" && event.event.itemId === "codex-async-live-pending",
+    );
+
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      id: "codex-blocking-request",
+      method: "item/tool/requestUserInput",
+      params: {
+        itemId: "codex-blocking-request",
+        questions: [{ id: "q", question: "Approve this command?", options: [{ label: "Allow" }] }],
+      },
+    });
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "approval_request" && event.event.itemId === "codex-blocking-request",
+    );
+
+    await expect(service.respondToInput({
+      sessionId: session.id,
+      itemId: "codex-async-live-pending",
+      decision: "accept",
+      answers: { "0": "Yes" },
+    })).rejects.toThrow(/pending input/i);
+
+    expect(events.some((event) =>
+      event.event.type === "pending_input_resolved"
+      && event.event.itemId === "codex-async-live-pending",
+    )).toBe(false);
+    expect((await service.getSessionSummary(session.id))?.asyncQuestion).toBe(true);
+    expect(readPersistedChatState(session.id).asyncQuestions).toHaveLength(1);
+
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: "codex-blocking-request",
+      decision: "decline",
+    });
+  });
+
+  it("dismisses with a receipt and a notice, and stops banking the card", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service, session } = await startCodexChat(events);
+    emitAsyncQuestion("codex-async-4", [{ title: "Keep going?", options: ["Yes"] }]);
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "approval_request" && event.event.itemId === "codex-async-4",
+    );
+
+    await service.dismissPendingInput({ sessionId: session.id, itemId: "codex-async-4" });
+
+    const receipt = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "pending_input_resolved" && event.event.itemId === "codex-async-4",
+    );
+    expect((receipt.event as { resolution?: string }).resolution).toBe("cancelled");
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "system_notice"
+        && (event.event as { message?: string }).message === "Question dismissed",
+    );
+    const summary = await service.getSessionSummary(session.id);
+    expect(summary?.asyncQuestion).toBeUndefined();
+    expect(readPersistedChatState(session.id).asyncQuestions).toBeUndefined();
+  });
+
+  it("refuses to dismiss a card the provider is waiting on", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service, session } = await startCodexChat(events);
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      id: "blocking-question-1",
+      method: "item/tool/requestUserInput",
+      params: {
+        itemId: "codex-blocking-1",
+        questions: [{ id: "q", question: "Approve this command?", options: [{ label: "Allow" }] }],
+      },
+    });
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "approval_request" && event.event.itemId === "codex-blocking-1",
+    );
+
+    await expect(
+      service.dismissPendingInput({ sessionId: session.id, itemId: "codex-blocking-1" }),
+    ).rejects.toThrow("This question needs an answer. Answer it or stop the turn.");
+    const summary = await service.getSessionSummary(session.id);
+    expect(summary?.awaitingInput).toBe(true);
+    expect(summary?.pendingInputItemId).toBe("codex-blocking-1");
+  });
+
+  it("keeps an unanswered card in history regardless of the event window", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service, session } = await startCodexChat(events);
+    emitAsyncQuestion("codex-async-5", [{ title: "Keep going?", options: ["Yes"] }]);
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "approval_request" && event.event.itemId === "codex-async-5",
+    );
+    for (let index = 0; index < 5; index += 1) {
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/completed",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: `codex-cmd-${index}`,
+            type: "commandExecution",
+            command: `echo noise-${index}`,
+            status: "completed",
+          },
+        },
+      });
+    }
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "command"
+        && String((event.event as { command?: string }).command ?? "").includes("noise-4"),
+    );
+
+    const history = await service.getChatEventHistory(session.id, { maxEvents: 2 });
+    expect(history.events.some((entry) =>
+      entry.event.type === "approval_request" && entry.event.itemId === "codex-async-5",
+    )).toBe(true);
+  });
+});
+
+describe("Claude resume_return dialog", () => {
+  type ClaudeOptionsWithDialogs = {
+    onUserDialog?: (
+      request: { dialogKind: string; payload: Record<string, unknown>; toolUseID?: string },
+      options: { signal: AbortSignal; requestId: string },
+    ) => Promise<{ behavior: "completed"; result: unknown } | { behavior: "cancelled" } | null>;
+    supportedDialogKinds?: string[];
+  };
+
+  const capturedClaudeOptions = (): ClaudeOptionsWithDialogs | undefined =>
+    vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as ClaudeOptionsWithDialogs | undefined;
+
+  const startClaudeChat = async (
+    events: AgentChatEventEnvelope[],
+    overrides: Record<string, unknown> = {},
+    sessionArgs: Record<string, unknown> = {},
+  ) => {
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      ...overrides,
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "sonnet",
+      ...sessionArgs,
+    });
+    await vi.waitFor(() => {
+      expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+    });
+    return { service, session };
+  };
+
+  it("declares only resume_return", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    await startClaudeChat(events);
+    const opts = capturedClaudeOptions();
+    expect(typeof opts?.onUserDialog).toBe("function");
+    // `refusal_fallback_prompt` is deliberately withheld — declaring a kind ADE
+    // cannot draw parks a dialog nobody can answer.
+    expect(opts?.supportedDialogKinds).toEqual(["resume_return"]);
+  });
+
+  it("maps each answer to the SDK result", async () => {
+    for (const [label, expected] of [
+      ["Compact and continue", "compact"],
+      ["Keep full history", "continue"],
+    ] as const) {
+      vi.mocked(claudeSdkCreateSessionCompat).mockClear();
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, session } = await startClaudeChat(events);
+      const onUserDialog = capturedClaudeOptions()?.onUserDialog;
+      expect(onUserDialog).toBeTruthy();
+
+      const controller = new AbortController();
+      const answered = onUserDialog!(
+        {
+          dialogKind: "resume_return",
+          payload: { sessionAgeMinutes: 145, estimatedTokens: 275_123 },
+          toolUseID: `tool-${expected}`,
+        },
+        { signal: controller.signal, requestId: `req-${expected}` },
+      );
+
+      const card = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } =>
+          event.event.type === "approval_request"
+          && String(event.event.itemId).startsWith("claude-resume-return:"),
+      );
+      const itemId = String(card.event.itemId);
+      expect((card.event as { detail?: { request?: any } }).detail?.request.description)
+        .toBe("This session is 2h 25m old and uses 275,123 tokens. Compact it before continuing?");
+
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId,
+        decision: "accept",
+        answers: { resume_decision: label },
+      });
+      await expect(answered).resolves.toEqual({ behavior: "completed", result: expected });
+    }
+  });
+
+  it("cancels an unrecognized dialog kind without drawing a card", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    await startClaudeChat(events);
+    const onUserDialog = capturedClaudeOptions()?.onUserDialog;
+    const controller = new AbortController();
+    await expect(onUserDialog!(
+      { dialogKind: "refusal_fallback_prompt", payload: {} },
+      { signal: controller.signal, requestId: "req-unknown" },
+    )).resolves.toEqual({ behavior: "cancelled" });
+    expect(events.some((entry) => entry.event.type === "approval_request")).toBe(false);
+  });
+
+  it("cancels and writes a receipt when the dialog is aborted", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    await startClaudeChat(events);
+    const onUserDialog = capturedClaudeOptions()?.onUserDialog;
+    const controller = new AbortController();
+    const answered = onUserDialog!(
+      { dialogKind: "resume_return", payload: { sessionAgeMinutes: 10, estimatedTokens: 100 }, toolUseID: "tool-abort" },
+      { signal: controller.signal, requestId: "req-abort" },
+    );
+    const card = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      } =>
+        event.event.type === "approval_request"
+        && String(event.event.itemId).startsWith("claude-resume-return:"),
+    );
+    const cardItemId = card.event.itemId;
+    controller.abort();
+    await expect(answered).resolves.toEqual({ behavior: "cancelled" });
+    // The card had no answer, so nothing else wrote a receipt — and without one
+    // it would be redrawn with no waiter behind it.
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "pending_input_resolved" && event.event.itemId === cardItemId,
+    );
+  });
+
+  it("remembers Don't ask again and stops declaring the kind", async () => {
+    let dismissed = false;
+    const preference = {
+      isDismissed: () => dismissed,
+      markDismissed: () => { dismissed = true; },
+    };
+    const events: AgentChatEventEnvelope[] = [];
+    const { service, session } = await startClaudeChat(events, {
+      claudeResumeDialogPreference: preference,
+    });
+    const onUserDialog = capturedClaudeOptions()?.onUserDialog;
+    const controller = new AbortController();
+    const answered = onUserDialog!(
+      { dialogKind: "resume_return", payload: { sessionAgeMinutes: 10, estimatedTokens: 100 }, toolUseID: "tool-never" },
+      { signal: controller.signal, requestId: "req-never" },
+    );
+    const card = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      } =>
+        event.event.type === "approval_request"
+        && String(event.event.itemId).startsWith("claude-resume-return:"),
+    );
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: String(card.event.itemId),
+      decision: "accept",
+      answers: { resume_decision: "Don't ask again" },
+    });
+    await expect(answered).resolves.toEqual({ behavior: "completed", result: "never" });
+    expect(dismissed).toBe(true);
+
+    vi.mocked(claudeSdkCreateSessionCompat).mockClear();
+    const { service: nextService } = createService({ claudeResumeDialogPreference: preference });
+    await nextService.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+    await vi.waitFor(() => {
+      expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+    });
+    // The callback stays wired; only the declaration is withheld, which is what
+    // makes the CLI stop emitting the dialog.
+    expect(capturedClaudeOptions()?.supportedDialogKinds).toBeUndefined();
+    expect(typeof capturedClaudeOptions()?.onUserDialog).toBe("function");
+  });
+
+  it("declares no dialog kinds for a lightweight session", async () => {
+    vi.mocked(claudeSdkCreateSessionCompat).mockClear();
+    const events: AgentChatEventEnvelope[] = [];
+    await startClaudeChat(events, {}, { sessionProfile: "light" });
+    const opts = capturedClaudeOptions();
+    expect(opts?.supportedDialogKinds).toBeUndefined();
+    expect(opts?.onUserDialog).toBeUndefined();
   });
 });

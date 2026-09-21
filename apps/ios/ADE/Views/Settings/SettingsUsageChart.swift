@@ -180,6 +180,9 @@ struct SettingsUsagePaceProvider: View {
   let accounts: [ADEUsageAccountView]
   let status: MobileUsageProviderStatus?
   let spendControlReached: Bool
+  /// Accounts on this provider with a credit banked. Empty renders nothing,
+  /// which is also what an older host that omits `resetCredits` means.
+  var resetCredits: [MobileUsageAccount] = []
 
   @Environment(\.openURL) private var openURL
   @State private var detail: ADEUsageLimitSegment?
@@ -211,6 +214,8 @@ struct SettingsUsagePaceProvider: View {
           )
         }
       }
+
+      ADEResetCreditRows(accounts: resetCredits)
 
       if let message = statusMessage {
         Text(message)
@@ -347,7 +352,9 @@ private struct SettingsUsageAccountRow: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.colorSchemeContrast) private var contrast
 
-  private var accent: Color { adeUsageAccountAccent(segment.account?.id ?? segment.id) }
+  /// The provider's brand, passed down from the group heading. Accounts do not
+  /// get a colour of their own — the email on this row is what tells them apart.
+  private var accent: Color { tint }
   private var left: Double { segment.percentLeft }
 
   var body: some View {

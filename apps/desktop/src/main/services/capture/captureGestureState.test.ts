@@ -1,0 +1,355 @@
+import path from "node:path";
+import { describe, expect, it } from "vitest";
+import {
+  captureAttachmentFilename,
+  captureFailureFor,
+  captureGestureHealth,
+  captureHelperExecutableName,
+  evaluateCaptureChord,
+  parseCaptureHelperOutput,
+  resolveCaptureHelperExecutablePath,
+} from "./captureGestureState";
+import { pickCaptureGestureWindow } from "./captureGestureTarget";
+import {
+  fitCaptureShotToAttachmentLimit,
+  MAX_CAPTURE_SHOT_HALVINGS,
+  type CaptureShotImage,
+} from "./captureShotFit";
+import type { CaptureGestureShot } from "../../../shared/types/captureGesture";
+
+describe("capture helper path resolution", () => {
+  it("resolves packaged and development paths per platform", () => {
+    expect(resolveCaptureHelperExecutablePath({
+      isPackaged: true,
+      resourcesPath: "/Applications/ADE.app/Contents/Resources",
+      appPath: "/repo/apps/desktop",
+      platform: "darwin",
+    })).toBe(path.join("/Applications/ADE.app/Contents/Resources", "native", "ade-capture-helper"));
+
+    expect(resolveCaptureHelperExecutablePath({
+      isPackaged: false,
+      resourcesPath: "/ignored",
+      appPath: "/repo/apps/desktop",
+      platform: "darwin",
+    })).toBe(path.join("/repo/apps/desktop", "resources", "native", "ade-capture-helper"));
+  });
+
+  it("uses the .exe name on Windows so spawn can find it", () => {
+    expect(captureHelperExecutableName("win32")).toBe("ade-capture-helper.exe");
+    expect(captureHelperExecutableName("darwin")).toBe("ade-capture-helper");
+    expect(resolveCaptureHelperExecutablePath({
+      isPackaged: true,
+      resourcesPath: "C:\\Program Files\\ADE\\resources",
+      appPath: "C:\\repo",
+      platform: "win32",
+    })).toContain("ade-capture-helper.exe");
+  });
+});
+
+describe("chord admission", () => {
+  const base = { enabled: true, captureInFlight: false, lastCaptureAtMs: null, nowMs: 1_000, cooldownMs: 1_200 };
+
+  it("captures on a clean chord", () => {
+    expect(evaluateCaptureChord(base)).toEqual({ action: "capture" });
+  });
+
+  it("refuses while the gesture is off", () => {
+    expect(evaluateCaptureChord({ ...base, enabled: false }))
+      .toEqual({ action: "ignore", reason: "disabled" });
+  });
+
+  it("refuses a second chord while a capture is running", () => {
+    expect(evaluateCaptureChord({ ...base, captureInFlight: true }))
+      .toEqual({ action: "ignore", reason: "in-flight" });
+  });
+
+  it("refuses a re-press inside the cooldown and allows one after it", () => {
+    expect(evaluateCaptureChord({ ...base, lastCaptureAtMs: 500, nowMs: 1_000 }))
+      .toEqual({ action: "ignore", reason: "cooldown" });
+    expect(evaluateCaptureChord({ ...base, lastCaptureAtMs: 500, nowMs: 2_000 }))
+      .toEqual({ action: "capture" });
+  });
+
+  it("puts the disabled refusal ahead of the cooldown", () => {
+    // Order matters for the log line, and "disabled" is the honest reason when
+    // the user switched the gesture off mid-press.
+    expect(evaluateCaptureChord({ ...base, enabled: false, lastCaptureAtMs: 999 }))
+      .toEqual({ action: "ignore", reason: "disabled" });
+  });
+});
+
+describe("helper output parsing", () => {
+  it("parses each known message", () => {
+    expect(parseCaptureHelperOutput('{"type":"ready"}')).toEqual({ type: "ready" });
+    expect(parseCaptureHelperOutput('{"type":"chord"}')).toEqual({ type: "chord" });
+    expect(parseCaptureHelperOutput('{"type":"no-window"}')).toEqual({ type: "no-window" });
+    expect(parseCaptureHelperOutput('{"type":"permission-denied"}'))
+      .toEqual({ type: "permission-denied" });
+  });
+
+  it("keeps a captured message's optional fields optional", () => {
+    expect(parseCaptureHelperOutput('{"type":"captured","path":"/tmp/a.png"}')).toEqual({
+      type: "captured",
+      path: "/tmp/a.png",
+      appName: null,
+      windowTitle: null,
+      ownerPid: null,
+      bounds: null,
+    });
+  });
+
+  it("carries app, pid and bounds when the helper knows them", () => {
+    const parsed = parseCaptureHelperOutput(JSON.stringify({
+      type: "captured",
+      path: "/tmp/a.png",
+      appName: "Safari",
+      windowTitle: "ADE",
+      ownerPid: 77,
+      bounds: { x: 10, y: 20, width: 300, height: 200 },
+    }));
+    expect(parsed).toEqual({
+      type: "captured",
+      path: "/tmp/a.png",
+      appName: "Safari",
+      windowTitle: "ADE",
+      ownerPid: 77,
+      bounds: { x: 10, y: 20, width: 300, height: 200 },
+    });
+  });
+
+  it("drops a captured message with no path rather than delivering a pathless shot", () => {
+    expect(parseCaptureHelperOutput('{"type":"captured"}')).toBeNull();
+    expect(parseCaptureHelperOutput('{"type":"captured","path":""}')).toBeNull();
+  });
+
+  it("rejects malformed bounds instead of trusting them for the flash geometry", () => {
+    const parsed = parseCaptureHelperOutput(JSON.stringify({
+      type: "captured",
+      path: "/tmp/a.png",
+      bounds: { x: 0, y: 0, width: 0, height: 100 },
+    }));
+    expect(parsed).toMatchObject({ bounds: null });
+  });
+
+  it("ignores junk and message types from a newer helper", () => {
+    expect(parseCaptureHelperOutput("not json")).toBeNull();
+    expect(parseCaptureHelperOutput('{"type":"tomorrow"}')).toBeNull();
+    expect(parseCaptureHelperOutput('["chord"]')).toBeNull();
+  });
+
+  it("defaults a capture-failed message that carries no text", () => {
+    expect(parseCaptureHelperOutput('{"type":"capture-failed"}')).toEqual({
+      type: "capture-failed",
+      message: "The window could not be captured.",
+    });
+  });
+});
+
+describe("failure presentation", () => {
+  it("tells the user exactly where the permission lives, per platform", () => {
+    // The platform is passed rather than read off the host: this is pure logic,
+    // and a test that says "Screen Recording" only because the developer is on
+    // a Mac is a test that goes red on a Windows contributor's machine.
+    const mac = captureFailureFor({ type: "permission-denied" }, "chord", "darwin");
+    expect(mac.reason).toBe("permission-denied");
+    expect(mac.message).toContain("Screen Recording");
+
+    // Windows has no Screen Recording pane, so sending a Windows user there is
+    // worse than saying nothing.
+    const win = captureFailureFor({ type: "permission-denied" }, "chord", "win32");
+    expect(win.message).toContain("keyboard hook");
+    expect(win.message).not.toContain("System Settings");
+
+    // A platform the gesture does not support yet gets neither story.
+    const other = captureFailureFor({ type: "permission-denied" }, "chord", "linux");
+    expect(other.message).not.toContain("Screen Recording");
+    expect(other.message).not.toContain("Windows");
+  });
+
+  it("keeps the source so the renderer can tell a chord from a palette run", () => {
+    expect(captureFailureFor({ type: "no-window" }, "command").source).toBe("command");
+  });
+});
+
+describe("health", () => {
+  const base = {
+    platform: "darwin" as const,
+    enabled: true,
+    executableExists: true,
+    running: true,
+    permissionDenied: false,
+    exhaustedRestarts: false,
+  };
+
+  it("answers unsupported before anything else on Linux", () => {
+    // Even a Linux machine with the setting on and a file at the helper path
+    // must not be told to "turn the gesture on" — there is no helper to run.
+    const health = captureGestureHealth({ ...base, platform: "linux", enabled: false });
+    expect(health.state).toBe("unsupported");
+    expect(health.recovery).toBeNull();
+  });
+
+  it("names the platform's own chord in the running and disabled copy", () => {
+    expect(captureGestureHealth(base).message).toContain("⌘");
+    expect(captureGestureHealth({ ...base, platform: "win32" }).message).toContain("Ctrl");
+    expect(captureGestureHealth({ ...base, enabled: false }).state).toBe("disabled");
+  });
+
+  it("reports a missing binary as a reinstall, not a retry", () => {
+    const health = captureGestureHealth({ ...base, executableExists: false, running: false });
+    expect(health.state).toBe("missing");
+    expect(health.recovery).toBe("reinstall_or_update");
+  });
+
+  it("puts permission refusal ahead of running", () => {
+    const health = captureGestureHealth({ ...base, permissionDenied: true });
+    expect(health.state).toBe("permission_denied");
+    expect(health.recovery).toBe("grant_permission");
+  });
+
+  it("reports an exhausted restart budget as a crash loop", () => {
+    expect(captureGestureHealth({ ...base, running: false, exhaustedRestarts: true }).state)
+      .toBe("crash_loop");
+    expect(captureGestureHealth({ ...base, running: false }).state).toBe("starting");
+  });
+});
+
+describe("attachment filename", () => {
+  it("is sortable, padded and .png", () => {
+    expect(captureAttachmentFilename(new Date(2026, 8, 13, 9, 5, 3)))
+      .toBe("ade-capture-20260913-090503.png");
+  });
+});
+
+/* --- Where a capture is delivered (captureGestureTarget.ts). --- */
+
+/**
+ * The routing order is the whole contract, and it is an order rather than a
+ * rule: focused, then the window the user was last in, then any live window,
+ * and NEVER a new one. Each step exists because the step after it was wrong in
+ * practice, so each one is pinned here separately.
+ */
+describe("pickCaptureGestureWindow", () => {
+  const windows = [{ id: 1 }, { id: 2 }, { id: 3 }];
+
+  it("prefers the focused window", () => {
+    expect(
+      pickCaptureGestureWindow({ liveWindows: windows, focused: windows[2], lastFocusedId: 1 }),
+    ).toBe(windows[2]);
+  });
+
+  /**
+   * The case that matters: the gesture fires over ANOTHER app's window, so
+   * nothing of ADE's is focused. Falling straight to the first window would
+   * pick creation order — an arbitrary project, usually not the one the user
+   * was last in.
+   */
+  it("falls back to the window the user was last in, not the oldest one", () => {
+    expect(
+      pickCaptureGestureWindow({ liveWindows: windows, focused: null, lastFocusedId: 3 }),
+    ).toBe(windows[2]);
+  });
+
+  /**
+   * A focused window that is mid-teardown is not a target, and main.ts says so
+   * by passing `focused: null` — which must fall THROUGH to the remembered
+   * window rather than skipping to the oldest one. Same input shape as "no
+   * focused window at all", deliberately: the caller owns liveness (only
+   * Electron can answer it) and this function owns the order.
+   */
+  it("falls through to the last-focused window when the focused one is being torn down", () => {
+    const live = [{ id: 1 }, { id: 2 }];
+    expect(
+      pickCaptureGestureWindow({ liveWindows: live, focused: null, lastFocusedId: 2 }),
+    ).toBe(live[1]);
+  });
+
+  /** ...and the remembered window is only usable while it is still live. */
+  it("ignores a remembered window that is no longer in the live set", () => {
+    expect(
+      pickCaptureGestureWindow({ liveWindows: windows, focused: null, lastFocusedId: 99 }),
+    ).toBe(windows[0]);
+    expect(
+      pickCaptureGestureWindow({ liveWindows: windows, focused: null, lastFocusedId: null }),
+    ).toBe(windows[0]);
+  });
+
+  /** Never a new window: with nothing live there is nowhere to deliver. */
+  it("answers null rather than conjuring a window", () => {
+    expect(
+      pickCaptureGestureWindow({ liveWindows: [], focused: null, lastFocusedId: 3 }),
+    ).toBeNull();
+  });
+});
+
+/* --- Fitting a shot into an attachment (captureShotFit.ts). --- */
+
+/**
+ * A fake image whose PNG size is proportional to its area, which is the only
+ * property the loop reasons about. `resize` halves the width and the fake
+ * halves the height with it, exactly as Electron's aspect-preserving resize
+ * does — so one halving is a quarter of the bytes.
+ */
+function fakeImage(width: number, height: number, bytesPerPixel = 1): CaptureShotImage {
+  return {
+    getSize: () => ({ width, height }),
+    resize: ({ width: nextWidth }) =>
+      fakeImage(nextWidth, Math.max(1, Math.floor((height * nextWidth) / width)), bytesPerPixel),
+    toPNG: () => Buffer.alloc(width * height * bytesPerPixel, 1),
+  };
+}
+
+function shotOf(bytes: number): CaptureGestureShot {
+  return {
+    pngBase64: Buffer.alloc(bytes, 1).toString("base64"),
+    source: "chord",
+  } as CaptureGestureShot;
+}
+
+describe("fitCaptureShotToAttachmentLimit", () => {
+  it("passes a shot that already fits through untouched", () => {
+    const shot = shotOf(100);
+    expect(fitCaptureShotToAttachmentLimit(shot, { fromBuffer: () => fakeImage(10, 10) }, 1_000)).toBe(shot);
+  });
+
+  it("halves until it fits and keeps the rest of the shot", () => {
+    // 64×64 = 4096 bytes against a 1000-byte ceiling: two halvings (1024, 256).
+    const shot = shotOf(4096);
+    const fitted = fitCaptureShotToAttachmentLimit(
+      shot,
+      { fromBuffer: () => fakeImage(64, 64) },
+      1_000,
+    );
+    expect(fitted).not.toBeNull();
+    expect(Buffer.from(fitted!.pngBase64, "base64").byteLength).toBe(256);
+    expect(fitted!.source).toBe("chord");
+  });
+
+  /**
+   * The refusal is the point: a shot that reached the composer and then failed
+   * to stage made the gesture silently do nothing, so the loop has to end in a
+   * `too_large` the user can be told about rather than in a bad attachment.
+   */
+  it("gives up after MAX_CAPTURE_SHOT_HALVINGS halvings rather than shrinking forever", () => {
+    let resizes = 0;
+    const image = (width: number, height: number): CaptureShotImage => ({
+      getSize: () => ({ width, height }),
+      resize: ({ width: nextWidth }) => {
+        resizes += 1;
+        return image(nextWidth, Math.max(1, Math.floor((height * nextWidth) / width)));
+      },
+      toPNG: () => Buffer.alloc(width * height, 1),
+    });
+    // 4096×4096 against 1000 bytes never fits inside the allowed halvings.
+    expect(
+      fitCaptureShotToAttachmentLimit(shotOf(4096 * 4096), { fromBuffer: () => image(4096, 4096) }, 1_000),
+    ).toBeNull();
+    expect(resizes).toBe(MAX_CAPTURE_SHOT_HALVINGS);
+  });
+
+  it("stops rather than dividing a one-pixel image", () => {
+    expect(
+      fitCaptureShotToAttachmentLimit(shotOf(50), { fromBuffer: () => fakeImage(1, 1, 50) }, 10),
+    ).toBeNull();
+  });
+});

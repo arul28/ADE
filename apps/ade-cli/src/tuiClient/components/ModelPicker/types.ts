@@ -14,6 +14,8 @@ export type ModelPickerRailEntry =
 export type ModelPickerEntry = {
   /** Canonical ADE model id (matches modelRegistry.id). Empty string for placeholder. */
   modelId: string;
+  /** Stored API credential that makes this catalog row reachable, when any. */
+  credentialId?: string;
   /** Provider/runtime model ref (for selection commit). */
   runtimeModelId: string;
   displayName: string;
@@ -28,6 +30,12 @@ export type ModelPickerEntry = {
   serviceTiers?: string[];
   cursorAvailability?: CursorModelAvailability;
 };
+
+/** Stable row identity when one provider exposes the same model through many keys. */
+export function modelPickerEntryKey(entry: Pick<ModelPickerEntry, "modelId" | "credentialId">): string {
+  const credentialId = entry.credentialId?.trim();
+  return credentialId ? `${entry.modelId}::credential:${credentialId}` : entry.modelId;
+}
 
 export type ModelPickerProviderTab = {
   key: string;

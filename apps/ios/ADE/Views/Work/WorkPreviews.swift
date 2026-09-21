@@ -1172,6 +1172,9 @@ enum ADEPreviewScreen: String, CaseIterable {
   case proofEmpty = "proof-empty"
   case proofViewer = "proof-viewer"
   case tools = "tools"
+  /// Scroll benchmark over a real transcript file. See `WorkChatScrollBench.swift`.
+  case chatScroll = "chat-scroll"
+  case queuedSteerDetail = "queued-steer"
 
   /// `-adePreviewScreen <value>`. Matches the shape `simctl launch` and the
   /// Xcode scheme editor both use for launch arguments.
@@ -1220,14 +1223,76 @@ struct ADEPreviewScreenHost: View {
         initialArtifactId: "proof-1",
         onLoadArtifact: { _ in }
       )
+    case .chatScroll:
+      WorkChatScrollBenchScreen(options: .fromLaunchArguments())
     case .tools:
       WorkToolsSheet(
         laneId: WorkProofPreviewData.laneId,
         previewState: WorkProofPreviewData.toolsState,
         previewFrame: WorkProofPreviewData.toolsFrame
       )
+    case .queuedSteerDetail:
+      // Presented as a real sheet rather than rendered full-bleed, so the
+      // detents and drag indicator the sheet declares are the ones in the
+      // screenshot.
+      WorkQueuedSteerPreviewHost()
     }
   }
+}
+
+/// Backdrop that opens `WorkQueuedSteerDetailSheet` on appear, so the fixture
+/// screenshot shows the sheet as the phone presents it.
+private struct WorkQueuedSteerPreviewHost: View {
+  @State private var presented = false
+
+  var body: some View {
+    ADEColor.surfaceBackground
+      .ignoresSafeArea()
+      .onAppear { presented = true }
+      .sheet(isPresented: $presented) {
+        WorkQueuedSteerDetailSheet(
+          steer: WorkQueuedSteerPreviewData.steer,
+          capability: WorkQueuedSteerPreviewData.capability,
+          turnActive: true,
+          isLive: true,
+          busy: false,
+          onDispatchInline: {},
+          onDispatchInterrupt: {},
+          onBeginEdit: {},
+          onCancel: {}
+        )
+        // The sheet offers [.medium, .large]; the fixture pins the large
+        // detent so one screenshot shows every delivery option.
+        .presentationDetents([.large])
+      }
+  }
+}
+
+@MainActor
+private enum WorkQueuedSteerPreviewData {
+  static let steer = WorkPendingSteerModel(
+    id: "preview-steer-1",
+    text: """
+    Before you touch the transcript merge, re-read how the host writes a steered \
+    message twice — `deliveryState: "queued"` when it is staged and non-queued \
+    once the provider consumes it. Both rows reach the phone, so the prune has to \
+    run before the idle filter, not after it.
+
+    Then add the regression test for a still-pending steer: it has no graduating \
+    row and must survive both prunes untouched.
+    """,
+    attachments: [
+      AgentChatFileRef(path: "apps/ios/ADE/Views/Work/WorkErrorAndMessageHelpers.swift", type: "file"),
+      AgentChatFileRef(path: "docs/features/chat/README.md", type: "file"),
+    ],
+    turnId: "preview-turn-1",
+    timestamp: WorkPreviewData.timestamp
+  )
+
+  static let capability = workChatActiveSendCapability(
+    provider: "claude",
+    liveRedirectOnly: false
+  )
 }
 
 #Preview("Proof sheet") {
@@ -1244,6 +1309,12 @@ struct ADEPreviewScreenHost: View {
 
 #Preview("Proof viewer") {
   ADEPreviewScreenHost(screen: .proofViewer)
+    .environmentObject(WorkPreviewData.syncService)
+    .preferredColorScheme(.dark)
+}
+
+#Preview("Queued steer detail") {
+  ADEPreviewScreenHost(screen: .queuedSteerDetail)
     .environmentObject(WorkPreviewData.syncService)
     .preferredColorScheme(.dark)
 }

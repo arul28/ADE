@@ -10,6 +10,12 @@ import {
   fitTranscriptReplayTextToBudget,
   replayMaxCharsForProvider,
   replayBudgetChars,
+  replayBudgetTokens,
+  replayReserveTokens,
+  estimateReplayTokens,
+  REPLAY_CHARS_PER_TOKEN,
+  REPLAY_MAX_WINDOW_FRACTION,
+  REPLAY_RESERVE_MIN_TOKENS,
 } from "./crossProviderReplayFork";
 
 const sessionId = "chat-1";
@@ -132,6 +138,39 @@ describe("fitTranscriptReplayToBudget", () => {
     expect(fit.truncated).toBe(true);
     expect(fit.keptTurnCount).toBe(0);
     expect(fit.truncatedTurnCount).toBe(document.turnCount);
+  });
+});
+
+describe("replay budget", () => {
+  it("keeps a 1M-token window inside 60% of the window at 3 chars per token", () => {
+    const budgetChars = replayBudgetChars(1_000_000);
+    expect(estimateReplayTokens("x".repeat(budgetChars))).toBeLessThanOrEqual(600_000);
+    expect(replayBudgetTokens(1_000_000)).toBe(600_000);
+  });
+
+  it("regression: a 1M-token window no longer admits a ~1.4M-token replay", () => {
+    // The old math was (window - 8k) * 4 chars, then counted at ~3 chars/token.
+    const oldBudgetChars = (1_000_000 - 8_000) * 4;
+    expect(estimateReplayTokens("x".repeat(oldBudgetChars))).toBeGreaterThan(1_000_000);
+    expect(replayBudgetChars(1_000_000)).toBeLessThan(oldBudgetChars);
+  });
+
+  it("reserves the larger of 32k tokens and 15% of the window", () => {
+    expect(replayReserveTokens(100_000)).toBe(REPLAY_RESERVE_MIN_TOKENS);
+    expect(replayReserveTokens(1_000_000)).toBe(150_000);
+  });
+
+  it("never lets the replay exceed the window cap", () => {
+    for (const window of [16_000, 128_000, 200_000, 1_000_000]) {
+      expect(replayBudgetTokens(window))
+        .toBeLessThanOrEqual(Math.floor(window * REPLAY_MAX_WINDOW_FRACTION));
+      expect(replayBudgetChars(window)).toBe(replayBudgetTokens(window) * REPLAY_CHARS_PER_TOKEN);
+    }
+  });
+
+  it("falls back to a 128k window when the target window is unknown", () => {
+    expect(replayBudgetChars(null)).toBe(replayBudgetChars(128_000));
+    expect(replayBudgetChars(0)).toBe(replayBudgetChars(128_000));
   });
 });
 

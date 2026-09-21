@@ -102,6 +102,9 @@ describe("session lifecycle parity", () => {
       lastActivityAt: "2026-07-23T12:00:00.000Z",
       settledAt: "2026-07-23T12:01:00.000Z",
       statusNote: "PR merged",
+      instanceId: "codex-work",
+      presetId: "preset-1",
+      credentialId: "cred-1",
       attentionRequestedAt: null,
       attentionMessage: null,
       lastTurnFailedAt: null,
@@ -155,6 +158,9 @@ describe("session lifecycle parity", () => {
       settledAt: lifecycle.settledAt,
       statusNote: "PR merged",
       lastActivityAt: lifecycle.lastActivityAt,
+      instanceId: "codex-work",
+      presetId: "preset-1",
+      credentialId: "cred-1",
     });
   });
 
@@ -1232,6 +1238,9 @@ describe("createChatSession", () => {
       modelId: "openai/gpt-5.5",
       reasoningEffort: "high",
       fastMode: true,
+      instanceId: "codex-work",
+      presetId: "preset-1",
+      credentialId: "cred-1",
       permissionMode: "plan",
       codexApprovalPolicy: "on-request",
       codexSandbox: "read-only",
@@ -1244,6 +1253,9 @@ describe("createChatSession", () => {
       modelId: "openai/gpt-5.5",
       reasoningEffort: "high",
       fastMode: true,
+      instanceId: "codex-work",
+      presetId: "preset-1",
+      credentialId: "cred-1",
       permissionMode: "plan",
       codexApprovalPolicy: "on-request",
       codexSandbox: "read-only",
@@ -1306,6 +1318,9 @@ describe("startCliTerminalSession", () => {
       title: "Claude smoke",
       model: "anthropic/claude-sonnet-5",
       reasoningEffort: "low",
+      instanceId: "claude-work",
+      presetId: "preset-2",
+      credentialId: "cred-2",
       permissionMode: "auto",
       initialInput: "Hello",
       cols: 100,
@@ -1321,6 +1336,9 @@ describe("startCliTerminalSession", () => {
           title: "Claude smoke",
           model: "anthropic/claude-sonnet-5",
           reasoningEffort: "low",
+          instanceId: "claude-work",
+          presetId: "preset-2",
+          credentialId: "cred-2",
           permissionMode: "auto",
           initialInput: "Hello",
           cols: 100,
@@ -1704,6 +1722,23 @@ describe("steer helpers", () => {
       { domain: "chat", action: "cancelSteer", args: { sessionId: "chat-1", steerId: "steer-1" } },
       { domain: "chat", action: "dispatchSteer", args: { sessionId: "chat-1", steerId: "steer-1", mode: "inline" } },
     ]);
+  });
+
+  it("reports a dispatch the host did not make, in both shapes it can answer with", async () => {
+    // `dispatchSteer` answers WITHOUT throwing when the live run refused the
+    // message (`dispatchedAt: null`), and a durably queued command answers with
+    // an ack envelope carrying no `dispatchedAt` at all. The TUI must read both
+    // as "still queued" rather than as a delivery.
+    const replies: unknown[] = [{ dispatchedAt: null }, { queued: true, commandId: "cmd-1" }];
+    const connection = {
+      action: async () => replies.shift(),
+    } as unknown as AdeCodeConnection;
+
+    const refused = await dispatchSteerMessage(connection, "chat-1", "steer-1", "inline");
+    expect(refused?.dispatchedAt == null).toBe(true);
+
+    const durablyQueued = await dispatchSteerMessage(connection, "chat-1", "steer-1", "inline");
+    expect(durablyQueued?.dispatchedAt == null).toBe(true);
   });
 
   it("routes stalled-turn recovery through the shared Codex chat action", async () => {

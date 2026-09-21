@@ -1,5 +1,6 @@
 import { CURSOR_CLI_EXECUTABLES } from "../../../desktop/src/shared/providerCliExecutables";
 import { resolveProviderRemediation } from "../../../desktop/src/shared/providerRemediation";
+import { COPILOT_NPM_PACKAGE_SPEC } from "../../../desktop/src/shared/acpProviderMetadata";
 import type { ShippedProvider } from "../../../desktop/src/shared/providers";
 
 export type AgentCliErrorCategory = "missing" | "unauthenticated";
@@ -180,7 +181,7 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     displayName: "Qwen Code",
     binaryNames: ["qwen"],
     installCommand: npmGlobalInstallCommand("@qwen-code/qwen-code"),
-    // 0.22.3 removed `qwen auth`. Sign-in is OPENAI_API_KEY / `--auth-type=openai`.
+    // 0.24.0 removed `qwen auth`. Sign-in is OPENAI_API_KEY / `--auth-type=openai`.
     authCommand: "qwen --auth-type=openai",
     missingErrorPatterns: [
       /\bqwen\b.*\b(command not found|not recognized|not found|enoent)\b/i,
@@ -214,7 +215,7 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     agent: "grok",
     displayName: "Grok CLI",
     binaryNames: ["grok"],
-    installCommand: npmGlobalInstallCommand("@xai-official/grok"),
+    installCommand: npmGlobalInstallCommand("@xai-official/grok@1.0.34"),
     authCommand: "grok login",
     missingErrorPatterns: [
       /\bgrok\b.*\b(command not found|not recognized|not found|enoent)\b/i,
@@ -230,7 +231,7 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     agent: "copilot",
     displayName: "GitHub Copilot CLI",
     binaryNames: ["copilot"],
-    installCommand: npmGlobalInstallCommand("@github/copilot"),
+    installCommand: npmGlobalInstallCommand(COPILOT_NPM_PACKAGE_SPEC),
     authCommand: "copilot login",
     missingErrorPatterns: [
       /\bcopilot\b.*\b(command not found|not recognized|not found|enoent)\b/i,

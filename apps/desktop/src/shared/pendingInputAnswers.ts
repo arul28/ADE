@@ -1,4 +1,4 @@
-import type { PendingInputOption, PendingInputQuestion } from "./types/chat";
+import type { PendingInputKind, PendingInputOption, PendingInputQuestion } from "./types/chat";
 
 /**
  * The answer semantics for a pending-input question, shared by every surface
@@ -85,7 +85,47 @@ export function isAskQuestionRequest(
 }
 
 /**
- * Codex 0.153.4 `requestUserInput` with `isBlocking: false` (Astra mid-turn
+ * The exact sentence every surface uses when a send is refused because a card
+ * is still open.
+ *
+ * One string, because the host refuses with it and the renderer pre-empts that
+ * refusal with its own copy — two copies of a user-visible sentence drift, and
+ * the drift shows up as the composer saying one thing and the transcript
+ * another for the same block.
+ */
+export const PENDING_INPUT_SEND_BLOCKED_MESSAGE =
+  "Answer or decline the pending request before sending another message.";
+
+/**
+ * Any card that leaves the composer usable.
+ *
+ * Codex steering was the first, and the Codex async question is the second, so
+ * the partition is stated as what it actually is — `blocking === false` — rather
+ * than as the name of the first case. Missing `blocking` still means blocking,
+ * matching Codex `unwrap_or(true)`: a card whose shape ADE cannot read must not
+ * silently stop gating sends.
+ */
+export function isNonBlockingPendingRequest(
+  request: { blocking?: boolean } | null | undefined,
+): boolean {
+  return request?.blocking === false;
+}
+
+/**
+ * May this card be thrown away without answering it?
+ *
+ * The provider says so explicitly. `blocking: false` is NOT the same claim —
+ * Codex steering is non-blocking and still holds an open app-server request
+ * that a local dismissal would strand.
+ */
+export function isDismissiblePendingRequest(
+  request: { providerMetadata?: Record<string, unknown> } | null | undefined,
+): boolean {
+  return request?.providerMetadata?.dismissible === true;
+}
+
+/**
+ * Codex 0.155.1 `requestUserInput` with `isBlocking: false` (Astra mid-turn
  * steering). Missing `blocking` stays a send-gate, matching Codex
  * `unwrap_or(true)`.
  */
@@ -239,6 +279,76 @@ export function buildAnswers(
   // direct assignment would invoke Object.prototype's legacy setter and lose
   // the answer from JSON serialization.
   return Object.fromEntries(entries);
+}
+
+/**
+ * The provider-facing form of an answer payload: every question keyed to a
+ * non-empty array, with nothing invented for a question nobody answered.
+ *
+ * The inbound half of {@link buildAnswers}. `respondToInput` is reachable from
+ * four surfaces and two of them (the CLI and the mobile client) send a single
+ * free-form `responseText` alongside the per-question `answers` map rather than
+ * folding it into one question the way the desktop composer does. That text is
+ * the user's actual reply, so Rule 1 applies to it: it travels.
+ *
+ * Where it travels matters. Filing it under a synthetic `"response"` key looks
+ * harmless and is not — Claude's `question.reply` takes one answer array PER
+ * ASKED QUESTION, so a key that matches no question id is dropped on the floor
+ * and the model sees an unanswered question it just blocked on. So the text is
+ * appended to the LAST question that has an answer (it qualifies the most
+ * recent choice, which is the ordering the desktop composer produces), or to
+ * the first question when nothing was picked. Only a request with no questions
+ * at all — an approval, a bare freeform prompt — still uses `"response"`,
+ * because there is no question id to use instead.
+ */
+export function normalizePendingInputAnswers(
+  request: { questions?: readonly PendingInputQuestion[]; kind?: PendingInputKind } | null | undefined,
+  answers: Readonly<Record<string, string | string[]>> | undefined,
+  responseText?: string | null,
+): Record<string, string[]> {
+  const normalized = Object.create(null) as Record<string, string[]>;
+  const trimValues = (values: readonly string[]): string[] =>
+    values.map((value) => value.trim()).filter((value) => value.length > 0);
+  const readValues = (record: Readonly<Record<string, unknown>> | undefined, key: string): string[] => {
+    const raw = ownQuestionValue(record, key);
+    if (Array.isArray(raw)) return trimValues(raw.filter((value): value is string => typeof value === "string"));
+    if (typeof raw === "string") return trimValues([raw]);
+    return [];
+  };
+
+  const questions = request?.questions ?? [];
+  for (const question of questions) {
+    const nextValues = readValues(answers, question.id);
+    if (nextValues.length > 0) normalized[question.id] = nextValues;
+  }
+
+  if (request?.kind === "model_selection") {
+    const selectionValues = readValues(answers, "selection");
+    if (selectionValues.length > 0) normalized.selection = selectionValues;
+  }
+
+  const trimmedResponse = typeof responseText === "string" ? responseText.trim() : "";
+  if (trimmedResponse.length > 0) {
+    // The last ANSWERED question, not the last question: text typed next to a
+    // pick qualifies that pick, and a trailing unanswered question would swallow
+    // it into a slot the user never touched.
+    let target: PendingInputQuestion | undefined;
+    for (const question of questions) {
+      if ((ownQuestionValue(normalized, question.id)?.length ?? 0) > 0) target = question;
+    }
+    target ??= questions[0];
+    if (target) {
+      const existing = ownQuestionValue(normalized, target.id) ?? [];
+      // The desktop composer already folds its note into `answers`, and some
+      // callers then send the same string as `responseText`. Appending it twice
+      // would read to the model as the user saying it twice.
+      if (!existing.includes(trimmedResponse)) normalized[target.id] = [...existing, trimmedResponse];
+    } else {
+      normalized.response = [trimmedResponse];
+    }
+  }
+
+  return normalized;
 }
 
 /**
@@ -476,4 +586,30 @@ export function flattenAnswerForSingleStringProvider(
   if (!picks.length) return note;
   if (!note.length) return picks.join(", ");
   return `${picks.join(", ")}\nNote: ${note}`;
+}
+
+/**
+ * Render answers to a "reply as an ordinary message" card as message text.
+ *
+ * Codex async questions carry no request id and no answer channel — the reply
+ * is a plain user message, so the question has to be restated or the model
+ * receives a bare "Yes" with nothing to attach it to. One block per question,
+ * the question on its own line above its answer, blocks separated by a blank
+ * line.
+ *
+ * Unanswered questions are omitted rather than sent empty: a blank line under a
+ * question reads to the model as an answer of "".
+ */
+export function formatPendingInputAnswersAsMessage(
+  request: { questions?: readonly PendingInputQuestion[] } | null | undefined,
+  normalizedAnswers: Readonly<Record<string, readonly string[]>>,
+): string {
+  const blocks: string[] = [];
+  for (const question of request?.questions ?? []) {
+    const values = ownQuestionValue(normalizedAnswers, question.id) ?? [];
+    const answer = values.map((value) => value.trim()).filter((value) => value.length).join(", ");
+    if (!answer.length) continue;
+    blocks.push(`${question.question.trim()}\n${answer}`);
+  }
+  return blocks.join("\n\n");
 }

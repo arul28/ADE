@@ -1,3 +1,4 @@
+import type { CtoVoiceAction } from "../../../shared/types/ctoVoice";
 import type { AdeActionDomain } from "./domains";
 
 /**
@@ -13,7 +14,27 @@ export type AdeActionInputContract = {
   example?: string;
 };
 
-const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record<string, AdeActionInputContract>>>> = {
+type AdeActionInputContractTable =
+  & Partial<Record<AdeActionDomain, Partial<Record<string, AdeActionInputContract>>>>
+  & { cto_voice: Record<CtoVoiceAction, AdeActionInputContract> };
+
+const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
+  cto_state: {
+    getThreadHealth: {
+      description:
+        "Report whether the CTO thread can take a turn: the session id, the last turn failure, context occupancy, "
+        + "and whether a rotation is advised. Open to every role; never changes state.",
+      input: "none",
+      example: "ade actions run cto_state.getThreadHealth --json",
+    },
+    startFreshSession: {
+      description:
+        "Retire the CTO's live conversation into History and start a fresh one on the primary lane. "
+        + "Identity, memory and the daily log carry over; a hand-off note is written first. CTO-only.",
+      input: "none",
+      example: "ade --role cto actions run cto_state.startFreshSession --json",
+    },
+  },
   cto_memory: {
     recordDiscovery: {
       description:
@@ -22,6 +43,76 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
         + "Tag it so it can be found later.",
       input: "object { fact: string, tags?: { lane?: string, pr?: string | number, path?: string, topic?: string } }",
       example: "ade actions run cto_memory.recordDiscovery --input-json '{\"fact\":\"Vitest localStorage suites need Node 22\",\"tags\":{\"topic\":\"testing\",\"path\":\"apps/desktop\"}}'",
+    },
+  },
+  ai: {
+    getMachineApiKeyStatus: {
+      description:
+        "Report whether this MACHINE has a provider key and where it resolves from (\"store\" or \"env\"). Scoped to this install's ADE home, not the project. Never returns the key.",
+      input: "object { provider: string }",
+      example: "ade --role cto actions run ai.getMachineApiKeyStatus --input-json '{\"provider\":\"openai\"}' --json",
+    },
+    storeMachineApiKey: {
+      description:
+        "Store a provider key for this machine, in the credential store the project runtime reads. The secret travels one way: only a status comes back.",
+      input: "object { provider: string, key: string }",
+    },
+    deleteMachineApiKey: {
+      description: "Remove this machine's stored provider key and return the resulting status.",
+      input: "object { provider: string }",
+      example: "ade --role cto actions run ai.deleteMachineApiKey --input-json '{\"provider\":\"openai\"}'",
+    },
+  },
+  // Exhaustive by type: a voice action with no documented shape fails to
+  // compile rather than reaching `ade actions list` as a blank row.
+  cto_voice: {
+    getState: {
+      description: "Read the CTO voice call's current state: phase, elapsed time, captions and any pending confirmation.",
+      input: "no input",
+      example: "ade --role cto actions run cto_voice.getState --json",
+    },
+    hasKey: {
+      description: "Report whether this machine has an OpenAI key a voice call could bill to. Never returns the key.",
+      input: "no input",
+      example: "ade --role cto actions run cto_voice.hasKey --json",
+    },
+    start: {
+      description:
+        "Open a CTO voice call on this project. The caller mints an owner token and must present it on every later voice action, "
+        + "because exactly one window may hold the microphone and drain the speaker.",
+      input: "object { ownerToken: string, callSessionId?: string }",
+      example: "ade --role cto actions run cto_voice.start --input-json '{\"ownerToken\":\"...\"}'",
+    },
+    end: {
+      description: "Hang up the CTO voice call, restoring the CTO's full-auto permission mode and writing the transcript.",
+      input: "object { ownerToken: string }",
+      example: "ade --role cto actions run cto_voice.end --input-json '{\"ownerToken\":\"...\"}'",
+    },
+    setMuted: {
+      description: "Mute or unmute the call's microphone. Muted calls keep streaming silence, because a Live session stalls without input.",
+      input: "object { ownerToken: string, muted: boolean }",
+      example: "ade --role cto actions run cto_voice.setMuted --input-json '{\"ownerToken\":\"...\",\"muted\":true}'",
+    },
+    pushAudio: {
+      description:
+        "Feed base64 PCM16 microphone chunks at the session sample rate into the live call. Batched by the caller; not an event, because "
+        + "audio on the event buffer would evict every real runtime event.",
+      input: "object { ownerToken: string, chunks: string[], level?: number 0..1, levels?: number[] 0..1, one per chunk }",
+    },
+    pullAudio: {
+      description:
+        "Drain the call's queued output audio, returning base64 PCM16 chunks and how many the queue had to drop. The owner polls this "
+        + "roughly ten times a second while a call is live; draining is also the heartbeat that proves the owning window is still there.",
+      input: "object { ownerToken: string }",
+    },
+    resolveApproval: {
+      description: "Answer the confirmation the call is holding, releasing or refusing the CTO turn parked inside canUseTool.",
+      input: "object { ownerToken: string, approvalId: string, approved: boolean }",
+      example: "ade --role cto actions run cto_voice.resolveApproval --input-json '{\"ownerToken\":\"...\",\"approvalId\":\"...\",\"approved\":true}'",
+    },
+    sendCapture: {
+      description: "Attach a window the user captured to the call's next backend turn. The image reaches the CTO thread, never the voice model.",
+      input: "object { ownerToken: string, pngBase64: string, note?: string }",
     },
   },
   account: {
@@ -68,6 +159,38 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       description: "Return a self-contained durable account token once for ADE_ACCOUNT_TOKEN provisioning.",
       input: "no input",
       example: "ade account token create",
+    },
+  },
+  proxy: {
+    status: {
+      description: "Read the local subscription proxy and its signed-in provider subscriptions without exposing credentials.",
+      input: "no input",
+      example: "ade proxy status --text",
+    },
+    ensureRunning: {
+      description: "Install and start the local subscription proxy when a harness needs a borrowed subscription.",
+      input: "no input",
+      example: "ade proxy start --text",
+    },
+    stop: {
+      description: "Stop the local subscription proxy without removing its installed binary or signed-in subscriptions.",
+      input: "no input",
+      example: "ade proxy stop --text",
+    },
+    signIn: {
+      description: "Sign in one Claude or Codex subscription for use by harness presets; ADE opens the provider's sign-in page and waits for completion.",
+      input: "object { provider: \"claude\" | \"codex\" }",
+      example: "ade actions run proxy.signIn --input-json '{\"provider\":\"claude\"}'",
+    },
+    signOut: {
+      description: "Remove one subscription sign-in from this machine.",
+      input: "object { loginId: string }",
+      example: "ade actions run proxy.signOut --input-json '{\"loginId\":\"...\"}'",
+    },
+    setDisabled: {
+      description: "Temporarily enable or disable one subscription sign-in without removing it.",
+      input: "object { loginId: string, disabled: boolean }",
+      example: "ade actions run proxy.setDisabled --input-json '{\"loginId\":\"...\",\"disabled\":true}'",
     },
   },
   attention: {
@@ -520,22 +643,10 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       example: "ade actions run built_in_browser.getTrace --input-json '{\"sessionId\":\"browser-1\"}' --json",
     },
   },
-  orchestration: {
-    runList: {
-      description: "List orchestration runs and their status, optionally for one lane.",
-      input: "positional argsList [laneId?, { limit?: number }?]",
-      example: "ade actions run orchestration.runList --args-json '[null,{\"limit\":10}]' --json",
-    },
-    bundleRead: {
-      description: "Read one orchestration run's bundle: manifest, plan, and registered assets.",
-      input: "positional argsList [runId, bundlePath]",
-      example: "ade actions run orchestration.bundleRead --args-json '[\"run-1\",\"/path/to/bundle\"]' --json",
-    },
-  },
   computer_use_artifacts: {
     listArtifacts: {
       description: "List computer-use proof artifacts (screenshots, recordings, traces, logs) across the project.",
-      input: "object { kind?, ownerKind?, ownerId?, artifactId?, limit? }",
+      input: "object { kind?, ownerKind?, ownerId?, artifactId?, metadataKind?, excludeMetadataKind?, limit? }",
       example: "ade actions run computer_use_artifacts.listArtifacts --input-json '{\"kind\":\"screenshot\",\"limit\":20}' --json",
     },
     ingest: {
@@ -544,6 +655,13 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
         + "Additive: never removes or overwrites an artifact.",
       input: "object { backend: { name, style?, toolName? }, inputs: Array<{ kind?, title?, description?, path?, uri?, text? }>, owners?: Array<{ kind, id, relation? }>, callerRoot?: string }",
       example: "ade actions run computer_use_artifacts.ingest --input-json '{\"backend\":{\"name\":\"cto\",\"style\":\"manual\"},\"inputs\":[{\"kind\":\"screenshot\",\"title\":\"Lanes tab\",\"path\":\"/tmp/shot.png\"}],\"owners\":[{\"kind\":\"lane\",\"id\":\"lane-1\"}]}' --json",
+    },
+    ingestSceneSnapshot: {
+      description:
+        "File a scene snapshot the desktop already wrote into this project's artifact store as proof. "
+        + "CTO-only, and the path must already be inside `.ade/artifacts/computer-use`.",
+      input: "object { path: string, title?: string, sessionId?: string | null, sceneScopeKey?: string, voiceCallId?: string }",
+      example: "ade --role cto actions run computer_use_artifacts.ingestSceneSnapshot --input-json '{\"path\":\"/repo/.ade/artifacts/computer-use/scene.png\",\"title\":\"Merged pull requests\"}' --json",
     },
     readArtifactPreview: {
       description: "Read one artifact's bytes as a bounded preview, for artifacts small enough to inline.",
@@ -571,6 +689,71 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       description: "Re-parse one outside session file and return a generous transcript tail.",
       input: "object { provider, sessionId }",
       example: "ade actions run external-sessions.getDetail --input-json '{\"provider\":\"claude\",\"sessionId\":\"session-id\"}' --text",
+    },
+  },
+  provider_instances: {
+    list: {
+      description:
+        "List this machine's provider accounts (Claude and Codex only). Each entry is a label plus the config directory "
+        + "that holds that login, never a credential.",
+      input: "object { provider?: \"claude\" | \"codex\" }",
+      example: "ade actions run provider_instances.list --input-json '{\"provider\":\"claude\"}' --text",
+    },
+    create: {
+      description:
+        "Create an empty provider account: a new config directory plus a label. Returns the account and the exact login "
+        + "command (argv + env var) a terminal must run so the provider CLI signs in to THIS directory.",
+      input: "object { provider: \"claude\" | \"codex\", label: string, accentColor?: string }",
+      example: "ade actions run provider_instances.create --input-json '{\"provider\":\"claude\",\"label\":\"Work\"}' --text",
+    },
+    remove: {
+      description:
+        "Forget a provider account. Nothing on disk is deleted — the config home is returned so the caller can say what is "
+        + "still there. The machine's own login and the current default cannot be removed.",
+      input: "object { id: string }",
+      example: "ade actions run provider_instances.remove --input-json '{\"id\":\"work\"}' --text",
+    },
+    rename: {
+      description: "Rename one provider account. Labels are at most 60 characters.",
+      input: "object { id: string, label: string }",
+      example: "ade actions run provider_instances.rename --input-json '{\"id\":\"work\",\"label\":\"Work (EU)\"}' --text",
+    },
+    setDefault: {
+      description:
+        "Make one account the provider's default, so sessions that name no instance land there. Exactly one default per provider.",
+      input: "object { id: string }",
+      example: "ade actions run provider_instances.setDefault --input-json '{\"id\":\"work\"}' --text",
+    },
+    setAccent: {
+      description: "Set or clear one account's accent colour. `#rrggbb`, or null to clear it.",
+      input: "object { id: string, accentColor: string | null }",
+      example: "ade actions run provider_instances.setAccent --input-json '{\"id\":\"work\",\"accentColor\":\"#3b82f6\"}' --text",
+    },
+    getSettings: {
+      description:
+        "Read the per-provider account settings: whether new chats spread across signed-in accounts, and whether the "
+        + "provider's accounts start with the machine on Windows.",
+      input: "object { provider: \"claude\" | \"codex\" }",
+      example: "ade actions run provider_instances.getSettings --input-json '{\"provider\":\"codex\"}' --text",
+    },
+    setSettings: {
+      description: "Patch the per-provider account settings. Omitted fields keep their current value.",
+      input: "object { provider: \"claude\" | \"codex\", settings: { smartBalance?: boolean, autoStartWindows?: boolean } }",
+      example: "ade actions run provider_instances.setSettings --input-json '{\"provider\":\"codex\",\"settings\":{\"smartBalance\":true}}' --text",
+    },
+    loginCommand: {
+      description:
+        "The exact command that signs one account in: the provider binary, its argv, and the single env var that points it at "
+        + "this account's config home. ADE never drives the OAuth flow itself.",
+      input: "object { id: string }",
+      example: "ade actions run provider_instances.loginCommand --input-json '{\"id\":\"work\"}' --text",
+    },
+    refresh: {
+      description:
+        "Re-read every account's config home and record who is signed in there. Writes only when something changed, so it is "
+        + "safe to call on a cadence.",
+      input: "object { provider?: \"claude\" | \"codex\" }",
+      example: "ade actions run provider_instances.refresh --input-json '{\"provider\":\"claude\"}' --text",
     },
   },
 };

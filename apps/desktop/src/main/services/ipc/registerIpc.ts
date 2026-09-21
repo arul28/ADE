@@ -55,7 +55,7 @@ import {
 } from "../editors/openPathInEditor";
 import { resolveKnownProjectRoot } from "./knownProjectRoots";
 import type { AttemptedProjectRoots } from "./knownProjectRoots";
-import { redactIpcArgsForChannel } from "./ipcChannelRedaction";
+import { redactIpcArgsForChannel, shouldRedactIpcKey } from "./ipcChannelRedaction";
 import type {
   AttentionItem,
   AttentionNotchSettings,
@@ -79,6 +79,8 @@ import {
 import type { AcpChatProvider, ConvertImageToJpegResult } from "../../../shared/types/chat";
 import { appendEvent as perfAppend, isRunActive as isPerfRunActive } from "../perf/perfLog";
 import { buildPrAiResolutionContextKey, isAdeUsageRangePreset, isAdeUsageScope } from "../../../shared/types";
+import type { MachineInventoryDetail } from "../../../shared/types/machineInventory";
+import { isProviderInstanceProvider } from "../../../shared/types/providerInstances";
 import { detectCliAuthStatuses } from "../ai/authDetector";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { buildProviderConnections } from "../ai/providerConnectionStatus";
@@ -111,6 +113,7 @@ import {
 } from "../projects/projectIconResolver";
 import { assertCursorCloudRenameAllowed } from "../../../shared/cursorCloudNaming";
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
+import { getTurnFileDiffFromGit } from "../chat/turnFileDiff";
 import {
   createPromptStash,
   deletePromptStash,
@@ -118,6 +121,10 @@ import {
 } from "../chat/promptStashService";
 import { isMeaningfulUsageAction, recordUsageInteraction, usageActionFromIpcChannel } from "../usage/usageStatsStore";
 import { createAccountRollupFetcher } from "../usage/accountUsageLiveRefresh";
+import {
+  createAccountMachineInventoryFetcher,
+  readLocalMachineInventoryDetail,
+} from "../account/accountMachineInventoryLiveRefresh";
 import { isUsageSnapshot, type AccountRollupFetcher } from "../usage/usageTrackingService";
 import { bootedUsageScopeRoot } from "../usage/bootedUsageScope";
 import {
@@ -130,6 +137,7 @@ import {
   createMachineRegisterRefusalObserver,
 } from "../analytics/reliabilityTelemetry";
 import type { createProjectSecretService } from "../secrets/projectSecretService";
+import { purgeAccountApiKeys } from "../ai/apiKeyStore";
 import { PROJECT_SECRET_ENV_MAX_BYTES } from "../secrets/projectSecretEnv";
 import { lookupOpenPrForBranch } from "../git/ghOpenPrLookup";
 import { runGit } from "../git/git";
@@ -481,6 +489,7 @@ import type {
   AgentChatParallelLaunchState,
   AgentChatParallelLaunchStateArgs,
   AgentChatPermissionMode,
+  AgentChatDismissPendingInputArgs,
   AgentChatRespondToInputArgs,
   AgentChatSendArgs,
   AgentChatSetParallelLaunchStateArgs,
@@ -629,6 +638,7 @@ import type {
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
+  MachineApiKeyStatus,
   OpenCodeOAuthStartResult,
   OpenCodeOAuthStatusEvent,
   OpenCodeProviderAuthMethods,
@@ -654,6 +664,8 @@ import type {
   CtoListSessionLogsArgs,
   CtoSnapshot,
   CtoSessionLogEntry,
+  CtoStartFreshSessionResult,
+  CtoThreadHealth,
   CtoGetMemoryArgs,
   CtoUpdateMemoryArgs,
   CtoSearchMemoryArgs,
@@ -673,6 +685,7 @@ import type {
   CtoSetLinearOAuthClientArgs,
   AdeUsageStats,
   GetAdeUsageStatsArgs,
+  UsageResetCreditResult,
   UsageSnapshot,
   BudgetCheckResult,
   BudgetCheckArgs,
@@ -734,7 +747,20 @@ import type {
   ExternalSessionSummary,
   ExternalSessionDetail,
   ExternalSessionDetailUpdatedEvent,
+  ProviderInstance,
+  ProviderInstanceCreateResult,
+  ProviderInstanceLoginCommand,
+  ProviderInstanceProvider,
+  ProviderInstanceRemoveResult,
+  ProviderInstanceSettings,
 } from "../../../shared/types";
+import type {
+  ApiCredentialGetArgs,
+  ApiCredentialListArgs,
+  ApiCredentialRemoveArgs,
+  ApiCredentialStoreArgs,
+  ApiCredentialSummary,
+} from "../../../shared/types/apiCredentials";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createLaneService } from "../lanes/laneService";
@@ -810,10 +836,32 @@ import {
   type TranscriptionStatus,
   TranscriptionError,
 } from "../transcription/transcriptionService";
-import { requestMicrophoneAccess } from "../transcription/microphoneAccess";
+import {
+  requestMicrophoneAccess,
+  type MicrophoneAccessResult,
+} from "../transcription/microphoneAccess";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import { fetchAdeLatestRelease, type createGithubService } from "../github/githubService";
-import { createAccountBridge, createBrainAccountActionCaller } from "../account/accountBridge";
+import {
+  createAccountBridge,
+  createBrainAccountActionCaller,
+  createBrainRefreshBroker,
+} from "../account/accountBridge";
+import { createAccountVaultBridge } from "../account/accountVaultBridge";
+import {
+  createAccountMigrationRunner,
+  createAccountMigrationStartRetry,
+  getOpenAccountContexts,
+} from "../account/accountMigrationRunner";
+import { createAccountSettingsSyncService } from "../account/accountSettingsSync";
+import { pruneOrphanedPresetConfigHomesFromMachine } from "../chat/harnessPresetConfigHomes";
+import { readHarnessPresetsFromMachine } from "../chat/harnessPresetSettings";
+import { capturePresetAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
+import type {
+  AccountSettingRow,
+  AccountSettingsResult,
+  AccountSettingsWriteOptions,
+} from "../../../shared/types/accountSettings";
 import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
 import type { createPrSummaryService } from "../prs/prSummaryService";
@@ -850,8 +898,12 @@ import type { createKeybindingsService } from "../keybindings/keybindingsService
 import type { createAgentToolsService } from "../agentTools/agentToolsService";
 import type { createDevToolsService } from "../devTools/devToolsService";
 import type { createOnboardingService } from "../onboarding/onboardingService";
-import { getSharedAccountAuthService } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
+import {
+  getSharedAccountAuthService,
+  setSharedAccountRefreshBroker,
+} from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import type { PushRelayClient } from "../../../../../ade-cli/src/services/push/pushRelayClient";
 import type { DevToolsCheckResult } from "../../../shared/types/devTools";
 import type { createAutomationService } from "../automations/automationService";
@@ -865,24 +917,19 @@ import type { createGithubPollingService } from "../automations/githubPollingSer
 import { ADE_ACTION_ALLOWLIST, getAdeActionDomainServices, listAllowedAdeActionNames } from "../adeActions/registry";
 import { createSessionBoardMoveActions } from "../adeActions/sessionBoardMove";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
+import type { ProxyService } from "../../../../../ade-cli/src/services/proxy/proxyService";
 import { ADE_WELCOME_VIDEO_ID, ADE_WELCOME_VIDEO_VERSION } from "../../../shared/welcomeVideo";
-
-import type { createOrchestrationService } from "../orchestration/orchestrationService";
-import { createOrchestrationDomainService } from "../orchestration/orchestrationDomain";
 import type {
-  ManifestSection,
-  OrchestrationAgentInjectRequest,
-  OrchestrationAssetRegisterRequest,
-  OrchestrationClaimTaskRequest,
-  OrchestrationManifestPatchRequest,
-  OrchestrationPlanAppendRequest,
-  OrchestrationPlanWriteRequest,
-  OrchestrationReleaseTaskRequest,
-  OrchestrationRunCreateRequest,
-  OrchestrationSpawnAgentRequest,
-} from "../../../shared/types/orchestration";
+  SubscriptionProxySetDisabledArgs,
+  SubscriptionProxySignInArgs,
+  SubscriptionProxySignOutArgs,
+} from "../../../shared/types/subscriptionProxy";
+
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { CtoMemoryService } from "../cto/ctoMemoryService";
+import type { CtoVoiceRuntimeService } from "../cto/ctoVoiceRuntimeService";
+import { registerCtoVoiceIpc } from "../cto/ctoVoiceWiring";
+import { UNAVAILABLE_CAPTURE_GESTURE_HEALTH } from "../capture/captureGestureState";
 import type { createLinearCredentialService } from "../cto/linearCredentialService";
 import { createLinearOAuthService, type LinearOAuthService } from "../cto/linearOAuthService";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
@@ -916,6 +963,21 @@ import type { ConfigReloadService } from "../projects/configReloadService";
 import type { createProjectScaffoldService } from "../projects/projectScaffoldService";
 import type { createAdeCliService } from "../cli/adeCliService";
 import { getErrorMessage, isPathEscapeError, isRecord, nowIso, resolvePathWithinRoot } from "../shared/utils";
+import { createComputerUseArtifactPath, toProjectArtifactUri } from "../computerUse/localComputerUse";
+import { sceneDocumentStore } from "../scenes/sceneDocumentStore";
+import {
+  clampSceneCaptureRect,
+  decodeScenePngDataUrl,
+  type SceneCaptureRect,
+} from "../scenes/sceneSnapshot";
+import {
+  fileSceneStill,
+  requireSceneStillScopeKey,
+  resolveSceneStillOwner,
+  sceneStillFileLabel,
+  SceneStillScopeKeyError,
+} from "../scenes/sceneStills";
+import { SCENE_LIMITS, type SceneStillRecord } from "../../../shared/chatScene";
 import { probeLocalhostPort } from "../probeLocalhostPort";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import { openExternalUrl } from "../shared/externalLinks";
@@ -1124,6 +1186,8 @@ export type AppContext = {
   laneTemplateService: ReturnType<typeof createLaneTemplateService> | null;
   portAllocationService: ReturnType<typeof createPortAllocationService> | null;
   laneProxyService: ReturnType<typeof createLaneProxyService> | null;
+  proxyService?: ProxyService | null;
+  getProxyService?: () => ProxyService;
   oauthRedirectService: ReturnType<typeof createOAuthRedirectService> | null;
   runtimeDiagnosticsService: ReturnType<typeof createRuntimeDiagnosticsService> | null;
   rebaseSuggestionService: ReturnType<typeof createRebaseSuggestionService> | null;
@@ -1160,13 +1224,23 @@ export type AppContext = {
   cursorCloudFleetService?: CursorCloudFleetService | null;
   devinCloudFleetService?: DevinCloudFleetService | null;
   githubPollingService?: ReturnType<typeof createGithubPollingService> | null;
-  orchestrationService?: ReturnType<typeof createOrchestrationService> | null;
   projectConfigService: ReturnType<typeof createProjectConfigService> | null;
   projectSecretService?: ReturnType<typeof createProjectSecretService> | null;
   testService: ReturnType<typeof createTestService> | null;
   sessionDeltaService?: SessionDeltaService | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   ctoMemoryService?: CtoMemoryService | null;
+  /**
+   * The in-process CTO voice call.
+   *
+   * Built only under `shouldUseInProcessProjectRuntime()`, and deliberately not
+   * merely "wherever this constructor runs": `ensureProjectContextForMobileSync`
+   * reaches the same constructor in production, and a call brain built there
+   * would be a second one for a project whose daemon already owns the real
+   * one. Null in every real build; the router reaches the runtime's instance
+   * over the `cto_voice` action domain instead.
+   */
+  ctoVoiceCallService?: CtoVoiceRuntimeService | null;
   adeProjectService?: AdeProjectService | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   linearIssueTracker?: ReturnType<typeof createLinearIssueTracker> | null;
@@ -1690,6 +1764,7 @@ function getAllowedDirs(getCtx: () => AppContext): string[] {
 export function registerIpc({
   getCtx,
   getResourceUsageContexts,
+  purgeClosedAccountCredentials,
   getSyncService,
   resolveSyncService,
   runWithIpcWindow,
@@ -1710,6 +1785,10 @@ export function registerIpc({
   builtInBrowserService,
   productAnalyticsService,
   autoDiagnosticsService,
+  updateCaptureGestureSettings,
+  getCaptureGestureHealth,
+  retryCaptureGesture,
+  captureGestureNow,
   publishAttentionNotchSnapshot,
   publishAttentionNotchToast,
   updateAttentionNotchSettings,
@@ -1723,6 +1802,7 @@ export function registerIpc({
 }: {
   getCtx: () => AppContext;
   getResourceUsageContexts?: () => AppContext[];
+  purgeClosedAccountCredentials?: () => void;
   getSyncService?: () => ReturnType<typeof createSyncService> | null | undefined;
   resolveSyncService?: () => Promise<ReturnType<typeof createSyncService> | null | undefined>;
   runWithIpcWindow?: <T>(event: { sender: Electron.WebContents }, fn: () => T | Promise<T>) => T | Promise<T>;
@@ -1770,6 +1850,18 @@ export function registerIpc({
    * tests and in runtime modes that never built one; every call site guards.
    */
   autoDiagnosticsService?: AutoDiagnosticsService;
+  /**
+   * The global capture gesture supervisor, absent in runtime modes that never
+   * built one (tests, the headless brain). Every handler below guards, and the
+   * `unsupported` health it falls back to is the same sentence a Linux desktop
+   * gets — "there is no helper here" is true in both cases.
+   */
+  updateCaptureGestureSettings?: (
+    settings: import("../../../shared/types/captureGesture").CaptureGestureSettings,
+  ) => import("../../../shared/types/captureGesture").CaptureGestureHealth;
+  getCaptureGestureHealth?: () => import("../../../shared/types/captureGesture").CaptureGestureHealth;
+  retryCaptureGesture?: () => import("../../../shared/types/captureGesture").CaptureGestureHealth;
+  captureGestureNow?: () => boolean;
   publishAttentionNotchSnapshot?: (snapshot: AttentionSnapshot) => void;
   publishAttentionNotchToast?: (toast: AttentionNotchToast) => void;
   updateAttentionNotchSettings?: (settings: AttentionNotchSettings) => void;
@@ -2055,19 +2147,6 @@ export function registerIpc({
   const traceIpcInvokes = isPerfRunActive() || !app.isPackaged || process.env.ADE_TRACE_IPC === "1" || process.env.ADE_TRACE_IPC === "verbose";
   const traceEveryIpcInvoke = process.env.ADE_TRACE_IPC === "verbose";
   let ipcInvokeSeq = 0;
-
-  const shouldRedactIpcKey = (key: string | undefined): boolean => {
-    if (!key) return false;
-    const normalized = key.toLowerCase();
-    return normalized.includes("token")
-      || normalized.includes("secret")
-      || normalized.includes("password")
-      || normalized.includes("authorization")
-      || normalized === "apikey"
-      || normalized === "api_key"
-      || normalized === "pairingpin"
-      || normalized === "pairing_pin";
-  };
 
   const summarizeIpcValue = (value: unknown, depth = 0, key?: string): unknown => {
     if (shouldRedactIpcKey(key)) return "[redacted]";
@@ -3295,6 +3374,24 @@ export function registerIpc({
     app.setBadgeCount(normalized);
     return { ok: true } as const;
   });
+
+  ipcMain.handle(IPC.captureGestureUpdateSettings, async (_event, input: unknown) => {
+    const enabled = typeof input === "object" && input !== null
+      && (input as { enabled?: unknown }).enabled === true;
+    return updateCaptureGestureSettings?.({ enabled })
+      ?? getCaptureGestureHealth?.()
+      ?? UNAVAILABLE_CAPTURE_GESTURE_HEALTH;
+  });
+
+  ipcMain.handle(IPC.captureGestureGetHealth, async () =>
+    getCaptureGestureHealth?.() ?? UNAVAILABLE_CAPTURE_GESTURE_HEALTH);
+
+  ipcMain.handle(IPC.captureGestureRetry, async () =>
+    retryCaptureGesture?.() ?? getCaptureGestureHealth?.() ?? UNAVAILABLE_CAPTURE_GESTURE_HEALTH);
+
+  ipcMain.handle(IPC.captureGestureCaptureNow, async () => ({
+    started: captureGestureNow?.() ?? false,
+  }));
 
   ipcMain.handle(IPC.attentionNotchPublishSnapshot, async (_event, input: unknown) => {
     const snapshot = parseAttentionNotchSnapshot(input);
@@ -5086,6 +5183,117 @@ export function registerIpc({
     return listStoredProviders();
   });
 
+  /*
+   * Multi-credential provider keys.
+   *
+   * One provider can hold several keys — a direct vendor key plus a gateway
+   * key with its own endpoint, say — so these are keyed by provider AND
+   * credential id rather than by provider alone like the legacy pair above.
+   * Nothing here returns a secret: `get` answers with the same non-secret
+   * summary `list` does, so the renderer never has a way to read a key back.
+   */
+  ipcMain.handle(
+    IPC.apiCredentialsList,
+    async (_event, arg: ApiCredentialListArgs = {}): Promise<ApiCredentialSummary[]> => {
+      const { listApiCredentials } = await import("../ai/apiKeyStore");
+      return listApiCredentials(arg?.provider);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.apiCredentialsGet,
+    async (_event, arg: ApiCredentialGetArgs): Promise<ApiCredentialSummary | null> => {
+      const { getApiCredentialSummary } = await import("../ai/apiKeyStore");
+      return getApiCredentialSummary(arg.provider, arg.credentialId);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.apiCredentialsStore,
+    async (_event, arg: ApiCredentialStoreArgs): Promise<ApiCredentialSummary | null> => {
+      const ctx = getCtx();
+      const { getApiCredentialSummary, storeApiCredential } = await import("../ai/apiKeyStore");
+      const credentialId = storeApiCredential(arg);
+      try {
+        // The write already succeeded; invalidation is a freshness step, so a
+        // saved key must not fail because a runtime cache is gone.
+        ctx.aiIntegrationService?.invalidateProviderReadinessCaches();
+      } catch (error) {
+        ctx.logger.warn("ai.api_key_cache_invalidation_failed", {
+          provider: arg.provider,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return getApiCredentialSummary(arg.provider, credentialId);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.apiCredentialsRemove,
+    async (_event, arg: ApiCredentialRemoveArgs): Promise<void> => {
+      const ctx = getCtx();
+      const { removeApiCredential } = await import("../ai/apiKeyStore");
+      removeApiCredential(arg.provider, arg.credentialId);
+      try {
+        ctx.aiIntegrationService?.invalidateProviderReadinessCaches();
+      } catch (error) {
+        ctx.logger.warn("ai.api_key_cache_invalidation_failed", {
+          provider: arg.provider,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+  );
+
+  // Machine-scoped keys. Like the agent-CLI cache above, these belong to THIS
+  // machine's install rather than to the bound project's runtime, so they are
+  // deliberately not routed through a project runtime action. Nothing here ever
+  // returns, logs, or echoes the key itself — only whether one resolves and
+  // where from.
+  ipcMain.handle(
+    IPC.aiGetMachineApiKeyStatus,
+    async (_event, arg: { provider: string }): Promise<MachineApiKeyStatus> => {
+      const { getMachineApiKeyStatus } = await import("../ai/apiKeyStore");
+      return getMachineApiKeyStatus(arg.provider);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiStoreMachineApiKey,
+    async (_event, arg: { provider: string; key: string }): Promise<MachineApiKeyStatus> => {
+      const { getMachineApiKeyStatus, storeMachineApiKey } = await import("../ai/apiKeyStore");
+      storeMachineApiKey(arg.provider, arg.key);
+      try {
+        // The key store mutation already succeeded; invalidation is a freshness
+        // step so a saved key should not fail because a runtime cache is gone.
+        getCtx().aiIntegrationService?.invalidateProviderReadinessCaches();
+      } catch (error) {
+        getCtx().logger.warn("ai.machine_api_key_cache_invalidation_failed", {
+          provider: arg.provider,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return getMachineApiKeyStatus(arg.provider);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiDeleteMachineApiKey,
+    async (_event, arg: { provider: string }): Promise<MachineApiKeyStatus> => {
+      const { deleteMachineApiKey, getMachineApiKeyStatus } = await import("../ai/apiKeyStore");
+      deleteMachineApiKey(arg.provider);
+      try {
+        getCtx().aiIntegrationService?.invalidateProviderReadinessCaches();
+      } catch (error) {
+        getCtx().logger.warn("ai.machine_api_key_cache_invalidation_failed", {
+          provider: arg.provider,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return getMachineApiKeyStatus(arg.provider);
+    },
+  );
+
   ipcMain.handle(
     IPC.aiVerifyApiKey,
     async (_event, arg: { provider: string }): Promise<AiApiKeyVerificationResult> => {
@@ -6446,6 +6654,115 @@ export function registerIpc({
   });
 
 
+  // ── Provider accounts ("instances") IPC ──────────────────────
+  /*
+   * No `requireAppContextServices` and no runtime field: the registry is a JSON
+   * file beside `projects.json` in this machine's ADE home, so the store is
+   * resolved from the environment the same way in the desktop main process, the
+   * daemon action domain and the CLI. Wiring it through the service graph would
+   * only add a way for one surface to see a different file than another.
+   */
+  const providerInstanceArgs = (arg: unknown): Record<string, unknown> =>
+    arg && typeof arg === "object" && !Array.isArray(arg) ? arg as Record<string, unknown> : {};
+
+  const providerInstanceId = (arg: unknown): string => {
+    const value = providerInstanceArgs(arg).id;
+    const id = typeof value === "string" ? value.trim() : "";
+    if (!id) throw new Error("A provider account id is required.");
+    return id;
+  };
+
+  const providerInstanceProvider = (value: unknown): ProviderInstanceProvider => {
+    if (!isProviderInstanceProvider(value)) {
+      throw new Error("A provider account provider must be \"claude\" or \"codex\".");
+    }
+    return value;
+  };
+
+  ipcMain.handle(IPC.providerInstancesList, async (_event, arg: unknown): Promise<ProviderInstance[]> => {
+    const provider = providerInstanceArgs(arg).provider;
+    return getMachineProviderInstanceStore().list(
+      provider == null ? undefined : providerInstanceProvider(provider),
+    );
+  });
+
+  // The desktop UI's own entry point for provider-account analytics; see
+  // `providerAccountAnalyticsCapture` for why the capture lives here.
+  const captureProviderAccount = providerAccountAnalyticsCapture(productAnalyticsService, "desktop");
+
+  ipcMain.handle(IPC.providerInstancesCreate, async (_event, arg: unknown): Promise<ProviderInstanceCreateResult> => {
+    const record = providerInstanceArgs(arg);
+    const result = getMachineProviderInstanceStore().create({
+      provider: record.provider,
+      label: record.label,
+      accentColor: record.accentColor,
+    });
+    captureProviderAccount("account_created", "completed", result.instance.provider);
+    return result;
+  });
+
+  ipcMain.handle(IPC.providerInstancesRemove, async (_event, arg: unknown): Promise<ProviderInstanceRemoveResult> => {
+    const store = getMachineProviderInstanceStore();
+    const id = providerInstanceId(arg);
+    // Read the provider before the removal: afterwards the record is gone.
+    const provider = store.get(id)?.provider;
+    const result = store.remove(id);
+    captureProviderAccount("account_removed", "completed", provider);
+    return result;
+  });
+
+  ipcMain.handle(IPC.providerInstancesRename, async (_event, arg: unknown): Promise<ProviderInstance> => {
+    return getMachineProviderInstanceStore().rename(providerInstanceId(arg), providerInstanceArgs(arg).label);
+  });
+
+  ipcMain.handle(IPC.providerInstancesSetDefault, async (_event, arg: unknown): Promise<ProviderInstance> => {
+    const instance = getMachineProviderInstanceStore().setDefault(providerInstanceId(arg));
+    captureProviderAccount("default_selected", "completed", instance.provider);
+    return instance;
+  });
+
+  ipcMain.handle(IPC.providerInstancesSetAccent, async (_event, arg: unknown): Promise<ProviderInstance> => {
+    const raw = providerInstanceArgs(arg).accentColor;
+    // `undefined` and `null` both mean "clear it": a renderer that omits the
+    // field is asking for the same thing as one that sends null, and the store
+    // only accepts `string | null`.
+    const accentColor = typeof raw === "string" ? raw : null;
+    return getMachineProviderInstanceStore().setAccent(providerInstanceId(arg), accentColor);
+  });
+
+  ipcMain.handle(IPC.providerInstancesGetSettings, async (_event, arg: unknown): Promise<ProviderInstanceSettings> => {
+    return getMachineProviderInstanceStore()
+      .getProviderSettings(providerInstanceProvider(providerInstanceArgs(arg).provider));
+  });
+
+  ipcMain.handle(IPC.providerInstancesSetSettings, async (_event, arg: unknown): Promise<ProviderInstanceSettings> => {
+    const record = providerInstanceArgs(arg);
+    const settings = record.settings && typeof record.settings === "object" && !Array.isArray(record.settings)
+      ? record.settings as Partial<ProviderInstanceSettings>
+      : {};
+    const provider = providerInstanceProvider(record.provider);
+    const result = getMachineProviderInstanceStore().setProviderSettings(provider, settings);
+    if (typeof settings.smartBalance === "boolean") {
+      captureProviderAccount("balance_changed", settings.smartBalance ? "enabled" : "disabled", provider);
+    }
+    if (typeof settings.autoStartWindows === "boolean") {
+      captureProviderAccount("auto_start_changed", settings.autoStartWindows ? "enabled" : "disabled", provider);
+    }
+    return result;
+  });
+
+  ipcMain.handle(IPC.providerInstancesLoginCommand, async (_event, arg: unknown): Promise<ProviderInstanceLoginCommand> => {
+    return getMachineProviderInstanceStore().loginCommand(providerInstanceId(arg));
+  });
+
+  ipcMain.handle(IPC.providerInstancesRefresh, async (_event, arg: unknown): Promise<ProviderInstance[]> => {
+    const provider = providerInstanceArgs(arg).provider;
+    return getMachineProviderInstanceStore().refreshAccounts(
+      provider == null ? undefined : providerInstanceProvider(provider),
+    );
+  });
+
+
   // ── Usage tracking + budget cap IPC ──────────────────────────
   /**
    * Opportunistic account-wide usage refresh over the already-paired transport.
@@ -6568,6 +6885,32 @@ export function registerIpc({
     if (machine.handled) return machine.result;
     return getCtx().usageTrackingService?.noteQuotaDemand() ?? null;
   });
+
+  /**
+   * Spend one banked reset credit.
+   *
+   * Usage tracking is optional on hosts that have not started that service, so
+   * this forwards when it is present and otherwise says so. It never reports a
+   * success it did not perform: a fake "reset applied" would tell the user
+   * their windows cleared when they did not.
+   */
+  ipcMain.handle(
+    IPC.usageConsumeResetCredit,
+    async (_event, arg: { accountId: string }): Promise<UsageResetCreditResult> => {
+      const accountId = typeof arg?.accountId === "string" ? arg.accountId.trim() : "";
+      if (!accountId) {
+        return { ok: false, status: "failure", message: "Pick an account to reset." };
+      }
+      const service = getCtx().usageTrackingService;
+      if (!service) {
+        return {
+          ok: false,
+          message: "Reset credits are not available on this host yet.",
+        };
+      }
+      return service.consumeResetCredit({ accountId });
+    }
+  );
 
   ipcMain.handle(
     IPC.usageCheckBudget,
@@ -7215,6 +7558,22 @@ export function registerIpc({
     if (!ctx.laneProxyService) return;
     await ctx.laneProxyService.stop();
   });
+
+  const getSubscriptionProxy = (): ProxyService => {
+    const ctx = getCtx();
+    const service = ctx.getProxyService?.() ?? ctx.proxyService;
+    if (!service) throw new Error("Subscription proxy service not available");
+    return service;
+  };
+
+  ipcMain.handle(IPC.proxyStatus, async () => getSubscriptionProxy().status());
+  ipcMain.handle(IPC.proxyEnsureRunning, async () => getSubscriptionProxy().ensureRunning());
+  ipcMain.handle(IPC.proxySignIn, async (_event, args: SubscriptionProxySignInArgs) =>
+    getSubscriptionProxy().signIn(args));
+  ipcMain.handle(IPC.proxySignOut, async (_event, args: SubscriptionProxySignOutArgs) =>
+    getSubscriptionProxy().signOut(args));
+  ipcMain.handle(IPC.proxySetDisabled, async (_event, args: SubscriptionProxySetDisabledArgs) =>
+    getSubscriptionProxy().setDisabled(args));
 
   ipcMain.handle(IPC.lanesProxyAddRoute, async (_event, args: { laneId: string; targetPort: number }) => {
     const ctx = ensureLaneContext();
@@ -8093,8 +8452,13 @@ export function registerIpc({
   // getMediaAccessStatus; Chromium owns any per-origin prompt.
   ipcMain.handle(
     IPC.transcriptionRequestMicAccess,
-    async (): Promise<{ status: "granted" | "denied" | "not-determined" | "restricted" | "unknown" }> => {
-      return requestMicrophoneAccess(process.platform, systemPreferences);
+    async (): Promise<MicrophoneAccessResult> => {
+      // `isPackaged` changes the ANSWER, not the wording: an unsigned build has
+      // no TCC identity, so its refusal is not one the user can grant in
+      // System Settings — the entry they see there belongs to the packaged app.
+      return requestMicrophoneAccess(process.platform, systemPreferences, {
+        isPackaged: app.isPackaged,
+      });
     },
   );
 
@@ -8381,6 +8745,14 @@ export function registerIpc({
     await ctx.agentChatService.respondToInput(arg);
   });
 
+  ipcMain.handle(
+    IPC.agentChatDismissPendingInput,
+    async (_event, arg: AgentChatDismissPendingInputArgs): Promise<void> => {
+      const ctx = ensureAgentChatContext();
+      await ctx.agentChatService.dismissPendingInput(arg);
+    },
+  );
+
   ipcMain.handle(IPC.agentChatModels, async (_event, arg: AgentChatModelsArgs): Promise<AgentChatModelInfo[]> => {
     const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.getAvailableModels(arg);
@@ -8622,34 +8994,12 @@ export function registerIpc({
     const ctx = getCtx();
     const cwd = ctx.project?.rootPath;
     if (!cwd) throw new Error("No project root");
-    const lang = arg.filePath.split(".").pop() ?? undefined;
-    const maxSideBytes = MAX_DIFF_SIDE_TEXT_BYTES;
-    const readSide = async (spec: string): Promise<{ exists: boolean; text: string; isTruncated?: boolean; isBinary?: boolean }> => {
-      const result = await runGit(["show", spec], {
-        cwd,
-        timeoutMs: 10_000,
-        maxOutputBytes: maxSideBytes + 64 * 1024,
-      });
-      if (result.exitCode !== 0) return { exists: false, text: "" };
-      const buf = Buffer.from(result.stdout, "utf8");
-      if (buf.includes(0)) return { exists: true, text: "", isBinary: true };
-      if (buf.length <= maxSideBytes) return { exists: true, text: result.stdout };
-      return {
-        exists: true,
-        text: appendDiffTruncationNotice(buf.subarray(0, maxSideBytes).toString("utf8")),
-        isTruncated: true,
-      };
-    };
-    const origResult = await readSide(`${arg.beforeSha}:${arg.filePath}`);
-    const modResult = await readSide(`${arg.afterSha}:${arg.filePath}`);
-    return {
-      path: arg.filePath,
-      mode: "commit",
-      language: lang,
-      original: origResult,
-      modified: modResult,
-      ...(origResult.isBinary || modResult.isBinary ? { isBinary: true } : {}),
-    };
+    // Shared with the `chat.getTurnFileDiff` runtime action. Preload prefers
+    // that action and falls back to this channel, so a second copy here meant
+    // the fallback kept reading both sides from the same commit on an
+    // uncommitted turn — every file the turn summary listed opened as
+    // "no changes".
+    return getTurnFileDiffFromGit(cwd, arg);
   });
 
   ipcMain.handle(IPC.agentChatGetEventHistory, async (
@@ -8735,132 +9085,6 @@ export function registerIpc({
     }).readTranscript(sessionId, arg?.limit, arg?.since);
   });
 
-  // ---------------------------------------------------------------------------
-  // Orchestration (lead/worker/validator runs)
-  // ---------------------------------------------------------------------------
-  const ensureOrchestration = () => {
-    const ctx = getCtx();
-    if (!ctx.orchestrationService) {
-      throw new Error("orchestration service is not initialised");
-    }
-    requireAppContextServices(ctx, ["laneService", "agentChatService"] as const);
-    return { ctx, service: ctx.orchestrationService };
-  };
-
-  let orchestrationBroadcastSubscribed = false;
-  const subscribeOrchestrationBroadcast = (): void => {
-    if (orchestrationBroadcastSubscribed) return;
-    const ctx = getCtx();
-    if (!ctx.orchestrationService) return;
-    orchestrationBroadcastSubscribed = true;
-    ctx.orchestrationService.on("event", (payload) => {
-      for (const win of BrowserWindow.getAllWindows()) {
-        if (win.isDestroyed()) continue;
-        try {
-          win.webContents.send(IPC.orchestrationEvent, payload);
-        } catch {
-          // ignore broadcast failures
-        }
-      }
-    });
-  };
-
-  // In-process / test-mode IPC handlers. In every runtime-backed build the
-  // renderer routes these through the daemon's "orchestration" action domain
-  // (see preload `orchestrationBridge`), so these handlers only fire when the
-  // desktop owns the orchestration service directly. Both paths share the same
-  // `createOrchestrationDomainService` factory, so behaviour stays identical.
-  let cachedOrchestrationDomain:
-    | { ctx: ReturnType<typeof getCtx>; domain: ReturnType<typeof createOrchestrationDomainService> }
-    | null = null;
-  const getOrchestrationDomain = () => {
-    const { ctx, service } = ensureOrchestration();
-    // ctx identity fully determines the deps (service + laneService + agentChatService
-    // all hang off it); reuse the closure object across calls, rebuilding only when the
-    // owning context changes (e.g. in-process project switch).
-    if (cachedOrchestrationDomain && cachedOrchestrationDomain.ctx === ctx) {
-      return cachedOrchestrationDomain.domain;
-    }
-    const domain = createOrchestrationDomainService({
-      orchestrationService: service,
-      laneService: {
-        getLaneWorktreePath: (laneId: string) => ctx.laneService.getLaneWorktreePath(laneId),
-      },
-      agentChatService: ctx.agentChatService,
-    });
-    cachedOrchestrationDomain = { ctx, domain };
-    return domain;
-  };
-
-  ipcMain.handle(IPC.orchestrationRunCreate, async (_event, arg: OrchestrationRunCreateRequest & { laneId: string }) => {
-    subscribeOrchestrationBroadcast();
-    return getOrchestrationDomain().runCreate(arg);
-  });
-
-  ipcMain.handle(IPC.orchestrationBundleRead, async (_event, arg: { runId: string; laneId: string }) => {
-    subscribeOrchestrationBroadcast();
-    return getOrchestrationDomain().bundleRead(arg);
-  });
-
-  ipcMain.handle(IPC.orchestrationManifestReadSection, async (
-    _event,
-    arg: { runId: string; laneId: string; section: ManifestSection },
-  ) => getOrchestrationDomain().manifestReadSection(arg));
-
-  ipcMain.handle(IPC.orchestrationManifestPatch, async (
-    _event,
-    arg: OrchestrationManifestPatchRequest & { laneId: string },
-  ) => getOrchestrationDomain().manifestPatch(arg));
-
-  ipcMain.handle(IPC.orchestrationPlanAppend, async (
-    _event,
-    arg: OrchestrationPlanAppendRequest & { laneId: string },
-  ) => getOrchestrationDomain().planAppend(arg));
-
-  ipcMain.handle(IPC.orchestrationPlanWrite, async (
-    _event,
-    arg: OrchestrationPlanWriteRequest & { laneId: string },
-  ) => getOrchestrationDomain().planWrite(arg));
-
-  ipcMain.handle(IPC.orchestrationAssetRegister, async (
-    _event,
-    arg: OrchestrationAssetRegisterRequest & { laneId: string },
-  ) => getOrchestrationDomain().assetRegister(arg));
-
-  ipcMain.handle(IPC.orchestrationClaimTask, async (
-    _event,
-    arg: OrchestrationClaimTaskRequest & { laneId: string },
-  ) => getOrchestrationDomain().claimTask(arg));
-
-  ipcMain.handle(IPC.orchestrationReleaseTask, async (
-    _event,
-    arg: OrchestrationReleaseTaskRequest & { laneId: string },
-  ) => getOrchestrationDomain().releaseTask(arg));
-
-  ipcMain.handle(IPC.orchestrationRunList, async (_event, arg: { laneId?: string } = {}) =>
-    getOrchestrationDomain().runList(arg),
-  );
-
-  ipcMain.handle(IPC.orchestrationSpawnAgent, async (
-    _event,
-    arg: OrchestrationSpawnAgentRequest & { laneId: string; leadSessionId: string },
-  ): Promise<{ sessionId: string; etag: string }> => getOrchestrationDomain().spawnAgent(arg));
-
-  ipcMain.handle(IPC.orchestrationAgentInject, async (
-    _event,
-    arg: OrchestrationAgentInjectRequest,
-  ): Promise<void> => getOrchestrationDomain().agentInject(arg));
-
-  ipcMain.handle(IPC.orchestrationSubscribe, async (_event, arg: { runId: string; laneId?: string }) => {
-    const result = await getOrchestrationDomain().subscribe(arg);
-    subscribeOrchestrationBroadcast();
-    return result;
-  });
-
-  ipcMain.handle(IPC.orchestrationUnsubscribe, async (_event, arg: { runId: string }) =>
-    getOrchestrationDomain().unsubscribe(arg),
-  );
-
   ipcMain.handle(IPC.computerUseListArtifacts, async (_event, arg: ComputerUseArtifactListArgs = {}): Promise<ComputerUseArtifactView[]> => {
     const ctx = ensureComputerUseBroker();
     return ctx.computerUseArtifactBrokerService.listArtifacts(arg);
@@ -8905,6 +9129,353 @@ export function registerIpc({
     const ctx = ensureComputerUseBroker();
     return ctx.computerUseArtifactBrokerService.readArtifactPreview(arg);
   });
+
+  // ── Scenes ─────────────────────────────────────────────────────────────────
+  // Agent-authored HTML, rendered in a sandboxed frame. See
+  // `shared/chatScene.ts` for why a scene never runs in ADE's own renderer.
+
+  // Scene work is best-effort by contract, so a failure is logged and swallowed
+  // — and the logging itself must not be what throws: these channels can be
+  // reached while the window has no project context to read a logger from.
+  const logSceneFailure = (event: string, error: unknown): void => {
+    try {
+      getCtx().logger.warn(event, { err: getErrorMessage(error) });
+    } catch {
+      // No context, no log. The caller still gets its honest false/null.
+    }
+  };
+
+  /** Same defensive shape, for a scene note that carries fields rather than an error. */
+  const logSceneNote = (event: string, fields: Record<string, unknown>): void => {
+    try {
+      getCtx().logger.warn(event, fields);
+    } catch {
+      // No context, no log.
+    }
+  };
+
+  /**
+   * Store a scene document and hand back the URL the frame loads it from.
+   *
+   * Nothing is written to disk and nothing in the URL is a path — the id is a
+   * key into an in-memory map that the `ade-scene:` handler reads.
+   */
+  ipcMain.handle(IPC.scenePrepare, async (_event, arg: { html?: unknown } | string): Promise<string> => {
+    const html = typeof arg === "string" ? arg : typeof arg?.html === "string" ? arg.html : "";
+    if (!html.length) throw new Error("A scene document is required.");
+    // The renderer checks its own ceiling before it ever gets here; this is the
+    // server-side one, and it lives with the rest of the scene limits rather
+    // than as arithmetic at the IPC edge.
+    if (Buffer.byteLength(html, "utf8") > SCENE_LIMITS.maxDocumentBytes) {
+      throw new Error("This scene is too large to render.");
+    }
+    return sceneDocumentStore.put(html).url;
+  });
+
+  /**
+   * Freeze a drawn scene to a PNG so scrollback shows a picture instead of a
+   * frame that keeps executing.
+   *
+   * Captures the window that asked, not the focused one: by the time a long
+   * transcript settles, focus may have moved on. A window that is hidden or
+   * minimized captures empty (the known WebContentsView gotcha), so it answers
+   * null rather than filing a blank image.
+   */
+  ipcMain.handle(
+    IPC.sceneSnapshot,
+    async (event, arg: SceneCaptureRect | null): Promise<string | null> => {
+      try {
+        const win = BrowserWindow.fromWebContents(event.sender);
+        if (!win || win.isDestroyed() || !win.isVisible() || win.isMinimized()) return null;
+        const [contentWidth, contentHeight] = win.getContentSize();
+        const rect = clampSceneCaptureRect(arg, { width: contentWidth, height: contentHeight });
+        if (!rect) return null;
+        // Capture the webContents that measured the rect, not the window: the
+        // renderer's `getBoundingClientRect()` is in its own client space.
+        const image = await event.sender.capturePage(rect);
+        if (image.isEmpty()) return null;
+        return image.toDataURL();
+      } catch (error) {
+        logSceneFailure("scene.snapshot_failed", error);
+        return null;
+      }
+    },
+  );
+
+  /**
+   * File a scene snapshot into the proof drawer.
+   *
+   * Reuses the computer-use artifact path rather than writing a second artifact
+   * store: the bytes land in `.ade/artifacts/computer-use/` via
+   * `createComputerUseArtifactPath` and the drawer record comes from the same
+   * broker `ingest` every other proof goes through. Answers false — never
+   * throws — when there is no project, no broker, or no snapshot to file, so a
+   * button press on a scene that was never captured is a no-op, not an error.
+   */
+  /**
+   * The chat a scene snapshot may be filed against.
+   *
+   * The Proof button's half of `resolveSceneStillOwner`: no call, so no call to
+   * resolve an owner from. `sessionService` is project-scoped, so an id naming
+   * another project's chat simply misses.
+   */
+  const resolveSceneProofOwner = (
+    ctx: AppContext,
+    claimed: unknown,
+  ): Promise<string | null> => resolveSceneStillOwner({
+    agentChatService: ctx.agentChatService,
+    claimedSessionId: claimed,
+  });
+
+  ipcMain.handle(
+    IPC.sceneAttachProof,
+    async (_event, arg: { dataUrl?: string | null; title?: string | null; sessionId?: string | null }): Promise<boolean> => {
+      try {
+        const ctx = getCtx();
+        const broker = ctx.computerUseArtifactBrokerService;
+        const projectRoot = ctx.project?.rootPath ?? null;
+        if (!projectRoot) return false;
+        const bytes = decodeScenePngDataUrl(arg?.dataUrl ?? null);
+        if (!bytes) return false;
+        const title = (typeof arg?.title === "string" ? arg.title.trim() : "") || "Generated view";
+        const artifactPath = createComputerUseArtifactPath(projectRoot, title, "png");
+        fs.writeFileSync(artifactPath, bytes);
+
+        // The bytes have to be on disk before either route can be taken: the
+        // in-process broker ingests a path, and the runtime action is handed a
+        // path and nothing else. Everything from here therefore runs under a
+        // `finally` — but the rule is NOT "delete unless filed". It is delete
+        // only when we KNOW the record was never created.
+        //
+        // The two failures are not symmetric. An unreferenced file is invisible
+        // and permanent (the store is pruned by drawer record, so nothing ever
+        // collects it) but it is inert. A drawer record pointing at a file that
+        // is gone is a BROKEN ARTIFACT the user sees and cannot open. So a lost
+        // or failed RPC — where `ingestSceneSnapshot` may well have committed
+        // the record before the answer went missing — keeps the file and logs
+        // it, and `listBrokenArtifacts` / `pruneBrokenArtifacts` reconcile the
+        // one case that is genuinely orphaned. Only an outcome we are certain
+        // of deletes.
+        let outcome: "filed" | "not-filed" | "unknown" = "not-filed";
+        try {
+          if (broker) {
+            // Proof in ADE is chat-scoped. A snapshot filed with no owner cannot
+            // be shown against the conversation that drew it, and lane-root
+            // resolution is skipped entirely.
+            //
+            // The id comes from the renderer, so it is checked against this
+            // project's own sessions rather than trusted: an id naming another
+            // project's chat would file the artifact into that chat's drawer. A
+            // miss drops the owner, never the artifact — an unattributed
+            // snapshot is a smaller loss than a misattributed one.
+            //
+            // A throw out of the lookup is still "not-filed": nothing has been
+            // ingested yet.
+            const sessionId = await resolveSceneProofOwner(ctx, arg?.sessionId);
+            // From this line on the record may exist, so a throw out of
+            // `ingest` is an unknown outcome rather than a failure.
+            outcome = "unknown";
+            broker.ingest({
+              backend: { name: "scene", style: "manual", toolName: "scene_snapshot" },
+              ...(sessionId ? { owners: [{ kind: "chat_session" as const, id: sessionId }] } : {}),
+              inputs: [{
+                kind: "screenshot",
+                title: title.slice(0, 200),
+                path: artifactPath,
+                mimeType: "image/png",
+                description: "Snapshot of an agent-authored scene.",
+              }],
+            });
+            outcome = "filed";
+            return true;
+          }
+
+          // Runtime-backed build: `computerUseArtifactBrokerService` and
+          // `agentChatService` are BOTH null in this process, so the branch
+          // above could never run and the Proof button answered false every
+          // time — with its ownership check never reached. The bytes are
+          // already on disk in this project's artifact store (the runtime is
+          // the same machine), so the daemon is handed the path and performs
+          // the same ownership resolution against the chat service it owns.
+          //
+          // No pool: nobody was asked to file anything, so this outcome is certain.
+          if (!localRuntimeConnectionPool) return false;
+          let response;
+          try {
+            response = await localRuntimeConnectionPool.callActionForRoot(projectRoot, {
+              domain: "computer_use_artifacts",
+              action: "ingestSceneSnapshot",
+              args: {
+                path: artifactPath,
+                title,
+                sessionId: typeof arg?.sessionId === "string" ? arg.sessionId : null,
+              },
+            });
+          } catch (error) {
+            // A dropped socket after the daemon committed looks exactly like a
+            // daemon that never ran the action. We cannot tell them apart from
+            // here, so we keep the bytes.
+            outcome = "unknown";
+            throw error;
+          }
+          const wasFiled = (response.result as { filed?: unknown } | null)?.filed === true;
+          // An explicit `filed: false` is an answer, not a silence.
+          outcome = wasFiled ? "filed" : "not-filed";
+          return wasFiled;
+        } finally {
+          if (outcome === "not-filed") {
+            try {
+              fs.rmSync(artifactPath, { force: true });
+            } catch {
+              // Best effort. A snapshot we could not file AND could not remove
+              // is not worth failing the button over.
+            }
+          } else if (outcome === "unknown") {
+            logSceneNote("scene.proof_outcome_unknown", { path: artifactPath });
+          }
+        }
+      } catch (error) {
+        logSceneFailure("scene.attach_proof_failed", error);
+        return false;
+      }
+    },
+  );
+
+  /**
+   * Keep a scene's settle-time still.
+   *
+   * The same bytes and the same jail as the Proof button — `attachProof` and
+   * this one write through `createComputerUseArtifactPath` into
+   * `.ade/artifacts/computer-use/` and file through the same broker or the same
+   * CTO-only runtime action — and two deliberate differences.
+   *
+   * THE BYTES ARE NEVER DELETED ON A FAILED FILING. Proof is a drawer record,
+   * so a record that could not be created makes the file pointless; a still is
+   * the picture itself, and the renderer is about to show it back from this
+   * path. A still that could not be filed is an unlisted image, which is
+   * exactly what the caller asked for.
+   *
+   * AND THE RECORD IS NOT PROOF. A still is a picture the transcript shows
+   * inline, so it is tagged `metadata.kind = "scene_still"` and excluded from
+   * every proof surface; the broker holds it because the broker owns the bytes
+   * and is the index the renderer looks the picture up in. `fileSceneStill`
+   * owns that tag and the two disk bounds that go with it.
+   *
+   * The renderer never names a path. It hands over a PNG data URL and gets back
+   * a project-relative uri, so `ade-artifact://project/` can resolve it without
+   * this process ever trusting a path from the other side.
+   */
+  ipcMain.handle(
+    IPC.sceneStoreStill,
+    async (
+      _event,
+      arg: {
+        dataUrl?: string | null;
+        title?: string | null;
+        sessionId?: string | null;
+        /** Identity of the scene the picture is of: one still per key. */
+        scopeKey?: string | null;
+        /** Set when the scene was drawn on a voice call. */
+        voiceCallId?: string | null;
+      },
+    ): Promise<SceneStillRecord | null> => {
+      try {
+        const ctx = getCtx();
+        const projectRoot = ctx.project?.rootPath ?? null;
+        if (!projectRoot) return null;
+        const bytes = decodeScenePngDataUrl(arg?.dataUrl ?? null);
+        if (!bytes) return null;
+        const title = (typeof arg?.title === "string" ? arg.title.trim() : "") || "Generated view";
+        const voiceCallId = typeof arg?.voiceCallId === "string" ? arg.voiceCallId.trim() : "";
+        // No scope key is no identity, and the two sides disagreed about what
+        // to do with one: in process it filed an index row nothing could ever
+        // look up, and over the runtime action the missing key is exactly what
+        // marks a call as the PROOF button — so the same still landed in the
+        // drawer as evidence. One contract now, refused on both sides before
+        // any bytes are written; here that refusal is a no-op answer rather
+        // than a logged failure, because an unkeyed still was never a still.
+        let scopeKey: string;
+        try {
+          scopeKey = requireSceneStillScopeKey(arg?.scopeKey);
+        } catch (error) {
+          if (error instanceof SceneStillScopeKeyError) return null;
+          throw error;
+        }
+        // The title reaches the FILE NAME here, and a scene titles itself: see
+        // `sceneStillFileLabel` for why that is clamped. The record keeps the
+        // whole title; the name on disk is a label.
+        const artifactPath = createComputerUseArtifactPath(
+          projectRoot,
+          sceneStillFileLabel(title),
+          "png",
+        );
+        fs.writeFileSync(artifactPath, bytes);
+        const record: SceneStillRecord = {
+          uri: toProjectArtifactUri(projectRoot, artifactPath),
+          artifactId: null,
+          title: title.slice(0, 200),
+        };
+
+        // Filing is best effort and deliberately after the bytes are on disk:
+        // the still is already usable, and an index row that could not be
+        // written must not cost the user the picture.
+        try {
+          const broker = ctx.computerUseArtifactBrokerService;
+          // A scene drawn on a CALL is filed from the HUD, which is mounted at
+          // the shell and outside every chat scope — so the renderer may not
+          // know the owning chat, and when it does it is still a renderer. The
+          // call id is resolved against the call that is actually up, on this
+          // side, and only after the renderer's own claim has failed the same
+          // ownership check every other filing goes through.
+          if (broker) {
+            const sessionId = await resolveSceneStillOwner({
+              agentChatService: ctx.agentChatService,
+              claimedSessionId: arg?.sessionId,
+              voiceCallId,
+              resolveVoiceCallSessionId: (callId) =>
+                ctx.ctoVoiceCallService?.getCallSessionId(callId) ?? null,
+            });
+            record.artifactId = fileSceneStill({
+              broker,
+              path: artifactPath,
+              title: record.title,
+              ownerSessionId: sessionId,
+              sceneScopeKey: scopeKey,
+              voiceCallId,
+            }).artifactId;
+          } else if (localRuntimeConnectionPool) {
+            // Runtime-backed build: this process owns neither the broker nor
+            // the chat service, so the daemon repeats the jail and the owner
+            // resolution against the services it does own.
+            const response = await localRuntimeConnectionPool.callActionForRoot(projectRoot, {
+              domain: "computer_use_artifacts",
+              action: "ingestSceneSnapshot",
+              args: {
+                path: artifactPath,
+                title,
+                sessionId: typeof arg?.sessionId === "string" ? arg.sessionId : null,
+                // Present only here, never on the Proof button's call: it is
+                // what tells the daemon this is a still and not proof.
+                sceneScopeKey: scopeKey,
+                // The daemon owns the call on a runtime-backed build, so it
+                // resolves the owner from this id the same way the branch
+                // above does — the renderer's claim is checked, never trusted.
+                voiceCallId,
+              },
+            });
+            const answered = (response.result as { artifactId?: unknown } | null)?.artifactId;
+            record.artifactId = typeof answered === "string" ? answered : null;
+          }
+        } catch (error) {
+          logSceneNote("scene.still_not_filed", { path: artifactPath, error: String(error) });
+        }
+        return record;
+      } catch (error) {
+        logSceneFailure("scene.store_still_failed", error);
+        return null;
+      }
+    },
+  );
 
   ipcMain.handle(IPC.iosSimulatorGetStatus, async () => ensureIosSimulator().getStatus());
 
@@ -10605,6 +11176,20 @@ export function registerIpc({
     return ctx.feedbackReporterService.list();
   });
 
+  // Electron main stops exchanging the account refresh credential here, and
+  // asks the brain for a token instead. Exactly one process per machine may
+  // POST a single-use rotating credential; every `invalid_grant` sign-out in
+  // the brain log is two processes that both thought they could. Installed
+  // rather than passed to the service, because the shared service caches one
+  // instance per secrets directory and can be built before this point.
+  setSharedAccountRefreshBroker(
+    createBrainRefreshBroker(localRuntimeConnectionPool, LOCAL_RUNTIME_SYNC_TIMEOUT_MS),
+  );
+
+  const openAccountContexts = (): AppContext[] => {
+    return getOpenAccountContexts(getResourceUsageContexts?.() ?? [getCtx()]);
+  };
+
   // Machine-owned ADE account (Clerk identity, #815). The bridge owns the auth
   // service in main and only ever exposes the token-free surface to the
   // renderer — getToken is deliberately never wired here.
@@ -10613,6 +11198,38 @@ export function registerIpc({
     reconcileAccountOwnership: runtimeBridge.reconcileAccountOwnership,
     purgeMachineActivity: (machineKey) =>
       attentionAccountCoordinator.purgeMachineActivity(machineKey),
+    purgeAccountCredentials: () => {
+      try {
+        purgeAccountApiKeys();
+      } catch (error) {
+        getCtx().logger.warn("account.local_api_keys_purge_failed", {
+          error: error instanceof Error ? error.message : String(error ?? ""),
+        });
+      }
+      for (const context of openAccountContexts()) {
+        try {
+          context.projectSecretService?.purgeAccountCredentials();
+        } catch (error) {
+          getCtx().logger.warn("account.local_project_secrets_purge_failed", {
+            error: error instanceof Error ? error.message : String(error ?? ""),
+          });
+        }
+        try {
+          context.linearCredentialService?.purgeAccountCredentials();
+        } catch (error) {
+          getCtx().logger.warn("account.local_linear_credentials_purge_failed", {
+            error: error instanceof Error ? error.message : String(error ?? ""),
+          });
+        }
+      }
+      try {
+        purgeClosedAccountCredentials?.();
+      } catch (error) {
+        getCtx().logger.warn("account.closed_project_credentials_purge_failed", {
+          error: error instanceof Error ? error.message : String(error ?? ""),
+        });
+      }
+    },
     // Routed to the brain rather than performed here: the push revocation's
     // live gate is in that process, and this client initializes as `cto`
     // (RuntimeRpcClient.initialize), which is what `account.call` requires.
@@ -10649,6 +11266,52 @@ export function registerIpc({
       warn: (message, meta) => getCtx().logger.warn(message, meta),
     },
   });
+  const accountMachineInventoryFetcher = createAccountMachineInventoryFetcher({
+    listMachines: () => accountBridge.listMachines(),
+    resolveTargetIdForMachineKey: runtimeBridge.resolveTargetIdForMachineKey,
+    isTargetConnected: runtimeBridge.isTargetConnected,
+    callMachineMethod: runtimeBridge.callMachineMethod,
+    callLocalMachineMethod: async (machineKey) => {
+      if (!localRuntimeConnectionPool) throw new Error("The local runtime is unavailable.");
+      const rootPath = getCtx().project?.rootPath?.trim();
+      if (!rootPath) throw new Error("The local project runtime is unavailable.");
+      return await readLocalMachineInventoryDetail({
+        machineKey,
+        providerInstanceStore: getMachineProviderInstanceStore(),
+        readPresetValue: async () => {
+          const response = await localRuntimeConnectionPool.callActionForRoot(rootPath, {
+            domain: "account_settings",
+            action: "get",
+            argsList: ["all", "harnessPresets"],
+          });
+          return response.result;
+        },
+        readModelCounts: async () => {
+          const response = await localRuntimeConnectionPool.callActionForRoot(rootPath, {
+            domain: "ai",
+            action: "getStatus",
+            args: {},
+          });
+          const result = response.result;
+          const models = result && typeof result === "object" && !Array.isArray(result)
+            ? (result as { models?: unknown }).models
+            : null;
+          if (!models || typeof models !== "object" || Array.isArray(models)) return {};
+          return Object.fromEntries(
+            Object.entries(models).map(([provider, entries]) => [
+              provider,
+              Array.isArray(entries) ? entries.length : 0,
+            ]),
+          );
+        },
+      });
+    },
+    localMachineKey: () => runtimeBridge.getLocalMachineIdentity().machineKey,
+    logger: {
+      debug: (message, meta) => getCtx().logger.debug(message, meta),
+      warn: (message, meta) => getCtx().logger.warn(message, meta),
+    },
+  });
   onAccountRollupFetcherReady?.(accountRollupFetcher);
 
   accountBridge.onPairMachineProgress((progress) => {
@@ -10662,9 +11325,117 @@ export function registerIpc({
     }
   });
 
+  /**
+   * The account settings store, borrowed from any booted project scope.
+   *
+   * The store is keyed by the machine's ADE directory, not by a repository, so
+   * every booted scope answers with the same rows — the same reason machine
+   * usage reads borrow a scope. With no pool or no booted scope the service
+   * answers "unavailable" and the renderer keeps its local copy.
+   */
+  const harnessPresetsAdeDir = resolveMachineAdeLayout().adeDir;
+  let knownHarnessPresets = readHarnessPresetsFromMachine(harnessPresetsAdeDir);
+  const reportHarnessPresetChanges = (): void => {
+    const next = readHarnessPresetsFromMachine(harnessPresetsAdeDir);
+    if (knownHarnessPresets !== null && next !== null) {
+      const before = new Map(knownHarnessPresets.map((preset) => [preset.id, preset]));
+      const after = new Map(next.map((preset) => [preset.id, preset]));
+      for (const preset of next) {
+        if (!before.has(preset.id)) {
+          capturePresetAnalytics({
+            analytics: productAnalyticsService,
+            surface: "desktop",
+            action: "preset_created",
+            provider: preset.harness,
+          });
+        }
+      }
+      for (const preset of knownHarnessPresets) {
+        if (!after.has(preset.id)) {
+          capturePresetAnalytics({
+            analytics: productAnalyticsService,
+            surface: "desktop",
+            action: "preset_deleted",
+            provider: preset.harness,
+          });
+        }
+      }
+    }
+    if (next !== null) knownHarnessPresets = next;
+  };
+  const accountSettingsSyncService = createAccountSettingsSyncService({
+    getPool: () => localRuntimeConnectionPool,
+    getRootPath: () => bootedUsageScopeRoot(getResourceUsageContexts?.() ?? []),
+    logger: { debug: (message, meta) => getCtx().logger.debug(message, meta) },
+    onHarnessPresetsChanged: () => {
+      reportHarnessPresetChanges();
+      pruneOrphanedPresetConfigHomesFromMachine();
+    },
+  });
+
+  ipcMain.handle(
+    IPC.accountSettingsList,
+    async (
+      _event,
+      args?: { scope?: string | null },
+    ): Promise<AccountSettingsResult<AccountSettingRow[]>> =>
+      await accountSettingsSyncService.list(args?.scope ?? null),
+  );
+
+  ipcMain.handle(
+    IPC.accountSettingsGet,
+    async (
+      _event,
+      args: { scope: string; key: string },
+    ): Promise<AccountSettingsResult<unknown>> =>
+      await accountSettingsSyncService.get(args.scope, args.key),
+  );
+
+  ipcMain.handle(
+    IPC.accountSettingsSet,
+    async (
+      _event,
+      args: { scope: string; key: string; value: unknown } & AccountSettingsWriteOptions,
+    ): Promise<AccountSettingsResult<null>> =>
+      await accountSettingsSyncService.set(
+        args.scope,
+        args.key,
+        args.value,
+        { expectedAccountUserId: args.expectedAccountUserId },
+      ),
+  );
+
+  ipcMain.handle(
+    IPC.accountSettingsSync,
+    async (): Promise<AccountSettingsResult<null>> => await accountSettingsSyncService.sync(),
+  );
+
+  const accountVaultBridge = createAccountVaultBridge({
+    getPool: () => localRuntimeConnectionPool,
+    getRootPath: () => bootedUsageScopeRoot(getResourceUsageContexts?.() ?? []) ?? getCtx().project?.rootPath ?? null,
+    logger: { debug: (message, meta) => getCtx().logger.debug(message, meta) },
+  });
+
+  const accountMigrationRunner = createAccountMigrationRunner({
+    accountBridge,
+    getAccountMigrationGeneration: () => accountBridge.getMigrationGeneration(),
+    accountVaultBridge,
+    getContexts: () => getResourceUsageContexts?.() ?? [getCtx()],
+    getLogger: () => getCtx().logger,
+  });
+  const accountMigrationStartRetry = createAccountMigrationStartRetry({
+    start: () => accountMigrationRunner.start(),
+    isSignedIn: () => accountBridge.status().signedIn,
+  });
+
+  // A signed-in launch has no sign-in transition to trigger the work, so seed
+  // the same best-effort path immediately after the account/settings services.
+  accountMigrationStartRetry.tryStart();
+
   ipcMain.handle(IPC.accountStatus, async (): Promise<AdeAccountStatus> => {
     const status = accountBridge.status();
     if (status.signedIn) productAnalyticsService?.identifyAccount(status.userId);
+    accountMigrationStartRetry.tryStart(status.signedIn);
     return status;
   });
 
@@ -10683,7 +11454,10 @@ export function registerIpc({
     IPC.accountPollLogin,
     async (_event, arg: { sessionId?: string }): Promise<AdeAccountLoginPoll> => {
       const result = await accountBridge.pollLogin(arg?.sessionId ?? "");
-      if (result.authStatus.signedIn) productAnalyticsService?.identifyAccount(result.authStatus.userId);
+      if (result.authStatus.signedIn) {
+        productAnalyticsService?.identifyAccount(result.authStatus.userId);
+      }
+      accountMigrationStartRetry.tryStart(result.authStatus.signedIn);
       return result;
     },
   );
@@ -10711,7 +11485,10 @@ export function registerIpc({
     IPC.accountPollDeviceLogin,
     async (_event, arg: { sessionId?: string }): Promise<AdeAccountDeviceLoginPoll> => {
       const result = await accountBridge.pollDeviceLogin(arg?.sessionId ?? "");
-      if (result.authStatus.signedIn) productAnalyticsService?.identifyAccount(result.authStatus.userId);
+      if (result.authStatus.signedIn) {
+        productAnalyticsService?.identifyAccount(result.authStatus.userId);
+      }
+      accountMigrationStartRetry.tryStart(result.authStatus.signedIn);
       return result;
     },
   );
@@ -10733,6 +11510,13 @@ export function registerIpc({
   ipcMain.handle(IPC.accountListMachines, async (): Promise<AdeAccountMachinesResult> => {
     return accountBridge.listMachines();
   });
+
+  ipcMain.handle(
+    IPC.accountGetMachineInventory,
+    async (_event, arg: { machineKey?: string }): Promise<MachineInventoryDetail> => {
+      return await accountMachineInventoryFetcher(arg?.machineKey ?? "");
+    },
+  );
 
   ipcMain.handle(
     IPC.accountRenameMachine,
@@ -11767,12 +12551,6 @@ export function registerIpc({
     return ctx.projectConfigService.diffAgainstDisk();
   });
 
-  ipcMain.handle(IPC.projectConfigConfirmTrust, async (_event, arg: { sharedHash?: string } = {}): Promise<ProjectConfigTrust> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["projectConfigService"] as const);
-    return ctx.projectConfigService.confirmTrust(arg);
-  });
-
   // ── CTO state IPC ─────────────────────────────────────────────────
 
   ipcMain.handle(IPC.ctoGetState, async (_event, arg: CtoGetStateArgs = {}): Promise<CtoSnapshot> => {
@@ -11813,6 +12591,36 @@ export function registerIpc({
     });
   });
 
+  ipcMain.handle(IPC.ctoGetThreadHealth, async (): Promise<CtoThreadHealth> => {
+    const ctx = getCtx();
+    const service = ctx.agentChatService;
+    return service
+      ? await service.getCtoThreadHealth()
+      : {
+          sessionId: null,
+          canTakeTurn: true,
+          blockedReason: null,
+          lastTurnFailure: null,
+          context: null,
+          rotationAdvised: false,
+        };
+  });
+
+  ipcMain.handle(IPC.ctoStartFreshSession, async (): Promise<CtoStartFreshSessionResult> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["agentChatService"] as const);
+    const laneId = await resolvePrimaryLaneIdOnly(ctx);
+    if (!laneId) {
+      throw new Error("No primary lane is available to host the CTO chat session.");
+    }
+    const result = await ctx.agentChatService.startFreshIdentitySession({ identityKey: "cto", laneId });
+    return {
+      sessionId: result.session.id,
+      previousSessionId: result.previousSessionId,
+      handoff: result.handoff,
+    };
+  });
+
   ipcMain.handle(IPC.ctoListSessionLogs, async (_event, arg: CtoListSessionLogsArgs = {}): Promise<CtoSessionLogEntry[]> => {
     const ctx = getCtx();
     if (!ctx.ctoStateService) {
@@ -11825,6 +12633,28 @@ export function registerIpc({
     const ctx = getCtx();
     if (!ctx.ctoStateService) throw new Error("CTO state service is not available.");
     return ctx.ctoStateService.updateIdentity(arg.patch ?? {});
+  });
+
+  // -- CTO voice call --
+
+  registerCtoVoiceIpc(ipcMain, {
+    getCtx,
+    // Null only when this desktop IS the project runtime. Whenever a pool
+    // exists the daemon owns this project's call, and the router routes there —
+    // `ctx.ctoVoiceCallService` is the fallback for the no-pool case, not a
+    // preference.
+    getLocalRuntimePool: () => localRuntimeConnectionPool ?? null,
+    // A remote-bound window is connected — just not to a runtime on this
+    // machine — so it gets its own sentence instead of the local pool's.
+    getBindingKind: (senderId) => {
+      const windowId = BrowserWindow.getAllWindows()
+        .find((win) => win.webContents.id === senderId)?.id ?? null;
+      return getWindowSession?.(windowId)?.binding?.kind ?? null;
+    },
+    logger: {
+      warn: (msg, meta) => getCtx().logger.warn(msg, meta),
+      info: (msg, meta) => getCtx().logger.info(msg, meta),
+    },
   });
 
   // -- Smart memory --
@@ -11954,18 +12784,6 @@ export function registerIpc({
     const ctx = getCtx();
     if (!ctx.ctoStateService) throw new Error("CTO state service is not available.");
     return ctx.ctoStateService.completeOnboardingStep(arg.stepId);
-  });
-
-  ipcMain.handle(IPC.ctoDismissOnboarding, async () => {
-    const ctx = getCtx();
-    if (!ctx.ctoStateService) throw new Error("CTO state service is not available.");
-    return ctx.ctoStateService.dismissOnboarding();
-  });
-
-  ipcMain.handle(IPC.ctoResetOnboarding, async () => {
-    const ctx = getCtx();
-    if (!ctx.ctoStateService) throw new Error("CTO state service is not available.");
-    return ctx.ctoStateService.resetOnboarding();
   });
 
   ipcMain.handle(IPC.ctoPreviewSystemPrompt, async (_event, arg: { identityOverride?: Record<string, unknown> } = {}) => {

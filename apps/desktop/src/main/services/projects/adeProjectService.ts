@@ -33,8 +33,6 @@ type AdeProjectServiceArgs = {
       trust?: {
         sharedHash: string;
         localHash: string;
-        approvedSharedHash?: string | null;
-        requiresSharedTrust: boolean;
       };
     };
   };
@@ -47,14 +45,6 @@ const SECRET_PATTERNS: Array<{ code: string; regex: RegExp; message: string }> =
   { code: "bearer-token", regex: /Bearer\s+[A-Za-z0-9._-]{20,}/, message: "Possible bearer token found in a tracked file." },
 ];
 
-const DEFAULT_ADE_CONFIG = [
-  "version: 1",
-  "testSuites: []",
-  "laneOverlayPolicies: []",
-  "automations: []",
-  "",
-].join("\n");
-
 const DEFAULT_CTO_IDENTITY = YAML.stringify(
   {
     name: "CTO",
@@ -64,12 +54,10 @@ const DEFAULT_CTO_IDENTITY = YAML.stringify(
       "You are the persistent technical lead who owns architecture, execution quality, engineering continuity, and team direction.",
       "Use ADE's tools and project context to help the team move forward with clear, concrete decisions.",
     ].join("\n"),
-    personality: "strategic",
-    modelPreferences: {
-      provider: "claude",
-      model: "sonnet",
-      reasoningEffort: "high",
-    },
+    // Null on purpose: the model picker is the CTO's welcome screen, and a
+    // hard-coded provider here would be the user's pick without the user
+    // picking. Matches `makeDefaultIdentity()` in ctoStateService.
+    modelPreferences: null,
     updatedAt: "1970-01-01T00:00:00.000Z",
   },
   { indent: 2 },
@@ -329,7 +317,9 @@ export function initializeOrRepairAdeProject(projectRoot: string, options: Repai
 
   if (shouldRepairSharedScaffold) {
     ensureFile(path.join(paths.adeDir, ".gitignore"), buildAdeGitignore(), ".gitignore", actions);
-    ensureFileIfMissing(paths.sharedConfigPath, DEFAULT_ADE_CONFIG, "ade.yaml", actions);
+    // No `ade.yaml`. The committed shared config is retired: projectConfigService
+    // no longer reads it, carries any legacy file over into local config once,
+    // and deletes it. Recreating it here would resurrect a deleted file.
     ensureFileIfMissing(path.join(paths.ctoDir, "identity.yaml"), DEFAULT_CTO_IDENTITY, "cto/identity.yaml", actions);
     for (const relativePath of TRACKED_PLACEHOLDER_PATHS) {
       ensureFileIfMissing(path.join(paths.adeDir, relativePath), "", relativePath, actions);
@@ -573,8 +563,6 @@ export function createAdeProjectService(args: AdeProjectServiceArgs) {
         trust: {
           sharedHash: configSnapshot.trust?.sharedHash ?? "",
           localHash: configSnapshot.trust?.localHash ?? "",
-          approvedSharedHash: configSnapshot.trust?.approvedSharedHash ?? null,
-          requiresSharedTrust: configSnapshot.trust?.requiresSharedTrust ?? false,
         },
       },
     };

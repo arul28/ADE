@@ -44,7 +44,6 @@ import type { createLaneTemplateService } from "../../../../desktop/src/main/ser
 import type { createAutoRebaseService } from "../../../../desktop/src/main/services/lanes/autoRebaseService";
 import type { createPortAllocationService } from "../../../../desktop/src/main/services/lanes/portAllocationService";
 import type { createRebaseSuggestionService } from "../../../../desktop/src/main/services/lanes/rebaseSuggestionService";
-import type { createOrchestrationService } from "../../../../desktop/src/main/services/orchestration/orchestrationService";
 import type { createPrService } from "../../../../desktop/src/main/services/prs/prService";
 import type { createPrSummaryService } from "../../../../desktop/src/main/services/prs/prSummaryService";
 import type { createPtyService } from "../../../../desktop/src/main/services/pty/ptyService";
@@ -90,6 +89,8 @@ import type { ModelPickerStore } from "../modelPickerStore";
 import type { UsageTrackingHost } from "../../../../desktop/src/main/services/usage/usageTrackingService";
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
 import type { AccountAuthService } from "../account/accountAuthService";
+import type { AccountSettingsStore } from "../account/accountSettingsStore";
+import type { ProxyService } from "../proxy/proxyService";
 import {
   getSharedAccountAttestationConfig,
   getSharedAccountAuthService,
@@ -105,6 +106,8 @@ import {
 type SyncServiceArgs = {
   db: AdeDb;
   usageTrackingService?: UsageTrackingHost | null;
+  getProxyService?: () => Pick<ProxyService, "status"> | null;
+  accountSettingsStore?: AccountSettingsStore | null;
   productAnalyticsService?: ProductAnalyticsService | null;
   logger: Logger;
   getAccountDirectoryHealth?: () => SyncAccountDirectoryHealth;
@@ -131,7 +134,6 @@ type SyncServiceArgs = {
   sessionDeltaService?: ReturnType<typeof createSessionDeltaService> | null;
   ptyService: ReturnType<typeof createPtyService>;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
-  orchestrationService?: ReturnType<typeof createOrchestrationService> | null;
   projectConfigService?: ReturnType<typeof createProjectConfigService>;
   portAllocationService?: ReturnType<typeof createPortAllocationService>;
   laneEnvironmentService?: ReturnType<typeof createLaneEnvironmentService>;
@@ -720,6 +722,8 @@ export function createSyncService(args: SyncServiceArgs) {
   const remoteCommandService = createSyncRemoteCommandService({
     db: args.db,
     usageTrackingService: args.usageTrackingService,
+    getProxyService: args.getProxyService,
+    accountSettingsStore: args.accountSettingsStore,
     productAnalyticsService: args.productAnalyticsService,
     projectRoot: args.projectRoot,
     laneService: args.laneService,
@@ -738,7 +742,6 @@ export function createSyncService(args: SyncServiceArgs) {
     agentChatService: args.agentChatService,
     cursorCloudFleetService: args.cursorCloudFleetService,
     personalChatScope: args.personalChatScope,
-    orchestrationService: args.orchestrationService,
     pushPublisherService: args.pushPublisherService,
     ctoStateService: args.ctoStateService,
     ctoMemoryService: args.ctoMemoryService,
@@ -882,7 +885,7 @@ export function createSyncService(args: SyncServiceArgs) {
       agentChatService: args.agentChatService,
       cursorCloudFleetService: args.cursorCloudFleetService,
       aiIntegrationService: args.aiIntegrationService,
-      orchestrationService: args.orchestrationService,
+      accountSettingsStore: args.accountSettingsStore,
       pushPublisherService: args.pushPublisherService,
       ctoStateService: args.ctoStateService,
       ctoMemoryService: args.ctoMemoryService,

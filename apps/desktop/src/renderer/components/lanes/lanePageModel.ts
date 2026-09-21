@@ -248,7 +248,7 @@ type PrTagComparable = {
   githubPrNumber: number;
 };
 
-function comparePrTags(a: PrTagComparable, b: PrTagComparable): number {
+export function comparePrTags(a: PrTagComparable, b: PrTagComparable): number {
   const byState = prStateRank(a.state) - prStateRank(b.state);
   if (byState !== 0) return byState;
   const aUpdated = Date.parse(a.updatedAt);
@@ -287,8 +287,50 @@ export function selectLanePrs(
   // lists, Work cards, and chat badges. Historical rows remain in the source
   // list and PR workspace, but never leak into those visible lane surfaces.
   return prs
-    .filter((pr) => !pr.detached && lanePrMatchesCurrentBranch(lane, pr))
+    .filter((pr) => {
+      if (pr.detached) return false;
+      // Lane ownership is NOT negotiable here. Callers pass the project-wide PR
+      // list, and `lanePrMatchesCurrentBranch` is the only place lane identity
+      // is checked, so skipping straight past it on a chat link would put every
+      // linked PR on every lane in the project.
+      if (pr.laneId !== lane.id) return false;
+      // Only the BRANCH half is relaxed. Every PR opened from a lane carries the
+      // lane's branch, so branch matching alone capped a lane at one PR and hid
+      // a deliberately linked second one. A PR this lane owns and a chat linked
+      // stays visible even once the lane moves to another branch. Historical
+      // rows with no link still fall back to the branch rule and stay hidden.
+      if ((pr.chatSessionIds?.filter(Boolean).length ?? 0) > 0) return true;
+      return lanePrMatchesCurrentBranch(lane, pr);
+    })
     .sort(comparePrTags);
+}
+
+/**
+ * What a CHAT should show: everything `selectLanePrs` gives the lane, plus any
+ * pull request this chat explicitly linked even though another lane owns it.
+ *
+ * The two rules have to live apart. Lane surfaces (tags, badges, Work cards)
+ * must stay strictly lane-owned — relaxing that put one lane's PR on every lane
+ * in the project. Chat surfaces must not, because `linkToLane` deliberately
+ * leaves `lane_id` on the ORIGINAL owning lane, so a cross-lane link would
+ * otherwise be written to the database and then filtered out of every view.
+ */
+export function selectChatPrs(
+  lane: Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef">,
+  prs: PrSummary[],
+  sessionId?: string | null,
+): PrSummary[] {
+  const owned = selectLanePrs(lane, prs);
+  const seen = new Set(owned.map((pr) => pr.id));
+  const linkedElsewhere = sessionId
+    ? prs.filter((pr) => (
+      !pr.detached
+      && pr.laneId !== lane.id
+      && !seen.has(pr.id)
+      && Boolean(pr.chatSessionIds?.includes(sessionId))
+    ))
+    : [];
+  return [...owned, ...linkedElsewhere].sort(comparePrTags);
 }
 
 export function selectLanePrTag(

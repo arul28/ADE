@@ -2,6 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { REMOTE_RUNTIME_EVENT_CATEGORIES } from "../../desktop/src/shared/types/remoteRuntime";
+import {
+  refusesVoiceCategory,
+  voiceCategoryRefusalMessage,
+  withoutVoiceEvents,
+} from "../../desktop/src/shared/runtimeEventPolicy";
 import { createCtoOperatorTools } from "../../desktop/src/main/services/ai/tools/ctoOperatorTools";
 import {
   createComputerUseArtifactPath,
@@ -26,6 +32,7 @@ import { resolvePathWithinRoot } from "../../desktop/src/main/services/shared/ut
 import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
 import { buildAdeCliInlineGuidance } from "../../desktop/src/shared/adeCliGuidance";
 import { buildDeeplink, isValidCommitSha, isValidRepoRelativePath } from "../../desktop/src/shared/deeplinks";
+import { PROOF_LISTING_ARTIFACT_FILTER } from "../../desktop/src/shared/types/computerUseArtifacts";
 import { resolveStableLaneBaseBranch } from "../../desktop/src/shared/laneBaseResolution";
 import { rollupPrChecks } from "../../desktop/src/shared/prChecksRollup";
 import {
@@ -53,6 +60,8 @@ import type { PrCheck, PrChecksStatus, PrComment, PrReviewThread } from "../../d
 import type { CtoLinearQuickView } from "../../desktop/src/shared/types/cto";
 import type { LinearConnectionStatus } from "../../desktop/src/shared/types/linearSync";
 import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
+import { resolveProviderInstanceForLaunch } from "./services/providerInstances/providerInstanceStore";
+import { resolveTrackedCliPreset } from "../../desktop/src/main/services/chat/harnessPresetLaunch";
 import {
   buildTrackedCliLaunchCommand,
   deriveTrackedCliInitialInputSessionMeta,
@@ -174,7 +183,7 @@ const LINEAR_ISSUE_TOOL_SCHEMA: Record<string, unknown> = {
 
 type SessionIdentity = {
   callerId: string;
-  role: "cto" | "orchestrator" | "agent" | "external" | "evaluator";
+  role: "cto" | "agent" | "external" | "evaluator";
   chatSessionId: string | null;
   standaloneChatSession: boolean;
   runId: string | null;
@@ -363,6 +372,16 @@ const TOOL_SPECS: ToolSpec[] = [
         chatSessionId: { type: "string" },
         orchestrationParentSessionId: { type: "string", minLength: 1 },
         spawnKind: { type: "string", enum: ["subagent", "peer"] },
+        // Which of this machine's provider accounts the session signs in as.
+        // Claude and Codex only; omit it to use the provider's default account.
+        instanceId: { type: "string", minLength: 1 },
+        // Saved harness preset (body + brain + model) this CLI launches under.
+        // Ignored for grok/cursor/copilot/kimi, whose CLIs take no outside key
+        // and therefore launch on their own sign-in.
+        presetId: { type: "string", minLength: 1 },
+        // A stored API credential, for a model chosen from a provider key
+        // rather than from a preset.
+        credentialId: { type: "string", minLength: 1 },
         tracked: { type: "boolean", default: true }
       }
     }
@@ -1184,7 +1203,7 @@ const TOOL_SPECS: ToolSpec[] = [
       properties: {
         cursor: { type: "number", minimum: 0 },
         limit: { type: "number", minimum: 1, maximum: 1000 },
-        category: { type: "string", enum: ["orchestrator", "dag_mutation", "runtime", "pty"] }
+        category: { type: "string", enum: [...REMOTE_RUNTIME_EVENT_CATEGORIES] }
       }
     }
   },
@@ -1817,7 +1836,6 @@ export function resolveComputerUseOwners(session: SessionState, toolArgs: Record
     const looksLikeStandaloneChat =
       !session.identity.runId
       && !session.identity.stepId
-      && session.identity.role !== "orchestrator"
       && session.identity.role !== "evaluator";
     if (looksLikeStandaloneChat) {
       const implicitChatSessionId =
@@ -2970,7 +2988,7 @@ function isUnboundAdeCliCaller(session: SessionState): boolean {
   // bound-agent scope here would make the documented external-session actions
   // unreachable. The caller id is minted by cli.ts for the direct `ade` client.
   const caller = resolveCallerContext(session);
-  return (caller.role === "agent" || caller.role === "orchestrator")
+  return caller.role === "agent"
     && /^ade-cli:\d+$/.test(caller.callerId ?? "")
     && !caller.chatSessionId
     && !caller.runId
@@ -3442,9 +3460,7 @@ function isToolHiddenForStandaloneChat(name: string, callerCtx: CallerContext): 
 }
 
 function isLocalComputerUseAllowed(callerCtx: CallerContext): boolean {
-  return callerCtx.role === "cto"
-    || callerCtx.role === "orchestrator"
-    || callerCtx.role === "agent";
+  return callerCtx.role === "cto" || callerCtx.role === "agent";
 }
 
 async function listToolSpecsForSession(runtime: AdeRuntime, session: SessionState): Promise<ToolSpec[]> {
@@ -4333,6 +4349,21 @@ async function runTool(args: {
       ? null
       : assertNonEmptyString(toolArgs.orchestrationParentSessionId, "orchestrationParentSessionId");
     const spawnKind = parseCliSessionSpawnKind(toolArgs.spawnKind);
+    const instanceId = toolArgs.instanceId == null
+      ? null
+      : assertNonEmptyString(toolArgs.instanceId, "instanceId");
+    if (instanceId && provider !== "claude" && provider !== "codex") {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "instanceId names a Claude or Codex account on this machine; every other provider has a single identity per machine.",
+      );
+    }
+    const presetId = toolArgs.presetId == null
+      ? null
+      : assertNonEmptyString(toolArgs.presetId, "presetId");
+    const credentialId = toolArgs.credentialId == null
+      ? null
+      : assertNonEmptyString(toolArgs.credentialId, "credentialId");
     if (provider === "shell" && (orchestrationParentSessionId || spawnKind)) {
       throw new JsonRpcError(
         JsonRpcErrorCode.invalidParams,
@@ -4375,6 +4406,15 @@ async function runTool(args: {
       ? await resolveCodexComputerUseMcpConfig()
       : null;
 
+    const launchInstance = resolveProviderInstanceForLaunch(provider, instanceId);
+    const trackedPreset = resolveTrackedCliPreset(provider, { presetId, credentialId });
+    const launchPreset = trackedPreset?.preset;
+    if (trackedPreset?.gateReason) {
+      runtime.logger?.info?.("start_cli_session.preset_gated", {
+        provider,
+        reason: trackedPreset.gateReason,
+      });
+    }
     const launchFields: Partial<TrackedCliLaunchCommand> = (() => {
       if (provider === "shell") {
         return resolveCleanShellLaunchFields({
@@ -4395,6 +4435,21 @@ async function runTool(args: {
         initialPrompt: initialInput,
         laneWorktreePath,
         ...(provider === "codex" ? { codexComputerUse } : {}),
+        // Resolved here rather than forwarded as an id: this process owns the
+        // lane, so it is the one that can turn the id into a config home. The
+        // shared resolver also owns the fallback — an id that no longer names
+        // an account launches under the provider's default instead of failing.
+        ...(launchInstance ? { instance: launchInstance } : {}),
+        // Same rule for the preset: resolved in the process that owns the lane,
+        // because only it can read this machine's key store. The CLI gate is
+        // locked inside the resolver's caller — a gated harness gets no preset
+        // and launches natively rather than half-configured.
+        ...(launchPreset
+          ? {
+            preset: launchPreset,
+            ...(trackedPreset?.model ? { model: trackedPreset.model } : {}),
+          }
+          : {}),
       });
     })();
     const toolType = LAUNCH_PROFILE_TOOL_TYPE[provider];
@@ -4403,7 +4458,15 @@ async function runTool(args: {
           provider,
           targetKind: provider === "codex" ? "thread" : "session",
           targetId: provider === "claude" ? preassignedSessionId ?? null : null,
-          launch: parseTrackedCliLaunchConfig(launchFields.startupCommand ?? "", toolType) ?? {},
+          launch: {
+            ...(parseTrackedCliLaunchConfig(launchFields.startupCommand ?? "", toolType) ?? {}),
+            ...(launchInstance ? { instanceId: launchInstance.id } : {}),
+            ...(presetId ? { presetId } : {}),
+            ...(trackedPreset && !presetId && credentialId ? { credentialId } : {}),
+          },
+          ...(launchInstance ? { instanceId: launchInstance.id } : {}),
+          ...(presetId ? { presetId } : {}),
+          ...(trackedPreset && !presetId && credentialId ? { credentialId } : {}),
           ...(orchestrationParentSessionId ? { orchestrationParentSessionId } : {}),
           ...(spawnKind ? { spawnKind } : {}),
         }
@@ -5085,6 +5148,10 @@ async function runTool(args: {
           ownerKind: owner.kind,
           ownerId: owner.id,
           kind,
+          // Proof only. A scene still is the picture a generated view left
+          // behind and is already shown inline in the transcript that drew it;
+          // an agent reading this list is asking what evidence exists.
+          ...PROOF_LISTING_ARTIFACT_FILTER,
           limit,
         })) {
           artifacts.set(artifact.id, artifact);
@@ -5110,6 +5177,8 @@ async function runTool(args: {
         ownerKind: requestedOwnerKind as any,
         ownerId: requestedOwnerId,
         kind: asOptionalTrimmedString(toolArgs.kind) as any,
+        // Same exclusion as the scoped branch above, for the same reason.
+        ...PROOF_LISTING_ARTIFACT_FILTER,
         limit: asNumber(toolArgs.limit, 50),
       }),
     };
@@ -5857,6 +5926,15 @@ async function runTool(args: {
     const cursor = asNumber(toolArgs.cursor, 0);
     const limit = asNumber(toolArgs.limit, 100);
     const category = asOptionalTrimmedString(toolArgs.category);
+    // The rule and its wording live in `shared/runtimeEventPolicy.ts`.
+    // Refused by name, filtered when not named.
+    const ctoVoiceVisible = callerHasRoleAtLeast(callerCtx.role, "cto");
+    if (refusesVoiceCategory(category, ctoVoiceVisible)) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidRequest,
+        voiceCategoryRefusalMessage("stream_events")
+      );
+    }
     if (category) {
       // When filtering by category, drain a larger batch and filter client-side.
       // Use the last *drained* event's ID (not last *filtered*) as nextCursor
@@ -5874,7 +5952,13 @@ async function runTool(args: {
         oldestCursor: result.oldestCursor ?? null
       };
     }
-    return runtime.eventBuffer.drain(cursor, limit);
+    const drained = runtime.eventBuffer.drain(cursor, limit);
+    // Filtered, not refused: every other category is still readable, and the
+    // cursor still advances past what was withheld so polling cannot stall.
+    return {
+      ...drained,
+      events: withoutVoiceEvents(drained.events, ctoVoiceVisible)
+    };
   }
 
   throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unknown ADE action: ${name}`);
@@ -6005,7 +6089,6 @@ export function createAdeRpcRequestHandler(args: {
           });
         }
       }
-      const resourcesEnabled = session.identity.role !== "orchestrator";
       return {
         protocolVersion: session.protocolVersion,
         runtimeInfo: {
@@ -6028,14 +6111,10 @@ export function createAdeRpcRequestHandler(args: {
           actions: {
             listChanged: true
           },
-          ...(resourcesEnabled
-            ? {
-                resources: {
-                  listChanged: false,
-                  subscribe: false
-                }
-              }
-            : {})
+          resources: {
+            listChanged: false,
+            subscribe: false
+          }
         }
       };
     }

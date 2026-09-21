@@ -96,12 +96,35 @@ extension WorkSessionDestinationView {
     do {
       let delivery: SyncChatMessageDelivery
       if useSteer {
-        delivery = try await syncService.steerChatSession(
-          sessionId: sessionId,
-          text: text,
-          attachments: attachmentRefs.isEmpty ? nil : attachmentRefs,
-          dispatchMode: atomicDispatchMode
-        )
+        do {
+          delivery = try await syncService.steerChatSession(
+            sessionId: sessionId,
+            text: text,
+            attachments: attachmentRefs.isEmpty ? nil : attachmentRefs,
+            dispatchMode: atomicDispatchMode
+          )
+        } catch where workChatErrorIndicatesUnsupportedDispatchMode(error) {
+          // An older host rejects a mode this client offers. On a normal chat,
+          // omit the mode so the message stages instead of failing the send.
+          // On the CTO surface queue is not offered: omitting the mode would
+          // auto-route to interrupt, cancelling the running agent for a tap
+          // that said Send during turn. Fail instead and keep the draft.
+          if workChatShouldStageAfterUnsupportedDispatchMode(liveRedirectOnly: liveRedirectOnlySends) {
+            updateLocalEchoDeliveryState(echoId: echoId, deliveryState: "queued")
+            delivery = try await syncService.steerChatSession(
+              sessionId: sessionId,
+              text: text,
+              attachments: attachmentRefs.isEmpty ? nil : attachmentRefs,
+              dispatchMode: nil
+            )
+          } else {
+            ADEHaptics.error()
+            localEchoMessages.removeAll { $0.id == echoId }
+            WorkPendingUploadPreviewStore.shared.release(pendingUploadRefs)
+            errorMessage = "This computer’s ADE cannot send during the turn. Update it, or pick Interrupt & continue."
+            return false
+          }
+        }
       } else {
         do {
           delivery = try await syncService.sendChatMessage(
@@ -133,18 +156,38 @@ extension WorkSessionDestinationView {
       }
       switch delivery {
       case .queued(let steerId):
-        // We asked for an atomic dispatch and got a staged row back, so this
-        // host predates `dispatchMode` on `chat.steer` (it shipped later than
-        // `chat.dispatchSteer`, which is what the capability gate checks).
-        // Promote with the older two-step call rather than dropping the mode
-        // the user picked. Current hosts answer `.sent` and never land here.
+        // Two hosts land here. An old one predates `dispatchMode` on
+        // `chat.steer` (it shipped later than `chat.dispatchSteer`, which is
+        // what the capability gate checks). A current one staged the row on
+        // purpose because the live run refused an inline steer. The two-step
+        // promotion is right for the first and harmless for the second, but only
+        // the host can say whether it landed — so read the result rather than
+        // assuming a non-throwing call delivered.
         if let steerId, let atomicDispatchMode {
           do {
-            try await syncService.dispatchChatSteer(
+            let dispatched = try await syncService.dispatchChatSteer(
               sessionId: sessionId,
               steerId: steerId,
               mode: atomicDispatchMode
             )
+            if !dispatched {
+              // Still staged on the host. Keep the queued echo and the chip so
+              // the message stays visible until the turn boundary sends it.
+              updateLocalEchoDeliveryState(echoId: echoId, deliveryState: "queued")
+              upsertOptimisticPendingSteer(
+                id: steerId,
+                text: text,
+                timestamp: echo.timestamp,
+                attachments: attachmentRefs.isEmpty ? nil : attachmentRefs
+              )
+              schedulePostSendReconciliation(reconcileLocalEchoes: false)
+              // The send succeeded — the message is staged, not failed — so the
+              // shared tail's cleanup has to run here too. Returning without it
+              // leaves a stale error banner over a send that worked.
+              openingDeliveryWarning = nil
+              errorMessage = nil
+              return true
+            }
           } catch {
             // Staging already succeeded on the host. Keep the single queued
             // message and clear the composer instead of restoring a duplicate
@@ -463,22 +506,29 @@ extension WorkSessionDestinationView {
 
   @MainActor
   func dispatchSteerInline(_ steerId: String) async {
-    do {
-      try await syncService.dispatchChatSteer(sessionId: sessionId, steerId: steerId, mode: "inline")
-      optimisticPendingSteers.removeAll { $0.id == steerId }
-      await refreshChatStateAfterAction(forceRemote: true)
-      errorMessage = nil
-    } catch {
-      ADEHaptics.error()
-      errorMessage = error.localizedDescription
-    }
+    await dispatchSteer(steerId, mode: "inline")
   }
 
   @MainActor
   func dispatchSteerInterrupt(_ steerId: String) async {
+    await dispatchSteer(steerId, mode: "interrupt")
+  }
+
+  /// Promote a staged row into the live turn.
+  ///
+  /// The chip is cleared only when the host reports it actually dispatched. Both
+  /// modes can answer `dispatchedAt: null` without throwing — an inline steer the
+  /// run refuses, or a promotion whose row already left the queue — and clearing
+  /// the chip there makes the message vanish from view before it is sent.
+  @MainActor
+  private func dispatchSteer(_ steerId: String, mode: String) async {
     do {
-      try await syncService.dispatchChatSteer(sessionId: sessionId, steerId: steerId, mode: "interrupt")
-      optimisticPendingSteers.removeAll { $0.id == steerId }
+      let dispatched = try await syncService.dispatchChatSteer(
+        sessionId: sessionId,
+        steerId: steerId,
+        mode: mode
+      )
+      if dispatched { optimisticPendingSteers.removeAll { $0.id == steerId } }
       await refreshChatStateAfterAction(forceRemote: true)
       errorMessage = nil
     } catch {
@@ -727,6 +777,21 @@ extension WorkSessionDestinationView {
         answers: nil,
         responseText: nil
       )
+      await refreshChatStateAfterAction(forceRemote: true)
+      errorMessage = nil
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  /// Throw a dismissible question away. Distinct from `declineQuestion`
+  /// because it is a different host command with a different refusal — a card
+  /// the provider is still waiting on comes back as an error the user sees.
+  @MainActor
+  func dismissPendingQuestion(itemId: String) async {
+    do {
+      try await syncService.dismissChatPendingInput(sessionId: sessionId, itemId: itemId)
       await refreshChatStateAfterAction(forceRemote: true)
       errorMessage = nil
     } catch {
@@ -1101,11 +1166,18 @@ extension WorkSessionDestinationView {
   /// frame and rebuilds the open liquid-glass menu mid-interaction. Final
   /// assignments are equality-guarded for the same reason. No-ops entirely when
   /// this destination resolves no lane PR (`WorkChatLanePrPolicy`).
+  ///
+  /// Pass `ownershipToken` when the caller owns a `prDetailsRequestToken`
+  /// generation: the lane check below cannot tell two overlapping SAME-lane
+  /// resolves apart, so without it a superseded resolve can resume last and
+  /// republish its older PR list — and then clear the user's newer pick,
+  /// because that older list does not contain it.
   @MainActor
   func resolveLaneOpenPr(
     for laneId: String,
     forceGithubRefresh: Bool = false,
-    clearBeforeLoad: Bool = true
+    clearBeforeLoad: Bool = true,
+    ownershipToken: Int? = nil
   ) async {
     // Chats that own no lane PR (CTO) must not touch the PR projection at all:
     // their lane id is synthetic, so a lookup would resolve the project's
@@ -1116,6 +1188,8 @@ extension WorkSessionDestinationView {
       if laneOpenPr != nil { laneOpenPr = nil }
       if lanePrSummary != nil { lanePrSummary = nil }
       if lanePrTag != nil { lanePrTag = nil }
+      if !laneChatPrs.isEmpty { laneChatPrs = [] }
+      if selectedChatPrId != nil { selectedChatPrId = nil }
       return
     }
     let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1124,16 +1198,28 @@ extension WorkSessionDestinationView {
       laneOpenPr = nil
       lanePrSummary = nil
       lanePrTag = nil
+      laneChatPrs = []
     }
+    // A pick belongs to one lane. Carrying it across would show lane A's PR on
+    // lane B for as long as the id happened to stay resolvable.
+    if laneChanged, selectedChatPrId != nil { selectedChatPrId = nil }
     guard !trimmed.isEmpty else {
       lastResolvedPrLaneId = trimmed
       laneOpenPr = nil
       lanePrSummary = nil
       lanePrTag = nil
+      laneChatPrs = []
+      selectedChatPrId = nil
       return
     }
 
     let items = (try? await syncService.fetchPullRequestListItems(laneId: trimmed)) ?? []
+    // Lane surfaces and chat surfaces need two different lists, exactly as on
+    // the desktop. The BADGE stays lane-strict (`items`), but a chat can be
+    // linked to a PR that lives on another lane, and `selectChatPrs` only sees
+    // such a row if it is in the list it is handed — a lane-filtered list makes
+    // its cross-lane arm dead code.
+    let projectItems = (try? await syncService.fetchPullRequestListItems()) ?? items
     let remoteSummary: PrSummary?
     if hostReachable && syncService.supportsRemoteAction("prs.getForLane") {
       remoteSummary = try? await syncService.fetchPullRequestForLane(laneId: trimmed)
@@ -1153,20 +1239,78 @@ extension WorkSessionDestinationView {
     )
 
     let stillCurrent = headerMenuLaneId.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed
-    guard !Task.isCancelled, stillCurrent else { return }
+    // Every write below this line happens after the awaits above, which suspend
+    // the main actor and let a newer refresh for the SAME lane run to
+    // completion first. Cancellation and the lane check both pass for that
+    // older task, so it needs its own claim to be told apart.
+    let ownsWrites = ownershipToken == nil || ownershipToken == prDetailsRequestToken
+    guard !Task.isCancelled, stillCurrent, ownsWrites else { return }
     lastResolvedPrLaneId = trimmed
     if lanePrSummary != resolution.summary { lanePrSummary = resolution.summary }
     if lanePrTag != resolution.tag { lanePrTag = resolution.tag }
     if laneOpenPr != resolution.mappedPr { laneOpenPr = resolution.mappedPr }
+
+    // Every PR this chat is linked to, not just the one the badge shows.
+    let chatPrs = workChatPullRequests(
+      lane: lanes.first(where: { $0.id == trimmed }),
+      pullRequests: projectItems,
+      sessionId: sessionId
+    )
+    if laneChatPrs != chatPrs { laneChatPrs = chatPrs }
+    // A pick that no longer exists (PR merged away, link removed) must fall
+    // back to the primary rather than blanking the badge.
+    if let picked = selectedChatPrId, !chatPrs.contains(where: { $0.id == picked }) {
+      selectedChatPrId = nil
+    }
+  }
+
+  /// The pull request every chat PR surface is currently showing: the user's
+  /// pick from the switcher when they made one, otherwise whatever
+  /// `resolveLaneOpenPr` chose. One accessor so the badge, the sheet, and the
+  /// snapshot fetch can never disagree about which PR they are describing.
+  var chatDisplayPr: PullRequestListItem? {
+    if let selectedChatPrId,
+       let picked = laneChatPrs.first(where: { $0.id == selectedChatPrId }) {
+      return picked
+    }
+    return laneOpenPr
+  }
+
+  var chatDisplayPrTag: LanePrTag? {
+    if let selectedChatPrId,
+       let picked = laneChatPrs.first(where: { $0.id == selectedChatPrId }) {
+      return workChatPrTag(from: picked)
+    }
+    return lanePrTag
+  }
+
+  /// The remote summary describes the lane's resolved PR only. Once the user
+  /// switches rows it is about a DIFFERENT pull request, so it must not be
+  /// allowed to caption the one on screen.
+  var chatDisplayPrSummary: PrSummary? {
+    selectedChatPrId == nil ? lanePrSummary : nil
+  }
+
+  @MainActor
+  func selectChatPr(_ prId: String) {
+    let trimmed = prId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, laneChatPrs.contains(where: { $0.id == trimmed }) else { return }
+    guard selectedChatPrId != trimmed else { return }
+    selectedChatPrId = trimmed
+    // The snapshot on screen belongs to the previous row; drop it before the
+    // refresh so no check count is ever read against the wrong PR.
+    prDetailsSnapshot = nil
+    prDetailsError = nil
+    Task { await refreshChatPrDetails(force: true) }
   }
 
   /// Navigate to the resolved lane PR. No-op (rather than crash) if the PR was
   /// cleared between menu render and tap.
   func openLaneOpenPr() {
-    guard let tag = lanePrTag else { return }
+    guard let tag = chatDisplayPrTag else { return }
     prDetailsPresented = false
-    if let prId = tag.prId ?? laneOpenPr?.id, !prId.isEmpty {
-      let laneId = (laneOpenPr?.laneId ?? headerMenuLaneId).trimmingCharacters(in: .whitespacesAndNewlines)
+    if let prId = tag.prId ?? chatDisplayPr?.id, !prId.isEmpty {
+      let laneId = (chatDisplayPr?.laneId ?? headerMenuLaneId).trimmingCharacters(in: .whitespacesAndNewlines)
       syncService.requestedPrNavigation = PrNavigationRequest(
         prId: prId,
         prNumber: tag.githubPrNumber,
@@ -1201,13 +1345,27 @@ extension WorkSessionDestinationView {
   @MainActor
   func refreshChatPrDetails(force: Bool = false) async {
     guard force || !prDetailsRefreshing else { return }
+    // `force` skips the in-flight guard on purpose, so B→C selection overlaps
+    // two refreshes. Claim a generation and gate EVERY later state write on
+    // still owning it: without this, B's error or B's `prDetailsRefreshing =
+    // false` landed on top of C's still-loading state.
+    prDetailsRequestToken += 1
+    let token = prDetailsRequestToken
     prDetailsRefreshing = true
     prDetailsError = nil
-    defer { prDetailsRefreshing = false }
+    defer {
+      if prDetailsRequestToken == token { prDetailsRefreshing = false }
+    }
 
-    await resolveLaneOpenPr(for: headerMenuLaneId, forceGithubRefresh: force, clearBeforeLoad: false)
+    await resolveLaneOpenPr(
+      for: headerMenuLaneId,
+      forceGithubRefresh: force,
+      clearBeforeLoad: false,
+      ownershipToken: token
+    )
+    guard prDetailsRequestToken == token else { return }
 
-    guard let prId = laneOpenPr?.id ?? lanePrSummary?.id else {
+    guard let prId = chatDisplayPr?.id ?? chatDisplayPrSummary?.id else {
       prDetailsSnapshot = nil
       await loadPrCreateCapabilitiesIfNeeded()
       return
@@ -1217,15 +1375,36 @@ extension WorkSessionDestinationView {
       do {
         try await syncService.refreshPullRequestSnapshots(prId: prId)
         let items = (try? await syncService.fetchPullRequestListItems(laneId: headerMenuLaneId)) ?? []
+        // Same split as the initial load: the badge maps against the lane's own
+        // rows, the chat list is selected from the project's.
+        let projectItems = (try? await syncService.fetchPullRequestListItems()) ?? items
+        let refreshedChatPrs = workChatPullRequests(
+          lane: lanes.first(where: { $0.id == headerMenuLaneId }),
+          pullRequests: projectItems,
+          sessionId: sessionId
+        )
+        guard prDetailsRequestToken == token else { return }
         laneOpenPr = workChatMappedPullRequest(for: lanePrTag, in: items)
+        if laneChatPrs != refreshedChatPrs { laneChatPrs = refreshedChatPrs }
       } catch {
+        guard prDetailsRequestToken == token else { return }
         prDetailsError = SyncUserFacingError.message(for: error)
       }
     }
 
     do {
-      prDetailsSnapshot = try await syncService.fetchPullRequestSnapshot(prId: prId)
+      let snapshot = try await syncService.fetchPullRequestSnapshot(prId: prId)
+      // Switching PRs while this await is in flight used to publish the OLD
+      // PR's details under the new PR's header: pick B, then C, and B's
+      // snapshot lands last and wins. The id we fetched must still be the id
+      // on screen. Same shape as the `stillCurrent` guard in
+      // `resolveLaneOpenPr` above.
+      guard prDetailsRequestToken == token,
+            (chatDisplayPr?.id ?? chatDisplayPrSummary?.id) == prId else { return }
+      prDetailsSnapshot = snapshot
     } catch {
+      guard prDetailsRequestToken == token,
+            (chatDisplayPr?.id ?? chatDisplayPrSummary?.id) == prId else { return }
       prDetailsSnapshot = nil
       prDetailsError = SyncUserFacingError.message(for: error)
     }

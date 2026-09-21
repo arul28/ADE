@@ -2,19 +2,24 @@
   "protocolVersion": 1,
   "agentCapabilities": {
     "loadSession": true,
+    "mcpCapabilities": {
+      "http": true,
+      "sse": true
+    },
     "promptCapabilities": {
       "image": true,
       "audio": false,
       "embeddedContext": true
     },
     "sessionCapabilities": {
+      "close": {},
       "list": {}
     }
   },
   "agentInfo": {
     "name": "Copilot",
     "title": "Copilot",
-    "version": "1.0.4"
+    "version": "1.0.86"
   },
   "authMethods": [
     {
