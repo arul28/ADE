@@ -20853,7 +20853,13 @@ export function createAgentChatService(args: {
       (managed.runtime.kind === "claude" || managed.runtime.kind === "cursor" || managed.runtime.kind === "pi"
         // Every ACP dialect can rejoin a session by id, so an idle or
         // shutdown teardown must keep the pointer it would resume from.
-        || managed.runtime.kind === "acp")
+        || managed.runtime.kind === "acp"
+        // OpenCode keeps its sessions in its own database, and `session.get`
+        // re-opens one by id on any later server. Left off this list, every
+        // idle teardown set `runtimeInvalidated`, the next persist dropped
+        // `providerSessionId`, and each follow-up message started a brand-new
+        // OpenCode session that had to rediscover the whole thread.
+        || managed.runtime.kind === "opencode")
       && reasonAllowsPreservation;
     if (managed.runtime.kind === "codex") {
       const runtime = managed.runtime;
@@ -20979,6 +20985,10 @@ export function createAgentChatService(args: {
       managed.runtime.handle.setBusy(false);
       settleOpenCodePendingApprovals(managed, managed.runtime);
       managed.runtime.handle.setEvictionHandler(null);
+      // Written while the handle is still here, so the pointer comes from the
+      // live session id and not from whatever the last persist happened to
+      // hold.
+      if (preserveProviderResumeState) persistChatState(managed);
       try { managed.runtime.handle.close(openCodeReason); } catch { /* ignore */ }
       managed.runtime = null;
     }

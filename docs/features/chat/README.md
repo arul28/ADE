@@ -1916,14 +1916,20 @@ stops calling the session live, and the user is told in the chat.
 `teardownRuntime` distinguishes **terminal** close reasons
 (`handle_close`, `ended_session`, `model_switch`) from **non-terminal**
 ones (`idle_ttl`, `budget_eviction`, `pool_compaction`, `paused_run`,
-`project_close`, `shutdown`). For Claude and Cursor runtimes, a
-non-terminal teardown preserves resume state: the service persists chat
-state immediately (Claude additionally pins `runtime.sdkSessionId` to
-the last known Claude SDK session id before releasing the session;
-Cursor persists with its SDK agent id intact) and skips the usual
+`project_close`, `shutdown`). For Claude, Cursor, Pi, ACP and OpenCode
+runtimes, a non-terminal teardown preserves resume state: the service
+persists chat state immediately (Claude additionally pins
+`runtime.sdkSessionId` to the last known Claude SDK session id before
+releasing the session; Cursor persists with its SDK agent id intact;
+OpenCode persists `providerSessionId` from the live handle before the
+lease closes, because OpenCode keeps sessions in its own store and
+`session.get` re-opens one by id on any later server) and skips the usual
 `runtimeInvalidated = true` + `clearLaneDirectiveKey` cleanup. The next
 turn on that chat can therefore rehydrate the same provider SDK session
-instead of creating a fresh one, even though the SDK process was
+instead of creating a fresh one (until 2026-09-21 OpenCode was missing
+from that list, so its 60-second idle window wiped the pointer and every
+follow-up message opened a brand-new OpenCode session that had to
+rediscover the thread), even though the SDK process was
 released to reclaim budget or compact the pool (a dead pooled Cursor
 worker detected during turn setup also tears down with
 `pool_compaction`, keeping that path non-terminal). Terminal closes
