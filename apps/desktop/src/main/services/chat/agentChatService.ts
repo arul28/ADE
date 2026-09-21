@@ -8982,7 +8982,6 @@ export function createAgentChatService(args: {
    * services). None of them are used by any non-CTO session.
    */
   getAutomationPlannerService?: () => CtoOperatorToolDeps["automationPlannerService"];
-  getReviewService?: () => CtoOperatorToolDeps["reviewService"];
   getUsageService?: () => CtoOperatorToolDeps["usageService"];
   getBudgetService?: () => CtoOperatorToolDeps["budgetService"];
   /** NAMES ONLY — the type carries no value accessor, so no tool can read a secret. */
@@ -9115,7 +9114,6 @@ export function createAgentChatService(args: {
     ptyService,
     getAutomationService,
     getAutomationPlannerService,
-    getReviewService,
     getUsageService,
     getBudgetService,
     getProjectSecretService,
@@ -11045,7 +11043,6 @@ export function createAgentChatService(args: {
           setPaused: (a) => setScheduledWorkPaused(a),
         },
         proofIngestService: computerUseArtifactBrokerRef ?? null,
-        reviewService: getReviewService?.() ?? null,
         searchService: getSearchService?.() ?? null,
         usageService: getUsageService?.() ?? null,
         budgetService: getBudgetService?.() ?? null,

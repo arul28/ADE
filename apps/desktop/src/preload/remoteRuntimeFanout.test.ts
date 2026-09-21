@@ -41,8 +41,8 @@ describe("createRemoteRuntimeFanout", () => {
   it("runs the pump hook on every subscribe", () => {
     const onSubscribe = vi.fn();
     const fanout = createRemoteRuntimeFanout<unknown>({
-      eventType: "review_event",
-      label: "review",
+      eventType: "usage",
+      label: "usage",
       onSubscribe,
     });
     fanout.subscribe(vi.fn());

@@ -185,17 +185,6 @@ import type {
   AutomationSaveDraftResult,
   AutomationSimulateRequest,
   AutomationSimulateResult,
-  ReviewEventPayload,
-  ReviewFeedbackRecord,
-  ReviewLaunchContext,
-  ReviewListRunsArgs,
-  ReviewListSuppressionsArgs,
-  ReviewQualityReport,
-  ReviewRecordFeedbackArgs,
-  ReviewRun,
-  ReviewRunDetail,
-  ReviewSuppression,
-  ReviewStartRunArgs,
   AdeActionRegistryEntry,
   AdeCliInstallResult,
   AdeCliStatus,
@@ -2466,11 +2455,6 @@ const remoteSyncStatusEventFanout = createRemoteRuntimeFanout<SyncStatusEventPay
       : null
   ),
 });
-const remoteReviewEventFanout = createRemoteRuntimeFanout<ReviewEventPayload>({
-  eventType: "review_event",
-  label: "review",
-  onSubscribe: () => ensureRemoteRuntimeEventPump(),
-});
 const remoteUsageUpdateEventFanout = createRemoteRuntimeFanout<UsageSnapshot>({
   eventType: "usage",
   label: "usage",
@@ -2560,7 +2544,6 @@ export const REMOTE_RUNTIME_FANOUTS: readonly RemoteRuntimeFanoutEntry[] = [
   remotePrAiResolutionEventFanout,
   remoteProjectStateEventFanout,
   remoteSyncStatusEventFanout,
-  remoteReviewEventFanout,
   remoteUsageUpdateEventFanout,
   remoteAutomationsEventFanout,
   remoteConflictEventFanout,
@@ -3100,12 +3083,6 @@ function subscribeRemoteSyncStatusEvents(
   cb: (payload: SyncStatusEventPayload) => void,
 ): () => void {
   return remoteSyncStatusEventFanout.subscribe(cb);
-}
-
-function subscribeRemoteReviewEvents(
-  cb: (payload: ReviewEventPayload) => void,
-): () => void {
-  return remoteReviewEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteSessionChangedEvents(
@@ -5412,74 +5389,6 @@ const adeBridge = {
         ),
     },
     onEvent: subscribeAutomationsEvents,
-  },
-  review: {
-    listLaunchContext: async (): Promise<ReviewLaunchContext> =>
-      callProjectRuntimeActionOr("review", "listLaunchContext", {}, () =>
-        ipcRenderer.invoke(IPC.reviewListLaunchContext),
-      ),
-    listRuns: async (args: ReviewListRunsArgs = {}): Promise<ReviewRun[]> =>
-      callProjectRuntimeActionOr("review", "listRuns", { args }, () =>
-        ipcRenderer.invoke(IPC.reviewListRuns, args),
-      ),
-    getRunDetail: async (runId: string): Promise<ReviewRunDetail | null> =>
-      callProjectRuntimeActionOr(
-        "review",
-        "getRunDetail",
-        { args: { runId } },
-        () => ipcRenderer.invoke(IPC.reviewGetRunDetail, { runId }),
-      ),
-    startRun: async (args: ReviewStartRunArgs): Promise<ReviewRun> =>
-      callProjectRuntimeActionStrictOr("review", "startRun", { args }, () =>
-        ipcRenderer.invoke(IPC.reviewStartRun, args),
-      ),
-    rerun: async (runId: string): Promise<ReviewRun> =>
-      callProjectRuntimeActionOr("review", "rerun", { arg: runId }, () =>
-        ipcRenderer.invoke(IPC.reviewRerun, { runId }),
-      ),
-    cancelRun: async (runId: string): Promise<ReviewRun | null> =>
-      callProjectRuntimeActionOr(
-        "review",
-        "cancelRun",
-        { args: { runId } },
-        () => ipcRenderer.invoke(IPC.reviewCancelRun, { runId }),
-      ),
-    recordFeedback: async (
-      args: ReviewRecordFeedbackArgs,
-    ): Promise<ReviewFeedbackRecord> =>
-      callProjectRuntimeActionOr("review", "recordFeedback", { args }, () =>
-        ipcRenderer.invoke(IPC.reviewRecordFeedback, args),
-      ),
-    listSuppressions: async (
-      args: ReviewListSuppressionsArgs = {},
-    ): Promise<ReviewSuppression[]> =>
-      callProjectRuntimeActionOr("review", "listSuppressions", { args }, () =>
-        ipcRenderer.invoke(IPC.reviewListSuppressions, args),
-      ),
-    deleteSuppression: async (suppressionId: string): Promise<boolean> =>
-      callProjectRuntimeActionOr(
-        "review",
-        "deleteSuppression",
-        { args: { suppressionId } },
-        () =>
-          ipcRenderer.invoke(IPC.reviewDeleteSuppression, { suppressionId }),
-      ),
-    qualityReport: async (): Promise<ReviewQualityReport> =>
-      callProjectRuntimeActionOr("review", "qualityReport", {}, () =>
-        ipcRenderer.invoke(IPC.reviewQualityReport),
-      ),
-    onEvent: (cb: (ev: ReviewEventPayload) => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: ReviewEventPayload,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.reviewEvent, listener);
-      const removeRemote = subscribeRemoteReviewEvents(cb);
-      return () => {
-        removeRemote();
-        ipcRenderer.removeListener(IPC.reviewEvent, listener);
-      };
-    },
   },
   actions: {
     listRegistry: async (): Promise<AdeActionRegistryEntry[]> => {

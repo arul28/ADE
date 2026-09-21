@@ -213,15 +213,6 @@ export interface CtoOperatorToolDeps {
   proofIngestService?: {
     ingest: (args: any) => Promise<any> | any;
   } | null;
-  reviewService?: {
-    listLaunchContext: () => Promise<any>;
-    startRun: (args: any) => Promise<any>;
-    rerun: (args: any) => Promise<any>;
-    cancelRun: (args: { runId: string }) => Promise<any>;
-    listRuns: (args?: any) => Promise<any[]>;
-    getRunDetail: (args: { runId: string }) => Promise<any>;
-    qualityReport: () => Promise<any>;
-  } | null;
   searchService?: {
     query: (args: { query: string; laneId?: string; limit?: number }) => Promise<{ results: unknown[]; totalByKind: unknown; nextCursor?: unknown }>;
     indexStatus?: () => Promise<any> | any;
@@ -614,7 +605,6 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   const conflicts = inPack("conflicts");
   const scheduling = inPack("scheduling");
   const proof = inPack("proof");
-  const review = inPack("review");
   const search = inPack("search");
   const insights = inPack("insights");
   const config = inPack("config");
@@ -3001,109 +2991,6 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         }],
         owners: [{ kind: ownerKind, id: ownerId, relation: "attached_to" }],
       }));
-    },
-  });
-
-  // ── Review ─────────────────────────────────────────────────────────────────
-
-  tools.listReviewLaunchContext = review({
-    description: "Read what a review run can target right now: lanes, their recent commits, and open PRs.",
-    inputSchema: z.object({}),
-    execute: async () => {
-      const review = deps.reviewService;
-      if (!review) return unavailable("The review service");
-      return attempt(() => review.listLaunchContext());
-    },
-  });
-
-  tools.startReviewRun = review({
-    description:
-      "Start an ADE code review over a lane's diff, its working tree, a commit range, or a PR. "
-      + "laneId is required — reviews read a specific worktree and there is no safe default.",
-    inputSchema: z.object({
-      laneId: z.string().min(1).describe("Lane to review. Required — there is no default."),
-      mode: z.enum(["lane_diff", "working_tree", "commit_range", "pr"]).optional().default("lane_diff"),
-      baseCommit: z.string().optional().describe("Required for commit_range."),
-      headCommit: z.string().optional().describe("Required for commit_range."),
-      prId: z.string().optional().describe("Required for pr."),
-    }),
-    execute: async ({ laneId, mode, baseCommit, headCommit, prId }) => {
-      const review = deps.reviewService;
-      if (!review) return unavailable("The review service");
-      return attempt(() => {
-        const resolvedLaneId = requireMutationLaneId(laneId, "startReviewRun");
-        if (mode === "commit_range") {
-          if (!baseCommit?.trim() || !headCommit?.trim()) {
-            throw new Error("commit_range needs both baseCommit and headCommit.");
-          }
-          return review.startRun({
-            target: { mode, laneId: resolvedLaneId, baseCommit: baseCommit.trim(), headCommit: headCommit.trim() },
-          });
-        }
-        if (mode === "pr") {
-          if (!prId?.trim()) throw new Error("pr mode needs a prId.");
-          return review.startRun({ target: { mode, laneId: resolvedLaneId, prId: prId.trim() } });
-        }
-        return review.startRun({ target: { mode, laneId: resolvedLaneId } });
-      });
-    },
-  });
-
-  tools.rerunReview = review({
-    description: "Re-run a finished review with the same target and config.",
-    inputSchema: z.object({ runId: z.string().min(1) }),
-    execute: async ({ runId }) => {
-      const review = deps.reviewService;
-      if (!review) return unavailable("The review service");
-      return attempt(() => review.rerun({ runId }));
-    },
-  });
-
-  tools.cancelReviewRun = review({
-    description: "Cancel an in-flight review run. Reversible with rerunReview.",
-    inputSchema: z.object({ runId: z.string().min(1) }),
-    execute: async ({ runId }) => {
-      const review = deps.reviewService;
-      if (!review) return unavailable("The review service");
-      return attempt(() => review.cancelRun({ runId }));
-    },
-  });
-
-  tools.listReviewRuns = review({
-    description: "List review runs, newest first, optionally filtered by lane or status.",
-    inputSchema: z.object({
-      laneId: z.string().optional(),
-      status: z.enum(["queued", "running", "completed", "failed", "cancelled", "all"]).optional(),
-      limit: z.number().int().min(1).max(200).optional().default(25),
-    }),
-    execute: async ({ laneId, status, limit }) => {
-      const review = deps.reviewService;
-      if (!review) return unavailable("The review service");
-      return attempt(() => review.listRuns({
-        ...(laneId?.trim() ? { laneId: laneId.trim() } : {}),
-        ...(status ? { status } : {}),
-        limit,
-      }));
-    },
-  });
-
-  tools.getReviewRunDetail = review({
-    description: "Read one review run in full: findings, severities, anchors, and evidence.",
-    inputSchema: z.object({ runId: z.string().min(1) }),
-    execute: async ({ runId }) => {
-      const review = deps.reviewService;
-      if (!review) return unavailable("The review service");
-      return attempt(() => review.getRunDetail({ runId }));
-    },
-  });
-
-  tools.getReviewQualityReport = review({
-    description: "Read aggregate review quality: run counts, finding counts, and accepted/rejected feedback rates.",
-    inputSchema: z.object({}),
-    execute: async () => {
-      const review = deps.reviewService;
-      if (!review) return unavailable("The review service");
-      return attempt(() => review.qualityReport());
     },
   });
 

@@ -135,10 +135,6 @@ import type {
   SetPrReviewThreadResolvedArgs,
   SetPrReviewThreadResolvedResult,
   ReactToPrCommentArgs,
-  ReviewFinding,
-  ReviewPublication,
-  ReviewPublicationDestination,
-  ReviewPublicationInlineComment,
 } from "../../../shared/types";
 import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
@@ -860,64 +856,6 @@ function createEmptyIntegrationResolutionState(integrationLaneId: string, update
     laneChangeStatus: "unknown",
     updatedAt,
   };
-}
-
-function buildPublishedReviewCommentBody(finding: ReviewFinding): string {
-  const sections = [
-    `[${finding.severity.toUpperCase()}] ${finding.title}`,
-    "",
-    finding.body,
-    "",
-    `Confidence: ${Math.round(finding.confidence * 100)}%`,
-  ];
-  const quote = finding.evidence.find((entry) => typeof entry.quote === "string" && entry.quote.trim().length > 0)?.quote?.trim() ?? null;
-  if (quote) {
-    sections.push("", "```", quote.slice(0, 1_200), "```");
-  }
-  return sections.join("\n");
-}
-
-function formatPublishedFindingLocation(finding: ReviewFinding): string {
-  if (finding.filePath && finding.line != null) return `${finding.filePath}:${finding.line}`;
-  if (finding.filePath) return finding.filePath;
-  return "general";
-}
-
-export function buildPublishedReviewSummaryBody(args: {
-  targetLabel: string;
-  summary: string | null;
-  inlineFindings: ReviewFinding[];
-  summaryFindings: ReviewFinding[];
-}): string {
-  const lines = [
-    "## ADE review",
-    "",
-    `Target: ${args.targetLabel}`,
-    "",
-    args.summary?.trim() || (args.inlineFindings.length + args.summaryFindings.length > 0
-      ? `ADE found ${args.inlineFindings.length + args.summaryFindings.length} actionable finding(s).`
-      : "ADE found no actionable findings."),
-  ];
-
-  if (args.inlineFindings.length > 0) {
-    lines.push("", `Anchored inline comments posted: ${args.inlineFindings.length}.`);
-  }
-
-  if (args.summaryFindings.length > 0) {
-    lines.push("", "### Findings kept in the summary");
-    for (const finding of args.summaryFindings) {
-      lines.push(
-        `- [${finding.severity}] ${finding.title} (${formatPublishedFindingLocation(finding)})`,
-        `  ${finding.body}`,
-      );
-    }
-  }
-
-  if (args.inlineFindings.length === 0 && args.summaryFindings.length === 0) {
-    lines.push("", "No actionable findings.");
-  }
-
-  return lines.join("\n").trim();
 }
 
 async function readIntegrationLaneSnapshot(worktreePath: string): Promise<IntegrationLaneSnapshot | null> {
@@ -12766,128 +12704,6 @@ export function createPrService({
 
     async submitReview(args: SubmitPrReviewArgs): Promise<SubmitPrReviewResult> {
       return await submitReviewRequest(args);
-    },
-
-    async publishReviewPublication(args: {
-      runId: string;
-      destination: ReviewPublicationDestination;
-      targetLabel: string;
-      summary: string | null;
-      findings: ReviewFinding[];
-      changedFiles: Array<{ filePath: string; diffPositionsByLine: Record<number, number> }>;
-    }): Promise<ReviewPublication> {
-      if (args.destination.kind !== "github_pr_review") {
-        throw new Error(`Unsupported review publication destination: ${args.destination.kind}`);
-      }
-
-      const snapshot = await getReviewSnapshot(args.destination.prId);
-      const requestedAt = nowIso();
-      const changedFilesByPath = new Map(
-        args.changedFiles.map((file) => [file.filePath, file.diffPositionsByLine] as const),
-      );
-      const inlineFindings: ReviewFinding[] = [];
-      const summaryFindings: ReviewFinding[] = [];
-      const inlineComments: ReviewPublicationInlineComment[] = [];
-
-      for (const finding of args.findings) {
-        const linePositions = finding.filePath ? changedFilesByPath.get(finding.filePath) : null;
-        const diffPosition = finding.line != null && linePositions
-          ? Number(linePositions[finding.line] ?? NaN)
-          : Number.NaN;
-
-        if (
-          finding.anchorState === "anchored"
-          && finding.filePath
-          && finding.line != null
-          && Number.isFinite(diffPosition)
-          && diffPosition > 0
-        ) {
-          inlineFindings.push(finding);
-          inlineComments.push({
-            findingId: finding.id,
-            path: finding.filePath,
-            line: finding.line,
-            position: diffPosition,
-            body: buildPublishedReviewCommentBody(finding),
-          });
-          continue;
-        }
-        summaryFindings.push(finding);
-      }
-
-      const summaryBody = buildPublishedReviewSummaryBody({
-        targetLabel: args.targetLabel,
-        summary: args.summary,
-        inlineFindings,
-        summaryFindings,
-      });
-
-      // The canonical top-level "## ADE review" summary is the edited issue
-      // comment posted/maintained by the review service (reviewService's
-      // underway comment). To avoid two competing top-level summaries on the PR,
-      // the published *review* carries the inline anchored findings only and a
-      // brief deferral note for its body. The full summaryBody is still persisted
-      // on the returned publication record for local history. Summary-only
-      // findings (which have no inline anchor) are appended here so they are not
-      // lost — they live in the top-level comment, but we keep a compact note in
-      // the review body too when there's no top-level comment to rely on.
-      const reviewBody = inlineComments.length > 0
-        ? "ADE review — see the top-level **## ADE review** comment for the full summary. Inline findings are attached below."
-        : summaryBody;
-
-      try {
-        const result = await submitReviewRequest(
-          {
-            prId: args.destination.prId,
-            event: "COMMENT",
-            body: reviewBody,
-            comments: inlineComments.map((comment) => ({
-              path: comment.path,
-              position: comment.position,
-              body: comment.body,
-            })),
-          },
-          {
-            commitSha: snapshot.headSha,
-          },
-        );
-
-        const completedAt = nowIso();
-        return {
-          id: randomUUID(),
-          runId: args.runId,
-          destination: args.destination,
-          reviewEvent: "COMMENT",
-          status: "published",
-          reviewUrl: result.htmlUrl,
-          remoteReviewId: result.id || result.nodeId,
-          summaryBody,
-          inlineComments,
-          summaryFindingIds: summaryFindings.map((finding) => finding.id),
-          errorMessage: null,
-          createdAt: requestedAt,
-          updatedAt: completedAt,
-          completedAt,
-        };
-      } catch (error) {
-        const completedAt = nowIso();
-        return {
-          id: randomUUID(),
-          runId: args.runId,
-          destination: args.destination,
-          reviewEvent: "COMMENT",
-          status: "failed",
-          reviewUrl: null,
-          remoteReviewId: null,
-          summaryBody,
-          inlineComments,
-          summaryFindingIds: summaryFindings.map((finding) => finding.id),
-          errorMessage: getErrorMessage(error),
-          createdAt: requestedAt,
-          updatedAt: completedAt,
-          completedAt,
-        };
-      }
     },
 
     async closePr(args: ClosePrArgs): Promise<void> {

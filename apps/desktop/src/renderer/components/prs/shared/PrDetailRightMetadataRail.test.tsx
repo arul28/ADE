@@ -1,13 +1,10 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 
 import type { PrDetail, PrWithConflicts } from "../../../../shared/types/prs";
 
-vi.mock("./PrRequestAiReviewDialog", () => ({
-  PrRequestAiReviewDialog: () => null,
-}));
 vi.mock("./PrReviewSubmitModal", () => ({
   PrReviewSubmitModal: () => null,
 }));
@@ -33,13 +30,11 @@ function section(title: string): HTMLElement {
 
 function renderRail(
   detail: PrDetail | null = null,
-  onOpenAsLane?: () => void,
   prOverride: PrWithConflicts = pr,
 ) {
   return render(
     <PrDetailRightMetadataRail
       pr={prOverride}
-      lane={null}
       detail={detail}
       status={null}
       reviews={[]}
@@ -57,39 +52,18 @@ function renderRail(
       onSetLabels={() => {}}
       actionBusy={false}
       onSubmitReview={() => {}}
-      onOpenAsLane={onOpenAsLane}
     />,
   );
 }
 
 describe("PrDetailRightMetadataRail — can-this-land column", () => {
 
-  // ADE review diffs a working tree, so a PR with no lane genuinely cannot run
-  // it. The button used to go dead and say nothing, which read as "broken" — it
-  // now offers the checkout that unblocks it. Without a way to make that lane it
-  // falls back to disabled, rather than promising something it cannot do.
-  it("offers the lane checkout instead of a dead ADE review button", () => {
-    const onOpenAsLane = vi.fn();
-    renderRail(null, onOpenAsLane);
-    const button = screen.getByRole("button", { name: /open as lane to review/i });
-    expect((button as HTMLButtonElement).disabled).toBe(false);
-    fireEvent.click(button);
-    expect(onOpenAsLane).toHaveBeenCalledTimes(1);
-  });
-
-  it("falls back to a disabled ADE review button when no lane can be created", () => {
-    renderRail(null);
-    const button = screen.getByRole("button", { name: /ADE review/i });
-    expect((button as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.queryByRole("button", { name: /open as lane to review/i })).toBeNull();
-  });
   it("folds the review actions into the Reviewers section instead of a standalone pane", () => {
     renderRail();
     const actions = screen.getByTestId("pr-detail-metadata-actions");
-    // The two buttons used to be the LAST card in the rail — i.e. the card that
+    // The actions used to be the LAST card in the rail — i.e. the card that
     // absorbed all the column's slack and produced the dead air.
     expect(screen.getByTestId("pr-metadata-section-people").contains(actions)).toBe(true);
-    expect(actions.textContent).toContain("ADE review");
     expect(actions.textContent).toContain("Submit review");
   });
 
@@ -123,7 +97,7 @@ describe("PrDetailRightMetadataRail — can-this-land column", () => {
   // resolve a synthetic `gh:` id. Gating them on a lane left a PR the user could
   // read, comment on and merge but not label.
   it("offers Request and Edit for a PR with no lane", () => {
-    renderRail(null, undefined, { ...pr, laneId: null } as unknown as PrWithConflicts);
+    renderRail(null, { ...pr, laneId: null } as unknown as PrWithConflicts);
     expect(section("Reviewers").querySelector("header")?.textContent).toContain("Request");
     expect(section("Labels").querySelector("header")?.textContent).toContain("Edit");
   });

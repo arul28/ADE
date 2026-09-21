@@ -1206,16 +1206,11 @@ Commit messages come from the last turned ADE chat on that lane
 and iOS PR create is a title (from the lane name) plus optional
 markdown; ADE does not draft or summarize the PR. Graph edge clicks
 run merge simulation only — there is no AI conflict-proposal flyout.
-Review start requires an explicit run `modelId`.
 
 - Commit messages and conflict proposals throw `Choose a … model in Settings`.
 - PR drafts and PR AI summaries use the deterministic template when the
   picker is empty; `requireAi` callers throw the Settings prompt instead
   of a stub.
-- Review start requires an explicit `modelId` on the run. Empty throws
-  `Choose a review model before starting a review.` Launch context may
-  advertise a Codex catalog `recommendedModelId` as a picker hint; the
-  service never fills a model if the caller omits one.
 - Live chat compaction is unchanged — it always uses the chat's own
   provider.
 

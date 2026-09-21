@@ -9,7 +9,6 @@ const STORED_PROJECT_ROUTE_ROOTS = [
   "/work",
   "/graph",
   "/prs",
-  "/review",
   "/history",
   "/automations",
   "/cto",

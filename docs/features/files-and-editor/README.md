@@ -135,7 +135,7 @@ Renderer:
 
 - `apps/desktop/src/renderer/components/files/FilesTab.tsx` — shared
   route/sidebar entry point. It always renders the workbench and forwards
-  router-state chat/review file targets as workspace-relative paths, preserving
+  router-state chat file targets as workspace-relative paths, preserving
   the lane id and source position for local and remote-bound projects. Router
   state is validated rather than trusted: `openPathType` selects a tree reveal
   instead of an editor open, `searchQuery` opens the search panel instead of a

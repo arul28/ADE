@@ -1333,6 +1333,11 @@ Bootstrap flow on first launch:
 6. Replace the legacy disposable iOS cache DB if it is detected at
    the old path.
 
+Tables ADE has retired — the execution-process tables and the removed
+AI review schema — are dropped before CRR discovery, and incoming
+changesets that still name them are ignored, so a peer on an older
+build cannot recreate them.
+
 **Every column desktop can write must exist here.** Replicated tables are
 column-additive on the desktop side (`safeAddColumn` in `kvDb.ts`), and a
 changeset naming a column the phone does not know about fails to apply *on the

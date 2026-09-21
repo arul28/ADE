@@ -48,7 +48,6 @@ import {
   AUTOMATION_SCHEDULE_OCCURRENCE_RETENTION_MS,
   INGRESS_EVENT_RETENTION_MS,
   PR_SNAPSHOT_RETENTION_DAYS,
-  REVIEW_ARTIFACT_RETENTION_DAYS,
   pruneIngressEventRowsForProject,
 } from "../state/dbMaintenanceApi";
 import type { createLaneService } from "../lanes/laneService";
@@ -477,7 +476,6 @@ type AutomationIngressEventRow = {
 // Retention/count bounds live in `state/dbMaintenanceApi` so the ingress writer,
 // the kvDb maintenance hooks, and the storage ledger enforce identical policy.
 const INGRESS_PAYLOAD_RECLAIM_CHUNK_ROWS = 2_000;
-const REVIEW_ARTIFACT_RETENTION_MS = REVIEW_ARTIFACT_RETENTION_DAYS * 24 * 60 * 60 * 1_000;
 const PR_SNAPSHOT_RETENTION_MS = PR_SNAPSHOT_RETENTION_DAYS * 24 * 60 * 60 * 1_000;
 
 type AutomationPendingPublishRow = {
@@ -1434,12 +1432,6 @@ export function createAutomationService({
       pruneIngressEventsForProject(row.project_id, referenceTime);
     }
 
-    if (tableExists("review_run_artifacts")) {
-      db.run(
-        "delete from review_run_artifacts where created_at < ?",
-        [new Date(referenceTime.getTime() - REVIEW_ARTIFACT_RETENTION_MS).toISOString()],
-      );
-    }
     if (tableExists("pull_request_snapshots")) {
       db.run(
         "delete from pull_request_snapshots where updated_at < ?",

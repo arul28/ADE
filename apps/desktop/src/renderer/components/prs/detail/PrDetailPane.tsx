@@ -1436,16 +1436,10 @@ export function PrDetailPane({
             onSetLabels={handleSetLabels}
             onDeleteBranch={handleDeleteBranch}
             deleteBranchBusy={actionBusy}
-            lane={laneForPr}
             onOpenManageLane={handleOpenManageLane}
             onClose={handleClosePr}
             onReopen={handleReopenPr}
             onSubmitReview={handleSubmitReview}
-            // ADE review needs a working tree, so when there is no lane the
-            // button offers the checkout rather than going dead.
-            onOpenAsLane={
-              unmappedAffordance?.canCreateLane ? unmappedAffordance.onCreateLane : undefined
-            }
           />
         )}
         <PrManageLaneDialogHost

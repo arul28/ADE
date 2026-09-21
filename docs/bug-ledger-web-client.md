@@ -245,8 +245,8 @@ Headline: **`WEB_CLIENT_TAB_PATHS` is dead code** (nothing imports it); the real
   actions (`:4761-4933`); adapter wires only 5 (`adapter/misc.ts:594-606`). Chat rides existing `agentChat` + 56
   `chat.*` actions. **Wire selectively — see C12-sec.** Bonus: `App.tsx:757` already idle-preloads the CTO chunk on
   web (users download a tab they can't open); if NOT enabling, gate that preload on `!isWebClientMode()`.
-- C12d `needs-host-descriptors` — **Review `/review`** (~10 new commands; zero `review.*` host-side; today would
-  render empty list + dead Start button).
+- C12d `removed` — **Review `/review`** was deleted from ADE entirely (tab, host actions, and docs), so there is no
+  web surface and no host descriptors to add.
 - C12e `needs-host-descriptors + ACTIVE BUG` — **Automations `/automations`**: zero `automations.*` host-side, but
   the adapter hardcodes `automationsEnabled: true` in `app.getInfo` (`adapter/app.ts:27`) so the FULL builder (not
   the coming-soon screen) renders for anyone reaching it via URL/palette today — **rules built there silently
@@ -758,12 +758,12 @@ one broken-both-ways invalidation path.
   fallbacks to throwing refusals. Expected to grow as testing continues.
 - **WS-G "Tab expansion on web"** (C12) — staged: (1) immediate: enable Graph (+hide openFolder), flip web
   `automationsEnabled` to false, gate CTO idle-preload; (2) small: History's 3 host descriptors + CTO selective
-  adapter wiring (excluding token setters) + Settings split; (3) larger: Review/Automations host command surfaces;
+  adapter wiring (excluding token setters) + Settings split; (3) larger: Automations host command surfaces;
   (4) security review of viewer-allowed write actions (C12-sec) — should precede (2)'s CTO work.
   **OWNER DECISION (round 5): approved — bring in Graph, History, CTO, and the workable Settings sections.**
   Settings semantics follow desktop's remote-connection model: machine-scoped sections read/write the connected
   Mac (via descriptors, clearly labeled as that machine's settings); browser-local sections (appearance, zoom,
-  layout) stay per-browser. Review/Automations remain deferred pending host command surfaces.
+  layout) stay per-browser. Automations remains deferred pending host command surfaces.
 
 - **WS-H "Live-read performance"** (C13 + C14) — the relay is exonerated; the workstream is round-trip economics +
   host hygiene. Sub-tracks: (1) invalidation-domain correctness (C13a substring bug + C14b queue/integration bug —
