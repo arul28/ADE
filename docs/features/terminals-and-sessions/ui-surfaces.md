@@ -834,10 +834,12 @@ unmount, and when the Work route deactivates.
 `workSidebarOpenTools` (the strip, in order, with the active tool among
 it) are stored per lane in `laneWorkViewByScope` under
 `"<projectKey>::<laneId>"`, read and written through
-`useWorkSidebarTool(laneId)`. Picking a tool appends it, or activates the
+`useWorkSidebarTool(laneId, runtimePin)`. Picking a tool appends it, or activates the
 tab it already has without moving it; closing one hands the pane to the
 tab on its **right**, then its left, then the picker
-(`openWorkToolTab` / `closeWorkToolTab`, pure). Going back to the picker
+(`openWorkToolTab` / `closeWorkToolTab`, pure). The optional pin is the
+focused chat's machine so `work_tools.setActiveTool` publishes there;
+a null pin is the tab's bound runtime. Going back to the picker
 keeps the strip — the tabs are still open, the pane is just showing the
 page you pick from. Persisted state written before the strip existed
 (`WORK_VIEW_STATE_VERSION` 6) normalizes its single tool into a one-tab

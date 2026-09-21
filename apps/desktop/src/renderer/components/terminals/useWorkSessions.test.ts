@@ -93,9 +93,13 @@ vi.mock("../../lib/sessions", () => ({
   isChatToolType: vi.fn(() => false),
 }));
 
-vi.mock("../../state/crossMachineLanes", () => ({
-  seedCrossMachineOptimisticSession: vi.fn(),
-}));
+vi.mock("../../state/crossMachineLanes", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../state/crossMachineLanes")>();
+  return {
+    ...actual,
+    seedCrossMachineOptimisticSession: vi.fn(),
+  };
+});
 
 vi.mock("react-router-dom", () => ({
   useNavigate: vi.fn(() => navigateSpy),

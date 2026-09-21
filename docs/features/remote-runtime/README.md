@@ -470,19 +470,23 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   - `machineEntryForBinding(state, pin)` / `useMachineEntryForBinding(pin)` —
     the pinned machine's slice of the union. The join is by binding **key**, not
     machine id: `machineId` is only known once that machine has answered, while
-    a pin carries its routing target from the moment a chat is selected.
+    a pin carries its routing target from the moment a chat is selected. The
+    React hook also consults the retained Work slices: a same-repo tab switch
+    replace-clears the live map, and Git/Files must keep answering from the
+    Studio slice that is still on screen rather than the empty refill.
   - `useForeignSessionLaneId(sessionId, presentLocally)` — a chat selected from
     another machine is absent from this tab's session list, so its lane, and
-    with it its machine, is knowable only from the union. `presentLocally`
-    short-circuits the scan for the common case where the tab already holds the
-    session.
+    with it its machine, is knowable only from the union (live, then retained).
+    `presentLocally` short-circuits the scan for the common case where the tab
+    already holds the session.
   - `useLanesForPin(pin)` — the **only** lane list a pinned lane id may be
     resolved against. Never `state.lanes`: lane ids are unique per machine, not
     globally, so falling back to the tab-bound machine's list can match a
     *different* lane that happens to share the id and then hand its worktree
     path to a tool about to drive the other machine. A machine that has not been
     read yet yields an empty list, which surfaces as "not found" rather than as
-    the wrong lane. It returns `null` for an absent pin so callers keep their own
+    the wrong lane. During a same-repo refill it reads the retained slice before
+    the warm cache. It returns `null` for an absent pin so callers keep their own
     unpinned source explicitly rather than by accident, and it reads each half
     from the store that owns it: the union from the root store, the warm
     `laneCacheByProject` lane cache from the surrounding project-scoped store.
@@ -665,8 +669,11 @@ relay payload E2E encryption is planned security work. See the trust boundary in
     with the `built_in_browser.acknowledgeRemoteRequest` runtime action so the
     CLI can print "Opened on <desktop> via tunnel" — or, after a bounded 5s
     wait, "no desktop is attached to this machine". If Browser is not the
-    visible Work tool, Work holds that request, switches the pane, and the
-    Browser panel drains the hold on mount — the event is not replayed.
+    visible Work tool, Work holds that request, switches the pane only when the
+    request names the focused chat (or names no chat), and the Browser panel
+    drains the hold on mount — the event is not replayed. A request that names a
+    different chat stays queued for that chat's panel and does not steal the
+    focused pane.
 
     **One request, one answering panel.** The daemon publishes the request to
     every desktop panel pinned to that machine. A request naming a lane or a

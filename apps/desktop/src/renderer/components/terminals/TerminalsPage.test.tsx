@@ -332,12 +332,12 @@ vi.mock("../../state/appStore", () => ({
 }));
 
 vi.mock("./useWorkSessions", async () => {
-  const {
-    useRetainedCrossMachineSlices,
-    useWorkMachineRouter,
-  } = await vi.importActual<typeof import("./useWorkMachineRouter")>(
+  const { useWorkMachineRouter } = await vi.importActual<typeof import("./useWorkMachineRouter")>(
     "./useWorkMachineRouter",
   );
+  const { useRetainedCrossMachineSlices } = await vi.importActual<
+    typeof import("../../state/crossMachineLanes")
+  >("../../state/crossMachineLanes");
   return {
     useWorkSessions: () => {
       const retainedCrossMachineSlices = useRetainedCrossMachineSlices();
@@ -1367,6 +1367,75 @@ describe("TerminalsPage chat session activation", () => {
       takeHeldRemoteBrowserOpen(studioBinding, {
         sessionId: boundSession.id,
         laneId: "lane-primary",
+      }),
+    ).toEqual(forwardedOpen);
+  });
+
+  it("holds a forwarded open for another chat without switching the focused pane", async () => {
+    const studioBinding: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:target-studio:project-a",
+      targetId: "target-studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-a",
+      rootPath: "/remote/repo-a",
+      displayName: "repo-a",
+    };
+    const foreignSession = workMocks.makeTerminalSession("chat-studio", "lane-studio", "codex-chat");
+    workMocks.projectRoot = "/laptop/repo-a";
+    workMocks.crossMachineLanesByMachineId = {
+      "target-studio": {
+        machineId: "target-studio",
+        machineName: "Mac Studio",
+        targetId: "target-studio",
+        projectId: "project-a",
+        binding: studioBinding,
+        lanes: [{ ...workMocks.baseWork.lanes[1] as LaneSummary, id: "lane-studio" }],
+        sessions: [foreignSession],
+        online: true,
+      },
+    };
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      sessions: [],
+      sessionsById: new Map([[foreignSession.id, foreignSession]]),
+      visibleSessions: [foreignSession],
+      activeItemId: foreignSession.id,
+      closingPtyIds: new Set<string>(),
+    };
+    const remoteRequestListener: {
+      current: ((request: BuiltInBrowserRemoteRequest) => void) | null;
+    } = { current: null };
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: {
+        builtInBrowser: {
+          onEvent: vi.fn(() => vi.fn()),
+          onRemoteRequest: vi.fn((listener: (request: BuiltInBrowserRemoteRequest) => void) => {
+            remoteRequestListener.current = listener;
+            return vi.fn();
+          }),
+        },
+      },
+    });
+
+    render(<TerminalsPage />);
+
+    await waitFor(() => expect(remoteRequestListener.current).not.toBeNull());
+    const forwardedOpen: BuiltInBrowserRemoteRequest = {
+      requestId: "bbr-other-open",
+      url: "http://127.0.0.1:3000/other",
+      laneId: "lane-studio",
+      chatSessionId: "chat-other",
+      openPanel: true,
+      requestedAt: "2026-09-21T00:00:00.000Z",
+    };
+    remoteRequestListener.current?.(forwardedOpen);
+    expect(workMocks.fns.setLaneWorkViewState).not.toHaveBeenCalled();
+    expect(
+      takeHeldRemoteBrowserOpen(studioBinding, {
+        sessionId: "chat-other",
+        laneId: "lane-studio",
       }),
     ).toEqual(forwardedOpen);
   });

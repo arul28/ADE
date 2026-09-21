@@ -51,7 +51,9 @@ import {
   type MachineBranchState,
 } from "../../shared/laneDivergence";
 import {
+  cachedGitRemoteIdentity,
   deriveLaneMachineOptions,
+  originUrlForBinding,
   rememberProjectOriginSummaries,
   type LaneMachineOption,
 } from "../components/lanes/laneMachines";
@@ -251,6 +253,135 @@ export const EMPTY_CROSS_MACHINE_UNION: CrossMachineUnion = {
 };
 const EMPTY_LANES: LaneSummary[] = [];
 
+type RetainedCrossMachineSlices = {
+  projectStateKey: string | null;
+  /** Normalized git origin, or null when this checkout has none yet. */
+  repoKey: string | null;
+  machinesById: Map<string, CrossMachineMachineLanes>;
+  /** Fallback for older callers that have not supplied authoritative scope intent yet. */
+  pendingMachineIds: Set<string> | null;
+};
+
+function repoKeyForBinding(binding: OpenProjectBinding | null | undefined): string | null {
+  return cachedGitRemoteIdentity(originUrlForBinding(binding));
+}
+
+/**
+ * Last retain pass from a mounted Work surface. Git/Files/chat-scope hooks can
+ * miss a live-union wipe if they mount after the refill has already emptied
+ * the store; the Work retain hook runs first in the same tree and leaves this
+ * for them.
+ */
+let retainedSlicesSnapshot: readonly CrossMachineMachineLanes[] = [];
+
+/**
+ * One retained cross-machine slice lifecycle for both Work rows and runtime pins.
+ *
+ * `crossMachineLanesByMachineId` is replace-on-refill. The separate intended-id
+ * list is the authoritative membership contract: an absent but intended machine
+ * is still loading, while an id removed from that list is gone immediately.
+ * Keeping complete slices here means the session index, lane index, and binding
+ * index cannot disagree during a partial refill.
+ */
+export function useRetainedCrossMachineSlices(): readonly CrossMachineMachineLanes[] {
+  const projectStateKey = useAppStore(selectActiveProjectStateKey);
+  const projectBinding = useAppStore((s) => s.projectBinding);
+  const crossMachineLanesByMachineId = useRootAppStore((s) => s.crossMachineLanesByMachineId) ?? {};
+  const intendedMachineIds = useRootAppStore((s) => s.crossMachineLaneIntendedMachineIds);
+  const retainedRef = useRef<RetainedCrossMachineSlices>({
+    projectStateKey: null,
+    repoKey: null,
+    machinesById: new Map(),
+    pendingMachineIds: null,
+  });
+
+  return useMemo(() => {
+    let retained = retainedRef.current;
+    const nextRepoKey = repoKeyForBinding(projectBinding);
+    if (retained.projectStateKey !== projectStateKey) {
+      // The project state key is the tab's binding key, so a same-repo machine
+      // switch changes it and also clears the live store. Keep slices only when
+      // both sides resolve to the same origin (binding stamp or recents).
+      // Local tabs do not carry gitOriginUrl; guessing "unknown means same
+      // repo" leaked repo A's PTYs into repo B. Fail closed unless the
+      // identities match.
+      const sameKnownRepo = nextRepoKey != null
+        && retained.repoKey != null
+        && nextRepoKey === retained.repoKey;
+      if (intendedMachineIds != null && sameKnownRepo) {
+        retained = {
+          ...retained,
+          projectStateKey,
+          repoKey: nextRepoKey ?? retained.repoKey,
+        };
+      } else {
+        retained = {
+          projectStateKey,
+          repoKey: nextRepoKey,
+          machinesById: new Map(),
+          pendingMachineIds: null,
+        };
+      }
+      retainedRef.current = retained;
+    } else if (nextRepoKey && retained.repoKey !== nextRepoKey) {
+      retained = { ...retained, repoKey: nextRepoKey };
+      retainedRef.current = retained;
+    }
+
+    const machines = Object.values(crossMachineLanesByMachineId);
+    if (intendedMachineIds != null) {
+      const intended = new Set(intendedMachineIds);
+      for (const machineId of retained.machinesById.keys()) {
+        if (!intended.has(machineId)) retained.machinesById.delete(machineId);
+      }
+      for (const machine of machines) {
+        if (intended.has(machine.machineId)) {
+          retained.machinesById.set(machine.machineId, machine);
+        }
+      }
+      // Authoritative intent makes arrival bookkeeping unnecessary: absence is
+      // pending until membership says otherwise, however many peers arrive first.
+      retained.pendingMachineIds = null;
+    } else if (machines.length === 0) {
+      // Compatibility fallback while scope identity is still unresolved. Once
+      // intent is published, the branch above becomes the only lifecycle rule.
+      if (retained.machinesById.size > 0 && retained.pendingMachineIds == null) {
+        retained.pendingMachineIds = new Set(retained.machinesById.keys());
+      }
+    } else {
+      const presentMachineIds = new Set(machines.map((machine) => machine.machineId));
+      if (retained.pendingMachineIds == null) {
+        for (const machineId of retained.machinesById.keys()) {
+          if (!presentMachineIds.has(machineId)) retained.machinesById.delete(machineId);
+        }
+      }
+      for (const machine of machines) {
+        retained.machinesById.set(machine.machineId, machine);
+        retained.pendingMachineIds?.delete(machine.machineId);
+      }
+      if (retained.pendingMachineIds?.size === 0) retained.pendingMachineIds = null;
+    }
+
+    const slices = Array.from(retained.machinesById.values());
+    retainedSlicesSnapshot = slices;
+    return slices;
+  }, [crossMachineLanesByMachineId, intendedMachineIds, projectBinding, projectStateKey]);
+}
+
+function pickPinnedMachineEntry(
+  pin: OpenProjectBinding | null | undefined,
+  live: CrossMachineMachineLanes | null,
+  retained: readonly CrossMachineMachineLanes[],
+): CrossMachineMachineLanes | null {
+  if (!pin) return null;
+  if (live && live.lanes.length > 0) return live;
+  const kept = retained.find((entry) => entry.binding?.key === pin.key)
+    ?? retainedSlicesSnapshot.find((entry) => entry.binding?.key === pin.key)
+    ?? null;
+  if (kept) return kept;
+  return live;
+}
+
 /**
  * The union slice owned by a pinned machine, or null when the pin is absent
  * (the chat lives on the tab's own binding) or that machine has not been read
@@ -271,7 +402,7 @@ export function machineEntryForBinding(
   pin: OpenProjectBinding | null | undefined,
 ): CrossMachineMachineLanes | null {
   if (!pin) return null;
-  for (const entry of Object.values(state.crossMachineLanesByMachineId)) {
+  for (const entry of Object.values(state.crossMachineLanesByMachineId ?? {})) {
     if (entry.binding?.key === pin.key) return entry;
   }
   return null;
@@ -282,7 +413,9 @@ function laneCacheKeyForPin(pin: OpenProjectBinding): string {
 }
 
 /**
- * The pinned machine's union slice, read from the ROOT store.
+ * The pinned machine's union slice, read from the ROOT store, then the
+ * retained Work slices when a same-repo tab switch has already wiped the live
+ * map.
  *
  * This is the only correct React reading of {@link machineEntryForBinding}:
  * under `AppStoreProvider` a plain `useAppStore` resolves to the project-scoped
@@ -291,7 +424,12 @@ function laneCacheKeyForPin(pin: OpenProjectBinding): string {
 export function useMachineEntryForBinding(
   pin: OpenProjectBinding | null | undefined,
 ): CrossMachineMachineLanes | null {
-  return useRootAppStore((state) => machineEntryForBinding(state, pin));
+  const live = useRootAppStore((state) => machineEntryForBinding(state, pin));
+  const retained = useRetainedCrossMachineSlices();
+  return useMemo(
+    () => pickPinnedMachineEntry(pin, live, retained),
+    [live, pin, retained],
+  );
 }
 
 /**
@@ -306,19 +444,30 @@ export function useForeignSessionLaneId(
   sessionId: string | null,
   presentLocally: boolean,
 ): string | null {
-  return useRootAppStore((state) => {
+  const liveId = useRootAppStore((state) => {
     if (!sessionId || presentLocally) return null;
-    for (const machine of Object.values(state.crossMachineLanesByMachineId)) {
+    for (const machine of Object.values(state.crossMachineLanesByMachineId ?? {})) {
       const session = machine.sessions.find((candidate) => candidate.id === sessionId);
       if (session) return session.laneId;
     }
     return null;
   });
+  const retained = useRetainedCrossMachineSlices();
+  return useMemo(() => {
+    if (liveId) return liveId;
+    if (!sessionId || presentLocally) return null;
+    for (const machine of retained) {
+      const session = machine.sessions.find((candidate) => candidate.id === sessionId);
+      if (session) return session.laneId;
+    }
+    return null;
+  }, [liveId, presentLocally, retained, sessionId]);
 }
 
 /**
  * The ONLY lane list a pinned lane id may be resolved against: the pinned
- * machine's own, from the live union or its warm cache.
+ * machine's own, from the live union, the retained Work slices during a
+ * same-repo refill, or its warm cache.
  *
  * Never `state.lanes`. Lane ids are unique per machine, not globally, so
  * falling back to the tab-bound machine's list can match a *different* lane
@@ -1937,6 +2086,7 @@ export function resetCrossMachineLaneSyncForTest(): void {
   runtime.refCount = 0;
   runtime.connections = [];
   pendingForeignOptimisticSessionsByBinding.clear();
+  retainedSlicesSnapshot = [];
   runtime.scope = {
     scopeKey: null,
     repoDisplayName: null,
@@ -2023,7 +2173,8 @@ export function useCrossMachineLaneUnion(
     }
     const loadIdentity = async () => {
       const projects = await listRecent();
-      rememberProjectOriginSummaries(projects);
+      if (cancelled) return null;
+      rememberProjectOriginSummaries(projects, { replace: true });
       if (!boundTargetId || !boundProjectId) {
         const project = projects.find((candidate) => candidate.rootPath === projectRoot);
         return {
@@ -2032,6 +2183,7 @@ export function useCrossMachineLaneUnion(
         };
       }
       const snapshot = await window.ade.remoteRuntime.getConnectionSnapshot();
+      if (cancelled) return null;
       const connection = snapshot.connections.find(
         (candidate) => candidate.target.id === boundTargetId,
       );
@@ -2063,7 +2215,7 @@ export function useCrossMachineLaneUnion(
     };
     void loadIdentity()
       .then((identity) => {
-        if (cancelled) return;
+        if (cancelled || identity == null) return;
         setLocalRepoIdentity({ scopeKey, ...identity });
       })
       .catch(() => {

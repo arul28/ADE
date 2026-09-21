@@ -56,11 +56,8 @@ import {
 } from "./cliLaunch";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { setPendingSessionAnchor } from "./pendingSessionAnchors";
-import { seedCrossMachineOptimisticSession } from "../../state/crossMachineLanes";
-import {
-  useRetainedCrossMachineSlices,
-  useWorkMachineRouter,
-} from "./useWorkMachineRouter";
+import { seedCrossMachineOptimisticSession, useRetainedCrossMachineSlices } from "../../state/crossMachineLanes";
+import { useWorkMachineRouter } from "./useWorkMachineRouter";
 
 type WorkStatusNavigation = "all" | "running" | "awaiting-input" | "ended" | "settled";
 

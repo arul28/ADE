@@ -15,7 +15,7 @@ import {
   subscribeWorkToolRequests,
   takePendingWorkToolRequest,
 } from "./workToolRequests";
-import { holdRemoteBrowserOpen } from "../../lib/pendingRemoteBrowserOpens";
+import { holdRemoteBrowserOpen, remoteBrowserOpenMatchesOwner } from "../../lib/pendingRemoteBrowserOpens";
 import { subscribeFilesOpenInTools } from "../files/v2/filesOpenRequests";
 import {
   SessionContextMenu,
@@ -81,13 +81,13 @@ import {
   nextWorkSidebarWidthPctForKey,
 } from "./workSidebarSplitter";
 import { useWorkLaneDeleteProgress } from "./useWorkLaneDeleteProgress";
-import { useRetainedCrossMachineSlices } from "./useWorkMachineRouter";
 import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
 import { buildPtyContinuationLaunchFields } from "./cliLaunch";
 import { canonicalInputFromSummary, sessionNeedsYou } from "../../lib/terminalAttention";
 import {
   cancelCrossMachineOptimisticChatSession,
   seedCrossMachineOptimisticChatSession,
+  useRetainedCrossMachineSlices,
 } from "../../state/crossMachineLanes";
 
 const TERMINALS_TILING_TREE: PaneSplit = {
@@ -1076,7 +1076,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     openTools: workSidebarOpenTools,
     setTool: setWorkSidebarTool,
     closeTool: closeWorkSidebarTool,
-  } = useWorkSidebarTool(activeLaneId);
+  } = useWorkSidebarTool(activeLaneId, activeWorkSessionRuntimePin);
   useEffect(() => {
     if (!active) return;
     const openBrowserSidebar = () => {
@@ -1100,6 +1100,10 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       // tool) is showing, and the runtime event is not replayed. Hold the
       // request so the Browser panel can drain it on mount.
       holdRemoteBrowserOpen(browserRemoteBinding, request);
+      if (!remoteBrowserOpenMatchesOwner(request, {
+        sessionId: activeWorkSession?.id ?? null,
+        laneId: activeLaneId,
+      })) return;
       openBrowserSidebar();
     }, browserRemoteBinding) ?? null;
     return () => {
@@ -1107,7 +1111,15 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       unsubscribeBrowserEvents?.();
       unsubscribeRemoteRequests?.();
     };
-  }, [active, activeWorkSessionRuntimePin, browserCheckoutRoot, browserRemoteBinding, setWorkSidebarTool]);
+  }, [
+    active,
+    activeLaneId,
+    activeWorkSession?.id,
+    activeWorkSessionRuntimePin,
+    browserCheckoutRoot,
+    browserRemoteBinding,
+    setWorkSidebarTool,
+  ]);
 
   // "Open this tool" asked for from outside the Work page — the app shell's
   // browser open-request handler, the command palette. Only this page knows the

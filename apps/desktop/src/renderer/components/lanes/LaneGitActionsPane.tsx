@@ -81,10 +81,10 @@ const AUTO_GENERATE_COMMIT_ACTION = "generate commit message";
 const LOCAL_ONLY_ACTION_MESSAGE = "This action only works on the machine this project tab is connected to.";
 const MAX_RENDERED_CHANGE_ROWS_PER_SECTION = 300;
 
-function formatLaneGitError(err: unknown): string {
+export function formatLaneGitError(err: unknown, pin?: OpenProjectBinding | null): string {
   const raw = err instanceof Error ? err.message : String(err ?? "");
   const message = stripElectronErrorWrapper(raw);
-  if (/connection closed/i.test(message)) {
+  if (pin?.kind === "remote" && /connection closed/i.test(message)) {
     return "That machine disconnected. Stay on this chat or switch back to reconnect.";
   }
   return message || "Git action failed.";
@@ -1053,8 +1053,8 @@ export function LaneGitActionsPane({
     if ((actionName === "push" || actionName === "force push") && isNonFastForwardError(message)) {
       return "Push rejected because remote history changed. Use Force Push (lease) after a rebase, amend, or other rewritten history.";
     }
-    return formatLaneGitError(message);
-  }, [isNonFastForwardError]);
+    return formatLaneGitError(message, pin);
+  }, [isNonFastForwardError, pin]);
 
   const runAction = async (actionName: string, fn: () => Promise<void>) => {
     const actionLaneId = laneId;
@@ -1227,10 +1227,10 @@ export function LaneGitActionsPane({
     Promise.all([refreshChanges(laneId), refreshGitMeta(laneId)]).catch((err) => {
       patchLaneGitActionRuntimeState(laneGitActionScopeKey, {
         notice: null,
-        error: formatLaneGitError(err),
+        error: formatLaneGitError(err, pin),
       });
     });
-  }, [active, laneGitActionScopeKey, laneId, lane?.branchRef, projectStateKey]);
+  }, [active, laneGitActionScopeKey, laneId, lane?.branchRef, pin, projectStateKey]);
 
   useEffect(() => {
     if (!active || !laneId) return;
@@ -1447,7 +1447,7 @@ export function LaneGitActionsPane({
       patchLaneGitActionRuntimeStateIfCurrent(actionScopeKey, actionVersion, {
         busyAction: null,
         notice: null,
-        error: formatLaneGitError(err),
+        error: formatLaneGitError(err, pin),
       });
     }
   }, [

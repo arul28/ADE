@@ -130,22 +130,32 @@ const originByRemoteKey = new Map<string, string>();
 /**
  * Recents and connection snapshots are the union's origin source. Local tab
  * bindings do not carry `gitOriginUrl`, so Work retain has to look here.
- * A blank origin is authoritative: it clears a stale mapping for that checkout.
+ *
+ * `replace: true` is a complete snapshot (`listRecent` / `forgetRecent`):
+ * omitted checkouts leave, and a blank origin deletes that key. Incremental
+ * connection.projects merges: a proven origin is kept when a snapshot later
+ * arrives blank, because a machine that has not reported origin yet is not
+ * proof the checkout has none.
  */
 export function rememberProjectOriginSummaries(
   projects: readonly Pick<RecentProjectSummary, "rootPath" | "kind" | "remote" | "gitOriginUrl">[],
+  options?: { replace?: boolean },
 ): void {
+  if (options?.replace) {
+    originByLocalRoot.clear();
+    originByRemoteKey.clear();
+  }
   for (const project of projects) {
     const origin = (project.gitOriginUrl ?? project.remote?.gitOriginUrl ?? "").trim();
     const remote = project.kind === "remote" ? project.remote : undefined;
     if (remote) {
       const key = remoteProjectBindingKey(remote.targetId, remote.projectId);
       if (origin) originByRemoteKey.set(key, origin);
-      else originByRemoteKey.delete(key);
+      else if (options?.replace) originByRemoteKey.delete(key);
       continue;
     }
     if (origin) originByLocalRoot.set(project.rootPath, origin);
-    else originByLocalRoot.delete(project.rootPath);
+    else if (options?.replace) originByLocalRoot.delete(project.rootPath);
   }
 }
 

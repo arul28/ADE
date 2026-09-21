@@ -823,7 +823,9 @@ Renderer surfaces:
   `useWorkToolStatuses.ts`, `workToolRequests.ts`, `workToolErrors.ts`,
   `workSidebarSplitter.ts` — which tools are open and which one is on screen
   (per lane, `openWorkToolTab` / `closeWorkToolTab` for the strip arithmetic,
-  published to the runtime as `work_tools.setActiveTool` on a 250 ms debounce),
+  published to the runtime as `work_tools.setActiveTool` on a 250 ms debounce,
+  addressed with the focused chat's pin so a foreign session updates that
+  machine's work_tools state),
   the status
   lines assembled only from reads the pane already makes, the request queue
   surfaces outside the Work page file instead of writing pane state directly,

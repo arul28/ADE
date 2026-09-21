@@ -166,7 +166,7 @@ function consumeRecentProjectTabDropHandled(
 
 function rememberRecentProjects(rows: RecentProjectSummary[]): void {
   recentProjectsCache = { rows, fetchedAtMs: Date.now() };
-  rememberProjectOriginSummaries(rows);
+  rememberProjectOriginSummaries(rows, { replace: true });
 }
 
 function listRecentProjectsCached(options?: {

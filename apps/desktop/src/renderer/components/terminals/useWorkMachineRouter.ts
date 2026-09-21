@@ -1,4 +1,4 @@
-import { useMemo, useRef } from "react";
+import { useMemo } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import {
   buildChatMachineRoutingState,
@@ -10,12 +10,10 @@ import {
   type LaneBindingSource,
 } from "../../lib/chatMachineRouting";
 import {
-  selectActiveProjectStateKey,
   useAppStore,
   useRootAppStore,
   type CrossMachineMachineLanes,
 } from "../../state/appStore";
-import { cachedGitRemoteIdentity, originUrlForBinding } from "../lanes/laneMachines";
 import {
   forgetWorkPtyLaunchPin,
   rememberWorkPtyLaunchPin,
@@ -40,111 +38,6 @@ export type WorkMachineRouter = ChatMachineRouter & {
   /** Remove both the session-id and PTY-id entries from the launch-pin registry. */
   forgetSessionPin: (session: WorkRuntimePinLookup) => void;
 };
-
-type RetainedCrossMachineSlices = {
-  projectStateKey: string | null;
-  /** Normalized git origin, or null when this checkout has none yet. */
-  repoKey: string | null;
-  machinesById: Map<string, CrossMachineMachineLanes>;
-  /** Fallback for older callers that have not supplied authoritative scope intent yet. */
-  pendingMachineIds: Set<string> | null;
-};
-
-function repoKeyForBinding(binding: OpenProjectBinding | null | undefined): string | null {
-  return cachedGitRemoteIdentity(originUrlForBinding(binding));
-}
-
-/**
- * One retained cross-machine slice lifecycle for both Work rows and runtime pins.
- *
- * `crossMachineLanesByMachineId` is replace-on-refill. The separate intended-id
- * list is the authoritative membership contract: an absent but intended machine
- * is still loading, while an id removed from that list is gone immediately.
- * Keeping complete slices here means the session index, lane index, and binding
- * index cannot disagree during a partial refill.
- */
-export function useRetainedCrossMachineSlices(): readonly CrossMachineMachineLanes[] {
-  const projectStateKey = useAppStore(selectActiveProjectStateKey);
-  const projectBinding = useAppStore((s) => s.projectBinding);
-  const crossMachineLanesByMachineId = useRootAppStore((s) => s.crossMachineLanesByMachineId);
-  const intendedMachineIds = useRootAppStore((s) => s.crossMachineLaneIntendedMachineIds);
-  const retainedRef = useRef<RetainedCrossMachineSlices>({
-    projectStateKey: null,
-    repoKey: null,
-    machinesById: new Map(),
-    pendingMachineIds: null,
-  });
-
-  return useMemo(() => {
-    let retained = retainedRef.current;
-    const nextRepoKey = repoKeyForBinding(projectBinding);
-    if (retained.projectStateKey !== projectStateKey) {
-      // The project state key is the tab's binding key, so a same-repo machine
-      // switch changes it and also clears the live store. Keep slices only when
-      // both sides resolve to the same origin (binding stamp or recents).
-      // Local tabs do not carry gitOriginUrl; guessing "unknown means same
-      // repo" leaked repo A's PTYs into repo B. Fail closed unless the
-      // identities match.
-      const sameKnownRepo = nextRepoKey != null
-        && retained.repoKey != null
-        && nextRepoKey === retained.repoKey;
-      if (intendedMachineIds != null && sameKnownRepo) {
-        retained = {
-          ...retained,
-          projectStateKey,
-          repoKey: nextRepoKey ?? retained.repoKey,
-        };
-      } else {
-        retained = {
-          projectStateKey,
-          repoKey: nextRepoKey,
-          machinesById: new Map(),
-          pendingMachineIds: null,
-        };
-      }
-      retainedRef.current = retained;
-    } else if (nextRepoKey && retained.repoKey !== nextRepoKey) {
-      retained = { ...retained, repoKey: nextRepoKey };
-      retainedRef.current = retained;
-    }
-
-    const machines = Object.values(crossMachineLanesByMachineId);
-    if (intendedMachineIds != null) {
-      const intended = new Set(intendedMachineIds);
-      for (const machineId of retained.machinesById.keys()) {
-        if (!intended.has(machineId)) retained.machinesById.delete(machineId);
-      }
-      for (const machine of machines) {
-        if (intended.has(machine.machineId)) {
-          retained.machinesById.set(machine.machineId, machine);
-        }
-      }
-      // Authoritative intent makes arrival bookkeeping unnecessary: absence is
-      // pending until membership says otherwise, however many peers arrive first.
-      retained.pendingMachineIds = null;
-    } else if (machines.length === 0) {
-      // Compatibility fallback while scope identity is still unresolved. Once
-      // intent is published, the branch above becomes the only lifecycle rule.
-      if (retained.machinesById.size > 0 && retained.pendingMachineIds == null) {
-        retained.pendingMachineIds = new Set(retained.machinesById.keys());
-      }
-    } else {
-      const presentMachineIds = new Set(machines.map((machine) => machine.machineId));
-      if (retained.pendingMachineIds == null) {
-        for (const machineId of retained.machinesById.keys()) {
-          if (!presentMachineIds.has(machineId)) retained.machinesById.delete(machineId);
-        }
-      }
-      for (const machine of machines) {
-        retained.machinesById.set(machine.machineId, machine);
-        retained.pendingMachineIds?.delete(machine.machineId);
-      }
-      if (retained.pendingMachineIds?.size === 0) retained.pendingMachineIds = null;
-    }
-
-    return Array.from(retained.machinesById.values());
-  }, [crossMachineLanesByMachineId, intendedMachineIds, projectBinding, projectStateKey]);
-}
 
 /**
  * Per-session runtime routing for the Work tab.

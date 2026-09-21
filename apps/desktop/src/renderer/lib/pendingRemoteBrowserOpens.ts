@@ -31,8 +31,10 @@ export function remoteBrowserOpenMatchesOwner(
   request: BuiltInBrowserRemoteRequest,
   owner: { sessionId?: string | null; laneId?: string | null },
 ): boolean {
+  if (request.chatSessionId) {
+    if (!owner.sessionId || request.chatSessionId !== owner.sessionId) return false;
+  }
   if (request.laneId && owner.laneId && request.laneId !== owner.laneId) return false;
-  if (request.chatSessionId && owner.sessionId && request.chatSessionId !== owner.sessionId) return false;
   return true;
 }
 

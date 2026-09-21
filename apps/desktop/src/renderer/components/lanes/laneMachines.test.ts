@@ -360,7 +360,64 @@ describe("project origin memory", () => {
     })).toBe("git@github.com:acme/ADE.git");
   });
 
-  it("forgets a checkout when recents no longer carry an origin", () => {
+  it("forgets a checkout when a complete recents snapshot no longer carries an origin", () => {
+    rememberProjectOriginSummaries([
+      {
+        rootPath: "/Users/x/work",
+        kind: "local",
+        gitOriginUrl: "git@github.com:acme/repo-a.git",
+      },
+    ]);
+    rememberProjectOriginSummaries([
+      {
+        rootPath: "/Users/x/work",
+        kind: "local",
+        gitOriginUrl: null,
+      },
+    ], { replace: true });
+    expect(originUrlForBinding({
+      kind: "local",
+      key: "local:/Users/x/work",
+      rootPath: "/Users/x/work",
+      displayName: "work",
+    })).toBeNull();
+  });
+
+  it("drops omitted checkouts when recents replace the snapshot", () => {
+    rememberProjectOriginSummaries([
+      {
+        rootPath: "/Users/x/keep",
+        kind: "local",
+        gitOriginUrl: "git@github.com:acme/keep.git",
+      },
+      {
+        rootPath: "/Users/x/drop",
+        kind: "local",
+        gitOriginUrl: "git@github.com:acme/drop.git",
+      },
+    ]);
+    rememberProjectOriginSummaries([
+      {
+        rootPath: "/Users/x/keep",
+        kind: "local",
+        gitOriginUrl: "git@github.com:acme/keep.git",
+      },
+    ], { replace: true });
+    expect(originUrlForBinding({
+      kind: "local",
+      key: "local:/Users/x/keep",
+      rootPath: "/Users/x/keep",
+      displayName: "keep",
+    })).toBe("git@github.com:acme/keep.git");
+    expect(originUrlForBinding({
+      kind: "local",
+      key: "local:/Users/x/drop",
+      rootPath: "/Users/x/drop",
+      displayName: "drop",
+    })).toBeNull();
+  });
+
+  it("does not let a blank connection snapshot wipe a recents-proven origin", () => {
     rememberProjectOriginSummaries([
       {
         rootPath: "/Users/x/work",
@@ -380,6 +437,6 @@ describe("project origin memory", () => {
       key: "local:/Users/x/work",
       rootPath: "/Users/x/work",
       displayName: "work",
-    })).toBeNull();
+    })).toBe("git@github.com:acme/repo-a.git");
   });
 });

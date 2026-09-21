@@ -6,7 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DiffChanges, GitConflictState, GitStashSummary, GitUpstreamSyncStatus, LaneSummary } from "../../../shared/types";
-import { __resetLaneGitActionRuntimeForTests, LaneGitActionsPane } from "./LaneGitActionsPane";
+import { __resetLaneGitActionRuntimeForTests, formatLaneGitError, LaneGitActionsPane } from "./LaneGitActionsPane";
 
 const commitTimelineMock = vi.hoisted(() => vi.fn((props: Record<string, unknown>) => null));
 
@@ -1006,5 +1006,27 @@ describe("LaneGitActionsPane rescue action", () => {
     });
     expect(window.ade.git.commit).not.toHaveBeenCalled();
     expect(screen.getByText(/No turned chat on this lane to suggest a commit message/)).toBeTruthy();
+  });
+});
+
+describe("formatLaneGitError", () => {
+  const remotePin = {
+    kind: "remote" as const,
+    key: "remote:target-studio:project-a",
+    targetId: "target-studio",
+    projectId: "project-a",
+    rootPath: "/remote/repo",
+    displayName: "repo",
+    runtimeName: "Mac Studio",
+  };
+
+  it("rewrites a remote ADE disconnect", () => {
+    expect(formatLaneGitError(new Error("Remote ADE service connection closed."), remotePin))
+      .toBe("That machine disconnected. Stay on this chat or switch back to reconnect.");
+  });
+
+  it("leaves a local git connection-closed error alone", () => {
+    expect(formatLaneGitError(new Error("ssh: connection closed by remote host")))
+      .toBe("ssh: connection closed by remote host");
   });
 });

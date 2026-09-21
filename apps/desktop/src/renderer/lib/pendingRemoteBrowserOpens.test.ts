@@ -61,6 +61,16 @@ describe("pendingRemoteBrowserOpens", () => {
     ).toBe("bbr-1");
   });
 
+  it("does not give a named open to a pane with no session", () => {
+    holdRemoteBrowserOpen(STUDIO, request());
+    expect(
+      takeHeldRemoteBrowserOpen(STUDIO, { sessionId: null, laneId: "lane-studio" }),
+    ).toBeNull();
+    expect(
+      takeHeldRemoteBrowserOpen(STUDIO, { sessionId: "chat-studio", laneId: "lane-studio" })?.requestId,
+    ).toBe("bbr-1");
+  });
+
   it("does not re-hold an id the live listener already handled", () => {
     markRemoteBrowserOpenHandled("bbr-1");
     holdRemoteBrowserOpen(STUDIO, request());

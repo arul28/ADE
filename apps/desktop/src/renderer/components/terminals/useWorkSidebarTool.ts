@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { OpenProjectBinding } from "../../../shared/types";
 import type { WorkToolId } from "../../../shared/types/workTools";
 import {
   laneWorkViewScopeKey,
@@ -99,8 +100,13 @@ export function closeWorkToolTab(
  * showing); `openTools` is the strip itself. `setTool` opens or activates a tab,
  * `closeTool` removes one. Openness and width stay project-wide
  * (`workSidebarOpen`, `workSidebarWidthPct`); only the contents follow the lane.
+ * `runtimePin` is the focused chat's machine for the phone/web mirror
+ * publish; null means the tab's bound runtime.
  */
-export function useWorkSidebarTool(laneId: string | null): {
+export function useWorkSidebarTool(
+  laneId: string | null,
+  runtimePin: OpenProjectBinding | null = null,
+): {
   tool: WorkSidebarTab | null;
   openTools: WorkSidebarTab[];
   setTool: (tool: WorkSidebarTab | null) => void;
@@ -188,7 +194,7 @@ export function useWorkSidebarTool(laneId: string | null): {
     [write],
   );
 
-  usePublishActiveWorkTool(laneId, tool, openTools);
+  usePublishActiveWorkTool(laneId, tool, openTools, runtimePin);
 
   return { tool, openTools, setTool, closeTool };
 }
@@ -214,6 +220,10 @@ export const WORK_TOOL_PUBLISH_DEBOUNCE_MS = 250;
  * a phone looking at a stale "Browser active" would be lying about a pane that
  * is no longer open.
  *
+ * The publish is addressed with the focused chat's pin so a Studio session on a
+ * MacBook tab updates Studio's work_tools state, not the laptop's. A null pin
+ * is the tab's bound runtime, the same path as every other unpinned Work call.
+ *
  * Failures are swallowed on purpose. This is a mirror for other devices; a
  * runtime that cannot take the publish must not disturb the pane it describes.
  */
@@ -221,13 +231,15 @@ function usePublishActiveWorkTool(
   laneId: string | null,
   tool: WorkSidebarTab | null,
   openTools: readonly WorkSidebarTab[],
+  runtimePin: OpenProjectBinding | null,
 ): void {
   const latest = useRef<{
     laneId: string | null;
     tool: WorkSidebarTab | null;
     openTools: readonly WorkSidebarTab[];
-  }>({ laneId, tool, openTools });
-  latest.current = { laneId, tool, openTools };
+    pin: OpenProjectBinding | null;
+  }>({ laneId, tool, openTools, pin: runtimePin });
+  latest.current = { laneId, tool, openTools, pin: runtimePin };
   // Incremented by binding/status changes so a reconnect re-publishes through
   // the same debounced effect instead of duplicating the call.
   const [republishToken, setRepublishToken] = useState(0);
@@ -248,6 +260,7 @@ function usePublishActiveWorkTool(
   // memo rebuilt from an unchanged store still yields a new array on some
   // renders, and publishing on that would defeat the debounce it sits behind.
   const stripKey = openTools.join(",");
+  const pinKey = runtimePin?.key ?? "bound";
   useEffect(() => {
     if (!laneId) return;
     const publish = window.ade?.workTools?.setActiveTool;
@@ -255,8 +268,8 @@ function usePublishActiveWorkTool(
     const timer = window.setTimeout(() => {
       const current = latest.current;
       if (!current.laneId) return;
-      void publish(current.laneId, current.tool, [...current.openTools]).catch(() => {});
+      void publish(current.laneId, current.tool, [...current.openTools], current.pin).catch(() => {});
     }, WORK_TOOL_PUBLISH_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [laneId, tool, stripKey, republishToken]);
+  }, [laneId, tool, stripKey, republishToken, pinKey]);
 }
