@@ -476,7 +476,9 @@ relay payload E2E encryption is planned security work. See the trust boundary in
     Studio slice that is still on screen rather than the empty refill. Retain
     lives in one slot per proven origin (per tab when origin is unknown) so a
     Git pane that mounts during refill cannot start empty and wipe Work's
-    snapshot, and a second project tab cannot prune this repo's Studio slice. `useWorkSessions` also copies
+    snapshot, and a second project tab cannot prune this repo's Studio slice.
+    A background tab whose `projectStateKey` is not the live union's scope
+    reads its own slot and does not ingest that union. `useWorkSessions` also copies
     the focused session (and the open tools pane) onto the destination
     `workViewByProject` key when git origin proves the same repo — otherwise
     the MacBook key's empty selection would unfocus the Studio chat and the

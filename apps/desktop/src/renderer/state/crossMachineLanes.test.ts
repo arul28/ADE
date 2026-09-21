@@ -28,6 +28,7 @@ import {
   useForeignSessionLaneId,
   useLanesForPin,
   useMachineEntryForBinding,
+  useRetainedCrossMachineSlices,
   requestCrossMachineLanesForMachine,
   startCrossMachineLaneSync,
   useCrossMachineLaneUnion,
@@ -2306,6 +2307,36 @@ describe("pinned lane resolution reads the store that owns the union", () => {
     const second = renderHook(() => useLanesForPin(pin), { wrapper });
     expect(useAppStore.getState().crossMachineLanesByMachineId).toEqual({});
     expect(second.result.current?.map((lane) => lane.id)).toEqual(["lane-foreign"]);
+  });
+
+  it("does not copy the live union into another project's retain slot", () => {
+    useAppStore.getState().applyCrossMachineLaneScope("/Users/arul/repo");
+    useAppStore.getState().mergeCrossMachineLanes({
+      machineId: "target-studio",
+      machineName: "Mac Studio (12)",
+      targetId: "target-studio",
+      projectId: "project-a",
+      binding: pin,
+      online: true,
+      lanes: [makeLane({ id: "lane-foreign", name: "Foreign Lane" })],
+      sessions: [makeSession({ id: "session-foreign", laneId: "lane-foreign" })],
+    });
+
+    const owner = scopedWrapper();
+    const ownerHook = renderHook(() => useRetainedCrossMachineSlices(), { wrapper: owner.wrapper });
+    expect(ownerHook.result.current.map((machine) => machine.machineId)).toEqual(["target-studio"]);
+
+    const otherStore = createProjectAppStore(
+      { rootPath: "/other/repo", displayName: "Other", baseRef: "main" },
+    );
+    const otherHook = renderHook(
+      () => useRetainedCrossMachineSlices(),
+      {
+        wrapper: ({ children }: { children: ReactNode }) =>
+          createElement(AppStoreProvider, { store: otherStore, children }),
+      },
+    );
+    expect(otherHook.result.current.map((machine) => machine.machineId)).toEqual([]);
   });
 
   it("finds a foreign session's lane from the retained slice after the live union is cleared", () => {

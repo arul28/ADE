@@ -335,10 +335,17 @@ export function useRetainedCrossMachineSlices(): readonly CrossMachineMachineLan
   const projectBinding = useAppStore((s) => s.projectBinding);
   const crossMachineLanesByMachineId = useRootAppStore((s) => s.crossMachineLanesByMachineId) ?? {};
   const intendedMachineIds = useRootAppStore((s) => s.crossMachineLaneIntendedMachineIds);
+  const unionScopeKey = useRootAppStore((s) => s.crossMachineLaneScopeKey);
 
   return useMemo(() => {
     const nextRepoKey = repoKeyForBinding(projectBinding);
     let retained = retainedSlotFor(nextRepoKey, projectStateKey);
+    // The live union is one repository. A background tab for another repo must
+    // not copy those machines into its slot (or prune its own with that intent).
+    const ownsUnion = unionScopeKey == null || unionScopeKey === projectStateKey;
+    if (!ownsUnion) {
+      return Array.from(retained.machinesById.values());
+    }
     if (retained.projectStateKey !== projectStateKey) {
       // The project state key is the tab's binding key, so a same-repo machine
       // switch changes it and also clears the live store. Keep slices only when
@@ -397,7 +404,7 @@ export function useRetainedCrossMachineSlices(): readonly CrossMachineMachineLan
 
     const slices = Array.from(retained.machinesById.values());
     return slices;
-  }, [crossMachineLanesByMachineId, intendedMachineIds, projectBinding, projectStateKey]);
+  }, [crossMachineLanesByMachineId, intendedMachineIds, projectBinding, projectStateKey, unionScopeKey]);
 }
 
 function pickPinnedMachineEntry(
