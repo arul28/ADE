@@ -179,7 +179,9 @@ vi.mock("./WorkStartSurface", () => ({
 }));
 
 vi.mock("./WorkToolPickerBackdrop", () => ({
-  WorkToolPickerBackdrop: () => <div data-testid="work-mesh-backdrop" />,
+  WorkToolPickerBackdrop: ({ playing }: { playing?: boolean }) => (
+    <div data-testid="work-mesh-backdrop" data-playing={playing === false ? "false" : "true"} />
+  ),
 }));
 
 // The real grid renders through PaneTilingLayout (react-resizable-panels), which
@@ -512,7 +514,46 @@ describe("WorkViewArea", () => {
 
     expect(screen.getByTestId("work-start-surface")).toBeTruthy();
     expect(screen.getByTestId("work-mesh-backdrop")).toBeTruthy();
+    expect(screen.getByTestId("work-mesh-backdrop").getAttribute("data-playing")).toBe("true");
     expect(screen.queryByText("Session ended")).toBeNull();
+  });
+
+  it("pauses the empty-draft mesh while the Work page is parked", () => {
+    render(
+      <WorkViewArea
+        pageActive={false}
+        lanes={[{
+          id: "lane-1",
+          name: "Lane 1",
+          laneType: "worktree",
+          baseRef: "main",
+          branchRef: "lane-1",
+          worktreePath: "/tmp/lane-1",
+          parentLaneId: null,
+          childCount: 0,
+          stackDepth: 0,
+          parentStatus: null,
+          isEditProtected: false,
+          status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+          color: null,
+          icon: null,
+          tags: [],
+          createdAt: "2026-04-06T12:00:00.000Z",
+        }]}
+        sessions={[]}
+        visibleSessions={[]}
+        activeItemId={null}
+        draftKind="chat"
+        onSelectItem={() => {}}
+        onCloseItem={() => {}}
+        onOpenChatSession={() => {}}
+        onLaunchPtySession={resolvePtyLaunch}
+        onShowDraftKind={() => {}}
+        closingPtyIds={new Set()}
+      />,
+    );
+
+    expect(screen.getByTestId("work-mesh-backdrop").getAttribute("data-playing")).toBe("false");
   });
 
   it("adds the CLI session header above agent PTY sessions", () => {

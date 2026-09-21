@@ -1330,7 +1330,7 @@ export function WorkViewArea({
       </SingleSessionGridDropZone>
     ) : (
       <div className="relative flex h-full min-h-0 flex-col overflow-hidden">
-        <WorkToolPickerBackdrop theme={theme} />
+        <WorkToolPickerBackdrop theme={theme} playing={pageActive} />
         <div className="relative z-10 flex shrink-0 items-center justify-center pb-8 pt-6">
           <ModeSwitcherPills draftKind={draftKind} onShowDraftKind={onShowDraftKind} />
         </div>

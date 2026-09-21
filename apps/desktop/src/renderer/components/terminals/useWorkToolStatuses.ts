@@ -313,7 +313,7 @@ export function appControlCardLabel(session: Pick<AppControlSession, "label" | "
 function looksLikeLaunchCommand(text: string): boolean {
   return /(?:^|[\s'"=])(?:sh|bash|zsh|cmd(?:\.exe)?|powershell)\b/i.test(text)
     || /\bADE_[A-Z0-9_]+=/.test(text)
-    || /\bnpm(?:\s+run)?\b/.test(text)
+    || /\bnpm(?:\s+run|\s+start|\s+--prefix)\b/.test(text)
     || /\s-{1,2}[\w-]+/.test(text) && text.length > 40;
 }
 

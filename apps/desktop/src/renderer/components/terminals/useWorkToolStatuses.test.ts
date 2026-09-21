@@ -180,6 +180,10 @@ describe("work tool status lines", () => {
       label: "sh -lc 'ADE_PACKAGE_CHANNEL= npm run dev:desktop -- --socket /tmp/x.sock'",
       status: "running",
     } as never).line).toBe("Desktop app");
+    expect(appControlStatusLine({
+      label: "Update npm package metadata",
+      status: "running",
+    } as never).line).toBe("Update npm package metadata");
   });
 
   it("keeps the fixed lines inside the one-line budget", () => {

@@ -3315,16 +3315,20 @@ button:active, [role="button"]:active {
 
 .ade-chat-shell-header {
   box-sizing: border-box;
-  /* Same token as `.ade-tool-header` so the Work split's two bars meet. */
-  height: var(--ade-work-chrome-rail-h);
-  min-height: var(--ade-work-chrome-rail-h);
-  max-height: var(--ade-work-chrome-rail-h);
   background: var(--work-chrome-surface, var(--color-card));
   border-style: solid;
   border-width: 0 0 1px 0;
   border-color: var(--chat-panel-border);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
+}
+
+/* Only the Work split needs a 33px rail so it meets `.ade-tool-header`.
+ * Personal chats and other ChatSurfaceShell hosts keep their own header height. */
+.ade-work-surface .ade-chat-shell-header {
+  height: var(--ade-work-chrome-rail-h);
+  min-height: var(--ade-work-chrome-rail-h);
+  max-height: var(--ade-work-chrome-rail-h);
 }
 
 /* Grid arrange preset slide-out — same height as header controls */
