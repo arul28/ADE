@@ -8,6 +8,13 @@ function words(sentence: string): number {
 }
 
 describe("describeAppleError", () => {
+  it("maps the browser's fetch failure to a video sentence with reconnect", () => {
+    const described = describeAppleError(new TypeError("Failed to fetch"));
+    expect(described.sentence).toBe("Could not connect to the video stream.");
+    expect(described.action).toBe("reconnect");
+    expect(described.detail).toBe("Failed to fetch");
+  });
+
   const cases: Array<[unknown, string, string | undefined]> = [
     // helper
     [new Error("Device not booted (state: Shutdown)"), "The device is off.", "start"],

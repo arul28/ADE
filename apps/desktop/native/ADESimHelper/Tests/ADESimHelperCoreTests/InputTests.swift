@@ -107,6 +107,51 @@ final class SimButtonTests: XCTestCase {
 }
 
 final class FrameStreamServerTests: XCTestCase {
+    /// The renderer's `fetch` carries an `authorization` header from another
+    /// origin, so the browser preflights with OPTIONS. Without a CORS answer
+    /// every in-app reader fails with "Failed to fetch" while curl works.
+    func testAnswersTheCorsPreflightAndLabelsEveryResponse() throws {
+        let server = try FrameStreamServer(path: "/video")
+        let port = try server.start()
+        defer { server.stop() }
+
+        let preflight = try Self.rawRequest(port: port, "OPTIONS /video HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: http://localhost:5173\r\nAccess-Control-Request-Method: GET\r\nAccess-Control-Request-Headers: authorization\r\n\r\n")
+        XCTAssertTrue(preflight.hasPrefix("HTTP/1.1 204"), preflight)
+        XCTAssertTrue(preflight.contains("Access-Control-Allow-Origin: *"), preflight)
+        XCTAssertTrue(preflight.lowercased().contains("access-control-allow-headers: authorization"), preflight)
+
+        let forbidden = try Self.rawRequest(port: port, "GET /video HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        XCTAssertTrue(forbidden.hasPrefix("HTTP/1.1 403"), forbidden)
+        // The status must be readable by the browser, not an opaque failure.
+        XCTAssertTrue(forbidden.contains("Access-Control-Allow-Origin: *"), forbidden)
+    }
+
+    private static func rawRequest(port: UInt16, _ request: String) throws -> String {
+        let sock = socket(AF_INET, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(sock, 0)
+        defer { close(sock) }
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = port.bigEndian
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let rc = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(sock, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+        }
+        XCTAssertEqual(rc, 0, "connect failed: \(errno)")
+        let bytes = Array(request.utf8)
+        XCTAssertEqual(send(sock, bytes, bytes.count, 0), bytes.count)
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        var received = Data()
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline {
+            let n = recv(sock, &buffer, buffer.count, 0)
+            if n <= 0 { break }
+            received.append(buffer, count: n)
+            if received.count > 8, String(decoding: received, as: UTF8.self).contains("\r\n\r\n") { break }
+        }
+        return String(decoding: received, as: UTF8.self)
+    }
+
     func testTokensAreLongAndUnique() {
         let first = FrameStreamServer.randomToken()
         let second = FrameStreamServer.randomToken()

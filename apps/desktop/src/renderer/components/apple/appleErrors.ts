@@ -76,6 +76,14 @@ const matches = (pattern: RegExp) => (haystack: string) => pattern.test(haystack
  * "Device not booted" answer must not read as the helper being missing.
  */
 const RULES: readonly Rule[] = [
+  {
+    // The browser's own wording for a fetch that never got an HTTP answer:
+    // connection refused, a CORS preflight the helper did not answer, or a
+    // helper that exited. All of them mean the video did not connect.
+    test: (h) => /failed to fetch|networkerror when attempting to fetch|load failed|ERR_CONNECTION_REFUSED|ECONNREFUSED/i.test(h),
+    sentence: "Could not connect to the video stream.",
+    action: "reconnect",
+  },
   // The device is off (helper `DeviceSession` refusal, or `simctl` on a shut-down device).
   { test: matches(/Device not booted|current state: Shutdown|is not booted|Unable to boot device/i), sentence: "The device is off.", action: "start" },
   // The helper.

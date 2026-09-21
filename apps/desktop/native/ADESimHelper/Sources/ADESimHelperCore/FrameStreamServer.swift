@@ -191,6 +191,20 @@ public final class FrameStreamServer {
             return
         }
         let parts = requestLine.split(separator: " ")
+        // The renderer is another origin (the app's own scheme, or the Vite dev
+        // server) and its `fetch` carries an `authorization` header, so the
+        // browser sends a CORS preflight first. Without this answer every
+        // in-app reader fails with "Failed to fetch" while curl works fine.
+        // Allowing any origin is safe here: the bearer token, not the origin,
+        // is what guards the stream, and the server binds loopback only.
+        if parts.count >= 2, parts[0] == "OPTIONS" {
+            respondAndClose(connection, status: "204 No Content", extraHeaders: Self.corsHeaders + [
+                "Access-Control-Allow-Methods: GET, OPTIONS",
+                "Access-Control-Allow-Headers: authorization",
+                "Access-Control-Max-Age: 600",
+            ])
+            return
+        }
         guard parts.count >= 2, parts[0] == "GET" else {
             respondAndClose(connection, status: "405 Method Not Allowed")
             return
@@ -207,17 +221,18 @@ public final class FrameStreamServer {
             return
         }
 
-        let response = [
+        let response = ([
             "HTTP/1.1 200 OK",
             "Content-Type: application/octet-stream",
             "Cache-Control: no-store",
             // The renderer reads this with `fetch` and a stream reader, so the
             // body must never be buffered by an intermediary.
             "X-Content-Type-Options: nosniff",
+        ] + Self.corsHeaders + [
             "Connection: close",
             "",
             "",
-        ].joined(separator: "\r\n")
+        ]).joined(separator: "\r\n")
 
         let client = Client(connection: connection)
         let key = ObjectIdentifier(connection)
@@ -267,8 +282,13 @@ public final class FrameStreamServer {
         })
     }
 
-    private func respondAndClose(_ connection: NWConnection, status: String) {
-        let response = "HTTP/1.1 \(status)\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    /// Sent on every response so the renderer can read a 403/404 status
+    /// instead of an opaque network failure.
+    static let corsHeaders: [String] = ["Access-Control-Allow-Origin: *"]
+
+    private func respondAndClose(_ connection: NWConnection, status: String, extraHeaders: [String] = corsHeaders) {
+        let headers = (["HTTP/1.1 \(status)", "Content-Length: 0"] + extraHeaders + ["Connection: close"]).joined(separator: "\r\n")
+        let response = headers + "\r\n\r\n"
         connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in
             connection.cancel()
         })
