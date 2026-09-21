@@ -22,6 +22,10 @@ import type { BuiltInBrowserStatus } from "../../../shared/types/builtInBrowser"
 import { makeBuiltInBrowserStatus, makeBuiltInBrowserTab } from "./__fixtures__/builtInBrowserStatus";
 import { dismissToast, getToasts } from "../app/toast/toastStore";
 import { useAppStore } from "../../state/appStore";
+import {
+  holdRemoteBrowserOpen,
+  resetRemoteBrowserOpensForTests,
+} from "../../lib/pendingRemoteBrowserOpens";
 
 const browserStatus: BuiltInBrowserStatus = makeBuiltInBrowserStatus();
 
@@ -408,6 +412,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   useAppStore.setState({ projectBinding: null } as never);
+  resetRemoteBrowserOpensForTests();
   delete (window as unknown as { ade?: unknown }).ade;
 });
 
@@ -557,6 +562,78 @@ describe("ChatBuiltInBrowserPanel", () => {
     await waitFor(() => {
       expect(api.acknowledgeRemoteRequest).toHaveBeenCalledWith(
         expect.objectContaining({ requestId: "bbr-9", accepted: true }),
+        REMOTE_PIN,
+      );
+    });
+  });
+
+  it("drains a remote open held while the Browser pane was unmounted", async () => {
+    const { api } = installBrowserApi();
+    holdRemoteBrowserOpen(REMOTE_PIN, {
+      requestId: "bbr-held",
+      url: "http://127.0.0.1:8080/admin",
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+      openPanel: true,
+      requestedAt: "2026-09-07T00:00:00.000Z",
+    });
+
+    render(<ChatBuiltInBrowserPanel sessionId="chat-1" runtimePin={REMOTE_PIN} />);
+
+    fireEvent.click(await screen.findByText("Allow once"));
+
+    await waitFor(() => {
+      expect(api.navigate).toHaveBeenCalledWith(
+        expect.objectContaining({ url: "http://127.0.0.1:8080/admin" }),
+        REMOTE_PIN,
+      );
+    });
+    await waitFor(() => {
+      expect(api.acknowledgeRemoteRequest).toHaveBeenCalledWith(
+        expect.objectContaining({ requestId: "bbr-held", accepted: true }),
+        REMOTE_PIN,
+      );
+    });
+  });
+
+  it("drains two held remote opens one grant at a time", async () => {
+    const { api } = installBrowserApi();
+    holdRemoteBrowserOpen(REMOTE_PIN, {
+      requestId: "bbr-held-1",
+      url: "http://127.0.0.1:8080/admin",
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+      openPanel: true,
+      requestedAt: "2026-09-07T00:00:00.000Z",
+    });
+    holdRemoteBrowserOpen(REMOTE_PIN, {
+      requestId: "bbr-held-2",
+      url: "http://127.0.0.1:9999/",
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+      openPanel: true,
+      requestedAt: "2026-09-07T00:00:01.000Z",
+    });
+
+    render(<ChatBuiltInBrowserPanel sessionId="chat-1" runtimePin={REMOTE_PIN} />);
+
+    expect(await screen.findByText("Agent wants to reach port 8080 on Mac Studio")).toBeTruthy();
+    expect(screen.queryByText("Agent wants to reach port 9999 on Mac Studio")).toBeNull();
+    fireEvent.click(screen.getByText("Allow once"));
+
+    await waitFor(() => {
+      expect(api.navigate).toHaveBeenCalledWith(
+        expect.objectContaining({ url: "http://127.0.0.1:8080/admin" }),
+        REMOTE_PIN,
+      );
+    });
+
+    expect(await screen.findByText("Agent wants to reach port 9999 on Mac Studio")).toBeTruthy();
+    fireEvent.click(screen.getByText("Allow once"));
+
+    await waitFor(() => {
+      expect(api.navigate).toHaveBeenCalledWith(
+        expect.objectContaining({ url: "http://127.0.0.1:9999/" }),
         REMOTE_PIN,
       );
     });

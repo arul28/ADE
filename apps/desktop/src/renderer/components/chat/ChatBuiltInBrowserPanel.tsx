@@ -61,11 +61,19 @@ import { getLinkOpenMode, refreshLinkOpenMode, setLinkOpenMode } from "../../lib
 import { showToast } from "../app/toast/toastStore";
 import { useChatRuntimeScope, useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
 import {
+  consumeMatchingRemoteBrowserOpen,
+  markRemoteBrowserOpenHandled,
+  remoteBrowserOpenMatchesOwner,
+  takeHeldRemoteBrowserOpen,
+  wasRemoteBrowserOpenHandled,
+} from "../../lib/pendingRemoteBrowserOpens";
+import {
   parseLoopbackUrl,
   remoteTunnelApprovalKey,
   type RemoteLoopbackTunnel,
 } from "../../../shared/remoteLoopbackUrl";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
+import type { BuiltInBrowserRemoteRequest } from "../../../shared/types/builtInBrowserRemote";
 import { useAppStore, type WorkProjectViewState } from "../../state/appStore";
 import {
   commitTunnelApproval,
@@ -928,7 +936,7 @@ export function ChatBuiltInBrowserPanel({
     const pin = remotePin;
     if (!api?.onRemoteRequest || !pin) return undefined;
     let cancelled = false;
-    const unsubscribe = api.onRemoteRequest((request) => {
+    const handleRequest = async (request: BuiltInBrowserRemoteRequest): Promise<void> => {
       // One request, one answering panel.
       //
       // The preload fanout now delivers to every panel mounted for this pin, so
@@ -938,91 +946,106 @@ export function ChatBuiltInBrowserPanel({
       // still takes it — the project-level pane is the one that answers a
       // request from outside any lane, and dropping those would make
       // `ade browser open` silently do nothing.
-      if (request.laneId && contextLaneId && request.laneId !== contextLaneId) return;
-      if (request.chatSessionId && sessionId && request.chatSessionId !== sessionId) return;
-      void (async () => {
-        /*
-          The filters above are per-renderer, and the panels that race are not.
+      if (!remoteBrowserOpenMatchesOwner(request, { sessionId, laneId: contextLaneId })) return;
+      if (wasRemoteBrowserOpenHandled(request.requestId)) return;
+      markRemoteBrowserOpenHandled(request.requestId);
+      consumeMatchingRemoteBrowserOpen(pin, request.requestId);
+      /*
+        The filters above are per-renderer, and the panels that race are not.
 
-          Two ADE windows both on Work, both showing the Browser tool for the
-          same pinned machine, both pass the tests above — so both navigated and
-          both acked, and the URL opened twice. The windows share exactly one
-          thing, the main process, so that is where the tie is broken: the first
-          panel to claim a requestId acts on it and every other is told no.
+        Two ADE windows both on Work, both showing the Browser tool for the
+        same pinned machine, both pass the tests above — so both navigated and
+        both acked, and the URL opened twice. The windows share exactly one
+        thing, the main process, so that is where the tie is broken: the first
+        panel to claim a requestId acts on it and every other is told no.
 
-          Feature-detected, and a refusal to answer is read as a yes: an older
-          main process with no claim route must keep working, and so must a
-          daemon whose request carries no id to arbitrate on.
-        */
-        const claimRemoteRequest = api.claimRemoteRequest;
-        if (claimRemoteRequest) {
-          const claimed = await claimRemoteRequest({ requestId: request.requestId })
-            .then((result) => result?.claimed !== false)
-            .catch(() => true);
-          if (!claimed) return;
-        }
-        let accepted = false;
-        let reason: string | null = null;
-        const acknowledge = async (payload: {
-          accepted: boolean;
-          awaitingApproval?: boolean;
-          reason: string | null;
-        }) => {
-          await api.acknowledgeRemoteRequest?.(
-            { requestId: request.requestId, desktopLabel: THIS_MACHINE_NAME, ...payload },
-            pin,
-          ).catch(() => {});
-        };
-        /*
-          The requester gives up after 5 seconds, and nobody answers an approval
-          bar in 5 seconds. So the moment a bar goes up the desktop says "I took
-          this, a person is deciding" — the CLI prints that and exits 0 — and
-          the page loads whenever the person gets to it. The real outcome is
-          still acked afterwards: by then it usually lands on a requestId nobody
-          is waiting on, which the daemon drops, but when the human WAS fast it
-          is the answer the CLI gets.
-        */
-        let awaitingAcked = false;
-        try {
-          const prepared = await prepareRemoteNavigation(request.url, {
-            human: false,
-            onAsk: () => {
-              awaitingAcked = true;
-              void acknowledge({ accepted: true, awaitingApproval: true, reason: null });
-            },
-          });
-          if (cancelled) return;
-          if (!prepared.ok) {
-            reason = prepared.reason;
-          } else {
-            await api.navigate(
-              withBrowserScope({
-                url: request.url,
-                ...(request.openPanel ? { openPanel: true } : {}),
-                ...(request.laneId ? { laneId: request.laneId } : {}),
-                ...(request.chatSessionId ? { chatSessionId: request.chatSessionId } : {}),
-              }),
-              pin,
-            );
-            // Before the refresh, not after: the refresh applies a status the
-            // omnibox is rendered from, and it has to already know this tab is
-            // showing the pinned machine.
-            if (prepared.tunnel) {
-              rememberTabTunnel(statusRef.current?.activeTabId ?? null, prepared.tunnel);
-            }
-            await refreshStatus();
-            accepted = true;
-          }
-        } catch (error) {
-          reason = errorMessage(error);
-        }
+        Feature-detected, and a refusal to answer is read as a yes: an older
+        main process with no claim route must keep working, and so must a
+        daemon whose request carries no id to arbitrate on.
+      */
+      const claimRemoteRequest = api.claimRemoteRequest;
+      if (claimRemoteRequest) {
+        const claimed = await claimRemoteRequest({ requestId: request.requestId })
+          .then((result) => result?.claimed !== false)
+          .catch(() => true);
+        if (!claimed) return;
+      }
+      let accepted = false;
+      let reason: string | null = null;
+      const acknowledge = async (payload: {
+        accepted: boolean;
+        awaitingApproval?: boolean;
+        reason: string | null;
+      }) => {
+        await api.acknowledgeRemoteRequest?.(
+          { requestId: request.requestId, desktopLabel: THIS_MACHINE_NAME, ...payload },
+          pin,
+        ).catch(() => {});
+      };
+      /*
+        The requester gives up after 5 seconds, and nobody answers an approval
+        bar in 5 seconds. So the moment a bar goes up the desktop says "I took
+        this, a person is deciding" — the CLI prints that and exits 0 — and
+        the page loads whenever the person gets to it. The real outcome is
+        still acked afterwards: by then it usually lands on a requestId nobody
+        is waiting on, which the daemon drops, but when the human WAS fast it
+        is the answer the CLI gets.
+      */
+      let awaitingAcked = false;
+      try {
+        const prepared = await prepareRemoteNavigation(request.url, {
+          human: false,
+          onAsk: () => {
+            awaitingAcked = true;
+            void acknowledge({ accepted: true, awaitingApproval: true, reason: null });
+          },
+        });
         if (cancelled) return;
-        if (!accepted && reason) setMessage({ tone: "error", text: reason });
-        // Nothing new to say when the request needed no prompt and succeeded —
-        // that is exactly what the pre-ack already claimed.
-        if (!awaitingAcked || !accepted) await acknowledge({ accepted, reason });
-      })();
+        if (!prepared.ok) {
+          reason = prepared.reason;
+        } else {
+          await api.navigate(
+            withBrowserScope({
+              url: request.url,
+              ...(request.openPanel ? { openPanel: true } : {}),
+              ...(request.laneId ? { laneId: request.laneId } : {}),
+              ...(request.chatSessionId ? { chatSessionId: request.chatSessionId } : {}),
+            }),
+            pin,
+          );
+          // Before the refresh, not after: the refresh applies a status the
+          // omnibox is rendered from, and it has to already know this tab is
+          // showing the pinned machine.
+          if (prepared.tunnel) {
+            rememberTabTunnel(statusRef.current?.activeTabId ?? null, prepared.tunnel);
+          }
+          await refreshStatus();
+          accepted = true;
+        }
+      } catch (error) {
+        reason = errorMessage(error);
+      }
+      if (cancelled) return;
+      if (!accepted && reason) setMessage({ tone: "error", text: reason });
+      // Nothing new to say when the request needed no prompt and succeeded —
+      // that is exactly what the pre-ack already claimed.
+      if (!awaitingAcked || !accepted) await acknowledge({ accepted, reason });
+    };
+    const unsubscribe = api.onRemoteRequest((request) => {
+      void handleRequest(request);
     }, pin);
+    // Work holds the triggering request when this pane is unmounted (Git
+    // showing, pane closed). Drain serially — two overlapping grants would
+    // auto-deny the first bar. The runtime stream does not replay.
+    const heldOwner = { sessionId, laneId: contextLaneId };
+    void (async () => {
+      for (;;) {
+        if (cancelled) return;
+        const held = takeHeldRemoteBrowserOpen(pin, heldOwner);
+        if (!held) break;
+        await handleRequest(held);
+      }
+    })();
     return () => {
       cancelled = true;
       unsubscribe();

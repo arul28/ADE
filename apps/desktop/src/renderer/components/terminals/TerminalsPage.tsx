@@ -15,6 +15,7 @@ import {
   subscribeWorkToolRequests,
   takePendingWorkToolRequest,
 } from "./workToolRequests";
+import { holdRemoteBrowserOpen } from "../../lib/pendingRemoteBrowserOpens";
 import { subscribeFilesOpenInTools } from "../files/v2/filesOpenRequests";
 import {
   SessionContextMenu,
@@ -977,6 +978,14 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     () => effectiveRuntimeBinding(activeWorkSessionRuntimePin, projectBinding)?.rootPath ?? projectRoot,
     [activeWorkSessionRuntimePin, projectBinding, projectRoot],
   );
+  // `pinForSession` is null on the tab's own runtime. Preload's remote-open
+  // subscription is a no-op for a non-remote pin, so a Studio-bound tab would
+  // never hear `ade browser open` while Git is showing. Use the same fallback
+  // the Browser panel uses for tunnels.
+  const browserRemoteBinding = useMemo(() => {
+    const effective = effectiveRuntimeBinding(activeWorkSessionRuntimePin, projectBinding);
+    return effective?.kind === "remote" ? effective : null;
+  }, [activeWorkSessionRuntimePin, projectBinding]);
 
   useEffect(() => {
     if (!activeWorkSession) return;
@@ -1083,16 +1092,22 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       }
     }, activeWorkSessionRuntimePin) ?? null;
     // `ade browser open` on a headless/remote machine has no WebContentsView;
-    // the daemon forwards it here. Subscribe with the session pin, not the tab.
+    // the daemon forwards it here. Subscribe with the session's effective
+    // remote machine — a null pin on a remote tab is still that tab's runtime.
     const unsubscribeRemoteRequests = window.ade?.builtInBrowser?.onRemoteRequest?.((request) => {
-      if (request.openPanel) openBrowserSidebar();
-    }, activeWorkSessionRuntimePin) ?? null;
+      if (!request.openPanel) return;
+      // The pane that navigates and acks is unmounted while Git (or another
+      // tool) is showing, and the runtime event is not replayed. Hold the
+      // request so the Browser panel can drain it on mount.
+      holdRemoteBrowserOpen(browserRemoteBinding, request);
+      openBrowserSidebar();
+    }, browserRemoteBinding) ?? null;
     return () => {
       window.removeEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, openBrowserSidebar);
       unsubscribeBrowserEvents?.();
       unsubscribeRemoteRequests?.();
     };
-  }, [active, activeWorkSessionRuntimePin, browserCheckoutRoot, setWorkSidebarTool]);
+  }, [active, activeWorkSessionRuntimePin, browserCheckoutRoot, browserRemoteBinding, setWorkSidebarTool]);
 
   // "Open this tool" asked for from outside the Work page — the app shell's
   // browser open-request handler, the command palette. Only this page knows the

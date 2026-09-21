@@ -17,6 +17,11 @@ import {
   rememberWorkPtyLaunchPin,
   workPtyLaunchPinFor,
 } from "./cliLaunch";
+import {
+  resetRemoteBrowserOpensForTests,
+  takeHeldRemoteBrowserOpen,
+} from "../../lib/pendingRemoteBrowserOpens";
+import type { BuiltInBrowserRemoteRequest } from "../../../shared/types/builtInBrowserRemote";
 
 const crossMachineMocks = vi.hoisted(() => ({
   cancelOptimistic: vi.fn(),
@@ -559,6 +564,7 @@ describe("TerminalsPage chat session activation", () => {
     forgetWorkPtyLaunchPin({ sessionId: "shell-foreign", ptyId: "pty-shell-foreign" });
     forgetWorkPtyLaunchPin({ sessionId: "shell-now-active", ptyId: "pty-shell-now-active" });
     forgetWorkPtyLaunchPin({ sessionId: "chat-foreign" });
+    resetRemoteBrowserOpensForTests();
     vi.clearAllMocks();
   });
 
@@ -1247,16 +1253,21 @@ describe("TerminalsPage chat session activation", () => {
       activeItemId: foreignSession.id,
       closingPtyIds: new Set<string>(),
     };
-    const onEvent = vi.fn(() => vi.fn());
+    const onEvent = vi.fn(
+      (
+        _listener: (event: { type?: string }) => void,
+        _pin?: OpenProjectBinding | null,
+      ) => vi.fn(),
+    );
     const remoteRequestListener: {
-      current: ((request: { openPanel?: boolean }) => void) | null;
+      current: ((request: BuiltInBrowserRemoteRequest) => void) | null;
     } = { current: null };
     Object.defineProperty(window, "ade", {
       configurable: true,
       value: {
         builtInBrowser: {
           onEvent,
-          onRemoteRequest: vi.fn((listener: (request: { openPanel?: boolean }) => void) => {
+          onRemoteRequest: vi.fn((listener: (request: BuiltInBrowserRemoteRequest) => void) => {
             remoteRequestListener.current = listener;
             return vi.fn();
           }),
@@ -1269,12 +1280,95 @@ describe("TerminalsPage chat session activation", () => {
     await waitFor(() => expect(onEvent).toHaveBeenCalled());
     expect(onEvent.mock.calls[0]?.[1]).toEqual(studioBinding);
     await waitFor(() => expect(remoteRequestListener.current).not.toBeNull());
-    remoteRequestListener.current?.({ openPanel: true });
+    const forwardedOpen: BuiltInBrowserRemoteRequest = {
+      requestId: "bbr-studio-open",
+      url: "http://127.0.0.1:3000/app",
+      laneId: "lane-studio",
+      chatSessionId: foreignSession.id,
+      openPanel: true,
+      requestedAt: "2026-09-21T00:00:00.000Z",
+    };
+    remoteRequestListener.current?.(forwardedOpen);
     expect(workMocks.fns.setLaneWorkViewState).toHaveBeenCalledWith(
       "/laptop/repo-a",
       "lane-studio",
       { workSidebarTool: "browser", workSidebarOpenTools: ["browser"] },
     );
+    expect(
+      takeHeldRemoteBrowserOpen(studioBinding, {
+        sessionId: foreignSession.id,
+        laneId: "lane-studio",
+      }),
+    ).toEqual(forwardedOpen);
+  });
+
+  it("holds a forwarded open for an unpinned chat on a remote-bound tab", async () => {
+    const studioBinding: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:target-studio:project-a",
+      targetId: "target-studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-a",
+      rootPath: "/remote/repo-a",
+      displayName: "repo-a",
+    };
+    const boundSession = workMocks.makeTerminalSession("chat-bound", "lane-primary", "codex-chat");
+    workMocks.projectRoot = "/remote/repo-a";
+    workMocks.projectBinding = studioBinding;
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      sessions: [boundSession],
+      sessionsById: new Map([[boundSession.id, boundSession]]),
+      visibleSessions: [boundSession],
+      activeItemId: boundSession.id,
+      closingPtyIds: new Set<string>(),
+    };
+    const remoteRequestListener: {
+      current: ((request: BuiltInBrowserRemoteRequest) => void) | null;
+    } = { current: null };
+    const onRemoteRequest = vi.fn(
+      (
+        listener: (request: BuiltInBrowserRemoteRequest) => void,
+        _pin?: OpenProjectBinding | null,
+      ) => {
+        remoteRequestListener.current = listener;
+        return vi.fn();
+      },
+    );
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: {
+        builtInBrowser: {
+          onEvent: vi.fn(() => vi.fn()),
+          onRemoteRequest,
+        },
+      },
+    });
+
+    render(<TerminalsPage />);
+
+    await waitFor(() => expect(onRemoteRequest).toHaveBeenCalled());
+    expect(onRemoteRequest.mock.calls[0]?.[1]).toEqual(studioBinding);
+    const forwardedOpen: BuiltInBrowserRemoteRequest = {
+      requestId: "bbr-bound-open",
+      url: "http://127.0.0.1:5173/",
+      laneId: "lane-primary",
+      chatSessionId: boundSession.id,
+      openPanel: true,
+      requestedAt: "2026-09-21T00:00:00.000Z",
+    };
+    remoteRequestListener.current?.(forwardedOpen);
+    expect(workMocks.fns.setLaneWorkViewState).toHaveBeenCalledWith(
+      "remote:target-studio:project-a",
+      "lane-primary",
+      { workSidebarTool: "browser", workSidebarOpenTools: ["browser"] },
+    );
+    expect(
+      takeHeldRemoteBrowserOpen(studioBinding, {
+        sessionId: boundSession.id,
+        laneId: "lane-primary",
+      }),
+    ).toEqual(forwardedOpen);
   });
 
   it("opens and closes the Work Terminal sidebar from the Work surface", async () => {

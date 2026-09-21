@@ -660,11 +660,13 @@ relay payload E2E encryption is planned security work. See the trust boundary in
     running only `ade serve` has no browser at all, so `ade browser open <url>`
     there emits a `built_in_browser_remote_request` runtime event and returns
     `{ status: "forwarded_to_desktop", requestId }` instead of failing at the
-    desktop bridge socket. A desktop holding a remote pin for that lane takes
+    desktop bridge socket.     A desktop holding a remote pin for that lane takes
     the request, runs it through the same approval + forward path, and answers
     with the `built_in_browser.acknowledgeRemoteRequest` runtime action so the
     CLI can print "Opened on <desktop> via tunnel" — or, after a bounded 5s
-    wait, "no desktop is attached to this machine".
+    wait, "no desktop is attached to this machine". If Browser is not the
+    visible Work tool, Work holds that request, switches the pane, and the
+    Browser panel drains the hold on mount — the event is not replayed.
 
     **One request, one answering panel.** The daemon publishes the request to
     every desktop panel pinned to that machine. A request naming a lane or a
