@@ -5,6 +5,9 @@ import type {
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
 } from "react";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { OpenProjectBinding } from "../../../shared/types";
@@ -561,5 +564,85 @@ describe("macDesktopDriverPayload", () => {
       .toEqual({ at: { x: 3, y: 4 }, button: "left", count: 1 });
     expect(macDesktopDriverPayload(macDesktopWheelCall(context, { point: { x: 5, y: 6 }, deltaX: 0, deltaY: 120 })))
       .toMatchObject({ x: 5, y: 6, direction: "down" });
+  });
+});
+
+describe("the driver's real-input contract", () => {
+  // The test that was missing. Every regression today was the same shape: the
+  // renderer emitted a command the driver had no arm for, the host answered
+  // 409, and nothing said so on screen. `scroll` was refused for the life of
+  // the feature this way — it existed only on the accessibility path, which
+  // needs an element to scroll, and a person turning a wheel names no element.
+  // So this reads the driver's own source and compares the two sets.
+  const DRIVER_SOURCE_SUFFIX = "native/ADEDesktopDriver/Sources/ADEDesktopDriver/InputCommands.swift";
+  // Walked up from the working directory rather than resolved from
+  // `import.meta.url`: this module is transformed by Vite, whose module URLs
+  // are root-relative, so the usual trick lands outside the repository.
+  const readDriverSource = (): string => {
+    let dir = process.cwd();
+    for (let up = 0; up < 6; up += 1) {
+      const candidate = join(dir, DRIVER_SOURCE_SUFFIX);
+      if (existsSync(candidate)) return readFileSync(candidate, "utf8");
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+    throw new Error(`Could not find ${DRIVER_SOURCE_SUFFIX} from ${process.cwd()}`);
+  };
+  const driverSource = readDriverSource();
+
+  /** The `case "…"` arms of the switch that ends in the real-input refusal. */
+  const realInputCommands = (): Set<string> => {
+    const refusal = driverSource.indexOf("is not a real-input command this driver knows");
+    expect(refusal).toBeGreaterThan(-1);
+    const body = driverSource.slice(0, refusal);
+    const start = body.lastIndexOf("switch command {");
+    expect(start).toBeGreaterThan(-1);
+    return new Set(
+      [...body.slice(start).matchAll(/^\s*case\s+"([a-z]+)":/gm)].map((match) => match[1]),
+    );
+  };
+
+  it("handles every command a takeover can send", () => {
+    const sent: Array<MacDesktopInputCall["kind"]> = ["move", "click", "drag", "scroll", "type", "press"];
+    const handled = realInputCommands();
+    expect([...sent].filter((kind) => !handled.has(kind))).toEqual([]);
+  });
+
+  it("reads every payload key the renderer writes", () => {
+    // A command the driver knows can still ignore the payload it is given:
+    // that is how `click` arrived as flat `x`/`y` and did nothing.
+    const context = { laneId: "l", chatSessionId: null, controllerId: "ade-window:x" };
+    const payloads: Record<string, Record<string, unknown>> = {
+      move: macDesktopDriverPayload(macDesktopMoveCall(context, { x: 1, y: 2 })),
+      click: macDesktopDriverPayload(
+        macDesktopPointerUpCall(context, { from: null, to: { x: 1, y: 2 }, button: 0, detail: 1 }),
+      ),
+      drag: macDesktopDriverPayload(
+        macDesktopPointerUpCall(context, { from: { x: 0, y: 0 }, to: { x: 99, y: 99 }, button: 0, detail: 1 }),
+      ),
+      scroll: macDesktopDriverPayload(
+        macDesktopWheelCall(context, { point: { x: 1, y: 2 }, deltaX: 0, deltaY: 60 }),
+      ),
+      press: macDesktopDriverPayload(
+        macDesktopKeyCall(context, { key: "Enter", metaKey: false, shiftKey: false, altKey: false, ctrlKey: false })!,
+      ),
+      type: macDesktopDriverPayload(
+        macDesktopKeyCall(context, { key: "a", metaKey: false, shiftKey: false, altKey: false, ctrlKey: false })!,
+      ),
+    };
+    // `x`/`y` are read by the driver's `point(_:)` fallback rather than by
+    // name, so a payload that carries them is asking for that fallback.
+    const readByPointHelper = new Set(["x", "y"]);
+    const missing: string[] = [];
+    for (const [command, payload] of Object.entries(payloads)) {
+      for (const key of Object.keys(payload)) {
+        if (readByPointHelper.has(key)) continue;
+        if (!driverSource.includes(`payload["${key}"]`) && !driverSource.includes(`point("${key}")`)) {
+          missing.push(`${command}.${key}`);
+        }
+      }
+    }
+    expect(missing).toEqual([]);
   });
 });

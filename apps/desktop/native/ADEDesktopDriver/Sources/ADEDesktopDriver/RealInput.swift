@@ -34,13 +34,31 @@ final class RealInput {
         self.hidSource = source
     }
 
-    /// Where an event goes. To a process when the lane knows which of its
-    /// windows is under the point: `postToPid` delivers at the coordinate and
-    /// leaves the one system cursor alone, which is what makes a local takeover
-    /// usable — the HID tap moves the user's own mouse onto the virtual display
-    /// on every click and the restore warp below only softens that. Empty
-    /// desktop has no process, so that case still takes the tap.
-    private func post(_ event: CGEvent, to pid: pid_t?) {
+    /// Where a MOUSE event goes: the HID tap, always.
+    ///
+    /// This file briefly posted mouse events to the pid under the point, to
+    /// spare the user's own cursor the trip to the virtual display. It does
+    /// spare it, and it also makes every click do nothing. A `CGEvent` built
+    /// from `mouseCursorPosition` carries window number 0, and the window
+    /// number is what AppKit resolves a mouse event's target window from. The
+    /// HID tap goes through the window server, which hit-tests the point and
+    /// fills that number in; `postToPid` hands the app the raw event, AppKit
+    /// resolves window 0 to no window, and drops it. Keyboard events have no
+    /// such field — they go to whatever is key — which is why typing kept
+    /// working while clicking and dragging silently stopped.
+    ///
+    /// The cursor is put back by {@link posting} instead. That is the trade
+    /// this feature actually has: a click that works and a pointer that is
+    /// warped back within the same turn of the main queue.
+    private func postMouse(_ event: CGEvent) {
+        event.post(tap: .cghidEventTap)
+    }
+
+    /// Where a KEY event goes: to the lane's frontmost process when it has
+    /// one. Safe here for the reason above — a keyboard event names no window,
+    /// so delivering it straight to the app is exactly right, and it keeps the
+    /// keystroke off whatever is frontmost on the user's own screen.
+    private func postKey(_ event: CGEvent, to pid: pid_t?) {
         if let pid {
             event.postToPid(pid)
         } else {
@@ -63,11 +81,10 @@ final class RealInput {
         laneId: String,
         holderId: String?,
         to point: CGPoint,
-        restoreCursor: Bool = false,
-        targetPid: pid_t? = nil
+        restoreCursor: Bool = false
     ) throws {
         try authorize(laneId: laneId, holderId: holderId)
-        try posting(restore: restoreCursor && targetPid == nil) {
+        try posting(restore: restoreCursor) {
             guard let event = CGEvent(
                 mouseEventSource: hidSource,
                 mouseType: .mouseMoved,
@@ -76,7 +93,7 @@ final class RealInput {
             ) else {
                 throw DriverError(code: DriverErrorCode.internalError, message: "Could not build a pointer event.")
             }
-            post(event, to: targetPid)
+            postMouse(event)
         }
     }
 
@@ -86,11 +103,10 @@ final class RealInput {
         at point: CGPoint,
         button: String,
         count: Int,
-        restoreCursor: Bool = false,
-        targetPid: pid_t? = nil
+        restoreCursor: Bool = false
     ) throws {
         try authorize(laneId: laneId, holderId: holderId)
-        try posting(restore: restoreCursor && targetPid == nil) {
+        try posting(restore: restoreCursor) {
             let isRight = button.lowercased() == "right"
             let downType: CGEventType = isRight ? .rightMouseDown : .leftMouseDown
             let upType: CGEventType = isRight ? .rightMouseUp : .leftMouseUp
@@ -112,8 +128,8 @@ final class RealInput {
                 }
                 down.setIntegerValueField(.mouseEventClickState, value: Int64(click))
                 up.setIntegerValueField(.mouseEventClickState, value: Int64(click))
-                post(down, to: targetPid)
-                post(up, to: targetPid)
+                postMouse(down)
+                postMouse(up)
             }
         }
     }
@@ -143,7 +159,6 @@ final class RealInput {
         to: CGPoint,
         durationMs: Int,
         restoreCursor: Bool = false,
-        targetPid: pid_t? = nil,
         verify: (CGPoint) -> DriverError? = { _ in nil }
     ) throws {
         try authorize(laneId: laneId, holderId: holderId)
@@ -151,7 +166,7 @@ final class RealInput {
         // on this lane's display" mistake never starts a gesture at all.
         if let error = verify(from) { throw error }
         if let error = verify(to) { throw error }
-        try posting(restore: restoreCursor && targetPid == nil) {
+        try posting(restore: restoreCursor) {
             let steps = max(2, min(60, durationMs / 16))
             guard let down = CGEvent(
                 mouseEventSource: hidSource,
@@ -161,7 +176,7 @@ final class RealInput {
             ) else {
                 throw DriverError(code: DriverErrorCode.internalError, message: "Could not build a drag event.")
             }
-            post(down, to: targetPid)
+            postMouse(down)
             var reached = from
             for step in 1...steps {
                 let progress = CGFloat(step) / CGFloat(steps)
@@ -172,12 +187,12 @@ final class RealInput {
                 do {
                     try authorize(laneId: laneId, holderId: holderId)
                 } catch {
-                    releaseButton(at: reached, to: targetPid)
+                    releaseButton(at: reached)
                     log("drag on lane \(laneId) lost its lease mid-gesture; released the button")
                     throw error
                 }
                 if let error = verify(point) {
-                    releaseButton(at: reached, to: targetPid)
+                    releaseButton(at: reached)
                     log("drag on lane \(laneId) left its display mid-gesture; released the button")
                     throw error
                 }
@@ -187,7 +202,7 @@ final class RealInput {
                     mouseCursorPosition: point,
                     mouseButton: .left
                 ) {
-                    post(moved, to: targetPid)
+                    postMouse(moved)
                     reached = point
                 }
                 // Pumped rather than slept: a 5-second drag on one lane must not
@@ -198,19 +213,80 @@ final class RealInput {
                     timeout: Double(max(1, durationMs)) / 1000.0 / Double(steps)
                 )
             }
-            releaseButton(at: to, to: targetPid)
+            releaseButton(at: to)
         }
     }
 
     /// The button must come up even when the drag is being abandoned.
-    private func releaseButton(at point: CGPoint, to pid: pid_t?) {
+    private func releaseButton(at point: CGPoint) {
         guard let up = CGEvent(
             mouseEventSource: hidSource,
             mouseType: .leftMouseUp,
             mouseCursorPosition: point,
             mouseButton: .left
         ) else { return }
-        post(up, to: pid)
+        postMouse(up)
+    }
+
+    /// A scroll wheel at a point.
+    ///
+    /// The one real-input command this driver was missing. `scroll` existed
+    /// only on the accessibility path, which walks the AX tree and scrolls an
+    /// element; a person turning a wheel over the live view is not naming an
+    /// element, so their every wheel turn was refused outright. Posted as a
+    /// line-unit wheel event through the same tap a click takes, so it lands
+    /// on whatever is under the point, exactly like a real wheel.
+    ///
+    /// `amount` is in lines and `direction` names the way the CONTENT moves,
+    /// matching the accessibility path's vocabulary: "down" scrolls a page
+    /// down, which on macOS is a negative wheel delta.
+    func scroll(
+        laneId: String,
+        holderId: String?,
+        at point: CGPoint,
+        direction: String,
+        amount: Int,
+        restoreCursor: Bool = false
+    ) throws {
+        try authorize(laneId: laneId, holderId: holderId)
+        let lines = Int32(max(1, min(50, amount)))
+        let vertical: Int32
+        let horizontal: Int32
+        switch direction.lowercased() {
+        case "up": (vertical, horizontal) = (lines, 0)
+        case "down": (vertical, horizontal) = (-lines, 0)
+        case "left": (vertical, horizontal) = (0, lines)
+        case "right": (vertical, horizontal) = (0, -lines)
+        default:
+            throw DriverError(
+                code: DriverErrorCode.invalidArgument,
+                message: "\"\(direction)\" is not a scroll direction; use up, down, left or right."
+            )
+        }
+        try posting(restore: restoreCursor) {
+            // The wheel event carries no position of its own: it goes where the
+            // pointer is. So the pointer is moved to the point first, and
+            // `posting` puts the user's own cursor back afterwards.
+            if let moved = CGEvent(
+                mouseEventSource: hidSource,
+                mouseType: .mouseMoved,
+                mouseCursorPosition: point,
+                mouseButton: .left
+            ) {
+                postMouse(moved)
+            }
+            guard let wheel = CGEvent(
+                scrollWheelEvent2Source: hidSource,
+                units: .line,
+                wheelCount: 2,
+                wheel1: vertical,
+                wheel2: horizontal,
+                wheel3: 0
+            ) else {
+                throw DriverError(code: DriverErrorCode.internalError, message: "Could not build a scroll event.")
+            }
+            postMouse(wheel)
+        }
     }
 
     /// A key press, posted to the session rather than to a process.
@@ -250,8 +326,8 @@ final class RealInput {
         // To the lane's frontmost window's process when it has one: the HID
         // tap would hand the keystroke to whatever is frontmost on the user's
         // own screen, mid-sentence.
-        post(down, to: targetPid)
-        post(up, to: targetPid)
+        postKey(down, to: targetPid)
+        postKey(up, to: targetPid)
     }
 
     /// Text, posted to the session for the same reason `key` is: it goes to
@@ -265,8 +341,8 @@ final class RealInput {
             else { continue }
             down.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
             up.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
-            post(down, to: targetPid)
-            post(up, to: targetPid)
+            postKey(down, to: targetPid)
+            postKey(up, to: targetPid)
         }
     }
 

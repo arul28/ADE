@@ -233,8 +233,7 @@ extension DriverRuntime {
                 laneId: laneId,
                 holderId: holderId,
                 to: target,
-                restoreCursor: restoreCursor,
-                targetPid: WindowHitTest.pid(at: target, in: hitCandidates)
+                restoreCursor: restoreCursor
             )
         case "click":
             let target = try point("at")
@@ -244,8 +243,7 @@ extension DriverRuntime {
                 at: target,
                 button: payload["button"]?.stringValue ?? "left",
                 count: payload["count"]?.intValue ?? 1,
-                restoreCursor: restoreCursor,
-                targetPid: WindowHitTest.pid(at: target, in: hitCandidates)
+                restoreCursor: restoreCursor
             )
         case "drag":
             let from = try point("from")
@@ -266,8 +264,17 @@ extension DriverRuntime {
                 to: to,
                 durationMs: payload["durationMs"]?.intValue ?? 300,
                 restoreCursor: restoreCursor,
-                targetPid: WindowHitTest.pid(at: from, in: hitCandidates),
                 verify: laneBoundsCheck(laneId: laneId)
+            )
+        case "scroll":
+            let target = try point("at")
+            try realInput.scroll(
+                laneId: laneId,
+                holderId: holderId,
+                at: target,
+                direction: payload["direction"]?.stringValue ?? "down",
+                amount: payload["amount"]?.intValue ?? 3,
+                restoreCursor: restoreCursor
             )
         case "press":
             try realInput.key(
