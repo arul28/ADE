@@ -1,4 +1,10 @@
 @import "tailwindcss";
+/* Tailwind v4 ignores `tailwind.config.cjs` unless the CSS asks for it. Without
+   this line every token utility in that config — `bg-surface`, `text-fg`,
+   `border-border`, `bg-surface-overlay` … — compiled to NOTHING, so panels had
+   no background, text inherited its colour and dialogs were see-through. Class
+   names in tests still passed, because jsdom computes no styles. */
+@config "../../tailwind.config.cjs";
 
 [data-theme="dark"] .editor-target-logo--invert-in-dark {
   filter: invert(1);
@@ -2429,6 +2435,41 @@ button:active, [role="button"]:active {
   .ade-tool-card:not(:disabled):active {
     transform: none;
   }
+}
+
+/* The same card, made SOLID and still — the Apple Development drawer's four
+   group cards (round 4 §B2).
+
+   They are the picker's cards by geometry, radius and hairline, because that is
+   the card language the tools grid established and the drawer had none of. Two
+   differences, both deliberate:
+
+   - Opaque. The picker's 82% fill is a card floating on its own mesh; these sit
+     over a LIVE simulator, and rule zero for this feature is that nothing in it
+     may be see-through. `var(--color-card)` flat, in both themes.
+   - Still. A 2px lift belongs to a card you are choosing between six of. These
+     are section headers you open and read under, and a whole column that rose
+     under the cursor would be six inches of drawer moving for no decision.
+
+   The open card takes the accent hairline — the one place accent appears on the
+   card itself, so the column says which group you are in without a fill. */
+.ade-tool-card-solid,
+[data-theme="light"] .ade-tool-card-solid {
+  background: var(--color-card);
+}
+
+.ade-tool-card-solid:not(:disabled):hover,
+.ade-tool-card-solid:not(:disabled)[data-highlighted="true"],
+.ade-tool-card-solid:not(:disabled):active {
+  transform: none;
+  box-shadow: none;
+  background: var(--color-card);
+  border-color: color-mix(in srgb, var(--color-border) 90%, transparent);
+}
+
+.ade-tool-card-solid[data-open="true"],
+.ade-tool-card-solid[data-open="true"]:not(:disabled):hover {
+  border-color: color-mix(in srgb, var(--color-accent) 40%, transparent);
 }
 
 /* The tools pane's own hairline — the header's bottom edge, at 60% of the
