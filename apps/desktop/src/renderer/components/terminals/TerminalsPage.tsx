@@ -81,6 +81,7 @@ import {
 } from "./workSidebarSplitter";
 import { useWorkLaneDeleteProgress } from "./useWorkLaneDeleteProgress";
 import { useRetainedCrossMachineSlices } from "./useWorkMachineRouter";
+import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
 import { buildPtyContinuationLaunchFields } from "./cliLaunch";
 import { canonicalInputFromSummary, sessionNeedsYou } from "../../lib/terminalAttention";
 import {
@@ -972,6 +973,10 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     () => (activeWorkSession ? resolveSessionRuntimePin(activeWorkSession) : null),
     [activeWorkSession, resolveSessionRuntimePin],
   );
+  const browserCheckoutRoot = useMemo(
+    () => effectiveRuntimeBinding(activeWorkSessionRuntimePin, projectBinding)?.rootPath ?? projectRoot,
+    [activeWorkSessionRuntimePin, projectBinding, projectRoot],
+  );
 
   useEffect(() => {
     if (!activeWorkSession) return;
@@ -1069,14 +1074,25 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       setWorkSidebarTool("browser");
     };
     window.addEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, openBrowserSidebar);
+    // Local IPC stream for this desktop's browser. The pin is accepted for
+    // API symmetry; preload still fans out the local event bus. Match the
+    // session checkout so a Studio pin is not filtered against the MacBook tab.
     const unsubscribeBrowserEvents = window.ade?.builtInBrowser?.onEvent?.((event) => {
-      if (event.type === "open-request" && browserEventMatchesProject(event, projectRoot)) openBrowserSidebar();
-    }) ?? null;
+      if (event.type === "open-request" && browserEventMatchesProject(event, browserCheckoutRoot)) {
+        openBrowserSidebar();
+      }
+    }, activeWorkSessionRuntimePin) ?? null;
+    // `ade browser open` on a headless/remote machine has no WebContentsView;
+    // the daemon forwards it here. Subscribe with the session pin, not the tab.
+    const unsubscribeRemoteRequests = window.ade?.builtInBrowser?.onRemoteRequest?.((request) => {
+      if (request.openPanel) openBrowserSidebar();
+    }, activeWorkSessionRuntimePin) ?? null;
     return () => {
       window.removeEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, openBrowserSidebar);
       unsubscribeBrowserEvents?.();
+      unsubscribeRemoteRequests?.();
     };
-  }, [active, projectRoot, setWorkSidebarTool]);
+  }, [active, activeWorkSessionRuntimePin, browserCheckoutRoot, setWorkSidebarTool]);
 
   // "Open this tool" asked for from outside the Work page — the app shell's
   // browser open-request handler, the command palette. Only this page knows the

@@ -127,31 +127,25 @@ export function resetGitRemoteIdentityCache(): void {
 const originByLocalRoot = new Map<string, string>();
 const originByRemoteKey = new Map<string, string>();
 
-function rememberOrigin(origin: string | null | undefined, write: (value: string) => void): void {
-  const trimmed = typeof origin === "string" ? origin.trim() : "";
-  if (trimmed) write(trimmed);
-}
-
 /**
  * Recents and connection snapshots are the union's origin source. Local tab
  * bindings do not carry `gitOriginUrl`, so Work retain has to look here.
+ * A blank origin is authoritative: it clears a stale mapping for that checkout.
  */
 export function rememberProjectOriginSummaries(
   projects: readonly Pick<RecentProjectSummary, "rootPath" | "kind" | "remote" | "gitOriginUrl">[],
 ): void {
   for (const project of projects) {
-    const origin = project.gitOriginUrl ?? project.remote?.gitOriginUrl ?? null;
+    const origin = (project.gitOriginUrl ?? project.remote?.gitOriginUrl ?? "").trim();
     const remote = project.kind === "remote" ? project.remote : undefined;
     if (remote) {
-      rememberOrigin(origin, (value) => {
-        originByRemoteKey.set(
-          remoteProjectBindingKey(remote.targetId, remote.projectId),
-          value,
-        );
-      });
+      const key = remoteProjectBindingKey(remote.targetId, remote.projectId);
+      if (origin) originByRemoteKey.set(key, origin);
+      else originByRemoteKey.delete(key);
       continue;
     }
-    rememberOrigin(origin, (value) => originByLocalRoot.set(project.rootPath, value));
+    if (origin) originByLocalRoot.set(project.rootPath, origin);
+    else originByLocalRoot.delete(project.rootPath);
   }
 }
 

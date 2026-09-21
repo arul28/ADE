@@ -411,6 +411,7 @@ describe("This computer counterpart resolution", () => {
       key: "local:/repo-a",
       rootPath: "/repo-a",
       displayName: "Repo A",
+      gitOriginUrl: "git@github.com:Acme/ADE.git",
     });
   });
 });

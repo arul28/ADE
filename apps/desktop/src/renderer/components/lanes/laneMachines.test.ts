@@ -359,4 +359,27 @@ describe("project origin memory", () => {
       gitOriginUrl: "git@github.com:acme/ADE.git",
     })).toBe("git@github.com:acme/ADE.git");
   });
+
+  it("forgets a checkout when recents no longer carry an origin", () => {
+    rememberProjectOriginSummaries([
+      {
+        rootPath: "/Users/x/work",
+        kind: "local",
+        gitOriginUrl: "git@github.com:acme/repo-a.git",
+      },
+    ]);
+    rememberProjectOriginSummaries([
+      {
+        rootPath: "/Users/x/work",
+        kind: "local",
+        gitOriginUrl: null,
+      },
+    ]);
+    expect(originUrlForBinding({
+      kind: "local",
+      key: "local:/Users/x/work",
+      rootPath: "/Users/x/work",
+      displayName: "work",
+    })).toBeNull();
+  });
 });

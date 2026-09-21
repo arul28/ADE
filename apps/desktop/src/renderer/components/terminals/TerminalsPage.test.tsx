@@ -1215,6 +1215,68 @@ describe("TerminalsPage chat session activation", () => {
     );
   });
 
+  it("opens Browser from a remote-pinned session's forwarded open request", async () => {
+    const studioBinding: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:target-studio:project-a",
+      targetId: "target-studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-a",
+      rootPath: "/remote/repo-a",
+      displayName: "repo-a",
+    };
+    const foreignSession = workMocks.makeTerminalSession("chat-studio", "lane-studio", "codex-chat");
+    workMocks.projectRoot = "/laptop/repo-a";
+    workMocks.crossMachineLanesByMachineId = {
+      "target-studio": {
+        machineId: "target-studio",
+        machineName: "Mac Studio",
+        targetId: "target-studio",
+        projectId: "project-a",
+        binding: studioBinding,
+        lanes: [{ ...workMocks.baseWork.lanes[1] as LaneSummary, id: "lane-studio" }],
+        sessions: [foreignSession],
+        online: true,
+      },
+    };
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      sessions: [],
+      sessionsById: new Map([[foreignSession.id, foreignSession]]),
+      visibleSessions: [foreignSession],
+      activeItemId: foreignSession.id,
+      closingPtyIds: new Set<string>(),
+    };
+    const onEvent = vi.fn(() => vi.fn());
+    const remoteRequestListener: {
+      current: ((request: { openPanel?: boolean }) => void) | null;
+    } = { current: null };
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: {
+        builtInBrowser: {
+          onEvent,
+          onRemoteRequest: vi.fn((listener: (request: { openPanel?: boolean }) => void) => {
+            remoteRequestListener.current = listener;
+            return vi.fn();
+          }),
+        },
+      },
+    });
+
+    render(<TerminalsPage />);
+
+    await waitFor(() => expect(onEvent).toHaveBeenCalled());
+    expect(onEvent.mock.calls[0]?.[1]).toEqual(studioBinding);
+    await waitFor(() => expect(remoteRequestListener.current).not.toBeNull());
+    remoteRequestListener.current?.({ openPanel: true });
+    expect(workMocks.fns.setLaneWorkViewState).toHaveBeenCalledWith(
+      "/laptop/repo-a",
+      "lane-studio",
+      { workSidebarTool: "browser", workSidebarOpenTools: ["browser"] },
+    );
+  });
+
   it("opens and closes the Work Terminal sidebar from the Work surface", async () => {
     workMocks.projectRoot = "/repo-one";
     Object.defineProperty(window, "ade", {
