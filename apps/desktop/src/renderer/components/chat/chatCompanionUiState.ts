@@ -234,8 +234,20 @@ export function setWorkLivePreviewEnabledForChat(
   enabled: boolean,
 ): ChatCompanionUiState | null {
   if (!key) return null;
-  if (enabled) return floatWorkLiveCardForChat(key, tool);
-  return closeWorkLiveCardForChat(key, tool, WORK_LIVE_PREVIEW_DISABLED_KEY);
+  if (!enabled) return closeWorkLiveCardForChat(key, tool, WORK_LIVE_PREVIEW_DISABLED_KEY);
+  // Enable clears the disable marker and nothing more. It must NOT float the
+  // tool: floating suspends the "never the active pane" rule, which drew the
+  // preview on top of the open pane the moment the toggle went on. The card
+  // shows on its own when the pane is minimized.
+  const current = readChatCompanionUiState(key);
+  const closed = { ...current.workLiveCardClosedByTool };
+  // Any close marker, the × on a session or the explicit disable: the toggle
+  // is "show it again", and the reader treats both markers as off.
+  const wasClosed = tool in closed;
+  if (wasClosed) delete closed[tool];
+  const floating = current.workLiveCardFloating.filter((entry) => entry !== tool);
+  if (!wasClosed && floating.length === current.workLiveCardFloating.length) return current;
+  return patchChatCompanionUiState(key, { workLiveCardClosedByTool: closed, workLiveCardFloating: floating });
 }
 
 /**

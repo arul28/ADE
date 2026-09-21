@@ -329,6 +329,33 @@ export type MacDesktopInputSender = (
   call: MacDesktopInputCall,
 ) => Promise<MacDesktopInputResult | null>;
 
+/** What the driver reads for each real-input command. Mirrors `macDesktopInput.ts`. */
+export function macDesktopDriverPayload(call: MacDesktopInputCall): Record<string, unknown> {
+  switch (call.kind) {
+    case "move":
+      return { to: { x: call.args.x, y: call.args.y } };
+    case "click":
+      return {
+        at: { x: call.args.x, y: call.args.y },
+        button: call.args.button ?? "left",
+        count: Math.max(1, Math.min(3, Math.round(call.args.count ?? 1))),
+      };
+    case "drag":
+      return { from: call.args.from, to: call.args.to, durationMs: call.args.durationMs ?? 300 };
+    case "scroll":
+      return {
+        x: call.args.x,
+        y: call.args.y,
+        direction: call.args.direction,
+        amount: Math.max(1, Math.min(50, Math.round(call.args.amount ?? 3))),
+      };
+    case "type":
+      return { text: call.args.text };
+    case "press":
+      return { key: call.args.key, modifiers: call.args.modifiers ?? [] };
+  }
+}
+
 /**
  * The takeover fast path: one local HTTP request per event, straight into the
  * driver, on the loopback port the stream already comes from. Built from the
@@ -347,8 +374,11 @@ export function createMacDesktopFastInputSender(streamUrl: string | null | undef
   target.pathname = "/mac-desktop/input";
   const endpoint = target.toString();
   return async (call) => {
-    const { laneId, controllerId, chatSessionId, mode: _mode, silent: _silent, ...payload } = call.args as
-      Record<string, unknown> & { laneId: string; controllerId?: string | null; chatSessionId?: string | null };
+    const { controllerId, chatSessionId } = call.args;
+    // The driver's own payload shapes, the same translation the service
+    // applies on the RPC path. Forwarding the renderer's flat args (`x`, `y`,
+    // `button`) as-is left `click` and `scroll` unrecognised at the driver.
+    const payload = macDesktopDriverPayload(call);
     const response = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

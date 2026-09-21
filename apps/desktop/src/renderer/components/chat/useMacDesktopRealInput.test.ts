@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { MacDesktopInputResult } from "../../../shared/types/macDesktop";
 import {
+  macDesktopDriverPayload,
   MAC_DESKTOP_DRAG_SLOP_PX,
   MAC_DESKTOP_MOVE_INTERVAL_MS,
   createMacDesktopMovePump,
@@ -544,5 +545,21 @@ describe("useMacDesktopRealInput with the Mac Desktop namespace", () => {
       // on the Studio.
       STUDIO_PIN,
     );
+  });
+});
+
+describe("macDesktopDriverPayload", () => {
+  // The fast path posts straight to the driver, which never saw the
+  // renderer's flat args: forwarding them as-is left click and scroll
+  // unrecognised, and a takeover could move but not click or scroll.
+  const context = { laneId: "lane-1", chatSessionId: "chat-1", controllerId: "ade-window:x" };
+
+  it("shapes move, click and scroll the way the driver reads them", () => {
+    expect(macDesktopDriverPayload(macDesktopMoveCall(context, { x: 10, y: 20 })))
+      .toEqual({ to: { x: 10, y: 20 } });
+    expect(macDesktopDriverPayload(macDesktopPointerUpCall(context, { from: null, to: { x: 3, y: 4 }, button: 0, detail: 1 })))
+      .toEqual({ at: { x: 3, y: 4 }, button: "left", count: 1 });
+    expect(macDesktopDriverPayload(macDesktopWheelCall(context, { point: { x: 5, y: 6 }, deltaX: 0, deltaY: 120 })))
+      .toMatchObject({ x: 5, y: 6, direction: "down" });
   });
 });

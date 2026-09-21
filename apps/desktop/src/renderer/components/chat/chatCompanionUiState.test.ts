@@ -359,7 +359,9 @@ describe("workLiveCard preview toggle", () => {
     expect(next?.workLiveCardClosedByTool.browser).toBeUndefined();
     expect(isWorkLivePreviewEnabled(readChatCompanionUiState("chat-1"), "browser")).toBe(true);
     // The opt-in float is remembered, so the card comes back beside the pane.
-    expect(next?.workLiveCardFloating).toContain("browser");
+    // Enable never floats: floating suspends the "never the active pane" rule
+    // and drew the preview on top of the open pane the moment it went on.
+    expect(next?.workLiveCardFloating).not.toContain("browser");
 
     // Turning it off again writes the marker the reader treats as disabled.
     const off = setWorkLivePreviewEnabledForChat("chat-1", "browser", false);
