@@ -336,6 +336,7 @@ function KimiBody() {
 function DevinBody() {
   const [auth, setAuth] = useState<Awaited<ReturnType<typeof window.ade.ai.devinCloudGetAuthStatus>> | null>(null);
   const [keyInput, setKeyInput] = useState("");
+  const [orgInput, setOrgInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -353,15 +354,21 @@ function DevinBody() {
     setBusy(true);
     setError(null);
     try {
-      const status = await window.ade.ai.devinCloudSetCredentials({ apiKey });
+      const status = await window.ade.ai.devinCloudSetCredentials({
+        apiKey,
+        orgId: orgInput.trim() || null,
+      });
       setAuth(status);
-      if (status.configured) setKeyInput("");
+      if (status.configured) {
+        setKeyInput("");
+        setOrgInput("");
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
-  }, [busy, keyInput]);
+  }, [busy, keyInput, orgInput]);
 
   const clear = useCallback(async () => {
     if (busy) return;
@@ -370,6 +377,7 @@ function DevinBody() {
     try {
       setAuth(await window.ade.ai.devinCloudSetCredentials({ apiKey: "" }));
       setKeyInput("");
+      setOrgInput("");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -404,20 +412,36 @@ function DevinBody() {
           </button>
         </div>
       ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 10, alignItems: "center" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 10, alignItems: "center" }}>
+            <input
+              aria-label="Devin API token"
+              value={keyInput}
+              onChange={(event) => setKeyInput(event.target.value)}
+              placeholder="cog_..."
+              type="password"
+              disabled={busy}
+              onKeyDown={(event) => { if (event.key === "Enter") void save(); }}
+              style={{ width: "100%", background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "8px 10px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textPrimary, outline: "none" }}
+            />
+            <button type="button" style={outlineButton({ height: 28 })} disabled={busy || !keyInput.trim()} onClick={() => void save()}>
+              {busy ? "Saving…" : "Save"}
+            </button>
+          </div>
           <input
-            aria-label="Devin API token"
-            value={keyInput}
-            onChange={(event) => setKeyInput(event.target.value)}
-            placeholder="cog_..."
-            type="password"
+            aria-label="Devin org id (optional)"
+            value={orgInput}
+            onChange={(event) => setOrgInput(event.target.value)}
+            placeholder="org-... (optional — required on non-enterprise accounts)"
             disabled={busy}
             onKeyDown={(event) => { if (event.key === "Enter") void save(); }}
             style={{ width: "100%", background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "8px 10px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textPrimary, outline: "none" }}
           />
-          <button type="button" style={outlineButton({ height: 28 })} disabled={busy || !keyInput.trim()} onClick={() => void save()}>
-            {busy ? "Saving…" : "Save"}
-          </button>
+          <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim, lineHeight: 1.4 }}>
+            Org id is auto-discovered on enterprise accounts; personal/team
+            accounts must paste it — visible in your Devin settings and session
+            URLs (or in the CLI via devin auth status).
+          </div>
         </div>
       )}
       {auth && !auth.configured && auth.error ? (
