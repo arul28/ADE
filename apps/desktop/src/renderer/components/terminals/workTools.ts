@@ -144,8 +144,6 @@ export function workToolLabel(id: WorkSidebarTab): string {
  * platform sniff in the renderer would offer it three tools that answer nothing.
  */
 export type WorkToolContext = {
-  /** The project tab is bound to another machine over SSH. */
-  isRemoteProject: boolean;
   /** This computer can host an iOS simulator. */
   supportsIosSimulator: boolean;
   /** Running as the hosted browser web client, where native namespaces are stubs. */
@@ -174,20 +172,6 @@ export type WorkToolAvailability =
   | { available: false; reason: string };
 
 const AVAILABLE: WorkToolAvailability = { available: true, reason: null };
-
-/**
- * Tools that drive something on *this* computer through a native namespace. A
- * remote project's work happens elsewhere and the web client has no namespace
- * at all, so both get the same honest sentence rather than a hidden card.
- *
- * The browser is deliberately NOT here. It is hosted by this desktop's own main
- * process, and a remote lane drives that same window: loopback URLs on the
- * pinned machine are rewritten onto a port-forward (`localizeRemoteLoopbackUrl`)
- * and `ade browser open` run over there is handed to this desktop as a
- * `built_in_browser_remote_request`. Gating it on the project binding took the
- * one tool the tunnel work exists for away from the lanes that need it.
- */
-const LOCAL_ONLY_TOOL_IDS = new Set<WorkSidebarTab>(["ios", "app-control"]);
 
 /**
  * Tools the web client cannot DRIVE but can WATCH.
@@ -222,9 +206,8 @@ export function workToolAvailability(
   context: WorkToolContext,
 ): WorkToolAvailability {
   if (isReadOnlyWorkTool(id, context)) return AVAILABLE;
-  if (LOCAL_ONLY_TOOL_IDS.has(id)) {
-    if (context.isWebClient) return { available: false, reason: "Desktop app only" };
-    if (context.isRemoteProject) return { available: false, reason: "Runs on this computer only" };
+  if (id === "ios" && context.isWebClient) {
+    return { available: false, reason: "Desktop app only" };
   }
   if (id === "ios" && !context.supportsIosSimulator) {
     return { available: false, reason: "macOS only" };

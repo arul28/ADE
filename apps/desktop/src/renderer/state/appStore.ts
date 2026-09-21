@@ -5,6 +5,7 @@ import type { StateCreator } from "zustand";
 import type { CtoAttentionState, KeybindingsSnapshot, LaneDeleteProgress, LaneListSnapshot, LaneSummary, OpenProjectBinding, PrSummary, ProjectInfo, ProjectPathInspection, ProviderMode, RecentProjectSummary, TerminalSessionSummary } from "../../shared/types";
 import { recentProjectStateKey } from "../../shared/projectIdentity";
 import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
+import { originUrlForBinding } from "../components/lanes/laneMachines";
 import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry";
 import { normalizeHarnessPresetList, type HarnessPreset } from "../../shared/harnessPresets";
 import { parseCodedErrorMessage } from "../lib/codedError";
@@ -2721,12 +2722,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           },
       projectTransitionError: null,
       projectBinding: isWarmTabSwitch && cachedProject
-        ? {
-            kind: "local",
-            key: `local:${cachedProject.rootPath}`,
-            rootPath: cachedProject.rootPath,
-            displayName: cachedProject.displayName,
-          }
+        ? createLocalProjectBinding(cachedProject)
         : null,
       ...(isWarmTabSwitch
         ? {
@@ -3068,12 +3064,14 @@ const rootAppStore = createStore<AppState>()(createAppState);
 const AppStoreContext = createContext<AppStoreApi | null>(null);
 
 function createLocalProjectBinding(project: ProjectInfo): OpenProjectBinding {
-  return {
+  const binding: Extract<OpenProjectBinding, { kind: "local" }> = {
     kind: "local",
     key: `local:${project.rootPath}`,
     rootPath: project.rootPath,
     displayName: project.displayName,
   };
+  const gitOriginUrl = originUrlForBinding(binding);
+  return gitOriginUrl ? { ...binding, gitOriginUrl } : binding;
 }
 
 export function createProjectAppStore(

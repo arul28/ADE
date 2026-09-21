@@ -1338,8 +1338,6 @@ describe("searchService PR-term reindex durability", () => {
             chatSessionIds: [session.id],
           } as never,
         ],
-        getDetail: async () => null,
-        getComments: async () => [],
       },
       now: () => NOW,
     });
@@ -1359,6 +1357,55 @@ describe("searchService PR-term reindex durability", () => {
     await service.processPendingNow();
     const afterRetry = await service.query({ query: "zebraflux" });
     expect(afterRetry.results.some((r) => r.kind === "chat" && r.sessionId === session.id)).toBe(true);
+
+    service.dispose();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+});
+
+describe("searchService PR indexing stays off GitHub", () => {
+  it("indexes the local title, number, and URL without live GitHub fetches", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-search-pr-quota-"));
+    const service = createSearchService({
+      cacheDir: path.join(root, "cache"),
+      transcriptsDir: path.join(root, "transcripts"),
+      chatTranscriptsDir: path.join(root, "transcripts", "chat"),
+      sessions: { list: async () => [] },
+      prs: {
+        listAll: async () => [
+          {
+            id: "pr-quota",
+            laneId: "lane-1",
+            projectId: "proj-1",
+            repoOwner: "ade",
+            repoName: "ade",
+            githubPrNumber: 1183,
+            githubUrl: "https://github.com/ade/ade/pull/1183",
+            githubNodeId: null,
+            title: "Quotabrake hydrangea",
+            state: "open",
+            baseBranch: "main",
+            headBranch: "ade/quotabrake",
+            checksStatus: "passing",
+            reviewStatus: "none",
+            additions: 1,
+            deletions: 0,
+            lastSyncedAt: null,
+            createdAt: "2026-09-01T00:00:00.000Z",
+            updatedAt: "2026-09-21T00:00:00.000Z",
+            chatSessionIds: [],
+          } as never,
+        ],
+      },
+      now: () => NOW,
+    });
+
+    service.notifyPrChanged("pr-quota");
+    await service.processPendingNow();
+    const byTitle = await service.query({ query: "quotabrake", kinds: ["pr"] });
+    expect(byTitle.results.some((row) => row.id === "pr:pr-quota")).toBe(true);
+    const byNumber = await service.query({ query: "1183", kinds: ["pr"] });
+    expect(byNumber.results.some((row) => row.id === "pr:pr-quota")).toBe(true);
 
     service.dispose();
     fs.rmSync(root, { recursive: true, force: true });

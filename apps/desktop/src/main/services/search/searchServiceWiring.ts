@@ -7,7 +7,7 @@ import type {
 import { PROOF_LISTING_ARTIFACT_FILTER } from "../../../shared/types";
 import type { LaneSummary } from "../../../shared/types/lanes";
 import type { GitBranchSummary, GitCommitSummary } from "../../../shared/types/git";
-import type { PrComment, PrDetail, PrSummary } from "../../../shared/types/prs";
+import type { PrSummary } from "../../../shared/types/prs";
 import type { TerminalSessionSummary } from "../../../shared/types/sessions";
 import type { Logger } from "../logging/logger";
 import { createSearchService, type SearchService } from "./searchService";
@@ -44,8 +44,6 @@ export type ProjectSearchServiceArgs = {
   } | null;
   prService?: {
     listAll: (args?: { laneId?: string }) => PrSummary[] | Promise<PrSummary[]>;
-    getDetail: (prId: string) => Promise<PrDetail | null>;
-    getComments: (prId: string) => Promise<PrComment[]>;
   } | null;
   gitService?: {
     listRecentCommits: (args: { laneId: string; limit?: number }) => Promise<GitCommitSummary[]>;
@@ -106,8 +104,6 @@ export function createProjectSearchService(args: ProjectSearchServiceArgs): Sear
     prs: prService
       ? {
           listAll: (listArgs) => prService.listAll(listArgs),
-          getDetail: (prId) => prService.getDetail(prId),
-          getComments: (prId) => prService.getComments(prId)
         }
       : null,
     git: gitService

@@ -978,6 +978,14 @@ export type AgentChatEvent =
       mcp?: AgentChatMcpToolSource;
       resultOriginalBytes?: number;
       resultOmittedBytes?: number;
+      /**
+       * Set only on the mobile wire, by `compactChatEventForMobileWire`, when
+       * `result` is a head slice rather than the whole thing. It is the row's
+       * cue to offer "Show full result" and fetch it through
+       * `chat_tool_result`. Never stored, and never sent to a client that did
+       * not announce `mobileChatSlimV1`.
+       */
+      resultTruncatedForMobile?: boolean;
       itemId: string;
       logicalItemId?: string;
       parentItemId?: string;
@@ -1964,6 +1972,19 @@ export type AgentChatEventHistoryPage = {
   events: AgentChatEventEnvelope[];
   /** Byte offset in the transcript where this page begins. Pass as the next request's beforeOffset. 0 = head reached. */
   startOffset: number;
+  /**
+   * Byte offset of each row in `events`, positionally aligned with it.
+   *
+   * Lets a client hand a later `chat_tool_result` the exact location of the
+   * row it wants instead of asking the host to scan for it: a truncated result
+   * the reader paged back to can sit far outside that lookup's bounded
+   * tail window, and without a location it reads as "no longer in the
+   * transcript". Optional so older hosts simply omit it, and a client whose
+   * event array lost an element to a lossy decode must compare lengths before
+   * zipping — a mismatched hint is only ever a missed hint, never a wrong row,
+   * because the host still matches the row's own sequence and timestamp.
+   */
+  envelopeStartOffsets?: number[];
   hasMore: boolean;
   sessionFound: boolean;
   /**

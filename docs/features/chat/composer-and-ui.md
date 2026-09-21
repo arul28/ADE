@@ -970,7 +970,7 @@ that could not work without it.
   sits above the still-open composer (`data-testid="codex-steering-question"`),
   the session row stays Working with a `?` pip, and `sendMessage` is
   allowed. Missing `isBlocking` still blocks (`unwrap_or(true)` in Codex
-  0.153.4). The same gate runs server-side: `agentChatService`
+  0.155.1). The same gate runs server-side: `agentChatService`
   refuses `sendMessage`, queued steers, and `dispatchSteer` while a
   live **blocking** pending input exists, throwing
   `"Answer or decline the pending request before sending another

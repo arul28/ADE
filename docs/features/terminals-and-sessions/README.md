@@ -708,10 +708,10 @@ Renderer surfaces:
   `{ x: 0, y: 0, width: 0, height: 0, visible: false }` and stopping any
   inspect mode. The browser is not lane-scoped: each ADE window owns its
   own tabs and active inspect state, while all windows share the same
-  `persist:ade-browser` partition for authentication. On remote-bound Work
-  surfaces the local-only tools (`ios`, `app-control`) render as disabled
-  cards explaining why — the browser stays available, because a remote lane
-  drives this desktop's own browser window — and an active tool that becomes
+  `persist:ade-browser` partition for authentication. On a web-client Work
+  surface Simulator is disabled ("Desktop app only") and Browser / App Control
+  stay read-only. Desktop Simulator and App Control follow the session
+  machine, including a remote Mac. An active tool that becomes
   unavailable falls back to the picker. It still flows selections to the
   active chat through the same dispatch path as before. The active
   Work session picks the sidebar's insertion target
@@ -774,7 +774,7 @@ Renderer surfaces:
   catalogue and the capability rules: `WORK_TOOL_DEFINITIONS` (order, icon,
   label, a three-to-five-word `hint` for a tool that has measured nothing yet,
   and a `contextLabel` rule for the header's one fact), `workToolAvailability`
-  (available, or a reason: local-only, desktop-only, macOS-only), and
+  (available, or a reason: desktop-only, macOS-only), and
   `isReadOnlyWorkTool` for the hosted web client. Six tools, no Pull request
   tool — PRs have their own tab. Availability is decided from capability flags,
   never `process.platform` — the web client renders the same components.
@@ -823,7 +823,9 @@ Renderer surfaces:
   `useWorkToolStatuses.ts`, `workToolRequests.ts`, `workToolErrors.ts`,
   `workSidebarSplitter.ts` — which tools are open and which one is on screen
   (per lane, `openWorkToolTab` / `closeWorkToolTab` for the strip arithmetic,
-  published to the runtime as `work_tools.setActiveTool` on a 250 ms debounce),
+  published to the runtime as `work_tools.setActiveTool` on a 250 ms debounce,
+  addressed with the focused chat's pin so a foreign session updates that
+  machine's work_tools state),
   the status
   lines assembled only from reads the pane already makes, the request queue
   surfaces outside the Work page file instead of writing pane state directly,

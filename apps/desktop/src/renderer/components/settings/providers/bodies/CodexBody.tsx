@@ -1,6 +1,6 @@
 /**
  * Codex settings extras: installed plugins from a live app-server runtime.
- * List-only — no marketplace, install, or toggle. Codex 0.153.4 `plugin/list`.
+ * List-only — no marketplace, install, or toggle. Codex 0.155.1 `plugin/list`.
  */
 import { ArrowsClockwise } from "@phosphor-icons/react";
 import React, { useCallback, useEffect, useState } from "react";

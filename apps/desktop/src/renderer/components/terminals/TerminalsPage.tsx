@@ -15,6 +15,7 @@ import {
   subscribeWorkToolRequests,
   takePendingWorkToolRequest,
 } from "./workToolRequests";
+import { holdRemoteBrowserOpen, remoteBrowserOpenMatchesOwner } from "../../lib/pendingRemoteBrowserOpens";
 import { subscribeFilesOpenInTools } from "../files/v2/filesOpenRequests";
 import {
   SessionContextMenu,
@@ -80,12 +81,13 @@ import {
   nextWorkSidebarWidthPctForKey,
 } from "./workSidebarSplitter";
 import { useWorkLaneDeleteProgress } from "./useWorkLaneDeleteProgress";
-import { useRetainedCrossMachineSlices } from "./useWorkMachineRouter";
+import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
 import { buildPtyContinuationLaunchFields } from "./cliLaunch";
 import { canonicalInputFromSummary, sessionNeedsYou } from "../../lib/terminalAttention";
 import {
   cancelCrossMachineOptimisticChatSession,
   seedCrossMachineOptimisticChatSession,
+  useRetainedCrossMachineSlices,
 } from "../../state/crossMachineLanes";
 
 const TERMINALS_TILING_TREE: PaneSplit = {
@@ -183,9 +185,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const refreshWork = work.refresh;
   const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
-  const selectLaneInStore = useAppStore((s) => s.selectLane);
-  const focusSessionInStore = useAppStore((s) => s.focusSession);
-  const setWorkViewState = useAppStore((s) => s.setWorkViewState);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const sortedLanes = useMemo(() => sortLanesForTabs(work.lanes), [work.lanes]);
   const handoffLaunchJobsScopeKey = useMemo(
@@ -359,90 +358,14 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       event: React.MouseEvent,
       visibleSessionIds: string[],
     ) => {
-      // A CLI/shell session on a binding this window still has open is opened IN
-      // PLACE, exactly like a chat: the click selects/opens its tab in the
-      // CURRENT view state and every runtime call for it carries `binding` as a
-      // per-session pin. The tab keeps pointing wherever the user put it —
-      // switching projects here used to drag Lanes/PRs/Files to the session's
-      // machine, which is precisely the bug per-session routing removes.
-      //
-      // Remembering the pin against the session/pty id means the paths that
-      // already consult the launch-pin registry (stop/dispose, and this page's
-      // resume/continue) reach the right machine without threading a binding
-      // through every one of them.
-      if (machineRouter.isLivePin(binding)) {
-        machineRouter.rememberSessionPin(session, binding);
-        handleSelectSession(session.id, event, visibleSessionIds, binding);
-        return;
-      }
-      // Fallback: the owning binding is not open in this window, so there is
-      // nothing to pin to. Rebinding the tab is then the only way to reach the
-      // session at all — the old behavior, now the exception rather than the
-      // rule.
-      const switchProject = binding.kind === "remote"
-        ? switchRemoteProject(binding.targetId, binding.projectId)
-        : switchProjectToPath(binding.rootPath);
-      void switchProject
-        .then(() => {
-          const useRange = event.shiftKey === true;
-          const useToggle = event.metaKey === true || event.ctrlKey === true;
-          let rangeApplied = false;
-          if (useRange) {
-            const anchorId = selectionAnchorId ?? session.id;
-            const anchorIndex = visibleSessionIds.indexOf(anchorId);
-            const nextIndex = visibleSessionIds.indexOf(session.id);
-            if (anchorIndex >= 0 && nextIndex >= 0) {
-              const [start, end] = anchorIndex <= nextIndex ? [anchorIndex, nextIndex] : [nextIndex, anchorIndex];
-              setSelectedSessionIds(new Set(visibleSessionIds.slice(start, end + 1)));
-              setSelectionAnchorId(anchorId);
-              rangeApplied = true;
-            }
-          }
-          if (!rangeApplied && useToggle) {
-            setSelectedSessionIds((prev) => {
-              const next = new Set(prev);
-              if (next.has(session.id)) next.delete(session.id);
-              else next.add(session.id);
-              return next;
-            });
-            setSelectionAnchorId(session.id);
-          } else if (!rangeApplied) {
-            setSelectedSessionIds(new Set());
-            setSelectionAnchorId(session.id);
-          }
-
-          const destinationProjectKey = binding.kind === "remote" ? binding.key : binding.rootPath;
-          setWorkViewState(destinationProjectKey, (prev) => ({
-            ...prev,
-            openItemIds: prev.openItemIds.includes(session.id)
-              ? prev.openItemIds
-              : [...prev.openItemIds, session.id],
-            selectedItemId: session.id,
-            activeItemId: session.id,
-          }));
-          if (session.wokeAt) clearSessionWokeMarker(session.id);
-        })
-        .catch((reason: unknown) => {
-          // Unreachable owning project: leaving the session closed is safer than
-          // opening its id against whichever runtime the tab currently owns.
-          // Surface the failure like every other switch path on this page —
-          // without it the click reads as a silent no-op.
-          console.error("work.foreign_session_switch_failed", reason);
-          const machineName = binding.kind === "remote" ? binding.runtimeName : binding.displayName;
-          setSessionActionError(
-            `Could not open this session on ${machineName}: ${reason instanceof Error ? reason.message : String(reason)}`,
-          );
-          window.setTimeout(() => setSessionActionError(null), 6000);
-        });
+      // Session clicks never rebind the tab. The row already carries a complete
+      // OpenProjectBinding, so every runtime call can pin there even after the
+      // dropdown released that checkout from the strip. Switching here used to
+      // drag Lanes/PRs/Files onto a click that was only meant to focus the chat.
+      machineRouter.rememberSessionPin(session, binding);
+      handleSelectSession(session.id, event, visibleSessionIds, binding);
     },
-    [
-      handleSelectSession,
-      machineRouter,
-      selectionAnchorId,
-      setWorkViewState,
-      switchProjectToPath,
-      switchRemoteProject,
-    ],
+    [handleSelectSession, machineRouter],
   );
 
   const handleInfoClick = useCallback(
@@ -534,56 +457,34 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       }>).detail;
       const sessionId = detail?.sessionId;
       if (!sessionId) return;
-      const focusActiveProject = () => {
-        // Callers (spawn cards, subagents pane) often don't know the target's
-        // lane. Resolve it from the loaded session list so cross-lane jumps
-        // land on the right lane instead of focusing an off-lane session.
-        const session = work.sessionsById.get(sessionId) ?? null;
-        const laneId = detail.laneId ?? session?.laneId ?? null;
-        if (laneId && (!session || !resolveSessionRuntimePin(session))) work.selectLane(laneId);
-        work.focusSession(sessionId);
-        work.openSessionTab(sessionId);
-        work.setSelectedSessionId(sessionId);
-      };
       const binding = detail.binding ?? null;
-      if (!binding) {
-        focusActiveProject();
-        return;
+      // Session focus never rebinds the tab — same rule as a sidebar click.
+      // The binding (command palette, foreign thread) is a pin for Work tools,
+      // not a request to drag Lanes/PRs/Files onto that machine.
+      if (binding) {
+        machineRouter.rememberSessionPin(
+          { id: sessionId, sessionId, laneId: detail.laneId ?? null },
+          binding,
+        );
       }
-      // Foreign target: write the destination project's state directly after
-      // switching. Calling `work.*` here would use the hook instance captured
-      // before the switch and persist the selection into the old project.
-      const destinationProjectKey = binding.kind === "remote" ? binding.key : binding.rootPath;
-      const switching = binding.kind === "remote"
-        ? switchRemoteProject(binding.targetId, binding.projectId)
-        : switchProjectToPath(binding.rootPath);
-      void switching
-        .then(() => {
-          if (detail.laneId) selectLaneInStore(detail.laneId);
-          focusSessionInStore(sessionId);
-          setWorkViewState(destinationProjectKey, (previous) => ({
-            ...previous,
-            openItemIds: previous.openItemIds.includes(sessionId)
-              ? previous.openItemIds
-              : [...previous.openItemIds, sessionId],
-            selectedItemId: sessionId,
-            activeItemId: sessionId,
-          }));
-        })
-        .catch((error: unknown) => {
-          setSessionActionError(error instanceof Error ? error.message : String(error));
-        });
+      // Callers (spawn cards, subagents pane) often don't know the target's
+      // lane. Resolve it from the loaded session list so cross-lane jumps
+      // land on the right lane instead of focusing an off-lane session.
+      const session = work.sessionsById.get(sessionId) ?? null;
+      const laneId = detail.laneId ?? session?.laneId ?? null;
+      const runtimePin = resolveSessionRuntimePin(session ?? {
+        id: sessionId,
+        sessionId,
+        laneId,
+      });
+      if (laneId && !runtimePin) work.selectLane(laneId);
+      work.focusSession(sessionId);
+      work.openSessionTab(sessionId);
+      work.setSelectedSessionId(sessionId);
     };
     window.addEventListener("ade:work:select-session", handler as EventListener);
     return () => window.removeEventListener("ade:work:select-session", handler as EventListener);
-  }, [
-    focusSessionInStore,
-    selectLaneInStore,
-    setWorkViewState,
-    switchProjectToPath,
-    switchRemoteProject,
-    work,
-  ]);
+  }, [machineRouter, resolveSessionRuntimePin, work]);
 
   const handleGoToLane = useCallback(
     (
@@ -1073,6 +974,26 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     () => (activeWorkSession ? resolveSessionRuntimePin(activeWorkSession) : null),
     [activeWorkSession, resolveSessionRuntimePin],
   );
+  const browserCheckoutRoot = useMemo(
+    () => effectiveRuntimeBinding(activeWorkSessionRuntimePin, projectBinding)?.rootPath ?? projectRoot,
+    [activeWorkSessionRuntimePin, projectBinding, projectRoot],
+  );
+  // `pinForSession` is null on the tab's own runtime. Preload's remote-open
+  // subscription is a no-op for a non-remote pin, so a Studio-bound tab would
+  // never hear `ade browser open` while Git is showing. Use the same fallback
+  // the Browser panel uses for tunnels.
+  const browserRemoteBinding = useMemo(() => {
+    const effective = effectiveRuntimeBinding(activeWorkSessionRuntimePin, projectBinding);
+    return effective?.kind === "remote" ? effective : null;
+  }, [activeWorkSessionRuntimePin, projectBinding]);
+
+  useEffect(() => {
+    if (!activeWorkSession) return;
+    // Stick the effective machine on focus, including the bound path (null pin).
+    // After the dropdown moves, pinForSession returns this sticky pin so Git
+    // and shells keep talking to the session's machine instead of the new tab.
+    machineRouter.rememberSessionPin(activeWorkSession, activeWorkSessionRuntimePin);
+  }, [activeWorkSession, activeWorkSessionRuntimePin, machineRouter]);
 
   const activeLaneId = useMemo(() => {
     if (activeWorkSession?.laneId) return activeWorkSession.laneId;
@@ -1103,9 +1024,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     }
     if (activeWorkSession.laneId !== activeLaneId) return null;
     if (isChatToolType(activeWorkSession.toolType)) {
-      // Chat insertion is a DOM event consumed by the chat pane, which is not
-      // machine-addressed. Still fail closed for a chat on another machine.
-      if (activeWorkSessionRuntimePin) return null;
+      // Insertion is a DOM event consumed by the chat pane on screen. A Studio
+      // chat rendered here can receive context even while the tab dropdown
+      // sits on another machine — the pane is already machine-addressed.
       return { kind: "chat", sessionId: activeWorkSession.id };
     }
     if (
@@ -1121,7 +1042,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       };
     }
     return null;
-  }, [activeLaneId, activeWorkSession, activeWorkSessionRuntimePin, draftContextTargetId, work.draftKind]);
+  }, [activeLaneId, activeWorkSession, draftContextTargetId, work.draftKind]);
 
   /**
    * Why context insertion is closed, for the one path that still needs words:
@@ -1135,8 +1056,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     contextDisabledReason = null;
   } else if (!activeWorkSession) {
     contextDisabledReason = "Select a lane before inserting tool context.";
-  } else if (activeWorkSessionRuntimePin && isChatToolType(activeWorkSession.toolType)) {
-    contextDisabledReason = "Tool context insertion is not available for chats on another machine.";
   } else if (activeWorkSession.laneId !== activeLaneId) {
     contextDisabledReason = "Open a Work session in the active lane to insert tool context.";
   } else if (!contextTarget && activeWorkSession.ptyId && activeWorkSession.status !== "running") {
@@ -1150,7 +1069,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   }
 
   const workSidebarVisible = active && work.workSidebarOpen;
-  const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   // Which tool the tools pane shows is per LANE, so it hangs off the lane this
   // page has resolved rather than off the project-wide work view state.
   const {
@@ -1158,25 +1076,50 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     openTools: workSidebarOpenTools,
     setTool: setWorkSidebarTool,
     closeTool: closeWorkSidebarTool,
-  } = useWorkSidebarTool(activeLaneId);
+  } = useWorkSidebarTool(activeLaneId, activeWorkSessionRuntimePin);
   useEffect(() => {
     if (!active) return;
     const openBrowserSidebar = () => {
-      // Remote projects don't host the built-in browser, so ignore open-requests
-      // (preserves main's remote-runtime hardening; the old viewMode switch is
-      // dropped with the work-tab grid).
-      if (isRemoteProject) return;
       setWorkSidebarTool("browser");
     };
     window.addEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, openBrowserSidebar);
+    // Local IPC stream for this desktop's browser. The pin is accepted for
+    // API symmetry; preload still fans out the local event bus. Match the
+    // session checkout so a Studio pin is not filtered against the MacBook tab.
     const unsubscribeBrowserEvents = window.ade?.builtInBrowser?.onEvent?.((event) => {
-      if (event.type === "open-request" && browserEventMatchesProject(event, projectRoot)) openBrowserSidebar();
-    }) ?? null;
+      if (event.type === "open-request" && browserEventMatchesProject(event, browserCheckoutRoot)) {
+        openBrowserSidebar();
+      }
+    }, activeWorkSessionRuntimePin) ?? null;
+    // `ade browser open` on a headless/remote machine has no WebContentsView;
+    // the daemon forwards it here. Subscribe with the session's effective
+    // remote machine — a null pin on a remote tab is still that tab's runtime.
+    const unsubscribeRemoteRequests = window.ade?.builtInBrowser?.onRemoteRequest?.((request) => {
+      if (!request.openPanel) return;
+      // The pane that navigates and acks is unmounted while Git (or another
+      // tool) is showing, and the runtime event is not replayed. Hold the
+      // request so the Browser panel can drain it on mount.
+      holdRemoteBrowserOpen(browserRemoteBinding, request);
+      if (!remoteBrowserOpenMatchesOwner(request, {
+        sessionId: activeWorkSession?.id ?? null,
+        laneId: activeLaneId,
+      })) return;
+      openBrowserSidebar();
+    }, browserRemoteBinding) ?? null;
     return () => {
       window.removeEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, openBrowserSidebar);
       unsubscribeBrowserEvents?.();
+      unsubscribeRemoteRequests?.();
     };
-  }, [active, isRemoteProject, projectRoot, setWorkSidebarTool]);
+  }, [
+    active,
+    activeLaneId,
+    activeWorkSession?.id,
+    activeWorkSessionRuntimePin,
+    browserCheckoutRoot,
+    browserRemoteBinding,
+    setWorkSidebarTool,
+  ]);
 
   // "Open this tool" asked for from outside the Work page — the app shell's
   // browser open-request handler, the command palette. Only this page knows the

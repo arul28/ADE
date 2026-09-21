@@ -494,4 +494,59 @@ describe("ChatTerminalDrawer", () => {
     expect(panel.style.height).toBe("");
     expect(panel.className).toContain("h-full");
   });
+
+  it("keeps drawer UI when a pin later arrives as a runtimeScopeKey", async () => {
+    const pin = {
+      kind: "remote" as const,
+      key: "remote:studio:project-a",
+      targetId: "studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-a",
+      rootPath: "/studio/repo",
+      displayName: "Studio",
+    };
+    vi.mocked(window.ade.terminal.list).mockResolvedValue([
+      {
+        terminalId: "terminal-1",
+        ptyId: "pty-1",
+        title: "First terminal",
+        status: "running",
+      },
+      {
+        terminalId: "terminal-2",
+        ptyId: "pty-2",
+        title: "Second terminal",
+        status: "running",
+      },
+    ] as any);
+
+    const first = render(
+      <ChatTerminalDrawer
+        open
+        onToggle={vi.fn()}
+        laneId="lane-1"
+        chatSessionId="chat-1"
+        runtimePin={pin}
+        autoCreateOnOpen={false}
+      />,
+    );
+    expect(await screen.findByText("First terminal")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Second terminal" }));
+    expect(screen.getByTestId("terminal-view").textContent).toBe("terminal-2:pty-2");
+    first.unmount();
+
+    render(
+      <ChatTerminalDrawer
+        open
+        onToggle={vi.fn()}
+        laneId="lane-1"
+        chatSessionId="chat-1"
+        runtimePin={pin}
+        runtimeScopeKey={pin.key}
+        autoCreateOnOpen={false}
+      />,
+    );
+    expect(await screen.findByText("Second terminal")).toBeTruthy();
+    expect(screen.getByTestId("terminal-view").textContent).toBe("terminal-2:pty-2");
+  });
 });

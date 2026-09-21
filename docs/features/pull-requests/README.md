@@ -2313,6 +2313,11 @@ markdown layout cost for offscreen or folded content.
   loops drained the quota the reserve was supposed to protect. When adding a new
   automatic PR read, gate it on `isGithubPollStoodDown()` and derive its interval
   from `githubPollPeriodFor(base)`; user-initiated actions stay exempt on purpose.
+- **Search must not live-fetch GitHub.** `searchService.processPr` used
+  `getDetail` + `getComments` (three REST calls per PR row) on every backfill
+  and every `prs-updated`. On a project with hundreds of historical PR rows
+  that is a 2:1 `repo_pulls`/`repo_issues` stampede. Index local titles,
+  numbers, and URLs only.
 - **A lookup that falls back to cached data must not report success upstream.**
   A failed per-branch PR lookup returns `null`, not `[]`, so the snapshot can
   never fold "we could not ask" into a confirmed-empty result and drop a lane's

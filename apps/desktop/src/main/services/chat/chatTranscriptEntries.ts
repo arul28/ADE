@@ -116,11 +116,38 @@ export type TranscriptEntriesOptions = {
   onEntrySourceOffset?: (offset: number | null) => void;
 };
 
+/**
+ * Steer ids that already have a non-queued `user_message` in this batch.
+ *
+ * The host writes a steered message twice: once as `deliveryState: "queued"`
+ * when it is staged, and again when the provider consumes it. Both are real
+ * transcript history, but they are one message — emitting both makes
+ * `ade chat read` (and every client that merges this canonical text against the
+ * live event stream) show the text twice. A still-pending queued steer has no
+ * graduating row and is kept, because it is the only record of that message.
+ */
+function graduatedSteerIds(
+  sessionId: string,
+  envelopes: readonly AgentChatEventEnvelope[],
+): ReadonlySet<string> {
+  const graduated = new Set<string>();
+  for (const entry of envelopes) {
+    if (entry.sessionId !== sessionId) continue;
+    if (entry.event.type !== "user_message") continue;
+    const steerId = entry.event.steerId?.trim();
+    if (!steerId) continue;
+    if (entry.event.deliveryState === "queued") continue;
+    graduated.add(steerId);
+  }
+  return graduated;
+}
+
 export function transcriptEntriesFromEnvelopes(
   sessionId: string,
   envelopes: readonly AgentChatEventEnvelope[],
   options?: TranscriptEntriesOptions,
 ): AgentChatTranscriptEntry[] {
+  const graduated = graduatedSteerIds(sessionId, envelopes);
   type TranscriptDraftEntry = AgentChatTranscriptEntry & Partial<BufferedAssistantText>;
   const entries: TranscriptDraftEntry[] = [];
   const sourceOffsetByDraft = new WeakMap<TranscriptDraftEntry, number>();
@@ -170,6 +197,13 @@ export function transcriptEntriesFromEnvelopes(
   for (const entry of envelopes) {
     if (entry.sessionId !== sessionId) continue;
     if (entry.event.type === "user_message") {
+      const steerId = entry.event.steerId?.trim();
+      // A queued steer whose delivered twin is in the same batch is the same
+      // message; the delivered row carries it. Skipped BEFORE the stream state
+      // is reset: a row that is never emitted must not break the assistant run
+      // it landed inside, or a mid-turn steer splits one message into two
+      // entries with no user entry between them.
+      if (entry.event.deliveryState === "queued" && steerId && graduated.has(steerId)) continue;
       flushAssistantDraft();
       openStreamKey = null;
       assistantDraftsByKey.clear();

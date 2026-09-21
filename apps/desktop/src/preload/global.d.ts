@@ -3821,6 +3821,7 @@ declare global {
           laneId: string,
           tool: WorkToolId | null,
           openTools?: WorkToolId[],
+          pin?: OpenProjectBinding | null,
         ) => Promise<void>;
         readObservationPreview: (
           observationPath: string,

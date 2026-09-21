@@ -726,12 +726,13 @@ catalogue owns the hint string so the card and its tooltip can never
 disagree about how much it says.
 
 A tool that cannot run in this context renders as a **disabled card with
-the reason as its status line** rather than disappearing: "Runs on this
-computer only" (Simulator / App Control on a remote project), "Desktop
-app only" (Simulator in the hosted web client), and "macOS only"
-(Simulator off a Mac). Only those two tools are local-only — the browser
-is hosted by this desktop's main process and a remote lane drives that
-same window, so it stays available on remote lanes. In the hosted web
+the reason as its status line** rather than disappearing: "Desktop
+app only" (Simulator in the hosted web client) and "macOS only"
+(Simulator off a Mac). Simulator and App Control follow the session's
+machine, including a remote Mac; they are not hidden just because the
+pin is remote. The browser is hosted by this desktop's main process
+and a remote lane drives that same window, so it stays available on
+remote lanes. In the hosted web
 client the browser and App Control render **read-only** — the tab list,
 attached app, and latest screenshot, with no way to drive them
 (`isReadOnlyWorkTool`). Availability is decided by
@@ -833,10 +834,12 @@ unmount, and when the Work route deactivates.
 `workSidebarOpenTools` (the strip, in order, with the active tool among
 it) are stored per lane in `laneWorkViewByScope` under
 `"<projectKey>::<laneId>"`, read and written through
-`useWorkSidebarTool(laneId)`. Picking a tool appends it, or activates the
+`useWorkSidebarTool(laneId, runtimePin)`. Picking a tool appends it, or activates the
 tab it already has without moving it; closing one hands the pane to the
 tab on its **right**, then its left, then the picker
-(`openWorkToolTab` / `closeWorkToolTab`, pure). Going back to the picker
+(`openWorkToolTab` / `closeWorkToolTab`, pure). The optional pin is the
+focused chat's machine so `work_tools.setActiveTool` publishes there;
+a null pin is the tab's bound runtime. Going back to the picker
 keeps the strip — the tabs are still open, the pane is just showing the
 page you pick from. Persisted state written before the strip existed
 (`WORK_VIEW_STATE_VERSION` 6) normalizes its single tool into a one-tab

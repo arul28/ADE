@@ -418,6 +418,7 @@ export function useWorkSessionActions({
             draftMachineId: binding?.kind === "remote" ? binding.targetId : null,
             activeItemId: null,
             selectedItemId: null,
+            workSidebarOpen: false,
           }));
           navigate("/work");
           onOpenChange(false);

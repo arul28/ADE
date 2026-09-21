@@ -12,7 +12,6 @@ import type { WorkToolContext } from "./workTools";
 import type { WorkToolStatusMap } from "./useWorkToolStatuses";
 
 const LOCAL: WorkToolContext = {
-  isRemoteProject: false,
   supportsIosSimulator: true,
   isWebClient: false,
 };

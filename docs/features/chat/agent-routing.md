@@ -45,7 +45,7 @@ for vendored runtimes without changing the union.
 | Provider | Runtime | Adapter location |
 |---|---|---|
 | `claude` | `@anthropic-ai/claude-agent-sdk` `query()` stream with an ADE async input pump, `startup()` warmup, bundled Claude Code binary, SDK sessions, hooks, output styles, plugins, context usage, rewind, and slash-command dispatch. | `agentChatService.ts` (inline; the file carries the full Claude adapter). |
-| `codex` | Pinned `@openai/codex` 0.153.4 `codex app-server` subprocess, JSON-RPC protocol. Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter and thread config); executable resolution via `services/ai/codexExecutable.ts`. |
+| `codex` | Pinned `@openai/codex` 0.155.1 `codex app-server` subprocess, JSON-RPC protocol. Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter and thread config); executable resolution via `services/ai/codexExecutable.ts`. |
 | `opencode` | OpenCode server runtime: the provider catalog and model list come from OpenCode/Models.dev, with provider-native OAuth, API-key, custom, and local-server paths. | `agentChatService.ts` (OpenCode adapter); inventory in `openCodeInventory.ts`; auth in `openCodeAuthService.ts`. |
 | `cursor` | Official `@cursor/sdk` running in a Node worker pool. ADE owns permissions, hooks, and the system prompt; the SDK owns the model + tool execution. Slash commands are discovered from `.cursor/commands/`, `.cursor/agents/`, built-in subagents, and Agent Skill roots via `cursorSlashCommandDiscovery.ts`. A transport failure can wedge the server-side agent thread while the worker process stays alive, so every local turn carries a 90 s first-event watchdog and one automatic recycle-and-resend — see [Cursor thread recycling and the first-event watchdog](README.md#cursor-thread-recycling-and-the-first-event-watchdog). | `cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`, `cursorSdkErrors.ts`, `cursorSlashCommandDiscovery.ts`. |
 | `droid` | Factory Droid models exposed as dynamic `droid/<modelId>` descriptors and driven through the official `@factory/droid-sdk` running in a forked Node worker pool. The legacy ACP bridge (`droidAcpPool.ts`) has been retired. | `droidSdkPool.ts`, `droidSdkWorker.ts`, `droidSdkProtocol.ts`, `droidSdkEventMapper.ts`, `droidModelsDiscovery.ts`; model helpers in `modelRegistry.ts`. |
@@ -143,10 +143,10 @@ high | xhigh | max`; Sol and Terra expose `low | medium | high | xhigh | max |
 ultra`. Desktop, ADE Code, and iOS label those values Light, Medium, High,
 Extra High, Max, and (for Sol/Terra) Ultra. Runtime app-server ladders retain
 their advertised order. `ultra` is the multi-agent tier and carries a usage
-warning. Codex 0.153.4 is the pinned app-server that advertises Astra; older
+warning. Codex 0.155.1 is the pinned app-server that advertises Astra; older
 PATH installs without Astra metadata cannot start it.
 
-On 0.153.4 ADE always enables `tools.update_plan` on `thread/start` and
+On 0.155.1 ADE always enables `tools.update_plan` on `thread/start` and
 `thread/resume`, copies the thread's `model` / `reasoningEffort` into the
 session snapshot, and treats `item/tool/requestUserInput` `isBlocking:
 false` as live steering rather than Needs you. Computer Use appears as a
