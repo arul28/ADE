@@ -648,9 +648,13 @@ the intensity in light, since on a light canvas the same amount of colour
 reads as a stain. The theme comes from the store (`s.theme`), the same
 value `App.tsx` writes to `data-theme`. Opening the pane paints the same
 gradient as CSS first so the surface is not empty while WebGL compiles;
-the canvas covers it once it has a frame. Leaving the picker pauses the
-loop without dropping the last frame. The Work new-chat surface uses the
-same backdrop and the same budget.
+the canvas covers it once it has a frame. The picker stays mounted while a
+tool is on screen: `inert` + `aria-hidden`, and `playing={false}` pauses the
+loop without dropping the last frame, so opening Tools is a CSS show rather
+than a shader recompile. Arrow-key card highlight is bound only while
+`playing`. The Work new-chat surface uses the same backdrop and the same
+budget; `AgentChatPane` leaves the chat canvas transparent so the mesh
+shows through.
 
 Its budget is a hard requirement, because this is decoration on a page you
 land on constantly inside a renderer that is also running a terminal, a
@@ -787,7 +791,7 @@ name, and every other tool shows its own status line. It rides in the
 active tab's tooltip and accessible name (`Browser · example.com`), never
 as a header line — an icon-only tab would otherwise have no name at all,
 and a bar that spelled out what the lit tab already says was saying one
-thing twice in 36 px.
+thing twice in 32 px.
 
 The strip is measured, not guessed (`workToolTabLayout`, pure and tested):
 below **420 px** of header the tabs drop their words and become glyphs, a
@@ -1076,7 +1080,7 @@ their own answer to the same row — uppercase mono buttons in one, tinted
 is that geometry, spent rather than reinvented:
 
 - **Exactly one chrome row per tool**, 40 px
-  (`WORK_TOOL_CHROME_ROW_HEIGHT`), under the pane header's own 36 px. The
+  (`WORK_TOOL_CHROME_ROW_HEIGHT`), under the pane header's own 32 px. The
   row carries `ade-pane-chrome` (which makes it `select-none`, so dragging
   the pane divider no longer leaves half the labels highlighted in accent
   blue) and the same `ade-tool-pane-rule` hairline the header draws, so
@@ -1355,9 +1359,10 @@ for context insertions. Contains:
 - for chat drafts: `AgentChatPane` in draft mode with provider-specific
   permission controls (`getPermissionOptions`, `safetyColors`). The
   ADE wordmark and optically lifted composer stay in the original
-  stack; the usage card sits below the launch shelf, a little further
-  down than before, capped to the shelf width, with an opaque darker
-  fill.
+  stack; the chat canvas is transparent so the mesh behind
+  `WorkViewArea` shows through. The usage card sits below the launch
+  shelf (`mt-11`), width-capped to the shelf, with an opaque fill that
+  matches the machine/lane submenu.
 - for cli drafts: a five-tile provider grid (Claude Code, Codex CLI,
   Cursor Agent CLI, Factory Droid CLI, OpenCode CLI) with logos sourced
   from `ToolLogos.tsx` / `ProviderLogos.tsx`. Selecting a provider

@@ -90,6 +90,7 @@ export function WorkToolPicker({
   // browser's own activation rather than a second key handler that could
   // disagree with the click path about which card is disabled.
   useEffect(() => {
+    if (!playing) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
       const step = event.key === "ArrowRight" || event.key === "ArrowDown"
@@ -113,7 +114,7 @@ export function WorkToolPicker({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [cardCount, focusCard]);
+  }, [cardCount, focusCard, playing]);
 
   return (
     // Two boxes, because the backdrop must not scroll. `inset: 0` inside the
@@ -124,7 +125,7 @@ export function WorkToolPicker({
     <div ref={rootRef} className="ade-pane-chrome relative h-full min-h-0">
       {/* Behind everything and untouchable: the canvas must never eat a click
           meant for the card on top of it, and it is never in the tab order. */}
-      <WorkToolPickerBackdrop theme={theme} playing={playing} className="ade-tool-picker-backdrop" />
+      <WorkToolPickerBackdrop theme={theme} playing={playing} />
       <div
         data-tool-picker-scroll=""
         className="relative flex h-full min-h-0 flex-col overflow-auto"

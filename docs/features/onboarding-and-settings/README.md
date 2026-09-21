@@ -1269,7 +1269,8 @@ Renderer — settings:
   `ade.activity.module.v1` (migrating the retired `ade.stats.carousel.v1`
   key). `WorkActivityModule` is the self-fetching compact wrapper that reads
   `usage.getAdeStats` and renders directly below the empty Work composer on
-  desktop and web.
+  desktop and web. On that surface the card is an opaque plate using
+  `--work-popover-bg` over `--color-bg`, matching the machine/lane submenu.
 - `apps/desktop/src/renderer/components/usage/providerColors.ts` — theme-aware
   brand color palette for usage bars and legends. `providerColor(provider,
   theme)` returns a per-provider brand color (Claude's rust family, distinct

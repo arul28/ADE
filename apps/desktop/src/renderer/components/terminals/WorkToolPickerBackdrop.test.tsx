@@ -190,7 +190,7 @@ describe("WorkToolPickerBackdrop", () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
 
     const { container } = render(
-      <WorkToolPickerBackdrop theme="dark" className="ade-tool-picker-backdrop" />,
+      <WorkToolPickerBackdrop theme="dark" />,
     );
 
     // No canvas left behind: a canvas element with no context is a layer the

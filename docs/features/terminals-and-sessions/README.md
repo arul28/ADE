@@ -691,7 +691,8 @@ Renderer surfaces:
   Work draft/new-chat surface. The ADE wordmark sits above an optically
   lifted composer; the machine/lane launch shelf tucks under it. Usage
   stays in that stack, a step below the shelf, capped to the
-  launch-shelf width, with an opaque darker fill. Shell and Import live
+  launch-shelf width, with an opaque fill that matches the machine/lane
+  submenu. Shell and Import live
   on that shelf; Import opens `ImportSessionBrowser` when the caller
   provides `onImportedSession`. Auto-created lane launches keep import
   disabled because there is no existing target lane to import into yet.
@@ -740,7 +741,10 @@ Renderer surfaces:
   controls affect the running tool while inserted context goes to the
   current chat, draft, or CLI target. The pane is a tab strip plus one
   page: one tab per open tool, one of them on screen, and the picker page
-  behind the grid button and the `+`. A tool is open once — there is no
+  behind the grid button and the `+`. The picker stays mounted while a
+  tool is on screen (`inert`, `aria-hidden`, `playing={false}`) so the
+  mesh does not recompile on return; tool panels never sit in an `inert`
+  subtree. A tool is open once — there is no
   multi-instance. A narrow pane sheds tab labels for glyphs and then
   overflows tabs into a `…` menu; below that the splitter clamp
   (`workSidebarSplitter.ts`) refuses to shrink the pane past the width its
@@ -784,7 +788,7 @@ Renderer surfaces:
   `WorkToolPickerBackdrop.tsx`, `WorkToolHeader.tsx`,
   `WorkToolReadOnlyView.tsx`, `workToolPanels.tsx` —
   the pane's tab strip, its two pages, and the panel mounts. The picker is one centred 512 px
-  column of translucent cards over a slow violet WebGL mesh (the backdrop, at
+  column of translucent cards over a slow violet-to-indigo WebGL mesh (the backdrop, at
   DPR 1 / 600 k pixels / 30 fps, paused when unwatched and a static CSS
   gradient with no WebGL) — name plus one line, which is the tool's measured
   status, else its catalogue `hint`, else the reason it cannot run here — and
@@ -810,8 +814,9 @@ Renderer surfaces:
   `workToolPickerBackdropRenderer.ts` — the backdrop's two halves, split out so
   `WorkToolPickerBackdrop.tsx` is only the React shell. The shader module is
   data: the two GLSL programs, the light and dark palettes (`backdropThemeFor`
-  — no colour is named in the fragment shader, so a token change is one line
-  here), the builder's non-colour uniforms, and the pure size policy
+  — no colour is named in the fragment shader; dark walks `--color-bg` through
+  `--color-accent-deep`, indigo `#6366F1`, `--color-accent`, and
+  `--color-accent-bright`), the builder's non-colour uniforms, and the pure size policy
   (`resolveBackdropSize`, `BACKDROP_MAX_DPR` / `BACKDROP_PIXEL_BUDGET` /
   `BACKDROP_FRAME_MS`, `isSoftwareRenderer`) that is testable without a GPU.
   The renderer module is React-free: `createBackdropRenderer` takes a canvas
@@ -1149,7 +1154,9 @@ Renderer surfaces:
   animated dots; chat title, lane name, and status line pass their own
   pending copy so visible and accessible labels stay consistent.
 - `apps/desktop/src/renderer/components/terminals/WorkViewArea.tsx` —
-  tabs/grid/single Work view. The grid mode renders through the shared
+  tabs/grid/single Work view. The empty new-chat surface paints
+  `WorkToolPickerBackdrop` behind the draft (the chat shell is
+  transparent there). The grid mode renders through the shared
   `PaneTilingLayout`; the seed tree comes from
   `buildWorkSessionTilingTree`. It builds a session-title index and threads it
   into locked `AgentChatPane` embeddings so spawned-chat roster rows use live

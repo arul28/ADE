@@ -45,6 +45,9 @@
   --chat-font-size: 14px;
   --chat-accent: var(--color-accent);
   --chat-radius-pill: 9999px;
+  /* 32px title rail + 1px hairline. Shared by `.ade-tool-header` and
+     `.ade-chat-shell-header` so the Work split's two bars meet. */
+  --ade-work-chrome-rail-h: 33px;
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -2439,9 +2442,9 @@ button:active, [role="button"]:active {
    + 1px hairline as `.ade-chat-shell-header`, so the two lines meet. */
 .ade-tool-header {
   box-sizing: border-box;
-  height: 33px;
-  min-height: 33px;
-  max-height: 33px;
+  height: var(--ade-work-chrome-rail-h);
+  min-height: var(--ade-work-chrome-rail-h);
+  max-height: var(--ade-work-chrome-rail-h);
   container-type: inline-size;
   container-name: ade-tool-header;
 }
@@ -3036,8 +3039,11 @@ button:active, [role="button"]:active {
     );
 }
 
+/* Same darkness as the machine/lane shelf submenu (`--work-popover-bg`).
+ * Flatten it over `--color-bg` so the card stays an opaque plate. */
 [data-chat-empty-usage] [data-activity-module] {
-  background-color: color-mix(in srgb, var(--color-bg) 78%, black 22%);
+  background-color: var(--color-bg);
+  background-image: linear-gradient(var(--work-popover-bg), var(--work-popover-bg));
 }
 
 /*
@@ -3309,11 +3315,10 @@ button:active, [role="button"]:active {
 
 .ade-chat-shell-header {
   box-sizing: border-box;
-  /* 32px title rail + 1px hairline. Must match `.ade-tool-header` or the two
-     bars' bottom edges miss each other across the Work split. */
-  height: 33px;
-  min-height: 33px;
-  max-height: 33px;
+  /* Same token as `.ade-tool-header` so the Work split's two bars meet. */
+  height: var(--ade-work-chrome-rail-h);
+  min-height: var(--ade-work-chrome-rail-h);
+  max-height: var(--ade-work-chrome-rail-h);
   background: var(--work-chrome-surface, var(--color-card));
   border-style: solid;
   border-width: 0 0 1px 0;

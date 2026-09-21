@@ -568,8 +568,10 @@ export function WorkSidebar({
   // `TerminalsPage` directly, not through `routeProps`), so all four ways of
   // leaving — switching tools, closing the pane, leaving the work route, and
   // leaving the project tab — unmount the panel before anything hides it. That
-  // is why no panel is ever mounted inside an `inert` subtree today, and it is
-  // the invariant a CSS hide here would quietly break.
+  // is why no tool panel is ever mounted inside an `inert` subtree today, and
+  // it is the invariant a CSS hide of a panel would quietly break. The picker
+  // keep-alive is not a panel: it has no WebContentsView, so it may be inert
+  // while a tool is on screen.
   const ToolPanel = active && effectiveTool ? WORK_TOOL_COMPONENTS[effectiveTool] : null;
   const content = ToolPanel ? <ToolPanel {...toolProps} /> : null;
 
@@ -794,6 +796,7 @@ export function WorkSidebar({
               : "absolute inset-0 min-h-0 opacity-100"
           }
           aria-hidden={effectiveTool ? true : undefined}
+          {...(effectiveTool ? ({ inert: "" } as { inert: string }) : {})}
         >
           <WorkToolPicker
             activeTool={tool}
