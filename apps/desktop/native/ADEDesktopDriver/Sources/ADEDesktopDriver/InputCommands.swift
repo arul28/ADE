@@ -200,6 +200,12 @@ extension DriverRuntime {
                 message: "Lane \(laneId) has no display to post real input on."
             )
         }
+        // The lane's windows, front to back, for routing: a real event lands
+        // on the process under the point (`WindowHitTest`), so the one system
+        // cursor stays with the user. Read once per command.
+        let hitCandidates = windows.listWindows(laneId: laneId).map {
+            WindowHitCandidate(pid: $0.pid, frame: $0.frame, minimized: $0.minimized)
+        }
         func point(_ key: String) throws -> CGPoint {
             let raw: CGPoint
             if let object = payload[key]?.objectValue,
@@ -227,7 +233,8 @@ extension DriverRuntime {
                 laneId: laneId,
                 holderId: holderId,
                 to: target,
-                restoreCursor: restoreCursor
+                restoreCursor: restoreCursor,
+                targetPid: WindowHitTest.pid(at: target, in: hitCandidates)
             )
         case "click":
             let target = try point("at")
@@ -237,7 +244,8 @@ extension DriverRuntime {
                 at: target,
                 button: payload["button"]?.stringValue ?? "left",
                 count: payload["count"]?.intValue ?? 1,
-                restoreCursor: restoreCursor
+                restoreCursor: restoreCursor,
+                targetPid: WindowHitTest.pid(at: target, in: hitCandidates)
             )
         case "drag":
             let from = try point("from")
@@ -258,6 +266,7 @@ extension DriverRuntime {
                 to: to,
                 durationMs: payload["durationMs"]?.intValue ?? 300,
                 restoreCursor: restoreCursor,
+                targetPid: WindowHitTest.pid(at: from, in: hitCandidates),
                 verify: laneBoundsCheck(laneId: laneId)
             )
         case "press":
@@ -265,10 +274,16 @@ extension DriverRuntime {
                 laneId: laneId,
                 holderId: holderId,
                 key: payload["key"]?.stringValue ?? "",
-                modifiers: payload["modifiers"]?.arrayValue?.compactMap(\.stringValue) ?? []
+                modifiers: payload["modifiers"]?.arrayValue?.compactMap(\.stringValue) ?? [],
+                targetPid: WindowHitTest.frontmostPid(in: hitCandidates)
             )
         case "type":
-            try realInput.text(laneId: laneId, holderId: holderId, text: payload["text"]?.stringValue ?? "")
+            try realInput.text(
+                laneId: laneId,
+                holderId: holderId,
+                text: payload["text"]?.stringValue ?? "",
+                targetPid: WindowHitTest.frontmostPid(in: hitCandidates)
+            )
         default:
             throw DriverError(
                 code: DriverErrorCode.invalidArgument,

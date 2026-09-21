@@ -34,6 +34,20 @@ final class RealInput {
         self.hidSource = source
     }
 
+    /// Where an event goes. To a process when the lane knows which of its
+    /// windows is under the point: `postToPid` delivers at the coordinate and
+    /// leaves the one system cursor alone, which is what makes a local takeover
+    /// usable — the HID tap moves the user's own mouse onto the virtual display
+    /// on every click and the restore warp below only softens that. Empty
+    /// desktop has no process, so that case still takes the tap.
+    private func post(_ event: CGEvent, to pid: pid_t?) {
+        if let pid {
+            event.postToPid(pid)
+        } else {
+            event.post(tap: .cghidEventTap)
+        }
+    }
+
     /// The gate. Called first by every method below, and by nothing else.
     @discardableResult
     func authorize(laneId: String, holderId: String?, now: Date = Date()) throws -> InputLease {
@@ -49,10 +63,11 @@ final class RealInput {
         laneId: String,
         holderId: String?,
         to point: CGPoint,
-        restoreCursor: Bool = false
+        restoreCursor: Bool = false,
+        targetPid: pid_t? = nil
     ) throws {
         try authorize(laneId: laneId, holderId: holderId)
-        try posting(restore: restoreCursor) {
+        try posting(restore: restoreCursor && targetPid == nil) {
             guard let event = CGEvent(
                 mouseEventSource: hidSource,
                 mouseType: .mouseMoved,
@@ -61,7 +76,7 @@ final class RealInput {
             ) else {
                 throw DriverError(code: DriverErrorCode.internalError, message: "Could not build a pointer event.")
             }
-            event.post(tap: .cghidEventTap)
+            post(event, to: targetPid)
         }
     }
 
@@ -71,10 +86,11 @@ final class RealInput {
         at point: CGPoint,
         button: String,
         count: Int,
-        restoreCursor: Bool = false
+        restoreCursor: Bool = false,
+        targetPid: pid_t? = nil
     ) throws {
         try authorize(laneId: laneId, holderId: holderId)
-        try posting(restore: restoreCursor) {
+        try posting(restore: restoreCursor && targetPid == nil) {
             let isRight = button.lowercased() == "right"
             let downType: CGEventType = isRight ? .rightMouseDown : .leftMouseDown
             let upType: CGEventType = isRight ? .rightMouseUp : .leftMouseUp
@@ -96,8 +112,8 @@ final class RealInput {
                 }
                 down.setIntegerValueField(.mouseEventClickState, value: Int64(click))
                 up.setIntegerValueField(.mouseEventClickState, value: Int64(click))
-                down.post(tap: .cghidEventTap)
-                up.post(tap: .cghidEventTap)
+                post(down, to: targetPid)
+                post(up, to: targetPid)
             }
         }
     }
@@ -127,6 +143,7 @@ final class RealInput {
         to: CGPoint,
         durationMs: Int,
         restoreCursor: Bool = false,
+        targetPid: pid_t? = nil,
         verify: (CGPoint) -> DriverError? = { _ in nil }
     ) throws {
         try authorize(laneId: laneId, holderId: holderId)
@@ -134,7 +151,7 @@ final class RealInput {
         // on this lane's display" mistake never starts a gesture at all.
         if let error = verify(from) { throw error }
         if let error = verify(to) { throw error }
-        try posting(restore: restoreCursor) {
+        try posting(restore: restoreCursor && targetPid == nil) {
             let steps = max(2, min(60, durationMs / 16))
             guard let down = CGEvent(
                 mouseEventSource: hidSource,
@@ -144,7 +161,7 @@ final class RealInput {
             ) else {
                 throw DriverError(code: DriverErrorCode.internalError, message: "Could not build a drag event.")
             }
-            down.post(tap: .cghidEventTap)
+            post(down, to: targetPid)
             var reached = from
             for step in 1...steps {
                 let progress = CGFloat(step) / CGFloat(steps)
@@ -155,12 +172,12 @@ final class RealInput {
                 do {
                     try authorize(laneId: laneId, holderId: holderId)
                 } catch {
-                    releaseButton(at: reached)
+                    releaseButton(at: reached, to: targetPid)
                     log("drag on lane \(laneId) lost its lease mid-gesture; released the button")
                     throw error
                 }
                 if let error = verify(point) {
-                    releaseButton(at: reached)
+                    releaseButton(at: reached, to: targetPid)
                     log("drag on lane \(laneId) left its display mid-gesture; released the button")
                     throw error
                 }
@@ -170,7 +187,7 @@ final class RealInput {
                     mouseCursorPosition: point,
                     mouseButton: .left
                 ) {
-                    moved.post(tap: .cghidEventTap)
+                    post(moved, to: targetPid)
                     reached = point
                 }
                 // Pumped rather than slept: a 5-second drag on one lane must not
@@ -181,19 +198,19 @@ final class RealInput {
                     timeout: Double(max(1, durationMs)) / 1000.0 / Double(steps)
                 )
             }
-            releaseButton(at: to)
+            releaseButton(at: to, to: targetPid)
         }
     }
 
     /// The button must come up even when the drag is being abandoned.
-    private func releaseButton(at point: CGPoint) {
+    private func releaseButton(at point: CGPoint, to pid: pid_t?) {
         guard let up = CGEvent(
             mouseEventSource: hidSource,
             mouseType: .leftMouseUp,
             mouseCursorPosition: point,
             mouseButton: .left
         ) else { return }
-        up.post(tap: .cghidEventTap)
+        post(up, to: pid)
     }
 
     /// A key press, posted to the session rather than to a process.
@@ -212,7 +229,8 @@ final class RealInput {
         laneId: String,
         holderId: String?,
         key: String,
-        modifiers: [String]
+        modifiers: [String],
+        targetPid: pid_t? = nil
     ) throws {
         try authorize(laneId: laneId, holderId: holderId)
         guard let keyCode = KeyCodes.code(for: key) else {
@@ -229,13 +247,16 @@ final class RealInput {
         }
         down.flags = flags
         up.flags = flags
-        down.post(tap: .cghidEventTap)
-        up.post(tap: .cghidEventTap)
+        // To the lane's frontmost window's process when it has one: the HID
+        // tap would hand the keystroke to whatever is frontmost on the user's
+        // own screen, mid-sentence.
+        post(down, to: targetPid)
+        post(up, to: targetPid)
     }
 
     /// Text, posted to the session for the same reason `key` is: it goes to
     /// whatever is key on the lane's display, not to a pid this file guessed.
-    func text(laneId: String, holderId: String?, text: String) throws {
+    func text(laneId: String, holderId: String?, text: String, targetPid: pid_t? = nil) throws {
         try authorize(laneId: laneId, holderId: holderId)
         for character in text {
             var utf16 = Array(String(character).utf16)
@@ -244,8 +265,8 @@ final class RealInput {
             else { continue }
             down.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
             up.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
-            down.post(tap: .cghidEventTap)
-            up.post(tap: .cghidEventTap)
+            post(down, to: targetPid)
+            post(up, to: targetPid)
         }
     }
 

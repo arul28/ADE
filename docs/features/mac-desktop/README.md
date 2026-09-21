@@ -332,7 +332,16 @@ the lane's desktop; a chat that is neither a viewer nor the lease holder does
 not get the lane's screen as a corner card.
 
 The corner card is itself a viewer, not a picture someone else happens to
-leave on screen. Pointer, wheel and key input are bound to the surface as
+leave on screen. On the driver side a real event is delivered to the
+PROCESS under the point (`WindowHitTest` in Core, `postToPid` in
+`RealInput`), not to the HID tap: a tap post moves the one system cursor to
+the event's coordinate, which on the Mac that hosts the display is the user's
+own mouse being yanked onto a screen they cannot see on every click, and the
+restore warp only softened that. A process post lands at the same coordinate
+and leaves the cursor alone; keys go to the lane's frontmost window's process
+for the same reason (the tap would type into whatever is frontmost on the
+user's own screen). Only empty desktop, which has no process, still takes the
+tap and the restore. Pointer, wheel and key input are bound to the surface as
 native DOM listeners, never React props: the decoder's canvas is a React portal
 into a host node parked inside the surface, and a portal's synthetic events
 bubble to the portal's owner, not to the surface that is its DOM parent, which
