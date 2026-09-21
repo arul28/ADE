@@ -7,7 +7,7 @@ import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import type { AgentChatEventEnvelope } from "../../../shared/types/chat";
 import type { LaneSummary } from "../../../shared/types/lanes";
 import type { GitBranchSummary, GitCommitSummary } from "../../../shared/types/git";
-import type { PrComment, PrDetail, PrSummary } from "../../../shared/types/prs";
+import type { PrSummary } from "../../../shared/types/prs";
 import type { TerminalSessionSummary } from "../../../shared/types/sessions";
 import type {
   SearchDocKind,
@@ -122,8 +122,6 @@ export type SearchServiceDeps = {
   } | null;
   prs?: {
     listAll: (args?: { laneId?: string }) => PrSummary[] | Promise<PrSummary[]>;
-    getDetail: (prId: string) => Promise<PrDetail | null>;
-    getComments: (prId: string) => Promise<PrComment[]>;
   } | null;
   git?: {
     listRecentCommits: (args: { laneId: string; limit?: number }) => Promise<GitCommitSummary[]>;
@@ -893,24 +891,14 @@ export function createSearchService(deps: SearchServiceDeps) {
       withTransaction(() => deleteDocsWhere("doc_id = ?", [`pr:${prId}`]));
       return;
     }
-    let detail: PrDetail | null = null;
-    let comments: PrComment[] = [];
-    try {
-      detail = await deps.prs.getDetail(prId);
-    } catch {
-      // body unavailable — index what we have
-    }
-    try {
-      comments = await deps.prs.getComments(prId);
-    } catch {
-      // comments unavailable
-    }
-    const commentText = comments
-      .map((comment) => `${comment.author}: ${comment.body ?? ""}`)
-      .filter((line) => line.trim().length > 0)
-      .join("\n");
+    // Index local PR rows only. `getDetail` / `getComments` hit GitHub REST
+    // (pull + issue comments + review comments) for every row on backfill and
+    // every `prs-updated` — on a project with hundreds of historical PRs that
+    // is a 2:1 `repo_pulls`/`repo_issues` stampede that exhausts the hourly
+    // quota. Title, number, and URL are already on the local summary; FTS
+    // indexes those fields, not GitHub bodies or comments.
     const body = sanitizeIndexedText(
-      [summary.title, detail?.body ?? "", commentText].filter(Boolean).join("\n")
+      [`#${summary.githubPrNumber}`, summary.title, summary.githubUrl].filter(Boolean).join("\n"),
     );
     let deepLink: string;
     try {
@@ -935,7 +923,7 @@ export function createSearchService(deps: SearchServiceDeps) {
         sessionId: null,
         title: `#${summary.githubPrNumber} ${summary.title}`,
         rankTitle: summary.title,
-        snippetSource: (detail?.body ?? summary.title).slice(0, 240),
+        snippetSource: summary.title.slice(0, 240),
         deepLink,
         updatedAt: summary.updatedAt,
         body
