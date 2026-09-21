@@ -2599,6 +2599,15 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   /// `AgentChatEvent.toolResult` already carries seven associated values that
   /// every construction site in the app and the tests would have to restate.
   var toolResultFullBytes: Int?
+  /// Byte offset of this row in the host's transcript, when it arrived on a
+  /// `chat_history` page that reported one.
+  ///
+  /// Not decoded from the event — the page carries the offsets in a parallel
+  /// array and the client stamps them on. Carried so a later "show full
+  /// result" can tell the host exactly where to read instead of asking it to
+  /// scan: that scan is bounded to a window near the tail, and a row the
+  /// reader paged back to can sit outside it.
+  var sourceOffset: Int?
 
   init(
     sessionId: String,
@@ -2803,9 +2812,30 @@ struct AgentChatEventHistoryPage: Decodable, Equatable {
   var sessionId: String
   @ADELossyArray var events: [AgentChatEventEnvelope]
   var startOffset: Int
+  /// Byte offset of each row in `events`, positionally aligned with it. Absent
+  /// on hosts that predate it.
+  var envelopeStartOffsets: [Int]?
   var hasMore: Bool
   var sessionFound: Bool
   var unavailable: Bool?
+
+  /// The page with each event stamped with its own offset.
+  ///
+  /// `events` is a lossy array: a row this build cannot decode is dropped, and
+  /// that would shift every later offset onto the wrong row. So the two are
+  /// zipped only when their lengths still agree. A dropped row therefore costs
+  /// the whole page its hints, which only ever means the host falls back to
+  /// scanning — never a hint pointing at the wrong row.
+  func stampingEnvelopeOffsets() -> AgentChatEventHistoryPage {
+    guard let offsets = envelopeStartOffsets, offsets.count == events.count else { return self }
+    var stamped = self
+    stamped.events = zip(events, offsets).map { event, offset in
+      var copy = event
+      copy.sourceOffset = offset >= 0 ? offset : nil
+      return copy
+    }
+    return stamped
+  }
 }
 
 /// One tool result fetched on demand, after the slim mobile wire delivered

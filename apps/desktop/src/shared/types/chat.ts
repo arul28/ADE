@@ -1972,6 +1972,19 @@ export type AgentChatEventHistoryPage = {
   events: AgentChatEventEnvelope[];
   /** Byte offset in the transcript where this page begins. Pass as the next request's beforeOffset. 0 = head reached. */
   startOffset: number;
+  /**
+   * Byte offset of each row in `events`, positionally aligned with it.
+   *
+   * Lets a client hand a later `chat_tool_result` the exact location of the
+   * row it wants instead of asking the host to scan for it: a truncated result
+   * the reader paged back to can sit far outside that lookup's bounded
+   * tail window, and without a location it reads as "no longer in the
+   * transcript". Optional so older hosts simply omit it, and a client whose
+   * event array lost an element to a lossy decode must compare lengths before
+   * zipping — a mismatched hint is only ever a missed hint, never a wrong row,
+   * because the host still matches the row's own sequence and timestamp.
+   */
+  envelopeStartOffsets?: number[];
   hasMore: boolean;
   sessionFound: boolean;
   /**

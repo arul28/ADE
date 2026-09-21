@@ -183,7 +183,8 @@ struct WorkToolCardView: View, Equatable {
                 // The result envelope's own timestamp: `completedAt` is set
                 // from it on the same pass that stamps `resultSequence`, so
                 // the pair always names one generation.
-                eventTimestamp: toolCard.completedAt
+                eventTimestamp: toolCard.completedAt,
+                sourceOffset: toolCard.resultSourceOffset
               )
             } else {
               let result = workToolResultBlockText(resultText, expanded: resultExpanded)

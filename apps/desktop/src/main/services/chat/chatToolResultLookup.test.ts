@@ -3,7 +3,11 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AgentChatEvent, AgentChatEventEnvelope } from "../../../shared/types/chat";
-import { chatToolResultRowId, findStoredToolResult } from "./chatToolResultLookup";
+import {
+  CHAT_TOOL_RESULT_LOOKUP_MAX_BYTES,
+  chatToolResultRowId,
+  findStoredToolResult,
+} from "./chatToolResultLookup";
 
 const SESSION_ID = "session-tool-result";
 
@@ -50,6 +54,91 @@ describe("chatToolResultRowId", () => {
 });
 
 describe("findStoredToolResult", () => {
+  it("answers from the sourceOffset hint, past the bounded tail scan", async () => {
+    // The scan only reaches a fixed window back from the tail, but the reader
+    // can page much further than that. A row they can still see must stay
+    // fetchable, and the hint is what makes that one exact read.
+    const target = JSON.stringify({
+      sessionId: SESSION_ID,
+      timestamp: "2026-09-19T10:00:00.000Z",
+      sequence: 1,
+      event: toolResult("item-deep", "the deep result"),
+    } satisfies AgentChatEventEnvelope);
+    // Pad past CHAT_TOOL_RESULT_LOOKUP_MAX_BYTES so the backward scan provably
+    // cannot reach the target row.
+    const padRow = (index: number) => JSON.stringify({
+      sessionId: SESSION_ID,
+      timestamp: `2026-09-20T10:00:${String(index % 60).padStart(2, "0")}.000Z`,
+      sequence: index + 2,
+      event: { type: "text", text: "x".repeat(4_096) },
+    } satisfies AgentChatEventEnvelope);
+    const padCount = Math.ceil(CHAT_TOOL_RESULT_LOOKUP_MAX_BYTES / 4_096) + 16;
+    const pad = Array.from({ length: padCount }, (_, index) => padRow(index));
+    fs.writeFileSync(transcriptPath, `${[target, ...pad].join("\n")}\n`, "utf8");
+
+    // Without the hint the row is out of reach.
+    expect(await findStoredToolResult({
+      transcriptPath,
+      sessionId: SESSION_ID,
+      itemId: "item-deep",
+    })).toBeNull();
+
+    // With it, one exact read answers.
+    const hit = await findStoredToolResult({
+      transcriptPath,
+      sessionId: SESSION_ID,
+      itemId: "item-deep",
+      sourceOffset: 0,
+      resultSequence: 1,
+      resultTimestamp: "2026-09-19T10:00:00.000Z",
+    });
+    expect(hit?.event.result).toBe("the deep result");
+    expect(hit?.envelope.sequence).toBe(1);
+  });
+
+  it("falls back to the scan when the hint misses", async () => {
+    write([
+      toolResult("item-1", "first"),
+      { type: "text", text: "between" },
+      toolResult("item-2", "second"),
+    ]);
+
+    // An offset pointing at the wrong row: the hinted read finds a row that is
+    // not the one asked for, so it is discarded and the scan answers.
+    const hit = await findStoredToolResult({
+      transcriptPath,
+      sessionId: SESSION_ID,
+      itemId: "item-2",
+      sourceOffset: 0,
+    });
+    expect(hit?.event.result).toBe("second");
+
+    // An offset past the end of the file, and one landing mid-row, are both
+    // just missed hints.
+    expect((await findStoredToolResult({
+      transcriptPath,
+      sessionId: SESSION_ID,
+      itemId: "item-2",
+      sourceOffset: 10_000_000,
+    }))?.event.result).toBe("second");
+    expect((await findStoredToolResult({
+      transcriptPath,
+      sessionId: SESSION_ID,
+      itemId: "item-2",
+      sourceOffset: 12,
+    }))?.event.result).toBe("second");
+
+    // A hint that lands on the right row but the wrong generation is refused
+    // by the same identity check the scan uses.
+    expect(await findStoredToolResult({
+      transcriptPath,
+      sessionId: SESSION_ID,
+      itemId: "item-2",
+      sourceOffset: 0,
+      resultSequence: 99,
+    })).toBeNull();
+  });
+
   it("uses the timestamp to separate legacy generations that share a sequence", async () => {
     // Older hosts restarted `eventSequence` at 1 on every rehydration, so one
     // legacy transcript can hold two generations under the same number. With

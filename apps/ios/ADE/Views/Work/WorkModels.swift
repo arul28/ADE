@@ -91,6 +91,10 @@ struct WorkToolCardModel: Identifiable, Hashable {
   /// Transcript sequence for the result. Retry events may reuse `itemId`, so
   /// the sequence is part of the remote-result cache identity.
   let resultSequence: Int?
+  /// Where the result row sits in the host transcript, when the phone read it
+  /// off a history page. Turns the fetch into an exact read rather than a
+  /// bounded scan that may not reach back this far.
+  let resultSourceOffset: Int?
 
   init(
     id: String,
@@ -104,7 +108,8 @@ struct WorkToolCardModel: Identifiable, Hashable {
     webSearchResults: [CodexWebSearchResult]? = nil,
     remoteResultBytes: Int? = nil,
     sessionId: String? = nil,
-    resultSequence: Int? = nil
+    resultSequence: Int? = nil,
+    resultSourceOffset: Int? = nil
   ) {
     self.id = id
     self.toolName = toolName
@@ -118,6 +123,7 @@ struct WorkToolCardModel: Identifiable, Hashable {
     self.remoteResultBytes = remoteResultBytes
     self.sessionId = sessionId
     self.resultSequence = resultSequence
+    self.resultSourceOffset = resultSourceOffset
   }
 }
 
@@ -1809,6 +1815,10 @@ struct WorkChatEnvelope: Identifiable, Equatable {
   /// reports `started`/`completed` without a delivered user-message frame.
   let commandLifecycleStatus: String?
   let commandLifecycleSteerId: String?
+  /// Byte offset of this row in the host's transcript, when it came off a
+  /// `chat_history` page. Lets a "show full result" fetch name the exact
+  /// location instead of relying on the host's bounded tail scan.
+  let sourceOffset: Int?
 
   init(
     sessionId: String,
@@ -1827,7 +1837,8 @@ struct WorkChatEnvelope: Identifiable, Equatable {
     stopReason: String? = nil,
     toolResultFullBytes: Int? = nil,
     commandLifecycleStatus: String? = nil,
-    commandLifecycleSteerId: String? = nil
+    commandLifecycleSteerId: String? = nil,
+    sourceOffset: Int? = nil
   ) {
     self.sessionId = sessionId
     self.timestamp = timestamp
@@ -1846,6 +1857,7 @@ struct WorkChatEnvelope: Identifiable, Equatable {
     self.toolResultFullBytes = toolResultFullBytes
     self.commandLifecycleStatus = commandLifecycleStatus
     self.commandLifecycleSteerId = commandLifecycleSteerId
+    self.sourceOffset = sourceOffset
   }
 }
 

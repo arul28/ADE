@@ -1700,6 +1700,16 @@ export type SyncChatToolResultRequestPayload = SyncChatUnsubscribePayload & {
    * match when both are named.
    */
   resultTimestamp?: string;
+  /**
+   * Byte offset of the row in the transcript, when the client got it from a
+   * `chat_history` page.
+   *
+   * Purely a hint: the host reads that one row directly (fixed I/O, no scan)
+   * and still checks it is the row that was asked for. A hint that misses —
+   * stale, misaligned, or from another file — falls back to the bounded scan,
+   * so it can never produce a wrong result, only a slower one.
+   */
+  sourceOffset?: number;
 };
 
 export type SyncChatToolResultResponsePayload = {

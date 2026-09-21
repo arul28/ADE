@@ -13832,7 +13832,8 @@ final class SyncService: ObservableObject {
     sessionId: String,
     itemId: String,
     eventSequence: Int? = nil,
-    eventTimestamp: String? = nil
+    eventTimestamp: String? = nil,
+    sourceOffset: Int? = nil
   ) async throws -> String {
     try await chatToolResultCache.fullToolResult(
       sessionId: sessionId,
@@ -13845,7 +13846,8 @@ final class SyncService: ObservableObject {
         sessionId: sessionId,
         itemId: itemId,
         resultSequence: eventSequence,
-        resultTimestamp: eventTimestamp
+        resultTimestamp: eventTimestamp,
+        sourceOffset: sourceOffset
       )
       if response.unavailable == true {
         throw NSError(
@@ -13877,7 +13879,8 @@ final class SyncService: ObservableObject {
     sessionId: String,
     itemId: String,
     resultSequence: Int? = nil,
-    resultTimestamp: String? = nil
+    resultTimestamp: String? = nil,
+    sourceOffset: Int? = nil
   ) async throws -> AgentChatToolResultResponse {
     let requestId = makeRequestId()
     var payload = chatSubscriptionPayload(
@@ -13895,6 +13898,11 @@ final class SyncService: ObservableObject {
     if let resultTimestamp, !resultTimestamp.isEmpty {
       payload["resultTimestamp"] = resultTimestamp
     }
+    // Where this row was read from, when it came off a history page. The host
+    // reads that one row directly instead of scanning back from the tail,
+    // which is what makes a result the reader paged a long way back to
+    // fetchable at all.
+    if let sourceOffset, sourceOffset >= 0 { payload["sourceOffset"] = sourceOffset }
     let raw = try await awaitResponse(
       requestId: requestId,
       disconnectOnTimeout: false,
@@ -13931,7 +13939,7 @@ final class SyncService: ObservableObject {
       ) {
         self.sendEnvelope(type: "chat_history", requestId: requestId, payload: payload)
       }
-      let page = try decode(raw, as: AgentChatEventHistoryPage.self)
+      let page = try decode(raw, as: AgentChatEventHistoryPage.self).stampingEnvelopeOffsets()
       recordChatHistoryPageCursor(
         requestedSessionId: sessionId,
         beforeOffset: beforeOffset,
@@ -13952,7 +13960,7 @@ final class SyncService: ObservableObject {
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath,
       as: AgentChatEventHistoryPage.self
-    )
+    ).stampingEnvelopeOffsets()
     recordChatHistoryPageCursor(
       requestedSessionId: sessionId,
       beforeOffset: beforeOffset,

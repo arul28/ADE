@@ -16,6 +16,10 @@ struct WorkRemoteToolResultAffordance: View {
   /// pair is what identifies this generation on a legacy transcript, where a
   /// sequence can repeat across host restarts.
   let eventTimestamp: String?
+  /// Byte offset of the row in the host transcript, when the phone has one.
+  /// Deliberately NOT part of `resultIdentity`: it is a location hint, not
+  /// part of what makes this result this result.
+  let sourceOffset: Int?
 
   @EnvironmentObject private var syncService: SyncService
   @State private var resultExpanded = false
@@ -175,7 +179,8 @@ struct WorkRemoteToolResultAffordance: View {
           sessionId: sessionId,
           itemId: itemId,
           eventSequence: eventSequence,
-          eventTimestamp: eventTimestamp
+          eventTimestamp: eventTimestamp,
+          sourceOffset: sourceOffset
         )
         guard fetchGeneration == requestGeneration else { return }
         fetchedFullResult = fullResult

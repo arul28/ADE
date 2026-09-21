@@ -884,7 +884,8 @@ func makeWorkChatTranscript(from entries: [AgentChatEventEnvelope]) -> [WorkChat
       commandLifecycleSteerId: {
         guard case .commandLifecycle(_, _, _, let steerId, _) = entry.event else { return nil }
         return steerId
-      }()
+      }(),
+      sourceOffset: entry.sourceOffset
     )
   }
   .sorted(by: workChatEnvelopeOrderedBefore)

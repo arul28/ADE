@@ -8542,6 +8542,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               sessionId,
               events: read.envelopes,
               startOffset: read.startOffset,
+              // Per-row locations, so a later `chat_tool_result` for a row on
+              // this page can be answered by an exact read instead of a scan
+              // that may not reach back this far.
+              envelopeStartOffsets: read.envelopeStartOffsets,
               hasMore: read.hasMore,
               sessionFound: true,
             };
@@ -8584,6 +8588,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // Legacy transcripts can repeat a sequence across host restarts; the
         // timestamp tells those generations apart.
         const requestedResultTimestamp = toOptionalString(payload?.resultTimestamp);
+        // Where the phone saw the row. A hint, never trusted on its own: the
+        // lookup still verifies the row it finds there is the one asked for.
+        const requestedSourceOffset = typeof payload?.sourceOffset === "number"
+          && Number.isFinite(payload.sourceOffset)
+          && payload.sourceOffset >= 0
+          ? payload.sourceOffset
+          : null;
         const unavailable = (): SyncChatToolResultResponsePayload => ({
           sessionId: sessionId ?? "",
           itemId: itemId ?? "",
@@ -8625,6 +8636,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               itemId,
               ...(requestedResultSequence !== null ? { resultSequence: requestedResultSequence } : {}),
               ...(requestedResultTimestamp ? { resultTimestamp: requestedResultTimestamp } : {}),
+              ...(requestedSourceOffset !== null ? { sourceOffset: requestedSourceOffset } : {}),
               ...(signal ? { signal } : {}),
             }),
             signal,

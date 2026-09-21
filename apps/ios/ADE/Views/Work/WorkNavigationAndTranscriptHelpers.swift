@@ -898,7 +898,8 @@ func buildWorkToolCards(
         // there was.
         remoteResultBytes: envelope.toolResultFullBytes,
         sessionId: envelope.sessionId,
-        resultSequence: envelope.sequence
+        resultSequence: envelope.sequence,
+        resultSourceOffset: envelope.sourceOffset
       )
     case .webSearch(let query, let action, let actions, let results, let status, let itemId, _):
       // Web searches are tool calls — render them as tool cards so they're

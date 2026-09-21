@@ -1,6 +1,7 @@
 import type { AgentChatEvent, AgentChatEventEnvelope } from "../../../shared/types/chat";
+import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { readTranscriptHistoryPage } from "./chatTranscriptHistoryPager";
-import { readHistoryFileSize } from "../storage/historyCompression";
+import { readHistoryFileRange, readHistoryFileSize } from "../storage/historyCompression";
 
 /**
  * Find one stored `tool_result` in a transcript by the id its row is keyed on.
@@ -21,6 +22,11 @@ import { readHistoryFileSize } from "../storage/historyCompression";
  */
 export const CHAT_TOOL_RESULT_LOOKUP_MAX_BYTES = 8 * 1024 * 1024;
 export const CHAT_TOOL_RESULT_LOOKUP_MAX_PAGES = 32;
+/**
+ * Window read forward from a client's `sourceOffset` hint. One row, plus room
+ * for a long one — the wire caps a stored result well below this.
+ */
+export const CHAT_TOOL_RESULT_HINT_MAX_BYTES = 2 * 1024 * 1024;
 
 export type ChatToolResultLookupHit = {
   event: Extract<AgentChatEvent, { type: "tool_result" }>;
@@ -56,6 +62,18 @@ export async function findStoredToolResult(options: {
    * newest-first scan, so the newest of a tie wins.
    */
   resultTimestamp?: string;
+  /**
+   * Byte offset the client saw this row at, from a `chat_history` page.
+   *
+   * The scan below is bounded to a fixed window back from the tail so an id
+   * that is not in the file costs fixed I/O. A reader can page much further
+   * back than that window, though, so a row they can see may sit outside it
+   * and read as "no longer in the transcript". This hint turns that case into
+   * one exact read. It is never trusted on its own: the row found there must
+   * still match the id (and the generation, when named), and anything else
+   * falls through to the scan.
+   */
+  sourceOffset?: number;
   signal?: AbortSignal;
 }): Promise<ChatToolResultLookupHit | null> {
   const wantedId = options.itemId.trim();
@@ -66,6 +84,17 @@ export async function findStoredToolResult(options: {
   const wantedTimestamp = typeof options.resultTimestamp === "string" && options.resultTimestamp.trim()
     ? options.resultTimestamp.trim()
     : null;
+  const hinted = await readHintedToolResult({
+    transcriptPath: options.transcriptPath,
+    sessionId: options.sessionId,
+    sourceOffset: options.sourceOffset,
+    wantedId,
+    wantedSequence,
+    wantedTimestamp,
+    ...(options.signal ? { signal: options.signal } : {}),
+  });
+  if (hinted) return hinted;
+
   let beforeOffset = await readHistoryFileSize(options.transcriptPath);
   let scannedBytes = 0;
   for (let page = 0; page < CHAT_TOOL_RESULT_LOOKUP_MAX_PAGES; page += 1) {
@@ -103,4 +132,58 @@ export async function findStoredToolResult(options: {
     beforeOffset = read.startOffset;
   }
   return null;
+}
+
+/**
+ * The one row at `sourceOffset`, when the client told us where it saw it.
+ *
+ * Reads a single bounded window forward from that byte and takes the first
+ * complete line, which is the row itself — the offsets the pager hands out
+ * always land on a line start. Everything about the hit is then verified
+ * against what was asked for, so a stale or misaligned hint returns null and
+ * the caller scans as before rather than answering with the wrong row.
+ */
+async function readHintedToolResult(args: {
+  transcriptPath: string;
+  sessionId: string;
+  sourceOffset: number | undefined;
+  wantedId: string;
+  wantedSequence: number | null;
+  wantedTimestamp: string | null;
+  signal?: AbortSignal;
+}): Promise<ChatToolResultLookupHit | null> {
+  const { sourceOffset } = args;
+  if (typeof sourceOffset !== "number" || !Number.isFinite(sourceOffset) || sourceOffset < 0) {
+    return null;
+  }
+  if (args.signal?.aborted) return null;
+  try {
+    const buffer = await readHistoryFileRange(
+      args.transcriptPath,
+      sourceOffset,
+      CHAT_TOOL_RESULT_HINT_MAX_BYTES,
+      args.signal,
+    );
+    const text = buffer.toString("utf8");
+    const newline = text.indexOf("\n");
+    // No terminator inside the window means the row is larger than the hint
+    // budget; the scan reads it through the pager's own oversized-row path.
+    if (newline < 0) return null;
+    const line = text.slice(0, newline).trim();
+    if (!line) return null;
+    const [envelope] = parseAgentChatTranscript(line);
+    if (!envelope) return null;
+    // The hint names a byte in THIS session's file, so a row for another
+    // session means the offset is stale or came from somewhere else.
+    if (envelope.sessionId !== args.sessionId) return null;
+    const event = envelope.event;
+    if (!event || event.type !== "tool_result") return null;
+    if (chatToolResultRowId(event) !== args.wantedId) return null;
+    if (args.wantedSequence !== null && envelope.sequence !== args.wantedSequence) return null;
+    if (args.wantedTimestamp !== null && envelope.timestamp !== args.wantedTimestamp) return null;
+    return { event, envelope };
+  } catch {
+    // A bad hint is only ever a missed hint.
+    return null;
+  }
 }
