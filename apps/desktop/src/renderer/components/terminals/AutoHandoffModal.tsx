@@ -13,7 +13,7 @@ import type {
 } from "../../../shared/types";
 import { resolveModelDescriptor } from "../../../shared/modelRegistry";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
-import { useAppStore } from "../../state/appStore";
+import { useAppStore, useRootAppStore } from "../../state/appStore";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
@@ -401,7 +401,17 @@ export type AutoHandoffSession = {
 };
 
 export function AutoHandoffModal({ session, binding = null, existingRules, onClose }: AutoHandoffModalProps) {
-  const storeLanes = useAppStore((state) => state.lanes) as LaneSummary[] | undefined;
+  const projectLanes = useAppStore((state) => state.lanes) as LaneSummary[] | undefined;
+  // A chat that lives on another machine must offer THAT machine's lanes: the
+  // rule is saved there, so a lane id only this tab knows would not resolve.
+  const crossMachineLanes = useRootAppStore((state) => state.crossMachineLanesByMachineId);
+  const storeLanes = useMemo(() => {
+    if (binding?.kind === "remote") {
+      const remote = crossMachineLanes?.[binding.targetId]?.lanes;
+      if (remote?.length) return remote as LaneSummary[];
+    }
+    return projectLanes;
+  }, [binding, crossMachineLanes, projectLanes]);
   const [availableModelIds, setAvailableModelIds] = useState<string[]>([]);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -425,7 +435,9 @@ export function AutoHandoffModal({ session, binding = null, existingRules, onClo
     let cancelled = false;
     void (async () => {
       try {
-        const status = await window.ade?.ai?.getStatus?.();
+        // Probe the chat's own machine: a model offered here but not there
+        // would be saved into a rule the remote runtime cannot execute.
+        const status = await window.ade?.ai?.getStatus?.({}, binding ?? null);
         if (cancelled) return;
         // Every provider is a legal handoff target. Live-redirect support is a
         // CTO constraint, not a handoff one, so the list is never narrowed here.
@@ -435,7 +447,7 @@ export function AutoHandoffModal({ session, binding = null, existingRules, onClo
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [binding]);
 
   useEffect(() => {
     if (form.targetModelId) return;
