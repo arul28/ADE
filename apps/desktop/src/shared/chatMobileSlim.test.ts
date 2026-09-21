@@ -286,6 +286,19 @@ describe("compactToolResultForMobile", () => {
     expect(compacted.resultTruncatedForMobile).toBe(true);
   });
 
+  it("does not offer a fetch for an unserializable result that fits whole", () => {
+    // Regression: `JSON.stringify` throws on a circular payload, so the size is
+    // unmeasurable and the early return was skipped. The row then advertised
+    // "Show full result" with a 0-byte original size for a 15-byte fallback the
+    // fetch would return verbatim.
+    const circular: Record<string, unknown> = { tool: "Bash" };
+    circular.self = circular;
+    const event = toolResult(circular);
+    const compacted = compactToolResultForMobile(event);
+    expect(compacted).toBe(event);
+    expect((compacted as Extract<AgentChatEvent, { type: "tool_result" }>).resultTruncatedForMobile).toBeUndefined();
+  });
+
   it("never slices mid-codepoint", () => {
     const compacted = compactToolResultForMobile(toolResult("é".repeat(4_000))) as Extract<AgentChatEvent, { type: "tool_result" }>;
     expect((compacted.result as string).includes("�")).toBe(false);

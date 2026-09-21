@@ -175,6 +175,24 @@ describe("transcriptEntriesFromEnvelopes", () => {
     ]);
   });
 
+  it("does not split an assistant run around a queued steer it drops", () => {
+    // Regression: the skip ran AFTER the assistant draft was flushed, so a
+    // queued row that is never emitted still ended the message it landed
+    // inside — one mid-turn steer turned one assistant message into two
+    // entries with no user entry between them.
+    const entries = transcriptEntriesFromEnvelopes(SESSION, [
+      envelope({ type: "text", text: "Checking the pair", messageId: "msg-a", turnId: "turn-1" }),
+      envelope({ type: "user_message", text: "also run the linter", turnId: "turn-1", steerId: "steer-1", deliveryState: "queued" }),
+      envelope({ type: "text", text: "ing now.", messageId: "msg-a", turnId: "turn-1" }),
+      envelope({ type: "user_message", text: "also run the linter", turnId: "turn-1", steerId: "steer-1", deliveryState: "inline" }),
+    ]);
+
+    expect(entries.map((entry) => [entry.role, entry.text])).toEqual([
+      ["assistant", "Checking the pairing now."],
+      ["user", "also run the linter"],
+    ]);
+  });
+
   it("keeps a still-pending queued steer", () => {
     const entries = transcriptEntriesFromEnvelopes(SESSION, [
       envelope({ type: "user_message", text: "queue me", turnId: "turn-1", steerId: "steer-2", deliveryState: "queued" }),

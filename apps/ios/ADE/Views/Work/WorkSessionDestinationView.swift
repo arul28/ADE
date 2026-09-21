@@ -2025,7 +2025,6 @@ struct WorkSessionDestinationView: View {
       // to the parent chat, so nested transcript state cannot accidentally
       // fetch from itself.
       onOpenChatInfo: { Task { await prepareChatInfoPresentation() } },
-      onSelectSubagentRow: subagentRowSelectionHandler(),
       onForkChatInLane: {
         let modelId = (composerChatSummary?.modelId ?? composerChatSummary?.model ?? "")
           .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2077,17 +2076,6 @@ struct WorkSessionDestinationView: View {
       onTakeOverSubagent: canWriteSpawnKind ? takeOverSubagent : nil,
       onKeepReportingSubagent: canWriteSpawnKind ? keepReportingSubagent : nil
     )
-  }
-
-  /// Explicitly-typed handler so the optional async closure doesn't make the
-  /// large `WorkChatSessionView(...)` initializer ambiguous at the call site.
-  /// Explicitly-typed handler so the optional async closure doesn't make the
-  /// large `WorkChatSessionView(...)` initializer ambiguous at the call site.
-  private func subagentRowSelectionHandler() -> (@MainActor (WorkSubagentSnapshot) async -> Void)? {
-    let handler: @MainActor (WorkSubagentSnapshot) async -> Void = { snapshot in
-      await handleSubagentSelection(snapshot)
-    }
-    return handler
   }
 
   /// Extracted from the `.onChange` modifier: the destination's modifier chain

@@ -128,11 +128,19 @@ export function compactToolResultForMobile(
     return event;
   }
   const preview = sliceUtf8FromStart(serialized.text, MOBILE_TOOL_RESULT_MAX_BYTES);
+  const previewBytes = utf8Bytes(preview);
+  if (!serialized.measurable && previewBytes === utf8Bytes(serialized.text)) {
+    // An unserializable payload degrades to a short `String(value)` fallback,
+    // and the stored result the fetch would return is the same fallback. The
+    // row already has everything there is, so it must not offer to fetch more
+    // and must not report a 0-byte original size.
+    return event;
+  }
   return {
     ...event,
     result: preview,
     resultOriginalBytes: originalBytes,
-    resultOmittedBytes: Math.max(0, originalBytes - utf8Bytes(preview)),
+    resultOmittedBytes: Math.max(0, originalBytes - previewBytes),
     // The row's "Show full result" affordance. Absent on every other wire, so
     // an older phone sees exactly the event it sees today.
     resultTruncatedForMobile: true,

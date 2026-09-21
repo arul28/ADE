@@ -331,8 +331,16 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
 
   // MARK: Snapshot
 
-  func apply(rows: [WorkChatTranscriptRow], contentRevision revision: Int) {
+  func apply(rows incoming: [WorkChatTranscriptRow], contentRevision revision: Int) {
     guard isViewLoaded else { return }
+    // Both `Dictionary(uniqueKeysWithValues:)` below and the diffable snapshot
+    // trap on a repeated id, and one split assistant message mints row ids by
+    // string concatenation (`<entryId>-<blockId>`), so uniqueness is a property
+    // of the producer rather than a guarantee. A duplicate is a rendering bug
+    // worth fixing at the source; it is never worth crashing the transcript.
+    var seenRowIds = Set<String>()
+    seenRowIds.reserveCapacity(incoming.count)
+    let rows = incoming.filter { seenRowIds.insert($0.id).inserted }
     let nextIds = rows.map(\.id)
     let revisionChanged = revision != contentRevision
     let changedRowIds: [String] = rows.compactMap { row in
@@ -536,10 +544,13 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
       animatingToLatest = true
     }
     performScrollWrite(.pinToBottom(animated: animated), reason: reason)
-    if animated, !collectionView.isDragging, collectionView.contentOffset.y >= 0 {
+    if animated, !collectionView.isDragging {
       // `setContentOffset(animated:)` does not always raise
       // `scrollViewDidEndScrollingAnimation` when the target was already
       // reached; clear the suppression on the next runloop turn in that case.
+      // Not gated on a non-negative offset: a transcript that fits rests at
+      // `-contentInset.top`, and skipping the fallback there leaves
+      // `animatingToLatest` set, which suppresses follow pinning indefinitely.
       let work = DispatchWorkItem { [weak self] in self?.animatingToLatest = false }
       settleWorkItem?.cancel()
       settleWorkItem = work

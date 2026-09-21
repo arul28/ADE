@@ -410,9 +410,6 @@ struct WorkChatSessionView: View {
   var scheduledWorkSnapshots: [WorkScheduledWorkSnapshot] = []
   var scheduledWorkSnapshotsRenderSignature: Int = 0
   var onOpenChatInfo: (() -> Void)? = nil
-  /// Tapping a subagent spawn/result timeline row opens the same detail surface
-  /// the Chat Info roster row opens (full transcript takeover or expanded row).
-  var onSelectSubagentRow: (@MainActor (WorkSubagentSnapshot) async -> Void)? = nil
   /// Fork the current Claude thread in this lane (session-quota card).
   var onForkChatInLane: (@MainActor () async -> Void)? = nil
   var prBadge: WorkChatPrBadgeModel? = nil

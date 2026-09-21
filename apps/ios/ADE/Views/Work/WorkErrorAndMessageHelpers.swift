@@ -1370,8 +1370,12 @@ func pruneResolvedQueuedSteerEnvelopes(_ transcript: [WorkChatEnvelope]) -> [Wor
   var resolvedSteerIds = Set<String>()
   var queuedSteerIdsByText: [String: Set<String>] = [:]
   for envelope in sortedWorkChatEnvelopes(transcript) {
+    // `status` is required on a `command_lifecycle` frame. An absent one is an
+    // off-contract host, and treating "unknown" as "no longer queued" would
+    // drop a steer row the user can still see is waiting.
     if let steerId = envelope.commandLifecycleSteerId,
-       envelope.commandLifecycleStatus != "queued" {
+       let status = envelope.commandLifecycleStatus,
+       status != "queued" {
       resolvedSteerIds.insert(steerId)
     }
     switch envelope.event {
@@ -2194,8 +2198,12 @@ func derivePendingWorkSteers(from transcript: [WorkChatEnvelope]) -> [WorkPendin
   var resolved = Set<String>()
   var queuedSteerIdsByText: [String: Set<String>] = [:]
   for envelope in sortedWorkChatEnvelopes(transcript) {
+    // Same rule as `pruneResolvedQueuedSteerEnvelopes`: only an explicit
+    // non-queued status graduates the steer. A missing status is an
+    // off-contract host, not evidence the message left the queue.
     if let steerId = envelope.commandLifecycleSteerId,
-       envelope.commandLifecycleStatus != "queued" {
+       let status = envelope.commandLifecycleStatus,
+       status != "queued" {
       queue.removeValue(forKey: steerId)
       resolved.insert(steerId)
     }

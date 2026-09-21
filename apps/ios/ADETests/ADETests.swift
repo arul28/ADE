@@ -20694,6 +20694,58 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(derivePendingWorkSteers(from: pruned).isEmpty)
   }
 
+  /// Regression: a `command_lifecycle` frame whose `status` is missing is an
+  /// off-contract host (the wire type requires it). Comparing `!= "queued"`
+  /// against a nil status treated "unknown" as "no longer queued" and dropped a
+  /// steer row the user can still see waiting.
+  func testPruneResolvedQueuedSteerEnvelopesKeepsQueuedRowWithoutALifecycleStatus() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .userMessage(text: "ship it", attachments: nil, turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil),
+        commandLifecycleStatus: nil,
+        commandLifecycleSteerId: nil
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:02.000Z",
+        sequence: 2,
+        event: .unknown(type: "command_lifecycle"),
+        commandLifecycleStatus: nil,
+        commandLifecycleSteerId: "steer-1"
+      ),
+    ]
+
+    let pruned = pruneResolvedQueuedSteerEnvelopes(transcript)
+    XCTAssertEqual(pruned.count, 2, "a statusless lifecycle frame must not resolve the steer")
+    XCTAssertEqual(derivePendingWorkSteers(from: pruned).count, 1)
+  }
+
+  /// The contract case still resolves: an explicit non-queued status graduates
+  /// the row.
+  func testPruneResolvedQueuedSteerEnvelopesDropsQueuedRowOnStartedLifecycle() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .userMessage(text: "ship it", attachments: nil, turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:02.000Z",
+        sequence: 2,
+        event: .unknown(type: "command_lifecycle"),
+        commandLifecycleStatus: "started",
+        commandLifecycleSteerId: "steer-1"
+      ),
+    ]
+
+    XCTAssertTrue(derivePendingWorkSteers(from: pruneResolvedQueuedSteerEnvelopes(transcript)).isEmpty)
+  }
+
   func testPreferredWorkTranscriptPreservesQueuedSteerAfterPlainFallbackBackfill() {
     let fallback = [
       WorkChatEnvelope(

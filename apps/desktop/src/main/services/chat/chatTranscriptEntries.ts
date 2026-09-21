@@ -197,13 +197,16 @@ export function transcriptEntriesFromEnvelopes(
   for (const entry of envelopes) {
     if (entry.sessionId !== sessionId) continue;
     if (entry.event.type === "user_message") {
+      const steerId = entry.event.steerId?.trim();
+      // A queued steer whose delivered twin is in the same batch is the same
+      // message; the delivered row carries it. Skipped BEFORE the stream state
+      // is reset: a row that is never emitted must not break the assistant run
+      // it landed inside, or a mid-turn steer splits one message into two
+      // entries with no user entry between them.
+      if (entry.event.deliveryState === "queued" && steerId && graduated.has(steerId)) continue;
       flushAssistantDraft();
       openStreamKey = null;
       assistantDraftsByKey.clear();
-      const steerId = entry.event.steerId?.trim();
-      // A queued steer whose delivered twin is in the same batch is the same
-      // message; the delivered row carries it.
-      if (entry.event.deliveryState === "queued" && steerId && graduated.has(steerId)) continue;
       const text = entry.event.text.trim();
       if (!text.length) continue;
       const displayText = typeof entry.event.displayText === "string" && entry.event.displayText.trim().length > 0

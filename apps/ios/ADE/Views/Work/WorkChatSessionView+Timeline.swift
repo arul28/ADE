@@ -144,7 +144,6 @@ extension WorkChatSessionView {
     case .subagent(let row):
       WorkSubagentTimelineRowView(
         row: row,
-        onOpen: onSelectSubagentRow,
         onStop: onStopSubagentTask.map { stop in
           { snapshot in await stop(snapshot.taskId) }
         }
@@ -153,8 +152,7 @@ extension WorkChatSessionView {
       WorkSubagentStoppedGroupCardView(
         model: model,
         isExpanded: cardIsExpanded(model.id, entryId: entry.id),
-        onToggle: { toggleCard(model.id, entryId: entry.id) },
-        onOpen: onSelectSubagentRow
+        onToggle: { toggleCard(model.id, entryId: entry.id) }
       )
     case .toolGroup(let group):
       timelineToolGroup(group, entryId: entry.id)

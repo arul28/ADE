@@ -3946,11 +3946,13 @@ private let workSubagentIsoFallbackFormatter: ISO8601DateFormatter = {
 /// spawn/result/background-chip rows produced by `deriveSubagentTimelineRows`
 /// (chatSubagents.ts). These rows are hard timeline boundaries anchored where
 /// the subagent started and ended; the full roster lives in Chat Info.
+///
+/// The rows themselves are not tappable. Opening an in-thread subagent's
+/// transcript was removed on the phone (see `handleSubagentSelection`), so the
+/// card IS the surface — a button that only toggled hidden Chat Info state read
+/// as a dead affordance. Stopping a running spawn is the one action left.
 struct WorkSubagentTimelineRowView: View {
   let row: WorkSubagentTimelineRow
-  /// Tapping a real spawn/result row opens the subagent detail/transcript, the
-  /// same surface the Chat Info roster row opens. Background chips are inert.
-  let onOpen: (@MainActor (WorkSubagentSnapshot) async -> Void)?
   var onStop: (@MainActor (WorkSubagentSnapshot) async -> Void)? = nil
 
   var body: some View {
@@ -3961,29 +3963,15 @@ struct WorkSubagentTimelineRowView: View {
       // The stop button is a layout sibling inside the row's own HStack, not a
       // trailing overlay: an overlay takes no space and landed on top of the
       // status capsule the row already put at the trailing edge.
-      tappable { WorkSubagentSpawnRow(row: row, stopAction: spawnStopAction) }
+      WorkSubagentSpawnRow(row: row, stopAction: spawnStopAction)
     case .result:
-      tappable { WorkSubagentResultRow(row: row) }
+      WorkSubagentResultRow(row: row)
     }
   }
 
   private var spawnStopAction: (() -> Void)? {
     guard let onStop, workSubagentCanStopTask(row.snapshot) else { return nil }
     return { Task { await onStop(row.snapshot) } }
-  }
-
-  @ViewBuilder
-  private func tappable<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-    if let onOpen {
-      Button {
-        Task { await onOpen(row.snapshot) }
-      } label: {
-        content()
-      }
-      .buttonStyle(.plain)
-    } else {
-      content()
-    }
   }
 }
 
@@ -3995,9 +3983,6 @@ struct WorkSubagentStoppedGroupCardView: View {
   let model: WorkSubagentStoppedGroupModel
   let isExpanded: Bool
   let onToggle: () -> Void
-  /// Same opener the result rows use; nil in previews/offline renders leaves the
-  /// list inert (and hides the per-row open affordance).
-  let onOpen: (@MainActor (WorkSubagentSnapshot) async -> Void)?
 
   private var headline: String { model.headline }
 
@@ -4061,22 +4046,11 @@ struct WorkSubagentStoppedGroupCardView: View {
     .contentShape(Rectangle())
   }
 
+  /// Flat rows, not buttons: the phone has no in-thread subagent drill-in to
+  /// open, and the list already carries each agent's title, last activity and
+  /// outcome.
   @ViewBuilder
   private func stoppedItem(_ row: WorkSubagentTimelineRow) -> some View {
-    if let onOpen {
-      Button {
-        Task { await onOpen(row.snapshot) }
-      } label: {
-        stoppedItemLabel(row)
-      }
-      .buttonStyle(.plain)
-    } else {
-      stoppedItemLabel(row)
-    }
-  }
-
-  @ViewBuilder
-  private func stoppedItemLabel(_ row: WorkSubagentTimelineRow) -> some View {
     let title = workSubagentMeaningfulName(row.snapshot)
     let lastActivity = row.snapshot.lastActivity?.trimmingCharacters(in: .whitespacesAndNewlines)
     let outcome = workSubagentStoppedOutcomeLabel(row.snapshot)
@@ -4096,15 +4070,9 @@ struct WorkSubagentStoppedGroupCardView: View {
         }
       }
       Spacer(minLength: 6)
-      VStack(alignment: .trailing, spacing: 2) {
-        Text(outcome)
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(row.snapshot.resultLanded ? ADEColor.success : ADEColor.warning)
-        Image(systemName: "arrow.up.right")
-          .font(.system(size: 10, weight: .semibold))
-          .foregroundStyle(ADEColor.textMuted)
-          .opacity(onOpen == nil ? 0 : 1)
-      }
+      Text(outcome)
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(row.snapshot.resultLanded ? ADEColor.success : ADEColor.warning)
     }
     .padding(.vertical, 5)
     .contentShape(Rectangle())

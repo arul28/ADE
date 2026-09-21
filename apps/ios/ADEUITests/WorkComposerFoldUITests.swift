@@ -129,6 +129,11 @@ final class WorkComposerFoldUITests: XCTestCase {
     )
 
     // The draft survives the fold, and is still the same message.
-    XCTAssertTrue(field.value as? String != "" , "the fold cleared the draft")
+    // Not `!= ""`: `field.value` is `Any?`, so a cleared field reads as nil and
+    // `nil != ""` passes in exactly the failure this asserts against.
+    XCTAssertTrue(
+      (field.value as? String)?.hasPrefix("line 1 of a long draft") == true,
+      "the fold cleared the draft"
+    )
   }
 }
