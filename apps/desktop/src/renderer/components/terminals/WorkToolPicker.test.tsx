@@ -253,6 +253,23 @@ describe("WorkToolPicker", () => {
     expect(cardById(last.id).getAttribute("data-highlighted")).toBe("true");
   });
 
+  it("does not steal arrow keys while the picker is paused off-screen", () => {
+    render(
+      <WorkToolPicker
+        activeTool={null}
+        context={LOCAL}
+        statuses={{}}
+        loading={false}
+        onPick={vi.fn()}
+        playing={false}
+      />,
+    );
+
+    fireEvent.keyDown(document.body, { key: "ArrowDown" });
+    expect(document.querySelector("[data-highlighted='true']")).toBeNull();
+    expect(document.activeElement).toBe(document.body);
+  });
+
   it("keeps every status on one line and finishes the last row", () => {
     render(
       <WorkToolPicker

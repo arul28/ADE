@@ -11,6 +11,7 @@ import {
   isSoftwareRenderer,
   resolveBackdropSize,
 } from "./WorkToolPickerBackdrop";
+import { FRAG, UNIFORMS } from "./workToolPickerBackdropShader";
 
 /**
  * A WebGL context that answers every call the backdrop makes.
@@ -133,13 +134,18 @@ describe("backdropThemeFor", () => {
   it("keeps light well under dark's intensity and vignette", () => {
     const dark = backdropThemeFor("dark");
     const light = backdropThemeFor("light");
-    expect(dark.intensity).toBeCloseTo(0.4, 2);
+    expect(dark.intensity).toBeCloseTo(0.44, 2);
     expect(light.intensity).toBeLessThan(dark.intensity);
     expect(light.vignette).toBeLessThan(dark.vignette);
+    expect(dark.vignette).toBeLessThan(0.3);
+    expect(dark.vignette).toBeGreaterThan(0.12);
     // Dark sits slightly under the mesh's own brightness so the flat cards
     // still read as the brightest thing on the page.
     expect(dark.brightness).toBeLessThan(0);
+    expect(dark.brightness).toBeGreaterThan(-0.2);
     expect(dark.saturation).toBeLessThan(1);
+    // Indigo stop — the bluish lobe the all-violet ramp lost.
+    expect(dark.colors).toContainEqual([0x63 / 255, 0x66 / 255, 0xf1 / 255]);
   });
 
   it("starts each ramp on that theme's own canvas and never exceeds 8 stops", () => {
@@ -152,6 +158,14 @@ describe("backdropThemeFor", () => {
     expect(dark.colors.length).toBeLessThanOrEqual(8);
     expect(light.colors.length).toBeLessThanOrEqual(8);
     expect(dark.colors.length).toBeGreaterThan(1);
+  });
+
+  it("keeps the mesh scaled so the colour field fills the pane", () => {
+    expect(UNIFORMS.scale).toBeGreaterThan(0.9);
+    expect(UNIFORMS.scale).toBeLessThan(1.2);
+    expect(FRAG).toContain("exp(-dot(p - c, p - c) * 3.5)");
+    expect(FRAG).toContain("u_colors[0] * 0.10");
+    expect(FRAG).toContain("smoothstep(0.48, 1.08, vd)");
   });
 });
 
@@ -176,7 +190,7 @@ describe("WorkToolPickerBackdrop", () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
 
     const { container } = render(
-      <WorkToolPickerBackdrop theme="dark" className="ade-tool-picker-backdrop" />,
+      <WorkToolPickerBackdrop theme="dark" />,
     );
 
     // No canvas left behind: a canvas element with no context is a layer the
@@ -186,7 +200,7 @@ describe("WorkToolPickerBackdrop", () => {
     expect(fallback).toBeTruthy();
     // Both classes: the caller's positioning and the gradient itself.
     expect(fallback?.className).toContain("ade-tool-picker-backdrop");
-    expect(fallback?.className).toContain("ade-tool-picker-static");
+    expect(fallback?.querySelector(".ade-tool-picker-static")).toBeTruthy();
     expect(fallback?.getAttribute("aria-hidden")).toBe("true");
   });
 
@@ -302,6 +316,15 @@ describe("WorkToolPickerBackdrop context lifecycle", () => {
     expect(container.querySelector("[data-backdrop='static']")).toBeTruthy();
     // …and the loop stopped rather than spinning on a dead context.
     expect(cancel).toHaveBeenCalled();
+  });
+
+  it("paints the CSS gradient under the canvas so the first frame is not empty", () => {
+    const { gl } = stubGl();
+    useStubGl(gl);
+    const { container } = render(<WorkToolPickerBackdrop theme="dark" />);
+    expect(container.querySelector("[data-backdrop='shader']")).toBeTruthy();
+    expect(container.querySelector(".ade-tool-picker-static")).toBeTruthy();
+    expect(container.querySelector("canvas")).toBeTruthy();
   });
 
   it("measures the layout once per frame, not once per scroll event", async () => {

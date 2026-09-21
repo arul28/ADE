@@ -9,7 +9,7 @@
  * and each panel spends it rather than inventing it.
  *
  * The rules, so a new panel does not have to reverse-engineer them:
- * - Exactly ONE chrome row per tool, 40px, under the pane header's own 36px.
+ * - Exactly ONE chrome row per tool, 40px, under the pane header's own 32px.
  * - Controls are ghost: transparent until hover, and hover/press change fill
  *   only — never size, never colour temperature. 120ms, the app's house rate.
  * - Icons are 16px in buttons, 12px inside a chip next to text.

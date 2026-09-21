@@ -589,7 +589,7 @@ testable without a layout engine. The percentage clamp
 (`MIN_WORK_SIDEBAR_WIDTH_PCT` 26 – `MAX_WORK_SIDEBAR_WIDTH_PCT` 55,
 mirrored by `normalizeWorkSidebarWidthPct` in the store) is a taste rule
 and says nothing about pixels: 26 % of a 900 px window is 234 px, and at
-234 px the pane's own 36 px header — back button, tool name, activity
+234 px the pane's own 32 px header — back button, tool name, activity
 dots, ✕ — has nowhere to go, which is how a drag once left the close
 button off-window. So a drag is clamped in **both** units: never below
 `MIN_WORK_SIDEBAR_PANE_PX` (280) of real pane, and never leaving the chat
@@ -624,7 +624,7 @@ Files, Simulator, App Control (`WorkToolPicker.tsx`, catalogue in
 `workTools.ts`). The page does not name itself: the strip above it already
 carries the word "Tools", and six labelled cards do not need introducing.
 The column is vertically centred against the **whole pane** rather than
-against the space left under the 36 px header, which is what the extra
+against the space left under the 32 px header, which is what the extra
 bottom pad buys; it centres with `m-auto` rather than `justify-center`,
 because a centred flex child in an overflow container has its overflowing
 top clipped and unreachable. The grid is `auto-fit` over a
@@ -637,15 +637,24 @@ one column down a pane wide enough for two. Cards therefore *grow* with
 the pane (188 → 252 px) instead of multiplying and shrinking. An odd card
 count lets the last card span the full row rather than orphaning it.
 
-Behind the grid is the pane's one decorated surface: a slow violet mesh
-(`WorkToolPickerBackdrop.tsx`, adapted from the 21st.dev Shader Builder
-"Mesh drift"). Nothing in its GLSL names a colour — `backdropThemeFor`
+Behind the grid is the pane's one decorated surface: a slow violet-to-indigo
+mesh (`WorkToolPickerBackdrop.tsx`, adapted from the 21st.dev Shader Builder
+"Mesh drift") whose gaussians fill the pane without collapsing into one
+wash. Nothing in its GLSL names a colour — `backdropThemeFor`
 hands the shader ADE's own tokens as uniforms, `--color-bg` →
-`--color-accent-deep` → `--color-accent` → `--color-accent-bright` in
-dark, and `--color-surface` up the same violet hues at well under half
+`--color-accent-deep` → indigo `#6366F1` → `--color-accent` → `--color-accent-bright` in
+dark, and `--color-surface` up the same hues at well under half
 the intensity in light, since on a light canvas the same amount of colour
 reads as a stain. The theme comes from the store (`s.theme`), the same
-value `App.tsx` writes to `data-theme`.
+value `App.tsx` writes to `data-theme`. Opening the pane paints the same
+gradient as CSS first so the surface is not empty while WebGL compiles;
+the canvas covers it once it has a frame. The picker stays mounted while a
+tool is on screen: `inert` + `aria-hidden`, and `playing={false}` pauses the
+loop without dropping the last frame, so opening Tools is a CSS show rather
+than a shader recompile. Arrow-key card highlight is bound only while
+`playing`. The Work new-chat surface uses the same backdrop and the same
+budget; `AgentChatPane` leaves the chat canvas transparent so the mesh
+shows through.
 
 Its budget is a hard requirement, because this is decoration on a page you
 land on constantly inside a renderer that is also running a terminal, a
@@ -740,7 +749,7 @@ capability flags in `workToolAvailability`, never by `process.platform` —
 the web client renders this same component. An active tool that becomes
 unavailable falls back to the **picker**, not to another tool.
 
-The pane's one 36 px header (`WorkToolHeader.tsx`) is the strip, and it is
+The pane's one 32 px header (`WorkToolHeader.tsx`) is the strip, and it is
 the same bar on both pages. Left edge is the `⊞ Tools` button back to the
 picker (Escape does the same, bound as `work.tools.picker` with scope
 `work` so it only fires inside the pane), lit while the picker is up.
@@ -782,7 +791,7 @@ name, and every other tool shows its own status line. It rides in the
 active tab's tooltip and accessible name (`Browser · example.com`), never
 as a header line — an icon-only tab would otherwise have no name at all,
 and a bar that spelled out what the lit tab already says was saying one
-thing twice in 36 px.
+thing twice in 32 px.
 
 The strip is measured, not guessed (`workToolTabLayout`, pure and tested):
 below **420 px** of header the tabs drop their words and become glyphs, a
@@ -1071,7 +1080,7 @@ their own answer to the same row — uppercase mono buttons in one, tinted
 is that geometry, spent rather than reinvented:
 
 - **Exactly one chrome row per tool**, 40 px
-  (`WORK_TOOL_CHROME_ROW_HEIGHT`), under the pane header's own 36 px. The
+  (`WORK_TOOL_CHROME_ROW_HEIGHT`), under the pane header's own 32 px. The
   row carries `ade-pane-chrome` (which makes it `select-none`, so dragging
   the pane divider no longer leaves half the labels highlighted in accent
   blue) and the same `ade-tool-pane-rule` hairline the header draws, so
@@ -1345,9 +1354,15 @@ for context insertions. Contains:
 - When the sessions list is collapsed, a thin left rail still offers
   **Show sessions**. The empty draft does not put that control in the
   chat header.
-- lane selector (`LaneCombobox`) synced to the global `selectedLaneId`
+- lane selector (`LaneCombobox`) on the launch shelf under the composer,
+  synced to the global `selectedLaneId`
 - for chat drafts: `AgentChatPane` in draft mode with provider-specific
-  permission controls (`getPermissionOptions`, `safetyColors`)
+  permission controls (`getPermissionOptions`, `safetyColors`). The
+  ADE wordmark and optically lifted composer stay in the original
+  stack; the chat canvas is transparent so the mesh behind
+  `WorkViewArea` shows through. The usage card sits below the launch
+  shelf (`mt-11`), width-capped to the shelf, with an opaque fill that
+  matches the machine/lane submenu.
 - for cli drafts: a five-tile provider grid (Claude Code, Codex CLI,
   Cursor Agent CLI, Factory Droid CLI, OpenCode CLI) with logos sourced
   from `ToolLogos.tsx` / `ProviderLogos.tsx`. Selecting a provider

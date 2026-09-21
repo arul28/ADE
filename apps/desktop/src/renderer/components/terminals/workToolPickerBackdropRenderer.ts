@@ -56,7 +56,11 @@ function matches(query: string): boolean {
   }
 }
 
-export type BackdropRenderer = { dispose: () => void };
+export type BackdropRenderer = {
+  dispose: () => void;
+  /** Pause the 30 fps loop without dropping the context or the last frame. */
+  setPlaying: (playing: boolean) => void;
+};
 
 /**
  * Start the mesh on `canvas`, or refuse.
@@ -70,8 +74,11 @@ export function createBackdropRenderer(options: {
   canvas: HTMLCanvasElement;
   theme: ThemeId;
   onRefused: () => void;
+  /** When false, the last frame stays on the canvas and the loop does not run. */
+  playing?: boolean;
 }): BackdropRenderer | null {
   const { canvas, theme, onRefused } = options;
+  let playing = options.playing !== false;
 
   const pendingRelease = pendingContextReleases.get(canvas);
   if (pendingRelease !== undefined) window.clearTimeout(pendingRelease);
@@ -80,6 +87,7 @@ export function createBackdropRenderer(options: {
   let gl: WebGLRenderingContext | null = null;
   try {
     gl = canvas.getContext("webgl", {
+      alpha: true,
       antialias: false,
       depth: false,
       stencil: false,
@@ -241,13 +249,13 @@ export function createBackdropRenderer(options: {
   };
 
   function requestRender() {
-    if (reduceMotion || disposed || !visible || !focused || !inView) return;
+    if (!playing || reduceMotion || disposed || !visible || !focused || !inView) return;
     if (raf === 0) raf = requestAnimationFrame(render);
   }
 
   function render(now: number) {
     raf = 0;
-    if (disposed || !visible || !focused || !inView) return;
+    if (!playing || disposed || !visible || !focused || !inView) return;
     // 30 fps, gated on the timestamp rather than on a timer: the frame is
     // simply skipped and re-requested, so a 240Hz panel costs eight cheap
     // no-ops instead of eight mesh evaluations.
@@ -389,9 +397,15 @@ export function createBackdropRenderer(options: {
   // that is blurred or a tab that is hidden at mount would otherwise show an
   // empty canvas over the pane until it was looked at.
   draw(0);
-  if (!reduceMotion) requestRender();
+  if (playing && !reduceMotion) requestRender();
 
   return {
+    setPlaying: (next: boolean) => {
+      if (playing === next) return;
+      playing = next;
+      if (playing) requestRender();
+      else stop();
+    },
     dispose: () => {
       disposed = true;
       stop();

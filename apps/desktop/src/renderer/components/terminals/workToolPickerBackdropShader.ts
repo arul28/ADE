@@ -90,15 +90,18 @@ float fbm(vec2 p) {
 }
 
 vec3 shade(vec2 p, float t) {
-  vec3 acc = u_colors[0] * 0.15;
-  float total = 0.15;
+  // Midway floor: enough canvas that the field still has dark valleys, not so
+  // much that distant gaussians collapse to black.
+  vec3 acc = u_colors[0] * 0.10;
+  float total = 0.10;
   for (int i = 0; i < 8; i++) {
     if (float(i) >= u_colorCount) break;
     float fi = float(i);
     vec2 c = vec2(
       sin(t * (0.21 + fi * 0.071) + fi * 2.4 + u_seed),
-      cos(t * (0.17 + fi * 0.093) + fi * 1.7)) * (0.45 + u_intensity * 0.35);
-    float w = exp(-dot(p - c, p - c) * 6.0);
+      cos(t * (0.17 + fi * 0.093) + fi * 1.7)) * (0.50 + u_intensity * 0.38);
+    // 3.5 sits between the original 6 (one corner lobe) and 1.8 (a flat wash).
+    float w = exp(-dot(p - c, p - c) * 3.5);
     acc += u_colors[i] * w;
     total += w;
   }
@@ -149,7 +152,7 @@ void main() {
     col += u_brightness;
   if (u_vignette > 0.0001) {
     float vd = length(screenUv - 0.5) * 1.41421356;
-    col *= 1.0 - u_vignette * smoothstep(0.35, 1.0, vd);
+    col *= 1.0 - u_vignette * smoothstep(0.48, 1.08, vd);
   }
   if (u_grain > 0.0001)
     col += (grainHash(
@@ -174,41 +177,39 @@ export type WorkToolPickerBackdropTheme = {
 };
 
 /**
- * The two palettes, both taken straight from `index.css`.
+ * The two palettes, both taken straight from `index.css`, plus one cooler
+ * indigo so the mesh still has a blue-violet lobe instead of a single purple.
  *
  * Dark is the app's own canvas (`--color-bg`) lifted through
- * `--color-accent-deep` → `--color-accent` → `--color-accent-bright`, kept low
- * on intensity with a slightly negative brightness: the mesh is a *surface* for
- * the cards, not a picture behind them, and every one of those cards is a
- * translucent rectangle full of 12px text. Light starts from
- * `--color-surface` and walks the same violet hues down (`#EDE9FE` is that ramp
- * one step lighter than `--color-accent-bright`), at well under half the
- * intensity — on a light canvas the same amount of colour reads as a stain.
+ * `--color-accent-deep` → indigo → `--color-accent` → `--color-accent-bright`.
+ * Intensity, brightness and vignette sit between the original corner-stain
+ * and the later full-pane wash: enough colour to fill the page, enough
+ * contrast that the field still reads as a gradient under the cards. Light
+ * starts from `--color-surface` and walks the same hues at well under half
+ * the intensity — on a light canvas the same amount of colour reads as a stain.
  */
 export function backdropThemeFor(theme: ThemeId): WorkToolPickerBackdropTheme {
   if (theme === "light") {
     return {
-      colors: [rgb("#faf8f5"), rgb("#EDE9FE"), rgb("#C4B5FD"), rgb("#A78BFA")],
-      intensity: 0.24,
-      vignette: 0.18,
-      brightness: 0.02,
-      saturation: 0.7,
+      colors: [rgb("#faf8f5"), rgb("#EDE9FE"), rgb("#C4B5FD"), rgb("#A5B4FC"), rgb("#A78BFA")],
+      intensity: 0.22,
+      vignette: 0.12,
+      brightness: 0.03,
+      saturation: 0.68,
     };
   }
   return {
-    colors: [rgb("#0C0B10"), rgb("#7C3AED"), rgb("#A78BFA"), rgb("#C4B5FD")],
-    intensity: 0.4,
-    vignette: 0.35,
-    // Measured, not guessed: at the pane's default size this ramp means a mean
-    // luminance of 57/255 with the brightness at -0.05, which is BRIGHTER than
-    // the card fill (`--color-card`, ~26) and inverts the page — the mesh would
-    // be reading as the content and the cards as holes in it. -0.16 lands the
-    // mean at ~37 and the peak at ~118: still violet, still moving, and still
-    // underneath. -0.24 takes the peak down again to ~92, because at ~118 the
-    // upper lobe was measurably brighter than a card sitting ON it (~71) and
-    // the eye went to the empty gradient instead of to the six cards.
-    brightness: -0.24,
-    saturation: 0.9,
+    colors: [
+      rgb("#0C0B10"),
+      rgb("#7C3AED"),
+      rgb("#6366F1"),
+      rgb("#A78BFA"),
+      rgb("#C4B5FD"),
+    ],
+    intensity: 0.44,
+    vignette: 0.22,
+    brightness: -0.14,
+    saturation: 0.82,
   };
 }
 
@@ -222,10 +223,12 @@ export function backdropThemeFor(theme: ThemeId): WorkToolPickerBackdropTheme {
  * shader.
  */
 export const UNIFORMS = {
-  scale: 1.3,
-  warp: 0.192,
+  // Near 1: the field covers the pane without zooming so far in that every
+  // gaussian overlaps into one colour.
+  scale: 1.05,
+  warp: 0.22,
   detail: 2.016,
-  contrast: 1.167,
+  contrast: 1.18,
   grain: 0.06,
   seed: 5069,
   rotate: 2.7227,

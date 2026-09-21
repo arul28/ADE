@@ -14793,6 +14793,7 @@ export function AgentChatPane({
         chromeTint={chatChromeTint}
         shellGeometry={chatShellGeometry}
         className={compactShell ? cn("border-0 shadow-none rounded-none bg-transparent") : undefined}
+        canvasFill={embedDraft ? "transparent" : undefined}
         header={compactShell || hideSurfaceHeader ? undefined : shellHeader}
         footer={isEmptyState || appPanelOpen
           ? undefined
@@ -15178,6 +15179,7 @@ export function AgentChatPane({
               ) : (
                 <motion.div
                   key="empty-state"
+                  data-chat-empty-state=""
                   initial={{ opacity: 1, scale: 1 }}
                   exit={{ opacity: 0, scale: 0.95, transition: { duration: 0.2, ease: "easeIn" } }}
                   className="absolute inset-0 flex min-h-0 overflow-hidden"
@@ -15188,11 +15190,9 @@ export function AgentChatPane({
                   >
                     <div className={cn(
                       "flex min-h-0 flex-1 items-center justify-center overflow-hidden",
-                      // The optical lift lives in the padding rather than a negative margin on the
-                      // column, so `max-h-full` below can cap the column without clipping its top.
-                      // 136px = the previous pb-24 (96px) + the removed -mt-10 lift (40px), which
-                      // keeps the resting position pixel-identical whenever there is room to spare.
-                      appPanelOpen ? "px-3" : "px-6 pb-[136px]",
+                      // Optical lift: 100px keeps the stack slightly below the
+                      // old 136px rest, so the prompt and usage sit a little lower.
+                      appPanelOpen ? "px-3" : "px-6 pb-[100px]",
                     )}>
                       <div className={cn(
                         "flex max-h-full w-full flex-col items-center gap-3 text-center",
@@ -15209,12 +15209,6 @@ export function AgentChatPane({
                           style={{ aspectRatio: "560 / 300" }}
                           exit={{ opacity: 0, scale: 0.8, transition: { duration: 0.3, ease: "easeOut" } }}
                         >
-                          {/* `h-auto` + `max-h-full` left the image at its
-                              natural height once the box shrank, so a short
-                              window cropped the wordmark against the column's
-                              `overflow-hidden` instead of scaling it. Filling
-                              the box and letterboxing inside it with
-                              `object-contain` keeps the shrink proportional. */}
                           <img
                             src="./logo.png"
                             alt="ADE"
@@ -15222,11 +15216,6 @@ export function AgentChatPane({
                           />
                         </motion.div>
 
-                        {/* Only a non-default mode earns a line here. The wordmark
-                            above already says which app this is, so a generic
-                            "Start a new conversation" was a caption on a thing
-                            that needs no caption — and a whole band of vertical
-                            space spent saying nothing the user did not know. */}
                         {/* Inline composer for empty state (only when sim drawer closed) */}
                         {!appPanelOpen ? (
                           <div data-chat-composer-wrapper className="relative z-10 w-full shrink-0">
@@ -15416,7 +15405,9 @@ export function AgentChatPane({
                             exit={{ opacity: 0, y: 6 }}
                             transition={{ duration: 0.28, ease: "easeOut" }}
                           >
-                            <WorkActivityModule />
+                            <div className="w-[calc(100%-6rem)]" data-chat-empty-usage="">
+                              <WorkActivityModule />
+                            </div>
                           </motion.div>
                         ) : null}
 
