@@ -264,21 +264,40 @@ function normalizeV1Message(record: Record<string, unknown>): DevinCloudMessage 
 }
 
 /**
- * Proof attachments render in-app, so bytes that smell like markup/script
- * (HTML, SVG, XML) are refused regardless of the remote's declared name or
- * content-type — a hostile or confused response must not enter the artifact
- * store as something renderable. Matches tags anywhere in the first KB:
- * documents can open with a BOM, an XML declaration, comments, or bare tags
- * like `<body>` that prefix checks would miss.
+ * Proof attachments render in-app, so documents whose *root element* is active
+ * markup (HTML, SVG) are refused regardless of the remote's declared name or
+ * content-type. The check peels the only permitted preamble — BOM, whitespace,
+ * comments, `<?…?>` declarations, a doctype — then asks whether the document
+ * begins with a renderable tag, so a plain-text `report.txt` mentioning
+ * `<body>` inline still lands in the drawer.
  */
-const ACTIVE_MARKUP_HEAD =
-  /<\s*(?:!doctype\s+html|html|head|body|svg|script|iframe|object|embed|base|meta|form|style|link)\b|<\?xml|<!\[CDATA\[|<!--/i;
+const ACTIVE_MARKUP_ROOT =
+  /^\s*<\s*(?:html|head|body|svg|script|iframe|object|embed|base|meta|form|style|link)\b/i;
 
 function sniffIsActiveMarkup(bytes: Uint8Array): boolean {
-  const head = new TextDecoder("utf-8", { fatal: false })
+  let head = new TextDecoder("utf-8", { fatal: false })
     .decode(bytes.subarray(0, 1024))
     .replace(/^\uFEFF/, "");
-  return ACTIVE_MARKUP_HEAD.test(head);
+  for (;;) {
+    head = head.trimStart();
+    if (head.startsWith("<?")) {
+      const end = head.indexOf("?>");
+      if (end === -1) return true;
+      head = head.slice(end + 2);
+      continue;
+    }
+    if (head.startsWith("<!--")) {
+      const end = head.indexOf("-->");
+      if (end === -1) return true;
+      head = head.slice(end + 3);
+      continue;
+    }
+    if (/^<!doctype\s+html\s*>/i.test(head)) {
+      head = head.replace(/^<!doctype\s+html\s*>/i, "");
+      continue;
+    }
+    return ACTIVE_MARKUP_ROOT.test(head);
+  }
 }
 
 export type DevinCloudListSessionsArgs = {

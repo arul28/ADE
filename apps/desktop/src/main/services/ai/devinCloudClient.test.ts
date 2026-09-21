@@ -101,4 +101,19 @@ describe("devinCloudClient downloadAttachment", () => {
     });
     await expect(client.downloadAttachment(attachment)).resolves.toEqual(png);
   });
+
+  it("keeps text files that merely mention markup tags inline", async () => {
+    for (const payload of [
+      "The <body> element contains the result.",
+      "<?xml version=\"1.0\"?><plist><dict></dict></plist>",
+      "note: see <svg> and <script> tags below",
+    ]) {
+      const bytes = new TextEncoder().encode(payload);
+      const fetchImpl = vi.fn(async () => bytesResponse(bytes));
+      const client = createDevinCloudClient({
+        apiKey: "cog_test", orgId: "org-mine", fetchImpl: fetchImpl as never, logger,
+      });
+      await expect(client.downloadAttachment(attachment)).resolves.toEqual(bytes);
+    }
+  });
 });
