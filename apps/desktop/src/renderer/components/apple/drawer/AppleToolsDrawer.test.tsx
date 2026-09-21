@@ -35,6 +35,15 @@ describe("AppleToolsDrawer", () => {
     await waitFor(() => expect(screen.queryByText("Reading device settings…")).toBeNull());
   });
 
+  it("shows the app the device reports in front, even when ADE launched nothing", async () => {
+    const { iosSimulator } = installAdeMock();
+    iosSimulator.getForegroundApp.mockResolvedValue({ bundleId: "com.other.fromxcode", pid: 77, checkedAt: "2026-09-21T00:00:00.000Z" });
+    render(<AppleToolsDrawer {...props()} />);
+    await waitFor(() => expect(screen.getByTestId("apple-drawer-foreground").textContent).toBe("com.other.fromxcode"));
+    expect(iosSimulator.getForegroundApp).toHaveBeenCalledWith({ laneId: "lane-1", deviceUdid: "UDID-1" }, null);
+    expect(iosSimulator.getStatus).not.toHaveBeenCalled();
+  });
+
   it("reads the device settings once visible and derives the foreground app from the lane's session", async () => {
     const { iosSimulator } = installAdeMock();
     iosSimulator.getStatus.mockResolvedValue({

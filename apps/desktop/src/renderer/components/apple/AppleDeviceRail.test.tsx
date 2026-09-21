@@ -17,6 +17,7 @@ function settings(overrides: Partial<IosSimulatorDeviceSettings> = {}): IosSimul
       "increase-contrast": false,
       "reduce-motion": false,
       "reduce-transparency": false,
+      "button-shapes": false,
       "bold-text": false,
       "invert-colors": false,
       grayscale: false,

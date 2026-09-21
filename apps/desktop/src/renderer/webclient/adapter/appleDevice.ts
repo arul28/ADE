@@ -280,6 +280,7 @@ export function createAppleDeviceNamespace(
     listLaunchTargets: (async (args?: unknown) => invoke("listLaunchTargets", args ?? {}, true)) as never,
     getDeviceSession: (async (args?: unknown) => invoke("getDeviceSession", args ?? {}, true)) as never,
     getDeviceSettings: (async (args?: unknown) => invoke("getDeviceSettings", args ?? {}, true)) as never,
+    getForegroundApp: (async (args?: unknown) => invoke("getForegroundApp", args ?? {}, true)) as never,
     setAppearance: (async (args?: unknown) => invoke("setAppearance", args ?? {}, false)) as never,
     setContentSize: (async (args?: unknown) => invoke("setContentSize", args ?? {}, false)) as never,
     relaunchApp: (async (args?: unknown) => invoke("relaunchApp", args ?? {}, false)) as never,

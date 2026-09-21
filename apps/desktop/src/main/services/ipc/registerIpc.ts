@@ -9360,6 +9360,8 @@ export function registerIpc({
     ensureIosSimulator().clearStatusBar(arg));
 
   ipcMain.handle(IPC.iosSimulatorGetAppState, async (_event, arg) => ensureIosSimulator().getAppState(arg));
+  ipcMain.handle(IPC.iosSimulatorGetForegroundApp, async (_event, arg = {}) =>
+    ensureIosSimulator().getForegroundApp(arg));
 
   ipcMain.handle(IPC.iosSimulatorStartEventLog, async (_event, arg = {}) =>
     ensureIosSimulator().startEventLog(arg));

@@ -1495,7 +1495,8 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Flags:
     --option <name>        Option to set; a positional value works too. Values:
                            increase-contrast, reduce-motion, reduce-transparency,
-                           bold-text, invert-colors, grayscale, voice-over.
+                           button-shapes (Show Borders), bold-text, invert-colors,
+                           grayscale, voice-over.
     --on, --off            State to set; positional on/off works too.
     --device, --udid <id>  Simulator device.
 `,

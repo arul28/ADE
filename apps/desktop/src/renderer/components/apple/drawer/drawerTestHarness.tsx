@@ -24,6 +24,7 @@ export const SETTINGS: IosSimulatorDeviceSettings = {
     "increase-contrast": false,
     "reduce-motion": true,
     "reduce-transparency": false,
+    "button-shapes": false,
     "bold-text": null,
     "invert-colors": false,
     grayscale: false,
@@ -39,6 +40,7 @@ export function installAdeMock(overrides: Record<string, unknown> = {}) {
   const iosSimulator: Record<string, ReturnType<typeof vi.fn>> = {
     getStatus: vi.fn(async () => ({ platform: "darwin", supported: true, tools: [], activeDevice: null, activeSession: null })),
     getDeviceSettings: vi.fn(async () => SETTINGS),
+    getForegroundApp: vi.fn(async () => null),
     setAppearance: vi.fn(async () => SETTINGS),
     setContentSize: vi.fn(async () => SETTINGS),
     setAccessibilityOption: vi.fn(async () => SETTINGS),

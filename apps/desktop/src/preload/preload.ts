@@ -824,6 +824,7 @@ import type {
   IosSimulatorStreamStatus,
   IosSimulatorAppLifecycleArgs,
   IosSimulatorAppState,
+  IosSimulatorForegroundApp,
   IosSimulatorAssertVisibleArgs,
   IosSimulatorCloseDeviceArgs,
   IosSimulatorCloseDeviceResult,
@@ -8312,6 +8313,16 @@ const adeBridge = {
         "getAppState",
         { args },
         () => ipcRenderer.invoke(IPC.iosSimulatorGetAppState, args),
+      ),
+    getForegroundApp: async (
+      args: { deviceUdid?: string | null; laneId?: string | null } = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<IosSimulatorForegroundApp> =>
+      callIosSimulatorActionOr(
+        pin,
+        "getForegroundApp",
+        { args },
+        () => ipcRenderer.invoke(IPC.iosSimulatorGetForegroundApp, args),
       ),
     startEventLog: (
       args: IosSimulatorStartEventLogArgs,

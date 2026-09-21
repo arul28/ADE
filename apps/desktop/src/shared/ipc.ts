@@ -485,6 +485,7 @@ export const IPC = {
   iosSimulatorSetStatusBar: "ade.iosSimulator.setStatusBar",
   iosSimulatorClearStatusBar: "ade.iosSimulator.clearStatusBar",
   iosSimulatorGetAppState: "ade.iosSimulator.getAppState",
+  iosSimulatorGetForegroundApp: "ade.iosSimulator.getForegroundApp",
   iosSimulatorStartEventLog: "ade.iosSimulator.startEventLog",
   iosSimulatorStopEventLog: "ade.iosSimulator.stopEventLog",
   iosSimulatorGetEventLog: "ade.iosSimulator.getEventLog",

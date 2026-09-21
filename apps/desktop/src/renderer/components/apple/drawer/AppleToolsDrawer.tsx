@@ -73,19 +73,36 @@ export function AppleToolsDrawer({
   const [showDetail, setShowDetail] = useState(false);
   const reportError = actions.reportError;
 
-  /* The foreground app: the lane's active app session, if the status names one. */
+  /*
+   * The foreground app, asked of the device itself every two seconds while the
+   * drawer is open, so an app opened from the home screen or from Xcode shows
+   * up too. When the device reports only SpringBoard, fall back to the lane's
+   * active app session, which is what ADE last launched here.
+   */
   useEffect(() => {
     if (!visible) return undefined;
     let cancelled = false;
-    void window.ade.iosSimulator.getStatus(pinRef.current)
-      .then((status) => {
+    const api = window.ade.iosSimulator;
+    const read = async () => {
+      try {
+        const front = await api.getForegroundApp({ laneId, deviceUdid: device.udid }, pinRef.current);
+        if (cancelled) return;
+        if (front?.bundleId) {
+          setForegroundApp(front.bundleId);
+          return;
+        }
+        const status = await api.getStatus(pinRef.current);
         if (cancelled) return;
         const session = status.activeSession;
         const sameLane = !session?.laneId || session.laneId === laneId;
         setForegroundApp(session && sameLane && session.deviceUdid === device.udid ? session.bundleId : null);
-      })
-      .catch((cause: unknown) => { if (!cancelled) reportError(cause); });
-    return () => { cancelled = true; };
+      } catch (cause: unknown) {
+        if (!cancelled) reportError(cause);
+      }
+    };
+    void read();
+    const timer = window.setInterval(() => { void read(); }, 2000);
+    return () => { cancelled = true; window.clearInterval(timer); };
   }, [device.udid, laneId, reportError, visible]);
 
   useEffect(() => { setShowDetail(false); }, [actions.error]);

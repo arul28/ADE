@@ -93,6 +93,10 @@ hides during local testing.
 
 ## 3. Known gaps
 
+- **Closed 2026-09-21:** Show Borders is the device's Button Shapes flag
+  (`accessibility button-shapes`), so the drawer row is live. The App section
+  reads the frontmost app from the helper every two seconds, so an app opened
+  from the home screen or Xcode shows up and the Event log follows it.
 - **Remote desktop live view is no longer a gap.** A Windows or Linux desktop bound to a Mac runtime can watch and drive the lane's simulator over H.264; test it by opening this desktop app on Windows/Linux against that Mac runtime and using the Apple tool (the picker follows `iosSimulator.status().supported`, not the viewer's OS).
 - **`apple.streamTicket` has no ownership guard — product decision needed.**
   It is `viewerAllowed: true` (deliberately: the phone is view-only and streams

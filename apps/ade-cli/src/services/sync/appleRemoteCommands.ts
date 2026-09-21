@@ -252,6 +252,7 @@ const APPLE_UNGUARDED_METHODS: ReadonlySet<string> = new Set([
   "getDeviceSession",
   "getDeviceSettings",
   "getAppState",
+  "getForegroundApp",
   "getEventLog",
   "getInspectorSnapshot",
   "getScreenSnapshot",

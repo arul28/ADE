@@ -19,16 +19,16 @@ const SWITCHES: ReadonlyArray<{ option: IosSimulatorAccessibilityOption; label: 
   { option: "reduce-motion", label: "Reduce Motion" },
   { option: "increase-contrast", label: "Increase Contrast" },
   { option: "reduce-transparency", label: "Reduce Transparency" },
-  { option: "bold-text", label: "Show Borders" },
+  { option: "button-shapes", label: "Show Borders" },
   { option: "voice-over", label: "VoiceOver" },
 ];
 
 /**
  * §8.2 — Appearance, Text size, and the five accessibility switches.
  *
- * "Show Borders" has no `simctl` setting of its own on this build; the row
- * exists (disabled, never hidden) so the drawer's shape matches the spec, and
- * it lights up the day the option is reported.
+ * "Show Borders" is iOS's Button Shapes flag (`button-shapes`), written to the
+ * same accessibility preference domain as the other switches. A switch whose
+ * value the device did not report renders disabled, never hidden.
  */
 export function SimulatorSection({ ctx }: { ctx: AppleDrawerContext }) {
   const { scope, pinRef, actions } = ctx;
@@ -82,8 +82,7 @@ export function SimulatorSection({ ctx }: { ctx: AppleDrawerContext }) {
       </Row>
       {SWITCHES.map(({ option, label }) => {
         const reported = settings?.accessibility?.[option];
-        // "Show Borders" is carried by no simctl option; it stays disabled.
-        const checked = label === "Show Borders" ? undefined : reported === null || reported === undefined ? undefined : reported;
+        const checked = reported === null || reported === undefined ? undefined : reported;
         return (
           <SwitchRow
             key={label}

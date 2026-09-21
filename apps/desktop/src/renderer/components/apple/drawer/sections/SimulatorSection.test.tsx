@@ -30,12 +30,14 @@ describe("SimulatorSection", () => {
     const reduceMotion = screen.getByRole("switch", { name: "Reduce Motion" }) as HTMLButtonElement;
     expect(reduceMotion.getAttribute("aria-checked")).toBe("true");
     expect(reduceMotion.disabled).toBe(false);
-    // `voice-over` is null in the fixture and Show Borders has no simctl option: present, off, inert.
-    for (const label of ["VoiceOver", "Show Borders"]) {
-      const control = screen.getByRole("switch", { name: label }) as HTMLButtonElement;
-      expect(control.disabled).toBe(true);
-      expect(control.getAttribute("aria-checked")).toBe("false");
-    }
+    // Show Borders is the device's Button Shapes flag: reported false, so on and off.
+    const showBorders = screen.getByRole("switch", { name: "Show Borders" }) as HTMLButtonElement;
+    expect(showBorders.disabled).toBe(false);
+    expect(showBorders.getAttribute("aria-checked")).toBe("false");
+    // `voice-over` is null in the fixture: present, off, inert.
+    const voiceOver = screen.getByRole("switch", { name: "VoiceOver" }) as HTMLButtonElement;
+    expect(voiceOver.disabled).toBe(true);
+    expect(voiceOver.getAttribute("aria-checked")).toBe("false");
   });
 
   it("disables everything with no settings snapshot", () => {

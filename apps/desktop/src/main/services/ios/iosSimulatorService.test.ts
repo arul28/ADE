@@ -1992,6 +1992,35 @@ describe("iosSimulatorService screenshots and platform guards", () => {
     }
   });
 
+  it("reads the foreground app from the helper and maps SpringBoard or a missing app to null", async () => {
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-front-`);
+    const { run } = simulatorRunMock();
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    let reply: () => Record<string, unknown> = () => ({ app: { bundleId: "com.acme.app", pid: 4242 } });
+    const helper = fakeSimHelper({ onSend: () => reply() });
+    const restoreHelper = __testSetIosSimulatorHelperFactory(() => helper.client);
+    const service = createIosSimulatorService({ projectRoot, logger: noopLogger });
+    try {
+      const front = await service.getForegroundApp({ deviceUdid: "device-1", laneId: "lane-a" });
+      expect(front).toMatchObject({ bundleId: "com.acme.app", pid: 4242 });
+      expect(helper.sent).toEqual([expect.objectContaining({ type: "ax-frontmost", udid: "device-1" })]);
+
+      reply = () => ({ app: { bundleId: "com.apple.springboard" } });
+      expect(await service.getForegroundApp({ deviceUdid: "device-1" })).toBeNull();
+
+      reply = () => { throw new Error("No frontmost application returned for simulator"); };
+      expect(await service.getForegroundApp({ deviceUdid: "device-1" })).toBeNull();
+
+      reply = () => { throw new Error("helper exited"); };
+      await expect(service.getForegroundApp({ deviceUdid: "device-1" })).rejects.toThrow(/helper exited/);
+    } finally {
+      service.dispose();
+      restoreHelper();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+    }
+  });
+
   it("rotates through the helper and passes applied through", async () => {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-rotate-`);

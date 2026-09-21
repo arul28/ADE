@@ -73,6 +73,7 @@ import type {
   IosSimulatorSelectResult,
   IosSimulatorSession,
   IosSimulatorAppLifecycleArgs,
+  IosSimulatorForegroundApp,
   IosSimulatorAssertVisibleArgs,
   IosSimulatorCloseDeviceArgs,
   IosSimulatorDeviceArgs,
@@ -5266,6 +5267,33 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     setStatusBar: async (toolArgs: IosSimulatorStatusBarArgs) => darwinHub(toolArgs).setStatusBar(toolArgs),
     clearStatusBar: async (toolArgs: IosSimulatorDeviceArgs = {}) => darwinHub(toolArgs).clearStatusBar(toolArgs),
     getAppState: async (toolArgs: IosSimulatorAppLifecycleArgs) => darwinHub(toolArgs).getAppState(toolArgs),
+    /**
+     * The app in front of the simulator, from the helper's accessibility
+     * bridge rather than from what ADE last launched. SpringBoard alone, or a
+     * device that has not finished booting, reads as `null`, not as an error:
+     * the drawer asks every couple of seconds and an empty home screen is a
+     * normal answer.
+     */
+    getForegroundApp: async (
+      arg: { deviceUdid?: string | null; laneId?: string | null; chatSessionId?: string | null } = {},
+    ): Promise<IosSimulatorForegroundApp> => {
+      assertDarwin();
+      const udid = await resolveControlDeviceUdid(arg.deviceUdid, resolveRuntime(arg));
+      let payload: Record<string, unknown>;
+      try {
+        payload = await helper().send({ type: "ax-frontmost", udid });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (/frontmost application|not booted/i.test(message)) return null;
+        throw error;
+      }
+      const app = payload.app;
+      if (!app || typeof app !== "object") return null;
+      const bundleId = (app as { bundleId?: unknown }).bundleId;
+      if (typeof bundleId !== "string" || !bundleId || bundleId === "com.apple.springboard") return null;
+      const pid = (app as { pid?: unknown }).pid;
+      return { bundleId, pid: typeof pid === "number" && pid > 0 ? pid : null, checkedAt: nowIso() };
+    },
 
     /* Device hub: the app's own log, interleaved with what ADE did. */
     startEventLog: async (logArgs: IosSimulatorStartEventLogArgs) => darwinHub(logArgs).startEventLog(logArgs),

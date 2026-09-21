@@ -834,6 +834,7 @@ export const IOS_SIMULATOR_ACCESSIBILITY_OPTIONS = [
   "increase-contrast",
   "reduce-motion",
   "reduce-transparency",
+  "button-shapes",
   "bold-text",
   "invert-colors",
   "grayscale",
@@ -960,6 +961,16 @@ export type IosSimulatorAppState = {
   pid: number | null;
   checkedAt: string;
 };
+
+/**
+ * The app in front of the simulator right now, read through the helper's
+ * accessibility bridge. `null` when nothing but SpringBoard is up.
+ */
+export type IosSimulatorForegroundApp = {
+  bundleId: string;
+  pid: number | null;
+  checkedAt: string;
+} | null;
 
 /**
  * One row of the device hub's event log.
