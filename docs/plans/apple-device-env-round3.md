@@ -35,13 +35,19 @@ a human driving the pane. Human input during an agent recording is still
 captured (it is on screen) but never starts one. The user's manual Record
 button is the only other way to start.
 
-A3. **Recordings vanish.** Three files sat in
-`.ade/artifacts/apple-recordings/<lane>/*.mp4` with nothing on screen. After
-Stop: an inline row appears at the bottom of the viewport for 6 s — "Saved ·
-0:23 · 8.5 MB · [Reveal] [Pin to proof]" — and the drawer's Recording section
-lists it at the top. Reveal opens Finder at the file. Pin adds it to the
-proof drawer. Recordings also appear in the lane's Files tool under
-`.ade/artifacts/apple-recordings`.
+A3. **Recordings vanish → every recording is proof.** Three files sat in
+`.ade/artifacts/apple-recordings/<lane>/*.mp4` with nothing on screen. Rule
+(user decision 2026-09-21): when a recording stops, for any reason, it is
+registered as a proof artifact (kind: video) in the proof drawer at once —
+attributed to the chat whose input started it, or to the user's active chat
+for a manual recording — with caption "Simulator recording · {device} ·
+{duration}". No "Pin to proof" button anywhere; the drawer's Recording section
+lists the same items with **Open in proof** and a `⋯` menu (Reveal in Finder,
+Delete, which also removes the proof artifact). After Stop an inline row
+appears at the bottom of the viewport for 6 s: "Saved to proof · 0:23 ·
+8.5 MB · [Open]". Recordings also appear in the lane's Files tool under
+`.ade/artifacts/apple-recordings`. Use the existing proof artifact service
+(`ade proof attach` path / `captureProofBundle` plumbing), not a new store.
 
 A4. **Closing the tools pane shows nothing.** When the tools pane closes (or
 switches tool) while a device is live, the mini player (A5) appears at once
