@@ -55,6 +55,7 @@ import {
   createGithubService,
   fetchAdeLatestRelease,
 } from "./githubService";
+import { GITHUB_REST_ISSUE_PR_LIST_MAX_PAGES } from "./githubRestPagination";
 import {
   clearGithubCredentialHealth,
   githubCredentialCooldown,
@@ -1073,6 +1074,16 @@ describe("githubService issue-domain helpers", () => {
     expect(init.method).toBe("GET");
   });
 
+  it("listRepoIssues forwards an explicit direction", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, []));
+    const service = makeService();
+
+    await service.listRepoIssues("acme", "ade", { direction: "asc" });
+
+    const [url] = lastFetchCall();
+    expect(url).toContain("direction=asc");
+  });
+
   it("listRepoIssues defaults state=all/sort=updated/perPage=50 and omits since", async () => {
     mockFetch.mockResolvedValueOnce(jsonResponse(200, []));
     const service = makeService();
@@ -1109,6 +1120,22 @@ describe("githubService issue-domain helpers", () => {
     expect(result.map((issue) => issue.number)).toEqual([1, 2]);
     expect(mockFetch).toHaveBeenCalledTimes(2);
     expect(mockFetch.mock.calls[1]?.[0]).toContain("page=2");
+  });
+
+  it("listRepoIssues stops following Link pagination at the issue/PR page budget", async () => {
+    for (let page = 1; page <= 6; page += 1) {
+      mockFetch.mockResolvedValueOnce(jsonResponse(200, [{ number: page }], {
+        link: `<https://api.github.com/repos/acme/ade/issues?page=${page + 1}&per_page=1>; rel="next"`,
+      }));
+    }
+    const service = makeService();
+
+    const result = await service.listRepoIssues("acme", "ade", { perPage: 1 });
+
+    expect(result.map((issue) => issue.number)).toEqual(
+      Array.from({ length: GITHUB_REST_ISSUE_PR_LIST_MAX_PAGES }, (_, index) => index + 1),
+    );
+    expect(mockFetch).toHaveBeenCalledTimes(GITHUB_REST_ISSUE_PR_LIST_MAX_PAGES);
   });
 
   it("listRepoPulls builds the correct URL with direction=desc", async () => {

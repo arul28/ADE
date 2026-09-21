@@ -264,6 +264,7 @@ import {
   collectOpenProjectBindings,
   createChatMachineRouter,
   isLivePinnedBinding,
+  workRuntimeScopeKey,
   type LaneBindingSource,
 } from "../../lib/chatMachineRouting";
 import { shouldShowClaudeChatLoginPrompt } from "../../lib/claudeAuthPrompt";
@@ -3197,6 +3198,7 @@ export function AgentChatPane({
   initialSessionSummary,
   lockSessionId,
   lockSessionProvider = null,
+  runtimePin: hostRuntimePin,
   sessionTitleById,
   hideSessionTabs = false,
   hideNativeControls = false,
@@ -3252,6 +3254,14 @@ export function AgentChatPane({
    * switch frame.
    */
   lockSessionProvider?: AgentChatProvider | null;
+  /**
+   * Host-resolved pin for a locked Work chat. When the Work tab already knows
+   * the session's machine — including a sticky pin after the dropdown moved —
+   * pass it here so send/history/drawer stay on that machine instead of
+   * re-deriving from the live union (which is cleared on a same-repo switch).
+   * Omit on every other embedding; the pane keeps deriving from the lane.
+   */
+  runtimePin?: OpenProjectBinding | null;
   /** Full host-surface title index for locked single-session embeddings. */
   sessionTitleById?: ReadonlyMap<string, string>;
   hideSessionTabs?: boolean;
@@ -4116,6 +4126,7 @@ export function AgentChatPane({
     projectBinding,
     lanes,
     availableLanes,
+    pinOverride: hostRuntimePin,
   });
   // Held in a ref so the ~40 call sites below can read the pin without
   // perturbing any existing effect/callback dependency array. Declared here,
@@ -4149,8 +4160,10 @@ export function AgentChatPane({
     Boolean(renderedSession),
   );
   const renderedChatRuntimePin = useMemo(
-    () => chatMachineRouter.pinForLane(renderedSession?.laneId ?? foreignRenderedLaneId ?? laneId),
-    [chatMachineRouter, foreignRenderedLaneId, laneId, renderedSession?.laneId],
+    () => (hostRuntimePin !== undefined
+      ? hostRuntimePin
+      : chatMachineRouter.pinForLane(renderedSession?.laneId ?? foreignRenderedLaneId ?? laneId)),
+    [chatMachineRouter, foreignRenderedLaneId, hostRuntimePin, laneId, renderedSession?.laneId],
   );
   // Lifecycle actions must follow the session currently rendered in the pane.
   // Resolve this after the machine pin so foreign chats never send a wake or
@@ -13428,6 +13441,7 @@ export function AgentChatPane({
       chatSessionId={selectedSessionId}
       revealRequest={terminalRevealRequest}
       runtimePin={chatRuntimePin}
+      runtimeScopeKey={workRuntimeScopeKey(chatRuntimePin, projectBinding)}
     />
   ) : null;
   const iosSimulatorPanelContent = (

@@ -323,8 +323,10 @@ three different owners:
   the aggregator reads that as the one-tab pane that build had.
   `useWorkSidebarTool`
   debounces changes by 250 ms and calls the `work_tools.setActiveTool` runtime
-  action, re-publishing whenever the project binding or runtime status changes
-  so a restarted brain relearns it. It is held **in memory only** — deliberately
+  action with the focused chat's runtime pin, re-publishing whenever the project
+  binding or runtime status changes so a restarted brain relearns it. A Studio
+  chat on a MacBook tab therefore updates Studio's in-memory work_tools state,
+  not the laptop's. It is held **in memory only** — deliberately
   not a cr-sqlite table, because a replicated row would outlive the desktop that
   meant it and turn an ephemeral view preference into permanent per-device state.
 - `browser` is **proxied from the desktop bridge** (`built_in_browser.getStatus`

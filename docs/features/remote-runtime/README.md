@@ -470,19 +470,35 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   - `machineEntryForBinding(state, pin)` / `useMachineEntryForBinding(pin)` —
     the pinned machine's slice of the union. The join is by binding **key**, not
     machine id: `machineId` is only known once that machine has answered, while
-    a pin carries its routing target from the moment a chat is selected.
+    a pin carries its routing target from the moment a chat is selected. The
+    React hook also consults the retained Work slices: a same-repo tab switch
+    replace-clears the live map, and Git/Files must keep answering from the
+    Studio slice that is still on screen rather than the empty refill. Retain
+    lives in one slot per proven origin (per tab when origin is unknown) so a
+    Git pane that mounts during refill cannot start empty and wipe Work's
+    snapshot, and a second project tab cannot prune this repo's Studio slice.
+    A background tab whose `projectStateKey` is not the live union's scope
+    reads its own slot and does not ingest that union. `useWorkSessions` also copies
+    the focused session (and the open tools pane) onto the destination
+    `workViewByProject` key when git origin proves the same repo — otherwise
+    the MacBook key's empty selection would unfocus the Studio chat and the
+    tools would follow the laptop. The tools-pane strip is stored under the
+    focused chat's runtime binding, not the tab's `projectStateKey`. Held
+    `ade browser open` requests expire after a short handoff window and are
+    capped per pin.
   - `useForeignSessionLaneId(sessionId, presentLocally)` — a chat selected from
     another machine is absent from this tab's session list, so its lane, and
-    with it its machine, is knowable only from the union. `presentLocally`
-    short-circuits the scan for the common case where the tab already holds the
-    session.
+    with it its machine, is knowable only from the union (live, then retained).
+    `presentLocally` short-circuits the scan for the common case where the tab
+    already holds the session.
   - `useLanesForPin(pin)` — the **only** lane list a pinned lane id may be
     resolved against. Never `state.lanes`: lane ids are unique per machine, not
     globally, so falling back to the tab-bound machine's list can match a
     *different* lane that happens to share the id and then hand its worktree
     path to a tool about to drive the other machine. A machine that has not been
     read yet yields an empty list, which surfaces as "not found" rather than as
-    the wrong lane. It returns `null` for an absent pin so callers keep their own
+    the wrong lane. During a same-repo refill it reads the retained slice before
+    the warm cache. It returns `null` for an absent pin so callers keep their own
     unpinned source explicitly rather than by accident, and it reads each half
     from the store that owns it: the union from the root store, the warm
     `laneCacheByProject` lane cache from the surrounding project-scoped store.
@@ -660,11 +676,16 @@ relay payload E2E encryption is planned security work. See the trust boundary in
     running only `ade serve` has no browser at all, so `ade browser open <url>`
     there emits a `built_in_browser_remote_request` runtime event and returns
     `{ status: "forwarded_to_desktop", requestId }` instead of failing at the
-    desktop bridge socket. A desktop holding a remote pin for that lane takes
+    desktop bridge socket.     A desktop holding a remote pin for that lane takes
     the request, runs it through the same approval + forward path, and answers
     with the `built_in_browser.acknowledgeRemoteRequest` runtime action so the
     CLI can print "Opened on <desktop> via tunnel" — or, after a bounded 5s
-    wait, "no desktop is attached to this machine".
+    wait, "no desktop is attached to this machine". If Browser is not the
+    visible Work tool, Work holds that request, switches the pane only when the
+    request names the focused chat (or names no chat), and the Browser panel
+    drains the hold on mount — the event is not replayed. A request that names a
+    different chat stays queued for that chat's panel and does not steal the
+    focused pane.
 
     **One request, one answering panel.** The daemon publishes the request to
     every desktop panel pinned to that machine. A request naming a lane or a
@@ -914,8 +935,8 @@ dimension inside it, switched from a dropdown on the tab. There is no separate
 "remote" tab, and "remote" is not a machine name: machines are named absolutely
 ("This computer", "MacBook Pro (97)").
 
-The tab's machine is the global execution context — Lanes, PRs, Files, Git, and
-Run all follow it. Two things are deliberately wider than that:
+The tab's machine is the global execution context — Lanes, PRs, the Files
+page, and Run all follow it. Two things are deliberately wider than that:
 
 - **The Work sidebar is a union.** It shows chats in flight on *every* connected
   machine for this repository, regardless of which machine the tab is bound to.
@@ -932,13 +953,26 @@ Run all follow it. Two things are deliberately wider than that:
   Local wins the tie, matching where a click resolves. A slice only claims
   sessions on lanes that same machine reports, so a session naming a lane a
   machine does not have cannot suppress the machine that does have it.
-- **A session runs on its own lane's machine.** Opening a chat, CLI, or shell
-  session from the union streams it from the machine that owns its lane, with its
-  calls pinned to that machine's runtime; the tab stays bound where it was. A row
-  whose owning binding this window does not have open is the exception — there is
-  nothing to pin to, so the tab switches. Clicking a foreign *lane* (rather than
-  a session) is the explicit move: it switches the tab's machine, the same thing
-  opening a remote project does.
+- **A session owns its Work tools.** Git, Files, Terminal, Browser, Simulator,
+  and App Control in the Work tools pane follow the focused chat's machine, not
+  the tab dropdown. Opening a chat, CLI, or shell from the union streams it from
+  the machine that owns its lane, with its calls pinned to that machine's
+  runtime; the tab stays bound where it was. Switching the dropdown under an
+  open session does not remount or retarget those tools — a Studio chat keeps
+  Studio git and Studio shells while you sit on a MacBook. New chat has no
+  Tools toggle; opening a draft closes any leftover pane. Clicking a session
+  never rebinds the tab: the row already carries a complete binding, so Work
+  pins the call even after the dropdown released that checkout. The command
+  palette and `ade:work:select-session` follow the same rule. Same-repo
+  machine switches keep the union's session slices; a different git origin
+  wipes them. Clicking a
+  foreign *lane* (rather than a session) is the explicit move: it switches the
+  tab's machine, the same thing opening a remote project does.
+
+Hosted web still cannot drive Simulator (no capture stream) and shows App
+Control read-only. iOS switches host rather than pinning a foreign runtime. The
+TUI hops machines separately. Windows uses the same session-owned routing;
+Simulator stays macOS-only.
 
 Machine selection also appears at lane creation: the create-lane dialog picks
 which machine the new worktree is created on, matching each machine's checkout of

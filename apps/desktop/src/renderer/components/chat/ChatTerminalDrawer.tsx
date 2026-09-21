@@ -71,6 +71,12 @@ type ChatTerminalDrawerProps = {
    * creation, restore, disposal, and the xterm runtime are all addressed there.
    */
   runtimePin?: OpenProjectBinding | null;
+  /**
+   * Stable machine identity for persisted drawer UI. Callers that know the
+   * tab's bound binding pass `workRuntimeScopeKey(pin, bound)` so a bound→pinned
+   * flip for the same machine does not look like a different drawer.
+   */
+  runtimeScopeKey?: string | null;
   autoCreateOnOpen?: boolean;
   createRequestNonce?: number;
   disposeTabsOnUnmount?: boolean;
@@ -102,9 +108,11 @@ function drawerStateKey(
   chatSessionId: string | null | undefined,
   laneId: string,
   pin?: OpenProjectBinding | null,
+  runtimeScopeKey?: string | null,
 ): string {
   const scope = chatSessionId ? `chat:${chatSessionId}` : `lane:${laneId}`;
-  return pin ? `machine:${pin.kind}:${pin.key}::${scope}` : scope;
+  const machine = runtimeScopeKey?.trim() || pin?.key || null;
+  return machine ? `machine:${machine}::${scope}` : scope;
 }
 
 function readDrawerUiState(key: string): DrawerUiState {
@@ -152,6 +160,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   laneId,
   chatSessionId,
   runtimePin = null,
+  runtimeScopeKey = null,
   autoCreateOnOpen = true,
   createRequestNonce = 0,
   disposeTabsOnUnmount = false,
@@ -159,9 +168,12 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   revealRequest,
 }: ChatTerminalDrawerProps) {
   const pin = runtimePin ?? null;
+  const pinKey = pin?.key ?? null;
   // Lane and chat ids are only unique per machine, so the persisted UI state
-  // (which shell was last active) is namespaced by machine too.
-  const uiStateKey = drawerStateKey(chatSessionId, laneId, pin);
+  // (which shell was last active) is namespaced by machine too. Key on the
+  // effective machine so a bound→pinned flip for the same session does not
+  // look like a different drawer.
+  const uiStateKey = drawerStateKey(chatSessionId, laneId, pin, runtimeScopeKey);
   const [tabs, setTabs] = useState<TabEntry[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [creatingTab, setCreatingTab] = useState(false);
@@ -189,6 +201,8 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   // stale request from a previous chat doesn't keep blocking the new chat's
   // auto-create path.
   const lastHandledRevealRef = useRef<{ chatKey: string; nonce: number } | null>(null);
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
 
   tabsRef.current = tabs;
 
@@ -296,7 +310,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
     if (!open && !revealRequest) return;
     let cancelled = false;
     setRestoringTabs(true);
-    window.ade.terminal.list({ chatSessionId, limit: 20 }, pin)
+    window.ade.terminal.list({ chatSessionId, limit: 20 }, pinRef.current)
       .then((sessions) => {
         if (cancelled) return;
         const restored = sessions
@@ -335,7 +349,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
     return () => {
       cancelled = true;
     };
-  }, [chatSessionId, open, pin, revealRequest, uiStateKey]);
+  }, [chatSessionId, open, pinKey, revealRequest, uiStateKey]);
 
   useEffect(() => {
     if (!revealRequest) return;

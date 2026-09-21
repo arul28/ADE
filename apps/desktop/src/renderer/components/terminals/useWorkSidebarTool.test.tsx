@@ -2,12 +2,14 @@
 
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { OpenProjectBinding } from "../../../shared/types";
 import type { ProductAnalyticsCapture } from "../../../shared/types/productAnalytics";
 import { useAppStore } from "../../state/appStore";
 import {
   closeWorkToolTab,
   openWorkToolTab,
   useWorkSidebarTool,
+  WORK_TOOL_PUBLISH_DEBOUNCE_MS,
   workToolScopeKey,
 } from "./useWorkSidebarTool";
 import {
@@ -315,5 +317,77 @@ describe("Work tool analytics", () => {
     act(() => result.current.setTool("browser"));
     expect(capture).toHaveBeenCalledTimes(1);
     expect(capture.mock.calls[0]![0]).toMatchObject({ dedupeKey: "work_tool_opened:browser" });
+  });
+});
+
+describe("work tool runtime publish", () => {
+  const setActiveTool = vi.fn(async () => undefined);
+  const studioPin: OpenProjectBinding = {
+    kind: "remote",
+    key: "remote:target-studio:project-a",
+    targetId: "target-studio",
+    projectId: "project-a",
+    rootPath: "/remote/repo",
+    displayName: "repo",
+    runtimeName: "Mac Studio",
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    setActiveTool.mockClear();
+    setProject(PROJECT_ROOT);
+    (window as unknown as { ade: unknown }).ade = { workTools: { setActiveTool } };
+  });
+
+  afterEach(() => {
+    cleanup();
+    setProject(null);
+    delete (window as unknown as { ade?: unknown }).ade;
+    vi.useRealTimers();
+  });
+
+  it("publishes the focused chat's pin so the phone mirrors that machine", () => {
+    const { result } = renderHook(() => useWorkSidebarTool("lane-studio", studioPin));
+    act(() => result.current.setTool("git"));
+    act(() => {
+      vi.advanceTimersByTime(WORK_TOOL_PUBLISH_DEBOUNCE_MS);
+    });
+    expect(setActiveTool).toHaveBeenCalledWith("lane-studio", "git", ["git"], studioPin);
+  });
+
+  it("stores lane tool tabs on the session machine after the tab dropdown moves", () => {
+    useAppStore.setState({
+      project: { rootPath: PROJECT_ROOT, name: "Repo" },
+      projectBinding: {
+        kind: "local",
+        key: "local:/repo",
+        rootPath: PROJECT_ROOT,
+        displayName: "MacBook",
+      },
+    } as never);
+    const { result, rerender } = renderHook(() => useWorkSidebarTool("lane-studio", studioPin));
+    act(() => result.current.setTool("git"));
+    rerender();
+
+    const studioScope = workToolScopeKey(studioPin.key, "lane-studio");
+    const tabScope = workToolScopeKey(PROJECT_ROOT, "lane-studio");
+    expect(useAppStore.getState().laneWorkViewByScope[studioScope]?.workSidebarTool).toBe("git");
+    expect(useAppStore.getState().laneWorkViewByScope[tabScope]).toBeUndefined();
+
+    useAppStore.setState({
+      projectBinding: {
+        kind: "local",
+        key: "local:/repo",
+        rootPath: PROJECT_ROOT,
+        displayName: "MacBook",
+      },
+    } as never);
+    act(() => result.current.setTool("terminal"));
+    rerender();
+    expect(result.current.tool).toBe("terminal");
+    expect(result.current.openTools).toEqual(["git", "terminal"]);
+    expect(useAppStore.getState().laneWorkViewByScope[studioScope]?.workSidebarOpenTools)
+      .toEqual(["git", "terminal"]);
+    expect(useAppStore.getState().laneWorkViewByScope[tabScope]).toBeUndefined();
   });
 });

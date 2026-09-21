@@ -11540,11 +11540,14 @@ const adeBridge = {
       laneId: string,
       tool: WorkToolId | null,
       openTools: WorkToolId[] = [],
+      pin?: OpenProjectBinding | null,
     ): Promise<void> => {
-      await callProjectRuntimeActionIfBound(
+      await callPinnedOrBoundRuntimeActionOr(
+        pin,
         "work_tools",
         "setActiveTool",
         { args: { laneId, tool, openTools } satisfies WorkToolsSetActiveToolArgs },
+        async () => undefined,
       );
     },
     readObservationPreview: async (

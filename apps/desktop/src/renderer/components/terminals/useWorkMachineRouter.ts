@@ -1,15 +1,15 @@
-import { useMemo, useRef } from "react";
+import { useMemo } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import {
   buildChatMachineRoutingState,
   collectOpenProjectBindings,
   createChatMachineRouter,
+  effectiveRuntimeBinding,
   isLivePinnedBinding,
   type ChatMachineRouter,
   type LaneBindingSource,
 } from "../../lib/chatMachineRouting";
 import {
-  selectActiveProjectStateKey,
   useAppStore,
   useRootAppStore,
   type CrossMachineMachineLanes,
@@ -39,81 +39,6 @@ export type WorkMachineRouter = ChatMachineRouter & {
   forgetSessionPin: (session: WorkRuntimePinLookup) => void;
 };
 
-type RetainedCrossMachineSlices = {
-  projectStateKey: string | null;
-  machinesById: Map<string, CrossMachineMachineLanes>;
-  /** Fallback for older callers that have not supplied authoritative scope intent yet. */
-  pendingMachineIds: Set<string> | null;
-};
-
-/**
- * One retained cross-machine slice lifecycle for both Work rows and runtime pins.
- *
- * `crossMachineLanesByMachineId` is replace-on-refill. The separate intended-id
- * list is the authoritative membership contract: an absent but intended machine
- * is still loading, while an id removed from that list is gone immediately.
- * Keeping complete slices here means the session index, lane index, and binding
- * index cannot disagree during a partial refill.
- */
-export function useRetainedCrossMachineSlices(): readonly CrossMachineMachineLanes[] {
-  const projectStateKey = useAppStore(selectActiveProjectStateKey);
-  const crossMachineLanesByMachineId = useRootAppStore((s) => s.crossMachineLanesByMachineId);
-  const intendedMachineIds = useRootAppStore((s) => s.crossMachineLaneIntendedMachineIds);
-  const retainedRef = useRef<RetainedCrossMachineSlices>({
-    projectStateKey: null,
-    machinesById: new Map(),
-    pendingMachineIds: null,
-  });
-
-  return useMemo(() => {
-    let retained = retainedRef.current;
-    if (retained.projectStateKey !== projectStateKey) {
-      retained = {
-        projectStateKey,
-        machinesById: new Map(),
-        pendingMachineIds: null,
-      };
-      retainedRef.current = retained;
-    }
-
-    const machines = Object.values(crossMachineLanesByMachineId);
-    if (intendedMachineIds != null) {
-      const intended = new Set(intendedMachineIds);
-      for (const machineId of retained.machinesById.keys()) {
-        if (!intended.has(machineId)) retained.machinesById.delete(machineId);
-      }
-      for (const machine of machines) {
-        if (intended.has(machine.machineId)) {
-          retained.machinesById.set(machine.machineId, machine);
-        }
-      }
-      // Authoritative intent makes arrival bookkeeping unnecessary: absence is
-      // pending until membership says otherwise, however many peers arrive first.
-      retained.pendingMachineIds = null;
-    } else if (machines.length === 0) {
-      // Compatibility fallback while scope identity is still unresolved. Once
-      // intent is published, the branch above becomes the only lifecycle rule.
-      if (retained.machinesById.size > 0 && retained.pendingMachineIds == null) {
-        retained.pendingMachineIds = new Set(retained.machinesById.keys());
-      }
-    } else {
-      const presentMachineIds = new Set(machines.map((machine) => machine.machineId));
-      if (retained.pendingMachineIds == null) {
-        for (const machineId of retained.machinesById.keys()) {
-          if (!presentMachineIds.has(machineId)) retained.machinesById.delete(machineId);
-        }
-      }
-      for (const machine of machines) {
-        retained.machinesById.set(machine.machineId, machine);
-        retained.pendingMachineIds?.delete(machine.machineId);
-      }
-      if (retained.pendingMachineIds?.size === 0) retained.pendingMachineIds = null;
-    }
-
-    return Array.from(retained.machinesById.values());
-  }, [crossMachineLanesByMachineId, intendedMachineIds, projectStateKey]);
-}
-
 /**
  * Per-session runtime routing for the Work tab.
  *
@@ -126,6 +51,8 @@ export function useRetainedCrossMachineSlices(): readonly CrossMachineMachineLan
  * This exists so a CLI/shell session is routed exactly like a chat. The Work
  * sidebar is a union across machines, and clicking a row must reach ITS machine
  * without rebinding the tab (rebinding would drag Lanes/PRs/Files along).
+ * Work tools follow that same session machine: a sticky effective pin survives
+ * the tab dropdown moving underneath an open session.
  */
 export function useWorkMachineRouter(
   crossMachineSlices: readonly CrossMachineMachineLanes[],
@@ -215,7 +142,15 @@ export function useWorkMachineRouter(
         return rememberedPin;
       },
       rememberSessionPin: (session, pin) => {
-        rememberWorkPtyLaunchPin(session, pin);
+        const existing = workPtyLaunchPinFor(session);
+        const effective = effectiveRuntimeBinding(pin, projectBinding);
+        if (!effective) return;
+        // A null pin means "the bound path", not "forget this machine". After
+        // the tab dropdown moves, callers still pass null for a session that
+        // was on the old bound machine; replacing the sticky foreign pin with
+        // the new tab would silently retarget Git/Terminal/Browser.
+        if (existing && !pin && existing.key !== effective.key) return;
+        rememberWorkPtyLaunchPin(session, effective);
       },
       forgetSessionPin: (session) => {
         forgetWorkPtyLaunchPin(session);
