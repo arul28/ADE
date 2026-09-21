@@ -259,10 +259,8 @@ function sessionStatusCluster(row: WorkListSessionRow): string {
   if (row.status) {
     // Desktop/iOS keep the Codex `?` pip as a sibling of the status word, so
     // a nested row that hides "Working" still shows it has a question.
-    const steered = row.status.glyph === "working" && row.status.label.endsWith(" ?");
-    const word = steered ? row.status.label.slice(0, -2) : row.status.label;
-    if (!row.nested || shout) label = word;
-    if (steered) steeringPip = "?";
+    if (!row.nested || shout) label = row.status.label;
+    if (row.steeringInput && row.status.glyph === "working") steeringPip = "?";
   } else {
     label = row.timestampLabel ?? "";
   }

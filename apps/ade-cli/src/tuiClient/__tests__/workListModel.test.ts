@@ -534,7 +534,8 @@ describe("workListModel status", () => {
     });
 
     const [row] = sessionRows(model);
-    expect(row!.status?.label).toBe("Working ?");
+    expect(row!.status?.label).toBe("Working");
+    expect(row!.steeringInput).toBe(true);
     expect(row!.status?.glyph).toBe("working");
   });
 

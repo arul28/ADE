@@ -51,6 +51,7 @@ function sessionRow(id: string, overrides: Partial<WorkListSessionRow> = {}): Wo
     laneColor: null,
     laneIcon: null,
     nested: false,
+    steeringInput: false,
     ...overrides,
   };
 }
