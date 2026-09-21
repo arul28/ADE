@@ -1440,13 +1440,14 @@ declare global {
         complete: () => Promise<OnboardingStatus>;
       };
       automations: {
-        list: () => Promise<AutomationRuleSummary[]>;
+        list: (pin?: OpenProjectBinding | null) => Promise<AutomationRuleSummary[]>;
         toggle: (args: {
           id: string;
           enabled: boolean;
         }) => Promise<AutomationRuleSummary[]>;
         deleteRule: (
           args: AutomationDeleteRuleRequest,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AutomationRuleSummary[]>;
         triggerManually: (
           args: AutomationManualTriggerRequest,
@@ -1473,6 +1474,7 @@ declare global {
         ) => Promise<AutomationValidateDraftResult>;
         saveDraft: (
           req: AutomationSaveDraftRequest,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AutomationSaveDraftResult>;
         simulate: (
           req: AutomationSimulateRequest,

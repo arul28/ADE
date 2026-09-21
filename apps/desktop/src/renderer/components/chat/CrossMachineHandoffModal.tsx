@@ -67,6 +67,7 @@ import {
   BlockedReasons,
   type BlockedActionReason,
 } from "../shared/BlockedAction";
+import { ProviderLogo } from "../shared/ProviderLogos";
 import { formatBytes } from "../../lib/format";
 import {
   branchRowDetail,
@@ -167,7 +168,6 @@ export function CrossMachineHandoffModal({
   const [destinationPreflight, setDestinationPreflight] = useState<AgentChatCrossMachineDestinationPreflightResult | null>(null);
   const [storagePreflight, setStoragePreflight] = useState<RemoteRuntimeHandoffStoragePreflightResult | null>(null);
   const [cloneApproved, setCloneApproved] = useState(false);
-  const [routeApproved, setRouteApproved] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<AgentChatAcceptCrossMachineHandoffResult | null>(null);
   const [sourceMarkerWarning, setSourceMarkerWarning] = useState<string | null>(null);
@@ -425,7 +425,6 @@ export function CrossMachineHandoffModal({
     setDestinationPreflight(null);
     setStoragePreflight(null);
     setCloneApproved(false);
-    setRouteApproved(false);
     setResult(null);
     setSourceMarkerWarning(null);
     setSendProgress([]);
@@ -443,10 +442,6 @@ export function CrossMachineHandoffModal({
       setConnections(snapshot.connections);
     });
   }, [open]);
-
-  useEffect(() => {
-    setRouteApproved(false);
-  }, [selectedConnection?.route?.kind]);
 
   // Resolve repository presence for every eligible machine once the source
   // origin is known. Failures resolve to "unknown" rather than a scary state —
@@ -744,7 +739,6 @@ export function CrossMachineHandoffModal({
   const sendHandoff = useCallback(async () => {
     if (!selectedConnection || !prepared || !destinationProject || !destinationPreflight) return;
     if (destinationPreflight.blockingErrors.length) return;
-    if (isInsecureRoute(selectedConnection) && !routeApproved) return;
     setStage("sending");
     setSendProgress([]);
     setBusyLabel("Rechecking source branch and chat…");
@@ -810,7 +804,6 @@ export function CrossMachineHandoffModal({
     markSource,
     onFinished,
     prepared,
-    routeApproved,
     selectedConnection,
     sourceSessionId,
   ]);
@@ -878,10 +871,9 @@ export function CrossMachineHandoffModal({
   const reviewBlocked = Boolean(destinationPreflight?.blockingErrors.length)
     || Boolean(destinationPreflight?.laneFastForward)
     || forkUnsupportedAtReview;
-  const routeNeedsApproval = isInsecureRoute(selectedConnection);
   const reviewIsFork = prepared?.capsule.mode === "fork";
   const handoffMayStillComplete = error === CROSS_MACHINE_HANDOFF_STILL_COMPLETING_MESSAGE;
-  const insecureConsentLine = reviewIsFork
+  const insecureRouteNotice = reviewIsFork
     ? "This connection is authenticated but not end-to-end encrypted. The full chat history is sent exactly as recorded."
     : "This connection is authenticated but not end-to-end encrypted. Only the summary is sent — never secrets.";
 
@@ -1048,7 +1040,6 @@ export function CrossMachineHandoffModal({
                         type="button"
                         onClick={() => {
                           setSelectedTargetId(connection.target.id);
-                          setRouteApproved(false);
                         }}
                         className={cn(
                           "flex w-full items-center gap-3 rounded-xl border px-3 py-3 text-left transition-colors",
@@ -1183,9 +1174,9 @@ export function CrossMachineHandoffModal({
               {[...storagePreflight.blockingErrors, ...storagePreflight.warnings].map((message) => (
                 <div key={message} className="rounded-lg border border-amber-300/18 bg-amber-400/[0.06] px-3 py-2 text-[10px] leading-4 text-amber-100/70">{message}</div>
               ))}
-              {routeNeedsApproval ? (
+              {isInsecureRoute(selectedConnection) ? (
                 <div className="rounded-lg border border-amber-300/20 bg-amber-400/[0.065] px-3 py-2.5 text-[10px] leading-4 text-amber-100/72">
-                  {insecureConsentLine}
+                  {insecureRouteNotice}
                 </div>
               ) : null}
               <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-white/[0.07] bg-white/[0.025] px-3 py-2.5">
@@ -1203,11 +1194,20 @@ export function CrossMachineHandoffModal({
           ) : null}
 
           {(stage === "review" || stage === "sending") && selectedConnection && prepared && destinationPreflight ? (
-            <div className="mx-auto max-w-[620px] space-y-4">
-              <div>
-                <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg/38">Final review</div>
-                <h3 className="mt-1 text-[14px] font-semibold text-fg/88">Ready to continue on {selectedConnection.target.name}</h3>
-                <p className="mt-1 text-[11px] leading-5 text-fg/48">ADE double-checks everything when you send. Retrying is safe — it never creates duplicates.</p>
+            <div className="mx-auto max-w-[620px] space-y-3.5">
+              {/* The destination is the headline, not a sentence: its icon, its
+                  name, and the route it travels on, in one glance. */}
+              <div className="flex items-center gap-3 rounded-xl border border-sky-300/18 bg-[linear-gradient(150deg,rgba(56,189,248,0.13),rgba(255,255,255,0.014)_62%)] px-4 py-3.5">
+                <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-sky-300/24 bg-sky-400/12 text-sky-100">
+                  <Desktop size={20} weight="duotone" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[14px] font-semibold text-fg/90">Ready to continue on {selectedConnection.target.name}</div>
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5 rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[10px] text-fg/60">
+                  {isInsecureRoute(selectedConnection) ? <ShieldWarning size={11} /> : <LockKey size={11} />}
+                  {routeLabel(selectedConnection)}
+                </div>
               </div>
               {forkUnsupportedAtReview ? (
                 <div className="rounded-lg border border-amber-300/20 bg-amber-400/[0.07] px-3 py-2.5">
@@ -1224,11 +1224,18 @@ export function CrossMachineHandoffModal({
                   </button>
                 </div>
               ) : null}
+              {/* The four checks ARE the "is this ready" answer, so they stay —
+                  now with the subject's own mark instead of four identical rows. */}
               <div className="grid gap-2 sm:grid-cols-2">
-                <CheckRow label="Repository" detail={destinationProject?.displayName || destinationProject?.rootPath || "Ready on the other machine"} state="ok" />
-                <CheckRow label="Branch commit" detail={`${prepared.capsule.source.branchRef} · ${prepared.capsule.source.headSha.slice(0, 10)}`} state={destinationPreflight.remoteBranchHeadSha === prepared.capsule.source.headSha ? "ok" : "error"} />
-                <CheckRow label="Model access" detail={destinationPreflight.modelAvailable ? "The model is available there" : "That model isn't available there yet"} state={destinationPreflight.modelAvailable && destinationPreflight.providerAuthorized ? "ok" : "error"} />
-                <CheckRow label="Lane plan" detail={destinationPreflight.existingLaneId ? "Reuse the existing clean lane" : "Start a new lane from your branch"} state="ok" />
+                <CheckRow icon={<HardDrives size={13} weight="duotone" />} label="Repository" detail={destinationProject?.displayName || destinationProject?.rootPath || "Ready on the other machine"} state="ok" />
+                <CheckRow icon={<GitBranch size={13} weight="duotone" />} label="Branch commit" detail={`${prepared.capsule.source.branchRef} · ${prepared.capsule.source.headSha.slice(0, 10)}`} state={destinationPreflight.remoteBranchHeadSha === prepared.capsule.source.headSha ? "ok" : "error"} />
+                <CheckRow
+                  icon={destinationDescriptor ? <ProviderLogo family={destinationDescriptor.family} size={13} /> : undefined}
+                  label="Model access"
+                  detail={destinationPreflight.modelAvailable ? "The model is available there" : "That model isn't available there yet"}
+                  state={destinationPreflight.modelAvailable && destinationPreflight.providerAuthorized ? "ok" : "error"}
+                />
+                <CheckRow icon={<GitFork size={13} weight="duotone" />} label="Lane plan" detail={destinationPreflight.existingLaneId ? "Reuse the existing clean lane" : "Start a new lane from your branch"} state="ok" />
               </div>
               {destinationPreflight.warnings.map((message) => (
                 <div key={message} className="rounded-lg border border-amber-300/18 bg-amber-400/[0.06] px-3 py-2 text-[10px] leading-4 text-amber-100/70">{message}</div>
@@ -1261,41 +1268,52 @@ export function CrossMachineHandoffModal({
                   </button>
                 </div>
               ) : null}
-              <div className="rounded-xl border border-white/[0.065] bg-white/[0.025] p-3">
-                <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.1em] text-fg/42">
-                  <HardDrives size={13} /> What gets sent
-                </div>
-                <div className="mt-2 grid gap-x-6 gap-y-1 text-[10px] leading-4 text-fg/48 sm:grid-cols-2">
-                  {reviewIsFork ? (
-                    <>
-                      <span>Sent: the full conversation history</span>
-                      <span>Sent: the branch and commit, plus your note</span>
-                      <span>The history is sent exactly as recorded — anything pasted into this conversation is included.</span>
-                    </>
-                  ) : (
-                    <>
-                      <span>Sent: a short summary of this chat</span>
-                      <span>Sent: the branch and commit, plus your note</span>
-                      <span>Never sent: secrets, terminals, and caches</span>
-                      <span>Never sent: the raw transcript</span>
-                    </>
-                  )}
-                </div>
+              {/* What travels, as marks rather than a paragraph. */}
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-white/[0.065] bg-white/[0.025] px-3.5 py-2.5 text-[10.5px] text-fg/55">
+                <span className="inline-flex items-center gap-1.5">
+                  <HardDrives size={13} className="text-fg/40" />
+                  {reviewIsFork ? "Sent: the full conversation history" : "Sent: a short summary of this chat"}
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <GitBranch size={13} className="text-fg/40" />
+                  Sent: the branch and commit, plus your note
+                </span>
+                {!reviewIsFork ? (
+                  <>
+                    <span className="inline-flex items-center gap-1.5">
+                      <LockKey size={13} className="text-fg/40" />
+                      Never sent: the raw transcript, secrets, terminals, and caches
+                    </span>
+                  </>
+                ) : (
+                  <span className="inline-flex items-center gap-1.5">
+                    <Warning size={13} className="text-fg/40" />
+                    Includes anything pasted into this conversation
+                  </span>
+                )}
                 {prepared.sanitizedSensitiveContext ? (
-                  <div className="mt-2 flex items-center gap-1.5 text-[10px] leading-4 text-emerald-200/65">
-                    <CheckCircle size={12} weight="fill" /> {reviewIsFork
+                  <span className="inline-flex items-center gap-1.5 text-emerald-200/70">
+                    <CheckCircle size={13} weight="fill" />
+                    {reviewIsFork
                       ? "ADE removed secret-shaped values from your note."
                       : "ADE removed detected secret-shaped values or source-only absolute paths from the summary."}
-                  </div>
+                  </span>
                 ) : null}
               </div>
-              {routeNeedsApproval ? (
-                <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-amber-300/20 bg-amber-400/[0.065] px-3 py-2.5">
-                  <input type="checkbox" checked={routeApproved} onChange={(event) => setRouteApproved(event.target.checked)} className="mt-0.5 accent-amber-400" />
-                  <span className="text-[10px] leading-4 text-amber-100/72" data-testid="insecure-consent-review">
-                    {insecureConsentLine}
-                  </span>
-                </label>
+              {isInsecureRoute(selectedConnection) ? (
+                /*
+                  Informational, not a second confirmation. Sending the chat from
+                  a non-end-to-end route is already an explicit act; the notice
+                  has to be visible but must not stand between the user and a
+                  button they just read.
+                */
+                <div
+                  className="flex items-start gap-2 rounded-lg border border-amber-300/16 bg-amber-400/[0.055] px-3 py-2 text-[10px] leading-4 text-amber-100/70"
+                  data-testid="insecure-route-notice"
+                >
+                  <ShieldWarning size={13} className="mt-0.5 shrink-0" />
+                  <span>{insecureRouteNotice}</span>
+                </div>
               ) : null}
             </div>
           ) : null}
@@ -1386,7 +1404,7 @@ export function CrossMachineHandoffModal({
             {stage === "review" ? (
               <button
                 type="button"
-                disabled={Boolean(busyLabel) || reviewBlocked || (routeNeedsApproval && !routeApproved)}
+                disabled={Boolean(busyLabel) || reviewBlocked}
                 onClick={() => void sendHandoff()}
                 className="inline-flex h-8 items-center gap-1.5 rounded-md border border-emerald-300/24 bg-emerald-400/12 px-3 text-[10px] font-semibold text-emerald-100 hover:bg-emerald-400/17 disabled:cursor-not-allowed disabled:opacity-35"
               >

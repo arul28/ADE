@@ -5235,8 +5235,8 @@ const adeBridge = {
       ),
   },
   automations: {
-    list: async (): Promise<AutomationRuleSummary[]> =>
-      callProjectRuntimeActionOr("automations", "list", {}, () =>
+    list: async (pin?: OpenProjectBinding | null): Promise<AutomationRuleSummary[]> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "automations", "list", {}, () =>
         ipcRenderer.invoke(IPC.automationsList),
       ),
     toggle: async (args: {
@@ -5248,8 +5248,9 @@ const adeBridge = {
       ),
     deleteRule: async (
       args: AutomationDeleteRuleRequest,
+      pin?: OpenProjectBinding | null,
     ): Promise<AutomationRuleSummary[]> =>
-      callProjectRuntimeActionOr("automations", "deleteRule", { args }, () =>
+      callPinnedOrBoundRuntimeActionOr(pin, "automations", "deleteRule", { args }, () =>
         ipcRenderer.invoke(IPC.automationsDeleteRule, args),
       ),
     triggerManually: async (
@@ -5328,12 +5329,10 @@ const adeBridge = {
       ),
     saveDraft: async (
       req: AutomationSaveDraftRequest,
+      pin?: OpenProjectBinding | null,
     ): Promise<AutomationSaveDraftResult> =>
-      callProjectRuntimeActionOr(
-        "automation_planner",
-        "saveDraft",
-        { args: req },
-        () => ipcRenderer.invoke(IPC.automationsSaveDraft, req),
+      callPinnedOrBoundRuntimeActionOr(pin, "automation_planner", "saveDraft", { args: req }, () =>
+        ipcRenderer.invoke(IPC.automationsSaveDraft, req),
       ),
     simulate: async (
       req: AutomationSimulateRequest,
