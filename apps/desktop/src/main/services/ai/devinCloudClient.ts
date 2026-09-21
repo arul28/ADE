@@ -329,30 +329,60 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
     }
   };
 
-  /** Every organization the token can see — the endpoint paginates. */
-  const listAllOrganizations = async (): Promise<Record<string, unknown>[]> => {
+  /**
+   * Every organization the token can see — the endpoint paginates. Returns
+   * null when the account is not enterprise: `/v3/enterprise/*` 403s on
+   * personal/team accounts, which can still use every org-scoped endpoint.
+   */
+  const listAllOrganizations = async (): Promise<Record<string, unknown>[] | null> => {
     const items: Record<string, unknown>[] = [];
     const seenCursors = new Set<string>();
     let cursor: string | null = null;
-    for (;;) {
-      const qs = { first: 50, ...(cursor ? { after: cursor } : {}) };
-      const page = await request<unknown>(
-        "/v3/enterprise/organizations?qs=" + encodeURIComponent(JSON.stringify(qs)),
-      );
-      if (!isRecord(page) || !Array.isArray(page.items)) {
-        throw new Error("Devin rejected this token — the organizations endpoint did not answer as expected.");
+    try {
+      for (;;) {
+        const qs = { first: 50, ...(cursor ? { after: cursor } : {}) };
+        const page = await request<unknown>(
+          "/v3/enterprise/organizations?qs=" + encodeURIComponent(JSON.stringify(qs)),
+        );
+        if (!isRecord(page) || !Array.isArray(page.items)) {
+          throw new Error("Devin rejected this token — the organizations endpoint did not answer as expected.");
+        }
+        items.push(...page.items.filter(isRecord));
+        const next = readString(page.end_cursor);
+        if (!next || seenCursors.has(next)) break;
+        seenCursors.add(next);
+        cursor = next;
       }
-      items.push(...page.items.filter(isRecord));
-      const next = readString(page.end_cursor);
-      if (!next || seenCursors.has(next)) break;
-      seenCursors.add(next);
-      cursor = next;
+    } catch (error) {
+      if (error instanceof DevinCloudApiError && error.status === 403) return null;
+      throw error;
     }
     return items;
   };
 
   const orgIdOf = (entry: Record<string, unknown>): string | null =>
     readString(entry.org_id) ?? readString(entry.id);
+
+  const noOrgIdError = () =>
+    new Error(
+      "Could not determine your Devin org. Add your org id (org-...) in Settings > Devin — it is shown in your Devin settings and session URLs.",
+    );
+
+  /**
+   * Probes an org-scoped endpoint: true when the token can read the org. Used
+   * when enterprise org listing is unavailable (non-enterprise accounts).
+   */
+  const probeOrg = async (orgId: string): Promise<boolean> => {
+    try {
+      await request<unknown>(
+        `/v3/organizations/${encodeURIComponent(orgId)}/sessions?qs=` +
+          encodeURIComponent(JSON.stringify({ first: 1 })),
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  };
 
   const resolveOrgId = async (): Promise<string> => {
     if (authMode === "v1") {
@@ -362,13 +392,10 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
     if (!orgLookupPromise) {
       orgLookupPromise = (async (): Promise<string | null> => {
         const items = await listAllOrganizations();
+        if (!items) throw noOrgIdError();
         const first = items.find(isRecord);
         const id = first ? orgIdOf(first) : null;
-        if (!id) {
-          throw new Error(
-            "Could not determine your Devin org. Add your org id (org-...) in Settings > Devin.",
-          );
-        }
+        if (!id) throw noOrgIdError();
         if (items.length > 1) {
           throw new Error(
             "Your Devin account belongs to multiple orgs. Add the org id (org-...) for the one you want in Settings > Devin.",
@@ -710,6 +737,17 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
       return { orgName: null };
     }
     const items = await listAllOrganizations();
+    if (!items) {
+      // Non-enterprise account: org listing is enterprise-gated, so verify
+      // the configured org by probing an org-scoped endpoint instead.
+      if (!cachedOrgId) throw noOrgIdError();
+      if (!(await probeOrg(cachedOrgId))) {
+        throw new Error(
+          `Org '${cachedOrgId}' is not visible to this Devin token. Check the org id in Settings > Devin.`,
+        );
+      }
+      return { orgName: null };
+    }
     const first = items.find(isRecord);
     if (!first) {
       throw new Error("This Devin token works but no organizations are visible to it.");
