@@ -45604,10 +45604,34 @@ export function createAgentChatService(args: {
       projectId: args.projectId,
       sessionId: args.sessionId,
     });
-    // v3 has no branch field — the lane branch is pushed to the remote by the
-    // caller, so name it in the prompt the way Devin's own handoff flow does.
+    // v3 has no branch field — name the lane branch in the prompt the way
+    // Devin's own handoff flow does, but only after the remote actually has it:
+    // some callers (drawer, remote command) never push.
     const laneBranch = laneInfo.branchRef?.trim();
-    const cloudPrompt = repoUrl && laneBranch
+    let branchOnRemote = false;
+    if (repoUrl && laneBranch) {
+      try {
+        const ls = await runGit(
+          ["ls-remote", "--exit-code", "--heads", "origin", `refs/heads/${laneBranch}`],
+          { cwd: laneInfo.worktreePath, timeoutMs: 15_000 },
+        );
+        branchOnRemote = ls.exitCode === 0;
+        if (!branchOnRemote) {
+          const push = await runGit(["push", "-u", "origin", laneBranch], {
+            cwd: laneInfo.worktreePath,
+            timeoutMs: 60_000,
+          });
+          branchOnRemote = push.exitCode === 0;
+        }
+      } catch (error) {
+        logger.warn("agent_chat.devin_cloud_branch_publish_failed", {
+          laneId: trimmedLane,
+          branch: laneBranch,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    const cloudPrompt = repoUrl && laneBranch && branchOnRemote
       ? `Repo: ${repoUrl} (branch: ${laneBranch})\nCheck out the existing '${laneBranch}' branch first — it has been pushed to the remote and carries this lane's commits.\n\n${prompt}`
       : prompt;
     const created = await aiIntegrationService.createDevinCloudSession({
