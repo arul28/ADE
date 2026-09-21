@@ -1,0 +1,30 @@
+---
+title: "v1.2.76"
+description: "Release notes for ADE v1.2.76 - September 21, 2026"
+---
+
+Nested subagent chats in the Work list, Droid SDK 0.9.1, Codex runtime 0.155.1, a Custom wizard that lists real models, Work tools pinned to the session machine, GitHub quota protection, and a packaged CLI fix.
+
+---
+
+## Work
+
+- **Same-lane subagent chats nest under their parent** in the by-lane Work list, so the roster matches the spawn tree. Peers and cross-lane children stay visible. Nested CLI lineage survives iOS hydration and a SQLite reload.
+- **Work tools stay on the session machine.** Switching the project-tab dropdown no longer remounts Git, Files, or Terminal onto the new tab, and a remote Browser open is held until the pane mounts.
+- The new-chat usage pane matches the shelf submenu chrome. The parked Work mesh pauses while Work is inactive, and prose that mentions npm is no longer treated as a launch command.
+
+## Providers
+
+- **Droid SDK 0.9.1.** The Factory Droid adapter moves to the `@factory/droid-sdk/node` entrypoint on desktop and the CLI. Forks re-open the source session with its latest settings, session lifecycle transitions are serialized, and a failed terminal result reaches the transcript as an error.
+- **Codex runtime 0.155.1.**
+- **The Custom wizard lists real models.** Step 1 picks a harness and step 2 picks a model provider, split into your own accounts and keys and the subscriptions borrowed through the proxy. The Model field reads the live runtime catalog through the same cache the composer uses. The wizard no longer asks for a permission mode.
+
+## Fixes
+
+- GitHub search and REST list walks are capped so they no longer exhaust the hourly quota, and incremental issue polls drain oldest-first without skipping the backlog.
+- A message steered during an active Claude turn no longer reappears as queued and then vanishes on iOS. Mobile retries and iOS transcript state are preserved.
+- The packaged `ade` CLI inlines `string-width`, and the build gate now runs `ade --help` against only the desktop production tree, so this class of failure stops at build time.
+
+## iOS
+
+- Spawn lineage is persisted on resume metadata so a tracked CLI subagent still nests after reload.
