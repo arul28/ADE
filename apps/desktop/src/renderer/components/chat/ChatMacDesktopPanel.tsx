@@ -1167,7 +1167,7 @@ export function ChatMacDesktopPanel({
           ? { aspectRatio: `${display.width} / ${display.height}` }
           : { width: "100%", height: "100%" }}
         className={cn(
-          "relative flex items-center justify-center overflow-hidden bg-surface",
+          "relative flex items-center justify-center overflow-hidden bg-surface-recessed",
           scope === "pane" ? "w-full max-h-full" : "rounded-[10px] shadow-float",
           // While the user is driving, the pointer they see is the one drawn
           // at the lane's Mac coordinates, not this machine's arrow.
