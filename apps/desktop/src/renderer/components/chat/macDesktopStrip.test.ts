@@ -4,7 +4,6 @@ import type { MacDesktopWindow } from "../../../shared/types/macDesktop";
 import {
   macDesktopAppGlyph,
   macDesktopFullscreenPicture,
-  macDesktopIsWidePane,
   macDesktopParkedWindows,
   macDesktopPresentAction,
   macDesktopRelativeTime,
@@ -121,21 +120,6 @@ describe("macDesktopParkedWindows", () => {
     const elsewhere = makeWindow({ id: 3, laneId: "lane", onDisplayId: 32 });
     expect(macDesktopParkedWindows([parked, elsewhere, makeWindow()], 31)).toEqual([parked]);
     expect(macDesktopParkedWindows([parked], null)).toEqual([]);
-  });
-});
-
-describe("macDesktopIsWidePane", () => {
-  it("stacks the tall tools column the pane normally is", () => {
-    expect(macDesktopIsWidePane(360, 760)).toBe(false);
-    expect(macDesktopIsWidePane(900, 700)).toBe(false);
-  });
-
-  it("goes side by side once the pane is appreciably wider than it is tall", () => {
-    expect(macDesktopIsWidePane(1200, 600)).toBe(true);
-  });
-
-  it("refuses a pane too narrow to hold a rail beside the picture, however wide its ratio", () => {
-    expect(macDesktopIsWidePane(400, 120)).toBe(false);
   });
 });
 

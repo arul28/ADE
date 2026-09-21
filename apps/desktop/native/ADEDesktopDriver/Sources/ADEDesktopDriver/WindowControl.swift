@@ -196,9 +196,16 @@ final class WindowControl {
             if let pid, ownerPid != pid { continue }
             let windowId = CGWindowID(windowNumber)
             let ownedBy = ownership.owner(ofWindow: Int(windowId))
-            if let laneId, ownedBy != laneId { continue }
+            // A lane's list is what is ON its display, owned or not: a window
+            // the user dragged there by hand is an app on that desktop too,
+            // and the Apps list read "No apps" while Finder sat in the picture.
+            // Ownership still decides what the driver may move or release.
             let boundsDict = entry[kCGWindowBounds as String] as? [String: Any]
             let frame = boundsDict.flatMap { CGRect(dictionaryRepresentation: $0 as CFDictionary) } ?? .zero
+            if let laneId, ownedBy != laneId {
+                guard let laneDisplay = displayIds[laneId],
+                      displayId(containing: frame) == laneDisplay else { continue }
+            }
             let application = NSRunningApplication(processIdentifier: ownerPid)
             let bundleId = application?.bundleIdentifier
             let appName = (entry[kCGWindowOwnerName as String] as? String)

@@ -75,7 +75,6 @@ import { macDesktopClaimAppIcons } from "./macDesktopClaimPicker.logic";
 import { macDesktopErrorText } from "./macDesktopErrorText";
 import { useMacDesktopMachineFacts } from "./useMacDesktopMachineFacts";
 import {
-  macDesktopIsWidePane,
   macDesktopParkedWindows,
   macDesktopPresentAction,
   macDesktopRelativeTime,
@@ -289,7 +288,6 @@ export function ChatMacDesktopPanel({
   }, [laneId]);
   const [viewRect, setViewRect] = useState({ left: 0, top: 0, width: 0, height: 0 });
   /** The pane's own box, which decides stacked vs side by side. */
-  const [bodySize, setBodySize] = useState({ width: 0, height: 0 });
   /** The window the rail is pointing at on the picture, if any. */
   const [selectedWindowId, setSelectedWindowId] = useState<number | null>(null);
   const [lastObservation, setLastObservation] = useState<MacDesktopLastObservation | null>(null);
@@ -302,7 +300,6 @@ export function ChatMacDesktopPanel({
    * landing at pane coordinates over a full-screen picture.
    */
   const [surfaceNode, setSurfaceNode] = useState<HTMLDivElement | null>(null);
-  const bodyRef = useRef<HTMLDivElement | null>(null);
 
   /**
    * The decoder's home, which is a node and not a place in the tree.
@@ -448,31 +445,7 @@ export function ChatMacDesktopPanel({
     };
   }, [display?.displayId, surfaceNode]);
 
-  /**
-   * The pane's box, measured the same way the picture's is.
-   *
-   * Separate from `viewRect` on purpose: that one is the stream surface, whose
-   * size is an OUTPUT of this decision, so reading the layout mode off it would
-   * be a loop that settles one frame late in one direction and oscillates in
-   * the other.
-   */
-  useEffect(() => {
-    const node = bodyRef.current;
-    if (!node || typeof ResizeObserver === "undefined") return;
-    const measure = () => {
-      const rect = node.getBoundingClientRect();
-      setBodySize((current) =>
-        current.width === rect.width && current.height === rect.height
-          ? current
-          : { width: rect.width, height: rect.height });
-    };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [display?.displayId]);
 
-  const wide = macDesktopIsWidePane(bodySize.width, bodySize.height);
 
   const toDisplayPoint = useCallback((clientX: number, clientY: number) => {
     if (!display) return null;
@@ -1351,12 +1324,14 @@ export function ChatMacDesktopPanel({
           removed the ~350px of empty pane that used to sit above a vertically
           centred 16:9 image. */}
       <div
-        ref={bodyRef}
         data-testid="mac-desktop-body"
-        data-layout={wide ? "wide" : "stacked"}
-        className={cn("flex min-h-0 flex-1 gap-2", wide ? "flex-row" : "flex-col overflow-y-auto")}
+        data-layout="stacked"
+        // Always stacked, picture above Apps. The side-by-side mode for wide
+        // panes put the list to the RIGHT of the picture, which is not where
+        // the owner asked for it and read as a second toolbar.
+        className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto"
       >
-        <div className={cn("flex min-w-0 shrink-0 flex-col items-stretch", wide ? "h-full flex-1" : "w-full")}>
+        <div className="flex w-full min-w-0 shrink-0 flex-col items-stretch">
           {renderInputErrorLine("")}
           {renderRecordingErrorLine("")}
           {renderPicture("pane")}
@@ -1372,8 +1347,7 @@ export function ChatMacDesktopPanel({
         <div
           data-testid="mac-desktop-apps"
           className={cn(
-            "flex min-h-0 flex-col gap-0.5",
-            wide ? "w-[280px] max-w-[280px] shrink-0 overflow-y-auto" : "shrink-0",
+            "flex min-h-0 shrink-0 flex-col gap-0.5",
             // The picker needs a bounded box to scroll inside; the list itself
             // is content-sized.
             pickerOpen && "min-h-[240px] max-h-[70vh]",

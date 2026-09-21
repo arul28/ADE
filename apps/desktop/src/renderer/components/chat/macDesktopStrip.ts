@@ -113,31 +113,6 @@ export function macDesktopParkedWindows(
   return windows.filter((entry) => entry.onDisplayId === displayId);
 }
 
-/**
- * Side-by-side, or stacked.
- *
- * The pane is a tall narrow column most of the time, and a 16:9 picture in it
- * leaves everything below the picture for the windows rail. Once the pane is
- * appreciably wider than it is tall the same stacking wastes the width instead,
- * so the rail moves to the right of the picture. The width floor is the second
- * half of the rule: a 300x150 pane is "wide" by ratio alone and has no room for
- * a 280px rail beside a picture.
- */
-export const MAC_DESKTOP_WIDE_RATIO = 1.6;
-export const MAC_DESKTOP_WIDE_MIN_WIDTH = 560;
-
-export function macDesktopIsWidePane(width: number, height: number): boolean {
-  if (width < MAC_DESKTOP_WIDE_MIN_WIDTH || height <= 0) return false;
-  return width > height * MAC_DESKTOP_WIDE_RATIO;
-}
-
-/**
- * The two letters on a window card, when there is no app icon to draw.
- *
- * Words first ("Visual Studio Code" -> "VS"), because an app's initials are how
- * its name is abbreviated everywhere else; a one-word name falls back to its
- * first two characters ("Xcode" -> "XC") rather than a single lonely letter.
- */
 export function macDesktopAppGlyph(appName: string | null | undefined): string {
   const words = (appName ?? "").trim().split(/[\s.\-_]+/).filter(Boolean);
   if (!words.length) return "?";
