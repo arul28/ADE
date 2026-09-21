@@ -914,6 +914,7 @@ export async function runOpenCodeTextPrompt(
     directory: args.directory,
     title: args.title,
     projectConfig: args.projectConfig,
+    ...(args.agentSkillRoots ? { agentSkillRoots: args.agentSkillRoots } : {}),
     leaseKind: "shared",
     ownerKind: "oneshot",
   });

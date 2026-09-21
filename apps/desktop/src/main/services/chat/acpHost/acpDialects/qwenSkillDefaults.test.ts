@@ -108,6 +108,7 @@ describe("qwen skill defaults file", () => {
     });
 
     expect(result.path).toBeNull();
+    expect(result.roots).toEqual([]);
     expect(result.reason).toContain("native_defaults_unreadable");
     // The native file is left exactly as it was.
     expect(fs.readFileSync(nativeFile, "utf8")).toBe("{ not valid json");

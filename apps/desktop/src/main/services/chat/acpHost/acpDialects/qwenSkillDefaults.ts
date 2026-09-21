@@ -217,7 +217,7 @@ export function ensureQwenAdeSkillDefaultsFile(args: {
     // replaced: Qwen has to keep seeing its own configuration, and the caller
     // reports why ADE's skills were not delivered.
     if (!read.ok) {
-      return { path: null, roots, reason: `native_defaults_unreadable: ${read.reason}` };
+      return { path: null, roots: [], reason: `native_defaults_unreadable: ${read.reason}` };
     }
     base = read.value;
   }
@@ -233,7 +233,7 @@ export function ensureQwenAdeSkillDefaultsFile(args: {
   } catch (error) {
     return {
       path: null,
-      roots,
+      roots: [],
       reason: error instanceof Error ? error.message : String(error),
     };
   }
