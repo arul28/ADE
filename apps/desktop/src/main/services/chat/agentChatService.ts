@@ -45611,17 +45611,29 @@ export function createAgentChatService(args: {
     let branchOnRemote = false;
     if (repoUrl && laneBranch) {
       try {
-        const ls = await runGit(
-          ["ls-remote", "--exit-code", "--heads", "origin", `refs/heads/${laneBranch}`],
-          { cwd: laneInfo.worktreePath, timeoutMs: 15_000 },
-        );
-        branchOnRemote = ls.exitCode === 0;
-        if (!branchOnRemote) {
-          const push = await runGit(["push", "-u", "origin", laneBranch], {
+        const headSha = (await runGit(["rev-parse", "HEAD"], {
+          cwd: laneInfo.worktreePath,
+          timeoutMs: 8_000,
+        })).stdout.trim();
+        const remoteSha = async (): Promise<string | null> => {
+          const ls = await runGit(
+            ["ls-remote", "--heads", "origin", `refs/heads/${laneBranch}`],
+            { cwd: laneInfo.worktreePath, timeoutMs: 15_000 },
+          );
+          return ls.exitCode === 0 ? ls.stdout.split(/\s+/)[0] ?? null : null;
+        };
+        // Existence is not freshness: the remote ref must point at the lane's
+        // current HEAD or unpushed commits never reach the cloud session.
+        if (headSha && (await remoteSha()) !== headSha) {
+          const push = await runGit(["push", "origin", `${laneBranch}:${laneBranch}`], {
             cwd: laneInfo.worktreePath,
             timeoutMs: 60_000,
           });
-          branchOnRemote = push.exitCode === 0;
+          if (push.exitCode === 0) {
+            branchOnRemote = (await remoteSha()) === headSha;
+          }
+        } else {
+          branchOnRemote = Boolean(headSha);
         }
       } catch (error) {
         logger.warn("agent_chat.devin_cloud_branch_publish_failed", {
