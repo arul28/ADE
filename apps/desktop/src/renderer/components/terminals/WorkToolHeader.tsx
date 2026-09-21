@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { ArrowsInSimple, ArrowsOutSimple, DotsThree, PictureInPicture, Plus, SquaresFour, X } from "@phosphor-icons/react";
+import { DotsThree, Plus, SquaresFour, X } from "@phosphor-icons/react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { motion, useReducedMotion } from "motion/react";
 import type { WorkSidebarTab } from "../../state/appStore";
@@ -196,11 +196,6 @@ export function WorkToolHeader({
   onPick,
   onCloseTool,
   onClose,
-  floatTool,
-  floating,
-  onFloat,
-  maximized,
-  onToggleMaximize,
 }: {
   /** The tab on screen, or null while the picker page is showing. */
   activeTool: WorkSidebarTab | null;
@@ -219,17 +214,6 @@ export function WorkToolHeader({
   onPick: (tool: WorkSidebarTab) => void;
   onCloseTool: (tool: WorkSidebarTab) => void;
   onClose: () => void;
-  /**
-   * The active screen tool, when it can be floated into the corner card. Null
-   * for non-screen tools (Git, Files, Terminal) and for the picker.
-   */
-  floatTool?: WorkSidebarTab | null;
-  /** True when the user has already floated this tool back on for the chat. */
-  floating?: boolean;
-  onFloat?: () => void;
-  /** The pane fills the window, tabs and all. See `workToolsMaximize`. */
-  maximized?: boolean;
-  onToggleMaximize?: () => void;
 }) {
   const reduceMotion = useReducedMotion() ?? false;
   const { ref, width } = useMeasuredWidth();
@@ -414,49 +398,11 @@ export function WorkToolHeader({
       ) : null}
 
       {/*
-        Float: show the corner card for the tool you are already looking at.
-        The card normally never duplicates the active pane, so this is the one
-        explicit way to ask for it; pressing it clears that tool's closed marker
-        for the chat. It stays lit while floated and × takes it back down.
+        Float and Maximize used to live here, in the strip. Both moved onto the
+        tool's OWN chrome row: the strip is the tab strip, and the controls that
+        act on the tool on screen belong to that tool's header, beside the
+        controls that already act on it.
       */}
-      {activeTool !== null && floatTool ? (
-        <PaneTooltip label="Show floating preview" side="bottom">
-          <button
-            type="button"
-            onClick={onFloat}
-            aria-label="Show floating preview"
-            aria-pressed={floating === true}
-            className={cn(
-              CONTROL_CLASS,
-              "w-6 px-0",
-              floating && "bg-white/[0.09] text-fg",
-            )}
-            data-variant="ghost"
-            data-state={floating ? "open" : undefined}
-          >
-            <PictureInPicture size={15} weight={floating ? "fill" : "regular"} />
-          </button>
-        </PaneTooltip>
-      ) : null}
-
-      {/* Maximise: the whole pane at window size, this strip included, so a
-          blown-up Mac Desktop still has Browser and Terminal one click away.
-          Esc restores. */}
-      {activeTool !== null && onToggleMaximize ? (
-        <PaneTooltip label={maximized ? "Restore pane (Esc)" : "Maximize pane"} side="bottom">
-          <button
-            type="button"
-            onClick={onToggleMaximize}
-            aria-label={maximized ? "Restore pane" : "Maximize pane"}
-            aria-pressed={maximized === true}
-            data-testid="work-tools-maximize"
-            className={cn(CONTROL_CLASS, "w-6 px-0", maximized && "bg-white/[0.09] text-fg")}
-            data-variant="ghost"
-          >
-            {maximized ? <ArrowsInSimple size={15} /> : <ArrowsOutSimple size={15} />}
-          </button>
-        </PaneTooltip>
-      ) : null}
 
       {/* Nothing to add while the picker is already up — that button IS the
           picker, and two controls opening one page is one too many. */}

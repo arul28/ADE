@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatIosSimulatorPanel } from "./ChatIosSimulatorPanel";
+import { WorkToolsMaximizeContext } from "../terminals/workToolsMaximize";
 import { selectLaunchSteps } from "./IosSimLaunchStepper";
 import type {
   IosSimulatorDevice,
@@ -674,6 +675,20 @@ describe("ChatIosSimulatorPanel", () => {
     vi.clearAllMocks();
     vi.unstubAllGlobals();
     vi.useRealTimers();
+  });
+
+  it("carries the preview toggle and maximize buttons on its chrome row", async () => {
+    installIosSimulatorApi();
+
+    render(
+      <WorkToolsMaximizeContext.Provider value={{ maximized: false, setMaximized: vi.fn() }}>
+        <ChatIosSimulatorPanel sessionId="chat-1" projectRoot="/tmp/project" />
+      </WorkToolsMaximizeContext.Provider>,
+    );
+
+    await screen.findByTestId("ios-pane-chrome");
+    expect(screen.getByRole("button", { name: "Show preview when minimized" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Maximize pane" })).toBeTruthy();
   });
 
   it("starts the live view through Simulator.app window capture", async () => {

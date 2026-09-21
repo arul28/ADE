@@ -7,7 +7,9 @@ import {
   clearChatCompanionUiState,
   closeWorkLiveCardForChat,
   floatWorkLiveCardForChat,
+  isWorkLivePreviewEnabled,
   markWorkLiveCardSeenForChat,
+  setWorkLivePreviewEnabledForChat,
   unfloatWorkLiveCardForChat,
   isWorkLiveCardClosedForChat,
   patchChatCompanionUiState,
@@ -326,5 +328,42 @@ describe("workLiveCard closed and floating flags", () => {
     closeWorkLiveCardForChat("chat-2", "browser", "tab-2");
     clearChatCompanionUiState("chat-1");
     expect(readChatCompanionUiState("chat-2").workLiveCardClosedByTool).toEqual({ browser: "tab-2" });
+  });
+});
+
+describe("workLiveCard preview toggle", () => {
+  it("preview is enabled by default", () => {
+    const state = readChatCompanionUiState("chat-1");
+    expect(isWorkLivePreviewEnabled(state, "browser")).toBe(true);
+    expect(isWorkLivePreviewEnabled(state, "ios")).toBe(true);
+    expect(isWorkLivePreviewEnabled(state, "mac-desktop")).toBe(true);
+    expect(isWorkLivePreviewEnabled(state, "app-control")).toBe(true);
+  });
+
+  it("× disables the preview for that tool and chat only", () => {
+    closeWorkLiveCardForChat("chat-1", "browser", "tab-1");
+
+    const chatOne = readChatCompanionUiState("chat-1");
+    expect(isWorkLivePreviewEnabled(chatOne, "browser")).toBe(false);
+    // Another tool in the same chat is untouched…
+    expect(isWorkLivePreviewEnabled(chatOne, "ios")).toBe(true);
+    // …and another chat never saw the close.
+    expect(isWorkLivePreviewEnabled(readChatCompanionUiState("chat-2"), "browser")).toBe(true);
+  });
+
+  it("re-enabling clears the closed marker", () => {
+    closeWorkLiveCardForChat("chat-1", "browser", "tab-1");
+    expect(isWorkLivePreviewEnabled(readChatCompanionUiState("chat-1"), "browser")).toBe(false);
+
+    const next = setWorkLivePreviewEnabledForChat("chat-1", "browser", true);
+    expect(next?.workLiveCardClosedByTool.browser).toBeUndefined();
+    expect(isWorkLivePreviewEnabled(readChatCompanionUiState("chat-1"), "browser")).toBe(true);
+    // The opt-in float is remembered, so the card comes back beside the pane.
+    expect(next?.workLiveCardFloating).toContain("browser");
+
+    // Turning it off again writes the marker the reader treats as disabled.
+    const off = setWorkLivePreviewEnabledForChat("chat-1", "browser", false);
+    expect(isWorkLivePreviewEnabled(readChatCompanionUiState("chat-1"), "browser")).toBe(false);
+    expect(off?.workLiveCardFloating).toEqual([]);
   });
 });

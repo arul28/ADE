@@ -2,6 +2,7 @@ import { useCallback, useSyncExternalStore } from "react";
 import type { ChatActionsTab } from "./ChatActionsDrawerPanel";
 import {
   isWorkLiveCardClosed,
+  isWorkLivePreviewDisabled,
   normalizeWorkLiveCardClosedByTool,
   normalizeWorkLiveCardFloatingTools,
   type WorkLiveCardClosedByTool,
@@ -33,10 +34,14 @@ export type ChatCompanionUiState = {
   /** Floating PR pane (left side). Persisted per chat; explicit open/close only. */
   prPaneOpen: boolean;
   /**
-   * The Work corner card's "×" markers for this chat, keyed by tool id and
-   * valued with the session key that was closed. Per chat because the card
-   * belongs to the conversation you are reading; a session started by another
-   * chat must not reappear here.
+   * The Work corner card's "off" markers for this chat, keyed by tool id.
+   *
+   * Written by × (valued with the session key that was closed) and by the
+   * "Show preview when minimized" toggle (valued with a sentinel). Presence is
+   * what disables the card, so the reader is `isWorkLivePreviewEnabled`, not a
+   * session-key comparison. Per chat because the card belongs to the
+   * conversation you are reading; a session started by another chat must not
+   * reappear here.
    */
   workLiveCardClosedByTool: WorkLiveCardClosedByTool;
   /**
@@ -190,6 +195,47 @@ export function floatWorkLiveCardForChat(
       ? current.workLiveCardFloating
       : [...current.workLiveCardFloating, tool],
   });
+}
+
+/**
+ * The marker the "Show preview when minimized" toggle writes when it is OFF.
+ *
+ * A non-empty sentinel rather than an absent / empty key, because the closed
+ * map is the same one × writes: presence of a marker is what reads as "off",
+ * and `normalizeWorkLiveCardClosedByTool` drops empty keys on the way back in.
+ */
+export const WORK_LIVE_PREVIEW_DISABLED_KEY = "preview-off";
+
+/**
+ * Is the per-chat preview for this tool ON?
+ *
+ * Default ON — a tool only stops previewing once the user pressed × or turned
+ * the toggle off. Presence-based rather than session-keyed: the toggle is a
+ * statement about the tool in this chat, and it survives the next session.
+ */
+export function isWorkLivePreviewEnabled(
+  state: Pick<ChatCompanionUiState, "workLiveCardClosedByTool">,
+  tool: WorkLiveScreenTool,
+): boolean {
+  return !isWorkLivePreviewDisabled(state.workLiveCardClosedByTool, tool);
+}
+
+/**
+ * The per-chat "Show preview when minimized" toggle, one per screen tool.
+ *
+ * ON reuses {@link floatWorkLiveCardForChat}: it clears the tool's closed
+ * marker and opts the tool in, so the card returns even while the pane still
+ * shows it. OFF writes the same marker × does, so the two affordances can
+ * never disagree. A missing key (projectless surface) is a no-op.
+ */
+export function setWorkLivePreviewEnabledForChat(
+  key: string | null,
+  tool: WorkLiveScreenTool,
+  enabled: boolean,
+): ChatCompanionUiState | null {
+  if (!key) return null;
+  if (enabled) return floatWorkLiveCardForChat(key, tool);
+  return closeWorkLiveCardForChat(key, tool, WORK_LIVE_PREVIEW_DISABLED_KEY);
 }
 
 /**

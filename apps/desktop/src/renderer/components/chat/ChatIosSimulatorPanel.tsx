@@ -30,6 +30,7 @@ import {
   WORK_TOOL_PRIMARY_BUTTON,
   WorkToolChromeButton,
 } from "../terminals/workToolChrome";
+import { WorkToolPreviewControls } from "../terminals/workToolPreviewControls";
 import { useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
 import { useIosSimBuildDuration } from "./useIosSimBuildDuration";
 import { useIosSimDeviceTools } from "./useIosSimDeviceTools";
@@ -2396,6 +2397,8 @@ export function ChatIosSimulatorPanel({
             >
               {activeSurface === "preview" ? <DeviceMobile size={16} /> : <BracketsCurly size={16} />}
             </WorkToolChromeButton>
+            {/* The pane's own preview/maximize controls, at the far right. */}
+            <WorkToolPreviewControls tool="ios" chatSessionId={sessionId} />
           </div>
         </div>
 

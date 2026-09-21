@@ -148,3 +148,19 @@ export function isWorkLiveCardClosed(
   if (sessionKey == null) return true;
   return stored === sessionKey;
 }
+
+/**
+ * True when the user turned this tool's floating preview OFF for the chat.
+ *
+ * Deliberately presence-based, unlike {@link isWorkLiveCardClosed}: × and the
+ * "Show preview when minimized" toggle are explicit, sticky choices about the
+ * TOOL, not about the session it happened to be showing. Any stored marker —
+ * whatever key it carries — means the preview is off until the toggle clears
+ * it, so a new session no longer reopens a card the user dismissed.
+ */
+export function isWorkLivePreviewDisabled(
+  closed: WorkLiveCardClosedByTool | null | undefined,
+  tool: WorkLiveScreenTool,
+): boolean {
+  return closed?.[tool] != null;
+}

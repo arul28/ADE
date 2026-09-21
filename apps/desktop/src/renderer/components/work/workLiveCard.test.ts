@@ -198,11 +198,14 @@ describe("closed-key semantics", () => {
     })).toBeNull();
   });
 
-  it("shows again for a new session key", () => {
+  it("stays off for a new session key — only the toggle brings it back", () => {
+    // The × / toggle marker is a statement about the TOOL in this chat, not
+    // about the session it happened to be showing, so a new session does not
+    // reopen a preview the user turned off.
     expect(select({
       activities: [activity({ tool: "browser", sessionKey: "tab-2", lastActivityAt: 9_000 })],
       closed: { browser: "tab-1" },
-    })).toBe("browser");
+    })).toBeNull();
   });
 
   it("silences only the tool the close was aimed at", () => {

@@ -306,51 +306,15 @@ describe("workToolTabLayout", () => {
   });
 });
 
-describe("WorkToolHeader float button", () => {
-  afterEach(() => {
-    cleanup();
-    vi.restoreAllMocks();
-  });
-
-  it("offers Float for a screen tool and calls back", () => {
-    const onFloat = vi.fn();
-    renderHeader({ activeTool: "browser", floatTool: "browser", floating: false, onFloat });
-    const button = screen.getByLabelText("Show floating preview");
-    expect(button.getAttribute("aria-pressed")).toBe("false");
-    fireEvent.click(button);
-    expect(onFloat).toHaveBeenCalledTimes(1);
-  });
-
-  it("marks the button pressed while the tool is floated", () => {
-    renderHeader({ activeTool: "ios", floatTool: "ios", floating: true, onFloat: vi.fn() });
-    expect(screen.getByLabelText("Show floating preview").getAttribute("aria-pressed")).toBe("true");
-  });
-
-  it("offers no Float for a tool with nothing to preview", () => {
-    renderHeader({ activeTool: "git", floatTool: null, onFloat: vi.fn() });
-    expect(screen.queryByLabelText("Show floating preview")).toBeNull();
-  });
-});
-
-describe("WorkToolHeader maximize", () => {
+describe("WorkToolHeader has no float or maximize controls", () => {
   afterEach(() => cleanup());
 
-  it("offers Maximize pane for an open tool and toggles it, so the tabs stay in the blown-up view", () => {
-    const onToggleMaximize = vi.fn();
-    renderHeader({ onToggleMaximize, maximized: false });
-    const button = screen.getByRole("button", { name: "Maximize pane" });
-    fireEvent.click(button);
-    expect(onToggleMaximize).toHaveBeenCalledTimes(1);
-  });
-
-  it("reads Restore pane while maximized", () => {
-    renderHeader({ onToggleMaximize: vi.fn(), maximized: true });
-    expect(screen.getByRole("button", { name: "Restore pane" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Maximize pane" })).toBeNull();
-  });
-
-  it("shows no maximize control on the picker page", () => {
-    renderHeader({ onToggleMaximize: vi.fn(), activeTool: null });
+  it("does not draw the float or maximize buttons the tool rows now own", () => {
+    renderHeader();
+    // Both moved onto each screen tool's own chrome row (see
+    // `workToolPreviewControls`); the strip is tabs only.
+    expect(screen.queryByLabelText("Show floating preview")).toBeNull();
     expect(screen.queryByRole("button", { name: /Maximize pane|Restore pane/ })).toBeNull();
+    expect(document.querySelector('[data-testid="work-tools-maximize"]')).toBeNull();
   });
 });

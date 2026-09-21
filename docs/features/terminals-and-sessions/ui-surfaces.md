@@ -750,7 +750,10 @@ opens the picker, dropped while the picker is already showing, because two
 controls opening one page is one too many. Activity dots for tools with
 **no tab** that are usable here and not idle sit to the right of that, and
 the close ✕ keeps its place at the end. There is no centred title: the lit
-tab is the title.
+tab is the title. The strip carries no tool-level controls: Float and
+Maximize used to live at its right edge and now sit on each screen tool's
+own chrome row (`WorkToolPreviewControls`), where they act on the tool on
+screen instead of from inside the strip that switches tools.
 
 The `×` is a sibling of the tab button, never a child — a button inside a
 button is invalid and the browser resolves it by dropping one of the two
@@ -828,18 +831,32 @@ The browser is the one tool with an explicit obligation, since its
 parks it on every switch away, on close, when the pane goes inactive, on
 unmount, and when the Work route deactivates.
 
+Closing a tool's **tab** is the one close that stops the tool for real.
+`closeWorkToolForReal` (beside `useWorkSidebarTool`) dispatches, on the
+tool's own runtime pin: the built-in browser closes every tab it has open
+(`builtInBrowser.closeTab` per tab from `getStatus`), App Control calls
+`appControl.stop`, the simulator `iosSimulator.shutdown` (lane-scoped, so
+`ignoreOwnership`), and mac-desktop the `mac_desktop.stop` action for the
+lane. A failure is logged and never blocks the tab from leaving the strip.
+Closing the **pane** (the ✕ at the row's end) is not a stop: every tool keeps
+running and the corner card can preview it (subject to the per-chat
+“Show preview when minimized” toggle).
+
 ### Which tools are open is per lane
 
 `workSidebarTool` (`WorkSidebarTab | null`, null = picker) and
 `workSidebarOpenTools` (the strip, in order, with the active tool among
 it) are stored per lane in `laneWorkViewByScope` under
 `"<projectKey>::<laneId>"`, read and written through
-`useWorkSidebarTool(laneId, runtimePin)`. Picking a tool appends it, or activates the
-tab it already has without moving it; closing one hands the pane to the
-tab on its **right**, then its left, then the picker
-(`openWorkToolTab` / `closeWorkToolTab`, pure). The optional pin is the
+`useWorkSidebarTool(laneId, runtimePin, chatSessionId)`. Picking a tool
+appends it, or activates the tab it already has without moving it; closing
+one hands the pane to the tab on its **right**, then its left, then the
+picker (`openWorkToolTab` / `closeWorkToolTab`, pure) and stops the tool
+through `closeWorkToolForReal`. The optional pin is the
 focused chat's machine so `work_tools.setActiveTool` publishes there;
-a null pin is the tab's bound runtime. Going back to the picker
+a null pin is the tab's bound runtime. The third argument is the chat the
+pane's tools are attached to, so a tab close can stop the tool with the
+right owner (`chatSessionId` on App Control / iOS / mac-desktop calls). Going back to the picker
 keeps the strip — the tabs are still open, the pane is just showing the
 page you pick from. Persisted state written before the strip existed
 (`WORK_VIEW_STATE_VERSION` 6) normalizes its single tool into a one-tab
@@ -1148,8 +1165,9 @@ dismissal undone by the event it caused would never stick.
   the Work page, a display the pane already streamed — still counts instead of
   being skipped for `lastActivityAt: 0` forever. A floated tool is shown even
   before it has painted and outranks every non-floated activity, because the
-  Float button is an explicit ask and a blank card with the tool's name is
-  better feedback than a lit button that does nothing. `browser`,
+  “Show preview when minimized” toggle is an explicit ask and a blank card
+  with the tool's name is better feedback than a lit control that does
+  nothing. `browser`,
   `app-control`, `ios`, and `mac-desktop` are previewable
   (`WORK_LIVE_SCREEN_TOOLS` in `state/workLiveCardState.ts`, which the
   store also imports so the list cannot fork); Git and Files have nothing
@@ -1176,21 +1194,25 @@ dismissal undone by the event it caused would never stick.
   promoted and decodes into an off-screen canvas, so frames keep landing in
   `macDesktopFrameStore` and the chat stays a viewer. Hiding the pane is
   therefore not an unsubscribe, and one lane never has two decoders.
-- **The ✕ means closed until the session changes.** It records the session key
-  it was closed at — browser active tab id, App Control session id, simulator
-  session id, and for mac-desktop the display's own identity
-  (`display:<displayId>:<createdAt>`), so a destroyed-and-recreated display may
-  show again while the same display stays closed — per chat, in
+- **The ✕ and the toggle mean off until turned back on.** × records the
+  session it was showing — browser active tab id, App Control session id,
+  simulator session id, and for mac-desktop the display's own identity
+  (`display:<displayId>:<createdAt>`) — per chat, in
   `chatCompanionUiState.ts`; the record is dropped when the chat is deleted.
-  Frames, status refreshes, open-requests, and remounts never reopen it; only a
-  new session key does. The Float button in the pane header (`WorkToolHeader`)
-  clears the marker and suspends the active-tool exclusion for that tool until
-  the next ×. Position and width stay project-scoped (`workLiveCardPosition`,
-  `workLiveCardWidth`) so resizing the column keeps the card in place instead
-  of stranding it off an edge, and a width resize re-clamps and re-persists the
-  position so a right-edge card cannot reopen off-column. In a column narrower
-  than the full-size floor the card shrinks to its minimum width instead of
-  being hidden.
+  The read is `isWorkLivePreviewEnabled`, which is **presence-based**: any
+  marker means this tool's preview is off for this chat, and a new session
+  does **not** reopen it (that is the change the per-tool toggle brought).
+  Each screen tool's chrome row carries a “Show preview when minimized”
+  toggle (`WorkToolPreviewControls`, default ON, `aria-pressed`); turning it
+  ON clears the marker and re-floats the tool
+  (`setWorkLivePreviewEnabledForChat`), turning it OFF writes the same marker
+  × does, so the two affordances cannot disagree. Frames, status refreshes,
+  open-requests, and remounts never reopen a card. Position and width stay
+  project-scoped (`workLiveCardPosition`, `workLiveCardWidth`) so resizing the
+  column keeps the card in place instead of stranding it off an edge, and a
+  width resize re-clamps and re-persists the position so a right-edge card
+  cannot reopen off-column. In a column narrower than the full-size floor the
+  card shrinks to its minimum width instead of being hidden.
 - **It costs nothing when nobody watches.** It subscribes to feeds that
   already exist — App Control's screencast, the browser's refcounted
   preview stream, the simulator's shared window capture via

@@ -1084,7 +1084,13 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     openTools: workSidebarOpenTools,
     setTool: setWorkSidebarTool,
     closeTool: closeWorkSidebarTool,
-  } = useWorkSidebarTool(activeLaneId, activeWorkSessionRuntimePin);
+  } = useWorkSidebarTool(
+    activeLaneId,
+    activeWorkSessionRuntimePin,
+    // The chat the pane's tools are attached to, so closing a tab can stop the
+    // tool with the right owner.
+    contextTarget?.kind === "chat" ? contextTarget.sessionId : null,
+  );
   useEffect(() => {
     if (!active) return;
     const openBrowserSidebar = () => {

@@ -222,6 +222,16 @@ describe("ChatMacDesktopPanel actions on a pinned machine", () => {
     macDesktop.getStatus.mockResolvedValue(makeStatus());
   });
 
+  it("carries the per-chat preview toggle on its chrome row", async () => {
+    renderPanel();
+
+    // Wait for the live chrome row (the display resolved), then the toggle.
+    await screen.findByTestId("mac-desktop-record");
+    const toggle = screen.getByTestId("work-tool-preview-toggle");
+    expect(toggle.getAttribute("aria-label")).toBe("Show preview when minimized");
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+  });
+
   it("starts a recording on the focused chat's machine", async () => {
     macDesktop.startRecording.mockResolvedValue({
       laneId: "lane-1",

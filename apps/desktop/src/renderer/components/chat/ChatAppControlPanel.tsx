@@ -49,6 +49,7 @@ import {
   WORK_TOOL_PRIMARY_BUTTON,
   WorkToolEmptyLine,
 } from "../terminals/workToolChrome";
+import { WorkToolPreviewControls } from "../terminals/workToolPreviewControls";
 import { AppControlToolbar, type AppControlLaunchRecent, type AppControlStatusTone } from "./AppControlToolbar";
 import {
   CURSOR_TRACE_ACTIONS,
@@ -1399,6 +1400,7 @@ export function ChatAppControlPanel({
         pickerOpen={pickerOpen}
         onPickerOpenChange={setPickerOpen}
         renderOverflow={renderOverflow}
+        previewControls={<WorkToolPreviewControls tool="app-control" chatSessionId={sessionId} />}
       />
 
       {waitingForCdp && activeSession?.cdpPort ? (

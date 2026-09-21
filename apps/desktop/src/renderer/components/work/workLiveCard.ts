@@ -3,6 +3,7 @@ import {
   WORK_LIVE_SCREEN_TOOLS,
   isWorkLiveCardClosed,
   isWorkLiveCardSeen,
+  isWorkLivePreviewDisabled,
   isWorkLiveScreenTool,
   normalizeWorkLiveCardClosedByTool,
   normalizeWorkLiveCardPosition,
@@ -38,6 +39,7 @@ export {
   WORK_LIVE_SCREEN_TOOLS,
   isWorkLiveScreenTool,
   isWorkLiveCardClosed,
+  isWorkLivePreviewDisabled,
   isWorkLiveCardSeen,
   normalizeWorkLiveCardClosedByTool,
   normalizeWorkLiveCardPosition,
@@ -131,9 +133,10 @@ export function workLiveActivityBelongsToChat(
  * every non-floated activity, so another tool's newer trace cannot quietly
  * take the slot the user just asked for.
  *
- * `closed` implements the "×" affordance by session key, not by activity stamp:
- * frames, status refreshes and remounts can never reopen a card, only a new
- * session key can.
+ * `closed` implements the "×" affordance by tool, not by activity stamp:
+ * frames, status refreshes and remounts can never reopen a card. It is
+ * presence-based (`isWorkLivePreviewDisabled`), so the "Show preview when
+ * minimized" toggle — which clears the marker — is the only way back on.
  */
 export function selectWorkLiveCardTool(args: {
   activeTool: WorkSidebarTab | null;
@@ -162,7 +165,7 @@ export function selectWorkLiveCardTool(args: {
       if (!activity.live) continue;
       if (activity.tool === activeTool) continue;
       if (activity.lastActivityAt <= 0) continue;
-      if (isWorkLiveCardClosed(closed, activity.tool, activity.sessionKey)) continue;
+      if (isWorkLivePreviewDisabled(closed, activity.tool)) continue;
     }
     if (
       !best

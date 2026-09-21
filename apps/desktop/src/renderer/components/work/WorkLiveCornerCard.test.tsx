@@ -20,6 +20,7 @@ import {
   markWorkLiveCardSeenForChat,
   readChatCompanionUiState,
   resetChatCompanionUiStateCacheForTests,
+  setWorkLivePreviewEnabledForChat,
 } from "../chat/chatCompanionUiState";
 
 type BrowserEventListener = (event: unknown) => void;
@@ -591,7 +592,7 @@ describe("WorkLiveCornerCard dismissal", () => {
     expect(readChatCompanionUiState("chat-1").workLiveCardFloating).toEqual([]);
   });
 
-  it("stays closed through new frames, then reopens for a new session key", async () => {
+  it("a disabled preview never shows even when the tool is live", async () => {
     seedProject();
     const { card } = await showCard();
     fireEvent.click(screen.getByLabelText("Hide the Browser preview"));
@@ -610,7 +611,7 @@ describe("WorkLiveCornerCard dismissal", () => {
     await new Promise((resolve) => setTimeout(resolve, 80));
     expect(screen.queryByLabelText("Browser live preview")).toBeNull();
 
-    // A NEW tab id is a new session, and may show again.
+    // A NEW tab id is still not a way back on: the toggle is the only one.
     const nextStatus = makeBuiltInBrowserStatus({
       visible: false,
       activeTabId: "tab-2",
@@ -624,7 +625,20 @@ describe("WorkLiveCornerCard dismissal", () => {
       ],
     });
     emitBrowserEvent({ type: "status", status: nextStatus });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(screen.queryByLabelText("Browser live preview")).toBeNull();
+  });
+
+  it("re-enabled preview shows when the pane is minimized", async () => {
+    seedProject();
+    // The pane is on Git, so the browser is minimized and the card may float.
+    await showCard();
+    fireEvent.click(screen.getByLabelText("Hide the Browser preview"));
+    await waitFor(() => expect(screen.queryByLabelText("Browser live preview")).toBeNull());
+
+    act(() => { setWorkLivePreviewEnabledForChat("chat-1", "browser", true); });
     expect(await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 })).toBeTruthy();
+    expect(readChatCompanionUiState("chat-1").workLiveCardClosedByTool.browser).toBeUndefined();
   });
 
   it("reopens a closed card when the chat floats the tool", async () => {
@@ -672,7 +686,7 @@ describe("WorkLiveCornerCard App Control dismissal", () => {
     expect(screen.queryByLabelText("App Control live preview")).toBeNull();
   });
 
-  it("shows again for a new App Control session id", async () => {
+  it("stays off for a new App Control session id until the toggle is back on", async () => {
     await showAppControlCard();
     fireEvent.click(screen.getByLabelText("Hide the App Control preview"));
     await waitFor(() => expect(screen.queryByLabelText("App Control live preview")).toBeNull());
@@ -681,7 +695,8 @@ describe("WorkLiveCornerCard App Control dismissal", () => {
       type: "session-started",
       session: { ...APP_CONTROL_SESSION, id: "app-2", label: "Playground 2" },
     });
-    expect(await screen.findByLabelText("App Control live preview", {}, { timeout: 3_000 })).toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(screen.queryByLabelText("App Control live preview")).toBeNull();
   });
 
   it("shows an unowned session only in a chat whose pane has shown it", async () => {
@@ -1013,7 +1028,7 @@ describe("WorkLiveCornerCard live tools that predate the card", () => {
     expect(await screen.findByLabelText("Mac Desktop live preview", {}, { timeout: 3_000 })).toBeTruthy();
   });
 
-  it("reopens a closed mac-desktop card for a recreated display (M2)", async () => {
+  it("keeps a closed mac-desktop card closed through a recreated display, until the toggle (M2)", async () => {
     macDesktopGetStatus.mockResolvedValue({
       supported: true,
       display: macDesktopDisplay(),
@@ -1030,19 +1045,25 @@ describe("WorkLiveCornerCard live tools that predate the card", () => {
 
     fireEvent.click(screen.getByLabelText("Hide the Mac Desktop preview"));
     await waitFor(() => expect(screen.queryByLabelText("Mac Desktop live preview")).toBeNull());
-    // The close is stored against the display, not the lane.
+    // The close still records the display it was showing, not the lane.
     expect(readChatCompanionUiState("chat-1").workLiveCardClosedByTool["mac-desktop"])
       .toBe("display:31:2026-09-18T19:00:00.000Z");
 
     // The display dies...
     emitMacDesktopEvent({ type: "display-destroyed", laneId: "lane-1", reason: "stopped" });
     await waitFor(() => expect(screen.queryByLabelText("Mac Desktop live preview")).toBeNull());
-    // ...and a new one is a new session, so the closed card may show again.
+    // ...and a new one is a new session, but the toggle is what decides: a
+    // dismissed preview stays dismissed.
     emitMacDesktopEvent({
       type: "display-created",
       display: macDesktopDisplay({ displayId: 57, createdAt: "2026-09-18T19:10:00.000Z" }),
     });
     act(() => { setMacDesktopFrame({ ...macDesktopFrame(), at: Date.now() + 1 }); });
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(screen.queryByLabelText("Mac Desktop live preview")).toBeNull();
+
+    // Turning the preview back on brings the card back for the new display.
+    act(() => { setWorkLivePreviewEnabledForChat("chat-1", "mac-desktop", true); });
     expect(await screen.findByLabelText("Mac Desktop live preview", {}, { timeout: 3_000 })).toBeTruthy();
   });
 

@@ -13,6 +13,7 @@ import type {
   AppControlTarget,
 } from "../../../shared/types";
 import { ChatAppControlPanel } from "./ChatAppControlPanel";
+import { WorkToolsMaximizeContext } from "../terminals/workToolsMaximize";
 
 const transparentPngDataUrl =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
@@ -306,6 +307,19 @@ describe("ChatAppControlPanel", () => {
   afterEach(() => {
     cleanup();
     delete (window as any).ade;
+  });
+
+  it("carries the preview toggle and maximize buttons on its chrome row", async () => {
+    installAdeMock();
+
+    render(
+      <WorkToolsMaximizeContext.Provider value={{ maximized: false, setMaximized: vi.fn() }}>
+        <ChatAppControlPanel sessionId="chat-buttons" laneId="lane-1" projectRoot="/repo" />
+      </WorkToolsMaximizeContext.Provider>,
+    );
+
+    expect(await screen.findByRole("button", { name: "Show preview when minimized" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Maximize pane" })).toBeTruthy();
   });
 
   it("offers the launch target picker with no session, and inserts the CDP help draft", async () => {

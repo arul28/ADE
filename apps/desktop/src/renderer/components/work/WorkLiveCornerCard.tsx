@@ -25,7 +25,7 @@ import {
 import {
   WORK_LIVE_CARD_DEFAULT_WIDTH,
   WORK_LIVE_SCREEN_TOOLS,
-  isWorkLiveCardClosed,
+  isWorkLivePreviewDisabled,
   isWorkLiveCardSeen,
   isWorkLiveScreenTool,
   normalizeWorkLiveCardWidth,
@@ -639,7 +639,7 @@ export function WorkLiveCornerCard({
    * the lane id, a closed card could never reopen for the next display.
    */
   const macDesktopSessionKey = sources["mac-desktop"].sessionKey ?? laneId;
-  const macDesktopCardDismissed = isWorkLiveCardClosed(closed, "mac-desktop", macDesktopSessionKey)
+  const macDesktopCardDismissed = isWorkLivePreviewDisabled(closed, "mac-desktop")
     && !floating.includes("mac-desktop");
 
   /**
