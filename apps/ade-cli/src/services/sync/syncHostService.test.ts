@@ -6370,6 +6370,10 @@ describe("CTO-gated Linear sync commands", () => {
         "ai.cursorCloudResolveLane",
         "ai.cursorCloudPullIntoLane",
         "ai.cursorCloudStopRun",
+        "ai.getDevinCloudFleet",
+        "ai.pullDevinCloudSessionIntoLane",
+        "ai.openDevinCloudChat",
+        "ai.getDevinCloudAuthStatus",
         "chat.listPromptStashes",
         "chat.createPromptStash",
         "chat.deletePromptStash",
@@ -6390,6 +6394,8 @@ describe("CTO-gated Linear sync commands", () => {
         // both are host state mutations refused to read-only viewers.
         "ai.cursorCloudResolveLane",
         "ai.cursorCloudPullIntoLane",
+        // Pulling a Devin session's PR head mutates lane worktrees too.
+        "ai.pullDevinCloudSessionIntoLane",
         // Resuming spends a provider turn, so it is a host mutation a
         // read-only viewer never gets to make.
         "chat.resumeUsageLimitNow",
@@ -6406,6 +6412,7 @@ describe("CTO-gated Linear sync commands", () => {
         "ai.cursorCloudStopRun",
       ]);
       const controllerAllowedActions = new Set<string>([
+        "ai.pullDevinCloudSessionIntoLane",
         "ai.createCursorCloudRun",
         "ai.archiveCursorCloudAgent",
         "ai.unarchiveCursorCloudAgent",

@@ -482,8 +482,10 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
       const items = raw
         .filter(isRecord)
         .map(normalizeV1Message)
-        .filter((m): m is DevinCloudMessage => m !== null)
-        .slice(-first);
+        .filter((m): m is DevinCloudMessage => m !== null);
+      // v1 embeds the whole transcript in the session record — return all of
+      // it. The mirror dedupes on event_id, so replaying history is invisible
+      // and nothing before the tail is ever lost.
       return { items, endCursor: null };
     }
     const qs = {
@@ -694,13 +696,27 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
     if (!first) {
       throw new Error("This Devin token works but no organizations are visible to it.");
     }
-    const name = readString(first.org_name) ?? readString(first.name);
-    const id = readString(first.org_id) ?? readString(first.id);
+    const idFor = (entry: Record<string, unknown>) => readString(entry.org_id) ?? readString(entry.id);
+    if (cachedOrgId) {
+      const match = page.items.filter(isRecord).find((entry) => idFor(entry) === cachedOrgId);
+      if (!match) {
+        throw new Error(
+          `Org '${cachedOrgId}' is not visible to this Devin token. Check the org id in Settings > Devin.`,
+        );
+      }
+      return { orgName: readString(match.org_name) ?? readString(match.name) };
+    }
+    if (page.items.length > 1) {
+      throw new Error(
+        "Your Devin account belongs to multiple orgs. Add the org id (org-...) for the one you want in Settings > Devin.",
+      );
+    }
+    const id = idFor(first);
     if (!id) {
       throw new Error("Could not determine your Devin org. Add your org id (org-...) in Settings > Devin.");
     }
-    if (!cachedOrgId) cachedOrgId = id;
-    return { orgName: name };
+    cachedOrgId = id;
+    return { orgName: readString(first.org_name) ?? readString(first.name) };
   };
 
   return {
