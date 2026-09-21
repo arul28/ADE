@@ -1522,6 +1522,13 @@ type PersistedChatState = {
   /** Degradation notes already shown for this chat, so each is emitted once. */
   acpDegradationNotesShown?: string[];
   /**
+   * Devin cloud echo consumption is durable: a remote `source: "user"` row
+   * matched to a local send is suppressed exactly once, and this list is the
+   * record of which sends already consumed their echo. One entry per matched
+   * echo — repeats of the same text need repeats of the fingerprint.
+   */
+  devinCloudConsumedEchoFingerprints?: string[];
+  /**
    * True once ADE told this chat that its ACP agent approves its own writes.
    * Persisted so the honest-degradation line stays once per chat rather than
    * once per runtime start.
@@ -15466,6 +15473,11 @@ export function createAgentChatService(args: {
         : prevPersisted?.acpDegradationNotesShown?.length
           ? { acpDegradationNotesShown: prevPersisted.acpDegradationNotesShown }
           : {}),
+      ...((devinCloudConsumedEchoFingerprints.get(managed.session.id)?.length
+        ? { devinCloudConsumedEchoFingerprints: devinCloudConsumedEchoFingerprints.get(managed.session.id) }
+        : prevPersisted?.devinCloudConsumedEchoFingerprints?.length
+          ? { devinCloudConsumedEchoFingerprints: prevPersisted.devinCloudConsumedEchoFingerprints }
+          : {})),
       // Latching: once said, always remembered. A live runtime that has not yet
       // tripped the invariant must not erase a flag an earlier run set.
       ...(managed.acpSupervisionNoticeShown || prevPersisted?.acpSupervisionNoticeShown
@@ -15876,6 +15888,9 @@ export function createAgentChatService(args: {
       const acpDegradationNotesShown = Array.isArray(record.acpDegradationNotesShown)
         ? record.acpDegradationNotesShown.filter((note): note is string => typeof note === "string" && note.length > 0)
         : [];
+      const devinCloudConsumedEchoFingerprints = Array.isArray(record.devinCloudConsumedEchoFingerprints)
+        ? record.devinCloudConsumedEchoFingerprints.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+        : [];
       const acpSupervisionNoticeShown = record.acpSupervisionNoticeShown === true;
       if (!laneId || !model) return null;
       const recentConversationEntries = Array.isArray(record.recentConversationEntries)
@@ -16112,6 +16127,7 @@ export function createAgentChatService(args: {
         ...(acpPermissionMode ? { acpPermissionMode } : {}),
         ...(acpConfigSnapshot ? { acpConfigSnapshot } : {}),
         ...(acpDegradationNotesShown.length ? { acpDegradationNotesShown } : {}),
+        ...(devinCloudConsumedEchoFingerprints.length ? { devinCloudConsumedEchoFingerprints } : {}),
         ...(acpSupervisionNoticeShown ? { acpSupervisionNoticeShown } : {}),
         ...(instanceId ? { instanceId } : {}),
         ...(presetId ? { presetId } : {}),
@@ -44954,6 +44970,21 @@ export function createAgentChatService(args: {
   const devinCloudAttentionRaised = new Set<string>();
   /** ADE sessions with a Devin cloud REST send in flight — the busy flag a runtime-less chat cannot carry. */
   const devinCloudSendInFlight = new Set<string>();
+  /**
+   * Echoes already consumed per session, persisted in PersistedChatState so a
+   * restarted host does not resurrect a spent local-send fingerprint and hide
+   * a later, genuinely different remote message that repeats the same text.
+   */
+  const devinCloudConsumedEchoFingerprints = new Map<string, string[]>();
+
+  const devinConsumedEchoesFor = (sessionId: string): string[] => {
+    let list = devinCloudConsumedEchoFingerprints.get(sessionId);
+    if (!list) {
+      list = readPersistedState(sessionId)?.devinCloudConsumedEchoFingerprints ?? [];
+      devinCloudConsumedEchoFingerprints.set(sessionId, list);
+    }
+    return list;
+  };
 
   const forgetDevinCloudHydrationState = (sessionId: string): void => {
     devinCloudHydratedEventIds.delete(sessionId);
@@ -44965,6 +44996,7 @@ export function createAgentChatService(args: {
     devinCloudPendingDoneTurn.delete(sessionId);
     devinCloudSyncedAttachmentIds.delete(sessionId);
     devinCloudAttentionRaised.delete(sessionId);
+    devinCloudConsumedEchoFingerprints.delete(sessionId);
   };
 
   const clearAllDevinCloudHydrationState = (): void => {
@@ -44978,6 +45010,7 @@ export function createAgentChatService(args: {
     devinCloudPendingDoneTurn.clear();
     devinCloudSyncedAttachmentIds.clear();
     devinCloudAttentionRaised.clear();
+    devinCloudConsumedEchoFingerprints.clear();
   };
 
   /** File types the proof drawer can actually render; everything else is skipped, not errored. */
@@ -45082,10 +45115,7 @@ export function createAgentChatService(args: {
     // event id) and are consumed on match, so repeated identical remote
     // messages still print.
     const localEchoes = new Map<string, number>();
-    for (const envelope of [
-      ...(eventHistoryBySession.get(managed.session.id) ?? []),
-      ...readTranscriptEnvelopes(managed),
-    ]) {
+    for (const envelope of readTranscriptEnvelopes(managed, { includeBuffered: true })) {
       const event = envelope.event;
       if (
         (event.type === "user_message" || event.type === "text")
@@ -45099,6 +45129,14 @@ export function createAgentChatService(args: {
         localEchoes.set(fingerprint, (localEchoes.get(fingerprint) ?? 0) + 1);
       }
     }
+    // Sends whose echo already arrived stay in the transcript forever; the
+    // persisted consumption record is what keeps them from suppressing a
+    // later, distinct remote message that happens to repeat the same text.
+    for (const consumed of devinConsumedEchoesFor(managed.session.id)) {
+      const remaining = (localEchoes.get(consumed) ?? 0) - 1;
+      if (remaining <= 0) localEchoes.delete(consumed);
+      else localEchoes.set(consumed, remaining);
+    }
     let emittedVisible = false;
     for (const message of messages) {
       if (!message.eventId || !message.message) continue;
@@ -45106,7 +45144,11 @@ export function createAgentChatService(args: {
       hydratedIds.add(message.eventId);
       if (message.source === "user") {
         const fingerprint = devinCloudMessageFingerprint(message);
-        if (fingerprint && consumeDevinEchoFingerprint(localEchoes, fingerprint)) continue;
+        if (fingerprint && consumeDevinEchoFingerprint(localEchoes, fingerprint)) {
+          devinConsumedEchoesFor(managed.session.id).push(fingerprint);
+          persistChatState(managed);
+          continue;
+        }
       }
       emittedVisible = true;
       emitChatEvent(managed, {
