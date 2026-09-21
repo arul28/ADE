@@ -87,21 +87,41 @@ async function getSdk(): Promise<DroidSdkModule> {
  * handle, so after a fork the source branch is re-opened here on demand (or
  * immediately, from `forkSession`) rather than leaving the pooled worker unable
  * to serve the source chat.
+ *
+ * Worker IPC is dispatched without serialization, so concurrent callers share
+ * one in-flight resume; whichever handle resolves first becomes the live
+ * session and any later handle is closed rather than leaked.
  */
+let pendingResumePromise: Promise<void> | null = null;
+
 async function ensureSession(): Promise<void> {
   if (session) return;
   const resumeId = pendingResumeSessionId;
-  if (!resumeId || !initState) throw new Error("Droid SDK worker is not initialized.");
-  const sdk = await getSdk();
-  const resumed = await sdk.resumeSession(resumeId, resumeSessionOptions(initState));
-  session = resumed;
-  pendingResumeSessionId = null;
-  post({
-    type: "log",
-    level: "info",
-    message: "Re-opened the Droid source session after a fork.",
-    detail: { sessionId: resumed.id },
-  });
+  const state = initState;
+  if (!resumeId || !state) throw new Error("Droid SDK worker is not initialized.");
+  if (!pendingResumePromise) {
+    pendingResumePromise = (async () => {
+      const sdk = await getSdk();
+      const resumed = await sdk.resumeSession(resumeId, resumeSessionOptions(state));
+      if (session) {
+        // Another recovery already adopted a handle; discard this one.
+        await resumed.close().catch(() => undefined);
+        return;
+      }
+      session = resumed;
+      pendingResumeSessionId = null;
+      post({
+        type: "log",
+        level: "info",
+        message: "Re-opened the Droid source session after a fork.",
+        detail: { sessionId: resumed.id },
+      });
+    })().finally(() => {
+      pendingResumePromise = null;
+    });
+  }
+  await pendingResumePromise;
+  if (!session) throw new Error("Droid SDK worker is not initialized.");
 }
 
 // Still accepts null: settings cross a process boundary as JSON, so the
@@ -531,12 +551,17 @@ async function forkSession(): Promise<{ newSessionId: string }> {
     throw new Error("Droid fork returned no session id.");
   }
   await forked.close().catch(() => undefined);
+  let resumed: DroidSession | null = null;
   try {
-    session = await sdk.resumeSession(sourceSessionId, resumeSessionOptions(initState));
+    resumed = await sdk.resumeSession(sourceSessionId, resumeSessionOptions(initState));
+    session = resumed;
     // Re-apply the LATEST settings, not the worker's init snapshot: the source
     // may have changed model, left Spec, or stopped stating a mode since then.
     await applySettings(latestSettings ?? initState.settings);
   } catch (error) {
+    // Close a handle that never became the live session so a lazy retry does not
+    // leak a process; the source re-opens on the next request.
+    if (resumed) await resumed.close().catch(() => undefined);
     // `fork()` retired the source handle. Retry the re-open lazily on the next
     // source request so the pooled worker self-heals instead of failing every
     // later turn with "not initialized".
