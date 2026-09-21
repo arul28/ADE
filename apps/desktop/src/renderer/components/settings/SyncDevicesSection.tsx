@@ -453,6 +453,12 @@ export function ThisMacCard({
  */
 function connectionProblem(status: SyncRoleSnapshot, host: boolean): string | null {
   if (!host) {
+    // "Connects through your main host" is only true when a host exists. When
+    // the brain says sync has not started, nobody on this computer hosts it,
+    // and the line must say so: the card above carries the Start sync button.
+    if (status.routeHealth?.accountDirectory?.state === "sync_not_started") {
+      return "No ADE on this computer is hosting sync right now";
+    }
     return "This machine connects through your main ADE host";
   }
   // The CRDT failure renders as its own alert block below, with the runtime's

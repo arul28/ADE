@@ -13,6 +13,7 @@ const appMock = {
 
 const accountMock = {
   repairMachinePairing: vi.fn(),
+  startSyncHost: vi.fn(),
   startDeviceLogin: vi.fn(),
   pollDeviceLogin: vi.fn(),
   cancelDeviceLogin: vi.fn(async () => ({})),
@@ -154,6 +155,25 @@ describe("ThisComputerStatus", () => {
     expect(await screen.findByText(/Can't reach your ADE account right now/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Repair" })).toBeNull();
+  });
+
+  it("offers Start sync when sync has not started, and reports the brain's answer", async () => {
+    installAdeMock({
+      state: "sync_not_started",
+      // Set by the brain to when it first found no host; a boot-time blip
+      // under the alarm threshold renders nothing.
+      failingSinceMs: Date.now() - 5 * 60_000,
+      lastLegDurations: { snapshot: null, token: null, http: null },
+    });
+    accountMock.startSyncHost.mockResolvedValue({ ok: true, state: "ready", message: "ok" });
+
+    render(<ThisComputerStatus accountSignedIn />);
+    expect(await screen.findByText("Sync hasn't started on this computer yet")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Start sync" }));
+
+    await waitFor(() => expect(accountMock.startSyncHost).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("Sync is running on this computer.")).toBeTruthy();
+    expect(accountMock.repairMachinePairing).not.toHaveBeenCalled();
   });
 
   it("renders nothing while signed out and the brain can read its session", async () => {

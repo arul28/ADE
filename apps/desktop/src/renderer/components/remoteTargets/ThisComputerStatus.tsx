@@ -121,6 +121,34 @@ export function ThisComputerStatus({
     }
   }, [onAccountMachinesChanged, refresh]);
 
+  /**
+   * "Start sync": the brain's own sync-host recovery. What it says back is the
+   * outcome line, so a conflict with another ADE app names that app instead of
+   * a bare failure.
+   */
+  const startSync = useCallback(async () => {
+    const start = window.ade.account?.startSyncHost;
+    if (!start) {
+      setOutcome({ tone: "danger", message: "This ADE build can't start sync from here. Restart ADE to start sync." });
+      return;
+    }
+    setReconnecting(true);
+    setOutcome(null);
+    try {
+      const result = await start();
+      setOutcome({
+        tone: result.ok ? "success" : "warning",
+        message: result.ok ? "Sync is running on this computer." : result.message,
+      });
+      onAccountMachinesChanged?.();
+      refresh();
+    } catch (error) {
+      setOutcome({ tone: "danger", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setReconnecting(false);
+    }
+  }, [onAccountMachinesChanged, refresh]);
+
   const cancel = useCallback(() => {
     cancelledRef.current = true;
     setSignInPrompt(null);
@@ -148,6 +176,7 @@ export function ThisComputerStatus({
           disabled={reconnecting}
           onClick={() => {
             if (card.action.retry) refresh();
+            else if (card.action.startSync) void startSync();
             else void reconnect();
           }}
           style={outlineButton({
@@ -159,7 +188,9 @@ export function ThisComputerStatus({
             cursor: reconnecting ? "not-allowed" : "pointer",
           })}
         >
-          {reconnecting ? (signInPrompt ? "Waiting for sign-in…" : "Reconnecting…") : card.action.label}
+          {reconnecting
+            ? (signInPrompt ? "Waiting for sign-in…" : card.action.startSync ? "Starting sync…" : "Reconnecting…")
+            : card.action.label}
         </button>
       )
       : null;

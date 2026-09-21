@@ -381,6 +381,7 @@ import type {
   AdeAccountMachine,
   AdeAccountMachineRemovalResult,
   AdeAccountMachinePairingRepairResult,
+  AdeAccountSyncHostStartResult,
   AdeAccountSessionRepairResult,
   AccountSettingRow,
   AccountSettingsResult,
@@ -10868,6 +10869,8 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.accountRemoveMachine, { machineKey }),
     repairMachinePairing: (): Promise<AdeAccountMachinePairingRepairResult> =>
       ipcRenderer.invoke(IPC.accountRepairMachinePairing),
+    startSyncHost: (): Promise<AdeAccountSyncHostStartResult> =>
+      ipcRenderer.invoke(IPC.accountStartSyncHost),
     repairSession: (): Promise<AdeAccountSessionRepairResult> =>
       ipcRenderer.invoke(IPC.accountRepairSession),
   },

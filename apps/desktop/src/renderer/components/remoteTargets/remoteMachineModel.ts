@@ -295,8 +295,11 @@ export const PUBLISH_FAILING_ALARM_MS = 2 * 60_000;
  */
 const PUBLISH_INACTIVE_STATES: ReadonlySet<SyncAccountDirectoryState> = new Set([
   "sync_disabled",
-  // The publisher has not run yet. Nothing has failed, so this must not alarm.
-  "sync_not_started",
+  // `sync_not_started` is deliberately NOT here. The brain reports it with
+  // `failingSinceMs` set to when it first found no sync host on this computer,
+  // so a boot-time blip stays quiet under the alarm threshold and a host that
+  // never comes back (2026-09-21: a dev brain took the lease and exited) gets
+  // the card with its Start sync button.
   "no_active_sync_scope",
   "not_host",
   "account_signed_out",
@@ -362,7 +365,7 @@ export function describeThisComputerCard(
     return {
       tone: "healthy",
       summary: "signed in and published to your ADE account",
-      action: { label: null, needsSignIn: false, retry: false },
+      action: { label: null, needsSignIn: false, retry: false, startSync: false },
     };
   }
   return {

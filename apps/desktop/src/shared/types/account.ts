@@ -188,6 +188,15 @@ type AdeAccountMachinePairingRefusalCode =
 export const ADE_ACCOUNT_PAIRING_AUTHENTICATION_REQUIRED_CODE:
   AdeAccountMachinePairingRefusalCode = "pairing_authentication_required";
 
+/** Outcome of the Connections card's "Start sync" on this computer. */
+export type AdeAccountSyncHostStartResult = {
+  ok: boolean;
+  /** `ready` | `starting` | `conflict` | `unavailable`, from the brain's readiness snapshot. */
+  state: string;
+  /** One sentence for the user. */
+  message: string;
+};
+
 export type AdeAccountMachinePairingRepairResult = {
   /** The directory accepted the re-pair and both halves were lifted. */
   repaired: boolean;

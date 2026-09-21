@@ -11543,6 +11543,8 @@ export function registerIpc({
   // Takes no arguments on purpose: it always targets THIS machine, and a
   // machineKey parameter would invite a caller to "repair" a machine it does
   // not own — the brain could not honour that anyway.
+  ipcMain.handle(IPC.accountStartSyncHost, async () => accountBridge.startSyncHost());
+
   ipcMain.handle(
     IPC.accountRepairMachinePairing,
     async (): Promise<AdeAccountMachinePairingRepairResult> => {

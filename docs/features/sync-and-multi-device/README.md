@@ -141,6 +141,22 @@ does hold the lease and loses it mid-handoff reports the same state from the
 publisher itself, so the two paths cannot tell different stories. `ade doctor`
 shows the same sentence on its publish row.
 
+A brain that once hosted sync and then lost the lease does not stay a viewer.
+`runSyncHostStartupLoop` returns when the host is up, so on 2026-09-21 a
+dev-build brain that took the lease and then exited left the installed ADE as
+a viewer for over an hour: the Connections card said "sync hasn't started",
+Reconnect refused with a sentence about the brain "not publishing", and only a
+service restart fixed it. `watchSyncHostAuthorityForRehost` now re-runs the
+loop when a loss outlives the switch grace (`SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS`),
+with first-attempt conflicts treated as retryable, so a foreign owner's exit
+hands sync back on its own. The user has a button for the same thing: the
+`sync_not_started` state renders **Start sync** on the This-machine card
+(`thisComputerAction`), which calls `account.startSyncHost`, the same
+`recoverSyncHostConnection` the phone's "Fix connection" runs; the card's
+second line then reads "No ADE on this computer is hosting sync right now"
+instead of claiming the machine connects through a host that does not exist,
+and `repairMachinePairing` on a non-host says to start sync first.
+
 Because the second brain cannot host sync, testing it over the relay means
 quitting the app that currently owns the lease first — the phone and the
 account directory are both pointed at that owner, and no amount of restarting

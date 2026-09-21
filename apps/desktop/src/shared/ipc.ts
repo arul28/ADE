@@ -889,6 +889,7 @@ export const IPC = {
   accountGetLocalMachineIdentity: "ade.account.getLocalMachineIdentity",
   accountRemoveMachine: "ade.account.removeMachine",
   accountRepairMachinePairing: "ade.account.repairMachinePairing",
+  accountStartSyncHost: "ade.account.startSyncHost",
   accountRepairSession: "ade.account.repairSession",
 
   /**

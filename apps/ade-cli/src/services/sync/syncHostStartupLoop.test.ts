@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { runSyncHostStartupLoop } from "./syncHostStartupLoop";
+import { runSyncHostStartupLoop, watchSyncHostAuthorityForRehost } from "./syncHostStartupLoop";
 import {
   SyncHostSingletonConflictError,
   type SyncHostSingletonOwner,
@@ -482,6 +482,94 @@ describe("runSyncHostStartupLoop", () => {
       isDone: () => false,
       log: () => {},
       sleep: instantSleep,
+    });
+    expect(attempts).toBe(3);
+  });
+});
+
+describe("watchSyncHostAuthorityForRehost", () => {
+  function harness(overrides: { holdsAfterGrace?: boolean; done?: boolean } = {}) {
+    let handler: ((held: boolean) => void) | null = null;
+    const logs: string[] = [];
+    const events: string[] = [];
+    let rehosts = 0;
+    let holds = true;
+    const stop = watchSyncHostAuthorityForRehost({
+      onAuthorityChanged: (next) => {
+        handler = next;
+        return () => { handler = null; };
+      },
+      holds: () => holds,
+      isDone: () => overrides.done === true,
+      graceMs: 5_000,
+      sleep: async () => {
+        holds = overrides.holdsAfterGrace === true;
+      },
+      log: (message) => logs.push(message),
+      logEvent: (event) => events.push(event),
+      rehost: async () => { rehosts += 1; },
+    });
+    return {
+      lose: () => { holds = false; handler?.(false); },
+      regain: () => { holds = true; handler?.(true); },
+      stop,
+      logs,
+      events,
+      rehosts: () => rehosts,
+      flush: () => new Promise((resolve) => setTimeout(resolve, 0)),
+    };
+  }
+
+  it("re-hosts after a loss that outlives the grace", async () => {
+    // The 2026-09-21 shape: a dev brain took the lease, then exited, and the
+    // installed brain sat as a viewer until a manual restart.
+    const h = harness();
+    h.lose();
+    await h.flush();
+    expect(h.rehosts()).toBe(1);
+    expect(h.events).toEqual(["sync.host_rehost_started"]);
+  });
+
+  it("ignores a loss that a project switch reverses within the grace", async () => {
+    const h = harness({ holdsAfterGrace: true });
+    h.lose();
+    await h.flush();
+    expect(h.rehosts()).toBe(0);
+  });
+
+  it("does nothing once the brain is shutting down, and after stop()", async () => {
+    const shuttingDown = harness({ done: true });
+    shuttingDown.lose();
+    await shuttingDown.flush();
+    expect(shuttingDown.rehosts()).toBe(0);
+
+    const stopped = harness();
+    stopped.stop();
+    stopped.lose();
+    await stopped.flush();
+    expect(stopped.rehosts()).toBe(0);
+  });
+
+  it("retries a first-attempt cross-channel conflict when asked to, instead of throwing", async () => {
+    let attempts = 0;
+    const crossChannel = conflictError(makeOwner({
+      packageChannel: null,
+      adeHome: "/Users/example/.ade",
+      serviceName: "com.ade.runtime",
+      appName: "ADE",
+    }));
+    await runSyncHostStartupLoop({
+      startSyncHost: () => {
+        attempts += 1;
+        return attempts < 3 ? Promise.reject(crossChannel) : Promise.resolve();
+      },
+      isDone: () => false,
+      log: () => {},
+      getServiceMainPid: () => process.pid,
+      kill: () => {},
+      sleep: instantSleep,
+      env: betaEnv,
+      retryFirstConflict: true,
     });
     expect(attempts).toBe(3);
   });

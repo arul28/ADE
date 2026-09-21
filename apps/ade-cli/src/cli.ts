@@ -73,6 +73,7 @@ import {
   machineStatusLine,
 } from "../../desktop/src/shared/machinePresence";
 import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
+import type { SyncHostStartupLoopDeps } from "./services/sync/syncHostStartupLoop";
 import type { ProjectSecretStorage } from "../../desktop/src/shared/types/projectSecrets";
 import type { SyncHostReadinessSnapshot } from "../../desktop/src/shared/types/syncHostRecovery";
 import type { SyncHostSingletonConflict } from "./services/sync/syncHostSingleton";
@@ -21757,6 +21758,7 @@ async function runServe(
   let brainSyncTunnelClient: SyncTunnelClientService | null = null;
   let brainRelayTunnelGate: RelayTunnelAuthorityGate | null = null;
   let releaseAccountPublisherAuthoritySubscription: (() => void) | null = null;
+  let stopSyncHostRehostWatch: (() => void) | null = null;
   // Read only when no publisher is running, which is exactly the state of the
   // second ADE on a machine: it cannot take the lease, so it never builds a
   // publisher, and the popover used to be told "sync hasn't started here yet".
@@ -21764,9 +21766,17 @@ async function runServe(
   // Wired inside the `syncEnabled` block below (that is where the singleton
   // module is imported); absent means "unknown owner", never a guessed one.
   let readCompetingSyncHostOwner: (() => CompetingSyncHostOwner | null) | null = null;
+  // When this brain first found no sync host on the machine. Carried as
+  // `failingSinceMs` on the synthesized health so the desktop can tell a
+  // boot-time blip (quiet) from a host that never came back (Start sync).
+  let syncHostMissingSinceMs: number | null = null;
   const getAccountDirectoryHealth = (): SyncAccountDirectoryHealth => {
     const publisherHealth = accountMachinePublisher?.getPublisherHealth();
-    if (publisherHealth) return publisherHealth;
+    if (publisherHealth) {
+      syncHostMissingSinceMs = null;
+      return publisherHealth;
+    }
+    syncHostMissingSinceMs ??= Date.now();
     let owner: CompetingSyncHostOwner | null = null;
     try {
       owner = readCompetingSyncHostOwner?.() ?? null;
@@ -21782,6 +21792,7 @@ async function runServe(
     return createSyncAccountDirectoryHealth(
       "sync_not_started",
       "Account-directory publishing has not started.",
+      { failingSinceMs: syncHostMissingSinceMs },
     );
   };
   /**
@@ -22014,6 +22025,13 @@ async function runServe(
       getAccountDirectoryHealth,
       getProjectlessSyncSnapshot: projectlessSyncSnapshot,
       repairMachinePairing,
+      // The desktop's "Start sync" button: the same repair the phone's "Fix
+      // connection" runs, so a brain that lost the lease can be re-hosted from
+      // the Connections card instead of a service restart.
+      startSyncHost: async () => {
+        const { recoverSyncHostConnection } = await import("./services/sync/syncHostRecovery");
+        return recoverSyncHostConnection();
+      },
       projectlessSyncControls: createProjectlessSyncControls({
         stores: brainMachineSyncStores,
         cloudRelayStore: machineCloudRelayStore,
@@ -22188,6 +22206,8 @@ async function runServe(
   const disposeServeResources = async () => {
     releaseAccountPublisherAuthoritySubscription?.();
     releaseAccountPublisherAuthoritySubscription = null;
+    stopSyncHostRehostWatch?.();
+    stopSyncHostRehostWatch = null;
     machinePairingAutoRecovery?.stop();
     machinePairingAutoRecovery = null;
     accountMachinePublisher?.dispose();
@@ -22301,9 +22321,16 @@ async function runServe(
       return;
     }
     try {
-      const [{ runSyncHostStartupLoop }, { getRuntimeServiceMainPid }] = await Promise.all([
+      const [
+        { runSyncHostStartupLoop, watchSyncHostAuthorityForRehost },
+        { getRuntimeServiceMainPid },
+        { holdsSyncHostSingleton: holdsSyncHostLease, onSyncHostSingletonAuthorityChanged: onSyncHostAuthorityChanged },
+        { SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS: syncHostAuthorityGraceMs },
+      ] = await Promise.all([
         import("./services/sync/syncHostStartupLoop"),
         import("./serviceManager"),
+        import("./services/sync/syncHostSingleton"),
+        import("./services/sync/relayTunnelAuthorityGate"),
       ]);
       // This loop no longer needs a socket-liveness abort. That abort guarded
       // against a rival brain taking the RPC socket while this one waited for
@@ -22325,7 +22352,7 @@ async function runServe(
           return true;
         },
       });
-      await runSyncHostStartupLoop({
+      const syncHostStartupLoopDeps: SyncHostStartupLoopDeps = {
         startSyncHost,
         isDone: () => done,
         log: (message) => process.stderr.write(`${message}\n`),
@@ -22365,11 +22392,29 @@ async function runServe(
             })
             .catch(() => undefined);
         },
-      });
+      };
+      await runSyncHostStartupLoop(syncHostStartupLoopDeps);
       // A recorded sync-host failure is cleared only once the sync host is
       // really up; clearing it on the bind would reset the crash-loop counter
       // on every restart of a brain that keeps dying right here.
       if (!done) clearLastFailure({ kind: "machine" });
+      // The loop is done, but the lease is not forever: another brain can take
+      // it and then exit. Re-host when a loss outlives the switch grace, so
+      // this brain does not sit as a viewer until someone restarts it.
+      if (!done) {
+        stopSyncHostRehostWatch = watchSyncHostAuthorityForRehost({
+          onAuthorityChanged: onSyncHostAuthorityChanged,
+          holds: holdsSyncHostLease,
+          isDone: () => done,
+          graceMs: syncHostAuthorityGraceMs,
+          log: (message) => process.stderr.write(`${message}\n`),
+          logEvent: (event, meta) => headlessProjectLogger.warn(event, meta),
+          rehost: async () => {
+            await runSyncHostStartupLoop({ ...syncHostStartupLoopDeps, retryFirstConflict: true });
+            if (!done) clearLastFailure({ kind: "machine" });
+          },
+        });
+      }
     } catch (error: unknown) {
       if (done) return;
       // Cross-channel conflict (another build's live brain owns mobile sync):

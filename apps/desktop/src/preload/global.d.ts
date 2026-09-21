@@ -441,6 +441,7 @@ import type {
   AdeAccountMachine,
   AdeAccountMachineRemovalResult,
   AdeAccountMachinePairingRepairResult,
+  AdeAccountSyncHostStartResult,
   AdeAccountSessionRepairResult,
   AccountSettingRow,
   AccountSettingsResult,
@@ -3566,6 +3567,8 @@ declare global {
         removeMachine: (machineKey: string) => Promise<AdeAccountMachineRemovalResult>;
         /** Re-pairs THIS machine after an account-side removal. */
         repairMachinePairing: () => Promise<AdeAccountMachinePairingRepairResult>;
+        /** Starts (or re-hosts) mobile sync on THIS machine. Optional: older preloads lack it. */
+        startSyncHost?: () => Promise<AdeAccountSyncHostStartResult>;
         /**
          * Repairs the stored sign-in on THIS Mac: converge the credential
          * file's key binding, restore anything set aside, then restart the

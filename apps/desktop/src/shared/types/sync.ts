@@ -568,7 +568,7 @@ export function describeUnpublishedAccountDirectory(
       // sends them looking for a switch that is already on.
       return {
         summary: "sync hasn't started on this computer yet",
-        nextAction: "ade doctor",
+        nextAction: "Start sync",
       };
     case "missing_pairing_connect_info":
       return {
@@ -650,6 +650,12 @@ export type ThisComputerAction = {
   needsSignIn: boolean;
   /** A plain retry of the failed publish. */
   retry: boolean;
+  /**
+   * Nobody on this computer hosts sync, so the publisher cannot run. The
+   * button starts (or re-hosts) sync through the brain's own recovery, the
+   * same repair the phone's "Fix connection" runs.
+   */
+  startSync: boolean;
 };
 
 /**
@@ -658,7 +664,6 @@ export type ThisComputerAction = {
  */
 const ACCOUNT_DIRECTORY_INACTIVE_STATES: ReadonlySet<SyncAccountDirectoryState> = new Set([
   "sync_disabled",
-  "sync_not_started",
   "no_active_sync_scope",
   "not_host",
   "account_signed_out",
@@ -670,22 +675,28 @@ export function thisComputerAction(
   state: SyncAccountDirectoryState,
   health?: SyncAccountDirectoryHealth | null,
 ): ThisComputerAction {
-  if (state === "published") return { label: null, needsSignIn: false, retry: false };
+  const none = { needsSignIn: false, retry: false, startSync: false };
+  if (state === "published") return { label: null, ...none };
   const refusal = readAccountRefusalCode(health ?? null);
   if (refusal === "machine_revoked") {
-    return { label: "Reconnect this computer", needsSignIn: false, retry: false };
+    return { label: "Reconnect this computer", ...none };
   }
   if (refusal === "pairing_authentication_required") {
-    return { label: "Sign in again", needsSignIn: true, retry: false };
+    return { label: "Sign in again", ...none, needsSignIn: true };
   }
   if (isBrainAccountSessionFailure(state)) {
     // The Repair control owns this one; the card renders it beside the line.
-    return { label: "Repair", needsSignIn: false, retry: false };
+    return { label: "Repair", ...none };
+  }
+  if (state === "sync_not_started") {
+    // Not "retry": nothing was published to retry. The sync host is down on
+    // this computer, and the brain's own recovery is the way back up.
+    return { label: "Start sync", ...none, startSync: true };
   }
   if (ACCOUNT_DIRECTORY_INACTIVE_STATES.has(state)) {
-    return { label: null, needsSignIn: false, retry: false };
+    return { label: null, ...none };
   }
-  return { label: "Retry", needsSignIn: false, retry: true };
+  return { label: "Retry", ...none, retry: true };
 }
 
 export type SyncAccountDirectoryLegDurations = {

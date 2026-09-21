@@ -110,6 +110,7 @@ describe("thisComputerAction button labels", () => {
       label: "Reconnect this computer",
       needsSignIn: false,
       retry: false,
+      startSync: false,
     });
   });
 
@@ -122,6 +123,7 @@ describe("thisComputerAction button labels", () => {
       label: "Sign in again",
       needsSignIn: true,
       retry: false,
+      startSync: false,
     });
   });
 
@@ -134,6 +136,7 @@ describe("thisComputerAction button labels", () => {
       label: "Retry",
       needsSignIn: false,
       retry: true,
+      startSync: false,
     });
   });
 
@@ -142,7 +145,21 @@ describe("thisComputerAction button labels", () => {
       label: "Repair",
       needsSignIn: false,
       retry: false,
+      startSync: false,
     });
+  });
+
+  it("offers Start sync when no brain on this computer hosts sync", () => {
+    // 2026-09-21: a dev brain took the lease and exited; the installed brain
+    // sat as a viewer, the card said "sync hasn't started", and Reconnect
+    // refused. The one thing to press is the brain's own sync-host recovery.
+    expect(thisComputerAction("sync_not_started")).toEqual({
+      label: "Start sync",
+      needsSignIn: false,
+      retry: false,
+      startSync: true,
+    });
+    expect(describeUnpublishedAccountDirectory("sync_not_started").nextAction).toBe("Start sync");
   });
 
   it("offers no button when nothing failed", () => {

@@ -74,7 +74,69 @@ export type SyncHostStartupLoopDeps = {
    * it into 9,700 log lines. Overridable for tests.
    */
   conflictSummaryIntervalMs?: number;
+  /**
+   * Treat a first-attempt cross-channel conflict as retryable instead of
+   * rethrowing it. Brain STARTUP wants the throw (fail loudly with quit
+   * instructions); a RE-HOST after a lost lease is already serving and must
+   * wait the foreign owner out instead.
+   */
+  retryFirstConflict?: boolean;
 };
+
+export type SyncHostRehostWatchDeps = {
+  /** `onSyncHostSingletonAuthorityChanged`. */
+  onAuthorityChanged: (handler: (held: boolean) => void) => () => void;
+  /** `holdsSyncHostSingleton`. */
+  holds: () => boolean;
+  isDone: () => boolean;
+  /** Runs the startup loop again. Its own failures are already logged. */
+  rehost: () => Promise<void>;
+  log: (message: string) => void;
+  logEvent?: (event: string, meta: Record<string, unknown>) => void;
+  /** How long a loss may last before it counts; a project switch reads false for a beat. */
+  graceMs: number;
+  sleep?: (ms: number) => Promise<void>;
+};
+
+/**
+ * Re-host after a lost lease, instead of staying a viewer until a restart.
+ *
+ * The startup loop returns once the host is up and never runs again. On
+ * 2026-09-21 a dev-build brain took the machine-wide lease from the installed
+ * ADE, and when that dev brain exited nobody hosted sync: the installed brain
+ * sat as a viewer for over an hour, the Connections card said "sync hasn't
+ * started", Reconnect refused, and the only fix was a manual service restart.
+ * This watches authority transitions and re-runs the loop when a loss outlives
+ * the switch grace, so a foreign owner's exit hands sync back on its own.
+ */
+export function watchSyncHostAuthorityForRehost(deps: SyncHostRehostWatchDeps): () => void {
+  const sleep = deps.sleep ?? defaultSleep;
+  let rehosting = false;
+  let stopped = false;
+  const unsubscribe = deps.onAuthorityChanged((held) => {
+    if (held || rehosting || stopped) return;
+    void (async () => {
+      await sleep(deps.graceMs);
+      if (stopped || deps.isDone() || deps.holds() || rehosting) return;
+      rehosting = true;
+      deps.log("ADE brain lost the mobile sync host lease; trying to host again.");
+      deps.logEvent?.("sync.host_rehost_started", {});
+      try {
+        await deps.rehost();
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        deps.log(`ADE brain could not re-host mobile sync: ${message}`);
+        deps.logEvent?.("sync.host_rehost_failed", { error: message });
+      } finally {
+        rehosting = false;
+      }
+    })();
+  });
+  return () => {
+    stopped = true;
+    unsubscribe();
+  };
+}
 
 function defaultKill(pid: number, signal: NodeJS.Signals | number): void {
   process.kill(pid, signal);
@@ -287,7 +349,7 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
           // First attempt: let brain startup fail loudly (caller shows quit
           // instructions). Later attempts: the brain is already serving —
           // keep watching so sync recovers when the foreign owner exits.
-          if (attempt === 1) {
+          if (attempt === 1 && !deps.retryFirstConflict) {
             throw error;
           }
           if (deps.maxAttempts != null && attempt >= deps.maxAttempts) return;
