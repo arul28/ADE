@@ -420,7 +420,21 @@ Shared types and IPC:
   Plan mode is a property of a live turn only: a background-promoted row never
   reads **Planning**.
   It also owns the short working-duration formatter; renderer icon components
-  map its dependency-free glyph ids to platform symbols.
+  map its dependency-free glyph ids to platform symbols. `sessionStatusShoutsLabel`
+  is the nested-compact filter: the status word is painted only for Needs you
+  or a red Failed tone.
+- `apps/desktop/src/shared/sessionSpawnNesting.ts` — the one by-lane filing
+  rule desktop, ADE Code, and the iOS Swift mirror consult. Same-lane
+  `spawnKind: "subagent"` chats (and tracked CLI `--type subagent` sessions)
+  nest under the parent; peers stay top-level. Demote un-nests; promote nests
+  again. Cross-lane children stay top-level. A quiet parent (snoozed or
+  settled) pulls not-done children up; done children stay nested. Grandchildren
+  flatten into the root parent's one drawer. Collapse keys:
+  `chat-subagents:<parentId>` vs shells `chat:<parentId>`. It also owns
+  `isChatToolType` (Cursor and every `*-chat` tool type are chats; tracked CLI
+  subagents are not) so filing can run in shared rather than the renderer, and
+  `nestedSubagentDrawerAttention` (Failed wins over a needs-you pip). Tested in
+  `sessionSpawnNesting.test.ts`.
 - `apps/desktop/src/renderer/lib/sessionSnooze.ts` — the desktop half of snooze
   presentation. The derivations themselves live in `shared/sessionCanonicalState.ts`
   and are shared with `ade code` and iOS; this module owns the re-export plus the
@@ -480,14 +494,17 @@ Shared types and IPC:
   list.
 - `apps/desktop/src/renderer/components/terminals/SessionStatusLabel.tsx` —
   the pure label half of the slot below: shared glyph id to Phosphor icon, tone
-  class, and the elapsed/countdown text. It was extracted so the account-wide
+  class, and the elapsed/countdown text. Nested compact rows pass
+  `hideLabelUnlessShout`, which keeps the word only when
+  `sessionStatusShoutsLabel` is true. It was extracted so the account-wide
   Activity card can speak the same status vocabulary **without** inheriting the
   slot's mutation controls, which act on this Mac's local session service and
   would be wrong — sometimes destructively so — on a row that belongs to
   another machine. Anything both surfaces must agree on belongs here.
 - `apps/desktop/src/renderer/components/terminals/SessionStatusSlot.tsx` —
   the row's single status surface and no-layout-shift hover/focus action swap.
-  It renders `SessionStatusLabel` and adds the mutations: it ticks running
+  It renders `SessionStatusLabel` (including `hideLabelUnlessShout`) and adds
+  the mutations: it ticks running
   elapsed time from immutable `currentTurnStartedAt` for **every** session
   type, not just chat, falling back to last activity for legacy rows — a CLI
   repainting its TUI would otherwise reset the timer every few seconds, because
@@ -532,6 +549,13 @@ Shared types and IPC:
   `sessionCanonicalState.ts`, wake and woke-reason copy from `sessionSnooze.ts`,
   duration grammar from `sessionSnoozeDuration.ts`. `/chat settle` and
   `/chat unsettle` keep their own active-only dispatch in `app.tsx`.
+- `apps/ade-cli/src/tuiClient/workListModel.ts`, `workListLayout.ts`, and
+  `components/WorkSessionsPane.tsx` — ADE Code sessions pane. Same-lane
+  subagent chats indent as one-line nested rows under the parent (shout-only
+  Needs you / Failed). A terminal cannot paint provider logos, so there is no
+  collapsible **N subagents** drawer. Filing imports `indexNestedSubagents`
+  from `sessionSpawnNesting.ts`. A nested row is one line; a full card is
+  three. See [ADE Code](../ade-code/README.md).
 - `apps/desktop/src/renderer/webclient/adapter/sessionLifecycleOverlay.ts`,
   `adapter/sessionLifecycleSupport.ts`, and `shell/sessionLifecycleChrome.ts` —
   the hosted-web halves. ADE Web has no local database, so every lifecycle
@@ -926,6 +950,20 @@ Renderer surfaces:
   settled filter because Status grouping already exposes the full lifecycle.
   Collapsed tails are excluded from shift-range selection so a hidden row cannot
   enter a bulk action accidentally.
+  In by-lane list mode, same-lane `spawnKind: "subagent"` chats (and tracked
+  CLI `--type subagent` sessions) nest under the parent in an expanded-by-default
+  **N subagents** drawer (`chat-subagents:<parentId>`), above the attached-shells
+  drawer (`chat:<parentId>`). Compact nested rows keep the identicon, title,
+  then the provider glyph on the right of the card (same seat as every other
+  session card), plus the status glyph; they spell Needs you / Failed only.
+  The drawer header is empty, a needs-you pip, or the red word **Failed**
+  (Failed wins). Peers stay top-level. Grandchildren flatten into the root
+  parent's one drawer. A quiet parent (snoozed or settled) pulls not-done
+  children up to top-level cards; done children stay nested. Demote-to-peer
+  un-nests; promote nests again. Cross-lane children stay top-level in their
+  own lane with the lineage chip. Status, time, and Kanban stay flat.
+  `ade chat list` stays a flat table. Filing lives in
+  `sessionSpawnNesting.ts`.
   It also hosts the list/board toggle and, in board mode, swaps its own body for
   `WorkKanbanBoard` — rebuilding `renderedSessionIds` in board reading order
   (columns left to right, cards top to bottom) so keyboard range selection still
@@ -1114,7 +1152,9 @@ Renderer surfaces:
   `SessionStatusSlot`; line two is the elastic title with a singleton lane's
   fixed-width PR badge at the right edge, directly beneath the status; line
   three keeps the sanitized preview, Claude TTL, failure exit code, and
-  provider mark. A foreign singleton adds the fixed-width amber machine glyph to
+  provider mark. Nested-subagent drawer rows (`nestedSubagent`) collapse to
+  identicon, title, then the provider glyph on the right (same seat as a full
+  card) plus shout-only status words (Needs you / Failed). A foreign singleton adds the fixed-width amber machine glyph to
   the line-one status cluster; grouped lane headers own repeated machine/PR
   identity. A lane with exactly one session has no redundant header and promotes
   the lane identity and PR navigation onto the card.
@@ -1619,7 +1659,8 @@ Renderer surfaces:
   cannot reuse a pre-mutation snapshot. Promise identity guards prevent a
   superseded response from repopulating the cache.
 - `apps/desktop/src/renderer/lib/sessions.ts` — session-label helpers,
-  `isChatToolType`, and `isPtyContextInsertableToolType` (claude / codex /
+  a re-export of `isChatToolType` from `sessionSpawnNesting.ts`, and
+  `isPtyContextInsertableToolType` (claude / codex /
   cursor-cli / droid / opencode; shells host terminals but are not a
   context-insertion target), shared by `TerminalsPage` and `WorkSidebar`,
   plus `getStaleRunningCliSessionAgeHours`, a separate process-cleanup
@@ -1657,7 +1698,8 @@ iOS Work surfaces:
   `WorkRootScreen+Actions.swift`, `WorkRootScreen+Selection.swift`, and
   `WorkRootComponents.swift` — mobile Work list: the one-row header
   (search + filter funnel + a compose menu holding **New chat** / **New lane**),
-  the filter panel, sticky lane section headers, the child-shell section, and
+  the filter panel, sticky lane section headers, the nested-subagent then
+  child-shell drawers, and
   the `WorkSessionListRow` action shell that hangs swipe and context menus off a
   row. Visibility mirrors desktop
   (`workSessionShouldAppearInWorkList` in `WorkBrowserHelpers.swift`):
@@ -1681,14 +1723,21 @@ iOS Work surfaces:
   (`workSessionRowPreviewSource`, `workLinkifiedPreview`). Split out of
   `WorkRootComponents.swift`, which keeps the surrounding list chrome. Card
   surface is neutral — background, border and shadow are reserved for selection
-  and press, never for state, matching desktop `SessionCard.tsx`. See
+  and press, never for state, matching desktop `SessionCard.tsx`. Nested
+  compact rows put the identicon and title on the leading edge and the
+  provider mark on the trailing edge, then shout-only status words. See
   [the iOS companion](../sync-and-multi-device/ios-companion.md#work-session-list-rows).
+- `apps/ios/ADE/Views/Work/WorkSpawnNesting.swift` — Swift mirror of
+  `sessionSpawnNesting.ts` (same-lane subagent filing, quiet-parent pull-up,
+  grandchild flatten, `chat-subagents:<parentId>` drawer ids, Failed-wins
+  drawer attention).
 - `apps/ios/ADE/Views/Work/WorkSessionGrouping.swift` — the by-lane (default) /
   by-status / by-time grouping, `WorkViewStateStore`, and the trailing quiet
   zone: a **Snoozed** shelf above a **Settled** shelf, both collapsed until
   explicitly opened via an inverted `shelf-open:<id>` marker. By-lane is exempt
   from the shelves — a settled row still belongs to its lane there, and the
-  per-lane quiet fold already handles it.
+  per-lane quiet fold already handles it. Nested subagent/shell drawers come
+  from `WorkSpawnNesting.swift`.
 - `apps/ios/ADE/Views/Work/TerminalSessionScreen.swift` and
   `SwiftTermSessionView.swift` — full-screen SwiftTerm-backed terminal
   surface for CLI sessions. It subscribes with `sinceOffset`, applies
@@ -2519,6 +2568,15 @@ degrades to "no ADE prompt" rather than a failed launch.
 - Chat sessions backed by the Claude/Codex SDK still insert a
   `terminal_sessions` row but they are not attached to a PTY. Guard
   UI code with `isChatToolType(toolType)` before calling PTY-only APIs.
+  The predicate lives in `sessionSpawnNesting.ts` (re-exported from
+  `renderer/lib/sessions.ts`) because by-lane filing also has to tell a chat
+  from a tracked CLI subagent.
+- **Spawn nesting is one shared rule.** Same-lane `spawnKind: "subagent"`
+  filing lives in `sessionSpawnNesting.ts`, with a Swift mirror in
+  `WorkSpawnNesting.swift`. Desktop, ADE Code, and iOS consult that index. Do
+  not re-derive nest / quiet-parent pull-up / grandchild flatten in a list
+  renderer — a demote, a quiet parent, or a grandchild will disagree across
+  surfaces. `ade chat list` stays a flat table on purpose.
 - **Mobile/web replacing hydrates cannot replay a transcript tail for an
   alt-screen TUI.** Desktop keeps a headless xterm and hydrates from
   SerializeAddon current-screen CSI. A days-long Claude Code session's last

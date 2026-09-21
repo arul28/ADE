@@ -325,6 +325,115 @@ describe("WorkSessionsPane cards", () => {
     expect(lines.slice(cleanIndex, cleanIndex + 3).join("\n")).not.toContain("✎");
   });
 
+  it("omits Working on a nested live helper and keeps elapsed", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW));
+
+    const frame = paneFrame({
+      lanes: [lane("lane-1", "Feature")],
+      sessions: [
+        session({ sessionId: "parent", laneId: "lane-1", title: "Lead chat", status: "idle" }),
+        session({
+          sessionId: "helper",
+          laneId: "lane-1",
+          title: "Nested helper",
+          status: "active",
+          runtimeState: "running",
+          spawnKind: "subagent",
+          orchestrationParentSessionId: "parent",
+          currentTurnStartedAt: "2026-05-12T11:52:00.000Z",
+        }),
+      ],
+      width: 64,
+    });
+
+    const lines = frame.split("\n");
+    const helperIndex = lines.findIndex((line) => line.includes("Nested helper"));
+    expect(helperIndex).toBeGreaterThanOrEqual(0);
+    expect(lines[helperIndex]).not.toContain("Working");
+    expect(lines[helperIndex]).toMatch(/\d+[smhd]|now/);
+    expect(lines[helperIndex + 1] ?? "").not.toContain("Nested helper");
+  });
+
+  it("keeps the steering pip on a nested live helper after omitting Working", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW));
+
+    const frame = paneFrame({
+      lanes: [lane("lane-1", "Feature")],
+      sessions: [
+        session({ sessionId: "parent", laneId: "lane-1", title: "Lead chat", status: "idle" }),
+        session({
+          sessionId: "helper",
+          laneId: "lane-1",
+          title: "Nested helper",
+          provider: "codex",
+          status: "active",
+          runtimeState: "running",
+          toolType: "codex-chat",
+          steeringInput: true,
+          spawnKind: "subagent",
+          orchestrationParentSessionId: "parent",
+          currentTurnStartedAt: "2026-05-12T11:52:00.000Z",
+        }),
+      ],
+      width: 64,
+    });
+
+    const helperLine = rowFor(frame, "Nested helper");
+    expect(helperLine).not.toContain("Working");
+    expect(helperLine).toContain("?");
+    expect(helperLine).toMatch(/\d+[smhd]|now/);
+  });
+
+  it("spells Needs you on a nested helper", () => {
+    const frame = paneFrame({
+      lanes: [lane("lane-1", "Feature")],
+      sessions: [
+        session({ sessionId: "parent", laneId: "lane-1", title: "Lead chat", status: "idle" }),
+        session({
+          sessionId: "helper",
+          laneId: "lane-1",
+          title: "Nested helper",
+          spawnKind: "subagent",
+          orchestrationParentSessionId: "parent",
+          attentionRequestedAt: "2026-05-12T11:55:00.000Z",
+          attentionMessage: "Which account?",
+        }),
+      ],
+      width: 64,
+    });
+
+    expect(rowFor(frame, "Nested helper")).toContain("Needs you");
+  });
+
+  it("keeps elapsed on a nested settled helper instead of a quiet-shelf timestamp", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW));
+
+    const frame = paneFrame({
+      lanes: [lane("lane-1", "Feature")],
+      sessions: [
+        session({ sessionId: "parent", laneId: "lane-1", title: "Lead chat", status: "active" }),
+        session({
+          sessionId: "helper",
+          laneId: "lane-1",
+          title: "Nested helper",
+          settledAt: "2026-05-12T11:50:00.000Z",
+          spawnKind: "subagent",
+          orchestrationParentSessionId: "parent",
+        }),
+      ],
+      width: 64,
+    });
+
+    const helperLine = rowFor(frame, "Nested helper");
+    expect(helperLine, "settled helper stays under the live parent").toBeTruthy();
+    expect(helperLine).not.toContain("Working");
+    expect(helperLine).toMatch(/\d+[smhd]|now/);
+    expect(frame).not.toMatch(/settled \(\d+\)/);
+  });
+
   it("marks the open chat and drops the new-chat row for a missing worktree", () => {
     const withChat = paneFrame({
       lanes: [lane("lane-1", "Feature")],

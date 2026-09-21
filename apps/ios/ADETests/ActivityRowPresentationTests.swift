@@ -68,6 +68,16 @@ final class ActivityRowPresentationTests: XCTestCase {
         XCTAssertTrue(presentation.showsElapsed)
     }
 
+    /// Desktop `sessionStatusShoutsLabel`: the word is painted only for Needs you
+    /// (amber pip) or a red Failed tone. Nested compact rows hide every other word.
+    func testActivityStatusShoutsLabelMatchesDesktop() {
+        XCTAssertTrue(activityStatusShoutsLabel(glyph: .needsYou, tone: .amber))
+        XCTAssertTrue(activityStatusShoutsLabel(glyph: .failed, tone: .red))
+        XCTAssertFalse(activityStatusShoutsLabel(glyph: .working, tone: .blue))
+        XCTAssertFalse(activityStatusShoutsLabel(glyph: .done, tone: .emerald))
+        XCTAssertFalse(activityStatusShoutsLabel(glyph: nil, tone: .neutral))
+    }
+
     // MARK: - The one table
 
     /// The tone tokens are only worth anything if they resolve to the desktop's

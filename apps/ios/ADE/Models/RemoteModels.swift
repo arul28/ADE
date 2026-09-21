@@ -910,7 +910,7 @@ struct AgentChatSetScheduledWorkPausedResult: Codable, Equatable {
   var nextWakeAt: String?
 }
 
-enum AgentChatSpawnKind: Equatable, Codable {
+enum AgentChatSpawnKind: Equatable, Codable, Hashable {
   case subagent
   case peer
   case legacyUntyped
@@ -4537,6 +4537,11 @@ struct TerminalResumeMetadata: Codable, Equatable {
   var launch: TerminalResumeLaunchConfig
   var target: String?
   var permissionMode: String?
+  /// Same fields as desktop `TerminalResumeMetadata`. Older hosts and older
+  /// phone caches omit them; decode-if-present so a JSON blob that already
+  /// carries lineage survives a SQLite round trip.
+  var orchestrationParentSessionId: String? = nil
+  var spawnKind: AgentChatSpawnKind? = nil
 }
 
 struct FilesQuickOpenItem: Codable, Identifiable, Equatable {
@@ -4627,6 +4632,11 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   /// `TerminalSessionSummary.parentIdentityKey` in
   /// `apps/desktop/src/shared/types/sessions.ts`.
   var parentIdentityKey: String? = nil
+  /// Spawn lineage projected from the chat record or CLI resume metadata.
+  /// Same-lane `spawnKind == .subagent` chats nest under this parent in the
+  /// by-lane Work list. Older hosts omit both keys.
+  var orchestrationParentSessionId: String? = nil
+  var spawnKind: AgentChatSpawnKind? = nil
 
   /// True when this row is a chat the CTO spawned. The host only stamps
   /// `parentIdentityKey` when there genuinely is a parent, so the key alone is
@@ -4682,6 +4692,8 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
       && lhs.cursorCloudAgentId == rhs.cursorCloudAgentId
       && lhs.cursorRuntime == rhs.cursorRuntime
       && lhs.parentIdentityKey == rhs.parentIdentityKey
+      && lhs.orchestrationParentSessionId == rhs.orchestrationParentSessionId
+      && lhs.spawnKind == rhs.spawnKind
   }
 }
 
@@ -4729,6 +4741,8 @@ extension TerminalSessionSummary {
     case cursorCloudAgentId
     case cursorRuntime
     case parentIdentityKey
+    case orchestrationParentSessionId
+    case spawnKind
   }
 
   init(from decoder: Decoder) throws {
@@ -4775,6 +4789,8 @@ extension TerminalSessionSummary {
     cursorCloudAgentId = try container.decodeIfPresent(String.self, forKey: .cursorCloudAgentId)
     cursorRuntime = try container.decodeIfPresent(String.self, forKey: .cursorRuntime)
     parentIdentityKey = try container.decodeIfPresent(String.self, forKey: .parentIdentityKey)
+    orchestrationParentSessionId = try container.decodeIfPresent(String.self, forKey: .orchestrationParentSessionId)
+    spawnKind = try container.decodeIfPresent(AgentChatSpawnKind.self, forKey: .spawnKind)
   }
 }
 
