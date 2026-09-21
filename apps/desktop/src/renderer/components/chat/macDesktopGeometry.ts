@@ -165,6 +165,27 @@ export function macDesktopAdvanceLockedPoint(args: {
   };
 }
 
+/**
+ * Where an input event lands on the lane's display.
+ *
+ * The whole point is that a locked pointer has NO usable event coordinate.
+ * Under pointer lock the browser freezes `clientX/clientY` at the point the
+ * lock began (that is the spec), so a caller that keeps resolving points from
+ * the event resolves the same stale point for the rest of the takeover: the
+ * glyph sticks where the lock started, every click lands there, and a drag
+ * runs from that point to itself. While the lock is held the advanced point
+ * (`macDesktopAdvanceLockedPoint`, fed by `movementX/movementY`) is the only
+ * truth; unlocked, the event coordinate is.
+ */
+export function macDesktopInputPoint(args: {
+  locked: boolean;
+  lockedPoint: { x: number; y: number } | null;
+  /** Read only when unlocked, so a frozen coordinate is never even computed. */
+  fromEvent: () => { x: number; y: number } | null;
+}): { x: number; y: number } | null {
+  return args.locked ? args.lockedPoint : args.fromEvent();
+}
+
 /** The middle of the display, where a takeover starts before the first move. */
 export function macDesktopDisplayCentre(
   display: MacDesktopGeometryDisplay,

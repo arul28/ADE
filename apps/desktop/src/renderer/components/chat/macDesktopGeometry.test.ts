@@ -3,6 +3,7 @@ import {
   displayFrameToViewRect,
   displayPointToViewPoint,
   macDesktopAdvanceLockedPoint,
+  macDesktopInputPoint,
   macDesktopContentBox,
   macDesktopDisplayCentre,
   viewPointToDisplayPoint,
@@ -152,5 +153,29 @@ describe("macDesktopAdvanceLockedPoint", () => {
 
   it("starts a takeover in the middle when nothing was hovered", () => {
     expect(macDesktopDisplayCentre(display)).toEqual({ x: 3800, y: 950 });
+  });
+});
+
+describe("macDesktopInputPoint", () => {
+  const fromEvent = () => ({ x: 8100, y: 50 });
+
+  it("ignores the event coordinate while the pointer is locked", () => {
+    // The regression: under pointer lock the browser freezes clientX/clientY
+    // at the lock origin, so resolving from the event pinned the glyph, every
+    // click and both ends of every drag to that one stale point.
+    expect(macDesktopInputPoint({
+      locked: true,
+      lockedPoint: { x: 8700, y: 400 },
+      fromEvent,
+    })).toEqual({ x: 8700, y: 400 });
+  });
+
+  it("uses the event coordinate when nothing is locked", () => {
+    expect(macDesktopInputPoint({ locked: false, lockedPoint: { x: 1, y: 1 }, fromEvent }))
+      .toEqual({ x: 8100, y: 50 });
+  });
+
+  it("reports no point rather than a stale one when a lock has no position yet", () => {
+    expect(macDesktopInputPoint({ locked: true, lockedPoint: null, fromEvent })).toBeNull();
   });
 });

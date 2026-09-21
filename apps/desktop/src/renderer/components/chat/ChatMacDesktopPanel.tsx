@@ -51,6 +51,7 @@ import {
   macDesktopAdvanceLockedPoint,
   macDesktopContentBox,
   macDesktopDisplayCentre,
+  macDesktopInputPoint,
   viewPointToDisplayPoint,
 } from "./macDesktopGeometry";
 import { useMacDesktopFrame } from "./macDesktopFrameStore";
@@ -602,12 +603,32 @@ export function ChatMacDesktopPanel({
     () => createMacDesktopFastInputSender(live.url, { holdCursor: () => pointerLockedRef.current }),
     [live.url],
   );
+  /**
+   * The one answer to "where is the pointer on the lane's display".
+   *
+   * Under pointer lock the browser FREEZES `clientX/clientY` at the point the
+   * lock began — that is the spec, not a bug — so every call that resolved a
+   * point from the event resolved the same stale point for the rest of the
+   * takeover: the glyph stuck where the lock started, every click landed
+   * there, and a drag ran from that point to itself (so it was not a drag at
+   * all). The panel was already advancing a correct locked point from
+   * `movementX/movementY` and then throwing it away. This is that point being
+   * used, and it is the only source of truth while the lock is held.
+   */
+  const resolveInputPoint = useCallback(
+    (clientX: number, clientY: number): MacDesktopPoint | null => macDesktopInputPoint({
+      locked: pointerLockedRef.current,
+      lockedPoint: lockedPointRef.current,
+      fromEvent: () => toDisplayPoint(clientX, clientY),
+    }),
+    [toDisplayPoint],
+  );
   const realInput = useMacDesktopRealInput({
     laneId,
     sessionId,
     controllerId: macDesktopControllerId(),
     enabled: iHaveControl,
-    toDisplayPoint,
+    toDisplayPoint: resolveInputPoint,
     runtimePin,
     sender: fastSender,
     // Hover moves are posted only while locked. Unlocked, a hover `CGEvent`
@@ -728,9 +749,14 @@ export function ChatMacDesktopPanel({
       // Seeded from where the person was pointing, so the lane's cursor does
       // not jump when the picture stops following their hand.
       if (!pointerLockedRef.current) {
+        // Seed first: the click below resolves its point through
+        // `resolveInputPoint`, and the lock may be established by then.
         lockedPointRef.current = lockedSeedRef.current();
         void requestPointerLockRef.current(node);
-        return;
+        // Deliberately NOT returning. Swallowing this one made the first click
+        // of every takeover do nothing, which read as "clicking is broken".
+        // The seeded point and the unlocked point are the same coordinate, so
+        // forwarding it is correct whether or not the lock lands.
       }
       realInputRef.current.onPointerDown(event as unknown as ReactPointerEvent<HTMLDivElement>);
     };
