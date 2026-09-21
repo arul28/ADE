@@ -87,7 +87,7 @@ type RuntimeCatalogScopeState = {
 // only a backstop against unbounded growth over a long-lived session.
 const MAX_RUNTIME_CATALOG_SCOPES = 8;
 const runtimeCatalogScopes = new Map<string, RuntimeCatalogScopeState>();
-const sharedRuntimeCatalogRequests = new Map<string, Promise<AgentChatModelCatalog | null>>();
+const sharedRuntimeCatalogRequests = new Map<string, Promise<SharedCatalogFetchResult>>();
 let nextRuntimeCatalogScopeSerial = 1;
 
 function peekRuntimeCatalogScope(scopeKey: string): RuntimeCatalogScopeState | undefined {
@@ -288,20 +288,34 @@ export function rememberRuntimeCatalog(
   return catalog;
 }
 
-export function getRuntimeCatalogRequest(key: string): Promise<AgentChatModelCatalog | null> | undefined {
+/**
+ * What a shared catalog fetch produced.
+ *
+ * `unavailable` and `error` both hand back no catalog, but they are not the
+ * same event: an older host with no bridge has nothing to report, while a
+ * bridge that threw is a provider a caller may want to mark as failing.
+ * Collapsing both to `null` is what would make a refresh error
+ * indistinguishable from a host that never had the capability.
+ */
+export type SharedCatalogFetchResult =
+  | { status: "ok"; catalog: AgentChatModelCatalog }
+  | { status: "unavailable" }
+  | { status: "error" };
+
+export function getRuntimeCatalogRequest(key: string): Promise<SharedCatalogFetchResult> | undefined {
   return sharedRuntimeCatalogRequests.get(key);
 }
 
 export function setRuntimeCatalogRequest(
   key: string,
-  request: Promise<AgentChatModelCatalog | null>,
+  request: Promise<SharedCatalogFetchResult>,
 ): void {
   sharedRuntimeCatalogRequests.set(key, request);
 }
 
 export function clearRuntimeCatalogRequest(
   key: string,
-  request: Promise<AgentChatModelCatalog | null>,
+  request: Promise<SharedCatalogFetchResult>,
 ): void {
   if (sharedRuntimeCatalogRequests.get(key) === request) {
     sharedRuntimeCatalogRequests.delete(key);

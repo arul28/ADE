@@ -161,8 +161,13 @@ export type HarnessPreset = {
   subagentModel: string;
   /** Per-built-in-agent pins. `"follows"` = follows the subagent model. */
   agentOverrides: HarnessPresetAgentOverrides;
-  /** The harness's own permission vocabulary — `default`, `plan`, `full-auto`, … */
-  permissionMode: string;
+  /**
+   * No permission mode lives here on purpose. A permission tier belongs to the
+   * harness and is chosen at launch in the composer, exactly as it is for every
+   * built-in provider. A second copy stored on the preset could disagree with
+   * the one the composer shows for the same run, so presets saved by v1.2.75
+   * with a `permissionMode` have it dropped on read.
+   */
   accentColor: string;
   logo: HarnessPresetLogo;
   createdAt: string;
@@ -182,7 +187,6 @@ export type HarnessPresetField =
   | "source"
   | "model"
   | "subagentModel"
-  | "permissionMode"
   | "accentColor"
   | "logo";
 
@@ -260,10 +264,6 @@ export function validateHarnessPreset(draft: Partial<HarnessPresetDraft> | null 
 
   if (draft.subagentModel != null && !isNonEmptyString(draft.subagentModel)) {
     errors.subagentModel = "Choose a subagent model, or leave it on Same as main.";
-  }
-
-  if (draft.permissionMode != null && !isNonEmptyString(draft.permissionMode)) {
-    errors.permissionMode = "Choose a permission mode.";
   }
 
   if (draft.accentColor != null && !HARNESS_PRESET_ACCENT_PATTERN.test(draft.accentColor)) {
@@ -359,7 +359,6 @@ export function normalizeHarnessPreset(value: unknown): HarnessPreset | null {
     ...(isNonEmptyString(raw.reasoningEffort) ? { reasoningEffort: raw.reasoningEffort.trim() } : {}),
     subagentModel: isNonEmptyString(raw.subagentModel) ? raw.subagentModel.trim() : HARNESS_PRESET_SUBAGENT_INHERIT,
     agentOverrides: normalizeAgentOverrides(raw.agentOverrides),
-    permissionMode: isNonEmptyString(raw.permissionMode) ? raw.permissionMode.trim() : "default",
     accentColor,
     logo: normalizeLogo(raw.logo),
     createdAt,
@@ -457,7 +456,6 @@ export type HarnessPresetExport = {
     reasoningEffort?: string;
     subagentModel: string;
     agentOverrides: HarnessPresetAgentOverrides;
-    permissionMode: string;
     accentColor: string;
     logo: HarnessPresetLogo;
   };
@@ -523,7 +521,6 @@ export function exportHarnessPreset(preset: HarnessPreset, now: () => Date = () 
       ...(preset.reasoningEffort ? { reasoningEffort: preset.reasoningEffort } : {}),
       subagentModel: preset.subagentModel,
       agentOverrides: normalizeAgentOverrides(preset.agentOverrides),
-      permissionMode: preset.permissionMode,
       accentColor: preset.accentColor,
       logo,
     },
@@ -589,7 +586,7 @@ export function importHarnessPreset(
   }
   const raw = body as Record<string, unknown>;
   if (!isHarnessPresetBody(raw.harness)) {
-    throw new HarnessPresetImportError("That harness names an agent ADE cannot run.");
+    throw new HarnessPresetImportError("That file names a harness ADE cannot run.");
   }
   const source = normalizeSource(raw.source);
   if (!source) {
@@ -620,7 +617,6 @@ export function importHarnessPreset(
     ...(isNonEmptyString(raw.reasoningEffort) ? { reasoningEffort: raw.reasoningEffort.trim() } : {}),
     subagentModel: isNonEmptyString(raw.subagentModel) ? raw.subagentModel.trim() : HARNESS_PRESET_SUBAGENT_INHERIT,
     agentOverrides: normalizeAgentOverrides(raw.agentOverrides),
-    permissionMode: isNonEmptyString(raw.permissionMode) ? raw.permissionMode.trim() : "default",
     accentColor:
       typeof raw.accentColor === "string" && HARNESS_PRESET_ACCENT_PATTERN.test(raw.accentColor)
         ? raw.accentColor.toLowerCase()

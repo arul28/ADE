@@ -4790,10 +4790,6 @@ button:active, [role="button"]:active {
   box-shadow: 0 0 24px rgba(167, 139, 250, 0.34);
 }
 
-@keyframes ade-reasoning-ultra-ring {
-  to { transform: rotate(360deg); }
-}
-
 @keyframes ade-reasoning-ultra-sheen {
   0%, 28% { transform: translateX(-135%) rotate(18deg); opacity: 0; }
   45% { opacity: 0.7; }
@@ -4805,37 +4801,12 @@ button:active, [role="button"]:active {
 .ade-reasoning-effort-trigger-ultra {
   position: relative;
   isolation: isolate;
-  overflow: visible;
   background:
     linear-gradient(120deg, rgba(139, 92, 246, 0.2), rgba(217, 70, 239, 0.16) 48%, rgba(34, 211, 238, 0.12));
   box-shadow:
     0 0 0 1px rgba(232, 121, 249, 0.24),
     0 0 16px rgba(217, 70, 239, 0.26),
     0 0 30px rgba(34, 211, 238, 0.1);
-}
-
-.ade-reasoning-effort-trigger-ultra::before,
-.ade-reasoning-effort-content-ultra::before {
-  content: "";
-  position: absolute;
-  inset: -2px;
-  z-index: 0;
-  pointer-events: none;
-  border-radius: inherit;
-  padding: 1px;
-  background: conic-gradient(
-    from 0deg,
-    rgba(34, 211, 238, 0.1),
-    rgba(232, 121, 249, 0.95),
-    rgba(167, 139, 250, 0.82),
-    rgba(34, 211, 238, 0.8),
-    rgba(232, 121, 249, 0.95)
-  );
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  mask-composite: exclude;
-  animation: ade-reasoning-ultra-ring 5s linear infinite;
 }
 
 .ade-reasoning-effort-trigger-ultra::after,
@@ -4922,9 +4893,7 @@ button:active, [role="button"]:active {
   .ade-reasoning-slider-fill::after,
   .ade-reasoning-slider-fill-max,
   .ade-workflow-active-card__sheen,
-  .ade-reasoning-effort-trigger-ultra::before,
   .ade-reasoning-effort-trigger-ultra::after,
-  .ade-reasoning-effort-content-ultra::before,
   .ade-reasoning-effort-content-ultra::after {
     animation: none;
   }

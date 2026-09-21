@@ -3393,8 +3393,9 @@ CLI: `ade providers accounts list|add|remove|rename|default`, with `--text` and
 A **harness preset** is the account idea generalised: a saved pairing of the
 harness ADE runs with where that harness gets its intelligence — a provider
 account, a stored API key, or a Claude/Codex subscription borrowed through
-ADE's proxy — carrying the model, the effort, the permission mode and the
-subagent pins as one value. Full feature doc:
+ADE's proxy — carrying the model, the effort and the subagent pins as one
+value. It carries no permission mode: the tier belongs to the harness and is
+chosen at launch, so a preset can never disagree with the composer. Full feature doc:
 `docs/features/onboarding-and-settings/harness-presets.md`.
 
 For chat, three things matter.

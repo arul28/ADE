@@ -9,7 +9,6 @@ import {
   type HarnessPreset,
   type HarnessPresetSource,
 } from "../../../../shared/harnessPresets";
-import { harnessPermissionLabel } from "../../settings/harnesses/harnessPermissionModes";
 import { harnessModelLabel } from "../../settings/harnesses/harnessModels";
 import { loadHarnessAccounts } from "../../settings/harnesses/harnessSources";
 import { bodyLogoFamily, PresetAgent, PresetModels } from "../../settings/harnesses/presetFacts";
@@ -28,10 +27,14 @@ import { cn } from "../../ui/cn";
  * provider tabs beside it.
  *
  * Everything the setup would silently apply (which account, what subagents run
- * on, which built-ins are pinned, how much it is allowed to do) sits behind the
- * caret, labelled and with the logos that say whose model each one is — because
- * a one-click launch that quietly sets permission mode to bypass is exactly the
- * surprise this list must not create.
+ * on, which built-ins are pinned) sits behind the caret, labelled and with the
+ * logos that say whose model each one is — because a one-click launch that
+ * quietly changes what a chat runs on is the surprise this list must not
+ * create.
+ *
+ * Permission mode is not here. A permission tier belongs to the harness and is
+ * chosen at launch in the composer, so a setup that also stored one could only
+ * disagree with the live choice.
  */
 
 /** The provider whose mark a source wears. Key sources name their own. */
@@ -65,10 +68,18 @@ export const HarnessPresetRow = memo(function HarnessPresetRow({
   isActive,
   onSelect,
   accountLabel,
+  catalogScopeKey,
 }: {
   preset: HarnessPreset;
   isActive: boolean;
   onSelect: (preset: HarnessPreset) => void;
+  /**
+   * The runtime catalog bucket the model display names resolve against. A
+   * picker pinned to a machine reads that machine's bucket; resolving a
+   * runtime-only model against the default one prints its raw slug instead of
+   * its name.
+   */
+  catalogScopeKey?: string;
   /**
    * Resolves an account source's instance id to its display name, so the
    * Source row names *which* sign-in the preset launches on — the same fact
@@ -82,7 +93,7 @@ export const HarnessPresetRow = memo(function HarnessPresetRow({
   const overrides = HARNESS_PRESET_AGENT_KEYS
     .map((agent) => {
       const model = preset.agentOverrides[agent];
-      return model ? `${HARNESS_PRESET_AGENT_LABELS[agent]}: ${harnessModelLabel(model)}` : null;
+      return model ? `${HARNESS_PRESET_AGENT_LABELS[agent]}: ${harnessModelLabel(model, catalogScopeKey)}` : null;
     })
     .filter((entry): entry is string => entry !== null);
 
@@ -113,15 +124,15 @@ export const HarnessPresetRow = memo(function HarnessPresetRow({
               <span className="truncate text-[12px] font-medium leading-snug text-fg">
                 {presetLabel(preset)}
               </span>
-              {/* The agent is the chip, because it is the fact that changes what
-                  pressing this row actually launches. */}
+              {/* The harness is the chip, because it is the fact that changes
+                  what pressing this row actually launches. */}
               <span className="inline-flex shrink-0 items-center gap-1 rounded-sm bg-white/[0.06] px-1 py-px text-[9px] font-semibold uppercase leading-none text-fg/70">
                 <ProviderLogo family={bodyLogoFamily(preset.harness)} size={9} />
                 {harnessBodyLabel(preset.harness)}
               </span>
             </span>
             <span className="block truncate text-[10px] font-normal leading-snug text-muted-fg/55">
-              {harnessModelLabel(preset.model)}
+              {harnessModelLabel(preset.model, catalogScopeKey)}
             </span>
           </span>
         </button>
@@ -142,7 +153,7 @@ export const HarnessPresetRow = memo(function HarnessPresetRow({
           data-harness-preset-details={preset.id}
           className="grid grid-cols-[62px_1fr] items-center gap-x-2 gap-y-1 border-t border-white/[0.06] px-3 py-2 text-[10.5px]"
         >
-          <DetailRow label="Agent" value={<PresetAgent harness={preset.harness} size={12} />} />
+          <DetailRow label="Harness" value={<PresetAgent harness={preset.harness} size={12} />} />
           <DetailRow
             label="Source"
             mark={<ProviderLogo family={sourceLogoFamily(preset.source)} size={12} />}
@@ -150,15 +161,16 @@ export const HarnessPresetRow = memo(function HarnessPresetRow({
           />
           <dt className="self-start text-muted-fg/55">Models</dt>
           <dd className="m-0 min-w-0 text-fg/80">
-            <PresetModels preset={preset} size={12} roleWidth={54} />
+            <PresetModels
+              preset={preset}
+              size={12}
+              roleWidth={54}
+              catalogScopeKey={catalogScopeKey}
+            />
           </dd>
           <DetailRow
             label="Built-ins"
             value={overrides.length > 0 ? overrides.join(" · ") : "All follow subagents"}
-          />
-          <DetailRow
-            label="Permission"
-            value={harnessPermissionLabel(preset.harness, preset.permissionMode)}
           />
         </dl>
       ) : null}
@@ -202,10 +214,13 @@ export function HarnessPresetList({
   presets,
   activeModelId,
   onSelect,
+  catalogScopeKey,
 }: {
   presets: readonly HarnessPreset[];
   activeModelId: string;
   onSelect: (preset: HarnessPreset) => void;
+  /** See `HarnessPresetRow` — the bucket the model names resolve against. */
+  catalogScopeKey?: string;
 }) {
   const accountLabel = useHarnessAccountLabel();
   return (
@@ -217,6 +232,7 @@ export function HarnessPresetList({
           isActive={preset.model === activeModelId}
           onSelect={onSelect}
           accountLabel={accountLabel}
+          catalogScopeKey={catalogScopeKey}
         />
       ))}
     </div>
@@ -253,7 +269,7 @@ export function HarnessPresetEmptyState({
         </button>
       ) : null}
       <span className="max-w-[280px] text-[11px] leading-relaxed text-muted-fg/60">
-        Save an agent and its model source together, and they show up here as one row.
+        A custom provider combines a harness and a model into one setup. Each saved setup is one row here.
       </span>
       {onOpenHarnessSettings ? null : (
         <span className="mt-1 text-[10.5px] text-muted-fg/50">Settings › Providers › Custom</span>

@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HarnessWizard, emptyHarnessDraft } from "./HarnessWizard";
 import type { HarnessPresetDraft } from "../../../../shared/harnessPresets";
 import type { AiSettingsStatus } from "../../../../shared/types";
+import { cursorCatalog } from "./harnessTestCatalog";
+import { resetModelPickerRuntimeCatalogForTests } from "../../shared/ModelPicker/runtimeCatalogCache";
 
 function status(overrides: Partial<AiSettingsStatus> = {}): AiSettingsStatus {
   return {
@@ -58,6 +60,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  resetModelPickerRuntimeCatalogForTests();
   delete (window as unknown as { ade?: unknown }).ade;
 });
 
@@ -73,9 +76,9 @@ describe("HarnessWizard", () => {
       />,
     );
 
-    expect(screen.getByText("Pick an agent")).toBeTruthy();
+    expect(screen.getByText("Pick a harness")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /^Next/ }));
-    expect(screen.getByText("Pick a brain")).toBeTruthy();
+    expect(screen.getByText("Pick a model provider")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: /^Next/ }));
     expect(screen.getByText("Name it")).toBeTruthy();
@@ -196,6 +199,78 @@ describe("HarnessWizard", () => {
     expect(banner).toBeTruthy();
     expect(within(banner).getByText(/provider account this computer does not have/i)).toBeTruthy();
     expect(within(banner).getByText(/ADE's proxy, which is not signed in/i)).toBeTruthy();
+  });
+
+  it("lists a Cursor model from the live catalog instead of a free-text box", async () => {
+    const modelCatalog = vi.fn(async () => cursorCatalog());
+    const ade = (window as unknown as { ade: Record<string, unknown> }).ade;
+    ade.agentChat = { modelCatalog };
+
+    render(
+      <HarnessWizard
+        initialDraft={claudeDraft({
+          model: "",
+          source: { kind: "key", provider: "cursor", credentialId: "default", label: "Cursor" },
+        })}
+        status={status()}
+        credentialSummaries={[
+          {
+            provider: "cursor",
+            credentialId: "default",
+            label: "Cursor",
+            source: "store",
+            createdAt: "2026-09-01T00:00:00.000Z",
+            updatedAt: "2026-09-01T00:00:00.000Z",
+          },
+        ]}
+        onCancel={() => undefined}
+        onSave={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^Next/ }));
+
+    const model = await waitFor(() => {
+      const control = screen.getByLabelText("Model") as HTMLElement;
+      expect(control.tagName).toBe("SELECT");
+      expect(within(control).getByText("Composer 9")).toBeTruthy();
+      return control as HTMLSelectElement;
+    });
+    expect(modelCatalog).toHaveBeenCalled();
+    fireEvent.change(model, { target: { value: "cursor/composer-9" } });
+    expect(model.value).toBe("cursor/composer-9");
+  });
+
+  it("groups the sources into what this computer holds and what the proxy holds", async () => {
+    render(
+      <HarnessWizard
+        initialDraft={claudeDraft()}
+        status={status()}
+        onCancel={() => undefined}
+        onSave={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^Next/ }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("radiogroup", { name: "Your accounts and keys" })).toBeTruthy();
+    });
+    const proxy = screen.getByRole("radiogroup", { name: "Through ADE's proxy" });
+    expect(within(proxy).getAllByRole("radio").length).toBe(2);
+    expect(document.querySelector('[data-harness-proxy-sign-in="claude"]')?.closest("[role=radiogroup]"))
+      .toBe(proxy);
+  });
+
+  it("has no permission mode control: the tier is chosen at launch", () => {
+    render(
+      <HarnessWizard
+        initialDraft={claudeDraft()}
+        status={status()}
+        onCancel={() => undefined}
+        onSave={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^Next/ }));
+    expect(screen.queryByText("Permission mode")).toBeNull();
   });
 
   it("shows the account's email and plan on its source row", async () => {
