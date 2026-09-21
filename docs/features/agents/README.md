@@ -138,20 +138,24 @@ Each ADE-launched session receives the canonical root through
 - Cursor SDK chats get the catalog through Cursor's own discovery. Cursor scans
   `<workspace root>/.agents/skills/<name>/SKILL.md` for every root in
   `LocalAgentOptions.dirs`, so ADE copies the bundled skills into an ADE-owned
-  shim at `<ADE_HOME>/agent-skill-shims/cursor` and passes only that root as an
-  extra `dirs` entry (`cursorAgentSkillShim.ts`). Real copies, not symlinks:
+  shim keyed per lane at `<ADE_HOME>/agent-skill-shims/cursor/<lane-key>` and
+  passes only that root as an extra `dirs` entry (`cursorAgentSkillShim.ts`).
+  Real copies, not symlinks:
   Cursor's walker follows a symlink and then drops any skill whose `realpath`
   escapes the roots it was given, so a link into the app bundle would require
   handing Cursor the whole resources directory as a workspace root — and
   Windows cannot create symlinks without extra privileges anyway. The copy is
   content-hashed against a stamp at the shim root, so an unchanged bundle does
-  not rewrite the tree. The shim root is also the one read-only exception ADE's
-  Cursor lane path guard makes outside the lane, so a model that follows a
-  listed skill path is not denied a file ADE just advertised. Personal chats
-  and orchestration leads are skipped: a lead runs on
+  not rewrite the tree. The root is keyed per lane so two concurrent chats
+  cannot rebuild a tree the other is using — a rebuild deletes and re-copies,
+  which on Windows throws against an open handle. The shim root is also the one
+  read-only exception ADE's Cursor lane path guard makes outside the lane, so a
+  model that follows a listed skill path is not denied a file ADE just
+  advertised. Personal chats and orchestration leads are skipped: a lead runs on
   `settingSources: ["user","team","mdm"]`, which turns Cursor's project
   extensibility off, so `dirs` skills would not load. Every outcome, including
-  every skip reason, is logged as `agent_chat.skill_delivery` with mechanism
+  every skip reason, is logged as `agent_chat.skill_delivery` — the one
+  skill-delivery telemetry point, in `skillDelivery.ts` — with mechanism
   `cursor-workspace-dirs`; a failed materialization falls back to
   `ADE_AGENT_SKILLS_DIRS` plus the catalog rather than failing the launch.
 - Droid and the remaining ACP providers (Kimi, Grok, Copilot) have no

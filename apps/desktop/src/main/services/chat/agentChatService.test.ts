@@ -3224,6 +3224,31 @@ describe("createAgentChatService", () => {
       expect(prompts.some((text) => text.includes("## Computer Use"))).toBe(true);
       service.forceDisposeAll();
     });
+
+    it("does not let a provider slash-command turn consume the directive", async () => {
+      // A provider slash-command turn replaces the user text with the command's
+      // own markdown and never runs `composeLaunchDirectives`, so the directive
+      // is not in that turn's prompt. The key must be null for it, or it would
+      // be marked delivered without delivery and suppressed for what follows.
+      const { service } = createService();
+      installAvailableBroker(service);
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "droid",
+        model: "custom:claude-sonnet-5-thinking-32000",
+        modelId: "droid/custom:claude-sonnet-5-thinking-32000",
+      });
+
+      await service.sendMessage({ sessionId: session.id, text: "/somecommand" }, { awaitDispatch: true });
+      await vi.waitFor(() => { expect(mockState.droidPromptCalls.length).toBe(1); });
+      await settleDirectiveBookkeeping();
+      await service.sendMessage({ sessionId: session.id, text: "real turn" }, { awaitDispatch: true });
+      await vi.waitFor(() => { expect(mockState.droidPromptCalls.length).toBe(2); });
+
+      expect(JSON.stringify(mockState.droidPromptCalls[0])).not.toContain("## Computer Use");
+      expect(JSON.stringify(mockState.droidPromptCalls[1])).toContain("## Computer Use");
+      service.forceDisposeAll();
+    });
   });
 
   // --------------------------------------------------------------------------
