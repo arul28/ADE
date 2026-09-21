@@ -9065,6 +9065,140 @@ describe("sync host handoff over a shared listener", () => {
     }
   });
 
+  it("flushes coalesced subagent progress to the wire before handing off its cursor", async () => {
+    // A slim progress event is marked delivered the moment the coalescer
+    // accepts it — this host promised to send it when the one-second window
+    // closed. A handoff exports the cursor and not the window, so without a
+    // flush on the way out the adopted host resumes past that sequence and the
+    // update dies with the process, leaving the phone's subagent card stale.
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const tokenPath = path.join(projectRoot, "shared-chat-handoff-token");
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+    const transcriptPath = path.join(projectRoot, "chat-handoff.jsonl");
+    fs.writeFileSync(transcriptPath, "", "utf8");
+    const sessionId = "chat-handoff";
+    const session = {
+      id: sessionId,
+      laneId: "lane-1",
+      transcriptPath,
+      status: "running",
+      runtimeState: "running",
+      lastOutputPreview: "",
+    };
+    const chatEventEmitter: { current?: (event: AgentChatEventEnvelope) => void } = {};
+    const makeArgs = () => ({
+      ...createHandoffHostArgs(projectRoot, tokenPath, {
+        siteId: "site-chat-handoff",
+        dbVersion: 0,
+        changes: [],
+      }),
+      pollIntervalMs: 60_000,
+      projectId: "project-1",
+      sessionService: {
+        list: () => [session],
+        get: (id: string) => (id === sessionId ? session : null),
+        readTranscriptTail: async () => "",
+      },
+      agentChatService: {
+        subscribeToEvents: vi.fn((callback: (event: AgentChatEventEnvelope) => void) => {
+          chatEventEmitter.current = callback;
+          return () => {};
+        }),
+        getChatEventHistory: vi.fn().mockReturnValue({
+          sessionId,
+          events: [],
+          truncated: false,
+          transcriptTruncated: false,
+          windowTruncated: false,
+          sessionFound: true,
+        }),
+        getSessionSummary: vi.fn().mockResolvedValue({ status: "active" }),
+      },
+      sharedListener: listener,
+    });
+    const progress = (sequence: number, summary: string): AgentChatEventEnvelope => ({
+      sessionId,
+      timestamp: `2026-09-20T10:00:0${sequence}.000Z`,
+      sequence,
+      event: {
+        type: "subagent_progress",
+        taskId: "agent-1",
+        agentId: "agent-1",
+        summary,
+      },
+    } as AgentChatEventEnvelope);
+    const emitChatEvent = (event: AgentChatEventEnvelope): void => {
+      const callback = chatEventEmitter.current;
+      if (!callback) throw new Error("chat event subscription was not installed");
+      callback(event);
+    };
+    const chatEvents = (peerEnvelopes: ParsedSyncEnvelope[]) =>
+      peerEnvelopes.filter((envelope) => envelope.type === "chat_event");
+
+    let hostA: ReturnType<typeof createSyncHostService> | null = null;
+    let hostB: ReturnType<typeof createSyncHostService> | null = null;
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      hostA = createSyncHostService(
+        makeArgs() as unknown as Parameters<typeof createSyncHostService>[0],
+      );
+      const port = await hostA.waitUntilListening();
+      peer = await connectPeer(port, hostA.getBootstrapToken(), "ios-chat-handoff", {
+        capabilities: [SYNC_MOBILE_CHAT_SLIM_CAPABILITY],
+      });
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "chat-handoff-subscribe",
+        payload: { sessionId },
+      }));
+      await waitForEnvelope(peer.envelopes, "chat_subscribe", "chat-handoff-subscribe");
+
+      // The first progress for an agent goes straight out and opens the
+      // window; the second is held inside it.
+      emitChatEvent(progress(1, "first"));
+      await waitForValue(
+        () => (chatEvents(peer!.envelopes).length === 1 ? true : undefined),
+        "first progress on the wire",
+      );
+      emitChatEvent(progress(2, "second"));
+      expect(chatEvents(peer.envelopes)).toHaveLength(1);
+
+      // Handoff. The held entry has to leave before the cursor does.
+      await hostA.dispose();
+      hostA = null;
+
+      const flushed = await waitForValue(
+        () => chatEvents(peer!.envelopes)[1],
+        "held progress flushed by the handoff",
+      );
+      expect(flushed.payload).toMatchObject({
+        event: { type: "subagent_progress", agentId: "agent-1", summary: "second" },
+      });
+
+      // And the cursor it exported still covers both, so the adopted host
+      // does not replay them onto the same socket.
+      hostB = createSyncHostService(
+        makeArgs() as unknown as Parameters<typeof createSyncHostService>[0],
+      );
+      expect(await hostB.waitUntilListening()).toBe(port);
+      await waitForValue(
+        () => (hostB!.getPeerStates().length === 1 ? true : undefined),
+        "adopted peer on host B",
+      );
+      expect(chatEvents(peer.envelopes)).toHaveLength(2);
+    } finally {
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await hostA?.dispose();
+      await hostB?.dispose();
+      await listener.close();
+      cleanup();
+    }
+  });
+
   it("preserves an invalidation browser's cursor across a same-database handoff", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const tokenPath = path.join(projectRoot, "shared-browser-bootstrap-token");

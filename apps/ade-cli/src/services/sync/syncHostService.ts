@@ -5831,6 +5831,43 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     peer.subagentProgressCoalescers.delete(sessionId);
   }
 
+  /**
+   * Push every coalesced progress entry still inside its one-second window out
+   * to this peer, before its cursor is handed to another host.
+   *
+   * `sendChatEvent` marks a slim progress event delivered the moment the
+   * coalescer accepts it — coalescing owns it from then on, and this host will
+   * flush it when the window closes. That bargain holds only while the pending
+   * entry stays in this process's memory. A handoff exports the cursor and not
+   * the window, so the adopted host resumes AFTER those sequences and never
+   * re-reads them: the update dies here, and the phone's subagent card keeps
+   * whatever it last showed.
+   *
+   * Returns, per session, the highest sequence still honestly on the wire when
+   * something could not be flushed, so the caller can hold the exported cursor
+   * back to it rather than claiming the whole window went out.
+   */
+  function flushChatEventCoalescersForHandoff(peer: PeerState): Map<string, number> {
+    const cursorCaps = new Map<string, number>();
+    if (peer.subagentProgressCoalescers.size === 0) return cursorCaps;
+    const nowMs = Date.now();
+    for (const [sessionId, coalescer] of peer.subagentProgressCoalescers) {
+      deliverCoalescedChatEvents(peer, coalescer, coalescer.flushAll(nowMs));
+      if (coalescer.pendingCount === 0) continue;
+      // A send failed mid-flush and the rest was requeued. Read what is left
+      // without consuming it, so the cursor can stop short of it.
+      const stranded = coalescer.flushAll(nowMs);
+      if (stranded.length === 0) continue;
+      coalescer.requeue(stranded);
+      const oldest = stranded.reduce(
+        (lowest, entry) => Math.min(lowest, entry.sourceSeq),
+        Number.POSITIVE_INFINITY,
+      );
+      if (Number.isFinite(oldest)) cursorCaps.set(sessionId, oldest - 1);
+    }
+    return cursorCaps;
+  }
+
   async function pumpChatEvents(peer: PeerState): Promise<void> {
     if (disposed || !peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) return;
     if (isPeerBackpressured(peer)) return;
@@ -9397,6 +9434,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             }
             continue;
           }
+          // Anything the coalescer is still holding was already marked
+          // delivered, so it has to reach the wire before the cursor below
+          // tells the next host those sequences are behind it.
+          const chatEventCursorCaps = flushChatEventCoalescersForHandoff(peer);
           const chatSubscriptions = [...peer.subscribedChatSessionIds].flatMap((sessionId) => {
             const scope = peer.chatSubscriptionBindings.get(sessionId)?.scope ?? "project";
             return scope === "foreign-project" ? [] : [{ sessionId, scope }];
@@ -9435,7 +9476,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             chatEventSequences: Object.fromEntries(
               [...handedOffChatSessionIds].flatMap((sessionId) => {
                 const eventSequence = chatEventSequenceHighWaterBySession.get(sessionId);
-                return eventSequence == null ? [] : [[sessionId, eventSequence]];
+                if (eventSequence == null) return [];
+                // Held back to the last sequence that actually reached the
+                // wire when a flush could not complete, so the adopted host
+                // re-reads the stranded window instead of skipping it.
+                const cap = chatEventCursorCaps.get(sessionId);
+                const exported = cap == null ? eventSequence : Math.min(eventSequence, cap);
+                return exported < 0 ? [] : [[sessionId, exported]];
               }),
             ),
             rosterSubscribed: peer.rosterSubscribed,
