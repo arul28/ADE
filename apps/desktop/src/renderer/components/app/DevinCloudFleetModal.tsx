@@ -368,6 +368,11 @@ export function DevinCloudFleetModal({
       onArchive={() => void toggleArchive(entry)}
       onRequestDelete={() => setConfirmDeleteId(entry.session.sessionId)}
       onConfirmDelete={() => void deleteSession(entry)}
+      onDismissDelete={() =>
+        setConfirmDeleteId((current) =>
+          current === entry.session.sessionId ? null : current,
+        )
+      }
     />
   );
 

@@ -45604,8 +45604,14 @@ export function createAgentChatService(args: {
       projectId: args.projectId,
       sessionId: args.sessionId,
     });
+    // v3 has no branch field — the lane branch is pushed to the remote by the
+    // caller, so name it in the prompt the way Devin's own handoff flow does.
+    const laneBranch = laneInfo.branchRef?.trim();
+    const cloudPrompt = repoUrl && laneBranch
+      ? `Repo: ${repoUrl} (branch: ${laneBranch})\nCheck out the existing '${laneBranch}' branch first — it has been pushed to the remote and carries this lane's commits.\n\n${prompt}`
+      : prompt;
     const created = await aiIntegrationService.createDevinCloudSession({
-      prompt,
+      prompt: cloudPrompt,
       ...(repoUrl ? { repoUrls: [repoUrl] } : {}),
       tags,
       ...(args.title?.trim() ? { title: args.title.trim() } : {}),

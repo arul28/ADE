@@ -1648,9 +1648,9 @@ export function createAiIntegrationService(args: {
     const { orgName } = await client.verify();
     storeStoredApiKey("devin", key);
     const resolvedOrgId = client.getOrgId() ?? orgId;
-    if (detectDevinAuthMode(key) === "v3") {
-      persistDevinCloudOrgId(resolvedOrgId);
-    }
+    // The org id only applies to v3 keys — persisting a stale one would make a
+    // later v3 key verify against the previous org.
+    persistDevinCloudOrgId(detectDevinAuthMode(key) === "v3" ? resolvedOrgId : null);
     devinCloudClientCache = { apiKey: key, orgId: resolvedOrgId, client };
     return {
       configured: true,

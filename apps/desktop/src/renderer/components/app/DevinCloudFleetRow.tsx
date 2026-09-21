@@ -106,6 +106,7 @@ export function FleetRow({
   onArchive,
   onRequestDelete,
   onConfirmDelete,
+  onDismissDelete,
 }: {
   entry: DevinCloudFleetEntry;
   expanded: boolean;
@@ -119,6 +120,7 @@ export function FleetRow({
   onArchive: () => void;
   onRequestDelete: () => void;
   onConfirmDelete: () => void;
+  onDismissDelete: () => void;
 }) {
   const [liveUrlCopied, setLiveUrlCopied] = useState(false);
   const { session } = entry;
@@ -272,7 +274,7 @@ export function FleetRow({
             onArchive={onArchive}
             onRequestDelete={onRequestDelete}
             onConfirmDelete={onConfirmDelete}
-            onConfirmDismiss={onRequestDelete}
+            onConfirmDismiss={onDismissDelete}
           />
         </span>
       </div>
