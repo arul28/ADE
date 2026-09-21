@@ -186,6 +186,28 @@ ade --socket app-control launch --force \
   --text
 ```
 
+### Test Mac Desktop in the dev app instead of an Alpha build
+
+Mac Desktop needs the native helper and two macOS grants, and both are usable
+from the dev app on this Mac, so a lane's Mac Desktop changes do not need a
+packaged Alpha to be tried:
+
+```bash
+cd /path/to/ADE/.ade/worktrees/<lane>
+npm --prefix apps/desktop run build:desktop-driver   # resources/native/ade-desktop-driver
+ADE_DESKTOP_BRIDGE_SOCKET_PATH=/tmp/ade-desktop-bridge-<lane>.sock \
+  npm run dev:desktop -- --socket /tmp/ade-runtime-<lane>.sock
+```
+
+The dev app runs the Electron binary from `node_modules`, which carries
+Electron's own stable code signature, so macOS keeps its Screen Recording and
+Accessibility grants across rebuilds; grant them once for "Electron" in System
+Settings. The dev brain on the per-lane socket must not host sync (it is not
+the machine's sync host, so it never publishes to the account), which is why
+the Connections card is not testable this way; everything on the Mac Desktop
+pane is. Use `ADE_PROJECT_ROOT` to point the dev app at a throwaway project so
+the lane's displays never touch real work.
+
 To test auto-runtime creation, use the default dev commands after stopping the dev runtime:
 
 ```bash

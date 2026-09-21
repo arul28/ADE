@@ -6,6 +6,7 @@ import {
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type {
   AgentChatFileRef,
@@ -37,6 +38,7 @@ import { isChatToolType, isPtyContextInsertableToolType } from "../../lib/sessio
 import { revealTransition } from "../../lib/motion";
 import { showToast } from "../app/toast/toastStore";
 import { WorkToolHeader, workToolPanelId } from "./WorkToolHeader";
+import { WORK_TOOLS_MAXIMIZED_Z, WorkToolsMaximizeContext } from "./workToolsMaximize";
 import { WorkToolPicker } from "./WorkToolPicker";
 import { useWorkToolStatuses } from "./useWorkToolStatuses";
 import { useNativeToolFeeds } from "./NativeToolFeedsContext";
@@ -355,6 +357,26 @@ export function WorkSidebar({
   const floatableTool = effectiveTool && isWorkLiveScreenTool(effectiveTool) ? effectiveTool : null;
   const companionUi = useChatCompanionUiState(panelSessionId);
   const floating = floatableTool ? companionUi.workLiveCardFloating.includes(floatableTool) : false;
+  // The whole pane at window size, tabs included. See `workToolsMaximize`.
+  const [maximized, setMaximized] = useState(false);
+  const maximizeContext = useMemo(() => ({ maximized, setMaximized }), [maximized]);
+  useEffect(() => {
+    if (!maximized || typeof document === "undefined") return;
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      // A menu or a dialog inside the pane owns its own Esc; only a bare one
+      // restores the pane.
+      if (document.querySelector('[role="menu"], [role="dialog"], [role="listbox"]')) return;
+      event.preventDefault();
+      setMaximized(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [maximized]);
+  // Closing the pane, or losing every tool, always restores the window.
+  useEffect(() => {
+    if (!effectiveTool) setMaximized(false);
+  }, [effectiveTool]);
   const floatActivePreview = useCallback(() => {
     if (!floatableTool || !panelSessionId) return;
     floatWorkLiveCardForChat(panelSessionId, floatableTool);
@@ -763,10 +785,14 @@ export function WorkSidebar({
       ? { duration: 0.12, ease: "easeOut" as const }
       : revealTransition;
 
-  return (
+  const aside = (
     <aside
       ref={sidebarRef}
       onKeyDownCapture={handleKeyDownCapture}
+      data-maximized={maximized ? "true" : undefined}
+      style={maximized
+        ? { position: "fixed", inset: 0, width: "100vw", height: "100vh", zIndex: WORK_TOOLS_MAXIMIZED_Z, borderLeft: "none" }
+        : undefined}
       // Focusable only programmatically (`selectTool`), and never ringed for
       // it: this is a focus fallback, not a stop on the tab order.
       tabIndex={-1}
@@ -796,6 +822,8 @@ export function WorkSidebar({
         floatTool={panelSessionId ? floatableTool : null}
         floating={floating}
         onFloat={floatActivePreview}
+        maximized={maximized}
+        onToggleMaximize={() => setMaximized((current) => !current)}
       />
       {/* A true crossfade, so the two surfaces overlap rather than the pane
           blanking between them: both children are absolutely positioned and
@@ -830,5 +858,13 @@ export function WorkSidebar({
         </AnimatePresence>
       </div>
     </aside>
+  );
+
+  return (
+    <WorkToolsMaximizeContext.Provider value={maximizeContext}>
+      {maximized && typeof document !== "undefined"
+        ? createPortal(aside, document.documentElement)
+        : aside}
+    </WorkToolsMaximizeContext.Provider>
   );
 }

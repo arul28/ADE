@@ -16,6 +16,7 @@ import type {
 } from "../../../shared/types";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { RemoteTargetList } from "../remoteTargets/RemoteTargetList";
+import { ThisComputerStatus } from "../remoteTargets/ThisComputerStatus";
 import {
   PhoneConnectionsTab,
   ThisMacCard,
@@ -323,7 +324,12 @@ export function ConnectionsPanel({
         <ThisMacCard
           sync={sync}
           sessionState={accountSessionState(accountStatus)}
-          hideDirectorySummary
+          statusSlot={(
+            <ThisComputerStatus
+              accountSignedIn={accountStatus.signedIn}
+              onAccountMachinesChanged={reloadAccountMachines}
+            />
+          )}
         />
       </div>
 

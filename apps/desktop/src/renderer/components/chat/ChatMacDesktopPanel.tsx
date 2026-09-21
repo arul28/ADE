@@ -34,6 +34,7 @@ import {
 import { H264VideoCanvas } from "./H264VideoCanvas";
 import { macDesktopApi } from "./macDesktopApi";
 import { MacDesktopPermissionBlock } from "./MacDesktopPermissionBlock";
+import { useWorkToolsMaximize } from "../terminals/workToolsMaximize";
 import {
   displayFrameToViewRect,
   displayPointToViewPoint,
@@ -266,6 +267,9 @@ export function ChatMacDesktopPanel({
   const [claimableLoading, setClaimableLoading] = useState(false);
   const [claimError, setClaimError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
+  // Inside the Work sidebar the whole pane maximises (tabs stay); the panel's
+  // own overlay is the fallback where no sidebar hosts it.
+  const paneMaximize = useWorkToolsMaximize();
   const [busy, setBusy] = useState(false);
   /**
    * A permission re-probe or prompt is in flight.
@@ -1152,11 +1156,14 @@ export function ChatMacDesktopPanel({
             </button>
           ) : (
             <WorkToolChromeButton
-              label={controls.fullscreen.label}
-              onClick={() => setExpanded(true)}
+              label={paneMaximize?.maximized ? "Restore pane" : controls.fullscreen.label}
+              onClick={() => {
+                if (paneMaximize) paneMaximize.setMaximized(!paneMaximize.maximized);
+                else setExpanded(true);
+              }}
               testId="mac-desktop-expand"
             >
-              <ArrowsOutSimple size={16} />
+              {paneMaximize?.maximized ? <ArrowsInSimple size={16} /> : <ArrowsOutSimple size={16} />}
             </WorkToolChromeButton>
           )}
         </div>
@@ -1200,9 +1207,20 @@ export function ChatMacDesktopPanel({
           scope === "pane" ? "w-full max-h-full" : "rounded-[10px] shadow-float",
           // While the user is driving, the pointer they see is the one drawn
           // at the lane's Mac coordinates, not this machine's arrow.
-          iHaveControl && MAC_DESKTOP_TAKEOVER_CURSOR_HIDDEN_CLASS,
+          iHaveControl ? MAC_DESKTOP_TAKEOVER_CURSOR_HIDDEN_CLASS : "cursor-pointer",
         )}
-        onPointerDown={realInput.onPointerDown}
+        title={iHaveControl ? undefined : "Click to take control"}
+        onPointerDown={(event) => {
+          // The first click on the screen takes control; the strip button is
+          // the same action. A picture you have to arm before it responds is a
+          // picture that looks broken.
+          if (!iHaveControl) {
+            // Right-click is a menu, not a claim; anything else claims.
+            if (active && !busy && event.button !== 2) void takeControl();
+            return;
+          }
+          realInput.onPointerDown(event);
+        }}
         onPointerUp={realInput.onPointerUp}
         onPointerLeave={realInput.onPointerLeave}
         onPointerMove={realInput.onPointerMove}
@@ -1367,27 +1385,39 @@ export function ChatMacDesktopPanel({
         {renderChromeRow("pane")}
       </div>
 
-      {/* ── One-line permission state ─────────────────────────────────── */}
+      {/* ── Permission banner over a live picture ──────────────────────
+          The picture streams without Accessibility; the mouse does not work.
+          The banner names the grant and carries the same two buttons as the
+          first screen, so the fix is never a hunt through System Settings. */}
       {blockedPermission ? (
-        <p className="flex items-center gap-2 px-1 text-[12px] text-amber-300" data-testid="mac-desktop-permission">
-          <WarningCircle size={12} />
-          {`${blockedPermission.kind === "screenRecording" ? "Screen Recording" : "Accessibility"} is off for ADE on the lane's Mac.`}
-          {/*
-            The opener only appears for a display hosted on THIS Mac. A grant is
-            made on the machine the display lives on, so opening this computer's
-            System Settings for a remote lane would send the user to the wrong
-            box entirely — the sentence names that machine instead.
-          */}
+        <div
+          data-testid="mac-desktop-permission"
+          className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-[10px] border border-amber-400/25 bg-amber-400/[0.08] px-3 py-2 text-[12px] text-amber-100"
+        >
+          <WarningCircle size={14} className="shrink-0 text-amber-300" />
+          <span className="min-w-0 flex-1">
+            {blockedPermission.kind === "screenRecording"
+              ? `Screen Recording is off for ${status?.responsibleAppName ?? "ADE"}${laneHostIsLocal ? "" : ` on ${machineFacts.machineName ?? "the lane's Mac"}`}. The picture cannot stream.`
+              : `Accessibility is off for ${status?.responsibleAppName ?? "ADE"}${laneHostIsLocal ? "" : ` on ${machineFacts.machineName ?? "the lane's Mac"}`}. The mouse and keyboard do nothing until it is on.`}
+          </span>
           {laneHostIsLocal ? (
             <button
               type="button"
-              className="underline underline-offset-2"
+              className={cn(WORK_TOOL_PRIMARY_BUTTON, "h-7 px-2.5 text-[11.5px]")}
               onClick={() => openSettingsPane(blockedPermission.pane)}
             >
-              Open System Settings
+              {`Open ${blockedPermission.kind === "screenRecording" ? "Screen Recording" : "Accessibility"} settings`}
             </button>
           ) : null}
-        </p>
+          <button
+            type="button"
+            className="inline-flex h-7 items-center gap-1 rounded-[8px] border border-amber-300/30 px-2.5 text-[11.5px] font-medium text-amber-100 hover:bg-amber-400/15 disabled:opacity-50"
+            onClick={() => void checkAgain()}
+            disabled={checkingPermissions}
+          >
+            {checkingPermissions ? "Checking…" : "Check again"}
+          </button>
+        </div>
       ) : null}
 
       {/* ── The screen, and the windows on it ───────────────────────────

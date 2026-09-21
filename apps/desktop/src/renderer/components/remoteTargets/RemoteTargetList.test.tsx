@@ -171,51 +171,6 @@ describe("RemoteTargetList", () => {
     Reflect.deleteProperty(window, "ade");
   });
 
-  it("offers Repair on the publish-failing banner only for an unreadable brain session", async () => {
-    remoteRuntimeMock.listTargets.mockResolvedValue([]);
-    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({ machines: [], diagnostics: [] });
-    installAdeMock();
-    appMock.restartBackgroundService.mockResolvedValue(undefined);
-    const publishHealth = {
-      state: "token_unreadable",
-      failingSinceMs: Date.now() - 5 * 60_000,
-      lastLegDurations: { snapshot: null, token: null, http: null },
-    };
-    appMock.getInfo.mockResolvedValue({ localRuntime: { publishHealth } });
-
-    render(<RemoteTargetList />);
-    const repair = await screen.findByRole("button", { name: "Repair" });
-
-    // The brain comes back healthy, so the banner and its button disappear.
-    appMock.getInfo.mockResolvedValue({ localRuntime: null });
-    fireEvent.click(repair);
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Repair" })).toBeNull());
-    expect(appMock.restartBackgroundService).toHaveBeenCalledTimes(1);
-  });
-
-  it("leaves the publish-failing card unrepairable when a restart cannot help", async () => {
-    remoteRuntimeMock.listTargets.mockResolvedValue([]);
-    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({ machines: [], diagnostics: [] });
-    installAdeMock();
-    appMock.getInfo.mockResolvedValue({
-      localRuntime: {
-        publishHealth: {
-          state: "http_error",
-          failingSinceMs: Date.now() - 5 * 60_000,
-          lastLegDurations: { snapshot: null, token: null, http: null },
-        },
-      },
-    });
-
-    render(<RemoteTargetList accountSignedIn />);
-    expect(
-      await screen.findByText("Can't reach your ADE account right now, retrying"),
-    ).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Repair" })).toBeNull();
-    // The directory may simply have been unreachable: that earns a Retry.
-    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
-  });
-
   it("hides a publish-failing banner while signed out", async () => {
     remoteRuntimeMock.listTargets.mockResolvedValue([]);
     remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({ machines: [], diagnostics: [] });
@@ -236,131 +191,6 @@ describe("RemoteTargetList", () => {
     expect(screen.queryByText(/route publish failing/)).toBeNull();
   });
 
-  it("names the removal and offers Reconnect when the directory revoked this machine", async () => {
-    remoteRuntimeMock.listTargets.mockResolvedValue([]);
-    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({ machines: [], diagnostics: [] });
-    installAdeMock();
-    appMock.getInfo.mockResolvedValue({
-      localRuntime: {
-        publishHealth: {
-          state: "http_error",
-          failingSinceMs: Date.now() - 5 * 60_000,
-          lastLegDurations: { snapshot: null, token: null, http: null },
-          lastHttpStatus: 403,
-          lastHttpReason: "machine_revoked",
-        },
-      },
-    });
-    accountMock.repairMachinePairing.mockResolvedValue({
-      repaired: true,
-      wasRevoked: true,
-      published: true,
-      pushRestored: true,
-      state: "registered",
-      reason: null,
-    });
-
-    render(<RemoteTargetList accountSignedIn />);
-
-    expect(
-      await screen.findByText("This computer was removed from your ADE account"),
-    ).toBeTruthy();
-    // The directory answered; "couldn't publish it" would be a lie.
-    expect(screen.queryByText(/couldn't publish it/)).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: "Reconnect this computer" }));
-    await waitFor(() =>
-      expect(accountMock.repairMachinePairing).toHaveBeenCalledTimes(1),
-    );
-  });
-
-  it("asks for a fresh sign-in when the directory requires one", async () => {
-    remoteRuntimeMock.listTargets.mockResolvedValue([]);
-    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({ machines: [], diagnostics: [] });
-    installAdeMock();
-    appMock.getInfo.mockResolvedValue({
-      localRuntime: {
-        publishHealth: {
-          state: "http_error",
-          failingSinceMs: Date.now() - 5 * 60_000,
-          lastLegDurations: { snapshot: null, token: null, http: null },
-          lastHttpStatus: 403,
-          lastHttpReason: "pairing_authentication_required",
-        },
-      },
-    });
-
-    render(<RemoteTargetList accountSignedIn />);
-
-    expect(
-      await screen.findByText("Sign in again to reconnect this computer"),
-    ).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Sign in again" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Reconnect this computer" })).toBeNull();
-  });
-
-  it("keeps the couldn't-publish text for an ordinary HTTP failure", async () => {
-    remoteRuntimeMock.listTargets.mockResolvedValue([]);
-    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({ machines: [], diagnostics: [] });
-    installAdeMock();
-    appMock.getInfo.mockResolvedValue({
-      localRuntime: {
-        publishHealth: {
-          state: "http_error",
-          failingSinceMs: Date.now() - 5 * 60_000,
-          lastLegDurations: { snapshot: null, token: null, http: null },
-          lastHttpStatus: 500,
-          lastHttpReason: null,
-        },
-      },
-    });
-
-    render(<RemoteTargetList accountSignedIn />);
-
-    expect(
-      await screen.findByText("Can't reach your ADE account right now, retrying"),
-    ).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Reconnect this computer" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Sign in again" })).toBeNull();
-  });
-
-  it("revoked machine shows one card with one button and no list banner", async () => {
-    remoteRuntimeMock.listTargets.mockResolvedValue([]);
-    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({ machines: [], diagnostics: [] });
-    installAdeMock();
-    appMock.getInfo.mockResolvedValue({
-      localRuntime: {
-        publishHealth: {
-          state: "http_error",
-          failingSinceMs: Date.now() - 5 * 60_000,
-          lastLegDurations: { snapshot: null, token: null, http: null },
-          lastHttpStatus: 403,
-          lastHttpReason: "machine_revoked",
-        },
-      },
-    });
-    accountMock.repairMachinePairing.mockResolvedValue({
-      repaired: false,
-      wasRevoked: true,
-      published: false,
-      pushRestored: false,
-      state: "not_revoked",
-      reason: null,
-    });
-
-    render(<RemoteTargetList accountSignedIn />);
-
-    await screen.findByText("This computer was removed from your ADE account");
-    const card = screen.getByText("This computer").closest("[data-this-computer-card]");
-    expect(card).toBeInstanceOf(HTMLElement);
-    // One owner, one button: the state card, and nothing else.
-    expect(within(card as HTMLElement).getAllByRole("button")).toHaveLength(1);
-    expect(screen.getByRole("button", { name: "Reconnect this computer" })).toBeTruthy();
-    // The old duplicate banner under the Machines heading is gone.
-    expect(screen.queryByText(/Other machines may not find this one/)).toBeNull();
-    expect(screen.queryByText(/couldn't publish it/)).toBeNull();
-  });
-
   it("signed-in refusal hides the sign-in helper", async () => {
     remoteRuntimeMock.listTargets.mockResolvedValue([]);
     remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({ machines: [], diagnostics: [] });
@@ -378,64 +208,11 @@ describe("RemoteTargetList", () => {
     });
 
     render(<RemoteTargetList accountSignedIn />);
-    await screen.findByText("This computer was removed from your ADE account");
 
-    fireEvent.click(screen.getByRole("button", { name: "Add machine" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Add machine" }));
     // A publish refusal is not "signed out": the sign-in path must not appear.
     expect(screen.queryByRole("button", { name: /Sign in to ADE/ })).toBeNull();
     expect(screen.getByRole("button", { name: /Find nearby computers/ })).toBeTruthy();
-  });
-
-  it("reconnect that needs fresh sign-in shows the browser prompt with Cancel only", async () => {
-    remoteRuntimeMock.listTargets.mockResolvedValue([]);
-    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({ machines: [], diagnostics: [] });
-    installAdeMock();
-    appMock.getInfo.mockResolvedValue({
-      localRuntime: {
-        publishHealth: {
-          state: "http_error",
-          failingSinceMs: Date.now() - 5 * 60_000,
-          lastLegDurations: { snapshot: null, token: null, http: null },
-          lastHttpStatus: 403,
-          lastHttpReason: "pairing_authentication_required",
-        },
-      },
-    });
-    accountMock.repairMachinePairing.mockResolvedValue({
-      repaired: false,
-      wasRevoked: true,
-      published: false,
-      pushRestored: false,
-      state: "http_error",
-      reason: null,
-      reasonCode: "pairing_authentication_required",
-    });
-    accountMock.startDeviceLogin.mockResolvedValue({
-      sessionId: "sess_1",
-      userCode: "WDJB-MJHT",
-      verificationUri: "https://directory.test/device",
-      verificationUriComplete: "https://directory.test/device?user_code=WDJB-MJHT",
-      expiresAt: new Date(Date.now() + 900_000).toISOString(),
-      intervalSec: 60,
-    });
-    // The prompt is what is under test; never let a poll resolve into it.
-    accountMock.pollDeviceLogin.mockReturnValue(new Promise(() => {}));
-
-    render(<RemoteTargetList accountSignedIn />);
-    fireEvent.click(await screen.findByRole("button", { name: "Sign in again" }));
-
-    expect(
-      await screen.findByText("Finish signing in in your browser. This closes on its own."),
-    ).toBeTruthy();
-    expect(screen.getByText("Code WDJB-MJHT, in case the browser asks")).toBeTruthy();
-    const card = screen
-      .getByText("This computer")
-      .closest("[data-this-computer-card]") as HTMLElement;
-    const labels = within(card)
-      .getAllByRole("button")
-      .map((button) => button.textContent);
-    expect(labels).toContain("Cancel");
-    expect(labels).not.toContain("Done");
   });
 
   it("pairs a discovered ADE machine with its 6-digit code instead of creating an SSH target", async () => {

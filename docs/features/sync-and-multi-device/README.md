@@ -637,7 +637,14 @@ Runtime support files outside `services/sync/`:
   once through `consumePairingGrant` and cleared on sign-out. That grant is the
   proof a removed machine needs to re-pair, which is why the desktop's Reconnect
   affordance and `ade machines reconnect` both run the device flow rather than
-  the loopback PKCE flow. `apps/account-directory/src/deviceAuthorization.ts`
+  the loopback PKCE flow. In the desktop that affordance lives in exactly one
+  place: `ThisComputerStatus`, rendered inside the "This machine" card at the
+  top of the Connections popover (the Machines list renders nothing about this
+  computer). One sentence from the shared advice table, one button whose label
+  follows the brain's refusal code ("Sign in again" / "Reconnect this computer"
+  / "Retry" / "Repair"), and while a device sign-in is pending a prompt that
+  says to finish in the browser and always offers "Open sign-in page" again,
+  because the browser can open behind ADE or not at all. `apps/account-directory/src/deviceAuthorization.ts`
   branches only its presentation on how the page was reached: a link carrying
   `user_code` (the desktop app) renders **Confirm this sign-in** with the code
   read-only and a hidden field, while the bare page (the CLI) keeps the typed

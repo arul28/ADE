@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   AppleLogo,
   ArrowSquareOut,
@@ -206,17 +206,19 @@ function useAppInfoLine(): {
 export function ThisMacCard({
   sync,
   sessionState,
-  hideDirectorySummary = false,
+  statusSlot = null,
 }: {
   sync: SyncConnections;
   sessionState: AdeAccountSessionState;
   /**
-   * The Connections popover renders its own "This computer" card in the
-   * Machines list, which owns publication status there. Settings renders this
-   * card on its own, so the summary stays.
+   * The Connections popover puts this computer's account standing and its one
+   * button here (`ThisComputerStatus`), in place of the summary line, so the
+   * failure and the fix are in the same card and nowhere else. Settings passes
+   * nothing and keeps the summary.
    */
-  hideDirectorySummary?: boolean;
+  statusSlot?: ReactNode;
 }) {
+  const hideDirectorySummary = statusSlot != null;
   const accountSignedIn = sessionState === "active";
   const { status, busy, error, notice, isRemoteBound, boundMachineName } = sync;
   const appInfo = useAppInfoLine();
@@ -355,8 +357,9 @@ export function ThisMacCard({
                   {directorySummary.label}
                 </span>
               ) : null}
-              {showRepair ? <BrainRepairButton repair={repair} height={24} /> : null}
+              {!hideDirectorySummary && showRepair ? <BrainRepairButton repair={repair} height={24} /> : null}
             </div>
+            {statusSlot}
             {!hideDirectorySummary && directorySummary.detail ? (
               // The one line that turns "another ADE app owns sync" into an
               // action: the reader has to quit it. Indented under the icon so

@@ -220,7 +220,11 @@ names the holding lane.
 2. **Permissions.** Screen Recording and Accessibility are reported by the
    helper's own `ping` reply — the service never shells out
    to probe, so nothing runs ungated on a non-Mac host. A missing grant is a
-   block with the pane opener, a numbered how-to, and a "Check again" that
+   card (`MacDesktopPermissionBlock`): the grant named in the title, the app
+   macOS lists, an "Open … settings" button that deep-links to the exact row
+   (the `com.apple.settings.PrivacySecurity.extension` address form — the older
+   `com.apple.preference.security` one opens the Privacy & Security root on
+   macOS 26), three numbered steps, and a "Check again" that
    restarts the helper before re-probing (`recheckPermissions`): macOS often does
    not show a grant made after a process started to that same process, which is
    why re-reading the old helper's cached "denied" never worked. The block also
@@ -237,7 +241,12 @@ names the holding lane.
    `request-permission`, and only for a local user's explicit "Ask macOS" click:
    the service passes `allowPrompt` true only when the window asking is on the
    host, the helper ignores the request without it, and the action is CTO-only so
-   an agent cannot reach it.
+   an agent cannot reach it. Accessibility missing while the picture already
+   streams is the same card as an amber banner above the picture, because a
+   synthetic event posted without Accessibility is dropped by macOS with no
+   error: the service refuses real input with `MAC_DESKTOP_PERMISSION_REQUIRED`
+   naming the grant (`macDesktopInput.ts`) instead of letting a takeover look
+   like a dead screen.
 3. **Idle release.** A display with no parked windows, no stream reader and no
    running recording for `MAC_DESKTOP_IDLE_RELEASE_MS` is destroyed on a 30s
    sweep. The next open recreates it. The display size comes from the
@@ -323,7 +332,13 @@ the lane's desktop; a chat that is neither a viewer nor the lease holder does
 not get the lane's screen as a corner card.
 
 The corner card is itself a viewer, not a picture someone else happens to
-leave on screen. The pane, full screen and the card share one decoder per lane
+leave on screen. The first click on the picture takes control (the strip's
+"Take over" button is the same action), and the picture shows a pointer cursor
+until it does. Inside the Work sidebar, "full screen" is the pane's own
+maximise (`workToolsMaximize`): the whole tools pane fills the window with its
+tab strip, so Browser and Terminal stay one click away, and Esc or the header
+button restores it. The panel's own overlay is only the fallback where no
+sidebar hosts it. The pane, full screen and the card share one decoder per lane
 through a renderer-side ref-counted lease (`macDesktopLiveViewLease.ts`): the
 first holder starts the stream, the last release stops it, and the decoder
 belongs to the highest-priority holder — the pane (and with it full screen)

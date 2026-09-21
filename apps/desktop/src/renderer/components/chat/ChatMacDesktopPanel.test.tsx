@@ -253,6 +253,22 @@ describe("ChatMacDesktopPanel actions on a pinned machine", () => {
     ));
   });
 
+  it("takes control on the first click on the picture, so the screen never looks dead", async () => {
+    macDesktop.takeControl.mockResolvedValue({
+      holder: "user",
+      holderId: CONTROLLER_ID,
+      expiresAt: "2026-09-18T19:10:00.000Z",
+    });
+
+    renderPanel();
+    fireEvent.pointerDown(await screen.findByTestId("mac-desktop-surface"), { button: 0 });
+
+    await waitFor(() => expect(macDesktop.takeControl).toHaveBeenCalledWith(
+      { laneId: "lane-1", controllerId: CONTROLLER_ID, controllerLabel: "You" },
+      STUDIO_PIN,
+    ));
+  });
+
   it("returns control on the focused chat's machine", async () => {
     macDesktop.getStatus.mockResolvedValue(makeStatus({
       lease: {
@@ -300,11 +316,11 @@ describe("ChatMacDesktopPanel permission first screen", () => {
 
     expect(await screen.findByTestId("mac-desktop-permission-block")).toBeTruthy();
     expect(screen.getByTestId("mac-desktop-open-settings")).toBeTruthy();
-    expect(screen.getByText("Screen Recording is off for ADE")).toBeTruthy();
-    expect(screen.getByText("macOS asks the app that owns the helper: ADE Alpha.")).toBeTruthy();
-    expect(screen.getByText("Turn on ADE Alpha.")).toBeTruthy();
+    expect(screen.getByText("Let ADE see this screen")).toBeTruthy();
+    expect(screen.getByText(/Turn on ADE Alpha under Screen Recording\./)).toBeTruthy();
+    expect(screen.getByText("Find ADE Alpha in the list and turn it on.")).toBeTruthy();
     expect(screen.getByText("If macOS asks to quit and reopen, press Later.")).toBeTruthy();
-    expect(screen.getByText("Press Check again.")).toBeTruthy();
+    expect(screen.getByText(/Press Check again\. The screen updates by itself/)).toBeTruthy();
     expect(screen.getByTestId("mac-desktop-adhoc-note")).toBeTruthy();
     // The local explicit prompt is a third control on this host only.
     expect(screen.getByTestId("mac-desktop-ask-macos")).toBeTruthy();

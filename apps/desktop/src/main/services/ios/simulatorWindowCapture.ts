@@ -752,7 +752,9 @@ export async function revealSimulatorWindow(): Promise<{ ok: boolean; message: s
 export async function openSimulatorPrivacyPane(pane: IosSimulatorPrivacyPane): Promise<{ ok: boolean }> {
   if (hostPlatform !== "darwin") return { ok: false };
   const anchor = pane === "automation" ? "Privacy_Automation" : "Privacy_ScreenCapture";
-  await shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${anchor}`);
+  // The extension address form; the older `com.apple.preference.security` one
+  // opens the Privacy & Security root on macOS 26 instead of the row.
+  await shell.openExternal(`x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?${anchor}`);
   return { ok: true };
 }
 

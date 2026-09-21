@@ -250,7 +250,13 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     // point this process resolved through that same tree.
     deps.assertPermission("accessibility");
     const holderId = inputHolderId(args);
-    if (args.mode === "real") assertRealInputAllowed(laneId, holderId);
+    if (args.mode === "real") {
+      assertRealInputAllowed(laneId, holderId);
+      // A synthetic event posted without Accessibility is dropped by macOS
+      // with no error, which is how a takeover looked like a dead screen. Say
+      // so instead, with the grant named.
+      deps.assertPermission("accessibility");
+    }
     const startedAt = new Date(now()).toISOString();
     const startedMs = now();
     let resolvedIndex: number | null = null;

@@ -331,3 +331,26 @@ describe("WorkToolHeader float button", () => {
     expect(screen.queryByLabelText("Show floating preview")).toBeNull();
   });
 });
+
+describe("WorkToolHeader maximize", () => {
+  afterEach(() => cleanup());
+
+  it("offers Maximize pane for an open tool and toggles it, so the tabs stay in the blown-up view", () => {
+    const onToggleMaximize = vi.fn();
+    renderHeader({ onToggleMaximize, maximized: false });
+    const button = screen.getByRole("button", { name: "Maximize pane" });
+    fireEvent.click(button);
+    expect(onToggleMaximize).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads Restore pane while maximized", () => {
+    renderHeader({ onToggleMaximize: vi.fn(), maximized: true });
+    expect(screen.getByRole("button", { name: "Restore pane" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Maximize pane" })).toBeNull();
+  });
+
+  it("shows no maximize control on the picker page", () => {
+    renderHeader({ onToggleMaximize: vi.fn(), activeTool: null });
+    expect(screen.queryByRole("button", { name: /Maximize pane|Restore pane/ })).toBeNull();
+  });
+});

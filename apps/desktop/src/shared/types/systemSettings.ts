@@ -13,12 +13,19 @@ export const SYSTEM_SETTINGS_PANE_URLS = {
   /** macOS Privacy & Security › Full Disk Access. */
   "macos-full-disk-access":
     "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles",
-  /** macOS Privacy & Security › Screen & System Audio Recording. */
+  /**
+   * macOS Privacy & Security › Screen & System Audio Recording.
+   *
+   * The `com.apple.settings.PrivacySecurity.extension` form, like Full Disk
+   * Access above. The older `com.apple.preference.security` address opened the
+   * Privacy & Security root on macOS 26 and left the user hunting for the row,
+   * which is how the Mac Desktop pane's "Open System Settings" looked dead.
+   */
   "macos-screen-recording":
-    "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
-  /** macOS Privacy & Security › Accessibility. */
+    "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ScreenCapture",
+  /** macOS Privacy & Security › Accessibility. Same address form as above. */
   "macos-accessibility":
-    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+    "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Accessibility",
   /** macOS Privacy & Security › Microphone. */
   "macos-microphone":
     "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",

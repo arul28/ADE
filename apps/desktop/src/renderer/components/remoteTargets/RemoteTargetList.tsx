@@ -12,18 +12,11 @@ import {
 } from "@phosphor-icons/react";
 import { extractError } from "../../lib/format";
 import {
-  runMachinePairingReconnect,
-  type MachinePairingReconnectOutcome,
-} from "../../lib/machinePairingReconnect";
-import { useBrainRepair } from "../../hooks/useBrainRepair";
-import { BrainRepairButton } from "../settings/BrainRepairButton";
-import {
   COLORS,
   MONO_FONT,
   SANS_FONT,
   outlineButton,
 } from "../lanes/laneDesignTokens";
-import { isBrainAccountSessionFailure } from "../../../shared/types";
 import type {
   AdeAccountMachine,
   AdeAccountMachinesResult,
@@ -46,19 +39,15 @@ import {
   accountMachineMatchesTarget,
   assignMachineSections,
   describePublishHealth,
-  describeThisComputerCard,
   discoveredPairingInput,
   discoveredTargetInput,
   formatRemoteTargetError,
-  formatThisComputerVersion,
   isMachineVersionOutdated,
   isSshOnlyDiscovered,
   machineMatchesSavedTarget,
   newestKnownAdeVersion,
-  type LocalPublishHealth,
   type MachineSection,
 } from "./remoteMachineModel";
-import type { AccountDeviceLoginPrompt } from "../../lib/accountLogin";
 import {
   connectedMachineIds,
   isMachineConnected,
@@ -236,28 +225,6 @@ export function RemoteTargetList({
   const [localMachineName, setLocalMachineName] = useState("");
   const [localMachineIdentity, setLocalMachineIdentity] =
     useState<{ machineKey: string; deviceId: string } | null>(null);
-  const [localPublishHealth, setLocalPublishHealth] =
-    useState<LocalPublishHealth | null>(null);
-  // This computer's own ADE version facts — the brain's reported version (which
-  // is the channel-stamped one) with the desktop package version as fallback.
-  const [localAppInfo, setLocalAppInfo] = useState<{
-    packageVersion: string | null;
-    channel: string | null;
-    brainVersion: string | null;
-  } | null>(null);
-  // Reconnect THIS computer to the account after the directory refused it.
-  // Same orchestration the Account page runs, shared through
-  // `runMachinePairingReconnect`, so the two surfaces cannot drift.
-  const [reconnectingThisMachine, setReconnectingThisMachine] = useState(false);
-  const [reconnectOutcome, setReconnectOutcome] =
-    useState<MachinePairingReconnectOutcome | null>(null);
-  // The device sign-in prompt while a reconnect is proving fresh authentication.
-  // Its `browserOpened` decides whether the card is a confirmation or has to
-  // carry the URL itself.
-  const [signInPrompt, setSignInPrompt] =
-    useState<AccountDeviceLoginPrompt | null>(null);
-  const [linkCopied, setLinkCopied] = useState(false);
-  const reconnectCancelledRef = useRef(false);
   const [pairingPrefill, setPairingPrefill] = useState<string | null>(null);
   const [accountConnectingMachineKey, setAccountConnectingMachineKey] =
     useState<string | null>(null);
@@ -520,143 +487,6 @@ export function RemoteTargetList({
       cancelled = true;
     };
   }, []);
-
-  // This computer's route-publish health, refreshed periodically so a persisting
-  // failure's "for N min" stays truthful while the panel is open. getInfo is a
-  // cheap one-shot; there is no push event for the publisher's health.
-  const publishHealthMountedRef = useRef(true);
-  // The interval and the post-repair refresh can overlap; without a generation
-  // an older in-flight read can land last and restore the failing banner the
-  // newer read already cleared.
-  const publishHealthRequestRef = useRef(0);
-  const refreshPublishHealth = useCallback(() => {
-    const infoPromise = window.ade.app?.getInfo?.();
-    if (!infoPromise) return;
-    const requestId = ++publishHealthRequestRef.current;
-    void infoPromise
-      .then((info) => {
-        if (!publishHealthMountedRef.current) return;
-        if (requestId !== publishHealthRequestRef.current) return;
-        const health = info.localRuntime?.publishHealth ?? null;
-        setLocalPublishHealth(
-          health
-            ? {
-                state: health.state,
-                failingSinceMs: health.failingSinceMs,
-                lastHttpStatus: health.lastHttpStatus ?? null,
-                lastHttpReason: health.lastHttpReason ?? null,
-              }
-            : null,
-        );
-        setLocalAppInfo({
-          packageVersion: info.appVersion ?? null,
-          channel: info.packageChannel ?? null,
-          brainVersion: info.localRuntime?.versionSkew?.runtimeVersion ?? null,
-        });
-      })
-      .catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    publishHealthMountedRef.current = true;
-    refreshPublishHealth();
-    const timer = window.setInterval(refreshPublishHealth, 30_000);
-    return () => {
-      publishHealthMountedRef.current = false;
-      window.clearInterval(timer);
-    };
-  }, [refreshPublishHealth]);
-
-  const publishHealthDisplay = useMemo(
-    () => describePublishHealth(localPublishHealth),
-    // Re-derive on each fetch; the 30s refresh advances the "for N min" count.
-    [localPublishHealth],
-  );
-  // Same brain-side unreadable-session failure the Connections card repairs;
-  // both surfaces read the one publisher health record and share the handler.
-  const repair = useBrainRepair(refreshPublishHealth);
-  const showRepair = publishHealthDisplay.kind === "failing"
-    && isBrainAccountSessionFailure(localPublishHealth?.state)
-    && repair.available;
-
-  // One owner for this computer's state: a single sentence from the shared
-  // advice table and a single button whose label follows the brain's refusal
-  // code. Both this card and the Account tab read the same publisher health, so
-  // they cannot word the same fix two ways.
-  const thisComputerCard = useMemo(
-    () => describeThisComputerCard(localPublishHealth),
-    [localPublishHealth],
-  );
-  const showThisComputerCard =
-    thisComputerCard != null
-    && (accountSignedIn || isBrainAccountSessionFailure(localPublishHealth?.state));
-  const thisComputerVersion = useMemo(
-    () =>
-      formatThisComputerVersion({
-        brainVersion: localAppInfo?.brainVersion,
-        packageVersion: localAppInfo?.packageVersion,
-        channel: localAppInfo?.channel,
-      }),
-    [localAppInfo],
-  );
-
-  const reconnectThisMachine = useCallback(async () => {
-    const api = window.ade.account;
-    if (!api?.repairMachinePairing) return;
-    setReconnectingThisMachine(true);
-    setReconnectOutcome(null);
-    setSignInPrompt(null);
-    setLinkCopied(false);
-    reconnectCancelledRef.current = false;
-    try {
-      const outcome = await runMachinePairingReconnect({
-        repair: () => api.repairMachinePairing(),
-        onPrompt: (prompt) => {
-          setSignInPrompt(prompt);
-          setLinkCopied(false);
-        },
-        isCancelled: () => reconnectCancelledRef.current,
-        afterAttempt: async () => {
-          // The card reads the publisher's health, so re-read it rather than
-          // assume the repair took. No roster here to confirm against.
-          refreshPublishHealth();
-          return "unverified";
-        },
-      });
-      if (outcome) setReconnectOutcome(outcome);
-      if (outcome?.tone === "success") {
-        // The popover's roster comes from the directory; re-read it so the row
-        // this computer was missing from can come back.
-        onAccountMachinesChanged?.();
-        refreshPublishHealth();
-      }
-    } finally {
-      setSignInPrompt(null);
-      setReconnectingThisMachine(false);
-    }
-  }, [onAccountMachinesChanged, refreshPublishHealth]);
-
-  const cancelReconnect = useCallback(() => {
-    reconnectCancelledRef.current = true;
-    setSignInPrompt(null);
-  }, []);
-
-  /** A plain retry of a publish that failed for a transient reason. */
-  const retryPublish = useCallback(() => {
-    refreshPublishHealth();
-    void loadTargets();
-    void loadDiscoveredMachines();
-  }, [loadDiscoveredMachines, loadTargets, refreshPublishHealth]);
-
-  const copySignInLink = useCallback(() => {
-    const url =
-      signInPrompt?.verificationUriComplete ?? signInPrompt?.verificationUri;
-    const write = window.ade.app?.writeClipboardText;
-    if (!url || !write) return;
-    void write(url)
-      .then(() => setLinkCopied(true))
-      .catch(() => {});
-  }, [signInPrompt]);
 
   const openAddMachine = useCallback(() => {
     setSelectedId(null);
@@ -1435,155 +1265,6 @@ export function RemoteTargetList({
             </button>
           </div>
         </div>
-
-        {showThisComputerCard && thisComputerCard ? (
-          <div style={inlineDetailStyle} data-this-computer-card>
-            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
-              <div style={{ minWidth: 0, flex: 1 }}>
-                <div style={{ fontFamily: SANS_FONT, fontSize: 12.5, fontWeight: 700, color: COLORS.textPrimary }}>
-                  This computer
-                </div>
-                {thisComputerVersion ? (
-                  <div style={{ ...helperTextStyle, marginTop: 2, fontFamily: MONO_FONT, fontSize: 11 }}>
-                    {thisComputerVersion.text}
-                    {thisComputerVersion.source === "package"
-                      ? " (app version; the background service did not answer)"
-                      : ""}
-                  </div>
-                ) : null}
-                <div
-                  style={{
-                    marginTop: 4,
-                    display: "flex",
-                    alignItems: "flex-start",
-                    gap: 5,
-                    color: thisComputerCard.tone === "healthy" ? COLORS.textSecondary : COLORS.warning,
-                    fontFamily: SANS_FONT,
-                    fontSize: 11.5,
-                    lineHeight: 1.4,
-                  }}
-                >
-                  {thisComputerCard.tone === "healthy" ? null : (
-                    <Warning size={13} weight="fill" style={{ flexShrink: 0, marginTop: 1 }} />
-                  )}
-                  <span>{capitalizeSentence(thisComputerCard.summary)}</span>
-                </div>
-              </div>
-              {thisComputerCard.action.label === "Repair" ? (
-                showRepair ? <BrainRepairButton repair={repair} height={24} /> : null
-              ) : thisComputerCard.action.label ? (
-                <button
-                  type="button"
-                  disabled={reconnectingThisMachine}
-                  onClick={() => {
-                    if (thisComputerCard.action.retry) retryPublish();
-                    else void reconnectThisMachine();
-                  }}
-                  style={outlineButton({
-                    height: 24,
-                    padding: "0 10px",
-                    fontSize: 11,
-                    flexShrink: 0,
-                    opacity: reconnectingThisMachine ? 0.6 : 1,
-                    cursor: reconnectingThisMachine ? "not-allowed" : "pointer",
-                  })}
-                >
-                  {signInPrompt
-                    ? "Sign in again"
-                    : reconnectingThisMachine
-                      ? "Reconnecting…"
-                      : thisComputerCard.action.label}
-                </button>
-              ) : null}
-            </div>
-
-            {signInPrompt ? (
-              <div
-                style={{
-                  display: "grid",
-                  gap: 6,
-                  marginTop: 8,
-                  padding: "8px 9px",
-                  borderRadius: 8,
-                  border: `1px solid ${COLORS.borderMuted}`,
-                  background: COLORS.recessedBg,
-                }}
-              >
-                {signInPrompt.browserOpened ? (
-                  <>
-                    <div style={{ ...helperTextStyle, color: COLORS.textSecondary }}>
-                      Finish signing in in your browser. This closes on its own.
-                    </div>
-                    <div style={{ ...helperTextStyle, fontSize: 11 }}>
-                      Code {signInPrompt.userCode}, in case the browser asks
-                    </div>
-                    <div>
-                      <button
-                        type="button"
-                        onClick={cancelReconnect}
-                        style={outlineButton({ height: 24, padding: "0 10px", fontSize: 11 })}
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div style={{ ...helperTextStyle, color: COLORS.textSecondary }}>
-                      Open the ADE sign-in page and enter this code.
-                    </div>
-                    <div
-                      style={{
-                        fontFamily: MONO_FONT,
-                        fontSize: 11,
-                        wordBreak: "break-all",
-                        color: COLORS.textSecondary,
-                      }}
-                    >
-                      {signInPrompt.verificationUriComplete ?? signInPrompt.verificationUri}
-                    </div>
-                    <div style={{ ...helperTextStyle, fontSize: 11 }}>
-                      Code {signInPrompt.userCode}
-                    </div>
-                    <div style={{ display: "flex", gap: 6 }}>
-                      <button
-                        type="button"
-                        onClick={copySignInLink}
-                        style={outlineButton({ height: 24, padding: "0 10px", fontSize: 11 })}
-                      >
-                        {linkCopied ? "Copied" : "Copy link"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={cancelReconnect}
-                        style={outlineButton({ height: 24, padding: "0 10px", fontSize: 11 })}
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-            ) : null}
-
-            {reconnectOutcome ? (
-              <div
-                role="status"
-                style={{
-                  ...helperTextStyle,
-                  marginTop: 6,
-                  color: reconnectOutcome.tone === "success"
-                    ? COLORS.success
-                    : reconnectOutcome.tone === "warning"
-                      ? COLORS.warning
-                      : COLORS.danger,
-                }}
-              >
-                {reconnectOutcome.message}
-              </div>
-            ) : null}
-          </div>
-        ) : null}
 
         {addMode ? (
           <div style={inlineDetailStyle}>

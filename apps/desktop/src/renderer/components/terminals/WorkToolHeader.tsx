@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { DotsThree, PictureInPicture, Plus, SquaresFour, X } from "@phosphor-icons/react";
+import { ArrowsInSimple, ArrowsOutSimple, DotsThree, PictureInPicture, Plus, SquaresFour, X } from "@phosphor-icons/react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { motion, useReducedMotion } from "motion/react";
 import type { WorkSidebarTab } from "../../state/appStore";
@@ -199,6 +199,8 @@ export function WorkToolHeader({
   floatTool,
   floating,
   onFloat,
+  maximized,
+  onToggleMaximize,
 }: {
   /** The tab on screen, or null while the picker page is showing. */
   activeTool: WorkSidebarTab | null;
@@ -225,6 +227,9 @@ export function WorkToolHeader({
   /** True when the user has already floated this tool back on for the chat. */
   floating?: boolean;
   onFloat?: () => void;
+  /** The pane fills the window, tabs and all. See `workToolsMaximize`. */
+  maximized?: boolean;
+  onToggleMaximize?: () => void;
 }) {
   const reduceMotion = useReducedMotion() ?? false;
   const { ref, width } = useMeasuredWidth();
@@ -430,6 +435,25 @@ export function WorkToolHeader({
             data-state={floating ? "open" : undefined}
           >
             <PictureInPicture size={15} weight={floating ? "fill" : "regular"} />
+          </button>
+        </PaneTooltip>
+      ) : null}
+
+      {/* Maximise: the whole pane at window size, this strip included, so a
+          blown-up Mac Desktop still has Browser and Terminal one click away.
+          Esc restores. */}
+      {activeTool !== null && onToggleMaximize ? (
+        <PaneTooltip label={maximized ? "Restore pane (Esc)" : "Maximize pane"} side="bottom">
+          <button
+            type="button"
+            onClick={onToggleMaximize}
+            aria-label={maximized ? "Restore pane" : "Maximize pane"}
+            aria-pressed={maximized === true}
+            data-testid="work-tools-maximize"
+            className={cn(CONTROL_CLASS, "w-6 px-0", maximized && "bg-white/[0.09] text-fg")}
+            data-variant="ghost"
+          >
+            {maximized ? <ArrowsInSimple size={15} /> : <ArrowsOutSimple size={15} />}
           </button>
         </PaneTooltip>
       ) : null}

@@ -946,9 +946,6 @@ export function YourMacsCard() {
                 }}
               >
                 This machine: {thisComputerVersion.text}
-                {thisComputerVersion.source === "package"
-                  ? " (app version; the background service did not answer)"
-                  : ""}
               </div>
             ) : null}
           </div>
