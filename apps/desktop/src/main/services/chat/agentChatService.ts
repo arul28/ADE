@@ -45144,8 +45144,11 @@ export function createAgentChatService(args: {
       hydratedIds.add(message.eventId);
       if (message.source === "user") {
         const fingerprint = devinCloudMessageFingerprint(message);
-        if (fingerprint && consumeDevinEchoFingerprint(localEchoes, fingerprint)) {
-          devinConsumedEchoesFor(managed.session.id).push(fingerprint);
+        const consumedLocal = fingerprint
+          ? consumeDevinEchoFingerprint(localEchoes, fingerprint)
+          : null;
+        if (consumedLocal) {
+          devinConsumedEchoesFor(managed.session.id).push(consumedLocal);
           persistChatState(managed);
           continue;
         }

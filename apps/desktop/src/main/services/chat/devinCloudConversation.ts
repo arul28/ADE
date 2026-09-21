@@ -48,26 +48,28 @@ export function devinCloudMessageFingerprint(
 export const DEVIN_CLOUD_REMOTE_MESSAGE_ID_PREFIX = "devin:";
 
 /**
- * Consumes one local-send echo: true (and one occurrence removed) when
- * `candidate` matches a fingerprint the transcript carries for a user
- * message this host emitted. Call only for remote `source: "user"` rows —
- * agent output dedupes on event id, never text, so repeated identical Devin
- * messages still print.
+ * Consumes one local-send echo: returns the matched local fingerprint (one
+ * occurrence removed) when `candidate` matches a fingerprint the transcript
+ * carries for a user message this host emitted, else null. Call only for
+ * remote `source: "user"` rows — agent output dedupes on event id, never
+ * text, so repeated identical Devin messages still print. The return is the
+ * LOCAL key, not the remote candidate — fuzzy suffix matches differ, and
+ * persisting the remote text would fail to retire the local echo on rebuild.
  */
 export function consumeDevinEchoFingerprint(
   echoes: Map<string, number>,
   candidate: string,
-): boolean {
-  const claim = (key: string): boolean => {
+): string | null {
+  const claim = (key: string): string => {
     const remaining = (echoes.get(key) ?? 0) - 1;
     if (remaining <= 0) echoes.delete(key);
     else echoes.set(key, remaining);
-    return true;
+    return key;
   };
   if (echoes.has(candidate)) return claim(candidate);
   const [kind, ...rest] = candidate.split(":");
   const value = rest.join(":");
-  if (!value) return false;
+  if (!value) return null;
   for (const existing of echoes.keys()) {
     if (!existing.startsWith(`${kind}:`)) continue;
     const known = existing.slice(kind.length + 1);
@@ -75,7 +77,7 @@ export function consumeDevinEchoFingerprint(
       return claim(existing);
     }
   }
-  return false;
+  return null;
 }
 
 /** Terminal Devin statuses — a session that will not produce further output. */
