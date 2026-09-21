@@ -329,6 +329,31 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
     }
   };
 
+  /** Every organization the token can see — the endpoint paginates. */
+  const listAllOrganizations = async (): Promise<Record<string, unknown>[]> => {
+    const items: Record<string, unknown>[] = [];
+    const seenCursors = new Set<string>();
+    let cursor: string | null = null;
+    for (;;) {
+      const qs = { first: 50, ...(cursor ? { after: cursor } : {}) };
+      const page = await request<unknown>(
+        "/v3/enterprise/organizations?qs=" + encodeURIComponent(JSON.stringify(qs)),
+      );
+      if (!isRecord(page) || !Array.isArray(page.items)) {
+        throw new Error("Devin rejected this token — the organizations endpoint did not answer as expected.");
+      }
+      items.push(...page.items.filter(isRecord));
+      const next = readString(page.end_cursor);
+      if (!next || seenCursors.has(next)) break;
+      seenCursors.add(next);
+      cursor = next;
+    }
+    return items;
+  };
+
+  const orgIdOf = (entry: Record<string, unknown>): string | null =>
+    readString(entry.org_id) ?? readString(entry.id);
+
   const resolveOrgId = async (): Promise<string> => {
     if (authMode === "v1") {
       throw new Error("Devin v1 personal keys are not org-scoped; this call needs a v3 PAT.");
@@ -336,12 +361,9 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
     if (cachedOrgId) return cachedOrgId;
     if (!orgLookupPromise) {
       orgLookupPromise = (async (): Promise<string | null> => {
-        const page = await request<unknown>(
-          "/v3/enterprise/organizations?qs=" + encodeURIComponent(JSON.stringify({ first: 2 })),
-        );
-        const items = isRecord(page) && Array.isArray(page.items) ? page.items : [];
+        const items = await listAllOrganizations();
         const first = items.find(isRecord);
-        const id = first ? readString(first.org_id) ?? readString(first.id) : null;
+        const id = first ? orgIdOf(first) : null;
         if (!id) {
           throw new Error(
             "Could not determine your Devin org. Add your org id (org-...) in Settings > Devin.",
@@ -686,19 +708,13 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
       }
       return { orgName: null };
     }
-    const page = await request<unknown>(
-      "/v3/enterprise/organizations?qs=" + encodeURIComponent(JSON.stringify({ first: 50 })),
-    );
-    if (!isRecord(page) || !Array.isArray(page.items)) {
-      throw new Error("Devin rejected this token — the organizations endpoint did not answer as expected.");
-    }
-    const first = page.items.find(isRecord);
+    const items = await listAllOrganizations();
+    const first = items.find(isRecord);
     if (!first) {
       throw new Error("This Devin token works but no organizations are visible to it.");
     }
-    const idFor = (entry: Record<string, unknown>) => readString(entry.org_id) ?? readString(entry.id);
     if (cachedOrgId) {
-      const match = page.items.filter(isRecord).find((entry) => idFor(entry) === cachedOrgId);
+      const match = items.find((entry) => orgIdOf(entry) === cachedOrgId);
       if (!match) {
         throw new Error(
           `Org '${cachedOrgId}' is not visible to this Devin token. Check the org id in Settings > Devin.`,
@@ -706,12 +722,12 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
       }
       return { orgName: readString(match.org_name) ?? readString(match.name) };
     }
-    if (page.items.length > 1) {
+    if (items.length > 1) {
       throw new Error(
         "Your Devin account belongs to multiple orgs. Add the org id (org-...) for the one you want in Settings > Devin.",
       );
     }
-    const id = idFor(first);
+    const id = orgIdOf(first);
     if (!id) {
       throw new Error("Could not determine your Devin org. Add your org id (org-...) in Settings > Devin.");
     }
