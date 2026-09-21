@@ -61,7 +61,7 @@ export type HarnessSubscriptionSource = {
   label: string;
 };
 
-export type HarnessBrainSource = HarnessAccountSource | HarnessKeySource | HarnessSubscriptionSource;
+export type HarnessModelSource = HarnessAccountSource | HarnessKeySource | HarnessSubscriptionSource;
 
 export type HarnessSourceInventory = {
   accounts: HarnessAccountSource[];
@@ -230,7 +230,7 @@ function harnessAccountProviderLabel(provider: HarnessPresetAccountProvider): st
  * are never twins; keys read as their vendor, with the user's own label after
  * it when one was given; subscriptions already carry a full sentence.
  */
-export function harnessSourceRowTitle(row: HarnessBrainSource): string {
+export function harnessSourceRowTitle(row: HarnessModelSource): string {
   if (row.kind === "account") return `${harnessAccountProviderLabel(row.provider)} · ${row.label}`;
   if (row.kind === "key") {
     const vendor = providerLabel(row.provider);
@@ -240,7 +240,7 @@ export function harnessSourceRowTitle(row: HarnessBrainSource): string {
 }
 
 /** The muted line under a source row: what it is, and what identifies it. */
-export function harnessSourceRowDetail(row: HarnessBrainSource): string {
+export function harnessSourceRowDetail(row: HarnessModelSource): string {
   if (row.kind === "account") {
     const facts = [row.email, row.plan].filter((entry): entry is string => Boolean(entry));
     if (facts.length) return facts.join(" · ");
@@ -265,7 +265,7 @@ export function subscriptionSources(): HarnessSubscriptionSource[] {
 }
 
 /** Turn a picked row back into the value a preset stores. */
-export function sourceFromInventoryRow(row: HarnessBrainSource): HarnessPresetSource {
+export function sourceFromInventoryRow(row: HarnessModelSource): HarnessPresetSource {
   if (row.kind === "account") {
     return { kind: "account", provider: row.provider, instanceId: row.instanceId };
   }
@@ -276,7 +276,7 @@ export function sourceFromInventoryRow(row: HarnessBrainSource): HarnessPresetSo
 }
 
 /** Whether a stored source still points at something this machine has. */
-export function sourceMatchesRow(source: HarnessPresetSource, row: HarnessBrainSource): boolean {
+export function sourceMatchesRow(source: HarnessPresetSource, row: HarnessModelSource): boolean {
   if (source.kind !== row.kind) return false;
   if (source.kind === "account" && row.kind === "account") return source.instanceId === row.instanceId;
   if (source.kind === "key" && row.kind === "key") {

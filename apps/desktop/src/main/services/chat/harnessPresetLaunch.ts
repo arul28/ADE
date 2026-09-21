@@ -101,7 +101,6 @@ export type HarnessPresetLaunchPlan = {
   /** Always true on a preset plan: the id reaches the harness unrewritten. */
   passthroughModelId: true;
   reasoningEffort?: string;
-  permissionMode?: string;
   /** Resolved subagent model, absent when the preset says "same as main". */
   subagentModel?: string;
   /** SDK `agents` entries for the built-ins this preset pinned. Claude only. */
@@ -515,7 +514,6 @@ export function resolveHarnessPresetPlan(
     model: preset.model,
     passthroughModelId: true,
     ...(preset.reasoningEffort?.trim() ? { reasoningEffort: preset.reasoningEffort.trim() } : {}),
-    ...(preset.permissionMode?.trim() ? { permissionMode: preset.permissionMode.trim() } : {}),
     ...(subagentModel && SUBAGENT_MODEL_SUPPORTED.has(harness) ? { subagentModel } : {}),
   };
 

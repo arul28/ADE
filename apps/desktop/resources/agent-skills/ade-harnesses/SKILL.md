@@ -1,18 +1,20 @@
 ---
 name: ade-harnesses
-description: Use this skill when you need to run a chat, a CLI session, or a subagent on a specific brain — a saved custom setup (a "harness preset" internally), one of this machine's provider accounts, or one stored API key — instead of whatever ADE would pick by default. Covers listing what is available (`ade chat models`, `ade providers accounts list`) and launching with `--preset`, `--credential`, or `--instance`.
+description: Use this skill when you need to run a chat, a CLI session, or a subagent on a specific setup — a saved Custom provider (a "harness preset" internally), one of this machine's provider accounts, or one stored API key — instead of whatever ADE would pick by default. Covers listing what is available (`ade chat models`, `ade providers accounts list`) and launching with `--preset`, `--credential`, or `--instance`.
 ---
 
-# ADE harnesses: picking the brain a session runs on
+# ADE harnesses: picking what a session runs on
 
-ADE separates the **body** (which agent harness runs: Claude Code, Codex, Droid,
-OpenCode, …) from the **brain** (where it gets its intelligence: a native
-sign-in, a stored API key, or a subscription borrowed through ADE's proxy).
+ADE separates the **harness** (which agent runs: Claude Code, Codex, Droid,
+OpenCode, …) from the **model provider** (where it gets its intelligence: a
+native sign-in, a stored API key, or a subscription borrowed through ADE's
+proxy).
 
 A **harness preset** — shown in the app as **Custom** (Settings › Providers ›
-Custom) — is one saved pairing of the two, with the model, the thinking level,
-the permission mode and the subagent pins attached. It has an id, and that id is
-the only thing a launch needs.
+Custom) — is one saved pairing of the two, with the model, the thinking level
+and the subagent pins attached. It has an id, and that id is the only thing a
+launch needs. The permission tier is not part of a preset: it is chosen at
+launch, the same way it is for every other provider.
 
 ## See what this machine can run
 
@@ -24,7 +26,7 @@ ade providers accounts list --provider codex --text
 ```
 
 Presets and accounts also ride the AI status payload, which is the one call that
-answers "what brains exist" without three round trips:
+answers what a session can run on without three round trips:
 
 ```bash
 ade actions run ai getStatus --text
@@ -34,7 +36,7 @@ Read `harnessPresets[]` (`{id, name, harness, model, source}`) and
 `providerAccounts[]` (`{id, provider, label, isDefault, signedIn}`). Neither
 carries a key or a config path — only the ids the flags below take.
 
-## Launch on a specific brain
+## Launch on a specific setup
 
 | you want | flag |
 |---|---|
@@ -43,8 +45,8 @@ carries a key or a config path — only the ids the flags below take.
 | a specific Claude/Codex account | `--instance <account-id>` |
 
 ```bash
-# A chat on a saved preset — model, effort, permission mode and subagent pins
-# all come from the preset, so nothing else needs stating.
+# A chat on a saved preset — model, effort and subagent pins all come from
+# the preset, so nothing else needs stating.
 ade chat create --lane <lane> --preset hp_opus_work
 
 # A tracked CLI terminal on the same preset.
@@ -57,7 +59,7 @@ ade chat create --lane <lane> --provider claude --credential openrouter
 ade chat create --lane <lane> --provider claude --instance work
 ```
 
-`--preset` and `--credential` are mutually exclusive: each names a whole brain,
+`--preset` and `--credential` are mutually exclusive: each names a whole setup,
 and passing both would leave ADE guessing which one you meant.
 
 ## Run subagents on a different preset

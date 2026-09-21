@@ -28,7 +28,6 @@ function preset(overrides: Partial<HarnessPreset> = {}): HarnessPreset {
     model: "claude-opus-4-5",
     subagentModel: HARNESS_PRESET_SUBAGENT_INHERIT,
     agentOverrides: {},
-    permissionMode: "default",
     accentColor: "#d97757",
     logo: { kind: "ade" },
     createdAt: "2026-09-01T00:00:00.000Z",
@@ -106,7 +105,6 @@ describe("normalizeHarnessPresetList", () => {
     ]);
     expect(normalized?.name).toBe("Codex CLI");
     expect(normalized?.subagentModel).toBe(HARNESS_PRESET_SUBAGENT_INHERIT);
-    expect(normalized?.permissionMode).toBe("default");
     expect(normalized?.accentColor).toBe(DEFAULT_HARNESS_PRESET_ACCENT);
     expect(normalized?.logo).toEqual({ kind: "ade" });
     expect(normalized?.updatedAt).toBe(normalized?.createdAt);

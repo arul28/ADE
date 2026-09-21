@@ -152,6 +152,11 @@ export type ModelPickerContentProps = {
   onRequestClose: () => void;
   /** Opens Settings › Providers › Custom from the Custom empty state. */
   onOpenHarnessSettings?: () => void;
+  /**
+   * The runtime catalog bucket this picker reads. Forwarded to the preset rows
+   * so a pinned picker names a runtime-only model instead of printing its slug.
+   */
+  catalogScopeKey?: string;
   onProviderRailSelect?: (family: ProviderFamily) => void;
   /**
    * When true, hide any permission-related rail/picker rows so the user only
@@ -206,6 +211,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   onSelect,
   onRequestClose,
   onOpenHarnessSettings,
+  catalogScopeKey,
   onProviderRailSelect,
   refreshingProvider,
   refreshErrorProvider,
@@ -1014,6 +1020,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                   presets={visiblePresets}
                   activeModelId={value}
                   onSelect={handlePresetSelect}
+                  catalogScopeKey={catalogScopeKey}
                 />
               )
             ) : (

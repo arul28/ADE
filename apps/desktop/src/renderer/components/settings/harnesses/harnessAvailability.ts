@@ -75,7 +75,7 @@ export function harnessAvailability(
   if (acp === undefined) return UNKNOWN;
   return acp
     ? { available: true, reason: "" }
-    : { available: false, reason: "This agent is not installed or not signed in." };
+    : { available: false, reason: "Not installed or not signed in." };
 }
 
 /** Readiness for every harness, for the wizard's card grid. */
