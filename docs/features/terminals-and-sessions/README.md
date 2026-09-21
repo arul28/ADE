@@ -1950,12 +1950,13 @@ container: it is amber and it says the row is blocked on the user. `ready` and
 here, loudest tier first — resting rows are live sessions that just finished a
 turn, settled is what the user already filed away.
 
-Both board derivations share one mapping, `canonicalBoardColumnForPhase`: the
-renderer's `buildWorkBoardModel` and the host's `deriveWorkBoardColumn`. They
-must agree, or a drag's host-authored "you moved this chat from <column>"
-message names a column the user never saw. They previously both filed the whole
-`awaiting-input` partition under "Needs you", so a board could claim five
-sessions were blocked on the user while every one of those cards showed an
+The host's `deriveWorkBoardColumn` maps a phase through
+`canonicalBoardColumnForPhase`; the renderer's `buildWorkBoardModel` reaches the
+same answer one level up, from the list's filing buckets plus a `needs_you`
+split. The two must agree, or a drag's host-authored "you moved this chat from
+<column>" message names a column the user never saw. They previously both filed
+the whole `awaiting-input` partition under "Needs you", so a board could claim
+five sessions were blocked on the user while every one of those cards showed an
 emerald "Done" dot and none had a raised hand.
 
 Waiting is not droppable because a row sits there for a reason a drag cannot

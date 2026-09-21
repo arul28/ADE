@@ -2416,6 +2416,14 @@ function claudeInputText(message: unknown): string {
     .join("");
 }
 
+async function settleDirectiveBookkeeping(): Promise<void> {
+  // `runSessionTurn`'s collector resolves on the turn's `done` event, which is
+  // emitted inside the provider run; the directive keys are marked when that run
+  // returns. A macrotask yield lets the run's promise chain finish so the next
+  // send sees the marked key. Not a wall-clock wait — nothing is being timed.
+  await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
 async function waitForSessionTitle(sessionService: ReturnType<typeof createMockSessionService>, sessionId: string, title: string): Promise<void> {
   await vi.waitFor(() => {
     expect(sessionService.get(sessionId)?.title).toBe(title);
@@ -3152,6 +3160,70 @@ describe("createAgentChatService", () => {
       "turnId",
     ]);
     service.forceDisposeAll();
+  });
+
+  // --------------------------------------------------------------------------
+  // computer-use directive cadence
+  // --------------------------------------------------------------------------
+
+  describe("computer-use directive cadence", () => {
+    const availableBackendStatus = {
+      backends: [{
+        name: "agent-browser",
+        available: true,
+        state: "installed",
+        detail: "installed",
+        supportedKinds: ["screenshot"],
+      }],
+      localFallback: { available: false },
+    };
+
+    function installAvailableBroker(service: ReturnType<typeof createService>["service"]): void {
+      service.setComputerUseArtifactBrokerService({
+        getBackendStatus: vi.fn(() => availableBackendStatus),
+        listArtifacts: vi.fn(() => []),
+        ingest: vi.fn(),
+      } as any);
+    }
+
+    it("delivers the directive once, then suppresses it while the capability set holds", async () => {
+      // The gate is a fingerprint of the rendered directive, and it is marked at
+      // the dispatch commitment point — not in `prepareSendMessage` and not in
+      // the local `/fast` handler. This is the regression guard for the bug
+      // where the key was written only by `/fast`: a normal send never marked
+      // it (so the directive rode every turn, the exact cost this gate exists to
+      // remove) and a `/fast` first message suppressed it for the whole session.
+      const fixture = installClaudeResponseFixture({ sdkSessionId: "sdk-cu-cadence", responseText: "ok" });
+      const { service } = createService();
+      installAvailableBroker(service);
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+
+      await service.runSessionTurn({ sessionId: session.id, text: "first" });
+      await settleDirectiveBookkeeping();
+      await service.runSessionTurn({ sessionId: session.id, text: "second" });
+
+      const prompts = fixture.send.mock.calls.map(([message]) => claudeInputText(message));
+      const carryingDirective = prompts.filter((text) => text.includes("## Computer Use"));
+      expect(carryingDirective).toHaveLength(1);
+      expect(prompts.at(-1) ?? "").not.toContain("## Computer Use");
+      service.forceDisposeAll();
+    });
+
+    it("does not let a local `/fast` suppress the directive for later real turns", async () => {
+      const fixture = installClaudeResponseFixture({ sdkSessionId: "sdk-cu-fast", responseText: "ok" });
+      const { service } = createService();
+      installAvailableBroker(service);
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+
+      // `/fast` is handled entirely locally: it never hands `promptText` — the
+      // carrier of the directive — to a provider, so it must not mark the key.
+      await service.sendMessage({ sessionId: session.id, text: "/fast on" });
+      await service.runSessionTurn({ sessionId: session.id, text: "real turn" });
+
+      const prompts = fixture.send.mock.calls.map(([message]) => claudeInputText(message));
+      expect(prompts.some((text) => text.includes("## Computer Use"))).toBe(true);
+      service.forceDisposeAll();
+    });
   });
 
   // --------------------------------------------------------------------------

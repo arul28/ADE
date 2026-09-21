@@ -330,9 +330,11 @@ Each block states its own cadence, and none of them repeats without a reason:
   here, never a second copy of the block.
 - **Computer Use directive** — once per lane epoch, and again whenever the
   available capture backends change. The gate is a fingerprint of the rendered
-  directive, so a capability the agent gained or lost always reaches it, and an
-  unchanged capability set never costs a second delivery. A session with no
-  artifact broker gets no directive at all rather than a claim it cannot honor.
+  directive, so a changed capability set is re-announced and an unchanged one
+  never costs a second delivery. Two honest limits: a transition to no available
+  backend emits no directive at all (there is nothing to announce), so a
+  capability lost entirely is not explicitly revoked; and a session with no
+  artifact broker gets no directive rather than a claim it cannot honor.
 
 ## Fragile and tricky wiring
 

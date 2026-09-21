@@ -768,6 +768,10 @@ import {
   cursorAgentSkillShimRoot,
   resolveCursorAgentSkillDirs,
 } from "../skills/cursorAgentSkillShim";
+import {
+  logSkillDelivery as recordSkillDelivery,
+  type SkillDeliveryDetail,
+} from "../skills/skillDelivery";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import {
   SESSION_STALE_AFTER_MS,
@@ -26695,39 +26699,15 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * The one skill-delivery telemetry point.
-   *
-   * ADE had none: no log line recorded which skill roots resolved, how many
-   * skills were advertised, whether the Claude plugin registered, or whether
-   * Codex accepted the extra roots. Every one of those failures is silent at
-   * runtime, so the only way to tell a working install from a broken one was to
-   * read agent transcripts and infer it from behaviour.
+   * Skill-delivery telemetry, bound to this service's logger. The event shape,
+   * the mechanism union, and the "there was no telemetry before this" rationale
+   * live in `services/skills/skillDelivery.ts`.
    */
   const logSkillDelivery = (
     managed: ManagedChatSession,
-    detail: {
-      mechanism:
-        | "claude-plugin"
-        | "claude-listing"
-        | "codex-extra-roots"
-        | "pi-additional-paths"
-        | "opencode-skill-paths"
-        | "qwen-skill-directories"
-        | "cursor-workspace-dirs";
-      rootCount?: number;
-      delivered: boolean;
-      skillCount?: number;
-      nativeCount?: number;
-      omittedCount?: number;
-      bytes?: number;
-      reason?: string;
-    },
+    detail: SkillDeliveryDetail,
   ): void => {
-    logger.info("agent_chat.skill_delivery", {
-      sessionId: managed.session.id,
-      provider: managed.session.provider,
-      ...detail,
-    });
+    recordSkillDelivery(logger, managed.session, detail);
   };
 
   const buildClaudeBackgroundSystemPrompt = (
@@ -40869,8 +40849,11 @@ export function createAgentChatService(args: {
     // EVERY turn on EVERY provider, gated only on "not a personal chat" — never
     // on whether the capability set had changed since the agent was last told.
     // It is now epoch-scoped like the lane directive, and re-sent whenever the
-    // available backends change, so an agent is never told it has a capability
-    // it lost or left unaware of one it gained.
+    // available backends change, so a changed capability set is re-announced
+    // rather than repeated. A transition to NO available backend emits no
+    // directive at all (there is nothing to say), so a capability that is lost
+    // entirely is not revoked mid-session — the agent simply stops being told
+    // it is available on the next turn that re-announces.
     const computerUseDirective = personalSession
       ? null
       : buildComputerUseDirective(computerUseArtifactBrokerRef?.getBackendStatus() ?? null);
@@ -40971,7 +40954,14 @@ export function createAgentChatService(args: {
       reasoningEffort,
       interactionMode: managed.session.provider === "claude" ? managed.session.interactionMode ?? "default" : null,
       laneDirectiveKey: providerSlashCommand && !personalSession ? null : shouldInjectLaneDirective ? laneDirectiveKey : null,
-      computerUseDirectiveKey: shouldInjectComputerUseDirective ? computerUseDirectiveKey : null,
+      // A provider slash-command turn replaces the user text with the command's
+      // own markdown and never runs `composeLaunchDirectives`, so the directive
+      // above is not in `promptText`. Null the key for the same reason the lane
+      // key is nulled, or a slash-command turn would mark it delivered without
+      // delivering it and suppress it for the rest of the session.
+      computerUseDirectiveKey: providerSlashCommand && !personalSession
+        ? null
+        : shouldInjectComputerUseDirective ? computerUseDirectiveKey : null,
       providerSlashCommand: personalSession ? false : providerSlashCommand === true,
       forceClaudeUserMessage: managed.session.provider === "claude" && (providerSlashCommand == null || personalSession) && slashCommand != null,
       ...(runtime ? { runtime } : {}),
@@ -42560,7 +42550,7 @@ export function createAgentChatService(args: {
       personalSession: isPersonalSession(managed.session),
       settingSources: cursorSdkSettingSources(policy),
       skillRoots: existingAgentSkillRoots(cursorRuntimeEnv),
-      shimRoot: cursorAgentSkillShimRoot(),
+      shimRoot: cursorAgentSkillShimRoot({ laneWorktreePath: managed.laneWorktreePath }),
     });
     logSkillDelivery(managed, {
       mechanism: "cursor-workspace-dirs",
@@ -45599,6 +45589,7 @@ export function createAgentChatService(args: {
       metadata,
       reasoningEffort,
       laneDirectiveKey,
+      computerUseDirectiveKey,
       providerSlashCommand,
       forceClaudeUserMessage,
       steerId,
@@ -45628,6 +45619,23 @@ export function createAgentChatService(args: {
     }
     recordLinearIssueContextForLane(managed, contextAttachments);
     recordGitHubIssueContextForLane(managed, contextAttachments);
+
+    // The computer-use directive is epoch-scoped: re-sent when the lane or the
+    // available backends change, not every turn. Its key is marked delivered at
+    // the same commitment point the lane directive uses — right after a provider
+    // run that carried the composed `promptText` returns — and NOT in
+    // `prepareSendMessage` or the local `/fast` handler. Both of those would mark
+    // a key for a prompt no provider ever received: the local command never
+    // hands `promptText` over, and marking in the handler suppressed the
+    // directive for the rest of the session after a single `/fast`.
+    //
+    // Marking after the run returns is the safe direction: a duplicate delivery
+    // is wasted tokens, a missed one leaves the agent unaware of a capability.
+    const markComputerUseDirectiveDelivered = (): void => {
+      if (computerUseDirectiveKey) {
+        managed.lastComputerUseDirectiveKey = computerUseDirectiveKey;
+      }
+    };
 
     // OpenCode runtime dispatch
     if (managed.session.provider === "opencode") {
@@ -45665,6 +45673,7 @@ export function createAgentChatService(args: {
         onDispatched,
         onBackendDispatched,
       });
+      markComputerUseDirectiveDelivered();
       return;
     }
 
@@ -45702,6 +45711,7 @@ export function createAgentChatService(args: {
           onBackendDispatched,
           ...(prepared.cloudOverrides ? { cloudOverrides: prepared.cloudOverrides } : {}),
         });
+        markComputerUseDirectiveDelivered();
         return;
       }
       await runCursorSdkTurn(managed, {
@@ -45718,6 +45728,7 @@ export function createAgentChatService(args: {
         onDispatched,
         onBackendDispatched,
       });
+      markComputerUseDirectiveDelivered();
       return;
     }
 
@@ -45742,6 +45753,7 @@ export function createAgentChatService(args: {
         onDispatched,
         onBackendDispatched,
       });
+      markComputerUseDirectiveDelivered();
       return;
     }
 
@@ -45764,6 +45776,7 @@ export function createAgentChatService(args: {
         onDispatched,
         onBackendDispatched,
       });
+      markComputerUseDirectiveDelivered();
       return;
     }
 
@@ -45807,6 +45820,7 @@ export function createAgentChatService(args: {
         onDispatched,
         onBackendDispatched,
       });
+      markComputerUseDirectiveDelivered();
       return;
     }
 
@@ -45927,6 +45941,7 @@ export function createAgentChatService(args: {
         optimisticCodexTurnStart,
         onDispatched: onBackendDispatched ?? onDispatched,
       });
+      markComputerUseDirectiveDelivered();
       return;
     }
 
@@ -45975,6 +45990,7 @@ export function createAgentChatService(args: {
       onDispatched,
       onBackendDispatched,
     });
+    markComputerUseDirectiveDelivered();
   };
 
   const applyClaudeFastModeSettingToRuntime = async (
@@ -46049,12 +46065,12 @@ export function createAgentChatService(args: {
     const turnId = randomUUID();
     prepared.onDispatched?.();
     prepared.onBackendDispatched?.();
-    persistDeliveredLaneDirectiveKey(managed, prepared.laneDirectiveKey);
-    // Marked at dispatch, like the lane directive: a send that never reached
-    // the provider must not convince ADE the agent has already been told.
-    if (prepared.computerUseDirectiveKey) {
-      managed.lastComputerUseDirectiveKey = prepared.computerUseDirectiveKey;
-    }
+    // No directive is marked delivered here. `/fast` is handled entirely
+    // locally: `prepared.promptText` — which is what carries the lane and
+    // computer-use directives — is never handed to a provider. Marking either
+    // key here would suppress that directive for the rest of the session after
+    // a single `/fast` as the user's first message. Both keys are marked where
+    // a provider run that actually carried `promptText` returns.
     emitChatEvent(managed, {
       type: "user_message",
       text: prepared.submittedText,

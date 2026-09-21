@@ -21,6 +21,7 @@ import {
   buildQwenAdeSkillDefaults,
   ensureQwenAdeSkillDefaultsFile,
   qwenAdeSkillDefaultsPath,
+  qwenNativeSystemDefaultsPath,
   QWEN_SYSTEM_DEFAULTS_PATH_ENV,
   QWEN_SYSTEM_SETTINGS_PATH_ENV,
 } from "./qwenSkillDefaults";
@@ -75,6 +76,21 @@ afterEach(() => {
 });
 
 describe("qwen skill defaults file", () => {
+  it("resolves the Windows system-defaults path through ProgramData, not a hardcoded drive", () => {
+    // An administrator can relocate ProgramData to another volume; reading the
+    // wrong base would silently drop the machine's own defaults tier.
+    const relocated = qwenNativeSystemDefaultsPath({ ProgramData: "D:\\Corp\\ProgramData" }, "win32");
+    expect(relocated).toContain("D:\\Corp\\ProgramData");
+    expect(relocated).toMatch(/system-defaults\.json$/);
+    // The conventional drive is only a fallback when the env var is absent.
+    expect(qwenNativeSystemDefaultsPath({}, "win32")).toContain("C:\\ProgramData");
+    // An explicit override still wins over any platform default.
+    expect(qwenNativeSystemDefaultsPath(
+      { [QWEN_SYSTEM_DEFAULTS_PATH_ENV]: "/custom/system.json" },
+      "win32",
+    )).toBe("/custom/system.json");
+  });
+
   it("puts the existing roots under skills.directories in an ADE-owned file", () => {
     const bundled = makeSkillRoot("bundled-skills", "ship");
     const project = makeSkillRoot("project-skills", "quality");

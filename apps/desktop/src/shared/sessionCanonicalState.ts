@@ -556,10 +556,15 @@ export function canonicalStatusBucket(phase: CanonicalSessionPhase): CanonicalSt
  * Filing the whole bucket under "Needs you" put finished and idle sessions in
  * an amber column while their own status dot read Done.
  *
- * Both board derivations call this: the renderer's `buildWorkBoardModel` and
- * the host's `deriveWorkBoardColumn`. They must agree, or a drag's
- * host-authored "you moved this chat from <column>" message names a column the
- * user never saw.
+ * The host's `deriveWorkBoardColumn` calls this. The renderer's
+ * `buildWorkBoardModel` reaches the same answer one level up, from the list's
+ * filing buckets plus a `phase === "needs_you"` split, and the two must agree —
+ * or a drag's host-authored "you moved this chat from <column>" message names a
+ * column the user never saw.
+ *
+ * One known divergence, predating this mapping and confined to helper rows:
+ * `effectiveSessionFilingBuckets` files a non-chat helper under its settled
+ * parent, which the host's single-row derivation does not model.
  */
 export function canonicalBoardColumnForPhase(
   phase: CanonicalSessionPhase,

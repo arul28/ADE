@@ -94,16 +94,23 @@ export function qwenAdeSkillDefaultsPath(args: {
  * and layers on top of it, because pointing the env var at an ADE file would
  * otherwise silently hide an administrator-installed one.
  */
-export function qwenNativeSystemDefaultsPath(env: NodeJS.ProcessEnv): string {
+export function qwenNativeSystemDefaultsPath(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = os.platform(),
+): string {
   const override = env[QWEN_SYSTEM_DEFAULTS_PATH_ENV]?.trim();
   if (override) return override;
   const settingsOverride = env[QWEN_SYSTEM_SETTINGS_PATH_ENV]?.trim();
   if (settingsOverride) return path.join(path.dirname(settingsOverride), "system-defaults.json");
-  if (os.platform() === "darwin") {
+  if (platform === "darwin") {
     return path.join("/Library", "Application Support", "QwenCode", "system-defaults.json");
   }
-  if (os.platform() === "win32") {
-    return path.join("C:\\ProgramData", "qwen-code", "system-defaults.json");
+  if (platform === "win32") {
+    // Resolve ProgramData instead of hardcoding `C:\ProgramData`: an
+    // administrator can relocate it to another volume, and a wrong base path
+    // would silently drop the machine's own defaults tier.
+    const programData = env.ProgramData?.trim() || env.PROGRAMDATA?.trim() || "C:\\ProgramData";
+    return path.join(programData, "qwen-code", "system-defaults.json");
   }
   return path.join("/etc", "qwen-code", "system-defaults.json");
 }

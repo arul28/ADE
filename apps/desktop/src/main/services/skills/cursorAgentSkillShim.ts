@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathKey } from "../shared/pathCompare";
 
 /**
  * Cursor's own agent-skill discovery, fed from an ADE-owned private directory.
@@ -28,8 +29,9 @@ import path from "node:path";
  * precedent for "is this skill copy still the one we wrote?".
  *
  * This is NOT an install into a provider-global skill home (`~/.cursor/skills`
- * and friends). The shim root is ADE-owned and is handed to one session at a
- * time; see docs/features/agents/README.md, "Bundled skill distribution".
+ * and friends). The shim root is ADE-owned and keyed per lane, so concurrent
+ * chats cannot rebuild a tree another session is using; see
+ * docs/features/agents/README.md, "Bundled skill distribution".
  */
 
 /** Cursor's non-third-party project skill layout: `<root>/.agents/skills`. */
@@ -63,9 +65,27 @@ export function adeHomeDir(env: NodeJS.ProcessEnv = process.env): string {
   return env.ADE_HOME?.trim() || path.join(os.homedir(), ".ade");
 }
 
-/** `<adeHome>/agent-skill-shims/cursor`. */
-export function cursorAgentSkillShimRoot(env: NodeJS.ProcessEnv = process.env): string {
-  return path.join(adeHomeDir(env), "agent-skill-shims", "cursor");
+/**
+ * `<adeHome>/agent-skill-shims/cursor/<lane-key>`.
+ *
+ * Keyed per lane, not one shared root: two Cursor chats can be mid-launch at
+ * once, and a rebuild does `rmSync(skillsDir, { recursive: true })` before it
+ * re-copies. A shared root let one launch delete the tree another live session
+ * had just been handed — on Windows an open handle makes that `rmSync` throw
+ * `EPERM`, degrading a launch that should have worked. Same rule and same
+ * `pathKey` input as `qwenAdeSkillDefaultsPath`.
+ */
+export function cursorAgentSkillShimRoot(args: {
+  env?: NodeJS.ProcessEnv;
+  laneWorktreePath: string;
+}): string {
+  const env = args.env ?? process.env;
+  const key = crypto
+    .createHash("sha256")
+    .update(pathKey(path.resolve(args.laneWorktreePath)))
+    .digest("hex")
+    .slice(0, 16);
+  return path.join(adeHomeDir(env), "agent-skill-shims", "cursor", key);
 }
 
 export function cursorAgentSkillShimSkillsDir(shimRoot: string): string {

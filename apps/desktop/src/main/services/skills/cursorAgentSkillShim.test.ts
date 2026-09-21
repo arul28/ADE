@@ -144,14 +144,34 @@ describe("prepareCursorAgentSkillShim", () => {
 
 describe("cursorAgentSkillShimRoot", () => {
   it("is ADE-owned, never a provider-global skill home", () => {
-    const root = cursorAgentSkillShimRoot({ ADE_HOME: path.join("/tmp", "ade-home") } as NodeJS.ProcessEnv);
-    expect(root).toBe(path.join("/tmp", "ade-home", "agent-skill-shims", "cursor"));
+    const root = cursorAgentSkillShimRoot({
+      env: { ADE_HOME: path.join("/tmp", "ade-home") } as NodeJS.ProcessEnv,
+      laneWorktreePath: "/repo/.ade/worktrees/lane-1",
+    });
+    expect(path.dirname(root)).toBe(
+      path.join("/tmp", "ade-home", "agent-skill-shims", "cursor"),
+    );
+    expect(path.basename(root)).toMatch(/^[0-9a-f]{16}$/);
     expect(root).not.toContain(path.join(".cursor", "skills"));
   });
 
+  it("keys per lane so two chats cannot rebuild one tree", () => {
+    const env = { ADE_HOME: path.join("/tmp", "ade-home") } as NodeJS.ProcessEnv;
+    const laneA = cursorAgentSkillShimRoot({ env, laneWorktreePath: "/repo/.ade/worktrees/lane-a" });
+    const laneB = cursorAgentSkillShimRoot({ env, laneWorktreePath: "/repo/.ade/worktrees/lane-b" });
+    const laneAAgain = cursorAgentSkillShimRoot({ env, laneWorktreePath: "/repo/.ade/worktrees/lane-a" });
+    expect(laneA).not.toBe(laneB);
+    expect(laneA).toBe(laneAAgain);
+  });
+
   it("falls back to <home>/.ade", () => {
-    expect(cursorAgentSkillShimRoot({} as NodeJS.ProcessEnv))
-      .toBe(path.join(os.homedir(), ".ade", "agent-skill-shims", "cursor"));
+    const root = cursorAgentSkillShimRoot({
+      env: {} as NodeJS.ProcessEnv,
+      laneWorktreePath: "/repo/.ade/worktrees/lane-1",
+    });
+    expect(path.dirname(root)).toBe(
+      path.join(os.homedir(), ".ade", "agent-skill-shims", "cursor"),
+    );
   });
 });
 
