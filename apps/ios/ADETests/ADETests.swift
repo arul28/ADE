@@ -10983,7 +10983,9 @@ final class ADETests: XCTestCase {
             codexConfigSource: "flags"
           ),
           target: nil,
-          permissionMode: "edit"
+          permissionMode: "edit",
+          orchestrationParentSessionId: "chat-parent",
+          spawnKind: .subagent
         ),
         chatIdleSinceAt: "2026-03-17T00:11:00.000Z"
       ),
@@ -10998,6 +11000,10 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(session.resumeMetadata?.launch.codexApprovalPolicy, "on-request")
     XCTAssertEqual(session.resumeMetadata?.launch.codexSandbox, "workspace-write")
     XCTAssertEqual(session.resumeMetadata?.launch.codexConfigSource, "flags")
+    XCTAssertEqual(session.resumeMetadata?.orchestrationParentSessionId, "chat-parent")
+    XCTAssertEqual(session.resumeMetadata?.spawnKind, .subagent)
+    XCTAssertEqual(session.orchestrationParentSessionId, "chat-parent")
+    XCTAssertEqual(session.spawnKind, .subagent)
     XCTAssertTrue(session.manuallyNamed ?? false)
     database.close()
   }

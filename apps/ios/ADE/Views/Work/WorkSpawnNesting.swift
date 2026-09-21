@@ -106,7 +106,7 @@ private func workSpawnKind(
   _ session: TerminalSessionSummary,
   summary: AgentChatSessionSummary?
 ) -> AgentChatSpawnKind? {
-  session.spawnKind ?? summary?.spawnKind
+  session.spawnKind ?? session.resumeMetadata?.spawnKind ?? summary?.spawnKind
 }
 
 private func workOrchestrationParentId(
@@ -115,6 +115,8 @@ private func workOrchestrationParentId(
 ) -> String? {
   let fromSession = session.orchestrationParentSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
   if !fromSession.isEmpty { return fromSession }
+  let fromResume = session.resumeMetadata?.orchestrationParentSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  if !fromResume.isEmpty { return fromResume }
   let fromSummary = summary?.orchestrationParentSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
   return fromSummary.isEmpty ? nil : fromSummary
 }

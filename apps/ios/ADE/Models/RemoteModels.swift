@@ -4537,6 +4537,11 @@ struct TerminalResumeMetadata: Codable, Equatable {
   var launch: TerminalResumeLaunchConfig
   var target: String?
   var permissionMode: String?
+  /// Same fields as desktop `TerminalResumeMetadata`. Older hosts and older
+  /// phone caches omit them; decode-if-present so a JSON blob that already
+  /// carries lineage survives a SQLite round trip.
+  var orchestrationParentSessionId: String? = nil
+  var spawnKind: AgentChatSpawnKind? = nil
 }
 
 struct FilesQuickOpenItem: Codable, Identifiable, Equatable {

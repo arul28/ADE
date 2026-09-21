@@ -79,6 +79,33 @@ final class WorkSessionGroupingTests: XCTestCase {
     XCTAssertEqual(presentation.topLevelDisplaySessionIds, Set(["chat-1"]))
   }
 
+  func testResumeMetadataLineageNestsATrackedCliSubagent() {
+    let lane = makeLane(id: "lane-a", name: "feature/one")
+    var helper = makeSession(
+      id: "cli-sub",
+      laneId: lane.id,
+      toolType: "codex"
+    )
+    helper.resumeMetadata = TerminalResumeMetadata(
+      provider: "codex",
+      targetKind: "thread",
+      targetId: "thread-1",
+      launch: TerminalResumeLaunchConfig(),
+      orchestrationParentSessionId: "chat-1",
+      spawnKind: .subagent
+    )
+    let presentation = makePresentation(
+      sessions: [
+        makeSession(id: "chat-1", laneId: lane.id),
+        helper,
+      ],
+      lanes: [lane]
+    )
+
+    XCTAssertEqual(nestedSubagentGroup(presentation, parentId: "chat-1")?.children.map(\.id), ["cli-sub"])
+    XCTAssertEqual(presentation.topLevelDisplaySessionIds, Set(["chat-1"]))
+  }
+
   func testDrawerAttentionDoesNotTreatUsageLimitAsFailed() throws {
     var child = makeSession(
       id: "sub-1",

@@ -1201,7 +1201,7 @@ final class DatabaseService {
           } else {
             sqlite3_bind_null(statement, 21)
           }
-          try bindOptionalJson(session.resumeMetadata, to: statement, index: 22)
+          try bindOptionalJson(persistableResumeMetadata(from: session), to: statement, index: 22)
           sqlite3_bind_int(statement, 23, session.manuallyNamed == true ? 1 : 0)
           if let chatIdleSinceAt = session.chatIdleSinceAt {
             try bindText(chatIdleSinceAt, to: statement, index: 24)
@@ -2020,8 +2020,22 @@ final class DatabaseService {
       resumeMetadata: row.resumeMetadata,
       chatIdleSinceAt: row.chatIdleSinceAt,
       chatSessionId: row.chatSessionId,
-      pendingInputItemId: row.pendingInputItemId
+      pendingInputItemId: row.pendingInputItemId,
+      orchestrationParentSessionId: row.resumeMetadata?.orchestrationParentSessionId,
+      spawnKind: row.resumeMetadata?.spawnKind
     )
+  }
+
+  /// Host projection carries lineage on the session row; SQLite only has the
+  /// resume-metadata JSON blob. Copy session-level spawn fields into that blob
+  /// so a tracked CLI `--type subagent` still nests after hydration.
+  private func persistableResumeMetadata(from session: TerminalSessionSummary) -> TerminalResumeMetadata? {
+    var metadata = session.resumeMetadata
+    guard metadata != nil else { return nil }
+    metadata?.orchestrationParentSessionId =
+      session.orchestrationParentSessionId ?? metadata?.orchestrationParentSessionId
+    metadata?.spawnKind = session.spawnKind ?? metadata?.spawnKind
+    return metadata
   }
 
   func updateSessionTitle(sessionId: String, title: String) throws {
