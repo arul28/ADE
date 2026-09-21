@@ -49,10 +49,16 @@ appears at the bottom of the viewport for 6 s: "Saved to proof · 0:23 ·
 `.ade/artifacts/apple-recordings`. Use the existing proof artifact service
 (`ade proof attach` path / `captureProofBundle` plumbing), not a new store.
 
-A4. **Closing the tools pane shows nothing.** When the tools pane closes (or
-switches tool) while a device is live, the mini player (A5) appears at once
-in the chat column, bottom-right, unless the user closed it explicitly for
-this device.
+A4. **Close / minimize rules (owner decision 2026-09-21, shared with every
+screen tool).** Closing the Apple Development TAB closes the tool for real:
+stream lease released, this chat's device session released (the lane device
+stays). Closing only the tools PANE, or switching tool, keeps it running and
+shows the floating corner preview (A5). Per-chat toggle "Show preview when
+minimized", default ON; X on the floating preview turns it OFF for that chat;
+turning it back ON shows the preview at the next minimize. Float and maximize
+live in the tool's own header/rail, never in the tools tab strip. State is the
+shared `renderer/state/workLiveCardState.ts` (from lane mac-desktop) and
+`chat/chatCompanionUiState.ts` — no parallel store.
 
 A5. **The floating player is blank.** "Float over chat" showed an empty
 transparent box with a permanently visible menu. Port
