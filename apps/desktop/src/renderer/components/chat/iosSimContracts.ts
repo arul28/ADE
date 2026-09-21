@@ -6,41 +6,16 @@
  */
 import type {
   IosSimulatorLaunchResult,
-  IosSimulatorPrivacyPane,
   IosSimulatorSession,
-  IosSimulatorWindowSourcesResult,
 } from "../../../shared/types";
 
-/** Opens the macOS privacy pane the blocked capability lives in. */
-export async function openIosSimSettingsPane(pane: IosSimulatorPrivacyPane): Promise<void> {
-  await window.ade.iosSimulator.openSystemSettings({ pane });
-}
-
-/**
- * Un-hides, un-minimizes and activates Simulator.app — the one place ADE
- * deliberately takes focus, because the user asked for it.
- *
- * Resolves `{ ok: false }` with a populated `message` for a denied Automation
- * grant, a Simulator that is not running, and non-macOS. Callers must honour
- * `ok`: reporting a refused reveal as a success is the exact silent failure the
- * blocker overlay exists to kill.
+/*
+ * `openIosSimSettingsPane` and `revealSimulator` used to live here. Both
+ * belonged to the window-capture era: one opened the Screen Recording pane the
+ * capture needed, the other un-minimized Simulator.app so there was a window to
+ * capture. The helper reads the framebuffer directly, so neither has a caller
+ * and neither has anything to do.
  */
-export async function revealSimulator(): Promise<{ ok: boolean; message: string | null }> {
-  return window.ade.iosSimulator.revealSimulator();
-}
-
-/**
- * Passes the runtime session down as a park/settle trigger: Electron main's own
- * service sees a null `activeSession` for brain-owned launches, so without this
- * hint the host never parks the window at all. Scoring the returned sources
- * against the booted device happens here in the renderer, in
- * `pickSimulatorWindowSource` — the host does not rank them.
- */
-export async function listWindowSourcesForSession(
-  session: { deviceUdid: string; deviceName: string | null } | null,
-): Promise<IosSimulatorWindowSourcesResult> {
-  return window.ade.iosSimulator.listSimulatorWindowSources(session ? { session } : undefined);
-}
 
 /**
  * What the drawer shows about *which* binary is running: the checkout it was

@@ -1,21 +1,20 @@
 import fs from "node:fs";
-import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import type { ChildProcess, spawn as nodeSpawn } from "node:child_process";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
-  __testSetIosSimulatorCompanionRegistryPath,
+  __testSetIosSimulatorHelperFactory,
   __testSetIosSimulatorProcessHooks,
   clampStreamFps,
   createIosSimulatorService,
-  IDB_COMPANION_REGISTRY_PATH,
+  IOS_SIMULATOR_STREAM_BACKEND,
   IosSimulatorOwnedBySessionError,
   parseXcodePreviewWindows,
-  resolveIosSimulatorStreamBackend,
   shouldOpenSimulatorAppForLaunch,
 } from "./iosSimulatorService";
+import type { SimHelperClient } from "./simHelperClient";
 import {
   IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE,
   IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE,
@@ -31,8 +30,8 @@ const noopLogger: Logger = {
   error: () => {},
 };
 
-// exitCode is load-bearing: ensureCompanion reads `exitCode !== null` as "the
-// companion already died", so a companion stub must pass exitCode: null.
+// exitCode is load-bearing for any caller that reads `exitCode !== null` as
+// "this child already died", so a stub must pass exitCode: null.
 function mockChildProcess(options: { exitCode?: number | null } = {}): ChildProcess {
   const child = new EventEmitter() as ChildProcess;
   child.stdout = new EventEmitter() as ChildProcess["stdout"];
@@ -53,6 +52,14 @@ const simulatorDevicesJson = JSON.stringify({
         udid: "device-1",
         state: "Booted",
         isAvailable: true,
+        deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro",
+      },
+      {
+        name: "iPhone 17",
+        udid: "device-2",
+        state: "Shutdown",
+        isAvailable: true,
+        deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
       },
     ],
   },
@@ -114,6 +121,59 @@ function writeMinimalXcodeProject(
   return projectPath;
 }
 
+/**
+ * A fake vendored helper.
+ *
+ * The real one is a Swift binary that talks to CoreSimulator and needs a booted
+ * simulator, so every service test that touches input, the accessibility tree
+ * or the live view stands this up instead and asserts on the NDJSON commands it
+ * received — which is the actual contract between ADE and the helper.
+ */
+function fakeSimHelper(overrides: {
+  onSend?: (command: Record<string, unknown>) => Record<string, unknown> | Promise<Record<string, unknown>>;
+} = {}): { client: SimHelperClient; sent: Array<Record<string, unknown>>; emit: (event: { type: string } & Record<string, unknown>) => void } {
+  const sent: Array<Record<string, unknown>> = [];
+  const listeners = new Set<(event: { type: string } & Record<string, unknown>) => void>();
+  const client: SimHelperClient = {
+    binaryPath: "/tmp/ade-sim-helper",
+    send: async (command) => {
+      sent.push(command);
+      if (overrides.onSend) return overrides.onSend(command);
+      if (command.type === "capture-start") {
+        return {
+          type: "capture-started",
+          udid: command.udid,
+          url: "http://127.0.0.1:45301/ios-simulator-video",
+          token: "a".repeat(64),
+          pointWidth: 393,
+          pointHeight: 852,
+          pixelWidth: 1179,
+          pixelHeight: 2556,
+          scale: 3,
+        };
+      }
+      if (command.type === "screenshot") {
+        return { path: command.path, width: 1179, height: 2556 };
+      }
+      return {};
+    },
+    onEvent: (listener) => {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
+    isReady: () => true,
+    pid: () => 4321,
+    protocolVersion: () => 1,
+    exists: () => true,
+    dispose: () => { listeners.clear(); },
+  };
+  return {
+    client,
+    sent,
+    emit: (event) => { for (const listener of [...listeners]) listener(event); },
+  };
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
@@ -124,8 +184,9 @@ describe("iosSimulatorService Simulator.app live view defaults", () => {
     expect(shouldOpenSimulatorAppForLaunch(undefined)).toBe(true);
     expect(shouldOpenSimulatorAppForLaunch(true)).toBe(false);
     expect(shouldOpenSimulatorAppForLaunch(false)).toBe(true);
-    expect(resolveIosSimulatorStreamBackend("auto")).toBe("simulator-window-capture");
-    expect(resolveIosSimulatorStreamBackend("simulator-window-capture")).toBe("simulator-window-capture");
+    // One engine now: the vendored Swift helper. The name survives so a status
+    // read still says which engine produced the pixels; it just has one answer.
+    expect(IOS_SIMULATOR_STREAM_BACKEND).toBe("helper-h264");
   });
 
   it("answers a usable frame rate for every input", () => {
@@ -133,7 +194,7 @@ describe("iosSimulatorService Simulator.app live view defaults", () => {
     expect(clampStreamFps(null)).toBe(60);
     expect(clampStreamFps(30)).toBe(30);
     expect(clampStreamFps(30.4)).toBe(30);
-    // Out of range clamps to the ends rather than reaching `idb`.
+    // Out of range clamps to the ends rather than reaching the encoder.
     expect(clampStreamFps(0)).toBe(1);
     expect(clampStreamFps(-5)).toBe(1);
     expect(clampStreamFps(1000)).toBe(60);
@@ -379,9 +440,12 @@ describe("iosSimulatorService single-owner lock contract", () => {
         chatSessionId: "chat-owner",
       });
 
-      await expect(service.claim({ laneId: "lane-thief", chatSessionId: "chat-thief" }))
+      // Sessions are keyed by lane now, so a thief has to name the lane it is
+      // reaching into — which is exactly what the guard refuses. (Naming a
+      // DIFFERENT lane is no longer a theft at all: that lane has no session.)
+      await expect(service.claim({ laneId: "lane-owner", chatSessionId: "chat-thief" }))
         .rejects.toMatchObject({ code: IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE });
-      expect((await service.getStatus()).activeSession).toMatchObject({
+      expect((await service.getStatus({ laneId: "lane-owner" })).activeSession).toMatchObject({
         laneId: "lane-owner",
         chatSessionId: "chat-owner",
       });
@@ -389,14 +453,14 @@ describe("iosSimulatorService single-owner lock contract", () => {
       // Naming no chat id is not a takeover: it re-attributes the lane and
       // leaves the owning chat exactly where it was, so an agent tagging a
       // running session with its lane still works.
-      const relabelled = await service.claim({ laneId: "lane-other" });
+      const relabelled = await service.claim({ laneId: "lane-other", chatSessionId: "chat-owner" });
       expect(relabelled.activeSession).toMatchObject({
         laneId: "lane-other",
         chatSessionId: "chat-owner",
       });
 
       // Stated intent gets through, the same way it does for `shutdown`.
-      const taken = await service.claim({ chatSessionId: "chat-thief", ignoreOwnership: true });
+      const taken = await service.claim({ laneId: "lane-other", chatSessionId: "chat-thief", ignoreOwnership: true });
       expect(taken.activeSession).toMatchObject({ chatSessionId: "chat-thief" });
     } finally {
       service.dispose();
@@ -759,18 +823,20 @@ describe("iosSimulatorService Simulator.app launch visibility", () => {
       spawn: spawnMock as unknown as typeof nodeSpawn,
       commandExists: () => true,
     });
+    const helper = fakeSimHelper();
+    const restoreHelper = __testSetIosSimulatorHelperFactory(() => helper.client);
     const service = createIosSimulatorService({ projectRoot: os.tmpdir(), logger: noopLogger });
 
     try {
       const before = await service.getStatus();
       expect(before.stream?.running).toBe(false);
 
-      const started = await service.startStream({ deviceUdid: "device-1", backend: "idb-h264" });
+      const started = await service.startStream({ deviceUdid: "device-1" });
       // Immediately after, well inside the throttle window: the cached status
       // must not still say the stream is stopped.
       const after = await service.getStatus();
       expect(after.stream?.running).toBe(true);
-      expect(after.stream?.backend).toBe("idb-h264");
+      expect(after.stream?.backend).toBe("helper-h264");
       expect(after.stream?.deviceUdid).toBe("device-1");
 
       const serialized = JSON.stringify(after.stream);
@@ -780,6 +846,7 @@ describe("iosSimulatorService Simulator.app launch visibility", () => {
       expect(after.stream).not.toHaveProperty("streamUrl");
     } finally {
       service.dispose();
+      restoreHelper();
       restoreHooks();
       platformSpy.mockRestore();
     }
@@ -797,41 +864,45 @@ describe("iosSimulatorService Simulator.app launch visibility", () => {
       }
       return { stdout: "", stderr: "" };
     });
-    const spawnMock = vi.fn<[string, string[], unknown?], ChildProcess>(() => mockChildProcess());
-    const restoreHooks = __testSetIosSimulatorProcessHooks({
-      run: runMock,
-      spawn: spawnMock as unknown as typeof nodeSpawn,
-      commandExists: () => true,
-    });
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run: runMock, commandExists: () => true });
+    const helper = fakeSimHelper();
+    const restoreHelper = __testSetIosSimulatorHelperFactory(() => helper.client);
     const service = createIosSimulatorService({ projectRoot: os.tmpdir(), logger: noopLogger });
 
     try {
-      const started = await service.startStream({ deviceUdid: "device-1", backend: "idb-h264" });
-      expect(started.backend).toBe("idb-h264");
+      const started = await service.startStream({ deviceUdid: "device-1", fps: 30, scaleFactor: 0.5 });
+      expect(started.backend).toBe("helper-h264");
+      // The helper is the one that captures, and it is told in its own units.
+      expect(helper.sent.at(-1)).toMatchObject({ type: "capture-start", udid: "device-1", fps: 30, scale: 0.5 });
       // The call that creates the stream is the one caller that needs to read
       // it, so it gets the whole address.
-      expect(started.transport?.token).toMatch(/^[0-9a-f]{64}$/);
-      expect(started.transport?.url).toContain(started.transport?.token ?? "never");
+      expect(started.transport?.token).toBe("a".repeat(64));
+      expect(started.transport?.url).toBe("http://127.0.0.1:45301/ios-simulator-video");
+      expect(started.transport?.port).toBe(45301);
+      expect(started.transport?.width).toBe(1179);
       expect(started.streamUrl).toBe(started.transport?.url);
 
       const read = service.getStreamStatus();
-      expect(read.backend).toBe("idb-h264");
+      expect(read.backend).toBe("helper-h264");
       expect(read.transport?.token).toBeNull();
       expect(read.transport?.url).toBeNull();
-      // The same secret rides in `streamUrl`'s query string, so redacting only
-      // `transport` would leave it in the field right next to it.
+      // A reader that only had `streamUrl` redacted would still be handed the
+      // address, so both go.
       expect(read.streamUrl).toBeNull();
       expect(JSON.stringify(read)).not.toContain(started.transport?.token ?? "never");
       // The shape a reader actually wants survives.
       expect(read.transport?.port).toBe(started.transport?.port);
     } finally {
       service.dispose();
+      restoreHelper();
       restoreHooks();
       platformSpy.mockRestore();
     }
   });
 
-  it("opens Simulator.app when explicit window capture streaming is requested", async () => {
+  it("keeps one lane's stream out of another lane's", async () => {
+    // Sessions and streams are per-lane now. A project-wide stream meant
+    // `stream-stop` on one lane killed the other lane's picture.
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     const runMock = vi.fn(async (command: string, commandArgs: string[]) => {
       if (command === "xcrun" && commandArgs.join(" ") === "simctl list devices available --json") {
@@ -839,21 +910,68 @@ describe("iosSimulatorService Simulator.app launch visibility", () => {
       }
       return { stdout: "", stderr: "" };
     });
-    const spawnMock = vi.fn<[string, string[], unknown?], ChildProcess>(() => mockChildProcess());
-    const restoreHooks = __testSetIosSimulatorProcessHooks({
-      run: runMock,
-      spawn: spawnMock as unknown as typeof nodeSpawn,
-      commandExists: () => true,
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run: runMock, commandExists: () => true });
+    const helper = fakeSimHelper();
+    const restoreHelper = __testSetIosSimulatorHelperFactory(() => helper.client);
+    const service = createIosSimulatorService({
+      projectRoot: os.tmpdir(),
+      logger: noopLogger,
+      resolveLaneWorktreePath: () => os.tmpdir(),
     });
-    const service = createIosSimulatorService({ projectRoot: os.tmpdir(), logger: noopLogger });
 
     try {
-      const status = await service.startStream({ deviceUdid: "device-1", backend: "simulator-window-capture" });
-      expect(status.backend).toBe("simulator-window-capture");
-      expect(spawnMock).toHaveBeenCalledWith("open", ["-g", "-a", "Simulator"], { detached: true, stdio: "ignore" });
+      await service.startStream({ deviceUdid: "device-1", laneId: "lane-a" });
+      await service.startStream({ deviceUdid: "device-2", laneId: "lane-b" });
+
+      expect(service.getStreamStatus({ laneId: "lane-a" }).running).toBe(true);
+      expect(service.getStreamStatus({ laneId: "lane-b" }).deviceUdid).toBe("device-2");
+
+      await service.stopStream({ laneId: "lane-a" });
+      expect(service.getStreamStatus({ laneId: "lane-a" }).running).toBe(false);
+      // The other lane is untouched — the whole point of keying by lane.
+      expect(service.getStreamStatus({ laneId: "lane-b" }).running).toBe(true);
     } finally {
       service.dispose();
+      restoreHelper();
       restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
+  it("refuses `frame` without a running stream and grabs one when there is", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-apple-frame-`);
+    const runMock = vi.fn(async (command: string, commandArgs: string[]) => {
+      if (command === "xcrun" && commandArgs.join(" ") === "simctl list devices available --json") {
+        return { stdout: simulatorDevicesJson, stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    });
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run: runMock, commandExists: () => true });
+    const helper = fakeSimHelper();
+    const restoreHelper = __testSetIosSimulatorHelperFactory(() => helper.client);
+    const service = createIosSimulatorService({ projectRoot, logger: noopLogger });
+
+    try {
+      // `frame` reads the live stream; `screenshot` round-trips simctl and
+      // needs no stream. Saying so is the difference between "start one" and
+      // "this is broken".
+      await expect(service.frame({})).rejects.toThrow(/APPLE_STREAM_NOT_RUNNING/);
+
+      await service.startStream({ deviceUdid: "device-1" });
+      const grabbed = await service.frame({});
+      expect(grabbed.width).toBe(1179);
+      expect(grabbed.filePath.startsWith(path.join(projectRoot, ".ade", "cache", "ios-simulator", "frames"))).toBe(true);
+      expect(helper.sent.at(-1)).toMatchObject({ type: "screenshot", udid: "device-1" });
+
+      // Same containment rule as `screenshot`: an `--out` that escapes the
+      // build root is refused rather than written.
+      await expect(service.frame({ outPath: "../escape.png" })).rejects.toThrow(/OUT_PATH_OUTSIDE_ROOT/);
+    } finally {
+      service.dispose();
+      restoreHelper();
+      restoreHooks();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
       platformSpy.mockRestore();
     }
   });
@@ -1602,108 +1720,6 @@ describe("iosSimulatorService launch concurrency and ownership", () => {
   });
 });
 
-describe("iosSimulatorService idb companion registry", () => {
-  // The real ledger at IDB_COMPANION_REGISTRY_PATH is shared with the
-  // developer's running ADE app and brain daemon, so writing or deleting it
-  // from a test erases the live processes' companion records. Every test here
-  // redirects the service at its own scratch file instead.
-  const useScratchRegistry = () => {
-    const dir = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-companion-registry-`);
-    const registryPath = path.join(dir, "companions.json");
-    const restoreHook = __testSetIosSimulatorCompanionRegistryPath(registryPath);
-    return {
-      registryPath,
-      restore: () => {
-        restoreHook();
-        fs.rmSync(dir, { recursive: true, force: true });
-      },
-    };
-  };
-
-  it("keeps the production ledger path per-user under tmpdir", () => {
-    expect(path.dirname(IDB_COMPANION_REGISTRY_PATH)).toBe(os.tmpdir());
-    expect(path.basename(IDB_COMPANION_REGISTRY_PATH)).toMatch(/^ade-ios-simulator-idb-companions-.+\.json$/);
-  });
-
-  it("sweeps only companions whose owning ADE process is gone", async () => {
-    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
-    const { registryPath, restore: restoreRegistry } = useScratchRegistry();
-    // A pid this test can be sure is dead: 2^22 is above every default
-    // pid_max, so nothing can be occupying it.
-    const deadOwnerPid = 4_194_304;
-    fs.writeFileSync(registryPath, JSON.stringify({
-      "901": { udid: "device-1", startedAt: new Date().toISOString(), ownerPid: process.pid },
-      "902": { udid: "device-2", startedAt: new Date().toISOString(), ownerPid: deadOwnerPid },
-      // Written by a build that predates ownerPid; treated as an orphan, which
-      // is the old behaviour and the safe reading for a since-dead writer.
-      "903": { udid: "device-3", startedAt: new Date().toISOString() },
-    }), "utf8");
-
-    const psCalls: string[][] = [];
-    let markSwept!: () => void;
-    const swept = new Promise<void>((resolve) => { markSwept = resolve; });
-    const run = vi.fn(async (command: string, commandArgs: string[]) => {
-      if (command === "ps") {
-        psCalls.push(commandArgs);
-        markSwept();
-      }
-      return { stdout: "", stderr: "" };
-    });
-    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
-    const service = createIosSimulatorService({ projectRoot: os.tmpdir(), logger: noopLogger });
-
-    try {
-      await swept;
-      // 901 belongs to this very process, which is very much alive: a second
-      // ADE (or the brain daemon beside the app) sweeping it killed the taps
-      // and typing of the process still driving that companion.
-      const pidArg = psCalls[0]?.[psCalls[0].length - 1] ?? "";
-      expect(pidArg.split(",").sort()).toEqual(["902", "903"]);
-      expect(pidArg).not.toContain("901");
-    } finally {
-      service.dispose();
-      restoreHooks();
-      restoreRegistry();
-      platformSpy.mockRestore();
-    }
-  });
-
-  it("rewrites the registry atomically and owner-readable only", async () => {
-    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
-    const { registryPath, restore: restoreRegistry } = useScratchRegistry();
-    fs.writeFileSync(registryPath, JSON.stringify({
-      "904": { udid: "device-4", startedAt: new Date().toISOString(), ownerPid: 4_194_305 },
-    }), "utf8");
-
-    let markSwept!: () => void;
-    const swept = new Promise<void>((resolve) => { markSwept = resolve; });
-    const run = vi.fn(async (command: string) => {
-      if (command === "ps") markSwept();
-      return { stdout: "", stderr: "" };
-    });
-    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
-    const service = createIosSimulatorService({ projectRoot: os.tmpdir(), logger: noopLogger });
-
-    try {
-      await swept;
-      // The sweep forgets what it reaped, which is the rewrite path.
-      await vi.waitFor(() => {
-        expect(JSON.parse(fs.readFileSync(registryPath, "utf8"))).toEqual({});
-      });
-      // tmpdir is world-writable and shared between accounts, so the file that
-      // names pids ADE will SIGKILL must not be readable or writable by others.
-      expect(fs.statSync(registryPath).mode & 0o777).toBe(0o600);
-      // No temp file survives the rename.
-      expect(fs.existsSync(`${registryPath}.${process.pid}.tmp`)).toBe(false);
-    } finally {
-      service.dispose();
-      restoreHooks();
-      restoreRegistry();
-      platformSpy.mockRestore();
-    }
-  });
-});
-
 describe("iosSimulatorService screenshots and platform guards", () => {
   it("writes the screenshot to a readable file under the build root", async () => {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
@@ -1838,53 +1854,197 @@ describe("iosSimulatorService screenshots and platform guards", () => {
     }
   });
 
-  it("gives a drag a duration so idb does not issue a flick", async () => {
+  it("sends a drag as begin/move/end so iOS does not read it as a flick", async () => {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-drag-duration-`);
     writeMinimalXcodeProject(projectRoot, "Prox");
     const { run } = simulatorRunMock();
-    // idb input needs a companion listening on the grpc port, so stand a real
-    // listener up on whatever port the service picked and hand back a stub
-    // process. Without this the drag blocks in waitForTcpPort.
-    const listeners: net.Server[] = [];
-    const spawn = ((command: string, commandArgs: string[]) => {
-      const portIndex = commandArgs.indexOf("--grpc-port");
-      if (portIndex >= 0) {
-        const server = net.createServer();
-        // getFreePort closes the port before handing it back, so another
-        // worker can take it first. Without a handler that bind error is an
-        // uncaught exception that fails the whole file instead of this test.
-        server.on("error", () => {});
-        server.listen(Number(commandArgs[portIndex + 1]), "127.0.0.1");
-        listeners.push(server);
-      }
-      // No pid: the registry is shared with the developer's running ADE, so the
-      // test must not record one.
-      return mockChildProcess({ exitCode: null });
-    }) as unknown as typeof nodeSpawn;
-    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, spawn, commandExists: () => true });
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    const helper = fakeSimHelper();
+    const restoreHelper = __testSetIosSimulatorHelperFactory(() => helper.client);
     const service = createIosSimulatorService({ projectRoot, logger: noopLogger });
 
     try {
       await service.launch({ projectRoot, build: true });
-      // Without --duration idb performs an instantaneous swipe, which iOS reads
-      // as a flick: scrolls and slider drags silently do nothing.
+      // The helper has no duration argument: the gesture IS the move events.
+      // A begin immediately followed by an end is a flick to UIKit's velocity
+      // tracker, so scrolls and slider drags would silently do nothing.
       await service.drag({ startX: 10, startY: 200, endX: 10, endY: 40 });
-      const swipeArgs = () => (run.mock.calls
-        .map((call) => call[1] as string[])
-        .filter((args) => args.includes("swipe"))
-        .at(-1) ?? []);
-      const defaulted = swipeArgs();
-      expect(defaulted).toContain("--duration");
-      expect(defaulted[defaulted.indexOf("--duration") + 1]).toBe("0.18");
+      const touches = helper.sent.filter((command) => command.type === "touch");
+      expect(touches.at(0)).toMatchObject({ phase: "begin", x: 10, y: 200 });
+      expect(touches.at(-1)).toMatchObject({ phase: "end", x: 10, y: 40 });
+      const moves = touches.filter((command) => command.phase === "move");
+      expect(moves.length).toBeGreaterThan(0);
+      // Every intermediate point lies on the segment between the ends.
+      for (const move of moves) {
+        expect(Number(move.y)).toBeLessThanOrEqual(200);
+        expect(Number(move.y)).toBeGreaterThanOrEqual(40);
+      }
 
-      // An explicit duration still wins.
+      // A longer drag is more move events, not a longer single hop.
+      helper.sent.length = 0;
       await service.drag({ startX: 10, startY: 200, endX: 10, endY: 40, durationMs: 500 });
-      const explicit = swipeArgs();
-      expect(explicit[explicit.indexOf("--duration") + 1]).toBe("0.5");
+      const longer = helper.sent.filter((command) => command.type === "touch" && command.phase === "move");
+      expect(longer.length).toBeGreaterThan(moves.length);
     } finally {
       service.dispose();
-      for (const server of listeners) server.close();
+      restoreHelper();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
+  it("taps through the helper in device points and records the input", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-tap-`);
+    const { run } = simulatorRunMock();
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    const helper = fakeSimHelper();
+    const restoreHelper = __testSetIosSimulatorHelperFactory(() => helper.client);
+    const noted: Array<Record<string, unknown>> = [];
+    const service = createIosSimulatorService({
+      projectRoot,
+      logger: noopLogger,
+      resolveLaneWorktreePath: () => projectRoot,
+      recordingService: {
+        noteInput: async (input) => { noted.push(input as unknown as Record<string, unknown>); },
+        start: async () => { throw new Error("unused"); },
+        stop: async () => null,
+        list: async () => [],
+        remove: async () => {},
+        pinActiveOrLatest: async () => null,
+        onTurnEnded: async () => {},
+        totalBytes: async () => 0,
+        dispose: () => {},
+      },
+    });
+
+    try {
+      await service.tap({ deviceUdid: "device-1", x: 100, y: 240, laneId: "lane-a" });
+      // Device POINTS, the same unit idb's `ui tap` took, so no caller had to
+      // change its coordinates when the engine did.
+      expect(helper.sent).toEqual([
+        expect.objectContaining({ type: "touch", udid: "device-1", phase: "begin", x: 100, y: 240 }),
+        expect.objectContaining({ type: "touch", udid: "device-1", phase: "end", x: 100, y: 240 }),
+      ]);
+
+      await service.typeText({ deviceUdid: "device-1", text: "hello", laneId: "lane-a" });
+      expect(helper.sent.at(-1)).toMatchObject({ type: "type", text: "hello" });
+
+      // Auto-record: the first injected input announces itself so unit 2C can
+      // start a recording without the service knowing anything about video.
+      expect(noted.map((entry) => entry.kind)).toEqual(["tap", "type"]);
+      expect(noted[0]).toMatchObject({ laneId: "lane-a", udid: "device-1", x: 100, y: 240 });
+    } finally {
+      service.dispose();
+      restoreHelper();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
+  it("presses helper buttons without recording overlay input, and refuses shake", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-button-`);
+    const { run } = simulatorRunMock();
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    const helper = fakeSimHelper();
+    const restoreHelper = __testSetIosSimulatorHelperFactory(() => helper.client);
+    const noted: Array<Record<string, unknown>> = [];
+    const service = createIosSimulatorService({
+      projectRoot,
+      logger: noopLogger,
+      recordingService: {
+        noteInput: async (input) => { noted.push(input as unknown as Record<string, unknown>); },
+        start: async () => { throw new Error("unused"); },
+        stop: async () => null,
+        list: async () => [],
+        remove: async () => {},
+        pinActiveOrLatest: async () => null,
+        onTurnEnded: async () => {},
+        totalBytes: async () => 0,
+        dispose: () => {},
+      },
+    });
+
+    try {
+      await service.pressButton({ name: "home", deviceUdid: "device-1", laneId: "lane-a" });
+      expect(helper.sent).toEqual([
+        expect.objectContaining({ type: "button", udid: "device-1", name: "home" }),
+      ]);
+      // Hardware buttons are not overlay input — auto-record must not start.
+      expect(noted).toEqual([]);
+
+      await expect(service.pressButton({ name: "shake", deviceUdid: "device-1" }))
+        .rejects.toThrow(/APPLE_BUTTON_UNSUPPORTED/);
+      expect(helper.sent).toHaveLength(1);
+
+      await expect(service.pressButton({ name: "power" as "home", deviceUdid: "device-1" }))
+        .rejects.toThrow(/APPLE_BUTTON_UNSUPPORTED/);
+    } finally {
+      service.dispose();
+      restoreHelper();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
+  it("rotates through the helper and passes applied through", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-rotate-`);
+    const { run } = simulatorRunMock();
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    const helper = fakeSimHelper({
+      onSend: (command) => {
+        if (command.type === "orientation") {
+          return { applied: command.value === 4 };
+        }
+        return {};
+      },
+    });
+    const restoreHelper = __testSetIosSimulatorHelperFactory(() => helper.client);
+    const noted: Array<Record<string, unknown>> = [];
+    const service = createIosSimulatorService({
+      projectRoot,
+      logger: noopLogger,
+      recordingService: {
+        noteInput: async (input) => { noted.push(input as unknown as Record<string, unknown>); },
+        start: async () => { throw new Error("unused"); },
+        stop: async () => null,
+        list: async () => [],
+        remove: async () => {},
+        pinActiveOrLatest: async () => null,
+        onTurnEnded: async () => {},
+        totalBytes: async () => 0,
+        dispose: () => {},
+      },
+    });
+
+    try {
+      // landscape-left is helper value 4 (UIInterfaceOrientation), not 3.
+      const applied = await service.rotate({
+        orientation: "landscape-left",
+        deviceUdid: "device-1",
+        laneId: "lane-a",
+      });
+      expect(helper.sent).toEqual([
+        expect.objectContaining({ type: "orientation", udid: "device-1", value: 4 }),
+      ]);
+      expect(applied).toEqual({ applied: true });
+      expect(noted).toEqual([]);
+
+      const skipped = await service.rotate({
+        orientation: "portrait",
+        deviceUdid: "device-1",
+      });
+      expect(helper.sent.at(-1)).toMatchObject({ type: "orientation", value: 1 });
+      expect(skipped).toEqual({ applied: false });
+    } finally {
+      service.dispose();
+      restoreHelper();
       fs.rmSync(projectRoot, { recursive: true, force: true });
       restoreHooks();
       platformSpy.mockRestore();
@@ -1929,6 +2089,8 @@ describe("iosSimulatorService screenshots and platform guards", () => {
     try {
       await expect(service.screenshot()).rejects.toThrow(/only available on macOS/);
       await expect(service.tap({ x: 1, y: 2 })).rejects.toThrow(/only available on macOS/);
+      await expect(service.pressButton({ name: "home" })).rejects.toThrow(/only available on macOS/);
+      await expect(service.rotate({ orientation: "portrait" })).rejects.toThrow(/only available on macOS/);
       await expect(service.typeText({ text: "hi" })).rejects.toThrow(/only available on macOS/);
       await expect(service.drag({ startX: 1, startY: 2, endX: 3, endY: 4 })).rejects.toThrow(/only available on macOS/);
       await expect(service.getScreenSnapshot()).rejects.toThrow(/only available on macOS/);

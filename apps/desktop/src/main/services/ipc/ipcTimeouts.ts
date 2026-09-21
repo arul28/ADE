@@ -213,11 +213,9 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.iosSimulatorStopStream:
     case IPC.iosSimulatorShutdown:
     case IPC.iosSimulatorGetStreamStatus:
-    case IPC.iosSimulatorGetWindowState:
-    case IPC.iosSimulatorListWindowSources:
-    case IPC.iosSimulatorOpenSystemSettings:
-    case IPC.iosSimulatorRevealWindow:
     case IPC.iosSimulatorTap:
+    case IPC.iosSimulatorPressButton:
+    case IPC.iosSimulatorRotate:
     case IPC.iosSimulatorTypeText:
     case IPC.iosSimulatorDrag:
     case IPC.iosSimulatorSwipe:

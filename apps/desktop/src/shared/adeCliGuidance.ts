@@ -3,6 +3,7 @@ import { formatAdeAgentSkillRootsForPrompt, getAdeAgentSkillRootsForPrompt } fro
 
 export const adeBundledAgentSkills = [
   "ade-cli-control-plane",
+  "ade-apple",
   "ade-ios-simulator",
   "ade-app-control",
   "ade-browser",

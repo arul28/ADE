@@ -727,14 +727,17 @@ disagree about how much it says.
 
 A tool that cannot run in this context renders as a **disabled card with
 the reason as its status line** rather than disappearing: "Runs on this
-computer only" (Simulator / App Control on a remote project), "Desktop
-app only" (Simulator in the hosted web client), and "macOS only"
-(Simulator off a Mac). Only those two tools are local-only — the browser
-is hosted by this desktop's main process and a remote lane drives that
-same window, so it stays available on remote lanes. In the hosted web
+computer only" (App Control on a remote project), "Desktop
+app only" (App Control in the hosted web client), and "The runtime for this
+project is not a Mac" (Apple when `iosSimulator.getStatus().supported` is
+false). Apple is available whenever the **bound runtime** is a Mac — a
+Windows or Linux desktop pinned to a remote Mac runtime can watch and drive
+it. Only App Control is local-only — the browser is hosted by this
+desktop's main process and a remote lane drives that same window, so it
+stays available on remote lanes. In the hosted web
 client the browser and App Control render **read-only** — the tab list,
 attached app, and latest screenshot, with no way to drive them
-(`isReadOnlyWorkTool`). Availability is decided by
+(`isReadOnlyWorkTool`); Apple is full-interact (`WEB_FULL_TOOL_IDS`). Availability is decided by
 capability flags in `workToolAvailability`, never by `process.platform` —
 the web client renders this same component. An active tool that becomes
 unavailable falls back to the **picker**, not to another tool.
@@ -1145,10 +1148,8 @@ dismissal undone by the event it caused would never stick.
   in place instead of stranding it off an edge.
 - **It costs nothing when nobody watches.** It subscribes to feeds that
   already exist — App Control's screencast, the browser's refcounted
-  preview stream, the simulator's shared window capture via
-  `iosSimulatorPreviewStream.ts`, which takes its own refcounted parking
-  hold and never stops a stream the iOS panel started — paints frames
-  straight onto an `<img>`/`<video>` ref inside one rAF (so a 12 fps feed
+  preview stream, the Apple-device H.264 stream keyed by device udid —
+  paints frames straight onto an `<img>`/`<canvas>` inside one rAF (so a 12 fps feed
   causes zero React renders), and tears every feed down the moment the
   Work route is not active.
 - **Parked, not hidden.** A `WebContentsView` that is detached or

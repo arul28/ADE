@@ -141,8 +141,8 @@ open the relevant one only when a task needs it.
   `ade help <command>` and `ade actions list --text`, not memory.
   → `ade-cli-control-plane`.
 - **Lanes & git** → `ade-lanes-git`. **PR workflows** → `ade-pr-workflows`.
-- **App / browser / iOS-sim control** → `ade-app-control`,
-  `ade-browser`, `ade-ios-simulator`.
+- **App / browser / Apple-device control** → `ade-app-control`,
+  `ade-browser`, `ade-apple` (old name `ade-ios-simulator` still resolves).
 - **Linear** (no API key needed; routed through ADE) → `ade-linear`.
 - **Proof & computer-use** (screenshots, video, traces → proof drawer) →
   `ade-proof-artifacts`. **Deeplinks** → `ade-deeplinks`.

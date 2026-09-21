@@ -78,6 +78,14 @@ struct WorkToolsSheet: View {
     ScrollView {
       VStack(alignment: .leading, spacing: 14) {
         activeToolCard
+        // Above the browser because it is the only card in this sheet that is
+        // live: the others describe what the Mac has open, this one can be
+        // watched. Gated on the host advertising `apple.status` so an older
+        // Mac shows the sheet it always showed rather than a new card that
+        // only ever says "update".
+        if syncService.supportsAppleDeviceStatus {
+          AppleDeviceCard(laneId: laneId)
+        }
         browserCard
         appControlCard
         Text("Control from the desktop")
@@ -128,6 +136,7 @@ struct WorkToolsSheet: View {
                     ? "\(workToolsDisplayName(tool) ?? tool), open and showing"
                     : "\(workToolsDisplayName(tool) ?? tool), open"
                 )
+                .accessibilityHint(workToolsAccessibilityHint(tool) ?? "")
             }
           }
         }

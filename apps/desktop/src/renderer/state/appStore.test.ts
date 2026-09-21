@@ -59,6 +59,7 @@ import {
   DEFAULT_TERMINAL_PREFERENCES,
   DEFAULT_CHAT_FONT_SIZE_PX,
 } from "./appStore";
+import { DEFAULT_APPLE_DEVICE_PREFERENCES } from "../../shared/appleDeviceSettings";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -94,6 +95,7 @@ function resetStore() {
     launchPromptClipboardEnabled: true,
     launchPromptClipboardNoticeEnabled: true,
     promptStashButtonEnabled: true,
+    appleDevice: { ...DEFAULT_APPLE_DEVICE_PREFERENCES },
     laneInspectorTabs: {},
     workViewByProject: {},
     laneWorkViewByScope: {},
@@ -1397,6 +1399,28 @@ describe("appStore", () => {
       expect(latest).toBeTruthy();
       const parsed = JSON.parse(latest![1]);
       expect(parsed.smartTooltipsEnabled).toBe(false);
+    });
+  });
+
+  describe("Apple device preferences", () => {
+    it("defaults the five contract keys and persists them under apple", () => {
+      expect(useAppStore.getState().appleDevice.realisticBody).toBe(true);
+      expect(useAppStore.getState().appleDevice.recordingTapRings).toBe(true);
+      expect(useAppStore.getState().appleDevice.recordingKeyBadges).toBe(true);
+      expect(useAppStore.getState().appleDevice.remoteBitrateKbpsCap).toBe(2500);
+      expect(useAppStore.getState().appleDevice.recordingsWarnBytes).toBe(5 * 1024 ** 3);
+
+      useAppStore.getState().setAppleDevicePreferences({ realisticBody: false, remoteBitrateKbpsCap: 1000 });
+      const calls = mockLocalStorage.setItem.mock.calls.filter(
+        ([key]) => key === "ade.userPreferences.v1",
+      );
+      const parsed = JSON.parse(calls[calls.length - 1]![1]);
+      expect(parsed.apple).toEqual({
+        realisticBody: false,
+        recordingOverlays: { tapRings: true, keyBadges: true },
+        remoteBitrateKbpsCap: 1000,
+        recordingsWarnBytes: 5 * 1024 ** 3,
+      });
     });
   });
 

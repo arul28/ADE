@@ -7,7 +7,18 @@ import { SessionListPane } from "./SessionListPane";
 import { WorkViewArea } from "./WorkViewArea";
 import { WorkHeaderSidebarToggle } from "../work/WorkHeaderPaneToggles";
 import { WorkLiveCornerCard } from "../work/WorkLiveCornerCard";
-import { WorkSidebar, type WorkSidebarContextTarget } from "./WorkSidebar";
+import { WorkSidebar } from "./WorkSidebar";
+import type { WorkSidebarContextTarget } from "./workToolContextInsertion";
+import { WorkAppleColumnPane } from "./WorkAppleColumnPane";
+import { beginPaneSplitterDrag } from "./paneSplitterDrag";
+import { useAppleLaneDevice } from "../apple/useAppleLaneDevice";
+import {
+  clampAppleColumnWidthPct,
+  MAX_APPLE_COLUMN_WIDTH_PCT,
+  MIN_APPLE_COLUMN_WIDTH_PCT,
+  nextAppleColumnWidthPctForKey,
+  selectAppleColumnVisible,
+} from "../apple/appleColumnLayout";
 import { NativeToolFeedsProvider } from "./NativeToolFeedsContext";
 import { useWorkSidebarTool } from "./useWorkSidebarTool";
 import {
@@ -56,6 +67,8 @@ import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import {
   selectActiveProjectRoot,
   selectActiveProjectStateKey,
+  selectLaneWorkViewState,
+  selectWorkViewState,
   useAppStore,
   useRootAppStore,
   type WorkDraftKind,
@@ -86,6 +99,7 @@ import { canonicalInputFromSummary, sessionNeedsYou } from "../../lib/terminalAt
 import {
   cancelCrossMachineOptimisticChatSession,
   seedCrossMachineOptimisticChatSession,
+  useLanesForPin,
 } from "../../state/crossMachineLanes";
 
 const TERMINALS_TILING_TREE: PaneSplit = {
@@ -117,6 +131,9 @@ type SessionMutationOptions<T> = {
  * it at mousedown instead of carrying one.
  */
 const WORK_SIDEBAR_PANE_ATTR = "data-work-sidebar-pane";
+
+/** The Apple column's pane, found the same way and for the same reason. */
+const WORK_APPLE_PANE_ATTR = "data-work-apple-pane";
 
 function dispatchWorkSidebarBrowserResizeEvent(type: "start" | "end"): void {
   window.dispatchEvent(new Event(
@@ -1150,6 +1167,117 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   }
 
   const workSidebarVisible = active && work.workSidebarOpen;
+
+  /* ── Apple device column ───────────────────────────────────────────────── */
+
+  /**
+   * The Apple column is a PANE, so its presence is decided here rather than
+   * inside the tool that fills it. A pane cannot conjure itself, and the width
+   * every one of the spec's breakpoints is measured against is this pane's,
+   * not the tools pane's.
+   */
+  /**
+   * The lane's worktree path, resolved the way the tools pane resolves it: a
+   * foreign chat's lane is absent from this tab's `lanes`, so fall back to the
+   * pinned machine's slice of the cross-machine union.
+   */
+  const appleScopedLanes = useLanesForPin(activeWorkSessionRuntimePin) ?? sortedLanes;
+  const activeLaneRoot = useMemo(
+    () => (activeLaneId ? appleScopedLanes.find((lane) => lane.id === activeLaneId)?.worktreePath ?? null : null),
+    [activeLaneId, appleScopedLanes],
+  );
+
+  const { device: appleDevice, refresh: refreshAppleDevice } = useAppleLaneDevice({
+    laneId: activeLaneId,
+    runtimePin: activeWorkSessionRuntimePin,
+    enabled: active,
+  });
+  const appleColumnClosedUdid = useAppStore(
+    (state) => selectLaneWorkViewState(projectStateKey, activeLaneId)(state).appleColumnClosedUdid ?? null,
+  );
+  const appleColumnWidthPct = useAppStore(
+    (state) => selectWorkViewState(projectStateKey)(state).appleColumnWidthPct ?? 30,
+  );
+  const setLaneWorkViewState = useAppStore((state) => state.setLaneWorkViewState);
+  const appleColumnVisible = active
+    && selectAppleColumnVisible({ device: appleDevice, closedUdid: appleColumnClosedUdid });
+  // Read by the tools-pane drag, which has to keep the chat column's flex-grow
+  // honest while a THIRD pane is on screen. A ref so the drag closure never
+  // captures a stale width.
+  const appleColumnShareRef = useRef(0);
+  appleColumnShareRef.current = appleColumnVisible ? appleColumnWidthPct : 0;
+
+  const setAppleColumnWidthPct = useCallback((widthPct: number) => {
+    const safe = Number.isFinite(widthPct) ? widthPct : 30;
+    setWorkViewState(projectStateKey, {
+      appleColumnWidthPct: Math.max(MIN_APPLE_COLUMN_WIDTH_PCT, Math.min(MAX_APPLE_COLUMN_WIDTH_PCT, safe)),
+    });
+  }, [projectStateKey, setWorkViewState]);
+
+  /**
+   * Closing the column does not shut the device down — it stamps the udid so
+   * the corner card takes over, and the next device this lane gets opens a
+   * fresh column.
+   */
+  const closeAppleColumn = useCallback(() => {
+    if (!activeLaneId) return;
+    setLaneWorkViewState(projectStateKey, activeLaneId, {
+      appleColumnClosedUdid: appleDevice?.udid ?? null,
+    });
+  }, [activeLaneId, appleDevice?.udid, projectStateKey, setLaneWorkViewState]);
+
+  /**
+   * Re-opening from the tools pane: clear the dismissal and ask the service
+   * again, so a device created seconds ago does not wait out the poll.
+   */
+  const openAppleColumn = useCallback(() => {
+    if (activeLaneId) {
+      setLaneWorkViewState(projectStateKey, activeLaneId, { appleColumnClosedUdid: null });
+    }
+    refreshAppleDevice();
+  }, [activeLaneId, projectStateKey, refreshAppleDevice, setLaneWorkViewState]);
+
+  const appleColumnDragEndRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => {
+    appleColumnDragEndRef.current?.();
+    appleColumnDragEndRef.current = null;
+  }, []);
+
+  const handleAppleColumnResizeMouseDown = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const container = event.currentTarget.parentElement;
+    if (!container) return;
+    appleColumnDragEndRef.current?.();
+    const totalWidth = container.getBoundingClientRect().width;
+    if (totalWidth <= 0) return;
+    const applePane = container.querySelector<HTMLElement>(`[${WORK_APPLE_PANE_ATTR}]`);
+    const sidebarShare = workSidebarVisible ? work.workSidebarWidthPct : 0;
+    const cancel = beginPaneSplitterDrag({
+      handle: event.currentTarget,
+      containerWidthPx: totalWidth,
+      startClientX: event.clientX,
+      startWidthPct: appleColumnWidthPct,
+      clamp: (widthPct) => clampAppleColumnWidthPct(widthPct, totalWidth, sidebarShare),
+      apply: (widthPct) => {
+        const contentPane = workContentPaneRef.current;
+        if (contentPane) contentPane.style.flexGrow = `${100 - widthPct - sidebarShare}`;
+        if (applePane) applePane.style.flexGrow = `${widthPct}`;
+      },
+      commit: setAppleColumnWidthPct,
+    });
+    appleColumnDragEndRef.current = cancel;
+  }, [appleColumnWidthPct, setAppleColumnWidthPct, work.workSidebarWidthPct, workSidebarVisible]);
+
+  const handleAppleColumnResizeKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    const containerWidth = event.currentTarget.parentElement?.getBoundingClientRect().width ?? null;
+    const sidebarShare = workSidebarVisible ? work.workSidebarWidthPct : 0;
+    const next = nextAppleColumnWidthPctForKey(event.key, appleColumnWidthPct, containerWidth, sidebarShare);
+    if (next == null) return;
+    event.preventDefault();
+    if (next === appleColumnWidthPct) return;
+    setAppleColumnWidthPct(next);
+  }, [appleColumnWidthPct, setAppleColumnWidthPct, work.workSidebarWidthPct, workSidebarVisible]);
+
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   // Which tool the tools pane shows is per LANE, so it hangs off the lane this
   // page has resolved rather than off the project-wide work view state.
@@ -1340,7 +1468,11 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       const nextWidthPct = clampWorkSidebarWidthPct(widthPct, totalWidth);
       pendingWidthPct = nextWidthPct;
       const contentPane = workContentPaneRef.current;
-      if (contentPane) contentPane.style.flexGrow = `${100 - nextWidthPct}`;
+      // The chat column is what is LEFT once both the Apple column and the
+      // tools pane have taken their share; before the Apple column existed
+      // this was simply `100 - nextWidthPct`, and leaving it that way made the
+      // chat overlap the device for the whole drag.
+      if (contentPane) contentPane.style.flexGrow = `${100 - nextWidthPct - appleColumnShareRef.current}`;
       if (sidebarPane) sidebarPane.style.flexGrow = `${nextWidthPct}`;
     };
     const scheduleWidth = (widthPct: number) => {
@@ -1515,7 +1647,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           <div
             ref={workContentPaneRef}
             className="relative min-h-0 min-w-0 flex-1 basis-0 overflow-hidden"
-            style={{ flexGrow: 100 - work.workSidebarWidthPct }}
+            style={{ flexGrow: 100 - work.workSidebarWidthPct - (appleColumnVisible ? appleColumnWidthPct : 0) }}
           >
             {workViewArea}
             {/*
@@ -1528,10 +1660,52 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
               active={active}
               laneId={activeLaneId}
               activeTool={workSidebarVisible ? workSidebarTool : null}
+              appleColumnOpen={appleColumnVisible}
               runtimePin={activeWorkSessionRuntimePin}
               onPick={setWorkSidebarTool}
             />
           </div>
+          {/*
+            The Apple column: a real sibling of the chat, with its own splitter
+            and its own persisted width. Rendered BEFORE the tools pane so the
+            row reads chat → device → tools, which is the order of §2a's
+            wireframe, and so the device never has to share a width with Git.
+          */}
+          {appleColumnVisible ? (
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize Apple device column"
+              aria-valuenow={Math.round(appleColumnWidthPct)}
+              aria-valuemin={MIN_APPLE_COLUMN_WIDTH_PCT}
+              aria-valuemax={MAX_APPLE_COLUMN_WIDTH_PCT}
+              aria-valuetext={`Apple device column ${Math.round(appleColumnWidthPct)}% of the window`}
+              tabIndex={0}
+              onMouseDown={handleAppleColumnResizeMouseDown}
+              onKeyDown={handleAppleColumnResizeKeyDown}
+              className="ade-pane-gutter ade-tool-gutter vertical shrink-0"
+            />
+          ) : null}
+          {appleColumnVisible ? (
+            <div
+              data-work-apple-pane=""
+              data-testid="work-apple-column-pane"
+              className="min-h-0 min-w-0 basis-0 overflow-hidden"
+              // The spec's hard floor, in the one unit a flex row understands.
+              // The percentage clamp defends taste; this defends the device.
+              style={{ flexGrow: appleColumnWidthPct, minWidth: 200 }}
+            >
+              <WorkAppleColumnPane
+                laneId={activeLaneId}
+                laneRoot={activeLaneRoot}
+                device={appleDevice}
+                runtimePin={activeWorkSessionRuntimePin}
+                contextTarget={contextTarget}
+                contextDisabledReason={contextDisabledReason}
+                onClose={closeAppleColumn}
+              />
+            </div>
+          ) : null}
           {/* Resize handle stays a row-level sibling so its width math is correct. */}
           {workSidebarVisible ? (
             <div
@@ -1572,6 +1746,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
                 <WorkSidebar
                   active={active}
                   laneId={activeLaneId}
+                  appleColumnOpen={appleColumnVisible}
+                  onOpenAppleColumn={appleDevice && !appleColumnVisible ? openAppleColumn : undefined}
                   lanes={sortedLanes}
                   activeSession={activeWorkSession}
                   tool={workSidebarTool}
@@ -1620,6 +1796,14 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       workSidebarVisible,
       workViewArea,
       activeLaneDeleteProgress,
+      activeLaneRoot,
+      appleColumnVisible,
+      appleColumnWidthPct,
+      appleDevice,
+      closeAppleColumn,
+      openAppleColumn,
+      handleAppleColumnResizeMouseDown,
+      handleAppleColumnResizeKeyDown,
     ],
   );
 

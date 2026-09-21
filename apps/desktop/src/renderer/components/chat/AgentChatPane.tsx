@@ -214,6 +214,8 @@ import { CHAT_SHELL_HEADER_CLASS, ChatSurfaceShell } from "./ChatSurfaceShell";
 import { chatAccentForRenderedChat, chatChipToneClass } from "./chatSurfaceTheme";
 import { ChatComputerUsePanel } from "./ChatComputerUsePanel";
 import { ChatIosSimulatorPanel } from "./ChatIosSimulatorPanel";
+import { IosSimulatorRunningPill } from "../work/IosSimulatorRunningPill";
+import { requestWorkLiveIosPictureInPicture } from "../work/workLiveIosPictureInPicture";
 import { ChatAppControlPanel } from "./ChatAppControlPanel";
 import { ChatSubagentsPanel } from "./ChatSubagentsPanel";
 import { RewindFilesConfirmDialog, type RewindFilesConfirmDialogState } from "./RewindFilesConfirmDialog";
@@ -3761,7 +3763,10 @@ export function AgentChatPane({
   // An agent launching the simulator used to force this drawer open, closing
   // whatever the user had on screen. It now only offers: a chip appears while a
   // simulator session is live and the drawer is closed.
-  const [iosSimulatorSessionChip, setIosSimulatorSessionChip] = useState<{ deviceName: string | null } | null>(null);
+  const [iosSimulatorSessionChip, setIosSimulatorSessionChip] = useState<{
+    deviceName: string | null;
+    deviceUdid: string | null;
+  } | null>(null);
   const [cursorCloudPaneOpen, setCursorCloudPaneOpen] = useState(false);
   // Subagent drill-in: when set, the chat surface renders the named subagent's
   // transcript instead of the parent stream and the composer is disabled.
@@ -7296,7 +7301,10 @@ export function AgentChatPane({
       if (event.type === "session-started") {
         if (!addressesThisPane(event.session.chatSessionId, event.session.laneId)) return;
         setIosSimulatorAvailable(true);
-        setIosSimulatorSessionChip({ deviceName: event.session.deviceName });
+        setIosSimulatorSessionChip({
+          deviceName: event.session.deviceName,
+          deviceUdid: event.session.deviceUdid,
+        });
         return;
       }
       if (event.type === "session-released") {
@@ -7349,7 +7357,10 @@ export function AgentChatPane({
       if (!session) return;
       if (!iosSimulatorAddressesThisPane(session.chatSessionId, session.laneId)) return;
       setIosSimulatorAvailable(true);
-      setIosSimulatorSessionChip({ deviceName: session.deviceName });
+      setIosSimulatorSessionChip({
+        deviceName: session.deviceName,
+        deviceUdid: session.deviceUdid ?? null,
+      });
     }).catch(() => {});
     return () => {
       cancelled = true;
@@ -13104,25 +13115,15 @@ export function AgentChatPane({
         />
       ) : null}
       {iosSimulatorSessionChip && !effectiveIosSimulatorOpen && laneToolsVisible && iosSimulatorAvailable ? (
-        <button
-          type="button"
-          onClick={() => {
+        <IosSimulatorRunningPill
+          deviceName={iosSimulatorSessionChip.deviceName}
+          onOpen={() => {
             setAppControlOpen(false);
             setCursorCloudPaneOpen(false);
             setIosSimulatorOpen(true);
           }}
-          className={cn(
-            "inline-flex max-w-[220px] items-center gap-1 rounded-full border px-2 py-0.5 font-sans text-[10px] font-medium transition-colors",
-            "border-cyan-300/20 bg-cyan-400/[0.06] text-cyan-100/75 hover:border-cyan-200/32 hover:text-cyan-50",
-          )}
-          title={iosSimulatorSessionChip.deviceName
-            ? `Simulator running on ${iosSimulatorSessionChip.deviceName}`
-            : "Simulator running"}
-        >
-          <DeviceMobile size={11} weight="fill" aria-hidden className="shrink-0" />
-          <span className="min-w-0 truncate">Simulator running</span>
-          <span className="shrink-0 text-cyan-200/55">Open</span>
-        </button>
+          onFloat={() => requestWorkLiveIosPictureInPicture(iosSimulatorSessionChip.deviceUdid)}
+        />
       ) : null}
       {laneToolsVisible && iosSimulatorAvailable ? (
             <SmartTooltip

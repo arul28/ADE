@@ -614,279 +614,22 @@ describe("preload OAuth bridge", () => {
     expect(invoke).not.toHaveBeenCalledWith(IPC.reviewStartRun, expect.anything());
   });
 
-  it("rejects sensitive local host helpers for remote project bindings before local IPC", async () => {
-    const binding = {
-      kind: "remote",
-      key: "remote:target-1:project-1",
-      targetId: "target-1",
-      runtimeName: "Remote",
-      projectId: "project-1",
-      rootPath: "/remote/project",
-      displayName: "Project",
-    };
-    const invoke = vi.fn(async (channel: string, _payload?: unknown) => {
-      if (channel === IPC.appGetWindowSession) {
-        return { windowId: 1, project: null, binding };
-      }
-      throw new Error(`unexpected IPC: ${channel}`);
-    });
-    const on = vi.fn();
-    const removeListener = vi.fn();
-    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
-      (globalThis as any).__bridgeName = name;
-      (globalThis as any).__adeBridge = value;
-    });
-
-    vi.doMock("electron", () => ({
-      contextBridge: { exposeInMainWorld },
-      ipcRenderer: { invoke, on, removeListener },
-      webFrame: {
-        getZoomLevel: vi.fn(() => 0),
-        setZoomLevel: vi.fn(),
-        getZoomFactor: vi.fn(() => 1),
-      },
-    }));
-
-    await import("./preload");
-
-    const bridge = (globalThis as any).__adeBridge;
-    await expect(bridge.iosSimulator.getSimulatorWindowState()).rejects.toThrow(/local project host/i);
-    await expect(bridge.iosSimulator.listSimulatorWindowSources()).rejects.toThrow(/local project host/i);
-
-    expect(invoke).toHaveBeenCalledWith(IPC.appGetWindowSession);
-    expect(invoke).not.toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, expect.anything());
-    expect(invoke).not.toHaveBeenCalledWith(IPC.iosSimulatorGetWindowState);
-    expect(invoke).not.toHaveBeenCalledWith(IPC.iosSimulatorListWindowSources);
-  });
-
-  it("rejects iOS Simulator window sources when no local project is bound", async () => {
-    const invoke = vi.fn(async (channel: string, _payload?: unknown) => {
-      if (channel === IPC.appGetWindowSession) {
-        return { windowId: 1, project: null, binding: null };
-      }
-      throw new Error(`unexpected IPC: ${channel}`);
-    });
-    const on = vi.fn();
-    const removeListener = vi.fn();
-    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
-      (globalThis as any).__bridgeName = name;
-      (globalThis as any).__adeBridge = value;
-    });
-
-    vi.doMock("electron", () => ({
-      contextBridge: { exposeInMainWorld },
-      ipcRenderer: { invoke, on, removeListener },
-      webFrame: {
-        getZoomLevel: vi.fn(() => 0),
-        setZoomLevel: vi.fn(),
-        getZoomFactor: vi.fn(() => 1),
-      },
-    }));
-
-    await import("./preload");
-
-    const bridge = (globalThis as any).__adeBridge;
-    await expect(bridge.iosSimulator.listSimulatorWindowSources()).rejects.toThrow(/open local project/i);
-
-    expect(invoke).toHaveBeenCalledWith(IPC.appGetWindowSession);
-    expect(invoke).not.toHaveBeenCalledWith(IPC.iosSimulatorListWindowSources, expect.anything());
-  });
-
-  it("passes the bound local project root when reading iOS Simulator window sources", async () => {
-    const binding = {
-      kind: "local",
-      key: "local:/repo",
-      rootPath: "/repo",
-      displayName: "Project",
-    };
-    const sources = {
-      sources: [{ id: "window:1", name: "Simulator", thumbnailDataUrl: null }],
-      windowState: null,
-      message: null,
-    };
-    const invoke = vi.fn(async (channel: string, payload?: unknown) => {
-      if (channel === IPC.appGetWindowSession) {
-        return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
-      }
-      if (channel === IPC.iosSimulatorListWindowSources) {
-        expect(payload).toEqual({ projectRoot: "/repo" });
-        return sources;
-      }
-      throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(payload)}`);
-    });
-    const on = vi.fn();
-    const removeListener = vi.fn();
-    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
-      (globalThis as any).__bridgeName = name;
-      (globalThis as any).__adeBridge = value;
-    });
-
-    vi.doMock("electron", () => ({
-      contextBridge: { exposeInMainWorld },
-      ipcRenderer: { invoke, on, removeListener },
-      webFrame: {
-        getZoomLevel: vi.fn(() => 0),
-        setZoomLevel: vi.fn(),
-        getZoomFactor: vi.fn(() => 1),
-      },
-    }));
-
-    await import("./preload");
-
-    const bridge = (globalThis as any).__adeBridge;
-    await expect(bridge.iosSimulator.listSimulatorWindowSources()).resolves.toEqual(sources);
-
-    expect(invoke).toHaveBeenCalledWith(IPC.appGetWindowSession);
-    expect(invoke).toHaveBeenCalledWith(IPC.iosSimulatorListWindowSources, { projectRoot: "/repo" });
-  });
-
-  it("forwards the caller's simulator session so window parking is not blind to brain-owned launches", async () => {
-    const binding = {
-      kind: "local",
-      key: "local:/repo",
-      rootPath: "/repo",
-      displayName: "Project",
-    };
-    const result = { sources: [], windowState: null, message: null };
-    const invoke = vi.fn(async (channel: string, _payload?: unknown) => {
-      if (channel === IPC.appGetWindowSession) {
-        return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
-      }
-      if (channel === IPC.iosSimulatorListWindowSources) return result;
-      throw new Error(`unexpected IPC: ${channel}`);
-    });
-    const on = vi.fn();
-    const removeListener = vi.fn();
-    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
-      (globalThis as any).__bridgeName = name;
-      (globalThis as any).__adeBridge = value;
-    });
-
-    vi.doMock("electron", () => ({
-      contextBridge: { exposeInMainWorld },
-      ipcRenderer: { invoke, on, removeListener },
-      webFrame: {
-        getZoomLevel: vi.fn(() => 0),
-        setZoomLevel: vi.fn(),
-        getZoomFactor: vi.fn(() => 1),
-      },
-    }));
-
-    await import("./preload");
-
-    const bridge = (globalThis as any).__adeBridge;
-    const session = { deviceUdid: "UDID-1", deviceName: "iPhone 17" };
-    await expect(
-      bridge.iosSimulator.listSimulatorWindowSources({ session }),
-    ).resolves.toEqual(result);
-
-    expect(invoke).toHaveBeenCalledWith(IPC.iosSimulatorListWindowSources, {
-      projectRoot: "/repo",
-      session,
-    });
-  });
-
-  // The other half of the wiring the parking refcount depends on. Window
-  // parking lives in Electron main, which only ever sees a plain invoke: every
-  // iOS Simulator call that goes through `callProjectRuntimeActionOr` is
-  // answered by the brain daemon instead, and the brain has no BrowserWindow to
-  // hold a claim against. Retain has to sit on the same local-only transport as
-  // its release or the count never leaves zero in production.
-  it("keeps iOS Simulator window parking on the local transport in both directions", async () => {
-    const binding = {
-      kind: "local",
-      key: "local:/repo",
-      rootPath: "/repo",
-      displayName: "Project",
-    };
-    const invoke = vi.fn(async (channel: string, _payload?: unknown) => {
-      if (channel === IPC.appGetWindowSession) {
-        return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
-      }
-      if (
-        channel === IPC.iosSimulatorRetainWindowParking
-        || channel === IPC.iosSimulatorReleaseWindowParking
-      ) {
-        return { ok: true };
-      }
-      throw new Error(`unexpected IPC: ${channel}`);
-    });
-    const on = vi.fn();
-    const removeListener = vi.fn();
-    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
-      (globalThis as any).__bridgeName = name;
-      (globalThis as any).__adeBridge = value;
-    });
-
-    vi.doMock("electron", () => ({
-      contextBridge: { exposeInMainWorld },
-      ipcRenderer: { invoke, on, removeListener },
-      webFrame: {
-        getZoomLevel: vi.fn(() => 0),
-        setZoomLevel: vi.fn(),
-        getZoomFactor: vi.fn(() => 1),
-      },
-    }));
-
-    await import("./preload");
-
-    const bridge = (globalThis as any).__adeBridge;
-    // Retain reports whether the host counted the holder, so the renderer only
-    // pairs a release with a retain that really happened.
-    await expect(bridge.iosSimulator.retainWindowParking()).resolves.toBe(true);
-    await expect(bridge.iosSimulator.releaseWindowParking()).resolves.toBeUndefined();
-
-    expect(invoke).toHaveBeenCalledWith(IPC.iosSimulatorRetainWindowParking);
-    expect(invoke).toHaveBeenCalledWith(IPC.iosSimulatorReleaseWindowParking);
-    expect(invoke).not.toHaveBeenCalledWith(IPC.localRuntimeCallAction, expect.anything());
-    expect(invoke).not.toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, expect.anything());
-  });
-
-  // Both directions are teardown-adjacent and must never surface an error to a
-  // drawer that is closing or a live view that is starting.
-  it("swallows iOS Simulator window parking failures in both directions", async () => {
+  /**
+   * The window-capture bridge is GONE, not inert.
+   *
+   * `getSimulatorWindowState`, `listSimulatorWindowSources`,
+   * `retainWindowParking`, `releaseWindowParking`, `revealSimulator` and
+   * `openSystemSettings` described a picture of Simulator.app — which window,
+   * whether it was minimized, which macOS privacy grant was missing. The
+   * helper reads the framebuffer, so there is no window and no grant. The
+   * three tests that lived here pinned the inert shims' return values; this
+   * one pins their absence, which is the invariant that is left.
+   */
+  it("no longer exposes the iOS Simulator window-capture bridge at all", async () => {
     const invoke = vi.fn(async (channel: string) => {
       if (channel === IPC.appGetWindowSession) {
         return { windowId: 1, project: null, binding: null };
       }
-      throw new Error(`no handler for ${channel}`);
-    });
-    const on = vi.fn();
-    const removeListener = vi.fn();
-    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
-      (globalThis as any).__bridgeName = name;
-      (globalThis as any).__adeBridge = value;
-    });
-
-    vi.doMock("electron", () => ({
-      contextBridge: { exposeInMainWorld },
-      ipcRenderer: { invoke, on, removeListener },
-      webFrame: {
-        getZoomLevel: vi.fn(() => 0),
-        setZoomLevel: vi.fn(),
-        getZoomFactor: vi.fn(() => 1),
-      },
-    }));
-
-    await import("./preload");
-
-    const bridge = (globalThis as any).__adeBridge;
-    // A retain that never reached the host counted nothing, so it has to read
-    // as "not held" — a caller that paired a release with it would decrement
-    // another drawer's holder.
-    await expect(bridge.iosSimulator.retainWindowParking()).resolves.toBe(false);
-    await expect(bridge.iosSimulator.releaseWindowParking()).resolves.toBeUndefined();
-  });
-
-  // The host refuses a holder from a window that does not own the parking
-  // claim. That refusal has to survive the bridge: the renderer records a hold
-  // only when one was really taken.
-  it("reports a refused iOS Simulator parking holder as not held", async () => {
-    const invoke = vi.fn(async (channel: string) => {
-      if (channel === IPC.appGetWindowSession) {
-        return { windowId: 1, project: null, binding: null };
-      }
-      if (channel === IPC.iosSimulatorRetainWindowParking) return { ok: false };
       throw new Error(`unexpected IPC: ${channel}`);
     });
     const on = vi.fn();
@@ -909,7 +652,30 @@ describe("preload OAuth bridge", () => {
     await import("./preload");
 
     const bridge = (globalThis as any).__adeBridge;
-    await expect(bridge.iosSimulator.retainWindowParking()).resolves.toBe(false);
+    for (const method of [
+      "getSimulatorWindowState",
+      "listSimulatorWindowSources",
+      "retainWindowParking",
+      "releaseWindowParking",
+      "revealSimulator",
+      "openSystemSettings",
+    ]) {
+      expect(bridge.iosSimulator[method]).toBeUndefined();
+    }
+    // Raw channel strings, not `IPC.*`: these constants are deleted, so reading
+    // them off `IPC` would evaluate to `undefined` and make every assertion
+    // vacuously true — which is precisely the regression this guards.
+    for (const channel of [
+      "ade.iosSimulator.getWindowState",
+      "ade.iosSimulator.listWindowSources",
+      "ade.iosSimulator.retainWindowParking",
+      "ade.iosSimulator.releaseWindowParking",
+      "ade.iosSimulator.revealWindow",
+      "ade.iosSimulator.openSystemSettings",
+    ]) {
+      expect(invoke).not.toHaveBeenCalledWith(channel, expect.anything());
+      expect(invoke).not.toHaveBeenCalledWith(channel);
+    }
   });
 
   it("routes local lane creation through the local runtime when a local project runtime is bound", async () => {

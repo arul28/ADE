@@ -75,6 +75,7 @@ import { createSyncRuntimeNameStore } from "./syncRuntimeNameStore";
 import { DEFAULT_SYNC_HOST_PORT, buildSyncHostPortCandidates } from "./syncProtocol";
 import { createSyncRemoteCommandService, type ExternalSessionsRemoteService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
 import type { WorkToolsStateService } from "../workTools/workToolsStateService";
+import type { AppleDeviceRemoteService, AppleStreamTicketIssuer } from "./appleRemoteCommands";
 import {
   buildAddressCandidates,
   buildPairingConnectInfo,
@@ -165,6 +166,10 @@ type SyncServiceArgs = {
    * served to iOS and the hosted web client through `workTools.*`.
    */
   workToolsStateService?: WorkToolsStateService | null;
+  /** Apple device environment for remote surfaces; absent off macOS. */
+  appleDeviceService?: AppleDeviceRemoteService | null;
+  appleStreamRelay?: AppleStreamTicketIssuer | null;
+  getAppleRemoteBitrateKbpsCap?: () => number | null;
   /**
    * Brain-level websocket listener shared across hosted-project switches.
    * When provided, the embedded sync host attaches to it instead of binding
@@ -748,6 +753,9 @@ export function createSyncService(args: SyncServiceArgs) {
     getLinearIssueTracker: args.getLinearIssueTracker,
     getExternalSessionsService: args.getExternalSessionsService,
     workToolsStateService: args.workToolsStateService,
+    appleDeviceService: args.appleDeviceService,
+    appleStreamRelay: args.appleStreamRelay,
+    getAppleRemoteBitrateKbpsCap: args.getAppleRemoteBitrateKbpsCap,
     projectConfigService: args.projectConfigService,
     portAllocationService: args.portAllocationService,
     laneEnvironmentService: args.laneEnvironmentService,
@@ -895,6 +903,9 @@ export function createSyncService(args: SyncServiceArgs) {
       // without `workTools.*`, which is a mobile capability disappearing with no
       // error anywhere.
       workToolsStateService: args.workToolsStateService,
+      appleDeviceService: args.appleDeviceService,
+      appleStreamRelay: args.appleStreamRelay,
+      getAppleRemoteBitrateKbpsCap: args.getAppleRemoteBitrateKbpsCap,
       projectConfigService: args.projectConfigService,
       portAllocationService: args.portAllocationService,
       laneEnvironmentService: args.laneEnvironmentService,

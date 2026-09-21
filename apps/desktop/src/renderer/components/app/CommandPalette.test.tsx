@@ -1698,10 +1698,10 @@ describe("CommandPalette", () => {
         supportsIosSimulator: true,
         isWebClient: false,
       });
-      expect(local).toContain("Tools: Simulator");
+      expect(local).toContain("Tools: Apple");
       expect(local).toContain("Tools: Browser");
 
-      // No simulator here, so the command that lands on a "macOS only" card is
+      // No Mac runtime, so the command that lands on a "not a Mac" card is
       // not offered at all.
       expect(
         titlesFor({
@@ -1709,26 +1709,29 @@ describe("CommandPalette", () => {
           supportsIosSimulator: false,
           isWebClient: false,
         }),
-      ).not.toContain("Tools: Simulator");
+      ).not.toContain("Tools: Apple");
 
       // A remote project's work happens on the other machine — except the
       // browser, which is this desktop's window reaching that machine's
-      // localhost through a port-forward.
+      // localhost through a port-forward, and Apple, which runs on that
+      // machine's helper rather than on this desk.
       const remote = titlesFor({
         isRemoteProject: true,
         supportsIosSimulator: true,
         isWebClient: false,
       });
       expect(remote).toContain("Tools: Browser");
-      expect(remote).not.toContain("Tools: Simulator");
+      expect(remote).toContain("Tools: Apple");
       expect(remote).not.toContain("Tools: App Control");
       expect(remote).not.toContain("Tools: Pull request");
       expect(remote).toContain("Tools: Git");
       // The picker is the fallback for every one of those, so it never goes.
       expect(remote).toContain("Tools: Show picker");
 
-      // The hosted client can WATCH the browser and App Control, so those stay;
-      // the simulator pane is a video stream with nothing to report.
+      // The hosted client can WATCH the browser and App Control, so those stay
+      // read-only. Apple is the one tool the web client DRIVES for real: the
+      // brain forwards H.264 one way and `apple.input` the other, and the web
+      // renders the same column the desktop does (spec §2i, full interact).
       const web = titlesFor({
         isRemoteProject: false,
         supportsIosSimulator: true,
@@ -1736,7 +1739,7 @@ describe("CommandPalette", () => {
       });
       expect(web).toContain("Tools: Browser");
       expect(web).toContain("Tools: App Control");
-      expect(web).not.toContain("Tools: Simulator");
+      expect(web).toContain("Tools: Apple");
     });
 
     /**

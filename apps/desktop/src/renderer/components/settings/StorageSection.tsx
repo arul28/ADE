@@ -52,6 +52,7 @@ import {
 import { PANEL_STYLE, STORAGE_BRAND } from "./storage/storageUiConstants";
 import { DiagnosticsStrip, TrendArrow } from "./storage/StorageDiagnostics";
 import { MaintenanceJournal } from "./storage/StorageMaintenanceJournal";
+import { AppleRecordingsWarning } from "./AppleRecordingsWarning";
 import {
   CATEGORY_META,
   CATEGORY_ORDER,
@@ -1353,6 +1354,8 @@ export function StorageSection() {
               runtimeHealth={runtimeHealth}
               runtimeHealthAvailable={Boolean(runtimeHealthFn)}
             />
+
+            <AppleRecordingsWarning projectRoot={snapshot.projectRoot} />
 
             <MaintenanceJournal extras={extras} />
 

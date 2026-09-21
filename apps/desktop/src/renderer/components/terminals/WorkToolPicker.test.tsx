@@ -3,7 +3,11 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { WorkToolPicker } from "./WorkToolPicker";
-import { WORK_TOOL_DEFINITIONS, type WorkToolContext } from "./workTools";
+import {
+  IOS_RUNTIME_UNSUPPORTED_REASON,
+  WORK_TOOL_DEFINITIONS,
+  type WorkToolContext,
+} from "./workTools";
 import type { WorkToolStatusMap } from "./useWorkToolStatuses";
 
 const LOCAL: WorkToolContext = {
@@ -117,7 +121,7 @@ describe("WorkToolPicker", () => {
     expect(screen.getByText("Run a shell here")).toBeTruthy();
     // Files has no hint at all: the lane store always knows whether the
     // worktree is dirty, so its slot is a status the pane never has to guess.
-    expect(screen.getByText("Boot a simulator")).toBeTruthy();
+    expect(screen.getByText("Open an Apple device")).toBeTruthy();
   });
 
   it("shows the reason on a tool that cannot run here and refuses the click", () => {
@@ -135,15 +139,15 @@ describe("WorkToolPicker", () => {
     const ios = cardFor("Simulator");
     expect(ios.disabled).toBe(true);
     // The reason replaces the hint rather than joining it.
-    expect(screen.getByText("macOS only")).toBeTruthy();
-    expect(screen.queryByText("Boot a simulator")).toBeNull();
+    expect(screen.getByText(IOS_RUNTIME_UNSUPPORTED_REASON)).toBeTruthy();
+    expect(screen.queryByText("Open an Apple device")).toBeNull();
     // Dimmed, not hidden: the tool still exists, it just cannot run here.
     expect(ios.className).toContain("opacity-40");
     fireEvent.click(ios);
     expect(onPick).not.toHaveBeenCalled();
   });
 
-  it("keeps the browser clickable on a remote project and disables only the rest", () => {
+  it("keeps the browser and Apple clickable on a remote project and disables only App Control", () => {
     const onPick = vi.fn();
     render(
       <WorkToolPicker
@@ -162,10 +166,11 @@ describe("WorkToolPicker", () => {
     fireEvent.click(cardFor("Browser"));
     expect(onPick).toHaveBeenCalledWith("browser");
 
-    // The two that really do drive something attached to this desk stay off.
-    expect(cardFor("Simulator").disabled).toBe(true);
+    // Apple runs on the bound runtime, so a remote Mac is a live viewer, not
+    // a local-only miss. App Control still attaches to apps on this desk.
+    expect(cardFor("Simulator").disabled).toBe(false);
     expect(cardFor("App Control").disabled).toBe(true);
-    expect(screen.getAllByText("Runs on this computer only").length).toBe(2);
+    expect(screen.getAllByText("Runs on this computer only").length).toBe(1);
   });
 
   it("activates the tool a card names", () => {
@@ -334,7 +339,7 @@ describe("WorkToolPicker", () => {
     expect(minTrack * 2 + 8 + COLUMN_PADDING_PX * 2).toBeLessThanOrEqual(DEFAULT_PANE_WIDTH_PX);
   });
 
-  it("keeps the web client's watchable tools pickable and its undrivable one dimmed", () => {
+  it("keeps the web client's watchable and fully drivable tools pickable", () => {
     const onPick = vi.fn();
     render(
       <WorkToolPicker
@@ -347,13 +352,29 @@ describe("WorkToolPicker", () => {
     );
 
     // Browser and App Control leave a describable trail the hosted client can
-    // show read-only; the simulator's pane is a video stream and nothing else.
+    // show read-only; the Apple device runs entirely on the ADE machine, so the
+    // hosted client drives it in full over the brain's video pipe.
     expect(cardFor("Browser").disabled).toBe(false);
     expect(cardFor("App Control").disabled).toBe(false);
-    expect(cardFor("Simulator").disabled).toBe(true);
-    expect(screen.getByText("Desktop app only")).toBeTruthy();
+    expect(cardFor("Simulator").disabled).toBe(false);
 
     fireEvent.click(cardFor("Browser"));
     expect(onPick).toHaveBeenCalledWith("browser");
+  });
+
+  it("dims Apple on the web client when the connected runtime is not a Mac", () => {
+    render(
+      <WorkToolPicker
+        activeTool={null}
+        context={{ isRemoteProject: false, supportsIosSimulator: false, isWebClient: true }}
+        statuses={{}}
+        loading={false}
+        onPick={vi.fn()}
+      />,
+    );
+
+    expect(cardFor("Simulator").disabled).toBe(true);
+    expect(screen.getByText(IOS_RUNTIME_UNSUPPORTED_REASON)).toBeTruthy();
+    expect(screen.queryByText("Desktop app only")).toBeNull();
   });
 });

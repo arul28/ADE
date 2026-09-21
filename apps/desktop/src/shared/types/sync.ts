@@ -2154,6 +2154,19 @@ export type SyncRemoteCommandAction =
   // panes, they never drive them.
   | "workTools.getLaneState"
   | "workTools.readObservationPreview"
+  // Apple device environment. `apple.status` and `apple.streamTicket` are
+  // viewer-allowed (the phone is view-only); everything that drives or
+  // provisions a device is controller-only, so a viewer role cannot tap.
+  | "apple.status"
+  | "apple.streamTicket"
+  | "apple.input"
+  | "apple.invoke"
+  | "apple.deviceList"
+  | "apple.deviceCreate"
+  | "apple.deviceAttach"
+  | "apple.recordList"
+  | "apple.recordStart"
+  | "apple.recordStop"
   | "deeplinks.open";
 
 export type SyncRemoteCommandPolicy = {

@@ -290,7 +290,9 @@ export function WorkToolHeader({
   const tabTooltip = (tool: WorkSidebarTab): string => {
     const definition = workToolDefinition(tool);
     if (!definition) return workToolLabel(tool);
-    if (tool === activeTool && contextLabel) return `${definition.label} · ${contextLabel}`;
+    if (tool === activeTool && contextLabel) return `${workToolLabel(tool)} · ${contextLabel}`;
+    const status = statuses[tool];
+    if (definition.tabTooltip && !status?.line) return definition.tabTooltip;
     const { tooltipLabel } = workToolSummary(
       definition,
       statuses[tool],
@@ -542,7 +544,7 @@ function WorkToolTab({
             className="shrink-0"
           />
           {showLabel ? (
-            <span className="min-w-0 truncate">{definition.label}</span>
+            <span className="min-w-0 truncate">{workToolLabel(tool)}</span>
           ) : null}
           {dotState !== "idle" && !active ? (
             <span
@@ -569,7 +571,7 @@ function WorkToolTab({
         // tabs themselves keep. The keyboard closes with Delete/Backspace on
         // the focused tab, or through the overflow menu.
         tabIndex={-1}
-        aria-label={`Close ${definition.label}`}
+        aria-label={`Close ${workToolLabel(tool)}`}
         data-tool-tab-close={tool}
         // The layout contract, named rather than left to be read back out of
         // the class string: `corner` is the 24px tab's top-right badge,

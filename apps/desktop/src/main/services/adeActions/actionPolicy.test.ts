@@ -203,6 +203,8 @@ describe("isAllowedAdeAction", () => {
     expect(isAllowedAdeAction("ios_simulator", "resolvePreviewMatch")).toBe(true);
     expect(isAllowedAdeAction("ios_simulator", "ensurePreviewWorkspace")).toBe(true);
     expect(isAllowedAdeAction("ios_simulator", "renderCurrentPreview")).toBe(true);
+    expect(isAllowedAdeAction("ios_simulator", "pressButton")).toBe(true);
+    expect(isAllowedAdeAction("ios_simulator", "rotate")).toBe(true);
     expect(isCtoOnlyAdeAction("ios_simulator", "resolvePreviewMatch")).toBe(false);
     expect(isCtoOnlyAdeAction("ios_simulator", "ensurePreviewWorkspace")).toBe(false);
     expect(isCtoOnlyAdeAction("ios_simulator", "renderCurrentPreview")).toBe(false);

@@ -91,6 +91,10 @@ import type {
   ProductAnalyticsStatus,
 } from "../shared/types/productAnalytics";
 import type { DiskPressureSnapshot } from "../main/services/storage/diskPressure";
+// Type-only, and the same precedent as `DiskPressureSnapshot` above: the
+// recording record is unit 2C's shape and re-declaring it here is how the two
+// drift.
+import type { SimRecording } from "../main/services/ios/recording/simRecordingService";
 import type {
   MaintenanceRunReport,
   RuntimeHealthSnapshot,
@@ -792,13 +796,28 @@ import type {
   IosSimulatorLaunchResult,
   IosSimulatorLaunchTarget,
   IosSimulatorListLaunchTargetsArgs,
-  IosSimulatorPrivacyPane,
   IosSimulatorScreenshot,
   IosSimulatorScreenshotArgs,
   IosSimulatorSelectResult,
   IosSimulatorSession,
   IosSimulatorShutdownArgs,
   IosSimulatorShutdownResult,
+  AppleDeviceAttachArgs,
+  AppleDeviceCreateArgs,
+  AppleDeviceDeleteArgs,
+  AppleDeviceListArgs,
+  AppleDeviceListResult,
+  AppleFrameArgs,
+  AppleFrameResult,
+  ApplePressButtonArgs,
+  ApplePressButtonResult,
+  AppleRotateArgs,
+  AppleRotateResult,
+  AppleLaneDevice,
+  AppleRecordDeleteArgs,
+  AppleRecordListArgs,
+  AppleRecordStartArgs,
+  AppleRecordStopArgs,
   IosSimulatorStartStreamArgs,
   IosSimulatorStatus,
   IosSimulatorStreamStatus,
@@ -831,9 +850,6 @@ import type {
   IosSimulatorTapElementArgs,
   IosSimulatorUninstallAppArgs,
   IosSimulatorWaitForElementArgs,
-  IosSimulatorWindowCaptureSessionHint,
-  IosSimulatorWindowSourcesResult,
-  IosSimulatorWindowState,
   AppControlClickArgs,
   AppControlConnectArgs,
   AppControlDriversResult,
@@ -1538,18 +1554,6 @@ async function assertLocalProjectHostAction(action: string): Promise<void> {
   const binding = await getProjectRuntimeBinding();
   if (binding?.kind !== "remote") return;
   throw new Error(`${action} is only available on the local project host.`);
-}
-
-async function requireLocalProjectHostBinding(action: string): Promise<Extract<
-  OpenProjectBinding,
-  { kind: "local" }
->> {
-  const binding = await getProjectRuntimeBinding({ fresh: true });
-  if (binding?.kind === "local") return binding;
-  if (binding?.kind === "remote") {
-    throw new Error(`${action} is only available on the local project host.`);
-  }
-  throw new Error(`${action} requires an open local project.`);
 }
 
 async function callRemoteProjectActionIfBound<T>(
@@ -8069,78 +8073,90 @@ const adeBridge = {
       pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorStreamStatus> =>
       callIosSimulatorMutation(pin, "startStream", args, IPC.iosSimulatorStartStream),
+    // `pin` stays FIRST on these two. Every renderer call site passes only a
+    // pin, and reordering to put the new lane scope first would have silently
+    // turned a binding into a scope object at ~10 call sites this unit does not
+    // own — a mistake TypeScript could not catch, because both are objects.
     stopStream: (
       pin?: OpenProjectBinding | null,
+      args: { laneId?: string | null; chatSessionId?: string | null } = {},
     ): Promise<IosSimulatorStreamStatus> =>
-      callIosSimulatorMutation(pin, "stopStream", undefined, IPC.iosSimulatorStopStream),
+      callIosSimulatorMutation(pin, "stopStream", args, IPC.iosSimulatorStopStream),
     getStreamStatus: async (
       pin?: OpenProjectBinding | null,
+      args: { laneId?: string | null; chatSessionId?: string | null } = {},
     ): Promise<IosSimulatorStreamStatus> =>
-      callIosSimulatorActionOr(pin, "getStreamStatus", {}, () =>
-        ipcRenderer.invoke(IPC.iosSimulatorGetStreamStatus),
+      callIosSimulatorActionOr(pin, "getStreamStatus", { args }, () =>
+        ipcRenderer.invoke(IPC.iosSimulatorGetStreamStatus, args),
       ),
-    getSimulatorWindowState: async (): Promise<IosSimulatorWindowState> => {
-      await assertLocalProjectHostAction("iOS Simulator window state");
-      return ipcRenderer.invoke(IPC.iosSimulatorGetWindowState);
-    },
-    listSimulatorWindowSources: async (
-      opts: {
-        session?: IosSimulatorWindowCaptureSessionHint | null;
-      } = {},
-    ): Promise<IosSimulatorWindowSourcesResult> => {
-      // The root is never the caller's to choose: window capture is always
-      // scoped to the window's own bound local project.
-      const binding = await requireLocalProjectHostBinding("iOS Simulator window sources");
-      // Window parking runs in Electron main, whose simulator service never sees
-      // a launch the brain daemon owns. Callers that already hold the runtime
-      // session pass it here so parking keys off a session that exists.
-      return ipcRenderer.invoke(IPC.iosSimulatorListWindowSources, {
-        projectRoot: binding.rootPath,
-        ...(opts.session ? { session: opts.session } : {}),
-      });
-    },
-    // Registers this surface as depending on the parking claim. It has to be
-    // its own local-only channel rather than a side effect of `startStream`:
-    // with a local project bound — which window capture requires —
-    // `startStream` is answered by the brain daemon, which has no BrowserWindow
-    // and no parking concept, so nothing in Electron main ever runs for it.
-    // Same transport as `releaseWindowParking` below, so the two always pair up.
-    //
-    // Resolves whether the host actually counted the holder — it refuses one
-    // from a window that does not own the claim — so the caller only pairs a
-    // release with a retain that really happened. Never throws, and a failure
-    // is reported as "not held" for the same reason.
-    retainWindowParking: async (): Promise<boolean> => {
-      try {
-        const result = await ipcRenderer.invoke(IPC.iosSimulatorRetainWindowParking) as { ok?: unknown } | null;
-        return result?.ok === true;
-      } catch {
-        /* parking is best-effort */
-        return false;
-      }
-    },
-    // The mirror image of the call above: capture arms the window-parking
-    // follow in this process, so whoever stops capturing has to disarm it here
-    // too. Deliberately not routed through the runtime — parking is a local
-    // Electron-main concern — and deliberately never throws, because every
-    // caller is a teardown path.
-    releaseWindowParking: async (): Promise<void> => {
-      try {
-        await ipcRenderer.invoke(IPC.iosSimulatorReleaseWindowParking);
-      } catch {
-        /* teardown is best-effort */
-      }
-    },
-    openSystemSettings: async (args: {
-      pane: IosSimulatorPrivacyPane;
-    }): Promise<{ ok: boolean }> => {
-      await assertLocalProjectHostAction("iOS Simulator system settings");
-      return ipcRenderer.invoke(IPC.iosSimulatorOpenSystemSettings, args);
-    },
-    revealSimulator: async (): Promise<{ ok: boolean; message: string | null }> => {
-      await assertLocalProjectHostAction("iOS Simulator reveal");
-      return ipcRenderer.invoke(IPC.iosSimulatorRevealWindow);
-    },
+
+    /* Per-lane devices. One simulator per lane, created on first ask. */
+    deviceCreate: (
+      args: AppleDeviceCreateArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleLaneDevice> =>
+      callIosSimulatorMutation(pin, "deviceCreate", args, IPC.iosSimulatorDeviceCreate),
+    deviceAttach: (
+      args: AppleDeviceAttachArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleLaneDevice> =>
+      callIosSimulatorMutation(pin, "deviceAttach", args, IPC.iosSimulatorDeviceAttach),
+    deviceList: async (
+      args: AppleDeviceListArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleDeviceListResult> =>
+      callIosSimulatorActionOr(pin, "deviceList", { args }, () =>
+        ipcRenderer.invoke(IPC.iosSimulatorDeviceList, args),
+      ),
+    deviceDelete: (
+      args: AppleDeviceDeleteArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> =>
+      callIosSimulatorMutation(pin, "deviceDelete", args, IPC.iosSimulatorDeviceDelete),
+
+    /**
+     * One decoded frame from the running stream.
+     *
+     * A mutation rather than a read even though it only looks: it writes a PNG
+     * into the build root, and the mutation path is the one that reaches the
+     * host that owns the stream.
+     */
+    frame: (
+      args: AppleFrameArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleFrameResult> =>
+      callIosSimulatorMutation(pin, "frame", args, IPC.iosSimulatorFrame),
+
+    /* Recording. */
+    recordStart: (
+      args: AppleRecordStartArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<SimRecording> =>
+      callIosSimulatorMutation(pin, "recordStart", args, IPC.iosSimulatorRecordStart),
+    recordStop: (
+      args: AppleRecordStopArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<SimRecording | null> =>
+      callIosSimulatorMutation(pin, "recordStop", args, IPC.iosSimulatorRecordStop),
+    recordList: async (
+      args: AppleRecordListArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<SimRecording[]> =>
+      callIosSimulatorActionOr(pin, "recordList", { args }, () =>
+        ipcRenderer.invoke(IPC.iosSimulatorRecordList, args),
+      ),
+    recordDelete: (
+      args: AppleRecordDeleteArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> =>
+      callIosSimulatorMutation(pin, "recordDelete", args, IPC.iosSimulatorRecordDelete),
+    recordingsTotalBytes: async (
+      args: { laneId?: string | null } = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<number> =>
+      callIosSimulatorActionOr(pin, "recordingsTotalBytes", { args }, () =>
+        ipcRenderer.invoke(IPC.iosSimulatorRecordingsTotalBytes, args),
+      ),
     tap: async (
       args: { deviceUdid?: string | null; x: number; y: number },
       pin?: OpenProjectBinding | null,
@@ -8148,6 +8164,16 @@ const adeBridge = {
       callIosSimulatorActionOr(pin, "tap", { args }, () =>
         ipcRenderer.invoke(IPC.iosSimulatorTap, args),
       ),
+    pressButton: (
+      args: ApplePressButtonArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ApplePressButtonResult> =>
+      callIosSimulatorMutation(pin, "pressButton", args, IPC.iosSimulatorPressButton),
+    rotate: (
+      args: AppleRotateArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleRotateResult> =>
+      callIosSimulatorMutation(pin, "rotate", args, IPC.iosSimulatorRotate),
     typeText: async (
       args: { deviceUdid?: string | null; text: string },
       pin?: OpenProjectBinding | null,

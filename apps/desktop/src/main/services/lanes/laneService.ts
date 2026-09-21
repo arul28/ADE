@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
+import { execFile as execFileCallback } from "node:child_process";
+import { promisify } from "node:util";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { AdeDb } from "../state/kvDb";
@@ -92,6 +94,10 @@ import {
   resolveAppliedAutoLaneBranchFragment,
 } from "../../../shared/laneNameFallback";
 
+import { releaseLaneAppleDevice } from "../ios/laneDeviceRegistry";
+
+/** `simctl` for the Apple-device half of a lane delete. Nothing else shells out here. */
+const execFileAsync = promisify(execFileCallback);
 type LaneRow = {
   id: string;
   project_id: string;
@@ -7648,6 +7654,23 @@ export function createLaneService({
             throw error;
           }
           const removedProofFiles = removeLaneArtifactFiles(laneId, laneArtifactFiles);
+          // The lane's Apple device and its recordings go with it. Not awaited:
+          // `simctl delete` can take tens of seconds on a large device set and
+          // the lane row is already gone, so blocking the delete on it would
+          // only make the progress UI look wedged. It deletes a CLONE and only
+          // detaches an attached device — ADE never deletes a simulator it did
+          // not create.
+          void releaseLaneAppleDevice({
+            laneId,
+            projectRoot,
+            store: db,
+            run: async (command, commandArgs, options) => {
+              const result = await execFileAsync(command, commandArgs, { timeout: options?.timeoutMs ?? 30_000 });
+              return { stdout: result.stdout?.toString() ?? "", stderr: result.stderr?.toString() ?? "" };
+            },
+            removeDirectory: (directory) => fs.promises.rm(directory, { recursive: true, force: true }),
+            logger,
+          });
           if (!laneArtifactFiles.length || removedProofFiles === 0) return undefined;
           return removedProofFiles === laneArtifactFiles.length
             ? { detail: `${removedProofFiles} proof file(s) removed` }

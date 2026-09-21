@@ -25,7 +25,9 @@ const iosListeners = new Set<Listener>();
 
 const browserGetStatus = vi.fn(async () => makeBuiltInBrowserStatus({ activeTabId: null, tabs: [] }));
 const appControlGetStatus = vi.fn(async () => ({ activeSession: null }));
-const iosGetStatus = vi.fn(async () => ({ activeSession: null }));
+const iosGetStatus = vi.fn(async (): Promise<{ supported?: boolean; activeSession: null }> => ({
+  activeSession: null,
+}));
 const browserOnEvent = vi.fn((listener: Listener) => {
   browserListeners.add(listener);
   return () => browserListeners.delete(listener);
@@ -166,5 +168,37 @@ describe("NativeToolFeedsProvider", () => {
     }
     expect(() => render(<OrphanHandler />)).toThrow(/NativeToolFeedsProvider/);
     error.mockRestore();
+  });
+
+  it("gates Apple on the bound runtime's supported flag, not this window's OS", async () => {
+    Object.defineProperty(window.navigator, "platform", { configurable: true, value: "Win32" });
+    iosGetStatus.mockResolvedValue({ supported: true, activeSession: null });
+    let latest: boolean | null = null;
+    function Probe() {
+      latest = useNativeToolFeeds().context.supportsIosSimulator;
+      return null;
+    }
+    render(
+      <NativeToolFeedsProvider active runtimePin={null}>
+        <Probe />
+      </NativeToolFeedsProvider>,
+    );
+    await waitFor(() => expect(iosGetStatus).toHaveBeenCalledTimes(1));
+    expect(latest).toBe(true);
+  });
+
+  it("marks Apple unavailable when the runtime reports supported=false", async () => {
+    iosGetStatus.mockResolvedValue({ supported: false, activeSession: null });
+    let latest: boolean | null = null;
+    function Probe() {
+      latest = useNativeToolFeeds().context.supportsIosSimulator;
+      return null;
+    }
+    render(
+      <NativeToolFeedsProvider active runtimePin={null}>
+        <Probe />
+      </NativeToolFeedsProvider>,
+    );
+    await waitFor(() => expect(latest).toBe(false));
   });
 });

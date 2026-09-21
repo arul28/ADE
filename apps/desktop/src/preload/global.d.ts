@@ -1,5 +1,24 @@
 import type { SmartLinkPreview } from "../shared/smartLinks";
 import type {
+  AppleDeviceAttachArgs,
+  AppleDeviceCreateArgs,
+  AppleDeviceDeleteArgs,
+  AppleDeviceListArgs,
+  AppleDeviceListResult,
+  AppleFrameArgs,
+  AppleFrameResult,
+  ApplePressButtonArgs,
+  ApplePressButtonResult,
+  AppleRotateArgs,
+  AppleRotateResult,
+  AppleLaneDevice,
+  AppleRecordDeleteArgs,
+  AppleRecordListArgs,
+  AppleRecordStartArgs,
+  AppleRecordStopArgs,
+} from "../shared/types/iosSimulator";
+import type { SimRecording } from "../main/services/ios/recording/simRecordingService";
+import type {
   AppOpenSystemSettingsPaneResult,
   SystemSettingsPaneId,
 } from "../shared/types/systemSettings";
@@ -690,7 +709,6 @@ import type {
   IosSimulatorLaunchResult,
   IosSimulatorLaunchTarget,
   IosSimulatorListLaunchTargetsArgs,
-  IosSimulatorPrivacyPane,
   IosSimulatorScreenshot,
   IosSimulatorScreenshotArgs,
   IosSimulatorSelectResult,
@@ -729,9 +747,6 @@ import type {
   IosSimulatorTapElementArgs,
   IosSimulatorUninstallAppArgs,
   IosSimulatorWaitForElementArgs,
-  IosSimulatorWindowCaptureSessionHint,
-  IosSimulatorWindowSourcesResult,
-  IosSimulatorWindowState,
   AppControlClickArgs,
   AppControlConnectArgs,
   AppControlDriversResult,
@@ -2382,33 +2397,71 @@ declare global {
         ) => Promise<IosSimulatorStreamStatus>;
         stopStream: (
           pin?: OpenProjectBinding | null,
+          args?: { laneId?: string | null; chatSessionId?: string | null },
         ) => Promise<IosSimulatorStreamStatus>;
         getStreamStatus: (
           pin?: OpenProjectBinding | null,
+          args?: { laneId?: string | null; chatSessionId?: string | null },
         ) => Promise<IosSimulatorStreamStatus>;
-        getSimulatorWindowState: () => Promise<IosSimulatorWindowState>;
-        listSimulatorWindowSources: (opts?: {
-          session?: IosSimulatorWindowCaptureSessionHint | null;
-        }) => Promise<IosSimulatorWindowSourcesResult>;
+        deviceCreate: (
+          args?: AppleDeviceCreateArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleLaneDevice>;
+        deviceAttach: (
+          args: AppleDeviceAttachArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleLaneDevice>;
+        deviceList: (
+          args?: AppleDeviceListArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleDeviceListResult>;
+        deviceDelete: (
+          args?: AppleDeviceDeleteArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<void>;
+        frame: (
+          args?: AppleFrameArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleFrameResult>;
+        recordStart: (
+          args?: AppleRecordStartArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<SimRecording>;
+        recordStop: (
+          args?: AppleRecordStopArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<SimRecording | null>;
+        recordList: (
+          args?: AppleRecordListArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<SimRecording[]>;
+        recordDelete: (
+          args: AppleRecordDeleteArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<void>;
         /**
-         * Registers one capture surface as depending on the parking claim.
-         * Resolves whether the host counted the holder — it refuses one from a
-         * window that does not own the claim — so only a `true` may be paired
-         * with a later release. Never throws; a failure resolves `false`.
+         * Bytes of Apple recordings on disk. Lane-optional: the Diagnostics
+         * row is project-wide, and the recorder already knows the answer from
+         * its own sidecars.
          */
-        retainWindowParking: () => Promise<boolean>;
-        /** Drops one holder of the window-parking follow. Never throws. */
-        releaseWindowParking: () => Promise<void>;
-        openSystemSettings: (args: {
-          pane: IosSimulatorPrivacyPane;
-        }) => Promise<{ ok: boolean }>;
-        revealSimulator: () => Promise<{ ok: boolean; message: string | null }>;
+        recordingsTotalBytes: (
+          args?: { laneId?: string | null },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<number>;
         // No projectRoot: tapping drives the booted device, and the service
         // never resolves a build root for it.
         tap: (
           args: { deviceUdid?: string | null; x: number; y: number },
           pin?: OpenProjectBinding | null,
         ) => Promise<{ ok: true }>;
+        pressButton: (
+          args: ApplePressButtonArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ApplePressButtonResult>;
+        rotate: (
+          args: AppleRotateArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleRotateResult>;
         typeText: (
           args: { deviceUdid?: string | null; text: string },
           pin?: OpenProjectBinding | null,

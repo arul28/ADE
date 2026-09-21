@@ -2,9 +2,11 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
+  useState,
   type ReactNode,
 } from "react";
 import type {
@@ -18,7 +20,6 @@ import type {
 } from "../../../shared/types";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { useMachineEntryForBinding } from "../../state/crossMachineLanes";
-import { isMacPlatform } from "../../lib/platform";
 import { isWebClientMode } from "../../lib/webClientMode";
 import type { WorkToolContext } from "./workTools";
 import {
@@ -132,14 +133,23 @@ export function NativeToolFeedsProvider({
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const isRemoteProject = useAppStore((state) => state.projectBinding?.kind === "remote");
   const pinnedMachine = useMachineEntryForBinding(runtimePin);
+  // Optimistic true until the bound runtime answers: a Windows desktop pinned
+  // to a Mac must not flash "not a Mac" while `getStatus` is in flight, and a
+  // false default would never ask because the session feed used to gate on it.
+  const [supportsIosSimulator, setSupportsIosSimulator] = useState(true);
+  const runtimePinKey = runtimePin?.key ?? null;
+  useEffect(() => {
+    setSupportsIosSimulator(true);
+  }, [runtimePinKey]);
 
   // Capability flags, never a platform sniff: the hosted web client renders
-  // these same components with stubbed native namespaces.
+  // these same components with stubbed native namespaces. Apple follows the
+  // runtime's `getStatus().supported`, not this window's OS.
   const context = useMemo<WorkToolContext>(() => ({
     isRemoteProject,
-    supportsIosSimulator: isMacPlatform(),
+    supportsIosSimulator,
     isWebClient: isWebClientMode(),
-  }), [isRemoteProject]);
+  }), [isRemoteProject, supportsIosSimulator]);
 
   // The browser view is owned by THIS window's main process. A pin on another
   // checkout of this computer still drives that view, just under the pinned
@@ -189,6 +199,7 @@ export function NativeToolFeedsProvider({
     onBrowserEvent,
     onAppControlEvent,
     onIosEvent,
+    onIosSupported: setSupportsIosSimulator,
   });
 
   const pinnedMachineId = pinnedMachine?.machineId ?? null;

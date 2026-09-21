@@ -7,6 +7,12 @@ import { recentProjectStateKey } from "../../shared/projectIdentity";
 import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
 import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry";
 import { normalizeHarnessPresetList, type HarnessPreset } from "../../shared/harnessPresets";
+import {
+  DEFAULT_APPLE_DEVICE_PREFERENCES,
+  normalizeAppleDevicePreferences,
+  serializeAppleDevicePreferences,
+  type AppleDevicePreferences,
+} from "../../shared/appleDeviceSettings";
 import { parseCodedErrorMessage } from "../lib/codedError";
 import { toAdeRecoveryErrorCode, type AdeRecoveryErrorCode } from "../../shared/types/recovery";
 import { isWebClientMode } from "../lib/webClientMode";
@@ -228,6 +234,25 @@ export type WorkProjectViewState = {
   workSidebarOpenTools: WorkSidebarTab[];
   workSidebarWidthPct: number;
   /**
+   * How wide the Apple device column is, as a percentage of the Work row.
+   *
+   * Project-wide, exactly like `workSidebarWidthPct`: the column's geometry is
+   * a workspace preference, and a width that reset every time you changed lane
+   * would be a width nobody could set. Its presence is NOT stored here — that
+   * is the device's business (see `appleColumnClosedUdid`).
+   */
+  appleColumnWidthPct: number;
+  /**
+   * The device udid the Apple column was last closed for, in THIS lane.
+   *
+   * A udid rather than a boolean because closing the column "does not shut the
+   * device down; it keeps running and the corner card takes over" (spec §2a) —
+   * so the dismissal belongs to the thing dismissed. The next device the lane
+   * gets is a new thing to look at, and a stale `true` would have hidden it.
+   * Lane-scoped (written through `setLaneWorkViewState`).
+   */
+  appleColumnClosedUdid?: string | null;
+  /**
    * Where the Work tab's floating live-preview card sits, as fractions of the
    * chat column. Optional because it is only written once somebody drags the
    * card: an absent value means "bottom-right", which is where it starts.
@@ -333,6 +358,8 @@ export function createDefaultWorkProjectViewState(): WorkProjectViewState {
     workSidebarTool: null,
     workSidebarOpenTools: [],
     workSidebarWidthPct: 36,
+    appleColumnWidthPct: 30,
+    appleColumnClosedUdid: null,
     workLiveCardPosition: null,
     workLiveCardDismissed: null,
     laneSessionOrder: {},
@@ -409,6 +436,23 @@ function normalizeWorkSidebarWidthPct(value: unknown): number {
   return Math.max(26, Math.min(55, n));
 }
 
+/**
+ * Mirror of `clampAppleColumnWidthPct`'s TASTE clamp only (18–60, default 30).
+ *
+ * The numbers are literals rather than an import for the same reason
+ * `normalizeWorkSidebarWidthPct` hardcodes 26/55: the clamp lives in
+ * `components/apple/appleColumnLayout.ts`, which reaches the toolbar's
+ * breakpoint table, and the store must not pull a React component into its
+ * module graph to normalize a persisted number. The pixel floors are not
+ * mirrored at all — they need a container width, which the store has no way to
+ * consult, and the splitter re-clamps against real pixels on every drag.
+ */
+function normalizeAppleColumnWidthPct(value: unknown): number {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return 30;
+  return Math.max(18, Math.min(60, n));
+}
+
 function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
   const candidate = value && typeof value === "object"
     ? value as Partial<WorkProjectViewState>
@@ -447,6 +491,8 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
       activeWorkSidebarTool,
     ),
     workSidebarWidthPct: normalizeWorkSidebarWidthPct(candidate.workSidebarWidthPct),
+    appleColumnWidthPct: normalizeAppleColumnWidthPct(candidate.appleColumnWidthPct),
+    appleColumnClosedUdid: normalizeOptionalString(candidate.appleColumnClosedUdid),
     workLiveCardPosition: normalizeWorkLiveCardPosition(candidate.workLiveCardPosition),
     workLiveCardDismissed: normalizeWorkLiveCardDismissals(candidate.workLiveCardDismissed),
     laneSessionOrder: normalizeLaneSessionOrder(candidate.laneSessionOrder),
@@ -952,6 +998,11 @@ type PersistedUserPreferences = {
    * you sign in on converges on the same list.
    */
   harnessPresets: HarnessPreset[];
+  /**
+   * Apple simulator/preview presentation. Persisted under `apple` in the
+   * blob so the keys match `docs/plans/apple-device-env-contracts.md`.
+   */
+  appleDevice: AppleDevicePreferences;
   /** Set true the first time the user changes the chat font size; locks the
    *  large-screen auto-size so it never overrides their choice again. */
   userOverrodeChatFontSize: boolean;
@@ -1018,6 +1069,10 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
       chatChromeTint: coercePersistedChatChromeTint(parsed as Record<string, unknown>),
       chatShellGeometry: normalizeChatShellGeometry(parsed.chatShellGeometry),
       harnessPresets: normalizeHarnessPresetList(parsed.harnessPresets),
+      appleDevice: normalizeAppleDevicePreferences(
+        (parsed as { apple?: unknown; appleDevice?: unknown }).apple
+          ?? (parsed as { appleDevice?: unknown }).appleDevice,
+      ),
       userOverrodeChatFontSize: parsed.userOverrodeChatFontSize === true,
     };
   } catch {
@@ -1063,13 +1118,18 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
     chatChromeTint: "colored",
     chatShellGeometry: "default",
     harnessPresets: [],
+    appleDevice: { ...DEFAULT_APPLE_DEVICE_PREFERENCES },
     userOverrodeChatFontSize: false,
   };
 }
 
 function persistUserPreferences(prefs: PersistedUserPreferences) {
   try {
-    window.localStorage.setItem(USER_PREFERENCES_STORAGE_KEY, JSON.stringify(prefs));
+    const { appleDevice, ...rest } = prefs;
+    window.localStorage.setItem(USER_PREFERENCES_STORAGE_KEY, JSON.stringify({
+      ...rest,
+      apple: serializeAppleDevicePreferences(appleDevice),
+    }));
   } catch {
     // ignore
   }
@@ -1094,6 +1154,7 @@ function persistUserPreferencesFrom(state: {
   chatChromeTint: ChatChromeTint;
   chatShellGeometry: ChatShellGeometry;
   harnessPresets: HarnessPreset[];
+  appleDevice: AppleDevicePreferences;
   userOverrodeChatFontSize: boolean;
 }) {
   persistUserPreferences({
@@ -1114,6 +1175,7 @@ function persistUserPreferencesFrom(state: {
     chatChromeTint: state.chatChromeTint,
     chatShellGeometry: state.chatShellGeometry,
     harnessPresets: state.harnessPresets,
+    appleDevice: state.appleDevice,
     userOverrodeChatFontSize: state.userOverrodeChatFontSize,
   });
 }
@@ -1276,6 +1338,7 @@ export type AppState = {
   chatShellGeometry: ChatShellGeometry;
   /** Saved harness presets, newest edit last. See `shared/harnessPresets.ts`. */
   harnessPresets: HarnessPreset[];
+  appleDevice: AppleDevicePreferences;
   providerMode: ProviderMode;
   availableModels: ModelDescriptor[];
   laneInspectorTabs: Record<string, LaneInspectorTab>;
@@ -1431,6 +1494,7 @@ export type AppState = {
   setHarnessPresets: (
     next: HarnessPreset[] | ((prev: HarnessPreset[]) => HarnessPreset[]),
   ) => void;
+  setAppleDevicePreferences: (next: Partial<AppleDevicePreferences>) => void;
   /** Resets only theme + chat font size (narrow restore — per product spec). */
   resetThemeAndChatFontDefaults: () => void;
   setTerminalPreferences: (
@@ -1724,6 +1788,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   chatChromeTint: initialUserPreferences.chatChromeTint,
   chatShellGeometry: initialUserPreferences.chatShellGeometry,
   harnessPresets: initialUserPreferences.harnessPresets,
+  appleDevice: initialUserPreferences.appleDevice,
   providerMode: "guest",
   availableModels: [...MODEL_REGISTRY].filter((m) => !m.deprecated),
   laneInspectorTabs: {},
@@ -2208,6 +2273,12 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       const value = normalizeHarnessPresetList(resolved);
       persistUserPreferencesFrom({ ...prev, harnessPresets: value });
       return { harnessPresets: value };
+    }),
+  setAppleDevicePreferences: (next) =>
+    set((prev) => {
+      const appleDevice = normalizeAppleDevicePreferences({ ...prev.appleDevice, ...next });
+      persistUserPreferencesFrom({ ...prev, appleDevice });
+      return { appleDevice };
     }),
   resetThemeAndChatFontDefaults: () =>
     set((prev) => {
@@ -3124,6 +3195,7 @@ export function createProjectAppStore(
     chatChromeTint: rootState.chatChromeTint,
     chatShellGeometry: rootState.chatShellGeometry,
     harnessPresets: rootState.harnessPresets,
+    appleDevice: rootState.appleDevice,
     smartTooltipsEnabled: rootState.smartTooltipsEnabled,
     launchPromptClipboardEnabled: rootState.launchPromptClipboardEnabled,
     launchPromptClipboardNoticeEnabled: rootState.launchPromptClipboardNoticeEnabled,
@@ -3141,6 +3213,7 @@ export function createProjectAppStore(
     setChatChromeTint: rootState.setChatChromeTint,
     setChatShellGeometry: rootState.setChatShellGeometry,
     setHarnessPresets: rootState.setHarnessPresets,
+    setAppleDevicePreferences: rootState.setAppleDevicePreferences,
     resetThemeAndChatFontDefaults: rootState.resetThemeAndChatFontDefaults,
     setSmartTooltipsEnabled: rootState.setSmartTooltipsEnabled,
     setLaunchPromptClipboardEnabled: rootState.setLaunchPromptClipboardEnabled,

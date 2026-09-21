@@ -197,6 +197,28 @@ describe("settings manifest", () => {
     expect(searchSettingsEntries("crash").map((e) => e.id)).toContain("general.diagnostics-sharing");
   });
 
+  it("registers the five Apple device keys on Appearance, account-scoped like Browser", () => {
+    const ids = [
+      "appearance.apple-realistic-body",
+      "appearance.apple-tap-rings",
+      "appearance.apple-typed-badges",
+      "appearance.apple-remote-bitrate",
+      "appearance.apple-recordings-warn",
+    ];
+    for (const id of ids) {
+      const entry = SETTINGS_ENTRIES.find((candidate) => candidate.id === id);
+      expect(entry, id).toBeDefined();
+      expect(entry!.tab).toBe("appearance");
+      expect(entry!.scope).toBe("account");
+      expect(entry!.web).toBe("browser");
+      expect(entry!.group).toBe("Apple devices");
+    }
+    expect(searchSettingsEntries("realistic body").map((entry) => entry.id))
+      .toContain("appearance.apple-realistic-body");
+    expect(searchSettingsEntries("apple.recordingsWarnBytes").map((entry) => entry.id))
+      .toContain("appearance.apple-recordings-warn");
+  });
+
   // The lane-A surfaces are PANELS on a provider's page, not pages of their
   // own, so before these entries existed ⌘K answered nothing for the words a
   // user actually types to reach them.

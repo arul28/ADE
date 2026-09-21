@@ -35,6 +35,7 @@ import {
  */
 export const BUNDLED_AGENT_SKILLS = Object.freeze([
   "ade-cli-control-plane",
+  "ade-apple",
   "ade-ios-simulator",
   "ade-app-control",
   "ade-browser",

@@ -30,6 +30,7 @@ import { KEYBINDING_DEFINITIONS } from "../../../shared/keybindings";
 import { getStoredZoomLevel, zoomFactorForDisplay, zoomFactorForLevel } from "../../lib/zoom";
 import { applyHostedWebZoom } from "../../lib/webZoom";
 import { chatSessionFromRemoteSummary } from "./infra/chatSessionShape";
+import { appleEndpointReader, createAppleDeviceNamespace } from "./appleDevice";
 import { createGithubNamespace, githubDisconnectedStatus } from "./githubStub";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
@@ -773,7 +774,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     tests: createTestStubs() as AdeNamespace<"tests">,
     feedback: createFeedbackStubs() as AdeNamespace<"feedback">,
     computerUse: createNativeUnavailableNamespace() as AdeNamespace<"computerUse">,
-    iosSimulator: createNativeUnavailableNamespace() as AdeNamespace<"iosSimulator">,
+    iosSimulator: createAppleDeviceNamespace(call, appleEndpointReader(client)),
     appControl: createNativeUnavailableNamespace() as AdeNamespace<"appControl">,
     builtInBrowser: {
       ...createNativeUnavailableNamespace(),

@@ -860,9 +860,9 @@ Renderer surfaces:
   unconditionally. See
   [Chat › An agent is using the browser](../chat/README.md#an-agent-is-using-the-browser).
 - `apps/desktop/src/renderer/components/work/WorkLiveCornerCard.tsx`,
-  `workLiveCard.ts`, `iosSimulatorPreviewStream.ts` — the floating
+  `workLiveCard.ts`, `WorkLiveIosStreamView.tsx` — the floating
   live-preview card for the most recently active screen tool that is *not*
-  in the pane. See
+  in the pane, plus one H.264 card per Apple device. See
   [UI surfaces](ui-surfaces.md#the-floating-live-preview-card-worklivecornercardtsx).
 - `apps/desktop/src/renderer/components/terminals/workLaneBranchClusters.ts` —
   same-branch adjacency for the Work by-lane list: normalize `branchRef`, skip

@@ -19,6 +19,22 @@ export function isWorkLiveScreenTool(tool: string | null | undefined): tool is W
 }
 
 /**
+ * Simulator cards are keyed by device, not by the `ios` tool id: two lanes
+ * with devices are two cards, and silencing one must not silence the other.
+ * `ios:<udid>` is that key. The bare `ios` stamp is still accepted so a
+ * dismissal written before device keying still hides the simulator.
+ */
+export function workLiveIosDismissalKey(udid: string): string {
+  return `ios:${udid.trim()}`;
+}
+
+export function isWorkLiveDismissalKey(key: string | null | undefined): boolean {
+  if (!key) return false;
+  if (isWorkLiveScreenTool(key)) return true;
+  return key.startsWith("ios:") && key.length > "ios:".length;
+}
+
+/**
  * Where the card sits, as fractions of the chat column. Fractions rather than
  * pixels so resizing the column keeps it in place instead of stranding it off
  * the edge.
@@ -26,9 +42,10 @@ export function isWorkLiveScreenTool(tool: string | null | undefined): tool is W
 export type WorkLiveCardPosition = { xPct: number; yPct: number };
 
 /**
- * The activity stamp each tool's card was dismissed at, keyed by tool id.
+ * The activity stamp each card was dismissed at, keyed by tool id or by
+ * `ios:<udid>` for a simulator device.
  *
- * Per TOOL rather than one flag because "I don't need to watch the browser
+ * Per CARD rather than one flag because "I don't need to watch the browser
  * right now" says nothing about the simulator that boots ten seconds later.
  * The value is the activity clock the card was showing when you closed it, so
  * the rule "come back on NEW activity" is a plain `>` and cannot be defeated by
@@ -48,12 +65,12 @@ export function normalizeWorkLiveCardPosition(value: unknown): WorkLiveCardPosit
   };
 }
 
-/** Drops unknown tool ids and non-positive stamps, so a hand-edited blob cannot hide the card forever. */
+/** Drops unknown keys and non-positive stamps, so a hand-edited blob cannot hide the card forever. */
 export function normalizeWorkLiveCardDismissals(value: unknown): WorkLiveCardDismissals | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const next: WorkLiveCardDismissals = {};
   for (const [key, stamp] of Object.entries(value as Record<string, unknown>)) {
-    if (!isWorkLiveScreenTool(key)) continue;
+    if (!isWorkLiveDismissalKey(key)) continue;
     if (typeof stamp !== "number" || !Number.isFinite(stamp) || stamp <= 0) continue;
     next[key] = stamp;
   }

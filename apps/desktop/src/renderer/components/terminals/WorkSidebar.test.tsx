@@ -314,7 +314,10 @@ function installAdeMock(options: {
         setBounds: vi.fn().mockResolvedValue(undefined),
       },
       iosSimulator: {
-        getStatus: vi.fn().mockResolvedValue({ activeSession: options.iosSession ?? null }),
+        getStatus: vi.fn().mockResolvedValue({
+          supported: true,
+          activeSession: options.iosSession ?? null,
+        }),
         onEvent: vi.fn(() => () => {}),
       },
       terminal: {
@@ -343,7 +346,7 @@ function withFeeds(runtimePin: OpenProjectBinding | null, children: ReactNode) {
 }
 
 function renderSidebar(args: {
-  tab: WorkSidebarTab;
+  tab: WorkSidebarTab | null;
   contextTarget: WorkSidebarContextTarget | null;
   contextDisabledReason?: string | null;
   laneId?: string;
@@ -589,7 +592,7 @@ describe("WorkSidebar context targets", () => {
       lanes: [lane, laneTwo],
     });
 
-    expect(await screen.findByText(/This Simulator view is claimed by Lane 2, not Lane 1/)).toBeTruthy();
+    expect(await screen.findByText(/This Apple view is claimed by Lane 2, not Lane 1/)).toBeTruthy();
     expect(screen.getByTestId("ios-panel").getAttribute("data-control-disabled")).toBe("");
     expect(screen.getByTestId("ios-panel").getAttribute("data-ignore-chat-ownership")).toBe("true");
     expect((screen.getByText("Add iOS context") as HTMLButtonElement).disabled).toBe(false);
@@ -709,7 +712,39 @@ describe("WorkSidebar context targets", () => {
     }));
   });
 
-  it("disables only the this-computer tools for remote projects and falls back to the picker", async () => {
+  it("keeps Apple available on a remote Mac runtime and disables only App Control", async () => {
+    const onTabChange = vi.fn();
+    useAppStore.setState({
+      projectBinding: {
+        kind: "remote",
+        key: "remote:target-1:project-1",
+        targetId: "target-1",
+        runtimeName: "Mac Studio",
+        projectId: "project-1",
+        rootPath: "/repo",
+        displayName: "Repo",
+      },
+    } as any);
+
+    renderSidebar({
+      tab: null,
+      contextTarget: { kind: "chat", sessionId: "chat-1" },
+      onTabChange,
+    });
+
+    expect(cardFor("Git").disabled).toBe(false);
+    expect(cardFor("Files").disabled).toBe(false);
+    expect(cardFor("Terminal").disabled).toBe(false);
+    expect(cardFor("Simulator").disabled).toBe(false);
+    expect(cardFor("App Control").disabled).toBe(true);
+    expect(cardFor("Browser").disabled).toBe(false);
+    expect(screen.getAllByText("Runs on this computer only").length).toBe(1);
+    await waitFor(() => expect(window.ade.iosSimulator.getStatus).toHaveBeenCalled());
+    expect(window.ade.appControl.getStatus).not.toHaveBeenCalled();
+    expect(onTabChange).not.toHaveBeenCalledWith(null);
+  });
+
+  it("stays on the Apple panel for a remote project instead of falling back to the picker", async () => {
     const onTabChange = vi.fn();
     useAppStore.setState({
       projectBinding: {
@@ -729,23 +764,9 @@ describe("WorkSidebar context targets", () => {
       onTabChange,
     });
 
-    // Every tool still has a card — an unavailable one says why rather than
-    // vanishing — but only the remote-capable ones are clickable.
-    expect(cardFor("Git").disabled).toBe(false);
-    expect(cardFor("Files").disabled).toBe(false);
-    expect(cardFor("Terminal").disabled).toBe(false);
-    expect(cardFor("Simulator").disabled).toBe(true);
-    expect(cardFor("App Control").disabled).toBe(true);
-    // The browser is NOT a this-computer tool. It is hosted by this window
-    // whatever the lane is bound to, and a remote lane is exactly what the
-    // loopback port-forward exists for.
-    expect(cardFor("Browser").disabled).toBe(false);
-    expect(screen.getAllByText("Runs on this computer only").length).toBeGreaterThan(0);
-    // The picker, not some other tool: being dumped into Git because the
-    // simulator is unavailable would be a non-sequitur.
-    await waitFor(() => expect(onTabChange).toHaveBeenCalledWith(null));
-    expect(window.ade.iosSimulator.getStatus).not.toHaveBeenCalled();
-    expect(window.ade.appControl.getStatus).not.toHaveBeenCalled();
+    expect(screen.getByTestId("ios-panel")).toBeTruthy();
+    await waitFor(() => expect(window.ade.iosSimulator.getStatus).toHaveBeenCalled());
+    expect(onTabChange).not.toHaveBeenCalledWith(null);
   });
 
   it("opens the browser on a remote project rather than falling back to the picker", async () => {
@@ -773,7 +794,28 @@ describe("WorkSidebar context targets", () => {
     expect(onTabChange).not.toHaveBeenCalledWith(null);
   });
 
-  it("disables the macOS-only iOS Simulator card on Windows", async () => {
+  it("disables the Apple card when the bound runtime is not a Mac", async () => {
+    window.ade.iosSimulator.getStatus = vi.fn().mockResolvedValue({
+      supported: false,
+      activeSession: null,
+    });
+    const onTabChange = vi.fn();
+
+    renderSidebar({
+      tab: "ios",
+      contextTarget: { kind: "chat", sessionId: "chat-1" },
+      onTabChange,
+    });
+
+    await waitFor(() => expect(screen.getByText("The runtime for this project is not a Mac")).toBeTruthy());
+    expect(cardFor("Simulator").disabled).toBe(true);
+    expect(cardFor("App Control").disabled).toBe(false);
+    expect(cardFor("Browser").disabled).toBe(false);
+    await waitFor(() => expect(onTabChange).toHaveBeenCalledWith(null));
+    expect(window.ade.iosSimulator.getStatus).toHaveBeenCalled();
+  });
+
+  it("keeps the Apple card available on a non-Mac desktop bound to a Mac runtime", async () => {
     Object.defineProperty(window.navigator, "platform", {
       configurable: true,
       value: "Win32",
@@ -786,13 +828,9 @@ describe("WorkSidebar context targets", () => {
       onTabChange,
     });
 
-    expect(cardFor("Simulator").disabled).toBe(true);
-    expect(screen.getByText("macOS only")).toBeTruthy();
-    expect(cardFor("App Control").disabled).toBe(false);
-    expect(cardFor("Browser").disabled).toBe(false);
-    expect(screen.queryByTestId("ios-panel")).toBeNull();
-    await waitFor(() => expect(onTabChange).toHaveBeenCalledWith(null));
-    expect(window.ade.iosSimulator.getStatus).not.toHaveBeenCalled();
+    expect(screen.getByTestId("ios-panel")).toBeTruthy();
+    await waitFor(() => expect(window.ade.iosSimulator.getStatus).toHaveBeenCalled());
+    expect(onTabChange).not.toHaveBeenCalledWith(null);
   });
 });
 

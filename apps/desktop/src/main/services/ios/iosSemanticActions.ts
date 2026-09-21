@@ -84,9 +84,9 @@ function isUsableFrame(frame: IosInspectableFrame | null | undefined): frame is 
  * `scaleAccessibilityElementsToScreenshot` multiplies `frame` by the device
  * scale to build it, so on a 3x device the two differ by a factor of three.
  *
- * The tap path takes device points. `runIdbTap` passes its `x`/`y` straight to
- * `idb ui tap`, and the drawer divides the screenshot-pixel point by
- * `snapshot.screen.scale` before it calls `tap`. So `frame` is the tap space
+ * The tap path takes device points. The helper's touch injection takes its
+ * `x`/`y` in the same space, and the column divides the screenshot-pixel point
+ * by `snapshot.screen.scale` before it calls `tap`. So `frame` is the tap space
  * and this function returns `frame` first.
  *
  * `pixelFrame` is only a fallback for an element whose `frame` never arrived.
@@ -152,8 +152,8 @@ export type ElementMatchOutcome = {
 /**
  * The centre of an element in device points, for the tap backend.
  *
- * The value is rounded because `idb ui tap` takes integers. The result is null
- * when neither frame has a positive width and height.
+ * The value is rounded because the helper's touch injection takes integers.
+ * The result is null when neither frame has a positive width and height.
  */
 export function elementTapPoint(element: IosScreenElement): { x: number; y: number } | null {
   const frame = tapFrameOf(element);

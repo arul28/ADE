@@ -1,9 +1,11 @@
 import type { WorkSidebarTab } from "../../state/appStore";
 import {
   WORK_LIVE_SCREEN_TOOLS,
+  isWorkLiveDismissalKey,
   isWorkLiveScreenTool,
   normalizeWorkLiveCardDismissals,
   normalizeWorkLiveCardPosition,
+  workLiveIosDismissalKey,
   type WorkLiveCardDismissals,
   type WorkLiveCardPosition,
   type WorkLiveScreenTool,
@@ -27,11 +29,14 @@ import {
  */
 export {
   WORK_LIVE_SCREEN_TOOLS,
+  isWorkLiveDismissalKey,
   isWorkLiveScreenTool,
   normalizeWorkLiveCardDismissals,
   normalizeWorkLiveCardPosition,
+  workLiveIosDismissalKey,
 };
 export type { WorkLiveCardDismissals, WorkLiveCardPosition, WorkLiveScreenTool };
+export { isWorkLivePictureInPictureSupported, workLiveIosStreamRequestUrl } from "./workLiveIosPictureInPicture";
 
 /**
  * Compile-time proof that every previewable tool id is a real sidebar tab id.
@@ -55,11 +60,11 @@ export type WorkLiveActivity = {
 
 export function commitWorkLiveCardDismissal(
   dismissals: WorkLiveCardDismissals | null | undefined,
-  tool: WorkLiveScreenTool,
+  key: string,
   activityStamp: number,
 ): WorkLiveCardDismissals {
-  const previous = dismissals?.[tool] ?? 0;
-  return { ...(dismissals ?? {}), [tool]: Math.max(previous, activityStamp) };
+  const previous = dismissals?.[key] ?? 0;
+  return { ...(dismissals ?? {}), [key]: Math.max(previous, activityStamp) };
 }
 
 /**
@@ -94,6 +99,90 @@ export function selectWorkLiveCardTool(args: {
   return best?.tool ?? null;
 }
 
+/**
+ * One floating card to paint. Browser and App Control stay one-of; each live
+ * Apple device is its own card, keyed by udid, so two lanes with devices are
+ * two cards rather than a fight over the `ios` tool slot.
+ */
+export type WorkLiveCardSelection =
+  | { kind: "tool"; tool: Exclude<WorkLiveScreenTool, "ios"> }
+  | { kind: "ios"; deviceUdid: string };
+
+/** One Apple device the card can picture. */
+export type WorkLiveIosDevice = {
+  udid: string;
+  laneId: string;
+  name: string;
+  appName: string | null;
+  chatSessionId: string | null;
+  /** Truthy while this device is recording; sourced from `status` / record list. */
+  recording: unknown;
+  lastActivityAt: number;
+};
+
+export function workLiveCardSelectionKey(selection: WorkLiveCardSelection): string {
+  switch (selection.kind) {
+    case "ios":
+      return workLiveIosDismissalKey(selection.deviceUdid);
+    case "tool":
+      return selection.tool;
+    default: {
+      const _exhaustive: never = selection;
+      return _exhaustive;
+    }
+  }
+}
+
+function iosDeviceDismissedAt(
+  dismissals: WorkLiveCardDismissals | null | undefined,
+  udid: string,
+): number | undefined {
+  return dismissals?.[workLiveIosDismissalKey(udid)] ?? dismissals?.ios;
+}
+
+/**
+ * Every card that should be on screen right now.
+ *
+ * The Apple column is the one place an open device is already in view, so
+ * `activeTool === "ios"` hides every device card. Browser and App Control still
+ * share a single slot (most recent wins). Devices do not: one card per udid.
+ */
+export function selectWorkLiveCards(args: {
+  activeTool: WorkSidebarTab | null;
+  activities: readonly WorkLiveActivity[];
+  dismissals: WorkLiveCardDismissals | null;
+  iosDevices: readonly WorkLiveIosDevice[];
+  iosAvailable: boolean;
+}): WorkLiveCardSelection[] {
+  const { activeTool, activities, dismissals, iosDevices, iosAvailable } = args;
+  const cards: WorkLiveCardSelection[] = [];
+  const seen = new Set<string>();
+
+  if (activeTool !== "ios" && iosAvailable) {
+    const ranked = [...iosDevices]
+      .filter((device) => device.udid.trim().length > 0 && device.lastActivityAt > 0)
+      .sort((left, right) => right.lastActivityAt - left.lastActivityAt);
+    for (const device of ranked) {
+      const dismissedAt = iosDeviceDismissedAt(dismissals, device.udid);
+      if (dismissedAt != null && device.lastActivityAt <= dismissedAt) continue;
+      const key = workLiveIosDismissalKey(device.udid);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      cards.push({ kind: "ios", deviceUdid: device.udid });
+    }
+  }
+
+  const tool = selectWorkLiveCardTool({
+    activeTool,
+    activities: activities.filter((activity) => activity.tool !== "ios"),
+    dismissals,
+  });
+  if (tool && tool !== "ios") {
+    cards.push({ kind: "tool", tool });
+  }
+  return cards;
+}
+
 /* ── Per-tool source adapters ─────────────────────────────────────────────── */
 
 /**
@@ -116,7 +205,7 @@ export type WorkLiveSource = {
   caption: string | null;
   /** A login handoff or equivalent "needs you" state, or null. */
   handoff: WorkLiveHandoff;
-  /** Truthy while the tool is recording; only the browser can be. */
+  /** Truthy while the tool is recording. Browser tabs and Apple devices can be. */
   recording: unknown;
 };
 
@@ -160,6 +249,9 @@ export type WorkLiveSourceState = {
     chatSessionId?: string | null;
     appName?: string | null;
     deviceName?: string | null;
+    deviceUdid?: string | null;
+    /** Active recording from `status({laneId})` (or the record list). */
+    recording?: unknown;
     handoff?: unknown;
   } | null;
 };
@@ -216,9 +308,16 @@ export const WORK_LIVE_SOURCES: Record<
     ownerLabel: iosSession?.chatSessionId ? AGENT_OWNER_LABEL : null,
     caption: iosSession?.appName ?? iosSession?.deviceName ?? null,
     handoff: detectWorkLiveHandoff(iosSession),
-    recording: null,
+    recording: iosSession?.recording ?? null,
   }),
 };
+
+/** Caption for one Apple device card: foreground app, else the device name. */
+export function workLiveIosCaption(device: Pick<WorkLiveIosDevice, "appName" | "name">): string | null {
+  const appName = device.appName?.trim() || null;
+  const deviceName = device.name.trim() || null;
+  return appName ?? deviceName;
+}
 
 export function workLiveSource(
   tool: WorkLiveScreenTool,
