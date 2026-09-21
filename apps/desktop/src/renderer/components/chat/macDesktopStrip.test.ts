@@ -11,7 +11,6 @@ import {
   macDesktopStatusPill,
   macDesktopStatusSegments,
   macDesktopStripControls,
-  macDesktopStripName,
   macDesktopWindowRowText,
   macDesktopWindowTitle,
 } from "./macDesktopStrip";
@@ -93,23 +92,6 @@ describe("macDesktopStatusSegments", () => {
       .toEqual({ status: "Live", separator: null, detail: null });
     expect(macDesktopStatusSegments({ label: "Reconnecting", detail: "Idle", tone: "error" }))
       .toEqual({ status: "Reconnecting", separator: "·", detail: "Idle" });
-  });
-});
-
-describe("macDesktopStripName", () => {
-  it("leads with the display's own Mission Control name", () => {
-    expect(macDesktopStripName({ displayName: "ADE · docs-fix", laneName: "docs-fix" }))
-      .toBe("ADE · docs-fix");
-  });
-
-  it("falls back to the lane name while the display has not answered", () => {
-    expect(macDesktopStripName({ displayName: "  ", laneName: "docs-fix" })).toBe("ADE · docs-fix");
-    expect(macDesktopStripName({ displayName: null, laneName: "docs-fix" })).toBe("ADE · docs-fix");
-  });
-
-  it("draws nothing rather than a generic name when neither is known", () => {
-    expect(macDesktopStripName({ displayName: null, laneName: null })).toBeNull();
-    expect(macDesktopStripName({ displayName: null, laneName: "   " })).toBeNull();
   });
 });
 
@@ -213,9 +195,14 @@ describe("macDesktopStripControls", () => {
     const args = { hostIsLocal: true, ownedCount: 2, parkedCount: 2 };
     const pane = macDesktopStripControls({ ...args, expanded: false });
     const full = macDesktopStripControls({ ...args, expanded: true });
-    for (const key of ["status", "windows", "record", "present", "takeover"] as const) {
+    for (const key of ["status", "record", "present", "takeover"] as const) {
       expect(full[key]).toBe(pane[key]);
     }
+  });
+
+  it("no longer carries a windows control", () => {
+    const pane = macDesktopStripControls({ expanded: false, hostIsLocal: true, ownedCount: 1, parkedCount: 1 });
+    expect(Object.keys(pane)).not.toContain("windows");
   });
 
   it("spells the exit out in full screen and keeps the pane's icon tooltip", () => {

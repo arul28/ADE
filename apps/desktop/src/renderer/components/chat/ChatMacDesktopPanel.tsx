@@ -14,9 +14,9 @@ import {
   ArrowSquareIn,
   ArrowsInSimple,
   ArrowsOutSimple,
-  CaretDown,
   Cursor,
   Monitor,
+  Plus,
   Record,
   Stop,
   WarningCircle,
@@ -32,15 +32,15 @@ import type {
 } from "../../../shared/types/macDesktop";
 import type { SystemSettingsPaneId } from "../../../shared/types/systemSettings";
 import { cn } from "../ui/cn";
-import { MENU_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import {
   WORK_TOOL_CHROME_CHIP,
-  WORK_TOOL_CHROME_META,
   WORK_TOOL_CHROME_ROW,
   WORK_TOOL_PRIMARY_BUTTON,
+  WORK_TOOL_SECTION_LABEL_TEXT,
   WorkToolChromeButton,
   WorkToolEmptyLine,
 } from "../terminals/workToolChrome";
+import { WorkToolPreviewControls } from "../terminals/workToolPreviewControls";
 import { H264VideoCanvas } from "./H264VideoCanvas";
 import { macDesktopApi } from "./macDesktopApi";
 import { MacDesktopPermissionBlock } from "./MacDesktopPermissionBlock";
@@ -59,21 +59,19 @@ import {
 import { useMacDesktopLiveView } from "./useMacDesktopLiveView";
 import { useMacDesktopRealInput } from "./useMacDesktopRealInput";
 import { useMacDesktopStatus } from "./useMacDesktopStatus";
-import { MacDesktopClaimPicker, MacDesktopLeaseChip } from "./MacDesktopClaimPicker";
+import { MacDesktopClaimPicker } from "./MacDesktopClaimPicker";
 import {
   MAC_DESKTOP_TAKEOVER_CURSOR_HIDDEN_CLASS,
   MacDesktopTakeoverCursor,
 } from "./MacDesktopTakeoverCursor";
 import {
-  MAC_DESKTOP_LIST_HEADER,
-  MAC_DESKTOP_LIST_META,
   MAC_DESKTOP_LIST_ROW,
   MAC_DESKTOP_LIST_TITLE,
   MacDesktopAppIcon,
   MacDesktopMinimizedBadge,
   MacDesktopRowAction,
 } from "./macDesktopWindowList";
-import { macDesktopClaimAppIcons, macDesktopHasLease } from "./macDesktopClaimPicker.logic";
+import { macDesktopClaimAppIcons } from "./macDesktopClaimPicker.logic";
 import { macDesktopErrorText } from "./macDesktopErrorText";
 import { useMacDesktopMachineFacts } from "./useMacDesktopMachineFacts";
 import {
@@ -84,8 +82,6 @@ import {
   macDesktopStatusPill,
   macDesktopStatusSegments,
   macDesktopStripControls,
-  macDesktopStripName,
-  macDesktopWindowRowText,
   macDesktopWindowTitle,
 } from "./macDesktopStrip";
 
@@ -141,30 +137,26 @@ function macDesktopControllerId(): string {
 /** Which of the two chrome rows a control is being drawn in. */
 export type MacDesktopChromeScope = "pane" | "fullscreen";
 
-/* ── The windows rail ───────────────────────────────────────────────────── */
+/* ── The Apps list ──────────────────────────────────────────────────────── */
 
 /**
- * One parked window, as a row.
+ * One parked window, as a row in the Apps section.
  *
  * A row and not a card: the first version drew a 28px initials tile ("GB") next
  * to the app's name printed twice, over two lines, inside a bordered box — a
  * 44px card per window in a 240px column, for a list whose whole job is to name
- * three windows. It is the app's own list row now, the same one the Windows
- * menu and the claim picker use, so the three places this app lists windows
- * look like one list.
+ * three windows. It is the app's own list row now, the same one the pane's Apps
+ * list and the Add app picker use, so both lists look like one list.
  *
- * There is no "observe" action. Observing is what the AGENT does to a window
- * before it acts on it; an eye button offering a person the chance to queue an
- * agent capture was a piece of the agent's plumbing wearing a human control's
- * clothes.
+ * The app's name leads and the window's own title follows, muted: the app is
+ * what a person recognises, the title is what tells its windows apart. No
+ * ownership words — a window is either on this desktop (listed) or it is not.
  *
- * Memoised per window: a frame arriving, a lease renewing or the pane resizing
- * re-renders the panel several times a second, and nothing on this row changes
- * on any of them.
+ * Memoised per window: a frame arriving or the pane resizing re-renders the
+ * panel several times a second, and nothing on this row changes on any of them.
  */
 type MacDesktopWindowCardProps = {
   window: MacDesktopWindow;
-  owned: boolean;
   selected: boolean;
   /** Resolved PNG for this app. The window row may not carry one of its own. */
   iconPng: string | null;
@@ -174,13 +166,12 @@ type MacDesktopWindowCardProps = {
 
 const MacDesktopWindowCard = memo(function MacDesktopWindowCard({
   window: entry,
-  owned,
   selected,
   iconPng,
   onSelect,
   onRelease,
 }: MacDesktopWindowCardProps) {
-  const text = macDesktopWindowRowText(entry);
+  const title = macDesktopWindowTitle(entry);
   return (
     <div
       role="button"
@@ -203,18 +194,19 @@ const MacDesktopWindowCard = memo(function MacDesktopWindowCard({
       )}
     >
       <MacDesktopAppIcon iconPng={iconPng ?? entry.iconPng} appName={entry.appName} />
-      <span className={MAC_DESKTOP_LIST_TITLE} title={macDesktopWindowTitle(entry)}>
-        {text.primary}
+      <span className={cn(MAC_DESKTOP_LIST_TITLE, "flex-none max-w-[55%]")} title={entry.appName}>
+        {entry.appName}
       </span>
       {entry.minimized ? <MacDesktopMinimizedBadge /> : null}
-      {owned ? <MacDesktopLeaseChip /> : null}
-      {text.secondary ? (
-        <span className={MAC_DESKTOP_LIST_META} title={text.secondary}>{text.secondary}</span>
-      ) : null}
+      {title !== entry.appName ? (
+        <span className="min-w-0 flex-1 truncate text-[11.5px] text-muted-fg/80" title={title}>{title}</span>
+      ) : (
+        <span className="min-w-0 flex-1" />
+      )}
       <MacDesktopRowAction
         label="Release"
         testId="mac-desktop-window-release"
-        title={`Release “${macDesktopWindowTitle(entry)}” back to your screen`}
+        title={`Release “${title}” back to your screen`}
         onClick={() => onRelease(entry.id)}
       />
     </div>
@@ -264,14 +256,6 @@ export function ChatMacDesktopPanel({
     machineName: machineFacts.machineName,
     machineVersion: machineFacts.machineVersion,
   });
-  /**
-   * Which chrome row has its Windows menu open, if either.
-   *
-   * A scope and not a boolean: the pane's row and full screen's bar are both in
-   * the tree at the same time now, and a shared boolean opened two menus at
-   * once — one of them behind an opaque overlay.
-   */
-  const [windowsOpenScope, setWindowsOpenScope] = useState<MacDesktopChromeScope | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [claimable, setClaimable] = useState<MacDesktopWindow[]>([]);
   const [claimableLoading, setClaimableLoading] = useState(false);
@@ -820,16 +804,6 @@ export function ChatMacDesktopPanel({
   }, [expanded]);
 
   /**
-   * Full screen closes its own Windows menu on the way out.
-   *
-   * The two rows share one scope, so a menu left open in full screen would come
-   * back as a menu hanging under the pane's row the next time it is opened.
-   */
-  useEffect(() => {
-    setWindowsOpenScope((current) => (current === (expanded ? "pane" : "fullscreen") ? null : current));
-  }, [expanded]);
-
-  /**
    * The one remediation button, routed through the app-level opener.
    *
    * `x-apple.systempreferences:` is outside the external-URL scheme allowlist,
@@ -973,8 +947,9 @@ export function ChatMacDesktopPanel({
    */
   const pill = macDesktopStatusPill({ live: live.status, lease, iHaveControl });
   const statusSegments = macDesktopStatusSegments(pill);
-  // "ADE · <lane>", the display's own name, leading the strip's status chip.
-  const stripName = macDesktopStripName({ displayName: display.name, laneName });
+  // The dot's tooltip is the only place the strip still says the state in words:
+  // the name/status text that used to lead the row was the confusing part.
+  const statusTooltip = [statusSegments.status, statusSegments.detail].filter(Boolean).join(" · ");
   const selectedWindow = parkedWindows.find((entry) => entry.id === selectedWindowId) ?? null;
   /* Where the selected window sits on the picture. A positioned div over the
      canvas, never a second canvas: it moves when the pane resizes and when the
@@ -1007,162 +982,42 @@ export function ChatMacDesktopPanel({
      The pane's 40px row and full screen's bar carry the SAME controls, which
      is the whole correction: full screen used to carry three of them and then
      fade even those out, so the owner arrived at a picture with no status, no
-     window list, no Record, no Take over and no way back. Both rows are in the
-     tree at once — the pane keeps rendering normally behind the overlay so
-     leaving full screen is a z-index change and not a remount — so everything
-     here is per-scope, including the testids and which one owns the open
-     Windows menu. */
+     Record, no Take over and no way back. Both rows are in the tree at once —
+     the pane keeps rendering normally behind the overlay so leaving full
+     screen is a z-index change and not a remount — so everything here is
+     per-scope, including the testids. */
 
-  const renderStatusChip = (scope: MacDesktopChromeScope) => (
+  /**
+   * The one state mark left in the row: a small coloured dot with a tooltip.
+   *
+   * The strip used to lead with "ADE · <lane> · Live · Idle" in text, which was
+   * the bulk of what made the pane read as confusing. The live/idle state is
+   * still true and worth a glance, so it stays as a dot; the words move into
+   * the tooltip, and the lane name and window count are gone from the strip
+   * entirely (the Apps section below states the windows).
+   */
+  const renderStatusDot = (scope: MacDesktopChromeScope) => (
     <span
-      className={cn(
-        WORK_TOOL_CHROME_META,
-        "inline-flex min-w-0 shrink items-center gap-1.5 whitespace-nowrap px-1",
-      )}
+      title={statusTooltip}
+      aria-label={statusTooltip}
       data-testid={scope === "pane" ? "mac-desktop-live-chip" : "mac-desktop-fs-live-chip"}
+      className="inline-flex size-7 shrink-0 items-center justify-center"
     >
       <span
+        data-testid={scope === "pane" ? "mac-desktop-live-dot" : "mac-desktop-fs-live-dot"}
         className={cn(
-          "size-[6px] shrink-0 rounded-full",
+          "size-[7px] shrink-0 rounded-full",
           pill.tone === "live" ? "bg-emerald-400" : pill.tone === "error" ? "bg-rose-400/85" : "bg-amber-400",
         )}
       />
-      {/*
-        The name truncates first, the detail second, and the status word never:
-        the takeover controls are wide, and "Live · Idle" collapsing into a
-        sliver that read as a bare separator is what this split prevents.
-      */}
-      {stripName ? (
-        <>
-          <span className="min-w-0 truncate" title={stripName}>{stripName}</span>
-          <span aria-hidden="true" className="shrink-0 text-muted-fg/50">·</span>
-        </>
-      ) : null}
-      <span className="shrink-0">{statusSegments.status}</span>
-      {statusSegments.detail ? (
-        <>
-          <span aria-hidden="true" className="shrink-0 opacity-60">{statusSegments.separator}</span>
-          <span className="min-w-0 truncate">{statusSegments.detail}</span>
-        </>
-      ) : null}
     </span>
   );
-
-  /**
-   * "Windows N", and the menu behind it.
-   *
-   * The menu is where an empty screen is answered now. The card that used to
-   * float over the picture said the same thing much louder — a headline, a
-   * paragraph and a text field asking for an app name — on top of the one
-   * thing the pane exists to show. An empty screen is a fact about the window
-   * list, so it is stated in the window list, and the chip wears a dot so the
-   * menu is worth opening.
-   */
-  const renderWindowsChip = (scope: MacDesktopChromeScope) => {
-    const open = windowsOpenScope === scope;
-    const suffix = scope === "pane" ? "" : "-fs";
-    return (
-      <div className="relative shrink-0">
-        <button
-          type="button"
-          className={cn(WORK_TOOL_CHROME_CHIP, "shrink-0 whitespace-nowrap")}
-          aria-expanded={open}
-          data-testid={`mac-desktop-windows-toggle${suffix}`}
-          onClick={() => setWindowsOpenScope((current) => (current === scope ? null : scope))}
-        >
-          Windows
-          <span className="tabular-nums">{parkedWindows.length}</span>
-          {parkedWindows.length === 0 ? (
-            <span
-              aria-hidden
-              data-testid={`mac-desktop-windows-dot${suffix}`}
-              className="size-[5px] shrink-0 rounded-full bg-[color-mix(in_srgb,var(--color-accent)_70%,transparent)]"
-            />
-          ) : null}
-          <CaretDown size={10} />
-        </button>
-        {open ? (
-          <div
-            className={cn(
-              MENU_SURFACE_CLASS,
-              /* In the pane the menu spans the strip row, which is the only
-                 width always available: the tools pane can be ~240px wide and
-                 an overflow-hidden ancestor clips anything that leaves it — a
-                 left-anchored menu lost its app and Release columns off the
-                 right edge, a right-anchored one lost "ADE lease" off the
-                 left. Full screen has the whole window, so there the menu is
-                 anchored to its own chip at a readable width. */
-              "absolute top-full z-[60] mt-1 max-h-[280px] overflow-auto",
-              scope === "pane" ? "inset-x-0" : "left-0 w-[min(420px,calc(100vw-32px))]",
-            )}
-            data-testid={`mac-desktop-windows-menu${suffix}`}
-          >
-            {parkedWindows.length ? (
-              <p className={MAC_DESKTOP_LIST_HEADER}>
-                <span className="min-w-0 flex-1 truncate">On this screen</span>
-                <span className="shrink-0 tabular-nums text-muted-fg/60">{parkedWindows.length}</span>
-              </p>
-            ) : (
-              <p className="px-2 py-1.5 text-[11.5px] text-muted-fg" data-testid={`mac-desktop-windows-empty${suffix}`}>
-                No windows on this screen
-              </p>
-            )}
-            {parkedWindows.map((entry) => {
-              const text = macDesktopWindowRowText(entry);
-              return (
-                <div key={entry.id} className={MAC_DESKTOP_LIST_ROW} data-testid="mac-desktop-windows-row">
-                  <MacDesktopAppIcon
-                    iconPng={claimAppIcons[entry.bundleId ?? entry.appName] ?? entry.iconPng}
-                    appName={entry.appName}
-                  />
-                  <span className={MAC_DESKTOP_LIST_TITLE} title={macDesktopWindowTitle(entry)}>
-                    {text.primary}
-                  </span>
-                  {entry.minimized ? <MacDesktopMinimizedBadge /> : null}
-                  {/* Ownership, stated where the window is listed: a lane can be
-                      watching a window it does not hold, and the chip is the
-                      only place that difference is visible. */}
-                  {macDesktopHasLease(entry, laneId) ? <MacDesktopLeaseChip /> : null}
-                  {text.secondary ? (
-                    <span className={MAC_DESKTOP_LIST_META} title={text.secondary}>{text.secondary}</span>
-                  ) : null}
-                  <MacDesktopRowAction
-                    label="Release"
-                    testId="mac-desktop-windows-release"
-                    title={`Release “${macDesktopWindowTitle(entry)}” back to your screen`}
-                    onClick={() => void releaseWindow(entry.id)}
-                  />
-                </div>
-              );
-            })}
-            {/* The one way into the picker from the strip. The dropdown used
-                to inline a second list of every claimable window, which made
-                a menu that answered two questions badly. */}
-            <button
-              type="button"
-              className={cn(
-                MAC_DESKTOP_LIST_ROW,
-                "mt-0.5 border-t border-white/[0.06] text-[12px] text-fg/85 hover:bg-white/[0.05]",
-              )}
-              data-testid={`mac-desktop-claim-another${suffix}`}
-              onClick={() => { setWindowsOpenScope(null); setPickerOpen(true); }}
-            >
-              <ArrowSquareIn size={13} className="shrink-0 text-muted-fg/70" />
-              {parkedWindows.length ? "Claim another…" : "Claim a window…"}
-            </button>
-          </div>
-        ) : null}
-      </div>
-    );
-  };
 
   const renderChromeRow = (scope: MacDesktopChromeScope) => {
     const suffix = scope === "pane" ? "" : "-fs";
     return (
       <>
-        {renderStatusChip(scope)}
-
-        {renderWindowsChip(scope)}
+        {renderStatusDot(scope)}
 
         <div className="ml-auto flex shrink-0 items-center gap-0.5">
           {iHaveControl ? (
@@ -1241,6 +1096,16 @@ export function ChatMacDesktopPanel({
               {paneMaximize?.maximized ? <ArrowsInSimple size={16} /> : <ArrowsOutSimple size={16} />}
             </WorkToolChromeButton>
           )}
+
+          {/* The pane's per-chat preview toggle, at the far right. Maximize is
+              already `mac-desktop-expand` above, so this row adds only the
+              toggle rather than a second control for the same state. */}
+          <WorkToolPreviewControls
+            tool="mac-desktop"
+            chatSessionId={sessionId}
+            showMaximize={false}
+            testIdSuffix={suffix}
+          />
         </div>
       </>
     );
@@ -1497,65 +1362,104 @@ export function ChatMacDesktopPanel({
           {renderPicture("pane")}
         </div>
 
-        {/* ── The windows rail ────────────────────────────────────────────
+        {/* ── Apps ────────────────────────────────────────────────────────
 
-            One row per parked window, under the picture or beside it, in the
-            app's own list row. Nothing at all when the screen is empty — that
-            case is answered in the Windows menu, and a rail with a "nothing
-            here" line under a chip that already says so is the same sentence
-            twice. */}
-        {parkedWindows.length || lastObservation ? (
-          <div
-            data-testid="mac-desktop-rail"
-            className={cn(
-              "flex min-h-0 flex-col gap-0.5",
-              wide ? "w-[280px] max-w-[280px] shrink-0 overflow-y-auto" : "shrink-0",
-            )}
-          >
-            {parkedWindows.map((entry) => (
-              <MacDesktopWindowCard
-                key={entry.id}
-                window={entry}
-                owned={macDesktopHasLease(entry, laneId)}
-                selected={entry.id === selectedWindowId}
-                iconPng={claimAppIcons[entry.bundleId ?? entry.appName] ?? entry.iconPng ?? null}
-                onSelect={selectWindow}
-                onRelease={releaseWindowById}
-              />
-            ))}
-
-            {/* ── The agent's last look ─────────────────────────────────
-                One row: what the AGENT last did to this screen, when, how much
-                it saw, and the frame it saw it on when the live view has one to
-                lend. Named for whose action it is — "Last observation" read
-                like something the person watching had done. */}
-            {lastObservation ? (
-              <div
-                className="mt-1 flex items-center gap-2 px-1 text-[11px] text-muted-fg"
-                data-testid="mac-desktop-last-observation"
-              >
-                {lastFrame ? (
-                  <img
-                    src={lastFrame.dataUrl}
-                    alt=""
-                    aria-hidden
-                    className="h-7 w-[46px] shrink-0 rounded-[4px] object-cover opacity-80 shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-border)_60%,transparent)]"
-                  />
-                ) : null}
-                <span className="min-w-0 flex-1 truncate" title={lastObservation.caption ?? undefined}>
-                  <span className="text-muted-fg/70">Agent’s last look</span>
-                  <span className="px-1 opacity-60">·</span>
-                  {lastObservation.caption ?? "Looked at this screen"}
-                </span>
-                <span className="shrink-0 tabular-nums">
-                  {macDesktopRelativeTime(lastObservation.at, Date.now())}
-                  <span className="px-1 opacity-60">·</span>
-                  {`${lastObservation.elementCount} elements`}
-                </span>
+            The lane's desktop, named in the user's vocabulary: one row per
+            window parked here, and the Add app picker drawn INLINE in place of
+            the list. No lease/claim words — a window is on this desktop or it
+            is not. The empty state still offers the Add app button the heading
+            carries, so there is always a way to put something here. */}
+        <div
+          data-testid="mac-desktop-apps"
+          className={cn(
+            "flex min-h-0 flex-col gap-0.5",
+            wide ? "w-[280px] max-w-[280px] shrink-0 overflow-y-auto" : "shrink-0",
+            // The picker needs a bounded box to scroll inside; the list itself
+            // is content-sized.
+            pickerOpen && "min-h-[240px] max-h-[70vh]",
+          )}
+        >
+          {pickerOpen ? (
+            <MacDesktopClaimPicker
+              inline
+              laneId={laneId}
+              displayId={display?.displayId}
+              laneNames={laneNames}
+              windows={claimable}
+              loading={claimableLoading}
+              error={claimError}
+              onRefresh={() => void refreshClaimable()}
+              onClaim={claimWindow}
+              onClose={() => setPickerOpen(false)}
+            />
+          ) : (
+            <>
+              <div className="flex h-7 items-center gap-1 px-1" data-testid="mac-desktop-apps-header">
+                <span className={WORK_TOOL_SECTION_LABEL_TEXT}>Apps</span>
+                <button
+                  type="button"
+                  data-testid="mac-desktop-add-app"
+                  onClick={() => setPickerOpen(true)}
+                  className={cn(
+                    MAC_DESKTOP_LIST_ROW,
+                    "ml-auto h-6 w-auto shrink-0 gap-1 px-1.5 text-[11.5px] text-muted-fg hover:bg-white/[0.06] hover:text-fg",
+                  )}
+                >
+                  <Plus size={12} />
+                  Add app
+                </button>
               </div>
-            ) : null}
-          </div>
-        ) : null}
+
+              {parkedWindows.length ? (
+                parkedWindows.map((entry) => (
+                  <MacDesktopWindowCard
+                    key={entry.id}
+                    window={entry}
+                    selected={entry.id === selectedWindowId}
+                    iconPng={claimAppIcons[entry.bundleId ?? entry.appName] ?? entry.iconPng ?? null}
+                    onSelect={selectWindow}
+                    onRelease={releaseWindowById}
+                  />
+                ))
+              ) : (
+                <p className="px-1 py-1 text-[11.5px] text-muted-fg" data-testid="mac-desktop-apps-empty">
+                  No apps on this desktop yet.
+                </p>
+              )}
+            </>
+          )}
+
+          {/* ── The agent's last look ─────────────────────────────────
+              One row: what the AGENT last did to this screen, when, how much
+              it saw, and the frame it saw it on when the live view has one to
+              lend. Named for whose action it is — "Last observation" read
+              like something the person watching had done. */}
+          {lastObservation ? (
+            <div
+              className="mt-1 flex items-center gap-2 px-1 text-[11px] text-muted-fg"
+              data-testid="mac-desktop-last-observation"
+            >
+              {lastFrame ? (
+                <img
+                  src={lastFrame.dataUrl}
+                  alt=""
+                  aria-hidden
+                  className="h-7 w-[46px] shrink-0 rounded-[4px] object-cover opacity-80 shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-border)_60%,transparent)]"
+                />
+              ) : null}
+              <span className="min-w-0 flex-1 truncate" title={lastObservation.caption ?? undefined}>
+                <span className="text-muted-fg/70">Agent’s last look</span>
+                <span className="px-1 opacity-60">·</span>
+                {lastObservation.caption ?? "Looked at this screen"}
+              </span>
+              <span className="shrink-0 tabular-nums">
+                {macDesktopRelativeTime(lastObservation.at, Date.now())}
+                <span className="px-1 opacity-60">·</span>
+                {`${lastObservation.elementCount} elements`}
+              </span>
+            </div>
+          ) : null}
+        </div>
       </div>
 
       {/*
@@ -1632,23 +1536,6 @@ export function ChatMacDesktopPanel({
             document.documentElement,
           )
         : null}
-
-      {pickerOpen ? (
-        <MacDesktopClaimPicker
-          laneId={laneId}
-          displayId={display?.displayId}
-          laneNames={laneNames}
-          windows={claimable}
-          loading={claimableLoading}
-          error={claimError}
-          onRefresh={() => void refreshClaimable()}
-          onClaim={claimWindow}
-          onClose={() => setPickerOpen(false)}
-          /* One step above full screen, so a picker opened from inside the
-             overlay is still in front of it. */
-          zIndex={expanded ? MAC_DESKTOP_FULLSCREEN_Z + 1 : undefined}
-        />
-      ) : null}
     </div>
   );
 }

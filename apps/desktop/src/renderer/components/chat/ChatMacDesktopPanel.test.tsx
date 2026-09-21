@@ -102,6 +102,9 @@ const macDesktop = {
   renewLease: vi.fn(),
   startRecording: vi.fn(),
   stopRecording: vi.fn(),
+  listWindows: vi.fn(async () => []),
+  claimWindow: vi.fn(async () => undefined),
+  releaseWindow: vi.fn(async () => undefined),
 };
 
 const getConnectionSnapshot = vi.fn(async () => ({
@@ -306,6 +309,58 @@ describe("ChatMacDesktopPanel actions on a pinned machine", () => {
       { laneId: "lane-1", controllerId: CONTROLLER_ID },
       STUDIO_PIN,
     ));
+  });
+});
+
+describe("ChatMacDesktopPanel Apps section", () => {
+  const parked = {
+    id: 7,
+    pid: 4242,
+    appName: "Xcode",
+    bundleId: "com.apple.dt.Xcode",
+    title: "ADE.xcodeproj",
+    frame: { x: 0, y: 0, width: 800, height: 600 },
+    laneId: "lane-1",
+    origin: "claimed" as const,
+    onDisplayId: 31,
+    minimized: false,
+    singleInstance: false,
+    iconPng: "AAAA",
+  };
+
+  beforeEach(() => {
+    macDesktop.getStatus.mockResolvedValue(makeStatus({ windows: [parked] }));
+  });
+
+  it("renders the Apps section with icon, name and Release per parked window", async () => {
+    renderPanel();
+
+    const apps = await screen.findByTestId("mac-desktop-apps");
+    expect(apps.textContent).toContain("Xcode");
+    expect(apps.textContent).toContain("ADE.xcodeproj");
+    expect(screen.getByTestId("mac-desktop-app-icon")).toBeTruthy();
+    expect(screen.getByTestId("mac-desktop-window-release").textContent).toContain("Release");
+  });
+
+  it("Add app opens the picker inside the pane, not in a portal", async () => {
+    renderPanel();
+
+    fireEvent.click(await screen.findByTestId("mac-desktop-add-app"));
+
+    const picker = await screen.findByTestId("mac-desktop-claim-picker");
+    expect(screen.getByText("Add an app to this desktop")).toBeTruthy();
+    expect(document.body.querySelector(':scope > [data-testid="mac-desktop-claim-picker"]')).toBeNull();
+    expect(screen.getByTestId("mac-desktop-panel").contains(picker)).toBe(true);
+  });
+
+  it("strip shows no lane name or Windows dropdown", async () => {
+    renderPanel();
+
+    await screen.findByTestId("mac-desktop-surface");
+    expect(screen.getByTestId("mac-desktop-live-dot")).toBeTruthy();
+    expect(screen.queryByTestId("mac-desktop-windows-toggle")).toBeNull();
+    expect(screen.queryByText(/ADE ·/)).toBeNull();
+    expect(screen.queryByText("Windows")).toBeNull();
   });
 });
 

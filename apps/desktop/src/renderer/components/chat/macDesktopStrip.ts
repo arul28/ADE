@@ -7,15 +7,15 @@
  * Those judgements are here rather than inline in JSX so they can be asserted
  * without mounting a pane, and so the row itself stays a layout.
  *
- * Layout rule the callers keep: everything in the row is either a short text
- * chip (the status pill, the window count) or a 28px icon button with a
- * tooltip. Nothing carries a sentence, which is what kept the row on one line
- * at 600px — the version that wrote "Bring to my screen" and "Take over" as
- * labels wrapped onto two lines in a 700px pane.
+ * Layout rule the callers keep: the row is a small state dot at the far left
+ * and 28px icon buttons on the right. Nothing carries a sentence, which is what
+ * kept the row on one line at 600px — the version that wrote "Bring to my
+ * screen" and "Take over" as labels wrapped onto two lines in a 700px pane.
+ * The name/status text and the Windows dropdown were removed: the desktop's
+ * apps are listed in the pane's own Apps section, not in a strip chip.
  */
 
 import {
-  macDesktopDisplayName,
   type MacDesktopLeaseState,
   type MacDesktopWindow,
 } from "../../../shared/types/macDesktop";
@@ -71,24 +71,6 @@ export function macDesktopStatusSegments(pill: MacDesktopStatusPill): MacDesktop
     separator: detail ? "·" : null,
     detail,
   };
-}
-
-/**
- * The strip's first segment: the display's own name.
- *
- * The display is created named `ADE · <lane>` and that is what Mission Control
- * and Displays show, so the strip leads with it. A status whose display has not
- * arrived yet falls back to the lane name; a lane with no name at all draws no
- * segment rather than a generic one.
- */
-export function macDesktopStripName(args: {
-  displayName?: string | null;
-  laneName?: string | null;
-}): string | null {
-  const fromDisplay = args.displayName?.trim();
-  if (fromDisplay) return fromDisplay;
-  const lane = args.laneName?.trim();
-  return lane ? macDesktopDisplayName(lane) : null;
 }
 
 /**
@@ -221,11 +203,11 @@ export function macDesktopFullscreenPicture(
  *
  * Full screen used to carry three of them and hide even those after two
  * seconds, so a person who pressed the button landed on a picture with no
- * status, no window list and no way back but an undiscoverable Escape. The
- * answer is that full screen carries the SAME row the pane does — the only
- * differences are the ones that are facts about the row's place: full screen
- * spells its exit out in words rather than an icon tooltip, because it is the
- * one control the user is looking for.
+ * status and no way back but an undiscoverable Escape. The answer is that full
+ * screen carries the SAME row the pane does — the only differences are the ones
+ * that are facts about the row's place: full screen spells its exit out in
+ * words rather than an icon tooltip, because it is the one control the user is
+ * looking for. The window list is gone: it lives in the pane's Apps section.
  */
 export function macDesktopStripControls(args: {
   expanded: boolean;
@@ -234,7 +216,6 @@ export function macDesktopStripControls(args: {
   parkedCount: number;
 }): {
   status: true;
-  windows: true;
   record: true;
   present: boolean;
   takeover: true;
@@ -242,7 +223,6 @@ export function macDesktopStripControls(args: {
 } {
   return {
     status: true,
-    windows: true,
     record: true,
     present: macDesktopPresentAction({
       hostIsLocal: args.hostIsLocal,

@@ -322,6 +322,21 @@ same re-encode runs on a keepalive. The codec record is broadcast on the
 transition as well as sent on attach, so a reader that arrived before the first
 keyframe can still configure its decoder.
 
+The pane is the picture, a 40px strip above it, and an Apps section under it.
+The strip carries only a small coloured state dot at the far left (green live,
+amber starting, red reconnecting) with the state in its tooltip, plus the icon
+controls on the right — Record, Present, Take over / Return to agent, and Full
+screen / Exit full screen. There is no lane name, no status sentence, and no
+Windows dropdown: the `ADE · <lane>` name and the window count were what made
+the pane read as confusing. The Apps section names each window parked on this
+desktop in the user's own vocabulary — app icon, app name, its window title
+muted, and one Release button — and its heading row carries an Add app button.
+Add app opens the window picker INLINE, replacing the list in place: no portal,
+no sheet over the chat, and an opaque surface. The picker's copy matches
+("Add an app to this desktop", "Add", "Moves the window onto this lane's
+desktop."), and the word "lease" never appears in the pane. An empty desktop
+reads "No apps on this desktop yet." with the Add app button in its heading.
+
 The token is minted per `startStream` and returned only by `startStream`.
 `getStreamStatus` reports the transport shape with `url` and `token` null,
 because that read sits on the agent action allowlist. It also reports
@@ -522,10 +537,12 @@ removed — it never reaches the proof drawer.
   `display-destroyed` clears the recording with the display. Error text never
   carries a raw lane id: `macDesktopErrorText` replaces it with the lane's name
   when known and drops it otherwise.
-- **The strip leads with the display's own name.** `ADE · <lane>` (from
-  `display.name`) is the first segment, truncated with a tooltip; the status
-  word never truncates and the separator travels with the detail it
-  introduces, so takeover controls cannot collapse "Live · Idle" to a sliver.
+- **The strip is a state dot and icon controls, nothing else.** The lane name,
+  the status sentence and the Windows dropdown were removed: `ADE · <lane>`
+  stays as the display's Mission Control name but is no longer printed in the
+  pane, and the live/idle status is a small coloured dot whose tooltip carries
+  the words. The window list lives in the Apps section under the picture, so a
+  window's state is never inferred from a strip count.
 - **`getStreamStatus` must stay redacted.** It is on the action allowlist, so an
   unredacted token would be printed into a durable agent transcript.
 - **The agent-facing prompt cost is one line.** The system prompt gains a single

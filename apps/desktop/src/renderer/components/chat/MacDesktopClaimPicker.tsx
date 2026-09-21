@@ -31,7 +31,9 @@ import {
 } from "./macDesktopWindowList";
 
 /**
- * "Claim a window" — the whole Mac's windows, one click from this lane's screen.
+ * "Add an app to this desktop" — the whole Mac's windows, one click from this
+ * lane's screen. Drawn inline inside the Mac Desktop pane by default; the
+ * overlay mode remains for a caller that has to open it over the window.
  *
  * It is a TABLE, and specifically the table the rest of ADE already uses:
  * `settings/AdeUsageSection`'s model breakdown and `settings/StorageSection`'s
@@ -64,8 +66,15 @@ export type MacDesktopClaimPickerProps = {
   onClaim: (windowId: number) => Promise<void>;
   onClose: () => void;
   /**
-   * Overlay stacking. Full screen sits at 1000; a picker opened from inside
-   * that overlay has to be one step above or it is behind the picture.
+   * Draw the picker inside its caller's container — no portal, no fixed
+   * overlay. This is how the Mac Desktop pane opens it: the Apps section is
+   * replaced in place, so nothing ever covers the chat.
+   */
+  inline?: boolean;
+  /**
+   * Overlay stacking, used only when NOT inline. Full screen sits at 1000; a
+   * picker opened from inside that overlay has to be one step above or it is
+   * behind the picture.
    */
   zIndex?: number;
 };
@@ -83,6 +92,7 @@ export function MacDesktopClaimPicker({
   onRefresh,
   onClaim,
   onClose,
+  inline = false,
   zIndex,
 }: MacDesktopClaimPickerProps) {
   const [query, setQuery] = useState("");
@@ -168,28 +178,24 @@ export function MacDesktopClaimPicker({
     row?.scrollIntoView?.({ block: "nearest" });
   }, [active]);
 
-  const body = (
+  const dialog = (
     <div
-      className="fixed inset-0 flex items-start justify-center bg-black/55 p-4 pt-[10vh]"
-      style={{ zIndex: zIndex ?? 220 }}
-      role="presentation"
-      data-testid="mac-desktop-claim-picker"
-      onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
-    >
-      <div
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Claim a window"
-        className={cn(
-          "grid max-h-[min(560px,calc(100vh-20vh))] w-[min(720px,calc(100vw-32px))]",
-          "grid-rows-[auto_auto_minmax(0,1fr)_auto] overflow-hidden rounded-xl border",
-          // Opaque on purpose: `bg-surface-overlay` is translucent by
-          // construction, which is how the chat ended up showing through this
-          // dialog. `bg-surface-raised` is the settings cards' own surface.
-          USAGE_HAIRLINE_CLASS,
-          "bg-surface-raised text-fg shadow-float",
-        )}
+      ref={dialogRef}
+      role="dialog"
+      aria-modal={inline ? undefined : true}
+      aria-label="Add an app to this desktop"
+      data-testid={inline ? "mac-desktop-claim-dialog" : undefined}
+      className={cn(
+        "grid min-h-0 grid-rows-[auto_auto_minmax(0,1fr)_auto] overflow-hidden rounded-xl border",
+        inline
+          ? "h-full w-full"
+          : "max-h-[min(560px,calc(100vh-20vh))] w-[min(720px,calc(100vw-32px))]",
+        // Opaque on purpose: `bg-surface-overlay` is translucent by
+        // construction, which is how the chat ended up showing through this
+        // dialog. `bg-surface-raised` is the settings cards' own surface.
+        USAGE_HAIRLINE_CLASS,
+        "bg-surface-raised text-fg shadow-float",
+      )}
         onKeyDown={(event) => {
           if (event.key !== "Tab") return;
           const nodes = getFocusableElements(event.currentTarget);
@@ -208,9 +214,9 @@ export function MacDesktopClaimPicker({
       >
         <header className={cn("flex items-start gap-3 border-b px-4 py-3", USAGE_DIVIDER_COLOR_CLASS)}>
           <div className="min-w-0 flex-1">
-            <h2 className={cn(USAGE_TEXT.body, "m-0 font-medium text-fg")}>Claim a window</h2>
+            <h2 className={cn(USAGE_TEXT.body, "m-0 font-medium text-fg")}>Add an app to this desktop</h2>
             <p className={cn(USAGE_TEXT.micro, "m-0 mt-0.5 text-muted-fg")}>
-              Move a window onto this lane&rsquo;s screen. ADE keeps a lease on it until you release it.
+              Choose a window to move onto this lane&rsquo;s desktop.
             </p>
           </div>
           <button
@@ -293,7 +299,7 @@ export function MacDesktopClaimPicker({
                       aria-disabled={row.disabled || undefined}
                       data-active={isActive ? "true" : undefined}
                       data-testid="mac-desktop-claim-row"
-                      title={row.disabledReason ?? `Move “${row.title}” onto this lane's screen`}
+                      title={row.disabledReason ?? `Move “${row.title}” onto this lane's desktop`}
                       onMouseEnter={() => { if (!row.disabled) setActive(index); }}
                       onClick={() => void claim(row)}
                       className={cn(
@@ -336,9 +342,9 @@ export function MacDesktopClaimPicker({
                           />
                         ) : (
                           <MacDesktopRowAction
-                            label="Claim"
+                            label="Add"
                             testId="mac-desktop-claim-action"
-                            title={row.disabledReason ?? `Move “${row.title}” onto this lane's screen`}
+                            title={row.disabledReason ?? `Move “${row.title}” onto this lane's desktop`}
                             disabled={row.disabled || claiming != null}
                             onClick={() => void claim(row)}
                           />
@@ -353,29 +359,34 @@ export function MacDesktopClaimPicker({
         </div>
 
         <footer className={cn(USAGE_TEXT.micro, "border-t px-4 py-2 text-muted-fg", USAGE_DIVIDER_COLOR_CLASS)}>
-          Claiming moves the window onto this lane&rsquo;s screen and gives ADE a lease on it.
+          Moves the window onto this lane&rsquo;s desktop.
         </footer>
       </div>
-    </div>
-  );
+    );
 
-  return typeof document === "undefined" ? body : createPortal(body, document.body);
-}
+  if (inline) {
+    return (
+      <div
+        data-testid="mac-desktop-claim-picker"
+        role="presentation"
+        className="flex min-h-0 flex-1 flex-col overflow-hidden"
+      >
+        {dialog}
+      </div>
+    );
+  }
 
-/** The lane's ownership, stated wherever a window it holds is listed. */
-export function MacDesktopLeaseChip({ className }: { className?: string }) {
-  return (
-    <span
-      data-testid="mac-desktop-lease-chip"
-      title="This lane holds a lease on this window"
-      className={cn(
-        "inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-px",
-        "bg-[color-mix(in_srgb,var(--color-accent)_16%,transparent)]",
-        "text-[10px] font-medium text-fg/75",
-        className,
-      )}
+  if (typeof document === "undefined") return dialog;
+  return createPortal(
+    <div
+      className="fixed inset-0 flex items-start justify-center bg-black/55 p-4 pt-[10vh]"
+      style={{ zIndex: zIndex ?? 220 }}
+      role="presentation"
+      data-testid="mac-desktop-claim-picker"
+      onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
     >
-      ADE lease
-    </span>
+      {dialog}
+    </div>,
+    document.body,
   );
 }
