@@ -449,7 +449,15 @@ export function AutoHandoffModal({ session, binding = null, existingRules, onClo
 
   useEffect(() => {
     if (form.targetModelId) return;
-    const preferred = availableModelIds.find((id) => id !== session.modelId) ?? availableModelIds[0];
+    // A legacy summary may carry only the provider-facing short token while the
+    // catalog lists canonical ids, so an exact match is not enough: exclude a
+    // catalog id that ends with the session token too, or the default target
+    // would be the very model that just hit its limit.
+    const sessionModel = session.modelId?.trim() || null;
+    const isSessionModel = (id: string) =>
+      sessionModel != null
+      && (id === sessionModel || id.endsWith(`/${sessionModel}`) || id.endsWith(`:${sessionModel}`));
+    const preferred = availableModelIds.find((id) => !isSessionModel(id)) ?? availableModelIds[0];
     if (preferred) setForm((current) => (current.targetModelId ? current : { ...current, targetModelId: preferred }));
   }, [availableModelIds, form.targetModelId, session.modelId]);
 

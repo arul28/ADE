@@ -25,7 +25,7 @@ import type {
   TerminalSessionSummary,
 } from "../../../shared/types";
 import { createDynamicCursorCliModelDescriptor, getModelById } from "../../../shared/modelRegistry";
-import { openChatHandoff } from "../../lib/chatHandoffIntent";
+import { openChatHandoff, takeChatHandoff } from "../../lib/chatHandoffIntent";
 import { invalidateAgentChatSessionListCache } from "../../lib/agentChatSessionListCache";
 import { invalidateAgentChatSlashCommandsCache } from "../../lib/agentChatSlashCommandsCache";
 import {
@@ -5757,6 +5757,33 @@ describe("AgentChatPane submit recovery", () => {
     });
 
     expect(await screen.findByTestId("handoff-local")).toBeTruthy();
+  });
+
+  it("leaves a handoff intent for the active surface instead of a hidden tile consuming it", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    installAdeMocks({ sessions: [session] });
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={session.laneId}
+          lockSessionId={session.sessionId}
+          hideSessionTabs
+          initialSessionSummary={session}
+          isTileActive={false}
+          onSessionCreated={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+
+    await act(async () => {
+      openChatHandoff(session.sessionId, "local");
+    });
+
+    // A hidden tile stays mounted for the same session; it must not drain the
+    // one-slot queue off-screen, so the intent survives for the visible pane.
+    expect(screen.queryByTestId("handoff-local")).toBeNull();
+    expect(takeChatHandoff(session.sessionId)).toBe("local");
   });
 
   it("refuses a context-menu handoff intent while a turn is active", async () => {

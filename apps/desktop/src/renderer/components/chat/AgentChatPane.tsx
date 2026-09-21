@@ -5010,23 +5010,19 @@ export function AgentChatPane({
   useEffect(() => {
     autoHandoffRequestRef.current += 1;
     pendingHandoffDestinationRef.current = null;
-    pendingHandoffPrefillRef.current = null;
     setAutoHandoffOpen(false);
     setAutoHandoffRules(null);
-    // The local handoff form is scoped to the chat being handed off. The
-    // one-shot open effect only re-seeds it on a closed→open transition, so a
-    // session switch that leaves the Handoff tab open would otherwise carry the
-    // previous chat's note and lane choice into this chat's handoff.
-    setHandoffNote("");
-    setHandoffView("menu");
-    setHandoffTargetLaneId("");
   }, [selectedSessionId]);
 
   // Handoff intents queued by the session context menu. The menu can run before
   // this pane renders for the target chat, so it both notifies live listeners
   // and leaves a queue entry this effect drains on the matching session.
   useEffect(() => {
-    if (!selectedSessionId) return undefined;
+    // Only the active surface may drain the one-slot intent queue. Hidden grid
+    // tiles and retained panes stay mounted with the same session id, so an
+    // ungated subscriber would consume the intent off-screen and the visible
+    // chat would never open handoff.
+    if (!selectedSessionId || !isTileActive) return undefined;
     const unsubscribe = subscribeChatHandoff((targetSessionId) => {
       if (targetSessionId !== selectedSessionId) return;
       const intent = takeChatHandoff(targetSessionId);
@@ -5035,7 +5031,7 @@ export function AgentChatPane({
     const queued = takeChatHandoff(selectedSessionId);
     if (queued) applyChatHandoffIntent(queued);
     return unsubscribe;
-  }, [applyChatHandoffIntent, selectedSessionId]);
+  }, [applyChatHandoffIntent, isTileActive, selectedSessionId]);
 
   // Cheap probe for the subagents panel: does this agent actually have a
   // pullable transcript? It runs the EXACT same fetch the takeover view uses

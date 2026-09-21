@@ -331,6 +331,21 @@ describe("AutoHandoffModal", () => {
     });
   });
 
+  it("still excludes the chat's own model when the summary carries only a legacy short token", async () => {
+    // Legacy summaries can omit `modelId` while keeping a provider-facing short
+    // token, so an exact match against canonical catalog ids is not enough.
+    render(
+      <AutoHandoffModal
+        session={makeSession({ modelId: "claude-opus-5" })}
+        existingRules={[]}
+        onClose={vi.fn()}
+      />,
+    );
+    await waitFor(() => {
+      expect((screen.getByLabelText("Handoff model") as HTMLSelectElement).value).toBe("openai/gpt-5.6-luna");
+    });
+  });
+
   it("saves a scoped rule and deletes the conditions the user left off", async () => {
     const { onClose } = renderModal();
     await waitFor(() => {
