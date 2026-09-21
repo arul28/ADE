@@ -267,20 +267,18 @@ function normalizeV1Message(record: Record<string, unknown>): DevinCloudMessage 
  * Proof attachments render in-app, so bytes that smell like markup/script
  * (HTML, SVG, XML) are refused regardless of the remote's declared name or
  * content-type — a hostile or confused response must not enter the artifact
- * store as something renderable.
+ * store as something renderable. Matches tags anywhere in the first KB:
+ * documents can open with a BOM, an XML declaration, comments, or bare tags
+ * like `<body>` that prefix checks would miss.
  */
+const ACTIVE_MARKUP_HEAD =
+  /<\s*(?:!doctype\s+html|html|head|body|svg|script|iframe|object|embed|base|meta|form|style|link)\b|<\?xml|<!\[CDATA\[|<!--/i;
+
 function sniffIsActiveMarkup(bytes: Uint8Array): boolean {
   const head = new TextDecoder("utf-8", { fatal: false })
-    .decode(bytes.subarray(0, 512))
-    .trimStart()
-    .toLowerCase();
-  return (
-    head.startsWith("<!doctype html")
-    || head.startsWith("<html")
-    || head.startsWith("<?xml")
-    || head.startsWith("<svg")
-    || head.startsWith("<script")
-  );
+    .decode(bytes.subarray(0, 1024))
+    .replace(/^\uFEFF/, "");
+  return ACTIVE_MARKUP_HEAD.test(head);
 }
 
 export type DevinCloudListSessionsArgs = {

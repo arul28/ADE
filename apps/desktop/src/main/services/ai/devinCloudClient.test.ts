@@ -65,3 +65,40 @@ describe("devinCloudClient verify on non-enterprise accounts", () => {
     await expect(client.listSessions()).rejects.toThrow(/Could not determine your Devin org/);
   });
 });
+
+describe("devinCloudClient downloadAttachment", () => {
+  const attachment = { attachmentId: "att-1", name: "proof.png", url: "x", source: "devin" as const, contentType: "image/png" };
+
+  const bytesResponse = (bytes: Uint8Array) => ({
+    ok: true,
+    status: 200,
+    json: async () => ({}),
+    text: async () => "",
+    headers: { get: () => null },
+    arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+  });
+
+  it("refuses attachments whose bytes sniff as markup despite an image name", async () => {
+    for (const payload of [
+      "\uFEFF<html><body>hi</body></html>",
+      "<!-- comment --><svg onload=alert(1)>",
+      "<body><script>alert(1)</script>",
+      "<?xml version='1.0'?><svg></svg>",
+    ]) {
+      const fetchImpl = vi.fn(async () => bytesResponse(new TextEncoder().encode(payload)));
+      const client = createDevinCloudClient({
+        apiKey: "cog_test", orgId: "org-mine", fetchImpl: fetchImpl as never, logger,
+      });
+      await expect(client.downloadAttachment(attachment)).resolves.toBeNull();
+    }
+  });
+
+  it("returns bytes for genuine binary content", async () => {
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+    const fetchImpl = vi.fn(async () => bytesResponse(png));
+    const client = createDevinCloudClient({
+      apiKey: "cog_test", orgId: "org-mine", fetchImpl: fetchImpl as never, logger,
+    });
+    await expect(client.downloadAttachment(attachment)).resolves.toEqual(png);
+  });
+});
