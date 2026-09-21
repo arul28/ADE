@@ -276,6 +276,13 @@ vi.mock("../../state/appStore", () => ({
     if (state.projectBinding?.kind === "remote") return state.projectBinding.rootPath?.trim() || null;
     return state.project?.rootPath?.trim() || null;
   },
+  projectStateKeyForBinding: (
+    binding: { kind?: string; key?: string | null; rootPath?: string | null } | null | undefined,
+    fallbackRoot?: string | null,
+  ) => {
+    if (binding?.kind === "remote") return (binding.key ?? "").trim();
+    return (binding?.rootPath ?? fallbackRoot ?? "").trim();
+  },
   selectActiveProjectStateKey: (state: {
     projectBinding?: { kind?: string; key?: string | null } | null;
     project?: { rootPath?: string | null } | null;
@@ -1290,7 +1297,7 @@ describe("TerminalsPage chat session activation", () => {
     };
     remoteRequestListener.current?.(forwardedOpen);
     expect(workMocks.fns.setLaneWorkViewState).toHaveBeenCalledWith(
-      "/laptop/repo-a",
+      studioBinding.key,
       "lane-studio",
       { workSidebarTool: "browser", workSidebarOpenTools: ["browser"] },
     );

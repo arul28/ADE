@@ -354,4 +354,40 @@ describe("work tool runtime publish", () => {
     });
     expect(setActiveTool).toHaveBeenCalledWith("lane-studio", "git", ["git"], studioPin);
   });
+
+  it("stores lane tool tabs on the session machine after the tab dropdown moves", () => {
+    useAppStore.setState({
+      project: { rootPath: PROJECT_ROOT, name: "Repo" },
+      projectBinding: {
+        kind: "local",
+        key: "local:/repo",
+        rootPath: PROJECT_ROOT,
+        displayName: "MacBook",
+      },
+    } as never);
+    const { result, rerender } = renderHook(() => useWorkSidebarTool("lane-studio", studioPin));
+    act(() => result.current.setTool("git"));
+    rerender();
+
+    const studioScope = workToolScopeKey(studioPin.key, "lane-studio");
+    const tabScope = workToolScopeKey(PROJECT_ROOT, "lane-studio");
+    expect(useAppStore.getState().laneWorkViewByScope[studioScope]?.workSidebarTool).toBe("git");
+    expect(useAppStore.getState().laneWorkViewByScope[tabScope]).toBeUndefined();
+
+    useAppStore.setState({
+      projectBinding: {
+        kind: "local",
+        key: "local:/repo",
+        rootPath: PROJECT_ROOT,
+        displayName: "MacBook",
+      },
+    } as never);
+    act(() => result.current.setTool("terminal"));
+    rerender();
+    expect(result.current.tool).toBe("terminal");
+    expect(result.current.openTools).toEqual(["git", "terminal"]);
+    expect(useAppStore.getState().laneWorkViewByScope[studioScope]?.workSidebarOpenTools)
+      .toEqual(["git", "terminal"]);
+    expect(useAppStore.getState().laneWorkViewByScope[tabScope]).toBeUndefined();
+  });
 });

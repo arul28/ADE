@@ -3,6 +3,7 @@ import type { OpenProjectBinding } from "../../../shared/types";
 import type { WorkToolId } from "../../../shared/types/workTools";
 import {
   laneWorkViewScopeKey,
+  projectStateKeyForBinding,
   selectActiveProjectStateKey,
   useAppStore,
   type WorkProjectViewState,
@@ -98,10 +99,12 @@ export function closeWorkToolTab(
  *
  * `tool` is the tab on screen (null = the picker page, with the strip still
  * showing); `openTools` is the strip itself. `setTool` opens or activates a tab,
- * `closeTool` removes one. Openness and width stay project-wide
- * (`workSidebarOpen`, `workSidebarWidthPct`); only the contents follow the lane.
+ * `closeTool` removes one. Openness and width stay tab-owned
+ * (`workSidebarOpen`, `workSidebarWidthPct`); the strip follows the lane on
+ * the focused chat's machine.
  * `runtimePin` is the focused chat's machine for the phone/web mirror
- * publish; null means the tab's bound runtime.
+ * publish and for the lane strip's storage key; null means the tab's bound
+ * runtime. Pane openness stays tab-owned.
  */
 export function useWorkSidebarTool(
   laneId: string | null,
@@ -117,8 +120,9 @@ export function useWorkSidebarTool(
   const workViewByProject = useAppStore((state) => state.workViewByProject);
   const setLaneWorkViewState = useAppStore((state) => state.setLaneWorkViewState);
   const setWorkViewState = useAppStore((state) => state.setWorkViewState);
+  const toolStateKey = projectStateKeyForBinding(runtimePin, projectStateKey) || projectStateKey;
 
-  const scopeKey = laneWorkViewScopeKey(projectStateKey, laneId);
+  const scopeKey = laneWorkViewScopeKey(toolStateKey, laneId);
 
   // Both fields come from ONE resolved record: reading the active tool from the
   // lane scope and the strip from the project fallback would produce a strip
@@ -131,6 +135,7 @@ export function useWorkSidebarTool(
       ? laneWorkViewByScope?.[scopeKey]
       : undefined;
     const view = scoped
+      ?? (toolStateKey ? workViewByProject?.[toolStateKey] : undefined)
       ?? (projectStateKey ? workViewByProject?.[projectStateKey] : undefined);
     const active = view?.workSidebarTool ?? null;
     const strip = view?.workSidebarOpenTools ?? [];
@@ -142,7 +147,7 @@ export function useWorkSidebarTool(
       tool: active,
       openTools: active && !strip.includes(active) ? [...strip, active] : strip,
     };
-  }, [laneWorkViewByScope, projectStateKey, scopeKey, workViewByProject]);
+  }, [laneWorkViewByScope, projectStateKey, scopeKey, toolStateKey, workViewByProject]);
 
   // The setters are pointer-driven and must not close over a stale render's
   // strip: two clicks inside one commit would otherwise both write against the
@@ -152,18 +157,19 @@ export function useWorkSidebarTool(
 
   const write = useCallback(
     (next: { workSidebarTool: WorkSidebarTab | null; workSidebarOpenTools: WorkSidebarTab[] }) => {
-      if (!projectStateKey) return;
+      if (!toolStateKey) return;
       if (laneId) {
-        setLaneWorkViewState(projectStateKey, laneId, next);
+        setLaneWorkViewState(toolStateKey, laneId, next);
       } else {
-        setWorkViewState(projectStateKey, next);
+        setWorkViewState(toolStateKey, next);
       }
       // Picking a tool always reveals the pane — every entry point that used to
       // call `setWorkSidebarTab` relied on that, and returning to the picker is
-      // not a reason to close it.
-      setWorkViewState(projectStateKey, { workSidebarOpen: true });
+      // not a reason to close it. Openness is tab-owned; the strip follows the
+      // session machine above.
+      if (projectStateKey) setWorkViewState(projectStateKey, { workSidebarOpen: true });
     },
-    [laneId, projectStateKey, setLaneWorkViewState, setWorkViewState],
+    [laneId, projectStateKey, setLaneWorkViewState, setWorkViewState, toolStateKey],
   );
 
   const setTool = useCallback(

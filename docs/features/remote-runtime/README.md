@@ -480,7 +480,10 @@ relay payload E2E encryption is planned security work. See the trust boundary in
     the focused session (and the open tools pane) onto the destination
     `workViewByProject` key when git origin proves the same repo — otherwise
     the MacBook key's empty selection would unfocus the Studio chat and the
-    tools would follow the laptop.
+    tools would follow the laptop. The tools-pane strip is stored under the
+    focused chat's runtime binding, not the tab's `projectStateKey`. Held
+    `ade browser open` requests expire after a short handoff window and are
+    capped per pin.
   - `useForeignSessionLaneId(sessionId, presentLocally)` — a chat selected from
     another machine is absent from this tab's session list, so its lane, and
     with it its machine, is knowable only from the union (live, then retained).

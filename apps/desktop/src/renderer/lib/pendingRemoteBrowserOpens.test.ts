@@ -4,7 +4,9 @@ import {
   consumeMatchingRemoteBrowserOpen,
   holdRemoteBrowserOpen,
   markRemoteBrowserOpenHandled,
+  REMOTE_BROWSER_OPEN_HOLD_TTL_MS,
   resetRemoteBrowserOpensForTests,
+  setRemoteBrowserOpenClockForTests,
   takeHeldRemoteBrowserOpen,
   wasRemoteBrowserOpenHandled,
 } from "./pendingRemoteBrowserOpens";
@@ -103,5 +105,27 @@ describe("pendingRemoteBrowserOpens", () => {
     expect(
       takeHeldRemoteBrowserOpen(STUDIO, { sessionId: "chat-studio", laneId: "lane-studio" }),
     ).toBeNull();
+  });
+
+  it("drops a hold after the handoff window", () => {
+    setRemoteBrowserOpenClockForTests(1_000);
+    holdRemoteBrowserOpen(STUDIO, request());
+    setRemoteBrowserOpenClockForTests(1_000 + REMOTE_BROWSER_OPEN_HOLD_TTL_MS + 1);
+    expect(
+      takeHeldRemoteBrowserOpen(STUDIO, { sessionId: "chat-studio", laneId: "lane-studio" }),
+    ).toBeNull();
+  });
+
+  it("drops the oldest hold on a pin once the queue is full", () => {
+    setRemoteBrowserOpenClockForTests(1_000);
+    for (let i = 0; i < 9; i += 1) {
+      holdRemoteBrowserOpen(STUDIO, request({
+        requestId: `bbr-${i}`,
+        url: `http://127.0.0.1:${3000 + i}/`,
+      }));
+    }
+    expect(
+      takeHeldRemoteBrowserOpen(STUDIO, { sessionId: "chat-studio", laneId: "lane-studio" })?.requestId,
+    ).toBe("bbr-1");
   });
 });

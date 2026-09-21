@@ -11,11 +11,33 @@ import type { BuiltInBrowserRemoteRequest } from "../../shared/types/builtInBrow
  * Keyed by pin so a personal-chat pane on another machine cannot drain a
  * Studio open, and filtered on take so a panel that is not this request's
  * chat/lane leaves it for the one that is. A queue, not a single slot: two
- * opens before the pane mounts must both survive.
+ * opens before the pane mounts must both survive. Holds expire after a short
+ * handoff window so a chat that never opens cannot replay timed-out URLs
+ * hours later, and each pin plus the global map are capped.
  */
-const holds = new Map<string, BuiltInBrowserRemoteRequest[]>();
+type HeldRemoteBrowserOpen = {
+  request: BuiltInBrowserRemoteRequest;
+  heldAtMs: number;
+};
+
+const holds = new Map<string, HeldRemoteBrowserOpen[]>();
 const handledIds = new Set<string>();
 const HANDLED_CAP = 32;
+/** Long enough to mount the pane; shorter than a CLI that has already given up. */
+export const REMOTE_BROWSER_OPEN_HOLD_TTL_MS = 30_000;
+const PER_PIN_HOLD_CAP = 8;
+const GLOBAL_HOLD_CAP = 32;
+
+let clockMs: number | null = null;
+
+function nowMs(): number {
+  return clockMs ?? Date.now();
+}
+
+/** Test seam — freeze insertion/expiry time without wall-clock sleeps. */
+export function setRemoteBrowserOpenClockForTests(ms: number | null): void {
+  clockMs = ms;
+}
 
 function pinKeyFor(pin: { key: string } | null | undefined): string {
   return pin?.key ?? "bound";
@@ -25,6 +47,45 @@ function forgetOldestHandled(): void {
   if (handledIds.size <= HANDLED_CAP) return;
   const oldest = handledIds.values().next().value;
   if (oldest) handledIds.delete(oldest);
+}
+
+function isFresh(held: HeldRemoteBrowserOpen, now: number): boolean {
+  return now - held.heldAtMs <= REMOTE_BROWSER_OPEN_HOLD_TTL_MS;
+}
+
+function globalHoldCount(): number {
+  let count = 0;
+  for (const queue of holds.values()) count += queue.length;
+  return count;
+}
+
+function dropOldestHold(): void {
+  let oldestKey: string | null = null;
+  let oldestIndex = -1;
+  let oldestAt = Number.POSITIVE_INFINITY;
+  for (const [key, queue] of holds) {
+    queue.forEach((held, index) => {
+      if (held.heldAtMs < oldestAt) {
+        oldestAt = held.heldAtMs;
+        oldestKey = key;
+        oldestIndex = index;
+      }
+    });
+  }
+  if (oldestKey == null || oldestIndex < 0) return;
+  const queue = holds.get(oldestKey);
+  if (!queue) return;
+  queue.splice(oldestIndex, 1);
+  if (queue.length > 0) holds.set(oldestKey, queue);
+  else holds.delete(oldestKey);
+}
+
+function pruneExpiredHolds(now: number = nowMs()): void {
+  for (const [key, queue] of holds) {
+    const fresh = queue.filter((held) => isFresh(held, now));
+    if (fresh.length > 0) holds.set(key, fresh);
+    else holds.delete(key);
+  }
 }
 
 export function remoteBrowserOpenMatchesOwner(
@@ -42,15 +103,18 @@ export function holdRemoteBrowserOpen(
   pin: { key: string } | null | undefined,
   request: BuiltInBrowserRemoteRequest,
 ): void {
+  pruneExpiredHolds();
   if (handledIds.has(request.requestId)) return;
   const key = pinKeyFor(pin);
   const queue = holds.get(key) ?? [];
-  if (queue.some((held) => held.requestId === request.requestId)) {
+  if (queue.some((held) => held.request.requestId === request.requestId)) {
     holds.set(key, queue);
     return;
   }
-  queue.push(request);
+  queue.push({ request, heldAtMs: nowMs() });
+  while (queue.length > PER_PIN_HOLD_CAP) queue.shift();
   holds.set(key, queue);
+  while (globalHoldCount() > GLOBAL_HOLD_CAP) dropOldestHold();
 }
 
 /**
@@ -62,14 +126,15 @@ export function takeHeldRemoteBrowserOpen(
   pin: { key: string } | null | undefined,
   owner: { sessionId?: string | null; laneId?: string | null },
 ): BuiltInBrowserRemoteRequest | null {
+  pruneExpiredHolds();
   const key = pinKeyFor(pin);
   const queue = holds.get(key);
   if (!queue?.length) return null;
   const idx = queue.findIndex((held) => (
-    !handledIds.has(held.requestId) && remoteBrowserOpenMatchesOwner(held, owner)
+    !handledIds.has(held.request.requestId) && remoteBrowserOpenMatchesOwner(held.request, owner)
   ));
   if (idx < 0) {
-    const leftover = queue.filter((held) => !handledIds.has(held.requestId));
+    const leftover = queue.filter((held) => !handledIds.has(held.request.requestId));
     if (leftover.length > 0) holds.set(key, leftover);
     else holds.delete(key);
     return null;
@@ -77,7 +142,7 @@ export function takeHeldRemoteBrowserOpen(
   const [held] = queue.splice(idx, 1);
   if (queue.length > 0) holds.set(key, queue);
   else holds.delete(key);
-  return held ?? null;
+  return held?.request ?? null;
 }
 
 export function markRemoteBrowserOpenHandled(requestId: string): void {
@@ -93,7 +158,7 @@ export function consumeMatchingRemoteBrowserOpen(
   const key = pinKeyFor(pin);
   const queue = holds.get(key);
   if (!queue) return;
-  const next = queue.filter((held) => held.requestId !== requestId);
+  const next = queue.filter((held) => held.request.requestId !== requestId);
   if (next.length > 0) holds.set(key, next);
   else holds.delete(key);
 }
@@ -106,4 +171,5 @@ export function wasRemoteBrowserOpenHandled(requestId: string): boolean {
 export function resetRemoteBrowserOpensForTests(): void {
   holds.clear();
   handledIds.clear();
+  clockMs = null;
 }

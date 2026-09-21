@@ -172,7 +172,9 @@ slices so repo A's sessions cannot land in repo B. Every pin reader shares
 one retain slot per proven origin, so mounting Git during refill cannot erase
 Work's snapshot and a second project tab cannot prune this repo's slices.
 The focused Work session and open tools pane copy onto the destination tab
-key when origin matches; they stay behind when it does not.
+key when origin matches; they stay behind when it does not. The tools-pane
+strip is stored on the session machine's binding. Held remote browser opens
+expire after a short handoff window.
 
 ## Sync command scoping
 
