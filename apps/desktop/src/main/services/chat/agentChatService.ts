@@ -44942,6 +44942,10 @@ export function createAgentChatService(args: {
   const devinCloudEmptyReads = new Map<string, number>();
   const devinCloudPlaceholderNameReads = new Map<string, number>();
   const devinCloudDoneAnnounced = new Set<string>();
+  /** Last seen message page cursor per ADE session — later polls only fetch the tail. */
+  const devinCloudMessagesTailCursor = new Map<string, string>();
+  /** Hydrate turn id that emitted output but never got a provable terminal status, per ADE session. */
+  const devinCloudPendingDoneTurn = new Map<string, string>();
   /** Attachment ids already filed into the proof drawer, per ADE session. */
   const devinCloudSyncedAttachmentIds = new Map<string, Set<string>>();
   /** Sessions whose needs-you marker this mirror raised (so it can clear it without touching others'). */
@@ -44955,6 +44959,8 @@ export function createAgentChatService(args: {
     devinCloudEmptyReads.delete(sessionId);
     devinCloudPlaceholderNameReads.delete(sessionId);
     devinCloudDoneAnnounced.delete(sessionId);
+    devinCloudMessagesTailCursor.delete(sessionId);
+    devinCloudPendingDoneTurn.delete(sessionId);
     devinCloudSyncedAttachmentIds.delete(sessionId);
     devinCloudAttentionRaised.delete(sessionId);
   };
@@ -44966,6 +44972,8 @@ export function createAgentChatService(args: {
     devinCloudEmptyReads.clear();
     devinCloudPlaceholderNameReads.clear();
     devinCloudDoneAnnounced.clear();
+    devinCloudMessagesTailCursor.clear();
+    devinCloudPendingDoneTurn.clear();
     devinCloudSyncedAttachmentIds.clear();
     devinCloudAttentionRaised.clear();
   };
@@ -45131,24 +45139,37 @@ export function createAgentChatService(args: {
       let liveStatus = remote?.status ?? null;
       for (let attempt = 0; attempt < DEVIN_CLOUD_MESSAGES_RETRY_ATTEMPTS; attempt += 1) {
         try {
-          const page = await aiIntegrationService.listDevinCloudMessages({
-            devinSessionId,
-            first: 200,
-          });
-          items = page.items;
-          // Follow the cursor: without it a session past one page replays the
-          // first 200 rows on every poll and newer output never arrives.
-          const seenCursors = new Set<string>();
-          let cursor = page.endCursor?.trim() ?? "";
-          while (cursor && !seenCursors.has(cursor)) {
-            seenCursors.add(cursor);
-            const nextPage = await aiIntegrationService.listDevinCloudMessages({
-              devinSessionId,
-              first: 200,
-              after: cursor,
-            });
-            items.push(...nextPage.items);
-            cursor = nextPage.endCursor?.trim() ?? "";
+          // The tail cursor makes steady-state polls fetch only new output.
+          // First hydration (or a restarted host) has none and walks every
+          // page; dedupe in hydrate keeps that replay invisible.
+          const fetchDevinCloudMessages = async (): Promise<DevinCloudMessage[]> => {
+            const fetched: DevinCloudMessage[] = [];
+            const seenCursors = new Set<string>();
+            let cursor = devinCloudMessagesTailCursor.get(managed.session.id) ?? "";
+            let tail = cursor;
+            while (true) {
+              const page = await aiIntegrationService.listDevinCloudMessages({
+                devinSessionId,
+                first: 200,
+                ...(cursor ? { after: cursor } : {}),
+              });
+              fetched.push(...page.items);
+              const next = page.endCursor?.trim() ?? "";
+              if (!next || seenCursors.has(next)) break;
+              seenCursors.add(next);
+              tail = next;
+              cursor = next;
+            }
+            if (tail) devinCloudMessagesTailCursor.set(managed.session.id, tail);
+            return fetched;
+          };
+          try {
+            items = await fetchDevinCloudMessages();
+          } catch (error) {
+            // A stale/invalidated checkpoint is retryable from scratch once;
+            // a first-page failure stays on the warn path.
+            if (!devinCloudMessagesTailCursor.delete(managed.session.id)) throw error;
+            items = await fetchDevinCloudMessages();
           }
         } catch (error) {
           logger.warn("agent_chat.devin_cloud_messages_failed", {
@@ -45237,17 +45258,38 @@ export function createAgentChatService(args: {
           remote = remote ?? await aiIntegrationService.getDevinCloudSession(devinSessionId).catch(() => null);
           liveStatus = remote?.status ?? null;
         }
-        if (liveStatus != null && !isDevinCloudSessionLive(liveStatus) && !devinCloudDoneAnnounced.has(managed.session.id)) {
-          devinCloudDoneAnnounced.add(managed.session.id);
-          emitChatEvent(managed, {
-            type: "done",
-            turnId: hydrateTurnId,
-            status: "completed",
-            runtime: "cloud",
-            ...(managed.session.model ? { model: managed.session.model } : {}),
-            ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
-          });
+      }
+
+      // Completion bookkeeping runs outside `emittedVisible`: once output is
+      // mirrored and deduped, a later poll sees no new messages but still owns
+      // the pending turn's `done`.
+      if (!devinCloudDoneAnnounced.has(managed.session.id)) {
+        const pendingDoneTurnId = devinCloudPendingDoneTurn.get(managed.session.id);
+        if (emittedVisible || pendingDoneTurnId) {
+          if (liveStatus == null) {
+            remote = remote ?? await aiIntegrationService.getDevinCloudSession(devinSessionId).catch(() => null);
+            liveStatus = remote?.status ?? null;
+          }
+          if (liveStatus != null && !isDevinCloudSessionLive(liveStatus)) {
+            devinCloudDoneAnnounced.add(managed.session.id);
+            devinCloudPendingDoneTurn.delete(managed.session.id);
+            emitChatEvent(managed, {
+              type: "done",
+              turnId: pendingDoneTurnId ?? hydrateTurnId,
+              status: "completed",
+              runtime: "cloud",
+              ...(managed.session.model ? { model: managed.session.model } : {}),
+              ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+            });
+            persistChatState(managed);
+          } else if (emittedVisible) {
+            // Output arrived without provable termination (still live, or the
+            // status read failed) — hold the turn so `done` survives dedup.
+            devinCloudPendingDoneTurn.set(managed.session.id, hydrateTurnId);
+          }
         }
+      }
+      if (emittedVisible) {
         persistChatState(managed);
       }
       return emittedVisible;
