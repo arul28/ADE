@@ -13,7 +13,8 @@ import type {
 } from "../../../shared/types";
 import { resolveModelDescriptor } from "../../../shared/modelRegistry";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
-import { useAppStore, useRootAppStore } from "../../state/appStore";
+import { useAppStore } from "../../state/appStore";
+import { useLanesForPin } from "../../state/crossMachineLanes";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
@@ -404,14 +405,11 @@ export function AutoHandoffModal({ session, binding = null, existingRules, onClo
   const projectLanes = useAppStore((state) => state.lanes) as LaneSummary[] | undefined;
   // A chat that lives on another machine must offer THAT machine's lanes: the
   // rule is saved there, so a lane id only this tab knows would not resolve.
-  const crossMachineLanes = useRootAppStore((state) => state.crossMachineLanesByMachineId);
-  const storeLanes = useMemo(() => {
-    if (binding?.kind === "remote") {
-      const remote = crossMachineLanes?.[binding.targetId]?.lanes;
-      if (remote?.length) return remote as LaneSummary[];
-    }
-    return projectLanes;
-  }, [binding, crossMachineLanes, projectLanes]);
+  // `useLanesForPin` joins by binding key across live/retained/cached slices and
+  // returns an empty list for an unread pinned machine — never `state.lanes`,
+  // whose ids are not globally unique and could name a different lane.
+  const pinnedLanes = useLanesForPin(binding);
+  const storeLanes = useMemo(() => pinnedLanes ?? projectLanes, [pinnedLanes, projectLanes]);
   const [availableModelIds, setAvailableModelIds] = useState<string[]>([]);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [saving, setSaving] = useState(false);

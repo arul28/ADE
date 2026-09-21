@@ -30,9 +30,9 @@ vi.mock("../shared/ModelPicker/ModelPicker", () => ({
     />
   ),
 }));
-const { catalogTiers, rootState } = vi.hoisted(() => ({
+const { catalogTiers, pinLanes } = vi.hoisted(() => ({
   catalogTiers: { value: [] as string[] },
-  rootState: { crossMachineLanesByMachineId: {} as Record<string, unknown> },
+  pinLanes: { value: null as LaneSummary[] | null },
 }));
 vi.mock("../shared/ModelPicker/modelCatalog", () => ({
   resolveModelDescriptorWithRuntimeCatalog: () => ({ reasoningTiers: catalogTiers.value }),
@@ -84,7 +84,10 @@ const lanes: LaneSummary[] = [
 
 vi.mock("../../state/appStore", () => ({
   useAppStore: (selector: (state: Record<string, unknown>) => unknown) => selector({ lanes }),
-  useRootAppStore: (selector: (state: Record<string, unknown>) => unknown) => selector(rootState),
+}));
+
+vi.mock("../../state/crossMachineLanes", () => ({
+  useLanesForPin: () => pinLanes.value,
 }));
 
 vi.mock("../../lib/modelOptions", () => ({
@@ -123,7 +126,7 @@ let deleteRule: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   catalogTiers.value = [];
-  rootState.crossMachineLanesByMachineId = {};
+  pinLanes.value = null;
   saveDraft = vi.fn().mockResolvedValue({ rule: {}, rules: [] });
   deleteRule = vi.fn().mockResolvedValue([]);
   Object.defineProperty(window, "ade", {
@@ -386,11 +389,8 @@ describe("AutoHandoffModal", () => {
       runtimeName: "Studio",
       displayName: "app",
     } as unknown as OpenProjectBinding;
-    rootState.crossMachineLanesByMachineId = {
-      studio: { lanes: [{ ...lanes[1], id: "lane-remote", name: "Remote Lane" }] },
-    };
+    pinLanes.value = [{ ...lanes[1], id: "lane-remote", name: "Remote Lane" }];
     const getStatus = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
-
     render(
       <AutoHandoffModal session={makeSession()} binding={binding} existingRules={[]} onClose={vi.fn()} />,
     );
