@@ -45,6 +45,9 @@
   --chat-font-size: 14px;
   --chat-accent: var(--color-accent);
   --chat-radius-pill: 9999px;
+  /* 32px title rail + 1px hairline. Shared by `.ade-tool-header` and
+     `.ade-chat-shell-header` so the Work split's two bars meet. */
+  --ade-work-chrome-rail-h: 33px;
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -2332,14 +2335,14 @@ button:active, [role="button"]:active {
 .ade-tool-picker-static {
   background:
     radial-gradient(
-      120% 90% at 16% 10%,
-      color-mix(in srgb, var(--color-accent-deep) 30%, transparent),
-      transparent 62%
+      130% 100% at 18% 12%,
+      color-mix(in srgb, #6366F1 28%, transparent),
+      transparent 64%
     ),
     radial-gradient(
-      110% 80% at 86% 82%,
-      color-mix(in srgb, var(--color-accent) 18%, transparent),
-      transparent 60%
+      120% 90% at 82% 78%,
+      color-mix(in srgb, var(--color-accent) 22%, transparent),
+      transparent 62%
     ),
     var(--color-bg);
 }
@@ -2347,14 +2350,14 @@ button:active, [role="button"]:active {
 [data-theme="light"] .ade-tool-picker-static {
   background:
     radial-gradient(
-      120% 90% at 16% 10%,
-      color-mix(in srgb, var(--color-accent-bright) 34%, transparent),
-      transparent 62%
+      130% 100% at 18% 12%,
+      color-mix(in srgb, #A5B4FC 30%, transparent),
+      transparent 64%
     ),
     radial-gradient(
-      110% 80% at 86% 82%,
+      120% 90% at 82% 78%,
       color-mix(in srgb, var(--color-accent-bright) 22%, transparent),
-      transparent 60%
+      transparent 62%
     ),
     var(--color-surface);
 }
@@ -2435,8 +2438,13 @@ button:active, [role="button"]:active {
 }
 
 /* The tools pane header measures itself, so the pane can be dragged to 280px
-   without the window knowing anything about it. */
+   without the window knowing anything about it. Height is the same 32px rail
+   + 1px hairline as `.ade-chat-shell-header`, so the two lines meet. */
 .ade-tool-header {
+  box-sizing: border-box;
+  height: var(--ade-work-chrome-rail-h);
+  min-height: var(--ade-work-chrome-rail-h);
+  max-height: var(--ade-work-chrome-rail-h);
   container-type: inline-size;
   container-name: ade-tool-header;
 }
@@ -2964,8 +2972,8 @@ button:active, [role="button"]:active {
   background:
     linear-gradient(
       to bottom,
-      color-mix(in srgb, var(--chat-glass-bg) 78%, transparent) 0%,
-      color-mix(in srgb, var(--chat-panel-bg) 42%, transparent) 100%
+      color-mix(in srgb, var(--chat-glass-bg) 76%, transparent) 0%,
+      color-mix(in srgb, var(--chat-panel-bg) 48%, transparent) 100%
     );
   box-shadow: 0 14px 32px -18px rgb(0 0 0 / 75%);
 }
@@ -3019,6 +3027,23 @@ button:active, [role="button"]:active {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.04),
     0 18px 44px -30px rgba(0, 0, 0, 0.72);
+}
+
+/* New-chat prompt + shelf sit a step darker than in-session composer chrome. */
+[data-chat-empty-state] [data-chat-composer-mode].ade-liquid-glass-strong {
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--chat-panel-bg-strong) 58%, var(--color-bg) 42%) 0%,
+      color-mix(in srgb, var(--chat-panel-bg) 64%, var(--color-bg) 36%) 100%
+    );
+}
+
+/* Same darkness as the machine/lane shelf submenu (`--work-popover-bg`).
+ * Flatten it over `--color-bg` so the card stays an opaque plate. */
+[data-chat-empty-usage] [data-activity-module] {
+  background-color: var(--color-bg);
+  background-image: linear-gradient(var(--work-popover-bg), var(--work-popover-bg));
 }
 
 /*
@@ -3289,12 +3314,21 @@ button:active, [role="button"]:active {
 }
 
 .ade-chat-shell-header {
+  box-sizing: border-box;
   background: var(--work-chrome-surface, var(--color-card));
   border-style: solid;
   border-width: 0 0 1px 0;
   border-color: var(--chat-panel-border);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
+}
+
+/* Only the Work split needs a 33px rail so it meets `.ade-tool-header`.
+ * Personal chats and other ChatSurfaceShell hosts keep their own header height. */
+.ade-work-surface .ade-chat-shell-header {
+  height: var(--ade-work-chrome-rail-h);
+  min-height: var(--ade-work-chrome-rail-h);
+  max-height: var(--ade-work-chrome-rail-h);
 }
 
 /* Grid arrange preset slide-out — same height as header controls */
@@ -4756,10 +4790,6 @@ button:active, [role="button"]:active {
   box-shadow: 0 0 24px rgba(167, 139, 250, 0.34);
 }
 
-@keyframes ade-reasoning-ultra-ring {
-  to { transform: rotate(360deg); }
-}
-
 @keyframes ade-reasoning-ultra-sheen {
   0%, 28% { transform: translateX(-135%) rotate(18deg); opacity: 0; }
   45% { opacity: 0.7; }
@@ -4771,37 +4801,12 @@ button:active, [role="button"]:active {
 .ade-reasoning-effort-trigger-ultra {
   position: relative;
   isolation: isolate;
-  overflow: visible;
   background:
     linear-gradient(120deg, rgba(139, 92, 246, 0.2), rgba(217, 70, 239, 0.16) 48%, rgba(34, 211, 238, 0.12));
   box-shadow:
     0 0 0 1px rgba(232, 121, 249, 0.24),
     0 0 16px rgba(217, 70, 239, 0.26),
     0 0 30px rgba(34, 211, 238, 0.1);
-}
-
-.ade-reasoning-effort-trigger-ultra::before,
-.ade-reasoning-effort-content-ultra::before {
-  content: "";
-  position: absolute;
-  inset: -2px;
-  z-index: 0;
-  pointer-events: none;
-  border-radius: inherit;
-  padding: 1px;
-  background: conic-gradient(
-    from 0deg,
-    rgba(34, 211, 238, 0.1),
-    rgba(232, 121, 249, 0.95),
-    rgba(167, 139, 250, 0.82),
-    rgba(34, 211, 238, 0.8),
-    rgba(232, 121, 249, 0.95)
-  );
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  mask-composite: exclude;
-  animation: ade-reasoning-ultra-ring 5s linear infinite;
 }
 
 .ade-reasoning-effort-trigger-ultra::after,
@@ -4888,9 +4893,7 @@ button:active, [role="button"]:active {
   .ade-reasoning-slider-fill::after,
   .ade-reasoning-slider-fill-max,
   .ade-workflow-active-card__sheen,
-  .ade-reasoning-effort-trigger-ultra::before,
   .ade-reasoning-effort-trigger-ultra::after,
-  .ade-reasoning-effort-content-ultra::before,
   .ade-reasoning-effort-content-ultra::after {
     animation: none;
   }

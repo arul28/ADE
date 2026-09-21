@@ -541,11 +541,10 @@ export function CommandPalette({
   }, [projectBinding]);
   const workToolContext = useMemo<WorkToolContext>(
     () => ({
-      isRemoteProject: projectBinding?.kind === "remote",
       supportsIosSimulator,
       isWebClient: isWebClientMode(),
     }),
-    [projectBinding, supportsIosSimulator],
+    [supportsIosSimulator],
   );
 
   const commands: Command[] = useMemo(() => {
@@ -1337,10 +1336,9 @@ export function CommandPalette({
       const { session, binding } = entry;
       // A foreign thread lives on another machine's project, so focusing it by
       // id alone would land on whatever session happens to share that id here —
-      // or nothing. The binding rides along in the event detail and the Work
-      // tab switches projects before focusing (see the `ade:work:select-session`
-      // listener in TerminalsPage). Local threads pass `undefined` and take the
-      // original synchronous path.
+      // or nothing. The binding rides along so Work can pin the call in place.
+      // Session focus never rebinds the tab: Lanes/PRs/Files stay on this
+      // dropdown. Local threads pass `undefined` and take the same focus path.
       window.dispatchEvent(
         new CustomEvent("ade:work:select-session", {
           detail: {
@@ -1355,10 +1353,9 @@ export function CommandPalette({
       // query string: a foreign thread's `sessionId`/`laneId` name rows in the
       // OTHER project, and `useWorkSessions`' URL-param effect resolves those
       // against the still-current project one tick from now, finds nothing, and
-      // strips them — so the deeplink would be consumed and discarded before the
-      // switch ever lands. The event's binding is the durable route; the
-      // listener focuses once `switchProjectToPath`/`switchRemoteProject`
-      // resolves.
+      // strips them — so the deeplink would be consumed and discarded. The
+      // event's binding is the durable route; the listener pins and focuses
+      // without switching the tab.
       navigate(
         binding
           ? "/work"

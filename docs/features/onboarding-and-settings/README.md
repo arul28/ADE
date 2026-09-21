@@ -1269,7 +1269,8 @@ Renderer — settings:
   `ade.activity.module.v1` (migrating the retired `ade.stats.carousel.v1`
   key). `WorkActivityModule` is the self-fetching compact wrapper that reads
   `usage.getAdeStats` and renders directly below the empty Work composer on
-  desktop and web.
+  desktop and web. On that surface the card is an opaque plate using
+  `--work-popover-bg` over `--color-bg`, matching the machine/lane submenu.
 - `apps/desktop/src/renderer/components/usage/providerColors.ts` — theme-aware
   brand color palette for usage bars and legends. `providerColor(provider,
   theme)` returns a per-provider brand color (Claude's rust family, distinct
@@ -1472,9 +1473,10 @@ banner):
   `projectConfigService`; types in `shared/types/config.ts`.
 - [first-run.md](./first-run.md) — first launch lands on Work. There is
   no blocking project-setup dashboard; optional integrations live in Settings.
-- [harness-presets.md](./harness-presets.md) — saved pairings of an agent
-  (the body) and a model source (the brain), managed in Settings › Providers ›
-  Harnesses and selectable from the Harnesses tab of every model picker.
+- [harness-presets.md](./harness-presets.md) — saved pairings of a harness
+  (the program ADE runs) and a model provider (the account, key, or
+  subscription that answers for it), managed in Settings › Providers › Custom
+  and selectable from the Custom tab of every model picker.
 
 ## Onboarding responsibilities
 

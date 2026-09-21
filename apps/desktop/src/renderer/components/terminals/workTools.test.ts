@@ -10,7 +10,6 @@ import {
 } from "./workTools";
 
 const LOCAL_MAC: WorkToolContext = {
-  isRemoteProject: false,
   supportsIosSimulator: true,
   isWebClient: false,
 };
@@ -29,16 +28,13 @@ describe("Apple work tool labels", () => {
 });
 
 describe("workToolAvailability Apple gate", () => {
-  it("follows the bound runtime, not project locality or the viewer's OS", () => {
+  it("follows the bound runtime, not the viewer's OS", () => {
     expect(workToolAvailability("ios", LOCAL_MAC)).toEqual({ available: true, reason: null });
-    expect(workToolAvailability("ios", { ...LOCAL_MAC, isRemoteProject: true }))
-      .toEqual({ available: true, reason: null });
     expect(workToolAvailability("ios", { ...LOCAL_MAC, supportsIosSimulator: false })).toEqual({
       available: false,
       reason: IOS_RUNTIME_UNSUPPORTED_REASON,
     });
     expect(workToolAvailability("ios", {
-      isRemoteProject: true,
       supportsIosSimulator: false,
       isWebClient: false,
     })).toEqual({
@@ -49,7 +45,6 @@ describe("workToolAvailability Apple gate", () => {
 
   it("keeps the hosted web client on the full Apple tool when the runtime is a Mac", () => {
     const webMac: WorkToolContext = {
-      isRemoteProject: false,
       supportsIosSimulator: true,
       isWebClient: true,
     };
@@ -61,11 +56,11 @@ describe("workToolAvailability Apple gate", () => {
     });
   });
 
-  it("still treats App Control as this-computer-only", () => {
-    expect(workToolAvailability("app-control", { ...LOCAL_MAC, isRemoteProject: true })).toEqual({
-      available: false,
-      reason: "Runs on this computer only",
-    });
+  // Work tools follow the session's machine, so App Control is no longer gated
+  // on the project tab's binding; the hosted web client still only watches it.
+  it("keeps App Control read-only on the web and drivable everywhere else", () => {
+    expect(workToolAvailability("app-control", LOCAL_MAC))
+      .toEqual({ available: true, reason: null });
     expect(isReadOnlyWorkTool("app-control", { ...LOCAL_MAC, isWebClient: true })).toBe(true);
     expect(workToolAvailability("app-control", { ...LOCAL_MAC, isWebClient: true }))
       .toEqual({ available: true, reason: null });

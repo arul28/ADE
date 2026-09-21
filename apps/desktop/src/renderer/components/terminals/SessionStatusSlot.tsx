@@ -58,6 +58,7 @@ export function SessionStatusSlot({
   actionsEnabled,
   compact = false,
   runtimePin = null,
+  hideLabelUnlessShout = false,
 }: {
   session: TerminalSessionSummary;
   /** Resolved status, or null for a settled row (which shows its timestamp). */
@@ -72,6 +73,7 @@ export function SessionStatusSlot({
   compact?: boolean;
   /** Runtime that owns this session when it differs from the active project. */
   runtimePin?: OpenProjectBinding | null;
+  hideLabelUnlessShout?: boolean;
 }) {
   // While the snooze popover is open the pointer has left the row, so the
   // hover-driven actions would fade out from under the open menu. Pin the slot
@@ -130,6 +132,7 @@ export function SessionStatusSlot({
           timestampLabel={timestampLabel}
           compact={compact}
           steeringInput={session.steeringInput === true}
+          hideLabelUnlessShout={hideLabelUnlessShout}
         />
       </span>
 

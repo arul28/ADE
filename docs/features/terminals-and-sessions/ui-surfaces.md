@@ -151,7 +151,28 @@ the same amber machine glyph the omitted header would have shown. The marker is
 present exactly when the lane is not on the physical Mac, not when it differs
 from the project tab's binding; a grouped header owns the glyph so its child
 cards do not repeat it. The singleton/header transition participates in the
-same layout animation as lane reordering.
+same layout animation as lane reordering. Headerless counting is top-level
+units only: attached shells and same-lane `spawnKind: "subagent"` chats (plus
+tracked CLI `--type subagent` sessions) nest under their parent and do not
+summon a lane header of their own.
+
+In by-lane list mode, those subagent chats render in a second drawer under the
+parent, above the existing "N shells" drawer, labeled **N subagents**. The
+drawer starts expanded; collapse is stored under `chat-subagents:<parentId>`,
+separate from the shell key `chat:<parentId>`. Compact nested rows show the
+subagent identicon, title, then the provider glyph on the right of the card
+(same seat as every other session card), status glyph, and elapsed — they
+spell **Needs you** or **Failed** and otherwise omit the status word. The
+drawer header shows nothing, a needs-you pip, or the red word **Failed**
+(Failed wins if both). Peers stay top-level. Grandchildren flatten into the
+root parent's one drawer. A quiet parent (snoozed or settled) pulls not-done
+children (working, needs you, failed, stale, starting) up to full top-level
+cards; done children stay nested and follow the parent into the quiet tails.
+Status, time, and Kanban stay flat. Foreign by-lane rows nest the same way.
+Demote-to-peer un-nests; promote nests again. Cross-lane children stay
+top-level in their own lane with the existing lineage chip. ADE Code cannot
+paint provider logos, so nested helpers are one-line indented rows rather
+than a collapsible drawer. `ade chat list` stays a flat table.
 
 Filing comes from `effectiveSessionFilingBuckets` (wrapping the base
 `sessionFilingBucket` rule), which combines canonical lifecycle
@@ -320,6 +341,11 @@ The full card is one full-bleed row with three lines:
    the previous logo peeking as a sliver to the right (offset ~28% of the mark,
    current logo at full opacity). Delta
    moved to line one so preview text owns the width it needs.
+
+A nested same-lane subagent (`nestedSubagent`) is a compact one-line card:
+identicon, title, then the provider glyph on the right (same seat as every
+other session card), plus shout-only status words (Needs you / Failed). Nested
+rows omit the Subagent/Peer lineage pill — they already sit under the parent.
 
 `SessionStatusSlot` is the card's only permanent status vocabulary. It resolves
 words, glyphs, tone, prominence, and elapsed-time behavior through
@@ -589,7 +615,7 @@ testable without a layout engine. The percentage clamp
 (`MIN_WORK_SIDEBAR_WIDTH_PCT` 26 – `MAX_WORK_SIDEBAR_WIDTH_PCT` 55,
 mirrored by `normalizeWorkSidebarWidthPct` in the store) is a taste rule
 and says nothing about pixels: 26 % of a 900 px window is 234 px, and at
-234 px the pane's own 36 px header — back button, tool name, activity
+234 px the pane's own 32 px header — back button, tool name, activity
 dots, ✕ — has nowhere to go, which is how a drag once left the close
 button off-window. So a drag is clamped in **both** units: never below
 `MIN_WORK_SIDEBAR_PANE_PX` (280) of real pane, and never leaving the chat
@@ -624,7 +650,7 @@ Files, Simulator, App Control (`WorkToolPicker.tsx`, catalogue in
 `workTools.ts`). The page does not name itself: the strip above it already
 carries the word "Tools", and six labelled cards do not need introducing.
 The column is vertically centred against the **whole pane** rather than
-against the space left under the 36 px header, which is what the extra
+against the space left under the 32 px header, which is what the extra
 bottom pad buys; it centres with `m-auto` rather than `justify-center`,
 because a centred flex child in an overflow container has its overflowing
 top clipped and unreachable. The grid is `auto-fit` over a
@@ -637,15 +663,24 @@ one column down a pane wide enough for two. Cards therefore *grow* with
 the pane (188 → 252 px) instead of multiplying and shrinking. An odd card
 count lets the last card span the full row rather than orphaning it.
 
-Behind the grid is the pane's one decorated surface: a slow violet mesh
-(`WorkToolPickerBackdrop.tsx`, adapted from the 21st.dev Shader Builder
-"Mesh drift"). Nothing in its GLSL names a colour — `backdropThemeFor`
+Behind the grid is the pane's one decorated surface: a slow violet-to-indigo
+mesh (`WorkToolPickerBackdrop.tsx`, adapted from the 21st.dev Shader Builder
+"Mesh drift") whose gaussians fill the pane without collapsing into one
+wash. Nothing in its GLSL names a colour — `backdropThemeFor`
 hands the shader ADE's own tokens as uniforms, `--color-bg` →
-`--color-accent-deep` → `--color-accent` → `--color-accent-bright` in
-dark, and `--color-surface` up the same violet hues at well under half
+`--color-accent-deep` → indigo `#6366F1` → `--color-accent` → `--color-accent-bright` in
+dark, and `--color-surface` up the same hues at well under half
 the intensity in light, since on a light canvas the same amount of colour
 reads as a stain. The theme comes from the store (`s.theme`), the same
-value `App.tsx` writes to `data-theme`.
+value `App.tsx` writes to `data-theme`. Opening the pane paints the same
+gradient as CSS first so the surface is not empty while WebGL compiles;
+the canvas covers it once it has a frame. The picker stays mounted while a
+tool is on screen: `inert` + `aria-hidden`, and `playing={false}` pauses the
+loop without dropping the last frame, so opening Tools is a CSS show rather
+than a shader recompile. Arrow-key card highlight is bound only while
+`playing`. The Work new-chat surface uses the same backdrop and the same
+budget; `AgentChatPane` leaves the chat canvas transparent so the mesh
+shows through.
 
 Its budget is a hard requirement, because this is decoration on a page you
 land on constantly inside a renderer that is also running a terminal, a
@@ -726,23 +761,25 @@ catalogue owns the hint string so the card and its tooltip can never
 disagree about how much it says.
 
 A tool that cannot run in this context renders as a **disabled card with
-the reason as its status line** rather than disappearing: "Runs on this
-computer only" (App Control on a remote project), "Desktop
-app only" (App Control in the hosted web client), and "The runtime for this
-project is not a Mac" (Apple when `iosSimulator.getStatus().supported` is
-false). Apple is available whenever the **bound runtime** is a Mac — a
-Windows or Linux desktop pinned to a remote Mac runtime can watch and drive
-it. Only App Control is local-only — the browser is hosted by this
-desktop's main process and a remote lane drives that same window, so it
-stays available on remote lanes. In the hosted web
+the reason as its status line** rather than disappearing. There is exactly
+one such reason left — "The runtime for this project is not a Mac" (Apple
+when `iosSimulator.getStatus().supported` is false). Every tool follows the **session's** machine, including a remote
+Mac; nothing is hidden just because the pin is remote. Apple additionally
+follows the **bound runtime's** own `supported` flag rather than the
+viewer's OS, so a Windows or Linux desktop pinned to a remote Mac runtime
+can watch and drive it. The browser is hosted by this desktop's main
+process and a remote lane drives that same window, so it stays available on
+remote lanes. In the hosted web
 client the browser and App Control render **read-only** — the tab list,
 attached app, and latest screenshot, with no way to drive them
-(`isReadOnlyWorkTool`); Apple is full-interact (`WEB_FULL_TOOL_IDS`). Availability is decided by
+(`isReadOnlyWorkTool`); Apple is full-interact — it is absent from
+`WEB_READ_ONLY_TOOL_IDS` because the helper runs on the bound runtime, not
+in the browser tab. Availability is decided by
 capability flags in `workToolAvailability`, never by `process.platform` —
 the web client renders this same component. An active tool that becomes
 unavailable falls back to the **picker**, not to another tool.
 
-The pane's one 36 px header (`WorkToolHeader.tsx`) is the strip, and it is
+The pane's one 32 px header (`WorkToolHeader.tsx`) is the strip, and it is
 the same bar on both pages. Left edge is the `⊞ Tools` button back to the
 picker (Escape does the same, bound as `work.tools.picker` with scope
 `work` so it only fires inside the pane), lit while the picker is up.
@@ -784,7 +821,7 @@ name, and every other tool shows its own status line. It rides in the
 active tab's tooltip and accessible name (`Browser · example.com`), never
 as a header line — an icon-only tab would otherwise have no name at all,
 and a bar that spelled out what the lit tab already says was saying one
-thing twice in 36 px.
+thing twice in 32 px.
 
 The strip is measured, not guessed (`workToolTabLayout`, pure and tested):
 below **420 px** of header the tabs drop their words and become glyphs, a
@@ -836,10 +873,12 @@ unmount, and when the Work route deactivates.
 `workSidebarOpenTools` (the strip, in order, with the active tool among
 it) are stored per lane in `laneWorkViewByScope` under
 `"<projectKey>::<laneId>"`, read and written through
-`useWorkSidebarTool(laneId)`. Picking a tool appends it, or activates the
+`useWorkSidebarTool(laneId, runtimePin)`. Picking a tool appends it, or activates the
 tab it already has without moving it; closing one hands the pane to the
 tab on its **right**, then its left, then the picker
-(`openWorkToolTab` / `closeWorkToolTab`, pure). Going back to the picker
+(`openWorkToolTab` / `closeWorkToolTab`, pure). The optional pin is the
+focused chat's machine so `work_tools.setActiveTool` publishes there;
+a null pin is the tab's bound runtime. Going back to the picker
 keeps the strip — the tabs are still open, the pane is just showing the
 page you pick from. Persisted state written before the strip existed
 (`WORK_VIEW_STATE_VERSION` 6) normalizes its single tool into a one-tab
@@ -1071,7 +1110,7 @@ their own answer to the same row — uppercase mono buttons in one, tinted
 is that geometry, spent rather than reinvented:
 
 - **Exactly one chrome row per tool**, 40 px
-  (`WORK_TOOL_CHROME_ROW_HEIGHT`), under the pane header's own 36 px. The
+  (`WORK_TOOL_CHROME_ROW_HEIGHT`), under the pane header's own 32 px. The
   row carries `ade-pane-chrome` (which makes it `select-none`, so dragging
   the pane divider no longer leaves half the labels highlighted in accent
   blue) and the same `ade-tool-pane-rule` hairline the header draws, so
@@ -1343,9 +1382,15 @@ for context insertions. Contains:
 - When the sessions list is collapsed, a thin left rail still offers
   **Show sessions**. The empty draft does not put that control in the
   chat header.
-- lane selector (`LaneCombobox`) synced to the global `selectedLaneId`
+- lane selector (`LaneCombobox`) on the launch shelf under the composer,
+  synced to the global `selectedLaneId`
 - for chat drafts: `AgentChatPane` in draft mode with provider-specific
-  permission controls (`getPermissionOptions`, `safetyColors`)
+  permission controls (`getPermissionOptions`, `safetyColors`). The
+  ADE wordmark and optically lifted composer stay in the original
+  stack; the chat canvas is transparent so the mesh behind
+  `WorkViewArea` shows through. The usage card sits below the launch
+  shelf (`mt-11`), width-capped to the shelf, with an opaque fill that
+  matches the machine/lane submenu.
 - for cli drafts: a five-tile provider grid (Claude Code, Codex CLI,
   Cursor Agent CLI, Factory Droid CLI, OpenCode CLI) with logos sourced
   from `ToolLogos.tsx` / `ProviderLogos.tsx`. Selecting a provider
@@ -1676,7 +1721,8 @@ nothing when no delta is available.
 ## Shared helpers
 
 - `apps/desktop/src/renderer/lib/sessions.ts` — `primarySessionLabel`,
-  `preferredSessionLabel`, `shortToolTypeLabel`, `isChatToolType`,
+  `preferredSessionLabel`, `shortToolTypeLabel`, a re-export of
+  `isChatToolType` from `sessionSpawnNesting.ts`,
   `isPtyContextInsertableToolType`, `buildOptimisticChatSessionSummary`.
 - `apps/desktop/src/renderer/lib/terminalAttention.ts` —
   `canonicalInputFromSummary`, `sessionCanonicalUiState`,
@@ -1741,6 +1787,11 @@ nothing when no delta is available.
 - The Work tab and the Lanes tab share the hook; changes to
   `useWorkSessions` ripple. Keep lane-scoped persistence keyed by
   `projectRoot::laneId` or the Lanes tab state leaks across projects.
+- **Spawn nesting is one shared rule.** Same-lane `spawnKind: "subagent"`
+  filing lives in `sessionSpawnNesting.ts`. Desktop, ADE Code, and iOS consult
+  that index (`WorkSpawnNesting.swift` on the phone). Do not re-derive nest /
+  quiet-parent pull-up / grandchild flatten in a list renderer. Status, time,
+  and Kanban stay flat; `ade chat list` stays a flat table.
 - The Work grid is `PaneTilingLayout` — every visible session has a
   leaf and stays mounted. Grid tiles pass `terminalVisible={true}`;
   `isActive` controls input but not mount state, so multiple PTYs can

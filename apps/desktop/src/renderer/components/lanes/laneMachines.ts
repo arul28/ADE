@@ -17,7 +17,12 @@
  */
 
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
-import type { RecentProjectSummary, RemoteRuntimeConnectionStatus } from "../../../shared/types";
+import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
+import type {
+  OpenProjectBinding,
+  RecentProjectSummary,
+  RemoteRuntimeConnectionStatus,
+} from "../../../shared/types";
 
 // Machine identity is shared, not per-module: five copies of these constants
 // with two different id values is what made the divergence guard able to warn
@@ -117,6 +122,58 @@ export function cachedGitRemoteIdentity(url: string | null | undefined): string 
 /** Test seam — the identity cache is module state. */
 export function resetGitRemoteIdentityCache(): void {
   identityCache.clear();
+}
+
+const originByLocalRoot = new Map<string, string>();
+const originByRemoteKey = new Map<string, string>();
+
+/**
+ * Recents and connection snapshots are the union's origin source. Local tab
+ * bindings do not carry `gitOriginUrl`, so Work retain has to look here.
+ *
+ * `replace: true` is a complete snapshot (`listRecent` / `forgetRecent`):
+ * omitted checkouts leave, and a blank origin deletes that key. Incremental
+ * connection.projects merges: a proven origin is kept when a snapshot later
+ * arrives blank, because a machine that has not reported origin yet is not
+ * proof the checkout has none.
+ */
+export function rememberProjectOriginSummaries(
+  projects: readonly Pick<RecentProjectSummary, "rootPath" | "kind" | "remote" | "gitOriginUrl">[],
+  options?: { replace?: boolean },
+): void {
+  if (options?.replace) {
+    originByLocalRoot.clear();
+    originByRemoteKey.clear();
+  }
+  for (const project of projects) {
+    const origin = (project.gitOriginUrl ?? project.remote?.gitOriginUrl ?? "").trim();
+    const remote = project.kind === "remote" ? project.remote : undefined;
+    if (remote) {
+      const key = remoteProjectBindingKey(remote.targetId, remote.projectId);
+      if (origin) originByRemoteKey.set(key, origin);
+      else if (options?.replace) originByRemoteKey.delete(key);
+      continue;
+    }
+    if (origin) originByLocalRoot.set(project.rootPath, origin);
+    else if (options?.replace) originByLocalRoot.delete(project.rootPath);
+  }
+}
+
+/** Origin stamped on the binding, else the recents/snapshot identity for that checkout. */
+export function originUrlForBinding(
+  binding: OpenProjectBinding | null | undefined,
+): string | null {
+  if (!binding) return null;
+  const stamped = typeof binding.gitOriginUrl === "string" ? binding.gitOriginUrl.trim() : "";
+  if (stamped) return stamped;
+  if (binding.kind === "local") return originByLocalRoot.get(binding.rootPath) ?? null;
+  return originByRemoteKey.get(binding.key) ?? null;
+}
+
+/** Test seam — origin memory is module state. */
+export function resetProjectOriginMemory(): void {
+  originByLocalRoot.clear();
+  originByRemoteKey.clear();
 }
 
 function pathBaseName(rootPath: string): string {

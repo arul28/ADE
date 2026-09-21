@@ -113,7 +113,11 @@ export function useWorkLiveIosDevices(args: {
       });
     };
 
-    const status = await api.getStatus(pin).catch(() => null);
+    // Optional-called like its siblings below: a surface that mounts this hook
+    // with a partial `iosSimulator` namespace (the hosted web client's stub, a
+    // test double that only needs `deviceList`) must degrade to "no status",
+    // not throw an unhandled rejection out of a passive effect.
+    const status = api.getStatus ? await api.getStatus(pin).catch(() => null) : null;
     if (cancelled()) return;
     await applyStatus(status?.laneId ?? laneId, status);
     if (cancelled()) return;

@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { OpenProjectBinding } from "../../../shared/types";
 import type { WorkToolId } from "../../../shared/types/workTools";
 import {
   laneWorkViewScopeKey,
+  projectStateKeyForBinding,
   selectActiveProjectStateKey,
   useAppStore,
   type WorkProjectViewState,
@@ -97,10 +99,17 @@ export function closeWorkToolTab(
  *
  * `tool` is the tab on screen (null = the picker page, with the strip still
  * showing); `openTools` is the strip itself. `setTool` opens or activates a tab,
- * `closeTool` removes one. Openness and width stay project-wide
- * (`workSidebarOpen`, `workSidebarWidthPct`); only the contents follow the lane.
+ * `closeTool` removes one. Openness and width stay tab-owned
+ * (`workSidebarOpen`, `workSidebarWidthPct`); the strip follows the lane on
+ * the focused chat's machine.
+ * `runtimePin` is the focused chat's machine for the phone/web mirror
+ * publish and for the lane strip's storage key; null means the tab's bound
+ * runtime. Pane openness stays tab-owned.
  */
-export function useWorkSidebarTool(laneId: string | null): {
+export function useWorkSidebarTool(
+  laneId: string | null,
+  runtimePin: OpenProjectBinding | null = null,
+): {
   tool: WorkSidebarTab | null;
   openTools: WorkSidebarTab[];
   setTool: (tool: WorkSidebarTab | null) => void;
@@ -111,8 +120,9 @@ export function useWorkSidebarTool(laneId: string | null): {
   const workViewByProject = useAppStore((state) => state.workViewByProject);
   const setLaneWorkViewState = useAppStore((state) => state.setLaneWorkViewState);
   const setWorkViewState = useAppStore((state) => state.setWorkViewState);
+  const toolStateKey = projectStateKeyForBinding(runtimePin, projectStateKey) || projectStateKey;
 
-  const scopeKey = laneWorkViewScopeKey(projectStateKey, laneId);
+  const scopeKey = laneWorkViewScopeKey(toolStateKey, laneId);
 
   // Both fields come from ONE resolved record: reading the active tool from the
   // lane scope and the strip from the project fallback would produce a strip
@@ -125,6 +135,7 @@ export function useWorkSidebarTool(laneId: string | null): {
       ? laneWorkViewByScope?.[scopeKey]
       : undefined;
     const view = scoped
+      ?? (toolStateKey ? workViewByProject?.[toolStateKey] : undefined)
       ?? (projectStateKey ? workViewByProject?.[projectStateKey] : undefined);
     const active = view?.workSidebarTool ?? null;
     const strip = view?.workSidebarOpenTools ?? [];
@@ -136,7 +147,7 @@ export function useWorkSidebarTool(laneId: string | null): {
       tool: active,
       openTools: active && !strip.includes(active) ? [...strip, active] : strip,
     };
-  }, [laneWorkViewByScope, projectStateKey, scopeKey, workViewByProject]);
+  }, [laneWorkViewByScope, projectStateKey, scopeKey, toolStateKey, workViewByProject]);
 
   // The setters are pointer-driven and must not close over a stale render's
   // strip: two clicks inside one commit would otherwise both write against the
@@ -146,18 +157,19 @@ export function useWorkSidebarTool(laneId: string | null): {
 
   const write = useCallback(
     (next: { workSidebarTool: WorkSidebarTab | null; workSidebarOpenTools: WorkSidebarTab[] }) => {
-      if (!projectStateKey) return;
+      if (!toolStateKey) return;
       if (laneId) {
-        setLaneWorkViewState(projectStateKey, laneId, next);
+        setLaneWorkViewState(toolStateKey, laneId, next);
       } else {
-        setWorkViewState(projectStateKey, next);
+        setWorkViewState(toolStateKey, next);
       }
       // Picking a tool always reveals the pane — every entry point that used to
       // call `setWorkSidebarTab` relied on that, and returning to the picker is
-      // not a reason to close it.
-      setWorkViewState(projectStateKey, { workSidebarOpen: true });
+      // not a reason to close it. Openness is tab-owned; the strip follows the
+      // session machine above.
+      if (projectStateKey) setWorkViewState(projectStateKey, { workSidebarOpen: true });
     },
-    [laneId, projectStateKey, setLaneWorkViewState, setWorkViewState],
+    [laneId, projectStateKey, setLaneWorkViewState, setWorkViewState, toolStateKey],
   );
 
   const setTool = useCallback(
@@ -188,7 +200,7 @@ export function useWorkSidebarTool(laneId: string | null): {
     [write],
   );
 
-  usePublishActiveWorkTool(laneId, tool, openTools);
+  usePublishActiveWorkTool(laneId, tool, openTools, runtimePin);
 
   return { tool, openTools, setTool, closeTool };
 }
@@ -214,6 +226,10 @@ export const WORK_TOOL_PUBLISH_DEBOUNCE_MS = 250;
  * a phone looking at a stale "Browser active" would be lying about a pane that
  * is no longer open.
  *
+ * The publish is addressed with the focused chat's pin so a Studio session on a
+ * MacBook tab updates Studio's work_tools state, not the laptop's. A null pin
+ * is the tab's bound runtime, the same path as every other unpinned Work call.
+ *
  * Failures are swallowed on purpose. This is a mirror for other devices; a
  * runtime that cannot take the publish must not disturb the pane it describes.
  */
@@ -221,13 +237,15 @@ function usePublishActiveWorkTool(
   laneId: string | null,
   tool: WorkSidebarTab | null,
   openTools: readonly WorkSidebarTab[],
+  runtimePin: OpenProjectBinding | null,
 ): void {
   const latest = useRef<{
     laneId: string | null;
     tool: WorkSidebarTab | null;
     openTools: readonly WorkSidebarTab[];
-  }>({ laneId, tool, openTools });
-  latest.current = { laneId, tool, openTools };
+    pin: OpenProjectBinding | null;
+  }>({ laneId, tool, openTools, pin: runtimePin });
+  latest.current = { laneId, tool, openTools, pin: runtimePin };
   // Incremented by binding/status changes so a reconnect re-publishes through
   // the same debounced effect instead of duplicating the call.
   const [republishToken, setRepublishToken] = useState(0);
@@ -248,6 +266,7 @@ function usePublishActiveWorkTool(
   // memo rebuilt from an unchanged store still yields a new array on some
   // renders, and publishing on that would defeat the debounce it sits behind.
   const stripKey = openTools.join(",");
+  const pinKey = runtimePin?.key ?? "bound";
   useEffect(() => {
     if (!laneId) return;
     const publish = window.ade?.workTools?.setActiveTool;
@@ -255,8 +274,8 @@ function usePublishActiveWorkTool(
     const timer = window.setTimeout(() => {
       const current = latest.current;
       if (!current.laneId) return;
-      void publish(current.laneId, current.tool, [...current.openTools]).catch(() => {});
+      void publish(current.laneId, current.tool, [...current.openTools], current.pin).catch(() => {});
     }, WORK_TOOL_PUBLISH_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [laneId, tool, stripKey, republishToken]);
+  }, [laneId, tool, stripKey, republishToken, pinKey]);
 }

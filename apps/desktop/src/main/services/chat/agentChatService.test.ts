@@ -450,7 +450,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   })),
 }));
 
-vi.mock("@factory/droid-sdk", () => ({
+vi.mock("@factory/droid-sdk/node", () => ({
   createSdkMcpServer: vi.fn((config: any) => ({
     async start() {
       mockState.mcpServerCounter += 1;

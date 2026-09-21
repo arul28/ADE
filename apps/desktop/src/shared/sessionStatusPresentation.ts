@@ -90,6 +90,13 @@ export type SessionStatusPresentation = {
   prominent: boolean;
 };
 
+/** Nested compact rows keep the word only for Needs you / Failed. */
+export function sessionStatusShoutsLabel(
+  presentation: Pick<SessionStatusPresentation, "glyph" | "tone">,
+): boolean {
+  return presentation.glyph === "needs-you" || presentation.tone === "red";
+}
+
 /**
  * Settled rows carry no status label at all — they live in the collapsed
  * settled tail, where the section itself is the status. Returning `null` rather

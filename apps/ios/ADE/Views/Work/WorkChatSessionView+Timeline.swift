@@ -16,7 +16,6 @@ extension WorkChatSessionView {
   @ViewBuilder
   func timelineRenderEntryView(
     for entry: WorkTimelineRenderEntry,
-    proxy: ScrollViewProxy,
     streamingAssistantMessageId: String?,
     maxUserBubbleWidth: CGFloat?
   ) -> some View {
@@ -24,7 +23,6 @@ extension WorkChatSessionView {
     case .entry(let timelineEntry):
       timelineEntryView(
         for: timelineEntry,
-        proxy: proxy,
         streamingAssistantMessageId: streamingAssistantMessageId,
         maxUserBubbleWidth: maxUserBubbleWidth
       )
@@ -81,7 +79,6 @@ extension WorkChatSessionView {
   @ViewBuilder
   func timelineEntryView(
     for entry: WorkTimelineEntry,
-    proxy: ScrollViewProxy,
     streamingAssistantMessageId: String?,
     maxUserBubbleWidth: CGFloat?
   ) -> some View {
@@ -147,7 +144,6 @@ extension WorkChatSessionView {
     case .subagent(let row):
       WorkSubagentTimelineRowView(
         row: row,
-        onOpen: onSelectSubagentRow,
         onStop: onStopSubagentTask.map { stop in
           { snapshot in await stop(snapshot.taskId) }
         }
@@ -156,8 +152,7 @@ extension WorkChatSessionView {
       WorkSubagentStoppedGroupCardView(
         model: model,
         isExpanded: cardIsExpanded(model.id, entryId: entry.id),
-        onToggle: { toggleCard(model.id, entryId: entry.id) },
-        onOpen: onSelectSubagentRow
+        onToggle: { toggleCard(model.id, entryId: entry.id) }
       )
     case .toolGroup(let group):
       timelineToolGroup(group, entryId: entry.id)
@@ -239,14 +234,15 @@ extension WorkChatSessionView {
         onDismiss: timelineQuestionDismissHandler(question.id, dismissible: question.dismissible),
         onFreeformFocusChange: { focused in
           guard focused else { return }
-          // Wait for the keyboard to start animating in so the ScrollView's
-          // safe-area inset is updated before we ask it to scroll the focused
-          // card above the keyboard.
+          // Wait for the keyboard to start animating in so the transcript's
+          // bottom inset is updated before we ask it to bring the focused card
+          // above the keyboard.
           Task { @MainActor in
             try? await Task.sleep(nanoseconds: 300_000_000)
-            withAnimation(.easeInOut(duration: 0.25)) {
-              proxy.scrollTo("pending-question-\(question.id)", anchor: .bottom)
-            }
+            transcriptScroller.scrollRowIntoView(
+              id: entry.id,
+              reason: "question-freeform-focus"
+            )
           }
         },
         fallbackProvider: chatSummaryContext.provider,

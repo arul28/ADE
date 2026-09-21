@@ -7,7 +7,7 @@
  * the tools pane each mounting `useNativeToolSessions` — was completely
  * invisible on screen.
  */
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   NativeToolFeedsProvider,
@@ -200,5 +200,40 @@ describe("NativeToolFeedsProvider", () => {
       </NativeToolFeedsProvider>,
     );
     await waitFor(() => expect(latest).toBe(false));
+  });
+
+  it("scopes browser status to a remote pin's checkout, not the tab root", async () => {
+    const pin = {
+      kind: "remote" as const,
+      key: "remote:studio:project-a",
+      targetId: "studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-a",
+      rootPath: "/studio/repo",
+      displayName: "Studio",
+    };
+    useAppStore.setState({
+      project: { rootPath: "/laptop/repo" },
+      projectBinding: {
+        kind: "local",
+        key: "local:/laptop/repo",
+        rootPath: "/laptop/repo",
+        displayName: "Laptop",
+      },
+    } as never);
+    function Probe() {
+      const feeds = useNativeToolFeeds();
+      return <div data-testid="browser-root">{feeds.browserViewRoot}</div>;
+    }
+    render(
+      <NativeToolFeedsProvider active runtimePin={pin}>
+        <Probe />
+      </NativeToolFeedsProvider>,
+    );
+
+    expect(screen.getByTestId("browser-root").textContent).toBe("/studio/repo");
+    await waitFor(() => {
+      expect(browserGetStatus).toHaveBeenCalledWith({ projectRoot: "/studio/repo" }, pin);
+    });
   });
 });

@@ -875,7 +875,17 @@ func makeWorkChatTranscript(from entries: [AgentChatEventEnvelope]) -> [WorkChat
       apiErrorStatus: entry.apiErrorStatus,
       isLegacySubagentCompletedFrame: entry.isLegacySubagentCompletedFrame,
       stopSource: entry.stopSource,
-      stopReason: entry.stopReason
+      stopReason: entry.stopReason,
+      toolResultFullBytes: entry.toolResultFullBytes,
+      commandLifecycleStatus: {
+        guard case .commandLifecycle(_, let status, _, _, _) = entry.event else { return nil }
+        return status
+      }(),
+      commandLifecycleSteerId: {
+        guard case .commandLifecycle(_, _, _, let steerId, _) = entry.event else { return nil }
+        return steerId
+      }(),
+      sourceOffset: entry.sourceOffset
     )
   }
   .sorted(by: workChatEnvelopeOrderedBefore)
@@ -982,7 +992,13 @@ func preferredWorkTranscript(
 ) -> [WorkChatEnvelope] {
   if !eventTranscript.isEmpty {
     let base = isFallbackOnlyWorkTranscript(current) ? [] : current
-    let merged = mergeWorkChatTranscripts(base: base, live: eventTranscript)
+    // Prune before the backfill, not only after it. A queued row whose steer
+    // has already graduated in the same live stream still looks pending to
+    // `shouldSkipBackfillPlainUserMessage`, which would then drop the canonical
+    // fallback bubble for a message that was actually delivered.
+    let merged = pruneResolvedQueuedSteerEnvelopes(
+      mergeWorkChatTranscripts(base: base, live: eventTranscript)
+    )
     // The live event stream may be missing tail envelopes after a disconnect
     // or when the host didn't replay the full snapshot on re-subscribe. The
     // `chat.getTranscript` fallback always contains the canonical user /
@@ -1030,6 +1046,17 @@ func preferredWorkTranscript(
     result: pruned
   )
   return pruned
+}
+
+/// The live event stream an idle session hands to `preferredWorkTranscript`.
+/// Resolved queued steers are pruned *first*: the filter below keeps queued
+/// rows and drops every other user row, so a stale queued row left in place
+/// outlives the delivered row that graduated it and reappears in the staged
+/// strip while its bubble is suppressed in the thread.
+func workChatIdleCanonicalEventTranscript(_ transcript: [WorkChatEnvelope]) -> [WorkChatEnvelope] {
+  pruneResolvedQueuedSteerEnvelopes(transcript).filter { envelope in
+    workChatEventIncludedInIdleCanonicalEventTranscript(envelope.event)
+  }
 }
 
 /// When an idle session prefers the canonical text transcript, keep tool /
@@ -1337,12 +1364,21 @@ private func duplicateWorkTextEnvelopeCount(_ transcript: [WorkChatEnvelope]) ->
 }
 
 /// Drop stale queued `user_message` rows once the same steerId has graduated
-/// to delivered/inline/failed or been resolved by a steer system notice.
+/// to delivered/inline/failed, been resolved by a steer system notice, or has
+/// a non-queued Claude command lifecycle frame.
 func pruneResolvedQueuedSteerEnvelopes(_ transcript: [WorkChatEnvelope]) -> [WorkChatEnvelope] {
   guard !transcript.isEmpty else { return transcript }
   var resolvedSteerIds = Set<String>()
   var queuedSteerIdsByText: [String: Set<String>] = [:]
   for envelope in sortedWorkChatEnvelopes(transcript) {
+    // `status` is required on a `command_lifecycle` frame. An absent one is an
+    // off-contract host, and treating "unknown" as "no longer queued" would
+    // drop a steer row the user can still see is waiting.
+    if let steerId = envelope.commandLifecycleSteerId,
+       let status = envelope.commandLifecycleStatus,
+       status != "queued" {
+      resolvedSteerIds.insert(steerId)
+    }
     switch envelope.event {
     case .userMessage(let text, _, _, let steerId, let deliveryState, _):
       if let steerId, deliveryState == "queued" {
@@ -2163,6 +2199,15 @@ func derivePendingWorkSteers(from transcript: [WorkChatEnvelope]) -> [WorkPendin
   var resolved = Set<String>()
   var queuedSteerIdsByText: [String: Set<String>] = [:]
   for envelope in sortedWorkChatEnvelopes(transcript) {
+    // Same rule as `pruneResolvedQueuedSteerEnvelopes`: only an explicit
+    // non-queued status graduates the steer. A missing status is an
+    // off-contract host, not evidence the message left the queue.
+    if let steerId = envelope.commandLifecycleSteerId,
+       let status = envelope.commandLifecycleStatus,
+       status != "queued" {
+      queue.removeValue(forKey: steerId)
+      resolved.insert(steerId)
+    }
     switch envelope.event {
     case .userMessage(let text, let attachments, let turnId, let steerId, let deliveryState, _):
       if let steerId, deliveryState == "queued", !resolved.contains(steerId) {

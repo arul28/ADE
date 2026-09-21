@@ -41,6 +41,7 @@ import { ChatComposerShell } from "../chat/ChatComposerShell";
 import { ModelRowLogo } from "../shared/ProviderLogos";
 import { resolveModelDescriptorWithRuntimeCatalog, createUnknownModelPlaceholder } from "../shared/ModelPicker/modelCatalog";
 import { WorkStartSurface } from "./WorkStartSurface";
+import { WorkToolPickerBackdrop } from "./WorkToolPickerBackdrop";
 import { CliSessionWorkSurfaceHeader } from "./CliSessionWorkSurfaceHeader";
 import { ChatPrPane } from "../chat/ChatPrPane";
 import { useChatPrPaneOpen } from "../chat/useChatPrPaneOpen";
@@ -609,7 +610,7 @@ function WorkCliContinuationComposer({
 function ClosedCliSessionSurface({
   session,
   lanes,
-  runtimePin,
+  runtimePin = null,
   layoutVariant,
   onInfoClick,
   onContextMenu,
@@ -620,7 +621,7 @@ function ClosedCliSessionSurface({
 }: {
   session: TerminalSessionSummary;
   lanes: LaneSummary[];
-  runtimePin: OpenProjectBinding | null;
+  runtimePin?: OpenProjectBinding | null;
   layoutVariant: "standard" | "grid-tile";
   onInfoClick?: (session: TerminalSessionSummary, event: React.MouseEvent<HTMLElement>) => void;
   onContextMenu?: (session: TerminalSessionSummary, event: React.MouseEvent<HTMLElement>) => void;
@@ -851,7 +852,7 @@ function SessionSurface({
   sessionTitleById,
   lanes,
   isActive,
-  runtimePin = null,
+  runtimePin,
   pageActive = true,
   shouldAutofocus = false,
   layoutVariant = "standard",
@@ -876,8 +877,8 @@ function SessionSurface({
   /**
    * Set only for a session that lives on another open binding; `null` means the
    * tab's own machine (the hot path — same calls as before per-session routing).
-   * The ADE chat pane resolves its own pin from the lane, so this is consumed by
-   * the PTY surfaces only.
+   * ADE chats take this pin too: after a dropdown switch the live union is
+   * empty, so deriving from the lane would unpin send/history onto the new tab.
    */
   runtimePin?: OpenProjectBinding | null;
   pageActive?: boolean;
@@ -922,6 +923,7 @@ function SessionSurface({
         sessionTitleById={sessionTitleById}
         hideSessionTabs
         hideLaneToolDrawers
+        runtimePin={runtimePin}
         onSessionCreated={onOpenChatSession}
         layoutVariant={layoutVariant}
         isTileActive={surfaceActive}
@@ -1229,6 +1231,7 @@ export function WorkViewArea({
   resolveSessionRuntimePin?: (session: TerminalSessionSummary) => OpenProjectBinding | null;
 }) {
   const { menu: laneContextMenuPortal } = useWorkLaneContextMenu();
+  const theme = useAppStore((s) => s.theme);
   const sessionsById = useMemo(() => {
     const map = new Map<string, TerminalSessionSummary>();
     for (const session of sessions) map.set(session.id, session);
@@ -1259,7 +1262,7 @@ export function WorkViewArea({
       // transfers activeItemId (WorkGridView's onPaneMouseDown) before typing.
       isActive={session.id === activeItemId}
       pageActive={pageActive}
-      runtimePin={resolveSessionRuntimePin?.(session) ?? null}
+      runtimePin={resolveSessionRuntimePin?.(session)}
       shouldAutofocus={session.id === activeItemId}
       terminalVisible
       onInfoClick={onInfoClick}
@@ -1309,7 +1312,7 @@ export function WorkViewArea({
           lanes={lanes}
           isActive
           pageActive={pageActive}
-          runtimePin={resolveSessionRuntimePin?.(activeSession) ?? null}
+          runtimePin={resolveSessionRuntimePin?.(activeSession)}
           terminalVisible
           onInfoClick={onInfoClick}
           onContextMenu={onContextMenu}
@@ -1326,11 +1329,12 @@ export function WorkViewArea({
         />
       </SingleSessionGridDropZone>
     ) : (
-      <div className="flex h-full flex-col">
+      <div className="relative flex h-full min-h-0 flex-col overflow-hidden">
+        <WorkToolPickerBackdrop theme={theme} playing={pageActive} />
         <div className="relative z-10 flex shrink-0 items-center justify-center pb-8 pt-6">
           <ModeSwitcherPills draftKind={draftKind} onShowDraftKind={onShowDraftKind} />
         </div>
-        <div className="min-h-0 flex-1">
+        <div className="relative z-10 min-h-0 flex-1">
           <WorkStartSurface
             draftKind={draftKind}
             draftLaneId={draftLaneId}
@@ -1354,7 +1358,7 @@ export function WorkViewArea({
     );
 
   const tabBody = (
-    <div className="relative min-h-0 flex-1" style={{ background: "var(--chat-canvas-bg)" }}>
+    <div className="relative min-h-0 flex-1" style={{ background: workAreaMode === "empty" ? "transparent" : "var(--chat-canvas-bg)" }}>
       <AnimatePresence initial={false}>
         <motion.div
           key={workAreaMode}

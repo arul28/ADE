@@ -576,7 +576,10 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     label: "Custom",
     // "harness"/"harnesses" stay as keywords: the label is Custom now, but
     // that is the word in the docs, the CLI flags and every older screenshot.
-    keywords: ["custom", "harness", "harnesses", "preset", "body", "brain", "profile", "combination", "subagent", "launch", "logo"],
+    // "body"/"brain" were internal shorthand that leaked into the wizard copy
+    // and have been removed from it; searching for them should not teach a
+    // vocabulary the product no longer speaks.
+    keywords: ["custom", "harness", "harnesses", "preset", "model", "account", "profile", "combination", "subagent", "launch", "logo"],
     tab: "agents",
     anchor: "ai-harnesses",
     scope: "account",

@@ -9,6 +9,7 @@ describe("startChatDraftPatch", () => {
       draftMachineId: null,
       activeItemId: null,
       selectedItemId: null,
+      workSidebarOpen: false,
     });
   });
 

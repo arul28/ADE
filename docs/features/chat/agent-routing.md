@@ -34,7 +34,7 @@ where the machinery lives.
 | `apps/desktop/src/main/services/chat/piSdkUiBridge.ts` | Worker-side half of the UI channel, deliberately free of Pi imports. Funnels Pi's three unrelated callback APIs — `AuthInteraction`, custom-tool `execute`, and an extension's `ExtensionUIContext` — into one never-rejecting `request()` that resolves to `null` when a card is dismissed, a turn aborts, or the worker is disposed. Also builds ADE's `ask_user` tool, the per-tool-call approval gate, and the extension UI context. |
 | `apps/desktop/src/main/services/ai/piInstallation.ts` | Resolves the user's Pi installation: CLI path, SDK package root/entry, agent dir, `auth.json` / models / settings paths, provider inventory, and a `blocker` string when the SDK cannot be used (missing package, or a Node older than `PI_SDK_MIN_NODE`). `sdkAvailable` and `cliAvailable` are independent — the CLI can be present while the SDK path is blocked. |
 | `apps/desktop/src/main/services/ai/piAuthService.ts` | In-app Pi sign-in. Enumerates the providers that can actually be signed into (`listPiLoginProviders`), runs one `startPiLogin` per provider on a dedicated inventory-only worker, relays Pi's prompts/notices through `addPiAuthStatusListener`, and answers them with `submitPiLoginPrompt`. Bounded at 10 minutes; `cancelPiLogin` stops a flow and releases its worker. Never reads, stores, or logs a credential. |
-| `apps/desktop/src/main/services/chat/droidModelsDiscovery.ts` | Droid model discovery: probes the live SDK via `createSession({ execPath })` to read `initResult.availableModels`, normalizes `supportedReasoningEfforts` into `reasoningTiers`, and emits `droid/<id>` descriptors via `createDynamicDroidCliModelDescriptor`. Droid fast choices are distinct model IDs, not ADE `serviceTiers`; custom models from `<factoryConfigHome>/config.json` (`~/.factory` unless `FACTORY_HOME_OVERRIDE` is set) are merged in. The legacy `DROID_DEFAULT_MODEL_IDS` constant has been removed — the SDK is the only source. Like Cursor, the cache is stale-while-revalidate: `markDroidModelCachesStale` ages it without dropping last-known-good rows, which are served past the 120s window (up to ~6h) while one background warm per freshness window refreshes them, so an unauthenticated/mid-reauth droid isn't handed a session per passive read. |
+| `apps/desktop/src/main/services/chat/droidModelsDiscovery.ts` | Droid model discovery: probes the installed `droid` CLI (`droid exec --help`, with legacy `models`/`model list` fallbacks) for the model list and merges custom models from `<factoryConfigHome>/config.json` (`~/.factory` unless `FACTORY_HOME_OVERRIDE` is set), emitting `droid/<id>` descriptors via `createDynamicDroidCliModelDescriptor`. Droid fast choices are distinct model IDs, not ADE `serviceTiers`. The CLI probe is the only source — the SDK session's `availableModels` is not read (0.9.x removed the `initResult` surface). Like Cursor, the cache is stale-while-revalidate: `markDroidModelCachesStale` ages it without dropping last-known-good rows, which are served past the 120s window (up to ~6h) while one background warm per freshness window refreshes them, so an unauthenticated/mid-reauth droid isn't handed a session per passive read. |
 
 ## Supported providers
 
@@ -45,7 +45,7 @@ for vendored runtimes without changing the union.
 | Provider | Runtime | Adapter location |
 |---|---|---|
 | `claude` | `@anthropic-ai/claude-agent-sdk` `query()` stream with an ADE async input pump, `startup()` warmup, bundled Claude Code binary, SDK sessions, hooks, output styles, plugins, context usage, rewind, and slash-command dispatch. | `agentChatService.ts` (inline; the file carries the full Claude adapter). |
-| `codex` | Pinned `@openai/codex` 0.153.4 `codex app-server` subprocess, JSON-RPC protocol. Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter and thread config); executable resolution via `services/ai/codexExecutable.ts`. |
+| `codex` | Pinned `@openai/codex` 0.155.1 `codex app-server` subprocess, JSON-RPC protocol. Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter and thread config); executable resolution via `services/ai/codexExecutable.ts`. |
 | `opencode` | OpenCode server runtime: the provider catalog and model list come from OpenCode/Models.dev, with provider-native OAuth, API-key, custom, and local-server paths. | `agentChatService.ts` (OpenCode adapter); inventory in `openCodeInventory.ts`; auth in `openCodeAuthService.ts`. |
 | `cursor` | Official `@cursor/sdk` running in a Node worker pool. ADE owns permissions, hooks, and the system prompt; the SDK owns the model + tool execution. Slash commands are discovered from `.cursor/commands/`, `.cursor/agents/`, built-in subagents, and Agent Skill roots via `cursorSlashCommandDiscovery.ts`. A transport failure can wedge the server-side agent thread while the worker process stays alive, so every local turn carries a 90 s first-event watchdog and one automatic recycle-and-resend — see [Cursor thread recycling and the first-event watchdog](README.md#cursor-thread-recycling-and-the-first-event-watchdog). | `cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`, `cursorSdkErrors.ts`, `cursorSlashCommandDiscovery.ts`. |
 | `droid` | Factory Droid models exposed as dynamic `droid/<modelId>` descriptors and driven through the official `@factory/droid-sdk` running in a forked Node worker pool. The legacy ACP bridge (`droidAcpPool.ts`) has been retired. | `droidSdkPool.ts`, `droidSdkWorker.ts`, `droidSdkProtocol.ts`, `droidSdkEventMapper.ts`, `droidModelsDiscovery.ts`; model helpers in `modelRegistry.ts`. |
@@ -143,10 +143,10 @@ high | xhigh | max`; Sol and Terra expose `low | medium | high | xhigh | max |
 ultra`. Desktop, ADE Code, and iOS label those values Light, Medium, High,
 Extra High, Max, and (for Sol/Terra) Ultra. Runtime app-server ladders retain
 their advertised order. `ultra` is the multi-agent tier and carries a usage
-warning. Codex 0.153.4 is the pinned app-server that advertises Astra; older
+warning. Codex 0.155.1 is the pinned app-server that advertises Astra; older
 PATH installs without Astra metadata cannot start it.
 
-On 0.153.4 ADE always enables `tools.update_plan` on `thread/start` and
+On 0.155.1 ADE always enables `tools.update_plan` on `thread/start` and
 `thread/resume`, copies the thread's `model` / `reasoningEffort` into the
 session snapshot, and treats `item/tool/requestUserInput` `isBlocking:
 false` as live steering rather than Needs you. Computer Use appears as a
@@ -427,16 +427,17 @@ collapses its compound autonomy mode to `spec` and reads it back as level `off`,
 so anything else is a claim Droid discards — which matches what
 `droidSettingsJson` already sends on the terminal path.
 
-Spec is the one place ADE has to speak up to stay quiet. The SDK exposes no
-`exitSpecMode`, so the only way out is to state a mode, and a plan session that
-later turns plan off states nothing. The worker therefore tracks whether ADE
-itself entered Spec (`enteredSpecMode` in `droidSdkWorker.ts`) and states `Auto`
-exactly once to leave, then goes back to saying nothing. The flag is reset on
-init and on dispose.
+Spec is the one place ADE has to speak up to stay quiet. `@factory/droid-sdk`
+0.9.x exposes `exitSpecMode()`, so the worker tracks whether ADE itself entered
+Spec (`enteredSpecMode` in `droidSdkWorker.ts`) and calls `exitSpecMode()` exactly
+once to leave, then goes back to saying nothing. The flag is reset on init and on
+dispose.
 
-`buildReady` reads the resolved model from `initResult.settings.modelId`.
-`initResult.currentModelId` does not exist in `@factory/droid-sdk`; reading it
-always yielded `null`.
+`buildReady` reads the resolved model from `session.settings.modelId` and the
+session id from `session.id`. 0.9.x removed the `initResult` surface entirely
+(`initResult.currentModelId` never existed; `initResult.availableModels` is
+gone). The model list is discovered separately by `droidModelsDiscovery`, so the
+worker's `DroidSdkReady.availableModels` stays empty.
 
 **Cursor.** ADE always passes `sandboxOptions: { enabled: false }` for local
 Cursor workers (`cursorSdkWorker.ts`) and relies on ADE hook denials as the

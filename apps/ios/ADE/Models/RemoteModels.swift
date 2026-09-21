@@ -910,7 +910,7 @@ struct AgentChatSetScheduledWorkPausedResult: Codable, Equatable {
   var nextWakeAt: String?
 }
 
-enum AgentChatSpawnKind: Equatable, Codable {
+enum AgentChatSpawnKind: Equatable, Codable, Hashable {
   case subagent
   case peer
   case legacyUntyped
@@ -2428,7 +2428,7 @@ struct AgentChatContextUsage: Codable, Equatable {
   }
 }
 
-struct CodexWebSearchAction: Codable, Equatable {
+struct CodexWebSearchAction: Codable, Hashable {
   var type: String
   var status: String?
   var query: String?
@@ -2590,6 +2590,24 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   /// AgentChatEvent also exposes the two optional values for direct callers.
   var stopSource: String?
   var stopReason: String?
+  /// Size of the stored tool result when the host sent only a head slice of
+  /// it (`resultTruncatedForMobile` on the wire), nil when the row carries the
+  /// whole thing.
+  ///
+  /// Kept beside the event for the same reason as the fields above: the Result
+  /// block needs "there is more, and it is this big" to label its fetch, and
+  /// `AgentChatEvent.toolResult` already carries seven associated values that
+  /// every construction site in the app and the tests would have to restate.
+  var toolResultFullBytes: Int?
+  /// Byte offset of this row in the host's transcript, when it arrived on a
+  /// `chat_history` page that reported one.
+  ///
+  /// Not decoded from the event — the page carries the offsets in a parallel
+  /// array and the client stamps them on. Carried so a later "show full
+  /// result" can tell the host exactly where to read instead of asking it to
+  /// scan: that scan is bounded to a window near the tail, and a row the
+  /// reader paged back to can sit outside it.
+  var sourceOffset: Int?
 
   init(
     sessionId: String,
@@ -2606,7 +2624,8 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     apiErrorStatus: Int? = nil,
     isLegacySubagentCompletedFrame: Bool = false,
     stopSource: String? = nil,
-    stopReason: String? = nil
+    stopReason: String? = nil,
+    toolResultFullBytes: Int? = nil
   ) {
     self.sessionId = sessionId
     self.timestamp = timestamp
@@ -2623,6 +2642,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     self.isLegacySubagentCompletedFrame = isLegacySubagentCompletedFrame
     self.stopSource = stopSource
     self.stopReason = stopReason
+    self.toolResultFullBytes = toolResultFullBytes
   }
 
   private enum CodingKeys: String, CodingKey {
@@ -2642,6 +2662,8 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     var apiErrorStatus: Int?
     var stopSource: String?
     var stopReason: String?
+    var resultTruncatedForMobile: Bool?
+    var resultOriginalBytes: Int?
 
     private enum CodingKeys: String, CodingKey {
       case type
@@ -2649,6 +2671,8 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
       case apiErrorStatusSnake = "api_error_status"
       case stopSource
       case stopReason
+      case resultTruncatedForMobile
+      case resultOriginalBytes
     }
 
     /// Each field is decoded on its own tolerant path, never a shared throwing
@@ -2665,6 +2689,8 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
         ?? nil
       stopSource = (try? container.decodeIfPresent(String.self, forKey: .stopSource)) ?? nil
       stopReason = (try? container.decodeIfPresent(String.self, forKey: .stopReason)) ?? nil
+      resultTruncatedForMobile = (try? container.decodeIfPresent(Bool.self, forKey: .resultTruncatedForMobile)) ?? nil
+      resultOriginalBytes = (try? container.decodeIfPresent(Int.self, forKey: .resultOriginalBytes)) ?? nil
     }
   }
 
@@ -2721,6 +2747,15 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     isLegacySubagentCompletedFrame = rawEvent?.type == "subagent.completed"
     stopSource = rawEvent?.stopSource
     stopReason = rawEvent?.stopReason
+    // Only a host that honoured `mobileChatSlimV1` sets this. A host that did
+    // not sends the whole result and no flag, and the row behaves exactly as
+    // it does today.
+    // Non-nil means "this row is a head slice" — the size may be unknown (0)
+    // if a host sent the flag without a count, and losing the fetch
+    // affordance over a missing number would strand the rest of the result.
+    toolResultFullBytes = rawEvent?.resultTruncatedForMobile == true
+      ? max(0, rawEvent?.resultOriginalBytes ?? 0)
+      : nil
   }
 }
 
@@ -2777,9 +2812,48 @@ struct AgentChatEventHistoryPage: Decodable, Equatable {
   var sessionId: String
   @ADELossyArray var events: [AgentChatEventEnvelope]
   var startOffset: Int
+  /// Byte offset of each row in `events`, positionally aligned with it. Absent
+  /// on hosts that predate it.
+  var envelopeStartOffsets: [Int]?
   var hasMore: Bool
   var sessionFound: Bool
   var unavailable: Bool?
+
+  /// The page with each event stamped with its own offset.
+  ///
+  /// `events` is a lossy array: a row this build cannot decode is dropped, and
+  /// that would shift every later offset onto the wrong row. So the two are
+  /// zipped only when their lengths still agree. A dropped row therefore costs
+  /// the whole page its hints, which only ever means the host falls back to
+  /// scanning — never a hint pointing at the wrong row.
+  func stampingEnvelopeOffsets() -> AgentChatEventHistoryPage {
+    guard let offsets = envelopeStartOffsets, offsets.count == events.count else { return self }
+    var stamped = self
+    stamped.events = zip(events, offsets).map { event, offset in
+      var copy = event
+      copy.sourceOffset = offset >= 0 ? offset : nil
+      return copy
+    }
+    return stamped
+  }
+}
+
+/// One tool result fetched on demand, after the slim mobile wire delivered
+/// only its head slice.
+///
+/// `found == false` is final ("that result is no longer in the transcript");
+/// `unavailable == true` is retryable ("this host could not read it"). The row
+/// says different things for the two, so they stay different fields.
+struct AgentChatToolResultResponse: Decodable, Equatable {
+  var sessionId: String
+  var itemId: String
+  var result: RemoteJSONValue?
+  var resultOriginalBytes: Int?
+  var resultOmittedBytes: Int?
+  var status: String?
+  var tool: String?
+  var unavailable: Bool?
+  var found: Bool
 }
 
 struct AgentChatFileRef: Codable, Equatable, Hashable {
@@ -4418,7 +4492,7 @@ struct SyncFileBlob: Codable, Equatable {
   var totalSize: Int? = nil
 }
 
-struct ComputerUseArtifactSummary: Codable, Identifiable, Equatable {
+struct ComputerUseArtifactSummary: Codable, Identifiable, Hashable {
   var id: String
   var artifactKind: String
   var backendStyle: String
@@ -4463,6 +4537,11 @@ struct TerminalResumeMetadata: Codable, Equatable {
   var launch: TerminalResumeLaunchConfig
   var target: String?
   var permissionMode: String?
+  /// Same fields as desktop `TerminalResumeMetadata`. Older hosts and older
+  /// phone caches omit them; decode-if-present so a JSON blob that already
+  /// carries lineage survives a SQLite round trip.
+  var orchestrationParentSessionId: String? = nil
+  var spawnKind: AgentChatSpawnKind? = nil
 }
 
 struct FilesQuickOpenItem: Codable, Identifiable, Equatable {
@@ -4553,6 +4632,11 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   /// `TerminalSessionSummary.parentIdentityKey` in
   /// `apps/desktop/src/shared/types/sessions.ts`.
   var parentIdentityKey: String? = nil
+  /// Spawn lineage projected from the chat record or CLI resume metadata.
+  /// Same-lane `spawnKind == .subagent` chats nest under this parent in the
+  /// by-lane Work list. Older hosts omit both keys.
+  var orchestrationParentSessionId: String? = nil
+  var spawnKind: AgentChatSpawnKind? = nil
 
   /// True when this row is a chat the CTO spawned. The host only stamps
   /// `parentIdentityKey` when there genuinely is a parent, so the key alone is
@@ -4608,6 +4692,8 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
       && lhs.cursorCloudAgentId == rhs.cursorCloudAgentId
       && lhs.cursorRuntime == rhs.cursorRuntime
       && lhs.parentIdentityKey == rhs.parentIdentityKey
+      && lhs.orchestrationParentSessionId == rhs.orchestrationParentSessionId
+      && lhs.spawnKind == rhs.spawnKind
   }
 }
 
@@ -4655,6 +4741,8 @@ extension TerminalSessionSummary {
     case cursorCloudAgentId
     case cursorRuntime
     case parentIdentityKey
+    case orchestrationParentSessionId
+    case spawnKind
   }
 
   init(from decoder: Decoder) throws {
@@ -4701,6 +4789,8 @@ extension TerminalSessionSummary {
     cursorCloudAgentId = try container.decodeIfPresent(String.self, forKey: .cursorCloudAgentId)
     cursorRuntime = try container.decodeIfPresent(String.self, forKey: .cursorRuntime)
     parentIdentityKey = try container.decodeIfPresent(String.self, forKey: .parentIdentityKey)
+    orchestrationParentSessionId = try container.decodeIfPresent(String.self, forKey: .orchestrationParentSessionId)
+    spawnKind = try container.decodeIfPresent(AgentChatSpawnKind.self, forKey: .spawnKind)
   }
 }
 

@@ -13,6 +13,7 @@ import type {
   WorkListSessionRow,
   WorkListShelfRow,
 } from "../workListModel";
+import { sessionStatusShoutsLabel } from "../../../../desktop/src/shared/sessionStatusPresentation";
 
 /**
  * ADE Code's left pane: the desktop Work list, one session per card.
@@ -252,11 +253,19 @@ function LaneHeader({
 
 function sessionStatusCluster(row: WorkListSessionRow): string {
   const glyphMark = row.glyph ? theme.sessionGlyphMark(row.glyph) : "";
-  const label = row.status
-    ? row.status.label
-    : row.timestampLabel ?? "";
+  const shout = Boolean(row.status && sessionStatusShoutsLabel(row.status));
+  let label = "";
+  let steeringPip = "";
+  if (row.status) {
+    // Desktop/iOS keep the Codex `?` pip as a sibling of the status word, so
+    // a nested row that hides "Working" still shows it has a question.
+    if (!row.nested || shout) label = row.status.label;
+    if (row.steeringInput && row.status.glyph === "working") steeringPip = "?";
+  } else {
+    label = row.timestampLabel ?? "";
+  }
   const elapsed = row.status ? row.elapsedLabel ?? "" : "";
-  const parts = [glyphMark, label, elapsed].filter((part) => part.length > 0);
+  const parts = [glyphMark, label, steeringPip, elapsed].filter((part) => part.length > 0);
   if (row.isActiveSession) parts.push("\u25DD");
   return parts.join(" ");
 }
@@ -286,9 +295,9 @@ function SessionCard({
   const toneColor = theme.sessionToneColor(row.tone);
   const railColor = highlighted ? theme.color.violet : theme.color.borderSoft;
   const innerWidth = Math.max(4, width - GUTTER_CELLS);
-  const whereLeft = row.showLaneIdentity
-    ? (row.laneName ?? "lane")
-    : row.ageLabel;
+  let whereLeft = row.ageLabel;
+  if (row.nested) whereLeft = `  ${row.title}`;
+  else if (row.showLaneIdentity) whereLeft = row.laneName ?? "lane";
   const whereColor = row.showLaneIdentity
     ? (row.laneColor ?? theme.color.t2)
     : theme.color.t5;

@@ -186,22 +186,12 @@ struct WorkSessionGroup: Identifiable, Equatable {
   }
 }
 
-struct WorkSessionChildGroup: Equatable {
-  let parentId: String
-  let children: [TerminalSessionSummary]
-  let collapsedSectionId: String
-
-  var label: String {
-    children.count == 1 ? "1 shell" : "\(children.count) shells"
-  }
-}
-
 struct WorkRootSessionPresentation: Equatable {
   let mergedSessions: [TerminalSessionSummary]
   let displaySessions: [TerminalSessionSummary]
   let displaySessionIds: Set<String>
   let topLevelDisplaySessionIds: Set<String>
-  let childGroupsByParentId: [String: WorkSessionChildGroup]
+  let nestedGroupsByParentId: [String: [WorkSessionChildGroup]]
   let sessionGroups: [WorkSessionGroup]
   let workOrderedLanes: [LaneSummary]
   let laneById: [String: LaneSummary]
@@ -213,7 +203,7 @@ struct WorkRootSessionPresentation: Equatable {
     displaySessions: [TerminalSessionSummary],
     displaySessionIds: Set<String>,
     topLevelDisplaySessionIds: Set<String>,
-    childGroupsByParentId: [String: WorkSessionChildGroup],
+    nestedGroupsByParentId: [String: [WorkSessionChildGroup]],
     sessionGroups: [WorkSessionGroup],
     workOrderedLanes: [LaneSummary],
     laneById: [String: LaneSummary],
@@ -224,7 +214,7 @@ struct WorkRootSessionPresentation: Equatable {
     self.displaySessions = displaySessions
     self.displaySessionIds = displaySessionIds
     self.topLevelDisplaySessionIds = topLevelDisplaySessionIds
-    self.childGroupsByParentId = childGroupsByParentId
+    self.nestedGroupsByParentId = nestedGroupsByParentId
     self.sessionGroups = sessionGroups
     self.workOrderedLanes = workOrderedLanes
     self.laneById = laneById
@@ -237,7 +227,7 @@ struct WorkRootSessionPresentation: Equatable {
     displaySessions: [],
     displaySessionIds: [],
     topLevelDisplaySessionIds: [],
-    childGroupsByParentId: [:],
+    nestedGroupsByParentId: [:],
     sessionGroups: [],
     workOrderedLanes: [],
     laneById: [:],
@@ -297,8 +287,30 @@ func buildWorkRootSessionPresentation(
     now: now
   )
   let displaySessionIds = Set(displaySessions.map(\.id))
-  let childGroupsByParentId = workSessionChildGroupsByParentId(sessions: displaySessions)
-  let childSessionIds = Set(childGroupsByParentId.values.flatMap { $0.children.map(\.id) })
+  let spawnIndex = organization == .byLane
+    ? workIndexNestedSubagents(
+      sessions: displaySessions,
+      chatSummaries: chatSummaries,
+      now: now,
+      visibleParentIds: displaySessionIds
+    )
+    : WorkSpawnNestingIndex.empty
+  let childGroupsByParentId = workAttachedShellGroupsByParentId(
+    sessions: displaySessions,
+    nestedChildToRootParentId: spawnIndex.nestedChildToRootParentId
+  )
+  let subagentGroupsByParentId = workSessionSubagentGroups(
+    from: spawnIndex,
+    chatSummaries: chatSummaries,
+    now: now
+  )
+  let nestedGroupsByParentId = workNestedGroupsByParentId(
+    subagents: subagentGroupsByParentId,
+    shells: childGroupsByParentId
+  )
+  let childSessionIds = Set(
+    nestedGroupsByParentId.values.flatMap { $0.flatMap { $0.children.map(\.id) } }
+  )
   let topLevelDisplaySessionIds = displaySessionIds.subtracting(childSessionIds)
 
   // Lane ordering and the singleton rule both read the UNFILTERED roster, so
@@ -320,7 +332,9 @@ func buildWorkRootSessionPresentation(
     workHeaderlessLaneInputs(
       lanes: orderedLanes,
       sessions: mergedSessions,
-      pinnedLaneIds: pinnedLaneIds
+      pinnedLaneIds: pinnedLaneIds,
+      chatSummaries: chatSummaries,
+      now: now
     ),
     sortMode: laneSortMode
   )
@@ -335,6 +349,7 @@ func buildWorkRootSessionPresentation(
     deletingLaneIds: deletingLaneIds,
     headerlessLaneIds: headerlessLaneIds,
     laneWaitingReasonByLaneId: laneWaitingReasonByLaneId,
+    nestedChildIds: childSessionIds,
     now: now
   )
 
@@ -343,7 +358,7 @@ func buildWorkRootSessionPresentation(
     displaySessions: displaySessions,
     displaySessionIds: displaySessionIds,
     topLevelDisplaySessionIds: topLevelDisplaySessionIds,
-    childGroupsByParentId: childGroupsByParentId,
+    nestedGroupsByParentId: nestedGroupsByParentId,
     sessionGroups: sessionGroups,
     workOrderedLanes: workOrderedLanes,
     laneById: laneById,
@@ -352,7 +367,7 @@ func buildWorkRootSessionPresentation(
       mergedSessions: mergedSessions,
       displaySessions: displaySessions,
       topLevelDisplaySessionIds: topLevelDisplaySessionIds,
-      childGroupsByParentId: childGroupsByParentId,
+      nestedGroupsByParentId: nestedGroupsByParentId,
       sessionGroups: sessionGroups,
       workOrderedLanes: workOrderedLanes,
       lanePrTagsByLaneId: lanePrTagsByLaneId,
@@ -366,7 +381,7 @@ private func workRootSessionPresentationRenderSignature(
   mergedSessions: [TerminalSessionSummary],
   displaySessions: [TerminalSessionSummary],
   topLevelDisplaySessionIds: Set<String>,
-  childGroupsByParentId: [String: WorkSessionChildGroup],
+  nestedGroupsByParentId: [String: [WorkSessionChildGroup]],
   sessionGroups: [WorkSessionGroup],
   workOrderedLanes: [LaneSummary],
   lanePrTagsByLaneId: [String: LanePrTag],
@@ -389,6 +404,8 @@ private func workRootSessionPresentationRenderSignature(
     hasher.combine(session.pendingInputItemId)
     hasher.combine(session.steeringInput)
     hasher.combine(session.chatSessionId)
+    hasher.combine(session.orchestrationParentSessionId)
+    hasher.combine(session.spawnKind)
     hasher.combine(session.archivedAt)
     hasher.combine(session.settledAt)
     hasher.combine(session.statusNote)
@@ -412,6 +429,16 @@ private func workRootSessionPresentationRenderSignature(
       hasher.combine(summary.idleSinceAt)
       hasher.combine(summary.endedAt)
       hasher.combine(summary.steeringInput)
+      hasher.combine(summary.usageLimitResume?.state.rawValue)
+      hasher.combine(summary.usageLimitResume?.fireAt)
+      hasher.combine(summary.usageLimitResume?.attempts)
+      hasher.combine(summary.usageLimitResumeWasCleared)
+      // Same filing inputs `workSpawnKind` / `workOrchestrationParentId` read
+      // when the session row has not hydrated them yet. Without these, a
+      // summary-only spawn-kind write could keep the previous nested shape
+      // behind the equatable short-circuit.
+      hasher.combine(summary.spawnKind)
+      hasher.combine(summary.orchestrationParentSessionId)
     }
   }
   hasher.combine(displaySessions.map(\.id))
@@ -425,12 +452,20 @@ private func workRootSessionPresentationRenderSignature(
     hasher.combine(group.isHeaderless)
     hasher.combine(group.sessions.map(\.id))
   }
-  for key in childGroupsByParentId.keys.sorted() {
-    guard let group = childGroupsByParentId[key] else { continue }
-    hasher.combine(key)
-    hasher.combine(group.parentId)
-    hasher.combine(group.collapsedSectionId)
-    hasher.combine(group.children.map(\.id))
+  for parentId in nestedGroupsByParentId.keys.sorted() {
+    guard let groups = nestedGroupsByParentId[parentId] else { continue }
+    hasher.combine(parentId)
+    for group in groups {
+      hasher.combine(group.kind == .subagents ? "subagent" : "shell")
+      hasher.combine(group.parentId)
+      hasher.combine(group.collapsedSectionId)
+      hasher.combine(group.children.map(\.id))
+      switch group.attention {
+      case .failed: hasher.combine("failed")
+      case .needsYou: hasher.combine("needs_you")
+      case .none: hasher.combine("none")
+      }
+    }
   }
   for lane in workOrderedLanes {
     hasher.combine(lane.id)
@@ -496,18 +531,31 @@ func workLaneOrderInputs(
 }
 
 /// Per-lane inputs to the singleton rule. Counts TOP-LEVEL rows only — a chat
-/// with terminal children is one unit — over the unfiltered roster.
+/// with terminal children or nested subagents is one unit — over the unfiltered roster.
 func workHeaderlessLaneInputs(
   lanes: [LaneSummary],
   sessions: [TerminalSessionSummary],
-  pinnedLaneIds: Set<String>
+  pinnedLaneIds: Set<String>,
+  chatSummaries: [String: AgentChatSessionSummary],
+  now: Date
 ) -> [WorkHeaderlessLaneInput] {
   let rosterIds = Set(sessions.map(\.id))
+  let spawn = workIndexNestedSubagents(
+    sessions: sessions,
+    chatSummaries: chatSummaries,
+    now: now,
+    visibleParentIds: rosterIds
+  )
   var topLevelByLaneId: [String: Int] = [:]
   for session in sessions {
-    let parentId = session.chatSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    let isChild = !parentId.isEmpty && parentId != session.id && rosterIds.contains(parentId)
-    guard !isChild else { continue }
+    if !workIsTopLevelWorkSession(
+      session: session,
+      rosterIds: rosterIds,
+      nestedChildIds: spawn.nestedChildIds,
+      nestedChildToRootParentId: spawn.nestedChildToRootParentId
+    ) {
+      continue
+    }
     topLevelByLaneId[session.laneId, default: 0] += 1
   }
   return lanes.map { lane in
@@ -518,67 +566,6 @@ func workHeaderlessLaneInputs(
     )
   }
 }
-
-func workSessionChildGroupsByParentId(sessions: [TerminalSessionSummary]) -> [String: WorkSessionChildGroup] {
-  let visibleIds = Set(sessions.map(\.id))
-  var childrenByParentId: [String: [TerminalSessionSummary]] = [:]
-  for session in sessions {
-    guard let parentId = normalizedWorkParentChatSessionId(session.chatSessionId),
-      parentId != session.id,
-      visibleIds.contains(parentId)
-    else {
-      continue
-    }
-    childrenByParentId[parentId, default: []].append(session)
-  }
-
-  return Dictionary(uniqueKeysWithValues: childrenByParentId.map { parentId, children in
-    let ordered = children.sorted { lhs, rhs in
-      let lhsDate = parseWorkSessionTimestamp(lhs.startedAt)
-      let rhsDate = parseWorkSessionTimestamp(rhs.startedAt)
-      if let lhsDate, let rhsDate, lhsDate != rhsDate {
-        return lhsDate < rhsDate
-      }
-      if lhs.startedAt != rhs.startedAt {
-        return lhs.startedAt < rhs.startedAt
-      }
-      return lhs.id < rhs.id
-    }
-    return (
-      parentId,
-      WorkSessionChildGroup(
-        parentId: parentId,
-        children: ordered,
-        collapsedSectionId: workSessionChildSectionId(parentId: parentId)
-      )
-    )
-  })
-}
-
-func workSessionChildSectionId(parentId: String) -> String {
-  "chat:\(parentId)"
-}
-
-private func normalizedWorkParentChatSessionId(_ value: String?) -> String? {
-  let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-  return trimmed.isEmpty ? nil : trimmed
-}
-
-private func parseWorkSessionTimestamp(_ rawValue: String) -> Date? {
-  workSessionISO8601Formatter.date(from: rawValue) ?? workSessionISO8601FormatterNoFractional.date(from: rawValue)
-}
-
-private let workSessionISO8601Formatter: ISO8601DateFormatter = {
-  let formatter = ISO8601DateFormatter()
-  formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-  return formatter
-}()
-
-private let workSessionISO8601FormatterNoFractional: ISO8601DateFormatter = {
-  let formatter = ISO8601DateFormatter()
-  formatter.formatOptions = [.withInternetDateTime]
-  return formatter
-}()
 
 /// Group session list by the user's chosen organization. Empty groups are filtered out.
 ///
@@ -613,6 +600,7 @@ func workSessionGroups(
   /// by-status reads it — it is what its Waiting section is, and it is the same
   /// map the Waiting chip filters with.
   laneWaitingReasonByLaneId: [String: WorkBoardWaitingReason] = [:],
+  nestedChildIds: Set<String> = [],
   now: Date = Date()
 ) -> [WorkSessionGroup] {
   // The quiet zone is a shelf pair, and only by-status and by-time build it.
@@ -626,6 +614,7 @@ func workSessionGroups(
   var settled: [TerminalSessionSummary] = []
   var awake: [TerminalSessionSummary] = []
   for session in sessions {
+    if nestedChildIds.contains(session.id) { continue }
     if session.isFiledAsSnoozed(summary: chatSummaries[session.id], now: now) {
       snoozed.append(session)
       continue
@@ -938,7 +927,7 @@ func workSessionGroupsByLane(
   // as their own per-lane groups so users still recognize which branch each belongs to.
   func latestStartedAt(_ list: [TerminalSessionSummary]) -> Date {
     list.reduce(.distantPast) { acc, session in
-      let parsed = parseWorkSessionTimestamp(session.startedAt) ?? .distantPast
+      let parsed = workParsedDate(session.startedAt) ?? .distantPast
       return parsed > acc ? parsed : acc
     }
   }
@@ -983,7 +972,7 @@ func workSessionGroupsByTime(sessions: [TerminalSessionSummary]) -> [WorkSession
   var older: [TerminalSessionSummary] = []
 
   for session in sessions {
-    let parsed = parseWorkSessionTimestamp(session.startedAt)
+    let parsed = workParsedDate(session.startedAt)
     guard let started = parsed else {
       older.append(session)
       continue

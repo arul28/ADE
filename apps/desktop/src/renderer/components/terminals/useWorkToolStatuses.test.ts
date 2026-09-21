@@ -176,10 +176,18 @@ describe("work tool status lines", () => {
     expect(iosStatusLine({ deviceName: "iPhone 17 Pro" } as never).line).toBe("iPhone 17 Pro");
     expect(appControlStatusLine(null).line).toBe("No app");
     expect(appControlStatusLine({ label: "Zen", status: "running" } as never).line).toBe("Zen");
+    expect(appControlStatusLine({
+      label: "sh -lc 'ADE_PACKAGE_CHANNEL= npm run dev:desktop -- --socket /tmp/x.sock'",
+      status: "running",
+    } as never).line).toBe("Desktop app");
+    expect(appControlStatusLine({
+      label: "Update npm package metadata",
+      status: "running",
+    } as never).line).toBe("Update npm package metadata");
   });
 
   it("keeps the fixed lines inside the one-line budget", () => {
-    for (const line of ["No shells", "2 shells", "No tabs", "Unpublished", "3 unstaged · 1 staged", "Not booted", "No app"]) {
+    for (const line of ["No shells", "2 shells", "No tabs", "Unpublished", "3 unstaged · 1 staged", "Not booted", "No app", "Desktop app"]) {
       expect(line.length).toBeLessThanOrEqual(ONE_LINE_BUDGET);
     }
   });
@@ -347,7 +355,7 @@ describe("useWorkToolStatuses shell re-reads", () => {
     );
 
     await waitFor(() => expect(list).toHaveBeenCalledTimes(1));
-    expect(result.current.statuses.terminal?.line).toBe("No shells");
+    await waitFor(() => expect(result.current.statuses.terminal?.line).toBe("No shells"));
 
     // A panel mounts and reports a live shell; the daemon's list now has it too.
     shells = [{ title: "zsh", status: "running", active: true }];

@@ -712,39 +712,7 @@ describe("WorkSidebar context targets", () => {
     }));
   });
 
-  it("keeps Apple available on a remote Mac runtime and disables only App Control", async () => {
-    const onTabChange = vi.fn();
-    useAppStore.setState({
-      projectBinding: {
-        kind: "remote",
-        key: "remote:target-1:project-1",
-        targetId: "target-1",
-        runtimeName: "Mac Studio",
-        projectId: "project-1",
-        rootPath: "/repo",
-        displayName: "Repo",
-      },
-    } as any);
-
-    renderSidebar({
-      tab: null,
-      contextTarget: { kind: "chat", sessionId: "chat-1" },
-      onTabChange,
-    });
-
-    expect(cardFor("Git").disabled).toBe(false);
-    expect(cardFor("Files").disabled).toBe(false);
-    expect(cardFor("Terminal").disabled).toBe(false);
-    expect(cardFor("Simulator").disabled).toBe(false);
-    expect(cardFor("App Control").disabled).toBe(true);
-    expect(cardFor("Browser").disabled).toBe(false);
-    expect(screen.getAllByText("Runs on this computer only").length).toBe(1);
-    await waitFor(() => expect(window.ade.iosSimulator.getStatus).toHaveBeenCalled());
-    expect(window.ade.appControl.getStatus).not.toHaveBeenCalled();
-    expect(onTabChange).not.toHaveBeenCalledWith(null);
-  });
-
-  it("stays on the Apple panel for a remote project instead of falling back to the picker", async () => {
+  it("stays on the Apple panel for a remote session instead of falling back to the picker", async () => {
     const onTabChange = vi.fn();
     useAppStore.setState({
       projectBinding: {
@@ -764,9 +732,39 @@ describe("WorkSidebar context targets", () => {
       onTabChange,
     });
 
+    expect(onTabChange).not.toHaveBeenCalled();
     expect(screen.getByTestId("ios-panel")).toBeTruthy();
     await waitFor(() => expect(window.ade.iosSimulator.getStatus).toHaveBeenCalled());
-    expect(onTabChange).not.toHaveBeenCalledWith(null);
+  });
+
+  it("offers Apple and App Control on a remote session's tool picker", () => {
+    useAppStore.setState({
+      projectBinding: {
+        kind: "remote",
+        key: "remote:target-1:project-1",
+        targetId: "target-1",
+        runtimeName: "Mac Studio",
+        projectId: "project-1",
+        rootPath: "/repo",
+        displayName: "Repo",
+      },
+    } as any);
+
+    renderSidebar({
+      tab: null,
+      contextTarget: { kind: "chat", sessionId: "chat-1" },
+    });
+
+    // Work tools follow the session's machine, so nothing here is gated on the
+    // tab's binding; Apple additionally follows the runtime's `supported`, and
+    // this remote runtime is a Mac.
+    expect(cardFor("Git").disabled).toBe(false);
+    expect(cardFor("Files").disabled).toBe(false);
+    expect(cardFor("Terminal").disabled).toBe(false);
+    expect(cardFor("Simulator").disabled).toBe(false);
+    expect(cardFor("App Control").disabled).toBe(false);
+    expect(cardFor("Browser").disabled).toBe(false);
+    expect(screen.queryByText("Runs on this computer only")).toBeNull();
   });
 
   it("opens the browser on a remote project rather than falling back to the picker", async () => {

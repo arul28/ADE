@@ -419,6 +419,7 @@ export function useWorkSessionActions({
             draftMachineId: binding?.kind === "remote" ? binding.targetId : null,
             activeItemId: null,
             selectedItemId: null,
+            workSidebarOpen: false,
           }));
           navigate("/work");
           onOpenChange(false);
@@ -527,10 +528,10 @@ export function buildWorkToolCommands({
   openTool: (tool: WorkSidebarTab | null) => void;
   /**
    * The same capability flags the picker gates its cards on. A command that
-   * lands on a card reading "The runtime for this project is not a Mac" or
-   * "Desktop app only" is a dead row, so an unavailable tool is not offered
-   * here either — the picker still shows the dimmed card WITH its reason,
-   * which is where that answer belongs.
+   * lands on a card reading "The runtime for this project is not a Mac" is a
+   * dead row, so an unavailable tool is not offered here either — the picker
+   * still shows the dimmed card WITH its reason, which is where that answer
+   * belongs.
    */
   context: WorkToolContext;
 }): WorkToolPaletteCommand[] {

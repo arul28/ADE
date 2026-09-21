@@ -30,17 +30,12 @@ import type {
 } from "../../../../shared/types";
 import type { CursorCloudServiceTier } from "../../../../shared/types/config";
 import {
-  clearRuntimeCatalogRequest,
-  getRuntimeCatalogRequest,
   getSharedRuntimeCatalog,
-  rememberRuntimeCatalog,
   runtimeCatalogProviderIsFresh,
-  setRuntimeCatalogRequest,
   refreshProviderForFamily,
-  reserveRuntimeCatalogScope,
   DEFAULT_RUNTIME_CATALOG_SCOPE,
-  isPersonalChatCatalogScopeKey,
 } from "./runtimeCatalogCache";
+import { fetchSharedRuntimeCatalog } from "./sharedCatalogFetch";
 
 /** The saved preset a surface is currently running on, for the trigger. */
 export type ModelPickerActivePreset = {
@@ -248,53 +243,30 @@ export const ModelPicker = memo(function ModelPicker({
       }
     }
 
-    if (isPersonalChatCatalogScopeKey(catalogScopeKey)) {
-      if (typeof window.ade?.personalChats?.call !== "function") return null;
-    } else if (typeof window.ade?.agentChat?.modelCatalog !== "function") {
+    // The fetch, the request-key dedup and the bucket claim live in
+    // `sharedCatalogFetch` so the wizard's model select runs the identical
+    // protocol. Only the picker's own state lands here.
+    const result = await fetchSharedRuntimeCatalog({
+      scopeKey: catalogScopeKey,
+      mode: args.mode,
+      ...(args.refreshProvider ? { refreshProvider: args.refreshProvider } : {}),
+      ...(cursorFlavor ? { cursorSource: cursorFlavor } : {}),
+      pin: runtimePinRef.current,
+    });
+    if (result.status === "unavailable") return null;
+    if (catalogScopeKeyRef.current !== catalogScopeKey) {
+      return result.status === "ok" ? result.catalog : null;
+    }
+    if (result.status === "error") {
+      // Keep the last catalog visible; renderer fallbacks cover older runtimes.
+      if (args.refreshProvider) setRefreshErrorProvider(args.refreshProvider);
       return null;
     }
-    const requestKey = `${catalogScopeKey}|${args.mode}:${args.refreshProvider ?? "all"}:${cursorFlavor ?? "all"}`;
-    const existingRequest = getRuntimeCatalogRequest(requestKey);
-    if (existingRequest) {
-      const next = await existingRequest;
-      if (catalogScopeKeyRef.current !== catalogScopeKey) return next;
-      if (next) setRuntimeCatalog(next);
-      return next;
+    setRuntimeCatalog(result.catalog);
+    if (args.refreshProvider) {
+      setRefreshErrorProvider((current) => current === args.refreshProvider ? null : current);
     }
-
-    // Claim the bucket now so a response that lands after this machine's bucket
-    // was evicted or reset is dropped rather than resurrecting it.
-    const scopeSerial = reserveRuntimeCatalogScope(catalogScopeKey);
-    const request = (async () => {
-      try {
-        const fetchArgs = {
-          ...args,
-          ...(cursorFlavor ? { cursorSource: cursorFlavor } : {}),
-        };
-        const pin = runtimePinRef.current;
-        const next = await requestModelCatalog(fetchArgs, { catalogScopeKey, pin });
-        const visible = rememberRuntimeCatalog(next, {
-          ...args,
-          ...(cursorFlavor ? { cursorSource: cursorFlavor } : {}),
-          scopeKey: catalogScopeKey,
-          scopeSerial,
-        });
-        if (catalogScopeKeyRef.current !== catalogScopeKey) return visible;
-        setRuntimeCatalog(visible);
-        if (args.refreshProvider) setRefreshErrorProvider((current) => current === args.refreshProvider ? null : current);
-        return visible;
-      } catch {
-        // Keep the last catalog visible; renderer fallbacks cover older runtimes.
-        if (catalogScopeKeyRef.current !== catalogScopeKey) return null;
-        if (args.refreshProvider) setRefreshErrorProvider(args.refreshProvider);
-        return null;
-      }
-    })();
-    setRuntimeCatalogRequest(requestKey, request);
-    void request.finally(() => {
-      clearRuntimeCatalogRequest(requestKey, request);
-    });
-    return await request;
+    return result.catalog;
   }, [catalogScopeKey, cursorSource, setRuntimeCatalog]);
 
   useEffect(() => {
@@ -507,6 +479,7 @@ export const ModelPicker = memo(function ModelPicker({
           >
             {open ? (
               <ModelPickerContent
+                catalogScopeKey={catalogScopeKey}
                 value={effectiveValue}
                 models={modelList}
                 isAvailable={isAvailable}

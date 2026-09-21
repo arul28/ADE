@@ -49,9 +49,9 @@ let droidSdkGenCounter = 0;
 const pools = new Map<string, { ref: number; generation: number; pooled: DroidSdkPooled }>();
 const pendingInits = new Map<string, Promise<DroidSdkPooled>>();
 const STALE_INIT_RETRY_LIMIT = 2;
-// @factory/droid-sdk's ProcessTransport.close() gives `droid` a 5s grace period
-// before escalating to SIGKILL. Force-killing the worker sooner than that tears
-// the worker down mid-close and leaves the `droid` process behind.
+// @factory/droid-sdk 0.9.x's ProcessTransport.close() gives `droid` a 2s grace
+// period before escalating to SIGKILL; force-kill the worker only after that
+// grace plus headroom, or the worker dies mid-close and leaves `droid` behind.
 const WORKER_FORCE_KILL_DELAY_MS = 6_000;
 const moduleDir =
   typeof __dirname === "string"

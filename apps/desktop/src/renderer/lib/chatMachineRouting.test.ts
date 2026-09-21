@@ -4,11 +4,14 @@ import {
   buildLaneBindingIndex,
   collectOpenProjectBindings,
   createChatMachineRouter,
+  effectiveRuntimeBinding,
   isLivePinnedBinding,
   resolveChatRuntimePin,
   resolveLaneBindingKey,
+  workRuntimeScopeKey,
 } from "./chatMachineRouting";
 import type { OpenProjectBinding } from "../../shared/types/core";
+import { projectStateKeyForBinding } from "../state/appStore";
 
 const machineA: OpenProjectBinding = {
   kind: "local",
@@ -173,5 +176,33 @@ describe("createChatMachineRouter", () => {
     const router = createChatMachineRouter(state({ openBindings: [machineA] }));
     expect(router.isLivePin(machineA)).toBe(true);
     expect(router.isLivePin(machineB)).toBe(false);
+  });
+});
+
+describe("effectiveRuntimeBinding / workRuntimeScopeKey", () => {
+  it("treats a null pin as the tab's bound machine", () => {
+    expect(effectiveRuntimeBinding(null, machineA)).toBe(machineA);
+    expect(workRuntimeScopeKey(null, machineA)).toBe(machineA.key);
+  });
+
+  it("keeps the same scope key when a bound session later carries an explicit pin", () => {
+    expect(workRuntimeScopeKey(null, machineB)).toBe(machineB.key);
+    expect(workRuntimeScopeKey(machineB, machineA)).toBe(machineB.key);
+  });
+
+  it("falls back to bound when nothing is pinned", () => {
+    expect(effectiveRuntimeBinding(undefined, undefined)).toBeNull();
+    expect(workRuntimeScopeKey(null, null)).toBe("bound");
+  });
+});
+
+describe("git cache identity from effectiveRuntimeBinding", () => {
+  it("keeps a local checkout path across a bound→pinned flip", () => {
+    expect(projectStateKeyForBinding(effectiveRuntimeBinding(null, machineA), machineA.rootPath))
+      .toBe("/repo-a");
+    expect(projectStateKeyForBinding(effectiveRuntimeBinding(machineA, machineA), machineA.rootPath))
+      .toBe("/repo-a");
+    expect(projectStateKeyForBinding(effectiveRuntimeBinding(machineB, machineA), machineA.rootPath))
+      .toBe(machineB.key);
   });
 });

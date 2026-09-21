@@ -70,7 +70,6 @@ function preset(overrides: Partial<HarnessPreset> = {}): HarnessPreset {
     model: "claude-opus-4-5",
     subagentModel: "inherit",
     agentOverrides: {},
-    permissionMode: "default",
     accentColor: "#7c5ce0",
     logo: { kind: "ade" },
     createdAt: "2026-01-01T00:00:00.000Z",
@@ -576,13 +575,15 @@ describe("resolveHarnessPresetForLaunch", () => {
     expect(plan.passthroughModelId).toBe(true);
   });
 
-  it("carries the preset's effort and permission mode", () => {
+  // A preset carries its effort, and deliberately no permission mode: the tier
+  // belongs to the harness and is chosen at launch in the composer.
+  it("carries the preset's effort", () => {
     const plan = resolveHarnessPresetForLaunch("hp_1", deps({
-      readPresets: () => [preset({ reasoningEffort: "high", permissionMode: "plan" })],
+      readPresets: () => [preset({ reasoningEffort: "high" })],
     }));
     if (plan?.status !== "ready") throw new Error("expected ready");
     expect(plan.reasoningEffort).toBe("high");
-    expect(plan.permissionMode).toBe("plan");
+    expect(plan).not.toHaveProperty("permissionMode");
   });
 
   it("reports a key that is no longer in the store", () => {

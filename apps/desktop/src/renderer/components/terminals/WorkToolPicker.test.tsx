@@ -11,7 +11,6 @@ import {
 import type { WorkToolStatusMap } from "./useWorkToolStatuses";
 
 const LOCAL: WorkToolContext = {
-  isRemoteProject: false,
   supportsIosSimulator: true,
   isWebClient: false,
 };
@@ -147,30 +146,30 @@ describe("WorkToolPicker", () => {
     expect(onPick).not.toHaveBeenCalled();
   });
 
-  it("keeps the browser and Apple clickable on a remote project and disables only App Control", () => {
+  it("keeps the browser, Apple, and App Control clickable on a remote session", () => {
     const onPick = vi.fn();
     render(
       <WorkToolPicker
         activeTool={null}
-        context={{ ...LOCAL, isRemoteProject: true }}
+        context={LOCAL}
         statuses={{}}
         loading={false}
         onPick={onPick}
       />,
     );
 
-    // The browser is this window's, whatever machine the lane runs on: a
-    // loopback URL over there is reached through a port-forward, which is the
-    // whole point of pinning a remote lane at a browser.
+    // Work tools follow the session's machine. A Studio chat keeps a remote
+    // pin while this tab sits on a laptop; Git, shells, Simulator, and App
+    // Control all drive that machine rather than this desk.
     expect(cardFor("Browser").disabled).toBe(false);
     fireEvent.click(cardFor("Browser"));
     expect(onPick).toHaveBeenCalledWith("browser");
 
-    // Apple runs on the bound runtime, so a remote Mac is a live viewer, not
-    // a local-only miss. App Control still attaches to apps on this desk.
+    // Apple runs its helper on the bound runtime, so a remote Mac is a live
+    // viewer rather than a local-only miss.
     expect(cardFor("Simulator").disabled).toBe(false);
-    expect(cardFor("App Control").disabled).toBe(true);
-    expect(screen.getAllByText("Runs on this computer only").length).toBe(1);
+    expect(cardFor("App Control").disabled).toBe(false);
+    expect(screen.queryByText("Runs on this computer only")).toBeNull();
   });
 
   it("activates the tool a card names", () => {
@@ -261,6 +260,23 @@ describe("WorkToolPicker", () => {
     expect(cardById(last.id).getAttribute("data-highlighted")).toBe("true");
   });
 
+  it("does not steal arrow keys while the picker is paused off-screen", () => {
+    render(
+      <WorkToolPicker
+        activeTool={null}
+        context={LOCAL}
+        statuses={{}}
+        loading={false}
+        onPick={vi.fn()}
+        playing={false}
+      />,
+    );
+
+    fireEvent.keyDown(document.body, { key: "ArrowDown" });
+    expect(document.querySelector("[data-highlighted='true']")).toBeNull();
+    expect(document.activeElement).toBe(document.body);
+  });
+
   it("keeps every status on one line and finishes the last row", () => {
     render(
       <WorkToolPicker
@@ -344,7 +360,7 @@ describe("WorkToolPicker", () => {
     render(
       <WorkToolPicker
         activeTool={null}
-        context={{ isRemoteProject: false, supportsIosSimulator: true, isWebClient: true }}
+        context={{ supportsIosSimulator: true, isWebClient: true }}
         statuses={{}}
         loading={false}
         onPick={onPick}
@@ -366,7 +382,7 @@ describe("WorkToolPicker", () => {
     render(
       <WorkToolPicker
         activeTool={null}
-        context={{ isRemoteProject: false, supportsIosSimulator: false, isWebClient: true }}
+        context={{ supportsIosSimulator: false, isWebClient: true }}
         statuses={{}}
         loading={false}
         onPick={vi.fn()}

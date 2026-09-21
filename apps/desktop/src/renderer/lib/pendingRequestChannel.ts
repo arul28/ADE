@@ -17,6 +17,9 @@
  * - `createKeyedPendingStore` — no listeners, one held value PER KEY, taken by
  *   the surface that owns that key when it mounts. Backs `pendingReveals`
  *   (keyed by path) and `pendingSessionAnchors` (keyed by session id).
+ *   Forwarded `ade browser open` handoff is a queue per pin in
+ *   `pendingRemoteBrowserOpens` — two opens before the pane mounts must both
+ *   survive, so it does not share this single-slot store.
  *
  * The two are not one primitive: the keyed store has no broadcast, no single
  * "current" request to clear, and no nonce — a second reveal for the same path

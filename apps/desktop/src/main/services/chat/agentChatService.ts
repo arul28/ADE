@@ -31,7 +31,7 @@ import {
 import {
   createSdkMcpServer as createDroidSdkMcpServer,
   tool as createDroidSdkTool,
-} from "@factory/droid-sdk";
+} from "@factory/droid-sdk/node";
 import type {
   SDKSessionInfo,
   SessionMessage as ClaudeSdkSessionMessage,

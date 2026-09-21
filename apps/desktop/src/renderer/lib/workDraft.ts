@@ -7,6 +7,7 @@ export type StartChatDraftPatch = Pick<
   | "draftMachineId"
   | "activeItemId"
   | "selectedItemId"
+  | "workSidebarOpen"
 >;
 
 /**
@@ -32,5 +33,8 @@ export function startChatDraftPatch(
     draftMachineId: machineId,
     activeItemId: null,
     selectedItemId: null,
+    // New chat has no Tools toggle; close a leftover pane from the previous
+    // session instead of leaving it sitting on an empty draft.
+    workSidebarOpen: false,
   };
 }

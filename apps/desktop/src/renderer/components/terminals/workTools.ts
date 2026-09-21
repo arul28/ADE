@@ -148,8 +148,6 @@ export function workToolCardLabel(id: WorkSidebarTab): string {
  * platform sniff in the renderer would offer it three tools that answer nothing.
  */
 export type WorkToolContext = {
-  /** The project tab is bound to another machine over SSH. */
-  isRemoteProject: boolean;
   /**
    * The bound runtime can host an iOS simulator.
    *
@@ -169,25 +167,6 @@ export type WorkToolAvailability =
 const AVAILABLE: WorkToolAvailability = { available: true, reason: null };
 
 /**
- * Tools that drive something on *this* computer through a native namespace. A
- * remote project's work happens elsewhere and the web client has no namespace
- * at all, so both get the same honest sentence rather than a hidden card.
- *
- * Apple is deliberately NOT here. The helper encodes H.264 and takes touches
- * on the bound runtime, so a Windows or Linux desktop watching a remote Mac
- * is a first-class viewer, not a local-only exception. App Control still
- * attaches to apps on this desk.
- *
- * The browser is also not here. It is hosted by this desktop's own main
- * process, and a remote lane drives that same window: loopback URLs on the
- * pinned machine are rewritten onto a port-forward (`localizeRemoteLoopbackUrl`)
- * and `ade browser open` run over there is handed to this desktop as a
- * `built_in_browser_remote_request`. Gating it on the project binding took the
- * one tool the tunnel work exists for away from the lanes that need it.
- */
-const LOCAL_ONLY_TOOL_IDS = new Set<WorkSidebarTab>(["app-control"]);
-
-/**
  * Tools the web client cannot DRIVE but can WATCH.
  *
  * The browser and App Control both leave a describable trail on the machine —
@@ -198,16 +177,20 @@ const LOCAL_ONLY_TOOL_IDS = new Set<WorkSidebarTab>(["app-control"]);
  */
 const WEB_READ_ONLY_TOOL_IDS = new Set<WorkSidebarTab>(["browser", "app-control"]);
 
-/**
- * Tools the hosted web client operates in full, despite being local-only.
+/*
+ * There is deliberately no "local only" set any more.
  *
- * The Apple device environment is the one tool whose engine is entirely on the
- * ADE machine: the helper encodes H.264 there and takes touches there, so a
- * browser tab needs no native namespace to drive it — only the brain's video
- * pipe and the `apple.*` commands. The viewer's OS is irrelevant; availability
- * still follows the bound runtime's `status.supported`.
+ * Work tools follow the SESSION's machine, not the project tab's binding, so a
+ * remote-pinned session is a first-class driver rather than a dimmed card. The
+ * browser is hosted by this desktop's own main process and reaches a remote
+ * lane's loopback URLs through a port-forward; App Control attaches over the
+ * session's runtime; and the Apple device environment runs its helper — H.264
+ * encode and touch injection alike — entirely on the bound runtime. That last
+ * one is also why Apple is absent from the web read-only set above: a browser
+ * tab needs no native namespace to drive it, only the brain's video pipe and
+ * the `apple.*` commands. The viewer's OS is irrelevant; Apple's availability
+ * follows the bound runtime's `status.supported` and nothing else.
  */
-const WEB_FULL_TOOL_IDS = new Set<WorkSidebarTab>(["ios"]);
 
 /** Shown on the picker when the bound runtime reports `supported: false`. */
 export const IOS_RUNTIME_UNSUPPORTED_REASON = "The runtime for this project is not a Mac";
@@ -222,11 +205,6 @@ export function workToolAvailability(
   context: WorkToolContext,
 ): WorkToolAvailability {
   if (isReadOnlyWorkTool(id, context)) return AVAILABLE;
-  const webFull = context.isWebClient && WEB_FULL_TOOL_IDS.has(id);
-  if (!webFull && LOCAL_ONLY_TOOL_IDS.has(id)) {
-    if (context.isWebClient) return { available: false, reason: "Desktop app only" };
-    if (context.isRemoteProject) return { available: false, reason: "Runs on this computer only" };
-  }
   if (id === "ios" && !context.supportsIosSimulator) {
     return { available: false, reason: IOS_RUNTIME_UNSUPPORTED_REASON };
   }

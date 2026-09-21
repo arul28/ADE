@@ -136,6 +136,113 @@ func workChatAttachmentSignature(_ attachments: [WorkChatInputAttachment]) -> St
 
 // MARK: - Upload on attach
 
+/// How long a send waits for an upload that started when the attachment was
+/// staged, before it gives up and fails visibly.
+///
+/// Matches `SyncRequestTimeout.chatSendTimeoutNanoseconds`: the same budget the
+/// message itself gets, which is long enough for a 50 MB video on a slow relay
+/// leg and short enough that a wedged upload becomes an error the user can act
+/// on instead of a permanent "Sending".
+let workComposerAttachmentUploadTimeoutNanoseconds: UInt64 = SyncRequestTimeout.chatSendTimeoutNanoseconds
+
+/// Plain-language failure for an upload that never landed. Deliberately the
+/// same sentence the composer's retry row shows, so the banner and the chip
+/// cannot say two different things about one message.
+let workChatAttachmentUploadTimedOutMessage = "Couldn't send. Tap to retry."
+
+func workChatAttachmentUploadTimedOutError(_ filename: String) -> NSError {
+  NSError(
+    domain: "ADE",
+    code: 32,
+    userInfo: [
+      NSLocalizedDescriptionKey: workChatAttachmentUploadTimedOutMessage,
+      "attachmentFilename": filename,
+    ]
+  )
+}
+
+/// What the staged-upload tracker knows about one attachment at send time.
+enum WorkComposerAttachmentUploadResolution: Equatable {
+  /// The host holds the bytes; send this ref.
+  case ref(AgentChatFileRef)
+  /// Nothing usable is tracked — no upload was started, or the one that ran
+  /// failed. The caller stages the bytes itself.
+  case stageInline
+  /// A tracked upload passed its deadline. Retrying inline would queue a second
+  /// copy behind the same wedged leg, so the send fails instead.
+  case abandoned
+}
+
+/// Awaits `work`, giving up after `timeoutNanoseconds` and returning nil.
+///
+/// Deliberately not a task group: a group only returns once *every* child has
+/// finished, so a child parked in a non-cancellable continuation makes the
+/// deadline a lie. This abandons the wait without touching the work, which is
+/// the semantics a send needs — the upload may still land and be reused, but
+/// the user is not held behind it.
+@MainActor
+func workAwaitWithDeadline<T>(
+  timeoutNanoseconds: UInt64,
+  work: @escaping @MainActor () async -> T
+) async -> T? {
+  let box = WorkDeadlineBox<T>()
+  return await withCheckedContinuation { (continuation: CheckedContinuation<T?, Never>) in
+    box.continuation = continuation
+    box.timer = Task { @MainActor in
+      try? await Task.sleep(nanoseconds: timeoutNanoseconds)
+      guard !Task.isCancelled else { return }
+      box.settle(nil)
+    }
+    Task { @MainActor in
+      let value = await work()
+      box.settle(value)
+    }
+  }
+}
+
+/// One-shot resume guard for `workAwaitWithDeadline`. Both racers call
+/// `settle`; the first one wins and the continuation is dropped, so the loser
+/// cannot resume it twice.
+@MainActor
+private final class WorkDeadlineBox<T> {
+  var continuation: CheckedContinuation<T?, Never>?
+  var timer: Task<Void, Never>?
+
+  func settle(_ value: T?) {
+    guard let continuation else { return }
+    self.continuation = nil
+    timer?.cancel()
+    timer = nil
+    continuation.resume(returning: value)
+  }
+}
+
+/// Writes one composer's staged attachments under a draft key: host refs for
+/// everything already uploaded, purgeable cached bytes for everything else.
+///
+/// Shared by the in-chat composer's autosave and by its send path, which has to
+/// write the outgoing set BEFORE it clears the tray — a send that never
+/// confirms must leave the user their attachments, not an empty composer.
+@MainActor
+func workChatPersistComposerAttachments(
+  _ attachments: [WorkChatInputAttachment],
+  for key: String
+) {
+  guard !key.isEmpty else { return }
+  let uploads = WorkComposerAttachmentUploads.shared
+  var refs: [AgentChatFileRef] = []
+  var unsaved: [WorkChatInputAttachment] = []
+  for attachment in attachments where attachment.isReady {
+    if let ref = attachment.hostRef ?? uploads.ref(for: attachment.id) {
+      refs.append(ref)
+    } else {
+      unsaved.append(attachment)
+    }
+  }
+  let localFiles = WorkComposerDraftAttachmentCache.write(unsaved, for: key)
+  WorkComposerDraftStore.saveAttachments(refs, owner: nil, localFiles: localFiles, for: key)
+}
+
 /// Tracks the host upload that starts the moment an attachment becomes `.ready`,
 /// keyed by the attachment's id.
 ///
@@ -151,8 +258,10 @@ func workChatAttachmentSignature(_ attachments: [WorkChatInputAttachment]) -> St
 ///   array being snapshotted and cleared by the send, which a per-element flag
 ///   would not.
 ///
-/// Bounded: finished entries are dropped by `release`, and the map is trimmed to
-/// `maxEntries` oldest-first so an abandoned composer cannot grow it.
+/// Settled entries are trimmed to `maxEntries` oldest-first. Active entries may
+/// temporarily take the map over that cap: cancelling one is not a reliable
+/// host abort, and evicting it would let a restored draft duplicate its upload.
+/// They become eligible for pruning as soon as their host task settles.
 @MainActor
 final class WorkComposerAttachmentUploads {
   static let shared = WorkComposerAttachmentUploads()
@@ -161,6 +270,8 @@ final class WorkComposerAttachmentUploads {
     var task: Task<AgentChatFileRef, Error>
     var ref: AgentChatFileRef?
     var failure: String?
+    var abandoned: Bool
+    var settled: Bool
     var startedAt: Date
   }
 
@@ -183,14 +294,17 @@ final class WorkComposerAttachmentUploads {
 
   func isUploading(_ id: UUID) -> Bool {
     guard let entry = entries[id] else { return false }
-    return entry.ref == nil && entry.failure == nil
+    return !entry.settled
   }
 
   /// Ref for a restored attachment that was uploaded in a previous session, so
   /// a send after a restore does not re-upload the same bytes.
   func adopt(id: UUID, ref: AgentChatFileRef) {
     guard entries[id] == nil else { return }
-    insert(id, Entry(task: Task { ref }, ref: ref, failure: nil, startedAt: Date()))
+    insert(
+      id,
+      Entry(task: Task { ref }, ref: ref, failure: nil, abandoned: false, settled: true, startedAt: Date())
+    )
   }
 
   /// Starts the upload for one ready attachment. No-op when one is already
@@ -203,10 +317,11 @@ final class WorkComposerAttachmentUploads {
     projectId: String?,
     projectRootPath: String?
   ) {
-    guard entries[attachment.id] == nil, attachment.isReady else { return }
-    let id = attachment.id
-    let task = Task { @MainActor () throws -> AgentChatFileRef in
-      try await workChatUploadSingleAttachment(
+    begin(id: attachment.id, isReady: attachment.isReady) {
+      // The RAW host call, never `workChatSaveInputAttachments`: that wrapper
+      // asks this tracker to resolve the same id, so routing the upload through
+      // it made this task await itself and hang forever.
+      try await workChatStageAttachmentOnHost(
         attachment,
         syncService: syncService,
         chatSessionId: chatSessionId,
@@ -214,10 +329,29 @@ final class WorkComposerAttachmentUploads {
         targetProjectRootPath: projectRootPath
       )
     }
-    insert(id, Entry(task: task, ref: nil, failure: nil, startedAt: Date()))
+  }
+
+  /// Tracking half of `begin`, with the upload itself injected. The only seam a
+  /// test can use to pin the "a stuck upload must not wedge a send" contract
+  /// without a live host.
+  func begin(
+    id: UUID,
+    isReady: Bool = true,
+    upload: @escaping @MainActor () async throws -> AgentChatFileRef
+  ) {
+    guard entries[id] == nil, isReady else { return }
+    let task = Task { @MainActor () throws -> AgentChatFileRef in
+      try await upload()
+    }
+    insert(
+      id,
+      Entry(task: task, ref: nil, failure: nil, abandoned: false, settled: false, startedAt: Date())
+    )
     Task { @MainActor in
       do {
         let ref = try await task.value
+        entries[id]?.abandoned = false
+        entries[id]?.settled = true
         entries[id]?.ref = ref
       } catch is CancellationError {
         entries[id] = nil
@@ -225,19 +359,62 @@ final class WorkComposerAttachmentUploads {
       } catch {
         // A failed upload is not fatal: the send path retries inline, and the
         // draft falls back to the on-disk byte cache.
+        entries[id]?.abandoned = false
+        entries[id]?.settled = true
         entries[id]?.failure = error.localizedDescription
       }
     }
   }
 
-  /// The ref for an attachment, waiting for an in-flight upload. Returns nil
-  /// when nothing is tracked (the caller then uploads inline) and rethrows a
-  /// tracked failure so the send path can retry.
-  func resolve(_ id: UUID) async -> AgentChatFileRef? {
-    guard let entry = entries[id] else { return nil }
-    if let ref = entry.ref { return ref }
-    if entry.failure != nil { return nil }
-    return try? await entry.task.value
+  /// The ref for an attachment, waiting for an in-flight upload — for at most
+  /// `timeoutNanoseconds`.
+  ///
+  /// The deadline is the reason this returns a case rather than an optional. A
+  /// send awaits this before it can put anything on the wire, so an upload that
+  /// never completes used to hold the message at "Sending" for the life of the
+  /// process: no error, no retry, and the draft already cleared. Waiting is now
+  /// always bounded, and "nothing is tracked" is told apart from "we gave up".
+  func resolve(
+    _ id: UUID,
+    timeoutNanoseconds: UInt64 = workComposerAttachmentUploadTimeoutNanoseconds
+  ) async -> WorkComposerAttachmentUploadResolution {
+    guard let entry = entries[id] else { return .stageInline }
+    if let ref = entry.ref { return .ref(ref) }
+    if entry.abandoned {
+      // The deadline already passed once for this upload, so this call is the
+      // user's retry and the original leg is presumed dead. Cancel it, record
+      // the failure, and let the send stage the bytes inline.
+      //
+      // The earlier rule — never a second upload while the first is in flight
+      // — still holds for the whole timeout window: the first `resolve` waits
+      // it out before anything is marked abandoned. What changed is what
+      // happens after. A leg that never settles left every later retry
+      // returning `.abandoned`, so the message could never be sent at all. A
+      // duplicate host upload is a temp file the send references once; an
+      // unsendable message is not recoverable.
+      entry.task.cancel()
+      entries[id]?.abandoned = false
+      entries[id]?.settled = true
+      entries[id]?.failure = workChatAttachmentUploadTimedOutMessage
+      return .stageInline
+    }
+    if entry.failure != nil { return .stageInline }
+    let task = entry.task
+    let settled = await workAwaitWithDeadline(timeoutNanoseconds: timeoutNanoseconds) {
+      try? await task.value
+    }
+    switch settled {
+    case .some(.some(let ref)):
+      return .ref(ref)
+    case .some(.none):
+      // The upload finished by failing. An inline retry is the cheap recovery
+      // for a transient network error.
+      return .stageInline
+    case .none:
+      entries[id]?.failure = workChatAttachmentUploadTimedOutMessage
+      entries[id]?.abandoned = true
+      return .abandoned
+    }
   }
 
   func release(_ ids: [UUID]) {
@@ -252,59 +429,12 @@ final class WorkComposerAttachmentUploads {
     entries[id] = entry
     order.append(id)
     while order.count > Self.maxEntries {
-      let oldest = order.removeFirst()
+      guard let index = order.firstIndex(where: { entries[$0]?.settled == true }) else { break }
+      let oldest = order.remove(at: index)
       entries[oldest]?.task.cancel()
       entries[oldest] = nil
     }
   }
-}
-
-/// Stages one attachment on the host and returns its ref. Images keep the
-/// historical base64 image route; everything else rides the chunked file route.
-@MainActor
-func workChatUploadSingleAttachment(
-  _ attachment: WorkChatInputAttachment,
-  syncService: SyncService,
-  chatSessionId: String?,
-  targetProjectId: String?,
-  targetProjectRootPath: String?
-) async throws -> AgentChatFileRef {
-  guard let data = attachment.uploadData else {
-    throw NSError(
-      domain: "ADE",
-      code: 30,
-      userInfo: [NSLocalizedDescriptionKey: "This attachment has no data to upload."]
-    )
-  }
-  if attachment.kind == .image {
-    let refs = try await workChatSaveInputAttachments(
-      [attachment],
-      syncService: syncService,
-      chatSessionId: chatSessionId,
-      targetProjectId: targetProjectId,
-      targetProjectRootPath: targetProjectRootPath
-    )
-    guard let ref = refs.first else {
-      throw NSError(
-        domain: "ADE",
-        code: 31,
-        userInfo: [NSLocalizedDescriptionKey: "The host did not accept this image."]
-      )
-    }
-    return ref
-  }
-  let saved = try await syncService.saveChatFileAttachment(
-    data: data,
-    filename: attachment.filename,
-    chatSessionId: chatSessionId,
-    targetProjectId: targetProjectId,
-    targetProjectRootPath: targetProjectRootPath
-  )
-  // `file` is the ref type desktop uses for non-image attachments, so the agent
-  // receives a path rather than an inlined image. The host parser accepts the
-  // exact literals `image` and `file` and silently DROPS anything else, so the
-  // capitalisation here is load-bearing.
-  return AgentChatFileRef(path: saved.path, type: "file")
 }
 
 // MARK: - Offline byte cache
@@ -322,10 +452,45 @@ enum WorkComposerDraftAttachmentCache {
   static let maxBytesPerKey = 10 * 1024 * 1024
 
   struct StoredFile: Codable, Equatable {
+    /// The composer's identity, persisted so a navigation restore can reuse an
+    /// upload that is still in flight. Optional for files written before this
+    /// field existed; `read` gives those legacy records a fresh identity.
+    var id: UUID?
     var name: String
     var filename: String
     var mimeType: String
     var kind: String
+
+    init(
+      id: UUID? = nil,
+      name: String,
+      filename: String,
+      mimeType: String,
+      kind: String
+    ) {
+      self.id = id
+      self.name = name
+      self.filename = filename
+      self.mimeType = mimeType
+      self.kind = kind
+    }
+
+    private enum CodingKeys: String, CodingKey {
+      case id
+      case name
+      case filename
+      case mimeType
+      case kind
+    }
+
+    init(from decoder: Decoder) throws {
+      let container = try decoder.container(keyedBy: CodingKeys.self)
+      id = try container.decodeIfPresent(UUID.self, forKey: .id)
+      name = try container.decode(String.self, forKey: .name)
+      filename = try container.decode(String.self, forKey: .filename)
+      mimeType = try container.decode(String.self, forKey: .mimeType)
+      kind = try container.decode(String.self, forKey: .kind)
+    }
   }
 
   private static var root: URL? {
@@ -389,6 +554,7 @@ enum WorkComposerDraftAttachmentCache {
       }
       totalBytes += data.count
       stored.append(StoredFile(
+        id: attachment.id,
         name: name,
         filename: attachment.filename,
         mimeType: attachment.mimeType,
@@ -405,6 +571,7 @@ enum WorkComposerDraftAttachmentCache {
             data.count <= maxBytesPerKey else { return nil }
       let kind = WorkChatInputAttachmentKind(rawValue: file.kind) ?? .file
       return WorkChatInputAttachment(
+        id: file.id ?? UUID(),
         image: kind == .image ? UIImage(data: data) : nil,
         uploadData: data,
         filename: file.filename,
