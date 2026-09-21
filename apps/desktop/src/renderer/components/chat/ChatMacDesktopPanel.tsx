@@ -57,7 +57,7 @@ import {
   macDesktopUserHasControl,
 } from "./macDesktopLease";
 import { useMacDesktopLiveView } from "./useMacDesktopLiveView";
-import { useMacDesktopRealInput } from "./useMacDesktopRealInput";
+import { createMacDesktopFastInputSender, useMacDesktopRealInput } from "./useMacDesktopRealInput";
 import { useMacDesktopStatus } from "./useMacDesktopStatus";
 import { MacDesktopClaimPicker } from "./MacDesktopClaimPicker";
 import {
@@ -566,6 +566,9 @@ export function ChatMacDesktopPanel({
 
   /* ── Real input, only while the user holds the lease ──────────────────── */
 
+  // Local takeover goes over the stream's loopback port, not the brain RPC:
+  // one request per event instead of a full IPC → brain → service hop.
+  const fastSender = useMemo(() => createMacDesktopFastInputSender(live.url), [live.url]);
   const realInput = useMacDesktopRealInput({
     laneId,
     sessionId,
@@ -573,6 +576,7 @@ export function ChatMacDesktopPanel({
     enabled: iHaveControl,
     toDisplayPoint,
     runtimePin,
+    sender: fastSender,
   });
 
   useEffect(() => {

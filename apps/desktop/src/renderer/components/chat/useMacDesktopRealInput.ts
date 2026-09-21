@@ -329,6 +329,41 @@ export type MacDesktopInputSender = (
   call: MacDesktopInputCall,
 ) => Promise<MacDesktopInputResult | null>;
 
+/**
+ * The takeover fast path: one local HTTP request per event, straight into the
+ * driver, on the loopback port the stream already comes from. Built from the
+ * stream URL because that is the one place the renderer holds the lane's token.
+ * Returns null when there is no transport yet, so the caller falls back to
+ * the IPC dispatch.
+ */
+export function createMacDesktopFastInputSender(streamUrl: string | null | undefined): MacDesktopInputSender | null {
+  if (!streamUrl) return null;
+  let target: URL;
+  try {
+    target = new URL(streamUrl);
+  } catch {
+    return null;
+  }
+  target.pathname = "/mac-desktop/input";
+  const endpoint = target.toString();
+  return async (call) => {
+    const { laneId, controllerId, chatSessionId, mode: _mode, silent: _silent, ...payload } = call.args as
+      Record<string, unknown> & { laneId: string; controllerId?: string | null; chatSessionId?: string | null };
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ controllerId, chatSessionId: chatSessionId ?? null, command: call.kind, payload }),
+      keepalive: true,
+    });
+    if (response.status === 204) return { ok: true, action: call.kind, mode: "real", silent: true, resolved: null, observation: null, trace: null };
+    let detail: { code?: string; message?: string } = {};
+    try { detail = await response.json(); } catch { /* not JSON */ }
+    const error = new Error(detail.message ?? `Input refused (${response.status}).`) as Error & { code?: string };
+    error.code = detail.code;
+    throw error;
+  };
+}
+
 /** The desktop's dispatch, unchanged, as the hook's default sender. */
 function sendMacDesktopInputCall(
   call: MacDesktopInputCall,

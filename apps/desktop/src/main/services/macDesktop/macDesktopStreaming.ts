@@ -21,6 +21,7 @@ import type { Logger } from "../logging/logger";
 import {
   clampFps,
   createMacDesktopStreamServer,
+  type MacDesktopStreamServerDeps,
   type MacDesktopStreamTransportWithSecret,
 } from "./macDesktopStreamServer";
 
@@ -41,6 +42,8 @@ export type MacDesktopStreamingDeps = {
   touchDisplay: (laneId: string) => void;
   /** Raised by `startStream` when the backend hands back no port. */
   driverUnavailable: (message: string) => Error;
+  /** The takeover fast path served on the stream server. See `macDesktopInput.postRealInput`. */
+  postRealInput?: MacDesktopStreamServerDeps["postRealInput"];
 };
 
 export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
@@ -83,6 +86,12 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
   const streamServer = createMacDesktopStreamServer({
     logger: deps.logger,
     now: deps.now,
+    // Read late: the input module is built after streaming (it needs the
+    // server's `noteActivity`), so the service fills this in afterwards.
+    postRealInput: (args) => {
+      if (!deps.postRealInput) return Promise.reject(new Error("Real input is not available on this host."));
+      return deps.postRealInput(args);
+    },
     setRate: async ({ laneId, fps }) => {
       const provider = deps.activeProvider();
       if (!provider) return;

@@ -332,7 +332,48 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     needsReal: boolean,
   ): MacDesktopInputMode => (needsReal ? "real" : requested ?? "accessibility");
 
+  /**
+   * The fast path for a human takeover.
+   *
+   * The ordinary path is renderer → IPC → main → brain RPC → this service →
+   * driver stdin, which costs a full RPC round trip per pointer event and at
+   * sixty moves a second never drains, so clicks queue behind moves. This is
+   * the same call with the same gates — lease, Accessibility, display — but
+   * reached over the stream server's loopback endpoint the panel already holds
+   * a token for, so an event is one local HTTP request straight into the
+   * driver. Silent by definition: nobody narrates their own mouse.
+   */
+  const postRealInput = async (args: {
+    laneId: string;
+    controllerId: string;
+    chatSessionId?: string | null;
+    command: "move" | "click" | "drag" | "scroll" | "press" | "type";
+    payload: Record<string, unknown>;
+  }): Promise<void> => {
+    const laneId = args.laneId.trim();
+    deps.requireDisplay(laneId);
+    const seat = await deps.ensureProvider();
+    deps.assertPermission("accessibility");
+    const holderId = inputHolderId(args);
+    assertRealInputAllowed(laneId, holderId);
+    try {
+      await seat.input({
+        laneId,
+        command: args.command,
+        mode: "real",
+        payload: { ...args.payload, restoreCursor: true },
+        lease: { holderId },
+      });
+    } catch (error) {
+      throw deps.toServiceError(error);
+    }
+    deps.noteStreamActivity(laneId);
+    ownership.touchDisplay(laneId);
+    deps.noteTurnActivity(laneId, args.chatSessionId);
+  };
+
   return {
+    postRealInput,
     /** The one capture path. The service's `observe` is this plus the gate. */
     observe: observeInternal,
 

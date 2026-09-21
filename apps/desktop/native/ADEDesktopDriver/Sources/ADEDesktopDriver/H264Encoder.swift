@@ -37,11 +37,23 @@ final class H264Encoder {
             throw CaptureError.failed("VideoToolbox refused an H.264 session (status \(status)).")
         }
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
+        // Main, not High: the browser's WebCodecs decoder holds up to four
+        // frames before it outputs the first one on a High-profile stream
+        // (w3c/webcodecs#732), which is over a hundred milliseconds of built-in
+        // lag at thirty frames a second. Main decodes one-in, one-out.
         VTSessionSetProperty(
             session,
             key: kVTCompressionPropertyKey_ProfileLevel,
-            value: kVTProfileLevel_H264_High_AutoLevel
+            value: kVTProfileLevel_H264_Main_AutoLevel
         )
+        // The setting every low-latency screen streamer names: without it
+        // VideoToolbox is free to hold frames for rate control.
+        VTSessionSetProperty(
+            session,
+            key: kVTVideoEncoderSpecification_EnableLowLatencyRateControl,
+            value: kCFBooleanTrue
+        )
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxFrameDelayCount, value: NSNumber(value: 0))
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
         // A keyframe every two seconds: the cost of a viewer's cold start.
         VTSessionSetProperty(

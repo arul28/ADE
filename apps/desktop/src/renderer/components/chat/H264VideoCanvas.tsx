@@ -28,6 +28,7 @@ export type H264VideoStatus = "connecting" | "playing" | "error" | "stopped";
 
 type VideoDecoderLike = {
   configure: (config: { codec: string; optimizeForLatency?: boolean }) => void;
+  readonly decodeQueueSize: number;
   decode: (chunk: unknown) => void;
   close: () => void;
   readonly state: string;
@@ -205,6 +206,9 @@ export function H264VideoCanvas({
         // No `description`: the stream is Annex-B, and a decoder configured
         // without one expects exactly that.
         decoder.configure({ codec: record.codec, optimizeForLatency: true });
+        // The decoder must never fall behind the stream: with a queue the
+        // picture shows where the pointer WAS. Drop delta frames while the
+        // decoder still holds more than one so it always paints the newest.
         configured = true;
         gate.reset();
         if (record.width && record.height) {
@@ -214,6 +218,10 @@ export function H264VideoCanvas({
       }
       if (!configured || !decoder || decoder.state === "closed") return;
       if (record.seq !== undefined && !gate.shouldDeliver(record.keyframe, record.seq)) return;
+      // Newest frame wins: a delta that would sit behind one already queued is
+      // dropped, so the picture never shows where the pointer WAS. A keyframe
+      // is always decoded, because the next delta needs it.
+      if (!record.keyframe && decoder.decodeQueueSize > 1) return;
       timestampUs += 33_333;
       decoder.decode(new EncodedVideoChunkCtor({
         type: record.keyframe ? "key" : "delta",

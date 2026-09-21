@@ -95,7 +95,22 @@ export type MacDesktopStreamServerDeps = {
   onZeroClients?: (laneId: string) => void;
   /** Test seam. Defaults to `net.connect`. */
   connectUpstream?: (port: number) => Socket;
+  /**
+   * The takeover fast path: a real-input command for a lane whose stream
+   * token the caller presented. Absent on hosts with no input module.
+   */
+  postRealInput?: (args: {
+    laneId: string;
+    controllerId: string;
+    chatSessionId?: string | null;
+    command: "move" | "click" | "drag" | "scroll" | "press" | "type";
+    payload: Record<string, unknown>;
+  }) => Promise<void>;
 };
+
+export const MAC_DESKTOP_INPUT_PATH = "/mac-desktop/input";
+const MAX_INPUT_BODY_BYTES = 16 * 1024;
+const INPUT_COMMANDS = new Set(["move", "click", "drag", "scroll", "press", "type"]);
 
 type LaneClient = {
   response: ServerResponse;
@@ -237,9 +252,73 @@ export function createMacDesktopStreamServer(deps: MacDesktopStreamServerDeps) {
     lane.windowStartedAtMs = now();
   };
 
+  /**
+   * `POST /mac-desktop/input?lane=…&token=…` with a JSON body
+   * `{controllerId, chatSessionId?, command, payload}`. Same token as the
+   * stream, so only a viewer that was handed the lane's transport can drive it;
+   * the lease check inside `postRealInput` decides whether that viewer may.
+   */
+  const handleInput = (request: IncomingMessage, response: ServerResponse, url: URL): void => {
+    const laneId = url.searchParams.get("lane")?.trim() ?? "";
+    const supplied = url.searchParams.get("token") ?? "";
+    const lane = laneId ? lanes.get(laneId) ?? null : null;
+    if (!lane || !lane.token || !supplied || !safeEqual(supplied, lane.token) || !deps.postRealInput) {
+      response.writeHead(403).end();
+      return;
+    }
+    request.socket.setNoDelay(true);
+    const chunks: Buffer[] = [];
+    let size = 0;
+    request.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > MAX_INPUT_BODY_BYTES) {
+        response.writeHead(413).end();
+        request.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    request.on("end", () => {
+      let body: Record<string, unknown>;
+      try {
+        body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+      } catch {
+        response.writeHead(400).end();
+        return;
+      }
+      const command = typeof body.command === "string" ? body.command : "";
+      const controllerId = typeof body.controllerId === "string" ? body.controllerId.trim() : "";
+      const payload = body.payload && typeof body.payload === "object" ? body.payload as Record<string, unknown> : null;
+      if (!INPUT_COMMANDS.has(command) || !controllerId || !payload) {
+        response.writeHead(400).end();
+        return;
+      }
+      void deps.postRealInput!({
+        laneId,
+        controllerId,
+        chatSessionId: typeof body.chatSessionId === "string" ? body.chatSessionId : null,
+        command: command as "move",
+        payload,
+      }).then(
+        () => { response.writeHead(204).end(); },
+        (error: unknown) => {
+          const err = error as { code?: unknown; message?: unknown };
+          response.writeHead(409, { "Content-Type": "application/json" }).end(JSON.stringify({
+            code: typeof err?.code === "string" ? err.code : "MAC_DESKTOP_INPUT_FAILED",
+            message: typeof err?.message === "string" ? err.message : String(error),
+          }));
+        },
+      );
+    });
+  };
+
   const handleRequest = (request: IncomingMessage, response: ServerResponse): void => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     if (answerLoopbackPreamble(request, response)) return;
+    if (url.pathname === MAC_DESKTOP_INPUT_PATH && request.method === "POST") {
+      handleInput(request, response, url);
+      return;
+    }
     if (url.pathname !== MAC_DESKTOP_STREAM_PATH || request.method !== "GET") {
       response.writeHead(404).end();
       return;

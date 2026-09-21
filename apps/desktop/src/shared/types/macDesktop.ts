@@ -1042,10 +1042,10 @@ export const MAC_DESKTOP_IDLE_RELEASE_MS = 10 * 60_000;
 export const MAC_DESKTOP_LEASE_TTL_MS = 60_000;
 
 /** Full frame rate while something is happening. */
-export const MAC_DESKTOP_ACTIVE_FPS = 30;
+export const MAC_DESKTOP_ACTIVE_FPS = 60;
 
 /** Low-power rate while nothing is. */
-export const MAC_DESKTOP_IDLE_FPS = 3;
+export const MAC_DESKTOP_IDLE_FPS = 10;
 
 /** How long after the last action the stream drops to the idle rate. */
 export const MAC_DESKTOP_IDLE_STREAM_AFTER_MS = 5_000;

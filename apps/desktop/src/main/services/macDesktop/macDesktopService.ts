@@ -418,7 +418,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     }
   };
 
-  const streaming = createMacDesktopStreaming({
+  const streamingDeps: Parameters<typeof createMacDesktopStreaming>[0] = {
     logger: deps.logger,
     now,
     isDarwin,
@@ -431,7 +431,8 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     assertPermission,
     touchDisplay: (laneId) => ownership.touchDisplay(laneId),
     driverUnavailable: (message) => new MacDesktopError("MAC_DESKTOP_DRIVER_UNAVAILABLE", message),
-  });
+  };
+  const streaming = createMacDesktopStreaming(streamingDeps);
   const streamServer = streaming.streamServer;
 
   const recording = createMacDesktopRecording({
@@ -469,6 +470,9 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     toServiceError,
     serviceError: (code, message) => new MacDesktopError(code, message),
   });
+  // The takeover fast path on the stream server goes straight to the input
+  // module; bound here because input is built after streaming.
+  streamingDeps.postRealInput = (args) => input.postRealInput(args);
 
   const windowLifecycle = createMacDesktopWindows({
     logger: deps.logger,

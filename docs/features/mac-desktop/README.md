@@ -310,6 +310,38 @@ H.264 access units to a token-guarded loopback HTTP endpoint, exactly like
 `iosVideoStreamServer.ts`. The renderer decodes with WebCodecs, using a codec
 string built from the stream's own SPS.
 
+Latency is a set of deliberate choices, measured against the open-source
+screen streamers that feel live on a LAN (SameDesk, OpenDisplay, VoidDisplay):
+
+- **Input rides the stream port, not the brain RPC.** A takeover used to send
+  every pointer event renderer → IPC → main → brain RPC → service → driver
+  stdin, one full round trip each (about the cost of a whole CLI call), so at
+  sixty moves a second the queue never drained and clicks lined up behind
+  moves. `POST /mac-desktop/input?lane=…&token=…` on the same loopback server
+  (`MAC_DESKTOP_INPUT_PATH`) takes `{controllerId, chatSessionId?, command,
+  payload}` straight into `macDesktopInput.postRealInput`, which runs the same
+  lease, Accessibility and display gates as the RPC path and skips only the
+  observation a takeover never wanted. The renderer builds the sender from the
+  stream URL it already holds (`createMacDesktopFastInputSender`), so only a
+  viewer that was handed the lane's transport can reach it; a refusal comes
+  back as 409 with the service's error code and lands on the input error line.
+- **Main profile, low-latency rate control, zero frame delay.** WebCodecs
+  holds up to four frames before it outputs the first one on a High-profile
+  H.264 stream ([w3c/webcodecs#732](https://github.com/w3c/webcodecs/issues/732)),
+  which is over a hundred milliseconds of built-in lag at thirty frames a
+  second. The encoder now asks for Main, sets
+  `EnableLowLatencyRateControl` (the setting every fast streamer names) and
+  `MaxFrameDelayCount = 0`.
+- **Newest frame wins in the decoder.** `H264VideoCanvas` drops a delta frame
+  while the decoder still holds more than one, so the picture never shows where
+  the pointer *was*; keyframes are always decoded because the next delta needs
+  them.
+- **60 fps active, 10 idle.** The idle floor was 3, so every first drag after a
+  pause started as a slideshow and ramped up.
+- **The floating preview is a JPEG snapshot of the live canvas, four times a
+  second** (`FRAME_SNAPSHOT_MS`), not a second stream; at once a second it read
+  as broken.
+
 A still desktop produces no frames at all. ScreenCaptureKit delivers a frame
 when the content changes and not otherwise, so a lane whose screen nobody has
 touched stops sending within a second of the display appearing — which is the

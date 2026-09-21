@@ -63,7 +63,9 @@ export function shouldRetryLiveView(args: {
  * the decode. One a second is what the mini view and the Lanes hover peek
  * actually need — they are showing "what does that lane look like", not video.
  */
-const FRAME_SNAPSHOT_MS = 1_000;
+// Four a second, not one: the floating preview is a picture of this snapshot
+// and one frame a second read as a broken stream.
+const FRAME_SNAPSHOT_MS = 250;
 
 export type MacDesktopLiveView = {
   /** The address this desktop can open, or null while it is being built. */

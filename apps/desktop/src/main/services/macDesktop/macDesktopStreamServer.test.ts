@@ -2,6 +2,7 @@ import { createServer, type Server } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { MAC_DESKTOP_STREAM_PATH } from "../../../shared/types/macDesktop";
+import { MAC_DESKTOP_INPUT_PATH } from "./macDesktopStreamServer";
 import {
   IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT,
   IOS_VIDEO_RECORD_TYPE_CONFIG,
@@ -83,6 +84,53 @@ describe("macDesktopStreamServer", () => {
     const wrongPath = await fetch(`http://127.0.0.1:${transport.port}/nope?lane=lane-1&token=${transport.token}`);
     expect(wrongPath.status).toBe(404);
     await wrongPath.arrayBuffer();
+  });
+
+  it("serves the takeover fast path on the stream token and hands the body to the input module", async () => {
+    const upstream = await startUpstream(Buffer.from([]));
+    cleanups.push(() => upstream.close());
+    const posted: unknown[] = [];
+    const server = createMacDesktopStreamServer({
+      logger,
+      postRealInput: async (args) => { posted.push(args); },
+    });
+    cleanups.push(() => server.dispose());
+    const transport = await server.start({ laneId: "lane-1", sourcePort: upstream.port });
+    const base = `http://127.0.0.1:${transport.port}${MAC_DESKTOP_INPUT_PATH}`;
+    const body = JSON.stringify({
+      controllerId: "ade-window:abc",
+      chatSessionId: "chat-1",
+      command: "click",
+      payload: { x: 10, y: 20, button: "left", count: 1 },
+    });
+
+    // Same token as the stream: no token, or the wrong one, is refused.
+    const noToken = await fetch(`${base}?lane=lane-1`, { method: "POST", body });
+    expect(noToken.status).toBe(403);
+    const wrongToken = await fetch(`${base}?lane=lane-1&token=nope`, { method: "POST", body });
+    expect(wrongToken.status).toBe(403);
+    expect(posted).toEqual([]);
+
+    const ok = await fetch(`${base}?lane=lane-1&token=${transport.token}`, { method: "POST", body });
+    expect(ok.status).toBe(204);
+    expect(posted).toEqual([{
+      laneId: "lane-1",
+      controllerId: "ade-window:abc",
+      chatSessionId: "chat-1",
+      command: "click",
+      payload: { x: 10, y: 20, button: "left", count: 1 },
+    }]);
+
+    // A refusal from the input module (a lost lease) comes back as 409 with its code.
+    const refused = createMacDesktopStreamServer({
+      logger,
+      postRealInput: async () => { throw Object.assign(new Error("Someone else has control."), { code: "MAC_DESKTOP_USER_HAS_CONTROL" }); },
+    });
+    cleanups.push(() => refused.dispose());
+    const t2 = await refused.start({ laneId: "lane-2", sourcePort: upstream.port });
+    const denied = await fetch(`http://127.0.0.1:${t2.port}${MAC_DESKTOP_INPUT_PATH}?lane=lane-2&token=${t2.token}`, { method: "POST", body });
+    expect(denied.status).toBe(409);
+    expect(await denied.json()).toEqual({ code: "MAC_DESKTOP_USER_HAS_CONTROL", message: "Someone else has control." });
   });
 
   it("rewrites the helper's bare-codec config into the record the renderer parses", async () => {
