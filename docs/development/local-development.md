@@ -205,6 +205,11 @@ npm run package:alpha        # current checkout -> ADE Alpha.app, ade-alpha, ~/.
 npm run package:beta         # origin/main -> ADE Beta.app, ade-beta, ~/.ade-beta
 ```
 
+The build prints one line about code signing. "Signing identity: ADE Local"
+means macOS keeps the app's Screen Recording and Accessibility grants across
+rebuilds. The ad-hoc warning means it does not; set up the certificate once as
+described in [Alpha/Beta builds and macOS permission grants](#alphabeta-builds-and-macos-permission-grants).
+
 `package:alpha` builds exactly the checkout you are in. `package:beta` is
 release-like: it fetches `origin/main`, fast-forwards the local `main` checkout
 when possible, and builds that checkout as `ADE Beta`. It does not create a
