@@ -992,6 +992,7 @@ describe("CommandPalette", () => {
           draftMachineId: null,
           activeItemId: null,
           selectedItemId: null,
+          workSidebarOpen: false,
         });
         expect(onOpenChange).toHaveBeenCalledWith(false);
       });
@@ -1291,11 +1292,10 @@ describe("CommandPalette", () => {
             binding: REMOTE_BINDING,
           },
         ]);
-        // The tab still switches to Work, but WITHOUT the session deeplink: the
-        // project switch the listener starts is async, and `useWorkSessions`
-        // would resolve `?sessionId=` against the still-current project a tick
-        // from now, find nothing, and strip it. The binding is the durable
-        // route; the listener focuses once the switch resolves.
+        // The tab still switches to Work, but WITHOUT the session deeplink: a
+        // foreign `?sessionId=` would resolve against this project a tick from
+        // now, find nothing, and strip. The binding is the durable route; the
+        // listener pins and focuses without rebinding the tab.
         await waitFor(() => {
           expect(screen.getByTestId("location").textContent).toBe("/work");
         });
@@ -1683,7 +1683,6 @@ describe("CommandPalette", () => {
 
     it("offers only the Work tools this surface can actually run", () => {
       const titlesFor = (context: {
-        isRemoteProject: boolean;
         supportsIosSimulator: boolean;
         isWebClient: boolean;
       }) =>
@@ -1694,43 +1693,25 @@ describe("CommandPalette", () => {
         }).map((command) => command.title);
 
       const local = titlesFor({
-        isRemoteProject: false,
         supportsIosSimulator: true,
         isWebClient: false,
       });
       expect(local).toContain("Tools: Simulator");
       expect(local).toContain("Tools: Browser");
+      expect(local).toContain("Tools: App Control");
 
       // No simulator here, so the command that lands on a "macOS only" card is
       // not offered at all.
       expect(
         titlesFor({
-          isRemoteProject: false,
           supportsIosSimulator: false,
           isWebClient: false,
         }),
       ).not.toContain("Tools: Simulator");
 
-      // A remote project's work happens on the other machine — except the
-      // browser, which is this desktop's window reaching that machine's
-      // localhost through a port-forward.
-      const remote = titlesFor({
-        isRemoteProject: true,
-        supportsIosSimulator: true,
-        isWebClient: false,
-      });
-      expect(remote).toContain("Tools: Browser");
-      expect(remote).not.toContain("Tools: Simulator");
-      expect(remote).not.toContain("Tools: App Control");
-      expect(remote).not.toContain("Tools: Pull request");
-      expect(remote).toContain("Tools: Git");
-      // The picker is the fallback for every one of those, so it never goes.
-      expect(remote).toContain("Tools: Show picker");
-
       // The hosted client can WATCH the browser and App Control, so those stay;
       // the simulator pane is a video stream with nothing to report.
       const web = titlesFor({
-        isRemoteProject: false,
         supportsIosSimulator: true,
         isWebClient: true,
       });

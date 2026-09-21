@@ -171,6 +171,31 @@ export function isLivePinnedBinding(
   return openBindings.some((binding) => binding.key === key);
 }
 
+/**
+ * The machine a session's Work tools actually talk to.
+ *
+ * `pin === null` means "this session lives on the tab's bound machine", not
+ * "no machine". Tool React keys and drawer UI state must use this effective
+ * binding so switching the tab dropdown under an open session does not remount
+ * Git/Terminal/Browser onto the new tab. Git caches use
+ * `projectStateKeyForBinding` of the same effective binding so a local
+ * bound→pinned flip stays keyed on the checkout path, not `local:${path}`.
+ */
+export function effectiveRuntimeBinding(
+  pin: OpenProjectBinding | null | undefined,
+  bound: OpenProjectBinding | null | undefined,
+): OpenProjectBinding | null {
+  return pin ?? bound ?? null;
+}
+
+/** Stable identity for the machine `effectiveRuntimeBinding` names. */
+export function workRuntimeScopeKey(
+  pin: OpenProjectBinding | null | undefined,
+  bound: OpenProjectBinding | null | undefined,
+): string {
+  return effectiveRuntimeBinding(pin, bound)?.key ?? "bound";
+}
+
 export type ChatMachineRouter = {
   /** Resolved pin for a chat on `laneId`, or null for the active binding. */
   pinForLane: (laneId: string | null | undefined) => OpenProjectBinding | null;

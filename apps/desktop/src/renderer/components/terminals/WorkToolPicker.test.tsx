@@ -7,7 +7,6 @@ import { WORK_TOOL_DEFINITIONS, type WorkToolContext } from "./workTools";
 import type { WorkToolStatusMap } from "./useWorkToolStatuses";
 
 const LOCAL: WorkToolContext = {
-  isRemoteProject: false,
   supportsIosSimulator: true,
   isWebClient: false,
 };
@@ -143,29 +142,27 @@ describe("WorkToolPicker", () => {
     expect(onPick).not.toHaveBeenCalled();
   });
 
-  it("keeps the browser clickable on a remote project and disables only the rest", () => {
+  it("keeps Simulator and App Control clickable on a remote session", () => {
     const onPick = vi.fn();
     render(
       <WorkToolPicker
         activeTool={null}
-        context={{ ...LOCAL, isRemoteProject: true }}
+        context={LOCAL}
         statuses={{}}
         loading={false}
         onPick={onPick}
       />,
     );
 
-    // The browser is this window's, whatever machine the lane runs on: a
-    // loopback URL over there is reached through a port-forward, which is the
-    // whole point of pinning a remote lane at a browser.
+    // Work tools follow the session's machine. A Studio chat keeps a remote
+    // pin while this tab sits on a laptop; Git, shells, Simulator, and App
+    // Control all drive that machine rather than this desk.
     expect(cardFor("Browser").disabled).toBe(false);
     fireEvent.click(cardFor("Browser"));
     expect(onPick).toHaveBeenCalledWith("browser");
-
-    // The two that really do drive something attached to this desk stay off.
-    expect(cardFor("Simulator").disabled).toBe(true);
-    expect(cardFor("App Control").disabled).toBe(true);
-    expect(screen.getAllByText("Runs on this computer only").length).toBe(2);
+    expect(cardFor("Simulator").disabled).toBe(false);
+    expect(cardFor("App Control").disabled).toBe(false);
+    expect(screen.queryByText("Runs on this computer only")).toBeNull();
   });
 
   it("activates the tool a card names", () => {
@@ -339,7 +336,7 @@ describe("WorkToolPicker", () => {
     render(
       <WorkToolPicker
         activeTool={null}
-        context={{ isRemoteProject: false, supportsIosSimulator: true, isWebClient: true }}
+        context={{ supportsIosSimulator: true, isWebClient: true }}
         statuses={{}}
         loading={false}
         onPick={onPick}

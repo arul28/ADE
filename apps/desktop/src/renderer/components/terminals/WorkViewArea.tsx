@@ -609,7 +609,7 @@ function WorkCliContinuationComposer({
 function ClosedCliSessionSurface({
   session,
   lanes,
-  runtimePin,
+  runtimePin = null,
   layoutVariant,
   onInfoClick,
   onContextMenu,
@@ -620,7 +620,7 @@ function ClosedCliSessionSurface({
 }: {
   session: TerminalSessionSummary;
   lanes: LaneSummary[];
-  runtimePin: OpenProjectBinding | null;
+  runtimePin?: OpenProjectBinding | null;
   layoutVariant: "standard" | "grid-tile";
   onInfoClick?: (session: TerminalSessionSummary, event: React.MouseEvent<HTMLElement>) => void;
   onContextMenu?: (session: TerminalSessionSummary, event: React.MouseEvent<HTMLElement>) => void;
@@ -851,7 +851,7 @@ function SessionSurface({
   sessionTitleById,
   lanes,
   isActive,
-  runtimePin = null,
+  runtimePin,
   pageActive = true,
   shouldAutofocus = false,
   layoutVariant = "standard",
@@ -876,8 +876,8 @@ function SessionSurface({
   /**
    * Set only for a session that lives on another open binding; `null` means the
    * tab's own machine (the hot path — same calls as before per-session routing).
-   * The ADE chat pane resolves its own pin from the lane, so this is consumed by
-   * the PTY surfaces only.
+   * ADE chats take this pin too: after a dropdown switch the live union is
+   * empty, so deriving from the lane would unpin send/history onto the new tab.
    */
   runtimePin?: OpenProjectBinding | null;
   pageActive?: boolean;
@@ -922,6 +922,7 @@ function SessionSurface({
         sessionTitleById={sessionTitleById}
         hideSessionTabs
         hideLaneToolDrawers
+        runtimePin={runtimePin}
         onSessionCreated={onOpenChatSession}
         layoutVariant={layoutVariant}
         isTileActive={surfaceActive}
@@ -1259,7 +1260,7 @@ export function WorkViewArea({
       // transfers activeItemId (WorkGridView's onPaneMouseDown) before typing.
       isActive={session.id === activeItemId}
       pageActive={pageActive}
-      runtimePin={resolveSessionRuntimePin?.(session) ?? null}
+      runtimePin={resolveSessionRuntimePin?.(session)}
       shouldAutofocus={session.id === activeItemId}
       terminalVisible
       onInfoClick={onInfoClick}
@@ -1309,7 +1310,7 @@ export function WorkViewArea({
           lanes={lanes}
           isActive
           pageActive={pageActive}
-          runtimePin={resolveSessionRuntimePin?.(activeSession) ?? null}
+          runtimePin={resolveSessionRuntimePin?.(activeSession)}
           terminalVisible
           onInfoClick={onInfoClick}
           onContextMenu={onContextMenu}
