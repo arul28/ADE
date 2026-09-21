@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.76] - 2026-09-21
+
+### Work
+
+- Same-lane subagent chats nest under their parent in the by-lane Work list; nested CLI lineage survives iOS hydration (#1275).
+- Work tools, chat send/history, and session clicks stay pinned to the session machine across project-tab switches; remote Browser opens are held until the pane mounts (#1269).
+- New-chat usage pane matches the shelf submenu chrome; parked Work mesh pauses when Work is inactive (#1273).
+
+### Providers
+
+- Droid SDK 0.9.1 on desktop and the CLI, with serialized session lifecycle and fork re-open recovery (#1272).
+- Codex runtime 0.155.1.
+- Custom wizard lists real models from the live runtime catalog and drops its permission mode (#1271).
+
+### Fixes
+
+- GitHub search and REST list walks are capped to protect the hourly quota; issue polls drain oldest-first (#1270).
+- Delivered steers no longer reappear as queued on iOS; mobile retries and transcript state preserved (#1268).
+- Packaged CLI inlines `string-width` and gates packaged module resolution at build time (#1266).
+
 ## [1.2.75] - 2026-09-20
 
 ### Providers and accounts
@@ -2003,6 +2023,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 
 [Unreleased]: https://github.com/arul28/ADE/compare/v1.2.74...HEAD
+[1.2.76]: https://github.com/arul28/ADE/compare/v1.2.75...v1.2.76
 [1.2.75]: https://github.com/arul28/ADE/compare/v1.2.74...v1.2.75
 [1.2.74]: https://github.com/arul28/ADE/compare/v1.2.73...v1.2.74
 [1.2.73]: https://github.com/arul28/ADE/compare/v1.2.72...v1.2.73
