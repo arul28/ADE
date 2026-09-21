@@ -61,12 +61,15 @@ export function WorkToolPicker({
   statuses,
   loading,
   onPick,
+  playing = true,
 }: {
   activeTool: WorkSidebarTab | null;
   context: WorkToolContext;
   statuses: WorkToolStatusMap;
   loading: boolean;
   onPick: (tool: WorkSidebarTab) => void;
+  /** False pauses the mesh loop without dropping the last frame. */
+  playing?: boolean;
 }) {
   const theme = useAppStore((s) => s.theme);
   const reasonIdPrefix = useId();
@@ -121,7 +124,7 @@ export function WorkToolPicker({
     <div ref={rootRef} className="ade-pane-chrome relative h-full min-h-0">
       {/* Behind everything and untouchable: the canvas must never eat a click
           meant for the card on top of it, and it is never in the tab order. */}
-      <WorkToolPickerBackdrop theme={theme} className="ade-tool-picker-backdrop" />
+      <WorkToolPickerBackdrop theme={theme} playing={playing} className="ade-tool-picker-backdrop" />
       <div
         data-tool-picker-scroll=""
         className="relative flex h-full min-h-0 flex-col overflow-auto"

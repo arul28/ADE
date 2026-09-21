@@ -178,7 +178,7 @@ function useMeasuredWidth(): { ref: (node: HTMLDivElement | null) => void; width
  * Left edge is the grid button back to the picker; then one tab per OPEN tool,
  * left-aligned, the active one lit; then a `+` for another. There is no centred
  * title any more — the lit tab is the title, and a bar that also spelled the
- * name out was saying the same thing twice in 36px. A tool's one compact fact
+ * name out was saying the same thing twice in 32px. A tool's one compact fact
  * (the page you are on, the branch) lives in its tab's tooltip.
  *
  * Tools that are NOT open still report themselves: a running shell, a tab an
@@ -302,7 +302,7 @@ export function WorkToolHeader({
   return (
     <div
       ref={ref}
-      className="ade-pane-chrome ade-tool-pane-rule ade-tool-header flex min-h-[36px] shrink-0 items-center gap-1 px-2"
+      className="ade-pane-chrome ade-tool-pane-rule ade-tool-header flex shrink-0 items-center gap-1 px-2"
     >
       <PaneTooltip label="Back to tools" shortcut={backShortcut} side="bottom">
         <button

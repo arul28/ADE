@@ -176,10 +176,14 @@ describe("work tool status lines", () => {
     expect(iosStatusLine({ deviceName: "iPhone 17 Pro" } as never).line).toBe("iPhone 17 Pro");
     expect(appControlStatusLine(null).line).toBe("No app");
     expect(appControlStatusLine({ label: "Zen", status: "running" } as never).line).toBe("Zen");
+    expect(appControlStatusLine({
+      label: "sh -lc 'ADE_PACKAGE_CHANNEL= npm run dev:desktop -- --socket /tmp/x.sock'",
+      status: "running",
+    } as never).line).toBe("Desktop app");
   });
 
   it("keeps the fixed lines inside the one-line budget", () => {
-    for (const line of ["No shells", "2 shells", "No tabs", "Unpublished", "3 unstaged · 1 staged", "Not booted", "No app"]) {
+    for (const line of ["No shells", "2 shells", "No tabs", "Unpublished", "3 unstaged · 1 staged", "Not booted", "No app", "Desktop app"]) {
       expect(line.length).toBeLessThanOrEqual(ONE_LINE_BUDGET);
     }
   });

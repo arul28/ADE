@@ -278,7 +278,7 @@ export function iosStatusLine(session: IosSimulatorSession | null): WorkToolStat
  */
 export function appControlStatusLine(session: AppControlSession | null): WorkToolStatus {
   if (!session) return statusLine("No app", false);
-  const label = session.label?.trim() || "App";
+  const label = appControlCardLabel(session);
   const attached = isAppControlSessionAttached(session);
   // Terminal states are the tool's idle: the session is a record of something
   // that finished, not something to point at.
@@ -289,6 +289,32 @@ export function appControlStatusLine(session: AppControlSession | null): WorkToo
     errored: session.status === "failed",
     attention: !attached && !settled && session.status !== "failed",
   });
+}
+
+/**
+ * The picker card gets one short name, never the launch argv.
+ *
+ * `app-control launch --command "sh -lc '…'"` stores that whole string as
+ * `session.label` when the caller omits `--label`. Dumping it on the card is
+ * how a 512px tools page ends up reading `sh -lc 'ADE_PACKAGE_CHANNEL…`.
+ */
+export function appControlCardLabel(session: Pick<AppControlSession, "label" | "command">): string {
+  const raw = session.label?.trim() || session.command?.trim() || "";
+  if (!raw) return "App";
+  if (!looksLikeLaunchCommand(raw)) return raw;
+  const npmScript = raw.match(/\bnpm run(?:\s+--prefix\s+\S+)?\s+(\S+)/)?.[1];
+  if (npmScript === "dev" || npmScript === "dev:desktop" || /dev:desktop/.test(raw)) {
+    return "Desktop app";
+  }
+  if (npmScript) return npmScript;
+  return "Desktop app";
+}
+
+function looksLikeLaunchCommand(text: string): boolean {
+  return /(?:^|[\s'"=])(?:sh|bash|zsh|cmd(?:\.exe)?|powershell)\b/i.test(text)
+    || /\bADE_[A-Z0-9_]+=/.test(text)
+    || /\bnpm(?:\s+run)?\b/.test(text)
+    || /\s-{1,2}[\w-]+/.test(text) && text.length > 40;
 }
 
 /**

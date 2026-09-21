@@ -688,11 +688,13 @@ Renderer surfaces:
   capability-to-action policy consumed by both desktop and `ade code`, so the
   two surfaces expose the same safe Continue/Copy choices.
 - `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` —
-  Work draft/new-chat surface. In draft mode the lane picker stays at
-  the top, with Shell and Import buttons below; Import opens
-  `ImportSessionBrowser` when the caller provides `onImportedSession`.
-  Auto-created lane launches keep import disabled because there is no
-  existing target lane to import into yet.
+  Work draft/new-chat surface. The ADE wordmark sits above an optically
+  lifted composer; the machine/lane launch shelf tucks under it. Usage
+  stays in that stack, a step below the shelf, capped to the
+  launch-shelf width, with an opaque darker fill. Shell and Import live
+  on that shelf; Import opens `ImportSessionBrowser` when the caller
+  provides `onImportedSession`. Auto-created lane launches keep import
+  disabled because there is no existing target lane to import into yet.
 - `apps/desktop/src/renderer/components/terminals/WorkSidebar.tsx` —
   right-edge tools pane tied to the active lane (and active Work session
   when present). It shows a **picker page** of tool cards, or **one
@@ -742,7 +744,7 @@ Renderer surfaces:
   multi-instance. A narrow pane sheds tab labels for glyphs and then
   overflows tabs into a `…` menu; below that the splitter clamp
   (`workSidebarSplitter.ts`) refuses to shrink the pane past the width its
-  36 px header needs.
+  32 px header needs.
 
   The pane follows the **chat's** machine, not the tab's. `runtimePin`
   (supplied by `TerminalsPage` from `activeWorkSessionRuntimePin`) names the
@@ -787,7 +789,7 @@ Renderer surfaces:
   gradient with no WebGL) — name plus one line, which is the tool's measured
   status, else its catalogue `hint`, else the reason it cannot run here — and
   the only mark a card carries is a red dot for a broken tool; the header is
-  the 36 px tab strip — the `⊞ Tools` button, one tab per open tool with a
+  the 32 px tab strip — the `⊞ Tools` button, one tab per open tool with a
   hover `×` (glyph-only under 420 px, overflowing into a `…` menu when even
   those do not fit — `workToolTabLayout`), a `+`, state-coloured activity dots
   for tools with no tab, and ✕; the `×` is untouchable until the tab is
@@ -833,7 +835,7 @@ Renderer surfaces:
   splitter clamp.
 - `apps/desktop/src/renderer/components/terminals/workToolChrome.tsx` — the one
   chrome vocabulary every tool panel spends instead of inventing: a single
-  40 px row per tool under the pane's 36 px header, ghost controls that change
+  40 px row per tool under the pane's 32 px header, ghost controls that change
   fill only over 120 ms, an inset focus hairline, 16 px icons, no sentences in
   the row, and an 8 px inset / 10 px radius / 1 px inset ring around any
   content that is its own surface. The browser composes its own row and App

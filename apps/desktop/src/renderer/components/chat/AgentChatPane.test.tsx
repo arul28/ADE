@@ -12847,4 +12847,48 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     });
     view.unmount();
   });
+
+  it("keeps the Work new-chat wordmark and caps usage to the launch-shelf width", async () => {
+    installAdeMocks({ sessions: [] });
+    seedDrawerStore();
+    useAppStore.setState({
+      project: { rootPath: "/tmp/project-under-test" } as any,
+      projectBinding: LOCAL_PROJECT_BINDING,
+      lanes: [{
+        id: "lane-1",
+        name: "current-lane",
+        laneType: "worktree",
+        branchRef: "refs/heads/current-lane",
+        worktreePath: "/tmp/project-under-test/current-lane",
+      } as any],
+      selectedLaneId: "lane-1",
+    });
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId="lane-1"
+          forceDraftMode
+          embeddedWorkLayout
+          availableLanes={[{
+            id: "lane-1",
+            name: "current-lane",
+            laneType: "worktree",
+            branchRef: "refs/heads/current-lane",
+            worktreePath: "/tmp/project-under-test/current-lane",
+          } as any]}
+          onLaneChange={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+
+    await screen.findByRole("textbox");
+    expect(screen.getByAltText("ADE")).toBeTruthy();
+    const empty = document.querySelector("[data-chat-empty-state]");
+    expect(empty).toBeTruthy();
+    expect(empty?.querySelector(".grid.grid-rows-3")).toBeNull();
+    const usage = empty?.querySelector("[data-chat-empty-usage]");
+    expect(usage).toBeTruthy();
+    expect(usage?.className).toContain("w-[calc(100%-6rem)]");
+  });
 });

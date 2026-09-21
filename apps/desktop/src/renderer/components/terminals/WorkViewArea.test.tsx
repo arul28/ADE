@@ -178,6 +178,10 @@ vi.mock("./WorkStartSurface", () => ({
   WorkStartSurface: () => <div data-testid="work-start-surface" />,
 }));
 
+vi.mock("./WorkToolPickerBackdrop", () => ({
+  WorkToolPickerBackdrop: () => <div data-testid="work-mesh-backdrop" />,
+}));
+
 // The real grid renders through PaneTilingLayout (react-resizable-panels), which
 // needs ResizeObserver + measured sizes that jsdom lacks. Mock the tiling wrapper
 // so the test exercises the real renderGridSession/SessionSurface ownership logic
@@ -507,6 +511,7 @@ describe("WorkViewArea", () => {
     );
 
     expect(screen.getByTestId("work-start-surface")).toBeTruthy();
+    expect(screen.getByTestId("work-mesh-backdrop")).toBeTruthy();
     expect(screen.queryByText("Session ended")).toBeNull();
   });
 

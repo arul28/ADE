@@ -589,7 +589,7 @@ testable without a layout engine. The percentage clamp
 (`MIN_WORK_SIDEBAR_WIDTH_PCT` 26 – `MAX_WORK_SIDEBAR_WIDTH_PCT` 55,
 mirrored by `normalizeWorkSidebarWidthPct` in the store) is a taste rule
 and says nothing about pixels: 26 % of a 900 px window is 234 px, and at
-234 px the pane's own 36 px header — back button, tool name, activity
+234 px the pane's own 32 px header — back button, tool name, activity
 dots, ✕ — has nowhere to go, which is how a drag once left the close
 button off-window. So a drag is clamped in **both** units: never below
 `MIN_WORK_SIDEBAR_PANE_PX` (280) of real pane, and never leaving the chat
@@ -624,7 +624,7 @@ Files, Simulator, App Control (`WorkToolPicker.tsx`, catalogue in
 `workTools.ts`). The page does not name itself: the strip above it already
 carries the word "Tools", and six labelled cards do not need introducing.
 The column is vertically centred against the **whole pane** rather than
-against the space left under the 36 px header, which is what the extra
+against the space left under the 32 px header, which is what the extra
 bottom pad buys; it centres with `m-auto` rather than `justify-center`,
 because a centred flex child in an overflow container has its overflowing
 top clipped and unreachable. The grid is `auto-fit` over a
@@ -637,15 +637,20 @@ one column down a pane wide enough for two. Cards therefore *grow* with
 the pane (188 → 252 px) instead of multiplying and shrinking. An odd card
 count lets the last card span the full row rather than orphaning it.
 
-Behind the grid is the pane's one decorated surface: a slow violet mesh
-(`WorkToolPickerBackdrop.tsx`, adapted from the 21st.dev Shader Builder
-"Mesh drift"). Nothing in its GLSL names a colour — `backdropThemeFor`
+Behind the grid is the pane's one decorated surface: a slow violet-to-indigo
+mesh (`WorkToolPickerBackdrop.tsx`, adapted from the 21st.dev Shader Builder
+"Mesh drift") whose gaussians fill the pane without collapsing into one
+wash. Nothing in its GLSL names a colour — `backdropThemeFor`
 hands the shader ADE's own tokens as uniforms, `--color-bg` →
-`--color-accent-deep` → `--color-accent` → `--color-accent-bright` in
-dark, and `--color-surface` up the same violet hues at well under half
+`--color-accent-deep` → indigo `#6366F1` → `--color-accent` → `--color-accent-bright` in
+dark, and `--color-surface` up the same hues at well under half
 the intensity in light, since on a light canvas the same amount of colour
 reads as a stain. The theme comes from the store (`s.theme`), the same
-value `App.tsx` writes to `data-theme`.
+value `App.tsx` writes to `data-theme`. Opening the pane paints the same
+gradient as CSS first so the surface is not empty while WebGL compiles;
+the canvas covers it once it has a frame. Leaving the picker pauses the
+loop without dropping the last frame. The Work new-chat surface uses the
+same backdrop and the same budget.
 
 Its budget is a hard requirement, because this is decoration on a page you
 land on constantly inside a renderer that is also running a terminal, a
@@ -740,7 +745,7 @@ capability flags in `workToolAvailability`, never by `process.platform` —
 the web client renders this same component. An active tool that becomes
 unavailable falls back to the **picker**, not to another tool.
 
-The pane's one 36 px header (`WorkToolHeader.tsx`) is the strip, and it is
+The pane's one 32 px header (`WorkToolHeader.tsx`) is the strip, and it is
 the same bar on both pages. Left edge is the `⊞ Tools` button back to the
 picker (Escape does the same, bound as `work.tools.picker` with scope
 `work` so it only fires inside the pane), lit while the picker is up.
@@ -1345,9 +1350,14 @@ for context insertions. Contains:
 - When the sessions list is collapsed, a thin left rail still offers
   **Show sessions**. The empty draft does not put that control in the
   chat header.
-- lane selector (`LaneCombobox`) synced to the global `selectedLaneId`
+- lane selector (`LaneCombobox`) on the launch shelf under the composer,
+  synced to the global `selectedLaneId`
 - for chat drafts: `AgentChatPane` in draft mode with provider-specific
-  permission controls (`getPermissionOptions`, `safetyColors`)
+  permission controls (`getPermissionOptions`, `safetyColors`). The
+  ADE wordmark and optically lifted composer stay in the original
+  stack; the usage card sits below the launch shelf, a little further
+  down than before, capped to the shelf width, with an opaque darker
+  fill.
 - for cli drafts: a five-tile provider grid (Claude Code, Codex CLI,
   Cursor Agent CLI, Factory Droid CLI, OpenCode CLI) with logos sourced
   from `ToolLogos.tsx` / `ProviderLogos.tsx`. Selecting a provider

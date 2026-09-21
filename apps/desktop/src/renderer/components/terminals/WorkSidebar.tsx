@@ -784,29 +784,42 @@ export function WorkSidebar({
           synchronously (`selectTool`), so the native view is never composited
           over the incoming tool during the overlap. */}
       <div className="relative min-h-0 flex-1 overflow-hidden">
+        {/* The picker stays mounted so its mesh does not recompile on every
+            return from a tool. Hidden and paused while a tool is on screen —
+            the loop stops, the last frame stays, opening Tools is a CSS show. */}
+        <div
+          className={
+            effectiveTool
+              ? "pointer-events-none absolute inset-0 min-h-0 opacity-0"
+              : "absolute inset-0 min-h-0 opacity-100"
+          }
+          aria-hidden={effectiveTool ? true : undefined}
+        >
+          <WorkToolPicker
+            activeTool={tool}
+            context={toolContext}
+            statuses={statuses}
+            loading={statusesLoading}
+            onPick={selectTool}
+            playing={!effectiveTool}
+          />
+        </div>
         <AnimatePresence initial={false}>
-          <motion.div
-            key={effectiveTool ?? "picker"}
-            role={effectiveTool ? "tabpanel" : undefined}
-            // The id its tab points at with `aria-controls`.
-            id={effectiveTool ? workToolPanelId(effectiveTool) : undefined}
-            aria-label={effectiveTool ? workToolLabel(effectiveTool) : undefined}
-            className="absolute inset-0 min-h-0"
-            initial={{ opacity: 0, y: tabSwitch ? 0 : 4 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: tabSwitch ? 0 : -4, pointerEvents: "none" }}
-            transition={transition}
-          >
-            {effectiveTool ? content : (
-              <WorkToolPicker
-                activeTool={tool}
-                context={toolContext}
-                statuses={statuses}
-                loading={statusesLoading}
-                onPick={selectTool}
-              />
-            )}
-          </motion.div>
+          {effectiveTool ? (
+            <motion.div
+              key={effectiveTool}
+              role="tabpanel"
+              id={workToolPanelId(effectiveTool)}
+              aria-label={workToolLabel(effectiveTool)}
+              className="absolute inset-0 z-[1] min-h-0"
+              initial={{ opacity: 0, y: tabSwitch ? 0 : 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: tabSwitch ? 0 : -4, pointerEvents: "none" }}
+              transition={transition}
+            >
+              {content}
+            </motion.div>
+          ) : null}
         </AnimatePresence>
       </div>
     </aside>
