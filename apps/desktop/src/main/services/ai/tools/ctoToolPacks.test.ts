@@ -57,7 +57,6 @@ function runtimeShapedDeps(overrides: Partial<CtoOperatorToolDeps> = {}): CtoOpe
     handoffSession: vi.fn(),
     scheduledWorkService: {} as any,
     proofIngestService: {} as any,
-    reviewService: {} as any,
     searchService: {} as any,
     usageService: {} as any,
     budgetService: {} as any,
@@ -155,22 +154,22 @@ describe("CTO tool packs", () => {
     expect(advertised.listLanes!.description).toBe(tools.listLanes!.description);
     expect(advertised.loadCtoTools!.description).toBe(tools.loadCtoTools!.description);
 
-    const deferred = advertised.startReviewRun!;
-    expect(deferred.description).not.toBe(tools.startReviewRun!.description);
-    expect(deferred.description).toContain('[pack "review"; loadCtoTools for the rest]');
+    const deferred = advertised.searchProject!;
+    expect(deferred.description).not.toBe(tools.searchProject!.description);
+    expect(deferred.description).toContain('[pack "search"; loadCtoTools for the rest]');
     // Deferral must never cost bytes — that guard is the reason short tools
     // keep their real text instead of growing a longer stub.
-    expect(deferred.description.length).toBeLessThan(tools.startReviewRun!.description.length);
+    expect(deferred.description.length).toBeLessThan(tools.searchProject!.description.length);
     // Still callable, and still carrying its real schema — deferral is quiet,
     // never unreachable.
-    expect(deferred.inputSchema).toBe(tools.startReviewRun!.inputSchema);
-    expect(deferred.execute).toBe(tools.startReviewRun!.execute);
+    expect(deferred.inputSchema).toBe(tools.searchProject!.inputSchema);
+    expect(deferred.execute).toBe(tools.searchProject!.execute);
   });
 
   it("restores the full description once its pack is loaded", () => {
     const tools = createCtoOperatorTools(runtimeShapedDeps());
-    const advertised = applyCtoToolPackVisibility(tools, ["review"]);
-    expect(advertised.startReviewRun!.description).toBe(tools.startReviewRun!.description);
+    const advertised = applyCtoToolPackVisibility(tools, ["search"]);
+    expect(advertised.searchProject!.description).toBe(tools.searchProject!.description);
     // Another pack stays deferred — loading one pack does not load them all.
     expect(advertised.getUsageStats!.description).toContain('[pack "insights"; loadCtoTools for the rest]');
   });

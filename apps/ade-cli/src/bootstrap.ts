@@ -149,7 +149,6 @@ import {
 } from "../../desktop/src/main/services/analytics/agentTurnProductAnalytics";
 import { capturePendingInputDismissedAnalytics } from "../../desktop/src/main/services/analytics/featureProductAnalytics";
 import { createSessionDeltaService } from "../../desktop/src/main/services/sessions/sessionDeltaService";
-import { createReviewService } from "../../desktop/src/main/services/review/reviewService";
 import { createProcessRegistryService } from "../../desktop/src/main/services/runtime/processRegistryService";
 import type { createAutoUpdateService } from "../../desktop/src/main/services/updates/autoUpdateService";
 import {
@@ -387,7 +386,6 @@ export type AdeRuntime = {
   storageInsightsService?: ReturnType<typeof createStorageInsightsService> | null;
   budgetCapService?: ReturnType<typeof createBudgetCapService> | null;
   sessionDeltaService?: ReturnType<typeof createSessionDeltaService> | null;
-  reviewService?: ReturnType<typeof createReviewService> | null;
   searchService?: SearchService | null;
   externalSessionsService?: ReturnType<typeof createExternalSessionsService> | null;
   autoUpdateService?: ReturnType<typeof createAutoUpdateService> | null;
@@ -1673,23 +1671,6 @@ export async function createAdeRuntime(args: {
     if (resolvedArgs.chatRuntime === "agent" && !agentChatService) {
       throw new Error("Agent chat runtime was requested but the agent chat service was not initialized.");
     }
-    const reviewService = agentChatService
-      ? createReviewService({
-        db,
-        logger,
-        projectId,
-        projectRoot,
-        projectDefaultBranch: baseRef,
-        laneService,
-        gitService,
-        agentChatService,
-        sessionService,
-        sessionDeltaService,
-        testService,
-        prService: headlessLinearServices.prService,
-        onEvent: (event) => pushEvent("runtime", { type: "review_event", event }),
-      })
-      : null;
     // Automations are unattended work the machine's own ADE schedules and owns.
     // An embedded runtime runs inside somebody else's process on somebody
     // else's lifecycle, so it must not start rules, fire ingress dispatches, or
@@ -2463,7 +2444,6 @@ export async function createAdeRuntime(args: {
       laneWorktreeLockService,
       ptyService,
       testService,
-      reviewService,
       searchService,
       externalSessionsService,
       aiIntegrationService,

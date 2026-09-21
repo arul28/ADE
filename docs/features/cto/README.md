@@ -295,9 +295,9 @@ is no `handoffChat`: it targeted "a different agent identity" and
 ### Tool packs
 
 The curated tool surface is large enough that advertising every description on
-every turn is its own context cost. `ctoToolPacks.ts` splits it into twelve
+every turn is its own context cost. `ctoToolPacks.ts` splits it into eleven
 packs — `core`, `linear`, `files`, `tests`, `conflicts`, `scheduling`, `proof`,
-`review`, `search`, `insights`, `config`, `devices` — each with
+`search`, `insights`, `config`, `devices` — each with
 a one-line scope string the capability manifest reuses verbatim.
 
 `core` is the standing surface and is always loaded **by construction**:

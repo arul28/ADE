@@ -13,7 +13,6 @@ export const DB_BREAKDOWN_META: Record<
 > = {
   webhooks: { label: "Webhook history", table: "automation_ingress_events", action: "prunable" },
   sync_bookkeeping: { label: "Sync bookkeeping", table: "operations__crsql", action: "compactable" },
-  review_artifacts: { label: "Review artifacts", table: "review_run_artifacts", action: "prunable" },
   pr_cache: { label: "PR cache", table: "pull_request_snapshots", action: "prunable" },
   core: { label: "Core data", table: "core", action: null },
 };
@@ -23,7 +22,6 @@ export function classifyDbTable(name: string): DbBreakdownCategoryKey {
   const lower = name.toLowerCase();
   if (lower.startsWith("operations__crsql")) return "sync_bookkeeping";
   if (lower.includes("automation_ingress_events")) return "webhooks";
-  if (lower.includes("review_run_artifacts")) return "review_artifacts";
   if (lower.includes("pull_request_snapshots")) return "pr_cache";
   return "core";
 }

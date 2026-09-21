@@ -16,7 +16,6 @@ import {
   INGRESS_EVENT_RETENTION_MS,
   EVENT_LOG_RETENTION_DAYS,
   PR_SNAPSHOT_RETENTION_DAYS,
-  REVIEW_ARTIFACT_RETENTION_DAYS,
 } from "../state/dbMaintenanceApi";
 
 // The DB retention/count policies below derive from the shared enforcement
@@ -51,14 +50,6 @@ export const STORAGE_LEDGER: readonly StorageLedgerEntry[] = [
     policyClass: "operational",
     policy: {},
     enforcement: "doctor",
-  },
-  {
-    id: "db.review_run_artifacts",
-    kind: "table",
-    description: "Review artifacts — cached code-review results, re-derivable from a fresh run.",
-    policyClass: "derived",
-    policy: { maxAgeDays: REVIEW_ARTIFACT_RETENTION_DAYS },
-    enforcement: "both",
   },
   {
     id: "db.pull_request_snapshots",

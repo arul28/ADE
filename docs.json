@@ -89,7 +89,6 @@
             "group": "Review & ship",
             "icon": "code-pull-request",
             "pages": [
-              "tools/review",
               "tools/pull-requests",
               "guides/stacked-prs",
               "tools/conflicts",

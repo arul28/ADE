@@ -696,8 +696,8 @@ that could not work without it.
   alias. Parallel mode passes the per-slot setter through the slot's own
   picker (`onParallelSlotCodexFastModeChange`).
 
-  Surfaces not yet migrated (`ModelSelector`, `ReviewLaunchModelControls`,
-  `CtoSettingsPage`, `ProjectlessComposer`)
+  Surfaces not yet migrated (`ModelSelector`, `CtoSettingsPage`,
+  `ProjectlessComposer`)
   still pass the deprecated `fastModeActive` / `onFastModeToggle` pair,
   which keeps rendering the old sibling chip. Migrating them is a prop
   rename with nothing else to unwind.

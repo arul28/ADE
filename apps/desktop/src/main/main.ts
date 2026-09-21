@@ -310,7 +310,6 @@ import { createCursorCloudIngressService } from "./services/automations/cursorCl
 import { createCursorCloudFleetService } from "./services/chat/cursorCloudFleetService";
 import { buildCursorCloudAutomationDispatches } from "./services/automations/cursorCloudAutomationDispatch";
 import { openCursorCloudCredentialStore } from "./services/chat/cursorCloudCreateOptions";
-import { createReviewService } from "./services/review/reviewService";
 import { createGithubPollingService } from "./services/automations/githubPollingService";
 import type { AutomationAdeActionRegistry } from "./services/automations/automationService";
 import {
@@ -4082,7 +4081,6 @@ app.whenReady().then(async () => {
       // later in this same bootstrap, and the CTO's tool map is only built when
       // a CTO session actually runs.
       getAutomationPlannerService: () => automationPlannerService,
-      getReviewService: () => reviewService,
       getUsageService: () => usageTrackingService,
       getBudgetService: () => budgetCapService,
       // Names and metadata only. `projectSecretService.get`/`exportEnv` are
@@ -4305,21 +4303,6 @@ app.whenReady().then(async () => {
           emitProjectEvent(projectRoot, IPC.automationsEvent, event),
       });
     }
-    const reviewService = createReviewService({
-      db,
-      logger,
-      projectId,
-      projectRoot,
-      projectDefaultBranch: baseRef,
-      laneService,
-      gitService,
-      agentChatService,
-      sessionService,
-      sessionDeltaService,
-      testService,
-      prService,
-      onEvent: (event) => emitProjectEvent(projectRoot, IPC.reviewEvent, event),
-    });
     // Constructed even when automations are unavailable (packaged builds):
     // the relay poll feeds prService.ingestGithubWebhook for PR freshness,
     // while automation rule dispatch stays gated on automationService.
@@ -5484,7 +5467,6 @@ app.whenReady().then(async () => {
       iosSimulatorService,
       appControlService,
       prSummaryService,
-      reviewService,
       searchService,
       externalSessionsService,
       jobEngine,
@@ -5697,7 +5679,6 @@ app.whenReady().then(async () => {
       prService: null,
       prPollingService: null,
       prSummaryService: null,
-      reviewService: null,
       jobEngine: null,
       transcriptionService: getSharedTranscriptionService(logger),
       automationService: null,
@@ -5977,11 +5958,6 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.automationService?.dispose();
-    } catch {
-      // ignore
-    }
-    try {
-      ctx.reviewService?.dispose?.();
     } catch {
       // ignore
     }

@@ -383,4 +383,46 @@ describe.skipIf(!isCrsqliteAvailable())("kvDb sync foundation", () => {
     db2.close();
   });
 
+  it("ignores CRDT changes for the retired review tables", async () => {
+    const db = await openKvDb(makeDbPath("ade-kvdb-sync-retired-review-"), createLogger() as any);
+    const retiredChange = {
+      table: "review_findings",
+      pk: "finding-1",
+      cid: "title",
+      val: "legacy finding",
+      col_version: 1,
+      db_version: 1,
+      site_id: "a".repeat(32),
+      cl: 1,
+      seq: 1,
+    };
+
+    const beforeVersion = db.sync.getDbVersion();
+    const result = db.sync.applyChanges([retiredChange as any]);
+    expect(result.appliedCount).toBe(0);
+    expect(result.touchedTables).not.toContain("review_findings");
+    expect(db.sync.getDbVersion()).toBe(beforeVersion);
+
+    db.close();
+  });
+
+  it("drops the retired review schema from an upgraded database", async () => {
+    const dbPath = makeDbPath("ade-kvdb-sync-retired-review-drop-");
+    const first = await openKvDb(dbPath, createLogger() as any);
+    // An upgraded database still holds the review tables the previous release
+    // created — as CRRs, with triggers and shadow tables — and the next open
+    // has to retire them locally.
+    first.run("create table review_findings (id text primary key not null, run_id text not null default '')");
+    first.run("create table review_runs (id text primary key not null, project_id text not null default '')");
+    first.run("insert into review_runs(id, project_id) values ('run-1', 'project-1')");
+    first.run("insert into review_findings(id, run_id) values ('finding-1', 'run-1')");
+    first.get("select crsql_as_crr(?)", ["review_runs"]);
+    first.get("select crsql_as_crr(?)", ["review_findings"]);
+    first.close();
+
+    const second = await openKvDb(dbPath, createLogger() as any);
+    expect(second.get("select name from sqlite_master where name like 'review_%'")).toBeNull();
+    second.close();
+  });
+
 });

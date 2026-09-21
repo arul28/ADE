@@ -1336,7 +1336,6 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
           };
         });
       await runDbStep("db.automation_ingress_events", "prune", maintenance?.pruneIngressEvents.bind(maintenance));
-      await runDbStep("db.review_run_artifacts", "prune", maintenance?.pruneReviewArtifacts.bind(maintenance));
       await runDbStep("db.pull_request_snapshots", "prune", maintenance?.prunePrSnapshots.bind(maintenance));
       // Method-level `?.`, not just object-level: this API is consumed optionally so
       // the doctor degrades on a handle that predates a step, and `x?.method.bind()`

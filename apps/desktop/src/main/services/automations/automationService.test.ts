@@ -3177,10 +3177,8 @@ describe("automation ingress storage bounds", () => {
 
   it("runs startup retention even when no legacy ingress payloads remain", () => {
     const { db, raw } = createInMemoryAdeDb();
-    raw.run("create table review_run_artifacts(id text primary key, created_at text not null)");
     raw.run("create table pull_request_snapshots(pr_id text primary key, updated_at text not null)");
     const oldIngress = new Date(Date.now() - 8 * 24 * 60 * 60 * 1_000).toISOString();
-    const oldReview = new Date(Date.now() - 31 * 24 * 60 * 60 * 1_000).toISOString();
     const oldSnapshot = new Date(Date.now() - 61 * 24 * 60 * 60 * 1_000).toISOString();
     raw.run(
       `insert into automation_ingress_events(
@@ -3189,13 +3187,11 @@ describe("automation ingress storage bounds", () => {
       ) values ('stale-ingress', 'proj', 'github-relay', 'stale-ingress', '[]', 'github.issue_opened', 'ignored', null, ?)`,
       [oldIngress],
     );
-    raw.run("insert into review_run_artifacts values ('stale-review', ?)", [oldReview]);
     raw.run("insert into pull_request_snapshots values ('stale-pr', ?)", [oldSnapshot]);
 
     const service = createIngressService(db);
     try {
       expect(mapExecRows(raw.exec("select id from automation_ingress_events"))).toEqual([]);
-      expect(mapExecRows(raw.exec("select id from review_run_artifacts"))).toEqual([]);
       expect(mapExecRows(raw.exec("select pr_id from pull_request_snapshots"))).toEqual([]);
     } finally {
       service.dispose();
@@ -3204,12 +3200,10 @@ describe("automation ingress storage bounds", () => {
 
   it("reclaims legacy payloads and local caches once, in bounded chunks", () => {
     const { db, raw } = createInMemoryAdeDb();
-    raw.run("create table review_run_artifacts(id text primary key, created_at text not null)");
     raw.run("create table pull_request_snapshots(pr_id text primary key, updated_at text not null)");
 
     const recent = new Date().toISOString();
     const oldIngress = new Date(Date.now() - 8 * 24 * 60 * 60 * 1_000).toISOString();
-    const oldReview = new Date(Date.now() - 31 * 24 * 60 * 60 * 1_000).toISOString();
     const oldSnapshot = new Date(Date.now() - 61 * 24 * 60 * 60 * 1_000).toISOString();
     raw.run("begin");
     const insert = raw.prepare(`
@@ -3229,7 +3223,6 @@ describe("automation ingress storage bounds", () => {
     }
     insert.free();
     raw.run("commit");
-    raw.run("insert into review_run_artifacts values ('old-review', ?), ('new-review', ?)", [oldReview, recent]);
     raw.run("insert into pull_request_snapshots values ('old-pr', ?), ('new-pr', ?)", [oldSnapshot, recent]);
 
     const info = vi.fn();
@@ -3244,7 +3237,6 @@ describe("automation ingress storage bounds", () => {
       expect(mapExecRows(raw.exec(
         "select count(*) as count from automation_ingress_events where project_id = 'proj'",
       ))[0]?.count).toBe(2_003);
-      expect(mapExecRows(raw.exec("select id from review_run_artifacts order by id"))).toEqual([{ id: "new-review" }]);
       expect(mapExecRows(raw.exec("select pr_id from pull_request_snapshots order by pr_id"))).toEqual([{ pr_id: "new-pr" }]);
       expect(info).toHaveBeenCalledWith("automations.ingress_payload_reclaim", {
         rowsCleared: 2_205,

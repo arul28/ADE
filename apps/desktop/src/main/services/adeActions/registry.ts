@@ -3425,7 +3425,6 @@ export function getAdeActionDomainServices(
     app_control: toService(runtime.appControlService),
     built_in_browser: toService(runtime.builtInBrowserService),
     automations: automationsEnabled ? toService(buildAutomationsDomainService(runtime)) : null,
-    review: toService(runtime.reviewService),
     issue: toService(buildIssueDomainService(runtime)),
     search: toService(buildSearchDomainService(runtime)),
     "external-sessions": toService(buildExternalSessionsDomainService(runtime)),
