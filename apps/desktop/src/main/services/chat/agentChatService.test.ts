@@ -2183,6 +2183,42 @@ function writePersistedChatState(sessionId: string, nextState: Record<string, un
   );
 }
 
+/**
+ * The setup every Claude approval test shares: one session whose stream never
+ * yields, so the only state writes are the host's own. Returning `canUseTool`
+ * (rather than raising a card here) lets each test drive its own asks.
+ */
+async function openClaudeApprovalHarness(sdkSessionId: string) {
+  const events: AgentChatEventEnvelope[] = [];
+  vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+    send: vi.fn().mockResolvedValue(undefined),
+    stream: vi.fn(async function* () { return; }),
+    close: vi.fn(),
+    sessionId: sdkSessionId,
+    setPermissionMode: vi.fn().mockResolvedValue(undefined),
+  } as any);
+
+  const { service } = createService({
+    onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+  });
+  const session = await service.createSession({
+    laneId: "lane-1",
+    provider: "claude",
+    model: "sonnet",
+  });
+  await vi.waitFor(() => { expect(claudeSdkCreateSessionCompat).toHaveBeenCalled(); });
+
+  const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
+    canUseTool?: (
+      tool: string,
+      input: Record<string, unknown>,
+      options: Record<string, unknown>,
+    ) => Promise<Record<string, unknown>>;
+  } | undefined;
+
+  return { service, session, events, opts };
+}
+
 async function waitForEvent<T extends AgentChatEventEnvelope>(
   events: AgentChatEventEnvelope[],
   predicate: (event: AgentChatEventEnvelope) => event is T,
@@ -18067,32 +18103,7 @@ describe("createAgentChatService", () => {
       // Without a `pending_input_resolved` per item the summary's restart
       // fallback keeps naming a card nothing can answer, and the row stays
       // stuck on "Needs you" with no way out.
-      const events: AgentChatEventEnvelope[] = [];
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send: vi.fn().mockResolvedValue(undefined),
-        stream: vi.fn(async function* () { return; }),
-        close: vi.fn(),
-        sessionId: "sdk-session-settle-receipts",
-        setPermissionMode: vi.fn().mockResolvedValue(undefined),
-      } as any);
-
-      const { service } = createService({
-        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-      });
-      await vi.waitFor(() => { expect(claudeSdkCreateSessionCompat).toHaveBeenCalled(); });
-
-      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
-        canUseTool?: (
-          tool: string,
-          input: Record<string, unknown>,
-          options: Record<string, unknown>,
-        ) => Promise<Record<string, unknown>>;
-      } | undefined;
+      const { service, session, events, opts } = await openClaudeApprovalHarness("sdk-session-settle-receipts");
       expect(opts?.canUseTool).toBeDefined();
 
       const firstWaiter = opts!.canUseTool!(
@@ -18131,32 +18142,7 @@ describe("createAgentChatService", () => {
       // Session", and a client that sends `accept_for_session` anyway — an
       // older build, a scripted answer — must be downgraded to a one-shot
       // allow, or the SDK's refusal is silently overridden by ADE.
-      const events: AgentChatEventEnvelope[] = [];
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send: vi.fn().mockResolvedValue(undefined),
-        stream: vi.fn(async function* () { return; }),
-        close: vi.fn(),
-        sessionId: "sdk-session-suppress-always-allow",
-        setPermissionMode: vi.fn().mockResolvedValue(undefined),
-      } as any);
-
-      const { service } = createService({
-        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-      });
-      await vi.waitFor(() => { expect(claudeSdkCreateSessionCompat).toHaveBeenCalled(); });
-
-      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
-        canUseTool?: (
-          tool: string,
-          input: Record<string, unknown>,
-          options: Record<string, unknown>,
-        ) => Promise<Record<string, unknown>>;
-      } | undefined;
+      const { service, session, events, opts } = await openClaudeApprovalHarness("sdk-session-suppress-always-allow");
       expect(opts?.canUseTool).toBeDefined();
 
       const raisedCards = () => events.filter((event) => event.event.type === "approval_request");
@@ -18209,32 +18195,7 @@ describe("createAgentChatService", () => {
       // possibly restored from a previous app run — must not answer a
       // suppressed ask either, or the SDK's refusal is defeated by state ADE
       // kept for a different call. The override stays usable for ordinary asks.
-      const events: AgentChatEventEnvelope[] = [];
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send: vi.fn().mockResolvedValue(undefined),
-        stream: vi.fn(async function* () { return; }),
-        close: vi.fn(),
-        sessionId: "sdk-session-suppress-vs-override",
-        setPermissionMode: vi.fn().mockResolvedValue(undefined),
-      } as any);
-
-      const { service } = createService({
-        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-      });
-      await vi.waitFor(() => { expect(claudeSdkCreateSessionCompat).toHaveBeenCalled(); });
-
-      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
-        canUseTool?: (
-          tool: string,
-          input: Record<string, unknown>,
-          options: Record<string, unknown>,
-        ) => Promise<Record<string, unknown>>;
-      } | undefined;
+      const { service, session, events, opts } = await openClaudeApprovalHarness("sdk-session-suppress-vs-override");
       const raisedCards = () => events.filter((event) => event.event.type === "approval_request");
 
       const ordinary = opts!.canUseTool!(
@@ -18282,37 +18243,48 @@ describe("createAgentChatService", () => {
       expect(raisedCards()).toHaveLength(2);
     });
 
+    it("persists a session-wide override before the next provider event", async () => {
+      // The resolution receipt is the only state write before the `canUseTool`
+      // continuation runs, and it cannot see the override the continuation
+      // adds. Without an explicit persist there, "Allow for Session" survives
+      // a crash only if the provider happens to emit another event first — the
+      // user's choice must not depend on that.
+      const { service, session, events, opts } = await openClaudeApprovalHarness("sdk-session-override-persist");
+
+      const persistedOverrides = (): string[] =>
+        (readPersistedChatState(session.id).approvalOverrides as string[] | undefined) ?? [];
+
+      const ask = opts!.canUseTool!(
+        "Bash",
+        { command: "ls" },
+        { signal: new AbortController().signal, toolUseID: "tool-persist-override-1" },
+      );
+      const card = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } => event.event.type === "approval_request",
+      );
+      expect(persistedOverrides()).toEqual([]);
+
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: card.event.itemId,
+        decision: "accept_for_session",
+      });
+      await expect(ask).resolves.toMatchObject({ behavior: "allow" });
+      // The override stores the normalized tool name, which is what the gate
+      // reads back on the next ask.
+      await waitFor(() => persistedOverrides().includes("bash"));
+      expect(persistedOverrides()).toContain("bash");
+    });
+
     it("reads a question-card option answer as the approval decision", async () => {
       // iOS renders an approval's options as chips and answers with `accept`
       // plus the chosen value in `answers`. The host reads `decision`, so
       // without this a chip labeled "Deny" would allow the tool — the exact
       // opposite of what the user tapped.
-      const events: AgentChatEventEnvelope[] = [];
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send: vi.fn().mockResolvedValue(undefined),
-        stream: vi.fn(async function* () { return; }),
-        close: vi.fn(),
-        sessionId: "sdk-session-option-answer",
-        setPermissionMode: vi.fn().mockResolvedValue(undefined),
-      } as any);
-
-      const { service } = createService({
-        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-      });
-      await vi.waitFor(() => { expect(claudeSdkCreateSessionCompat).toHaveBeenCalled(); });
-
-      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
-        canUseTool?: (
-          tool: string,
-          input: Record<string, unknown>,
-          options: Record<string, unknown>,
-        ) => Promise<Record<string, unknown>>;
-      } | undefined;
+      const { service, session, events, opts } = await openClaudeApprovalHarness("sdk-session-option-answer");
       const raisedCards = () => events.filter((event) => event.event.type === "approval_request");
 
       const denied = opts!.canUseTool!(
@@ -18386,32 +18358,7 @@ describe("createAgentChatService", () => {
       // holds AskUserQuestion (kind "question"), whose option values are
       // model-authored labels. Without the guard, an option a model happened to
       // spell `deny` would deny the whole question and drop the user's answer.
-      const events: AgentChatEventEnvelope[] = [];
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send: vi.fn().mockResolvedValue(undefined),
-        stream: vi.fn(async function* () { return; }),
-        close: vi.fn(),
-        sessionId: "sdk-session-question-deny-option",
-        setPermissionMode: vi.fn().mockResolvedValue(undefined),
-      } as any);
-
-      const { service } = createService({
-        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-      });
-      await vi.waitFor(() => { expect(claudeSdkCreateSessionCompat).toHaveBeenCalled(); });
-
-      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
-        canUseTool?: (
-          tool: string,
-          input: Record<string, unknown>,
-          options: Record<string, unknown>,
-        ) => Promise<Record<string, unknown>>;
-      } | undefined;
+      const { service, session, events, opts } = await openClaudeApprovalHarness("sdk-session-question-deny-option");
 
       const asked = opts!.canUseTool!(
         "AskUserQuestion",

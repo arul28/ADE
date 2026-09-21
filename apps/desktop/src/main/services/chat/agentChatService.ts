@@ -10706,6 +10706,11 @@ export function createAgentChatService(args: {
       const sessionWide = response.decision === "accept_for_session" && !approvalFlags.suppressAlwaysAllowRule;
       if (sessionWide) {
         runtime.approvalOverrides.add(normalizedToolName);
+        // Persist now, not on the next provider event: the resolution receipt
+        // was already written by `deliverInputResponse` before this promise
+        // continuation runs, so a crash before that next event would drop the
+        // session-wide choice the user just made.
+        persistChatState(managed);
       }
       if (approved) {
         rememberUserAuthoredClassifierContext(runtime, sdkOptions?.toolUseID, {
