@@ -27921,11 +27921,21 @@ export function createAgentChatService(args: {
       if (!acc || acc.totalTokens <= 0) return undefined;
       return { totalTokens: acc.totalTokens, ...(acc.costUsd > 0 ? { costUsd: acc.costUsd } : {}) };
     };
+    // Children this turn has already settled. OpenCode keeps publishing
+    // `session.updated` for a finished child (its summary, its `time.updated`
+    // when the parent reads the result) AFTER that child's `session.idle`, and
+    // the "missed the created event" synthesis below used to re-add the child
+    // on that update. Nothing settles it a second time, so the parent's idle
+    // then waited on a child that had already reported, and the turn never
+    // ended: 2026-09-21, two dev-loop turns with start → result → start in the
+    // transcript and no `done`.
+    const settledOpenCodeSubagentKeys = new Set<string>();
     const settleOpenCodeSubagent = (
       childKey: string,
       status: "completed" | "failed" | "stopped",
       summaryOverride?: string,
     ): boolean => {
+      settledOpenCodeSubagentKeys.add(childKey);
       const child = runtime.subagentSessions.get(childKey);
       if (!child) return false;
       const summary = summaryOverride ?? child.summary;
@@ -28252,6 +28262,7 @@ export function createAgentChatService(args: {
             };
             const ensureSubagentStarted = (): void => {
               if (runtime.subagentSessions.has(childKey)) return;
+              if (settledOpenCodeSubagentKeys.has(childKey)) return;
               runtime.subagentSessions.set(childKey, {
                 summary: formatSummary(),
                 turnId,
@@ -28273,6 +28284,12 @@ export function createAgentChatService(args: {
             if (event.type === "session.created") {
               ensureSubagentStarted();
             } else if (event.type === "session.updated") {
+              // A finished child keeps publishing updates; they are not a new
+              // run and must not re-add it (see `settledOpenCodeSubagentKeys`).
+              if (settledOpenCodeSubagentKeys.has(childKey)) {
+                if (parentSessionIdle && runtime.subagentSessions.size === 0) break;
+                continue;
+              }
               // Synthesize started first if we missed the created event so the
               // panel has a row to update.
               ensureSubagentStarted();

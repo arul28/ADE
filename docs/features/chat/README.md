@@ -3196,15 +3196,23 @@ declares no kinds.
   2 to allow one real reconnect — 1 permits none. The `onSseError` log is skipped
   when the turn's abort signal already fired, because that is the user's Stop.
   The cap does not cover the other loss: a socket that reconnects within the
-  cap still dropped whatever was published in the gap, and on 2026-09-21 two
-  dev-loop turns in one chat ended in OpenCode (`exiting loop` in its log) with
-  no `done` in the ADE transcript and the chat showing "Working" for hours. So
-  the loop reads the stream through `withOpenCodeIdleProbe`
+  cap still dropped whatever was published in the gap. So the loop reads the
+  stream through `withOpenCodeIdleProbe`
   (`openCodeIdleProbe.ts`): after `OPENCODE_IDLE_PROBE_QUIET_MS` of silence it
   calls `GET /session/status` and synthesizes `session.idle` for every session
   it still waits on that the server does not report `busy`, logging
   `agent_chat.opencode_idle_recovered_by_probe`. A busy session (a long tool
   call, a CI poll) is left alone, and a failed probe is unknown, not idle.
+- **A settled child never comes back.** OpenCode keeps publishing
+  `session.updated` for a finished child (its summary, its `time.updated` when
+  the parent reads the result) after that child's `session.idle`. The
+  "missed the created event" synthesis used to re-add it, nothing settled it a
+  second time, and the parent's idle then waited on a child that had already
+  reported: on 2026-09-21 two dev-loop turns in one chat read `subagent_started`
+  → `subagent_result` → `subagent_started` in the transcript with no `done`,
+  and showed "Working" for hours. `settledOpenCodeSubagentKeys` records every
+  settled child for the turn; a later update for one is ignored. The idle probe
+  above is the safety net for this class, not the fix.
 - **Cancel OpenCode question cards on interrupt and on turn failure, never on a
   clean completion.** `requestChatInput` parks the card in
   `managed.localPendingInputs`, which the interrupt path did not drain — it

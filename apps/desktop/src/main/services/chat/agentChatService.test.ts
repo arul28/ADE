@@ -47491,6 +47491,77 @@ describe("createAgentChatService", () => {
     await sendPromise;
   });
 
+  it("finishes an OpenCode turn when a settled child keeps publishing session.updated", async () => {
+    // 2026-09-21: a child reported (session.idle) and one millisecond later
+    // OpenCode published session.updated for that same finished child. The
+    // "missed the created event" synthesis re-added it, nothing settled it
+    // again, and the parent's idle waited forever: the transcript read
+    // subagent_started → subagent_result → subagent_started, with no done.
+    const events: AgentChatEventEnvelope[] = [];
+    let releaseStream!: () => void;
+    const streamGate = new Promise<void>((resolve) => {
+      releaseStream = () => resolve();
+    });
+    vi.mocked(streamText).mockImplementation(() => ({
+      fullStream: (async function* () {
+        await streamGate;
+        yield { type: "finish", usage: {} };
+      })(),
+    }) as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "opencode",
+      model: "opencode/openai/gpt-5.4",
+      modelId: "opencode/openai/gpt-5.4",
+    });
+    const sendPromise = service.sendMessage({ sessionId: session.id, text: "Run the dev loop." });
+    const started = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "status" && event.event.turnStatus === "started",
+    );
+    const state = [...mockState.openCodeSessions.values()][0]!;
+    const pushEvents = (...nextEvents: any[]): void => {
+      state.events.push(...nextEvents);
+      const waiters = [...state.waiters];
+      state.waiters.length = 0;
+      waiters.forEach((waiter) => waiter());
+    };
+    const child = (extra: Record<string, unknown> = {}) => ({
+      id: "opencode-child-1",
+      parentID: "opencode-session-1",
+      title: "Post-rebase quality revalidation",
+      ...extra,
+    });
+
+    pushEvents(
+      { type: "session.created", properties: { info: child() } },
+      { type: "session.idle", properties: { sessionID: "opencode-child-1" } },
+      // The late update for the finished child.
+      { type: "session.updated", properties: { info: child({ summary: { additions: 1, deletions: 0, files: 1 } }) } },
+    );
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "subagent_result" && event.event.taskId === "opencode-child-1",
+    );
+
+    releaseStream();
+    const done = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "done" && event.event.turnId === started.event.turnId,
+    );
+    expect(done.event).toMatchObject({ status: "completed" });
+    // One row, started once, settled once: the late update did not resurrect it.
+    expect(events.filter((e) => e.event.type === "subagent_started" && e.event.taskId === "opencode-child-1")).toHaveLength(1);
+    await sendPromise;
+  });
+
   it("never renders OpenCode user-message parts as assistant output", async () => {
     // Regression: `message.part.updated` carries user-message parts too (the
     // prompt echo, and historically the synthetic system-prompt part). Without
