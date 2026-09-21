@@ -1477,6 +1477,12 @@ export type DevinCloudCreateSessionRequest = {
   linearIssueId?: string | null;
   /** Skip Devin's approval gate (maps to `bypass_approval`). */
   bypassApproval?: boolean;
+  /**
+   * VM platform label for the session (`platform`, v3 only) — org-defined
+   * values such as linux/macos/windows or an outpost pool name; unset uses
+   * the org default.
+   */
+  platform?: string | null;
 };
 
 export type DevinCloudCreateSessionResult = {
@@ -1603,6 +1609,8 @@ export type DevinCloudCreateSessionForLaneRequest = {
   devinMode?: DevinCloudMode | null;
   projectId?: string | null;
   bypassApproval?: boolean;
+  /** VM platform label (v3 only); unset uses the org default. */
+  platform?: string | null;
 };
 
 export type DevinCloudCreateSessionForLaneResult = {

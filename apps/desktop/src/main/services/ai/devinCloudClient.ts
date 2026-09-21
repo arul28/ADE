@@ -478,6 +478,7 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
       ...(input.devinMode ? { devin_mode: input.devinMode } : {}),
       ...(input.resumable !== undefined ? { resumable: input.resumable } : {}),
       ...(input.bypassApproval !== undefined ? { bypass_approval: input.bypassApproval } : {}),
+      ...(input.platform?.trim() ? { platform: input.platform.trim() } : {}),
     };
     const record = await request<unknown>(await orgPath("/sessions"), { method: "POST", body });
     if (!isRecord(record)) throw new Error("Devin did not return a session.");

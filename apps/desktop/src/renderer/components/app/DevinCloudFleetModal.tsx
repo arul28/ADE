@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useNavigate } from "react-router-dom";
 import {
   ArrowSquareOut,
   ArrowsClockwise,
@@ -21,6 +22,7 @@ import {
   repoMatchKey,
 } from "../../lib/devinCloudUtils";
 import { announceWorkChatSessionCreated } from "../../lib/chatSessionEvents";
+import { revealTerminalSessionInWork } from "../work/ClaudeLoginPromptButton";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
@@ -85,6 +87,22 @@ export function DevinCloudFleetModal({
 
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const lanes = useAppStore((s) => s.lanes);
+  const navigate = useNavigate();
+  const [devinCliAvailable, setDevinCliAvailable] = useState(false);
+
+  // `devin` CLI presence gates the VM actions (ssh / forward / steer) — they
+  // ride the logged-in CLI credentials, not the fleet's API key.
+  useEffect(() => {
+    let cancelled = false;
+    void window.ade.agentTools?.detect?.()
+      .then((tools) => {
+        if (!cancelled) {
+          setDevinCliAvailable(Boolean(tools?.some((t) => t.id === "devin" && t.installed)));
+        }
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
 
   const refresh = useCallback(async (soft: boolean) => {
     const generation = ++requestGeneration.current;
@@ -246,6 +264,51 @@ export function DevinCloudFleetModal({
     }
   }, [lanes, onClose, projectRoot]);
 
+  /**
+   * VM actions ride the Devin CLI (devin ssh / forward / --cloud -r) as a
+   * tracked terminal in the session's lane — same lane resolution as opening
+   * the mirrored chat.
+   */
+  const openVmAction = useCallback(async (
+    entry: DevinCloudFleetEntry,
+    kind: "ssh" | "steer" | "forward",
+    port?: string,
+  ) => {
+    const devinSessionId = entry.session.sessionId;
+    setBusySessionId(devinSessionId);
+    setRowError(null);
+    try {
+      const laneId = entry.ownership.laneId
+        ?? entry.adeLaneId
+        ?? lanes.find((lane) => lane.laneType === "primary")?.id
+        ?? null;
+      if (!laneId) throw new Error("No lane available to host this terminal.");
+      const label = entry.session.title || devinSessionId.slice(0, 10);
+      const spec =
+        kind === "ssh"
+          ? { args: ["ssh", devinSessionId], title: `Devin VM · ${label}` }
+          : kind === "forward"
+            ? { args: ["forward", devinSessionId, port ?? ""], title: `Devin forward · ${label}` }
+            : { args: ["--cloud", "-r", devinSessionId], title: `Devin Cloud · ${label}` };
+      const created = await window.ade.pty.create({
+        laneId,
+        cols: 100,
+        rows: 30,
+        title: spec.title,
+        tracked: true,
+        toolType: "devin",
+        command: "devin",
+        args: spec.args,
+      });
+      revealTerminalSessionInWork(navigate, { terminalId: created.sessionId, laneId });
+      onClose();
+    } catch (err) {
+      setRowError({ sessionId: devinSessionId, message: devinCloudErrorMessage(err) });
+    } finally {
+      setBusySessionId(null);
+    }
+  }, [lanes, navigate, onClose]);
+
   const terminateSession = useCallback(async (entry: DevinCloudFleetEntry) => {
     const devinSessionId = entry.session.sessionId;
     setBusySessionId(devinSessionId);
@@ -373,6 +436,8 @@ export function DevinCloudFleetModal({
           current === entry.session.sessionId ? null : current,
         )
       }
+      devinCliAvailable={devinCliAvailable}
+      onVmAction={(kind, port) => void openVmAction(entry, kind, port)}
     />
   );
 

@@ -45583,6 +45583,7 @@ export function createAgentChatService(args: {
     devinMode?: DevinCloudMode | null;
     projectId?: string | null;
     bypassApproval?: boolean;
+    platform?: string | null;
   }): Promise<{ sessionId: string; session: AgentChatSession; devinSessionId: string }> => {
     const trimmedLane = args.laneId.trim();
     const prompt = args.prompt.trim();
@@ -45653,6 +45654,7 @@ export function createAgentChatService(args: {
       ...(args.title?.trim() ? { title: args.title.trim() } : {}),
       ...(args.devinMode ? { devinMode: args.devinMode } : {}),
       ...(args.bypassApproval !== undefined ? { bypassApproval: args.bypassApproval } : {}),
+      ...(args.platform?.trim() ? { platform: args.platform.trim() } : {}),
     });
     const opened = await openDevinCloudChat({
       devinSessionId: created.sessionId,

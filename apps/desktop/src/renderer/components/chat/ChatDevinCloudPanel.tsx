@@ -54,6 +54,9 @@ type ChatDevinCloudPanelProps = {
   laneGitBranch?: string | null;
   devinMode: DevinCloudMode | null;
   onDevinModeChange: (mode: DevinCloudMode | null) => void;
+  /** VM platform label (v3, org-defined e.g. linux/macos/windows/outpost). */
+  platform: string;
+  onPlatformChange: (value: string) => void;
   bypassApproval: boolean;
   onBypassApprovalChange: (value: boolean) => void;
   onLaunched?: (devinSessionId: string) => void;
@@ -76,6 +79,8 @@ export const ChatDevinCloudPanel = forwardRef<ChatDevinCloudPanelHandle, ChatDev
   laneGitBranch,
   devinMode,
   onDevinModeChange,
+  platform,
+  onPlatformChange,
   bypassApproval,
   onBypassApprovalChange,
   onLaunched,
@@ -158,6 +163,7 @@ export const ChatDevinCloudPanel = forwardRef<ChatDevinCloudPanelHandle, ChatDev
         prompt: trimmedPrompt,
         devinMode,
         bypassApproval,
+        platform: platform.trim() || null,
       });
       onLaunched?.(created.devinSessionId);
       onOpened?.({ sessionId: created.sessionId, session: created.session });
@@ -169,7 +175,7 @@ export const ChatDevinCloudPanel = forwardRef<ChatDevinCloudPanelHandle, ChatDev
     } finally {
       setLoading(false);
     }
-  }, [bypassApproval, devinMode, laneId, onLaunched, onMissingFields, onOpened, refresh]);
+  }, [bypassApproval, devinMode, laneId, onLaunched, onMissingFields, onOpened, platform, refresh]);
 
   useImperativeHandle(ref, () => ({
     launchWithPrompt,
@@ -280,6 +286,23 @@ export const ChatDevinCloudPanel = forwardRef<ChatDevinCloudPanelHandle, ChatDev
                     <option key={mode} value={mode}>{devinCloudModeLabel(mode)}</option>
                   ))}
                 </select>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="font-sans text-[10.5px] text-fg/45">VM platform</span>
+                <input
+                  type="text"
+                  list="ade-devin-cloud-platforms"
+                  value={platform}
+                  onChange={(event) => onPlatformChange(event.target.value)}
+                  placeholder="org default"
+                  aria-label="Devin VM platform"
+                  className="h-6 w-36 rounded-md border border-white/[0.08] bg-white/[0.03] px-1.5 text-right font-mono text-[10.5px] text-fg/75 outline-none placeholder:text-fg/30 hover:border-white/[0.16]"
+                />
+                <datalist id="ade-devin-cloud-platforms">
+                  <option value="linux" />
+                  <option value="macos" />
+                  <option value="windows" />
+                </datalist>
               </div>
               <label className="flex items-center justify-between gap-3">
                 <span className="font-sans text-[10.5px] text-fg/45">

@@ -3807,6 +3807,7 @@ export function AgentChatPane({
   // quick-view button uses — so a work tab never pays an auth probe at boot.
   const [devinCloudMode, setDevinCloudMode] = useState(false);
   const [devinCloudModeSel, setDevinCloudModeSel] = useState<DevinCloudMode | null>(null);
+  const [devinCloudPlatformSel, setDevinCloudPlatformSel] = useState("");
   const [devinBypassApproval, setDevinBypassApproval] = useState(false);
   const [devinCloudAuthConfigured, setDevinCloudAuthConfigured] = useState<boolean | null>(null);
   const [cloudOverlayArmed, setCloudOverlayArmed] = useState(false);
@@ -10779,6 +10780,7 @@ export function AgentChatPane({
         title: buildDraftLaunchJobTitle("chat", snapshot),
         devinMode: devinCloudModeSel,
         bypassApproval: devinBypassApproval,
+        platform: devinCloudPlatformSel.trim() || null,
       });
       createdDevinSessionId = created.devinSessionId;
       // The Devin session exists; leave the draft pane immediately. The mirror
@@ -10846,6 +10848,7 @@ export function AgentChatPane({
     cursorCloudServiceTier,
     devinBypassApproval,
     devinCloudModeSel,
+    devinCloudPlatformSel,
     devinCloudUnavailableReason,
     draftLaunchTargetIsAutoCreate,
     executionMode,
@@ -13422,6 +13425,8 @@ export function AgentChatPane({
       laneGitBranch={laneGitBranch}
       devinMode={devinCloudModeSel}
       onDevinModeChange={setDevinCloudModeSel}
+      platform={devinCloudPlatformSel}
+      onPlatformChange={setDevinCloudPlatformSel}
       bypassApproval={devinBypassApproval}
       onBypassApprovalChange={setDevinBypassApproval}
       onLaunched={() => setDevinCloudPaneOpen(false)}
@@ -15305,6 +15310,25 @@ export function AgentChatPane({
                                       <option value="ultra">Ultra</option>
                                       <option value="fusion">Fusion</option>
                                     </select>
+                                  </label>
+                                  <label
+                                    className="flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-1.5 py-1 font-sans text-[10px] text-fg/55"
+                                    title="Devin Cloud VM platform — org-defined (linux, macos, windows, or an outpost pool); blank uses the org default"
+                                  >
+                                    <span>Platform</span>
+                                    <input
+                                      type="text"
+                                      list="ade-devin-platforms"
+                                      value={devinCloudPlatformSel}
+                                      onChange={(event) => setDevinCloudPlatformSel(event.target.value)}
+                                      placeholder="default"
+                                      className="w-16 bg-transparent font-mono text-[10px] font-medium text-fg/75 outline-none placeholder:text-fg/30"
+                                    />
+                                    <datalist id="ade-devin-platforms">
+                                      <option value="linux" />
+                                      <option value="macos" />
+                                      <option value="windows" />
+                                    </datalist>
                                   </label>
                                   <button
                                     type="button"

@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import {
   ArrowSquareOut,
+  ArrowsLeftRight,
   CaretDown,
   Desktop,
   GitPullRequest,
   Stop,
+  TerminalWindow,
   Trash,
 } from "@phosphor-icons/react";
 
@@ -107,6 +109,8 @@ export function FleetRow({
   onRequestDelete,
   onConfirmDelete,
   onDismissDelete,
+  devinCliAvailable,
+  onVmAction,
 }: {
   entry: DevinCloudFleetEntry;
   expanded: boolean;
@@ -121,6 +125,8 @@ export function FleetRow({
   onRequestDelete: () => void;
   onConfirmDelete: () => void;
   onDismissDelete: () => void;
+  devinCliAvailable: boolean;
+  onVmAction: (kind: "ssh" | "steer" | "forward", port?: string) => void;
 }) {
   const [liveUrlCopied, setLiveUrlCopied] = useState(false);
   const { session } = entry;
@@ -270,8 +276,10 @@ export function FleetRow({
             busy={busy}
             confirmingDelete={confirmingDelete}
             finished={finished}
+            devinCliAvailable={devinCliAvailable}
             onPull={onPull}
             onArchive={onArchive}
+            onVmAction={onVmAction}
             onRequestDelete={onRequestDelete}
             onConfirmDelete={onConfirmDelete}
             onConfirmDismiss={onDismissDelete}
@@ -350,8 +358,10 @@ function RowMenu({
   busy,
   confirmingDelete,
   finished,
+  devinCliAvailable,
   onPull,
   onArchive,
+  onVmAction,
   onRequestDelete,
   onConfirmDelete,
   onConfirmDismiss,
@@ -360,19 +370,25 @@ function RowMenu({
   busy: boolean;
   confirmingDelete: boolean;
   finished: boolean;
+  devinCliAvailable: boolean;
   onPull: () => void;
   onArchive: () => void;
+  onVmAction: (kind: "ssh" | "steer" | "forward", port?: string) => void;
   onRequestDelete: () => void;
   onConfirmDelete: () => void;
   onConfirmDismiss: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [flipUp, setFlipUp] = useState(false);
+  const [forwardMode, setForwardMode] = useState(false);
+  const [forwardPort, setForwardPort] = useState("");
   const menuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!open) {
       setFlipUp(false);
+      setForwardMode(false);
+      setForwardPort("");
       return;
     }
     const onDocClick = (event: MouseEvent) => {
@@ -441,6 +457,85 @@ function RowMenu({
             >
               <Desktop size={12} weight="bold" /> Open live session in ADE
             </button>
+          ) : null}
+          {!entry.session.isArchived ? (
+            devinCliAvailable ? (
+              <>
+                {forwardMode ? (
+                  <div className="flex items-center gap-1 px-1 py-1">
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      autoFocus
+                      value={forwardPort}
+                      onChange={(event) => setForwardPort(event.target.value.replace(/[^0-9:]/g, ""))}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" && forwardPort.trim()) {
+                          setOpen(false);
+                          onVmAction("forward", forwardPort.trim());
+                        } else if (event.key === "Escape") {
+                          setForwardMode(false);
+                        }
+                      }}
+                      placeholder="8080 or 3000:8080"
+                      aria-label="VM port to forward"
+                      className="h-6 min-w-0 flex-1 rounded border border-white/[0.10] bg-white/[0.04] px-1.5 font-mono text-[10.5px] text-fg/80 outline-none placeholder:text-fg/30"
+                    />
+                    <button
+                      type="button"
+                      disabled={!forwardPort.trim()}
+                      onClick={() => {
+                        setOpen(false);
+                        onVmAction("forward", forwardPort.trim());
+                      }}
+                      className="h-6 shrink-0 rounded border border-sky-300/30 bg-sky-500/[0.12] px-1.5 text-[10px] font-medium text-sky-100/90 disabled:opacity-40"
+                    >
+                      Forward
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className={itemClass}
+                      disabled={busy}
+                      title="devin ssh — shell on the session's VM"
+                      onClick={() => { setOpen(false); onVmAction("ssh"); }}
+                    >
+                      <TerminalWindow size={12} weight="bold" /> SSH into VM
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className={itemClass}
+                      disabled={busy}
+                      title="devin forward — map a VM port to localhost"
+                      onClick={() => setForwardMode(true)}
+                    >
+                      <ArrowsLeftRight size={12} weight="bold" /> Forward port…
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className={itemClass}
+                      disabled={busy}
+                      title="devin --cloud -r — steer this session from a terminal"
+                      onClick={() => { setOpen(false); onVmAction("steer"); }}
+                    >
+                      <TerminalWindow size={12} weight="bold" /> Steer in terminal
+                    </button>
+                  </>
+                )}
+              </>
+            ) : (
+              <div
+                className="px-2 py-1.5 text-[10.5px] leading-snug text-fg/35"
+                title="Install the devin CLI to SSH into session VMs, forward ports, or steer in a terminal"
+              >
+                Install the <span className="font-mono">devin</span> CLI for SSH / port-forward / steer actions.
+              </div>
+            )
           ) : null}
           {finished && !entry.session.isArchived && entry.prUrl ? (
             <button type="button" role="menuitem" className={itemClass} onClick={() => { setOpen(false); onPull(); }}>

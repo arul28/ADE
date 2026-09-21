@@ -2268,9 +2268,9 @@ or a legacy v1 personal key (`apk_user_`) for enterprises where PATs are
 admin-disabled. The org id is collected once and auto-discovered from the token
 when possible.
 
-The top bar and left sidebar carry auth-gated Devin quick-view buttons
-(`DevinCloudQuickViewButton`, mounted beside the Cursor quick-view). They render
-only while `devinCloudGetAuthStatus().configured` is true and open
+The top bar carries an auth-gated Devin quick-view button
+(`DevinCloudQuickViewButton`, mounted beside the Cursor quick-view). It renders
+only while `devinCloudGetAuthStatus().configured` is true and opens
 `DevinCloudFleetModal`, an org-wide fleet surface listing Devin sessions.
 Provenance chips (**Mine / From ADE / All**) sit beside the status and lane
 filters; ADE-created sessions carry `ade` + `ade:lane:<id>` tags at launch and
@@ -2292,10 +2292,22 @@ Archive/Unarchive, Open PR, and Delete with confirmation. A successful pull
 offers **Continue in lane**, which launches the local `devin` CLI in that lane
 seeded with the session's task context — the reverse of handing off to cloud.
 
+When the `devin` CLI is installed and logged in, the row menu also offers VM
+actions that ride the CLI's own credentials rather than the API token:
+**SSH into VM** (`devin ssh <id>` — a real shell on the session's machine),
+**Forward port…** (`devin forward <id> <port>` — maps a VM port to localhost
+for dev servers on the box), and **Steer in terminal** (`devin --cloud -r
+<id>` — drive the cloud session from a PTY). Each spawns as a tracked
+terminal session in the entry's lane and reveals it in Work. Without the CLI
+the menu shows a hint to install it instead.
+
 The chat drawer's **Devin Cloud sessions** panel drafts a new session bound to
 the selected lane's repository: target repo and base branch come from the lane,
 **Agent mode** maps to `devin_mode` (Devin default / normal / fast / lite /
-ultra / fusion), and **Skip Devin's approval gate** sets `bypass_approval`.
+ultra / fusion), **VM platform** maps to the v3 `platform` label
+(org-defined — linux, macos, windows, or an outpost pool name; blank uses the
+org default, and it is ignored on the v1 fallback path), and **Skip Devin's
+approval gate** sets `bypass_approval`.
 Sending from the composer launches the session with the provenance tags. From
 any non-cloud chat, the attach menu's **Hand off to Devin Cloud** packages the
 lane context into a prompt and launches the same path.
@@ -2308,7 +2320,9 @@ output (recordings, screenshots) are downloaded into the computer-use artifact
 store and ingested into the chat's proof drawer, deduped by attachment id.
 
 Known limits: cloud sessions run on Devin's VMs — no local file access and no
-API for screen/exec, so the deep-link live view is the interactive surface.
+REST API for screen/exec; the deep-link live view covers watching, and the
+CLI's `devin ssh`/`devin forward` cover shell + port access (both surfaced in
+the row menu when the CLI is present).
 There is no third-party OAuth for the REST API; the token paste is the only
 path (same as Cursor). The Devin CLI does not yet expose account
 Knowledge/Playbooks/Secrets to local sessions.
