@@ -281,9 +281,12 @@ function sniffIsActiveMarkup(bytes: Uint8Array): boolean {
   for (;;) {
     head = head.trimStart();
     if (head.startsWith("<?")) {
-      const end = head.indexOf("?>");
+      // Browsers read `<?` as a bogus comment ending at the FIRST `>` — not the
+      // XML-style `?>` — so anything before that `>` (including a smuggled
+      // `<script>`) is inert, and peeling to `?>` would hide live markup.
+      const end = head.indexOf(">");
       if (end === -1) return true;
-      head = head.slice(end + 2);
+      head = head.slice(end + 1);
       continue;
     }
     if (head.startsWith("<!--")) {

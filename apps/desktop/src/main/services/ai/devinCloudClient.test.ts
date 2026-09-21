@@ -84,6 +84,9 @@ describe("devinCloudClient downloadAttachment", () => {
       "<!-- comment --><svg onload=alert(1)>",
       "<body><script>alert(1)</script>",
       "<?xml version='1.0'?><svg></svg>",
+      // `<?` is a bogus comment in HTML and ends at the first `>` — the SVG
+      // here is inert, but the smuggled `<script>` after it is not.
+      "<?xml <svg><script>alert(1)</script></svg> ?>",
     ]) {
       const fetchImpl = vi.fn(async () => bytesResponse(new TextEncoder().encode(payload)));
       const client = createDevinCloudClient({
