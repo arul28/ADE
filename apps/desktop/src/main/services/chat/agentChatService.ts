@@ -806,6 +806,8 @@ import type { CtoMemoryService } from "../cto/ctoMemoryService";
 import type { IssueTracker } from "../cto/issueTracker";
 import type { createPrService } from "../prs/prService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
+import { readOpenCodeSessionStatuses, withOpenCodeIdleProbe } from "../opencode/openCodeIdleProbe";
+import type { OpenCodeRuntimeEvent } from "../opencode/openCodeRuntime";
 import {
   buildOpenCodePromptParts,
   buildOpenCodeV2PromptAttachments,
@@ -4342,6 +4344,13 @@ const HANDOFF_NOTE_TOO_LONG_MESSAGE = "Handoff note is too long. Keep it under 4
 // can always interrupt manually if something is genuinely stuck.
 const SESSION_INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const OPENCODE_SESSION_INACTIVITY_TIMEOUT_MS = 60 * 1000; // 1 minute
+/**
+ * How long an OpenCode turn's event stream may stay silent before the server
+ * is asked whether the sessions it waits on are still busy. Long enough that a
+ * normal tool call never triggers it; short enough that a lost `session.idle`
+ * costs half a minute, not a turn that never ends.
+ */
+const OPENCODE_IDLE_PROBE_QUIET_MS = 30 * 1000;
 const SESSION_CLEANUP_INTERVAL_MS = 15 * 1000; // check every 15 seconds
 
 const MAX_RECENT_CONVERSATION_ENTRIES = 50;
@@ -28081,7 +28090,40 @@ export function createAgentChatService(args: {
         if (viewEvent) emitChatEvent(managed, viewEvent);
       };
       let parentSessionIdle = false;
-      for await (const event of eventStream) {
+      // The stream is not trusted alone for the end of the turn: an idle that
+      // lands while the socket is between connections is gone, and the loop
+      // used to wait forever with the chat showing "Working". While the stream
+      // is quiet the server is asked directly, and a session it reports idle
+      // gets its idle synthesized here. See `openCodeIdleProbe.ts`.
+      const probedStream = withOpenCodeIdleProbe<OpenCodeRuntimeEvent>(eventStream, {
+        quietMs: OPENCODE_IDLE_PROBE_QUIET_MS,
+        waitingOn: () => [
+          ...(parentSessionIdle ? [] : [runtime.handle.sessionId]),
+          ...runtime.subagentSessions.keys(),
+        ],
+        probe: async () => {
+          const status = runtime.handle.client.session.status;
+          if (typeof status !== "function") return null;
+          const reply = await status.call(
+            runtime.handle.client.session,
+            { directory: runtime.handle.directory },
+            { throwOnError: true },
+          );
+          return readOpenCodeSessionStatuses((reply as { data?: unknown }).data);
+        },
+        makeIdleEvent: (sessionID) => ({
+          type: "session.idle",
+          properties: { sessionID },
+        }) as OpenCodeRuntimeEvent,
+        onSynthesized: (sessionIDs) => {
+          logger.warn("agent_chat.opencode_idle_recovered_by_probe", {
+            sessionId: managed.session.id,
+            turnId,
+            sessionIDs: [...sessionIDs],
+          });
+        },
+      });
+      for await (const event of probedStream) {
         const resolveSessionId = (): string | null => {
           const legacyPermission = asLegacyOpenCodePermissionUpdated(event);
           if (legacyPermission) return legacyPermission.properties.sessionID;

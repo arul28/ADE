@@ -3195,6 +3195,16 @@ declares no kinds.
   connection and the client stops at `attempt >= max`, so the ceiling has to be
   2 to allow one real reconnect — 1 permits none. The `onSseError` log is skipped
   when the turn's abort signal already fired, because that is the user's Stop.
+  The cap does not cover the other loss: a socket that reconnects within the
+  cap still dropped whatever was published in the gap, and on 2026-09-21 two
+  dev-loop turns in one chat ended in OpenCode (`exiting loop` in its log) with
+  no `done` in the ADE transcript and the chat showing "Working" for hours. So
+  the loop reads the stream through `withOpenCodeIdleProbe`
+  (`openCodeIdleProbe.ts`): after `OPENCODE_IDLE_PROBE_QUIET_MS` of silence it
+  calls `GET /session/status` and synthesizes `session.idle` for every session
+  it still waits on that the server does not report `busy`, logging
+  `agent_chat.opencode_idle_recovered_by_probe`. A busy session (a long tool
+  call, a CI poll) is left alone, and a failed probe is unknown, not idle.
 - **Cancel OpenCode question cards on interrupt and on turn failure, never on a
   clean completion.** `requestChatInput` parks the card in
   `managed.localPendingInputs`, which the interrupt path did not drain — it
