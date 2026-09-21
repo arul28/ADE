@@ -179,7 +179,11 @@ struct WorkToolCardView: View, Equatable {
                 sessionId: sessionId,
                 resultText: resultText,
                 remoteResultBytes: remoteResultBytes,
-                eventSequence: toolCard.resultSequence
+                eventSequence: toolCard.resultSequence,
+                // The result envelope's own timestamp: `completedAt` is set
+                // from it on the same pass that stamps `resultSequence`, so
+                // the pair always names one generation.
+                eventTimestamp: toolCard.completedAt
               )
             } else {
               let result = workToolResultBlockText(resultText, expanded: resultExpanded)

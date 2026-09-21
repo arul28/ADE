@@ -12,6 +12,10 @@ struct WorkRemoteToolResultAffordance: View {
   let resultText: String
   let remoteResultBytes: Int
   let eventSequence: Int?
+  /// Timestamp of the same `tool_result` envelope the sequence came from. The
+  /// pair is what identifies this generation on a legacy transcript, where a
+  /// sequence can repeat across host restarts.
+  let eventTimestamp: String?
 
   @EnvironmentObject private var syncService: SyncService
   @State private var resultExpanded = false
@@ -166,7 +170,8 @@ struct WorkRemoteToolResultAffordance: View {
         let fullResult = try await syncService.fullToolResult(
           sessionId: sessionId,
           itemId: itemId,
-          eventSequence: eventSequence
+          eventSequence: eventSequence,
+          eventTimestamp: eventTimestamp
         )
         guard fetchGeneration == requestGeneration else { return }
         fetchedFullResult = fullResult

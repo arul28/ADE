@@ -8581,6 +8581,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           && Number.isFinite(payload.resultSequence)
           ? payload.resultSequence
           : null;
+        // Legacy transcripts can repeat a sequence across host restarts; the
+        // timestamp tells those generations apart.
+        const requestedResultTimestamp = toOptionalString(payload?.resultTimestamp);
         const unavailable = (): SyncChatToolResultResponsePayload => ({
           sessionId: sessionId ?? "",
           itemId: itemId ?? "",
@@ -8621,6 +8624,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               sessionId,
               itemId,
               ...(requestedResultSequence !== null ? { resultSequence: requestedResultSequence } : {}),
+              ...(requestedResultTimestamp ? { resultTimestamp: requestedResultTimestamp } : {}),
               ...(signal ? { signal } : {}),
             }),
             signal,

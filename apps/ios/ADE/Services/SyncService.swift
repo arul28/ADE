@@ -13829,7 +13829,8 @@ final class SyncService: ObservableObject {
   func fullToolResult(
     sessionId: String,
     itemId: String,
-    eventSequence: Int? = nil
+    eventSequence: Int? = nil,
+    eventTimestamp: String? = nil
   ) async throws -> String {
     try await chatToolResultCache.fullToolResult(
       sessionId: sessionId,
@@ -13840,7 +13841,8 @@ final class SyncService: ObservableObject {
       let response = try await self.fetchChatToolResult(
         sessionId: sessionId,
         itemId: itemId,
-        resultSequence: eventSequence
+        resultSequence: eventSequence,
+        resultTimestamp: eventTimestamp
       )
       if response.unavailable == true {
         throw NSError(
@@ -13871,7 +13873,8 @@ final class SyncService: ObservableObject {
   func fetchChatToolResult(
     sessionId: String,
     itemId: String,
-    resultSequence: Int? = nil
+    resultSequence: Int? = nil,
+    resultTimestamp: String? = nil
   ) async throws -> AgentChatToolResultResponse {
     let requestId = makeRequestId()
     var payload = chatSubscriptionPayload(
@@ -13884,6 +13887,11 @@ final class SyncService: ObservableObject {
     // with a later attempt's output. Omitted when the row has none, which is
     // the pre-slim-wire shape the host still accepts.
     if let resultSequence { payload["resultSequence"] = resultSequence }
+    // Paired with the sequence: a legacy transcript can repeat a sequence
+    // across host restarts, and the timestamp tells those generations apart.
+    if let resultTimestamp, !resultTimestamp.isEmpty {
+      payload["resultTimestamp"] = resultTimestamp
+    }
     let raw = try await awaitResponse(
       requestId: requestId,
       disconnectOnTimeout: false,

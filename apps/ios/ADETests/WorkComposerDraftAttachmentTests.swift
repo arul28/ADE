@@ -420,11 +420,55 @@ final class WorkComposerDraftAttachmentTests: XCTestCase {
     }
 
     let resolution = await uploads.resolve(id, timeoutNanoseconds: 50_000_000)
-    XCTAssertEqual(resolution, .abandoned)
-    // The original task is still running, so a retry must not fall through to
-    // a second inline upload for the same attachment.
-    let retryResolution = await uploads.resolve(id, timeoutNanoseconds: 50_000_000)
-    XCTAssertEqual(retryResolution, .abandoned)
+    XCTAssertEqual(
+      resolution,
+      .abandoned,
+      "the send that waited out the deadline reports it, rather than racing a second upload"
+    )
+  }
+
+  /// The other half of that contract: a retry AFTER the deadline has to be able
+  /// to make progress.
+  ///
+  /// `.abandoned` covered the whole timeout window and then never lifted, so a
+  /// leg that never settled left every later retry failing instantly and the
+  /// message could not be sent at all. The retry now cancels the wedged task,
+  /// records the failure, and stages the bytes inline — a duplicate temp upload
+  /// on the host is a file the send references once, an unsendable message is
+  /// not recoverable.
+  @MainActor
+  func testARetryAfterTheDeadlineCancelsTheWedgedUploadAndStagesInline() async {
+    let id = UUID()
+    let uploads = WorkComposerAttachmentUploads.shared
+    var release: CheckedContinuation<Void, Never>?
+    defer {
+      release?.resume()
+      uploads.release([id])
+    }
+
+    uploads.begin(id: id) {
+      await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+        release = continuation
+      }
+      return AgentChatFileRef(path: "/never", type: "image")
+    }
+
+    let first = await uploads.resolve(id, timeoutNanoseconds: 50_000_000)
+    XCTAssertEqual(first, .abandoned)
+
+    let retry = await uploads.resolve(id, timeoutNanoseconds: 50_000_000)
+    XCTAssertEqual(retry, .stageInline, "the retry must be able to upload rather than fail forever")
+    XCTAssertEqual(
+      uploads.failure(for: id),
+      workChatAttachmentUploadTimedOutMessage,
+      "the wedged leg is recorded as failed, not left pending"
+    )
+    XCTAssertFalse(uploads.isUploading(id), "the wedged upload is no longer treated as in flight")
+
+    // Still inline-eligible on every later attempt; it never falls back to
+    // `.abandoned`.
+    let third = await uploads.resolve(id, timeoutNanoseconds: 50_000_000)
+    XCTAssertEqual(third, .stageInline)
   }
 
   @MainActor
@@ -447,11 +491,11 @@ final class WorkComposerDraftAttachmentTests: XCTestCase {
 
     let firstResolution = await uploads.resolve(id, timeoutNanoseconds: 50_000_000)
     XCTAssertEqual(firstResolution, .abandoned)
-    let retryWhilePending = await uploads.resolve(id, timeoutNanoseconds: 50_000_000)
+    let retryAfterTheDeadline = await uploads.resolve(id, timeoutNanoseconds: 50_000_000)
     XCTAssertEqual(
-      retryWhilePending,
-      .abandoned,
-      "an upload that is still in flight must not start a duplicate"
+      retryAfterTheDeadline,
+      .stageInline,
+      "past the deadline the original leg is presumed dead and the retry may upload"
     )
 
     release?.resume()

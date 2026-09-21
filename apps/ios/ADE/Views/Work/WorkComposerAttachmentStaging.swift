@@ -380,7 +380,24 @@ final class WorkComposerAttachmentUploads {
   ) async -> WorkComposerAttachmentUploadResolution {
     guard let entry = entries[id] else { return .stageInline }
     if let ref = entry.ref { return .ref(ref) }
-    if entry.abandoned { return .abandoned }
+    if entry.abandoned {
+      // The deadline already passed once for this upload, so this call is the
+      // user's retry and the original leg is presumed dead. Cancel it, record
+      // the failure, and let the send stage the bytes inline.
+      //
+      // The earlier rule — never a second upload while the first is in flight
+      // — still holds for the whole timeout window: the first `resolve` waits
+      // it out before anything is marked abandoned. What changed is what
+      // happens after. A leg that never settles left every later retry
+      // returning `.abandoned`, so the message could never be sent at all. A
+      // duplicate host upload is a temp file the send references once; an
+      // unsendable message is not recoverable.
+      entry.task.cancel()
+      entries[id]?.abandoned = false
+      entries[id]?.settled = true
+      entries[id]?.failure = workChatAttachmentUploadTimedOutMessage
+      return .stageInline
+    }
     if entry.failure != nil { return .stageInline }
     let task = entry.task
     let settled = await workAwaitWithDeadline(timeoutNanoseconds: timeoutNanoseconds) {

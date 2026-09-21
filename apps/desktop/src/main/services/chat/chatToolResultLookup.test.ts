@@ -50,6 +50,58 @@ describe("chatToolResultRowId", () => {
 });
 
 describe("findStoredToolResult", () => {
+  it("uses the timestamp to separate legacy generations that share a sequence", async () => {
+    // Older hosts restarted `eventSequence` at 1 on every rehydration, so one
+    // legacy transcript can hold two generations under the same number. With
+    // both named, both must match; with only the sequence named, the
+    // newest-first scan takes the newest of the tie.
+    const lines = [
+      { sequence: 7, timestamp: "2026-09-19T10:00:00.000Z", result: "before restart" },
+      { sequence: 7, timestamp: "2026-09-20T10:00:00.000Z", result: "after restart" },
+    ].map(({ sequence, timestamp, result }) => JSON.stringify({
+      sessionId: SESSION_ID,
+      timestamp,
+      sequence,
+      event: toolResult("item-1", result),
+    } satisfies AgentChatEventEnvelope));
+    fs.writeFileSync(transcriptPath, `${lines.join("\n")}\n`, "utf8");
+
+    expect((await findStoredToolResult({
+      transcriptPath,
+      sessionId: SESSION_ID,
+      itemId: "item-1",
+      resultSequence: 7,
+      resultTimestamp: "2026-09-19T10:00:00.000Z",
+    }))?.event.result).toBe("before restart");
+
+    expect((await findStoredToolResult({
+      transcriptPath,
+      sessionId: SESSION_ID,
+      itemId: "item-1",
+      resultSequence: 7,
+      resultTimestamp: "2026-09-20T10:00:00.000Z",
+    }))?.event.result).toBe("after restart");
+
+    // Sequence alone: the newest of the tie, which is what the scan order
+    // already gives.
+    expect((await findStoredToolResult({
+      transcriptPath,
+      sessionId: SESSION_ID,
+      itemId: "item-1",
+      resultSequence: 7,
+    }))?.event.result).toBe("after restart");
+
+    // A timestamp that belongs to no generation is "not found", never another
+    // attempt's output.
+    expect(await findStoredToolResult({
+      transcriptPath,
+      sessionId: SESSION_ID,
+      itemId: "item-1",
+      resultSequence: 7,
+      resultTimestamp: "2026-01-01T00:00:00.000Z",
+    })).toBeNull();
+  });
+
   it("answers the exact generation when the row names its sequence", async () => {
     // Regression: a retry reuses the logical item id, so the backward scan
     // returned the NEWEST result for every row and an older retry row showed

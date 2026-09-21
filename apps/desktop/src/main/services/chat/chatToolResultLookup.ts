@@ -48,12 +48,23 @@ export async function findStoredToolResult(options: {
    * already have.
    */
   resultSequence?: number;
+  /**
+   * Timestamp of that same envelope, when the caller has it. `sequence` is not
+   * unique over a transcript's whole life — older hosts restarted it at 1 on
+   * every rehydration — so a legacy file can hold two generations under one
+   * number. With both named, both must match. Sequence alone keeps the
+   * newest-first scan, so the newest of a tie wins.
+   */
+  resultTimestamp?: string;
   signal?: AbortSignal;
 }): Promise<ChatToolResultLookupHit | null> {
   const wantedId = options.itemId.trim();
   if (!wantedId) return null;
   const wantedSequence = typeof options.resultSequence === "number" && Number.isFinite(options.resultSequence)
     ? options.resultSequence
+    : null;
+  const wantedTimestamp = typeof options.resultTimestamp === "string" && options.resultTimestamp.trim()
+    ? options.resultTimestamp.trim()
     : null;
   let beforeOffset = await readHistoryFileSize(options.transcriptPath);
   let scannedBytes = 0;
@@ -80,6 +91,10 @@ export async function findStoredToolResult(options: {
       // other generation would be worse than "not found": the row would show
       // another attempt's output as its own.
       if (wantedSequence !== null && envelope.sequence !== wantedSequence) continue;
+      // Legacy transcripts can repeat a sequence across host restarts, so the
+      // timestamp disambiguates when the row names one. Sequence alone falls
+      // back to this newest-first scan, where the newest of a tie wins.
+      if (wantedTimestamp !== null && envelope.timestamp !== wantedTimestamp) continue;
       return { event, envelope };
     }
     scannedBytes += windowBytes;

@@ -1690,6 +1690,16 @@ export type SyncChatToolResultRequestPayload = SyncChatUnsubscribePayload & {
    * behaviour they already have.
    */
   resultSequence?: number;
+  /**
+   * Timestamp of that same envelope.
+   *
+   * `sequence` alone is not unique across the whole life of a transcript:
+   * older hosts restarted `eventSequence` at 1 on every rehydration, so a
+   * legacy file can carry the same number for two different generations.
+   * Sent together, the pair identifies the row; the host requires both to
+   * match when both are named.
+   */
+  resultTimestamp?: string;
 };
 
 export type SyncChatToolResultResponsePayload = {
