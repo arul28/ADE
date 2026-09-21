@@ -140,6 +140,19 @@ export const SYNC_BINARY_ENVELOPES_CAPABILITY = "binaryEnvelopes";
  * Clients that do not declare it receive every individual delta, unchanged.
  */
 export const SYNC_FOLDED_REPLAY_CAPABILITY = "foldedReplay";
+/**
+ * Hello capability a phone declares when it accepts the slim mobile chat wire:
+ * subagent progress folded per agent (snapshot) and coalesced per agent per
+ * second (live), and tool results delivered as a bounded head slice that the
+ * client fetches in full through `chat_tool_result` when the user expands the
+ * row. See `shared/chatMobileSlim.ts` for each rule and why it keeps every
+ * user-visible outcome.
+ *
+ * Desktop, hosted web and the TUI never declare it: they render the full work
+ * timeline and keep every event. A client that does not declare it receives
+ * exactly the wire it receives today.
+ */
+export const SYNC_MOBILE_CHAT_SLIM_CAPABILITY = "mobileChatSlimV1";
 
 export type SyncPayloadEncoding = "json" | "base64";
 
@@ -1657,6 +1670,65 @@ export type SyncChatHistoryRequestPayload = SyncChatUnsubscribePayload & {
 export type SyncChatHistoryResponsePayload = AgentChatEventHistoryPage;
 
 /**
+ * On-demand fetch of one tool result the phone received as a bounded slice.
+ *
+ * Scoped exactly like `chat_history`: the peer must already be subscribed to
+ * the session, and the request carries the same chat-scope fields so a
+ * personal or cross-project quick-look reads from its own transcript and never
+ * from the active project's.
+ */
+export type SyncChatToolResultRequestPayload = SyncChatUnsubscribePayload & {
+  /** `logicalItemId ?? itemId` of the tool_result row the user expanded. */
+  itemId: string;
+  /**
+   * Transcript sequence of the `tool_result` envelope the expanded row was
+   * built from. A retry reuses the logical item id, so the id alone names a
+   * row and not a generation: without this the host answers every row with the
+   * newest result for that id, and an older retry row shows the newer output.
+   *
+   * Optional for clients that predate it; those keep the newest-match
+   * behaviour they already have.
+   */
+  resultSequence?: number;
+  /**
+   * Timestamp of that same envelope.
+   *
+   * `sequence` alone is not unique across the whole life of a transcript:
+   * older hosts restarted `eventSequence` at 1 on every rehydration, so a
+   * legacy file can carry the same number for two different generations.
+   * Sent together, the pair identifies the row; the host requires both to
+   * match when both are named.
+   */
+  resultTimestamp?: string;
+  /**
+   * Byte offset of the row in the transcript, when the client got it from a
+   * `chat_history` page.
+   *
+   * Purely a hint: the host reads that one row directly (fixed I/O, no scan)
+   * and still checks it is the row that was asked for. A hint that misses —
+   * stale, misaligned, or from another file — falls back to the bounded scan,
+   * so it can never produce a wrong result, only a slower one.
+   */
+  sourceOffset?: number;
+};
+
+export type SyncChatToolResultResponsePayload = {
+  sessionId: string;
+  itemId: string;
+  /** Absent when the event could not be found or read. */
+  result?: unknown;
+  /** Size of the stored result, for the row's footer. */
+  resultOriginalBytes?: number;
+  resultOmittedBytes?: number;
+  status?: "running" | "completed" | "failed" | "interrupted";
+  tool?: string;
+  /** True when this host could not answer at all (no service, read failure). */
+  unavailable?: boolean;
+  /** True when the session/item pair resolved to a stored tool result. */
+  found: boolean;
+};
+
+/**
  * Live chat event envelope. `seq` is a host-assigned, per-session,
  * monotonically increasing counter used for resumable streams: clients track
  * the highest seq applied and pass it back as `sinceSeq` on re-subscribe.
@@ -2281,6 +2353,11 @@ export type SyncTerminalHistoryEnvelope = SyncEnvelopeWithPayload<"terminal_hist
 export type SyncChatSubscribeEnvelope = SyncEnvelopeWithPayload<"chat_subscribe", SyncChatSubscribePayload | SyncChatSubscribeSnapshotPayload>;
 export type SyncChatUnsubscribeEnvelope = SyncEnvelopeWithPayload<"chat_unsubscribe", SyncChatUnsubscribePayload>;
 export type SyncChatEventEnvelope = SyncEnvelopeWithPayload<"chat_event", SyncChatEventPayload>;
+export type SyncChatToolResultEnvelope = SyncEnvelopeWithPayload<
+  "chat_tool_result",
+  SyncChatToolResultRequestPayload | SyncChatToolResultResponsePayload
+>;
+
 export type SyncChatHistoryEnvelope = SyncEnvelopeWithPayload<
   "chat_history",
   SyncChatHistoryRequestPayload | SyncChatHistoryResponsePayload
@@ -2359,6 +2436,7 @@ export type SyncEnvelope =
   | SyncChatUnsubscribeEnvelope
   | SyncChatEventEnvelope
   | SyncChatHistoryEnvelope
+  | SyncChatToolResultEnvelope
   | SyncBrainStatusEnvelope
   | SyncPrsUpdatedEnvelope
   | SyncRosterSubscribeEnvelope

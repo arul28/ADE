@@ -1667,6 +1667,16 @@ struct WorkComposerTextView: UIViewRepresentable {
   var acceptsPastedImages = true
   var onPasteImages: (([UIImage]) -> Void)? = nil
   var maxLines = 6
+  /// Folded composer. The field keeps its measured height and is clipped to one
+  /// line by the SwiftUI frame above it; here it only means "pin the draft to
+  /// its first line", so the clip never lands mid-scroll.
+  var collapsed = false
+  /// Called when the field's own scroll pan is a fold swipe. Observing the text
+  /// view's recognizer rather than adding one is what keeps the fold from
+  /// fighting the draft's internal scroll: a scrollable `UITextView` never lets
+  /// a foreign recognizer run simultaneously, so the card's SwiftUI drag is
+  /// only reachable while the draft still fits.
+  var onFoldSwipeDown: (() -> Void)? = nil
 
   private var maxHeight: CGFloat {
     ceil(UIFont.preferredFont(forTextStyle: .body).lineHeight * CGFloat(max(1, maxLines))) + 8
@@ -1697,6 +1707,9 @@ struct WorkComposerTextView: UIViewRepresentable {
     textView.backgroundColor = .clear
     textView.textContainerInset = .zero
     textView.isScrollEnabled = false
+    // A downward drag inside a draft long enough to scroll takes the keyboard
+    // with it, matching the composer card's fold swipe.
+    textView.keyboardDismissMode = .interactive
     // Keep natural-language prompt traits aligned with `adePromptInputTraits()`.
     textView.autocorrectionType = .yes
     textView.autocapitalizationType = .sentences
@@ -1718,6 +1731,7 @@ struct WorkComposerTextView: UIViewRepresentable {
 
     context.coordinator.textView = textView
     context.coordinator.installSmartLinkMenu(on: textView)
+    context.coordinator.observeFoldPan(on: textView)
     // Route committed suggestions straight to the live text view.
     controller.onCommit = { [weak coordinator = context.coordinator] suggestion, range in
       coordinator?.commit(suggestion, replacing: range)
@@ -1751,6 +1765,7 @@ struct WorkComposerTextView: UIViewRepresentable {
     }
     context.coordinator.applyFocusRequest(draftState.isFocused, to: textView)
     context.coordinator.updateHeight()
+    context.coordinator.pinFoldedOffset(on: textView)
   }
 
   @MainActor
@@ -1767,6 +1782,10 @@ struct WorkComposerTextView: UIViewRepresentable {
     private var triggerInputTraitsActive = false
     private let focusScheduler = WorkComposerFocusScheduler()
     private var smartLinkMenu: WorkSmartLinkContextMenuController?
+    /// Whether the pan that is running started with the draft scrolled to its
+    /// top. Dragging down inside a draft the reader has scrolled into is that
+    /// draft scrolling, not a fold.
+    private var foldPanBeganAtTop = false
 
     init(_ parent: WorkComposerTextView) {
       self.parent = parent
@@ -1777,6 +1796,52 @@ struct WorkComposerTextView: UIViewRepresentable {
         .font: UIFont.preferredFont(forTextStyle: .body),
         .foregroundColor: UIColor(ADEColor.textPrimary),
       ]
+    }
+
+    /// Rides the text view's own pan recognizer. `keyboardDismissMode` already
+    /// takes the keyboard down with the finger; this is what takes the card's
+    /// height with it.
+    func observeFoldPan(on textView: UITextView) {
+      textView.panGestureRecognizer.addTarget(self, action: #selector(handleFoldPan(_:)))
+    }
+
+    @objc private func handleFoldPan(_ gesture: UIPanGestureRecognizer) {
+      guard let textView else { return }
+      switch gesture.state {
+      case .began:
+        foldPanBeganAtTop = textView.contentOffset.y <= 0.5
+      case .ended:
+        guard foldPanBeganAtTop else { return }
+        let translation = gesture.translation(in: textView)
+        let swipe = workComposerFoldGesture(
+          translation: CGSize(width: translation.x, height: translation.y),
+          collapsed: false
+        )
+        if swipe == .collapse { parent.onFoldSwipeDown?() }
+      default:
+        break
+      }
+    }
+
+    /// Folded means "the start of the draft". A draft typed past the bottom of
+    /// the field is scrolled when the fold lands, and a clip window over a
+    /// scrolled field shows a sliced line.
+    func pinFoldedOffset(on textView: UITextView) {
+      guard let y = workComposerFoldedContentOffsetY(
+        collapsed: parent.collapsed,
+        current: textView.contentOffset.y
+      ) else { return }
+      textView.setContentOffset(CGPoint(x: 0, y: y), animated: false)
+    }
+
+    /// Holds the pin for the life of the fold: resigning the responder and the
+    /// height change both re-scroll the text view after `updateUIView` ran.
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+      guard let y = workComposerFoldedContentOffsetY(
+        collapsed: parent.collapsed,
+        current: scrollView.contentOffset.y
+      ) else { return }
+      scrollView.contentOffset = CGPoint(x: 0, y: y)
     }
 
     func textViewDidBeginEditing(_ textView: UITextView) {

@@ -70,7 +70,7 @@ enum WorkToolCardStatus: String, Equatable {
   case failed
 }
 
-struct WorkToolCardModel: Identifiable, Equatable {
+struct WorkToolCardModel: Identifiable, Hashable {
   let id: String
   let toolName: String
   let status: WorkToolCardStatus
@@ -80,6 +80,21 @@ struct WorkToolCardModel: Identifiable, Equatable {
   let resultText: String?
   let webSearchActions: [CodexWebSearchAction]?
   let webSearchResults: [CodexWebSearchResult]?
+  /// Size of the stored result when `resultText` is only the head slice the
+  /// slim mobile wire delivered. nil means the card already has everything,
+  /// which is the case for every host and every client that does not use that
+  /// wire.
+  let remoteResultBytes: Int?
+  /// Session this card came from. Needed only to fetch a truncated result, so
+  /// it is optional: a card built without one simply cannot offer the fetch.
+  let sessionId: String?
+  /// Transcript sequence for the result. Retry events may reuse `itemId`, so
+  /// the sequence is part of the remote-result cache identity.
+  let resultSequence: Int?
+  /// Where the result row sits in the host transcript, when the phone read it
+  /// off a history page. Turns the fetch into an exact read rather than a
+  /// bounded scan that may not reach back this far.
+  let resultSourceOffset: Int?
 
   init(
     id: String,
@@ -90,7 +105,11 @@ struct WorkToolCardModel: Identifiable, Equatable {
     argsText: String?,
     resultText: String?,
     webSearchActions: [CodexWebSearchAction]? = nil,
-    webSearchResults: [CodexWebSearchResult]? = nil
+    webSearchResults: [CodexWebSearchResult]? = nil,
+    remoteResultBytes: Int? = nil,
+    sessionId: String? = nil,
+    resultSequence: Int? = nil,
+    resultSourceOffset: Int? = nil
   ) {
     self.id = id
     self.toolName = toolName
@@ -101,6 +120,10 @@ struct WorkToolCardModel: Identifiable, Equatable {
     self.resultText = resultText
     self.webSearchActions = webSearchActions
     self.webSearchResults = webSearchResults
+    self.remoteResultBytes = remoteResultBytes
+    self.sessionId = sessionId
+    self.resultSequence = resultSequence
+    self.resultSourceOffset = resultSourceOffset
   }
 }
 
@@ -179,7 +202,7 @@ struct WorkPendingApprovalModel: Identifiable, Equatable {
   var title: String? = nil
 }
 
-struct WorkPendingQuestionOption: Equatable {
+struct WorkPendingQuestionOption: Hashable {
   let label: String
   let value: String
   let description: String?
@@ -188,7 +211,7 @@ struct WorkPendingQuestionOption: Equatable {
   var previewFormat: String? = nil
 }
 
-struct WorkPendingQuestion: Identifiable, Equatable {
+struct WorkPendingQuestion: Identifiable, Hashable {
   let questionId: String
   let question: String
   let options: [WorkPendingQuestionOption]
@@ -202,7 +225,7 @@ struct WorkPendingQuestion: Identifiable, Equatable {
   var id: String { questionId }
 }
 
-struct WorkPendingQuestionModel: Identifiable, Equatable {
+struct WorkPendingQuestionModel: Identifiable, Hashable {
   let id: String
   let questions: [WorkPendingQuestion]
   var title: String? = nil
@@ -408,7 +431,7 @@ extension WorkPendingPlanApprovalModel {
   }
 }
 
-struct WorkPendingPermissionModel: Identifiable, Equatable {
+struct WorkPendingPermissionModel: Identifiable, Hashable {
   let id: String
   let tool: String
   let description: String
@@ -419,7 +442,7 @@ struct WorkPendingPermissionModel: Identifiable, Equatable {
 /// with `request.kind == "plan_approval"` — desktop's `ChatProposedPlanCard`
 /// equivalent on iOS. Carries the full plan text so the card can render a
 /// scrollable formatted block, plus the source label (e.g. "claude", "codex").
-struct WorkPendingPlanApprovalModel: Identifiable, Equatable {
+struct WorkPendingPlanApprovalModel: Identifiable, Hashable {
   let id: String
   let source: String
   let planText: String
@@ -474,7 +497,7 @@ struct WorkModelSelectionChoice: Codable, Equatable {
   }
 }
 
-struct WorkPendingModelSelectionModel: Identifiable, Equatable {
+struct WorkPendingModelSelectionModel: Identifiable, Hashable {
   let id: String
   let role: String
   let tag: String
@@ -492,7 +515,7 @@ struct WorkPendingModelSelectionModel: Identifiable, Equatable {
   }
 }
 
-struct WorkUsageSummary: Equatable {
+struct WorkUsageSummary: Hashable {
   var turnCount: Int
   var inputTokens: Int
   var outputTokens: Int
@@ -617,6 +640,36 @@ struct WorkActiveSendCapability: Equatable {
       return WorkActiveSendCapability(modes: [.queue], agentLabel: "the agent", interruptContinues: false)
     }
   }
+}
+
+struct WorkQueuedSteerDisposition: Equatable {
+  let shortText: String
+  let detailText: String
+}
+
+/// Shared wording for the staged-message strip and its detail sheet. Keeping
+/// the capability decision here prevents the two surfaces from drifting when
+/// a provider gains or loses inline steering.
+func workQueuedSteerDisposition(
+  capability: WorkActiveSendCapability,
+  turnActive: Bool
+) -> WorkQueuedSteerDisposition {
+  guard turnActive else {
+    return WorkQueuedSteerDisposition(
+      shortText: "after turn",
+      detailText: "It sends as soon as \(capability.agentLabel) is ready."
+    )
+  }
+  if capability.modes.contains(.inline) {
+    return WorkQueuedSteerDisposition(
+      shortText: "sends at next step",
+      detailText: "\(capability.agentLabel) picks it up after the current tool step."
+    )
+  }
+  return WorkQueuedSteerDisposition(
+    shortText: "sends when turn ends",
+    detailText: "\(capability.agentLabel) can't take a message mid-turn, so it sends when this turn ends."
+  )
 }
 
 /// Work-board columns, as they are written on screen.
@@ -773,7 +826,7 @@ struct WorkCompletionArtifactModel: Equatable {
   let reference: String?
 }
 
-struct WorkCodexStallContext: Equatable {
+struct WorkCodexStallContext: Hashable {
   let reason: String
   let detectedAt: String?
   let turnStartedAt: String?
@@ -791,7 +844,7 @@ struct WorkUserMessageResolution: Equatable {
   let replacementMessageId: String?
 }
 
-struct WorkCodexRecoveryReceipt: Equatable {
+struct WorkCodexRecoveryReceipt: Hashable {
   let action: String
   let state: String
   let automatic: Bool
@@ -801,7 +854,7 @@ struct WorkCodexRecoveryReceipt: Equatable {
   var providerNeutral: Bool = false
 }
 
-struct WorkCommandCardModel: Identifiable, Equatable {
+struct WorkCommandCardModel: Identifiable, Hashable {
   let id: String
   let command: String
   let cwd: String
@@ -812,7 +865,7 @@ struct WorkCommandCardModel: Identifiable, Equatable {
   let durationMs: Int?
 }
 
-struct WorkFileChangeCardModel: Identifiable, Equatable {
+struct WorkFileChangeCardModel: Identifiable, Hashable {
   let id: String
   let path: String
   let diff: String
@@ -848,20 +901,20 @@ enum WorkAdeCardIcon: String, Equatable {
   case file
 }
 
-struct WorkAdeCardMetric: Equatable {
+struct WorkAdeCardMetric: Hashable {
   let label: String
   let value: String
   let tone: WorkAdeCardTone
 }
 
-struct WorkAdeCardRow: Equatable {
+struct WorkAdeCardRow: Hashable {
   let icon: WorkAdeCardIcon?
   let text: String
   let detail: String?
   let tone: WorkAdeCardTone
 }
 
-struct WorkAdeCardProgress: Equatable {
+struct WorkAdeCardProgress: Hashable {
   let passed: Int
   let failed: Int
   let running: Int
@@ -872,7 +925,7 @@ struct WorkAdeCardProgress: Equatable {
   }
 }
 
-struct WorkAdeCardAction: Equatable {
+struct WorkAdeCardAction: Hashable {
   let id: String
   let label: String
   let isPrimary: Bool
@@ -882,7 +935,7 @@ struct WorkAdeCardAction: Equatable {
 /// Kinds with no URL form (`route`, `files-external`, or anything a newer host
 /// invents) parse to `nil`, which degrades the card to fallback text without a
 /// link rather than dropping the payload.
-enum WorkAdeCardNavTarget: Equatable {
+enum WorkAdeCardNavTarget: Hashable {
   case session(sessionId: String, laneId: String?)
   case file(path: String, line: Int?, laneId: String?)
   case commit(sha: String, laneId: String?)
@@ -904,7 +957,7 @@ enum WorkAdeCardNavTarget: Equatable {
 /// same id merges into this card (see `buildWorkAdeCards`) instead of appending
 /// a second row, so a long-running card stays one chronological entry as it
 /// progresses.
-struct WorkAdeCardModel: Identifiable, Equatable {
+struct WorkAdeCardModel: Identifiable, Hashable {
   /// Variants this build knows how to render richly. Anything else degrades to
   /// `fallbackText` + deeplink — that is what makes one wire contract safe to
   /// ship across desktop auto-update, App Store review, and npm.
@@ -1039,6 +1092,81 @@ enum WorkTimelinePayload: Equatable {
   case pendingModelSelection(WorkPendingModelSelectionModel)
 }
 
+extension WorkTimelinePayload: Hashable {
+  /// Content hash for change detection: every field that can change what a card
+  /// draws, for every card kind.
+  ///
+  /// Cards update in place under a stable row id — a tool card goes running →
+  /// completed and gains a result, a subagent card gains a summary, a
+  /// pending-input card gains a resolution — so a revision built from ids and
+  /// timestamps alone leaves the visible cell showing the old content. Hashing
+  /// the model itself keeps this aligned with payload equality by construction.
+  ///
+  /// `.message` is the one case that hashes only its identity here: assistant
+  /// markdown is long and re-hashed several times a second during a streaming
+  /// turn, so `workChatTranscriptRowRevision` covers messages through the
+  /// digest-based fast path instead. Hashing fewer fields than `==` compares is
+  /// always safe (it can only collide, never falsely separate).
+  func hash(into hasher: inout Hasher) {
+    switch self {
+    case .message(let message):
+      hasher.combine(0)
+      hasher.combine(message.id)
+    case .toolCard(let model):
+      hasher.combine(1)
+      hasher.combine(model)
+    case .commandCard(let model):
+      hasher.combine(2)
+      hasher.combine(model)
+    case .fileChangeCard(let model):
+      hasher.combine(3)
+      hasher.combine(model)
+    case .subagent(let model):
+      hasher.combine(4)
+      hasher.combine(model)
+    case .subagentStoppedGroup(let model):
+      hasher.combine(5)
+      hasher.combine(model)
+    case .toolGroup(let model):
+      hasher.combine(6)
+      hasher.combine(model)
+    case .changedFiles(let model):
+      hasher.combine(7)
+      hasher.combine(model)
+    case .eventCard(let model):
+      hasher.combine(8)
+      hasher.combine(model)
+    case .adeCard(let model):
+      hasher.combine(9)
+      hasher.combine(model)
+    case .usageSummary(let model):
+      hasher.combine(10)
+      hasher.combine(model)
+    case .artifact(let model):
+      hasher.combine(11)
+      hasher.combine(model)
+    case .turnSeparator(let model):
+      hasher.combine(12)
+      hasher.combine(model)
+    case .turnEndMarker(let model):
+      hasher.combine(13)
+      hasher.combine(model)
+    case .pendingQuestion(let model):
+      hasher.combine(14)
+      hasher.combine(model)
+    case .pendingPermission(let model):
+      hasher.combine(15)
+      hasher.combine(model)
+    case .pendingPlanApproval(let model):
+      hasher.combine(16)
+      hasher.combine(model)
+    case .pendingModelSelection(let model):
+      hasher.combine(17)
+      hasher.combine(model)
+    }
+  }
+}
+
 struct WorkAssistantMarkdownBlockRenderModel: Identifiable, Equatable {
   let id: String
   let messageId: String
@@ -1097,7 +1225,7 @@ struct WorkTimelineRenderEntry: Identifiable, Equatable {
 /// One member of a `WorkToolGroupModel`. Carries enough context for the
 /// collapsed mini-row (icon, title, status) and hands the full payload back
 /// when the group expands into per-entry cards.
-enum WorkToolGroupMember: Equatable, Identifiable {
+enum WorkToolGroupMember: Hashable, Identifiable {
   case tool(WorkToolCardModel)
   case command(WorkCommandCardModel)
   case fileChange(WorkFileChangeCardModel)
@@ -1127,7 +1255,7 @@ enum WorkToolGroupMember: Equatable, Identifiable {
   }
 }
 
-struct WorkToolGroupModel: Identifiable, Equatable {
+struct WorkToolGroupModel: Identifiable, Hashable {
   let id: String
   let members: [WorkToolGroupMember]
 
@@ -1138,7 +1266,7 @@ struct WorkToolGroupModel: Identifiable, Equatable {
 /// Stats are summed across every event that touched the same path during the
 /// cluster, so a file edited by both an `Edit` tool and a `file_change` event
 /// renders as a single row.
-struct WorkChangedFileEntry: Identifiable, Equatable {
+struct WorkChangedFileEntry: Identifiable, Hashable {
   let id: String
   let path: String
   let kind: String
@@ -1148,21 +1276,21 @@ struct WorkChangedFileEntry: Identifiable, Equatable {
   let status: WorkToolCardStatus
 }
 
-struct WorkChangedFilesGroupModel: Identifiable, Equatable {
+struct WorkChangedFilesGroupModel: Identifiable, Hashable {
   let id: String
   let files: [WorkChangedFileEntry]
 
   var count: Int { files.count }
 }
 
-struct WorkTurnSeparator: Equatable {
+struct WorkTurnSeparator: Hashable {
   let time: String
   let provider: String
   let modelLabel: String
   let modelId: String?
 }
 
-struct WorkTurnEndMarker: Equatable {
+struct WorkTurnEndMarker: Hashable {
   let turnId: String
   let time: String
   let workedDurationLabel: String
@@ -1217,7 +1345,7 @@ struct WorkTimelineEntry: Identifiable, Equatable {
   let payload: WorkTimelinePayload
 }
 
-struct WorkSubagentSnapshot: Identifiable, Equatable {
+struct WorkSubagentSnapshot: Identifiable, Hashable {
   enum Status: Equatable { case running, succeeded, failed, stopped }
 
   let taskId: String
@@ -1256,7 +1384,7 @@ struct WorkSubagentSnapshot: Identifiable, Equatable {
   var id: String { taskId }
 }
 
-struct WorkSubagentTimelineRow: Identifiable, Equatable {
+struct WorkSubagentTimelineRow: Identifiable, Hashable {
   enum Kind: String, Equatable {
     case spawn
     case result
@@ -1278,7 +1406,7 @@ struct WorkSubagentTimelineRow: Identifiable, Equatable {
 /// Folded run of 2+ same-cause, same-source subagent result rows (desktop
 /// parity: `SubagentStoppedGroupEvent`). Carries the original result rows so
 /// the card can list each agent's title, last activity, and outcome.
-struct WorkSubagentStoppedGroupModel: Identifiable, Equatable {
+struct WorkSubagentStoppedGroupModel: Identifiable, Hashable {
   /// Why the run stopped. The two causes read differently and must not be
   /// merged: an interrupt is something you did, a usage limit is something that
   /// happened to every agent at once.
@@ -1466,7 +1594,7 @@ struct WorkPlanStep: Equatable, Hashable {
   let status: String
 }
 
-struct WorkEventCardModel: Identifiable, Equatable {
+struct WorkEventCardModel: Identifiable, Hashable {
   let id: String
   let kind: String
   let title: String
@@ -1677,6 +1805,20 @@ struct WorkChatEnvelope: Identifiable, Equatable {
   /// without changing the broad WorkChatEvent associated-value surface.
   let stopSource: String?
   let stopReason: String?
+  /// Size of the stored tool result when this row carries only the head slice
+  /// the slim mobile wire sent, nil when the result is complete. Drives the
+  /// Result block's on-demand fetch.
+  let toolResultFullBytes: Int?
+  /// Raw Claude queue lifecycle metadata. `WorkChatEvent` intentionally maps
+  /// non-terminal lifecycle frames to no visible card, but pending-steer
+  /// derivation still needs the status to clear a staged row when the host
+  /// reports `started`/`completed` without a delivered user-message frame.
+  let commandLifecycleStatus: String?
+  let commandLifecycleSteerId: String?
+  /// Byte offset of this row in the host's transcript, when it came off a
+  /// `chat_history` page. Lets a "show full result" fetch name the exact
+  /// location instead of relying on the host's bounded tail scan.
+  let sourceOffset: Int?
 
   init(
     sessionId: String,
@@ -1692,7 +1834,11 @@ struct WorkChatEnvelope: Identifiable, Equatable {
     apiErrorStatus: Int? = nil,
     isLegacySubagentCompletedFrame: Bool = false,
     stopSource: String? = nil,
-    stopReason: String? = nil
+    stopReason: String? = nil,
+    toolResultFullBytes: Int? = nil,
+    commandLifecycleStatus: String? = nil,
+    commandLifecycleSteerId: String? = nil,
+    sourceOffset: Int? = nil
   ) {
     self.sessionId = sessionId
     self.timestamp = timestamp
@@ -1708,6 +1854,10 @@ struct WorkChatEnvelope: Identifiable, Equatable {
     self.isLegacySubagentCompletedFrame = isLegacySubagentCompletedFrame
     self.stopSource = stopSource
     self.stopReason = stopReason
+    self.toolResultFullBytes = toolResultFullBytes
+    self.commandLifecycleStatus = commandLifecycleStatus
+    self.commandLifecycleSteerId = commandLifecycleSteerId
+    self.sourceOffset = sourceOffset
   }
 }
 

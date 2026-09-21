@@ -165,19 +165,24 @@ struct WorkToolActivityPresentation: Equatable {
   let detail: String?
 }
 
+/// What this provider's in-thread subagents support on a phone.
+///
+/// There is only one capability left. Opening an in-thread subagent's
+/// transcript was removed (see `handleSubagentSelection`): the phone shows the
+/// subagent card — label, model, status, latest summary, result — and never
+/// replaces the thread with a read-only copy of the agent's own work. Separate
+/// subagent chats (`--type subagent`) and child lanes are unaffected; they are
+/// full chats with their own rows.
 struct WorkSubagentCapability: Equatable {
   let canList: Bool
-  let canViewFullTranscript: Bool
 
-  static let none = WorkSubagentCapability(canList: false, canViewFullTranscript: false)
+  static let none = WorkSubagentCapability(canList: false)
 }
 
 func workResolveSubagentCapability(provider: String?) -> WorkSubagentCapability {
   switch providerFamilyKey(provider ?? "") {
-  case "codex", "claude", "opencode":
-    return WorkSubagentCapability(canList: true, canViewFullTranscript: true)
-  case "cursor", "droid", "factory":
-    return WorkSubagentCapability(canList: true, canViewFullTranscript: false)
+  case "codex", "claude", "opencode", "cursor", "droid", "factory":
+    return WorkSubagentCapability(canList: true)
   default:
     return .none
   }

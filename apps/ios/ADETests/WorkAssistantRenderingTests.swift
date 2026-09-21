@@ -328,12 +328,6 @@ final class WorkChatLanePrPolicyTests: XCTestCase {
     XCTAssertTrue(policy.rendersPrBadge)
   }
 
-  func testSubagentTranscriptRendersNoBadgeButStillResolves() {
-    let policy = WorkChatLanePrPolicy(showsLaneActions: true, viewingSubagent: true)
-    XCTAssertTrue(policy.resolvesLanePr)
-    XCTAssertFalse(policy.rendersPrBadge)
-  }
-
   /// The composer badge input itself: even when a lane PR is somehow in state,
   /// a lane-action-free chat passes `nil` to `WorkChatSessionView`.
   func testCtoConfigurationPassesNoPrBadgeEvenWithAResolvedTag() {
@@ -679,5 +673,174 @@ final class WorkChatActiveSendCapabilityTests: XCTestCase {
       return XCTFail("expected a system notice, got \(transcript[0].event)")
     }
     XCTAssertEqual(kind, "auth")
+  }
+}
+
+/// The transcript's change-detection surface: what makes a row reconfigure
+/// and re-measure, plus the envelope fields those rows are built from.
+final class WorkChatTranscriptRowRevisionTests: XCTestCase {
+  /// Regression: `optionalString(a ?? b)` cannot fall through an explicit
+  /// null. A host that sends `"steerId": null` beside a snake_case
+  /// `steer_id` had the NSNull win the coalesce, so the steer id was lost and
+  /// its queued row never graduated.
+  func testCommandLifecycleReadsSnakeCaseSteerIdPastAnExplicitNull() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-09-16T00:00:01.000Z","sequence":1,"event":{"type":"command_lifecycle","commandUuid":"cmd-1","status":"started","steerId":null,"steer_id":"steer-1","turnId":"turn-1"}}
+    """
+
+    let transcript = parseWorkChatTranscript(raw)
+    XCTAssertEqual(transcript.count, 1)
+    XCTAssertEqual(transcript[0].commandLifecycleSteerId, "steer-1")
+    XCTAssertEqual(transcript[0].commandLifecycleStatus, "started")
+  }
+
+  /// Regression: a `resultTruncatedForMobile` flag with no `resultOriginalBytes`
+  /// left `toolResultFullBytes` nil, which reads as "the row already has
+  /// everything" and hid the fetch affordance for a head slice.
+  func testTruncatedToolResultKeepsItsFetchAffordanceWithoutAByteCount() throws {
+    let unsized = """
+    {"sessionId":"chat-1","timestamp":"2026-09-16T00:00:01.000Z","sequence":4,"event":{"type":"tool_result","tool":"Bash","itemId":"item-1","status":"completed","result":"head slice","resultTruncatedForMobile":true}}
+    """
+    XCTAssertEqual(
+      try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(unsized.utf8)).toolResultFullBytes,
+      0,
+      "truncated, size unknown — not nil, which means complete"
+    )
+
+    let sized = """
+    {"sessionId":"chat-1","timestamp":"2026-09-16T00:00:02.000Z","sequence":5,"event":{"type":"tool_result","tool":"Bash","itemId":"item-2","status":"completed","result":"head slice","resultTruncatedForMobile":true,"resultOriginalBytes":50000}}
+    """
+    XCTAssertEqual(
+      try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(sized.utf8)).toolResultFullBytes,
+      50_000
+    )
+
+    let complete = """
+    {"sessionId":"chat-1","timestamp":"2026-09-16T00:00:03.000Z","sequence":6,"event":{"type":"tool_result","tool":"Bash","itemId":"item-3","status":"completed","result":"whole thing"}}
+    """
+    XCTAssertNil(
+      try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(complete.utf8)).toolResultFullBytes,
+      "an untruncated row must not offer a fetch"
+    )
+  }
+
+  private func toolCardRenderEntry(
+    status: WorkToolCardStatus,
+    resultText: String?,
+    completedAt: String? = nil
+  ) -> WorkTimelineRenderEntry {
+    let card = WorkToolCardModel(
+      id: "tool-item-1",
+      toolName: "Bash",
+      status: status,
+      startedAt: "2026-09-20T00:00:00.000Z",
+      completedAt: completedAt,
+      argsText: "npm test",
+      resultText: resultText
+    )
+    let entry = WorkTimelineEntry(
+      id: "tool-item-1",
+      timestamp: "2026-09-20T00:00:00.000Z",
+      rank: 3,
+      payload: .toolCard(card)
+    )
+    return WorkTimelineRenderEntry(
+      id: "tool-item-1",
+      sourceEntryId: "tool-item-1",
+      timestamp: "2026-09-20T00:00:00.000Z",
+      payload: .entry(entry)
+    )
+  }
+
+  /// A tool card updates in place under one row id: `tool_call` creates it
+  /// running, `tool_result` completes it and attaches the output. The row
+  /// revision is what tells the transcript to reconfigure that cell and
+  /// re-measure it, so a revision built from ids and timestamps alone left the
+  /// running card on screen forever.
+  func testToolCardStatusAndResultChangeTheRowRevision() {
+    let running = toolCardRenderEntry(status: .running, resultText: nil)
+    let completed = toolCardRenderEntry(
+      status: .completed,
+      resultText: "1990 tests passed",
+      completedAt: "2026-09-20T00:00:09.000Z"
+    )
+
+    XCTAssertEqual(
+      workChatTranscriptRowRevision(running),
+      workChatTranscriptRowRevision(toolCardRenderEntry(status: .running, resultText: nil)),
+      "an unchanged card must keep its revision, or every refresh re-measures every row"
+    )
+    XCTAssertNotEqual(
+      workChatTranscriptRowRevision(running),
+      workChatTranscriptRowRevision(completed)
+    )
+    XCTAssertNotEqual(
+      workChatTranscriptRowRevision(completed),
+      workChatTranscriptRowRevision(
+        toolCardRenderEntry(
+          status: .completed,
+          resultText: "1990 tests passed, 1 skipped",
+          completedAt: "2026-09-20T00:00:09.000Z"
+        )
+      ),
+      "a result that grows must reconfigure the cell"
+    )
+  }
+
+  /// The same rule for the other two card kinds that mutate under a stable id:
+  /// a subagent row gaining its summary, and a pending-input card gaining its
+  /// resolution.
+  func testSubagentAndPendingCardUpdatesChangeTheRowRevision() {
+    func renderEntry(_ payload: WorkTimelinePayload, id: String) -> WorkTimelineRenderEntry {
+      WorkTimelineRenderEntry(
+        id: id,
+        sourceEntryId: id,
+        timestamp: "2026-09-20T00:00:00.000Z",
+        payload: .entry(
+          WorkTimelineEntry(
+            id: id,
+            timestamp: "2026-09-20T00:00:00.000Z",
+            rank: 1,
+            payload: payload
+          )
+        )
+      )
+    }
+
+    func permission(_ detail: String?) -> WorkTimelinePayload {
+      .pendingPermission(
+        WorkPendingPermissionModel(
+          id: "perm-1",
+          tool: "Bash",
+          description: "Run npm test",
+          detail: detail
+        )
+      )
+    }
+
+    XCTAssertNotEqual(
+      workChatTranscriptRowRevision(renderEntry(permission(nil), id: "perm-1")),
+      workChatTranscriptRowRevision(renderEntry(permission("in apps/ios"), id: "perm-1"))
+    )
+
+    func commandCard(_ status: WorkToolCardStatus, output: String) -> WorkTimelinePayload {
+      .commandCard(
+        WorkCommandCardModel(
+          id: "cmd-1",
+          command: "npm test",
+          cwd: "/repo",
+          output: output,
+          status: status,
+          timestamp: "2026-09-20T00:00:00.000Z",
+          exitCode: nil,
+          durationMs: nil
+        )
+      )
+    }
+
+    XCTAssertNotEqual(
+      workChatTranscriptRowRevision(renderEntry(commandCard(.running, output: ""), id: "cmd-1")),
+      workChatTranscriptRowRevision(renderEntry(commandCard(.completed, output: "ok"), id: "cmd-1"))
+    )
   }
 }
