@@ -810,7 +810,7 @@ function buildUserOpenCodeEnv(config: OpenCodeConfig): NodeJS.ProcessEnv {
       const parsed = JSON.parse(inheritedContent);
       if (!isRecord(parsed)) return addUserOpenCodeOwnershipMarkers(env);
       env.OPENCODE_CONFIG_CONTENT = JSON.stringify(
-        mergeOpenCodeConfig(parsed, config as Record<string, unknown>),
+        mergeOpenCodeConfig(parsed, withInheritedSkillPaths(config, parsed)),
       );
       return addUserOpenCodeOwnershipMarkers(env);
     } catch {
@@ -824,6 +824,36 @@ function buildUserOpenCodeEnv(config: OpenCodeConfig): NodeJS.ProcessEnv {
     config as Record<string, unknown>,
   );
   return addUserOpenCodeOwnershipMarkers(env);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
+/**
+ * `mergeOpenCodeConfig` replaces arrays, so ADE's `skills.paths` would drop any
+ * the user already had in `OPENCODE_CONFIG_CONTENT`. Union them, user paths
+ * first, so ADE's bundled skills add to the user's rather than replacing them.
+ */
+export function withInheritedSkillPaths(
+  config: OpenCodeConfig,
+  inherited: Record<string, unknown>,
+): Record<string, unknown> {
+  const adeSkills = isRecord(config.skills) ? config.skills : null;
+  const adePaths = isStringArray(adeSkills?.paths) ? adeSkills.paths : [];
+  if (!adePaths.length) return config as Record<string, unknown>;
+  const inheritedSkills = isRecord(inherited.skills) ? inherited.skills : null;
+  const inheritedPaths = isStringArray(inheritedSkills?.paths) ? inheritedSkills.paths : [];
+  if (!inheritedPaths.length) return config as Record<string, unknown>;
+  const seen = new Set<string>();
+  const union: string[] = [];
+  for (const entry of [...inheritedPaths, ...adePaths]) {
+    const trimmed = entry.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    union.push(trimmed);
+  }
+  return { ...config, skills: { ...adeSkills, paths: union } };
 }
 
 function addUserOpenCodeOwnershipMarkers(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {

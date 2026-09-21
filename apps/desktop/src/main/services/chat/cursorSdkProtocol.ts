@@ -99,6 +99,16 @@ export type CursorSdkWorkerInit = {
   agentName?: string | null;
   policy: CursorSdkPermissionPolicy;
   mcpServers?: Record<string, unknown>;
+  /**
+   * Extra Cursor workspace roots (`LocalAgentOptions.dirs`) that carry ADE's
+   * bundled agent skills as `<root>/.agents/skills/<name>/SKILL.md`.
+   *
+   * The main process materializes the shim and passes the root here; the worker
+   * never derives it. `ADE_HOME` is on the worker env denylist, and the worker
+   * runs with `HOME` rewritten to the Cursor state home, so it cannot resolve
+   * the ADE-owned shim location on its own.
+   */
+  agentSkillDirs?: string[];
 };
 
 /**

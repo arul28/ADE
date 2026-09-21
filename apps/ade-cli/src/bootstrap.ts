@@ -115,10 +115,10 @@ import { createFeedbackReporterService } from "../../desktop/src/main/services/f
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
   ADE_BUNDLED_AGENT_SKILLS_DIR_ENV,
-  getAdeAgentSkillRootsForPrompt,
   joinAdeAgentSkillRoots,
   splitAdeAgentSkillRoots,
 } from "../../desktop/src/shared/agentSkillRoots";
+import { adePromptAgentSkillRoots } from "../../desktop/src/main/services/skills/agentSkillRuntimeService";
 import {
   attachSharedUsageTrackingScope,
   createUsageTrackingService,
@@ -627,7 +627,7 @@ export function createHeadlessAdeCliAgentEnv(
     next[ADE_AGENT_SKILLS_DIRS_ENV],
     inferredSkillRoots.catalogRoot,
   );
-  next[ADE_AGENT_SKILLS_DIRS_ENV] = joinAdeAgentSkillRoots(getAdeAgentSkillRootsForPrompt({
+  next[ADE_AGENT_SKILLS_DIRS_ENV] = joinAdeAgentSkillRoots(adePromptAgentSkillRoots({
     env: next,
     cwd: options.cwd ?? process.cwd(),
   }));

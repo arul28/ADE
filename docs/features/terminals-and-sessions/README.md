@@ -1936,10 +1936,28 @@ hand translation at the drop handler.
 
 | Column | Membership | Drop target |
 | --- | --- | --- |
-| **Needs you** | the awaiting-input partition | yes |
+| **Needs you** | the `needs_you` phase only — a raised hand | yes |
 | **Working** | what is left of the running partition after Waiting takes its share | yes |
 | **Waiting** | snoozed rows, plus running rows whose lane PR is mid-CI or has a review requested | **no** |
-| **Done** | ended rows, then settled rows (settled is the quieter tier, so it sinks) | yes |
+| **Done** | resting rows (`ready`/`idle`), then ended rows, then settled rows | yes |
+
+The first column takes the `needs_you` phase, **not** the list's whole
+`awaiting-input` partition. That partition is a container holding three phases —
+`needs_you`, `ready` and `idle` — which is why the list names it "Your move" and
+lets each card state its own phase. The board's first column is a claim, not a
+container: it is amber and it says the row is blocked on the user. `ready` and
+`idle` are already emerald "Done" on their own cards, so they file under Done
+here, loudest tier first — resting rows are live sessions that just finished a
+turn, settled is what the user already filed away.
+
+The host's `deriveWorkBoardColumn` maps a phase through
+`canonicalBoardColumnForPhase`; the renderer's `buildWorkBoardModel` reaches the
+same answer one level up, from the list's filing buckets plus a `needs_you`
+split. The two must agree, or a drag's host-authored "you moved this chat from
+<column>" message names a column the user never saw. They previously both filed
+the whole `awaiting-input` partition under "Needs you", so a board could claim
+five sessions were blocked on the user while every one of those cards showed an
+emerald "Done" dot and none had a raised hand.
 
 Waiting is not droppable because a row sits there for a reason a drag cannot
 assert — it is snoozed, or its PR is waiting on someone else. `canAcceptDrop`

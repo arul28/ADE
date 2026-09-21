@@ -107,7 +107,12 @@ import {
   type ClaudeWorkflowAgentTransition,
   type ClaudeWorkflowProgressSnapshot,
 } from "./claudeWorkflowProgress";
-import { discoverClaudeSlashCommands } from "./claudeSlashCommandDiscovery";
+import {
+  discoverClaudeSlashCommands,
+  formatClaudeSlashCommandEntry,
+  planClaudeSlashCommandInjection,
+  renderClaudeSlashCommandEntries,
+} from "./claudeSlashCommandDiscovery";
 import { discoverCodexSlashCommands } from "./codexSlashCommandDiscovery";
 import {
   CODEX_COMPACTION_STALL_MS,
@@ -750,8 +755,8 @@ import {
 import { createChatAutoResumeCoordinator } from "./chatAutoResumeCoordinator";
 import type { ChatAutoResumeAnalyticsProperties } from "./chatAutoResumeCoordinator";
 import { buildAdeCliAgentGuidance } from "../../../shared/adeCliGuidance";
-import { getAdeAgentSkillRootsForPrompt } from "../../../shared/agentSkillRoots";
 import {
+  adePromptAgentSkillRoots,
   agentSkillSlashCommands,
   claudeAgentSkillPluginRoots,
   codexSkillsForCwd,
@@ -759,6 +764,14 @@ import {
   existingAgentSkillRoots,
   type CodexSkillsListResponse,
 } from "../skills/agentSkillRuntimeService";
+import {
+  cursorAgentSkillShimRoot,
+  resolveCursorAgentSkillDirs,
+} from "../skills/cursorAgentSkillShim";
+import {
+  logSkillDelivery as recordSkillDelivery,
+  type SkillDeliveryDetail,
+} from "../skills/skillDelivery";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import {
   SESSION_STALE_AFTER_MS,
@@ -835,6 +848,7 @@ import {
   acpInvocationKey,
   buildAcpPromptBlocks,
   createAcpRuntime,
+  ensureQwenAdeSkillDefaultsFile,
   openAcpSession,
   pendingPermissionToInputRequest,
   setAcpReasoningEffort,
@@ -957,6 +971,7 @@ import {
 import {
   allowCursorHook,
   approvalPolicyLabel,
+  cursorSdkSettingSources,
   denyCursorHook,
   evaluateCursorSdkHook,
   resolveCursorSdkPolicy,
@@ -3955,6 +3970,7 @@ type ManagedChatSession = {
   preferredExecutionLaneId: string | null;
   selectedExecutionLaneId: string | null;
   lastLaneDirectiveKey: string | null;
+  lastComputerUseDirectiveKey: string | null;
   runtimeInvalidated: boolean;
   /** True when a transient Qwen effort update is the reason the runtime is invalidated. */
   acpReasoningEffortInvalidated: boolean;
@@ -4136,6 +4152,7 @@ type PreparedSendMessage = {
   reasoningEffort?: string | null;
   interactionMode?: AgentChatInteractionMode | null;
   laneDirectiveKey?: string | null;
+  computerUseDirectiveKey?: string | null;
   providerSlashCommand?: boolean;
   forceClaudeUserMessage?: boolean;
   onDispatched?: () => void;
@@ -7344,16 +7361,32 @@ export function buildLinearSessionDirective(
   ].join("\n");
 }
 
+/**
+ * Identity of one rendering of the computer-use directive.
+ *
+ * The directive's text is derived entirely from which backends are available,
+ * so hashing the text is the same as hashing the capability set — and it stays
+ * correct if the prose changes, without a second list to keep in sync.
+ */
+export function computerUseDirectiveFingerprint(directive: string): string {
+  return createHash("sha1").update(directive).digest("hex").slice(0, 16);
+}
+
 export function buildComputerUseDirective(
   backendStatus: ComputerUseBackendStatus | null,
 ): string | null {
   const hasExternalBackends = backendStatus
     ? backendStatus.backends.some((b) => b.available)
     : false;
-  const hasLocalFallback = backendStatus?.localFallback.available ?? true;
+  // A null status means no artifact broker is attached to this session, so
+  // there is no computer-use capability to describe. This used to default to
+  // "local fallback available", which made the null case — the common one when
+  // the broker is absent — emit the full directive on a session that cannot
+  // screenshot anything.
+  const hasLocalFallback = backendStatus?.localFallback.available ?? false;
 
   // No backends and no local fallback → skip the directive entirely.
-  if (!hasExternalBackends && !hasLocalFallback && backendStatus != null) {
+  if (!hasExternalBackends && !hasLocalFallback) {
     return null;
   }
 
@@ -8250,7 +8283,7 @@ function buildAdeGuidanceForLane(
   session?: Pick<AgentChatSession, "id" | "orchestrationParentSessionId" | "spawnKind">,
   opts?: SpawnSelfReportGuidanceOpts,
 ): string {
-  const base = buildAdeCliAgentGuidance(getAdeAgentSkillRootsForPrompt({ cwd: laneWorktreePath }));
+  const base = buildAdeCliAgentGuidance(adePromptAgentSkillRoots({ cwd: laneWorktreePath }));
   return [base, buildAdeSessionLineageGuidance(session, opts)].filter(Boolean).join("\n");
 }
 
@@ -8280,7 +8313,7 @@ function buildCodexDeveloperInstructions(args: {
     permissionMode: toHarnessPermissionMode(args.session.permissionMode),
     interactive: true,
     runtime: "codex-app-server",
-    adeSkillRoots: getAdeAgentSkillRootsForPrompt({ cwd: args.laneWorktreePath }),
+    adeSkillRoots: adePromptAgentSkillRoots({ cwd: args.laneWorktreePath }),
   });
   const spawnGuidance = buildSpawnSelfReportGuidance(args.session, args.spawnGuidance);
   return [base, args.linearDirective, spawnGuidance].filter(Boolean).join("\n\n");
@@ -8310,7 +8343,7 @@ function buildOpenCodeSystemPrompt(args: {
     permissionMode: toHarnessPermissionMode(args.session.permissionMode),
     interactive: true,
     runtime: "opencode",
-    adeSkillRoots: getAdeAgentSkillRootsForPrompt({ cwd: args.laneWorktreePath }),
+    adeSkillRoots: adePromptAgentSkillRoots({ cwd: args.laneWorktreePath }),
   });
   return [base, buildAdeSessionLineageGuidance(args.session, args.spawnGuidance)]
     .filter(Boolean)
@@ -9537,6 +9570,17 @@ export function createAgentChatService(args: {
       });
     }
   };
+
+  /**
+   * The skill-root slice of the agent environment, with no browser capability.
+   *
+   * `buildAgentRuntimeEnv` issues a browser actor token as a side effect and
+   * carries an ordering rule (`prepareBrowserActorCapability` must be awaited
+   * first) that `agentChatBrowserActorOrdering.test.ts` enforces by counting
+   * call sites. Reading skill roots needs none of that, so it reads the two
+   * variables `adeCliService.agentEnv()` sets and nothing else.
+   */
+  const agentSkillRootEnv = (): NodeJS.ProcessEnv => getAdeCliAgentEnv?.(process.env) ?? process.env;
 
   const buildAgentRuntimeEnv = (managed: ManagedChatSession): NodeJS.ProcessEnv => {
     const personalSession = isPersonalSession(managed.session);
@@ -13223,7 +13267,7 @@ export function createAgentChatService(args: {
       .filter((section) => section.length > 0)
       .join("\n\n");
     target.pendingReconstructionContext = nextContext.length ? nextContext : null;
-    clearLaneDirectiveKey(target);
+    clearDeliveredDirectiveEpoch(target);
   };
 
   const stageTranscriptReplayOnSession = (
@@ -13363,7 +13407,7 @@ export function createAgentChatService(args: {
     if (!fit.turnCount || !fit.text.trim().length) {
       // Nothing to carry: a header that announces restored context with no
       // context attached just lies to the model.
-      clearLaneDirectiveKey(managed);
+      clearDeliveredDirectiveEpoch(managed);
       return;
     }
     stageCursorSdkContinuityHeader(managed, [
@@ -14249,6 +14293,15 @@ export function createAgentChatService(args: {
 
     const runtimeEnv = buildAgentRuntimeEnv(managed);
     const skillRoots = existingAgentSkillRoots(runtimeEnv);
+    // Pi is the one provider where ADE replaces native discovery entirely
+    // (`noSkills: true` + `additionalSkillPaths`), so an empty root list here
+    // means the session has no skills at all rather than falling back.
+    logSkillDelivery(managed, {
+      mechanism: "pi-additional-paths",
+      rootCount: skillRoots.length,
+      delivered: skillRoots.length > 0,
+      ...(skillRoots.length ? {} : { reason: "no_existing_roots" }),
+    });
     const persisted = readPersistedState(managed.session.id);
     const sessionFile = managed.session.piSessionFile?.trim() || persisted?.piSessionFile?.trim() || null;
     const sessionId = managed.session.piSessionId?.trim() || persisted?.piSessionId?.trim() || null;
@@ -14295,7 +14348,7 @@ export function createAgentChatService(args: {
           permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
           interactive: true,
           runtime: "pi-sdk",
-          adeSkillRoots: getAdeAgentSkillRootsForPrompt({ cwd: managed.laneWorktreePath }),
+          adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
         });
     // Pi's built-in tool registry only contains read, bash, edit, and write.
     // Passing ADE's generic grep/find/ls names would make the SDK launch fail.
@@ -14594,6 +14647,19 @@ export function createAgentChatService(args: {
         ])),
       }
       : undefined;
+    // OpenCode's own `skills.paths` key, so its agents get ADE's bundled skills
+    // through native discovery instead of having to read a path out of prose.
+    // A personal chat deliberately gets none — ADE capabilities are not part of
+    // that surface.
+    const openCodeAgentSkillRoots = isPersonalSession(managed.session)
+      ? []
+      : existingAgentSkillRoots(agentSkillRootEnv());
+    logSkillDelivery(managed, {
+      mechanism: "opencode-skill-paths",
+      rootCount: openCodeAgentSkillRoots.length,
+      delivered: openCodeAgentSkillRoots.length > 0,
+      ...(openCodeAgentSkillRoots.length ? {} : { reason: "no_existing_roots" }),
+    });
     let handle: OpenCodeSessionHandle;
     try {
       handle = await startOpenCodeSession({
@@ -14606,6 +14672,7 @@ export function createAgentChatService(args: {
         // provider is a config block or it does not exist. A preset's block is
         // resolved per chat and merged last, so it changes this session only.
         ...(openCodePresetProviders ? { presetProviders: openCodePresetProviders } : {}),
+        ...(openCodeAgentSkillRoots.length ? { agentSkillRoots: openCodeAgentSkillRoots } : {}),
         ...(opencodeMcpConfig ? { mcp: opencodeMcpConfig } : {}),
         ownerKind: "chat",
         ownerId: managed.session.id,
@@ -20840,7 +20907,7 @@ export function createAgentChatService(args: {
     if (!managed.runtime) {
       if (!reasonAllowsPreservation) {
         managed.runtimeInvalidated = true;
-        clearLaneDirectiveKey(managed);
+        clearDeliveredDirectiveEpoch(managed);
       }
       return;
     }
@@ -21035,7 +21102,7 @@ export function createAgentChatService(args: {
     managed.runtimeInvalidated = !preserveProviderResumeState;
     managed.acpReasoningEffortInvalidated = false;
     if (!preserveProviderResumeState) {
-      clearLaneDirectiveKey(managed);
+      clearDeliveredDirectiveEpoch(managed);
     }
   };
 
@@ -21398,6 +21465,9 @@ export function createAgentChatService(args: {
       preferredExecutionLaneId: persisted?.preferredExecutionLaneId ?? null,
       selectedExecutionLaneId: persisted?.selectedExecutionLaneId ?? null,
       lastLaneDirectiveKey: persisted?.lastLaneDirectiveKey ?? null,
+      // Deliberately in-memory only: after a restart the directive is re-sent
+      // once, which is the safe direction to fail.
+      lastComputerUseDirectiveKey: null,
       runtimeInvalidated: false,
       acpReasoningEffortInvalidated: false,
       claudeRateLimitWarningEmitted: false,
@@ -21540,8 +21610,16 @@ export function createAgentChatService(args: {
     persistChatState(managed);
   };
 
-  const clearLaneDirectiveKey = (managed: ManagedChatSession): void => {
+  /**
+   * Forget what this session's provider threads have been told, so a
+   * replacement runtime (model switch, thread recycle, resume) is re-announced
+   * to. Both the lane directive and the computer-use directive are epoch-scoped
+   * and would otherwise be suppressed for the new thread by a key the old one
+   * set.
+   */
+  const clearDeliveredDirectiveEpoch = (managed: ManagedChatSession): void => {
     managed.lastLaneDirectiveKey = null;
+    managed.lastComputerUseDirectiveKey = null;
     persistChatState(managed);
   };
 
@@ -26546,7 +26624,7 @@ export function createAgentChatService(args: {
           );
           if (runtime.sdkSessionId === staleSdkSessionId) runtime.sdkSessionId = null;
           managed.runtimeInvalidated = true;
-          clearLaneDirectiveKey(managed);
+          clearDeliveredDirectiveEpoch(managed);
           void maybeRefreshIdentityContinuitySummary(managed, "provider_reset");
           // The provider thread is gone and the next send opens a new one, so
           // the once-per-thread sections have to be said again. Without this
@@ -26628,7 +26706,22 @@ export function createAgentChatService(args: {
     });
   };
 
-  const buildClaudeBackgroundSystemPrompt = (managed: ManagedChatSession): string => {
+  /**
+   * Skill-delivery telemetry, bound to this service's logger. The event shape,
+   * the mechanism union, and the "there was no telemetry before this" rationale
+   * live in `services/skills/skillDelivery.ts`.
+   */
+  const logSkillDelivery = (
+    managed: ManagedChatSession,
+    detail: SkillDeliveryDetail,
+  ): void => {
+    recordSkillDelivery(logger, managed.session, detail);
+  };
+
+  const buildClaudeBackgroundSystemPrompt = (
+    managed: ManagedChatSession,
+    pluginRoots: readonly string[] = [],
+  ): string => {
     resolveManagedClaudeOutputStyle(managed);
     const projectSlashCommands = (() => {
       try {
@@ -26643,33 +26736,29 @@ export function createAgentChatService(args: {
         return [];
       }
     })();
-    const projectCommandFiles = projectSlashCommands.filter((cmd) => cmd.source === "command");
-    const projectSkillFiles = projectSlashCommands.filter((cmd) => cmd.source === "skill");
-    const slashCommandsSection = projectSlashCommands.length
+    const injectionPlan = planClaudeSlashCommandInjection(projectSlashCommands, {
+      cwd: managed.laneWorktreePath,
+      pluginRoots,
+    });
+    const renderedSkills = renderClaudeSlashCommandEntries(injectionPlan.skills);
+    const slashCommandsSection = (injectionPlan.commands.length || renderedSkills.lines.length)
       ? [
           "",
           "## Project slash commands and skills",
-          "ADE walks up from the lane worktree to discover `.claude/commands/*.md` plus `.claude/skills/<name>/SKILL.md`, `.agents/skills/<name>/SKILL.md`, `.ade/skills/<name>/SKILL.md`, user skill roots, and ADE bundled skills. Claude Code itself may discover some of these, but ADE also tells you about the full project-visible set here.",
+          "ADE walks up from the lane worktree to discover `.claude/commands/*.md` plus `.claude/skills/<name>/SKILL.md`, `.agents/skills/<name>/SKILL.md`, `.ade/skills/<name>/SKILL.md`, user skill roots, and ADE bundled skills. Claude Code already lists `<cwd>/.claude/`, `~/.claude/`, and ADE's bundled `ade:*` plugin skills for you, so this section lists only the roots it cannot see.",
           "**User-invoked (`/<name>`):** When the user sends a message that is exactly `/<name>` or `/<name> <args>`, ADE may pre-expand the file's body and substitute `$ARGUMENTS` before it reaches you. You'll see the expanded instructions, not necessarily the literal `/<name>`.",
           "**Mid-sentence reference:** When the user mentions a command/skill mid-sentence, read the file at the path below and follow it.",
           "**Autonomous skill use:** If, while working on a task, you decide a discovered skill applies, read its SKILL.md file and follow it as if it had been invoked.",
-          ...(projectCommandFiles.length ? [
+          ...(injectionPlan.commands.length ? [
             "",
             "Commands (file-backed prompts):",
-            ...projectCommandFiles.map((cmd) => {
-              const desc = cmd.description.trim();
-              const head = desc.length ? `- ${cmd.name}: ${desc}` : `- ${cmd.name}`;
-              return `${head}\n  file: ${cmd.filePath}`;
-            }),
+            ...injectionPlan.commands.map(formatClaudeSlashCommandEntry),
           ] : []),
-          ...(projectSkillFiles.length ? [
+          ...(renderedSkills.lines.length ? [
             "",
             "Skills (autonomously usable when relevant):",
-            ...projectSkillFiles.map((cmd) => {
-              const desc = cmd.description.trim();
-              const head = desc.length ? `- ${cmd.name}: ${desc}` : `- ${cmd.name}`;
-              return `${head}\n  file: ${cmd.filePath}`;
-            }),
+            ...renderedSkills.lines,
+            ...(renderedSkills.omitted > 0 ? [`- ${renderedSkills.omitted} more skill(s) omitted to stay inside ADE's skill-listing budget. Run \`ade skill list --text\` if none of the listed skills fits.`] : []),
           ] : []),
         ]
       : [];
@@ -26680,7 +26769,7 @@ export function createAgentChatService(args: {
       permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
       interactive: true,
       runtime: "claude-code-cli",
-      adeSkillRoots: getAdeAgentSkillRootsForPrompt({ cwd: managed.laneWorktreePath }),
+      adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
     });
     return [
       harnessPrompt,
@@ -26706,14 +26795,22 @@ export function createAgentChatService(args: {
     const permissionMode = resolveClaudeTurnPermissionMode(managed);
     const model = resolveClaudeCliModel(managed.session.model);
     const rowTitle = sessionService.get(managed.session.id)?.title?.trim();
+    // The SDK path passes the bundled skills as a local plugin and the tracked
+    // CLI gets `--plugin-dir` at the PTY boundary. Without this the background
+    // CLI was the one Claude surface that saw ADE's own skills only as file
+    // paths in prose, so it could not invoke them as `ade:<name>`.
+    const bundledPluginPaths = isPersonalSession(managed.session)
+      ? []
+      : claudeAgentSkillPluginRoots(agentSkillRootEnv());
     const cliArgs = [
       "--bg",
       "--model",
       model,
       "--permission-mode",
       permissionMode,
+      ...bundledPluginPaths.flatMap((pluginPath) => ["--plugin-dir", pluginPath]),
       "--append-system-prompt",
-      buildClaudeBackgroundSystemPrompt(managed),
+      buildClaudeBackgroundSystemPrompt(managed, bundledPluginPaths),
     ];
     if (rowTitle) {
       cliArgs.push("--name", rowTitle);
@@ -27358,6 +27455,28 @@ export function createAgentChatService(args: {
     }
 
     const configHome = acpConfigHomeFor(provider, runtimeEnv);
+    // Qwen's own `skills.directories` key, so its agents get ADE's bundled
+    // skills through native discovery instead of having to read a path out of
+    // prose. It travels in an ADE-OWNED system-defaults file named by
+    // `QWEN_CODE_SYSTEM_DEFAULTS_PATH`; nothing is written into `~/.qwen`.
+    // A personal chat deliberately gets none — ADE capabilities are not part
+    // of that surface. No other ACP agent has an equivalent hook yet.
+    const qwenSkillDefaults = provider === "qwen"
+      ? ensureQwenAdeSkillDefaultsFile({
+        projectRoot,
+        laneWorktreePath: managed.laneWorktreePath,
+        env: agentSkillRootEnv(),
+        personalSession: isPersonalSession(managed.session),
+      })
+      : null;
+    if (qwenSkillDefaults) {
+      logSkillDelivery(managed, {
+        mechanism: "qwen-skill-directories",
+        rootCount: qwenSkillDefaults.roots.length,
+        delivered: qwenSkillDefaults.path !== null,
+        ...(qwenSkillDefaults.reason ? { reason: qwenSkillDefaults.reason } : {}),
+      });
+    }
     const permissionMode = resolveAcpPermissionMode(managed.session);
     const modelToken = acpModelTokenFor(managed.session);
     const spawnPlan = dialect.buildSpawnPlan({
@@ -27368,6 +27487,7 @@ export function createAgentChatService(args: {
       reasoningEffort: managed.session.reasoningEffort ?? null,
       permissionMode,
       configHome,
+      adeSkillDefaultsPath: qwenSkillDefaults?.path ?? null,
     });
     const invocationKey = acpInvocationKey(spawnPlan);
 
@@ -34308,8 +34428,27 @@ export function createAgentChatService(args: {
     runtime.notify("initialized");
     const bundledSkillRoots = runtime.agentSkillRoots;
     if (bundledSkillRoots.length) {
+      // A silent `.catch` here used to make a downgrade indistinguishable from
+      // success: on an app-server without this method, Codex quietly loses
+      // every ADE bundled skill and nothing in any log says so.
       await runtime.request("skills/extraRoots/set", { extraRoots: bundledSkillRoots })
-        .catch(() => { /* older app-server versions use the prompt/CLI fallback */ });
+        .then(() => {
+          logSkillDelivery(managed, {
+            mechanism: "codex-extra-roots",
+            rootCount: bundledSkillRoots.length,
+            delivered: true,
+          });
+        })
+        .catch((error: unknown) => {
+          logSkillDelivery(managed, {
+            mechanism: "codex-extra-roots",
+            rootCount: bundledSkillRoots.length,
+            delivered: false,
+            reason: error instanceof Error ? error.message : String(error),
+          });
+        });
+    } else {
+      logSkillDelivery(managed, { mechanism: "codex-extra-roots", rootCount: 0, delivered: false, reason: "no_existing_roots" });
     }
     runtime.acceptedSteersHydrationReady = hydrateAcceptedCodexSteers(
       managed,
@@ -35132,33 +35271,50 @@ export function createAgentChatService(args: {
           return [];
         }
       })();
-      const projectCommandFiles = projectSlashCommands.filter((cmd) => cmd.source === "command");
-      const projectSkillFiles = projectSlashCommands.filter((cmd) => cmd.source === "skill");
-      const visibleProjectCommandFiles = projectCommandFiles.slice(0, MAX_INJECTED_PROJECT_COMMANDS);
-      const hiddenProjectCommandCount = projectCommandFiles.length - visibleProjectCommandFiles.length;
-      const formatDiscoveredCommand = (cmd: (typeof projectSlashCommands)[number]): string => {
-        const desc = cmd.description.trim();
-        const head = desc.length ? `- ${cmd.name} — ${desc}` : `- ${cmd.name}`;
-        return `${head}\n  file: ${cmd.filePath}`;
-      };
-      const slashCommandsSection = projectSlashCommands.length
+      // Claude Code lists `<cwd>/.claude` and `~/.claude` for itself, and the
+      // bundled ADE skills reach it as a local plugin. Repeating either here
+      // spends system-prompt budget to tell the model something it already
+      // knows, and for the plugin skills it presents one skill under two names.
+      const injectionPlan = planClaudeSlashCommandInjection(projectSlashCommands, {
+        cwd: managed.laneWorktreePath,
+        pluginRoots: pluginPaths,
+      });
+      const visibleProjectCommandFiles = injectionPlan.commands.slice(0, MAX_INJECTED_PROJECT_COMMANDS);
+      const hiddenProjectCommandCount = injectionPlan.commands.length - visibleProjectCommandFiles.length;
+      const renderedSkills = renderClaudeSlashCommandEntries(injectionPlan.skills);
+      logSkillDelivery(managed, {
+        mechanism: "claude-plugin",
+        rootCount: pluginPaths.length,
+        delivered: pluginPaths.length > 0,
+        ...(pluginPaths.length ? {} : { reason: "no_trusted_plugin_root" }),
+      });
+      logSkillDelivery(managed, {
+        mechanism: "claude-listing",
+        delivered: renderedSkills.lines.length > 0,
+        skillCount: renderedSkills.lines.length,
+        nativeCount: injectionPlan.nativeCount,
+        omittedCount: renderedSkills.omitted,
+        bytes: renderedSkills.lines.reduce((total, line) => total + Buffer.byteLength(line, "utf8") + 1, 0),
+      });
+      const slashCommandsSection = (visibleProjectCommandFiles.length || renderedSkills.lines.length)
         ? [
           "",
           "## Project slash commands and skills",
-          "ADE walks up from the lane worktree to discover `.claude/commands/*.md` plus `.claude/skills/<name>/SKILL.md`, `.agents/skills/<name>/SKILL.md`, `.ade/skills/<name>/SKILL.md`, user skill roots, and ADE bundled skills. The Claude Agent SDK only auto-discovers `<cwd>/.claude/` and `~/.claude/`, so ADE injects the rest here.",
+          "ADE walks up from the lane worktree to discover `.claude/commands/*.md` plus `.claude/skills/<name>/SKILL.md`, `.agents/skills/<name>/SKILL.md`, `.ade/skills/<name>/SKILL.md`, user skill roots, and ADE bundled skills. Claude Code already lists `<cwd>/.claude/`, `~/.claude/`, and ADE's bundled `ade:*` plugin skills for you, so this section lists only the roots it cannot see — do not expect it to repeat your own listing.",
           "**User-invoked (`/<name>`):** When the user sends a message that is exactly `/<name>` or `/<name> <args>`, ADE pre-expands the file's body (commands take precedence over same-named skills) and substitutes `$ARGUMENTS` before it reaches you. You'll see the expanded instructions, not the literal `/<name>`.",
           "**Mid-sentence reference:** When the user mentions a command/skill mid-sentence (e.g. \"please /audit this\", \"can you do a /security-review\") the message is NOT auto-expanded. Read the file at the path below and follow it.",
           "**Autonomous skill use:** If, while working on a task, you decide a discovered skill applies (its description matches the situation), Read its SKILL.md file and follow it as if it had been invoked. Don't ask the user — just use the skill when warranted.",
-          ...(projectCommandFiles.length ? [
+          ...(visibleProjectCommandFiles.length ? [
             "",
             "Commands (file-backed prompts):",
-            ...visibleProjectCommandFiles.map(formatDiscoveredCommand),
+            ...visibleProjectCommandFiles.map(formatClaudeSlashCommandEntry),
             ...(hiddenProjectCommandCount > 0 ? [`- ${hiddenProjectCommandCount} more command(s) hidden to keep startup context lean. Use slash command search or inspect project command folders if needed.`] : []),
           ] : []),
-          ...(projectSkillFiles.length ? [
+          ...(renderedSkills.lines.length ? [
             "",
             "Skills (autonomously usable when relevant):",
-            ...projectSkillFiles.map(formatDiscoveredCommand),
+            ...renderedSkills.lines,
+            ...(renderedSkills.omitted > 0 ? [`- ${renderedSkills.omitted} more skill(s) omitted to stay inside ADE's skill-listing budget. Run \`ade skill list --text\`, or look under the agent skill roots above, if none of the listed skills fits.`] : []),
           ] : []),
         ]
         : [];
@@ -35169,7 +35325,7 @@ export function createAgentChatService(args: {
         permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
         interactive: true,
         runtime: "claude-agent-sdk-query",
-        adeSkillRoots: getAdeAgentSkillRootsForPrompt({ cwd: managed.laneWorktreePath }),
+        adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
       });
       opts.systemPrompt = {
         type: "preset",
@@ -35355,7 +35511,7 @@ export function createAgentChatService(args: {
       restageSectionsForNewProviderThread(managed);
       refreshReconstructionContext(managed);
       void maybeRefreshIdentityContinuitySummary(managed, "provider_reset");
-      clearLaneDirectiveKey(managed);
+      clearDeliveredDirectiveEpoch(managed);
       persistChatState(managed);
     }
   };
@@ -36455,6 +36611,7 @@ export function createAgentChatService(args: {
       preferredExecutionLaneId: null,
       selectedExecutionLaneId: null,
       lastLaneDirectiveKey: null,
+      lastComputerUseDirectiveKey: null,
       runtimeInvalidated: false,
       acpReasoningEffortInvalidated: false,
       claudeRateLimitWarningEmitted: false,
@@ -37652,6 +37809,7 @@ export function createAgentChatService(args: {
       preferredExecutionLaneId: null,
       selectedExecutionLaneId: null,
       lastLaneDirectiveKey: null,
+      lastComputerUseDirectiveKey: null,
       runtimeInvalidated: false,
       acpReasoningEffortInvalidated: false,
       claudeRateLimitWarningEmitted: false,
@@ -40691,6 +40849,27 @@ export function createAgentChatService(args: {
       || managed.session.provider === "codex"
       || managed.session.provider === "opencode";
     const shouldInjectGuidance = !personalSession && !providerHasPersistentGuidance;
+    // Droid's SDK takes no system prompt, so ADE prepends the whole harness
+    // prompt to every `sendPrompt`. That harness already carries the shared
+    // `## ADE` block, which is why the lane guidance must not repeat it here.
+    const providerRepeatsHarnessEveryTurn = managed.session.provider === "droid";
+    // The computer-use directive is ~2KB of static prose that used to ride
+    // EVERY turn on EVERY provider, gated only on "not a personal chat" — never
+    // on whether the capability set had changed since the agent was last told.
+    // It is now epoch-scoped like the lane directive, and re-sent whenever the
+    // available backends change, so a changed capability set is re-announced
+    // rather than repeated. A transition to NO available backend emits no
+    // directive at all (there is nothing to say), so a capability that is lost
+    // entirely is not revoked mid-session — the agent simply stops being told
+    // it is available on the next turn that re-announces.
+    const computerUseDirective = personalSession
+      ? null
+      : buildComputerUseDirective(computerUseArtifactBrokerRef?.getBackendStatus() ?? null);
+    const computerUseDirectiveKey = computerUseDirective
+      ? `${laneDirectiveKey ?? "no-lane"}::${computerUseDirectiveFingerprint(computerUseDirective)}`
+      : null;
+    const shouldInjectComputerUseDirective = computerUseDirectiveKey != null
+      && managed.lastComputerUseDirectiveKey !== computerUseDirectiveKey;
     const claudeRuntimeSlashCommandNames = managed.runtime?.kind === "claude"
       ? new Set(managed.runtime.slashCommands.map((command) => slashCommandKey(command.name)))
       : new Set<string>();
@@ -40733,17 +40912,19 @@ export function createAgentChatService(args: {
           personalSession ? null : buildExecutionModeDirective(executionMode, managed.session.provider),
           personalSession ? null : buildClaudeInteractionModeDirective(managed.session.interactionMode, managed.session.provider),
           shouldInjectGuidance
-            ? buildAdeGuidanceForLane(
-              managed.laneWorktreePath,
-              managed.session,
-              spawnSelfReportOpts(managed.session),
-            )
+            ? (providerRepeatsHarnessEveryTurn
+              // Droid's harness prompt already ends with the shared `## ADE`
+              // block and is re-sent whole on every turn, so the lane guidance
+              // delivered a second copy of it per turn. Only the session
+              // lineage lines are absent from the harness.
+              ? buildAdeSessionLineageGuidance(managed.session, spawnSelfReportOpts(managed.session)) || null
+              : buildAdeGuidanceForLane(
+                managed.laneWorktreePath,
+                managed.session,
+                spawnSelfReportOpts(managed.session),
+              ))
             : null,
-          personalSession
-            ? null
-            : buildComputerUseDirective(
-                computerUseArtifactBrokerRef?.getBackendStatus() ?? null,
-              ),
+          shouldInjectComputerUseDirective ? computerUseDirective : null,
           contextAttachmentPrompt || null,
         ]);
     const codexGoalTitleSeed = managed.session.provider === "codex" && isCodexGoalSlashInput(trimmed)
@@ -40781,6 +40962,14 @@ export function createAgentChatService(args: {
       reasoningEffort,
       interactionMode: managed.session.provider === "claude" ? managed.session.interactionMode ?? "default" : null,
       laneDirectiveKey: providerSlashCommand && !personalSession ? null : shouldInjectLaneDirective ? laneDirectiveKey : null,
+      // A provider slash-command turn replaces the user text with the command's
+      // own markdown and never runs `composeLaunchDirectives`, so the directive
+      // above is not in `promptText`. Null the key for the same reason the lane
+      // key is nulled, or a slash-command turn would mark it delivered without
+      // delivering it and suppress it for the rest of the session.
+      computerUseDirectiveKey: providerSlashCommand && !personalSession
+        ? null
+        : shouldInjectComputerUseDirective ? computerUseDirectiveKey : null,
       providerSlashCommand: personalSession ? false : providerSlashCommand === true,
       forceClaudeUserMessage: managed.session.provider === "claude" && (providerSlashCommand == null || personalSession) && slashCommand != null,
       ...(runtime ? { runtime } : {}),
@@ -42357,12 +42546,33 @@ export function createAgentChatService(args: {
     // Electron main this is a no-op and the launch stays synchronous.
     const browserCapabilityReady = prepareBrowserActorCapability(managed);
     if (browserCapabilityReady) await browserCapabilityReady;
+    const cursorRuntimeEnv = buildAgentRuntimeEnv(managed);
+    // Cursor's own skill discovery. ADE copies the bundled catalog into a
+    // private shim laid out the way Cursor scans (`.agents/skills/<name>/
+    // SKILL.md`) and passes that root as an extra workspace dir, instead of
+    // relying on `ADE_AGENT_SKILLS_DIRS` — which Cursor never reads — plus a
+    // prompt pointer. The env var stays on the worker env as the fallback for
+    // every session this declines (personal chats, orchestration leads, and any
+    // launch where the shim could not be written).
+    const cursorAgentSkills = resolveCursorAgentSkillDirs({
+      personalSession: isPersonalSession(managed.session),
+      settingSources: cursorSdkSettingSources(policy),
+      skillRoots: existingAgentSkillRoots(cursorRuntimeEnv),
+      shimRoot: cursorAgentSkillShimRoot({ laneWorktreePath: managed.laneWorktreePath }),
+    });
+    logSkillDelivery(managed, {
+      mechanism: "cursor-workspace-dirs",
+      rootCount: cursorAgentSkills.rootCount,
+      delivered: cursorAgentSkills.delivered,
+      skillCount: cursorAgentSkills.skillCount,
+      ...(cursorAgentSkills.reason ? { reason: cursorAgentSkills.reason } : {}),
+    });
     const acquireArgs = {
       poolKey,
       stateKey: cursorSdkStateKeyFor(managed),
       projectRoot,
       workspacePath: managed.laneWorktreePath,
-      baseEnv: buildAgentRuntimeEnv(managed),
+      baseEnv: cursorRuntimeEnv,
       modelSdkId: launchModelSdkId,
       ...(launchModelParams?.length ? { modelParams: launchModelParams } : {}),
       apiKey,
@@ -42371,6 +42581,7 @@ export function createAgentChatService(args: {
       sessionId: managed.session.id,
       policy,
       ...(cursorMcpServerConfig ? { mcpServers: cursorMcpServerConfig } : {}),
+      ...(cursorAgentSkills.dirs.length ? { agentSkillDirs: cursorAgentSkills.dirs } : {}),
       logger,
     };
     try {
@@ -45241,7 +45452,7 @@ export function createAgentChatService(args: {
             permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
             interactive: true,
             runtime: "droid-sdk",
-            adeSkillRoots: getAdeAgentSkillRootsForPrompt({ cwd: managed.laneWorktreePath }),
+            adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
           });
       const sdkInput = [
         droidHarnessPrompt,
@@ -45386,6 +45597,7 @@ export function createAgentChatService(args: {
       metadata,
       reasoningEffort,
       laneDirectiveKey,
+      computerUseDirectiveKey,
       providerSlashCommand,
       forceClaudeUserMessage,
       steerId,
@@ -45415,6 +45627,23 @@ export function createAgentChatService(args: {
     }
     recordLinearIssueContextForLane(managed, contextAttachments);
     recordGitHubIssueContextForLane(managed, contextAttachments);
+
+    // The computer-use directive is epoch-scoped: re-sent when the lane or the
+    // available backends change, not every turn. Its key is marked delivered at
+    // the same commitment point the lane directive uses — right after a provider
+    // run that carried the composed `promptText` returns — and NOT in
+    // `prepareSendMessage` or the local `/fast` handler. Both of those would mark
+    // a key for a prompt no provider ever received: the local command never
+    // hands `promptText` over, and marking in the handler suppressed the
+    // directive for the rest of the session after a single `/fast`.
+    //
+    // Marking after the run returns is the safe direction: a duplicate delivery
+    // is wasted tokens, a missed one leaves the agent unaware of a capability.
+    const markComputerUseDirectiveDelivered = (): void => {
+      if (computerUseDirectiveKey) {
+        managed.lastComputerUseDirectiveKey = computerUseDirectiveKey;
+      }
+    };
 
     // OpenCode runtime dispatch
     if (managed.session.provider === "opencode") {
@@ -45452,6 +45681,7 @@ export function createAgentChatService(args: {
         onDispatched,
         onBackendDispatched,
       });
+      markComputerUseDirectiveDelivered();
       return;
     }
 
@@ -45489,6 +45719,7 @@ export function createAgentChatService(args: {
           onBackendDispatched,
           ...(prepared.cloudOverrides ? { cloudOverrides: prepared.cloudOverrides } : {}),
         });
+        markComputerUseDirectiveDelivered();
         return;
       }
       await runCursorSdkTurn(managed, {
@@ -45505,6 +45736,7 @@ export function createAgentChatService(args: {
         onDispatched,
         onBackendDispatched,
       });
+      markComputerUseDirectiveDelivered();
       return;
     }
 
@@ -45529,6 +45761,7 @@ export function createAgentChatService(args: {
         onDispatched,
         onBackendDispatched,
       });
+      markComputerUseDirectiveDelivered();
       return;
     }
 
@@ -45551,6 +45784,7 @@ export function createAgentChatService(args: {
         onDispatched,
         onBackendDispatched,
       });
+      markComputerUseDirectiveDelivered();
       return;
     }
 
@@ -45594,6 +45828,7 @@ export function createAgentChatService(args: {
         onDispatched,
         onBackendDispatched,
       });
+      markComputerUseDirectiveDelivered();
       return;
     }
 
@@ -45714,6 +45949,7 @@ export function createAgentChatService(args: {
         optimisticCodexTurnStart,
         onDispatched: onBackendDispatched ?? onDispatched,
       });
+      markComputerUseDirectiveDelivered();
       return;
     }
 
@@ -45762,6 +45998,7 @@ export function createAgentChatService(args: {
       onDispatched,
       onBackendDispatched,
     });
+    markComputerUseDirectiveDelivered();
   };
 
   const applyClaudeFastModeSettingToRuntime = async (
@@ -45836,7 +46073,12 @@ export function createAgentChatService(args: {
     const turnId = randomUUID();
     prepared.onDispatched?.();
     prepared.onBackendDispatched?.();
-    persistDeliveredLaneDirectiveKey(managed, prepared.laneDirectiveKey);
+    // No directive is marked delivered here. `/fast` is handled entirely
+    // locally: `prepared.promptText` — which is what carries the lane and
+    // computer-use directives — is never handed to a provider. Marking either
+    // key here would suppress that directive for the rest of the session after
+    // a single `/fast` as the user's first message. Both keys are marked where
+    // a provider run that actually carried `promptText` returns.
     emitChatEvent(managed, {
       type: "user_message",
       text: prepared.submittedText,
@@ -53212,7 +53454,7 @@ export function createAgentChatService(args: {
         delete managed.session.threadId;
         managed.runtimeInvalidated = true;
         managed.acpReasoningEffortInvalidated = false;
-        clearLaneDirectiveKey(managed);
+        clearDeliveredDirectiveEpoch(managed);
         stageTranscriptReplayOnSession(
           managed,
           readTranscriptEnvelopes(managed, { includeBuffered: true }),
@@ -53223,7 +53465,7 @@ export function createAgentChatService(args: {
         delete managed.session.threadId;
         managed.runtimeInvalidated = true;
         managed.acpReasoningEffortInvalidated = false;
-        clearLaneDirectiveKey(managed);
+        clearDeliveredDirectiveEpoch(managed);
       }
       sessionService.updateMeta({
         sessionId,
@@ -53326,7 +53568,7 @@ export function createAgentChatService(args: {
           });
           delete managed.session.threadId;
           managed.runtimeInvalidated = true;
-          clearLaneDirectiveKey(managed);
+          clearDeliveredDirectiveEpoch(managed);
           teardownRuntime(managed, "model_switch");
           refreshReconstructionContext(managed);
         }

@@ -30,6 +30,7 @@ import {
   parseWindowsWmicProcessCsv,
   recoverManagedOpenCodeOrphans,
   renderOpenCodeDiagnostic,
+  withInheritedSkillPaths,
 } from "./openCodeServerManager";
 
 const originalProcessPlatform = process.platform;
@@ -947,5 +948,30 @@ describe("openCodeServerManager", () => {
     expect(killProcess).toHaveBeenCalledTimes(1);
     expect(killProcess).toHaveBeenCalledWith(8002, "SIGTERM");
     expect(procKill).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("withInheritedSkillPaths", () => {
+  it("unions the user's inherited skill paths with ADE's instead of replacing them", () => {
+    // The generic config merge replaces arrays, so ADE's `skills.paths` would
+    // otherwise drop any the user set in OPENCODE_CONFIG_CONTENT.
+    const merged = withInheritedSkillPaths(
+      { skills: { paths: ["/ade/bundled-skills"] } } as never,
+      { skills: { paths: ["/company/skills"] } },
+    ) as { skills: { paths: string[] } };
+    expect(merged.skills.paths).toEqual(["/company/skills", "/ade/bundled-skills"]);
+  });
+
+  it("leaves ADE's config alone when the user set no skill paths", () => {
+    const config = { skills: { paths: ["/ade/bundled-skills"] } };
+    expect(withInheritedSkillPaths(config as never, { theme: "dark" })).toBe(config);
+  });
+
+  it("dedupes a path both sides list", () => {
+    const merged = withInheritedSkillPaths(
+      { skills: { paths: ["/shared", "/ade"] } } as never,
+      { skills: { paths: ["/shared"] } },
+    ) as { skills: { paths: string[] } };
+    expect(merged.skills.paths).toEqual(["/shared", "/ade"]);
   });
 });

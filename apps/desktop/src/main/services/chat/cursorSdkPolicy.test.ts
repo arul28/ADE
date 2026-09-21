@@ -364,6 +364,65 @@ describe("Cursor SDK policy", () => {
     expect(evaluateCursorSdkHook({ request: otherAsset, policy, laneRoot, userHomeDir })).toBe("deny");
   });
 
+  it("allows read-only access to the ADE-owned Cursor skill shim, and nothing more", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cursor-skill-dirs-"));
+    const laneRoot = path.join(root, "repo");
+    const shimRoot = path.join(root, "ade-home", "agent-skill-shims", "cursor");
+    const skillFile = path.join(shimRoot, ".agents", "skills", "ade-browser", "SKILL.md");
+    const outside = path.join(root, "elsewhere", "secret.txt");
+    fs.mkdirSync(laneRoot, { recursive: true });
+    fs.mkdirSync(path.dirname(skillFile), { recursive: true });
+    fs.mkdirSync(path.dirname(outside), { recursive: true });
+    fs.writeFileSync(skillFile, "skill");
+    fs.writeFileSync(outside, "secret");
+
+    try {
+      const policy = resolveCursorSdkPolicy({ cursorModeId: "full-auto" });
+      const readSkill = () => summarizeCursorHook({
+        toolName: "read",
+        toolInput: { path: skillFile },
+      }, laneRoot);
+
+      expect(evaluateCursorSdkHook({
+        request: readSkill(),
+        policy,
+        laneRoot,
+        agentSkillDirs: [shimRoot],
+      })).toBe("allow");
+
+      // A session that was never given the shim keeps the old denial.
+      expect(evaluateCursorSdkHook({
+        request: readSkill(),
+        policy,
+        laneRoot,
+      })).toBe("deny");
+
+      // Read-only: the shim is ADE's copy, not a scratch directory.
+      expect(evaluateCursorSdkHook({
+        request: summarizeCursorHook({
+          toolName: "write",
+          toolInput: { path: skillFile, contents: "x" },
+        }, laneRoot),
+        policy,
+        laneRoot,
+        agentSkillDirs: [shimRoot],
+      })).toBe("deny");
+
+      // The grant does not widen past the shim root.
+      expect(evaluateCursorSdkHook({
+        request: summarizeCursorHook({
+          toolName: "read",
+          toolInput: { path: outside },
+        }, laneRoot),
+        policy,
+        laneRoot,
+        agentSkillDirs: [shimRoot],
+      })).toBe("deny");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("allows read-only access to staged project attachments from a lane worktree", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cursor-attach-"));
     const projectRoot = path.join(root, "repo");

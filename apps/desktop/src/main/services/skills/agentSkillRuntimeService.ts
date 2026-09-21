@@ -3,6 +3,7 @@ import path from "node:path";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
   ADE_BUNDLED_AGENT_SKILLS_DIR_ENV,
+  getAdeAgentSkillRootsForPrompt,
   splitAdeAgentSkillRoots,
 } from "../../../shared/agentSkillRoots";
 
@@ -16,14 +17,31 @@ export type CodexSkillsListResponse = {
   data?: Array<{ cwd?: string; skills?: RuntimeAgentSkill[] }>;
 };
 
+export function agentSkillRootExists(candidate: string): boolean {
+  try {
+    return fs.statSync(candidate).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 export function existingAgentSkillRoots(env: NodeJS.ProcessEnv): string[] {
-  return splitAdeAgentSkillRoots(env[ADE_AGENT_SKILLS_DIRS_ENV]).filter((root) => {
-    try {
-      return fs.statSync(root).isDirectory();
-    } catch {
-      return false;
-    }
-  });
+  return splitAdeAgentSkillRoots(env[ADE_AGENT_SKILLS_DIRS_ENV]).filter(agentSkillRootExists);
+}
+
+/**
+ * The prompt- and env-facing bundled skill roots, filtered against the disk.
+ *
+ * Every Node-side caller uses this instead of the shared helper. The shared
+ * helper cannot stat, because the renderer bundles it, so a caller that skips
+ * this wrapper advertises roots that may not exist.
+ */
+export function adePromptAgentSkillRoots(options: {
+  env?: NodeJS.ProcessEnv;
+  resourcesPath?: string | null;
+  cwd?: string | null;
+} = {}): string[] {
+  return getAdeAgentSkillRootsForPrompt({ ...options, exists: agentSkillRootExists });
 }
 
 export function claudeAgentSkillPluginRoots(env: NodeJS.ProcessEnv): string[] {
