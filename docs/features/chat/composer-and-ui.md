@@ -2266,7 +2266,9 @@ light up per surface. Cloud auth is a pasted token in Settings → AI connection
 a v3 Personal Access Token (`cog_`, primary — self-serve on every Devin account)
 or a legacy v1 personal key (`apk_user_`) for enterprises where PATs are
 admin-disabled. The org id is collected once and auto-discovered from the token
-when possible.
+when possible; on non-enterprise accounts (where `/v3/enterprise/organizations`
+is gated) the org id must be entered in Settings — it is shown in the Devin
+webapp's settings and session URLs.
 
 The top bar carries an auth-gated Devin quick-view button
 (`DevinCloudQuickViewButton`, mounted beside the Cursor quick-view). It renders
