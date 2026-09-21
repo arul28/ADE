@@ -45,6 +45,18 @@ let session: DroidSession | null = null;
  * on every resume) would exit a mode ADE does not own.
  */
 let enteredSpecMode = false;
+/**
+ * The most recent settings ADE pushed. Re-applied when the source branch is
+ * re-opened after a `fork()` retired its handle, so the source is not reset to
+ * the worker's original init snapshot.
+ */
+let latestSettings: DroidSdkSessionSettings | null = null;
+/**
+ * Source session id to re-open lazily after a `fork()` retired the live handle
+ * and the immediate re-open failed. Keeps the source self-healing instead of
+ * leaving the pooled worker with no session.
+ */
+let pendingResumeSessionId: string | null = null;
 const activeAborts = new Set<AbortController>();
 let waiterSeq = 0;
 const permissionWaiters = new Map<string, (decision: DroidSdkPermissionDecision) => void>();
@@ -68,6 +80,28 @@ function errorMessage(error: unknown): string {
 async function getSdk(): Promise<DroidSdkModule> {
   if (!sdkModule) sdkModule = await loadDroidSdk();
   return sdkModule;
+}
+
+/**
+ * Ensures a live session is present. `DroidSession.fork()` retires the source
+ * handle, so after a fork the source branch is re-opened here on demand (or
+ * immediately, from `forkSession`) rather than leaving the pooled worker unable
+ * to serve the source chat.
+ */
+async function ensureSession(): Promise<void> {
+  if (session) return;
+  const resumeId = pendingResumeSessionId;
+  if (!resumeId || !initState) throw new Error("Droid SDK worker is not initialized.");
+  const sdk = await getSdk();
+  const resumed = await sdk.resumeSession(resumeId, resumeSessionOptions(initState));
+  session = resumed;
+  pendingResumeSessionId = null;
+  post({
+    type: "log",
+    level: "info",
+    message: "Re-opened the Droid source session after a fork.",
+    detail: { sessionId: resumed.id },
+  });
 }
 
 // Still accepts null: settings cross a process boundary as JSON, so the
@@ -317,7 +351,9 @@ async function disableUnmanagedMcpTools(): Promise<void> {
 }
 
 async function applySettings(settings: DroidSdkSessionSettings): Promise<void> {
+  await ensureSession();
   if (!session) throw new Error("Droid SDK worker is not initialized.");
+  latestSettings = settings;
   const sdk = await getSdk();
   await disableUnmanagedMcpTools();
   if (settings.interactionMode === "spec") {
@@ -360,6 +396,8 @@ async function applySettings(settings: DroidSdkSessionSettings): Promise<void> {
 async function initWorker(init: DroidSdkWorkerInit): Promise<DroidSdkReady> {
   initState = init;
   enteredSpecMode = false;
+  latestSettings = init.settings;
+  pendingResumeSessionId = null;
   const sdk = await getSdk();
   const resumeId = init.resumeSessionId?.trim();
   if (resumeId) {
@@ -395,8 +433,9 @@ async function initWorker(init: DroidSdkWorkerInit): Promise<DroidSdkReady> {
 }
 
 async function sendPrompt(payload: DroidSdkWorkerRequest & { type: "send" }): Promise<unknown> {
-  if (!session || !initState) throw new Error("Droid SDK worker is not initialized.");
+  if (!initState) throw new Error("Droid SDK worker is not initialized.");
   await applySettings(payload.payload.settings);
+  if (!session) throw new Error("Droid SDK worker is not initialized.");
   const controller = new AbortController();
   activeAborts.add(controller);
   let tokenUsage: unknown = null;
@@ -433,7 +472,16 @@ async function sendPrompt(payload: DroidSdkWorkerRequest & { type: "send" }): Pr
       if (event.type === "token_usage_update") tokenUsage = event;
       if (event.type === "result") {
         tokenUsage = event.tokenUsage ?? tokenUsage;
-        if (event.success === false) resultSuccess = false;
+        if (event.success === false) {
+          resultSuccess = false;
+          // The stream's terminal `result` carries the failure cause but the
+          // event mapper drops `result`, so surface the cause as an `error`
+          // event (the turn still ends failed) or users lose the provider text.
+          if (event.error && firstError == null) {
+            firstError = event.error;
+            post({ type: "sdk_event", event: event.error });
+          }
+        }
       }
       if (event.type === "error" && firstError == null) firstError = event;
       post({ type: "sdk_event", event });
@@ -454,6 +502,7 @@ async function sendPrompt(payload: DroidSdkWorkerRequest & { type: "send" }): Pr
 // exposes no public getter at @factory/droid-sdk 0.9.x — so reach the underlying
 // client via its (TS-private, runtime-present) `_client` field.
 async function killWorker(workerSessionId: string): Promise<void> {
+  await ensureSession();
   if (!session) throw new Error("Droid SDK worker is not initialized.");
   const id = workerSessionId?.trim();
   if (!id) return;
@@ -467,6 +516,7 @@ async function killWorker(workerSessionId: string): Promise<void> {
 }
 
 async function forkSession(): Promise<{ newSessionId: string }> {
+  await ensureSession();
   if (!session || !initState) throw new Error("Droid SDK worker is not initialized.");
   const sdk = await getSdk();
   const sourceSessionId = session.id;
@@ -483,16 +533,19 @@ async function forkSession(): Promise<{ newSessionId: string }> {
   await forked.close().catch(() => undefined);
   try {
     session = await sdk.resumeSession(sourceSessionId, resumeSessionOptions(initState));
-    await applySettings(initState.settings);
+    // Re-apply the LATEST settings, not the worker's init snapshot: the source
+    // may have changed model, left Spec, or stopped stating a mode since then.
+    await applySettings(latestSettings ?? initState.settings);
   } catch (error) {
-    // The source handle is already retired; leaving it in place would make every
-    // later call throw a stale `SessionReplacedError`. Null it so the state is
-    // explicit instead of latent.
+    // `fork()` retired the source handle. Retry the re-open lazily on the next
+    // source request so the pooled worker self-heals instead of failing every
+    // later turn with "not initialized".
     session = null;
+    pendingResumeSessionId = sourceSessionId;
     post({
       type: "log",
       level: "warn",
-      message: "Droid fork succeeded but the source session could not be re-opened.",
+      message: "Droid fork succeeded but the source session re-open failed; it retries on next use.",
       detail: { sourceSessionId, error: errorMessage(error) },
     });
   }
@@ -514,6 +567,8 @@ async function dispose(): Promise<void> {
   await session?.close().catch(() => undefined);
   session = null;
   enteredSpecMode = false;
+  latestSettings = null;
+  pendingResumeSessionId = null;
   initState = null;
 }
 

@@ -223,4 +223,19 @@ describe("mapDroidSdkMessageToChatEvents — structured assistant content", () =
       turnId: "turn-1",
     }]);
   });
+
+  it("surfaces a terminal error with its provider message", () => {
+    // The worker re-emits the failed `result`'s error as an `error` event so the
+    // turn's cause reaches the transcript instead of only the done status.
+    expect(map({
+      type: "error",
+      message: "Usage limit reached",
+      errorType: "usage_limit",
+      timestamp: "2026-09-21T00:00:00Z",
+    })).toEqual([{
+      type: "error",
+      message: "Usage limit reached",
+      turnId: "turn-1",
+    }]);
+  });
 });
