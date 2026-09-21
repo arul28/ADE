@@ -62,6 +62,22 @@ let waiterSeq = 0;
 const permissionWaiters = new Map<string, (decision: DroidSdkPermissionDecision) => void>();
 const askUserWaiters = new Map<string, (response: DroidSdkAskUserResponse) => void>();
 
+/**
+ * Serializes session acquisition/lifecycle transitions. Worker IPC dispatches
+ * requests independently, so a `send`/`settings_update`/`kill_worker` must not
+ * use a handle a concurrent `fork` is about to retire. `cancel` is deliberately
+ * not gated — it has to interrupt an in-flight turn — and `dispose` flips
+ * `disposed` first so a resume that lands after disposal is closed, not adopted.
+ */
+let disposed = false;
+let sessionOpLock: Promise<unknown> = Promise.resolve();
+
+function withSessionOp<T>(op: () => Promise<T>): Promise<T> {
+  const next = sessionOpLock.then(op, op);
+  sessionOpLock = next.catch(() => undefined);
+  return next;
+}
+
 function nextWaiterId(prefix: string): string {
   waiterSeq = (waiterSeq + 1) >>> 0;
   return `${prefix}-${Date.now()}-${waiterSeq}`;
@@ -103,8 +119,9 @@ async function ensureSession(): Promise<void> {
     pendingResumePromise = (async () => {
       const sdk = await getSdk();
       const resumed = await sdk.resumeSession(resumeId, resumeSessionOptions(state));
-      if (session) {
-        // Another recovery already adopted a handle; discard this one.
+      if (disposed || session) {
+        // The worker was disposed (or another recovery already adopted a handle)
+        // while this resume was in flight; discard it instead of leaking.
         await resumed.close().catch(() => undefined);
         return;
       }
@@ -416,6 +433,7 @@ async function applySettings(settings: DroidSdkSessionSettings): Promise<void> {
 async function initWorker(init: DroidSdkWorkerInit): Promise<DroidSdkReady> {
   initState = init;
   enteredSpecMode = false;
+  disposed = false;
   latestSettings = init.settings;
   pendingResumeSessionId = null;
   const sdk = await getSdk();
@@ -454,7 +472,9 @@ async function initWorker(init: DroidSdkWorkerInit): Promise<DroidSdkReady> {
 
 async function sendPrompt(payload: DroidSdkWorkerRequest & { type: "send" }): Promise<unknown> {
   if (!initState) throw new Error("Droid SDK worker is not initialized.");
-  await applySettings(payload.payload.settings);
+  // Acquire/refresh the session under the lifecycle gate; the long stream itself
+  // runs outside it so `cancel` can still interrupt the turn.
+  await withSessionOp(() => applySettings(payload.payload.settings));
   if (!session) throw new Error("Droid SDK worker is not initialized.");
   const controller = new AbortController();
   activeAborts.add(controller);
@@ -522,6 +542,10 @@ async function sendPrompt(payload: DroidSdkWorkerRequest & { type: "send" }): Pr
 // exposes no public getter at @factory/droid-sdk 0.9.x — so reach the underlying
 // client via its (TS-private, runtime-present) `_client` field.
 async function killWorker(workerSessionId: string): Promise<void> {
+  return withSessionOp(() => killWorkerLocked(workerSessionId));
+}
+
+async function killWorkerLocked(workerSessionId: string): Promise<void> {
   await ensureSession();
   if (!session) throw new Error("Droid SDK worker is not initialized.");
   const id = workerSessionId?.trim();
@@ -536,6 +560,10 @@ async function killWorker(workerSessionId: string): Promise<void> {
 }
 
 async function forkSession(): Promise<{ newSessionId: string }> {
+  return withSessionOp(forkSessionLocked);
+}
+
+async function forkSessionLocked(): Promise<{ newSessionId: string }> {
   await ensureSession();
   if (!session || !initState) throw new Error("Droid SDK worker is not initialized.");
   const sdk = await getSdk();
@@ -588,6 +616,7 @@ async function cancelRun(): Promise<void> {
 }
 
 async function dispose(): Promise<void> {
+  disposed = true;
   await cancelRun().catch(() => undefined);
   await session?.close().catch(() => undefined);
   session = null;
@@ -604,7 +633,7 @@ async function dispatch(req: DroidSdkWorkerRequest): Promise<unknown> {
     case "send":
       return sendPrompt(req);
     case "settings_update":
-      await applySettings(req.payload);
+      await withSessionOp(() => applySettings(req.payload));
       return buildReady();
     case "cancel":
       await cancelRun();
