@@ -1,6 +1,9 @@
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import type * as DroidSdkModuleTypes from "@factory/droid-sdk";
+// Node session APIs (createSession/resumeSession/tool/createSdkMcpServer) live on
+// the `@factory/droid-sdk/node` entrypoint as of 0.9.x. The package root is the
+// browser/daemon surface and no longer exports them.
+import type * as DroidSdkModuleTypes from "@factory/droid-sdk/node";
 
 export type DroidSdkModule = typeof DroidSdkModuleTypes;
 
@@ -23,16 +26,16 @@ export function isDroidSdkResolutionError(error: unknown): boolean {
     : "";
   return code === "ERR_MODULE_NOT_FOUND"
     || code === "MODULE_NOT_FOUND"
-    || /Cannot find package ['"]@factory\/droid-sdk['"]/i.test(message)
-    || /Cannot find module ['"]@factory\/droid-sdk['"]/i.test(message);
+    || /Cannot find package ['"]@factory\/droid-sdk(?:\/node)?['"]/i.test(message)
+    || /Cannot find module ['"]@factory\/droid-sdk(?:\/node)?['"]/i.test(message);
 }
 
 function loadDroidSdkWithRequire(originalError: unknown): DroidSdkModule {
   try {
-    return requireFromRuntime("@factory/droid-sdk") as DroidSdkModule;
+    return requireFromRuntime("@factory/droid-sdk/node") as DroidSdkModule;
   } catch (fallbackError) {
     const error = new Error(
-      `Failed to load @factory/droid-sdk via dynamic import or packaged runtime resolution. import=${errorText(originalError)} require=${errorText(fallbackError)}`,
+      `Failed to load @factory/droid-sdk/node via dynamic import or packaged runtime resolution. import=${errorText(originalError)} require=${errorText(fallbackError)}`,
     );
     (error as { cause?: unknown }).cause = originalError;
     throw error;
@@ -42,7 +45,7 @@ function loadDroidSdkWithRequire(originalError: unknown): DroidSdkModule {
 export async function loadDroidSdk(): Promise<DroidSdkModule> {
   if (sdkModule) return sdkModule;
   if (!sdkModulePromise) {
-    sdkModulePromise = import("@factory/droid-sdk")
+    sdkModulePromise = import("@factory/droid-sdk/node")
       .catch((error) => {
         if (!isDroidSdkResolutionError(error)) throw error;
         return loadDroidSdkWithRequire(error);

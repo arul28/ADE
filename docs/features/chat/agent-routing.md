@@ -34,7 +34,7 @@ where the machinery lives.
 | `apps/desktop/src/main/services/chat/piSdkUiBridge.ts` | Worker-side half of the UI channel, deliberately free of Pi imports. Funnels Pi's three unrelated callback APIs — `AuthInteraction`, custom-tool `execute`, and an extension's `ExtensionUIContext` — into one never-rejecting `request()` that resolves to `null` when a card is dismissed, a turn aborts, or the worker is disposed. Also builds ADE's `ask_user` tool, the per-tool-call approval gate, and the extension UI context. |
 | `apps/desktop/src/main/services/ai/piInstallation.ts` | Resolves the user's Pi installation: CLI path, SDK package root/entry, agent dir, `auth.json` / models / settings paths, provider inventory, and a `blocker` string when the SDK cannot be used (missing package, or a Node older than `PI_SDK_MIN_NODE`). `sdkAvailable` and `cliAvailable` are independent — the CLI can be present while the SDK path is blocked. |
 | `apps/desktop/src/main/services/ai/piAuthService.ts` | In-app Pi sign-in. Enumerates the providers that can actually be signed into (`listPiLoginProviders`), runs one `startPiLogin` per provider on a dedicated inventory-only worker, relays Pi's prompts/notices through `addPiAuthStatusListener`, and answers them with `submitPiLoginPrompt`. Bounded at 10 minutes; `cancelPiLogin` stops a flow and releases its worker. Never reads, stores, or logs a credential. |
-| `apps/desktop/src/main/services/chat/droidModelsDiscovery.ts` | Droid model discovery: probes the live SDK via `createSession({ execPath })` to read `initResult.availableModels`, normalizes `supportedReasoningEfforts` into `reasoningTiers`, and emits `droid/<id>` descriptors via `createDynamicDroidCliModelDescriptor`. Droid fast choices are distinct model IDs, not ADE `serviceTiers`; custom models from `<factoryConfigHome>/config.json` (`~/.factory` unless `FACTORY_HOME_OVERRIDE` is set) are merged in. The legacy `DROID_DEFAULT_MODEL_IDS` constant has been removed — the SDK is the only source. Like Cursor, the cache is stale-while-revalidate: `markDroidModelCachesStale` ages it without dropping last-known-good rows, which are served past the 120s window (up to ~6h) while one background warm per freshness window refreshes them, so an unauthenticated/mid-reauth droid isn't handed a session per passive read. |
+| `apps/desktop/src/main/services/chat/droidModelsDiscovery.ts` | Droid model discovery: probes the installed `droid` CLI (`droid exec --help`, with legacy `models`/`model list` fallbacks) for the model list and merges custom models from `<factoryConfigHome>/config.json` (`~/.factory` unless `FACTORY_HOME_OVERRIDE` is set), emitting `droid/<id>` descriptors via `createDynamicDroidCliModelDescriptor`. Droid fast choices are distinct model IDs, not ADE `serviceTiers`. The CLI probe is the only source — the SDK session's `availableModels` is not read (0.9.x removed the `initResult` surface). Like Cursor, the cache is stale-while-revalidate: `markDroidModelCachesStale` ages it without dropping last-known-good rows, which are served past the 120s window (up to ~6h) while one background warm per freshness window refreshes them, so an unauthenticated/mid-reauth droid isn't handed a session per passive read. |
 
 ## Supported providers
 
@@ -427,16 +427,17 @@ collapses its compound autonomy mode to `spec` and reads it back as level `off`,
 so anything else is a claim Droid discards — which matches what
 `droidSettingsJson` already sends on the terminal path.
 
-Spec is the one place ADE has to speak up to stay quiet. The SDK exposes no
-`exitSpecMode`, so the only way out is to state a mode, and a plan session that
-later turns plan off states nothing. The worker therefore tracks whether ADE
-itself entered Spec (`enteredSpecMode` in `droidSdkWorker.ts`) and states `Auto`
-exactly once to leave, then goes back to saying nothing. The flag is reset on
-init and on dispose.
+Spec is the one place ADE has to speak up to stay quiet. `@factory/droid-sdk`
+0.9.x exposes `exitSpecMode()`, so the worker tracks whether ADE itself entered
+Spec (`enteredSpecMode` in `droidSdkWorker.ts`) and calls `exitSpecMode()` exactly
+once to leave, then goes back to saying nothing. The flag is reset on init and on
+dispose.
 
-`buildReady` reads the resolved model from `initResult.settings.modelId`.
-`initResult.currentModelId` does not exist in `@factory/droid-sdk`; reading it
-always yielded `null`.
+`buildReady` reads the resolved model from `session.settings.modelId` and the
+session id from `session.id`. 0.9.x removed the `initResult` surface entirely
+(`initResult.currentModelId` never existed; `initResult.availableModels` is
+gone). The model list is discovered separately by `droidModelsDiscovery`, so the
+worker's `DroidSdkReady.availableModels` stays empty.
 
 **Cursor.** ADE always passes `sandboxOptions: { enabled: false }` for local
 Cursor workers (`cursorSdkWorker.ts`) and relies on ADE hook denials as the
