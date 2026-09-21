@@ -297,7 +297,6 @@ export async function startCtoCapture(
     const classified = classifyCaptureError(error, gate.denied);
     // The name is diagnostic, not user-facing: it goes to the log so an
     // unrecognised refusal can be classified later, and never into a sentence.
-    // eslint-disable-next-line no-console
     console.warn("[cto-voice] microphone refused", classified.name);
     throw new MicrophoneBlockedError(classified.kind);
   }
@@ -474,7 +473,6 @@ export function playVoiceChunk(base64: string): void {
     node.start(playbackAt);
     playbackAt += buffer.duration;
   } catch (error) {
-    // eslint-disable-next-line no-console
     console.warn("[cto-voice] output chunk dropped", error);
   }
 }

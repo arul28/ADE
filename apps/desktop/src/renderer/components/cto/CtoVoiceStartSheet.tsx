@@ -89,7 +89,6 @@ async function startFreshCtoSession(): Promise<boolean> {
     await startFresh();
     return true;
   } catch (error) {
-    // eslint-disable-next-line no-console
     console.error("[cto-voice] fresh session failed", error);
     return false;
   }
@@ -185,7 +184,6 @@ export function CtoVoiceStartSheet({ onClose }: { onClose: () => void }) {
         microphone: null,
       });
       setPhase("blocked");
-      // eslint-disable-next-line no-console
       console.error("[cto-voice] start failed", error);
     }
   }, [start]);
