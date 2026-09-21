@@ -620,7 +620,7 @@ describe("WorkSidebar context targets", () => {
       lanes: [lane, laneTwo],
     });
 
-    expect(await screen.findByText(/This Apple view is claimed by Lane 2, not Lane 1/)).toBeTruthy();
+    expect(await screen.findByText(/This Apple Development view is claimed by Lane 2, not Lane 1/)).toBeTruthy();
     expect(screen.getByTestId("ios-panel").getAttribute("data-control-disabled")).toBe("");
     expect(screen.getByTestId("ios-panel").getAttribute("data-ignore-chat-ownership")).toBe("true");
     expect((screen.getByText("Add iOS context") as HTMLButtonElement).disabled).toBe(false);
@@ -696,7 +696,7 @@ describe("WorkSidebar context targets", () => {
     renderSidebar({ tab: "git", contextTarget: { kind: "chat", sessionId: "chat-1" }, onTabChange });
 
     const dot = await screen.findByRole("button", {
-      name: "Switch to Apple — iPhone 17 Pro · Running",
+      name: "Switch to Apple Development — iPhone 17 Pro · Running",
     });
     fireEvent.click(dot);
     expect(onTabChange).toHaveBeenCalledWith("ios");
@@ -790,7 +790,7 @@ describe("WorkSidebar context targets", () => {
     expect(cardFor("Git").disabled).toBe(false);
     expect(cardFor("Files").disabled).toBe(false);
     expect(cardFor("Terminal").disabled).toBe(false);
-    expect(cardFor("Apple").disabled).toBe(false);
+    expect(cardFor("Apple Development").disabled).toBe(false);
     expect(cardFor("App Control").disabled).toBe(false);
     expect(cardFor("Browser").disabled).toBe(false);
     expect(screen.queryByText("Runs on this computer only")).toBeNull();
@@ -835,7 +835,7 @@ describe("WorkSidebar context targets", () => {
     });
 
     await waitFor(() => expect(screen.getByText("The runtime for this project is not a Mac")).toBeTruthy());
-    expect(cardFor("Apple").disabled).toBe(true);
+    expect(cardFor("Apple Development").disabled).toBe(true);
     expect(cardFor("App Control").disabled).toBe(false);
     expect(cardFor("Browser").disabled).toBe(false);
     await waitFor(() => expect(onTabChange).toHaveBeenCalledWith(null));

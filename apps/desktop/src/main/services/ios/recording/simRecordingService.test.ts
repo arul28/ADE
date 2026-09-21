@@ -202,7 +202,10 @@ describe("simRecordingService", () => {
     fs.writeFileSync(started.path, "mp4");
     await service.stop({ laneId: lane, chatSessionId: "chat-1" });
 
-    await service.remove({ laneId: lane, id: started.id, chatSessionId: "chat-1" });
+    // `allowProof` is the user's own delete row. Every stopped recording is
+    // proof now (round 3, A3), so without it this is the refusal the next
+    // test asserts.
+    await service.remove({ laneId: lane, id: started.id, chatSessionId: "chat-1", allowProof: true });
     expect(await service.list({ laneId: lane })).toEqual([]);
     expect(fs.existsSync(started.path)).toBe(false);
   });
@@ -212,7 +215,7 @@ describe("simRecordingService", () => {
     await service.stop({ laneId: lane, chatSessionId: "chat-1" });
 
     await expect(
-      service.remove({ laneId: lane, id: started.id, chatSessionId: "chat-2" }),
+      service.remove({ laneId: lane, id: started.id, chatSessionId: "chat-2", allowProof: true }),
     ).rejects.toMatchObject({ code: APPLE_OWNED_BY_OTHER_SESSION_CODE });
     expect(await service.list({ laneId: lane })).toHaveLength(1);
   });
@@ -238,6 +241,7 @@ describe("simRecordingService", () => {
 
     expect(pinned).toMatchObject({ id: started.id, proof: true, endedAt: expect.any(String) });
     expect(transport.typed("record-stop")).toHaveLength(1);
+    // Stopping filed it; pinning must not file the same bytes twice.
     expect(filed).toHaveLength(1);
     expect(filed[0]).toMatchObject({
       inputs: [expect.objectContaining({ kind: "video_recording", path: started.path, mimeType: "video/mp4" })],
@@ -288,6 +292,87 @@ describe("simRecordingService", () => {
     await expect(inert.totalBytes()).resolves.toBe(0);
     await expect(inert.start({ laneId: lane, udid, chatSessionId: null })).rejects.toThrow(/APPLE_HELPER_UNAVAILABLE/);
     inert.dispose();
+  });
+
+  it("never starts a recording for a person driving the pane", async () => {
+    // Round 3, A2. One live test left three MP4s in .ade/artifacts with
+    // nothing on screen about any of them, because every tap the user made
+    // was treated as an agent verifying its work.
+    await service.noteInput({ laneId: lane, udid, chatSessionId: "chat-1", kind: "tap", x: 1, y: 2, source: "user" });
+    expect(transport.typed("record-start")).toHaveLength(0);
+    expect(await service.list({ laneId: lane })).toEqual([]);
+
+    // An agent's input still does, and the person's input during it is still
+    // drawn on the screen being recorded.
+    await service.noteInput({ laneId: lane, udid, chatSessionId: "chat-1", kind: "tap", x: 3, y: 4 });
+    expect(transport.typed("record-start")).toHaveLength(1);
+    transport.commands.length = 0;
+    await service.noteInput({ laneId: lane, udid, chatSessionId: "chat-1", kind: "tap", x: 5, y: 6, source: "user" });
+    expect(transport.typed("record-start")).toHaveLength(0);
+    expect(transport.typed("overlay-tap")).toHaveLength(1);
+  });
+
+  it("files every stopped recording as proof, captioned with the device", async () => {
+    // Round 3, A3: there is no pin step any more. A recording that exists is
+    // in the drawer, or the user never learns it exists.
+    const named = build({ resolveDeviceName: () => "ADE Repro" });
+    const started = await named.start({ laneId: lane, udid, chatSessionId: "chat-7" });
+    fs.writeFileSync(started.path, "mp4");
+
+    const stopped = await named.stop({ laneId: lane, chatSessionId: "chat-7" });
+    expect(stopped).toMatchObject({ proof: true });
+    expect(filed).toHaveLength(1);
+    expect(filed[0]).toMatchObject({
+      owners: [{ kind: "chat_session", id: "chat-7" }],
+      inputs: [expect.objectContaining({
+        kind: "video_recording",
+        title: "Simulator recording · ADE Repro · 0:04",
+        path: started.path,
+      })],
+    });
+    named.dispose();
+  });
+
+  it("keeps the video when the drawer refuses it", async () => {
+    const refusing = build({
+      artifactFiler: {
+        ingest() { throw new Error("drawer is closed"); },
+      },
+    });
+    const started = await refusing.start({ laneId: lane, udid, chatSessionId: null });
+    fs.writeFileSync(started.path, "mp4");
+
+    const stopped = await refusing.stop({ laneId: lane, chatSessionId: null });
+    // Proof-marked with no artifact behind it: the bytes are what matters, and
+    // a drawer that would not take them is not a reason to lose them.
+    expect(stopped).toMatchObject({ proof: true, proofArtifactId: null });
+    expect(fs.existsSync(started.path)).toBe(true);
+    refusing.dispose();
+  });
+
+  it("takes the drawer row with the file when the user deletes it", async () => {
+    const deleted: string[] = [];
+    const wired = build({
+      artifactFiler: {
+        ingest(request) {
+          filed.push(request as Record<string, unknown>);
+          return { artifacts: [{ artifactId: "artifact-9" }], links: [] };
+        },
+        deleteArtifacts(args) {
+          deleted.push(...args.artifactIds);
+          return {};
+        },
+      },
+    });
+    const started = await wired.start({ laneId: lane, udid, chatSessionId: "chat-1" });
+    fs.writeFileSync(started.path, "mp4");
+    const stopped = await wired.stop({ laneId: lane, chatSessionId: "chat-1" });
+    expect(stopped?.proofArtifactId).toBe("artifact-9");
+
+    await wired.remove({ laneId: lane, id: started.id, chatSessionId: "chat-1", allowProof: true });
+    expect(deleted).toEqual(["artifact-9"]);
+    expect(fs.existsSync(started.path)).toBe(false);
+    wired.dispose();
   });
 
   it("puts a lane's files exactly where the contract says", () => {

@@ -85,8 +85,20 @@ export type AppleDeviceStream = {
   token: string | null;
   /** Bump to force the reader to redial. */
   reconnectNonce: number;
+  /** Decoded frame size, in PIXELS. */
   width: number | null;
   height: number | null;
+  /**
+   * Screen size in POINTS, which is the unit `tap`, `drag` and the inspect
+   * overlay all speak. Null until the stream says.
+   *
+   * Passing this to the presenter is what makes a pointer position land where
+   * the user pointed: a view laid out in decoded pixels maps a click to a
+   * pixel coordinate, and sending that to `tap` on a 3× phone aims at three
+   * times the intended point — off the bottom of the screen for anything below
+   * a third of the way down. That was round 2's "input does nothing".
+   */
+  devicePointSize: { width: number; height: number } | null;
   error: string | null;
   chip: AppleStreamChip | null;
   /** Increments once per decoded frame; the 3D presenter re-uploads on change. */
@@ -127,6 +139,7 @@ export function useAppleDeviceStream({
     width: null,
     height: null,
   });
+  const [pointSize, setPointSize] = useState<{ width: number; height: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reconnectNonce, setReconnectNonce] = useState(0);
   const [frameVersion, setFrameVersion] = useState(0);
@@ -263,6 +276,13 @@ export function useAppleDeviceStream({
         width: status.transport?.width ?? null,
         height: status.transport?.height ?? null,
       });
+      const pointWidth = status.transport?.pointWidth ?? null;
+      const pointHeight = status.transport?.pointHeight ?? null;
+      setPointSize(
+        pointWidth && pointHeight && pointWidth > 0 && pointHeight > 0
+          ? { width: pointWidth, height: pointHeight }
+          : null,
+      );
     };
 
     void run().catch((caught: unknown) => {
@@ -416,6 +436,7 @@ export function useAppleDeviceStream({
     reconnectNonce,
     width: size.width,
     height: size.height,
+    devicePointSize: pointSize,
     error,
     chip,
     frameVersion,

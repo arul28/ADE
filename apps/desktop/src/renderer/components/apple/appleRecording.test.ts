@@ -71,9 +71,14 @@ describe("summarizeRecordings and deletion", () => {
     expect(summary).toEqual({ count: 3, totalBytes: 3_000, pinnedCount: 1 });
   });
 
-  it("refuses to offer delete on a proof-pinned recording", () => {
-    expect(canDeleteRecording(recording({ proof: true }))).toBe(false);
+  it("offers delete on every finished recording, proof included", () => {
+    // Round 3, A3: every stopped recording is proof, so hiding delete for
+    // proof would leave a drawer nothing could ever be removed from. The
+    // agent-facing protection moved into the service, which refuses unless
+    // the caller passes `allowProof` — and only this UI does.
+    expect(canDeleteRecording(recording({ proof: true }))).toBe(true);
     expect(canDeleteRecording(recording())).toBe(true);
+    expect(canDeleteRecording(recording({ endedAt: null }))).toBe(false);
   });
 });
 
@@ -92,7 +97,7 @@ describe("describeRecording", () => {
   it("names the owner and the mode", () => {
     expect(describeRecording(recording({ chatSessionId: "chat-1", mode: "auto" }))).toBe("agent · auto");
     expect(describeRecording(recording({ mode: "manual" }))).toBe("manual");
-    expect(describeRecording(recording({ proof: true }))).toBe("manual · pinned");
+    expect(describeRecording(recording({ proof: true }))).toBe("manual · proof");
   });
 });
 

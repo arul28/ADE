@@ -33,7 +33,7 @@ export const DRAWER_ICON_BUTTON = cn(
 );
 
 export const DRAWER_INPUT = cn(
-  "h-6 min-w-0 flex-1 rounded-[6px] border border-border bg-black/25 px-1.5",
+  "h-6 min-w-0 flex-1 rounded-[6px] border border-border bg-[var(--color-bg)] px-1.5",
   "text-[11px] text-fg/90 placeholder:text-muted-fg/50 outline-none",
   "focus:border-[color-mix(in_srgb,var(--color-accent)_45%,transparent)]",
   "disabled:cursor-not-allowed disabled:opacity-40",
@@ -53,12 +53,12 @@ export function Section({
 }) {
   return (
     <section
-      className="flex flex-col gap-2 border-b border-border px-3 py-2.5 last:border-b-0"
+      className="flex min-w-0 flex-col gap-2 border-b border-border px-3 py-2.5 last:border-b-0"
       data-testid={testId}
       aria-label={title}
     >
-      <div className="flex min-h-5 items-center justify-between gap-2">
-        <h3 className="text-xs font-medium text-muted-fg">{title}</h3>
+      <div className="flex min-h-5 min-w-0 flex-nowrap items-center justify-between gap-2">
+        <h3 className="min-w-0 flex-1 truncate text-xs font-medium text-muted-fg">{title}</h3>
         {right}
       </div>
       {children}
@@ -66,11 +66,26 @@ export function Section({
   );
 }
 
+/**
+ * One row: a label, and its control on the right of the SAME line (§B4).
+ *
+ * The label is the part that gives way. Round 2 made it `shrink-0` and let the
+ * control column shrink instead, so on a narrow drawer "Reduce Transparency"
+ * held its full width and pushed the switch off the edge — the collision in
+ * the screenshot. Reversed: the control is `shrink-0` (a 28px switch has no
+ * smaller size to go to), the label truncates with its full text in `title`,
+ * and `flex-nowrap` means neither of them can ever drop to a second line.
+ */
 export function Row({ label, children, mono }: { label: string; children: ReactNode; mono?: boolean }) {
   return (
-    <div className="flex min-h-7 items-center justify-between gap-3">
-      <span className={cn("shrink-0 text-xs text-muted-fg", mono && "font-mono")}>{label}</span>
-      <div className="flex min-w-0 items-center justify-end gap-1.5">{children}</div>
+    <div className="flex min-h-7 min-w-0 flex-nowrap items-center justify-between gap-3">
+      <span
+        title={label}
+        className={cn("min-w-0 flex-1 truncate text-xs text-muted-fg", mono && "font-mono")}
+      >
+        {label}
+      </span>
+      <div className="flex shrink-0 items-center justify-end gap-1.5">{children}</div>
     </div>
   );
 }
@@ -237,7 +252,7 @@ export function SubmitRow({
     });
   };
   return (
-    <form className="flex min-h-7 items-center gap-1.5" onSubmit={submit}>
+    <form className="flex min-h-7 min-w-0 flex-nowrap items-center gap-1.5" onSubmit={submit}>
       <input
         className={cn(DRAWER_INPUT, mono && "font-mono")}
         placeholder={placeholder}

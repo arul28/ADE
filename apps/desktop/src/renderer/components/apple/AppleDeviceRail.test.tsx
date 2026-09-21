@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { IosSimulatorDeviceSettings } from "../../../shared/types/iosSimulator";
 import { AppleDeviceRail } from "./AppleDeviceRail";
 import type { AppleDeviceControls } from "./useAppleDeviceControls";
+import { expectNoHorizontalOverflow } from "./testLayout";
 
 afterEach(cleanup);
 
@@ -67,8 +68,8 @@ function renderRail(overrides: Partial<React.ComponentProps<typeof AppleDeviceRa
     onPowerOff: vi.fn(),
     ...overrides,
   };
-  render(<AppleDeviceRail {...props} />);
-  return props;
+  const view = render(<AppleDeviceRail {...props} />);
+  return { ...props, ...view };
 }
 
 const railButtons = () =>
@@ -169,5 +170,26 @@ describe("AppleDeviceRail", () => {
     // pointerdown path never fires here. Enter is the same open.
     fireEvent.keyDown(screen.getByRole("button", { name: "More device actions" }), { key: "Enter" });
     expect(screen.getByRole("menuitem", { name: "Stop recording" })).toBeTruthy();
+  });
+
+  it("is an opaque pill, never a blur over the picture (rule zero / §B3)", () => {
+    const { container } = renderRail();
+    const pill = container.querySelector("[data-apple-rail] > div") as HTMLElement;
+    expect(pill.className).toContain("bg-surface");
+    expect(pill.className).not.toContain("backdrop-blur");
+    expect(container.querySelector("[class*='backdrop-blur']")).toBeNull();
+  });
+
+  it("wraps every icon in its own tooltip (§B6)", () => {
+    const { container } = renderRail();
+    for (const button of container.querySelectorAll("button")) {
+      // PaneTooltip wraps each control in its own positioned span.
+      expect(button.parentElement?.getAttribute("style") ?? "").toContain("inline-flex");
+    }
+  });
+
+  it.each([360, 900])("fits its container at %ipx", (width) => {
+    const { container } = renderRail({ containerWidth: width });
+    expectNoHorizontalOverflow(container, width);
   });
 });

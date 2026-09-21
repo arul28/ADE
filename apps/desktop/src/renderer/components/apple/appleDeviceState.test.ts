@@ -20,6 +20,7 @@ const LIVE: ResolveAppleDeviceStateInput = {
   booted: true,
   starting: false,
   previewing: false,
+  streamReady: true,
   streamState: "live",
 };
 
@@ -65,10 +66,20 @@ describe("resolveAppleDeviceState", () => {
     expect(state()).toBe("live");
   });
 
-  it("treats a quiet stream on a booted device as live", () => {
-    expect(state({ streamState: "idle" })).toBe("live");
-    expect(state({ streamState: "starting" })).toBe("live");
-    expect(state({ streamState: "paused" })).toBe("live");
+  it("never calls a device live before there is anything to read", () => {
+    // Round 3, A1. `live` used to mean "booted and not stalled", so a pane
+    // whose stream had not connected painted an empty black stage that took
+    // input — the user's "input does nothing", with the pane's own "Input
+    // disconnected, reconnecting…" pill showing in a state it called live.
+    expect(state({ streamReady: false, streamState: "idle" })).toBe("starting");
+    expect(state({ streamReady: false, streamState: "starting" })).toBe("starting");
+    expect(state({ streamReady: false, streamState: "paused" })).toBe("starting");
+
+    // Connected is live even before the first frame: the stage is the decoder,
+    // so a state that waits for frames to mount it never gets any. A stream
+    // that draws nothing is demoted by the first-frame watchdog instead.
+    expect(state({ streamReady: true, streamState: "starting" })).toBe("live");
+    expect(state({ streamReady: true, streamState: "stalled" })).toBe("video-lost");
   });
 });
 

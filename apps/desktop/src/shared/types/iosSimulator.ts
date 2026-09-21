@@ -535,7 +535,19 @@ export type IosSimulatorDragArgs = {
   endY: number;
   durationMs?: number | null;
   delta?: number | null;
+  source?: AppleInputSource;
 };
+
+/**
+ * Who drove the device on an injected-input call.
+ *
+ * `user` is the desktop pane, the mini player, and the phone/web viewers — a
+ * person looking at the screen. Anything else is an agent, and only an agent's
+ * input starts an automatic recording (round 3, A2). The preload stamps this
+ * on every call the renderer makes; nothing else sets it, so the default is
+ * the safe one.
+ */
+export type AppleInputSource = "user" | "agent";
 
 export type IosInspectableFrame = {
   x: number;
@@ -800,8 +812,20 @@ export type IosSimulatorStreamTransport = {
   token: string | null;
   /** WebCodecs codec string built from the stream's own SPS, e.g. `avc1.640032`. */
   codec: string | null;
+  /** Frame size in PIXELS — what the decoder produces. */
   width: number | null;
   height: number | null;
+  /**
+   * Screen size in POINTS — what every input call takes.
+   *
+   * Both are needed and they are not the same number: a 3× phone decodes at
+   * 1179×2556 and is 393×852 points. A viewer that laid its frame out in
+   * pixels and then sent pointer coordinates straight to `tap` was sending
+   * three times the intended position, which is why taps in round 2 landed
+   * nowhere and the pane looked unresponsive.
+   */
+  pointWidth: number | null;
+  pointHeight: number | null;
 };
 
 export type IosSimulatorAppearance = "light" | "dark";
@@ -1311,6 +1335,14 @@ export type AppleRecordDeleteArgs = {
   chatSessionId?: string | null;
   id: string;
   force?: boolean | null;
+  /**
+   * The user pressed Delete in the drawer.
+   *
+   * Every stopped recording is proof now, so this is what separates "the
+   * person who owns this Mac asked" from "an agent tried to delete the
+   * evidence" — which is still refused with `APPLE_RECORDING_PINNED`.
+   */
+  allowProof?: boolean | null;
 };
 
 /** What `status.tools` reports for the vendored helper. */

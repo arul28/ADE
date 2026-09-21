@@ -128,6 +128,7 @@ import {
 } from "./simHelperClient";
 import {
   createSimRecordingService,
+  type AppleInputSource,
   type SimRecording,
   type SimRecordingService,
   type SimRecordingServiceDeps,
@@ -2278,6 +2279,16 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     transport: helperTransport,
     projectRoot: args.projectRoot,
     logger: args.logger,
+    // The proof caption says "Simulator recording · ADE Repro · 0:23", and the
+    // recorder only ever knows the udid. The lane registry is already the
+    // place that maps one to the other.
+    resolveDeviceName: (udid: string) => {
+      for (const runtime of runtimes.values()) {
+        const device = laneDevices.get(runtime.key);
+        if (device?.udid === udid) return device.name;
+      }
+      return null;
+    },
   });
 
   /**
@@ -2289,7 +2300,22 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    */
   const noteInput = (
     runtime: LaneRuntime,
-    input: { udid: string; kind: "tap" | "type" | "drag" | "select" | "open-url"; x?: number; y?: number; text?: string },
+    input: {
+      udid: string;
+      kind: "tap" | "type" | "drag" | "select" | "open-url";
+      x?: number;
+      y?: number;
+      text?: string;
+      /**
+       * Who drove the device. `user` never starts a recording (round 3, A2).
+       *
+       * Absent means `agent`: every caller that is NOT the desktop pane — the
+       * CLI, an agent's `ios_simulator.tap`, a semantic action — is producing
+       * verification evidence, and the preload stamps `source: "user"` on the
+       * pane's calls precisely so this default stays safe.
+       */
+      source?: AppleInputSource;
+    },
   ): void => {
     void Promise.resolve(recordings.noteInput({
       laneId: runtime.key,
@@ -2299,6 +2325,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       x: input.x,
       y: input.y,
       text: input.text,
+      source: input.source ?? "agent",
     })).catch((error: unknown) => {
       args.logger.debug("apple.note_input_failed", {
         laneId: runtime.key || null,
@@ -2492,13 +2519,39 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return (await resolveDevice(null, runtime)).udid;
   };
 
+  /**
+   * How long one queued control may hold the input queue.
+   *
+   * The queue is serial on purpose — two overlapping taps on one digitizer is
+   * not a gesture — but serial means one wedged command is every later tap's
+   * problem. The helper's own request timeout is 30s, which is LONGER than the
+   * desktop's 25s action timeout, so before this a single stuck `touch`
+   * produced a caller that had already given up and a queue that kept every
+   * subsequent tap waiting behind it: the storm of identical
+   * `ade/actions/call` timeouts in the round-2 log. A control that has not
+   * answered in eight seconds is not going to; the caller hears that, and the
+   * queue moves on.
+   */
+  const CONTROL_TIMEOUT_MS = 8_000;
+
   const enqueueControl = async <T>(action: string, runControl: () => Promise<T>): Promise<T> => {
     const queuedAt = Date.now();
     const task = controlQueue.then(async () => {
       const startedAt = Date.now();
       const queuedMs = startedAt - queuedAt;
+      let expiry: ReturnType<typeof setTimeout> | null = null;
       try {
-        const result = await runControl();
+        const result = await Promise.race([
+          runControl(),
+          new Promise<never>((_resolve, reject) => {
+            expiry = setTimeout(() => {
+              reject(new Error(
+                `The simulator did not accept ${action} within ${Math.round(CONTROL_TIMEOUT_MS / 1000)}s.`,
+              ));
+            }, CONTROL_TIMEOUT_MS);
+            (expiry as unknown as { unref?: () => void }).unref?.();
+          }),
+        ]);
         args.logger.debug("ios_simulator.control_completed", {
           action,
           queuedMs,
@@ -2513,6 +2566,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
           error: error instanceof Error ? error.message : String(error),
         });
         throw error;
+      } finally {
+        if (expiry) clearTimeout(expiry);
       }
     });
     controlQueue = task.then(() => undefined, () => undefined);
@@ -4667,6 +4722,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const port = Number(new URL(url).port) || 0;
     const pixelWidth = typeof payload.pixelWidth === "number" ? payload.pixelWidth : null;
     const pixelHeight = typeof payload.pixelHeight === "number" ? payload.pixelHeight : null;
+    // The helper answers with both, and both matter: pixels size the decoded
+    // frame, points are the unit every input call takes.
+    const pointWidth = typeof payload.pointWidth === "number" ? payload.pointWidth : null;
+    const pointHeight = typeof payload.pointHeight === "number" ? payload.pointHeight : null;
     runtime.streamRequestContext = {
       requestedBackend: IOS_SIMULATOR_STREAM_BACKEND,
       fallbackReason: null,
@@ -4702,6 +4761,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         codec: null,
         width: pixelWidth,
         height: pixelHeight,
+        pointWidth,
+        pointHeight,
       },
     };
     emit({ type: "stream-started", status: runtime.streamStatus });
@@ -4818,7 +4879,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     await client.send({ type: "touch", udid: deviceUdid, phase: "end", x: input.endX, y: input.endY });
   };
 
-  const tap = async (point: { deviceUdid?: string | null; x: number; y: number; laneId?: string | null; chatSessionId?: string | null }): Promise<{ ok: true }> => {
+  const tap = async (point: { deviceUdid?: string | null; x: number; y: number; laneId?: string | null; chatSessionId?: string | null; source?: AppleInputSource }): Promise<{ ok: true }> => {
     assertDarwin();
     const runtime = resolveRuntime(point);
     const deviceUdid = await resolveControlDeviceUdid(point.deviceUdid, runtime);
@@ -4827,7 +4888,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return enqueueControl("tap", async () => {
       await helperTap(deviceUdid, x, y);
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
-      noteInput(runtime, { udid: deviceUdid, kind: "tap", x, y });
+      noteInput(runtime, { udid: deviceUdid, kind: "tap", x, y, source: point.source });
       return { ok: true };
     });
   };
@@ -4905,14 +4966,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     });
   };
 
-  const typeText = async (input: { deviceUdid?: string | null; text: string; laneId?: string | null; chatSessionId?: string | null }): Promise<{ ok: true }> => {
+  const typeText = async (input: { deviceUdid?: string | null; text: string; laneId?: string | null; chatSessionId?: string | null; source?: AppleInputSource }): Promise<{ ok: true }> => {
     assertDarwin();
     const runtime = resolveRuntime(input);
     const deviceUdid = await resolveControlDeviceUdid(input.deviceUdid, runtime);
     return enqueueControl("text", async () => {
       await helperType(deviceUdid, input.text);
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
-      noteInput(runtime, { udid: deviceUdid, kind: "type", text: input.text });
+      noteInput(runtime, { udid: deviceUdid, kind: "type", text: input.text, source: input.source });
       return { ok: true };
     });
   };
@@ -4935,7 +4996,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       if (deltaValue != null && (!Number.isFinite(deltaValue) || deltaValue <= 0)) throw new Error("delta must be a positive number.");
       await helperSwipe(deviceUdid, { startX, startY, endX, endY, durationMs });
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
-      noteInput(runtime, { udid: deviceUdid, kind: "drag", x: endX, y: endY });
+      noteInput(runtime, { udid: deviceUdid, kind: "drag", x: endX, y: endY, source: input.source });
       return { ok: true };
     });
   };
@@ -5150,6 +5211,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       id: recordArgs.id,
       chatSessionId: recordArgs.chatSessionId ?? runtime.activeSession?.chatSessionId ?? null,
       force: recordArgs.force ?? undefined,
+      allowProof: recordArgs.allowProof ?? undefined,
     });
   };
 

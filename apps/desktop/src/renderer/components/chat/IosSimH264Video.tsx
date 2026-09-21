@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { APPLE_STREAM_NOT_RUNNING_CODE } from "../../../shared/types/iosSimulator";
 import { cn } from "../ui/cn";
 import {
   IosSimVideoProtocolError,
@@ -20,6 +21,10 @@ import {
  */
 
 export type IosSimH264Status = "connecting" | "playing" | "error" | "stopped";
+
+/** Consecutive decoder failures inside the window that mean the stream is gone. */
+export const DECODE_FAILURE_LIMIT = 3;
+export const DECODE_FAILURE_WINDOW_MS = 5_000;
 
 type VideoDecoderLike = {
   configure: (config: { codec: string; optimizeForLatency?: boolean }) => void;
@@ -224,6 +229,20 @@ export function IosSimH264Video({
    * object on every call — a full drawer re-render per frame.
    */
   const reportedRef = useRef<{ status: IosSimH264Status; error: string | null } | null>(null);
+  /**
+   * When the decoder last failed, and how many times in a row.
+   *
+   * One rejected access unit is not a dead stream. It happens when the
+   * decoder is fed a delta frame whose reference it never saw — after a
+   * reattach, or when a second reader joins between an IDR and the frames
+   * that depend on it — and the fix is to build a new decoder and ask the
+   * helper for a fresh keyframe, which it emits whenever a reader attaches.
+   * Round 2 reported the first failure as an error instead, which closed the
+   * decoder, froze the picture on its last frame and put "Something went
+   * wrong with the simulator · Decoding error." over a device that was fine.
+   */
+  const decodeFailuresRef = useRef<number[]>([]);
+  const [recoveryNonce, setRecoveryNonce] = useState(0);
 
   const statusRef = useRef(onStatus);
   statusRef.current = onStatus;
@@ -263,6 +282,9 @@ export function IosSimH264Video({
     const abort = new AbortController();
     let decoder: VideoDecoderLike | null = null;
     let cancelled = false;
+    // One redial per failed decoder. The error callback can fire several
+    // times for one bad access unit.
+    let recovering = false;
     let timestampUs = 0;
     let lastWidth = 0;
     let lastHeight = 0;
@@ -314,8 +336,23 @@ export function IosSimH264Video({
               decoder = new VideoDecoderCtor({
                 output: drawFrame,
                 error: (decodeError) => {
-                  if (cancelled) return;
-                  report("error", decodeError.message);
+                  if (cancelled || recovering) return;
+                  const now = Date.now();
+                  const recent = decodeFailuresRef.current
+                    .filter((at) => now - at < DECODE_FAILURE_WINDOW_MS);
+                  recent.push(now);
+                  decodeFailuresRef.current = recent;
+                  if (recent.length >= DECODE_FAILURE_LIMIT) {
+                    // Not one bad frame: something is actually wrong. Say the
+                    // sentence the viewer maps to "Video stopped." with a
+                    // Reconnect, never the generic "something went wrong".
+                    report("error", `${APPLE_STREAM_NOT_RUNNING_CODE}: ${decodeError.message}`);
+                    return;
+                  }
+                  // Keep the last good frame on the canvas and redial, which
+                  // makes the helper emit a keyframe for the new reader.
+                  recovering = true;
+                  setRecoveryNonce((nonce) => nonce + 1);
                 },
               });
               // No `description`: the stream is Annex-B, and a decoder
@@ -335,6 +372,9 @@ export function IosSimH264Video({
               data: record.bytes,
             }));
             report("playing", null);
+            // A stream that draws again has recovered; a later single failure
+            // must not inherit this one's count.
+            if (decodeFailuresRef.current.length > 0) decodeFailuresRef.current = [];
           }
         }
         if (!cancelled) report("stopped", null);
@@ -361,7 +401,7 @@ export function IosSimH264Video({
       }
       decoder = null;
     };
-  }, [url, token, reconnectNonce, report]);
+  }, [url, token, reconnectNonce, recoveryNonce, report]);
 
   return (
     <canvas

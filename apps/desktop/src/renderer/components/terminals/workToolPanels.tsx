@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { Play, WarningCircle } from "@phosphor-icons/react";
 import type { ComponentType, ReactNode } from "react";
@@ -16,6 +17,10 @@ import { workRuntimeScopeKey } from "../../lib/chatMachineRouting";
 import { ChatAppControlPanel } from "../chat/ChatAppControlPanel";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
 import { AppleDevicePane } from "../apple/AppleDevicePane";
+import {
+  handoffAppleMiniPlayer,
+  retakeAppleMiniPlayer,
+} from "../apple/appleMiniPlayerStore";
 import { ChatTerminalDrawer } from "../chat/ChatTerminalDrawer";
 import { FilesTab } from "../files/FilesTab";
 import { LaneDiffPane } from "../lanes/LaneDiffPane";
@@ -324,6 +329,31 @@ function WorkIosTool({
   onInsertDraft,
 }: WorkToolPanelProps) {
   const mountScope = useWorkToolMountScope(runtimePin);
+  /**
+   * The device follows the pane out of the door (round 3, A4).
+   *
+   * Closing the tools pane, or switching to another tool, used to leave a
+   * running simulator with nothing on screen at all — no picture, no control,
+   * no hint that a device was still up. Unmounting this panel now floats it
+   * over the chat instead, unless the user has closed the player for that
+   * device. Mounting takes it back: two live views of one device is the
+   * handoff failing, not succeeding.
+   */
+  const pinRef = useRef(runtimePin);
+  pinRef.current = runtimePin;
+  const sessionRef = useRef(panelSessionId);
+  sessionRef.current = panelSessionId;
+  useEffect(() => {
+    if (!laneId) return undefined;
+    retakeAppleMiniPlayer();
+    return () => {
+      void handoffAppleMiniPlayer({
+        laneId,
+        chatSessionId: sessionRef.current,
+        runtimePin: pinRef.current,
+      });
+    };
+  }, [laneId]);
   if (!laneId) return <NoLaneNotice />;
   // Deliberately NOT `padded`. The Apple pane fills its host: the tools pane's
   // 12px gutter and scroll container turned the device back into the drawer

@@ -3,11 +3,11 @@ name: ade-apple
 description: Use this skill when you need to see an iOS or SwiftUI change actually running on a simulator — creating or attaching a per-lane device, launching the app, driving it by element query, screenshotting or streaming the screen, recording, capturing proof, or rendering a SwiftUI preview through Preview Lab — via `ade apple`.
 ---
 
-# ADE Apple device and Preview Lab
+# ADE Apple Development and Preview Lab
 
 Drive the lane's Apple simulator through `ade apple`. `ade ios-sim` is a
 deprecated alias for one minor release. Use `--socket` so CLI actions and the
-desktop Apple column share one session.
+desktop Apple Development tool share one session.
 
 The pixels come from a vendored Swift helper (`ade-sim-helper`), not from
 Simulator.app window capture and not from idb. There is no Screen Recording

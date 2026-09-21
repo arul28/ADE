@@ -1241,7 +1241,7 @@ const agentChatSummaryCache =
 const iosSimulatorStatusCache = createKeyedShortIpcCache<IosSimulatorStatus>(
   () =>
     callProjectRuntimeActionOr("ios_simulator", "getStatus", {}, () =>
-      ipcRenderer.invoke(IPC.iosSimulatorGetStatus),
+      iosSimulatorLocalFallback("getStatus", () => ipcRenderer.invoke(IPC.iosSimulatorGetStatus)),
     ),
   2_000,
 );
@@ -1249,7 +1249,7 @@ const iosSimulatorStatusCache = createKeyedShortIpcCache<IosSimulatorStatus>(
 const iosSimulatorDevicesCache = createKeyedShortIpcCache<IosSimulatorDevice[]>(
   () =>
     callProjectRuntimeActionOr("ios_simulator", "listDevices", {}, () =>
-      ipcRenderer.invoke(IPC.iosSimulatorListDevices),
+      iosSimulatorLocalFallback("listDevices", () => ipcRenderer.invoke(IPC.iosSimulatorListDevices)),
     ),
   2_000,
 );
@@ -2076,7 +2076,55 @@ function callIosSimulatorActionOr<T>(
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
   local: () => Promise<T>,
 ): Promise<T> {
-  return callPinnedOrBoundRuntimeActionOr(pin, "ios_simulator", action, request, local);
+  return callPinnedOrBoundRuntimeActionOr(pin, "ios_simulator", action, request, () =>
+    iosSimulatorLocalFallback(action, local),
+  );
+}
+
+/**
+ * Input that came from THIS window, which is a person looking at the screen.
+ *
+ * Agents never reach the simulator through the preload — they call
+ * `ios_simulator.tap` on the runtime directly — so stamping the source here is
+ * both sufficient and untamperable from the renderer's side. Without it the
+ * service could not tell a human tapping the pane from an agent verifying its
+ * work, and auto-record started an MP4 for every tap the user made (round 3,
+ * A2).
+ */
+function asUserInput<T extends Record<string, unknown>>(args: T): T & { source: "user" } {
+  return { ...args, source: "user" };
+}
+
+/**
+ * Has the local IPC path already told us there is no simulator service here?
+ *
+ * The in-process simulator service exists only in a packaged runtime. In dev,
+ * and in any build where the project runtime owns the devices, the IPC handler
+ * answers "iOS Simulator service is not available." — which reached the log as
+ * a raw `Error occurred in handler for 'ade.iosSimulator.getStatus'` on every
+ * poll before a project finished binding (round 3, A6). One refusal is enough
+ * to know: after it, the local arm answers in-process with a sentence that
+ * says what to do instead of an IPC round trip that cannot succeed.
+ */
+let iosSimulatorLocalServiceMissing = false;
+
+const IOS_SIMULATOR_NEEDS_RUNTIME_MESSAGE =
+  "Apple device control needs an open project. Open a project so ADE can reach the Mac that owns its simulators.";
+
+async function iosSimulatorLocalFallback<T>(action: string, local: () => Promise<T>): Promise<T> {
+  if (iosSimulatorLocalServiceMissing) {
+    throw new Error(`${IOS_SIMULATOR_NEEDS_RUNTIME_MESSAGE} (${action})`);
+  }
+  try {
+    return await local();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("iOS Simulator service is not available")) {
+      iosSimulatorLocalServiceMissing = true;
+      throw new Error(`${IOS_SIMULATOR_NEEDS_RUNTIME_MESSAGE} (${action})`);
+    }
+    throw error;
+  }
 }
 
 /**
@@ -2102,7 +2150,7 @@ async function callIosSimulatorMutation<T>(
       pin,
       action,
       args === undefined ? {} : { args },
-      () => (args === undefined ? ipcRenderer.invoke(channel) : ipcRenderer.invoke(channel, args)),
+      () => (args === undefined ? ipcRenderer.invoke(channel) : ipcRenderer.invoke(channel, args)) as Promise<T>,
     );
   } finally {
     clearIosSimulatorStatusCaches();
@@ -8166,12 +8214,14 @@ const adeBridge = {
         ipcRenderer.invoke(IPC.iosSimulatorRecordingsTotalBytes, args),
       ),
     tap: async (
-      args: { deviceUdid?: string | null; x: number; y: number },
+      args: { deviceUdid?: string | null; x: number; y: number; laneId?: string | null; chatSessionId?: string | null },
       pin?: OpenProjectBinding | null,
-    ): Promise<{ ok: true }> =>
-      callIosSimulatorActionOr(pin, "tap", { args }, () =>
-        ipcRenderer.invoke(IPC.iosSimulatorTap, args),
-      ),
+    ): Promise<{ ok: true }> => {
+      const stamped = asUserInput(args);
+      return callIosSimulatorActionOr(pin, "tap", { args: stamped }, () =>
+        ipcRenderer.invoke(IPC.iosSimulatorTap, stamped),
+      );
+    },
     pressButton: (
       args: ApplePressButtonArgs,
       pin?: OpenProjectBinding | null,
@@ -8183,26 +8233,32 @@ const adeBridge = {
     ): Promise<AppleRotateResult> =>
       callIosSimulatorMutation(pin, "rotate", args, IPC.iosSimulatorRotate),
     typeText: async (
-      args: { deviceUdid?: string | null; text: string },
+      args: { deviceUdid?: string | null; text: string; laneId?: string | null; chatSessionId?: string | null },
       pin?: OpenProjectBinding | null,
-    ): Promise<{ ok: true }> =>
-      callIosSimulatorActionOr(pin, "typeText", { args }, () =>
-        ipcRenderer.invoke(IPC.iosSimulatorTypeText, args),
-      ),
+    ): Promise<{ ok: true }> => {
+      const stamped = asUserInput(args);
+      return callIosSimulatorActionOr(pin, "typeText", { args: stamped }, () =>
+        ipcRenderer.invoke(IPC.iosSimulatorTypeText, stamped),
+      );
+    },
     drag: async (
       args: IosSimulatorDragArgs,
       pin?: OpenProjectBinding | null,
-    ): Promise<{ ok: true }> =>
-      callIosSimulatorActionOr(pin, "drag", { args }, () =>
-        ipcRenderer.invoke(IPC.iosSimulatorDrag, args),
-      ),
+    ): Promise<{ ok: true }> => {
+      const stamped = asUserInput(args);
+      return callIosSimulatorActionOr(pin, "drag", { args: stamped }, () =>
+        ipcRenderer.invoke(IPC.iosSimulatorDrag, stamped),
+      );
+    },
     swipe: async (
       args: IosSimulatorDragArgs,
       pin?: OpenProjectBinding | null,
-    ): Promise<{ ok: true }> =>
-      callIosSimulatorActionOr(pin, "swipe", { args }, () =>
-        ipcRenderer.invoke(IPC.iosSimulatorSwipe, args),
-      ),
+    ): Promise<{ ok: true }> => {
+      const stamped = asUserInput(args);
+      return callIosSimulatorActionOr(pin, "swipe", { args: stamped }, () =>
+        ipcRenderer.invoke(IPC.iosSimulatorSwipe, stamped),
+      );
+    },
     selectPoint: async (
       args: {
         deviceUdid?: string | null;

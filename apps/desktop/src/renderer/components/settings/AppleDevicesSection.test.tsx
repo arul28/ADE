@@ -12,9 +12,9 @@ describe("AppleDevicesSection", () => {
     useAppStore.getState().setAppleDevicePreferences(DEFAULT_APPLE_DEVICE_PREFERENCES);
   });
 
-  it("renders the Apple devices rows with contract defaults", () => {
+  it("renders the Apple Development rows with contract defaults", () => {
     render(<AppleDevicesSection />);
-    expect(screen.getByText("Apple devices")).toBeTruthy();
+    expect(screen.getByText("Apple Development")).toBeTruthy();
     expect(screen.getByRole("switch", { name: "Realistic body" }).getAttribute("aria-checked")).toBe("true");
     expect(screen.getByRole("switch", { name: "Tap rings" }).getAttribute("aria-checked")).toBe("true");
     expect(screen.getByRole("switch", { name: "Typed-text badges" }).getAttribute("aria-checked")).toBe("true");

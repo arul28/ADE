@@ -48,6 +48,17 @@ export type ResolveAppleDeviceStateInput = {
   starting: boolean;
   /** A rendered preview is on screen. */
   previewing: boolean;
+  /**
+   * The viewer has an address to read frames from.
+   *
+   * The machine cannot wait for FRAMES before it calls a device live: the
+   * stage is the decoder, so a state that keeps the stage unmounted until a
+   * frame arrives is a state no frame can ever leave. Readiness is the stream
+   * having connected; a connection that then draws nothing is caught five
+   * seconds later by `useAppleDeviceStream`'s first-frame watchdog and lands
+   * here as `video-lost`.
+   */
+  streamReady: boolean;
   streamState: AppleStreamState;
 };
 
@@ -69,6 +80,14 @@ export function resolveAppleDeviceState(input: ResolveAppleDeviceStateInput): Ap
   if (!input.hasDevice) return "no-device";
   if (!input.booted) return "stopped";
   if (input.streamState === "stalled" || input.streamState === "error") return "video-lost";
+  // Round 2 called a device `live` whenever it was booted, whatever the stream
+  // was doing, so a pane whose stream had not connected painted an empty black
+  // stage that took input the user could not see the result of — the "input
+  // does nothing" report, with the giveaway being the pane's own "Input
+  // disconnected, reconnecting…" pill showing in a state it calls live.
+  // Nothing to read from is `starting`; connected is `live`, and the watchdogs
+  // above are what demote a connection that never draws.
+  if (!input.streamReady) return "starting";
   return "live";
 }
 
@@ -162,4 +181,36 @@ export function appleCommandForElement(element: IosScreenElement): string {
     return `ade --socket apple tap-element --ref ${shellQuote(ref.trim())}`;
   }
   return commandFor(element);
+}
+
+/* ── Recordings (round 3 §A3) ─────────────────────────────────────────────── */
+
+/**
+ * The proof link a finished recording carries.
+ *
+ * APPENDED for round 3 and shared on purpose: a recording becomes a proof
+ * artifact by itself when it stops (there is no "Pin to proof" button any
+ * more), and the drawer's row needs to know WHICH artifact so "Open in proof"
+ * can go somewhere. Unit F fills this field on the record; Unit D only reads
+ * it, which is why the reader below tolerates a record that predates it rather
+ * than assuming the field is there.
+ */
+export type AppleRecordingProofLink = {
+  /** The proof artifact this recording became, once it has one. */
+  proofArtifactId?: string | null;
+};
+
+/**
+ * The artifact id for a recording, or null when it has none yet.
+ *
+ * Reads the round-3 field and nothing else. A recording that only carries the
+ * round-2 `proof: true` flag is deliberately NOT treated as openable: the flag
+ * says "an artifact exists somewhere", not "here it is", and a button that
+ * navigates to an id we do not have is worse than one that is visibly off.
+ */
+export function appleRecordingProofArtifactId(
+  recording: AppleRecordingProofLink | null | undefined,
+): string | null {
+  const id = recording?.proofArtifactId;
+  return typeof id === "string" && id.trim().length > 0 ? id.trim() : null;
 }

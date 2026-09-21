@@ -3163,7 +3163,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Pass --no-verify to skip the re-read.
 `,
   "apple": `${ADE_BANNER}
-  Apple device
+  Apple Development
 
   Apple device commands build, launch, stream, inspect, and control a per-lane
   iOS simulator through ADE's vendored helper. \`ade ios-sim\` is a deprecated

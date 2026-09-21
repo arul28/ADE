@@ -1,12 +1,12 @@
 import {
   Desktop,
-  DeviceMobile,
   FolderOpen,
   GitBranch,
   Globe,
   Terminal,
   type Icon,
 } from "@phosphor-icons/react";
+import { AppleLogo } from "../ui/appleIcons";
 import type { WorkSidebarTab } from "../../state/appStore";
 
 /**
@@ -96,12 +96,16 @@ export const WORK_TOOL_DEFINITIONS: readonly WorkToolDefinition[] = [
   },
   {
     id: "ios",
-    // One name everywhere: card, tab, palette, phone and web. The subtitle is
-    // the device and what it is doing (`iosStatusLine`), which is the part
-    // worth reading twice.
-    label: "Apple",
+    /*
+     * One name everywhere: card, tab, palette, settings, docs, CLI, phone and
+     * web (§B1). Round 2 called it "Apple", which named the company rather
+     * than the work and sat under a generic phone glyph that could equally
+     * have been the browser's. The subtitle is the device and what it is doing
+     * (`appleToolCardSubtitle`), which is the part worth reading twice.
+     */
+    label: "Apple Development",
     tabTooltip: "Apple simulators and previews",
-    icon: DeviceMobile,
+    icon: AppleLogo,
     color: "#60a5fa",
     hint: "Open an Apple device",
   },

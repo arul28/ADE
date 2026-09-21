@@ -17,6 +17,9 @@ import {
 /**
  * Presentation choices for Apple simulators and previews.
  *
+ * Titled "Apple Development" because that is the tool's one name (round 3
+ * §B1) — the card, the tab, the palette, the docs and the CLI all say it.
+ *
  * Account-scoped, same as the rest of Appearance: they follow the signed-in
  * account rather than this machine, and the hosted web client can set them.
  */
@@ -25,7 +28,7 @@ export function AppleDevicesSection() {
   const setAppleDevicePreferences = useAppStore((s) => s.setAppleDevicePreferences);
 
   return (
-    <SettingsGroup title="Apple devices">
+    <SettingsGroup title="Apple Development">
       <SettingsCard
         anchor="apple-realistic-body"
         title="Realistic body"

@@ -3,6 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { ADE_ACCENT_COLOR } from "../../../../shared/themeTokens";
+import type { AppleInputSource } from "../../../../shared/types/iosSimulator";
 import type { SimHelperTransport } from "../simHelperClient";
 
 /**
@@ -14,17 +15,20 @@ import type { SimHelperTransport } from "../simHelperClient";
  * which exists so an agent's verification video is a by-product of driving the
  * device rather than something it has to remember to ask for:
  *
- * 1. The first injected input on a device with no running recording starts one,
- *    tagged `auto`, owned by the calling chat.
+ * 1. The first AGENT input on a device with no running recording starts one,
+ *    tagged `auto`, owned by the calling chat. A person driving the pane never
+ *    starts one (round 3, A2) — see `noteInput`'s `source`.
  * 2. It stops at the end of that chat's turn, or after ten minutes, whichever
  *    comes first.
  * 3. `record-start` while an auto recording runs **converts** it — no restart,
  *    no gap, no cap — so "let me record that" never costs the first minute.
- * 4. An agent may delete a recording it owns and has not pinned. Pinned ones
- *    are refused with `APPLE_RECORDING_PINNED`; another chat's are refused with
- *    the ordinary cooperative-guard error.
- * 5. `proof-bundle` pins the active recording (or this chat's latest), files it
- *    into the proof drawer, and makes it undeletable.
+ * 4. Every recording that stops is filed into the proof drawer at once (round
+ *    3, A3), attributed to the chat that owns it, captioned
+ *    "Simulator recording · {device} · {duration}". There is no pin step.
+ * 5. An agent may delete a recording it owns, but not one filed as proof
+ *    (`APPLE_RECORDING_PINNED`); another chat's are refused with the ordinary
+ *    cooperative-guard error. The user's own delete row passes `allowProof`
+ *    and removes the drawer entry with the file.
  * 6. There is **no auto-delete**, ever. `totalBytes()` is what the storage
  *    warning reads; nothing here acts on it.
  *
@@ -48,7 +52,18 @@ export type SimRecording = {
   proof: boolean;
   label: string | null;
   overlays: boolean;
+  /**
+   * The proof-drawer artifact this recording was filed as, once it stopped.
+   *
+   * Round 3 made every finished recording proof (see `stopActive`), so this is
+   * the handle "Open in proof" opens and the row `remove` deletes alongside the
+   * file. Null means the filing failed or there was no drawer to file into —
+   * the video is still on disk, which is why that is a warning and not a throw.
+   */
+  proofArtifactId?: string | null;
 };
+
+export type { AppleInputSource };
 
 export interface SimRecordingService {
   /** Auto-record start + overlay events. Called from every injected-input path. */
@@ -60,6 +75,18 @@ export interface SimRecordingService {
     x?: number;
     y?: number;
     text?: string;
+    /**
+     * Who drove the device. Only `agent` may START a recording.
+     *
+     * Round 2 auto-started on ANY injected input, so a person tapping their own
+     * simulator in the pane silently began writing an MP4 — three of them sat
+     * in `.ade/artifacts` after one live test with nothing on screen saying so.
+     * A human driving the pane is not producing verification evidence; an agent
+     * driving it headlessly is, which is the whole point of the auto-record
+     * contract. Human input during an agent's recording is still overlaid,
+     * because it is on the screen being recorded.
+     */
+    source?: AppleInputSource;
   }): Promise<void>;
   start(args: {
     laneId: string;
@@ -75,7 +102,22 @@ export interface SimRecordingService {
     chatSessionId: string | null;
   }): Promise<SimRecording | null>;
   list(args: { laneId: string }): Promise<SimRecording[]>;
-  remove(args: { laneId: string; id: string; chatSessionId: string | null; force?: boolean }): Promise<void>;
+  remove(args: {
+    laneId: string;
+    id: string;
+    chatSessionId: string | null;
+    force?: boolean;
+    /**
+     * The person asked, from the drawer's ⋯ menu.
+     *
+     * Every stopped recording is proof now (A3), so the old blanket "pinned
+     * recordings cannot be deleted" would mean nothing is ever deletable. The
+     * protection still holds for agents — which is who it was written for —
+     * and this flag, set only by the desktop's own delete row, is the user
+     * saying they want the video and its drawer row gone.
+     */
+    allowProof?: boolean;
+  }): Promise<void>;
   /** proof-bundle: pins the active recording, or the latest from this chat. */
   pinActiveOrLatest(args: { laneId: string; chatSessionId: string | null }): Promise<SimRecording | null>;
   /** Stops auto recordings owned by that chat. */
@@ -187,7 +229,31 @@ export type AppleRecordingArtifactFiler = {
     owners?: Array<{ kind: string; id: string }>;
     callerRoot?: string | null;
   }): unknown;
+  /** Deleting the video deletes its drawer row too. Optional so tests can omit it. */
+  deleteArtifacts?(args: { artifactIds: string[] }): unknown;
 };
+
+/**
+ * The artifact id an `ingest` returned, or null.
+ *
+ * Read defensively rather than typed against the broker: this module is
+ * imported by the brain and by tests that pass a two-line fake filer, and a
+ * hard dependency on the broker's result shape would make both of those carry
+ * the whole `computerUseArtifacts` type surface.
+ */
+function readArtifactId(result: unknown): string | null {
+  if (!result || typeof result !== "object") return null;
+  const artifacts = (result as { artifacts?: unknown }).artifacts;
+  if (!Array.isArray(artifacts) || artifacts.length === 0) return null;
+  const first = artifacts[0];
+  if (!first || typeof first !== "object") return null;
+  const record = first as Record<string, unknown>;
+  for (const key of ["artifactId", "id"]) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
 
 export type SimRecordingServiceDeps = {
   /** The helper. Absent means recording is unavailable, not broken. */
@@ -202,8 +268,10 @@ export type SimRecordingServiceDeps = {
   readOverlaySetting?: (key: "apple.recordingOverlays.tapRings" | "apple.recordingOverlays.keyBadges") => boolean | undefined;
   /** Theme primary, for the tap ring. */
   accentColor?: () => string | null | undefined;
-  /** The proof drawer. Absent means `pinActiveOrLatest` still pins locally. */
+  /** The proof drawer. Absent means a stopped recording is still kept locally. */
   artifactFiler?: AppleRecordingArtifactFiler | null;
+  /** Device name for the proof caption. Falls back to the udid's first eight. */
+  resolveDeviceName?: (udid: string) => string | null | undefined;
   fps?: number;
   logger?: {
     warn?: (event: string, data?: Record<string, unknown>) => void;
@@ -460,15 +528,91 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
         removeFiles(finished);
         return null;
       }
-      writeSidecar(finished);
-      return finished;
+      // Every recording that stops is proof (round 3, A3). Round 2 wrote the
+      // file and waited for someone to press "Pin to proof"; nobody ever did,
+      // because nothing on screen said the file existed. Filing it here means
+      // the drawer is the one place recordings live, and the row below the
+      // viewport is a receipt rather than a call to action.
+      const filed = fileAsProof(finished);
+      writeSidecar(filed);
+      return filed;
     })();
 
     entry.stopping = run;
     return run;
   };
 
+  /** "0:23" / "1:04:02" — the caption's duration part. */
+  const captionDuration = (record: SimRecording): string => {
+    const total = Math.max(0, Math.round((record.durationMs ?? 0) / 1000));
+    const seconds = String(total % 60).padStart(2, "0");
+    const minutes = Math.floor(total / 60) % 60;
+    const hours = Math.floor(total / 3600);
+    return hours > 0
+      ? `${hours}:${String(minutes).padStart(2, "0")}:${seconds}`
+      : `${minutes}:${seconds}`;
+  };
+
+  const deviceLabel = (udid: string): string => {
+    try {
+      const name = deps.resolveDeviceName?.(udid);
+      if (typeof name === "string" && name.trim()) return name.trim();
+    } catch {
+      // A name lookup that fails is a cosmetic loss, not a failed recording.
+    }
+    return udid.slice(0, 8);
+  };
+
+  /**
+   * File a finished recording into the proof drawer and mark it proof.
+   *
+   * Returns the record to persist either way: a drawer that refused the file
+   * must not cost the user the video, so the failure path keeps the sidecar
+   * (with `proofArtifactId: null`) rather than throwing out of `stopActive`.
+   */
+  const fileAsProof = (record: SimRecording): SimRecording => {
+    const caption = `Simulator recording · ${deviceLabel(record.udid)} · ${captionDuration(record)}`;
+    let artifactId: string | null = null;
+    try {
+      const result = deps.artifactFiler?.ingest({
+        backend: { name: "apple-device", style: "local_fallback", toolName: "apple_record" },
+        ...(record.chatSessionId ? { owners: [{ kind: "chat_session", id: record.chatSessionId }] } : {}),
+        ...(deps.projectRoot ? { callerRoot: deps.projectRoot } : {}),
+        inputs: [
+          {
+            kind: "video_recording",
+            title: record.label ?? caption,
+            description: "Screen recording of the lane's Apple device, with input overlays.",
+            path: record.path,
+            mimeType: "video/mp4",
+            metadata: {
+              laneId: record.laneId,
+              udid: record.udid,
+              durationMs: record.durationMs,
+              overlays: record.overlays,
+              mode: record.mode,
+              recordingId: record.id,
+            },
+          },
+        ],
+      });
+      artifactId = readArtifactId(result);
+    } catch (error) {
+      warn("apple.recording.proof_file_failed", { id: record.id, error: String(error) });
+    }
+    return { ...record, proof: true, proofArtifactId: artifactId };
+  };
+
   const removeFiles = (record: SimRecording): void => {
+    if (record.proofArtifactId) {
+      try {
+        deps.artifactFiler?.deleteArtifacts?.({ artifactIds: [record.proofArtifactId] });
+      } catch (error) {
+        // The bytes are what the user asked to be rid of. A drawer row left
+        // pointing at a deleted file is the broken-artifact sweeper's problem.
+        warn("apple.recording.proof_delete_failed", { id: record.id, error: String(error) });
+      }
+    }
     for (const file of [record.path, sidecarPath(record.laneId, record.id)]) {
       try {
         fs.rmSync(file, { force: true });
@@ -519,6 +663,9 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
       try {
         let entry = active.get(input.laneId);
         if (!entry) {
+          // A person tapping the pane never starts a recording. See the
+          // `source` field on this method for why.
+          if (input.source === "user") return;
           if (!deps.transport || !deps.projectRoot) return;
           await beginRecording({
             laneId: input.laneId,
@@ -591,16 +738,19 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
       const activeEntry = active.get(args.laneId);
       if (activeEntry?.record.id === args.id) {
         assertOwner(activeEntry, args.chatSessionId);
-        if (activeEntry.record.proof) throw new AppleRecordingPinnedError(args.id);
+        if (activeEntry.record.proof && args.allowProof !== true) {
+          throw new AppleRecordingPinnedError(args.id);
+        }
         await stopActive(args.laneId, { reason: "requested", discard: true });
         return;
       }
 
       const record = readSidecar(args.laneId, args.id);
       if (!record) return;
-      // Pinned wins over `force`. The drawer hides the delete action entirely
-      // for proof, and a flag must not be a way around that.
-      if (record.proof) throw new AppleRecordingPinnedError(args.id);
+      // Pinned wins over `force`, and only over `force`: `allowProof` is the
+      // user's own delete row, which is allowed to take the drawer entry with
+      // the file. An agent passing `force` still cannot touch proof.
+      if (record.proof && args.allowProof !== true) throw new AppleRecordingPinnedError(args.id);
       if (
         args.force !== true
         && record.chatSessionId
@@ -629,38 +779,17 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
           ?? null;
       }
       if (!target) return null;
+      // `stopActive` already filed it. Re-filing the same bytes would put a
+      // second row in the drawer for one video, so this is now a read of what
+      // stopping already did — kept as a method because `proof-bundle` asks
+      // "which recording belongs to this turn", which only this knows.
+      // `proof`, not `proofArtifactId`: a drawer that accepted the file but
+      // answered with no id still took it, and filing it twice would put two
+      // rows in front of the user for one video.
+      if (target.proof) return target;
 
-      const pinned: SimRecording = { ...target, proof: true };
+      const pinned = fileAsProof(target);
       writeSidecar(pinned);
-
-      try {
-        deps.artifactFiler?.ingest({
-          backend: { name: "apple-device", style: "local_fallback", toolName: "apple_record" },
-          ...(args.chatSessionId ? { owners: [{ kind: "chat_session", id: args.chatSessionId }] } : {}),
-          ...(deps.projectRoot ? { callerRoot: deps.projectRoot } : {}),
-          inputs: [
-            {
-              kind: "video_recording",
-              title: pinned.label ?? `Apple device recording · ${pinned.udid.slice(0, 8)}`,
-              description: "Screen recording of the lane's Apple device, with input overlays.",
-              path: pinned.path,
-              mimeType: "video/mp4",
-              metadata: {
-                laneId: pinned.laneId,
-                udid: pinned.udid,
-                durationMs: pinned.durationMs,
-                overlays: pinned.overlays,
-                mode: pinned.mode,
-              },
-            },
-          ],
-        });
-      } catch (error) {
-        // The pin is what makes it undeletable, and it is already on disk.
-        // Failing to copy it into the drawer must not undo that.
-        warn("apple.recording.proof_file_failed", { id: pinned.id, error: String(error) });
-      }
-
       return pinned;
     },
 

@@ -47,6 +47,8 @@ export type AppleDeviceStageProps = {
   interactive: boolean;
   onDeviceInput: (input: AppleDeviceInput) => void;
   onDeviceScroll?: (delta: { x: number; y: number; deltaX: number; deltaY: number }) => void;
+  /** A key pressed while the flat screen holds focus. True = forwarded. */
+  onDeviceKey?: (event: { key: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean }) => boolean;
   onReaderStatus: (status: "connecting" | "playing" | "error" | "stopped", error: string | null) => void;
   onDimensions: (size: { width: number; height: number }) => void;
   onFrame: () => void;
@@ -93,6 +95,7 @@ export function AppleDeviceStage({
   interactive,
   onDeviceInput,
   onDeviceScroll,
+  onDeviceKey,
   onReaderStatus,
   onDimensions,
   onFrame,
@@ -159,6 +162,7 @@ export function AppleDeviceStage({
           interactive={interactive}
           onDeviceInput={onDeviceInput}
           onDeviceScroll={onDeviceScroll}
+          onDeviceKey={onDeviceKey}
           onGeometryChange={setGeometry}
           screenOverlay={renderScreenOverlay?.(flatDeviceToView(geometry))}
         />

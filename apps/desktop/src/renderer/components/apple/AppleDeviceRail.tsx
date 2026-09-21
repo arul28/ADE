@@ -18,6 +18,7 @@ import {
   TextAa,
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
+import { Button } from "../ui/Button";
 import { PaneTooltip } from "../ui/PaneTooltip";
 import {
   MENU_CONTENT_CLASS,
@@ -55,6 +56,16 @@ export type AppleDeviceRailProps = {
   onFloat: () => void;
   onSwitchDevice: () => void;
   onPowerOff: () => void;
+  /**
+   * The tool's own chrome, drawn in the pill above More.
+   *
+   * A4 puts Float and Maximize in the TOOL's header/rail rather than in the
+   * tools tab strip, and the Apple pane's header IS this pill. A slot rather
+   * than named props because what goes in it is the shared
+   * `WorkToolPreviewControls` every screen tool mounts, not something this
+   * rail should know the shape of.
+   */
+  extraControls?: ReactNode;
 };
 
 /**
@@ -89,6 +100,7 @@ export function AppleDeviceRail({
   onFloat,
   onSwitchDevice,
   onPowerOff,
+  extraControls,
 }: AppleDeviceRailProps) {
   const compact = containerWidth < APPLE_RAIL_COMPACT_WIDTH;
   const appearance = controls.settings?.appearance;
@@ -103,9 +115,15 @@ export function AppleDeviceRail({
       className="pointer-events-none absolute inset-y-0 right-0 z-10 flex w-14 flex-col items-center justify-center py-3 pr-2"
     >
       <div
+        /*
+         * §B3: an OPAQUE pill. Round 2 used `bg-bg/80` with a backdrop blur,
+         * which over a live device is twelve icons read through a frosted
+         * smear of whatever the app happens to be showing — the blur changed
+         * every frame, so the icons flickered.
+         */
         className={cn(
           "pointer-events-auto flex shrink-0 flex-col items-center gap-1 overflow-y-auto",
-          "rounded-full border border-border bg-bg/80 p-1 shadow-sm backdrop-blur-md",
+          "rounded-full border border-border bg-surface p-1 shadow-md",
           "[scrollbar-width:none]",
         )}
       >
@@ -162,6 +180,8 @@ export function AppleDeviceRail({
             <Camera size={16} />
           </RailButton>
         )}
+
+        {extraControls}
 
         <RailMenu label="More device actions" icon={<DotsThree size={16} weight="bold" />}>
           <div className={MENU_LABEL_CLASS}>
@@ -220,9 +240,14 @@ function RailDivider() {
   return <div aria-hidden="true" className="my-1 h-px w-5 shrink-0 bg-border" />;
 }
 
+/**
+ * Every rail control is the shared `Button` (§B6) trimmed to a 28px circle:
+ * same focus ring, same disabled rule, same press feedback as every other
+ * button in ADE. The size and the radius are the only things overridden.
+ */
 const RAIL_BUTTON_CLASS = cn(
-  "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full",
-  "text-muted-fg transition-colors hover:bg-white/[0.07] hover:text-fg",
+  "h-7 w-7 shrink-0 gap-0 rounded-full p-0",
+  "text-muted-fg hover:bg-white/[0.07] hover:text-fg",
   "disabled:cursor-not-allowed disabled:opacity-40",
 );
 
@@ -243,8 +268,9 @@ function RailButton({
 }) {
   return (
     <PaneTooltip label={description ?? label} side="left">
-      <button
-        type="button"
+      <Button
+        variant="ghost"
+        size="sm"
         aria-label={label}
         aria-pressed={pressed}
         disabled={disabled}
@@ -252,7 +278,7 @@ function RailButton({
         className={cn(RAIL_BUTTON_CLASS, pressed && "bg-secondary text-fg")}
       >
         {children}
-      </button>
+      </Button>
     </PaneTooltip>
   );
 }
@@ -272,9 +298,9 @@ function RailMenu({
     <DropdownMenu.Root>
       <PaneTooltip label={label} side="left">
         <DropdownMenu.Trigger asChild>
-          <button type="button" aria-label={label} disabled={disabled} className={RAIL_BUTTON_CLASS}>
+          <Button variant="ghost" size="sm" aria-label={label} disabled={disabled} className={RAIL_BUTTON_CLASS}>
             {icon}
-          </button>
+          </Button>
         </DropdownMenu.Trigger>
       </PaneTooltip>
       <DropdownMenu.Portal>

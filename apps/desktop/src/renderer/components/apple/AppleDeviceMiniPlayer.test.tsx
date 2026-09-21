@@ -4,7 +4,9 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./AppleDeviceStage", () => ({
-  AppleDeviceStage: () => <div data-testid="apple-stage" />,
+  AppleDeviceStage: (props: { className?: string }) => (
+    <div data-testid="apple-stage" data-stage-class={props.className ?? ""} />
+  ),
   isWebCodecsAvailable: () => true,
 }));
 
@@ -118,6 +120,20 @@ describe("AppleDeviceMiniPlayer", () => {
     fireEvent.pointerEnter(screen.getByRole("group", { name: "iPhone 17 Pro, floating" }));
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(getAppleMiniPlayerTarget()).toBeNull();
+  });
+
+  /**
+   * A5's empty frame: the stage's own box is `flex-1`, which is a height only
+   * inside the pane's flex column. Floating, it is a block in an
+   * absolutely-positioned host whose every child is absolute — 0px tall — so
+   * the flat view measured nothing, the screen box came back null and the
+   * decoder stayed parked off-screen. The player must hand the stage a
+   * definite height or it draws a picture of nothing.
+   */
+  it("gives the stage a definite height so the decoder is not parked", () => {
+    render(<AppleDeviceMiniPlayer onOpenInPane={vi.fn()} />);
+    act(() => openAppleMiniPlayer(TARGET));
+    expect(screen.getByTestId("apple-stage").getAttribute("data-stage-class")).toContain("h-full");
   });
 
   it("offers eight resize zones", () => {

@@ -1,6 +1,8 @@
 import { useState, type ReactNode } from "react";
 import { X } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
+import { Button } from "../ui/Button";
+import { PaneTooltip } from "../ui/PaneTooltip";
 import {
   describeAppleError,
   type AppleErrorAction,
@@ -105,6 +107,13 @@ function StripShell({
   onDismiss?: (() => void) | undefined;
 }) {
   const error = tone === "error";
+  /*
+   * Rule zero: OPAQUE. Round 2 painted this `bg-[var(--color-error)]/8` over
+   * whatever was behind it, which on a live device is a moving picture read
+   * through a red film. The error tone is now a `color-mix` INTO the surface,
+   * so it is the same red at the same weight over any background and the
+   * sentence keeps its contrast.
+   */
   return (
     <div
       role="alert"
@@ -112,26 +121,29 @@ function StripShell({
       className={cn(
         "shrink-0 border-b px-3 py-2 font-sans text-xs",
         error
-          ? "border-[var(--color-error)]/25 bg-[var(--color-error)]/8 text-[var(--color-error)]"
+          ? "border-[color-mix(in_srgb,var(--color-error)_35%,var(--color-border))] bg-[color-mix(in_srgb,var(--color-error)_12%,var(--color-surface))] text-[var(--color-error)]"
           : "border-border bg-surface text-fg/85",
       )}
     >
-      <div className="flex items-start gap-2">
-        <p className="min-w-0 flex-1 leading-5">{sentence}</p>
+      <div className="flex min-w-0 items-start gap-2">
+        <p className="min-w-0 flex-1 break-words leading-5">{sentence}</p>
         {actions}
         {onDismiss ? (
-          <button
-            type="button"
-            aria-label="Dismiss this message"
-            className="shrink-0 rounded p-0.5 opacity-80 hover:opacity-100"
-            onClick={onDismiss}
-          >
-            <X size={12} />
-          </button>
+          <PaneTooltip label="Dismiss this message" side="bottom">
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-label="Dismiss this message"
+              className="h-5 shrink-0 px-1"
+              onClick={onDismiss}
+            >
+              <X size={12} aria-hidden="true" />
+            </Button>
+          </PaneTooltip>
         ) : null}
       </div>
       {detail ? (
-        <pre className="mt-1.5 max-h-24 overflow-auto whitespace-pre-wrap break-words rounded bg-black/25 p-2 font-mono text-[11px] leading-4">
+        <pre className="mt-1.5 max-h-24 overflow-auto whitespace-pre-wrap break-words rounded bg-[var(--color-bg)] p-2 font-mono text-[11px] leading-4">
           {detail}
         </pre>
       ) : null}
@@ -151,16 +163,14 @@ function StripAction({
   onClick: () => void;
 }) {
   return (
-    <button
-      type="button"
+    <Button
+      variant="ghost"
+      size="sm"
       aria-expanded={expanded}
       onClick={onClick}
-      className={cn(
-        "shrink-0 rounded px-1.5 py-0.5 font-medium underline-offset-2 hover:underline",
-        muted && "opacity-80 hover:opacity-100",
-      )}
+      className={cn("h-5 shrink-0 px-1.5 text-current", muted && "opacity-80 hover:opacity-100")}
     >
       {label}
-    </button>
+    </Button>
   );
 }

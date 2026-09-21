@@ -4,6 +4,7 @@ import { DotsThree } from "@phosphor-icons/react";
 import type { IosSimulatorPreviewTarget } from "../../../../../shared/types";
 import { cn } from "../../../ui/cn";
 import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS } from "../../../ui/paneMenuTokens";
+import { PaneTooltip } from "../../../ui/PaneTooltip";
 import { DRAWER_BUTTON, DRAWER_GHOST_BUTTON, DRAWER_ICON_BUTTON, DrawerMenu, Row, Section, SwitchRow } from "../drawerPrimitives";
 import type { AppleDrawerContext } from "../drawerContext";
 
@@ -164,11 +165,13 @@ export function PreviewLabSection({
   const busy = loading || rendering;
   const menu = (
     <DropdownMenu.Root>
-      <DropdownMenu.Trigger asChild>
-        <button type="button" className={DRAWER_ICON_BUTTON} aria-label="Preview Lab actions" disabled={!visible}>
-          <DotsThree size={14} weight="bold" />
-        </button>
-      </DropdownMenu.Trigger>
+      <PaneTooltip label="Preview Lab actions" side="left">
+        <DropdownMenu.Trigger asChild>
+          <button type="button" className={DRAWER_ICON_BUTTON} aria-label="Preview Lab actions" disabled={!visible}>
+            <DotsThree size={14} weight="bold" aria-hidden="true" />
+          </button>
+        </DropdownMenu.Trigger>
+      </PaneTooltip>
       <DropdownMenu.Portal>
         <DropdownMenu.Content align="end" sideOffset={4} className={MENU_CONTENT_CLASS}>
           <DropdownMenu.Item

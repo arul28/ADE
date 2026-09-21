@@ -15,6 +15,7 @@ import {
 } from "./appleMiniPlayerLayout";
 import {
   closeAppleMiniPlayer,
+  retakeAppleMiniPlayer,
   useAppleMiniPlayerTarget,
   type AppleMiniPlayerTarget,
 } from "./appleMiniPlayerStore";
@@ -24,7 +25,7 @@ import {
   WORK_LIVE_PIP_UNSUPPORTED_LABEL,
   type WorkLivePipSession,
 } from "../work/workLiveIosPictureInPicture";
-import type { AppleDeviceInput } from "./AppleDeviceFlatView";
+import { useAppleDeviceInput } from "./useAppleDeviceInput";
 import { PaneTooltip } from "../ui/PaneTooltip";
 
 const RESIZE_ZONES: { direction: AppleMiniPlayerResizeDirection; className: string }[] = [
@@ -212,15 +213,21 @@ function AppleMiniPlayerFrameView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stream.handleDimensions]);
 
-  const sendInput = useCallback((input: AppleDeviceInput) => {
-    if (input.phase !== "end") return;
-    void window.ade.iosSimulator
-      .tap(
-        { deviceUdid: target.deviceUdid, x: Math.round(input.x), y: Math.round(input.y) },
-        pinRef.current,
-      )
-      .catch(() => {});
-  }, [target.deviceUdid]);
+  /**
+   * The floating player drives the device exactly as the pane does.
+   *
+   * Same hook, same gesture recognition, same one-action-per-gesture rule —
+   * "taps and keys pass through exactly as in the pane" is a contract, and the
+   * way to keep it is to share the implementation rather than to write a
+   * second tap sender that drifts.
+   */
+  const input = useAppleDeviceInput({
+    deviceUdid: target.deviceUdid,
+    laneId: target.laneId,
+    chatSessionId: target.chatSessionId,
+    enabled: stream.state === "live",
+    runtimePinRef: pinRef,
+  });
 
   const pipSupported = isWorkLivePictureInPictureSupported();
 
@@ -232,7 +239,11 @@ function AppleMiniPlayerFrameView({
       aria-label={`${target.deviceName}, floating`}
       onPointerEnter={() => setHovered(true)}
       onPointerLeave={() => setHovered(false)}
-      className="absolute z-40 overflow-hidden bg-muted shadow-2xl ring-1 ring-inset ring-white/10"
+      onFocus={() => setHovered(true)}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setHovered(false);
+      }}
+      className="absolute z-40 overflow-hidden rounded-xl bg-surface shadow-2xl ring-1 ring-inset ring-border"
       style={{
         left: frame.x,
         top: frame.y,
@@ -241,8 +252,28 @@ function AppleMiniPlayerFrameView({
         borderRadius: APPLE_MINI_PLAYER_CORNER_RADIUS,
       }}
     >
-      <div ref={canvasHostRef} className="absolute inset-0" onPointerDown={startDrag}>
+      {/*
+        The picture is for driving the device, not for moving the window. Round
+        2 put the drag handler on the whole canvas, so every tap grabbed the
+        player instead of reaching the simulator — which is most of why the
+        floating view read as dead. Moving it lives on one invisible strip
+        under the top edge (inside the north resize zone) and on the chrome bar.
+      */}
+      <div ref={canvasHostRef} className="absolute inset-0">
         <AppleDeviceStage
+          /*
+           * `h-full` is what makes the floating player show a PICTURE.
+           *
+           * The stage's own box is `flex-1`, which is a height in the pane's
+           * flex column and nothing at all here: every child of the stage is
+           * absolutely positioned, so as a plain block inside `absolute
+           * inset-0` it laid out 0px tall. The flat view then measured a
+           * zero-height container, `measureAppleScreenBox` answered null, and
+           * the stage parked the decoder off-screen — the empty frame A5
+           * describes. The stream, the lease and the decoder were all fine;
+           * only the box was missing.
+           */
+          className="h-full w-full"
           streamUrl={stream.url}
           streamToken={stream.token}
           reconnectNonce={stream.reconnectNonce}
@@ -252,15 +283,24 @@ function AppleMiniPlayerFrameView({
           deviceTypeName={target.deviceName}
           realistic={false}
           orientation="portrait"
-          devicePointSize={null}
+          devicePointSize={stream.devicePointSize}
           interactive
-          onDeviceInput={sendInput}
+          onDeviceInput={input.send}
+          onDeviceScroll={input.scroll}
+          onDeviceKey={input.key}
           onReaderStatus={stream.handleReaderStatus}
           onDimensions={handleDimensions}
           onFrame={stream.noteFrame}
           frameVersion={stream.frameVersion}
         />
       </div>
+
+      <div
+        data-apple-mini-drag=""
+        aria-hidden="true"
+        className="absolute left-2 right-2 top-2 z-[2] h-4 cursor-grab active:cursor-grabbing"
+        onPointerDown={startDrag}
+      />
 
       {RESIZE_ZONES.map((zone) => (
         <div
@@ -273,13 +313,20 @@ function AppleMiniPlayerFrameView({
 
       <div className="absolute right-2 top-2 z-[3]">
         {hovered ? (
-          <div className="flex items-center gap-1 rounded-full border border-border bg-bg/95 px-1 py-0.5 shadow-lg backdrop-blur-md">
+          /* `shrink-0` + `nowrap` on every child: at the 240px minimum the bar
+             is nearly as wide as the player, and flex was shrinking the two
+             word buttons until "Close" sat on top of the picture-in-picture
+             glyph. The bar may reach the player's edges; it may not overlap
+             itself. */
+          <div className="flex max-w-full items-center gap-1 overflow-hidden rounded-full border border-border bg-surface px-1 py-0.5 shadow-lg">
             <button
               type="button"
-              className="rounded-full px-2 py-0.5 font-sans text-[11px] text-fg/85 hover:bg-white/[0.08] hover:text-fg"
+              className="shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 font-sans text-[11px] text-fg/85 hover:bg-white/[0.07] hover:text-fg"
               onClick={() => {
                 stopPip();
-                closeAppleMiniPlayer(target.deviceUdid);
+                // The device is moving back into the pane, not being refused:
+                // a dismissal here would stop A4 from ever floating it again.
+                retakeAppleMiniPlayer(target.deviceUdid);
                 onOpenInPane(target);
               }}
             >
@@ -290,7 +337,7 @@ function AppleMiniPlayerFrameView({
                 type="button"
                 aria-label="Picture in picture"
                 disabled={!pipSupported}
-                className="inline-flex h-5 w-5 items-center justify-center rounded-full text-muted-fg hover:bg-white/[0.08] hover:text-fg disabled:opacity-40"
+                className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-muted-fg hover:bg-white/[0.07] hover:text-fg disabled:opacity-40"
                 onClick={() => (pipActive ? stopPip() : void enterPip())}
               >
                 <PictureInPicture size={12} />
@@ -298,7 +345,7 @@ function AppleMiniPlayerFrameView({
             </PaneTooltip>
             <button
               type="button"
-              className="rounded-full px-2 py-0.5 font-sans text-[11px] text-fg/85 hover:bg-white/[0.08] hover:text-fg"
+              className="shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 font-sans text-[11px] text-fg/85 hover:bg-white/[0.07] hover:text-fg"
               onClick={() => {
                 stopPip();
                 closeAppleMiniPlayer(target.deviceUdid);
@@ -313,7 +360,7 @@ function AppleMiniPlayerFrameView({
             data-apple-mini-dot={recording ? "recording" : "idle"}
             className={cn(
               "block h-2 w-2 rounded-full",
-              recording ? "bg-[var(--color-error)] motion-safe:animate-pulse" : "bg-white/45",
+              recording ? "bg-[var(--color-error)] motion-safe:animate-pulse" : "bg-fg/45",
             )}
           />
         )}

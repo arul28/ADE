@@ -9,6 +9,7 @@ import {
   type WorkProjectViewState,
   type WorkSidebarTab,
 } from "../../state/appStore";
+import { closeWorkToolForReal } from "./closeWorkToolForReal";
 
 /**
  * The scope key is the store's own — `laneWorkViewScopeKey`. Re-exported under
@@ -109,6 +110,11 @@ export function closeWorkToolTab(
 export function useWorkSidebarTool(
   laneId: string | null,
   runtimePin: OpenProjectBinding | null = null,
+  /**
+   * The chat the pane's tools are attached to, for the ownership-aware
+   * "close for real" calls a tab close makes. Null on a chatless surface.
+   */
+  chatSessionId: string | null = null,
 ): {
   tool: WorkSidebarTab | null;
   openTools: WorkSidebarTab[];
@@ -190,6 +196,10 @@ export function useWorkSidebarTool(
 
   const closeTool = useCallback(
     (target: WorkSidebarTab) => {
+      // A4: closing a tab closes the tool behind it. Dispatched before the
+      // strip write, and never awaited — the tab leaves the strip even if the
+      // runtime refuses or is unreachable (see `closeWorkToolForReal`).
+      closeWorkToolForReal(target, { laneId, chatSessionId, runtimePin });
       const current = latestStrip.current;
       const next = closeWorkToolTab(current.openTools, current.tool, target);
       write({
@@ -197,7 +207,7 @@ export function useWorkSidebarTool(
         workSidebarOpenTools: next.openTools,
       });
     },
-    [write],
+    [chatSessionId, laneId, runtimePin, write],
   );
 
   usePublishActiveWorkTool(laneId, tool, openTools, runtimePin);

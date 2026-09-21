@@ -6,7 +6,7 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { DeviceMobile } from "@phosphor-icons/react";
+import { AppleLogo } from "../ui/appleIcons";
 import type {
   AppleDeviceOrientation,
   AppleDeviceStartArgs,
@@ -17,16 +17,19 @@ import type {
   OpenProjectBinding,
 } from "../../../shared/types";
 import { cn } from "../ui/cn";
+import { Button } from "../ui/Button";
 import { AppleDeviceStage, isWebCodecsAvailable } from "./AppleDeviceStage";
 import { AppleDeviceLoadingCard, type AppleLoadingStage } from "./AppleDeviceLoadingCard";
 import { AppleDevicePicker } from "./AppleDevicePicker";
 import { AppleDeviceRail } from "./AppleDeviceRail";
+import { WorkToolPreviewControls } from "../terminals/workToolPreviewControls";
 import {
   AppleDeviceNoticeStrip,
   AppleDeviceStatusStrip,
   describeAppleError,
   type AppleErrorAction,
 } from "./AppleDeviceStatusStrip";
+import { appleDeviceIdentity, type AppleDeviceFamilyId } from "./appleDeviceFamily";
 import {
   appleInputAllowed,
   appleRailVisible,
@@ -36,9 +39,10 @@ import {
 } from "./appleDeviceState";
 import { formatRecordingElapsed, recordingElapsedMs, useAppleRecordings } from "./appleRecording";
 import { useAppleDeviceControls } from "./useAppleDeviceControls";
+import { useAppleDeviceInput } from "./useAppleDeviceInput";
+import { AppleRecordingSavedRow } from "./AppleRecordingSavedRow";
 import { useAppleDeviceStream } from "./useAppleDeviceStream";
 import { openAppleMiniPlayer } from "./appleMiniPlayerStore";
-import type { AppleDeviceInput } from "./AppleDeviceFlatView";
 import type { AppleInspectNode } from "./drawer/AppleToolsDrawer";
 import type { AppleRenderedPreview } from "./drawer/sections/PreviewLabSection";
 
@@ -141,18 +145,23 @@ export function AppleDevicePane({
     return () => observer.disconnect();
   }, []);
 
-  // A viewer nobody is looking at is pure bitrate: both "the window is in the
-  // background" and "the pane is scrolled out of view" stop the stream.
+  /**
+   * The pane stops the stream when the PANE is not on screen. Not when the
+   * window is behind another one.
+   *
+   * Round 2 also paused on `document.visibilityState`, which on macOS goes
+   * "hidden" the moment any other app's window covers this one — and the
+   * matching `visibilitychange` does not reliably fire on the way back. The
+   * result, reproduced on the dev app in the round-3 test: a pane opened while
+   * another window was in front sat on the loading card forever, over a
+   * simulator that was booted and streaming the whole time. Minimising or
+   * closing the pane unmounts this component, which stops the stream through
+   * the lease; that is the case the visibility check was really for.
+   */
   useEffect(() => {
     const node = bodyRef.current;
     let offScreen = false;
-    let documentHidden = document.visibilityState === "hidden";
-    const apply = () => setHidden(offScreen || documentHidden);
-    const onVisibility = () => {
-      documentHidden = document.visibilityState === "hidden";
-      apply();
-    };
-    document.addEventListener("visibilitychange", onVisibility);
+    const apply = () => setHidden(offScreen);
     let observer: IntersectionObserver | null = null;
     if (node && typeof IntersectionObserver === "function") {
       observer = new IntersectionObserver((entries) => {
@@ -165,7 +174,6 @@ export function AppleDevicePane({
     }
     apply();
     return () => {
-      document.removeEventListener("visibilitychange", onVisibility);
       observer?.disconnect();
     };
   }, []);
@@ -250,6 +258,7 @@ export function AppleDevicePane({
     booted,
     starting: pendingStart !== null,
     previewing: preview !== null,
+    streamReady: stream.url != null,
     streamState: stream.state,
   });
 
@@ -424,12 +433,21 @@ export function AppleDevicePane({
     });
   }, [deviceUdid, laneDevice, laneId, sessionId]);
 
-  const sendInput = useCallback((input: AppleDeviceInput) => {
-    if (input.phase !== "end" || !deviceUdid || !appleInputAllowed(state)) return;
-    void window.ade.iosSimulator
-      .tap({ deviceUdid, x: Math.round(input.x), y: Math.round(input.y) }, runtimePinRef.current)
-      .catch((cause: unknown) => setError(cause));
-  }, [deviceUdid, state]);
+  /**
+   * Pointer, wheel and keys → the device.
+   *
+   * Unit F owns this: the hook recognises the gesture and sends ONE action for
+   * it (`tap` or `drag`), which is what makes a swipe scroll and what stopped a
+   * burst of taps from becoming a burst of 25-second runtime calls.
+   */
+  const input = useAppleDeviceInput({
+    deviceUdid,
+    laneId,
+    chatSessionId: sessionId,
+    enabled: appleInputAllowed(state) && !inspectOn,
+    runtimePinRef,
+    onError: setError,
+  });
 
   const handleStripAction = useCallback((action: AppleErrorAction) => {
     setError(null);
@@ -478,6 +496,7 @@ export function AppleDevicePane({
             onStart={startInstalled}
             onCreate={createDevice}
             onRefresh={refreshList}
+            playing={!hidden}
           />
         );
       case "starting":
@@ -485,7 +504,8 @@ export function AppleDevicePane({
           <AppleDeviceLoadingCard
             name={pendingStart === "create" ? "New simulator" : startingName()}
             runtime={startingRuntime()}
-            family={familyOf(laneDevice)}
+            model={startingIdentity().model}
+            family={startingIdentity().family}
             stage={loadingStage}
             error={startError}
             onRetry={() => (pendingStart ? undefined : restart())}
@@ -493,14 +513,15 @@ export function AppleDevicePane({
         );
       case "preview":
         return (
-          <div className="relative size-full overflow-auto bg-bg p-4">
-            <button
-              type="button"
-              className="absolute left-3 top-3 z-[2] rounded-md border border-border bg-bg/90 px-2 py-1 font-sans text-xs text-fg/85 backdrop-blur-md hover:text-fg"
+          <div className="ade-tool-picker-static relative size-full overflow-auto p-4">
+            <Button
+              variant="outline"
+              size="sm"
+              className="absolute left-3 top-3 z-[2]"
               onClick={() => setPreview(null)}
             >
               ← Back to device
-            </button>
+            </Button>
             {preview ? (
               <img
                 src={preview.dataUrl}
@@ -525,18 +546,20 @@ export function AppleDevicePane({
             deviceTypeName={deviceName}
             realistic={false}
             orientation="portrait"
-            devicePointSize={null}
+            devicePointSize={stream.devicePointSize}
             interactive={appleInputAllowed(state)}
-            onDeviceInput={sendInput}
+            onDeviceInput={input.send}
+            onDeviceScroll={input.scroll}
+            onDeviceKey={input.key}
             onReaderStatus={stream.handleReaderStatus}
             onDimensions={stream.handleDimensions}
             onFrame={stream.noteFrame}
             frameVersion={stream.frameVersion}
-            className={cn(state === "video-lost" && "opacity-40")}
+            className={cn("bg-transparent", state === "video-lost" && "opacity-40")}
           >
             {state === "stopped" ? (
               <div className="pointer-events-none absolute inset-0 grid place-items-center">
-                <DeviceMobile size={72} className="text-white/10" />
+                <AppleLogo size={72} className="text-fg/10" />
               </div>
             ) : null}
           </AppleDeviceStage>
@@ -553,6 +576,21 @@ export function AppleDevicePane({
   function startingRuntime(): string | null {
     if (laneDevice) return laneDevice.runtime;
     return installed.find((entry) => entry.udid === pendingStart)?.runtime ?? null;
+  }
+
+  /**
+   * The starting card's glyph and model line, from the device type identifier
+   * rather than the lane record's two-value `family` — a Watch or a Vision Pro
+   * booting under a phone outline is the same "what IS this?" the picker just
+   * fixed.
+   */
+  function startingIdentity(): { family: AppleDeviceFamilyId; model: string | null } {
+    const record = installed.find(
+      (entry) => entry.udid === (laneDevice?.udid ?? pendingStart),
+    );
+    if (!record) return { family: familyOf(laneDevice), model: null };
+    const identity = appleDeviceIdentity(record);
+    return { family: identity.family, model: identity.renamed ? identity.model : null };
   }
 
   const strip = error != null
@@ -585,11 +623,16 @@ export function AppleDevicePane({
     <div
       data-apple-pane=""
       data-apple-device-state={state}
-      className={cn("relative flex h-full min-h-0 min-w-0 flex-col bg-bg", className)}
+      className={cn("relative flex h-full min-h-0 min-w-0 flex-col bg-surface", className)}
     >
       {strip}
       <div ref={bodyRef} className="@container relative flex min-h-0 min-w-0 flex-1">
-        <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+        {/* §B3: the device sits on the tools grid's page, not on pure black.
+            The STATIC gradient, never the shader — a 30 fps WebGL mesh behind
+            a live H.264 decode is two animations competing for one GPU, and
+            the only part of it you can see is the 2px margin round the
+            picture. */}
+        <div className="ade-tool-picker-static relative flex min-h-0 min-w-0 flex-1 flex-col">
           {viewport}
 
           {appleRailVisible(state) ? (
@@ -615,61 +658,58 @@ export function AppleDevicePane({
               onFloat={float}
               onSwitchDevice={() => setConfirmSwitch(true)}
               onPowerOff={powerOff}
+              /* A4: the preview toggle (and Maximize, where the pane provides
+                 one) live in the TOOL's own rail, never in the tools tab
+                 strip. Shared with every other screen tool. */
+              extraControls={<WorkToolPreviewControls tool="ios" chatSessionId={sessionId} />}
             />
           ) : null}
 
           {confirmSwitch ? (
-            <div className="absolute inset-x-0 bottom-0 z-20 flex flex-wrap items-center gap-2 border-t border-border bg-bg/95 px-3 py-2 font-sans text-xs text-fg backdrop-blur-md">
+            <div className="absolute inset-x-0 bottom-0 z-20 flex min-w-0 flex-wrap items-center gap-2 border-t border-border bg-surface px-3 py-2 font-sans text-xs text-fg">
               <span className="min-w-0 flex-1">Give up this device and pick another?</span>
-              <button
-                type="button"
-                className="rounded-md px-2 py-1 font-medium text-muted-fg hover:text-fg"
-                onClick={() => setConfirmSwitch(false)}
-              >
+              <Button variant="ghost" size="sm" onClick={() => setConfirmSwitch(false)}>
                 Keep it
-              </button>
-              <button
-                type="button"
-                className="rounded-md px-2 py-1 font-medium text-[var(--color-error)] hover:underline"
-                onClick={switchDevice}
-              >
+              </Button>
+              <Button variant="danger" size="sm" onClick={switchDevice}>
                 Switch device
-              </button>
+              </Button>
             </div>
           ) : null}
+
+          <AppleRecordingSavedRow
+            recording={recordings.lastSaved}
+            onDismiss={recordings.dismissLastSaved}
+            onOpen={recordings.openProof}
+          />
 
           {recordingActive && appleRailVisible(state) ? (
             <div
               data-apple-recording-pill=""
-              className="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-2 rounded-full border border-border bg-bg/90 px-3 py-1 font-sans text-xs text-fg backdrop-blur-md"
+              className="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-2 rounded-full border border-border bg-surface px-3 py-1 font-sans text-xs text-fg shadow-sm"
             >
               <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-error)] motion-safe:animate-pulse" />
               <span className="tabular-nums">
                 Recording {formatRecordingElapsed(recordingElapsedMs(recordingActive, nowTick))}
               </span>
-              <button
-                type="button"
-                className="font-medium text-muted-fg hover:text-fg"
-                onClick={() => recordings.stop()}
-              >
+              <Button variant="ghost" size="sm" className="h-5 px-1.5" onClick={() => recordings.stop()}>
                 Stop
-              </button>
+              </Button>
             </div>
           ) : null}
 
-          {state === "live" && !stream.url ? (
-            <div className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-full border border-border bg-bg/90 px-3 py-1 font-sans text-xs text-muted-fg backdrop-blur-md">
-              Input disconnected, reconnecting…
-            </div>
-          ) : null}
         </div>
 
         {toolsOpen && laneDevice ? (
           <div
             data-apple-drawer=""
             className={cn(
-              "absolute inset-y-0 right-0 z-20 w-full max-w-72 border-l border-border bg-bg shadow-lg",
-              "@[700px]:static @[700px]:w-72 @[700px]:max-w-72 @[700px]:shrink-0 @[700px]:shadow-none",
+              /* Narrow: an opaque overlay that still leaves the rail
+                 reachable. Wide: docked beside the picture. The @700px
+                 threshold is what guarantees §B4's floor — 700 − 288 = 412px
+                 of viewport, twice the 200px the spec refuses to go under. */
+              "absolute inset-y-0 right-0 z-20 w-[min(18rem,calc(100%-3.5rem))] shadow-lg",
+              "@[700px]:static @[700px]:w-72 @[700px]:shrink-0 @[700px]:shadow-none",
             )}
           >
             <Suspense fallback={null}>
@@ -692,6 +732,7 @@ export function AppleDevicePane({
                 onPreviewRendered={setPreview}
                 onAddContext={onAddContext}
                 onInsertDraft={onInsertDraft}
+                onOpenProof={recordings.openProofArtifact}
                 onSelectInspectNode={setInspectSelected}
               />
             </Suspense>
@@ -704,12 +745,17 @@ export function AppleDevicePane({
 
 function PaneMessage({ title, description }: { title: string; description: string | null }) {
   return (
-    <div className="flex size-full flex-col items-center justify-center gap-2 bg-bg px-6 py-10 text-center">
-      <DeviceMobile size={28} className="text-muted-fg/60" />
-      <p className="max-w-sm font-sans text-sm font-medium leading-5 text-fg">{title}</p>
-      {description ? (
-        <p className="max-w-sm font-sans text-xs leading-5 text-muted-fg">{description}</p>
-      ) : null}
+    <div
+      data-apple-pane-message=""
+      className="ade-tool-picker-static flex size-full items-center justify-center px-6 py-10"
+    >
+      <div className="ade-tool-card flex w-full min-w-0 max-w-sm flex-col items-center gap-2 p-6 text-center">
+        <AppleLogo size={28} aria-hidden="true" className="text-muted-fg/60" />
+        <p className="min-w-0 break-words font-sans text-sm font-medium leading-5 text-fg">{title}</p>
+        {description ? (
+          <p className="min-w-0 break-words font-sans text-xs leading-5 text-muted-fg">{description}</p>
+        ) : null}
+      </div>
     </div>
   );
 }

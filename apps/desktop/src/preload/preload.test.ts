@@ -9597,3 +9597,88 @@ describe("preload provider API credential bridge", () => {
     expect(invoke).not.toHaveBeenCalledWith(IPC.localRuntimeCallAction, expect.anything());
   });
 });
+
+describe("preload Apple device input routing", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    delete (globalThis as any).__adeBridge;
+  });
+
+  afterEach(() => {
+    vi.resetModules();
+    vi.doUnmock("electron");
+  });
+
+  const mountBridge = async (invoke: ReturnType<typeof vi.fn>) => {
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on: vi.fn(), removeListener: vi.fn() },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+    await import("./preload");
+    return (globalThis as any).__adeBridge;
+  };
+
+  it("stamps every input this window sends as a person's", async () => {
+    // Round 3, A2. Agents never come through the preload, so this is where a
+    // human's tap stops looking like an agent's verification run — and stops
+    // silently starting an MP4 nobody asked for.
+    const actions: Array<{ action?: string; args?: Record<string, unknown> }> = [];
+    const invoke = vi.fn(async (channel: string, arg?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return {
+          windowId: 1,
+          project: { rootPath: "/repo", displayName: "Repo", baseRef: "main" },
+          binding: { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "Repo" },
+        };
+      }
+      if (channel === IPC.localRuntimeCallAction) {
+        const request = (arg as { request?: { action?: string; args?: Record<string, unknown> } }).request;
+        actions.push({ action: request?.action, args: request?.args });
+        return { result: { ok: true } };
+      }
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const bridge = await mountBridge(invoke);
+
+    await bridge.iosSimulator.tap({ deviceUdid: "device-1", x: 10, y: 20 });
+    await bridge.iosSimulator.typeText({ deviceUdid: "device-1", text: "hi" });
+    await bridge.iosSimulator.drag({ deviceUdid: "device-1", startX: 1, startY: 2, endX: 3, endY: 4 });
+
+    expect(actions.map((entry) => entry.action)).toEqual(["tap", "typeText", "drag"]);
+    expect(actions.every((entry) => entry.args?.source === "user")).toBe(true);
+  });
+
+  it("says what to do instead of leaking the missing local service", async () => {
+    // Round 3, A6: the dev app has no in-process simulator service, so every
+    // poll before a project bound reached the log as a raw
+    // `Error occurred in handler for 'ade.iosSimulator.getStatus'`.
+    let ipcCalls = 0;
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding: null };
+      }
+      if (channel === IPC.iosSimulatorTap) {
+        ipcCalls += 1;
+        throw new Error("iOS Simulator service is not available.");
+      }
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const bridge = await mountBridge(invoke);
+
+    await expect(bridge.iosSimulator.tap({ deviceUdid: "device-1", x: 1, y: 2 }))
+      .rejects.toThrow(/needs an open project/i);
+    // One refusal is enough to know: the second call does not go near IPC.
+    await expect(bridge.iosSimulator.tap({ deviceUdid: "device-1", x: 1, y: 2 }))
+      .rejects.toThrow(/needs an open project/i);
+    expect(ipcCalls).toBe(1);
+  });
+});

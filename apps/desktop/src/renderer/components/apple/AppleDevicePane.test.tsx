@@ -65,6 +65,7 @@ vi.mock("./appleRecording", async (importOriginal) => ({
 }));
 
 const { AppleDevicePane } = await import("./AppleDevicePane");
+const { expectNoHorizontalOverflow } = await import("./testLayout");
 
 /* ── Fixtures ─────────────────────────────────────────────────────────────── */
 
@@ -225,7 +226,10 @@ describe("AppleDevicePane states", () => {
   it("no-device: shows the picker, with no header bar above it", async () => {
     setup({ lane: null });
     renderPane();
-    expect(await screen.findByRole("heading", { name: "iOS Simulators" })).toBeTruthy();
+    // §B2: the picker's page is the tools-grid card language, grouped by
+    // family — never a flat list under the heading "iOS Simulators".
+    expect(await screen.findByRole("heading", { name: "iPhone" })).toBeTruthy();
+    expect(screen.queryByText("iOS Simulators")).toBeNull();
     expect(paneState()).toBe("no-device");
     // §0: the Device / Preview Lab toggle and the "No device · Primary" header
     // row do not survive.
@@ -244,28 +248,28 @@ describe("AppleDevicePane states", () => {
     );
     expect(document.querySelector("[role='dialog']")).toBeNull();
     // The loading card is what stands between the click and the device.
-    expect(await screen.findByText("Starting device…")).toBeTruthy();
+    expect(await screen.findByText("Booting device")).toBeTruthy();
     expect(paneState()).toBe("starting");
   });
 
-  it("starting: advances to Connecting video… on the boot event", async () => {
+  it("starting: advances to Connecting video on the boot event", async () => {
     setup({ lane: null });
     renderPane();
     fireEvent.click(await screen.findByRole("button", { name: "Start iPhone 17 Pro Max" }));
-    await screen.findByText("Starting device…");
+    await screen.findByText("Booting device");
     act(() => {
       for (const listener of listeners) {
         listener({ type: "apple.device.state", laneId: "lane-1", udid: "max", phase: "streaming" });
       }
     });
-    expect(await screen.findByText("Connecting video…")).toBeTruthy();
+    expect(await screen.findByText("Connecting video")).toBeTruthy();
   });
 
   it("starting: a failed boot keeps the card and offers Try again", async () => {
     setup({ lane: null });
     renderPane();
     fireEvent.click(await screen.findByRole("button", { name: "Start iPhone 17 Pro Max" }));
-    await screen.findByText("Starting device…");
+    await screen.findByText("Booting device");
     act(() => {
       for (const listener of listeners) {
         listener({
@@ -318,7 +322,7 @@ describe("AppleDevicePane states", () => {
   it("never renders a raw IPC string, whatever the service says", async () => {
     const { iosSimulator } = setup({ lane: null });
     iosSimulator.deviceList = vi.fn(async () => {
-      throw new Error("Error invoking remote method 'apple.deviceList': ECONNREFUSED");
+      throw new Error("Error invoking remote method 'apple.deviceList': TypeError");
     });
     renderPane();
     expect(await screen.findByText("Something went wrong with the simulator.")).toBeTruthy();
@@ -338,5 +342,32 @@ describe("AppleDevicePane states", () => {
       { laneId: "lane-1", chatSessionId: "chat-1", force: true },
       null,
     );
+  });
+});
+
+describe("AppleDevicePane surfaces (round 3 §B)", () => {
+  it("puts the device on the tools grid's gradient, not on pure black", async () => {
+    setup({ lane: LANE_DEVICE, stream: "live" });
+    const { container } = renderPane();
+    await waitFor(() => expect(paneState()).toBe("live"));
+    expect(container.querySelector(".ade-tool-picker-static")).toBeTruthy();
+    // The stage's own `bg-black` is overridden from here, so the picture's
+    // letterbox is the page rather than a hole in it.
+    expect(container.querySelector("[data-apple-stage]")?.className ?? "").not.toContain("bg-black");
+  });
+
+  it("has no translucent or blurred surface anywhere (rule zero)", async () => {
+    setup({ lane: LANE_DEVICE, stream: "live" });
+    const { container } = renderPane();
+    await waitFor(() => expect(paneState()).toBe("live"));
+    expect(container.querySelector("[class*='backdrop-blur']")).toBeNull();
+    expect(container.querySelector("[class*='bg-bg/']")).toBeNull();
+  });
+
+  it.each([360, 900])("fits its container at %ipx", async (width) => {
+    setup({ lane: null });
+    const { container } = renderPane();
+    await waitFor(() => expect(paneState()).toBe("no-device"));
+    expectNoHorizontalOverflow(container, width);
   });
 });

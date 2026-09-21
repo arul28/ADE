@@ -1,4 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode, type WheelEvent } from "react";
+// Ported from t3code apps/web/src/components/device/DeviceStreamView.tsx
+// (MIT, T3 Tools Inc.) — the fit rule, the normalise-against-the-drawn-frame
+// pointer mapping, and keyboard forwarding from a focused `role="application"`
+// surface.
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode, type WheelEvent } from "react";
 import { cn } from "../ui/cn";
 
 /**
@@ -39,6 +43,11 @@ export type AppleDeviceFlatViewProps = {
   onDeviceInput: (input: AppleDeviceInput) => void;
   /** Wheel over the device is forwarded as a scroll, in device points. */
   onDeviceScroll?: (delta: { x: number; y: number; deltaX: number; deltaY: number }) => void;
+  /**
+   * A key pressed while the screen has focus. Return true when it was
+   * forwarded, which is what suppresses the browser's own handling of it.
+   */
+  onDeviceKey?: (event: { key: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean }) => boolean;
   /**
    * Publishes the device→view mapping the inspect overlay draws with. Null
    * whenever there is nothing to map against yet.
@@ -86,6 +95,7 @@ export function AppleDeviceFlatView({
   interactive,
   onDeviceInput,
   onDeviceScroll,
+  onDeviceKey,
   onGeometryChange,
   screenOverlay,
   className,
@@ -133,18 +143,30 @@ export function AppleDeviceFlatView({
     onGeometryChange?.(geometry);
   }, [geometry, onGeometryChange]);
 
+  /**
+   * Pointer → device point, through the drawn frame's own 0..1 coordinates.
+   *
+   * The intermediate normalisation is not ceremony: it is the one number that
+   * is true no matter how the frame is scaled, letterboxed or (later) rotated,
+   * and it is the shape the device's own input protocol takes. Deriving points
+   * straight from CSS pixels worked only while the box happened to be
+   * unrotated and unscaled past 1×, which is why this is ported rather than
+   * re-derived.
+   */
   const toDevicePoint = useCallback((event: PointerEvent<HTMLDivElement> | WheelEvent<HTMLDivElement>) => {
     const node = containerRef.current;
-    if (!node || !geometry) return null;
+    if (!node || !geometry || !contentSize) return null;
+    if (geometry.width <= 0 || geometry.height <= 0) return null;
     const rect = node.getBoundingClientRect();
-    const x = (event.clientX - rect.left - geometry.left) * geometry.scale;
-    const y = (event.clientY - rect.top - geometry.top) * geometry.scale;
-    if (!contentSize) return null;
+    const normalizedX = (event.clientX - rect.left - geometry.left) / geometry.width;
+    const normalizedY = (event.clientY - rect.top - geometry.top) / geometry.height;
     // Clamped rather than refused: a drag that leaves the screen edge should
     // end at the edge, not vanish and leave the device holding a touch.
+    const clampedX = Math.max(0, Math.min(1, normalizedX));
+    const clampedY = Math.max(0, Math.min(1, normalizedY));
     return {
-      x: Math.max(0, Math.min(contentSize.width, x)),
-      y: Math.max(0, Math.min(contentSize.height, y)),
+      x: clampedX * contentSize.width,
+      y: clampedY * contentSize.height,
     };
   }, [contentSize, geometry]);
 
@@ -152,9 +174,21 @@ export function AppleDeviceFlatView({
     if (!interactive) return;
     const point = toDevicePoint(event);
     if (!point) return;
-    event.currentTarget.setPointerCapture(event.pointerId);
+    // The touch is sent first and the browser's bookkeeping second. Pointer
+    // capture is an optimisation — it keeps a drag alive past the frame edge —
+    // and `setPointerCapture` throws for a pointer the document no longer
+    // owns, which used to take the whole gesture with it and leave the device
+    // looking dead to anything that did not hold a real mouse.
     draggingRef.current = true;
     onDeviceInput({ phase: "begin", ...point });
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // No capture: a drag that leaves the frame ends at the edge instead.
+    }
+    // Focus follows the finger, so the keys that follow the tap reach the
+    // device instead of whatever the pane focused last.
+    event.currentTarget.focus({ preventScroll: true });
   }, [interactive, onDeviceInput, toDevicePoint]);
 
   const handlePointerMove = useCallback((event: PointerEvent<HTMLDivElement>) => {
@@ -167,13 +201,32 @@ export function AppleDeviceFlatView({
   const endPointer = useCallback((event: PointerEvent<HTMLDivElement>) => {
     if (!draggingRef.current) return;
     draggingRef.current = false;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
+    try {
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    } catch {
+      // Same reason as the capture above: never lose the `end` over it.
     }
     const point = toDevicePoint(event);
     if (!point) return;
     onDeviceInput({ phase: "end", ...point });
   }, [onDeviceInput, toDevicePoint]);
+
+  const handleKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
+    if (!interactive || !onDeviceKey) return;
+    if (event.target !== event.currentTarget) return;
+    // Cmd-R and friends stay the app's. Everything else the device can type is
+    // the device's while the screen holds focus.
+    if (event.metaKey || event.ctrlKey) return;
+    const sent = onDeviceKey({
+      key: event.key,
+      metaKey: event.metaKey,
+      ctrlKey: event.ctrlKey,
+      altKey: event.altKey,
+    });
+    if (sent) event.preventDefault();
+  }, [interactive, onDeviceKey]);
 
   const handleWheel = useCallback((event: WheelEvent<HTMLDivElement>) => {
     if (!interactive || !onDeviceScroll) return;
@@ -186,7 +239,15 @@ export function AppleDeviceFlatView({
     <div
       ref={containerRef}
       data-apple-flat-view=""
-      className={cn("relative h-full w-full min-h-0 min-w-0 overflow-hidden", className)}
+      className={cn(
+        "relative h-full w-full min-h-0 min-w-0 overflow-hidden outline-none",
+        interactive && "focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent",
+        className,
+      )}
+      role="application"
+      aria-label="iOS Simulator screen"
+      tabIndex={interactive ? 0 : -1}
+      onKeyDown={handleKeyDown}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={endPointer}

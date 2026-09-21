@@ -211,7 +211,7 @@ describe("settings manifest", () => {
       expect(entry!.tab).toBe("appearance");
       expect(entry!.scope).toBe("account");
       expect(entry!.web).toBe("browser");
-      expect(entry!.group).toBe("Apple devices");
+      expect(entry!.group).toBe("Apple Development");
     }
     expect(searchSettingsEntries("realistic body").map((entry) => entry.id))
       .toContain("appearance.apple-realistic-body");

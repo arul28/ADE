@@ -51,7 +51,7 @@ docs/
     ├── cto/                               # CTO agent: single thread, smart memory, model switching, Linear
     ├── files-and-editor/                  # watcher, editor, Monaco, search
     ├── history/                           # operations timeline, transcripts, export
-    ├── apple-device/                      # Apple column + helper stream + ADEInspector
+    ├── apple-device/                      # Apple Development tool + helper stream + ADEInspector
     ├── lanes/                             # worktree isolation, stacking, runtime, OAuth
     ├── linear-integration/                # issue reads, lane/PR flow, live-status round-trip
     ├── onboarding-and-settings/           # first-run, schema, settings tabs

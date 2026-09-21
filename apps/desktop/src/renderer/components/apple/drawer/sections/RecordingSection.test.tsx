@@ -21,6 +21,8 @@ function recording(overrides: Partial<SimRecording> = {}): SimRecording {
     mode: "manual",
     proof: false,
     label: "signup",
+    // The artifact a stopped recording became (round 3 §A3).
+    proofArtifactId: null,
     overlays: true,
     ...overrides,
   };
@@ -47,26 +49,44 @@ describe("RecordingSection", () => {
     expect(stop).toHaveBeenCalled();
   });
 
-  it("lists finished recordings with name, duration · size, Pin to proof and a ⋯ menu", async () => {
+  it("lists finished recordings with name, duration · size, Open in proof and a ⋯ menu", async () => {
     const { iosSimulator } = installAdeMock();
-    iosSimulator.recordList.mockResolvedValue([recording(), recording({ id: "rec-2", label: null, proof: true, bytes: null })]);
-    render(<RecordingSection ctx={makeCtx()} active={null} start={vi.fn()} stop={vi.fn()} />);
+    const onOpenProof = vi.fn();
+    iosSimulator.recordList.mockResolvedValue([
+      recording({ proofArtifactId: "artifact-1" }),
+      recording({ id: "rec-2", label: null, bytes: null }),
+    ]);
+    render(
+      <RecordingSection ctx={makeCtx()} active={null} start={vi.fn()} stop={vi.fn()} onOpenProof={onOpenProof} />,
+    );
     const list = await screen.findByRole("list", { name: "Recordings" });
     const items = list.querySelectorAll("li");
     expect(items).toHaveLength(2);
     expect(items[0]!.textContent).toContain("signup");
     expect(items[0]!.textContent).toContain("00:42 · 3 MB");
-    expect(items[1]!.textContent).toContain("pinned");
-    const pins = screen.getAllByRole("button", { name: "Pin to proof" }) as HTMLButtonElement[];
-    expect(pins[0]!.disabled).toBe(false);
-    // A pinned recording's button is present and inert, not gone.
-    expect(pins[1]!.disabled).toBe(true);
+    // Recordings become proof by themselves now: nothing here asks you to pin.
+    expect(screen.queryByRole("button", { name: "Pin to proof" })).toBeNull();
+    expect(list.textContent).not.toContain("pinned");
+    // `describeRecording` says what the file IS, not what was done to it.
+    expect(items[0]!.textContent).toContain("manual");
+
+    const opens = screen.getAllByRole("button", { name: "Open in proof" }) as HTMLButtonElement[];
+    expect(opens).toHaveLength(2);
+    expect(opens[0]!.disabled).toBe(false);
+    // No artifact id yet: present and inert, never removed (§B6).
+    expect(opens[1]!.disabled).toBe(true);
+    fireEvent.click(opens[0]!);
+    expect(onOpenProof).toHaveBeenCalledWith("artifact-1");
+
     expect(screen.getByRole("button", { name: `More for ${recordingName(recording())}` })).toBeTruthy();
-    fireEvent.click(pins[0]!);
-    await waitFor(() => expect(iosSimulator.captureProofBundle).toHaveBeenCalledWith(
-      expect.objectContaining({ laneId: "lane-1", caption: "signup" }),
-      null,
-    ));
+  });
+
+  it("keeps Open in proof inert when the surface has no proof drawer", async () => {
+    const { iosSimulator } = installAdeMock();
+    iosSimulator.recordList.mockResolvedValue([recording({ proofArtifactId: "artifact-1" })]);
+    render(<RecordingSection ctx={makeCtx()} active={null} start={vi.fn()} stop={vi.fn()} />);
+    await screen.findByRole("list", { name: "Recordings" });
+    expect((screen.getByRole("button", { name: "Open in proof" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("names an unlabeled recording by its start time", () => {

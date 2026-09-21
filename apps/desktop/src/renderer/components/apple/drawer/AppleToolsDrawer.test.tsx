@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { AppleToolsDrawer, type AppleToolsDrawerProps } from "./AppleToolsDrawer";
 import { DEVICE, installAdeMock } from "./drawerTestHarness";
+import { expectNoHorizontalOverflow } from "../testLayout";
 
 afterEach(cleanup);
 
@@ -113,5 +114,54 @@ describe("AppleToolsDrawer", () => {
     expect(iosSimulator.getDeviceSettings).not.toHaveBeenCalled();
     expect(iosSimulator.getStatus).not.toHaveBeenCalled();
     expect((screen.getByRole("button", { name: "Dark" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("is opaque: nothing behind the drawer can be read through it (rule zero)", async () => {
+    installAdeMock();
+    const { container } = render(<AppleToolsDrawer {...props()} />);
+    const shell = screen.getByTestId("apple-tools-drawer");
+    expect(shell.className).toContain("bg-surface");
+    expect(shell.className).toContain("border-l");
+    // No alpha fill and no blur anywhere in the column: those are exactly what
+    // made the simulator legible through the Simulator section's switches.
+    expect(container.querySelector("[class*='backdrop-blur']")).toBeNull();
+    expect(container.querySelector("[class*='bg-bg/']")).toBeNull();
+    await waitFor(() => expect(screen.queryByText("Reading device settings…")).toBeNull());
+  });
+
+  it("never lets a row's label and its control fall onto two lines (§B4)", async () => {
+    installAdeMock();
+    render(<AppleToolsDrawer {...props()} />);
+    await waitFor(() => expect(screen.queryByText("Reading device settings…")).toBeNull());
+    // Every row that pairs a label with a control is `flex-nowrap`, and the
+    // LABEL is the side that gives way — the control has no smaller size.
+    const row = screen.getByText("Reduce Transparency").closest("div");
+    expect(row?.className).toContain("flex-nowrap");
+    const label = screen.getByText("Reduce Transparency");
+    expect(label.className).toContain("truncate");
+    expect(label.className).toContain("min-w-0");
+    expect(label.getAttribute("title")).toBe("Reduce Transparency");
+    // Chip groups (Location presets, Permissions) wrap on purpose; a Row —
+    // one label, one control — never may.
+    expect(screen.getByTestId("apple-drawer-simulator").querySelector(".flex-wrap")).toBeNull();
+  });
+
+  it("disables an unreported control rather than hiding it (§B6)", async () => {
+    const { iosSimulator } = installAdeMock();
+    iosSimulator.getDeviceSettings.mockResolvedValue({
+      deviceUdid: "UDID-1", appearance: "dark", contentSize: "medium",
+      accessibility: { "reduce-motion": null }, location: null, statusBarOverridden: false, readAt: "",
+    });
+    render(<AppleToolsDrawer {...props()} />);
+    const missing = await screen.findByRole("switch", { name: "Reduce Motion" });
+    expect((missing as HTMLButtonElement).disabled).toBe(true);
+    expect(missing.getAttribute("aria-checked")).toBe("false");
+  });
+
+  it.each([360, 900])("fits its container at %ipx", async (width) => {
+    installAdeMock();
+    const { container } = render(<AppleToolsDrawer {...props()} />);
+    await waitFor(() => expect(screen.queryByText("Reading device settings…")).toBeNull());
+    expectNoHorizontalOverflow(container, width);
   });
 });

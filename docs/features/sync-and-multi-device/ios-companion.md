@@ -263,7 +263,7 @@ and they open exactly as they always have.
 > a DEBUG-only SwiftUI inspector that publishes per-frame element
 > metadata (component id, source file/line, accessibility identifier,
 > point/pixel frames) to the running app's data container so the
-> desktop Apple column can convert taps into source-anchored
+> desktop Apple Development tool can convert taps into source-anchored
 > chat context. See [`features/apple-device/inspector.md`](../apple-device/inspector.md).
 
 ```

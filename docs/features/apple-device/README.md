@@ -1,6 +1,6 @@
 # Apple device
 
-ADE drives a per-lane iOS simulator from the Work tab Apple column and from
+ADE drives a per-lane Apple simulator from the Work tab's Apple Development tool and from
 `ade apple`. It clones or attaches an installed simulator, builds and launches
 the selected app, streams the device framebuffer through a vendored Swift
 helper, and turns gestures into simulator input or context items for the
@@ -50,7 +50,7 @@ worktree is a hard failure (`IOS_SIMULATOR_LANE_NOT_RESOLVED`).
 
 ### Per-lane devices
 
-A lane gets no device until asked: the user asks from the Apple column, or an
+A lane gets no device until asked: the user asks from Apple Development, or an
 agent runs `launch` / `open-device` / `device-create`. First ask clones the
 project's last-used installed simulator (else newest installed iPhone) via
 `simctl clone`, named for the lane. A lane may instead `device-attach` an

@@ -1945,6 +1945,107 @@ describe("iosSimulatorService screenshots and platform guards", () => {
     }
   });
 
+  it("answers a tap in well under a second, and names who tapped", async () => {
+    // Round 3, A1. The live test produced dozens of
+    // `Remote ADE service timed out waiting for method ade/actions/call
+    // (25000ms)` while the user tapped, so the floor this guards is not
+    // "fast" — it is "the call returns at all, promptly, with a helper that
+    // answers". The `source` is what keeps a human's tap from starting a
+    // recording (A2).
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-tap-latency-`);
+    const { run } = simulatorRunMock();
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    const helper = fakeSimHelper();
+    const restoreHelper = __testSetIosSimulatorHelperFactory(() => helper.client);
+    const noted: Array<Record<string, unknown>> = [];
+    const service = createIosSimulatorService({
+      projectRoot,
+      logger: noopLogger,
+      resolveLaneWorktreePath: () => projectRoot,
+      recordingService: {
+        noteInput: async (input) => { noted.push(input as unknown as Record<string, unknown>); },
+        start: async () => { throw new Error("unused"); },
+        stop: async () => null,
+        list: async () => [],
+        remove: async () => {},
+        pinActiveOrLatest: async () => null,
+        onTurnEnded: async () => {},
+        totalBytes: async () => 0,
+        dispose: () => {},
+      },
+    });
+
+    try {
+      const startedAt = Date.now();
+      for (let index = 0; index < 12; index += 1) {
+        await service.tap({ deviceUdid: "device-1", x: 40 + index, y: 80, laneId: "lane-a", source: "user" });
+      }
+      // Twelve taps, serialised through the one control queue, still well
+      // inside the budget of a single one of the old timeouts.
+      expect(Date.now() - startedAt).toBeLessThan(1_000);
+      expect(noted).toHaveLength(12);
+      expect(noted.every((entry) => entry.source === "user")).toBe(true);
+
+      // Nothing said `source`, so it is an agent: the auto-record contract's
+      // default has to be the one that produces evidence.
+      await service.tap({ deviceUdid: "device-1", x: 5, y: 5, laneId: "lane-a" });
+      expect(noted.at(-1)).toMatchObject({ source: "agent" });
+    } finally {
+      service.dispose();
+      restoreHelper();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
+  it("does not let one wedged control wedge every tap behind it", async () => {
+    // The shape of the round-2 failure: the control queue is serial, and the
+    // helper's own request timeout (30s) is LONGER than the desktop's action
+    // timeout (25s) — so one command that never answered meant every later
+    // tap sat behind it while its caller had already given up. The queue now
+    // gives a control eight seconds and moves on.
+    vi.useFakeTimers();
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-tap-wedge-`);
+    const { run } = simulatorRunMock();
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    let wedge = true;
+    const helper = fakeSimHelper({
+      onSend: async (command) => {
+        if (command.type === "touch" && wedge) return new Promise<Record<string, unknown>>(() => {});
+        return {};
+      },
+    });
+    const restoreHelper = __testSetIosSimulatorHelperFactory(() => helper.client);
+    const service = createIosSimulatorService({
+      projectRoot,
+      logger: noopLogger,
+      resolveLaneWorktreePath: () => projectRoot,
+    });
+
+    try {
+      const stuck = service.tap({ deviceUdid: "device-1", x: 1, y: 1, laneId: "lane-a" });
+      const stuckResult = expect(stuck).rejects.toThrow(/did not accept tap/);
+      await vi.advanceTimersByTimeAsync(8_001);
+      await stuckResult;
+
+      // The queue moved on: the next tap is answered normally.
+      wedge = false;
+      const next = service.tap({ deviceUdid: "device-1", x: 2, y: 2, laneId: "lane-a" });
+      await vi.advanceTimersByTimeAsync(10);
+      await expect(next).resolves.toEqual({ ok: true });
+    } finally {
+      service.dispose();
+      restoreHelper();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it("presses helper buttons without recording overlay input, and refuses shake", async () => {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-button-`);

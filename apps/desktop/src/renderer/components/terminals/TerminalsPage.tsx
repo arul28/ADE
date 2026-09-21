@@ -1084,7 +1084,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     openTools: workSidebarOpenTools,
     setTool: setWorkSidebarTool,
     closeTool: closeWorkSidebarTool,
-  } = useWorkSidebarTool(activeLaneId, activeWorkSessionRuntimePin);
+    // The focused work item is the chat the pane's tools are attached to, which
+    // is what a tab close has to name when it stops the tool for real (A4).
+  } = useWorkSidebarTool(activeLaneId, activeWorkSessionRuntimePin, activeWorkSession?.id ?? null);
 
   /**
    * The floating device asks to come back into the pane. The pane IS the Apple

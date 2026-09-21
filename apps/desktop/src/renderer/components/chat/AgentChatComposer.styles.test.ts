@@ -14,12 +14,26 @@ describe("queued steer action styles", () => {
 
     expect(css).toContain(".\\[\\@media\\(hover\\:hover\\)\\]\\:opacity-0");
     expect(css).toContain(".\\[\\@media\\(hover\\:hover\\)\\]\\:group-hover\\:opacity-100");
-    const hiddenRuleStart = css.indexOf(".\\[\\@media\\(hover\\:hover\\)\\]\\:opacity-0");
-    const revealRuleStart = css.indexOf(".\\[\\@media\\(hover\\:hover\\)\\]\\:group-hover\\:opacity-100");
-    expect(hiddenRuleStart).toBeGreaterThanOrEqual(0);
-    expect(revealRuleStart).toBeGreaterThanOrEqual(0);
-    expect(css.slice(hiddenRuleStart, hiddenRuleStart + 260)).toContain("@media (hover:hover)");
-    expect(css.slice(hiddenRuleStart, hiddenRuleStart + 260)).toContain("opacity: 0%");
-    expect(css.slice(revealRuleStart, revealRuleStart + 320)).toContain("@media (hover:hover)");
+    // The two utilities share one `@media (hover:hover)` block whose other
+    // members change as the app grows, so check nesting by brace depth rather
+    // than by a fixed window of characters after the opener.
+    const insideHoverMedia = (selector: string) => {
+      const start = css.indexOf(selector);
+      expect(start).toBeGreaterThanOrEqual(0);
+      const opener = css.lastIndexOf("@media (hover:hover)", start);
+      if (opener < 0) return false;
+      let depth = 0;
+      for (const ch of css.slice(opener, start)) {
+        if (ch === "{") depth += 1;
+        else if (ch === "}") depth -= 1;
+      }
+      return depth >= 1;
+    };
+    const hiddenSelector = ".\\[\\@media\\(hover\\:hover\\)\\]\\:opacity-0";
+    const revealSelector = ".\\[\\@media\\(hover\\:hover\\)\\]\\:group-hover\\:opacity-100";
+    expect(insideHoverMedia(hiddenSelector)).toBe(true);
+    expect(insideHoverMedia(revealSelector)).toBe(true);
+    const hiddenStart = css.indexOf(hiddenSelector);
+    expect(css.slice(hiddenStart, css.indexOf("}", hiddenStart))).toContain("opacity: 0%");
   });
 });

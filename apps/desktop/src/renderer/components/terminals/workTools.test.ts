@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { AppleLogo } from "../ui/appleIcons";
 import {
   IOS_RUNTIME_UNSUPPORTED_REASON,
   isReadOnlyWorkTool,
@@ -17,15 +18,23 @@ const LOCAL_MAC: WorkToolContext = {
 describe("Apple work tool labels", () => {
   const ios = WORK_TOOL_DEFINITIONS.find((entry) => entry.id === "ios");
 
-  it("calls the tool Apple on the card, the tab and the palette", () => {
-    // §0: "The tools-grid card label 'Simulator'. It is 'Apple'." One tool,
-    // one name, everywhere it is written.
-    expect(ios?.label).toBe("Apple");
+  it("calls the tool Apple Development on the card, the tab and the palette", () => {
+    // Round 3 §B1: one tool, one name, everywhere it is written — and the name
+    // is the work, not the company.
+    expect(ios?.label).toBe("Apple Development");
     expect(ios?.tabLabel).toBeUndefined();
     expect(ios?.tabTooltip).toBe("Apple simulators and previews");
     expect(ios?.hint).toBe("Open an Apple device");
-    expect(workToolLabel("ios")).toBe("Apple");
-    expect(workToolCardLabel("ios")).toBe("Apple");
+    expect(workToolLabel("ios")).toBe("Apple Development");
+    expect(workToolCardLabel("ios")).toBe("Apple Development");
+  });
+
+  it("wears the Apple mark rather than a generic phone", () => {
+    // The glyph is ours (`ui/appleIcons`), not Phosphor's device family: every
+    // other tool's icon is a Phosphor import, and "a phone" described the
+    // browser's mobile emulation just as well as it described this.
+    expect(ios?.icon).toBe(AppleLogo);
+    expect((ios?.icon as { displayName?: string } | undefined)?.displayName).toBe("AppleLogo");
   });
 });
 

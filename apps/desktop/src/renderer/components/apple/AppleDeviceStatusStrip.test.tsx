@@ -7,6 +7,7 @@ import {
   AppleDeviceStatusStrip,
   describeAppleError,
 } from "./AppleDeviceStatusStrip";
+import { expectNoHorizontalOverflow } from "./testLayout";
 
 afterEach(cleanup);
 
@@ -42,7 +43,7 @@ describe("AppleDeviceStatusStrip", () => {
   it("shows the sentence and hides the wire text behind Details", () => {
     render(
       <AppleDeviceStatusStrip
-        error={new Error("Error invoking remote method 'apple.start': ECONNREFUSED")}
+        error={new Error("Error invoking remote method 'apple.start': TypeError")}
         onDismiss={vi.fn()}
       />,
     );
@@ -106,5 +107,27 @@ describe("AppleDeviceNoticeStrip", () => {
       <AppleDeviceNoticeStrip sentence="Video stopped." actionLabel="Reconnect" onAction={vi.fn()} />,
     );
     expect(screen.queryByRole("button", { name: "Dismiss this message" })).toBeNull();
+  });
+
+  it("is an opaque bar, never a tint over the device (rule zero / §B3)", () => {
+    const { container } = render(
+      <AppleDeviceStatusStrip error={new Error("APPLE_HELPER_UNAVAILABLE")} onDismiss={vi.fn()} />,
+    );
+    const strip = container.querySelector("[data-apple-status-strip='error']") as HTMLElement;
+    // A `color-mix` INTO the surface, not `bg-[var(--color-error)]/8` over it.
+    expect(strip.className).toContain("var(--color-surface)");
+    expect(strip.className).not.toMatch(/bg-\[var\(--color-error\)\]\/\d/);
+    expect(container.querySelector("[class*='backdrop-blur']")).toBeNull();
+  });
+
+  it.each([360, 900])("fits its container at %ipx", (width) => {
+    const { container } = render(
+      <AppleDeviceStatusStrip
+        error={new Error("Error invoking remote method 'apple.start': TypeError")}
+        onAction={vi.fn()}
+        onDismiss={vi.fn()}
+      />,
+    );
+    expectNoHorizontalOverflow(container, width);
   });
 });

@@ -106,7 +106,7 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   { id: "stats", label: "Usage", description: "Spend, limits, and pacing across your providers and machines.", group: "account" },
 
   // ── Preferences ────────────────────────────────────────────────────────
-  { id: "appearance", label: "Appearance", description: "Theme, terminal text, and Apple devices.", group: "preferences" },
+  { id: "appearance", label: "Appearance", description: "Theme, terminal text, and Apple Development.", group: "preferences" },
   { id: "chat", label: "Chat", description: "How the chat transcript reads, and what the composer does.", group: "preferences" },
   // No description. The page is a list of named providers with their status —
   // a sentence restating that above it is the caption the owner called out.
@@ -393,7 +393,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "apple-realistic-body",
     scope: "account",
     web: "browser",
-    group: "Apple devices",
+    group: "Apple Development",
   },
   {
     id: "appearance.apple-tap-rings",
@@ -403,7 +403,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "apple-tap-rings",
     scope: "account",
     web: "browser",
-    group: "Apple devices",
+    group: "Apple Development",
   },
   {
     id: "appearance.apple-typed-badges",
@@ -413,7 +413,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "apple-typed-badges",
     scope: "account",
     web: "browser",
-    group: "Apple devices",
+    group: "Apple Development",
   },
   {
     id: "appearance.apple-remote-bitrate",
@@ -423,7 +423,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "apple-remote-bitrate",
     scope: "account",
     web: "browser",
-    group: "Apple devices",
+    group: "Apple Development",
   },
   {
     id: "appearance.apple-recordings-warn",
@@ -433,7 +433,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "apple-recordings-warn",
     scope: "account",
     web: "browser",
-    group: "Apple devices",
+    group: "Apple Development",
   },
 
   // ── Agents & Models ──────────────────────────────────────────────────────

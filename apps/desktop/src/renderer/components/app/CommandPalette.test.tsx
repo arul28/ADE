@@ -1696,7 +1696,7 @@ describe("CommandPalette", () => {
         supportsIosSimulator: true,
         isWebClient: false,
       });
-      expect(local).toContain("Tools: Apple");
+      expect(local).toContain("Tools: Apple Development");
       expect(local).toContain("Tools: Browser");
       expect(local).toContain("Tools: App Control");
 
@@ -1707,7 +1707,7 @@ describe("CommandPalette", () => {
           supportsIosSimulator: false,
           isWebClient: false,
         }),
-      ).not.toContain("Tools: Apple");
+      ).not.toContain("Tools: Apple Development");
 
       // The hosted client can WATCH the browser and App Control, so those stay
       // read-only. Apple is the one tool the web client DRIVES for real: the
@@ -1719,7 +1719,7 @@ describe("CommandPalette", () => {
       });
       expect(web).toContain("Tools: Browser");
       expect(web).toContain("Tools: App Control");
-      expect(web).toContain("Tools: Apple");
+      expect(web).toContain("Tools: Apple Development");
     });
 
     /**

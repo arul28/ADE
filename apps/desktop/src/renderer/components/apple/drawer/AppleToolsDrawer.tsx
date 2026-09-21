@@ -7,6 +7,7 @@ import type {
 } from "../../../../shared/types";
 import type { SimRecording } from "../../../../main/services/ios/recording/simRecordingService";
 import { cn } from "../../ui/cn";
+import { PaneTooltip } from "../../ui/PaneTooltip";
 import { describeAppleError } from "../appleErrors";
 import type { IosSimulatorSnapshotElement } from "../appleInspectGeometry";
 import { DRAWER_GHOST_BUTTON, DRAWER_ICON_BUTTON } from "./drawerPrimitives";
@@ -46,6 +47,12 @@ export interface AppleToolsDrawerProps {
   onPreviewRendered: (preview: AppleRenderedPreview | null) => void;
   /** The host chat's composer, when there is one. */
   onInsertDraft?: ((text: string) => void) | undefined;
+  /**
+   * Opens a finished recording in the proof drawer (round 3 §A3). Optional
+   * because a surface without a proof drawer still renders the row — the
+   * button is disabled there, never removed.
+   */
+  onOpenProof?: ((artifactId: string) => void) | undefined;
   onAddContext?: ((item: IosElementContextItem) => void) | undefined;
   onSelectInspectNode?: ((node: AppleInspectNode | null) => void) | undefined;
   className?: string;
@@ -61,6 +68,7 @@ export function AppleToolsDrawer({
   recording,
   onPreviewRendered,
   onInsertDraft,
+  onOpenProof,
   className,
 }: AppleToolsDrawerProps) {
   // A ref, never a dep: the binding object is rebuilt on every cross-machine
@@ -119,31 +127,41 @@ export function AppleToolsDrawer({
   const described = actions.error != null ? describeAppleError(actions.error) : null;
 
   return (
-    <div className={cn("flex h-full min-h-0 w-full flex-col bg-bg text-sm", className)} data-testid="apple-tools-drawer">
-      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-3">
-        <span className="text-xs font-medium text-fg">Tools</span>
-        {actions.pending ? <SpinnerGap size={14} className="animate-spin text-muted-fg" aria-label="Working" /> : null}
-        <button type="button" className={cn(DRAWER_ICON_BUTTON, "ml-auto")} aria-label="Close tools" onClick={onClose}>
-          <X size={14} />
-        </button>
+    /* §B4: opaque `bg-surface` and its own `border-l`. Round 2 painted the
+       drawer `bg-bg` at pane opacity over a LIVE device, so the simulator was
+       legible through the switches. */
+    <div
+      className={cn("flex h-full min-h-0 w-full min-w-0 flex-col border-l border-border bg-surface text-sm", className)}
+      data-testid="apple-tools-drawer"
+    >
+      <div className="flex h-9 min-w-0 shrink-0 flex-nowrap items-center gap-2 border-b border-border px-3">
+        <span className="min-w-0 flex-1 truncate text-xs font-medium text-fg">Tools</span>
+        {actions.pending ? <SpinnerGap size={14} className="shrink-0 animate-spin text-muted-fg" aria-label="Working" /> : null}
+        <PaneTooltip label="Close tools" side="bottom">
+          <button type="button" className={cn(DRAWER_ICON_BUTTON, "shrink-0")} aria-label="Close tools" onClick={onClose}>
+            <X size={14} aria-hidden="true" />
+          </button>
+        </PaneTooltip>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
         {described ? (
           <div
             role="alert"
-            className="flex flex-col gap-1 border-b border-border bg-[color-mix(in_srgb,var(--color-error)_6%,transparent)] px-3 py-2 text-xs text-[var(--color-error)]"
+            className="flex min-w-0 flex-col gap-1 border-b border-border bg-[color-mix(in_srgb,var(--color-error)_10%,var(--color-surface))] px-3 py-2 text-xs text-[var(--color-error)]"
             data-testid="apple-drawer-error"
           >
-            <div className="flex items-center gap-2">
-              <span className="min-w-0 flex-1">{described.sentence}</span>
+            <div className="flex min-w-0 flex-nowrap items-center gap-2">
+              <span className="min-w-0 flex-1 break-words">{described.sentence}</span>
               {described.detail ? (
                 <button type="button" className={cn(DRAWER_GHOST_BUTTON, "h-5 px-1.5 text-[11px]")} onClick={() => setShowDetail((value) => !value)}>
                   Details
                 </button>
               ) : null}
-              <button type="button" className={cn(DRAWER_ICON_BUTTON, "h-5 w-5")} aria-label="Dismiss" onClick={actions.clearError}>
-                <X size={12} />
-              </button>
+              <PaneTooltip label="Dismiss" side="bottom">
+                <button type="button" className={cn(DRAWER_ICON_BUTTON, "h-5 w-5 shrink-0")} aria-label="Dismiss" onClick={actions.clearError}>
+                  <X size={12} aria-hidden="true" />
+                </button>
+              </PaneTooltip>
             </div>
             {showDetail && described.detail ? (
               <pre className="whitespace-pre-wrap break-words font-mono text-[11px] text-fg/70">{described.detail}</pre>
@@ -164,7 +182,13 @@ export function AppleToolsDrawer({
           selected={inspect.selected}
           onInsertDraft={onInsertDraft}
         />
-        <RecordingSection ctx={ctx} active={recording.active} start={recording.start} stop={recording.stop} />
+        <RecordingSection
+          ctx={ctx}
+          active={recording.active}
+          start={recording.start}
+          stop={recording.stop}
+          onOpenProof={onOpenProof}
+        />
         <LocationSection ctx={ctx} />
         <PermissionsSection ctx={ctx} />
         <PushSection ctx={ctx} />
