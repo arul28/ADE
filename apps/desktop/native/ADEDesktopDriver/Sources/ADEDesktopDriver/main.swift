@@ -61,12 +61,20 @@ final class DriverRuntime: NSObject {
     /// `permission-changed` only on a transition.
     private var lastPermissions: [String: JSONValue]?
     private var permissionTimer: Timer?
+    /// How many `watch-permissions {watch:true}` askers are outstanding. The
+    /// probe runs when watching OR a display exists, so a watched pane keeps
+    /// probing with no display while an idle helper with neither stays idle.
+    /// Sent only by the service, which watches while a viewer is reading.
+    private var permissionWatching = false
 
-    /// How often the permission probe runs while a display exists. Both probes
-    /// are cheap local calls, but they are not free, and nothing about a
+    /// How often the permission probe runs while only a display exists. Both
+    /// probes are cheap local calls, but they are not free, and nothing about a
     /// revoked grant needs sub-10-second latency: the action that follows it
     /// fails with a permission error of its own either way.
     private static let permissionProbeInterval: TimeInterval = 10
+    /// A watched pane needs the transition quickly; 10 seconds of a stale
+    /// "denied" screen after the user toggles the grant reads as broken.
+    private static let watchedPermissionProbeInterval: TimeInterval = 3
 
     private var signalSources: [DispatchSourceSignal] = []
     private var isShuttingDown = false
@@ -343,6 +351,8 @@ final class DriverRuntime: NSObject {
         case .createDisplay: return try createDisplay(request)
         case .destroyDisplay: return try destroyDisplay(request)
         case .reconcileDisplays: return reconcileDisplays(request)
+        case .watchPermissions: return setPermissionWatch(request.bool("watch") ?? false)
+        case .requestPermission: return try requestPermission(request)
         case .listWindows: return listWindows(request)
         case .parkWindow: return try parkWindow(request)
         case .unparkWindow: return try unparkWindow(request)
@@ -368,30 +378,75 @@ final class DriverRuntime: NSObject {
 
     /// The periodic probe behind `permission-changed`.
     ///
-    /// Only runs while at least one display exists: with no display there is
-    /// nothing a revoked grant could break, and a helper that is idle should
-    /// stay idle.
+    /// Runs while a display exists OR a viewer is watching. With neither, there
+    /// is nothing a revoked grant could break and nothing watching for a new
+    /// one, so an idle helper stays idle. A watched pane probes every 3 seconds
+    /// so the screen flips off "denied" promptly after the user toggles the
+    /// grant; a display-only helper keeps the cheaper 10-second cadence.
     private func updatePermissionProbe() {
-        let wanted = !displays.all().isEmpty
-        if wanted, permissionTimer == nil {
-            lastPermissions = Permissions.snapshot()
-            let timer = Timer(timeInterval: Self.permissionProbeInterval, repeats: true) { [weak self] _ in
-                self?.probePermissionsForChange()
+        let wanted = !displays.all().isEmpty || permissionWatching
+        let interval = permissionWatching
+            ? Self.watchedPermissionProbeInterval
+            : Self.permissionProbeInterval
+        if wanted {
+            if permissionTimer == nil {
+                startPermissionTimer(interval: interval)
+            } else if (permissionTimer?.timeInterval ?? interval) != interval {
+                // A `Timer` carries its interval for life, so a cadence change
+                // is a new timer. `lastPermissions` is re-seeded from the
+                // current snapshot, which keeps the swap itself transition-free.
+                permissionTimer?.invalidate()
+                permissionTimer = nil
+                startPermissionTimer(interval: interval)
             }
-            RunLoop.main.add(timer, forMode: .common)
-            permissionTimer = timer
-        } else if !wanted, permissionTimer != nil {
+        } else if permissionTimer != nil {
             permissionTimer?.invalidate()
             permissionTimer = nil
             lastPermissions = nil
         }
     }
 
+    private func startPermissionTimer(interval: TimeInterval) {
+        lastPermissions = Permissions.snapshot()
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+            self?.probePermissionsForChange()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        permissionTimer = timer
+    }
+
+    /// Turns the viewer-driven half of the probe condition on or off.
+    ///
+    /// Internal rather than private so a test can assert the probe starts with
+    /// no display, which is exactly the state the first-run screen is stuck in.
+    @discardableResult
+    func setPermissionWatch(_ watch: Bool) -> [String: JSONValue] {
+        permissionWatching = watch
+        updatePermissionProbe()
+        return ["watch": .bool(watch)]
+    }
+
+    /// Test seam: whether the periodic probe currently has a timer.
+    var isPermissionProbeActive: Bool { permissionTimer != nil }
+
     private func probePermissionsForChange() {
         let current = Permissions.snapshot()
         guard current != lastPermissions else { return }
         lastPermissions = current
         emit(DriverEvent(event: "permission-changed", fields: ["permissions": .object(current)]))
+    }
+
+    /// `request-permission`: ask macOS for a grant, but only when told to.
+    ///
+    /// The service passes `allowPrompt` true only for a local user's explicit
+    /// click; an agent action or a remote client arrives false. The prompt is a
+    /// system modal fired at whoever is at the Mac, so this never fires from a
+    /// background read, and when it is refused the fresh snapshot is still the
+    /// answer.
+    private func requestPermission(_ request: DriverRequest) throws -> [String: JSONValue] {
+        let which = try request.requireString("which")
+        let allowPrompt = request.bool("allowPrompt") ?? false
+        return Permissions.request(which: which, allowPrompt: allowPrompt)
     }
 
     private func health() -> [String: JSONValue] {

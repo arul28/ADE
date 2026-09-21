@@ -74,7 +74,7 @@ required.
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/main.swift` | The NDJSON loop, the op dispatcher, the periodic permission probe, and the signal-handled shutdown. stdout is protocol; every log line goes to stderr. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/InputCommands.swift` | The `input` op: accessibility commands, real-event commands, the wait, and the element resolver they share. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/ObjCDynamic.swift` | The Objective-C runtime calls the private display classes need: `objc_msgSend` by `dlsym`, and KVC that probes the setter first. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/Permissions.swift` | Screen Recording and Accessibility, probed without ever prompting. The driver only reports; asking for the grant is the app's job. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/Permissions.swift` | Screen Recording and Accessibility, probed without prompting; the one prompt it can fire is `request-permission`, which the service allows only for a local user's explicit click. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/PhysicalInput.swift` | Seconds since the last physical input, for the idle rate and the takeover check. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/InputLease.swift` | The lease the driver keeps for itself, and the refusal `RealInput` raises. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/GestureGate.swift` | While a real drag holds the mouse button, the ops that could corrupt it — any `input` except `wait`, and this lane's `display.destroy`/`present`/`window.unpark` — are parked in order and replayed when the button comes up. A `wait` is not parked: it would poll nested inside the drag's own run-loop pump and hold the button down, so it is refused with `gesture_in_flight` and the client retries against its own deadline. `ping`, `observe`, `window.list` and capture keep answering. |
@@ -219,14 +219,25 @@ names the holding lane.
    no intermediate card.
 2. **Permissions.** Screen Recording and Accessibility are reported by the
    helper's own `ping` reply — the service never shells out
-   to probe, so nothing runs ungated on a non-Mac host. A missing grant is one
-   inline line with a System Settings opener, reusing the simulator's
-   `openSystemSettings` route; `IosSimulatorPrivacyPane` gained an
-   `accessibility` pane for the second row rather than growing a second opener.
-   A grant revoked mid-session arrives as a `permission-changed` event — the
-   driver probes every 10 seconds while any display exists and emits only on a
-   transition — and every action then fails with
-   `MAC_DESKTOP_PERMISSION_REQUIRED`.
+   to probe, so nothing runs ungated on a non-Mac host. A missing grant is a
+   block with the pane opener, a numbered how-to, and a "Check again" that
+   restarts the helper before re-probing (`recheckPermissions`): macOS often does
+   not show a grant made after a process started to that same process, which is
+   why re-reading the old helper's cached "denied" never worked. The block also
+   names the app macOS accuses (`responsibleAppName`, `ADE`/`ADE Alpha`/`ADE
+   Beta`) and, when the build is ad-hoc (`signing === "adhoc"`, read from the
+   packaging marker beside the app's resources), says macOS forgets the grant on
+   every rebuild. While a viewer is reading the lane's status the service tells
+   the helper to watch for a transition (`watch-permissions`), so an already
+   open pane flips off "denied" by itself within 3 seconds of the toggle; with
+   no watch and no display the helper probes nothing. A grant revoked mid-session
+   otherwise arrives as a `permission-changed` event (10-second cadence while a
+   display exists, emitted only on a transition), and every action then fails
+   with `MAC_DESKTOP_PERMISSION_REQUIRED`. The one prompt the driver may fire is
+   `request-permission`, and only for a local user's explicit "Ask macOS" click:
+   the service passes `allowPrompt` true only when the window asking is on the
+   host, the helper ignores the request without it, and the action is CTO-only so
+   an agent cannot reach it.
 3. **Idle release.** A display with no parked windows, no stream reader and no
    running recording for `MAC_DESKTOP_IDLE_RELEASE_MS` is destroyed on a 30s
    sweep. The next open recreates it. The display size comes from the

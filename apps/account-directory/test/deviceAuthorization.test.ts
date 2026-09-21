@@ -90,7 +90,9 @@ describe("device authorization bridge", () => {
       { now: () => now, fetchImpl: tokenExchange as typeof fetch },
     );
     expect(callback.status).toBe(200);
-    expect(await callback.text()).toContain("Signed in to ADE");
+    const callbackBody = await callback.text();
+    expect(callbackBody).toContain("You're signed in");
+    expect(callbackBody).toContain("Go back to ADE.");
 
     const wrongSecret = await handleRequest(
       request("POST", "/device/token", undefined, {
@@ -265,6 +267,52 @@ describe("device authorization bridge", () => {
       oauth_state_hash: expect.any(String),
     });
     expect(env.DB.approvalRateLimits.size).toBe(2);
+  });
+
+  it("renders the confirm variant with a readonly code when the link carries one", async () => {
+    const env = makeEnv();
+    const now = Date.parse("2026-07-14T12:00:00.000Z");
+    const created = await handleRequest(
+      request("POST", "/device/code", undefined, {
+        device_secret: "daemon-device-secret-with-at-least-32-bytes",
+      }),
+      env,
+      { now: () => now },
+    );
+    const device = await created.json() as Record<string, unknown>;
+
+    const preview = await handleRequest(
+      new Request(String(device.verification_uri_complete)),
+      env,
+      { now: () => now },
+    );
+
+    expect(preview.status).toBe(200);
+    const body = await preview.text();
+    expect(body).toContain("Confirm this sign-in");
+    expect(body).toContain(String(device.user_code));
+    // The code is shown, never typed: it rides a hidden field, so there is no
+    // visible code input for the reader to have to fill in.
+    expect(body).toContain('type="hidden" name="user_code"');
+    expect(body).not.toContain('id="user_code"');
+    expect(body).not.toContain("ade login");
+  });
+
+  it("renders the code input form when the link carries no code", async () => {
+    const env = makeEnv();
+
+    const preview = await handleRequest(
+      new Request("https://directory.test/device"),
+      env,
+      {},
+    );
+
+    expect(preview.status).toBe(200);
+    const body = await preview.text();
+    expect(body).toContain("Sign in to ADE");
+    expect(body).toContain('id="user_code"');
+    expect(body).toContain("Enter the code shown by <code>ade login</code> in your terminal.");
+    expect(body).not.toContain("Confirm this sign-in");
   });
 
   it("returns expired for a device code after its short TTL", async () => {

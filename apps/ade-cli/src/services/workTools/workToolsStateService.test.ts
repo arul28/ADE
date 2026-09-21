@@ -623,6 +623,8 @@ describe("workToolsStateService", () => {
         recording: null,
         lanes: [],
         hostIsLocal: true,
+        responsibleAppName: "ADE",
+        signing: "identity",
         ...overrides,
       };
     }

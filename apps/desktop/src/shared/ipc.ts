@@ -493,6 +493,8 @@ export const IPC = {
   // Windows or Linux uses exactly these: the display lives on the runtime
   // host, so nothing here is gated on this desktop's own platform.
   macDesktopGetStatus: "ade.macDesktop.getStatus",
+  macDesktopRecheckPermissions: "ade.macDesktop.recheckPermissions",
+  macDesktopRequestPermission: "ade.macDesktop.requestPermission",
   macDesktopStart: "ade.macDesktop.start",
   macDesktopStop: "ade.macDesktop.stop",
   macDesktopListWindows: "ade.macDesktop.listWindows",

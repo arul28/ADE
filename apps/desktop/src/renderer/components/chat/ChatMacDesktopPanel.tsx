@@ -17,6 +17,7 @@ import { macDesktopNotParkedPhrase } from "../../../shared/types/macDesktop";
 import type {
   MacDesktopDisplay,
   MacDesktopLeaseState,
+  MacDesktopPermissionKind,
   MacDesktopWindow,
 } from "../../../shared/types/macDesktop";
 import type { SystemSettingsPaneId } from "../../../shared/types/systemSettings";
@@ -32,6 +33,7 @@ import {
 } from "../terminals/workToolChrome";
 import { H264VideoCanvas } from "./H264VideoCanvas";
 import { macDesktopApi } from "./macDesktopApi";
+import { MacDesktopPermissionBlock } from "./MacDesktopPermissionBlock";
 import {
   displayFrameToViewRect,
   displayPointToViewPoint,
@@ -266,6 +268,14 @@ export function ChatMacDesktopPanel({
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState(false);
   /**
+   * A permission re-probe or prompt is in flight.
+   *
+   * Separate from `busy` so the screen, the rail and the strip stay live while
+   * the one control that is waiting says "Checking…". Two simultaneous calls
+   * would race two helper restarts.
+   */
+  const [checkingPermissions, setCheckingPermissions] = useState(false);
+  /**
    * A recording toggle that failed, kept OUT of `statusError`.
    *
    * `statusError` is the display-state slot: it titles the empty state when
@@ -365,6 +375,36 @@ export function ChatMacDesktopPanel({
   const iHaveControl = macDesktopUserHasControl(lease, macDesktopControllerId());
   const parkedWindows = macDesktopParkedWindows(windows, display?.displayId);
   const claimAppIcons = useMemo(() => macDesktopClaimAppIcons(windows), [windows]);
+
+  /**
+   * The one permission that is blocking, and which pane it opens.
+   *
+   * Screen Recording first when both are missing: without it there is no
+   * picture at all, so it is the grant that changes what the user can see. The
+   * pane ids are the app-level ones from `SYSTEM_SETTINGS_PANE_URLS`, which is
+   * the one table main resolves against — the renderer never holds the URL.
+   * Computed above the empty-state branch because the denied first screen is
+   * its own block, not the one-line start card.
+   */
+  const blockedPermission: {
+    kind: MacDesktopPermissionKind;
+    pane: SystemSettingsPaneId;
+  } | null =
+    status?.permissions.screenRecording === "denied"
+      ? { kind: "screenRecording", pane: "macos-screen-recording" }
+      : status?.permissions.accessibility === "denied"
+        ? { kind: "accessibility", pane: "macos-accessibility" }
+        : null;
+
+  /**
+   * Whether a grant can be made from THIS window.
+   *
+   * The pin is the reliable half: a `remote` binding means the lane's Mac is
+   * another machine, where opening this computer's System Settings or firing a
+   * local prompt reaches the wrong box. `hostIsLocal` is the host's own answer
+   * and stays true for a runtime that has not been told which client asked.
+   */
+  const laneHostIsLocal = runtimePin?.kind !== "remote" && Boolean(status?.hostIsLocal);
 
   /**
    * Lane id → name, for "ADE · docs-fix" on a window parked somewhere else.
@@ -732,6 +772,54 @@ export function ChatMacDesktopPanel({
     }, failed);
   }, [setStatusError]);
 
+  /**
+   * "Check again": restart the helper, re-probe, and start only if the grant is
+   * now there.
+   *
+   * The restart is the point. macOS usually will not show a grant made after a
+   * process started to that same process, so re-reading the old helper's cached
+   * "denied" is exactly the retry that never worked. `start()` then runs only
+   * when Screen Recording is not denied, because creating a display without it
+   * can only fail again with the same error.
+   */
+  const checkAgain = useCallback(async () => {
+    setCheckingPermissions(true);
+    setStatusError(null);
+    try {
+      const permissions = await macDesktopApi().recheckPermissions(
+        { restartDriver: true },
+        pinRef.current,
+      );
+      setStatus((current) => (current ? { ...current, permissions } : current));
+      if (permissions.screenRecording !== "denied") {
+        await start();
+      } else {
+        await refreshStatus();
+      }
+    } catch (error) {
+      setStatusError(errorText(error));
+    } finally {
+      setCheckingPermissions(false);
+    }
+  }, [errorText, refreshStatus, start, setStatus, setStatusError]);
+
+  /**
+   * "Ask macOS": the explicit local prompt. Only ever drawn for a display on
+   * this computer, and the host refuses it for a remote caller regardless.
+   */
+  const askMacos = useCallback(async (which: MacDesktopPermissionKind) => {
+    setCheckingPermissions(true);
+    setStatusError(null);
+    try {
+      const permissions = await macDesktopApi().requestPermission({ which }, pinRef.current);
+      setStatus((current) => (current ? { ...current, permissions } : current));
+    } catch (error) {
+      setStatusError(errorText(error));
+    } finally {
+      setCheckingPermissions(false);
+    }
+  }, [errorText, setStatus, setStatusError]);
+
   /* ── Render ──────────────────────────────────────────────────────────── */
 
   // Hidden entirely when the host cannot host a display. The tab is hidden too
@@ -757,13 +845,39 @@ export function ChatMacDesktopPanel({
       both the retry and the stopped case get the same button.
     */
     const settled = status != null && !starting;
+    /*
+      A denied grant is its own screen, not the one-line start card. The card
+      offered a single "Try again" that re-read a cached "denied" and changed
+      nothing, which is the exact bug this block replaces. The block leads with
+      the two things that can actually change the state: opening the pane, and a
+      restart-and-reprobe.
+    */
+    if (blockedPermission) {
+      return (
+        <MacDesktopPermissionBlock
+          kind={blockedPermission.kind}
+          appName={status?.responsibleAppName ?? "ADE"}
+          signing={status?.signing ?? "unknown"}
+          hostIsLocal={laneHostIsLocal}
+          machineName={machineFacts.machineName}
+          checking={checkingPermissions}
+          onOpenSettings={() => openSettingsPane(blockedPermission.pane)}
+          onCheckAgain={() => void checkAgain()}
+          onAskMacos={laneHostIsLocal ? () => void askMacos(blockedPermission.kind) : null}
+        />
+      );
+    }
     return (
       <WorkToolEmptyLine
         testId="mac-desktop-starting"
         title={statusError
           ?? (settled ? "Start Mac Desktop for this lane" : "Starting this lane's screen…")}
         action={statusError || settled ? (
-          <button type="button" className={WORK_TOOL_PRIMARY_BUTTON} onClick={() => void start()}>
+          <button
+            type="button"
+            className={WORK_TOOL_PRIMARY_BUTTON}
+            onClick={() => void (statusError ? checkAgain() : start())}
+          >
             <Monitor size={14} />
             {statusError ? "Try again" : "Start Mac Desktop"}
           </button>
@@ -773,19 +887,11 @@ export function ChatMacDesktopPanel({
   }
 
   /**
-   * The one permission line, and which pane it opens.
+   * The inline permission line for a LIVE display.
    *
-   * Screen Recording first when both are missing: without it there is no
-   * picture at all, so it is the grant that changes what the user can see. The
-   * pane ids are the app-level ones from `SYSTEM_SETTINGS_PANE_URLS`, which is
-   * the one table main resolves against — the renderer never holds the URL.
+   * The denied first screen (no display yet) is the real block above; this is
+   * the reminder while a display exists and one grant was revoked mid-session.
    */
-  const blockedPermission: { message: string; pane: SystemSettingsPaneId } | null =
-    status?.permissions.screenRecording === "denied"
-      ? { message: "Screen Recording is off for ADE on the lane's Mac.", pane: "macos-screen-recording" }
-      : status?.permissions.accessibility === "denied"
-        ? { message: "Accessibility is off for ADE on the lane's Mac.", pane: "macos-accessibility" }
-        : null;
   const pill = macDesktopStatusPill({ live: live.status, lease, iHaveControl });
   const statusSegments = macDesktopStatusSegments(pill);
   // "ADE · <lane>", the display's own name, leading the strip's status chip.
@@ -1265,14 +1371,14 @@ export function ChatMacDesktopPanel({
       {blockedPermission ? (
         <p className="flex items-center gap-2 px-1 text-[12px] text-amber-300" data-testid="mac-desktop-permission">
           <WarningCircle size={12} />
-          {blockedPermission.message}
+          {`${blockedPermission.kind === "screenRecording" ? "Screen Recording" : "Accessibility"} is off for ADE on the lane's Mac.`}
           {/*
             The opener only appears for a display hosted on THIS Mac. A grant is
             made on the machine the display lives on, so opening this computer's
             System Settings for a remote lane would send the user to the wrong
             box entirely — the sentence names that machine instead.
           */}
-          {status?.hostIsLocal ? (
+          {laneHostIsLocal ? (
             <button
               type="button"
               className="underline underline-offset-2"

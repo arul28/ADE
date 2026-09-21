@@ -205,7 +205,19 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // all of which connect at cto role), not a session-bound agent's. An agent
   // reads `getStreamStatus`, which is redacted.
   mac_desktop: {
-    only: ["startStream", "stopStream", "takeControl", "returnControl", "renewLease"],
+    only: [
+      "startStream",
+      "stopStream",
+      "takeControl",
+      "returnControl",
+      "renewLease",
+      // A person's permission remediation. Restarting the helper and prompting
+      // for a grant are the desktop renderer's business, never a session-bound
+      // agent's: the agent cannot see the dialog and the prompt is a system
+      // modal fired at whoever is at the Mac.
+      "recheckPermissions",
+      "requestPermission",
+    ],
   },
   computer_use_artifacts: {
     only: [
@@ -894,6 +906,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
    */
   mac_desktop: [
     "getStatus",
+    "recheckPermissions",
+    "requestPermission",
     "start",
     "stop",
     "listWindows",

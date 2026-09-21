@@ -300,4 +300,34 @@ do not collide with dev or stable. Local channel packages include this Mac's
 runtime binary. Release builds still require the full cross-platform runtime
 artifact set used by remote runtime bootstrap.
 
+### Alpha/Beta builds and macOS permission grants
+
+`npm run package:alpha` and `npm run package:beta` sign the app locally. There is
+no Developer ID certificate behind a channel build, so the default is an ad-hoc
+signature, and the app's designated requirement is its cdhash. The cdhash changes
+on every build, so macOS treats each rebuild as a new app and drops its Screen
+Recording and Accessibility grants. Re-adding ADE Alpha or ADE Beta in System
+Settings works until the next build.
+
+A self-signed code-signing certificate makes the designated requirement the
+bundle identifier plus the certificate leaf, which does not change between
+rebuilds. Grants then survive.
+
+Create the certificate once:
+
+1. Open Keychain Access › Certificate Assistant › Create a Certificate.
+2. Name it exactly `ADE Local`, set Certificate Type to `Code Signing`, and
+   create it.
+3. Run a channel build and press `Always Allow` on the keychain prompt, so later
+   builds can use the private key without prompting.
+
+Then remove ADE Alpha or ADE Beta from Screen Recording and from Accessibility,
+add it back once, and the grants are stored against the new requirement.
+
+The packager uses the certificate automatically when an identity named exactly
+`ADE Local` is present. To use another certificate, or a specific SHA-1 hash,
+pass `--sign "<identity>"` or set `ADE_CHANNEL_SIGN_IDENTITY`. Developer ID
+identities are never selected automatically. Without any of these, the build
+stays ad-hoc and prints a warning.
+
 Validate with `npm --prefix apps/desktop run typecheck` and `npm run test:desktop:sharded` for the full desktop suite. The desktop test suite is large, so run the smallest relevant subset first.

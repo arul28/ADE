@@ -813,6 +813,50 @@ describe("AccountPage signed-in", () => {
     expect(screen.getByRole("button", { name: "Repair" })).toBeTruthy();
   });
 
+  it("revoked publisher health shows the reconnect card without a roster", async () => {
+    // The roster did not arrive at all, so the old roster-derived detection
+    // cannot fire. The publisher's refusal is the proof this computer is off.
+    listMachines.mockResolvedValue({
+      state: "unavailable",
+      message: null,
+      machines: [],
+    });
+    (window.ade.app as unknown as { getInfo: unknown }).getInfo = vi.fn(async () => ({
+      appVersion: "1.2.75",
+      packageChannel: "stable",
+      localRuntime: {
+        publishHealth: {
+          state: "http_error",
+          failingSinceMs: Date.now() - 5 * 60_000,
+          lastLegDurations: { snapshot: null, token: null, http: null },
+          lastHttpStatus: 403,
+          lastHttpReason: "machine_revoked",
+        },
+      },
+    }));
+    renderPage();
+
+    expect(await screen.findByText("This computer isn't on your account")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reconnect this computer" })).toBeTruthy();
+  });
+
+  it("version line prefers the brain version and shows channel", async () => {
+    (window.ade.app as unknown as { getInfo: unknown }).getInfo = vi.fn(async () => ({
+      appVersion: "1.2.75",
+      packageChannel: "alpha",
+      localRuntime: {
+        versionSkew: { runtimeVersion: "1.2.75-alpha.202609211413" },
+      },
+    }));
+    renderPage();
+
+    expect(
+      await screen.findByText(/This machine: ADE Alpha 1\.2\.75-alpha\.202609211413/),
+    ).toBeTruthy();
+    // The package version is not what it shows while the brain answered.
+    expect(screen.queryByText(/^This machine: ADE 1\.2\.75$/)).toBeNull();
+  });
+
   it("repairs the background service from a missing directory row", async () => {
     machinesWithoutThisComputer();
     renderPage();
@@ -1075,10 +1119,11 @@ describe("AccountPage signed-in", () => {
     fireEvent.click(screen.getByRole("button", { name: "Reconnect this computer" }));
 
     expect(
-      await screen.findByText(/Finish signing in in your browser to reconnect this computer/),
+      await screen.findByText("Open the ADE sign-in page and enter this code."),
     ).toBeTruthy();
-    expect(screen.getByText("WDJB-MJHT")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Signing in…" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByText("Code WDJB-MJHT")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy link" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Sign in again" }).hasAttribute("disabled")).toBe(true);
 
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(cancelled?.()).toBe(true);

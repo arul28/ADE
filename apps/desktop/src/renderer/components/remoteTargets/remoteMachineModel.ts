@@ -27,6 +27,12 @@ import type {
 } from "../../../shared/types/sync";
 import { createSyncAccountDirectoryHealth } from "../../../shared/types/sync";
 import {
+  describeUnpublishedAccountDirectory,
+  thisComputerAction,
+  type ThisComputerAction,
+} from "../../../shared/types/sync";
+import { normalizeAppPackageChannel, type AppPackageChannel } from "../../../shared/packageChannel";
+import {
   readAccountRefusalCode,
   type AccountMachineRefusalCode,
 } from "../../../shared/accountMachineRefusal";
@@ -316,6 +322,81 @@ export function describePublishHealth(
   const elapsedMs = Math.max(0, nowMs - failingSinceMs);
   if (elapsedMs < PUBLISH_FAILING_ALARM_MS) return { kind: "none" };
   return { kind: "failing", minutes: Math.floor(elapsedMs / 60_000) };
+}
+
+/** The publisher health shape `thisComputerAction` needs to decode a refusal. */
+function accountDirectoryHealthFromPublishHealth(
+  publishHealth: LocalPublishHealth,
+): ReturnType<typeof createSyncAccountDirectoryHealth> {
+  return createSyncAccountDirectoryHealth(publishHealth.state, null, {
+    lastHttpStatus: publishHealth.lastHttpStatus ?? null,
+    lastHttpReason: publishHealth.lastHttpReason ?? null,
+  });
+}
+
+export type ThisComputerCardModel = {
+  tone: "healthy" | "warning";
+  /** The one sentence of truth about this computer, from the shared advice table. */
+  summary: string;
+  /** The one button, its label already deciding Reconnect / Sign in / Retry. */
+  action: ThisComputerAction;
+};
+
+/**
+ * The single owner of this computer's publication state, shared by the
+ * Connections popover's card and the Account tab's card. The sentence is the
+ * shared advice table's, never a hand-written second copy; the button label is
+ * `thisComputerAction`, which reads the brain's refusal code.
+ *
+ * Returns null when there is nothing worth a card: healthy machines and inactive
+ * states (sync off, not this computer's turn) show no publication status.
+ */
+export function describeThisComputerCard(
+  publishHealth: LocalPublishHealth | null | undefined,
+): ThisComputerCardModel | null {
+  if (!publishHealth) return null;
+  const display = describePublishHealth(publishHealth);
+  if (display.kind === "none") return null;
+  const health = accountDirectoryHealthFromPublishHealth(publishHealth);
+  if (display.kind === "healthy") {
+    return {
+      tone: "healthy",
+      summary: "signed in and published to your ADE account",
+      action: { label: null, needsSignIn: false, retry: false },
+    };
+  }
+  return {
+    tone: "warning",
+    summary: describeUnpublishedAccountDirectory(publishHealth.state, health).summary,
+    action: thisComputerAction(publishHealth.state, health),
+  };
+}
+
+/** Channel word in front of a build: "ADE", "ADE Beta", "ADE Alpha". */
+export function channelProductName(channel: AppPackageChannel | string | null | undefined): string {
+  const normalized = normalizeAppPackageChannel(channel);
+  return normalized === "stable"
+    ? "ADE"
+    : `ADE ${normalized.charAt(0).toUpperCase()}${normalized.slice(1)}`;
+}
+
+/**
+ * This computer's own version line, channel first: "ADE Alpha 1.2.75-alpha.…".
+ * The brain's reported version is the one that matches what actually runs;
+ * the desktop package version is only a fallback for a brain that cannot
+ * answer, and the caller is told which one it got so it can say so.
+ */
+export function formatThisComputerVersion(args: {
+  brainVersion: string | null | undefined;
+  packageVersion: string | null | undefined;
+  channel: AppPackageChannel | string | null | undefined;
+}): { text: string; source: "brain" | "package" } | null {
+  const brain = args.brainVersion?.trim();
+  const packageVersion = args.packageVersion?.trim();
+  const product = channelProductName(args.channel);
+  if (brain) return { text: `${product} ${brain}`, source: "brain" };
+  if (packageVersion) return { text: `${product} ${packageVersion}`, source: "package" };
+  return null;
 }
 
 // ---------------------------------------------------------------------------

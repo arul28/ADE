@@ -637,7 +637,13 @@ Runtime support files outside `services/sync/`:
   once through `consumePairingGrant` and cleared on sign-out. That grant is the
   proof a removed machine needs to re-pair, which is why the desktop's Reconnect
   affordance and `ade machines reconnect` both run the device flow rather than
-  the loopback PKCE flow. A definitively rejected grant is **marked dead, not
+  the loopback PKCE flow. `apps/account-directory/src/deviceAuthorization.ts`
+  branches only its presentation on how the page was reached: a link carrying
+  `user_code` (the desktop app) renders **Confirm this sign-in** with the code
+  read-only and a hidden field, while the bare page (the CLI) keeps the typed
+  form and says the code is shown by `ade login` in the terminal. Validation,
+  PKCE, and one-time redemption are identical on both. A definitively rejected
+  grant is **marked dead, not
   deleted** (`rejectedAt` / `needsReauth` / `rejectedReason` on the stored
   record) and `sessionState` reports `active | signed_out | expired |
   unreadable` so every surface can say which it is; see
@@ -1306,6 +1312,18 @@ Desktop connection UI:
   top-bar Connections surface with Machines, Phone, and Web tabs. The
   panel owns its header close control and passes the current in-app route to the
   Account page so signed-out users can return to the exact surface they left.
+- `apps/desktop/src/renderer/components/remoteTargets/RemoteTargetList.tsx` and
+  `remoteMachineModel.ts` — the Machines list's one **This computer** card, and
+  the only place publication state is worded. `describeThisComputerCard` renders
+  a single sentence from `describeUnpublishedAccountDirectory` and one button
+  whose label `thisComputerAction` decodes from the brain's refusal code
+  (`Reconnect this computer`, `Sign in again`, `Retry`, or `Repair`), with the
+  channel-prefixed brain version beneath it. The list no longer renders a second
+  banner under the Machines heading; the card is the only reconnect affordance.
+  A device sign-in it starts shows the browser-open confirmation (the code and a
+  lone **Cancel**) or, when the handoff failed, the URL with **Copy link**.
+  `ConnectionsPanel` passes `hideDirectorySummary` to `ThisMacCard` so the
+  popover's top identity card cannot repeat the same sentence.
 - `apps/desktop/src/renderer/components/settings/SyncDevicesSection.tsx` —
   Connections uses the focused `"phone"` and `"web"` variants beneath a
   shared **This computer** card. The card owns the pairing-PIN manager and the
@@ -1377,10 +1395,13 @@ Desktop connection UI:
   route-publish row, and Account `YourMacsCard` mount the same hook and button.
 - `apps/desktop/src/renderer/components/account/YourMacsCard.tsx` — Account
   **Your computers** directory UI (extracted from `AccountPage`). When this
-  computer is missing from the signed-in list it offers **Reconnect** (directory
-  re-pair via `repairMachinePairing` / device login) beside **Repair**, with
-  session-state-aware copy from `describeThisComputerMissing` that does not
-  treat absence as proven removal. See
+  computer is missing from the signed-in list — **or** the publisher health
+  reports a refusal (`machine_revoked` / `pairing_authentication_required`) while
+  the roster is stale — it offers the same button the Machines card renders
+  (`thisComputerAction`), beside **Repair**, with session-state-aware copy from
+  `describeThisComputerMissing` that does not treat absence as proven removal.
+  Its version line names the brain's channel-stamped version, falling back to the
+  package version only when the brain cannot answer and saying which it used. See
   [onboarding and settings](../onboarding-and-settings/README.md).
 - `apps/desktop/src/shared/runtimeErrors.ts` — canonical cross-process error
   messages and predicates shared by the local-runtime pool, main IPC fallback,

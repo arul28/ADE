@@ -200,6 +200,27 @@ export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): 
       laneId: optionalLaneId(args),
       ...chatSessionId(args),
     }),
+    /**
+     * "Try again" after a grant. Restarts the helper so a grant macOS made
+     * after it started is visible, then re-probes. CTO-only, because it is a
+     * person's remediation rather than an agent's.
+     */
+    recheckPermissions: (args?: unknown) => gated(() => service.recheckPermissions({
+      restartDriver: optionalBoolean(args, "restartDriver") ?? undefined,
+    })),
+    /**
+     * "Ask macOS" for a grant. The driver prompts only when the service passes
+     * `allowPrompt`, which the service decides from the origin, so this cannot
+     * be talked into prompting by anything on the bus. CTO-only for the same
+     * reason as `recheckPermissions`.
+     */
+    requestPermission: (args?: unknown) => gated(() => {
+      const which = enumOf(args, "which", ["screenRecording", "accessibility"] as const, "requestPermission");
+      if (!which) {
+        throw new Error("macDesktop.requestPermission requires which (screenRecording or accessibility).");
+      }
+      return service.requestPermission({ which });
+    }),
     start: (args?: unknown) => gated(() => service.start({
       laneId: requiredLaneId(args, "start"),
       resolution: enumOf(args, "resolution", MAC_DESKTOP_RESOLUTIONS, "start"),

@@ -80,12 +80,26 @@ export const MAC_DESKTOP_MACOS_ONLY_MESSAGE =
 
 export type MacDesktopPermissionState = "granted" | "denied" | "unknown";
 
+/** The two grants, named once so the driver request and the panel agree. */
+export type MacDesktopPermissionKind = "screenRecording" | "accessibility";
+
 export type MacDesktopPermissions = {
   /** ScreenCaptureKit needs this before any frame exists. */
   screenRecording: MacDesktopPermissionState;
   /** The Accessibility API needs this before any element action works. */
   accessibility: MacDesktopPermissionState;
 };
+
+/**
+ * How the running app was signed, for the one sentence a grant needs.
+ *
+ * macOS remembers a Screen Recording grant against the signing identity. An
+ * ad-hoc build has no stable identity, so the grant is forgotten on every
+ * rebuild — worth telling the user, because "grant it again" is the whole fix.
+ * `unknown` is the honest answer when the marker cannot be read; it hides the
+ * note rather than inventing a warning.
+ */
+export type MacDesktopSigningState = "adhoc" | "identity" | "unknown";
 
 /**
  * Helper health, modelled on `AttentionNotchHealth` so the same settings-style
@@ -689,11 +703,32 @@ export type MacDesktopStatus = {
    * screen" is meaningless from another machine.
    */
   hostIsLocal: boolean;
+  /**
+   * The app macOS will accuse in the permission UI: `ADE`, `ADE Alpha` or
+   * `ADE Beta`. The helper is owned by the packaged app, so the grant is made
+   * against its name, not ADE's bundle id.
+   */
+  responsibleAppName: string;
+  /** How this build was signed; drives the "macOS forgets this grant" note. */
+  signing: MacDesktopSigningState;
 };
 
 export type MacDesktopGetStatusArgs = {
   laneId?: string | null;
   chatSessionId?: string | null;
+};
+
+export type MacDesktopRecheckPermissionsArgs = {
+  /**
+   * Restart the helper child before re-probing. A fresh process is the only
+   * reliable way to see a Screen Recording grant macOS made after this one
+   * started. Defaults to true; a caller may pass false to re-read only.
+   */
+  restartDriver?: boolean;
+};
+
+export type MacDesktopRequestPermissionArgs = {
+  which: MacDesktopPermissionKind;
 };
 
 export type MacDesktopStartArgs = {
@@ -937,6 +972,21 @@ export type DesktopSeatProvider = {
   destroy(args: { laneId: string }): Promise<DesktopSeatReply>;
   /** Destroys every seat no live lane claims. Runs once per backend start. */
   reconcile(args: { liveLaneIds: string[] }): Promise<void>;
+  /**
+   * Turns the helper's permission probe on while a viewer is watching. The
+   * probe is refcounted with the "a display exists" condition; off with
+   * neither is what keeps an idle helper idle.
+   */
+  watchPermissions(args: { watch: boolean }): Promise<void>;
+  /**
+   * Asks macOS to show its grant prompt. The helper answers with the fresh
+   * permission snapshot and honors the ask only when `allowPrompt` is true,
+   * which the service passes only for a local user's explicit click.
+   */
+  requestPermission(args: {
+    which: MacDesktopPermissionKind;
+    allowPrompt: boolean;
+  }): Promise<DesktopSeatReply>;
   listWindows(args: { laneId?: string | null }): Promise<MacDesktopWindow[]>;
   park(args: { laneId: string; windowId: number }): Promise<MacDesktopWindow>;
   unpark(args: { windowId: number }): Promise<void>;
@@ -1059,6 +1109,17 @@ export function isMacDesktopHandle(value: unknown): value is string {
  */
 export type MacDesktopServiceApi = {
   getStatus(args?: MacDesktopGetStatusArgs): Promise<MacDesktopStatus>;
+  /**
+   * Re-probes the grants, restarting the helper first so a grant macOS made
+   * after it started is visible. The panel's "Check again" calls this.
+   */
+  recheckPermissions(args?: MacDesktopRecheckPermissionsArgs): Promise<MacDesktopPermissions>;
+  /**
+   * Asks macOS to show its permission prompt. Honored only when the service
+   * itself passed `allowPrompt`, which it does only for a local renderer's
+   * explicit click — never for an agent action or a remote client.
+   */
+  requestPermission(args: MacDesktopRequestPermissionArgs): Promise<MacDesktopPermissions>;
   start(args: MacDesktopStartArgs): Promise<MacDesktopStatus>;
   stop(args: MacDesktopStopArgs): Promise<MacDesktopStopResult>;
   getDisplay(args: { laneId: string }): Promise<MacDesktopDisplay | null>;

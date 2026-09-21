@@ -106,3 +106,81 @@ export function resolveMacDesktopDriverBinary(input: {
   // the health card can say which file is missing instead of "unknown".
   return candidates[0] ?? null;
 }
+
+/** How a packaged app was signed, as `MacDesktopSigningState` spells it. */
+export type AdeSigningState = "adhoc" | "identity" | "unknown";
+
+/** The marker UNIT-K writes beside the app's resources: `adhoc` or `identity`. */
+const ADE_SIGNING_MARKER_PATH = ["ade-cli", "signing"] as const;
+
+/**
+ * Reads the build's signing identity from the marker the packaging step writes.
+ *
+ * The marker sits at `Contents/Resources/ade-cli/signing`. Electron main can
+ * name that directory directly, but the runtime daemon has no `app`, so the
+ * candidates are assembled the same way the driver binary is: the resources
+ * directory derived from the binary, `process.resourcesPath` when it exists,
+ * and every `Resources` directory above `process.execPath` and this module.
+ * A packaged app with no marker anywhere is treated as ad-hoc — the safe
+ * reading, because it is exactly the case where macOS drops the grant and the
+ * user needs to be told. An unpackaged dev build is always `identity`: telling
+ * a developer to re-add the grant on every rebuild is noise about a build that
+ * never shipped.
+ */
+export function resolveAdeSigningState(input: {
+  platform?: NodeJS.Platform;
+  /** Electron's `process.resourcesPath`; gives the marker directly. */
+  resourcesPath?: string | null;
+  /** Electron's `app.isPackaged`. Inferred from the candidates when absent. */
+  isPackaged?: boolean;
+  /** Test seam; defaults to `resolveMacDesktopDriverBinary`. */
+  driverBinaryPath?: string | null;
+  env?: NodeJS.ProcessEnv;
+} = {}): AdeSigningState {
+  if ((input.platform ?? process.platform) !== "darwin") return "unknown";
+  const binary = input.driverBinaryPath !== undefined
+    ? input.driverBinaryPath
+    : resolveMacDesktopDriverBinary({ platform: input.platform, env: input.env });
+
+  const resourcesDirs: string[] = [];
+  const addResources = (value: string | null | undefined): void => {
+    const trimmed = value?.trim();
+    if (trimmed && !resourcesDirs.includes(trimmed)) resourcesDirs.push(trimmed);
+  };
+  addResources(input.resourcesPath);
+  if (binary) addResources(path.dirname(path.dirname(binary)));
+  addResources((process as NodeJS.Process & { resourcesPath?: string }).resourcesPath);
+  // A packaged app is `.../ADE.app/Contents/Resources`; walking up from the
+  // executable (main's own or this daemon's) finds it whether or not Electron
+  // ever told this process where its resources live.
+  const starts = [process.execPath, typeof __dirname === "string" ? __dirname : null];
+  for (const start of starts) {
+    if (!start) continue;
+    let current = path.dirname(start);
+    for (let depth = 0; depth < 12; depth += 1) {
+      addResources(path.join(current, "Resources"));
+      const parent = path.dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+  }
+
+  const packaged = input.isPackaged ?? resourcesDirs.some(
+    (dir) => dir.includes(`${path.sep}.app${path.sep}Contents${path.sep}`),
+  );
+  if (!packaged) return "identity";
+
+  for (const dir of resourcesDirs) {
+    const markerPath = path.join(dir, ...ADE_SIGNING_MARKER_PATH);
+    try {
+      const contents = fs.readFileSync(markerPath, "utf8").trim();
+      if (contents === "identity") return "identity";
+      if (contents === "adhoc") return "adhoc";
+      return "unknown";
+    } catch {
+      // Not this directory; try the next candidate.
+    }
+  }
+  // Packaged and no marker anywhere: the grant is not durable, so say so.
+  return "adhoc";
+}

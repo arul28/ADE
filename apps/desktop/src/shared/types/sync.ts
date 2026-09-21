@@ -634,6 +634,60 @@ export function describeUnpublishedAccountDirectory(
   }
 }
 
+/**
+ * What the one button on a "this computer" card should say, and what pressing
+ * it does. The label follows the brain's refusal code — the same code the
+ * publisher already reports on `lastHttpReason` — so the two surfaces that
+ * render this card can never word it differently.
+ *
+ * A plain publish failure that the directory did not refuse gets "Retry"; a
+ * healthy or inactive state gets no button at all.
+ */
+export type ThisComputerAction = {
+  /** The button's label, or null when this state offers nothing to press. */
+  label: string | null;
+  /** The reconnect has to prove a fresh sign-in before it can go through. */
+  needsSignIn: boolean;
+  /** A plain retry of the failed publish. */
+  retry: boolean;
+};
+
+/**
+ * States where nothing has failed. They get no action button: `sync_disabled`
+ * means the user turned sync off, and the rest are "not this computer's turn".
+ */
+const ACCOUNT_DIRECTORY_INACTIVE_STATES: ReadonlySet<SyncAccountDirectoryState> = new Set([
+  "sync_disabled",
+  "sync_not_started",
+  "no_active_sync_scope",
+  "not_host",
+  "account_signed_out",
+  "machine_key_unavailable",
+  "missing_pairing_connect_info",
+]);
+
+export function thisComputerAction(
+  state: SyncAccountDirectoryState,
+  health?: SyncAccountDirectoryHealth | null,
+): ThisComputerAction {
+  if (state === "published") return { label: null, needsSignIn: false, retry: false };
+  const refusal = readAccountRefusalCode(health ?? null);
+  if (refusal === "machine_revoked") {
+    return { label: "Reconnect this computer", needsSignIn: false, retry: false };
+  }
+  if (refusal === "pairing_authentication_required") {
+    return { label: "Sign in again", needsSignIn: true, retry: false };
+  }
+  if (isBrainAccountSessionFailure(state)) {
+    // The Repair control owns this one; the card renders it beside the line.
+    return { label: "Repair", needsSignIn: false, retry: false };
+  }
+  if (ACCOUNT_DIRECTORY_INACTIVE_STATES.has(state)) {
+    return { label: null, needsSignIn: false, retry: false };
+  }
+  return { label: "Retry", needsSignIn: false, retry: true };
+}
+
 export type SyncAccountDirectoryLegDurations = {
   snapshot: number | null;
   token: number | null;

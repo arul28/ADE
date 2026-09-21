@@ -40,6 +40,8 @@ function macDesktopStatus(overrides: Partial<MacDesktopStatus> = {}): MacDesktop
     recording: null,
     lanes: [],
     hostIsLocal: true,
+    responsibleAppName: "ADE",
+    signing: "identity",
     ...overrides,
   };
 }
@@ -148,8 +150,17 @@ describe("mac_desktop action domain", () => {
     }
     // `startStream` is the ONLY call that mints the loopback stream token, and
     // the takeover trio is a human client's. All are reachable, none by an
-    // agent-role caller.
-    for (const action of ["startStream", "stopStream", "takeControl", "returnControl", "renewLease"]) {
+    // agent-role caller. The permission remediation pair is the same: a system
+    // prompt and a helper restart are a person's, not an agent's.
+    for (const action of [
+      "startStream",
+      "stopStream",
+      "takeControl",
+      "returnControl",
+      "renewLease",
+      "recheckPermissions",
+      "requestPermission",
+    ]) {
       expect(isAllowedAdeAction("mac_desktop", action), action).toBe(true);
       expect(isCtoOnlyAdeAction("mac_desktop", action), action).toBe(true);
       expect(isAutomationAllowedAdeAction("mac_desktop", action), action).toBe(false);

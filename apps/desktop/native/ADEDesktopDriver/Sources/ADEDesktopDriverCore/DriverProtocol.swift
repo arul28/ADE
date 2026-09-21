@@ -207,6 +207,8 @@ public struct DriverError: Codable, Equatable, Sendable, Error {
 /// | `display.create` | `laneId,name,width,height,scale` | `MacDesktopDisplay` |
 /// | `display.destroy` | `laneId,reason?` | `{destroyed, releasedWindows}` |
 /// | `display.reconcile` | `liveLaneIds` | `{destroyed: string[]}` |
+/// | `watch-permissions` | `watch` | `{watch}` — refcounts the probe with the display condition |
+/// | `request-permission` | `which,allowPrompt` | `{requested, permissions}` — prompts only when `allowPrompt` |
 /// | `window.list` | `laneId?`, `pid?` | `{windows: MacDesktopWindow[]}` — a window carries `iconPng` (base64 PNG, 32x32) only on the first window of its bundle id in the reply; readers join it across that app's rows |
 /// | `window.park` | `laneId,windowId` | `MacDesktopWindow` |
 /// | `window.unpark` | `windowId` | `{window: MacDesktopWindow?}` |
@@ -228,6 +230,8 @@ public enum DriverOp: String, CaseIterable, Sendable {
     case createDisplay = "display.create"
     case destroyDisplay = "display.destroy"
     case reconcileDisplays = "display.reconcile"
+    case watchPermissions = "watch-permissions"
+    case requestPermission = "request-permission"
     case listWindows = "window.list"
     case parkWindow = "window.park"
     case unparkWindow = "window.unpark"

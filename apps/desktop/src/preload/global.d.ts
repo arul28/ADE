@@ -18,11 +18,14 @@ import type {
   MacDesktopObserveArgs,
   MacDesktopOpenArgs,
   MacDesktopOpenResult,
+  MacDesktopPermissions,
   MacDesktopPressArgs,
   MacDesktopPresentArgs,
   MacDesktopRecordStartArgs,
   MacDesktopRecordingStatus,
+  MacDesktopRecheckPermissionsArgs,
   MacDesktopReleaseArgs,
+  MacDesktopRequestPermissionArgs,
   MacDesktopScreenshotArgs,
   MacDesktopScreenshotResult,
   MacDesktopScrollArgs,
@@ -2596,6 +2599,14 @@ declare global {
           args?: MacDesktopGetStatusArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<MacDesktopStatus>;
+        recheckPermissions: (
+          args?: MacDesktopRecheckPermissionsArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopPermissions>;
+        requestPermission: (
+          args: MacDesktopRequestPermissionArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopPermissions>;
         start: (
           args: MacDesktopStartArgs,
           pin?: OpenProjectBinding | null,

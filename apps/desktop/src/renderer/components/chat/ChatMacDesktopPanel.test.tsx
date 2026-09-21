@@ -90,6 +90,8 @@ function makeStreamStatus(): MacDesktopStreamStatus {
 
 const macDesktop = {
   getStatus: vi.fn(),
+  recheckPermissions: vi.fn(),
+  requestPermission: vi.fn(),
   start: vi.fn(),
   onEvent: vi.fn((_cb: (event: MacDesktopEventPayload) => void, _pin?: OpenProjectBinding | null) => () => {}),
   startStream: vi.fn(async () => makeStreamStatus()),
@@ -121,6 +123,8 @@ beforeEach(() => {
   }
   macDesktop.startStream.mockResolvedValue(makeStreamStatus());
   macDesktop.resolveStreamUrl.mockResolvedValue({ url: null, forwarded: false, error: "no address" });
+  macDesktop.recheckPermissions.mockResolvedValue({ screenRecording: "granted", accessibility: "granted" });
+  macDesktop.requestPermission.mockResolvedValue({ screenRecording: "granted", accessibility: "granted" });
   getConnectionSnapshot.mockClear();
   onConnectionSnapshotChanged.mockClear();
   (window as unknown as { ade: unknown }).ade = {
@@ -147,6 +151,18 @@ function renderPanel() {
       laneName="docs-fix"
       sessionId="chat-1"
       runtimePin={STUDIO_PIN}
+    />,
+  );
+}
+
+/** A lane hosted on this computer, where a grant can actually be made. */
+function renderLocalPanel() {
+  return render(
+    <ChatMacDesktopPanel
+      laneId="lane-1"
+      laneName="docs-fix"
+      sessionId="chat-1"
+      runtimePin={null}
     />,
   );
 }
@@ -257,5 +273,92 @@ describe("ChatMacDesktopPanel actions on a pinned machine", () => {
       { laneId: "lane-1", controllerId: CONTROLLER_ID },
       STUDIO_PIN,
     ));
+  });
+});
+
+describe("ChatMacDesktopPanel permission first screen", () => {
+  const deniedStatus = (overrides: Partial<MacDesktopStatus> = {}) => makeStatus({
+    display: null,
+    hostIsLocal: true,
+    permissions: { screenRecording: "denied", accessibility: "granted" },
+    ...overrides,
+  } as Partial<MacDesktopStatus>);
+
+  beforeEach(() => {
+    // The auto-start still fires and fails on the denied grant; the block is
+    // what the user gets instead of the one-line retry.
+    macDesktop.start.mockRejectedValue(new Error("ADE needs Screen Recording permission."));
+  });
+
+  it("shows the settings button, the steps, and the ad-hoc note only when signing is adhoc", async () => {
+    macDesktop.getStatus.mockResolvedValue(deniedStatus({
+      responsibleAppName: "ADE Alpha",
+      signing: "adhoc",
+    }));
+
+    renderLocalPanel();
+
+    expect(await screen.findByTestId("mac-desktop-permission-block")).toBeTruthy();
+    expect(screen.getByTestId("mac-desktop-open-settings")).toBeTruthy();
+    expect(screen.getByText("Screen Recording is off for ADE")).toBeTruthy();
+    expect(screen.getByText("macOS asks the app that owns the helper: ADE Alpha.")).toBeTruthy();
+    expect(screen.getByText("Turn on ADE Alpha.")).toBeTruthy();
+    expect(screen.getByText("If macOS asks to quit and reopen, press Later.")).toBeTruthy();
+    expect(screen.getByText("Press Check again.")).toBeTruthy();
+    expect(screen.getByTestId("mac-desktop-adhoc-note")).toBeTruthy();
+    // The local explicit prompt is a third control on this host only.
+    expect(screen.getByTestId("mac-desktop-ask-macos")).toBeTruthy();
+  });
+
+  it("hides the ad-hoc note for an identity-signed build", async () => {
+    macDesktop.getStatus.mockResolvedValue(deniedStatus({
+      responsibleAppName: "ADE",
+      signing: "identity",
+    }));
+
+    renderLocalPanel();
+
+    expect(await screen.findByTestId("mac-desktop-permission-block")).toBeTruthy();
+    expect(screen.queryByTestId("mac-desktop-adhoc-note")).toBeNull();
+  });
+
+  it("sends a remote lane host to its own machine instead of this one", async () => {
+    macDesktop.getStatus.mockResolvedValue(deniedStatus({
+      hostIsLocal: true,
+      responsibleAppName: "ADE",
+      signing: "identity",
+    }));
+
+    // The pin, not `hostIsLocal`, is what says the lane's Mac is elsewhere.
+    renderPanel();
+
+    expect(await screen.findByTestId("mac-desktop-permission-block")).toBeTruthy();
+    expect(screen.queryByTestId("mac-desktop-open-settings")).toBeNull();
+    expect(screen.queryByTestId("mac-desktop-ask-macos")).toBeNull();
+    expect(screen.getByText(
+      "Grant it on Mac Studio: System Settings › Privacy & Security › Screen Recording, then press Check again.",
+    )).toBeTruthy();
+  });
+
+  it("Check again calls recheck before start", async () => {
+    macDesktop.getStatus.mockResolvedValue(deniedStatus({ signing: "identity" }));
+    // The mount auto-start fails on the denied grant; the start that follows
+    // the recheck succeeds and lands the display.
+    macDesktop.start.mockResolvedValue(makeStatus());
+    macDesktop.start.mockRejectedValueOnce(new Error("ADE needs Screen Recording permission."));
+
+    renderLocalPanel();
+    fireEvent.click(await screen.findByTestId("mac-desktop-check-again"));
+
+    await waitFor(() => expect(macDesktop.recheckPermissions).toHaveBeenCalledWith(
+      { restartDriver: true },
+      null,
+    ));
+    // The start that follows the recheck is what proves the order; the mount
+    // auto-start happened before it.
+    const recheckOrder = macDesktop.recheckPermissions.mock.invocationCallOrder.at(-1) ?? 0;
+    await waitFor(() => expect(
+      macDesktop.start.mock.invocationCallOrder.some((order) => order > recheckOrder),
+    ).toBe(true));
   });
 });

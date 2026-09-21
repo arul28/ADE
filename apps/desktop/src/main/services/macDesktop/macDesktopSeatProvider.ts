@@ -76,6 +76,15 @@ export function createMacVirtualDisplayProvider(client: MacDesktopDriverClient):
       await request(MAC_DESKTOP_DRIVER_OPS.reconcileDisplays, { liveLaneIds: args.liveLaneIds });
     },
 
+    async watchPermissions(args) {
+      await request(MAC_DESKTOP_DRIVER_OPS.watchPermissions, { watch: args.watch });
+    },
+
+    requestPermission: (args) => request(MAC_DESKTOP_DRIVER_OPS.requestPermission, {
+      which: args.which,
+      allowPrompt: args.allowPrompt,
+    }),
+
     async listWindows(args) {
       const reply = await request(
         MAC_DESKTOP_DRIVER_OPS.listWindows,

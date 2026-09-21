@@ -6,11 +6,16 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolveNpmInvocation } from "./dev-shared.mjs";
 import { computeChannelVersion, resolveChannelBaseVersion } from "./channelVersion.mjs";
+import { parseCodesigningIdentities, resolveChannelSignIdentity } from "./channelSignIdentity.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const currentRepoRoot = path.resolve(scriptDir, "..");
 const APPLE_EVENTS_USAGE_DESCRIPTION =
   "ADE launches agent terminals that can use local app automation through Codex Computer Use.";
+const ADHOC_SIGN_WARNING =
+  '[ade] Ad-hoc signing: macOS forgets Screen Recording/Accessibility grants for this app on every rebuild. Create a self-signed code-signing certificate named "ADE Local" in Keychain Access to keep them. See docs/development/local-development.md.';
+const SIGNING_KEYCHAIN_HINT =
+  'Hint: if macOS showed a keychain prompt, press "Always Allow" so builds can use the private key. Over SSH there is no prompt; run the build once from a local terminal session.';
 
 const CHANNELS = {
   alpha: {
@@ -48,6 +53,9 @@ function usage() {
     "  --skip-fetch         For beta, do not fetch origin/main before the fast-forward check.",
     "  --dry-run            Print the commands without running them.",
     "  --repo <path>        Internal/debug: build the selected channel from an existing repo path.",
+    "  --sign <identity>    macOS code-signing identity (exact common name or SHA-1 hash).",
+    "                       Defaults to ADE_CHANNEL_SIGN_IDENTITY, then an auto-detected",
+    '                       certificate named "ADE Local", then ad-hoc.',
     "  --help               Show this help.",
     "",
   ].join("\n"));
@@ -65,6 +73,7 @@ function parseArgs(argv) {
     skipFetch: false,
     dryRun: false,
     repo: null,
+    sign: null,
   };
   const args = [...argv];
   while (args.length > 0) {
@@ -94,6 +103,18 @@ function parseArgs(argv) {
     }
     if (arg.startsWith("--repo=")) {
       options.repo = path.resolve(arg.slice("--repo=".length));
+      continue;
+    }
+    if (arg === "--sign") {
+      const value = args.shift();
+      if (!value) fail("--sign requires an identity.");
+      options.sign = value;
+      continue;
+    }
+    if (arg.startsWith("--sign=")) {
+      const value = arg.slice("--sign=".length);
+      if (!value) fail("--sign requires an identity.");
+      options.sign = value;
       continue;
     }
     if (arg.startsWith("-")) fail(`Unknown option: ${arg}`);
@@ -330,7 +351,7 @@ function zipApp(appPath, outputRoot, channel, options) {
   return zipPath;
 }
 
-function postprocessChannelApp(appPath, channel, config, options) {
+function postprocessChannelApp(appPath, channel, config, options, signSource = "adhoc") {
   const resourcesRoot = path.join(appPath, "Contents", "Resources");
   const cliRoot = path.join(resourcesRoot, "ade-cli");
   const binRoot = path.join(cliRoot, "bin");
@@ -345,14 +366,65 @@ function postprocessChannelApp(appPath, channel, config, options) {
   fs.chmodSync(sourceWrapper, 0o755);
   fs.chmodSync(channelWrapper, 0o755);
   fs.writeFileSync(path.join(cliRoot, "channel"), `${channel}\n`);
+  // The running app reads this to tell the user whether macOS will keep its
+  // Screen Recording/Accessibility grants across rebuilds (see UNIT-L). Written
+  // before signing so the codesign resource seal covers it.
+  fs.writeFileSync(path.join(cliRoot, "signing"), `${signSource === "adhoc" ? "adhoc" : "identity"}\n`);
 }
 
-function adHocSignLocalMacApp(appPath) {
-  if (process.platform !== "darwin") return;
-  process.stdout.write(`[ade] Ad-hoc signing local app bundle: ${appPath}\n`);
-  run("codesign", ["--force", "--deep", "--sign", "-", "--timestamp=none", appPath], {
-    cwd: path.dirname(appPath),
+function detectCodesigningIdentities() {
+  if (process.platform !== "darwin") return [];
+  const result = spawnSync("security", ["find-identity", "-v", "-p", "codesigning"], { encoding: "utf8" });
+  if (result.error || result.status !== 0) return [];
+  return parseCodesigningIdentities(result.stdout ?? "");
+}
+
+function resolveSigningDecision(options) {
+  return resolveChannelSignIdentity({
+    flag: options.sign,
+    env: process.env.ADE_CHANNEL_SIGN_IDENTITY,
+    identities: detectCodesigningIdentities(),
   });
+}
+
+function describeSigningDecision(decision) {
+  if (decision.source === "flag") {
+    return `[ade] Signing identity: ${decision.identity} (from --sign).`;
+  }
+  if (decision.source === "env") {
+    return `[ade] Signing identity: ${decision.identity} (from ADE_CHANNEL_SIGN_IDENTITY).`;
+  }
+  if (decision.source === "auto") {
+    return `[ade] Signing identity: ${decision.identity} (auto-detected self-signed certificate).`;
+  }
+  return ADHOC_SIGN_WARNING;
+}
+
+function signLocalMacApp(appPath, decision) {
+  if (process.platform !== "darwin") return;
+  const isAdhoc = decision.source === "adhoc";
+  const identity = isAdhoc ? "-" : decision.identity;
+  if (isAdhoc) {
+    process.stdout.write(`[ade] Ad-hoc signing local app bundle: ${appPath}\n`);
+  } else {
+    process.stdout.write(`[ade] Signing ${appPath} with "${identity}"\n`);
+  }
+  // Capture codesign's own stderr: `run` inherits stdio, which would lose the
+  // message the user needs to fix a keychain access denial.
+  const result = spawnSync(
+    "codesign",
+    ["--force", "--deep", "--sign", identity, "--timestamp=none", appPath],
+    { cwd: path.dirname(appPath), encoding: "utf8" },
+  );
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    const stderr = (result.stderr ?? "").trim();
+    fail(
+      `codesign failed for ${appPath} (exit ${result.status ?? "unknown"}).` +
+        (stderr ? `\n${stderr}` : "") +
+        `\n${SIGNING_KEYCHAIN_HINT}`,
+    );
+  }
   run("codesign", ["--verify", "--deep", "--strict", "--verbose=2", appPath], {
     cwd: path.dirname(appPath),
   });
@@ -428,6 +500,8 @@ function buildChannel(repoRoot, channel, options) {
   const outputRoot = path.join(outputRepoRoot, "apps", "desktop", config.outputDir);
   const appVersion = resolveChannelVersion(repoRoot, channel);
   process.stdout.write(`[ade] Channel version: ${appVersion}\n`);
+  const signingDecision = process.platform === "darwin" ? resolveSigningDecision(options) : null;
+  if (signingDecision) process.stdout.write(`${describeSigningDecision(signingDecision)}\n`);
   const env = {
     ...process.env,
     ADE_PACKAGE_CHANNEL: channel,
@@ -487,8 +561,8 @@ function buildChannel(repoRoot, channel, options) {
   if (options.dryRun) return;
   const appPath = findBuiltApp(outputRoot, config.productName);
   if (!appPath) fail(`Build finished but no .app was found in ${outputRoot}.`);
-  postprocessChannelApp(appPath, channel, config, options);
-  adHocSignLocalMacApp(appPath);
+  postprocessChannelApp(appPath, channel, config, options, signingDecision?.source);
+  signLocalMacApp(appPath, signingDecision);
   const zipPath = zipApp(appPath, outputRoot, channel, options);
   process.stdout.write(`\n[ade] Built ${config.productName}: ${appPath}\n`);
   if (zipPath) process.stdout.write(`[ade] Zipped app: ${zipPath}\n`);

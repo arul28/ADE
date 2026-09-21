@@ -9700,6 +9700,10 @@ export function registerIpc({
   // A runtime-backed build therefore never reaches `ensureMacDesktop` at all,
   // and a dev build that does gets a sentence rather than a null crash.
   ipcMain.handle(IPC.macDesktopGetStatus, async (_event, arg = {}) => ensureMacDesktop().getStatus(arg));
+  ipcMain.handle(IPC.macDesktopRecheckPermissions, async (_event, arg = {}) =>
+    ensureMacDesktop().recheckPermissions(arg));
+  ipcMain.handle(IPC.macDesktopRequestPermission, async (_event, arg) =>
+    ensureMacDesktop().requestPermission(arg));
   ipcMain.handle(IPC.macDesktopStart, async (_event, arg) => ensureMacDesktop().start(arg));
   ipcMain.handle(IPC.macDesktopStop, async (_event, arg) => ensureMacDesktop().stop(arg));
   ipcMain.handle(IPC.macDesktopListWindows, async (_event, arg = {}) => ensureMacDesktop().listWindows(arg));

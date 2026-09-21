@@ -32,6 +32,8 @@ const macDesktopChannelKeys = Object.keys(IPC).filter((key) => key.startsWith("m
 /** Every bridge method that routes, with the arguments its signature wants. */
 const ROUTED_CALLS: Array<[string, unknown]> = [
   ["getStatus", { laneId: "lane-1" }],
+  ["recheckPermissions", { restartDriver: true }],
+  ["requestPermission", { which: "screenRecording" }],
   ["start", { laneId: "lane-1" }],
   ["stop", { laneId: "lane-1" }],
   ["listWindows", { laneId: "lane-1" }],
@@ -91,6 +93,8 @@ describe("Mac Desktop IPC contract", () => {
     // a failing test rather than a panel button that stops working.
     const required = [
       "macDesktopGetStatus",
+      "macDesktopRecheckPermissions",
+      "macDesktopRequestPermission",
       "macDesktopStart",
       "macDesktopStop",
       "macDesktopListWindows",

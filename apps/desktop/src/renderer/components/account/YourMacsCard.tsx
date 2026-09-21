@@ -34,6 +34,7 @@ import {
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import {
   COLORS,
+  MONO_FONT,
   RADII,
   SANS_FONT,
   cardStyle,
@@ -56,8 +57,11 @@ import {
   type AccountDeviceLoginPrompt,
 } from "../../lib/accountLogin";
 import {
+  describeThisComputerCard,
   formatMachineEndpoint,
+  formatThisComputerVersion,
   relativeLastSeenPhrase,
+  type LocalPublishHealth,
 } from "../remoteTargets/remoteMachineModel";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import { isWebClientMode } from "../../lib/webClientMode";
@@ -411,6 +415,16 @@ export function YourMacsCard() {
   const [reconnecting, setReconnecting] = useState(false);
   const [reconnectOutcome, setReconnectOutcome] = useState<ReconnectOutcome | null>(null);
   const [signInPrompt, setSignInPrompt] = useState<AccountDeviceLoginPrompt | null>(null);
+  const [linkCopied, setLinkCopied] = useState(false);
+  // This computer's publisher health and its own ADE version facts. Both come
+  // from `app.getInfo`, the same source the Connections popover card reads, so
+  // the two surfaces cannot describe this computer differently.
+  const [localPublishHealth, setLocalPublishHealth] = useState<LocalPublishHealth | null>(null);
+  const [localAppInfo, setLocalAppInfo] = useState<{
+    packageVersion: string | null;
+    channel: string | null;
+    brainVersion: string | null;
+  } | null>(null);
   const [expandedMachineKey, setExpandedMachineKey] = useState<string | null>(null);
   const [inventoryByMachine, setInventoryByMachine] = useState<Record<string, MachineInventoryViewState>>({});
   // A ref, not state: the in-flight sign-in loop reads it between polls, and a
@@ -464,6 +478,44 @@ export function YourMacsCard() {
       .catch(() => {});
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  // This computer's own publisher health and version, refreshed on focus. The
+  // roster below is the directory's word; this is the brain's, which is the only
+  // thing that knows about a refusal the directory answered with.
+  useEffect(() => {
+    let cancelled = false;
+    const read = () => {
+      const infoPromise = window.ade?.app?.getInfo?.();
+      if (!infoPromise) return;
+      void infoPromise
+        .then((info) => {
+          if (cancelled || !info) return;
+          const health = info.localRuntime?.publishHealth ?? null;
+          setLocalPublishHealth(
+            health
+              ? {
+                  state: health.state,
+                  failingSinceMs: health.failingSinceMs,
+                  lastHttpStatus: health.lastHttpStatus ?? null,
+                  lastHttpReason: health.lastHttpReason ?? null,
+                }
+              : null,
+          );
+          setLocalAppInfo({
+            packageVersion: info.appVersion ?? null,
+            channel: info.packageChannel ?? null,
+            brainVersion: info.localRuntime?.versionSkew?.runtimeVersion ?? null,
+          });
+        })
+        .catch(() => {});
+    };
+    read();
+    window.addEventListener("focus", read);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", read);
     };
   }, []);
 
@@ -618,13 +670,36 @@ export function YourMacsCard() {
    * without this, the banner would fire on every web session and offer a repair
    * no browser can perform.
    */
-  const thisMachineMissing =
+  const publisherCard = useMemo(
+    () => describeThisComputerCard(localPublishHealth),
+    [localPublishHealth],
+  );
+  const publisherActionLabel = publisherCard?.action.label ?? null;
+  // A refusal the directory answered with is proof this computer is off the
+  // account, even while the roster is stale and still shows it. Same source as
+  // the Connections popover card.
+  const publisherNeedsReconnect =
+    publisherActionLabel === "Reconnect this computer"
+    || publisherActionLabel === "Sign in again";
+
+  const rosterMissingThisMachine =
     !webMode
     && result?.state === "ok"
     && Boolean(localIdentity?.machineKey)
     && !machines.some((candidate) => isThisMac(candidate));
+  const thisMachineMissing = !webMode && (rosterMissingThisMachine || publisherNeedsReconnect);
 
   const canReconnect = !webMode && typeof accountBridge()?.repairMachinePairing === "function";
+  const reconnectActionLabel = publisherActionLabel ?? "Reconnect this computer";
+  const thisComputerVersion = useMemo(
+    () =>
+      formatThisComputerVersion({
+        brainVersion: localAppInfo?.brainVersion,
+        packageVersion: localAppInfo?.packageVersion,
+        channel: localAppInfo?.channel,
+      }),
+    [localAppInfo],
+  );
 
   /**
    * Reconnect this computer, signing in again first when the directory demands
@@ -653,11 +728,15 @@ export function YourMacsCard() {
     setReconnecting(true);
     setReconnectOutcome(null);
     setSignInPrompt(null);
+    setLinkCopied(false);
     reconnectCancelledRef.current = false;
     try {
       const outcome = await runMachinePairingReconnect({
         repair: () => api.repairMachinePairing!(),
-        onPrompt: setSignInPrompt,
+        onPrompt: (prompt) => {
+          setSignInPrompt(prompt);
+          setLinkCopied(false);
+        },
         isCancelled: () => reconnectCancelledRef.current,
         afterAttempt: async () => {
           invalidateAccountMachines();
@@ -679,6 +758,16 @@ export function YourMacsCard() {
     reconnectCancelledRef.current = true;
     setSignInPrompt(null);
   }, []);
+
+  const copySignInLink = useCallback(() => {
+    const url =
+      signInPrompt?.verificationUriComplete ?? signInPrompt?.verificationUri;
+    const write = window.ade?.app?.writeClipboardText;
+    if (!url || !write) return;
+    void write(url)
+      .then(() => setLinkCopied(true))
+      .catch(() => {});
+  }, [signInPrompt]);
 
   // The ⋮ menu is rendered in a fixed portal so it can never be clipped by, or
   // stack behind, the cards that follow this one (mirrors the TabNav pattern).
@@ -847,6 +936,21 @@ export function YourMacsCard() {
               Your computers
             </div>
             <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>{summary}</div>
+            {thisComputerVersion ? (
+              <div
+                style={{
+                  marginTop: 1,
+                  fontFamily: MONO_FONT,
+                  fontSize: 11,
+                  color: COLORS.textMuted,
+                }}
+              >
+                This machine: {thisComputerVersion.text}
+                {thisComputerVersion.source === "package"
+                  ? " (app version; the background service did not answer)"
+                  : ""}
+              </div>
+            ) : null}
           </div>
         </div>
         {!webMode ? (
@@ -885,7 +989,9 @@ export function YourMacsCard() {
               {missingCopy.title}
             </div>
             <div style={{ marginTop: 2, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.5, color: COLORS.textSecondary }}>
-              {missingCopy.body}
+              {publisherCard
+                ? `${publisherCard.summary.charAt(0).toUpperCase()}${publisherCard.summary.slice(1)}.`
+                : missingCopy.body}
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginTop: 10 }}>
               <button
@@ -903,10 +1009,10 @@ export function YourMacsCard() {
               >
                 {reconnecting ? <CircleNotch size={13} weight="bold" className="animate-spin" /> : null}
                 {signInPrompt
-                  ? "Signing in…"
+                  ? "Sign in again"
                   : reconnecting
                     ? "Reconnecting…"
-                    : "Reconnect this computer"}
+                    : reconnectActionLabel}
               </button>
               {repair.available ? (
                 <BrainRepairButton repair={repair} height={30} disabled={reconnecting} />
@@ -1242,39 +1348,67 @@ export function YourMacsCard() {
 
       {/*
         The directory refused the re-pair without proof of a fresh sign-in, so
-        one is in flight. The browser is already open on the pre-filled page;
-        the code is shown for the case where it opened without it.
+        one is in flight. With the browser open the prompt is a confirmation;
+        when the handoff failed it carries the URL and a Copy link button.
       */}
       {signInPrompt ? (
         <div
           role="status"
           style={{
             display: "flex",
-            alignItems: "center",
+            alignItems: "flex-start",
             gap: 12,
             borderTop: `1px solid ${COLORS.borderMuted}`,
             padding: "10px 18px",
             background: COLORS.recessedBg,
           }}
         >
-          <CircleNotch size={14} weight="bold" className="animate-spin" color={COLORS.textSecondary} />
+          {signInPrompt.browserOpened ? (
+            <CircleNotch size={14} weight="bold" className="animate-spin" color={COLORS.textSecondary} style={{ marginTop: 2 }} />
+          ) : null}
           <div style={{ minWidth: 0, flex: 1, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.5, color: COLORS.textSecondary }}>
-            Finish signing in in your browser to reconnect this computer…
-            <div style={{ color: COLORS.textMuted }}>
-              If the page asks for a code, enter{" "}
-              <span style={{ color: COLORS.textPrimary, fontWeight: 600, letterSpacing: 0.5 }}>
-                {signInPrompt.userCode}
-              </span>
-              .
-            </div>
+            {signInPrompt.browserOpened ? (
+              <>
+                Finish signing in in your browser. This closes on its own.
+                <div style={{ color: COLORS.textMuted }}>
+                  Code {signInPrompt.userCode}, in case the browser asks
+                </div>
+                <div style={{ marginTop: 8 }}>
+                  <button
+                    type="button"
+                    onClick={cancelReconnect}
+                    style={outlineButton({ height: 26, fontSize: 11, padding: "0 10px" })}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                Open the ADE sign-in page and enter this code.
+                <div style={{ marginTop: 4, fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textSecondary, wordBreak: "break-all" }}>
+                  {signInPrompt.verificationUriComplete ?? signInPrompt.verificationUri}
+                </div>
+                <div style={{ color: COLORS.textMuted }}>Code {signInPrompt.userCode}</div>
+                <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
+                  <button
+                    type="button"
+                    onClick={copySignInLink}
+                    style={outlineButton({ height: 26, fontSize: 11, padding: "0 10px" })}
+                  >
+                    {linkCopied ? "Copied" : "Copy link"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={cancelReconnect}
+                    style={outlineButton({ height: 26, fontSize: 11, padding: "0 10px" })}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </>
+            )}
           </div>
-          <button
-            type="button"
-            onClick={cancelReconnect}
-            style={outlineButton({ height: 26, fontSize: 11, padding: "0 10px", flexShrink: 0 })}
-          >
-            Cancel
-          </button>
         </div>
       ) : null}
 
@@ -1442,10 +1576,10 @@ export function YourMacsCard() {
                     }}
                   >
                     {signInPrompt
-                      ? "Signing in…"
+                      ? "Sign in again"
                       : reconnecting
                         ? "Reconnecting…"
-                        : "Reconnect this computer"}
+                        : reconnectActionLabel}
                   </button>
                 ) : null}
                 {/*

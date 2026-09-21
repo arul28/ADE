@@ -43,6 +43,8 @@ export const MAC_DESKTOP_DRIVER_OPS = {
   createDisplay: "display.create",
   destroyDisplay: "display.destroy",
   reconcileDisplays: "display.reconcile",
+  watchPermissions: "watch-permissions",
+  requestPermission: "request-permission",
   listWindows: "window.list",
   parkWindow: "window.park",
   unparkWindow: "window.unpark",
@@ -508,6 +510,63 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
   return {
     /** Starts the helper if it is not already up. Idempotent. */
     async ensureStarted(): Promise<void> {
+      await start();
+    },
+
+    /**
+     * Kills the helper and starts a fresh one, resolving once the new child is
+     * ready.
+     *
+     * macOS often does not show a Screen Recording grant made after a process
+     * started to that same process; a new one sees it. This deliberately does
+     * not go through `scheduleRestart`: an asked-for restart is not a crash, so
+     * neither the backoff nor the crash-loop counter applies, and the caller is
+     * owed a promise that settles when the replacement is up.
+     */
+    async restart(): Promise<void> {
+      if (disposed) {
+        throw new MacDesktopDriverError("MAC_DESKTOP_DRIVER_UNAVAILABLE", "The desktop driver client is disposed.");
+      }
+      if (restartTimer) {
+        clearTimeout(restartTimer);
+        restartTimer = null;
+      }
+      const running = child;
+      if (running) {
+        // Null `child` first. The `close` handler attributes a close to the
+        // current handle, so leaving this one current would let a requested
+        // restart schedule an unwanted backoff restart and a driver-lost event.
+        child = null;
+        childReady = false;
+        if (stableTimer) {
+          clearTimeout(stableTimer);
+          stableTimer = null;
+        }
+        settlePending(new MacDesktopDriverError(
+          "MAC_DESKTOP_DRIVER_UNAVAILABLE",
+          "The desktop driver was restarted.",
+        ));
+        await new Promise<void>((resolve) => {
+          let settled = false;
+          const done = () => {
+            if (settled) return;
+            settled = true;
+            resolve();
+          };
+          running.once("close", done);
+          try {
+            running.kill("SIGTERM");
+          } catch {
+            // Already gone; the handle was the only thing left of it.
+            done();
+          }
+          // A close that never arrives must not wedge the restart. Unref'd so
+          // it cannot hold the process open on its own.
+          const fallback = setTimeout(done, 2_000);
+          fallback.unref?.();
+        });
+      }
+      restartAttempts = 0;
       await start();
     },
 

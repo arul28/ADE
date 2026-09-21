@@ -14,6 +14,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { accountDirectorySummary } from "./accountDirectorySummary";
+import { formatThisComputerVersion } from "../remoteTargets/remoteMachineModel";
 import { QRCodeSVG } from "qrcode.react";
 import { createPortal } from "react-dom";
 import {
@@ -168,15 +169,30 @@ function platformAccessibleName(platform: string | undefined): string {
 
 // One-shot fetch of the local build/platform. `platform` stays the raw Node
 // identifier because the glyph, not a label, is what consumes it.
-function useAppInfoLine(): { version: string; platform: string } | null {
-  const [info, setInfo] = useState<{ version: string; platform: string } | null>(null);
+function useAppInfoLine(): {
+  packageVersion: string | null;
+  channel: string | null;
+  brainVersion: string | null;
+  platform: string;
+} | null {
+  const [info, setInfo] = useState<{
+    packageVersion: string | null;
+    channel: string | null;
+    brainVersion: string | null;
+    platform: string;
+  } | null>(null);
   useEffect(() => {
     let cancelled = false;
     window.ade?.app
       ?.getInfo?.()
       ?.then((next) => {
         if (!cancelled && next) {
-          setInfo({ version: next.appVersion, platform: next.platform });
+          setInfo({
+            packageVersion: next.appVersion ?? null,
+            channel: next.packageChannel ?? null,
+            brainVersion: next.localRuntime?.versionSkew?.runtimeVersion ?? null,
+            platform: next.platform,
+          });
         }
       })
       .catch(() => {});
@@ -190,13 +206,27 @@ function useAppInfoLine(): { version: string; platform: string } | null {
 export function ThisMacCard({
   sync,
   sessionState,
+  hideDirectorySummary = false,
 }: {
   sync: SyncConnections;
   sessionState: AdeAccountSessionState;
+  /**
+   * The Connections popover renders its own "This computer" card in the
+   * Machines list, which owns publication status there. Settings renders this
+   * card on its own, so the summary stays.
+   */
+  hideDirectorySummary?: boolean;
 }) {
   const accountSignedIn = sessionState === "active";
   const { status, busy, error, notice, isRemoteBound, boundMachineName } = sync;
   const appInfo = useAppInfoLine();
+  const versionLine = appInfo
+    ? formatThisComputerVersion({
+        brainVersion: appInfo.brainVersion,
+        packageVersion: appInfo.packageVersion,
+        channel: appInfo.channel,
+      })
+    : null;
   // Restarting the brain is the fix when it cannot read the stored account
   // session; re-read the snapshot once it settles so the banner clears.
   // Forced: a repair is a user action, so it must not wait out the degraded
@@ -275,7 +305,7 @@ export function ThisMacCard({
             color: COLORS.textSecondary,
           }}
         >
-          {appInfo ? `This machine — ADE ${appInfo.version}` : "This machine"}
+          {versionLine ? `This machine — ${versionLine.text}` : "This machine"}
         </div>
 
         <div style={{ display: "flex", alignItems: "flex-start", gap: 10, minWidth: 0 }}>
@@ -301,30 +331,33 @@ export function ThisMacCard({
               onSave={saveMachineName}
             />
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-              {accountSignedIn ? (
+              {!hideDirectorySummary && accountSignedIn ? (
                 <Cloud
                   size={13}
                   weight="fill"
                   color={directorySummary.healthy ? COLORS.accent : COLORS.warning}
                   style={{ flexShrink: 0 }}
                 />
-              ) : (
+              ) : null}
+              {!hideDirectorySummary && !accountSignedIn ? (
                 <CloudSlash size={13} weight="regular" color={COLORS.textMuted} style={{ flexShrink: 0 }} />
-              )}
-              <span
-                style={{
-                  ...helperTextStyle,
-                  lineHeight: 1.35,
-                  color: directorySummary.healthy || !accountSignedIn
-                    ? helperTextStyle.color
-                    : COLORS.warning,
-                }}
-              >
-                {directorySummary.label}
-              </span>
+              ) : null}
+              {!hideDirectorySummary ? (
+                <span
+                  style={{
+                    ...helperTextStyle,
+                    lineHeight: 1.35,
+                    color: directorySummary.healthy || !accountSignedIn
+                      ? helperTextStyle.color
+                      : COLORS.warning,
+                  }}
+                >
+                  {directorySummary.label}
+                </span>
+              ) : null}
               {showRepair ? <BrainRepairButton repair={repair} height={24} /> : null}
             </div>
-            {directorySummary.detail ? (
+            {!hideDirectorySummary && directorySummary.detail ? (
               // The one line that turns "another ADE app owns sync" into an
               // action: the reader has to quit it. Indented under the icon so
               // it reads as part of the same sentence.

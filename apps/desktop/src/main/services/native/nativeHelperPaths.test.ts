@@ -1,7 +1,10 @@
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  resolveAdeSigningState,
   resolveAttentionNotchExecutablePath,
   resolveMacDesktopDriverBinary,
 } from "./nativeHelperPaths";
@@ -100,5 +103,57 @@ describe("native helper paths", () => {
       platform: "darwin",
       env: { ADE_MAC_DESKTOP_DRIVER_PATH: process.execPath },
     })).toBe(process.execPath);
+  });
+
+  describe("ade signing marker", () => {
+    function packagedResources(marker: string | null): string {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-signing-"));
+      if (marker !== null) {
+        fs.mkdirSync(path.join(dir, "ade-cli"), { recursive: true });
+        fs.writeFileSync(path.join(dir, "ade-cli", "signing"), marker);
+      }
+      return dir;
+    }
+
+    it("reads the identity and ad-hoc markers from a packaged app", () => {
+      const identity = packagedResources("identity");
+      expect(resolveAdeSigningState({
+        platform: "darwin",
+        isPackaged: true,
+        resourcesPath: identity,
+      })).toBe("identity");
+
+      const adhoc = packagedResources("adhoc");
+      expect(resolveAdeSigningState({
+        platform: "darwin",
+        isPackaged: true,
+        resourcesPath: adhoc,
+      })).toBe("adhoc");
+    });
+
+    it("treats a packaged app with no marker as ad-hoc", () => {
+      // Packaged and no marker is the case where macOS drops the grant; saying
+      // so is the whole point of the note.
+      expect(resolveAdeSigningState({
+        platform: "darwin",
+        isPackaged: true,
+        resourcesPath: packagedResources(null),
+      })).toBe("adhoc");
+    });
+
+    it("never calls a development build ad-hoc", () => {
+      // A dev rebuild losing a grant is noise, not a warning worth showing.
+      const dir = packagedResources("adhoc");
+      expect(resolveAdeSigningState({
+        platform: "darwin",
+        isPackaged: false,
+        resourcesPath: dir,
+      })).toBe("identity");
+    });
+
+    it("answers unknown off macOS", () => {
+      expect(resolveAdeSigningState({ platform: "win32" })).toBe("unknown");
+      expect(resolveAdeSigningState({ platform: "linux" })).toBe("unknown");
+    });
   });
 });

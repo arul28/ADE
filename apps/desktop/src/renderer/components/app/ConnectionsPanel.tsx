@@ -323,6 +323,7 @@ export function ConnectionsPanel({
         <ThisMacCard
           sync={sync}
           sessionState={accountSessionState(accountStatus)}
+          hideDirectorySummary
         />
       </div>
 

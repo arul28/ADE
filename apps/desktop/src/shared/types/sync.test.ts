@@ -4,6 +4,7 @@ import {
   createSyncAccountDirectoryHealth,
   describeUnpublishedAccountDirectory,
   readCompetingSyncHostOwner,
+  thisComputerAction,
 } from "./sync";
 
 /**
@@ -91,5 +92,62 @@ describe("describeUnpublishedAccountDirectory competing sync host", () => {
     expect(readCompetingSyncHostOwner(
       createSyncAccountDirectoryHealth("no_active_sync_scope", "No active sync scope is available."),
     )).toBeNull();
+  });
+});
+
+/**
+ * The one button on the "this computer" card. Its label is the user-facing half
+ * of the refusal code the publisher already reports, so the Connections
+ * popover and the Account tab can never name the same fix differently.
+ */
+describe("thisComputerAction button labels", () => {
+  it("offers Reconnect this computer for a revoked machine", () => {
+    const health = createSyncAccountDirectoryHealth("http_error", null, {
+      lastHttpStatus: 403,
+      lastHttpReason: "machine_revoked",
+    });
+    expect(thisComputerAction("http_error", health)).toEqual({
+      label: "Reconnect this computer",
+      needsSignIn: false,
+      retry: false,
+    });
+  });
+
+  it("offers Sign in again when the directory demands fresh authentication", () => {
+    const health = createSyncAccountDirectoryHealth("http_error", null, {
+      lastHttpStatus: 403,
+      lastHttpReason: "pairing_authentication_required",
+    });
+    expect(thisComputerAction("http_error", health)).toEqual({
+      label: "Sign in again",
+      needsSignIn: true,
+      retry: false,
+    });
+  });
+
+  it("offers Retry for an HTTP failure the directory did not refuse", () => {
+    const health = createSyncAccountDirectoryHealth("http_error", null, {
+      lastHttpStatus: 500,
+      lastHttpReason: null,
+    });
+    expect(thisComputerAction("http_error", health)).toEqual({
+      label: "Retry",
+      needsSignIn: false,
+      retry: true,
+    });
+  });
+
+  it("names Repair for an unreadable brain session", () => {
+    expect(thisComputerAction("token_unreadable")).toEqual({
+      label: "Repair",
+      needsSignIn: false,
+      retry: false,
+    });
+  });
+
+  it("offers no button when nothing failed", () => {
+    expect(thisComputerAction("published").label).toBeNull();
+    expect(thisComputerAction("sync_disabled").label).toBeNull();
+    expect(thisComputerAction("not_host").label).toBeNull();
   });
 });

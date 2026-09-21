@@ -51,6 +51,8 @@ const baseStatus = (): MacDesktopStatus => ({
   recording: null,
   lanes: [],
   hostIsLocal: true,
+  responsibleAppName: "ADE",
+  signing: "identity",
 });
 
 describe("reduceMacDesktopStatus", () => {

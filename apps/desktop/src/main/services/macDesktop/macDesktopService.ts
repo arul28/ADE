@@ -43,12 +43,15 @@ import {
   type MacDesktopPresentArgs,
   type MacDesktopRecordStartArgs,
   type MacDesktopRecordingStatus,
+  type MacDesktopRecheckPermissionsArgs,
   type MacDesktopReleaseArgs,
+  type MacDesktopRequestPermissionArgs,
   type MacDesktopResolutionPreset,
   type MacDesktopScreenshotArgs,
   type MacDesktopScreenshotResult,
   type MacDesktopScrollArgs,
   type MacDesktopServiceApi,
+  type MacDesktopSigningState,
   type MacDesktopStartArgs,
   type MacDesktopStartStreamArgs,
   type MacDesktopStatus,
@@ -66,9 +69,10 @@ import type {
   ComputerUseArtifactIngestionRequest,
   ComputerUseArtifactIngestionResult,
 } from "../../../shared/types/computerUseArtifacts";
-import { resolveMacDesktopDriverBinary } from "../native/nativeHelperPaths";
+import { resolveAdeSigningState, resolveMacDesktopDriverBinary } from "../native/nativeHelperPaths";
 import {
   createMacDesktopDriverClient,
+  MAC_DESKTOP_DRIVER_OPS,
   MacDesktopDriverError,
   type MacDesktopDriverClient,
 } from "./macDesktopDriverClient";
@@ -159,6 +163,13 @@ export type MacDesktopServiceDeps = {
   writeSetting?: ((key: string, value: unknown) => void) | null;
   /** True when the ADE window asking is on this Mac. Defaults to true. */
   hostIsLocal?: (() => boolean) | null;
+  /**
+   * The app name macOS puts in its permission UI. Defaults to
+   * `ADE_DESKTOP_APP_NAME`, then `ADE`. Test seam only.
+   */
+  resolveResponsibleAppName?: (() => string) | null;
+  /** How this build was signed. Defaults to the packaged marker on disk. */
+  readSigningState?: (() => MacDesktopSigningState) | null;
   /** Test seam: supply a fake driver client instead of spawning the helper. */
   createDriverClient?: ((args: {
     logger: Logger;
@@ -225,6 +236,29 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   const now = deps.now ?? (() => Date.now());
   const isDarwin = platform === "darwin";
 
+  /** The app name macOS addresses in its permission UI. */
+  const responsibleAppName = (): string => {
+    if (deps.resolveResponsibleAppName) return deps.resolveResponsibleAppName();
+    const fromEnv = process.env.ADE_DESKTOP_APP_NAME?.trim();
+    return fromEnv && fromEnv.length ? fromEnv : "ADE";
+  };
+
+  /** How the running app was signed, for the ad-hoc grant note. */
+  let signingCache: MacDesktopSigningState | null = null;
+  const signingState = (): MacDesktopSigningState => {
+    if (deps.readSigningState) return deps.readSigningState();
+    // Resolved once: the signing identity cannot change while this process
+    // runs, and `getStatus` is a hot read that must not stat the app on every
+    // call.
+    if (signingCache === null) {
+      signingCache = resolveAdeSigningState({
+        platform,
+        driverBinaryPath: resolveMacDesktopDriverBinary({ platform, logger: deps.logger }),
+      });
+    }
+    return signingCache;
+  };
+
   const ownership = createMacDesktopOwnershipRegistry({ now });
   const leases = createMacDesktopLeaseRegistry({ now });
   const observations = createMacDesktopObservations({
@@ -247,6 +281,19 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
    */
   let backend: { client: MacDesktopDriverClient; provider: DesktopSeatProvider } | null = null;
   let driverEventUnsubscribe: (() => void) | null = null;
+  /**
+   * How many status subscribers are watching, and what the helper was last
+   * told about it.
+   *
+   * The probe has to run while a pane is open even with no display: that is
+   * exactly the stuck first-run state, where a grant made in System Settings
+   * never reaches the already-running helper. The driver refcounts this with
+   * "a display exists"; off with neither is what keeps an idle helper idle.
+   * The initial value matches a freshly spawned helper, so the first
+   * `getStatus` does not send a redundant `watch:false`.
+   */
+  let permissionWatchers = 0;
+  let permissionWatchSent = false;
   let reconciled = false;
   const startLocks = new Map<string, Promise<MacDesktopStatus>>();
   /**
@@ -343,6 +390,33 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   /** The backend only when it is already running: teardown must not start one. */
   const activeProvider = (): DesktopSeatProvider | null =>
     (backend && backend.client.isRunning() ? backend.provider : null);
+
+  /**
+   * Tells the helper whether to keep probing for a permission transition.
+   *
+   * Fire and forget: the probe is an optimization, and a helper that refuses
+   * the op still answers the one-shot probe on `getStatus`. Nothing is sent
+   * while no helper is up; the first `ensureDriver` re-runs this, which is why
+   * `permissionWatchSent` is only updated once a request is actually sent.
+   */
+  const syncPermissionWatch = async (): Promise<void> => {
+    const desired = permissionWatchers > 0;
+    if (desired === permissionWatchSent) return;
+    const client = backend?.client;
+    if (!client || !client.isRunning()) return;
+    try {
+      await client.request(MAC_DESKTOP_DRIVER_OPS.watchPermissions, { watch: desired });
+      permissionWatchSent = desired;
+    } catch (error) {
+      // Leave the recorded state disagreeing with the ask so the next sync
+      // retries it; the helper is still serving one-shot probes meanwhile.
+      permissionWatchSent = !desired;
+      deps.logger.debug("mac_desktop.permission_watch_failed", {
+        watch: desired,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
 
   const streaming = createMacDesktopStreaming({
     logger: deps.logger,
@@ -550,6 +624,10 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       driverEventUnsubscribe = client.onEvent((event) => handleDriverEvent(event));
     }
     await backend.client.ensureStarted();
+    // A fresh child knows nothing about the last one's watch state: it starts
+    // with the probe off, whatever this process last told the old helper.
+    permissionWatchSent = false;
+    await syncPermissionWatch();
     await refreshDriverHealth(backend.client, backend.provider);
     return backend;
   };
@@ -628,6 +706,8 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       recording: laneId ? recordings.get(laneId) ?? null : null,
       lanes: ownership.laneSummaries((lane) => streamServer.isStreaming(lane)),
       hostIsLocal: deps.hostIsLocal ? deps.hostIsLocal() : true,
+      responsibleAppName: responsibleAppName(),
+      signing: signingState(),
     };
   };
 
@@ -813,6 +893,38 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         await refreshDriverHealth(backend.client, backend.provider);
       }
       return await buildStatus(args);
+    },
+
+    async recheckPermissions(args: MacDesktopRecheckPermissionsArgs = {}): Promise<MacDesktopPermissions> {
+      assertSupported();
+      const { client, provider } = await ensureDriver();
+      if (args.restartDriver !== false) {
+        await client.restart();
+        // The helper died with every display it owned. Nothing is parked on a
+        // display that no longer exists, so a lane map that still claimed one
+        // would report a screen that is gone.
+        if (ownership.laneIds().length > 0) onDriverLost("restarted");
+      }
+      permissionWatchSent = false;
+      await syncPermissionWatch();
+      await refreshDriverHealth(client, provider);
+      return permissions;
+    },
+
+    async requestPermission(args: MacDesktopRequestPermissionArgs): Promise<MacDesktopPermissions> {
+      assertSupported();
+      // The one place `allowPrompt` is decided. It is true only when the
+      // ADE window asking is on this Mac; an agent cannot reach this method
+      // (it is CTO-only) and the helper ignores the ask when it arrives false.
+      const allowPrompt = deps.hostIsLocal ? deps.hostIsLocal() : true;
+      const { client, provider } = await ensureDriver();
+      const reply = await provider.requestPermission({
+        which: args.which === "accessibility" ? "accessibility" : "screenRecording",
+        allowPrompt,
+      });
+      applyPermissions(asRecord(reply.permissions) as Partial<MacDesktopPermissions>);
+      await refreshDriverHealth(client, provider);
+      return permissions;
     },
 
     async start(args: MacDesktopStartArgs): Promise<MacDesktopStatus> {
@@ -1030,8 +1142,22 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
      * read-only surface cannot start a display or move a pointer.
      */
     subscribe(listener: (payload: MacDesktopEventPayload) => void): () => void {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
+      // Counted only when the listener is actually new: the same listener added
+      // twice would otherwise leave the watcher count permanently inflated,
+      // because the second unsubscribe finds nothing to delete.
+      if (!listeners.has(listener)) {
+        listeners.add(listener);
+        permissionWatchers += 1;
+        void syncPermissionWatch();
+      }
+      let active = true;
+      return () => {
+        if (!active) return;
+        active = false;
+        if (!listeners.delete(listener)) return;
+        permissionWatchers = Math.max(0, permissionWatchers - 1);
+        void syncPermissionWatch();
+      };
     },
 
     dispose(): void {

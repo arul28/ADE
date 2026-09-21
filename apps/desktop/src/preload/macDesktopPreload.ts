@@ -14,11 +14,14 @@ import type {
   MacDesktopObserveArgs,
   MacDesktopOpenArgs,
   MacDesktopOpenResult,
+  MacDesktopPermissions,
   MacDesktopPressArgs,
   MacDesktopPresentArgs,
   MacDesktopRecordStartArgs,
   MacDesktopRecordingStatus,
+  MacDesktopRecheckPermissionsArgs,
   MacDesktopReleaseArgs,
+  MacDesktopRequestPermissionArgs,
   MacDesktopScreenshotArgs,
   MacDesktopScreenshotResult,
   MacDesktopScrollArgs,
@@ -90,6 +93,14 @@ export function createMacDesktopBridge(deps: MacDesktopBridgeDeps) {
 
   return {
     getStatus: callOptional<MacDesktopGetStatusArgs, MacDesktopStatus>("getStatus", IPC.macDesktopGetStatus),
+    recheckPermissions: callOptional<MacDesktopRecheckPermissionsArgs, MacDesktopPermissions>(
+      "recheckPermissions",
+      IPC.macDesktopRecheckPermissions,
+    ),
+    requestPermission: call<MacDesktopRequestPermissionArgs, MacDesktopPermissions>(
+      "requestPermission",
+      IPC.macDesktopRequestPermission,
+    ),
     start: call<MacDesktopStartArgs, MacDesktopStatus>("start", IPC.macDesktopStart),
     stop: call<MacDesktopStopArgs, MacDesktopStopResult>("stop", IPC.macDesktopStop),
     listWindows: callOptional<{ laneId?: string | null }, MacDesktopWindow[]>("listWindows", IPC.macDesktopListWindows),

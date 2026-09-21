@@ -36,6 +36,8 @@ function createFakeDriver(overrides: Record<string, (payload: Record<string, unk
     /** Lets a test swap an op's answer after the driver was built. */
     overrides,
     listeners,
+    /** How many times `restart` was asked for. */
+    restartCalls: 0,
     /** Lets a test hold `display.create` open to force a race. */
     blockCreate() {
       return new Promise<void>((resolve) => {
@@ -48,6 +50,10 @@ function createFakeDriver(overrides: Record<string, (payload: Record<string, unk
     },
     async ensureStarted() {},
     isRunning: () => true,
+    async restart() {
+      client.restartCalls += 1;
+      calls.push({ op: "restart", payload: {} });
+    },
     async request(op: string, payload: Record<string, unknown> = {}) {
       calls.push({ op, payload });
       const override = overrides[op];
@@ -187,6 +193,73 @@ describe("macDesktopService start", () => {
     await service.start({ laneId: "lane-1", laneName: "Login fix" });
     const create = driver.calls.find((call) => call.op === MAC_DESKTOP_DRIVER_OPS.createDisplay);
     expect(create?.payload.name).toBe("ADE · Login fix");
+    service.dispose();
+  });
+});
+
+describe("macDesktopService permissions", () => {
+  it("recheckPermissions restarts the driver and returns the fresh probe", async () => {
+    const driver = createFakeDriver({
+      [MAC_DESKTOP_DRIVER_OPS.health]: () => ({
+        version: "1.0.0",
+        permissions: { screenRecording: "denied", accessibility: "granted" },
+        displayMode: "virtual",
+      }),
+    });
+    const { service } = makeService({ driver });
+    expect((await service.getStatus({ laneId: "lane-1" })).permissions.screenRecording).toBe("denied");
+
+    // The grant was made in System Settings and macOS showed it to a fresh
+    // helper process, which is the whole reason the restart comes first.
+    driver.overrides[MAC_DESKTOP_DRIVER_OPS.health] = () => ({
+      version: "1.0.0",
+      permissions: { screenRecording: "granted", accessibility: "granted" },
+      displayMode: "virtual",
+    });
+
+    const permissions = await service.recheckPermissions({ restartDriver: true });
+    expect(driver.restartCalls).toBe(1);
+    expect(permissions).toEqual({ screenRecording: "granted", accessibility: "granted" });
+    expect((await service.getStatus({ laneId: "lane-1" })).permissions.screenRecording).toBe("granted");
+    service.dispose();
+  });
+
+  it("status watch turns the driver permission watch on and off", async () => {
+    const driver = createFakeDriver();
+    const { service } = makeService({ driver });
+    await service.getStatus({ laneId: "lane-1" });
+    const watches = () => driver.calls
+      .filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.watchPermissions)
+      .map((call) => call.payload.watch);
+    // A plain status read watches nothing: the helper stays idle.
+    expect(watches()).toEqual([]);
+
+    const unsubscribe = service.subscribe(() => {});
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(watches()).toEqual([true]);
+
+    unsubscribe();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(watches()).toEqual([true, false]);
+    service.dispose();
+  });
+
+  it("request-permission is refused without allowPrompt", async () => {
+    const driver = createFakeDriver();
+    const service = createMacDesktopService({
+      projectRoot: fs.mkdtempSync(path.join(os.tmpdir(), "mac-desktop-test-")),
+      logger,
+      platform: "darwin",
+      // The lane's Mac is not this computer: prompting would fire a system
+      // modal at somebody sitting at a machine that is not theirs.
+      hostIsLocal: () => false,
+      createDriverClient: () => driver as unknown as MacDesktopDriverClient,
+    });
+    await service.requestPermission({ which: "screenRecording" });
+    const ask = driver.calls.find((call) => call.op === MAC_DESKTOP_DRIVER_OPS.requestPermission);
+    expect(ask?.payload).toMatchObject({ which: "screenRecording", allowPrompt: false });
     service.dispose();
   });
 });

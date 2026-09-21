@@ -39,6 +39,7 @@ final class DriverProtocolTests: XCTestCase {
             [
                 "ping",
                 "display.create", "display.destroy", "display.reconcile",
+                "watch-permissions", "request-permission",
                 "window.list", "window.park", "window.unpark",
                 "app.launch", "present", "observe", "input",
                 "lease.set", "lease.clear",

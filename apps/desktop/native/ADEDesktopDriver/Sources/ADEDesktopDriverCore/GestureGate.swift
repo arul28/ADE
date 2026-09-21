@@ -195,7 +195,9 @@ public final class GestureGate: @unchecked Sendable {
              .setStreamCursorVisible,
              .stopStream,
              .startRecording,
-             .stopRecording:
+             .stopRecording,
+             .watchPermissions,
+             .requestPermission:
             // Read-only, or scoped to plumbing the window server does not route
             // through the pointer. These keep answering so a gesture never
             // looks like a hung driver.
