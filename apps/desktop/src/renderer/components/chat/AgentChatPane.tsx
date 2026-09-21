@@ -4004,7 +4004,7 @@ export function AgentChatPane({
   // Tagged with the chat the rules belong to: a session switch is not
   // synchronous with the reset effect, so the modal must never render another
   // chat's rules even for one frame.
-  const [autoHandoffRules, setAutoHandoffRules] = useState<{ sessionId: string; rules: AutomationRuleSummary[] } | null>(null);
+  const [autoHandoffRules, setAutoHandoffRules] = useState<{ sessionId: string; rules: AutomationRuleSummary[]; binding: OpenProjectBinding | null } | null>(null);
   // Token for the in-flight rules read; a later open or a session switch
   // invalidates an older response so it cannot prefill the wrong chat.
   const autoHandoffRequestRef = useRef(0);
@@ -4971,13 +4971,16 @@ export function AgentChatPane({
   const openAutoHandoff = useCallback(async () => {
     const sessionId = selectedSessionId;
     const requestId = ++autoHandoffRequestRef.current;
-    // Read through the chat's own machine pin: a chat that lives on another
-    // machine must read and later save its rules there, not in this tab's
-    // bound project.
+    // Freeze the machine for this read. The chat's pin can re-resolve while the
+    // read is in flight; seeding the editor from one machine's rules while it
+    // saved through another would overwrite the other machine's rules, so the
+    // read and the modal are both bound to the pin captured here.
+    const pin = chatRuntimePinRef.current;
     const rules = sessionId
-      ? await loadAutoHandoffRulesForSession(sessionId, chatRuntimePinRef.current)
+      ? await loadAutoHandoffRulesForSession(sessionId, pin)
       : null;
     if (autoHandoffRequestRef.current !== requestId) return;
+    if ((chatRuntimePinRef.current?.key ?? null) !== (pin?.key ?? null)) return;
     if (!sessionId) return;
     // A failed read is not "no rules": opening the editor on defaults would let
     // Save delete conditions the read never saw. Keep it closed and say so.
@@ -4990,7 +4993,7 @@ export function AgentChatPane({
       return;
     }
     openHandoffTab();
-    setAutoHandoffRules({ sessionId, rules });
+    setAutoHandoffRules({ sessionId, rules, binding: pin });
     setAutoHandoffOpen(true);
   }, [openHandoffTab, selectedSessionId]);
 
@@ -15141,7 +15144,11 @@ export function AgentChatPane({
             laneId: selectedSession.laneId,
             modelId: selectedSession.modelId ?? selectedSession.model,
           }}
-          binding={chatRuntimePin}
+          binding={
+            autoHandoffRules?.sessionId === selectedSession.sessionId
+              ? autoHandoffRules.binding
+              : chatRuntimePin
+          }
           existingRules={
             autoHandoffRules?.sessionId === selectedSession.sessionId
               ? autoHandoffRules.rules
