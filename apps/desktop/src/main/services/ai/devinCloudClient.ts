@@ -363,6 +363,30 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
   const orgIdOf = (entry: Record<string, unknown>): string | null =>
     readString(entry.org_id) ?? readString(entry.id);
 
+  /**
+   * `GET /v3/self` — who the credential authenticates as. Works for PATs and
+   * service-user keys on every account tier (the enterprise org list is
+   * enterprise-only); null on v1 keys, which have no equivalent.
+   */
+  const getSelf = async (): Promise<{
+    userId: string | null;
+    orgId: string | null;
+    userName: string | null;
+  } | null> => {
+    if (authMode === "v1") return null;
+    try {
+      const record = await request<unknown>("/v3/self");
+      if (!isRecord(record)) return null;
+      return {
+        userId: readString(record.user_id) ?? readString(record.service_user_id),
+        orgId: readString(record.org_id),
+        userName: readString(record.user_name) ?? readString(record.service_user_name),
+      };
+    } catch {
+      return null;
+    }
+  };
+
   const noOrgIdError = () =>
     new Error(
       "Could not determine your Devin org. Add your org id (org-...) in Settings > Devin — it is shown in your Devin settings and session URLs.",
@@ -391,6 +415,11 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
     if (cachedOrgId) return cachedOrgId;
     if (!orgLookupPromise) {
       orgLookupPromise = (async (): Promise<string | null> => {
+        // `/v3/self` is the cheapest, tier-agnostic discovery: PATs and service
+        // users get `org_id` even on non-enterprise accounts where the
+        // enterprise org list is gated.
+        const self = await getSelf();
+        if (self?.orgId) return self.orgId;
         const items = await listAllOrganizations();
         if (!items) throw noOrgIdError();
         const first = items.find(isRecord);
@@ -738,14 +767,17 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
     }
     const items = await listAllOrganizations();
     if (!items) {
-      // Non-enterprise account: org listing is enterprise-gated, so verify
-      // the configured org by probing an org-scoped endpoint instead.
-      if (!cachedOrgId) throw noOrgIdError();
-      if (!(await probeOrg(cachedOrgId))) {
+      // Non-enterprise account: org listing is enterprise-gated. `/v3/self`
+      // still reports the org for PATs; otherwise verify the configured org by
+      // probing an org-scoped endpoint.
+      const orgId = cachedOrgId ?? (await getSelf())?.orgId ?? null;
+      if (!orgId) throw noOrgIdError();
+      if (!(await probeOrg(orgId))) {
         throw new Error(
-          `Org '${cachedOrgId}' is not visible to this Devin token. Check the org id in Settings > Devin.`,
+          `Org '${orgId}' is not visible to this Devin token. Check the org id in Settings > Devin.`,
         );
       }
+      cachedOrgId = orgId;
       return { orgName: null };
     }
     const first = items.find(isRecord);
@@ -787,6 +819,8 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
     archiveSession,
     unarchiveSession,
     verify,
+    /** `GET /v3/self` — caller identity (userId/orgId) for PATs and service users. */
+    getSelf,
     /** Resolved org id when known (configured or discovered). */
     getOrgId: () => cachedOrgId,
   };

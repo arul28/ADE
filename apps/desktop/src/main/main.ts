@@ -4464,6 +4464,7 @@ app.whenReady().then(async () => {
       logger,
       listDevinCloudSessions: (args) => aiIntegrationService.listDevinCloudSessions(args),
       getDevinCloudSession: (devinSessionId) => aiIntegrationService.getDevinCloudSession(devinSessionId),
+      getDevinCloudCallerUserId: () => aiIntegrationService.getDevinCloudCallerUserId(),
       laneService: {
         list: (args) => laneService.list(args),
         importBranch: (args) => laneService.importBranch(args),

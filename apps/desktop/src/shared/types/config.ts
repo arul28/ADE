@@ -1538,6 +1538,11 @@ export type DevinCloudFleetEntry = {
    * org-level row unrelated to this project ("org").
    */
   matchedBy: "session" | "repo" | "tag" | "org";
+  /**
+   * True when the fleet credential's principal (`/v3/self` user_id) created
+   * this session. Null-safe: false on v1 keys, which report no caller.
+   */
+  isMine: boolean;
 };
 
 export type DevinCloudFleetResult = {

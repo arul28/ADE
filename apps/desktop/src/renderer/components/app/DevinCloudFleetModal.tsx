@@ -52,7 +52,7 @@ function provenanceMatches(entry: DevinCloudFleetEntry, provenance: ProvenanceFi
     case "ade":
       return entry.createdViaAde;
     case "mine":
-      return entry.createdViaAde || entry.session.origin === "mine";
+      return entry.createdViaAde || entry.isMine;
     default:
       return true;
   }

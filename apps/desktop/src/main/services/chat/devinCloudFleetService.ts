@@ -33,6 +33,8 @@ type FleetServiceDeps = {
   }>;
   /** Single-session read for ids beyond the first list page. */
   getDevinCloudSession?: (devinSessionId: string) => Promise<DevinCloudSessionSummary | null>;
+  /** `user_id` of the credential's principal (`/v3/self`) — drives the "Mine" filter. */
+  getDevinCloudCallerUserId?: () => Promise<string | null>;
   laneService: Pick<ReturnType<typeof createLaneService>, "list" | "importBranch">;
   /** ADE chat sessions already linked to a Devin cloud session. */
   listDevinCloudSessionLinks: () => Promise<SessionLink[]>;
@@ -150,6 +152,10 @@ export function createDevinCloudFleetService(deps: FleetServiceDeps) {
       cursor = next;
     } while (true);
 
+    const callerUserId = deps.getDevinCloudCallerUserId
+      ? await deps.getDevinCloudCallerUserId().catch(() => null)
+      : null;
+
     return listedItems.map((session): DevinCloudFleetEntry => {
       const link = linkByDevinId.get(session.sessionId) ?? null;
       const laneIdFromTag = devinCloudAdeLaneId(session.tags);
@@ -182,6 +188,7 @@ export function createDevinCloudFleetService(deps: FleetServiceDeps) {
         createdViaAde,
         adeLaneId: laneIdFromTag,
         matchedBy,
+        isMine: Boolean(callerUserId && session.userId && session.userId === callerUserId),
       };
     });
   };

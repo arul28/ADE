@@ -1618,6 +1618,21 @@ export function createAiIntegrationService(args: {
     }
   };
 
+  // `/v3/self` principal id for the stored credential — drives the fleet's
+  // "Mine" filter. Cached per apiKey; null on v1 keys (no self endpoint).
+  let devinCloudCaller: { apiKey: string; userId: string | null } | null = null;
+
+  const getDevinCloudCallerUserId = async (): Promise<string | null> => {
+    const apiKey = await requireDevinCloudApiKey();
+    if (devinCloudCaller && devinCloudCaller.apiKey === apiKey) {
+      return devinCloudCaller.userId;
+    }
+    const client = await devinCloudClient();
+    const self = await client.getSelf().catch(() => null);
+    devinCloudCaller = { apiKey, userId: self?.userId ?? null };
+    return devinCloudCaller.userId;
+  };
+
   const getDevinCloudAuthStatus = async (): Promise<DevinCloudAuthStatus> => {
     const apiKey = getStoredApiKey("devin");
     if (!apiKey) {
@@ -1640,6 +1655,7 @@ export function createAiIntegrationService(args: {
       deleteStoredApiKey("devin");
       persistDevinCloudOrgId(null);
       devinCloudClientCache = null;
+      devinCloudCaller = null;
       return { configured: false, authMode: null, orgId: null, orgName: null, error: null };
     }
     const orgId = args.orgId?.trim() || null;
@@ -2562,6 +2578,7 @@ export function createAiIntegrationService(args: {
     archiveDevinCloudSession,
     unarchiveDevinCloudSession,
     requireDevinCloudApiKey,
+    getDevinCloudCallerUserId,
 
     getAvailabilityAsync,
     resolveModelForTask,
