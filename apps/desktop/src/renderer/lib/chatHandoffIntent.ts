@@ -18,8 +18,24 @@ export type ChatHandoffIntent = "local" | "remote";
 
 type ChatHandoffListener = (sessionId: string, intent: ChatHandoffIntent) => void;
 
+type PendingChatHandoff = {
+  sessionId: string;
+  intent: ChatHandoffIntent;
+  queuedAt: number;
+};
+
 const listeners = new Set<ChatHandoffListener>();
-let pending: { sessionId: string; intent: ChatHandoffIntent } | null = null;
+let pending: PendingChatHandoff | null = null;
+
+/**
+ * A queued intent is a transient command, not state. If the target pane never
+ * mounts (the session failed to open, the user navigated away), consuming it an
+ * arbitrary time later would open the handoff surface uninvited — the same
+ * reason `agentChatDraftHandoff` bounds its queue. Kept local rather than shared
+ * because that sibling keys a different payload by target and notifies through a
+ * window event; the two diverge in housekeeping, not in intent.
+ */
+const MAX_PENDING_AGE_MS = 30_000;
 
 /**
  * Queue a handoff and notify any pane already listening for that session. The
@@ -31,7 +47,7 @@ let pending: { sessionId: string; intent: ChatHandoffIntent } | null = null;
  * first is taken replaces the first rather than accumulating stale commands.
  */
 export function openChatHandoff(sessionId: string, intent: ChatHandoffIntent): void {
-  pending = { sessionId, intent };
+  pending = { sessionId, intent, queuedAt: Date.now() };
   for (const listener of [...listeners]) listener(sessionId, intent);
 }
 
@@ -41,15 +57,17 @@ export function subscribeChatHandoff(listener: ChatHandoffListener): () => void 
 }
 
 /**
- * Return and clear the queued intent for this session, if any. The slot is
- * single-slot, so a pending intent for a different session is not preserved —
- * see `openChatHandoff`.
+ * Return and clear the queued intent for this session, if any. A stale intent
+ * (older than `MAX_PENDING_AGE_MS`) is discarded rather than consumed, so a
+ * command whose pane never mounted cannot fire on a much later selection. An
+ * intent queued for a different session is left in place, not returned.
  */
 export function takeChatHandoff(sessionId: string): ChatHandoffIntent | null {
   if (!pending || pending.sessionId !== sessionId) return null;
   const intent = pending.intent;
+  const stale = Date.now() - pending.queuedAt > MAX_PENDING_AGE_MS;
   pending = null;
-  return intent;
+  return stale ? null : intent;
 }
 
 /** Test hook; production code never needs to reset the module. */

@@ -5707,7 +5707,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(await screen.findByText("Handoff is not available for this chat.")).toBeTruthy();
   });
 
-  it("greys out both handoff menu cards with a notice while the turn is active", async () => {
+  it("greys out the two live handoff cards with a notice while the turn is active, but keeps the auto rule editor reachable", async () => {
     const session = buildSession("session-1");
     installAdeMocks({
       transcript: buildStatusStartedTranscript(session.sessionId),
@@ -5719,15 +5719,23 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
     const remoteCard = await screen.findByRole("button", { name: /Continue on another machine/i });
     const localCard = await screen.findByRole("button", { name: /Hand off locally/i });
+    const autoCard = await screen.findByRole("button", { name: /Auto handoff/i });
     await waitFor(() => {
       expect((remoteCard as HTMLButtonElement).disabled).toBe(true);
       expect((localCard as HTMLButtonElement).disabled).toBe(true);
     });
+    // Auto handoff is a rule editor rather than a move, so arming a rule while
+    // the turn runs is allowed and matches the session menu's ungated row.
+    expect((autoCard as HTMLButtonElement).disabled).toBe(false);
     expect(screen.getByText(/A turn is running — wait for it to finish/i)).toBeTruthy();
 
     // Clicking the disabled local card must not navigate into the local view.
     fireEvent.click(localCard);
     expect(screen.queryByText("Local handoff")).toBeNull();
+
+    // The auto editor opens even mid-turn.
+    fireEvent.click(autoCard);
+    expect(await screen.findByRole("heading", { name: "Auto handoff" })).toBeTruthy();
   });
 
   it("opens the local handoff view from a queued context-menu intent", async () => {

@@ -873,7 +873,7 @@ export function CrossMachineHandoffModal({
     || forkUnsupportedAtReview;
   const reviewIsFork = prepared?.capsule.mode === "fork";
   const handoffMayStillComplete = error === CROSS_MACHINE_HANDOFF_STILL_COMPLETING_MESSAGE;
-  const insecureConsentLine = reviewIsFork
+  const insecureRouteNotice = reviewIsFork
     ? "This connection is authenticated but not end-to-end encrypted. The full chat history is sent exactly as recorded."
     : "This connection is authenticated but not end-to-end encrypted. Only the summary is sent — never secrets.";
 
@@ -1176,7 +1176,7 @@ export function CrossMachineHandoffModal({
               ))}
               {isInsecureRoute(selectedConnection) ? (
                 <div className="rounded-lg border border-amber-300/20 bg-amber-400/[0.065] px-3 py-2.5 text-[10px] leading-4 text-amber-100/72">
-                  {insecureConsentLine}
+                  {insecureRouteNotice}
                 </div>
               ) : null}
               <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-white/[0.07] bg-white/[0.025] px-3 py-2.5">
@@ -1279,11 +1279,18 @@ export function CrossMachineHandoffModal({
                   Sent: the branch and commit, plus your note
                 </span>
                 {!reviewIsFork ? (
+                  <>
+                    <span className="inline-flex items-center gap-1.5">
+                      <LockKey size={13} className="text-fg/40" />
+                      Never sent: the raw transcript, secrets, terminals, and caches
+                    </span>
+                  </>
+                ) : (
                   <span className="inline-flex items-center gap-1.5">
-                    <LockKey size={13} className="text-fg/40" />
-                    Never sent: secrets and caches
+                    <Warning size={13} className="text-fg/40" />
+                    Includes anything pasted into this conversation
                   </span>
-                ) : null}
+                )}
                 {prepared.sanitizedSensitiveContext ? (
                   <span className="inline-flex items-center gap-1.5 text-emerald-200/70">
                     <CheckCircle size={13} weight="fill" />
@@ -1302,10 +1309,10 @@ export function CrossMachineHandoffModal({
                 */
                 <div
                   className="flex items-start gap-2 rounded-lg border border-amber-300/16 bg-amber-400/[0.055] px-3 py-2 text-[10px] leading-4 text-amber-100/70"
-                  data-testid="insecure-consent-review"
+                  data-testid="insecure-route-notice"
                 >
                   <ShieldWarning size={13} className="mt-0.5 shrink-0" />
-                  <span>{insecureConsentLine}</span>
+                  <span>{insecureRouteNotice}</span>
                 </div>
               ) : null}
             </div>

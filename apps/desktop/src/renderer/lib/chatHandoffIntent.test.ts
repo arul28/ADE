@@ -38,7 +38,7 @@ describe("chatHandoffIntent", () => {
     expect(takeChatHandoff("chat-2")).toBeNull();
   });
 
-  it("keeps the latest intent per session and unsubscribes cleanly", () => {
+  it("last write wins for the single queued slot, and unsubscribes cleanly", () => {
     const listener = vi.fn();
     const unsubscribe = subscribeChatHandoff(listener);
     openChatHandoff("chat-3", "remote");
@@ -48,5 +48,27 @@ describe("chatHandoffIntent", () => {
 
     expect(listener).toHaveBeenCalledTimes(1);
     expect(takeChatHandoff("chat-3")).toBe("local");
+  });
+
+  it("discards a queued intent older than the staleness bound", () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    openChatHandoff("chat-4", "remote");
+
+    // The target pane never mounted; much later the same session is selected.
+    now.mockReturnValue(1_000 + 30_001);
+
+    expect(takeChatHandoff("chat-4")).toBeNull();
+    // And it is cleared, so it cannot fire on any later take.
+    now.mockReturnValue(1_000 + 30_002);
+    expect(takeChatHandoff("chat-4")).toBeNull();
+  });
+
+  it("delivers a queued intent within the staleness bound", () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(2_000);
+    openChatHandoff("chat-5", "local");
+
+    now.mockReturnValue(2_000 + 29_999);
+
+    expect(takeChatHandoff("chat-5")).toBe("local");
   });
 });

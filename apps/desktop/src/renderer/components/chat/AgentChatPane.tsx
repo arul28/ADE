@@ -422,10 +422,12 @@ const HANDOFF_CARD_TONE_CLASS: Record<
       "border-[color:color-mix(in_srgb,var(--chat-accent)_30%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_15%,transparent)] text-[color:color-mix(in_srgb,var(--chat-accent)_84%,white)]",
   },
   auto: {
-    border: "border-violet-300/18",
-    wash: "bg-[linear-gradient(150deg,rgba(167,139,250,0.12),rgba(255,255,255,0.014)_62%)]",
-    hover: "hover:border-violet-300/34 hover:bg-[linear-gradient(150deg,rgba(167,139,250,0.19),rgba(255,255,255,0.02)_62%)]",
-    plate: "border-violet-300/24 bg-violet-400/12 text-violet-100",
+    border: "border-[color:color-mix(in_srgb,var(--color-accent)_22%,transparent)]",
+    wash: "bg-[linear-gradient(150deg,color-mix(in_srgb,var(--color-accent)_12%,transparent),rgba(255,255,255,0.014)_62%)]",
+    hover:
+      "hover:border-[color:color-mix(in_srgb,var(--color-accent)_38%,transparent)] hover:bg-[linear-gradient(150deg,color-mix(in_srgb,var(--color-accent)_19%,transparent),rgba(255,255,255,0.02)_62%)]",
+    plate:
+      "border-[color:color-mix(in_srgb,var(--color-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--color-accent)_14%,transparent)] text-accent",
   },
 };
 
@@ -3781,6 +3783,14 @@ export function AgentChatPane({
   const [chatActionsTab, setChatActionsTab] = useState<ChatActionsTab>(
     () => readChatCompanionUiState(initialCompanionStateKey).chatActionsTab,
   );
+  // The handoff router reads the drawer's open/tab state to decide whether it
+  // can apply a destination directly or must hand it to the tab's one-shot open
+  // effect. It reads them through latest-value refs so the intent subscription
+  // does not tear down and re-arm on every drawer open/close/tab change.
+  const chatActionsOpenRef = useRef(chatActionsOpen);
+  chatActionsOpenRef.current = chatActionsOpen;
+  const chatActionsTabRef = useRef(chatActionsTab);
+  chatActionsTabRef.current = chatActionsTab;
   const openProofDrawer = useCallback(() => {
     setChatActionsTab("proof");
     setChatActionsOpen(true);
@@ -3974,8 +3984,8 @@ export function AgentChatPane({
     setChatActionsTab("handoff");
     setChatActionsOpen(true);
   }, []);
-  // Two-view handoff tab: the landing menu (remote vs local) and the local
-  // handoff surface (fork | brief). Both reset each time the tab is opened.
+  // Two-view handoff tab: the landing menu (remote / local / auto) and the
+  // local handoff surface (fork | brief). Both reset each time the tab opens.
   const [handoffView, setHandoffView] = useState<"menu" | "local">("menu");
   const [handoffLocalMode, setHandoffLocalMode] = useState<"fork" | "brief">("fork");
   // Brief handoffs may target a different lane (or a freshly created one); fork
@@ -4943,13 +4953,13 @@ export function AgentChatPane({
     // menu. When the drawer is not already on that tab — the normal context-menu
     // case — hand the effect the destination through the pending ref instead of
     // racing it; apply directly only when the tab is already showing.
-    if (chatActionsOpen && chatActionsTab === "handoff") {
+    if (chatActionsOpenRef.current && chatActionsTabRef.current === "handoff") {
       setHandoffView("local");
       setHandoffLocalMode("fork");
       return;
     }
     pendingHandoffDestinationRef.current = "local";
-  }, [chatActionsOpen, chatActionsTab, isRemoteChat]);
+  }, [isRemoteChat]);
 
   /**
    * Opens the Auto handoff rule editor for the selected chat, prefilled from the
@@ -12919,9 +12929,9 @@ export function AgentChatPane({
         <div className="font-sans text-[12px] font-semibold text-fg/82">Hand off this chat</div>
         <div className="text-[11px] leading-4 text-fg/50">Continue the work somewhere new — another machine, a fresh chat here, or automatically when this one stops.</div>
       </div>
-      <div className="relative">
+      <div className="space-y-2.5">
         <div
-          className={cn("space-y-2.5", handoffTurnGate && "pointer-events-none select-none opacity-40")}
+          className={cn("relative space-y-2.5", handoffTurnGate && "pointer-events-none select-none opacity-40")}
           aria-disabled={handoffTurnGate || undefined}
         >
           <HandoffMenuCard
@@ -12943,22 +12953,24 @@ export function AgentChatPane({
             disabled={handoffTurnGate}
             onClick={() => openHandoffDestination("local")}
           />
-          <HandoffMenuCard
-            tone="auto"
-            icon={ArrowsLeftRight}
-            title="Auto handoff"
-            description="If this chat hits a limit, fails, or ends — continue it automatically."
-            disabled={handoffTurnGate}
-            onClick={() => { void openAutoHandoff(); }}
-          />
-        </div>
-        {handoffTurnGate ? (
-          <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-3">
-            <div className="pointer-events-auto max-w-[220px] rounded-lg border border-amber-300/22 bg-[color:color-mix(in_srgb,#f59e0b_16%,#11131a)] px-3 py-2 text-center text-[10.5px] font-medium leading-4 text-amber-100/90 shadow-[0_10px_30px_-12px_rgba(0,0,0,0.7)]">
-              A turn is running — wait for it to finish before handing off.
+          {handoffTurnGate ? (
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-3">
+              <div className="pointer-events-auto max-w-[220px] rounded-lg border border-amber-300/22 bg-[color:color-mix(in_srgb,#f59e0b_16%,#11131a)] px-3 py-2 text-center text-[10.5px] font-medium leading-4 text-amber-100/90 shadow-[0_10px_30px_-12px_rgba(0,0,0,0.7)]">
+                A turn is running — wait for it to finish before handing off.
+              </div>
             </div>
-          </div>
-        ) : null}
+          ) : null}
+        </div>
+        {/* Auto handoff is a rule editor, not a move: arming "continue when this
+            stops" is most useful while the turn is still running, so it stays
+            available while the two live-handoff cards are gated. */}
+        <HandoffMenuCard
+          tone="auto"
+          icon={ArrowsLeftRight}
+          title="Auto handoff"
+          description="If this chat hits a limit, fails, or ends — continue it automatically."
+          onClick={() => { void openAutoHandoff(); }}
+        />
       </div>
     </div>
   );

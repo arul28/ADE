@@ -506,7 +506,7 @@ describe("CrossMachineHandoffModal", () => {
     expect(await screen.findByText(/Ready to continue on Studio/i)).toBeTruthy();
     expect(screen.getByText(/Sent: the full conversation history/i)).toBeTruthy();
     expect(screen.getByText("ADE removed secret-shaped values from your note.")).toBeTruthy();
-    expect(screen.getByTestId("insecure-consent-review").textContent).toBe(
+    expect(screen.getByTestId("insecure-route-notice").textContent).toBe(
       "This connection is authenticated but not end-to-end encrypted. The full chat history is sent exactly as recorded.",
     );
 
