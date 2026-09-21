@@ -19,6 +19,17 @@ export function clampGithubRestListMaxPages(
   return Math.max(1, Math.min(raw, GITHUB_REST_LIST_MAX_PAGES));
 }
 
+/** True when a walk used every allowed page, so GitHub may still have more rows. */
+export function githubRestListWalkFilledBudget(
+  itemCount: number,
+  perPage: number,
+  maxPages: number,
+): boolean {
+  const size = Math.max(1, Math.floor(perPage));
+  const pages = clampGithubRestListMaxPages(maxPages);
+  return Number.isFinite(itemCount) && itemCount >= size * pages;
+}
+
 export function githubRestListPageReachedUpdatedBefore(
   batch: readonly unknown[],
   stopWhenUpdatedBefore?: string | null,

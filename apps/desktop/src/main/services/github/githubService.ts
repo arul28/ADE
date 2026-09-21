@@ -2145,6 +2145,7 @@ export function createGithubService({
       since?: string;
       state?: "open" | "closed" | "all";
       sort?: "created" | "updated";
+      direction?: "asc" | "desc";
       perPage?: number;
       maxPages?: number;
     } = {}
@@ -2154,6 +2155,7 @@ export function createGithubService({
       query: {
         state: opts.state ?? "all",
         sort: opts.sort ?? "updated",
+        ...(opts.direction ? { direction: opts.direction } : {}),
         per_page: opts.perPage ?? 50,
         ...(opts.since ? { since: opts.since } : {}),
       },

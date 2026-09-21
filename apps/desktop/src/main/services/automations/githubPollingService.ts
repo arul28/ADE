@@ -5,7 +5,11 @@ import type {
   AutomationTriggerType,
 } from "../../../shared/types";
 import type { GithubService, GitHubIssue, GitHubPullRequest } from "../github/githubService";
-import { GITHUB_REST_ISSUE_PR_LIST_MAX_PAGES } from "../github/githubRestPagination";
+import {
+  GITHUB_REST_ISSUE_PR_LIST_MAX_PAGES,
+  GITHUB_REST_LIST_MAX_PAGES,
+  githubRestListWalkFilledBudget,
+} from "../github/githubRestPagination";
 
 type AutomationServiceHandle = {
   hasEnabledGithubRules?: () => boolean;
@@ -46,6 +50,7 @@ type GithubPollingServiceArgs = {
 const DEFAULT_POLL_INTERVAL_MS = 30_000;
 const GITHUB_POLLING_LIST_PER_PAGE = 100;
 const GITHUB_POLLING_LIST_MAX_PAGES = Math.min(3, GITHUB_REST_ISSUE_PR_LIST_MAX_PAGES);
+const GITHUB_POLLING_COMMENT_PER_PAGE = 100;
 
 function labelsToStrings(raw: GitHubIssue["labels"] | GitHubPullRequest["labels"]): string[] {
   if (!Array.isArray(raw)) return [];
@@ -62,6 +67,24 @@ function labelsToStrings(raw: GitHubIssue["labels"] | GitHubPullRequest["labels"
 
 function repoSlug(repo: RepoRef): string {
   return `${repo.owner}/${repo.name}`;
+}
+
+function snapshotCommentCount(args: {
+  reported: number;
+  fetched: number | null;
+  previous?: number;
+}): number {
+  if (
+    args.fetched != null
+    && githubRestListWalkFilledBudget(
+      args.fetched,
+      GITHUB_POLLING_COMMENT_PER_PAGE,
+      GITHUB_REST_LIST_MAX_PAGES,
+    )
+  ) {
+    return args.previous ?? args.fetched;
+  }
+  return args.reported;
 }
 
 function issueContext(repo: RepoRef, issue: GitHubIssue): AutomationTriggerIssueContext {
@@ -156,13 +179,13 @@ function isCommentAfterCursor(
   return !isCommentAtOrBeforeCursor(comment, cursor);
 }
 
-function prSnapshot(pr: GitHubPullRequest): PrSnapshot {
+function prSnapshot(pr: GitHubPullRequest, commentCount = pr.comments ?? 0): PrSnapshot {
   return {
     updatedAt: pr.updated_at,
     state: pr.state,
     merged: Boolean(pr.merged ?? pr.merged_at),
     mergedAt: pr.merged_at ?? null,
-    commentCount: pr.comments ?? 0,
+    commentCount,
     title: pr.title,
     body: pr.body ?? null,
     draft: typeof pr.draft === "boolean" ? pr.draft : null,
@@ -305,14 +328,25 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
     }
   };
 
-  const pollIssues = async (repo: RepoRef, since: string | undefined): Promise<string | null> => {
+  const pollIssues = async (
+    repo: RepoRef,
+    since: string | undefined,
+  ): Promise<{ maxUpdatedAt: string | null; truncated: boolean }> => {
     const issues = await githubService.listRepoIssues(repo.owner, repo.name, {
       state: "all",
       sort: "updated",
+      // Incremental ticks drain oldest-first so a capped window can advance the
+      // durable cursor through the processed prefix instead of skipping it.
+      direction: since === undefined ? "desc" : "asc",
       since,
       perPage: GITHUB_POLLING_LIST_PER_PAGE,
       maxPages: GITHUB_POLLING_LIST_MAX_PAGES,
     });
+    const truncated = githubRestListWalkFilledBudget(
+      issues.length,
+      GITHUB_POLLING_LIST_PER_PAGE,
+      GITHUB_POLLING_LIST_MAX_PAGES,
+    );
     // GitHub's `issues` endpoint mixes PRs in. Filter those out.
     const realIssues = issues.filter((row) => !row.pull_request);
     let maxUpdatedAt: string | null = null;
@@ -337,14 +371,18 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
             summary: `Issue #${issue.number} opened: ${issue.title}`,
           });
         }
+        let fetchedComments: number | null = null;
         if ((issue.comments ?? 0) > 0) {
-          await pollComments(repo, issue.number, since, ctx, /* isPr */ false, /* emit */ since !== undefined);
+          fetchedComments = await pollComments(repo, issue.number, since, ctx, /* isPr */ false, /* emit */ since !== undefined);
         }
         snapshotByRepo.set(issue.number, {
           labels: currentLabels,
           updatedAt: issue.updated_at,
           state: issue.state,
-          commentCount: issue.comments ?? 0,
+          commentCount: snapshotCommentCount({
+            reported: issue.comments ?? 0,
+            fetched: fetchedComments,
+          }),
         });
         continue;
       }
@@ -392,22 +430,30 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
 
       // New comments. The `issues` endpoint gives us a count; if it grew we
       // fetch comments since the last cursor.
+      let fetchedComments: number | null = null;
       if (newCommentCount > prev.commentCount) {
-        await pollComments(repo, issue.number, since, ctx, /* isPr */ false);
+        fetchedComments = await pollComments(repo, issue.number, since, ctx, /* isPr */ false);
       }
 
       snapshotByRepo.set(issue.number, {
         labels: currentLabels,
         updatedAt: issue.updated_at,
         state: issue.state,
-        commentCount: issue.comments ?? prev.commentCount,
+        commentCount: snapshotCommentCount({
+          reported: issue.comments ?? prev.commentCount,
+          fetched: fetchedComments,
+          previous: prev.commentCount,
+        }),
       });
     }
 
-    return maxUpdatedAt;
+    return { maxUpdatedAt, truncated };
   };
 
-  const pollPulls = async (repo: RepoRef, since: string | undefined): Promise<string | null> => {
+  const pollPulls = async (
+    repo: RepoRef,
+    since: string | undefined,
+  ): Promise<{ maxUpdatedAt: string | null; truncated: boolean }> => {
     const pulls = await githubService.listRepoPulls(repo.owner, repo.name, {
       state: "all",
       sort: "updated",
@@ -415,6 +461,11 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
       maxPages: GITHUB_POLLING_LIST_MAX_PAGES,
       updatedSince: since,
     });
+    const truncated = githubRestListWalkFilledBudget(
+      pulls.length,
+      GITHUB_POLLING_LIST_PER_PAGE,
+      GITHUB_POLLING_LIST_MAX_PAGES,
+    );
     // The pulls endpoint doesn't accept `since`; filter client-side.
     const filtered = since ? pulls.filter((pr) => pr.updated_at > since) : pulls;
     let maxUpdatedAt: string | null = null;
@@ -425,7 +476,6 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
       if (!maxUpdatedAt || pr.updated_at > maxUpdatedAt) maxUpdatedAt = pr.updated_at;
       const prev = snapshotByRepo.get(pr.number);
       const ctx = prContext(repo, pr);
-      const currentSnapshot = prSnapshot(pr);
 
       if (!prev) {
         const isNew = pr.created_at === pr.updated_at;
@@ -435,8 +485,9 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
             summary: `PR #${pr.number} opened: ${pr.title}`,
           });
         }
+        let fetchedComments: number | null = null;
         if ((pr.comments ?? 0) > 0) {
-          await pollComments(repo, pr.number, since, ctx, /* isPr */ true, /* emit */ since !== undefined);
+          fetchedComments = await pollComments(repo, pr.number, since, ctx, /* isPr */ true, /* emit */ since !== undefined);
         }
         // Cold start (no durable cursor): snapshot only. Walking reviews for
         // every historical PR spends the hourly quota before any rule can fire.
@@ -445,10 +496,14 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
         } else if (pr.updated_at) {
           reviewCursors.set(`${repoSlug(repo)}:${pr.number}`, pr.updated_at);
         }
-        snapshotByRepo.set(pr.number, currentSnapshot);
+        snapshotByRepo.set(pr.number, prSnapshot(pr, snapshotCommentCount({
+          reported: pr.comments ?? 0,
+          fetched: fetchedComments,
+        })));
         continue;
       }
 
+      const currentSnapshot = prSnapshot(pr);
       const newCommentCount = pr.comments ?? 0;
       if (prev.updatedAt === pr.updated_at && prev.state === pr.state && prev.merged === Boolean(pr.merged ?? pr.merged_at) && prev.commentCount === newCommentCount) {
         continue;
@@ -473,15 +528,20 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
         });
       }
 
+      let fetchedComments: number | null = null;
       if (newCommentCount > prev.commentCount) {
-        await pollComments(repo, pr.number, since, ctx, /* isPr */ true);
+        fetchedComments = await pollComments(repo, pr.number, since, ctx, /* isPr */ true);
       }
       await pollReviews(repo, pr.number, ctx);
 
-      snapshotByRepo.set(pr.number, currentSnapshot);
+      snapshotByRepo.set(pr.number, prSnapshot(pr, snapshotCommentCount({
+        reported: pr.comments ?? 0,
+        fetched: fetchedComments,
+        previous: prev.commentCount,
+      })));
     }
 
-    return maxUpdatedAt;
+    return { maxUpdatedAt, truncated };
   };
 
   const pollComments = async (
@@ -491,7 +551,7 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
     ctx: AutomationTriggerIssueContext | AutomationTriggerPrContext,
     isPr: boolean,
     emit = true,
-  ) => {
+  ): Promise<number> => {
     const key = `${repoSlug(repo)}:${issueNumber}`;
     const cursor = parseCommentCursor(commentCursors.get(key));
     const comments = await githubService.listIssueComments(repo.owner, repo.name, issueNumber, {
@@ -517,6 +577,7 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
         commentCursors.set(key, formatCommentCursor(comment));
       }
     }
+    return comments.length;
   };
 
   const pollReviews = async (
@@ -564,9 +625,17 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
       for (const repo of repos) {
         try {
           const cursor = readCursor(repo) ?? undefined;
-          const maxIssues = await pollIssues(repo, cursor);
-          const maxPulls = await pollPulls(repo, cursor);
-          const maxOverall = [maxIssues, maxPulls].filter((v): v is string => typeof v === "string").sort().at(-1);
+          const issues = await pollIssues(repo, cursor);
+          const pulls = await pollPulls(repo, cursor);
+          const frontiers: string[] = [];
+          if (issues.maxUpdatedAt) frontiers.push(issues.maxUpdatedAt);
+          // `/pulls` is newest-first and has no `since`. A full page budget
+          // means older updates in the window were not processed, so do not
+          // advance the durable cursor to that newest timestamp.
+          if (pulls.maxUpdatedAt && !(cursor && pulls.truncated)) {
+            frontiers.push(pulls.maxUpdatedAt);
+          }
+          const maxOverall = frontiers.sort().at(-1);
           if (maxOverall && maxOverall !== cursor) {
             writeCursor(repo, maxOverall);
           }

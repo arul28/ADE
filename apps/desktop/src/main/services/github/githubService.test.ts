@@ -1074,6 +1074,16 @@ describe("githubService issue-domain helpers", () => {
     expect(init.method).toBe("GET");
   });
 
+  it("listRepoIssues forwards an explicit direction", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, []));
+    const service = makeService();
+
+    await service.listRepoIssues("acme", "ade", { direction: "asc" });
+
+    const [url] = lastFetchCall();
+    expect(url).toContain("direction=asc");
+  });
+
   it("listRepoIssues defaults state=all/sort=updated/perPage=50 and omits since", async () => {
     mockFetch.mockResolvedValueOnce(jsonResponse(200, []));
     const service = makeService();

@@ -4,6 +4,7 @@ import {
   clampGithubRestListMaxPages,
   collectGithubRestPages,
   githubRestListPageReachedUpdatedBefore,
+  githubRestListWalkFilledBudget,
 } from "./githubRestPagination";
 
 describe("clampGithubRestListMaxPages", () => {
@@ -12,6 +13,14 @@ describe("clampGithubRestListMaxPages", () => {
     expect(clampGithubRestListMaxPages(999)).toBe(GITHUB_REST_LIST_MAX_PAGES);
     expect(clampGithubRestListMaxPages(0)).toBe(1);
     expect(clampGithubRestListMaxPages(3)).toBe(3);
+  });
+});
+
+describe("githubRestListWalkFilledBudget", () => {
+  it("is true only when the walk used every allowed page", () => {
+    expect(githubRestListWalkFilledBudget(299, 100, 3)).toBe(false);
+    expect(githubRestListWalkFilledBudget(300, 100, 3)).toBe(true);
+    expect(githubRestListWalkFilledBudget(301, 100, 3)).toBe(true);
   });
 });
 

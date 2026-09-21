@@ -258,6 +258,52 @@ describe("githubPollingService — first poll", () => {
     // Single-repo format is just the ISO stamp (multi-repo adds a slug prefix).
     expect(cursor).toContain("2026-04-23");
   });
+
+  it("drains incremental issue lists oldest-first", async () => {
+    const { service, githubService } = makeHarness({
+      initialCursor: "2026-04-23T10:00:00Z",
+      issuesByCall: [[]],
+      pullsByCall: [[]],
+    });
+
+    await service.pollNow();
+
+    expect(githubService.listRepoIssues.mock.calls[0]?.[2]).toMatchObject({
+      direction: "asc",
+      since: "2026-04-23T10:00:00Z",
+    });
+  });
+
+  it("snapshots newest issues first on a cold start", async () => {
+    const { service, githubService } = makeHarness({
+      issuesByCall: [[]],
+      pullsByCall: [[]],
+    });
+
+    await service.pollNow();
+
+    expect(githubService.listRepoIssues.mock.calls[0]?.[2]).toMatchObject({
+      direction: "desc",
+    });
+  });
+
+  it("does not advance the durable cursor past a truncated newest-first pull walk", async () => {
+    const pulls = Array.from({ length: 300 }, (_, index) => ({
+      number: index + 1,
+      updatedAt: "2026-04-23T12:00:00Z",
+    }));
+    const { service, cursors } = makeHarness({
+      initialCursor: "2026-04-23T10:00:00Z",
+      issuesByCall: [[{ number: 10, updatedAt: "2026-04-23T10:30:00Z" }]],
+      pullsByCall: [pulls],
+    });
+
+    await service.pollNow();
+
+    const cursor = cursors.get("github-polling");
+    expect(cursor).toContain("2026-04-23T10:30:00Z");
+    expect(cursor).not.toContain("2026-04-23T12:00:00Z");
+  });
 });
 
 describe("githubPollingService — issue diffing", () => {
