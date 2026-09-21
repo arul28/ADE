@@ -201,6 +201,10 @@ export function createAppleDeviceNamespace(
       unavailable(NO_HOST),
       false,
     )) as never,
+    // Through the allowlisted passthrough rather than a new wire action: the
+    // boot is a mutation on the owning machine and `apple.invoke` already
+    // carries the cooperative-ownership guard every other mutation gets.
+    deviceStart: (async (args?: unknown) => invoke("deviceStart", args ?? {}, false)) as never,
     deviceDelete: (async (args?: unknown) => invoke("deviceDelete", args ?? {}, false)) as never,
 
     recordList: (async (args?: unknown) => call(

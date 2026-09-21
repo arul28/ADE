@@ -8,8 +8,8 @@ import {
 
 /**
  * The chat-chrome chip shown while an agent has a simulator running and the
- * Apple column is closed. Open reveals the column; Float asks the corner card
- * for native picture-in-picture.
+ * Apple pane is closed. Open reveals the pane; Float pops the device out into
+ * the mini player (§7), which owns native picture-in-picture itself.
  */
 export function IosSimulatorRunningPill({
   deviceName,

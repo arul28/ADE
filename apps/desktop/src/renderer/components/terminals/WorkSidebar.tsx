@@ -131,8 +131,6 @@ export function WorkSidebar({
   contextTarget,
   contextDisabledReason: targetDisabledReason,
   runtimePin = null,
-  appleColumnOpen = false,
-  onOpenAppleColumn,
 }: {
   active?: boolean;
   laneId: string | null;
@@ -154,14 +152,6 @@ export function WorkSidebar({
    * another machine gets THAT machine's git, terminals, and files.
    */
   runtimePin?: OpenProjectBinding | null;
-  /**
-   * The lane's device has its own column beside the chat, so the Apple tool in
-   * here is down to the empty/create state — spec §2a: "the shared tools pane
-   * only hosts the empty/create state".
-   */
-  appleColumnOpen?: boolean;
-  /** Re-opens a column the user closed. Absent on surfaces with no column. */
-  onOpenAppleColumn?: () => void;
 }) {
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [selectedMode, setSelectedMode] = useState<"staged" | "unstaged" | null>(null);
@@ -387,11 +377,7 @@ export function WorkSidebar({
     onResumeEndedSession: resumeEndedSession,
     onToolChange,
     onClose,
-    appleColumnOpen,
-    onOpenAppleColumn,
   }), [
-    appleColumnOpen,
-    onOpenAppleColumn,
     activeLane,
     activeSession,
     addAppControlContext,

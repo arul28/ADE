@@ -1824,6 +1824,24 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     --simulator, --device, --udid <id>  Required installed simulator.
     --lane, --lane-id <id>              Lane to bind.
 `,
+  "start": `${ADE_BANNER}
+  Apple device: start
+
+  Brings the lane's device up in one step: attaches (or clones, with
+  --create) when the lane owns no device yet, boots it if it is shut down,
+  waits for simctl bootstatus, then starts the live view. Progress arrives
+  as apple.device.state events (starting → booted → streaming). Unlike
+  device-attach and device-create, this boots.
+
+    $ ade --socket apple start --text
+    $ ade --socket apple start --udid <udid> --text
+    $ ade --socket apple start --create <sourceUdid> --text
+
+  Flags:
+    --udid, --simulator, --device <id>  Installed simulator to attach when the lane has none.
+    --create <sourceUdid>               Clone this installed simulator for the lane instead.
+    --lane, --lane-id <id>              Lane that owns (or will own) the device.
+`,
   "device-list": `${ADE_BANNER}
   Apple device: device-list
 
@@ -3213,6 +3231,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Per-lane devices:
     $ ade apple device-create --text             Clone the project's last-used simulator
     $ ade apple device-attach --simulator <id>   Bind an existing simulator to this lane
+    $ ade apple start [--udid <id>|--create <id>] Attach or clone, boot, wait, and stream
     $ ade apple device-list --installed --text   Installed simulators for a picker
     $ ade apple device-list --lane --text        The one device this lane owns
     $ ade apple device-delete --text             Delete a clone (attached devices refuse)
@@ -12113,6 +12132,19 @@ function buildIosSimulatorPlan(
     return iosAction("Apple device attach", "deviceAttach", {
       simulator,
       ...(laneId ? { laneId } : {}),
+    });
+  }
+  if (sub === "start") {
+    // `--create` first: `firstPositional` would otherwise eat its value.
+    const sourceUdid = readValue(args, ["--create", "--from"]);
+    const udid = readValue(args, ["--udid", "--simulator", "--device"]) ?? firstPositional(args);
+    if (udid && sourceUdid) {
+      throw new CliUsageError("apple start takes --udid (attach) or --create <sourceUdid> (clone), not both.");
+    }
+    return iosAction("Apple device start", "deviceStart", {
+      ...(laneId ? { laneId } : {}),
+      ...(udid ? { udid } : {}),
+      ...(sourceUdid ? { create: { sourceUdid } } : {}),
     });
   }
   if (sub === "device-list") {

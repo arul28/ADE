@@ -215,7 +215,7 @@ import { chatAccentForRenderedChat, chatChipToneClass } from "./chatSurfaceTheme
 import { ChatComputerUsePanel } from "./ChatComputerUsePanel";
 import { ChatIosSimulatorPanel } from "./ChatIosSimulatorPanel";
 import { IosSimulatorRunningPill } from "../work/IosSimulatorRunningPill";
-import { requestWorkLiveIosPictureInPicture } from "../work/workLiveIosPictureInPicture";
+import { openAppleMiniPlayer } from "../apple/appleMiniPlayerStore";
 import { ChatAppControlPanel } from "./ChatAppControlPanel";
 import { ChatSubagentsPanel } from "./ChatSubagentsPanel";
 import { RewindFilesConfirmDialog, type RewindFilesConfirmDialogState } from "./RewindFilesConfirmDialog";
@@ -13136,7 +13136,21 @@ export function AgentChatPane({
             setCursorCloudPaneOpen(false);
             setIosSimulatorOpen(true);
           }}
-          onFloat={() => requestWorkLiveIosPictureInPicture(iosSimulatorSessionChip.deviceUdid)}
+          onFloat={() => {
+            // §7: Float opens the mini player, which owns native PiP in its
+            // own hover bar. The auto-appearing corner card it used to ask is
+            // gone, so asking it would have been a button that did nothing.
+            if (!iosSimulatorSessionChip.deviceUdid) return;
+            openAppleMiniPlayer({
+              laneId: selectedSession?.laneId ?? laneId ?? null,
+              chatSessionId: selectedSessionId,
+              deviceUdid: iosSimulatorSessionChip.deviceUdid,
+              deviceName: iosSimulatorSessionChip.deviceName ?? "Simulator",
+              deviceRuntime: null,
+              family: "iphone",
+              runtimePin: composerRuntimePin,
+            });
+          }}
         />
       ) : null}
       {laneToolsVisible && iosSimulatorAvailable ? (

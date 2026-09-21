@@ -17,13 +17,15 @@ const LOCAL_MAC: WorkToolContext = {
 describe("Apple work tool labels", () => {
   const ios = WORK_TOOL_DEFINITIONS.find((entry) => entry.id === "ios");
 
-  it("keeps the picker card named Simulator and the tab named Apple", () => {
-    expect(ios?.label).toBe("Simulator");
-    expect(ios?.tabLabel).toBe("Apple");
+  it("calls the tool Apple on the card, the tab and the palette", () => {
+    // §0: "The tools-grid card label 'Simulator'. It is 'Apple'." One tool,
+    // one name, everywhere it is written.
+    expect(ios?.label).toBe("Apple");
+    expect(ios?.tabLabel).toBeUndefined();
     expect(ios?.tabTooltip).toBe("Apple simulators and previews");
     expect(ios?.hint).toBe("Open an Apple device");
     expect(workToolLabel("ios")).toBe("Apple");
-    expect(workToolCardLabel("ios")).toBe("Simulator");
+    expect(workToolCardLabel("ios")).toBe("Apple");
   });
 });
 

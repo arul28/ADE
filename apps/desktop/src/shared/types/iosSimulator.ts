@@ -673,7 +673,26 @@ export type IosSimulatorEventPayload =
   | { type: "stream-error"; status: IosSimulatorStreamStatus }
   | { type: "device-session-started"; deviceSession: IosSimulatorDeviceSession }
   | { type: "device-session-released"; previousDeviceSession: IosSimulatorDeviceSession | null }
-  | { type: "device-settings-changed"; settings: IosSimulatorDeviceSettings };
+  | { type: "device-settings-changed"; settings: IosSimulatorDeviceSettings }
+  | AppleDeviceStateEvent;
+
+/**
+ * Where `deviceStart` is in bringing a lane's device up.
+ *
+ * `starting` is emitted once the device is known (attached or created) and
+ * before `simctl boot`; `booted` once `bootstatus` returns; `streaming` once
+ * the helper capture is open; `failed` on any error, with `detail` carrying
+ * the message. The loading card advances its two segments on these.
+ */
+export type AppleDeviceStatePhase = "starting" | "booted" | "streaming" | "failed";
+
+export type AppleDeviceStateEvent = {
+  type: "apple.device.state";
+  laneId: string;
+  udid: string;
+  phase: AppleDeviceStatePhase;
+  detail?: string;
+};
 
 /* ------------------------------------------------------------------------- *
  * Device hub: device sessions, host-encoded video, device tools, semantic
@@ -1162,6 +1181,22 @@ export type AppleDeviceListArgs = {
   laneId?: string | null;
   chatSessionId?: string | null;
   installed?: boolean | null;
+};
+
+/**
+ * `deviceStart`: attach (or create) if the lane has no device, boot it if it
+ * is shut down, wait for `bootstatus`, then open the live view — one call for
+ * the picker's Start/Open/Create actions and for `ade apple start`.
+ *
+ * `udid` names an installed simulator to attach when the lane owns nothing.
+ * `create.sourceUdid` clones that simulator for the lane instead. Neither is
+ * consulted when the lane already owns a device: that device is started.
+ */
+export type AppleDeviceStartArgs = {
+  laneId?: string | null;
+  chatSessionId?: string | null;
+  udid?: string | null;
+  create?: { sourceUdid: string } | null;
 };
 
 export type AppleDeviceListResult = {

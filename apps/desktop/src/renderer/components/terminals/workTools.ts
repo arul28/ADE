@@ -22,8 +22,9 @@ export type WorkToolDefinition = {
   label: string;
   /**
    * Name on the tools tab strip. Omitted means the card label is also the tab
-   * name — the Apple tool is the exception: the card stays "Simulator", the
-   * tab is "Apple".
+   * name, which is now true of every tool: the Apple card used to read
+   * "Simulator" while its tab read "Apple", and one tool with two names is one
+   * name too many (spec §0).
    */
   tabLabel?: string;
   /**
@@ -95,11 +96,10 @@ export const WORK_TOOL_DEFINITIONS: readonly WorkToolDefinition[] = [
   },
   {
     id: "ios",
-    // The picker card stays "Simulator". The tab, palette, and phone/web
-    // picker name the same tool "Apple" so the surface matches the rest of
-    // the Apple-device column rather than the old iOS drawer.
-    label: "Simulator",
-    tabLabel: "Apple",
+    // One name everywhere: card, tab, palette, phone and web. The subtitle is
+    // the device and what it is doing (`iosStatusLine`), which is the part
+    // worth reading twice.
+    label: "Apple",
     tabTooltip: "Apple simulators and previews",
     icon: DeviceMobile,
     color: "#60a5fa",
@@ -134,7 +134,7 @@ export function workToolLabel(id: WorkSidebarTab): string {
   return definition?.tabLabel ?? definition?.label ?? id;
 }
 
-/** Card / picker name. Distinct from `workToolLabel` only for the Apple tool. */
+/** Card / picker name. Identical to `workToolLabel` for every tool today. */
 export function workToolCardLabel(id: WorkSidebarTab): string {
   return WORK_TOOL_DEFINITIONS_BY_ID.get(id)?.label ?? id;
 }

@@ -37,185 +37,41 @@ nothing works at all.
 
 ---
 
-## 1. The walk-through, in order
+## 1. The walk-through, in order (round 2 pane)
 
-### 1. Apple tab
+The pane lives inside the tools pane as the **Apple** tab. There is no column,
+no header bar, no dialog. Spec: `apple-device-env-redesign.md`.
 
-Work tab → tools pane → **Apple** (the tab formerly called "iOS"; tooltip
-"Apple simulators and previews").
-
-*Expect:* the pane shows the **No device yet** empty state — one icon, one line
-("This lane has no simulator."), and two actions: **Create a device** and
-**Attach…**. The tools pane is the ONLY place that empty state lives.
-
-### 2. Create a device
-
-Press **Create a device**.
-
-*Expect:* the create dialog, with **Clone a fresh simulator** pre-selected and
-pre-filled with the project's last-used installed simulator (newest installed
-iPhone if the project has no history). The new device will be named
-`<source name> — <lane name>`.
-
-Press **Create**.
-
-*Expect, and this is the point of task 1:* the device does **not** appear in the
-tools pane. A **new full-height column opens beside the chat**, with its own
-splitter between the chat and it. The tools pane, still on Apple, now reads
-"Apple device is open in its own column".
-
-Grab the splitter. The column resizes, the chat gives way, and the width
-survives a project-tab switch and an app restart. Drag it left: it stops at
-**200px** and refuses to go narrower.
-
-### 3. Live
-
-*Expect:* the launch stepper (Create → Boot → Ready), then a black stage with
-the device screen on it — **no bezel, no window chrome, no Screen Recording
-prompt**. The header chip reads `Live`; hover it for fps and bitrate.
-
-Click and drag on the stage. Input goes to the device.
-
-Now narrow the column and watch the breakpoints, all measured on the **column**:
-
-| Column width | Expect |
-|---|---|
-| ≥ 700px | advanced drawer docks beside the stage |
-| 420–700px | drawer overlays the stage from the right, with a scrim |
-| 280–420px | the floating toolbar moves into the column header as a scrollable row |
-| < 280px | the quick-control strip hides |
-| < 200px | the splitter stops |
-
-The stream must survive every one of those swaps. A mode change that
-black-frames the device is a bug.
-
-### 4. 3D / flat
-
-Toolbar → **3D**.
-
-*Expect:* the device body appears, the live frames still playing on its screen.
-Drag orbits; release springs back to the nearest screen-facing view; pinch
-zooms. **Flat** returns to the plain stage. Neither switch tears the stream
-down — the decoder keeps running and the frame is handed to the new presenter.
-
-3D is refused, with the reason in its tooltip, when WebGL is unavailable, when
-inspect is on, when the column is under 420px, or when the stream is not
-running.
-
-### 5. Inspect
-
-Toolbar → **Inspect**.
-
-*Expect:* the view drops to flat, rectangles are drawn over the **live** frame,
-and the cursor becomes a crosshair. Hover highlights the deepest element (cyan
-1px); `alt` cycles outward; click **selects** rather than tapping. The side
-panel replaces the drawer and shows label / role / identifier / frame / source.
-
-Press **Copy as ade command** → the clipboard holds something like
-`ade apple tap-element --identifier signInButton`. Press **Insert into chat** →
-the element lands in the active chat's composer. (That path is why the column
-has its own context wiring: it is no longer inside the tools pane that used to
-supply it.)
-
-`Esc` clears the selection; toggling Inspect off restores input.
-
-### 6. Record
-
-Toolbar → **Record**.
-
-*Expect:* a red dot and an elapsed timer in the header and the quick strip.
-**Live viewers never show the overlays** — the tap rings and typed-text badges
-are composited into the saved file only.
-
-Tap a few things, type into a field, then **Stop and keep**. Open the saved
-`.mp4` from the drawer's Recording section.
-
-*Expect in the file:* a ring at each tap point in **ADE's accent purple**
-(`#A78BFA`, `shared/themeTokens.ts`, guarded against `renderer/index.css` by
-`themeTokens.test.ts`) — not the placeholder blue it used to draw. A typed-text
-chip at the bottom for what you typed, and **nothing at all** for a secure text
-field.
-
-Also check an **auto** recording: send an agent turn that taps the device
-without asking for a recording. One should start by itself, tagged `auto`, and
-stop when the turn ends.
-
-### 7. Proof
-
-Run `ade --socket apple proof-bundle --caption "..." --text`, or hold the
-column's **Screenshot** button.
-
-*Expect:* the current (or most recent) recording is marked `proof`, copied into
-the chat's proof drawer, and pinned. It shows a pin glyph in the Recent list
-and **has no delete action** — an agent asking to remove it is refused with
-`APPLE_RECORDING_PINNED`.
-
-### 8. Storage row
-
-Settings → Diagnostics.
-
-*Expect:* nothing at all, unless recordings exceed the warning size
-(`apple.recordingsWarnBytes`, default 5 GiB). Over it, one read-only row naming
-the total. It never deletes.
-
-Under the hood this now reads `iosSimulator.recordingsTotalBytes()` — one number
-from the recorder's own sidecars — instead of walking
-`.ade/artifacts/apple-recordings/` through the files API. The directory walk is
-still there as a fallback for a remote Mac running an older brain, so the row
-does not silently go quiet against one.
-
-### 9. Corner card
-
-Switch the tools pane to **Git**, then close the Apple column with its `×`.
-
-*Expect:* the device keeps running — closing the column never shuts it down —
-and the floating corner card takes over, playing the same H.264 at 240×320. The
-tools pane's Apple tab now offers **Open column** to get back.
-
-*The regression to watch for (task 3):* with the column open **and** the card
-visible, dismiss the card. The column must keep its frames. `stopStream` is
-lane-scoped, so before the viewer lease the first viewer to leave stopped the
-other one's capture. Two viewers, one lease count, last one out turns it off.
-
-### 10. Picture in picture
-
-Corner card → **⧉ PiP**.
-
-*Expect:* a native PiP window, and the card collapses to a one-line pill so the
-lane still says the device is live. Switch to another app entirely — the device
-is still on screen. Leaving PiP restores the card.
-
-### 11. Web client
-
-Open the web client against this machine and go to the same lane's Work tab.
-
-*Expect:* the **same column, same layout** — the web client mounts the same
-components, so there is no separate web layout to check. Full interact: tap,
-drag, type, scroll, inspect, 3D, record. **Open in Simulator.app** is absent
-(local-only). The live chip names the machine. The encode is capped by
-`apple.remoteBitrateKbpsCap` (default 2 Mb/s) because a web viewer is a remote
-viewer even on the same LAN.
-
-Then close the web tab while the desktop column is still open. **The desktop
-must keep its frames.** The brain-side rule is "the relay stops only what the
-relay started", now backed by `appleLocalViewers.ts` so the relay also knows
-when a renderer on this Mac is still watching.
-
-### 12. Phone
-
-iOS app → the lane's chat → **Tools** row → **Simulator**.
-
-*Expect:* the live stream, view-only. Touching the frame shows a "View only"
-chip for 1.5s and does nothing else. The card names the device, the lane, and
-the bitrate, and shows a recording dot while one is running. **Reconnect** on a
-stall, **⧉ PiP** via `AVPictureInPictureController` so the device survives
-backgrounding. It streams on cellular with no gate and no warning.
-
-The ownership line reads the chat's **title** (`owner.chatTitle`, resolved on
-the host), and so does the desktop's watch ribbon now — both surfaces name the
-same chat the same way instead of one showing eight characters of a session id.
-
----
+1. **Tools grid.** The card reads **Apple · No device**.
+2. **Picker.** Open the Apple tab. Expect a list titled *iOS Simulators*: each
+   installed simulator as a row with `iOS 26.x · Stopped|Running` and a
+   trailing **Start** or **Open**. The last row is *New simulator for this
+   lane* with a device select and **Create**.
+3. **Start.** Press Start on a stopped simulator. Expect the loading card
+   (device name, runtime, two-segment bar: "Starting device…" then
+   "Connecting video…"), then the live device. One click, no dialog.
+4. **Live.** Tap and type on the screen. Expect the screen to follow. Hover
+   every rail button: each has a tooltip. Home and Rotate work. There is no
+   Shake.
+5. **3D / Flat.** The bottom rail group toggles the 3D body and the flat
+   view. A narrow pane shows a shorter phone, never a squeezed one.
+6. **Tools drawer.** Press the rail's *Tools*. Expect a 288 px drawer with
+   sections App, Simulator, Inspect, Recording, Location, Permissions, Push
+   notification, Preview Lab, Event log. Unsupported rows are disabled, not
+   hidden.
+7. **Inspect.** Drawer › Inspect › *Overlay element frames*. Click a frame;
+   its details fill the rows below.
+8. **Record.** Rail › More › Record, or ask an agent to tap. Expect the
+   bottom pill "● Recording 0:42 · Stop". Drawer › Recording lists the file
+   with **Pin to proof**.
+9. **Preview Lab.** Drawer › Preview Lab: pick a target, press Render.
+   Expect the preview in the viewport with a **← Back to device** chip.
+10. **Float.** Rail › More › *Float over chat*. Expect the mini player: flat
+    stream, a dot top-right that becomes a bar on hover (Open in pane, Close).
+11. **Errors.** Shut the simulator down in Simulator.app. Expect a one-line
+    strip "iPhone 17 Pro is off. [Start]". No text starting with
+    "Error invoking remote method" anywhere.
+12. **CLI.** `ade-alpha apple start --lane <id>` boots and streams.
 
 ## 2. Relay redeploy — read this before blaming NAT
 

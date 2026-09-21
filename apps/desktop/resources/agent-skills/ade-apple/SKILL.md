@@ -51,6 +51,7 @@ never downloads a runtime.
 ade --socket apple device-create --text
 ade --socket apple device-create --from "iPhone 17" --name "iPhone 17 — lane-ab3" --text
 ade --socket apple device-attach --simulator <udid|name> --text
+ade --socket apple start [--udid <udid>|--create <sourceUdid>] --text
 ade --socket apple device-list --installed --text
 ade --socket apple device-list --lane --text
 ade --socket apple device-delete --text
@@ -60,6 +61,9 @@ ade --socket apple device-delete --text
   simulator, else the newest installed iPhone.
 - `device-attach` binds an existing simulator without cloning. ADE never
   deletes a simulator it did not create.
+- `start` is the one-step bring-up: attach (`--udid`) or clone (`--create`)
+  when the lane has no device, boot it if it is off, wait, then stream.
+  `device-create`/`device-attach` never boot; `start` always does.
 - `device-list --installed` is what a picker shows. `device-list --lane` is
   the one device this lane owns.
 - The clone is deleted when the lane is archived.

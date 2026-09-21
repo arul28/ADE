@@ -135,7 +135,7 @@ describe("WorkToolPicker", () => {
       />,
     );
 
-    const ios = cardFor("Simulator");
+    const ios = cardFor("Apple");
     expect(ios.disabled).toBe(true);
     // The reason replaces the hint rather than joining it.
     expect(screen.getByText(IOS_RUNTIME_UNSUPPORTED_REASON)).toBeTruthy();
@@ -167,7 +167,7 @@ describe("WorkToolPicker", () => {
 
     // Apple runs its helper on the bound runtime, so a remote Mac is a live
     // viewer rather than a local-only miss.
-    expect(cardFor("Simulator").disabled).toBe(false);
+    expect(cardFor("Apple").disabled).toBe(false);
     expect(cardFor("App Control").disabled).toBe(false);
     expect(screen.queryByText("Runs on this computer only")).toBeNull();
   });
@@ -372,7 +372,7 @@ describe("WorkToolPicker", () => {
     // hosted client drives it in full over the brain's video pipe.
     expect(cardFor("Browser").disabled).toBe(false);
     expect(cardFor("App Control").disabled).toBe(false);
-    expect(cardFor("Simulator").disabled).toBe(false);
+    expect(cardFor("Apple").disabled).toBe(false);
 
     fireEvent.click(cardFor("Browser"));
     expect(onPick).toHaveBeenCalledWith("browser");
@@ -389,7 +389,7 @@ describe("WorkToolPicker", () => {
       />,
     );
 
-    expect(cardFor("Simulator").disabled).toBe(true);
+    expect(cardFor("Apple").disabled).toBe(true);
     expect(screen.getByText(IOS_RUNTIME_UNSUPPORTED_REASON)).toBeTruthy();
     expect(screen.queryByText("Desktop app only")).toBeNull();
   });

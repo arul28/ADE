@@ -1,177 +1,152 @@
 import { describe, expect, it } from "vitest";
+import type { AppleInstalledSimulator } from "../../../shared/types/iosSimulator";
 import {
-  appleCommandForElement,
-  appleHeaderChips,
+  APPLE_DEVICE_ORIENTATION_CYCLE,
   appleInputAllowed,
+  appleRailVisible,
+  appleSimulatorDescription,
+  appleToolCardSubtitle,
+  isAppleSimulatorBooted,
   nextAppleDeviceOrientation,
   resolveAppleDeviceState,
+  sortAppleSimulators,
   type ResolveAppleDeviceStateInput,
 } from "./appleDeviceState";
-import type { IosScreenElement } from "../../../shared/types/iosSimulator";
 
-function stateInput(overrides: Partial<ResolveAppleDeviceStateInput> = {}): ResolveAppleDeviceStateInput {
-  return {
-    supported: true,
-    hasLaneDevice: true,
-    poweredOff: false,
-    creating: false,
-    booting: false,
-    building: false,
-    ownedByOtherChat: false,
-    hasAppSession: false,
-    streamState: "live",
-    failed: false,
-    ...overrides,
-  };
-}
+const LIVE: ResolveAppleDeviceStateInput = {
+  supported: true,
+  helperAvailable: true,
+  hasDevice: true,
+  booted: true,
+  starting: false,
+  previewing: false,
+  streamState: "live",
+};
 
-function element(overrides: Partial<IosScreenElement> = {}): IosScreenElement {
-  return {
-    id: "el-1",
-    source: "accessibility",
-    layer: "app",
-    label: "Sign in",
-    value: null,
-    role: "button",
-    elementType: null,
-    identifier: "signInButton",
-    frame: { x: 0, y: 0, width: 10, height: 10 },
-    pixelFrame: { x: 0, y: 0, width: 30, height: 30 },
-    componentId: null,
-    sourceFile: null,
-    sourceLine: null,
-    metadata: {},
-    ...overrides,
-  };
-}
+const state = (overrides: Partial<ResolveAppleDeviceStateInput> = {}) =>
+  resolveAppleDeviceState({ ...LIVE, ...overrides });
 
 describe("resolveAppleDeviceState", () => {
-  it("names a non-Mac runtime an error rather than a missing device", () => {
-    // The fix here is the ordering: a Windows lane has no device AND no Mac,
-    // and "No device yet / Create a device" on it offers an action that cannot
-    // work.
-    expect(resolveAppleDeviceState(stateInput({ supported: false, hasLaneDevice: false }))).toBe("error");
+  it("answers the host's question before the device's", () => {
+    // A Linux runtime is not a device problem with a device fix, so nothing
+    // below it — not even a lane that owns a device — can change the answer.
+    expect(state({ supported: false })).toBe("unsupported");
+    expect(state({ supported: false, hasDevice: false, streamState: "error" }))
+      .toBe("unsupported");
+    expect(state({ helperAvailable: false })).toBe("helper-missing");
   });
 
-  it("reports no-device before any stream verdict", () => {
-    expect(resolveAppleDeviceState(stateInput({
-      hasLaneDevice: false,
-      streamState: "stalled",
-    }))).toBe("no-device");
+  it("lets a rendered preview take the viewport from a live stream", () => {
+    expect(state({ previewing: true })).toBe("preview");
+    // But never from a host that could not show a device at all.
+    expect(state({ previewing: true, supported: false })).toBe("unsupported");
   });
 
-  it("puts creating and booting ahead of everything", () => {
-    expect(resolveAppleDeviceState(stateInput({ creating: true, hasLaneDevice: false }))).toBe("creating");
-    expect(resolveAppleDeviceState(stateInput({ booting: true, poweredOff: true }))).toBe("booting");
+  it("shows the loading card for an in-flight start, device or not", () => {
+    expect(state({ starting: true, hasDevice: false })).toBe("starting");
+    expect(state({ starting: true, booted: false })).toBe("starting");
   });
 
-  it("reports powered-off before ownership or stream state", () => {
-    expect(resolveAppleDeviceState(stateInput({
-      poweredOff: true,
-      ownedByOtherChat: true,
-      streamState: "error",
-    }))).toBe("powered-off");
+  it("shows the picker only when the lane owns nothing", () => {
+    expect(state({ hasDevice: false })).toBe("no-device");
   });
 
-  it("puts ownership ahead of the stream, because a watcher must be told first", () => {
-    expect(resolveAppleDeviceState(stateInput({
-      ownedByOtherChat: true,
-      streamState: "stalled",
-      building: true,
-    }))).toBe("watching");
+  it("never reports a stream problem for a lane with no live device", () => {
+    // The round-1 bug, verbatim: "No frames", with a Reconnect button, on a
+    // lane that owned no simulator at all.
+    expect(state({ hasDevice: false, streamState: "error" })).toBe("no-device");
+    expect(state({ booted: false, streamState: "stalled" })).toBe("stopped");
   });
 
-  it("keeps building visible while the stream is live underneath", () => {
-    expect(resolveAppleDeviceState(stateInput({ building: true, hasAppSession: true }))).toBe("building");
+  it("separates a dead stream from a dead device", () => {
+    expect(state({ streamState: "stalled" })).toBe("video-lost");
+    expect(state({ streamState: "error" })).toBe("video-lost");
+    expect(state({ booted: false })).toBe("stopped");
+    expect(state()).toBe("live");
   });
 
-  it("turns a stalled or errored stream into stalled", () => {
-    expect(resolveAppleDeviceState(stateInput({ streamState: "stalled" }))).toBe("stalled");
-    expect(resolveAppleDeviceState(stateInput({ streamState: "error" }))).toBe("stalled");
-  });
-
-  it("separates a booted device with an app from one without", () => {
-    expect(resolveAppleDeviceState(stateInput({ hasAppSession: true }))).toBe("app-running");
-    expect(resolveAppleDeviceState(stateInput({ hasAppSession: false }))).toBe("ready-no-app");
-  });
-
-  it("treats a failed launch step as the error state", () => {
-    expect(resolveAppleDeviceState(stateInput({ failed: true }))).toBe("error");
+  it("treats a quiet stream on a booted device as live", () => {
+    expect(state({ streamState: "idle" })).toBe("live");
+    expect(state({ streamState: "starting" })).toBe("live");
+    expect(state({ streamState: "paused" })).toBe("live");
   });
 });
 
-describe("appleHeaderChips", () => {
-  const live = { label: "Live", detail: "Encoded on this Mac.", tone: "active" as const };
-
-  it("shows no chip at all with no device", () => {
-    expect(appleHeaderChips("no-device", live)).toEqual([]);
-    expect(appleHeaderChips("powered-off", live)).toEqual([]);
-  });
-
-  it("names the transient states", () => {
-    expect(appleHeaderChips("creating", null)[0]?.label).toBe("Creating");
-    expect(appleHeaderChips("booting", null)[0]?.label).toBe("Booting");
-  });
-
-  it("shows Live AND Building during a build", () => {
-    expect(appleHeaderChips("building", live).map((chip) => chip.label)).toEqual(["Live", "Building"]);
-  });
-
-  it("carries the stream chip through the steady states", () => {
-    expect(appleHeaderChips("app-running", live)).toEqual([live]);
-    expect(appleHeaderChips("watching", live)).toEqual([live]);
-  });
-
-  it("overrides the stream chip when the column itself is stalled or failed", () => {
-    expect(appleHeaderChips("stalled", live)[0]?.label).toBe("Stalled");
-    expect(appleHeaderChips("error", live)[0]?.label).toBe("Error");
-  });
-});
-
-describe("appleInputAllowed", () => {
-  it("refuses input in every state that is not a driveable device", () => {
-    expect(appleInputAllowed("app-running")).toBe(true);
-    expect(appleInputAllowed("ready-no-app")).toBe(true);
-    expect(appleInputAllowed("building")).toBe(true);
-    for (const state of ["watching", "stalled", "no-device", "powered-off", "error", "creating", "booting"] as const) {
-      expect(appleInputAllowed(state)).toBe(false);
+describe("appleInputAllowed / appleRailVisible", () => {
+  it("only sends input at a real picture", () => {
+    expect(appleInputAllowed("live")).toBe(true);
+    for (const value of ["video-lost", "stopped", "no-device", "starting", "preview"] as const) {
+      expect(appleInputAllowed(value)).toBe(false);
     }
+  });
+
+  it("keeps the rail over a dimmed last frame, and nowhere else", () => {
+    expect(appleRailVisible("live")).toBe(true);
+    expect(appleRailVisible("video-lost")).toBe(true);
+    expect(appleRailVisible("stopped")).toBe(false);
+    expect(appleRailVisible("no-device")).toBe(false);
+  });
+});
+
+function simulator(overrides: Partial<AppleInstalledSimulator>): AppleInstalledSimulator {
+  return {
+    udid: "udid",
+    name: "iPhone 17 Pro",
+    runtime: "iOS 26.2",
+    state: "Shutdown",
+    isAvailable: true,
+    family: "iphone",
+    deviceTypeIdentifier: null,
+    ...overrides,
+  };
+}
+
+describe("picker ordering and copy", () => {
+  it("puts booted devices first, then sorts alphabetically", () => {
+    const rows = sortAppleSimulators([
+      simulator({ udid: "c", name: "iPhone Air" }),
+      simulator({ udid: "a", name: "ADE Unit C" }),
+      simulator({ udid: "b", name: "iPhone 17 Pro Max", state: "Booted" }),
+    ]);
+    expect(rows.map((row) => row.udid)).toEqual(["b", "a", "c"]);
+  });
+
+  it("does not mutate the list it was given", () => {
+    const input = [simulator({ udid: "z", name: "Z" }), simulator({ udid: "a", name: "A" })];
+    sortAppleSimulators(input);
+    expect(input.map((row) => row.udid)).toEqual(["z", "a"]);
+  });
+
+  it("describes a row as runtime then power", () => {
+    expect(appleSimulatorDescription(simulator({ state: "Booted" }))).toBe("iOS 26.2 · Running");
+    expect(appleSimulatorDescription(simulator({}))).toBe("iOS 26.2 · Stopped");
+    expect(isAppleSimulatorBooted({ state: "Booting" })).toBe(false);
+  });
+});
+
+describe("appleToolCardSubtitle", () => {
+  it("is §9's four lines, and never the word Simulator over a real name", () => {
+    expect(appleToolCardSubtitle(null)).toBe("No device");
+    expect(appleToolCardSubtitle({ name: "iPhone 17 Pro", state: "starting" }))
+      .toBe("iPhone 17 Pro · Starting");
+    expect(appleToolCardSubtitle({ name: "iPhone 17 Pro", state: "running" }))
+      .toBe("iPhone 17 Pro · Running");
+    expect(appleToolCardSubtitle({ name: "iPhone 17 Pro", state: "off" }))
+      .toBe("iPhone 17 Pro · Off");
+  });
+
+  it("falls back to a name rather than rendering an empty half", () => {
+    expect(appleToolCardSubtitle({ name: "  ", state: "off" })).toBe("Simulator · Off");
+    expect(appleToolCardSubtitle({ name: null, state: "running" })).toBe("Simulator · Running");
   });
 });
 
 describe("nextAppleDeviceOrientation", () => {
-  it("cycles portrait → landscape-left → upside-down → landscape-right", () => {
+  it("steps 90° per click and wraps", () => {
     expect(nextAppleDeviceOrientation("portrait")).toBe("landscape-left");
     expect(nextAppleDeviceOrientation("landscape-left")).toBe("portrait-upside-down");
     expect(nextAppleDeviceOrientation("portrait-upside-down")).toBe("landscape-right");
     expect(nextAppleDeviceOrientation("landscape-right")).toBe("portrait");
-  });
-});
-
-describe("appleCommandForElement", () => {
-  it("prefers the service's own ref, which is hashed", () => {
-    // `commandFor` builds `--identifier signInButton`, which is right for a
-    // human reading the panel and wrong for a paste: `--ref` resolves against
-    // `id:<shortHash>`, so a raw identifier matches nothing.
-    const command = appleCommandForElement(element({ metadata: { ref: "id:9f3c1a2b" } }));
-    expect(command).toBe("ade --socket apple tap-element --ref id:9f3c1a2b");
-  });
-
-  it("falls back to the identifier query when the snapshot carries no ref", () => {
-    expect(appleCommandForElement(element())).toBe(
-      "ade --socket apple tap-element --identifier signInButton",
-    );
-  });
-
-  it("quotes a ref that needs it", () => {
-    expect(appleCommandForElement(element({ metadata: { ref: "label:a b" } })))
-      .toBe("ade --socket apple tap-element --ref 'label:a b'");
-  });
-
-  it("ignores a non-string or blank ref", () => {
-    expect(appleCommandForElement(element({ metadata: { ref: "   " } })))
-      .toBe("ade --socket apple tap-element --identifier signInButton");
-    expect(appleCommandForElement(element({ metadata: { ref: 7 } })))
-      .toBe("ade --socket apple tap-element --identifier signInButton");
+    expect(APPLE_DEVICE_ORIENTATION_CYCLE).toHaveLength(4);
   });
 });

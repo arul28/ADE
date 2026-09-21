@@ -15,7 +15,7 @@ import { formatToolTypeLabel } from "../../lib/sessions";
 import { workRuntimeScopeKey } from "../../lib/chatMachineRouting";
 import { ChatAppControlPanel } from "../chat/ChatAppControlPanel";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
-import { ChatIosSimulatorPanel } from "../chat/ChatIosSimulatorPanel";
+import { AppleDevicePane } from "../apple/AppleDevicePane";
 import { ChatTerminalDrawer } from "../chat/ChatTerminalDrawer";
 import { FilesTab } from "../files/FilesTab";
 import { LaneDiffPane } from "../lanes/LaneDiffPane";
@@ -78,14 +78,6 @@ export type WorkToolPanelProps = {
   onResumeEndedSession: () => void;
   onToolChange: (tool: WorkSidebarTab | null) => void;
   onClose: () => void;
-  /** The lane's Apple device is on screen in its own column, not in here. */
-  appleColumnOpen?: boolean;
-  /**
-   * Re-opens a column the user closed with its `×`. Present ONLY in that
-   * state: absent means there is no device, which is the one case the tools
-   * pane still renders the Apple surface itself for (its empty/create state).
-   */
-  onOpenAppleColumn?: (() => void) | undefined;
 };
 
 function useWorkToolMountScope(runtimePin: OpenProjectBinding | null): string {
@@ -328,54 +320,23 @@ function WorkIosTool({
   runtimePin,
   warningReason,
   canInsertContext,
-  shouldPersistPanelAttachment,
-  appleColumnOpen,
-  onOpenAppleColumn,
-  onAddAttachment,
   onAddIosContext,
   onInsertDraft,
 }: WorkToolPanelProps) {
   const mountScope = useWorkToolMountScope(runtimePin);
   if (!laneId) return <NoLaneNotice />;
-  /*
-    The device lives in its own column now (spec §2a), so the tools pane hosts
-    the empty/create state and nothing else. Mounting a second full column in
-    here would be two live viewers of one device in one window, side by side,
-    each paying for its own decode.
-  */
-  if (appleColumnOpen) {
-    return <WorkToolEmptyState title="Apple device is open in its own column" />;
-  }
-  if (onOpenAppleColumn) {
-    // The column was closed with its `×`. The device kept running — that is
-    // the whole point of the close — so the pane offers the way back rather
-    // than re-mounting a second viewer of it in here.
-    return (
-      <WorkToolEmptyState
-        title="Apple device is running"
-        actions={(
-          <button type="button" onClick={onOpenAppleColumn} className={WORK_TOOL_CHROME_CHIP}>
-            Open column
-          </button>
-        )}
-      />
-    );
-  }
-  // Deliberately NOT `padded`. The Apple surface is a full-height column — a
-  // black stage with a floating toolbar, a quick strip and an edge-docked
-  // drawer — and the tools pane's 12px gutter and scroll container turned it
-  // back into the drawer this rebuild replaced.
+  // Deliberately NOT `padded`. The Apple pane fills its host: the tools pane's
+  // 12px gutter and scroll container turned the device back into the drawer
+  // this rebuild replaced.
   return (
     <NativePanelFrame warningReason={warningReason}>
-      <ChatIosSimulatorPanel
+      <AppleDevicePane
         key={`work-ios:${mountScope}`}
         sessionId={panelSessionId}
         laneId={laneId}
         runtimePin={runtimePin}
         projectRoot={laneRoot}
-        controlDisabledReason={null}
         ignoreChatOwnership
-        onAddAttachment={shouldPersistPanelAttachment ? onAddAttachment : undefined}
         onAddContext={canInsertContext ? onAddIosContext : undefined}
         onInsertDraft={canInsertContext ? onInsertDraft : undefined}
       />

@@ -235,25 +235,6 @@ export type WorkProjectViewState = {
   workSidebarOpenTools: WorkSidebarTab[];
   workSidebarWidthPct: number;
   /**
-   * How wide the Apple device column is, as a percentage of the Work row.
-   *
-   * Project-wide, exactly like `workSidebarWidthPct`: the column's geometry is
-   * a workspace preference, and a width that reset every time you changed lane
-   * would be a width nobody could set. Its presence is NOT stored here — that
-   * is the device's business (see `appleColumnClosedUdid`).
-   */
-  appleColumnWidthPct: number;
-  /**
-   * The device udid the Apple column was last closed for, in THIS lane.
-   *
-   * A udid rather than a boolean because closing the column "does not shut the
-   * device down; it keeps running and the corner card takes over" (spec §2a) —
-   * so the dismissal belongs to the thing dismissed. The next device the lane
-   * gets is a new thing to look at, and a stale `true` would have hidden it.
-   * Lane-scoped (written through `setLaneWorkViewState`).
-   */
-  appleColumnClosedUdid?: string | null;
-  /**
    * Where the Work tab's floating live-preview card sits, as fractions of the
    * chat column. Optional because it is only written once somebody drags the
    * card: an absent value means "bottom-right", which is where it starts.
@@ -359,8 +340,6 @@ export function createDefaultWorkProjectViewState(): WorkProjectViewState {
     workSidebarTool: null,
     workSidebarOpenTools: [],
     workSidebarWidthPct: 36,
-    appleColumnWidthPct: 30,
-    appleColumnClosedUdid: null,
     workLiveCardPosition: null,
     workLiveCardDismissed: null,
     laneSessionOrder: {},
@@ -437,23 +416,6 @@ function normalizeWorkSidebarWidthPct(value: unknown): number {
   return Math.max(26, Math.min(55, n));
 }
 
-/**
- * Mirror of `clampAppleColumnWidthPct`'s TASTE clamp only (18–60, default 30).
- *
- * The numbers are literals rather than an import for the same reason
- * `normalizeWorkSidebarWidthPct` hardcodes 26/55: the clamp lives in
- * `components/apple/appleColumnLayout.ts`, which reaches the toolbar's
- * breakpoint table, and the store must not pull a React component into its
- * module graph to normalize a persisted number. The pixel floors are not
- * mirrored at all — they need a container width, which the store has no way to
- * consult, and the splitter re-clamps against real pixels on every drag.
- */
-function normalizeAppleColumnWidthPct(value: unknown): number {
-  const n = typeof value === "number" ? value : Number(value);
-  if (!Number.isFinite(n)) return 30;
-  return Math.max(18, Math.min(60, n));
-}
-
 function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
   const candidate = value && typeof value === "object"
     ? value as Partial<WorkProjectViewState>
@@ -492,8 +454,6 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
       activeWorkSidebarTool,
     ),
     workSidebarWidthPct: normalizeWorkSidebarWidthPct(candidate.workSidebarWidthPct),
-    appleColumnWidthPct: normalizeAppleColumnWidthPct(candidate.appleColumnWidthPct),
-    appleColumnClosedUdid: normalizeOptionalString(candidate.appleColumnClosedUdid),
     workLiveCardPosition: normalizeWorkLiveCardPosition(candidate.workLiveCardPosition),
     workLiveCardDismissed: normalizeWorkLiveCardDismissals(candidate.workLiveCardDismissed),
     laneSessionOrder: normalizeLaneSessionOrder(candidate.laneSessionOrder),

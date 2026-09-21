@@ -1,125 +1,135 @@
 import type { AppleStreamState } from "./useAppleDeviceStream";
-import type { AppleDeviceOrientation, IosScreenElement } from "../../../shared/types/iosSimulator";
+import type {
+  AppleDeviceOrientation,
+  AppleInstalledSimulator,
+  IosScreenElement,
+} from "../../../shared/types/iosSimulator";
 import { commandFor } from "./appleInspectGeometry";
 
 /**
- * The column's one state value, and the header chips it produces.
+ * The Apple pane's one state value.
  *
- * Kept out of the component because it is the part with rules: the stream has
- * its own state, and a ready device with a dead stream is a different and real
- * thing from a device that is not there. Every ordering decision below is one
- * of those two facts winning over the other, and each was a wrong answer at
- * some point in the drawer this replaces — "No frames", with a Reconnect
- * button, on a lane that owned no simulator at all.
+ * Round 1 had ten states describing what the SERVICE was doing — `creating`,
+ * `building`, `watching`, `stalled` — and a header full of chips to narrate
+ * them. The pane the user asked for has one job per state: show the picker,
+ * show the loading card, show the device, or say the one sentence that
+ * explains why none of those is possible. Eight values, each of which maps to
+ * exactly one viewport in §3's table, and nothing here describes a chip.
  */
 
 export type AppleDeviceState =
+  /** The bound runtime is not a Mac. */
+  | "unsupported"
+  /** The runtime is a Mac, but this install shipped without the helper. */
+  | "helper-missing"
+  /** No device for this lane: the picker. */
   | "no-device"
-  | "creating"
-  | "booting"
-  | "ready-no-app"
-  | "building"
-  | "app-running"
-  | "watching"
-  | "stalled"
-  | "powered-off"
-  | "error";
+  /** A `deviceStart` is in flight: the loading card. */
+  | "starting"
+  /** Frames are arriving. */
+  | "live"
+  /** Frames stopped, but the device is still up. */
+  | "video-lost"
+  /** The simulator is shut down. */
+  | "stopped"
+  /** A SwiftUI preview has taken over the viewport. */
+  | "preview";
 
 export type ResolveAppleDeviceStateInput = {
-  /** This machine can host a simulator. */
+  /** `getStatus().supported` for the BOUND runtime, not the viewer's OS. */
   supported: boolean;
+  /** `getStatus().tools` reports the helper as available. */
+  helperAvailable: boolean;
   /** The lane owns a device record. */
-  hasLaneDevice: boolean;
-  /** The lane's device is shut down. */
-  poweredOff: boolean;
-  /** A clone is being made right now. */
-  creating: boolean;
-  /** A boot is in flight. */
-  booting: boolean;
-  /** A build/install/launch is in flight. */
-  building: boolean;
-  /** Another chat owns the session. A watcher can never launch. */
-  ownedByOtherChat: boolean;
-  /** An app session names a bundle id on this device. */
-  hasAppSession: boolean;
+  hasDevice: boolean;
+  /** The lane's simulator is booted. */
+  booted: boolean;
+  /** A start/create is in flight. */
+  starting: boolean;
+  /** A rendered preview is on screen. */
+  previewing: boolean;
   streamState: AppleStreamState;
-  /** A launch step failed, or a device call was refused. */
-  failed: boolean;
-};
-
-export function resolveAppleDeviceState(input: ResolveAppleDeviceStateInput): AppleDeviceState {
-  // A runtime that is not a Mac is not a device problem with a device fix; it
-  // is the terminal error state with its own action (bind to a Mac).
-  if (!input.supported) return "error";
-  if (input.creating) return "creating";
-  if (input.booting) return "booting";
-  if (!input.hasLaneDevice) return "no-device";
-  if (input.poweredOff) return "powered-off";
-  if (input.failed) return "error";
-  // Ownership outranks the stream: a watcher sees the same pixels and the same
-  // stall, but the ribbon is the thing it must be told first.
-  if (input.ownedByOtherChat) return "watching";
-  // `building` before `stalled`, because the stepper is the more specific
-  // answer to "why is nothing moving" while a build is running, and the spec
-  // keeps the stream live underneath it.
-  if (input.building) return "building";
-  if (input.streamState === "stalled" || input.streamState === "error") return "stalled";
-  return input.hasAppSession ? "app-running" : "ready-no-app";
-}
-
-export type AppleHeaderChip = {
-  label: string;
-  detail: string | null;
-  tone: "active" | "starting" | "error";
 };
 
 /**
- * Section 3's chip column, verbatim.
+ * The order is the whole rule.
  *
- * `building` is the only state with two chips — Live AND Building — because the
- * stream really is live underneath the stepper and saying only one of those two
- * things leaves the other invisible.
+ * Host facts first, because a Linux runtime is not a device problem with a
+ * device fix. Then the preview, which is a deliberate takeover of the viewport
+ * and outranks whatever the stream is doing underneath it. Then presence,
+ * then the in-flight start, then power, and only then the stream — a lane that
+ * owns no simulator must never be told "Video stopped", which is the exact
+ * wrong answer round 1 shipped.
  */
-export function appleHeaderChips(
-  state: AppleDeviceState,
-  streamChip: AppleHeaderChip | null,
-): AppleHeaderChip[] {
-  switch (state) {
-    case "no-device":
-    case "powered-off":
-      return [];
-    case "creating":
-      return [{ label: "Creating", detail: null, tone: "starting" }];
-    case "booting":
-      return [{ label: "Booting", detail: null, tone: "starting" }];
-    case "error":
-      return [{ label: "Error", detail: streamChip?.detail ?? null, tone: "error" }];
-    case "stalled":
-      return [{ label: "Stalled", detail: streamChip?.detail ?? null, tone: "error" }];
-    case "building":
-      return [
-        streamChip ?? { label: "Live", detail: null, tone: "active" },
-        { label: "Building", detail: null, tone: "starting" },
-      ];
-    case "watching":
-    case "app-running":
-    case "ready-no-app":
-    default:
-      return streamChip ? [streamChip] : [];
-  }
+export function resolveAppleDeviceState(input: ResolveAppleDeviceStateInput): AppleDeviceState {
+  if (!input.supported) return "unsupported";
+  if (!input.helperAvailable) return "helper-missing";
+  if (input.previewing) return "preview";
+  if (input.starting) return "starting";
+  if (!input.hasDevice) return "no-device";
+  if (!input.booted) return "stopped";
+  if (input.streamState === "stalled" || input.streamState === "error") return "video-lost";
+  return "live";
 }
 
-/** Input is refused in these states, whatever the toolbar looks like. */
+/** Input reaches the device only while the picture is real. */
 export function appleInputAllowed(state: AppleDeviceState): boolean {
-  return state === "ready-no-app" || state === "app-running" || state === "building";
+  return state === "live";
 }
+
+/** The rail is mounted in these states, and nowhere else. */
+export function appleRailVisible(state: AppleDeviceState): boolean {
+  return state === "live" || state === "video-lost";
+}
+
+/* ── Picker ordering ──────────────────────────────────────────────────────── */
+
+/** Booted first, then alphabetical. No row is ever pre-selected. */
+export function sortAppleSimulators(
+  simulators: readonly AppleInstalledSimulator[],
+): AppleInstalledSimulator[] {
+  return [...simulators].sort((a, b) => {
+    const booted = Number(isAppleSimulatorBooted(b)) - Number(isAppleSimulatorBooted(a));
+    return booted !== 0 ? booted : a.name.localeCompare(b.name);
+  });
+}
+
+export function isAppleSimulatorBooted(simulator: Pick<AppleInstalledSimulator, "state">): boolean {
+  return simulator.state === "Booted";
+}
+
+/** `iOS 26.2 · Running` — the row's one description line. */
+export function appleSimulatorDescription(simulator: AppleInstalledSimulator): string {
+  return `${simulator.runtime} · ${isAppleSimulatorBooted(simulator) ? "Running" : "Stopped"}`;
+}
+
+/* ── The tools grid card ──────────────────────────────────────────────────── */
 
 /**
- * Home / Rotate / Shake's rotate cycle: 90° each click.
- *
- * Portrait → landscape-left → upside-down → landscape-right → portrait.
- * Starting from an unknown orientation, the first click goes to landscape-left
- * (the step after the default portrait).
+ * §9's subtitle: `No device` | `{name} · Starting` | `{name} · Running` |
+ * `{name} · Off`. One function so the picker card, the tab tooltip and the
+ * palette cannot drift apart.
+ */
+export function appleToolCardSubtitle(device: {
+  name: string | null | undefined;
+  state: "starting" | "running" | "off";
+} | null): string {
+  if (!device) return "No device";
+  const name = device.name?.trim() || "Simulator";
+  const suffix = device.state === "starting"
+    ? "Starting"
+    : device.state === "running"
+      ? "Running"
+      : "Off";
+  return `${name} · ${suffix}`;
+}
+
+/* ── Rotation ─────────────────────────────────────────────────────────────── */
+
+/**
+ * Rotate's 90° cycle: portrait → landscape-left → upside-down →
+ * landscape-right → portrait. From an unknown orientation the first click goes
+ * to landscape-left, the step after the default portrait.
  */
 export const APPLE_DEVICE_ORIENTATION_CYCLE = [
   "portrait",
@@ -143,14 +153,8 @@ function shellQuote(value: string): string {
 
 /**
  * The `ade apple tap-element` command for an element, preferring the service's
- * own ref when the snapshot carries one.
- *
- * `appleInspectGeometry.commandFor` builds its query from the raw identifier,
- * which is right for a human reading the panel and wrong for a paste: the
- * service's element refs are HASHED (`id:<shortHash>`), and a raw identifier
- * handed to `--ref` matches nothing. When the host does carry a `ref` — it does
- * on element-action results, and may start carrying it on snapshot rows — that
- * is the string the CLI will actually resolve, so it wins.
+ * own ref when the snapshot carries one: the refs are HASHED (`id:<hash>`),
+ * and a raw identifier handed to `--ref` matches nothing.
  */
 export function appleCommandForElement(element: IosScreenElement): string {
   const ref = element.metadata?.ref;

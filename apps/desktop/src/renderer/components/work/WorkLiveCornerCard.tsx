@@ -30,9 +30,6 @@ import {
   useNativeToolFeedHandlers,
   useNativeToolFeeds,
 } from "../terminals/NativeToolFeedsContext";
-import { WorkLiveIosCornerCard } from "./WorkLiveIosCornerCard";
-import { useWorkLiveIosDevices } from "./useWorkLiveIosDevices";
-import { onWorkLiveIosPictureInPictureRequest } from "./workLiveIosPictureInPicture";
 import {
   clampWorkLiveCardRect,
   commitWorkLiveCardDismissal,
@@ -41,7 +38,6 @@ import {
   formatWorkLiveAge,
   normalizeWorkLiveCardDismissals,
   normalizeWorkLiveCardPosition,
-  selectWorkLiveCards,
   selectWorkLiveCardTool,
   updateWorkLiveScrubCaption,
   workLiveBottomReserve,
@@ -51,7 +47,6 @@ import {
   workLiveCardRect,
   workLiveCardObjectFit,
   workLiveCardSize,
-  workLiveIosDismissalKey,
   workLivePreviewMaxWidth,
   WORK_LIVE_CARD_AVOID_SELECTOR,
   workLiveScrubFrameKey,
@@ -59,7 +54,6 @@ import {
   workLiveSource,
   type WorkLiveActivity,
   type WorkLiveCardPosition,
-  type WorkLiveIosDevice,
   type WorkLiveScreenTool,
   type WorkLiveScrubFrame,
 } from "./workLiveCard";
@@ -130,7 +124,6 @@ export function WorkLiveCornerCard({
   active,
   laneId,
   activeTool,
-  appleColumnOpen = false,
   runtimePin,
   onPick,
 }: {
@@ -145,7 +138,6 @@ export function WorkLiveCornerCard({
    * tools pane shows Git — so device cards are suppressed by THIS flag, not by
    * `activeTool`, which still governs the browser and App Control cards.
    */
-  appleColumnOpen?: boolean;
   runtimePin: OpenProjectBinding | null;
   onPick: (tool: WorkSidebarTab) => void;
 }) {
@@ -193,10 +185,6 @@ export function WorkLiveCornerCard({
   const [bottomReserve, setBottomReserve] = useState(0);
   const [scrubBuffer, setScrubBuffer] = useState<readonly WorkLiveScrubFrame[]>([]);
   const [nowTick, setNowTick] = useState(() => Date.now());
-  const [pipRequest, setPipRequest] = useState<{ udid: string | null; key: number }>({
-    udid: null,
-    key: 0,
-  });
 
   const hostRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
@@ -377,7 +365,6 @@ export function WorkLiveCornerCard({
     appControlSession,
     browserViewRoot,
     canBrowser,
-    canIos,
     canAppControl,
   } = useNativeToolFeeds();
   useNativeToolFeedHandlers(useMemo(() => ({
@@ -386,10 +373,6 @@ export function WorkLiveCornerCard({
     onAppControlEvent,
     onIosEvent,
   }), [onAppControlEvent, onBrowserEvent, onBrowserStatusSettled, onIosEvent]));
-
-  useEffect(() => onWorkLiveIosPictureInPictureRequest((udid) => {
-    setPipRequest((current) => ({ udid, key: current.key + 1 }));
-  }), []);
 
   /* ── Which tool, and does it fit ───────────────────────────────────────── */
 
@@ -412,14 +395,6 @@ export function WorkLiveCornerCard({
     ios: workLiveSource("ios", sourceState),
   }), [sourceState]);
 
-  const iosDevices = useWorkLiveIosDevices({
-    laneId,
-    iosSession,
-    runtimePin,
-    enabled: active && canIos,
-    activityAt: activityAt.ios,
-  });
-
   const activities = useMemo<WorkLiveActivity[]>(() => [
     { tool: "browser", lastActivityAt: activityAt.browser, available: canBrowser, live: sources.browser.live },
     {
@@ -428,8 +403,13 @@ export function WorkLiveCornerCard({
       available: canAppControl,
       live: sources["app-control"].live,
     },
-    { tool: "ios", lastActivityAt: activityAt.ios, available: canIos, live: sources.ios.live || iosDevices.length > 0 },
-  ], [activityAt, canAppControl, canBrowser, canIos, iosDevices.length, sources]);
+    /*
+      The Apple device is deliberately absent. §7 replaced the auto-appearing
+      simulator card with a floating player the rail OPENS — a device only
+      floats because somebody asked it to, so there is nothing for this card
+      to surface on its own.
+    */
+  ], [activityAt, canAppControl, canBrowser, sources]);
 
   const dismissals = useMemo(
     () => normalizeWorkLiveCardDismissals(projectStateKey && laneId ? storedDismissals : localDismissals),
@@ -439,45 +419,14 @@ export function WorkLiveCornerCard({
     () => selectWorkLiveCardTool({ activeTool, activities, dismissals }),
     [activeTool, activities, dismissals],
   );
-  // Browser / App Control keep the existing single-card path. Simulator cards
-  // are keyed by device and rendered beside it — H.264, not a `<video>` of
-  // Simulator.app.
   const paintTool: Exclude<WorkLiveScreenTool, "ios"> | null = tool === "ios" ? null : tool;
-  const iosCards = useMemo(
-    () => selectWorkLiveCards({
-      // The column showing the device is exactly what `activeTool === "ios"`
-      // used to mean when the device lived in the tools pane.
-      activeTool: appleColumnOpen ? "ios" : activeTool,
-      activities,
-      dismissals,
-      iosDevices,
-      iosAvailable: canIos,
-    }).flatMap((selection) => {
-      if (selection.kind !== "ios") return [];
-      const device = iosDevices.find((entry) => entry.udid === selection.deviceUdid);
-      return device ? [device] : [];
-    }),
-    [activeTool, appleColumnOpen, activities, canIos, dismissals, iosDevices],
-  );
-  const shownIosDevices = useMemo(() => {
-    const list = [...iosCards];
-    if (pipRequest.key > 0) {
-      const match = pipRequest.udid
-        ? iosDevices.find((device) => device.udid === pipRequest.udid)
-        : iosDevices[0] ?? null;
-      if (match && !list.some((device) => device.udid === match.udid)) list.push(match);
-    }
-    return list;
-  }, [iosCards, iosDevices, pipRequest]);
   dismissalsRef.current = dismissals;
 
   const cardSize = workLiveCardSize(paintTool);
   const objectFit = workLiveCardObjectFit(paintTool);
 
   const toolFits = workLiveCardFits(hostSize, bottomReserve, cardSize);
-  const iosFits = workLiveCardFits(hostSize, bottomReserve, workLiveCardSize("ios"));
   const visible = active && paintTool != null && toolFits;
-  const iosVisible = active && iosFits && shownIosDevices.length > 0;
 
   /* ── Host geometry ─────────────────────────────────────────────────────── */
 
@@ -557,7 +506,7 @@ export function WorkLiveCornerCard({
       if (frame != null) window.cancelAnimationFrame(frame);
       observer.disconnect();
     };
-  }, [iosVisible, visible]);
+  }, [visible]);
 
   const position = useMemo(
     () => (projectStateKey ? normalizeWorkLiveCardPosition(storedPosition) : localPosition),
@@ -571,14 +520,6 @@ export function WorkLiveCornerCard({
     cardWidth: cardSize.width,
     bottomReserve,
   }), [bottomReserve, cardSize, hostSize, position]);
-
-  const iosRect = useMemo(() => workLiveCardRect({
-    host: hostSize,
-    position,
-    cardHeight: workLiveCardSize("ios").height,
-    cardWidth: workLiveCardSize("ios").width,
-    bottomReserve,
-  }), [bottomReserve, hostSize, position]);
 
   const dragConstraints = useMemo(() => workLiveCardDragConstraints({
     host: hostSize,
@@ -774,23 +715,6 @@ export function WorkLiveCornerCard({
     setLocalDismissals((current) => commitWorkLiveCardDismissal(current, paintTool, stamp));
   }, [laneId, paintTool, projectStateKey, setLaneWorkViewState]);
 
-  const handleDismissIos = useCallback((device: WorkLiveIosDevice) => {
-    const stamp = Math.max(Date.now(), device.lastActivityAt, activityRef.current.ios ?? 0);
-    const key = workLiveIosDismissalKey(device.udid);
-    if (projectStateKey && laneId) {
-      setLaneWorkViewState(projectStateKey, laneId, (prev) => ({
-        ...prev,
-        workLiveCardDismissed: commitWorkLiveCardDismissal(
-          normalizeWorkLiveCardDismissals(prev.workLiveCardDismissed),
-          key,
-          stamp,
-        ),
-      }));
-      return;
-    }
-    setLocalDismissals((current) => commitWorkLiveCardDismissal(current, key, stamp));
-  }, [laneId, projectStateKey, setLaneWorkViewState]);
-
   const activate = useCallback(() => {
     if (suppressClickRef.current || draggingRef.current || !paintTool) return;
     onPick(paintTool);
@@ -833,7 +757,7 @@ export function WorkLiveCornerCard({
   return (
     <div
       ref={hostRef}
-      aria-hidden={visible || iosVisible ? undefined : true}
+      aria-hidden={visible ? undefined : true}
       className="pointer-events-none absolute inset-0 z-20 overflow-hidden"
     >
       <AnimatePresence initial={false}>
@@ -1083,29 +1007,6 @@ export function WorkLiveCornerCard({
             </div>
           </motion.section>
         ) : null}
-        {iosVisible
-          ? shownIosDevices.map((device, index) => (
-            <WorkLiveIosCornerCard
-              key={device.udid}
-              device={device}
-              runtimePin={runtimePin}
-              origin={iosRect}
-              offset={index + (visible ? 1 : 0)}
-              reduceMotion={reduceMotion}
-              onPick={() => onPick("ios")}
-              onDismiss={() => handleDismissIos(device)}
-              pipRequestKey={
-                pipRequest.key > 0 && (
-                  pipRequest.udid
-                    ? pipRequest.udid === device.udid
-                    : device.udid === shownIosDevices[0]?.udid
-                )
-                  ? pipRequest.key
-                  : 0
-              }
-            />
-          ))
-          : null}
       </AnimatePresence>
     </div>
   );

@@ -1383,6 +1383,7 @@ _    ____  _____
   Per-lane devices:
     $ ade apple device-create --text             Clone the project's last-used simulator
     $ ade apple device-attach --simulator <id>   Bind an existing simulator to this lane
+    $ ade apple start [--udid <id>|--create <id>] Attach or clone, boot, wait, and stream
     $ ade apple device-list --installed --text   Installed simulators for a picker
     $ ade apple device-list --lane --text        The one device this lane owns
     $ ade apple device-delete --text             Delete a clone (attached devices refuse)

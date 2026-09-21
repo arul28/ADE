@@ -1,0 +1,717 @@
+import React, {
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { DeviceMobile } from "@phosphor-icons/react";
+import type {
+  AppleDeviceOrientation,
+  AppleDeviceStartArgs,
+  AppleInstalledSimulator,
+  AppleLaneDevice,
+  IosElementContextItem,
+  IosSimulatorStatus,
+  OpenProjectBinding,
+} from "../../../shared/types";
+import { cn } from "../ui/cn";
+import { AppleDeviceStage, isWebCodecsAvailable } from "./AppleDeviceStage";
+import { AppleDeviceLoadingCard, type AppleLoadingStage } from "./AppleDeviceLoadingCard";
+import { AppleDevicePicker } from "./AppleDevicePicker";
+import { AppleDeviceRail } from "./AppleDeviceRail";
+import {
+  AppleDeviceNoticeStrip,
+  AppleDeviceStatusStrip,
+  describeAppleError,
+  type AppleErrorAction,
+} from "./AppleDeviceStatusStrip";
+import {
+  appleInputAllowed,
+  appleRailVisible,
+  nextAppleDeviceOrientation,
+  resolveAppleDeviceState,
+  type AppleDeviceState,
+} from "./appleDeviceState";
+import { formatRecordingElapsed, recordingElapsedMs, useAppleRecordings } from "./appleRecording";
+import { useAppleDeviceControls } from "./useAppleDeviceControls";
+import { useAppleDeviceStream } from "./useAppleDeviceStream";
+import { openAppleMiniPlayer } from "./appleMiniPlayerStore";
+import type { AppleDeviceInput } from "./AppleDeviceFlatView";
+import type { AppleInspectNode } from "./drawer/AppleToolsDrawer";
+import type { AppleRenderedPreview } from "./drawer/sections/PreviewLabSection";
+
+/**
+ * The Apple device, as the body of the Work tools pane's Apple tab.
+ *
+ * There is no header bar, no Device/Preview Lab toggle, no sibling column and
+ * no modal. Top to bottom the pane is: an optional one-line strip, and a body
+ * that is either the picker, the loading card, the device, or a rendered
+ * preview — with the rail floating on the right of the picture and the tools
+ * drawer overlaying it (or docked beside it at ≥700px).
+ */
+
+const STATUS_POLL_MS = 6_000;
+
+/**
+ * The drawer is lazy on purpose: it pulls nine sections, the event log and
+ * Preview Lab, none of which a pane showing the picker has any use for.
+ */
+const AppleToolsDrawer = React.lazy(async () => {
+  const mod = await import("./drawer/AppleToolsDrawer");
+  return { default: mod.AppleToolsDrawer };
+});
+
+export type AppleDevicePaneProps = {
+  /** The chat this pane acts for. Recordings and ownership key off it. */
+  sessionId: string | null;
+  laneId: string | null;
+  projectRoot: string | null;
+  runtimePin: OpenProjectBinding | null;
+  /** The lane-scoped surface drives a device it does not own on purpose. */
+  ignoreChatOwnership?: boolean;
+  onAddContext?: ((item: IosElementContextItem) => void) | undefined;
+  onInsertDraft?: ((text: string) => void) | undefined;
+  className?: string;
+};
+
+
+function familyOf(device: AppleLaneDevice | null): "iphone" | "ipad" {
+  return device?.family === "ipad" ? "ipad" : "iphone";
+}
+
+function helperAvailable(status: IosSimulatorStatus | null): boolean {
+  if (!status) return true;
+  const helper = status.tools.find((tool) => tool.name === "helper");
+  return helper ? helper.available : true;
+}
+
+export function AppleDevicePane({
+  sessionId,
+  laneId,
+  projectRoot,
+  runtimePin,
+  ignoreChatOwnership = false,
+  onAddContext,
+  onInsertDraft,
+  className,
+}: AppleDevicePaneProps) {
+  const runtimePinRef = useRef<OpenProjectBinding | null>(runtimePin);
+  runtimePinRef.current = runtimePin;
+
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const orientationRef = useRef<AppleDeviceOrientation>("portrait");
+
+  const [status, setStatus] = useState<IosSimulatorStatus | null>(null);
+  const [installed, setInstalled] = useState<AppleInstalledSimulator[]>([]);
+  const [laneDevice, setLaneDevice] = useState<AppleLaneDevice | null>(null);
+  const [listNonce, setListNonce] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const [pendingStart, setPendingStart] = useState<string | null>(null);
+  const [loadingStage, setLoadingStage] = useState<AppleLoadingStage>("starting");
+  const [startError, setStartError] = useState<unknown>(null);
+  const [error, setError] = useState<unknown>(null);
+
+  const [mode, setMode] = useState<"flat" | "3d">("flat");
+  const [viewNonce, setViewNonce] = useState(0);
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const [inspectOn, setInspectOn] = useState(false);
+  const [inspectSelected, setInspectSelected] = useState<AppleInspectNode | null>(null);
+  const [preview, setPreview] = useState<AppleRenderedPreview | null>(null);
+  const [confirmSwitch, setConfirmSwitch] = useState(false);
+  const [screenshotPending, setScreenshotPending] = useState(false);
+  const [bodyWidth, setBodyWidth] = useState(720);
+  const [hidden, setHidden] = useState(false);
+  const [nowTick, setNowTick] = useState(() => Date.now());
+
+  const refreshList = useCallback(() => setListNonce((nonce) => nonce + 1), []);
+
+  /* ── size + visibility ─────────────────────────────────────────────────── */
+
+  useEffect(() => {
+    const node = bodyRef.current;
+    if (!node || typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width;
+      if (typeof width === "number") setBodyWidth(width);
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
+  // A viewer nobody is looking at is pure bitrate: both "the window is in the
+  // background" and "the pane is scrolled out of view" stop the stream.
+  useEffect(() => {
+    const node = bodyRef.current;
+    let offScreen = false;
+    let documentHidden = document.visibilityState === "hidden";
+    const apply = () => setHidden(offScreen || documentHidden);
+    const onVisibility = () => {
+      documentHidden = document.visibilityState === "hidden";
+      apply();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    let observer: IntersectionObserver | null = null;
+    if (node && typeof IntersectionObserver === "function") {
+      observer = new IntersectionObserver((entries) => {
+        const entry = entries[0];
+        if (!entry) return;
+        offScreen = !entry.isIntersecting;
+        apply();
+      });
+      observer.observe(node);
+    }
+    apply();
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      observer?.disconnect();
+    };
+  }, []);
+
+  /* ── status + devices ──────────────────────────────────────────────────── */
+
+  useEffect(() => {
+    let cancelled = false;
+    const read = async () => {
+      try {
+        const next = await window.ade.iosSimulator.getStatus(runtimePinRef.current);
+        if (!cancelled) setStatus(next);
+      } catch (cause: unknown) {
+        if (!cancelled) setError(cause);
+      }
+    };
+    void read();
+    const timer = window.setInterval(() => {
+      if (!hidden) void read();
+    }, STATUS_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [hidden, listNonce]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setRefreshing(true);
+    void window.ade.iosSimulator
+      .deviceList({ laneId, chatSessionId: sessionId, installed: true }, runtimePinRef.current)
+      .then((next) => {
+        if (cancelled) return;
+        setInstalled(next.installed);
+        setLaneDevice(next.lane);
+      })
+      .catch((cause: unknown) => {
+        if (!cancelled) setError(cause);
+      })
+      .finally(() => {
+        if (!cancelled) setRefreshing(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [laneId, listNonce, sessionId]);
+
+  const deviceUdid = laneDevice?.udid ?? null;
+  const installedForLane = useMemo(
+    () => installed.find((entry) => entry.udid === deviceUdid) ?? null,
+    [deviceUdid, installed],
+  );
+
+  /* ── stream ────────────────────────────────────────────────────────────── */
+
+  const onStreamError = useCallback((message: string | null) => {
+    if (message) setError(new Error(message));
+  }, []);
+
+  const booted = Boolean(
+    installedForLane?.state === "Booted"
+    || (status?.activeDevice?.udid === deviceUdid && status?.activeDevice?.state === "Booted")
+    || (deviceUdid && status?.deviceSession?.deviceUdid === deviceUdid),
+  );
+
+  const stream = useAppleDeviceStream({
+    deviceUdid: booted ? deviceUdid : null,
+    laneId,
+    chatSessionId: sessionId,
+    enabled: Boolean(deviceUdid) && booted && Boolean(status?.supported ?? true),
+    hidden,
+    machineName: null,
+    bitrateKbpsCap: null,
+    runtimePinRef,
+    onError: onStreamError,
+  });
+
+  const state: AppleDeviceState = resolveAppleDeviceState({
+    supported: status ? status.supported : true,
+    helperAvailable: helperAvailable(status),
+    hasDevice: Boolean(deviceUdid),
+    booted,
+    starting: pendingStart !== null,
+    previewing: preview !== null,
+    streamState: stream.state,
+  });
+
+  /* ── service events ────────────────────────────────────────────────────── */
+
+  const applyStreamEventRef = useRef(stream.applyStreamEvent);
+  applyStreamEventRef.current = stream.applyStreamEvent;
+
+  useEffect(() => {
+    const unsubscribe = window.ade.iosSimulator.onEvent((event) => {
+      switch (event.type) {
+        case "apple.device.state": {
+          if (event.laneId && laneId && event.laneId !== laneId) return;
+          if (event.phase === "failed") {
+            setStartError(new Error(event.detail ?? "The device did not start."));
+            return;
+          }
+          setLoadingStage(event.phase === "streaming" ? "streaming" : "starting");
+          if (event.phase === "streaming") refreshList();
+          return;
+        }
+        case "stream-started":
+        case "stream-status":
+        case "stream-stopped":
+        case "stream-error":
+          applyStreamEventRef.current(event.status);
+          return;
+        case "device-session-started":
+        case "device-session-released":
+        case "session-started":
+        case "session-released":
+          refreshList();
+          return;
+        default:
+          return;
+      }
+    }, runtimePinRef.current);
+    return unsubscribe;
+  }, [laneId, refreshList]);
+
+  /* ── recordings ────────────────────────────────────────────────────────── */
+
+  const onRecordingError = useCallback((message: string | null) => {
+    if (message) setError(new Error(message));
+  }, []);
+
+  const recordings = useAppleRecordings({
+    laneId,
+    chatSessionId: sessionId,
+    enabled: Boolean(laneId) && !hidden,
+    runtimePinRef,
+    onError: onRecordingError,
+  });
+  const recordingActive = recordings.active;
+
+  useEffect(() => {
+    if (!recordingActive) return undefined;
+    const timer = window.setInterval(() => setNowTick(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [recordingActive]);
+
+  /* ── device settings, serialized ───────────────────────────────────────── */
+
+  const controls = useAppleDeviceControls({
+    deviceUdid: booted ? deviceUdid : null,
+    laneId,
+    chatSessionId: sessionId,
+    visible: !hidden && appleRailVisible(state),
+    runtimePinRef,
+  });
+
+  /* ── actions ───────────────────────────────────────────────────────────── */
+
+  const start = useCallback((args: AppleDeviceStartArgs, key: string) => {
+    setStartError(null);
+    setError(null);
+    setLoadingStage("starting");
+    setPendingStart(key);
+    void window.ade.iosSimulator.deviceStart(args, runtimePinRef.current)
+      .then(() => {
+        refreshList();
+      })
+      .catch((cause: unknown) => {
+        setStartError(cause);
+      })
+      .finally(() => {
+        setPendingStart(null);
+      });
+  }, [refreshList]);
+
+  const startInstalled = useCallback((udid: string) => {
+    start({ laneId, chatSessionId: sessionId, udid }, udid);
+  }, [laneId, sessionId, start]);
+
+  const createDevice = useCallback((sourceUdid: string) => {
+    start({ laneId, chatSessionId: sessionId, create: { sourceUdid } }, "create");
+  }, [laneId, sessionId, start]);
+
+  const restart = useCallback(() => {
+    if (deviceUdid) start({ laneId, chatSessionId: sessionId, udid: deviceUdid }, deviceUdid);
+  }, [deviceUdid, laneId, sessionId, start]);
+
+  const powerOff = useCallback(() => {
+    if (!deviceUdid) return;
+    void window.ade.iosSimulator
+      .closeDevice(
+        {
+          deviceUdid,
+          chatSessionId: sessionId,
+          ignoreOwnership: ignoreChatOwnership,
+          shutdownDevice: true,
+        },
+        runtimePinRef.current,
+      )
+      .then(() => refreshList())
+      .catch((cause: unknown) => setError(cause));
+  }, [deviceUdid, ignoreChatOwnership, refreshList, sessionId]);
+
+  /**
+   * "Switch device…" deletes or detaches this lane's device and returns to the
+   * picker. It is the ONLY way back, which is why `APPLE_DEVICE_EXISTS` can
+   * never reach a person: nothing else ever asks for a second one.
+   */
+  const switchDevice = useCallback(() => {
+    setConfirmSwitch(false);
+    void window.ade.iosSimulator
+      .deviceDelete({ laneId, chatSessionId: sessionId, force: true }, runtimePinRef.current)
+      .then(() => {
+        setLaneDevice(null);
+        refreshList();
+      })
+      .catch((cause: unknown) => setError(cause));
+  }, [laneId, refreshList, sessionId]);
+
+  const screenshot = useCallback(() => {
+    setScreenshotPending(true);
+    void window.ade.iosSimulator
+      .screenshot(
+        { deviceUdid, ...(laneId ? { laneId } : { projectRoot }) },
+        runtimePinRef.current,
+      )
+      .catch((cause: unknown) => setError(cause))
+      .finally(() => setScreenshotPending(false));
+  }, [deviceUdid, laneId, projectRoot]);
+
+  const pressHome = useCallback(() => {
+    if (!appleInputAllowed(state)) return;
+    void window.ade.iosSimulator
+      .pressButton({ name: "home", laneId, deviceUdid }, runtimePinRef.current)
+      .catch((cause: unknown) => setError(cause));
+  }, [deviceUdid, laneId, state]);
+
+  const rotate = useCallback(() => {
+    if (!appleInputAllowed(state)) return;
+    const next = nextAppleDeviceOrientation(orientationRef.current);
+    orientationRef.current = next;
+    void window.ade.iosSimulator
+      .rotate({ orientation: next, laneId, deviceUdid }, runtimePinRef.current)
+      .catch((cause: unknown) => setError(cause));
+  }, [deviceUdid, laneId, state]);
+
+  const float = useCallback(() => {
+    if (!deviceUdid || !laneDevice) return;
+    openAppleMiniPlayer({
+      laneId,
+      chatSessionId: sessionId,
+      deviceUdid,
+      deviceName: laneDevice.name,
+      deviceRuntime: laneDevice.runtime,
+      family: familyOf(laneDevice),
+      runtimePin: runtimePinRef.current,
+    });
+  }, [deviceUdid, laneDevice, laneId, sessionId]);
+
+  const sendInput = useCallback((input: AppleDeviceInput) => {
+    if (input.phase !== "end" || !deviceUdid || !appleInputAllowed(state)) return;
+    void window.ade.iosSimulator
+      .tap({ deviceUdid, x: Math.round(input.x), y: Math.round(input.y) }, runtimePinRef.current)
+      .catch((cause: unknown) => setError(cause));
+  }, [deviceUdid, state]);
+
+  const handleStripAction = useCallback((action: AppleErrorAction) => {
+    setError(null);
+    if (action === "start") restart();
+    else if (action === "reconnect") stream.reconnect();
+    // `reinstall` has nothing to press: the sentence IS the instruction.
+  }, [restart, stream]);
+
+  /* ── viewport ──────────────────────────────────────────────────────────── */
+
+  const canUse3d = isWebCodecsAvailable() && !inspectOn && bodyWidth >= 420;
+  const threeDisabledReason = inspectOn
+    ? "Inspect is flat-view only"
+    : bodyWidth < 420
+      ? "3D view needs a wider pane"
+      : "3D view needs WebCodecs";
+
+  const deviceName = laneDevice?.name ?? "Simulator";
+  const inputConnected = state === "live";
+
+  const viewport = renderViewport();
+
+  function renderViewport() {
+    switch (state) {
+      case "unsupported":
+        return (
+          <PaneMessage
+            title="Apple simulators need a Mac runtime."
+            description={status?.tools.find((tool) => !tool.available)?.detail ?? null}
+          />
+        );
+      case "helper-missing":
+        return (
+          <PaneMessage
+            title="ADE's simulator helper is missing from this install."
+            description="Reinstall ADE to restore it."
+          />
+        );
+      case "no-device":
+        return (
+          <AppleDevicePicker
+            installed={installed}
+            pending={pendingStart}
+            lastUsedUdid={laneDevice?.templateUdid ?? null}
+            refreshing={refreshing}
+            onStart={startInstalled}
+            onCreate={createDevice}
+            onRefresh={refreshList}
+          />
+        );
+      case "starting":
+        return (
+          <AppleDeviceLoadingCard
+            name={pendingStart === "create" ? "New simulator" : startingName()}
+            runtime={startingRuntime()}
+            family={familyOf(laneDevice)}
+            stage={loadingStage}
+            error={startError}
+            onRetry={() => (pendingStart ? undefined : restart())}
+          />
+        );
+      case "preview":
+        return (
+          <div className="relative size-full overflow-auto bg-bg p-4">
+            <button
+              type="button"
+              className="absolute left-3 top-3 z-[2] rounded-md border border-border bg-bg/90 px-2 py-1 font-sans text-xs text-fg/85 backdrop-blur-md hover:text-fg"
+              onClick={() => setPreview(null)}
+            >
+              ← Back to device
+            </button>
+            {preview ? (
+              <img
+                src={preview.dataUrl}
+                alt={`${preview.targetLabel} preview`}
+                className="mx-auto max-h-full max-w-full object-contain"
+              />
+            ) : null}
+          </div>
+        );
+      case "stopped":
+      case "video-lost":
+      case "live":
+      default:
+        return (
+          <AppleDeviceStage
+            streamUrl={stream.url}
+            streamToken={stream.token}
+            reconnectNonce={stream.reconnectNonce}
+            mode={canUse3d ? mode : "flat"}
+            viewNonce={viewNonce}
+            family={familyOf(laneDevice)}
+            deviceTypeName={deviceName}
+            realistic={false}
+            orientation="portrait"
+            devicePointSize={null}
+            interactive={appleInputAllowed(state)}
+            onDeviceInput={sendInput}
+            onReaderStatus={stream.handleReaderStatus}
+            onDimensions={stream.handleDimensions}
+            onFrame={stream.noteFrame}
+            frameVersion={stream.frameVersion}
+            className={cn(state === "video-lost" && "opacity-40")}
+          >
+            {state === "stopped" ? (
+              <div className="pointer-events-none absolute inset-0 grid place-items-center">
+                <DeviceMobile size={72} className="text-white/10" />
+              </div>
+            ) : null}
+          </AppleDeviceStage>
+        );
+    }
+  }
+
+  function startingName(): string {
+    if (laneDevice) return laneDevice.name;
+    const match = installed.find((entry) => entry.udid === pendingStart);
+    return match?.name ?? "Simulator";
+  }
+
+  function startingRuntime(): string | null {
+    if (laneDevice) return laneDevice.runtime;
+    return installed.find((entry) => entry.udid === pendingStart)?.runtime ?? null;
+  }
+
+  const strip = error != null
+    ? (
+      <AppleDeviceStatusStrip
+        error={error}
+        onAction={handleStripAction}
+        onDismiss={() => setError(null)}
+      />
+    )
+    : state === "video-lost"
+      ? (
+        <AppleDeviceNoticeStrip
+          sentence="Video stopped."
+          actionLabel="Reconnect"
+          onAction={() => stream.reconnect()}
+        />
+      )
+      : state === "stopped"
+        ? (
+          <AppleDeviceNoticeStrip
+            sentence={`${deviceName} is off.`}
+            actionLabel="Start"
+            onAction={restart}
+          />
+        )
+        : null;
+
+  return (
+    <div
+      data-apple-pane=""
+      data-apple-device-state={state}
+      className={cn("relative flex h-full min-h-0 min-w-0 flex-col bg-bg", className)}
+    >
+      {strip}
+      <div ref={bodyRef} className="@container relative flex min-h-0 min-w-0 flex-1">
+        <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+          {viewport}
+
+          {appleRailVisible(state) ? (
+            <AppleDeviceRail
+              containerWidth={bodyWidth}
+              deviceName={deviceName}
+              deviceRuntime={laneDevice?.runtime ?? null}
+              controls={controls}
+              inputConnected={inputConnected}
+              mode={canUse3d ? mode : "flat"}
+              canUse3d={canUse3d}
+              threeDisabledReason={threeDisabledReason}
+              toolsOpen={toolsOpen}
+              recording={Boolean(recordingActive)}
+              screenshotPending={screenshotPending}
+              onHome={pressHome}
+              onRotate={rotate}
+              onScreenshot={screenshot}
+              onToggleTools={() => setToolsOpen((open) => !open)}
+              onMode={setMode}
+              onResetView={() => setViewNonce((nonce) => nonce + 1)}
+              onToggleRecording={() => (recordingActive ? recordings.stop() : recordings.start())}
+              onFloat={float}
+              onSwitchDevice={() => setConfirmSwitch(true)}
+              onPowerOff={powerOff}
+            />
+          ) : null}
+
+          {confirmSwitch ? (
+            <div className="absolute inset-x-0 bottom-0 z-20 flex flex-wrap items-center gap-2 border-t border-border bg-bg/95 px-3 py-2 font-sans text-xs text-fg backdrop-blur-md">
+              <span className="min-w-0 flex-1">Give up this device and pick another?</span>
+              <button
+                type="button"
+                className="rounded-md px-2 py-1 font-medium text-muted-fg hover:text-fg"
+                onClick={() => setConfirmSwitch(false)}
+              >
+                Keep it
+              </button>
+              <button
+                type="button"
+                className="rounded-md px-2 py-1 font-medium text-[var(--color-error)] hover:underline"
+                onClick={switchDevice}
+              >
+                Switch device
+              </button>
+            </div>
+          ) : null}
+
+          {recordingActive && appleRailVisible(state) ? (
+            <div
+              data-apple-recording-pill=""
+              className="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-2 rounded-full border border-border bg-bg/90 px-3 py-1 font-sans text-xs text-fg backdrop-blur-md"
+            >
+              <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-error)] motion-safe:animate-pulse" />
+              <span className="tabular-nums">
+                Recording {formatRecordingElapsed(recordingElapsedMs(recordingActive, nowTick))}
+              </span>
+              <button
+                type="button"
+                className="font-medium text-muted-fg hover:text-fg"
+                onClick={() => recordings.stop()}
+              >
+                Stop
+              </button>
+            </div>
+          ) : null}
+
+          {state === "live" && !stream.url ? (
+            <div className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-full border border-border bg-bg/90 px-3 py-1 font-sans text-xs text-muted-fg backdrop-blur-md">
+              Input disconnected, reconnecting…
+            </div>
+          ) : null}
+        </div>
+
+        {toolsOpen && laneDevice ? (
+          <div
+            data-apple-drawer=""
+            className={cn(
+              "absolute inset-y-0 right-0 z-20 w-full max-w-72 border-l border-border bg-bg shadow-lg",
+              "@[700px]:static @[700px]:w-72 @[700px]:max-w-72 @[700px]:shrink-0 @[700px]:shadow-none",
+            )}
+          >
+            <Suspense fallback={null}>
+              <AppleToolsDrawer
+                pin={runtimePin}
+                laneId={laneId ?? ""}
+                device={laneDevice}
+                visible={toolsOpen && !hidden}
+                onClose={() => setToolsOpen(false)}
+                inspect={{
+                  enabled: inspectOn,
+                  setEnabled: setInspectOn,
+                  selected: inspectSelected,
+                }}
+                recording={{
+                  active: recordingActive,
+                  start: () => recordings.start(),
+                  stop: () => recordings.stop(),
+                }}
+                onPreviewRendered={setPreview}
+                onAddContext={onAddContext}
+                onInsertDraft={onInsertDraft}
+                onSelectInspectNode={setInspectSelected}
+              />
+            </Suspense>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function PaneMessage({ title, description }: { title: string; description: string | null }) {
+  return (
+    <div className="flex size-full flex-col items-center justify-center gap-2 bg-bg px-6 py-10 text-center">
+      <DeviceMobile size={28} className="text-muted-fg/60" />
+      <p className="max-w-sm font-sans text-sm font-medium leading-5 text-fg">{title}</p>
+      {description ? (
+        <p className="max-w-sm font-sans text-xs leading-5 text-muted-fg">{description}</p>
+      ) : null}
+    </div>
+  );
+}
+
+export { describeAppleError };

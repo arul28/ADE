@@ -13276,6 +13276,23 @@ describe("ADE CLI", () => {
       args: { installed: true },
     });
 
+    // `start` is the boot contract: attach-or-create, boot, bootstatus, stream.
+    const startedAttached = iosSimActionArgs(["apple", "start", "--udid", "AAA-BBB", "--lane", "lane-a"]);
+    expect(startedAttached).toMatchObject({
+      action: "deviceStart",
+      args: { udid: "AAA-BBB", laneId: "lane-a" },
+    });
+    expect((startedAttached as { args: Record<string, unknown> }).args).not.toHaveProperty("create");
+    const startedCloned = iosSimActionArgs(["apple", "start", "--create", "SRC-1"]);
+    expect(startedCloned).toMatchObject({
+      action: "deviceStart",
+      args: { create: { sourceUdid: "SRC-1" } },
+    });
+    const startedOwned = iosSimActionArgs(["apple", "start"]);
+    expect(startedOwned).toMatchObject({ action: "deviceStart" });
+    expect((startedOwned as { args: Record<string, unknown> }).args).not.toHaveProperty("udid");
+    expect(() => buildCliPlan(["apple", "start", "--udid", "A", "--create", "B"])).toThrow(/not both/);
+
     const deleted = iosSimActionArgs(["apple", "device-delete", "--force"]);
     expect(deleted).toMatchObject({
       action: "deviceDelete",

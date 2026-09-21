@@ -803,6 +803,7 @@ import type {
   IosSimulatorShutdownArgs,
   IosSimulatorShutdownResult,
   AppleDeviceAttachArgs,
+  AppleDeviceStartArgs,
   AppleDeviceCreateArgs,
   AppleDeviceDeleteArgs,
   AppleDeviceListArgs,
@@ -8101,6 +8102,12 @@ const adeBridge = {
       pin?: OpenProjectBinding | null,
     ): Promise<AppleLaneDevice> =>
       callIosSimulatorMutation(pin, "deviceAttach", args, IPC.iosSimulatorDeviceAttach),
+    /** Attach-or-create, boot, wait, stream — the picker's one click. */
+    deviceStart: (
+      args: AppleDeviceStartArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<IosSimulatorStreamStatus> =>
+      callIosSimulatorMutation(pin, "deviceStart", args, IPC.iosSimulatorDeviceStart),
     deviceList: async (
       args: AppleDeviceListArgs = {},
       pin?: OpenProjectBinding | null,

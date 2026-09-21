@@ -452,6 +452,7 @@ export const IPC = {
   iosSimulatorGetStreamStatus: "ade.iosSimulator.getStreamStatus",
   iosSimulatorDeviceCreate: "ade.iosSimulator.deviceCreate",
   iosSimulatorDeviceAttach: "ade.iosSimulator.deviceAttach",
+  iosSimulatorDeviceStart: "ade.iosSimulator.deviceStart",
   iosSimulatorDeviceList: "ade.iosSimulator.deviceList",
   iosSimulatorDeviceDelete: "ade.iosSimulator.deviceDelete",
   iosSimulatorFrame: "ade.iosSimulator.frame",

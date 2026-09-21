@@ -1,6 +1,7 @@
 import type { SmartLinkPreview } from "../shared/smartLinks";
 import type {
   AppleDeviceAttachArgs,
+  AppleDeviceStartArgs,
   AppleDeviceCreateArgs,
   AppleDeviceDeleteArgs,
   AppleDeviceListArgs,
@@ -2411,6 +2412,15 @@ declare global {
           args: AppleDeviceAttachArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AppleLaneDevice>;
+        /**
+         * Attach (or create, with `create.sourceUdid`) if the lane owns no
+         * device, boot it if it is off, wait for `bootstatus`, then start the
+         * live view. Progress arrives on `onEvent` as `apple.device.state`.
+         */
+        deviceStart: (
+          args?: AppleDeviceStartArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<IosSimulatorStreamStatus>;
         deviceList: (
           args?: AppleDeviceListArgs,
           pin?: OpenProjectBinding | null,

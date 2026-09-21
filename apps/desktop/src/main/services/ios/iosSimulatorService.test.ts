@@ -2156,3 +2156,167 @@ describe("iosSimulatorService device tool targeting", () => {
     }
   });
 });
+
+describe("iosSimulatorService boot contract", () => {
+  /**
+   * A `run` mock that keeps the installed list honest: a `simctl clone`
+   * appends the clone as Shutdown, and `simctl boot` flips a device to Booted,
+   * so `resolveDevice` after either sees what the real `simctl` would report.
+   */
+  function bootAwareRun(options: { bootError?: string | null } = {}) {
+    const devices = [
+      { name: "iPhone 17 Pro", udid: "device-1", state: "Booted", isAvailable: true, deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro" },
+      { name: "iPhone 17", udid: "device-2", state: "Shutdown", isAvailable: true, deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-17" },
+    ];
+    const calls: string[] = [];
+    const run = vi.fn(async (command: string, commandArgs: string[]) => {
+      const joined = `${command} ${commandArgs.join(" ")}`;
+      calls.push(joined);
+      if (joined === "xcrun simctl list devices available --json") {
+        return { stdout: JSON.stringify({ devices: { "com.apple.CoreSimulator.SimRuntime.iOS-26-3": devices } }), stderr: "" };
+      }
+      if (command === "xcrun" && commandArgs[0] === "simctl" && commandArgs[1] === "clone") {
+        devices.push({ name: commandArgs[3] ?? "clone", udid: "device-clone", state: "Shutdown", isAvailable: true, deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro" });
+        return { stdout: "device-clone\n", stderr: "" };
+      }
+      if (command === "xcrun" && commandArgs[0] === "simctl" && commandArgs[1] === "boot") {
+        if (options.bootError) throw new Error(options.bootError);
+        const target = devices.find((device) => device.udid === commandArgs[2]);
+        if (target) target.state = "Booted";
+      }
+      return { stdout: "", stderr: "" };
+    });
+    return { run, calls };
+  }
+
+  function setup(options: { bootError?: string | null; captureError?: string | null } = {}) {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const { run, calls } = bootAwareRun(options);
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    const helper = fakeSimHelper(options.captureError ? {
+      onSend: (command) => {
+        if (command.type === "capture-start") throw new Error(options.captureError ?? "capture failed");
+        return {};
+      },
+    } : {});
+    const restoreHelper = __testSetIosSimulatorHelperFactory(() => helper.client);
+    const events: IosSimulatorEventPayload[] = [];
+    const service = createIosSimulatorService({
+      projectRoot: os.tmpdir(),
+      logger: noopLogger,
+      onEvent: (payload) => { events.push(payload); },
+    });
+    const phases = () => events.flatMap((event) => (event.type === "apple.device.state" ? [event.phase] : []));
+    const dispose = () => {
+      service.dispose();
+      restoreHelper();
+      restoreHooks();
+      platformSpy.mockRestore();
+    };
+    return { service, calls, helper, events, phases, dispose };
+  }
+
+  it("startStream boots a shut-down device and waits for bootstatus before opening the capture", async () => {
+    const { service, calls, helper, dispose } = setup();
+    try {
+      const status = await service.startStream({ deviceUdid: "device-2", laneId: "lane-a" });
+      expect(status.running).toBe(true);
+      const bootAt = calls.indexOf("xcrun simctl boot device-2");
+      const statusAt = calls.indexOf("xcrun simctl bootstatus device-2 -b");
+      expect(bootAt).toBeGreaterThan(-1);
+      expect(statusAt).toBeGreaterThan(bootAt);
+      expect(helper.sent.some((command) => command.type === "capture-start" && command.udid === "device-2")).toBe(true);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("startStream skips simctl boot for a device that is already booted", async () => {
+    const { service, calls, dispose } = setup();
+    try {
+      await service.startStream({ deviceUdid: "device-1", laneId: "lane-a" });
+      expect(calls).not.toContain("xcrun simctl boot device-1");
+      expect(calls).toContain("xcrun simctl bootstatus device-1 -b");
+    } finally {
+      dispose();
+    }
+  });
+
+  it("startStream tolerates simctl saying the device is already booted", async () => {
+    const { service, dispose } = setup({ bootError: "Unable to boot device in current state: Booted" });
+    try {
+      const status = await service.startStream({ deviceUdid: "device-2", laneId: "lane-a" });
+      expect(status.running).toBe(true);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("deviceStart attaches, boots, streams, and narrates starting → booted → streaming", async () => {
+    const { service, calls, phases, dispose, events } = setup();
+    try {
+      const status = await service.deviceStart({ laneId: "lane-a", udid: "device-2" });
+      expect(status.running).toBe(true);
+      expect(status.deviceUdid).toBe("device-2");
+      expect(phases()).toEqual(["starting", "booted", "streaming"]);
+      const first = events.find((event) => event.type === "apple.device.state");
+      expect(first).toMatchObject({ type: "apple.device.state", laneId: "lane-a", udid: "device-2", phase: "starting" });
+      expect(calls).toContain("xcrun simctl boot device-2");
+      expect(calls).toContain("xcrun simctl bootstatus device-2 -b");
+      const owned = await service.deviceList({ laneId: "lane-a", installed: false });
+      expect(owned.lane).toMatchObject({ udid: "device-2", origin: "attached" });
+    } finally {
+      dispose();
+    }
+  });
+
+  it("deviceStart clones the source when asked to create", async () => {
+    const { service, calls, phases, dispose } = setup();
+    try {
+      const status = await service.deviceStart({ laneId: "lane-b", create: { sourceUdid: "device-1" } });
+      expect(status.deviceUdid).toBe("device-clone");
+      expect(calls.some((call) => call.startsWith("xcrun simctl clone device-1 "))).toBe(true);
+      expect(calls).toContain("xcrun simctl boot device-clone");
+      expect(phases()).toEqual(["starting", "booted", "streaming"]);
+      const owned = await service.deviceList({ laneId: "lane-b", installed: false });
+      expect(owned.lane).toMatchObject({ udid: "device-clone", origin: "clone" });
+    } finally {
+      dispose();
+    }
+  });
+
+  it("deviceStart starts the device the lane already owns and ignores no udid silently", async () => {
+    const { service, dispose } = setup();
+    try {
+      await service.deviceAttach({ laneId: "lane-c", simulator: "device-2" });
+      const status = await service.deviceStart({ laneId: "lane-c" });
+      expect(status.deviceUdid).toBe("device-2");
+      await expect(service.deviceStart({ laneId: "lane-c", udid: "device-1" })).rejects.toThrow(/APPLE_DEVICE_EXISTS/);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("deviceStart refuses a lane with no device and nothing to attach", async () => {
+    const { service, phases, dispose } = setup();
+    try {
+      await expect(service.deviceStart({ laneId: "lane-d" })).rejects.toThrow(/no Apple device yet/);
+      expect(phases()).toEqual([]);
+      await expect(service.deviceStart({})).rejects.toThrow(/belong to a lane/);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("deviceStart narrates a failure and rethrows it", async () => {
+    const { service, phases, events, dispose } = setup({ captureError: "Device not booted (state: Shutdown)" });
+    try {
+      await expect(service.deviceStart({ laneId: "lane-e", udid: "device-2" })).rejects.toThrow(/Device not booted/);
+      expect(phases()).toEqual(["starting", "booted", "failed"]);
+      const failed = events.find((event) => event.type === "apple.device.state" && event.phase === "failed");
+      expect(failed).toMatchObject({ detail: "Device not booted (state: Shutdown)" });
+    } finally {
+      dispose();
+    }
+  });
+});

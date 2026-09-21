@@ -22,10 +22,10 @@ import { makeBuiltInBrowserStatus } from "../chat/__fixtures__/builtInBrowserSta
 
 const originalNavigatorPlatform = Object.getOwnPropertyDescriptor(window.navigator, "platform");
 
-vi.mock("../chat/ChatIosSimulatorPanel", async () => {
+vi.mock("../apple/AppleDevicePane", async () => {
   const React = await import("react");
   return {
-    ChatIosSimulatorPanel: (props: {
+    AppleDevicePane: (props: {
       sessionId: string | null;
       controlDisabledReason?: string | null;
       ignoreChatOwnership?: boolean;
@@ -296,6 +296,8 @@ const defaultBrowserStatus: BuiltInBrowserStatus = makeBuiltInBrowserStatus({
 function installAdeMock(options: {
   appControlSession?: AppControlSession | null;
   iosSession?: IosSimulatorSession | null;
+  /** The lane's Apple device, which is what the tools card names. */
+  laneDevice?: { udid: string; name: string } | null;
   browserStatus?: BuiltInBrowserStatus | null;
 } = {}) {
   const terminalWrite = vi.fn().mockResolvedValue({ ok: true });
@@ -317,6 +319,32 @@ function installAdeMock(options: {
         getStatus: vi.fn().mockResolvedValue({
           supported: true,
           activeSession: options.iosSession ?? null,
+        }),
+        // The tools card reads the LANE's device, not the app session.
+        deviceList: vi.fn().mockResolvedValue({
+          installed: options.laneDevice
+            ? [{
+              udid: options.laneDevice.udid,
+              name: options.laneDevice.name,
+              runtime: "iOS 26.2",
+              state: "Booted",
+              isAvailable: true,
+              family: "iphone",
+              deviceTypeIdentifier: null,
+            }]
+            : [],
+          lane: options.laneDevice
+            ? {
+              laneId: "lane-1",
+              udid: options.laneDevice.udid,
+              name: options.laneDevice.name,
+              origin: "attached",
+              family: "iphone",
+              runtime: "iOS 26.2",
+              createdAt: new Date(0).toISOString(),
+              templateUdid: null,
+            }
+            : null,
         }),
         onEvent: vi.fn(() => () => {}),
       },
@@ -662,12 +690,13 @@ describe("WorkSidebar context targets", () => {
   it("offers an activity dot for another lane-usable tool that is live", async () => {
     installAdeMock({
       iosSession: { ...otherLaneIosSession, laneId: "lane-1", deviceName: "iPhone 17 Pro" },
+      laneDevice: { udid: "pro", name: "iPhone 17 Pro" },
     });
     const onTabChange = vi.fn();
     renderSidebar({ tab: "git", contextTarget: { kind: "chat", sessionId: "chat-1" }, onTabChange });
 
     const dot = await screen.findByRole("button", {
-      name: "Switch to Simulator — iPhone 17 Pro",
+      name: "Switch to Apple — iPhone 17 Pro · Running",
     });
     fireEvent.click(dot);
     expect(onTabChange).toHaveBeenCalledWith("ios");
@@ -761,7 +790,7 @@ describe("WorkSidebar context targets", () => {
     expect(cardFor("Git").disabled).toBe(false);
     expect(cardFor("Files").disabled).toBe(false);
     expect(cardFor("Terminal").disabled).toBe(false);
-    expect(cardFor("Simulator").disabled).toBe(false);
+    expect(cardFor("Apple").disabled).toBe(false);
     expect(cardFor("App Control").disabled).toBe(false);
     expect(cardFor("Browser").disabled).toBe(false);
     expect(screen.queryByText("Runs on this computer only")).toBeNull();
@@ -806,7 +835,7 @@ describe("WorkSidebar context targets", () => {
     });
 
     await waitFor(() => expect(screen.getByText("The runtime for this project is not a Mac")).toBeTruthy());
-    expect(cardFor("Simulator").disabled).toBe(true);
+    expect(cardFor("Apple").disabled).toBe(true);
     expect(cardFor("App Control").disabled).toBe(false);
     expect(cardFor("Browser").disabled).toBe(false);
     await waitFor(() => expect(onTabChange).toHaveBeenCalledWith(null));

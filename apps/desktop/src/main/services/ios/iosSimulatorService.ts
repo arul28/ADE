@@ -5,6 +5,8 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type {
   AppleDeviceAttachArgs,
+  AppleDeviceStartArgs,
+  AppleDeviceStatePhase,
   AppleDeviceCreateArgs,
   AppleDeviceDeleteArgs,
   AppleDeviceListArgs,
@@ -115,7 +117,7 @@ import { pngDimensions } from "../shared/imageDimensions";
 import { isPathInside } from "../shared/pathCompare";
 import { isPathEscapeError, isRecord, resolvePathWithinRoot, signalChildProcessTree } from "../shared/utils";
 import { createIosDeviceHub, type IosDeviceHub } from "./iosDeviceHub";
-import { appleDeviceFamily, createLaneDeviceRegistry, type LaneDeviceStore } from "./laneDeviceRegistry";
+import { AppleDeviceExistsError, appleDeviceFamily, createLaneDeviceRegistry, type LaneDeviceStore } from "./laneDeviceRegistry";
 import {
   createSimHelperClient,
   resolveSimHelperExecutablePath,
@@ -2418,6 +2420,26 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       `Simulator ${device.name} did not become ready within ${Math.round(SIMCTL_BOOTSTATUS_TIMEOUT_MS / 1000)}s. CoreSimulator may be stuck; shut down that simulator and launch again.`,
     );
 
+  /**
+   * Boot a shut-down simulator and wait until CoreSimulator says it is ready.
+   *
+   * Idempotent: a device that is already booted skips `simctl boot` (and the
+   * "current state: Booted" refusal `simctl` answers with when two callers
+   * race) and only waits on `bootstatus`, which returns at once for a booted
+   * device. `startStream` and `deviceStart` both go through here so the
+   * helper's `capture-start` never meets a device that is off — that was the
+   * "Device not booted" the phone and the web tab used to see.
+   */
+  const ensureDeviceBooted = async (device: IosSimulatorDevice): Promise<void> => {
+    if (device.state !== "Booted") {
+      await run("xcrun", ["simctl", "boot", device.udid]).catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!/Unable to boot device in current state|current state: Booted|already booted/i.test(message)) throw error;
+      });
+    }
+    await waitForSimulatorBootStatus(device);
+  };
+
   const installAppOnSimulator = (device: IosSimulatorDevice, appBundle: string) =>
     runSimctlWithTimeout(
       ["install", device.udid, appBundle],
@@ -4625,6 +4647,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     // first: the helper keys captures by udid and would leave the old one
     // streaming to a reader nobody is holding.
     if (runtime.streamStatus.running) await stopStream({ laneId: runtime.laneId });
+    // The helper reads the framebuffer of a BOOTED device and refuses one that
+    // is off. Booting here, rather than leaving it to the caller, is what keeps
+    // a remote viewer's `apple.streamTicket` from failing on a lane whose device
+    // was shut down from Xcode or by a reboot.
+    await ensureDeviceBooted(device);
     const payload = await helper().send({
       type: "capture-start",
       udid: device.udid,
@@ -4982,6 +5009,56 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return device;
   };
 
+  /**
+   * The picker's one click: attach or create if the lane owns nothing, boot,
+   * wait for `bootstatus`, open the live view.
+   *
+   * `deviceAttach` and `deviceCreate` keep their no-boot semantics for the CLI
+   * — an agent provisioning a device is not asking for video — so the boot
+   * lives here and in `startStream`, not in the registry. Progress goes out as
+   * `apple.device.state` events so the loading card can advance its two
+   * segments; the `failed` phase carries the message and the error is still
+   * thrown, because the caller's promise is the contract and the event is only
+   * the narration.
+   */
+  const deviceStart = async (deviceArgs: AppleDeviceStartArgs = {}): Promise<IosSimulatorStreamStatus> => {
+    assertDarwin();
+    const runtime = requireLaneScope(deviceArgs);
+    const laneId = runtime.key;
+    const requestedUdid = deviceArgs.udid?.trim() || null;
+    const sourceUdid = deviceArgs.create?.sourceUdid?.trim() || null;
+    let laneDevice = laneDevices.get(laneId);
+    if (!laneDevice) {
+      if (sourceUdid) {
+        laneDevice = await laneDevices.deviceCreate({ laneId, from: sourceUdid });
+      } else if (requestedUdid) {
+        laneDevice = await laneDevices.deviceAttach({ laneId, simulator: requestedUdid });
+      } else {
+        throw new Error("The lane has no Apple device yet. Pass a simulator udid to attach, or create: { sourceUdid } to clone one.");
+      }
+      invalidateStatus(runtime);
+    } else if (requestedUdid && requestedUdid !== laneDevice.udid) {
+      throw new AppleDeviceExistsError(laneDevice);
+    }
+    const udid = laneDevice.udid;
+    const phase = (next: AppleDeviceStatePhase, detail?: string) => {
+      emit({ type: "apple.device.state", laneId, udid, phase: next, ...(detail ? { detail } : {}) });
+    };
+    try {
+      phase("starting");
+      const device = await resolveDevice(udid, runtime);
+      await ensureDeviceBooted(device);
+      invalidateStatus(runtime);
+      phase("booted");
+      const status = await startStream({ laneId, chatSessionId: deviceArgs.chatSessionId ?? null, deviceUdid: udid });
+      phase("streaming");
+      return status;
+    } catch (error) {
+      phase("failed", error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+  };
+
   const deviceList = async (deviceArgs: AppleDeviceListArgs = {}): Promise<AppleDeviceListResult> => {
     // No `assertDarwin`: a Windows caller asking what is installed should get
     // an empty list and the lane's (absent) device, not an exception.
@@ -5136,6 +5213,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     /* Per-lane devices: one simulator per lane, created on first ask. */
     deviceCreate,
     deviceAttach,
+    /** Attach-or-create, boot, `bootstatus`, then `startStream`. The picker's one click. */
+    deviceStart,
     deviceList,
     deviceDelete,
     /** Lane archive/delete hook. Deletes a clone, only detaches an attached device. */
