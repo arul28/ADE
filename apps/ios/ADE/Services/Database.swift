@@ -2030,11 +2030,10 @@ final class DatabaseService {
   /// resume-metadata JSON blob. Copy session-level spawn fields into that blob
   /// so a tracked CLI `--type subagent` still nests after hydration.
   private func persistableResumeMetadata(from session: TerminalSessionSummary) -> TerminalResumeMetadata? {
-    var metadata = session.resumeMetadata
-    guard metadata != nil else { return nil }
-    metadata?.orchestrationParentSessionId =
-      session.orchestrationParentSessionId ?? metadata?.orchestrationParentSessionId
-    metadata?.spawnKind = session.spawnKind ?? metadata?.spawnKind
+    guard var metadata = session.resumeMetadata else { return nil }
+    metadata.orchestrationParentSessionId =
+      session.orchestrationParentSessionId ?? metadata.orchestrationParentSessionId
+    metadata.spawnKind = session.spawnKind ?? metadata.spawnKind
     return metadata
   }
 
