@@ -8575,6 +8575,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         const payload = envelope.payload as SyncChatToolResultRequestPayload | null;
         const sessionId = toOptionalString(payload?.sessionId);
         const itemId = toOptionalString(payload?.itemId);
+        // The generation the row was built from. A retry reuses the logical
+        // item id, so without this the newest result answers every row.
+        const requestedResultSequence = typeof payload?.resultSequence === "number"
+          && Number.isFinite(payload.resultSequence)
+          ? payload.resultSequence
+          : null;
         const unavailable = (): SyncChatToolResultResponsePayload => ({
           sessionId: sessionId ?? "",
           itemId: itemId ?? "",
@@ -8614,6 +8620,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               transcriptPath,
               sessionId,
               itemId,
+              ...(requestedResultSequence !== null ? { resultSequence: requestedResultSequence } : {}),
               ...(signal ? { signal } : {}),
             }),
             signal,

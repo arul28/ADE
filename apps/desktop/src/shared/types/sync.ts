@@ -1680,6 +1680,16 @@ export type SyncChatHistoryResponsePayload = AgentChatEventHistoryPage;
 export type SyncChatToolResultRequestPayload = SyncChatUnsubscribePayload & {
   /** `logicalItemId ?? itemId` of the tool_result row the user expanded. */
   itemId: string;
+  /**
+   * Transcript sequence of the `tool_result` envelope the expanded row was
+   * built from. A retry reuses the logical item id, so the id alone names a
+   * row and not a generation: without this the host answers every row with the
+   * newest result for that id, and an older retry row shows the newer output.
+   *
+   * Optional for clients that predate it; those keep the newest-match
+   * behaviour they already have.
+   */
+  resultSequence?: number;
 };
 
 export type SyncChatToolResultResponsePayload = {

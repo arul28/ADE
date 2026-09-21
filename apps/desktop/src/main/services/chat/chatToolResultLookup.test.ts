@@ -50,6 +50,47 @@ describe("chatToolResultRowId", () => {
 });
 
 describe("findStoredToolResult", () => {
+  it("answers the exact generation when the row names its sequence", async () => {
+    // Regression: a retry reuses the logical item id, so the backward scan
+    // returned the NEWEST result for every row and an older retry row showed
+    // the newer attempt's output as its own.
+    write([
+      toolResult("item-1", "old"),
+      { type: "text", text: "retrying" },
+      toolResult("item-1", "new"),
+    ]);
+
+    const older = await findStoredToolResult({
+      transcriptPath,
+      sessionId: SESSION_ID,
+      itemId: "item-1",
+      resultSequence: 1,
+    });
+    expect(older?.event.result).toBe("old");
+    expect(older?.envelope.sequence).toBe(1);
+
+    const newer = await findStoredToolResult({
+      transcriptPath,
+      sessionId: SESSION_ID,
+      itemId: "item-1",
+      resultSequence: 3,
+    });
+    expect(newer?.event.result).toBe("new");
+
+    // A generation that is not there is "not found", never the nearest other
+    // attempt's output.
+    expect(await findStoredToolResult({
+      transcriptPath,
+      sessionId: SESSION_ID,
+      itemId: "item-1",
+      resultSequence: 99,
+    })).toBeNull();
+
+    // A client that omits the sequence keeps the newest-match behaviour.
+    const legacy = await findStoredToolResult({ transcriptPath, sessionId: SESSION_ID, itemId: "item-1" });
+    expect(legacy?.event.result).toBe("new");
+  });
+
   it("returns the stored result for the requested row", async () => {
     write([
       toolResult("item-1", "first"),

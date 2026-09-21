@@ -40,10 +40,21 @@ export async function findStoredToolResult(options: {
   transcriptPath: string;
   sessionId: string;
   itemId: string;
+  /**
+   * Exact transcript sequence of the row being expanded. Present, it is part
+   * of the identity: a retry reuses the item id, so matching the id alone
+   * answers an older row with a newer retry's result. Absent (an older
+   * client), the newest match wins, which is the behaviour those clients
+   * already have.
+   */
+  resultSequence?: number;
   signal?: AbortSignal;
 }): Promise<ChatToolResultLookupHit | null> {
   const wantedId = options.itemId.trim();
   if (!wantedId) return null;
+  const wantedSequence = typeof options.resultSequence === "number" && Number.isFinite(options.resultSequence)
+    ? options.resultSequence
+    : null;
   let beforeOffset = await readHistoryFileSize(options.transcriptPath);
   let scannedBytes = 0;
   for (let page = 0; page < CHAT_TOOL_RESULT_LOOKUP_MAX_PAGES; page += 1) {
@@ -65,6 +76,10 @@ export async function findStoredToolResult(options: {
       const event = envelope.event;
       if (!event || event.type !== "tool_result") continue;
       if (chatToolResultRowId(event) !== wantedId) continue;
+      // A named generation must match exactly. Answering with the nearest
+      // other generation would be worse than "not found": the row would show
+      // another attempt's output as its own.
+      if (wantedSequence !== null && envelope.sequence !== wantedSequence) continue;
       return { event, envelope };
     }
     scannedBytes += windowBytes;

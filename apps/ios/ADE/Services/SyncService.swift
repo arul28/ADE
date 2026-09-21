@@ -13837,7 +13837,11 @@ final class SyncService: ObservableObject {
       eventSequence: eventSequence
     ) { [weak self] in
       guard let self else { throw CancellationError() }
-      let response = try await self.fetchChatToolResult(sessionId: sessionId, itemId: itemId)
+      let response = try await self.fetchChatToolResult(
+        sessionId: sessionId,
+        itemId: itemId,
+        resultSequence: eventSequence
+      )
       if response.unavailable == true {
         throw NSError(
           domain: "ADE",
@@ -13866,7 +13870,8 @@ final class SyncService: ObservableObject {
   /// serves `chat_tool_result` by construction.
   func fetchChatToolResult(
     sessionId: String,
-    itemId: String
+    itemId: String,
+    resultSequence: Int? = nil
   ) async throws -> AgentChatToolResultResponse {
     let requestId = makeRequestId()
     var payload = chatSubscriptionPayload(
@@ -13875,6 +13880,10 @@ final class SyncService: ObservableObject {
       includeSinceSeq: false
     )
     payload["itemId"] = itemId
+    // The row's transcript sequence, so a retried item id cannot be answered
+    // with a later attempt's output. Omitted when the row has none, which is
+    // the pre-slim-wire shape the host still accepts.
+    if let resultSequence { payload["resultSequence"] = resultSequence }
     let raw = try await awaitResponse(
       requestId: requestId,
       disconnectOnTimeout: false,

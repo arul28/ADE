@@ -240,13 +240,18 @@ a second — it bounds a burst rather than thinning a steady stream.
 
 ## In-thread subagents have a card, not a transcript
 
-Tapping a subagent that runs INSIDE a main thread — a Claude or Codex native
-Task — expands its card and nothing more. The card carries the label, model,
-status, latest summary and final result, which is everything a phone can act
-on. Opening the transcript replaced the thread the user was reading with a
-read-only copy they had to back out of, and kept a one-and-a-half-second
-transcript poll running for as long as it was open, for content that is the
-parent's own work seen one level down.
+A subagent that runs INSIDE a main thread — a Claude or Codex native Task —
+has no transcript to open. Its card carries the label, model, status, latest
+summary and final result, which is everything a phone can act on. Opening the
+transcript replaced the thread the user was reading with a read-only copy they
+had to back out of, and kept a one-and-a-half-second transcript poll running
+for as long as it was open, for content that is the parent's own work seen one
+level down.
+
+The in-transcript spawn/result rows are therefore flat rows, not buttons.
+Stopping a running spawn is the one action left on them. Tapping a roster row
+in the Chat Info sheet still expands that agent's details in place, which is
+the only surface that expansion was ever visible on.
 
 This is only about in-thread subagents. A `--type subagent` chat and a child
 lane are full chats with their own rows, their own composer and their own lane,
