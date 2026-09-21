@@ -961,6 +961,8 @@ declare global {
         packageChannel: AppPackageChannel;
         ping: () => Promise<"pong">;
         setDockBadgeCount: (count: number) => Promise<{ ok: true }>;
+        /** Swallow this window's menu accelerators while a takeover drives. */
+        setIgnoreMenuShortcuts: (ignore: boolean) => Promise<{ ok: true }>;
         getInfo: () => Promise<AppInfo>;
         getInstalledEditors: () => Promise<EditorTarget[]>;
         onRuntimeStatusChanged: (

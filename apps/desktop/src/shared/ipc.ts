@@ -1,6 +1,7 @@
 export const IPC = {
   appPing: "ade.app.ping",
   appSetDockBadgeCount: "ade.app.setDockBadgeCount",
+  appSetIgnoreMenuShortcuts: "ade.app.setIgnoreMenuShortcuts",
   appGetInfo: "ade.app.getInfo",
   appGetInstalledEditors: "ade.app.getInstalledEditors",
   appRuntimeStatusChanged: "ade.app.runtimeStatusChanged",

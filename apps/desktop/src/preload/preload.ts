@@ -4029,6 +4029,8 @@ const adeBridge = {
     ping: async (): Promise<"pong"> => ipcRenderer.invoke(IPC.appPing),
     setDockBadgeCount: async (count: number): Promise<{ ok: true }> =>
       ipcRenderer.invoke(IPC.appSetDockBadgeCount, { count }),
+    setIgnoreMenuShortcuts: async (ignore: boolean): Promise<{ ok: true }> =>
+      ipcRenderer.invoke(IPC.appSetIgnoreMenuShortcuts, { ignore }),
     getInfo: async (): Promise<AppInfo> => ipcRenderer.invoke(IPC.appGetInfo),
     getInstalledEditors: async (): Promise<EditorTarget[]> => ipcRenderer.invoke(IPC.appGetInstalledEditors),
     onRuntimeStatusChanged: (cb: (status: LocalRuntimeStatus) => void) => {

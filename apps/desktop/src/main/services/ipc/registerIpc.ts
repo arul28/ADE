@@ -3390,6 +3390,28 @@ export function registerIpc({
     return { ok: true } as const;
   });
 
+  /**
+   * Swallow this window's menu accelerators while it drives a remote screen.
+   *
+   * A takeover forwards every keystroke to the lane's display, and the person
+   * driving reasonably presses ⌘Q to quit an app over there, or ⌘W to close a
+   * window. `preventDefault` in the renderer does not touch an Electron menu
+   * accelerator — it fires first and independently — so ⌘Q on the remote
+   * desktop quit ADE instead. That is what kept closing the dev window
+   * mid-test, cleanly and with nothing in the log to explain it.
+   *
+   * Scoped to the calling window's own contents, and to the span of the
+   * takeover: the renderer turns it off when the pointer lock ends, and the
+   * menu works normally everywhere else.
+   */
+  ipcMain.handle(IPC.appSetIgnoreMenuShortcuts, async (event, input: unknown) => {
+    const ignore = typeof input === "object" && input !== null
+      ? (input as { ignore?: unknown }).ignore === true
+      : input === true;
+    event.sender.setIgnoreMenuShortcuts(ignore);
+    return { ok: true } as const;
+  });
+
   ipcMain.handle(IPC.captureGestureUpdateSettings, async (_event, input: unknown) => {
     const enabled = typeof input === "object" && input !== null
       && (input as { enabled?: unknown }).enabled === true;

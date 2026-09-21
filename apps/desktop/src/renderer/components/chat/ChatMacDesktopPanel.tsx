@@ -612,6 +612,25 @@ export function ChatMacDesktopPanel({
   }, [iHaveControl, realInput.clearInputError]);
 
   /*
+    While the person drives, the menu's shortcuts belong to the lane.
+
+    A takeover forwards every keystroke to the lane's display, and somebody
+    driving reasonably presses ⌘Q to quit an app over there, or ⌘W to close a
+    window. `preventDefault` in the key handler cannot reach an Electron menu
+    accelerator — it fires first and independently of the page — so ⌘Q aimed
+    at the remote desktop quit ADE itself, cleanly, with nothing in any log to
+    explain it. That is what kept closing this window mid-test.
+
+    Scoped to the takeover and released with it, so the menu works normally
+    everywhere else, including in this pane when the agent holds the lease.
+  */
+  useEffect(() => {
+    void window.ade?.app?.setIgnoreMenuShortcuts?.(iHaveControl);
+    if (!iHaveControl) return;
+    return () => { void window.ade?.app?.setIgnoreMenuShortcuts?.(false); };
+  }, [iHaveControl]);
+
+  /*
     Input reaches the surface as DOM events, on purpose.
 
     The decoder's canvas is a React portal into a host node that is parked
