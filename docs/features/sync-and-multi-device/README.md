@@ -120,6 +120,35 @@ stop and restart the machine's relay tunnel and tear down and rebuild the
 directory publisher (`ade doctor` would report "Account-directory publishing
 has not started" in the gap).
 
+#### Two ADE apps on one computer
+
+One machine has one sync host, so a second ADE app on the same computer — the
+release build plus an Alpha or Beta channel, each with its own `ADE_HOME` and
+its own brain — is idle for sync rather than fighting for it. The lease is
+machine-wide across channels (`$TMPDIR/ade-sync-host-<uid>.json` records the
+owning pid, channel, and home), and the non-owning brain takes no lease, binds
+no shared listener of its own, and never publishes itself to the account
+directory. It does not retry its way into ownership and it does not stop the
+running app.
+
+The idle brain says so instead of claiming a fault. When no publisher is running
+and the lock file names another process, `getStatus` reports the
+`no_active_sync_scope` publisher state with the owning app and pid in
+`skipReason`, and the Connections This-machine line reads "another ADE app on
+this computer owns sync for this machine (ADE Alpha, pid 9253)" with one
+instruction under it: "Quit that ADE to let this one host sync." A brain that
+does hold the lease and loses it mid-handoff reports the same state from the
+publisher itself, so the two paths cannot tell different stories. `ade doctor`
+shows the same sentence on its publish row.
+
+Because the second brain cannot host sync, testing it over the relay means
+quitting the app that currently owns the lease first — the phone and the
+account directory are both pointed at that owner, and no amount of restarting
+the idle brain changes that while the owner is still running. Sync-host startup
+conflicts are logged once with their full quit instructions and then restated at
+most once every ten minutes as a single line with an occurrence count, so an app
+left open for days no longer floods the log.
+
 ### Hosting sync, and publishing, with no project
 
 A project is not a precondition for anything machine-level. A brain that holds
@@ -3094,6 +3123,22 @@ still accept the machine's existing sign-in. Waiting that window out means the
 only repair this loop can land is one granted on stale-but-valid grounds: a
 stale row, a key rotation, a directory hiccup. A deliberate removal stands, and
 recovering from it needs the user's next interactive sign-in.
+
+A refusal must not read like an outage. When the directory reaches a decision it
+answers a `403` with a machine-readable code — `machine_revoked` or
+`pairing_authentication_required` — carried on the publisher health's
+`lastHttpReason`. The Connections popover decodes it with
+`readAccountRefusalCode` (in `shared/accountMachineRefusal.ts`) instead of
+showing "can't reach your ADE account right now": the This-machine line and the
+publish-failing banner say "this computer was removed from your ADE account" or
+"sign in again to reconnect this computer", and the banner offers a
+**Reconnect this computer** or **Sign in again** button that presses the same
+brain repair the Account page does. The shared copy table
+(`describeUnpublishedAccountDirectory` in `shared/types/sync.ts`) and the shared
+reconnect orchestration (`runMachinePairingReconnect`, which escalates to the
+device-flow sign-in only when the refusal demands it) keep the pane, the banner,
+and `ade setup` from drifting; a plain transport or `5xx` failure keeps the
+reachability wording.
 
 Every refusal the Worker issues is also logged with its wire code, a finer
 `reason`, the correlation id, and 8-character identifier prefixes, because by

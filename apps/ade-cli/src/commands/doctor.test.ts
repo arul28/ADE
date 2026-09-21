@@ -207,6 +207,10 @@ describe("doctor row evaluation", () => {
         },
         lastSuccessAt: 123_456.5,
         skipReason: "signed out",
+        // Additive wire fields: a refusal code rides `lastHttpReason` so the
+        // machine card can name a removed machine instead of "can't reach".
+        lastHttpStatus: null,
+        lastHttpReason: null,
       },
       lastWedge: {
         lastCommand: "chat.send",

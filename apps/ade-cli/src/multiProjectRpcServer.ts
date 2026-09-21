@@ -300,10 +300,17 @@ export type MultiProjectRpcHandlerOptions = {
     | void;
   getRuntimeStatus?: () => {
     syncPort: number | null;
-    publishHealth: Pick<
+    publishHealth: (Pick<
       SyncAccountDirectoryHealth,
       "state" | "failingSinceMs" | "lastLegDurations"
-    > | null;
+    > & {
+      /**
+       * Optional so an older embedder that predates the fields still satisfies
+       * this shape; current brains always set them.
+       */
+      lastHttpStatus?: number | null;
+      lastHttpReason?: string | null;
+    }) | null;
     lastWedge: {
       lastCommand: string;
       blockedMs: number;

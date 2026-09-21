@@ -204,6 +204,52 @@ describe("runSyncHostStartupLoop", () => {
     expect(logs.at(-1)).toBe("ADE brain mobile sync host recovered.");
   });
 
+  it("logs a persistent sync-host conflict once, then at most once per ten minutes in one line", async () => {
+    // One Alpha brain logged this conflict 9,700 times — once a minute, each a
+    // multi-line message — while the release ADE simply sat there owning sync.
+    const logs: string[] = [];
+    const events: Array<{ event: string; meta: Record<string, unknown> }> = [];
+    let clock = 0;
+    const conflict = conflictError(makeOwner({ appName: "ADE Alpha", pid: 9253 }));
+    await runSyncHostStartupLoop({
+      startSyncHost: () => Promise.reject(conflict),
+      isDone: () => false,
+      log: (message) => logs.push(message),
+      logEvent: (event, meta) => events.push({ event, meta }),
+      // Each retry advances a full interval, so every attempt after the first
+      // is eligible to restate the conflict — and still emits one line.
+      sleep: () => {
+        clock += 10 * 60_000;
+        return Promise.resolve();
+      },
+      now: () => clock,
+      maxAttempts: 4,
+      env: betaEnv,
+    });
+
+    // First occurrence keeps the full detail, quit command included.
+    expect(logs[0]).toContain("Another ADE brain is already hosting mobile sync");
+    expect(logs[0]).toContain("Quit that brain before starting this ADE brain");
+    const repeats = logs.slice(1);
+    expect(repeats).toHaveLength(3);
+    for (const line of repeats) {
+      expect(line).not.toContain("\n");
+      expect(line).toContain("still blocked by ADE Alpha (pid 9253)");
+    }
+    expect(repeats[0]).toContain("2 occurrences");
+    expect(repeats.at(-1)).toContain("4 occurrences");
+
+    // The structured half rides the same cadence, with the owning pid on it.
+    const failures = events.filter((entry) => entry.event === "sync.host_start_failed");
+    expect(failures).toHaveLength(4);
+    expect(failures[0]?.meta).toMatchObject({
+      code: "sync_host_singleton_conflict",
+      ownerPid: 9253,
+      occurrences: 1,
+    });
+    expect(failures.at(-1)?.meta).toMatchObject({ occurrences: 4 });
+  });
+
   it("classifies a storage fault, records it, and slows down instead of looping on the raw errno", async () => {
     const logs: string[] = [];
     const recorded: Array<{ message: string; detail: string; code: string }> = [];

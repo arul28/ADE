@@ -324,6 +324,21 @@ export function ThisMacCard({
               </span>
               {showRepair ? <BrainRepairButton repair={repair} height={24} /> : null}
             </div>
+            {directorySummary.detail ? (
+              // The one line that turns "another ADE app owns sync" into an
+              // action: the reader has to quit it. Indented under the icon so
+              // it reads as part of the same sentence.
+              <div
+                style={{
+                  ...helperTextStyle,
+                  paddingLeft: 19,
+                  lineHeight: 1.4,
+                  color: COLORS.warning,
+                }}
+              >
+                {directorySummary.detail}
+              </div>
+            ) : null}
             {problem ? (
               <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
                 <span

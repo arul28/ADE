@@ -35,6 +35,7 @@ import type {
 } from "./macDesktop";
 import type { LinearConnectionStatus } from "./linearSync";
 import type { SyncHostConflictPublic, SyncHostReadinessSnapshot } from "./syncHostRecovery";
+import { readAccountRefusalCode } from "../accountMachineRefusal";
 
 export type SyncScalarBytes = {
   type: "bytes";
@@ -456,6 +457,53 @@ export type UnpublishedMachineAdvice = {
   nextAction: string | null;
 };
 
+/** The process holding the machine-wide sync-host lease when it is not us. */
+export type CompetingSyncHostOwner = {
+  /** The owning runtime's app name, e.g. `ADE Alpha`; null when unknown. */
+  appName: string | null;
+  /** The owning process's pid; null when it could not be read. */
+  pid: number | null;
+};
+
+/**
+ * The publisher's `skipReason` for `no_active_sync_scope`.
+ *
+ * `skipReason` is the only field the publisher health round-trips to the popover
+ * and `ade doctor`, and the owning process is the one fact a person needs to end
+ * the condition. One producer here and one reader below, so the pid cannot be
+ * written in a shape the popover fails to parse.
+ */
+export function competingSyncHostSkipReason(owner: CompetingSyncHostOwner): string {
+  const pid = Number.isFinite(owner.pid) && (owner.pid as number) > 0
+    ? Math.floor(owner.pid as number)
+    : null;
+  if (pid == null) {
+    return "Another ADE app on this computer owns sync for this machine.";
+  }
+  const name = owner.appName?.trim() || "ADE";
+  return `Another ADE app on this computer owns sync for this machine (${name}, pid ${pid}).`;
+}
+
+/**
+ * Reads the owning process back out of a `no_active_sync_scope` skipReason.
+ * Returns null for the plain, owner-less sentence and for any other state.
+ */
+export function readCompetingSyncHostOwner(
+  health: SyncAccountDirectoryHealth | null | undefined,
+): CompetingSyncHostOwner | null {
+  const reason = health?.skipReason;
+  if (!reason) return null;
+  const match =
+    /^Another ADE app on this computer owns sync for this machine \((.*), pid (\d+)\)\.$/.exec(reason);
+  if (!match) return null;
+  const pid = Number.parseInt(match[2]!, 10);
+  if (!Number.isFinite(pid) || pid <= 0) return null;
+  return { appName: match[1]!.trim() || null, pid };
+}
+
+/** The one next step that ends a competing sync host: quit the other ADE app. */
+export const QUIT_COMPETING_SYNC_HOST_ADVICE = "Quit that ADE to let this one host sync.";
+
 /**
  * User-facing advice for a machine that is signed in but not published.
  *
@@ -470,20 +518,40 @@ export type UnpublishedMachineAdvice = {
  */
 export function describeUnpublishedAccountDirectory(
   state: SyncAccountDirectoryState,
+  /**
+   * The publisher health behind `state`, when the caller has it. Two branches
+   * consult it: `http_error`, where a 403 whose reason names a refusal is the
+   * directory *answering* rather than failing to be reached, and
+   * `no_active_sync_scope`, whose `skipReason` names the ADE app that owns sync.
+   * Optional so CLI callers that only have the state keep today's text.
+   */
+  health?: SyncAccountDirectoryHealth | null,
 ): UnpublishedMachineAdvice {
   switch (state) {
     case "published":
       return { summary: "published to your ADE account", nextAction: null };
-    case "no_active_sync_scope":
+    case "no_active_sync_scope": {
       // NOT "open a project" any more. A brain with no project registered now
       // publishes on its own, so the only way to reach this state is another ADE
       // process on this computer holding the machine-wide sync-host lease — and
       // that process is the one publishing this machine. Telling the user to
       // open a project would hand them an action that cannot change anything.
+      //
+      // When the publisher named the owning process in its `skipReason`, name it
+      // here too: "another ADE app" is not actionable, but "ADE Alpha, pid 9253"
+      // is the app the user has to quit.
+      const owner = readCompetingSyncHostOwner(health ?? null);
+      if (owner?.pid != null) {
+        return {
+          summary: `another ADE app on this computer owns sync for this machine (${owner.appName ?? "ADE"}, pid ${owner.pid})`,
+          nextAction: QUIT_COMPETING_SYNC_HOST_ADVICE,
+        };
+      }
       return {
         summary: "another ADE app on this computer owns sync for this machine",
         nextAction: "ade doctor",
       };
+    }
     case "not_host":
       return {
         summary: "this computer publishes through your main ADE host",
@@ -527,7 +595,28 @@ export function describeUnpublishedAccountDirectory(
         summary: "the ADE background service can't read your account session",
         nextAction: "ade brain restart",
       };
-    case "http_error":
+    case "http_error": {
+      // "Can't reach your ADE account" was a lie when the directory was reached
+      // and answered that this machine is not on the account. The refusal code
+      // rides `lastHttpReason`, so branch on it rather than on the state alone.
+      const refusalCode = readAccountRefusalCode(health ?? null);
+      if (refusalCode === "machine_revoked") {
+        return {
+          summary: "this computer was removed from your ADE account",
+          nextAction: "Reconnect this computer",
+        };
+      }
+      if (refusalCode === "pairing_authentication_required") {
+        return {
+          summary: "sign in again to reconnect this computer",
+          nextAction: "Sign in again",
+        };
+      }
+      return {
+        summary: "can't reach your ADE account right now, retrying",
+        nextAction: null,
+      };
+    }
     case "http_timeout":
     case "token_timeout":
     case "timeout":

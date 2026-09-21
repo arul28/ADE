@@ -62,6 +62,7 @@ import {
 } from "./macDesktopWindowList";
 import { macDesktopClaimAppIcons, macDesktopHasLease } from "./macDesktopClaimPicker.logic";
 import { macDesktopErrorText } from "./macDesktopErrorText";
+import { useMacDesktopMachineFacts } from "./useMacDesktopMachineFacts";
 import {
   macDesktopIsWidePane,
   macDesktopParkedWindows,
@@ -228,6 +229,9 @@ export function ChatMacDesktopPanel({
   sessionId,
   runtimePin,
 }: ChatMacDesktopPanelProps) {
+  // The machine on the other end of the pin, for the one failure that is about
+  // it rather than about this screen: a brain with no `mac_desktop` domain.
+  const machineFacts = useMacDesktopMachineFacts(runtimePin);
   const {
     status,
     setStatus,
@@ -239,7 +243,14 @@ export function ChatMacDesktopPanel({
     cursor,
     notParked,
     dismissNotParked,
-  } = useMacDesktopStatus({ laneId, laneName, sessionId, runtimePin });
+  } = useMacDesktopStatus({
+    laneId,
+    laneName,
+    sessionId,
+    runtimePin,
+    machineName: machineFacts.machineName,
+    machineVersion: machineFacts.machineVersion,
+  });
   /**
    * Which chrome row has its Windows menu open, if either.
    *
@@ -337,9 +348,14 @@ export function ChatMacDesktopPanel({
   const errorText = useCallback(
     (error: unknown): string | null => macDesktopErrorText(
       error instanceof Error ? error.message : String(error),
-      { laneId, laneName },
+      {
+        laneId,
+        laneName,
+        machineName: machineFacts.machineName,
+        machineVersion: machineFacts.machineVersion,
+      },
     ),
-    [laneId, laneName],
+    [laneId, laneName, machineFacts.machineName, machineFacts.machineVersion],
   );
 
   const display: MacDesktopDisplay | null = status?.display ?? null;
@@ -568,14 +584,11 @@ export function ChatMacDesktopPanel({
       setStatus((current) => (current ? { ...current, recording: next } : current));
       setRecordingError(null);
     } catch (error) {
-      setRecordingError(macDesktopErrorText(
-        error instanceof Error ? error.message : String(error),
-        { laneId, laneName },
-      ));
+      setRecordingError(errorText(error));
     } finally {
       setBusy(false);
     }
-  }, [display, laneId, laneName, recording?.running, sessionId, setStatus]);
+  }, [display, errorText, recording?.running, sessionId, setStatus]);
 
   const present = useCallback(async (destination: "main" | "display") => {
     setBusy(true);

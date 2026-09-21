@@ -143,9 +143,15 @@ export function useMacDesktopStatus(args: {
   laneName?: string | null;
   sessionId: string | null;
   runtimePin: OpenProjectBinding | null;
+  /** The machine the pin names, for the "update ADE there" sentence. */
+  machineName?: string | null;
+  /** That machine's ADE version, when known. */
+  machineVersion?: string | null;
 }): UseMacDesktopStatus {
   const { laneId, sessionId, runtimePin } = args;
   const laneName = args.laneName ?? null;
+  const machineName = args.machineName ?? null;
+  const machineVersion = args.machineVersion ?? null;
 
   const [status, setStatus] = useState<MacDesktopStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -191,13 +197,13 @@ export function useMacDesktopStatus(args: {
     } catch (caught) {
       setError(macDesktopErrorText(
         caught instanceof Error ? caught.message : String(caught),
-        { laneId, laneName },
+        { laneId, laneName, machineName, machineVersion },
       ));
       return null;
     } finally {
       setStarting(false);
     }
-  }, [laneId, laneName, runtimePin, sessionId]);
+  }, [laneId, laneName, machineName, machineVersion, runtimePin, sessionId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -211,7 +217,7 @@ export function useMacDesktopStatus(args: {
         if (!cancelled) {
           setError(macDesktopErrorText(
             caught instanceof Error ? caught.message : String(caught),
-            { laneId, laneName },
+            { laneId, laneName, machineName, machineVersion },
           ));
         }
       }
@@ -219,7 +225,7 @@ export function useMacDesktopStatus(args: {
     return () => {
       cancelled = true;
     };
-  }, [laneId, laneName, refresh, start]);
+  }, [laneId, laneName, machineName, machineVersion, refresh, start]);
 
   useEffect(() => {
     const api = window.ade.macDesktop;

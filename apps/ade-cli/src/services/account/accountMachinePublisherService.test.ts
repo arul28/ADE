@@ -11,6 +11,7 @@ import {
   createBrainAccountMachinePublisherService,
   createAccountMachinePublisherService,
   PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE,
+  relayPublishStateSignature,
 } from "./accountMachinePublisherService";
 import {
   DEFAULT_ADE_ACCOUNT_DIRECTORY_URL,
@@ -492,6 +493,77 @@ describe("account machine publisher health", () => {
       state: expected,
       lastAttemptAt: 250,
     });
+  });
+
+  it("names the ADE app that owns sync when this brain cannot publish", async () => {
+    // A null snapshot is the publisher's one honest "another ADE process on this
+    // computer owns the machine-wide lease" signal. The app name and pid are the
+    // only actionable facts in it, so they ride the skipReason.
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-token",
+      getAccountStatus: () => ({ signedIn: true, sessionReadState: "available" as const }),
+      getSnapshot: async () => null,
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      readCompetingSyncHostOwner: () => ({ appName: "ADE Alpha", pid: 9253 }),
+    });
+
+    await service.publishNow();
+
+    expect(service.getPublisherHealth()).toMatchObject({
+      state: "no_active_sync_scope",
+      skipReason:
+        "Another ADE app on this computer owns sync for this machine (ADE Alpha, pid 9253).",
+    });
+  });
+
+  it("keeps the generic scope sentence when the owning process is unreadable", async () => {
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-token",
+      getAccountStatus: () => ({ signedIn: true, sessionReadState: "available" as const }),
+      getSnapshot: async () => null,
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      readCompetingSyncHostOwner: () => {
+        throw new Error("lock unreadable");
+      },
+    });
+
+    await service.publishNow();
+
+    expect(service.getPublisherHealth()).toMatchObject({
+      state: "no_active_sync_scope",
+      skipReason: "No active sync scope is available.",
+    });
+  });
+
+  it("keeps the relay publish state stable across end-to-end verification polls", () => {
+    // The tunnel client re-probes every 2 seconds and restamps
+    // `relayEndToEndVerifiedAt`. If that timestamp fed the publish signature,
+    // every poll would look like a change: 74 register POSTs in 110 seconds from
+    // one brain. Only "does verification currently hold" belongs in it.
+    const first = routeSnapshot();
+    const registration = buildAccountMachineRegistration({
+      machineKey: "machine-studio",
+      snapshot: first,
+      packageChannel: null,
+      publicKeyRawBase64: Buffer.alloc(32, 9).toString("base64"),
+    });
+    expect(registration).not.toBeNull();
+    const signature = relayPublishStateSignature(first, registration!);
+
+    const reVerified = routeSnapshot();
+    reVerified.routeHealth.relay.relayEndToEndVerifiedAt = "2026-07-16T00:00:05.000Z";
+    expect(relayPublishStateSignature(reVerified, registration!)).toBe(signature);
+
+    // Losing verification is material and must still be observed.
+    const lost = routeSnapshot();
+    lost.routeHealth.relay.relayEndToEndVerifiedAt = null;
+    expect(relayPublishStateSignature(lost, registration!)).not.toBe(signature);
+
+    const failed = routeSnapshot();
+    failed.routeHealth.relay.relayEndToEndFailure = "Relay self-probe closed before ready.";
+    expect(relayPublishStateSignature(failed, registration!)).not.toBe(signature);
   });
 
   it("distinguishes HTTP timeouts from transport failures", async () => {

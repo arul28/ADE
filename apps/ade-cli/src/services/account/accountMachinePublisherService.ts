@@ -1,7 +1,9 @@
 import path from "node:path";
 import {
+  competingSyncHostSkipReason,
   createSyncAccountDirectoryHealth,
   type AdeAccountMachineEndpoint,
+  type CompetingSyncHostOwner,
   type SyncAccountDirectoryHealth,
   type SyncAccountDirectoryLegDurations,
   type SyncRoleSnapshot,
@@ -670,18 +672,35 @@ export function buildAccountMachineRegistration(args: {
   }, args.powerPublication ?? null);
 }
 
-function relayPublishStateSignature(
+/**
+ * The publish-relevant relay state, for deciding whether a 2-second poll
+ * observed anything that warrants a directory write.
+ *
+ * Deliberately a boolean for end-to-end verification, never the raw
+ * `relayEndToEndVerifiedAt`: the tunnel client re-probes on the same 2-second
+ * cycle, so a fresh timestamp on every poll would make `relayPublishStateSignature`
+ * differ on every poll and turn the observer into a ~2-second register storm
+ * (once measured at 74 POSTs / 110 s from one brain). What matters to the
+ * directory is whether the route currently verifies and, if not, why — a
+ * verified→unverified or unverified→verified transition still changes this
+ * signature, so the publish that matters is never lost.
+ *
+ * Exported for the stability test.
+ */
+export function relayPublishStateSignature(
   snapshot: AccountMachineRegistrationSnapshot,
   registration: AccountMachineRegistration,
 ): string {
   const reachableEndpoints = registration.reachableEndpoints
     .map((endpoint) => JSON.stringify(endpoint))
     .sort();
+  const relay = snapshot.routeHealth.relay;
   return JSON.stringify({
-    relayControlConnected: snapshot.routeHealth.relay.relayControlConnected,
-    relayBridgeValidated: snapshot.routeHealth.relay.relayBridgeValidated,
-    relayEndToEndVerifiedAt: snapshot.routeHealth.relay.relayEndToEndVerifiedAt ?? null,
-    relayEndToEndFailure: snapshot.routeHealth.relay.relayEndToEndFailure ?? null,
+    relayControlConnected: relay.relayControlConnected,
+    relayBridgeValidated: relay.relayBridgeValidated,
+    relayEndToEndVerified: Boolean(relay.relayEndToEndVerifiedAt)
+      && relay.relayEndToEndFailure == null,
+    relayEndToEndFailure: relay.relayEndToEndFailure ?? null,
     pubkey: registration.pubkey,
     reachableEndpoints,
   });
@@ -730,6 +749,16 @@ export function createAccountMachinePublisherService(options: {
   powerSource?: MachinePowerSource;
   /** Best-effort provider/preset counts for the 30-second directory beat. */
   getInventorySummary?: () => Promise<MachineInventorySummary | null>;
+  /**
+   * The ADE process that holds the machine-wide sync host lease when it is NOT
+   * this one, or null when this brain holds it (or no conflict is readable).
+   *
+   * Read only when `getSnapshot()` returns null — the `no_active_sync_scope`
+   * branch — because that is exactly the "another ADE app owns sync" case, and
+   * the owning app name and pid are what tell a person which app to quit.
+   * Optional so small embedded/test publishers are unaffected.
+   */
+  readCompetingSyncHostOwner?: () => CompetingSyncHostOwner | null;
   directoryBaseUrl?: () => string | null | undefined;
   isSyncEnabled?: () => boolean;
   subscribeToSignIn?: (listener: () => void) => (() => void);
@@ -1182,9 +1211,20 @@ export function createAccountMachinePublisherService(options: {
     }
     if (disposed) return;
     if (!snapshot) {
+      // A null snapshot while the publisher is running means another ADE process
+      // on this machine holds the sync-host lease. Name it when the host can, so
+      // the popover and `ade doctor` can tell the user which app to quit.
+      let owner: CompetingSyncHostOwner | null = null;
+      try {
+        owner = options.readCompetingSyncHostOwner?.() ?? null;
+      } catch {
+        owner = null;
+      }
       outcome("no_active_sync_scope", {
         attemptAt,
-        skipReason: "No active sync scope is available.",
+        skipReason: owner
+          ? competingSyncHostSkipReason(owner)
+          : "No active sync scope is available.",
         directoryOrigin,
       });
       return;
@@ -1902,6 +1942,8 @@ export function createBrainAccountMachinePublisherService(options: {
   onSustainedFailure?: (input: { code: SyncAccountDirectoryHealth["state"] }) => void;
   /** Best-effort provider/preset counts for the 30-second directory beat. */
   getInventorySummary?: () => Promise<MachineInventorySummary | null>;
+  /** See the same option on `createAccountMachinePublisherService`. */
+  readCompetingSyncHostOwner?: () => CompetingSyncHostOwner | null;
   /**
    * Override the machine power source. Tests pass `null` to keep the brain's
    * poll and gap timers out of a suite; a host with a precise suspend hook can
@@ -1951,6 +1993,7 @@ export function createBrainAccountMachinePublisherService(options: {
     getSnapshot: options.getSnapshot,
     getMachineKey: options.getMachineKey,
     getInventorySummary: options.getInventorySummary,
+    readCompetingSyncHostOwner: options.readCompetingSyncHostOwner,
     getMachineIdentitySigningPublicKey: () =>
       signingStore.getOrCreate().publicKeyRawBase64,
     // Same shared auth service the access token comes from, so the grant a

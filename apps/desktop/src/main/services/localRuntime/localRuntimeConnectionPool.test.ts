@@ -330,6 +330,16 @@ describe("local runtime connection pool", () => {
     expect(compareRuntimeVersionStrings("1.2.14", "1.2.14-beta.2")).toBe(1);
     expect(compareRuntimeVersionStrings("1.2.14-beta.2", "1.2.14")).toBe(-1);
     expect(compareRuntimeVersionStrings("0.0.0", "1.2.13")).toBe(-1);
+    // Channel builds stamp `<base>-<channel>.<yyyymmddHHMM>`; the timestamp
+    // parts must order numerically, and any prerelease stays below its release.
+    expect(
+      compareRuntimeVersionStrings("1.2.75-alpha.202609211035", "1.2.75-alpha.202609201200"),
+    ).toBe(1);
+    expect(
+      compareRuntimeVersionStrings("1.2.75-alpha.202609201200", "1.2.75-alpha.202609211035"),
+    ).toBe(-1);
+    expect(compareRuntimeVersionStrings("1.2.75-alpha.x", "1.2.75")).toBe(-1);
+    expect(compareRuntimeVersionStrings("1.2.75", "1.2.75-alpha.x")).toBe(1);
     expect(compareRuntimeVersionStrings(null, "1.2.13")).toBeNull();
     expect(compareRuntimeVersionStrings("next", "1.2.13")).toBeNull();
   });
@@ -1117,6 +1127,9 @@ describe("local runtime connection pool", () => {
     // A failed probe re-attempts the service install once per cooldown window.
     await internals.tryRecoverFromIsolatedRuntime("/tmp/ade.sock");
     expect(installSpy).toHaveBeenCalledTimes(1);
+    // The probe failed, so the recovery must force the installer to replace
+    // whatever owns the primary endpoint rather than risk an idempotent no-op.
+    expect(installSpy).toHaveBeenCalledWith({ forceRestart: true });
     await internals.tryRecoverFromIsolatedRuntime("/tmp/ade.sock");
     expect(installSpy).toHaveBeenCalledTimes(1);
     internals.lastIsolatedServiceRepairMs = 0;
@@ -4350,6 +4363,31 @@ describe("service repair storm control", () => {
     expect(serviceRepairBackoffMs(3)).toBe(30_000);
     expect(serviceRepairBackoffMs(4)).toBe(60_000);
     expect(serviceRepairBackoffMs(40)).toBe(60_000);
+  });
+
+  it("forces a restart when the running brain answered with the wrong identity", async () => {
+    // An older Alpha/Beta brain is running and responsive, so an idempotent
+    // install would report "already installed and running" and leave it. The
+    // incompatible path must ask the installer to replace it.
+    const { pool, install } = createRepairPool();
+    try {
+      await pool.tryRepairServiceConnection("/tmp/ade-test.sock", "incompatible");
+      expect(install).toHaveBeenCalledWith({ forceRestart: true });
+    } finally {
+      pool.dispose();
+    }
+  });
+
+  it("does not force a restart when the endpoint is simply missing", async () => {
+    // Nothing is answering, so there is no wrong brain to replace; the plain
+    // install starts one.
+    const { pool, install } = createRepairPool();
+    try {
+      await pool.tryRepairServiceConnection("/tmp/ade-test.sock", "missing");
+      expect(install).toHaveBeenCalledWith({ forceRestart: false });
+    } finally {
+      pool.dispose();
+    }
   });
 
   it("runs the first repair immediately and throttles the ones behind it", async () => {

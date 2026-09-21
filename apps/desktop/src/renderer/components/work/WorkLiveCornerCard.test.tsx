@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkLiveCornerCard } from "./WorkLiveCornerCard";
 import { NativeToolFeedsProvider } from "../terminals/NativeToolFeedsContext";
 import { useAppStore } from "../../state/appStore";
-import type { BuiltInBrowserStatus, BuiltInBrowserTab } from "../../../shared/types";
+import type { BuiltInBrowserStatus, BuiltInBrowserTab, OpenProjectBinding } from "../../../shared/types";
 import type { MacDesktopDisplay, MacDesktopEventPayload, MacDesktopStatus, MacDesktopStreamStatus } from "../../../shared/types/macDesktop";
 import {
   makeBuiltInBrowserStatus,
@@ -65,6 +65,13 @@ const macDesktopGetStatus = vi.fn(async (): Promise<Partial<MacDesktopStatus>> =
   windows: [],
   recording: null,
 }));
+const macDesktopOnEvent = vi.fn((
+  cb: (event: MacDesktopEventPayload) => void,
+  _pin?: OpenProjectBinding | null,
+) => {
+  macDesktopListeners.add(cb);
+  return () => macDesktopListeners.delete(cb);
+});
 
 function emitMacDesktopEvent(event: MacDesktopEventPayload): void {
   act(() => {
@@ -122,6 +129,7 @@ beforeEach(() => {
   macDesktopGetStreamStatus.mockReset();
   macDesktopGetStreamStatus.mockResolvedValue(makeStreamStatus());
   macDesktopGetStatus.mockClear();
+  macDesktopOnEvent.mockClear();
   resetMacDesktopSupportCache();
   resetMacDesktopLiveViewLeasesForTests();
   resetMacDesktopFrames();
@@ -166,10 +174,7 @@ beforeEach(() => {
       startStream: macDesktopStartStream,
       stopStream: macDesktopStopStream,
       resolveStreamUrl: vi.fn(async (url: string) => ({ url, forwarded: false, error: null })),
-      onEvent: (cb: (event: MacDesktopEventPayload) => void) => {
-        macDesktopListeners.add(cb);
-        return () => macDesktopListeners.delete(cb);
-      },
+      onEvent: macDesktopOnEvent,
     },
   };
   useAppStore.setState({ projectBinding: null });
@@ -973,6 +978,38 @@ describe("WorkLiveCornerCard live tools that predate the card", () => {
     );
     setMacDesktopFrame(macDesktopFrame());
     renderCard({ activeTool: "browser" });
+    expect(await screen.findByLabelText("Mac Desktop live preview", {}, { timeout: 3_000 })).toBeTruthy();
+  });
+
+  it("reads the lane's desktop with the focused CHAT's machine pin", async () => {
+    // A Studio chat selected from a MacBook-bound tab: every mac-desktop read
+    // the card makes must address the Studio, because that is where the display
+    // lives. `TerminalsPage` supplies the pin; the card must spend it.
+    const studioPin: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:target-studio:project-a",
+      targetId: "target-studio",
+      runtimeName: "Mac Studio",
+      transport: "paired",
+      projectId: "project-a",
+      rootPath: "/repo",
+      displayName: "ADE",
+    };
+    macDesktopGetStreamStatus.mockResolvedValue(
+      makeStreamStatus({ viewerChatSessionIds: ["chat-1"] }),
+    );
+    setMacDesktopFrame(macDesktopFrame());
+    renderCard({ activeTool: "browser", runtimePin: studioPin });
+
+    await waitFor(() => expect(macDesktopGetStreamStatus).toHaveBeenCalledWith(
+      { laneId: "lane-1" },
+      studioPin,
+    ));
+    expect(macDesktopGetStatus).toHaveBeenCalledWith(
+      { laneId: "lane-1", chatSessionId: "chat-1" },
+      studioPin,
+    );
+    expect(macDesktopOnEvent).toHaveBeenCalledWith(expect.any(Function), studioPin);
     expect(await screen.findByLabelText("Mac Desktop live preview", {}, { timeout: 3_000 })).toBeTruthy();
   });
 

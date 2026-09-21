@@ -17,6 +17,9 @@ export type RuntimePublishHealth = {
   lastLegDurations: SyncAccountDirectoryLegDurations;
   lastSuccessAt: number | null;
   skipReason: string | null;
+  /** Present on current runtimes; absent (and null) on older ones. */
+  lastHttpStatus?: number | null;
+  lastHttpReason?: string | null;
 };
 
 export type RuntimeLastWedge = {
@@ -59,6 +62,11 @@ export function parseRuntimePublishHealth(raw: unknown): RuntimePublishHealth | 
         ? Math.max(0, raw.lastSuccessAt)
         : null,
     skipReason: asTrimmedString(raw.skipReason),
+    lastHttpStatus:
+      typeof raw.lastHttpStatus === "number" && Number.isInteger(raw.lastHttpStatus)
+        ? raw.lastHttpStatus
+        : null,
+    lastHttpReason: asTrimmedString(raw.lastHttpReason),
   };
 }
 

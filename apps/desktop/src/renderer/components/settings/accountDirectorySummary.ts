@@ -1,7 +1,9 @@
 import {
+  QUIT_COMPETING_SYNC_HOST_ADVICE,
   describeUnpublishedAccountDirectory,
   isSyncAccountDirectoryState,
   type AdeAccountSessionState,
+  type SyncAccountDirectoryHealth,
   type SyncAccountDirectoryState,
   type SyncRoleSnapshot,
 } from "../../../shared/types";
@@ -10,6 +12,12 @@ import { accountSessionConnectionsSubtitle } from "../../lib/account";
 export type AccountDirectorySummary = {
   label: string;
   healthy: boolean;
+  /**
+   * A second line the reader can act on right here, when the shared advice names
+   * one. Today that is only the competing-sync-host state: "another ADE app owns
+   * sync" is not actionable without knowing to quit it.
+   */
+  detail?: string;
 };
 
 /**
@@ -20,7 +28,10 @@ export type AccountDirectorySummary = {
  * copies already had. This function only decides how the shared advice reads on
  * one line of the Connections pane.
  */
-function unpublishedMachineLabel(state: SyncAccountDirectoryState): string {
+function unpublishedMachineSummary(
+  state: SyncAccountDirectoryState,
+  health?: SyncAccountDirectoryHealth | null,
+): { label: string; detail?: string } {
   // The state arrives from the brain over RPC. A brain newer than this window
   // can name a state this build's union does not carry, and the shared table's
   // switch is exhaustive over the union only — it returns undefined for
@@ -28,14 +39,22 @@ function unpublishedMachineLabel(state: SyncAccountDirectoryState): string {
   // blanks the whole Connections pane. So an unrecognised state gets a truthful
   // generic line instead of a crash.
   if (!isSyncAccountDirectoryState(state)) {
-    return "Signed in — sync state isn't available on this computer yet";
+    return { label: "Signed in — sync state isn't available on this computer yet" };
   }
-  // Only the summary. The shared table's `nextAction` is deliberately dropped
-  // here: `token_unreadable` already renders a Repair button beside this line,
-  // and the other actions are CLI commands, which mean nothing to someone
-  // reading a settings panel.
-  const { summary } = describeUnpublishedAccountDirectory(state);
-  return `Signed in — ${summary}`;
+  // The shared table's `nextAction` is deliberately dropped here: `token_unreadable`
+  // already renders a Repair button beside this line, and most actions are CLI
+  // commands, which mean nothing to someone reading a settings panel. The one
+  // exception is the competing-sync-host instruction — "Quit that ADE" is a thing
+  // this reader can do, and the line above it cannot be acted on without it.
+  //
+  // `health` is passed through because an answered refusal decodes from it: a
+  // 403 `machine_revoked` is the directory replying, not being unreachable.
+  const { summary, nextAction } = describeUnpublishedAccountDirectory(state, health);
+  const label = `Signed in — ${summary}`;
+  if (nextAction === QUIT_COMPETING_SYNC_HOST_ADVICE) {
+    return { label, detail: nextAction };
+  }
+  return { label };
 }
 
 export function accountDirectorySummary(
@@ -72,5 +91,5 @@ export function accountDirectorySummary(
     // plumbing detail the reader could neither act on nor interpret.
     return { label: "Connected to your ADE account", healthy: true };
   }
-  return { label: unpublishedMachineLabel(health.state), healthy: false };
+  return { ...unpublishedMachineSummary(health.state, health), healthy: false };
 }

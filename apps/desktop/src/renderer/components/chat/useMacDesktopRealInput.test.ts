@@ -7,6 +7,7 @@ import type {
 } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { OpenProjectBinding } from "../../../shared/types";
 import type { MacDesktopInputResult } from "../../../shared/types/macDesktop";
 import {
   MAC_DESKTOP_DRAG_SLOP_PX,
@@ -491,5 +492,57 @@ describe("useMacDesktopRealInput with an injected sender", () => {
 
     act(() => { result.current.clearInputError(); });
     expect(result.current.inputError).toBeNull();
+  });
+});
+
+/* ── The desktop's own dispatch: a takeover on another Mac ──────────────── */
+
+const STUDIO_PIN: OpenProjectBinding = {
+  kind: "remote",
+  key: "remote:target-studio:project-a",
+  targetId: "target-studio",
+  runtimeName: "Mac Studio",
+  transport: "paired",
+  projectId: "project-a",
+  rootPath: "/repo",
+  displayName: "ADE",
+};
+
+describe("useMacDesktopRealInput with the Mac Desktop namespace", () => {
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it("forwards a takeover click to the focused chat's machine", async () => {
+    const click = vi.fn(async () => SILENT_RESULT);
+    (window as unknown as { ade: unknown }).ade = { macDesktop: { click } };
+    const { result } = renderHook(() => useMacDesktopRealInput({
+      laneId: "lane-1",
+      sessionId: "chat-1",
+      controllerId: "ade-window:1",
+      enabled: true,
+      toDisplayPoint: (x, y) => ({ x, y }),
+      runtimePin: STUDIO_PIN,
+    }));
+
+    await act(async () => {
+      result.current.onPointerDown(pointerEvent(10, 11));
+      result.current.onPointerUp(pointerEvent(11, 12));
+    });
+
+    expect(click).toHaveBeenCalledTimes(1);
+    expect(click).toHaveBeenCalledWith(
+      expect.objectContaining({
+        laneId: "lane-1",
+        x: 11,
+        y: 12,
+        mode: "real",
+        controllerId: "ade-window:1",
+      }),
+      // The pin, not the project tab: this is a click on a display that lives
+      // on the Studio.
+      STUDIO_PIN,
+    );
   });
 });

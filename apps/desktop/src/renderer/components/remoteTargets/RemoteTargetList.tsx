@@ -11,6 +11,10 @@ import {
   WifiHigh,
 } from "@phosphor-icons/react";
 import { extractError } from "../../lib/format";
+import {
+  runMachinePairingReconnect,
+  type MachinePairingReconnectOutcome,
+} from "../../lib/machinePairingReconnect";
 import { useBrainRepair } from "../../hooks/useBrainRepair";
 import { BrainRepairButton } from "../settings/BrainRepairButton";
 import { ReportIssueButton } from "../app/ReportIssueButton";
@@ -43,6 +47,7 @@ import {
   accountMachineMatchesTarget,
   assignMachineSections,
   describePublishHealth,
+  describePublishRefusal,
   discoveredPairingInput,
   discoveredTargetInput,
   formatRemoteTargetError,
@@ -227,6 +232,13 @@ export function RemoteTargetList({
     useState<{ machineKey: string; deviceId: string } | null>(null);
   const [localPublishHealth, setLocalPublishHealth] =
     useState<LocalPublishHealth | null>(null);
+  // Reconnect THIS computer to the account after the directory refused it.
+  // Same orchestration the Account page runs, shared through
+  // `runMachinePairingReconnect`, so the two surfaces cannot drift.
+  const [reconnectingThisMachine, setReconnectingThisMachine] = useState(false);
+  const [reconnectOutcome, setReconnectOutcome] =
+    useState<MachinePairingReconnectOutcome | null>(null);
+  const reconnectCancelledRef = useRef(false);
   const [pairingPrefill, setPairingPrefill] = useState<string | null>(null);
   const [accountConnectingMachineKey, setAccountConnectingMachineKey] =
     useState<string | null>(null);
@@ -509,7 +521,12 @@ export function RemoteTargetList({
         const health = info.localRuntime?.publishHealth ?? null;
         setLocalPublishHealth(
           health
-            ? { state: health.state, failingSinceMs: health.failingSinceMs }
+            ? {
+                state: health.state,
+                failingSinceMs: health.failingSinceMs,
+                lastHttpStatus: health.lastHttpStatus ?? null,
+                lastHttpReason: health.lastHttpReason ?? null,
+              }
             : null,
         );
       })
@@ -537,6 +554,36 @@ export function RemoteTargetList({
   const showRepair = publishHealthDisplay.kind === "failing"
     && isBrainAccountSessionFailure(localPublishHealth?.state)
     && repair.available;
+
+  // A directory that answered "this machine is not on the account" is not
+  // unreachable; decode the refusal so the banner stops claiming it is.
+  const publishRefusal = useMemo(
+    () => describePublishRefusal(localPublishHealth),
+    [localPublishHealth],
+  );
+
+  const reconnectThisMachine = useCallback(async () => {
+    const api = window.ade.account;
+    if (!api?.repairMachinePairing) return;
+    setReconnectingThisMachine(true);
+    setReconnectOutcome(null);
+    reconnectCancelledRef.current = false;
+    try {
+      const outcome = await runMachinePairingReconnect({
+        repair: () => api.repairMachinePairing(),
+        isCancelled: () => reconnectCancelledRef.current,
+        afterAttempt: async () => {
+          // The banner reads the publisher's health, so re-read it rather than
+          // assume the repair took. No roster here to confirm against.
+          refreshPublishHealth();
+          return "unverified";
+        },
+      });
+      if (outcome) setReconnectOutcome(outcome);
+    } finally {
+      setReconnectingThisMachine(false);
+    }
+  }, [refreshPublishHealth]);
 
   const openAddMachine = useCallback(() => {
     setSelectedId(null);
@@ -1305,19 +1352,62 @@ export function RemoteTargetList({
               >
                 <Warning size={13} weight="fill" style={{ flexShrink: 0 }} />
                 <span>
-                  Other machines may not find this one — ADE couldn't publish it for{" "}
-                  {publishHealthDisplay.minutes} min
+                  {publishRefusal ? (
+                    `${publishRefusal.summary.charAt(0).toUpperCase()}${publishRefusal.summary.slice(1)}`
+                  ) : (
+                    <>
+                      Other machines may not find this one — ADE couldn't publish it for{" "}
+                      {publishHealthDisplay.minutes} min
+                    </>
+                  )}
                 </span>
+                {publishRefusal ? (
+                  <button
+                    type="button"
+                    disabled={reconnectingThisMachine}
+                    onClick={() => void reconnectThisMachine()}
+                    style={outlineButton({
+                      height: 22,
+                      padding: "0 9px",
+                      fontSize: 11,
+                      opacity: reconnectingThisMachine ? 0.6 : 1,
+                      cursor: reconnectingThisMachine ? "not-allowed" : "pointer",
+                    })}
+                  >
+                    {reconnectingThisMachine ? "Reconnecting…" : publishRefusal.actionLabel}
+                  </button>
+                ) : null}
                 {showRepair ? <BrainRepairButton repair={repair} height={22} /> : null}
                 <ReportIssueButton
                   variant="ghost"
                   context={{
                     surface: "connections",
-                    headline: "Other machines may not find this one",
+                    headline:
+                      publishRefusal
+                        ? `${publishRefusal.summary.charAt(0).toUpperCase()}${publishRefusal.summary.slice(1)}`
+                        : "Other machines may not find this one",
                     code: "publish_failing",
                     technicalDetail: `publish health: ${publishHealthDisplay.kind}`,
                   }}
                 />
+              </div>
+            ) : null}
+            {reconnectOutcome ? (
+              <div
+                role="status"
+                style={{
+                  marginTop: 3,
+                  color: reconnectOutcome.tone === "success"
+                    ? COLORS.success
+                    : reconnectOutcome.tone === "warning"
+                      ? COLORS.warning
+                      : COLORS.danger,
+                  fontFamily: SANS_FONT,
+                  fontSize: 11,
+                  lineHeight: 1.4,
+                }}
+              >
+                {reconnectOutcome.message}
               </div>
             ) : null}
           </div>

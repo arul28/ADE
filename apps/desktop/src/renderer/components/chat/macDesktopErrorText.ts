@@ -33,7 +33,32 @@ export type MacDesktopErrorTextOptions = {
   laneId?: string | null;
   /** The lane's own name, when the caller has one. */
   laneName?: string | null;
+  /** The machine the lane's runtime lives on, when the caller knows it. */
+  machineName?: string | null;
+  /** That machine's ADE version, when the caller knows it. */
+  machineVersion?: string | null;
 };
+
+/**
+ * The one error that means "update ADE on that machine".
+ *
+ * A brain older than this app has no `mac_desktop` action domain, so every call
+ * comes back as an RPC refusal whose message is `Domain 'mac_desktop' is
+ * unavailable in this runtime.` — sometimes behind the remote client's own
+ * `Remote ADE service method ade/actions/call failed (code -32602): ` prefix.
+ * That sentence names an action domain, which is a fact about the protocol and
+ * not about the screen the user just opened — so it becomes a sentence naming
+ * the machine and the version, which is the one thing they can act on.
+ */
+const MAC_DESKTOP_MISSING_DOMAIN = /Domain ['"]mac_desktop['"] is unavailable in this runtime/i;
+
+function macDesktopMissingDomainText(options?: MacDesktopErrorTextOptions): string {
+  const machine = options?.machineName?.trim() || "That machine";
+  const version = options?.machineVersion?.trim();
+  return version
+    ? `${machine} runs ADE ${version}, which has no Mac Desktop. Update ADE there.`
+    : `${machine} runs an older ADE, which has no Mac Desktop. Update ADE there.`;
+}
 
 /**
  * Replaces a lane id with the lane's name, or drops it.
@@ -75,6 +100,9 @@ export function macDesktopErrorText(
     text = text.replace(IPC_WRAPPER, "").replace(ERROR_LABEL, "").replace(CODE_PREFIX, "").trim();
     if (text === before) break;
   }
+  // A brain with no domain at all is the one failure the panel answers with the
+  // machine's own name and version rather than with the refusal itself.
+  if (MAC_DESKTOP_MISSING_DOMAIN.test(text)) return macDesktopMissingDomainText(options);
   if (options?.laneId) text = stripMacDesktopLaneId(text, options.laneId, options.laneName);
   return text.length ? text : null;
 }

@@ -874,6 +874,22 @@ describe("accountDirectorySummary", () => {
     expect(summary.label).not.toContain("open a project");
   });
 
+  it("names the owning ADE app and pid, and adds the one line that ends it", () => {
+    // The second ADE on a Mac cannot host sync while the first is running. Naming
+    // the owner is the whole point: "another ADE app" is not something a person
+    // can act on, and the pid disambiguates two ADE builds with one name.
+    const summary = summaryForState(
+      "no_active_sync_scope",
+      "Another ADE app on this computer owns sync for this machine (ADE Alpha, pid 9253).",
+    );
+    expect(summary).toEqual({
+      label:
+        "Signed in — another ADE app on this computer owns sync for this machine (ADE Alpha, pid 9253)",
+      healthy: false,
+      detail: "Quit that ADE to let this one host sync.",
+    });
+  });
+
   it("gives each actionable publish state its own instruction", () => {
     expect(summaryForState("account_signed_out", "The ADE brain is signed out.").label).toBe(
       "Signed in — the ADE background service is signed out",
@@ -883,6 +899,31 @@ describe("accountDirectorySummary", () => {
     );
     expect(summaryForState("http_error", null).label).toBe(
       "Signed in — can't reach your ADE account right now, retrying",
+    );
+  });
+
+  it("names an answered refusal instead of claiming the directory is unreachable", () => {
+    const summaryForRefusal = (lastHttpReason: string) =>
+      accountDirectorySummary(
+        {
+          routeHealth: {
+            accountDirectory: {
+              state: "http_error",
+              skipReason: null,
+              reachableEndpointCount: 0,
+              lastHttpStatus: 403,
+              lastHttpReason,
+            },
+          },
+        } as SyncRoleSnapshot,
+        "active",
+      );
+
+    expect(summaryForRefusal("machine_revoked").label).toBe(
+      "Signed in — this computer was removed from your ADE account",
+    );
+    expect(summaryForRefusal("pairing_authentication_required").label).toBe(
+      "Signed in — sign in again to reconnect this computer",
     );
   });
 

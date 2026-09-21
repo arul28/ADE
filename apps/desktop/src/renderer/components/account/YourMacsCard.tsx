@@ -16,8 +16,11 @@ import type {
   AdeAccountMachineRemovalResult,
   MachineInventoryDetail,
 } from "../../../shared/types";
-import { ADE_ACCOUNT_PAIRING_AUTHENTICATION_REQUIRED_CODE } from "../../../shared/types/account";
 import type { MachinePresence } from "../../../shared/types/power";
+import {
+  runMachinePairingReconnect,
+  type MachinePairingReconnectOutcome,
+} from "../../lib/machinePairingReconnect";
 import { accountMachineDisplayName } from "../../../shared/accountDirectory";
 import {
   NO_CONNECTED_MACHINE_IDS,
@@ -50,7 +53,6 @@ import {
   type AdeAccountStatus,
 } from "../../lib/account";
 import {
-  runAccountDeviceLogin,
   type AccountDeviceLoginPrompt,
 } from "../../lib/accountLogin";
 import {
@@ -63,6 +65,8 @@ import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 import { CustomToolMark } from "../shared/CustomToolMark";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { providerColor } from "../usage/providerColors";
+
+export { reconnectNeedsFreshSignIn } from "../../lib/machinePairingReconnect";
 
 /** The quiet heading over one column of a machine's expanded inventory. */
 function InventoryGroupLabel({ children }: { children: React.ReactNode }) {
@@ -231,92 +235,7 @@ export function ConfirmSheet({
 }
 
 /** What the user is told after a reconnect attempt, and how it is styled. */
-type ReconnectOutcome = { tone: "success" | "warning" | "danger"; message: string };
-
-/** Join the brain's reason onto our sentence without doubling its punctuation. */
-function sentence(reason: string): string {
-  const trimmed = reason.trim();
-  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
-}
-
-/**
- * Turn a repair result into copy that stays true to what actually happened.
- *
- * Read against `repairMachinePairing` in ade-cli, not by intuition:
- * `published` is true only on the path that also sets `repaired`, and a
- * successful re-pair reports `pushRestored: false` whenever the push half was
- * never gated — so `!pushRestored` on its own does NOT mean "still muted".
- *
- * The state that does mean it is `repaired && wasRevoked && !pushRestored`:
- * something was gated, the directory took the machine back, and the push
- * revocation did not lift with it. That machine is on the roster and silent —
- * the exact failure the ade-cli side refuses to paper over — so it must not be
- * reported as a clean reconnect.
- */
-function describeReconnectOutcome(
-  result: AdeAccountMachinePairingRepairResult,
-): ReconnectOutcome {
-  if (result.repaired) {
-    if (!result.wasRevoked) {
-      return { tone: "success", message: "This computer is already connected to your account." };
-    }
-    return result.pushRestored
-      ? {
-          tone: "success",
-          message: "This computer is back on your account. Activity and alerts are delivering again.",
-        }
-      : {
-          tone: "warning",
-          message:
-            "This computer is back on your account, but it isn't delivering Activity yet. Reopen ADE on this computer to finish.",
-        };
-  }
-  // Nothing was gated and the brain skipped the publish — no work to report.
-  if (result.state === "not_revoked") {
-    return { tone: "success", message: "This computer is already connected to your account." };
-  }
-  return {
-    tone: "danger",
-    message: result.reason
-      ? `Couldn't reconnect this computer: ${sentence(result.reason)} It's still disconnected from your account.`
-      : "Couldn't reconnect this computer, so it's still disconnected from your account. Try again in a moment.",
-  };
-}
-
-/**
- * Does this failed reconnect mean "prove a fresh sign-in", rather than a
- * transport, configuration, or brain-availability failure?
- *
- * Decided by `reasonCode`, the brain's machine-readable answer. Both refusals
- * still share `state: "http_error"`, but they no longer share a discriminator:
- * `pairing_authentication_required` is the recoverable one, and a present code
- * is authoritative — `machine_revoked` means the sentence must NOT be consulted
- * to talk us into a sign-in the directory did not ask for.
- *
- * Fails CLOSED: an unrecognised or absent answer reports the brain's reason
- * as-is rather than dragging the user into a browser sign-in that would not
- * have fixed anything.
- */
-export function reconnectNeedsFreshSignIn(
-  result: AdeAccountMachinePairingRepairResult,
-): boolean {
-  if (result.repaired) return false;
-  if (result.reasonCode) {
-    return result.reasonCode === ADE_ACCOUNT_PAIRING_AUTHENTICATION_REQUIRED_CODE;
-  }
-  // COMPATIBILITY SHIM — older brain only.
-  //
-  // Brains before `reasonCode` existed encoded this refusal solely in the
-  // user-facing sentence `PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE` (see
-  // `apps/ade-cli/src/services/account/accountMachinePublisherService.ts`; the
-  // renderer cannot import that module because it pulls in Node, so a test pins
-  // the two together). Matched loosely so small copy edits in those already-
-  // shipped builds do not break their recovery path.
-  //
-  // Delete this branch — and the test that pins the sentence — once the
-  // supported brain floor includes `reasonCode`.
-  return /\bsign in\b[\s\S]*\bagain on this computer\b/i.test(result.reason ?? "");
-}
+type ReconnectOutcome = MachinePairingReconnectOutcome;
 
 /**
  * Body copy when this computer is missing from the account directory.
@@ -736,50 +655,20 @@ export function YourMacsCard() {
     setSignInPrompt(null);
     reconnectCancelledRef.current = false;
     try {
-      const first = await api.repairMachinePairing();
-      if (!reconnectNeedsFreshSignIn(first)) {
-        setReconnectOutcome(describeReconnectOutcome(first));
-        invalidateAccountMachines();
-        await load();
-        return;
-      }
-      const signIn = await runAccountDeviceLogin({
+      const outcome = await runMachinePairingReconnect({
+        repair: () => api.repairMachinePairing!(),
         onPrompt: setSignInPrompt,
         isCancelled: () => reconnectCancelledRef.current,
+        afterAttempt: async () => {
+          invalidateAccountMachines();
+          const refreshed = await load();
+          return refreshed?.state === "ok"
+            && refreshed.machines.some((candidate) => isThisMac(candidate))
+            ? "reconnected"
+            : "still_missing";
+        },
       });
-      setSignInPrompt(null);
-      if (signIn.status === "cancelled") return;
-      if (signIn.status === "failed") {
-        setReconnectOutcome({ tone: "danger", message: signIn.message });
-        return;
-      }
-      invalidateAccountMachines();
-      const refreshed = await load();
-      const back = Boolean(
-        refreshed?.state === "ok"
-        && refreshed.machines.some((candidate) => isThisMac(candidate)),
-      );
-      setReconnectOutcome(
-        back
-          ? {
-              tone: "success",
-              message: "This computer is back on your account. Activity and alerts are delivering again.",
-            }
-          : {
-              tone: "danger",
-              message:
-                "You're signed in, but this computer still isn't on your account. Try reconnecting it again.",
-            },
-      );
-    } catch (err) {
-      // Main already translated the brain's failure into a sentence; only a
-      // truly unexpected throw reaches the fallback.
-      setReconnectOutcome({
-        tone: "danger",
-        message: err instanceof Error && err.message
-          ? err.message
-          : "Couldn't reconnect this computer to your account. Try again in a moment.",
-      });
+      if (outcome) setReconnectOutcome(outcome);
     } finally {
       setSignInPrompt(null);
       setReconnecting(false);

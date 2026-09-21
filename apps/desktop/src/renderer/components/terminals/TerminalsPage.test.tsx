@@ -2419,4 +2419,92 @@ describe("TerminalsPage chat session activation", () => {
     fireEvent.click(show);
     expect(workMocks.currentWork.setWorkFocusSessionsHidden).toHaveBeenCalledWith(false);
   });
+
+  it("points the Mac Desktop corner card at the focused chat's machine", async () => {
+    // After #1269 the card takes the same session-machine pin the tools pane
+    // does: a Studio chat read from a MacBook-bound tab must ask the Studio
+    // about its own screen, so the card's reads carry the Studio binding.
+    const studioBinding: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:target-studio:project-a",
+      targetId: "target-studio",
+      runtimeName: "Mac Studio",
+      transport: "paired",
+      projectId: "project-a",
+      rootPath: "/remote/repo-a",
+      displayName: "repo-a",
+    };
+    const chat = workMocks.makeTerminalSession("chat-studio", "lane-studio", "codex-chat");
+    workMocks.projectRoot = "/repo";
+    workMocks.projectBinding = {
+      kind: "local",
+      key: "local:/repo",
+      rootPath: "/repo",
+      displayName: "repo",
+    };
+    workMocks.openRemoteProjectTabs = [studioBinding];
+    workMocks.crossMachineLanesByMachineId = {
+      "target-studio": {
+        machineId: "target-studio",
+        machineName: "Mac Studio",
+        targetId: "target-studio",
+        projectId: "project-a",
+        binding: studioBinding,
+        lanes: [{ ...workMocks.baseWork.lanes[1] as LaneSummary, id: "lane-studio" }],
+        sessions: [chat],
+        online: true,
+      },
+    };
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      activeItemId: "chat-studio",
+      selectedSessionId: "chat-studio",
+      sessions: [chat],
+      sessionsById: new Map([[chat.id, chat]]),
+      closingPtyIds: new Set<string>(),
+    };
+    const getStreamStatus = vi.fn(async () => ({
+      laneId: "lane-studio",
+      running: false,
+      fps: 0,
+      idle: false,
+      bitrateKbps: null,
+      transport: null,
+      lastError: null,
+      clients: 0,
+      viewerChatSessionIds: ["chat-studio"],
+    }));
+    const getStatus = vi.fn(async () => ({
+      supported: true,
+      display: null,
+      lease: null,
+      windows: [],
+      recording: null,
+    }));
+    const onEvent = vi.fn(() => () => {});
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: {
+        builtInBrowser: { onEvent: vi.fn(() => vi.fn()) },
+        macDesktop: { getStatus, getStreamStatus, onEvent },
+      },
+    });
+
+    render(<TerminalsPage />);
+    await screen.findByTestId("session-list-pane");
+
+    await waitFor(() => expect(getStreamStatus).toHaveBeenCalledWith(
+      { laneId: "lane-studio" },
+      studioBinding,
+    ));
+    // The capability probe behind the tool's availability asked the same
+    // machine — a remote Studio does not hide Mac Desktop, and a local tab
+    // does not answer for it.
+    expect(getStatus).toHaveBeenCalledWith({}, studioBinding);
+    expect(getStatus).toHaveBeenCalledWith(
+      { laneId: "lane-studio", chatSessionId: "chat-studio" },
+      studioBinding,
+    );
+    expect(onEvent).toHaveBeenCalledWith(expect.any(Function), studioBinding);
+  });
 });

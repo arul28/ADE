@@ -82,6 +82,7 @@ const accountMock = {
   renameMachine: vi.fn(),
   getLocalMachineIdentity: vi.fn(),
   onPairMachineProgress: vi.fn(),
+  repairMachinePairing: vi.fn(),
 };
 
 function installAdeMock(): void {
@@ -99,6 +100,14 @@ function installAdeMock(): void {
   appMock.getInfo.mockResolvedValue({ localRuntime: null });
   accountMock.getLocalMachineIdentity.mockResolvedValue({ machineKey: "local-mk", deviceId: "local-dev" });
   accountMock.onPairMachineProgress.mockReturnValue(() => {});
+  accountMock.repairMachinePairing.mockResolvedValue({
+    repaired: false,
+    wasRevoked: true,
+    published: false,
+    pushRestored: false,
+    state: "not_revoked",
+    reason: null,
+  });
   accountMock.renameMachine.mockImplementation(async (machineKey: string, customName: string | null) => ({
     ...accountMachine({ machineKey, name: customName ?? "Studio" }),
     customName,
@@ -217,6 +226,92 @@ describe("RemoteTargetList", () => {
     await screen.findByRole("button", { name: "Add machine" });
     expect(screen.queryByText(/couldn't publish it/)).toBeNull();
     expect(screen.queryByText(/route publish failing/)).toBeNull();
+  });
+
+  it("names the removal and offers Reconnect when the directory revoked this machine", async () => {
+    remoteRuntimeMock.listTargets.mockResolvedValue([]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({ machines: [], diagnostics: [] });
+    installAdeMock();
+    appMock.getInfo.mockResolvedValue({
+      localRuntime: {
+        publishHealth: {
+          state: "http_error",
+          failingSinceMs: Date.now() - 5 * 60_000,
+          lastLegDurations: { snapshot: null, token: null, http: null },
+          lastHttpStatus: 403,
+          lastHttpReason: "machine_revoked",
+        },
+      },
+    });
+    accountMock.repairMachinePairing.mockResolvedValue({
+      repaired: true,
+      wasRevoked: true,
+      published: true,
+      pushRestored: true,
+      state: "registered",
+      reason: null,
+    });
+
+    render(<RemoteTargetList accountSignedIn />);
+
+    expect(
+      await screen.findByText("This computer was removed from your ADE account"),
+    ).toBeTruthy();
+    // The directory answered; "couldn't publish it" would be a lie.
+    expect(screen.queryByText(/couldn't publish it/)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect this computer" }));
+    await waitFor(() =>
+      expect(accountMock.repairMachinePairing).toHaveBeenCalledTimes(1),
+    );
+  });
+
+  it("asks for a fresh sign-in when the directory requires one", async () => {
+    remoteRuntimeMock.listTargets.mockResolvedValue([]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({ machines: [], diagnostics: [] });
+    installAdeMock();
+    appMock.getInfo.mockResolvedValue({
+      localRuntime: {
+        publishHealth: {
+          state: "http_error",
+          failingSinceMs: Date.now() - 5 * 60_000,
+          lastLegDurations: { snapshot: null, token: null, http: null },
+          lastHttpStatus: 403,
+          lastHttpReason: "pairing_authentication_required",
+        },
+      },
+    });
+
+    render(<RemoteTargetList accountSignedIn />);
+
+    expect(
+      await screen.findByText("Sign in again to reconnect this computer"),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Sign in again" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Reconnect this computer" })).toBeNull();
+  });
+
+  it("keeps the couldn't-publish text for an ordinary HTTP failure", async () => {
+    remoteRuntimeMock.listTargets.mockResolvedValue([]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({ machines: [], diagnostics: [] });
+    installAdeMock();
+    appMock.getInfo.mockResolvedValue({
+      localRuntime: {
+        publishHealth: {
+          state: "http_error",
+          failingSinceMs: Date.now() - 5 * 60_000,
+          lastLegDurations: { snapshot: null, token: null, http: null },
+          lastHttpStatus: 500,
+          lastHttpReason: null,
+        },
+      },
+    });
+
+    render(<RemoteTargetList accountSignedIn />);
+
+    expect(await screen.findByText(/couldn't publish it for 5 min/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Reconnect this computer" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Sign in again" })).toBeNull();
   });
 
   it("pairs a discovered ADE machine with its 6-digit code instead of creating an SSH target", async () => {

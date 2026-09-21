@@ -12,7 +12,6 @@ import {
  */
 
 const context = (overrides: Partial<WorkToolContext> = {}): WorkToolContext => ({
-  isRemoteProject: false,
   supportsIosSimulator: false,
   isWebClient: false,
   ...overrides,
@@ -46,14 +45,16 @@ describe("Mac Desktop tool availability", () => {
     expect(workToolAvailability("mac-desktop", context({ supportsMacDesktop: true })).available).toBe(true);
   });
 
-  it("shows on a non-Mac desktop and on a remote project, because the display is the host's", () => {
-    // The two gates that (correctly) hide the simulator must not touch this
-    // tool: a Windows desktop viewing a Mac-hosted lane is the headline case.
-    expect(workToolAvailability("ios", context({ isRemoteProject: true })).available).toBe(false);
-    expect(workToolAvailability(
-      "mac-desktop",
-      context({ isRemoteProject: true, supportsMacDesktop: true }),
-    ).available).toBe(true);
+  it("follows the session machine's host, so a remote tab never hides it", () => {
+    // The one gate is the answer from the machine the FOCUSED CHAT runs on
+    // (`useMacDesktopSupport`, cached per pin). There is deliberately no
+    // tab-level flag in this context: "the project tab is bound remotely" is
+    // not a fact about whether the lane's host is a Mac, and the same box can
+    // be a Mac Desktop host for a Studio chat while this desktop is Windows.
+    expect(workToolAvailability("ios", context()).available).toBe(false);
+    expect(workToolAvailability("mac-desktop", context({ supportsMacDesktop: true })).available).toBe(true);
+    // A non-Mac host hides it for every chat, remote or local.
+    expect(workToolAvailability("mac-desktop", context({ supportsMacDesktop: false })).available).toBe(false);
   });
 
   it("is watchable but not drivable from the hosted web client", () => {

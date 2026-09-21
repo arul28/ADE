@@ -243,7 +243,9 @@ import {
 } from "../../desktop/src/main/services/chat/harnessPresetLaunch";
 import type { ApiCredentialSummary } from "../../desktop/src/shared/types/apiCredentials";
 import {
+  competingSyncHostSkipReason,
   createSyncAccountDirectoryHealth,
+  type CompetingSyncHostOwner,
   type SyncMobileProjectSummary,
   type SyncAccountDirectoryHealth,
   type SyncPairingConnectInfo,
@@ -21755,11 +21757,33 @@ async function runServe(
   let brainSyncTunnelClient: SyncTunnelClientService | null = null;
   let brainRelayTunnelGate: RelayTunnelAuthorityGate | null = null;
   let releaseAccountPublisherAuthoritySubscription: (() => void) | null = null;
-  const getAccountDirectoryHealth = (): SyncAccountDirectoryHealth =>
-    accountMachinePublisher?.getPublisherHealth() ?? createSyncAccountDirectoryHealth(
+  // Read only when no publisher is running, which is exactly the state of the
+  // second ADE on a machine: it cannot take the lease, so it never builds a
+  // publisher, and the popover used to be told "sync hasn't started here yet".
+  // The truthful state is that another ADE app owns sync, and it can name it.
+  // Wired inside the `syncEnabled` block below (that is where the singleton
+  // module is imported); absent means "unknown owner", never a guessed one.
+  let readCompetingSyncHostOwner: (() => CompetingSyncHostOwner | null) | null = null;
+  const getAccountDirectoryHealth = (): SyncAccountDirectoryHealth => {
+    const publisherHealth = accountMachinePublisher?.getPublisherHealth();
+    if (publisherHealth) return publisherHealth;
+    let owner: CompetingSyncHostOwner | null = null;
+    try {
+      owner = readCompetingSyncHostOwner?.() ?? null;
+    } catch {
+      owner = null;
+    }
+    if (owner) {
+      return createSyncAccountDirectoryHealth(
+        "no_active_sync_scope",
+        competingSyncHostSkipReason(owner),
+      );
+    }
+    return createSyncAccountDirectoryHealth(
       "sync_not_started",
       "Account-directory publishing has not started.",
     );
+  };
   /**
    * The desktop's OS-level suspend/resume beat, arriving over RPC.
    *
@@ -22020,6 +22044,8 @@ async function runServe(
             state: publishHealth.state,
             failingSinceMs: publishHealth.failingSinceMs,
             lastLegDurations: { ...publishHealth.lastLegDurations },
+            lastHttpStatus: publishHealth.lastHttpStatus,
+            lastHttpReason: publishHealth.lastHttpReason,
           },
           lastWedge: readBrainLoopWatchdogLastWedge(layout.runtimeDir),
         };
@@ -22460,11 +22486,37 @@ async function runServe(
     // here", so like the relay tunnel it belongs to whichever brain actually
     // holds the machine-wide sync host lease. A second brain publishing its own
     // endpoints points phones at a runtime that does not host sync.
-    const [{ holdsSyncHostSingleton, onSyncHostSingletonAuthorityChanged }, { SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS }] =
+    const [{ holdsSyncHostSingleton, onSyncHostSingletonAuthorityChanged, detectSyncHostSingletonConflict }, { SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS }] =
       await Promise.all([
         import("./services/sync/syncHostSingleton"),
         import("./services/sync/relayTunnelAuthorityGate"),
       ]);
+    // The lock file is the authority on who owns sync on this machine, so read it
+    // (not the listener scan, which spawns lsof and would run on every status
+    // read) and report the owner only when it is someone else. Held in a
+    // try/catch because a status read must never fail over a diagnostic, and
+    // cached briefly: the winner only changes when an app quits or starts, while
+    // proving the owner's birth identity spawns `ps` on every uncached read.
+    const competingSyncHostOwnerCache: { value: CompetingSyncHostOwner | null; at: number } = {
+      value: null,
+      at: 0,
+    };
+    readCompetingSyncHostOwner = (): CompetingSyncHostOwner | null => {
+      const at = Date.now();
+      if (competingSyncHostOwnerCache.at > 0 && at - competingSyncHostOwnerCache.at < 10_000) {
+        return competingSyncHostOwnerCache.value;
+      }
+      let owner: CompetingSyncHostOwner | null = null;
+      try {
+        const conflict = detectSyncHostSingletonConflict({ skipListenerScan: true });
+        owner = conflict ? { appName: conflict.owner.appName, pid: conflict.owner.pid } : null;
+      } catch {
+        owner = null;
+      }
+      competingSyncHostOwnerCache.value = owner;
+      competingSyncHostOwnerCache.at = at;
+      return owner;
+    };
     const startAccountMachinePublisher = (): void => {
       if (accountMachinePublisher) return;
       accountMachinePublisher = createBrainAccountMachinePublisherService({
@@ -22502,6 +22554,10 @@ async function runServe(
             aiIntegrationService: activeScope?.runtime.aiIntegrationService ?? null,
           });
         },
+        // Only consulted on the `no_active_sync_scope` branch, but declared here
+        // so a publisher built during a lease handoff names the same owner the
+        // no-publisher health fallback above would.
+        readCompetingSyncHostOwner: () => readCompetingSyncHostOwner?.() ?? null,
         // The SAME store instance the machine key above comes from, so a
         // `supersededMachineKeys` answer is checked against the keys this brain
         // actually retired. The publisher used to build a private second store

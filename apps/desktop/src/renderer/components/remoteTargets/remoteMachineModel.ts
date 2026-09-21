@@ -25,6 +25,11 @@ import type {
   SyncAddressCandidate,
   SyncPeerPlatform,
 } from "../../../shared/types/sync";
+import { createSyncAccountDirectoryHealth } from "../../../shared/types/sync";
+import {
+  readAccountRefusalCode,
+  type AccountMachineRefusalCode,
+} from "../../../shared/accountMachineRefusal";
 
 // ---------------------------------------------------------------------------
 // Route identity + discovered-machine helpers (framework-free, unit-tested via
@@ -219,7 +224,55 @@ export function machineMatchesSavedTarget(
 export type LocalPublishHealth = {
   state: SyncAccountDirectoryState;
   failingSinceMs: number | null;
+  /**
+   * Last directory HTTP status and its bounded classified reason. Present on
+   * current runtimes; a 403 refusal decodes from these so the banner can tell
+   * "the directory answered and refused" from "we could not reach it".
+   */
+  lastHttpStatus?: number | null;
+  lastHttpReason?: string | null;
 };
+
+/**
+ * A refusal the directory answered with, decoded for the Machine banner. Null
+ * when the failure is an ordinary transport/server error or nothing at all —
+ * those keep the reachability wording.
+ */
+export type PublishRefusal = {
+  code: AccountMachineRefusalCode;
+  /** Lowercase, as the shared advice table words it. */
+  summary: string;
+  actionLabel: string;
+};
+
+export function describePublishRefusal(
+  publishHealth: LocalPublishHealth | null | undefined,
+): PublishRefusal | null {
+  if (!publishHealth) return null;
+  const code = readAccountRefusalCode(createSyncAccountDirectoryHealth(
+    publishHealth.state,
+    null,
+    {
+      lastHttpStatus: publishHealth.lastHttpStatus ?? null,
+      lastHttpReason: publishHealth.lastHttpReason ?? null,
+    },
+  ));
+  if (code === "machine_revoked") {
+    return {
+      code,
+      summary: "this computer was removed from your ADE account",
+      actionLabel: "Reconnect this computer",
+    };
+  }
+  if (code === "pairing_authentication_required") {
+    return {
+      code,
+      summary: "sign in again to reconnect this computer",
+      actionLabel: "Sign in again",
+    };
+  }
+  return null;
+}
 
 export type PublishHealthDisplay =
   | { kind: "none" }

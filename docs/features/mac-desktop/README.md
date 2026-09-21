@@ -112,9 +112,24 @@ client.
 
 - **Local Mac runtime.** The desktop app talks to the service over local IPC,
   reads the stream from loopback, and can offer "Bring to my screen".
-- **Remote Mac runtime.** Every call goes over the runtime RPC. The stream is
-  read through the same SSH port forward the `idb-h264` simulator backend uses.
-  "Bring to my screen" is hidden, because the user's screen is not on that Mac.
+- **Remote Mac runtime.** Every call is routed to the FOCUSED CHAT's machine —
+  the session machine the Work tools already follow — not to whichever project
+  tab happens to be bound. A chat whose lane lives on another Mac gets that
+  Mac's `getStatus`, `start`, input, and stream calls even while the tab sits on
+  a laptop checkout, and switching focus between a Studio chat and a local chat
+  flips the tool's availability with it, because the capability answer is cached
+  per session machine. Only an unpinned chat (one that already lives on the
+  tab's bound machine) takes the bound path.
+  The stream is read through a local port forward: an SSH target gets the same
+  SSH forward the `idb-h264` simulator backend uses, and a paired target gets a
+  forward opened on the authenticated sync channel (`syncPortForwardClient.ts`)
+  whichever route carried it — direct LAN, tailnet, or the ADE account relay.
+  The loopback URL and its token never leave the two machines. "Bring to my
+  screen" is hidden, because the user's screen is not on that Mac. When the
+  remote brain predates this feature and has no `mac_desktop` domain at all, the
+  pane says so in the machine's own terms — "<Machine name> runs ADE
+  <version>, which has no Mac Desktop. Update ADE there." — instead of printing
+  the action-domain refusal.
 - **Non-Mac runtime.** `getStatus` answers `supported: false`. Every other
   method rejects with `MAC_DESKTOP_UNSUPPORTED_PLATFORM`. The renderer hides the
   tab.

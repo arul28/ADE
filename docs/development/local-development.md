@@ -226,6 +226,19 @@ apps/desktop/release-beta/mac-arm64/ADE Beta.app
 apps/desktop/release-beta/ADE-Beta-local.zip
 ```
 
+Every channel build carries a per-build version of the form
+`<base>-<channel>.<yyyymmddHHMM>`, where `<base>` is the newest `v*` tag
+reachable from HEAD (or the `apps/desktop/package.json` version when no tag
+exists) and the timestamp is UTC — for example `1.2.75-alpha.202609211035`.
+The stamp is written into the packaged app's `version` (electron-builder
+`extraMetadata.version`, so `app.getVersion()` reports it), into
+`ADE_CLI_VERSION` for the bundled CLI build, and through `ADE_DESKTOP_VERSION`
+for the Windows packaging wrapper. This is what stops a fresh Alpha/Beta app
+from reusing a brain left by an earlier build: the runtime compatibility gate
+treats equal versions as compatible, so a build has to identify itself with a
+version that changes every time. The desktop never writes the stamp back into
+`package.json`.
+
 Install the build you want to test by replacing the matching app in
 `/Applications`:
 

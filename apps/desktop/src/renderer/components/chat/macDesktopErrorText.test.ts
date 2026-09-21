@@ -44,6 +44,43 @@ describe("macDesktopErrorText", () => {
     expect(macDesktopErrorText("MAC_DESKTOP_NO_DISPLAY:   ")).toBeNull();
   });
 
+  describe("a brain with no mac_desktop domain", () => {
+    const RAW = "Domain 'mac_desktop' is unavailable in this runtime.";
+
+    it("names the machine and its version instead of the action domain", () => {
+      expect(macDesktopErrorText(RAW, {
+        machineName: "Mac Studio",
+        machineVersion: "1.2.74",
+      })).toBe("Mac Studio runs ADE 1.2.74, which has no Mac Desktop. Update ADE there.");
+    });
+
+    it("peels the IPC wrapper before recognizing it", () => {
+      // The exact shape a pinned remote refusal arrives in: the remote client's
+      // method prefix, then the JSON-RPC code, then Electron's IPC wrapper.
+      expect(macDesktopErrorText(
+        "Error invoking remote method 'ade.remoteRuntime.callAction': Error: "
+          + "Remote ADE service method ade/actions/call failed (code -32602): "
+          + RAW,
+        { machineName: "Mac Studio", machineVersion: "1.2.74" },
+      )).toBe("Mac Studio runs ADE 1.2.74, which has no Mac Desktop. Update ADE there.");
+    });
+
+    it("still says what to do when the version is not known", () => {
+      expect(macDesktopErrorText(RAW, { machineName: "Mac Studio" }))
+        .toBe("Mac Studio runs an older ADE, which has no Mac Desktop. Update ADE there.");
+      // No caller-provided name at all degrades to a machine, never to the code.
+      expect(macDesktopErrorText(RAW))
+        .toBe("That machine runs an older ADE, which has no Mac Desktop. Update ADE there.");
+    });
+
+    it("leaves a different unavailable domain alone", () => {
+      expect(macDesktopErrorText("Domain 'app_control' is unavailable in this runtime.", {
+        machineName: "Mac Studio",
+        machineVersion: "1.2.74",
+      })).toBe("Domain 'app_control' is unavailable in this runtime.");
+    });
+  });
+
   describe("lane ids", () => {
     const LANE_ID = "ab829725-4f40-4c1f-8582-091b500dd26a";
 

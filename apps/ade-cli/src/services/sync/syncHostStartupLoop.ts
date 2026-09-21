@@ -62,6 +62,18 @@ export type SyncHostStartupLoopDeps = {
   slowRetryDelayMs?: number;
   fastRetryCount?: number;
   maxAttempts?: number;
+  /**
+   * Injectable clock, so the conflict log cadence can be tested without
+   * wall-clock waits. Defaults to `Date.now`.
+   */
+  now?: () => number;
+  /**
+   * How often a still-persisting sync-host conflict is restated after its first
+   * occurrence. Ten minutes: the condition is "the other ADE app is open", which
+   * can last for days, and the generic one-minute retry summary is what turned
+   * it into 9,700 log lines. Overridable for tests.
+   */
+  conflictSummaryIntervalMs?: number;
 };
 
 function defaultKill(pid: number, signal: NodeJS.Signals | number): void {
@@ -132,6 +144,10 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
   let lastFailureSignature = "";
   let consecutiveStorageFaults = 0;
   let reportedSustainedStorageFault = false;
+  const now = deps.now ?? Date.now;
+  const conflictSummaryIntervalMs = deps.conflictSummaryIntervalMs ?? 10 * 60_000;
+  let conflictOccurrences = 0;
+  let lastConflictLoggedAt = 0;
   // Telemetry must never become a second failure path in a retry loop, so
   // every structured event in this loop goes out through this one guard.
   const logEvent = (event: string, meta: Record<string, unknown>): void => {
@@ -140,6 +156,51 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
     } catch {
       // Ignored on purpose: see above.
     }
+  };
+  /**
+   * A sync-host conflict is not a transient failure: it means another ADE app
+   * on this computer is open and owns sync. The generic deduper restates every
+   * failure once a minute, which is how one Alpha brain logged the same
+   * multi-line conflict 9,700 times. Keep the first occurrence's full detail —
+   * it carries the quit command — then at most one single-line restatement per
+   * `conflictSummaryIntervalMs`, with a count so the line still ages honestly.
+   */
+  const noteSyncHostConflict = (
+    error: SyncHostSingletonConflictError,
+    conflictAttempt: number,
+  ): void => {
+    const owner = error.conflict.owner;
+    conflictOccurrences += 1;
+    const at = now();
+    if (conflictOccurrences === 1) {
+      lastConflictLoggedAt = at;
+      deps.log(error.message);
+      logEvent("sync.host_start_failed", {
+        signature: "SyncHostSingletonConflictError",
+        attempt: conflictAttempt,
+        code: "sync_host_singleton_conflict",
+        ownerApp: owner.appName ?? null,
+        ownerPid: owner.pid,
+        ownerPort: owner.port ?? null,
+        occurrences: 1,
+        message: error.message,
+      });
+      return;
+    }
+    if (at - lastConflictLoggedAt < conflictSummaryIntervalMs) return;
+    lastConflictLoggedAt = at;
+    const line = `ADE brain sync host still blocked by ${owner.appName ?? "another ADE app"} (pid ${owner.pid}); ${conflictOccurrences} occurrences.`;
+    deps.log(line);
+    logEvent("sync.host_start_failed", {
+      signature: "SyncHostSingletonConflictError",
+      attempt: conflictAttempt,
+      code: "sync_host_singleton_conflict",
+      ownerApp: owner.appName ?? null,
+      ownerPid: owner.pid,
+      ownerPort: owner.port ?? null,
+      occurrences: conflictOccurrences,
+      message: line,
+    });
   };
   // The deduper decides WHETHER this failure gets narrated (first occurrence,
   // then once a minute); routing the structured event through the same
@@ -155,6 +216,10 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
     try {
       await deps.startSyncHost();
       if (lastFailureSignature) failureLogs.clear(lastFailureSignature);
+      // A recovery re-arms the conflict narration: a later conflict with a
+      // different app should get its own first-occurrence full detail.
+      conflictOccurrences = 0;
+      lastConflictLoggedAt = 0;
       if (attempt > 0) {
         deps.log("ADE brain mobile sync host recovered.");
         logEvent("sync.host_start_recovered", { attempts: attempt, lastFailureSignature });
@@ -172,19 +237,26 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
         ? storageFault.code
         : error instanceof Error ? error.name : typeof error;
       consecutiveStorageFaults = storageFault ? consecutiveStorageFaults + 1 : 0;
-      failureLogs.note(
-        signature,
-        storageFault
-          ? `ADE brain sync host failed: ${storageFault.message}`
-          : `ADE brain sync host failed: ${message}`,
-        {
+      if (error instanceof SyncHostSingletonConflictError) {
+        // Conflict narration has its own cadence and its own single-line repeat
+        // (see `noteSyncHostConflict`); routing it through the generic deduper
+        // is what produced a multi-line message every minute.
+        noteSyncHostConflict(error, attempt);
+      } else {
+        failureLogs.note(
           signature,
-          attempt,
-          code: storageFault?.code ?? null,
-          errno: storageFault?.errno ?? null,
-          provider: storageFault?.provider ?? null,
-        },
-      );
+          storageFault
+            ? `ADE brain sync host failed: ${storageFault.message}`
+            : `ADE brain sync host failed: ${message}`,
+          {
+            signature,
+            attempt,
+            code: storageFault?.code ?? null,
+            errno: storageFault?.errno ?? null,
+            provider: storageFault?.provider ?? null,
+          },
+        );
+      }
       lastFailureSignature = signature;
       if (storageFault) {
         try {

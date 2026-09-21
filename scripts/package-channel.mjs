@@ -5,6 +5,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolveNpmInvocation } from "./dev-shared.mjs";
+import { computeChannelVersion, resolveChannelBaseVersion } from "./channelVersion.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const currentRepoRoot = path.resolve(scriptDir, "..");
@@ -177,6 +178,27 @@ function readDesktopVersion(repoRoot) {
   const version = typeof packageJson.version === "string" ? packageJson.version.trim() : "";
   if (!version) fail("apps/desktop/package.json is missing a version.");
   return version;
+}
+
+/**
+ * Every channel build gets a version that changes with the build, so a fresh
+ * Alpha/Beta app never treats a brain left by an earlier build as compatible
+ * just because both came from the same `apps/desktop/package.json` version.
+ * The base is the newest `v*` tag reachable from HEAD (a released version),
+ * falling back to package.json when the checkout has no tags. See
+ * `channelVersion.mjs` for why the timestamp is UTC.
+ */
+function resolveChannelVersion(repoRoot, channel, now = new Date()) {
+  const fallbackVersion = readDesktopVersion(repoRoot);
+  let taggedVersion = "";
+  try {
+    taggedVersion = gitOutput(["describe", "--tags", "--abbrev=0", "--match", "v*"], { cwd: repoRoot });
+  } catch {
+    // No reachable v* tag (shallow clone, or a branch before the first tag).
+    taggedVersion = "";
+  }
+  const baseVersion = resolveChannelBaseVersion({ taggedVersion, fallbackVersion });
+  return computeChannelVersion({ baseVersion, channel, now });
 }
 
 function assertRuntimeArtifacts(repoRoot, target) {
@@ -404,11 +426,17 @@ function buildChannel(repoRoot, channel, options) {
   const desktopRoot = path.join(repoRoot, "apps", "desktop");
   const outputRepoRoot = channel === "beta" && !options.repo ? currentRepoRoot : repoRoot;
   const outputRoot = path.join(outputRepoRoot, "apps", "desktop", config.outputDir);
-  const appVersion = readDesktopVersion(repoRoot);
+  const appVersion = resolveChannelVersion(repoRoot, channel);
+  process.stdout.write(`[ade] Channel version: ${appVersion}\n`);
   const env = {
     ...process.env,
     ADE_PACKAGE_CHANNEL: channel,
+    // `ADE_CLI_VERSION` is baked into the CLI build's `__ADE_VERSION__`, so the
+    // brain this package installs reports the same per-build version the app
+    // does. `ADE_DESKTOP_VERSION` carries the same stamp into the maintained
+    // electron-builder wrapper used on Windows.
     ADE_CLI_VERSION: appVersion,
+    ADE_DESKTOP_VERSION: appVersion,
     ADE_DESKTOP_APP_NAME: config.productName,
     ADE_HOME: config.adeHome,
     ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY: "1",
@@ -443,6 +471,11 @@ function buildChannel(repoRoot, channel, options) {
     `-c.productName=${config.productName}`,
     `-c.mac.icon=build/icon.${channel}.icns`,
     `-c.directories.output=${outputRoot}`,
+    // electron-builder merges extraMetadata into the packaged app's
+    // package.json, which is what `app.getVersion()` reads. Without this the
+    // packaged app would keep the literal package.json version and every
+    // channel build would look identical to a stale running brain.
+    `-c.extraMetadata.version=${appVersion}`,
     `-c.extraMetadata.adePackageChannel=${channel}`,
     `-c.extraMetadata.adeCliName=${config.cliName}`,
     `-c.mac.extendInfo.LSEnvironment.ADE_PACKAGE_CHANNEL=${channel}`,
