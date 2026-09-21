@@ -126,7 +126,11 @@ struct WorkRemoteToolResultAffordance: View {
         .accessibilityLabel("Loading full tool result")
       } else {
         Button(action: loadFullResult) {
-          Text("Show all (\(workToolResultRemoteByteLabel(remoteResultBytes)))")
+          // A host that flagged truncation without a size gives 0 here; the
+          // button still has to exist, it just cannot name a number.
+          Text(remoteResultBytes > 0
+            ? "Show all (\(workToolResultRemoteByteLabel(remoteResultBytes)))"
+            : "Show all")
             .font(.caption2.weight(.semibold))
             .foregroundStyle(ADEColor.accent)
             .frame(minHeight: 44)

@@ -1093,7 +1093,11 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         )
       case "command_lifecycle":
         let status = optionalString(eventDict["status"])
-        let steerId = optionalString(eventDict["steerId"] ?? eventDict["steer_id"])
+        // Per key, never `?? ` on the raw values: an explicit `"steerId": null`
+        // arrives as `NSNull`, wins the coalesce, and hides a snake_case
+        // `steer_id` beside it — the steer id is then lost and its queued row
+        // never graduates. Same rule this file states for `apiErrorStatus`.
+        let steerId = optionalString(eventDict["steerId"]) ?? optionalString(eventDict["steer_id"])
         if status == "cancelled" || status == "discarded" {
           let verb = status == "discarded" ? "discarded" : "cancelled"
           event = .systemNotice(
@@ -1142,7 +1146,7 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         stopReason: stopReason,
         commandLifecycleStatus: type == "command_lifecycle" ? optionalString(eventDict["status"]) : nil,
         commandLifecycleSteerId: type == "command_lifecycle"
-          ? optionalString(eventDict["steerId"] ?? eventDict["steer_id"])
+          ? optionalString(eventDict["steerId"]) ?? optionalString(eventDict["steer_id"])
           : nil
       )
     }

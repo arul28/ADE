@@ -49,7 +49,11 @@ struct WorkChatTranscriptGeometry: Equatable {
 struct WorkChatTranscriptHeightKey: Hashable {
   let rowId: String
   let width: CGFloat
+  /// The row's own content revision and the transcript-wide one, kept apart
+  /// rather than summed: they move independently, and a sum lets one change
+  /// cancel the other out and restore a height measured for different content.
   let revision: Int
+  let contentRevision: Int
 }
 
 /// Measured row heights, keyed by row id + width + content revision.
@@ -73,9 +77,19 @@ final class WorkChatTranscriptHeightCache {
     heights.removeAll(keepingCapacity: true)
   }
 
-  func prune(keeping rowIds: Set<String>) {
+  /// Drop every entry no live row can ask for again.
+  ///
+  /// Filtering on the row id alone was not enough: `revision` and
+  /// `contentRevision` are part of the key and both move on live state, card
+  /// expansion, and width changes, so a row that simply stays in the
+  /// transcript kept one entry per revision it was ever measured at — the
+  /// cache grew for the whole session. An entry survives only while its row is
+  /// still present AND still at that revision pair.
+  func prune(keeping live: [String: Int], contentRevision: Int) {
     guard heights.count > 4096 else { return }
-    heights = heights.filter { rowIds.contains($0.key.rowId) }
+    heights = heights.filter { key, _ in
+      key.contentRevision == contentRevision && live[key.rowId] == key.revision
+    }
   }
 }
 
@@ -291,7 +305,8 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
       cell.cacheKey = WorkChatTranscriptHeightKey(
         rowId: rowId,
         width: width,
-        revision: row.revision &+ self.contentRevision
+        revision: row.revision,
+        contentRevision: self.contentRevision
       )
       cell.backgroundConfiguration = .clear()
       let content = self.rowContent?(row) ?? AnyView(EmptyView())
@@ -359,7 +374,10 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
     contentRevision = revision
     rowsById = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
     orderedRowIds = nextIds
-    heightCache.prune(keeping: Set(nextIds))
+    heightCache.prune(
+      keeping: Dictionary(rows.map { ($0.id, $0.revision) }, uniquingKeysWith: { first, _ in first }),
+      contentRevision: revision
+    )
 
     var snapshot = NSDiffableDataSourceSnapshot<Section, String>()
     snapshot.appendSections([.main])

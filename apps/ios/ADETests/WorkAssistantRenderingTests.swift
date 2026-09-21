@@ -674,8 +674,55 @@ final class WorkChatActiveSendCapabilityTests: XCTestCase {
     }
     XCTAssertEqual(kind, "auth")
   }
+}
 
-  // MARK: - Transcript row revision
+/// The transcript's change-detection surface: what makes a row reconfigure
+/// and re-measure, plus the envelope fields those rows are built from.
+final class WorkChatTranscriptRowRevisionTests: XCTestCase {
+  /// Regression: `optionalString(a ?? b)` cannot fall through an explicit
+  /// null. A host that sends `"steerId": null` beside a snake_case
+  /// `steer_id` had the NSNull win the coalesce, so the steer id was lost and
+  /// its queued row never graduated.
+  func testCommandLifecycleReadsSnakeCaseSteerIdPastAnExplicitNull() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-09-16T00:00:01.000Z","sequence":1,"event":{"type":"command_lifecycle","commandUuid":"cmd-1","status":"started","steerId":null,"steer_id":"steer-1","turnId":"turn-1"}}
+    """
+
+    let transcript = parseWorkChatTranscript(raw)
+    XCTAssertEqual(transcript.count, 1)
+    XCTAssertEqual(transcript[0].commandLifecycleSteerId, "steer-1")
+    XCTAssertEqual(transcript[0].commandLifecycleStatus, "started")
+  }
+
+  /// Regression: a `resultTruncatedForMobile` flag with no `resultOriginalBytes`
+  /// left `toolResultFullBytes` nil, which reads as "the row already has
+  /// everything" and hid the fetch affordance for a head slice.
+  func testTruncatedToolResultKeepsItsFetchAffordanceWithoutAByteCount() throws {
+    let unsized = """
+    {"sessionId":"chat-1","timestamp":"2026-09-16T00:00:01.000Z","sequence":4,"event":{"type":"tool_result","tool":"Bash","itemId":"item-1","status":"completed","result":"head slice","resultTruncatedForMobile":true}}
+    """
+    XCTAssertEqual(
+      try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(unsized.utf8)).toolResultFullBytes,
+      0,
+      "truncated, size unknown — not nil, which means complete"
+    )
+
+    let sized = """
+    {"sessionId":"chat-1","timestamp":"2026-09-16T00:00:02.000Z","sequence":5,"event":{"type":"tool_result","tool":"Bash","itemId":"item-2","status":"completed","result":"head slice","resultTruncatedForMobile":true,"resultOriginalBytes":50000}}
+    """
+    XCTAssertEqual(
+      try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(sized.utf8)).toolResultFullBytes,
+      50_000
+    )
+
+    let complete = """
+    {"sessionId":"chat-1","timestamp":"2026-09-16T00:00:03.000Z","sequence":6,"event":{"type":"tool_result","tool":"Bash","itemId":"item-3","status":"completed","result":"whole thing"}}
+    """
+    XCTAssertNil(
+      try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(complete.utf8)).toolResultFullBytes,
+      "an untruncated row must not offer a fetch"
+    )
+  }
 
   private func toolCardRenderEntry(
     status: WorkToolCardStatus,

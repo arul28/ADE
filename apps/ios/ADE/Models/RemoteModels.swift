@@ -2741,8 +2741,11 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     // Only a host that honoured `mobileChatSlimV1` sets this. A host that did
     // not sends the whole result and no flag, and the row behaves exactly as
     // it does today.
+    // Non-nil means "this row is a head slice" — the size may be unknown (0)
+    // if a host sent the flag without a count, and losing the fetch
+    // affordance over a missing number would strand the rest of the result.
     toolResultFullBytes = rawEvent?.resultTruncatedForMobile == true
-      ? (rawEvent?.resultOriginalBytes).map { max(0, $0) }
+      ? max(0, rawEvent?.resultOriginalBytes ?? 0)
       : nil
   }
 }
