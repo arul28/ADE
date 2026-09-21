@@ -674,4 +674,126 @@ final class WorkChatActiveSendCapabilityTests: XCTestCase {
     }
     XCTAssertEqual(kind, "auth")
   }
+
+  // MARK: - Transcript row revision
+
+  private func toolCardRenderEntry(
+    status: WorkToolCardStatus,
+    resultText: String?,
+    completedAt: String? = nil
+  ) -> WorkTimelineRenderEntry {
+    let card = WorkToolCardModel(
+      id: "tool-item-1",
+      toolName: "Bash",
+      status: status,
+      startedAt: "2026-09-20T00:00:00.000Z",
+      completedAt: completedAt,
+      argsText: "npm test",
+      resultText: resultText
+    )
+    let entry = WorkTimelineEntry(
+      id: "tool-item-1",
+      timestamp: "2026-09-20T00:00:00.000Z",
+      rank: 3,
+      payload: .toolCard(card)
+    )
+    return WorkTimelineRenderEntry(
+      id: "tool-item-1",
+      sourceEntryId: "tool-item-1",
+      timestamp: "2026-09-20T00:00:00.000Z",
+      payload: .entry(entry)
+    )
+  }
+
+  /// A tool card updates in place under one row id: `tool_call` creates it
+  /// running, `tool_result` completes it and attaches the output. The row
+  /// revision is what tells the transcript to reconfigure that cell and
+  /// re-measure it, so a revision built from ids and timestamps alone left the
+  /// running card on screen forever.
+  func testToolCardStatusAndResultChangeTheRowRevision() {
+    let running = toolCardRenderEntry(status: .running, resultText: nil)
+    let completed = toolCardRenderEntry(
+      status: .completed,
+      resultText: "1990 tests passed",
+      completedAt: "2026-09-20T00:00:09.000Z"
+    )
+
+    XCTAssertEqual(
+      workChatTranscriptRowRevision(running),
+      workChatTranscriptRowRevision(toolCardRenderEntry(status: .running, resultText: nil)),
+      "an unchanged card must keep its revision, or every refresh re-measures every row"
+    )
+    XCTAssertNotEqual(
+      workChatTranscriptRowRevision(running),
+      workChatTranscriptRowRevision(completed)
+    )
+    XCTAssertNotEqual(
+      workChatTranscriptRowRevision(completed),
+      workChatTranscriptRowRevision(
+        toolCardRenderEntry(
+          status: .completed,
+          resultText: "1990 tests passed, 1 skipped",
+          completedAt: "2026-09-20T00:00:09.000Z"
+        )
+      ),
+      "a result that grows must reconfigure the cell"
+    )
+  }
+
+  /// The same rule for the other two card kinds that mutate under a stable id:
+  /// a subagent row gaining its summary, and a pending-input card gaining its
+  /// resolution.
+  func testSubagentAndPendingCardUpdatesChangeTheRowRevision() {
+    func renderEntry(_ payload: WorkTimelinePayload, id: String) -> WorkTimelineRenderEntry {
+      WorkTimelineRenderEntry(
+        id: id,
+        sourceEntryId: id,
+        timestamp: "2026-09-20T00:00:00.000Z",
+        payload: .entry(
+          WorkTimelineEntry(
+            id: id,
+            timestamp: "2026-09-20T00:00:00.000Z",
+            rank: 1,
+            payload: payload
+          )
+        )
+      )
+    }
+
+    func permission(_ detail: String?) -> WorkTimelinePayload {
+      .pendingPermission(
+        WorkPendingPermissionModel(
+          id: "perm-1",
+          tool: "Bash",
+          description: "Run npm test",
+          detail: detail
+        )
+      )
+    }
+
+    XCTAssertNotEqual(
+      workChatTranscriptRowRevision(renderEntry(permission(nil), id: "perm-1")),
+      workChatTranscriptRowRevision(renderEntry(permission("in apps/ios"), id: "perm-1"))
+    )
+
+    func commandCard(_ status: WorkToolCardStatus, output: String) -> WorkTimelinePayload {
+      .commandCard(
+        WorkCommandCardModel(
+          id: "cmd-1",
+          command: "npm test",
+          cwd: "/repo",
+          output: output,
+          status: status,
+          timestamp: "2026-09-20T00:00:00.000Z",
+          exitCode: nil,
+          durationMs: nil
+        )
+      )
+    }
+
+    XCTAssertNotEqual(
+      workChatTranscriptRowRevision(renderEntry(commandCard(.running, output: ""), id: "cmd-1")),
+      workChatTranscriptRowRevision(renderEntry(commandCard(.completed, output: "ok"), id: "cmd-1"))
+    )
+  }
 }

@@ -2251,24 +2251,31 @@ func workChatTranscriptRowRevision(_ entry: WorkTimelineRenderEntry) -> Int {
     hasher.combine(timelineEntry.id)
     hasher.combine(timelineEntry.timestamp)
     hasher.combine(timelineEntry.rank)
-    if case .message(let message) = timelineEntry.payload {
-      hasher.combine(message.id)
-      hasher.combine(message.role)
-      hasher.combine(message.steerId)
-      hasher.combine(message.deliveryState)
-      hasher.combine(message.processed)
-      hasher.combine(message.unprocessedResolution?.action)
-      hasher.combine(message.unprocessedResolution?.state)
-      hasher.combine(message.unprocessedResolution?.resolvedAt)
-      workTimelineCombineMessageTextSignature(message, into: &hasher)
-      if let preview = message.assistantPreview {
-        // A preview is a pure function of the message text, and the text is
-        // already in this hash. Its shape is enough to separate two previews
-        // of the same message — no need to hash the rendered text, which is
-        // O(message) on every refresh.
-        hasher.combine(preview.totalLineCount)
-        hasher.combine(preview.usesMonospacedRendering)
-      }
+    // Messages take the digest-based fast path below; every other card kind
+    // hashes its whole model, so an in-place update (a tool card gaining its
+    // result, a subagent card gaining a summary, a pending-input card gaining
+    // a resolution) reconfigures the cell and re-measures its height instead
+    // of leaving a stale card on screen.
+    guard case .message(let message) = timelineEntry.payload else {
+      hasher.combine(timelineEntry.payload)
+      return hasher.finalize()
+    }
+    hasher.combine(message.id)
+    hasher.combine(message.role)
+    hasher.combine(message.steerId)
+    hasher.combine(message.deliveryState)
+    hasher.combine(message.processed)
+    hasher.combine(message.unprocessedResolution?.action)
+    hasher.combine(message.unprocessedResolution?.state)
+    hasher.combine(message.unprocessedResolution?.resolvedAt)
+    workTimelineCombineMessageTextSignature(message, into: &hasher)
+    if let preview = message.assistantPreview {
+      // A preview is a pure function of the message text, and the text is
+      // already in this hash. Its shape is enough to separate two previews of
+      // the same message — no need to hash the rendered text, which is
+      // O(message) on every refresh.
+      hasher.combine(preview.totalLineCount)
+      hasher.combine(preview.usesMonospacedRendering)
     }
   case .assistantMarkdownBlock(let model):
     hasher.combine(model.id)
@@ -2773,7 +2780,8 @@ private struct WorkChatComposerDraftInput: View {
   private func performSend(mode: WorkActiveSendMode) {
     guard sendEnabled else { return }
     let key = draftPersistenceKey
-    let originalText = draftState.beginPendingSend()
+    let pendingSend = draftState.beginPendingSend()
+    let originalText = pendingSend.text
     let outgoingAttachments = workChatInputReadyAttachments(inputAttachments)
     let text = workChatOutgoingText(originalText, attachmentCount: outgoingAttachments.count)
     let restoredAttachments = inputAttachments
@@ -2785,7 +2793,7 @@ private struct WorkChatComposerDraftInput: View {
       let sent = await onSend(text, outgoingAttachments, mode)
       // Drops the stored draft only on a confirmed send; a failure keeps it, so
       // the composer copy below and the stored copy stay the same message.
-      draftState.finishPendingSend(sent: sent)
+      draftState.finishPendingSend(pendingSend, sent: sent)
       if sent {
         // The refs were consumed by the send; drop the upload tracking so a
         // later attachment can never reuse a sent message's ref.
@@ -3593,6 +3601,22 @@ struct WorkChatComposerDraftRestore: Equatable, Identifiable {
   }
 }
 
+/// One send's claim on a composer's persisted draft.
+///
+/// Queued steering lets a second message leave the composer while the first is
+/// still unconfirmed, so "there is a send in flight for this key" is not enough
+/// to decide who may clear the stored text and attachments. The token names the
+/// individual send; `finishPendingSend` only releases the store when the token
+/// that settled is the newest one for its key.
+///
+/// `token` is nil when the composer had no persistence key at send time — that
+/// send stored nothing, so it has nothing to release.
+struct WorkChatComposerPendingSend: Equatable {
+  let token: UUID?
+  let key: String
+  let text: String
+}
+
 final class WorkChatComposerDraftState: ObservableObject {
   @Published var text = "" {
     didSet {
@@ -3606,10 +3630,20 @@ final class WorkChatComposerDraftState: ObservableObject {
   /// persist" (the key is unresolved), which is the safe default.
   private var persistenceKey = ""
   private var autosaveTask: Task<Void, Never>?
-  /// Key of a send that has left the composer but has not been confirmed by the
-  /// host yet. While it is set, the stored draft belongs to that send — autosave
-  /// must not overwrite it with the emptied field.
-  private var pendingSendKey: String?
+  /// Sends that have left the composer but have not been confirmed by the host
+  /// yet, oldest first. While a key appears here the stored draft belongs to a
+  /// send — autosave must not overwrite it with the emptied field.
+  ///
+  /// This is a list rather than one key because queued steering lets the
+  /// composer accept a second message while the first is still unconfirmed.
+  /// Both sends would otherwise share one marker, and whichever settled first
+  /// would clear the other's persisted text and attachments.
+  private var pendingSends: [WorkChatComposerPendingSend] = []
+
+  /// True while any send still owns this composer's stored draft.
+  private var hasPendingSendForCurrentKey: Bool {
+    !persistenceKey.isEmpty && pendingSends.contains { $0.key == persistenceKey }
+  }
 
   var trimmedText: String {
     text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3653,7 +3687,7 @@ final class WorkChatComposerDraftState: ObservableObject {
   func flushDraft() {
     autosaveTask?.cancel()
     autosaveTask = nil
-    guard !persistenceKey.isEmpty, pendingSendKey != persistenceKey else { return }
+    guard !persistenceKey.isEmpty, !hasPendingSendForCurrentKey else { return }
     WorkComposerDraftStore.save(text, for: persistenceKey)
   }
 
@@ -3662,7 +3696,7 @@ final class WorkChatComposerDraftState: ObservableObject {
   private func scheduleAutosave() {
     // Only the key whose send is unconfirmed stands down; another chat's
     // composer must keep autosaving normally.
-    guard !persistenceKey.isEmpty, pendingSendKey != persistenceKey else { return }
+    guard !persistenceKey.isEmpty, !hasPendingSendForCurrentKey else { return }
     autosaveTask?.cancel()
     let key = persistenceKey
     let value = text
@@ -3689,36 +3723,46 @@ final class WorkChatComposerDraftState: ObservableObject {
   /// host accepting and this returning restores an already-sent message as a
   /// draft, which is what `SyncRequestTimeout.chatSendMessage` already tells
   /// the user to check the transcript for.
-  func beginPendingSend() -> String {
+  func beginPendingSend() -> WorkChatComposerPendingSend {
     let value = trimmedText
     isFocused = false
     autosaveTask?.cancel()
     autosaveTask = nil
+    var issued = WorkChatComposerPendingSend(token: nil, key: "", text: value)
     if !persistenceKey.isEmpty {
-      pendingSendKey = persistenceKey
+      issued = WorkChatComposerPendingSend(token: UUID(), key: persistenceKey, text: value)
+      pendingSends.append(issued)
       WorkComposerDraftStore.save(value, for: persistenceKey)
     }
     text = ""
-    return value
+    return issued
   }
 
   /// Releases the stored draft back to the composer — dropping it when the host
   /// took the message, keeping it when it did not.
-  func finishPendingSend(sent: Bool) {
-    guard let key = pendingSendKey else { return }
-    pendingSendKey = nil
-    guard sent else { return }
+  func finishPendingSend(_ send: WorkChatComposerPendingSend, sent: Bool) {
+    guard let token = send.token,
+          let index = pendingSends.firstIndex(where: { $0.token == token })
+    else { return }
+    let key = pendingSends[index].key
+    // Only the newest send for a key owns that key's stored payload. An older
+    // send settling first must leave the newer one's text and attachments
+    // alone — clearing them is exactly how a back-to-back send used to lose the
+    // second message when the first one confirmed.
+    let ownsStoredDraft = !pendingSends[(index + 1)...].contains { $0.key == key }
+    pendingSends.remove(at: index)
+    guard ownsStoredDraft, sent else { return }
     WorkComposerDraftStore.clear(key)
     // Anything typed while the send was in flight was held out of the store by
     // the guard above; write it now that the key is free again.
-    if key == persistenceKey, !trimmedText.isEmpty {
+    if key == persistenceKey, !hasPendingSendForCurrentKey, !trimmedText.isEmpty {
       WorkComposerDraftStore.save(text, for: persistenceKey)
     }
   }
 
   /// Whether an unconfirmed send owns this key's stored draft.
   func isSendInFlight(for key: String) -> Bool {
-    !key.isEmpty && pendingSendKey == key
+    !key.isEmpty && pendingSends.contains { $0.key == key }
   }
 
   func restoreUnsentText(_ value: String) {

@@ -875,7 +875,7 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     draft.text = "  Ship this change  "
     draft.isFocused = true
 
-    XCTAssertEqual(draft.beginPendingSend(), "Ship this change")
+    XCTAssertEqual(draft.beginPendingSend().text, "Ship this change")
     XCTAssertEqual(draft.text, "")
     XCTAssertFalse(draft.isFocused)
 
@@ -896,7 +896,7 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     XCTAssertEqual(draft.text, "Check whether this already started")
     XCTAssertTrue(draft.isFocused)
 
-    XCTAssertEqual(draft.beginPendingSend(), "Check whether this already started")
+    XCTAssertEqual(draft.beginPendingSend().text, "Check whether this already started")
     draft.applyRestore(restore)
     XCTAssertEqual(draft.text, "", "The same restoration token must not refill a draft after the user sends it.")
 

@@ -2428,7 +2428,7 @@ struct AgentChatContextUsage: Codable, Equatable {
   }
 }
 
-struct CodexWebSearchAction: Codable, Equatable {
+struct CodexWebSearchAction: Codable, Hashable {
   var type: String
   var status: String?
   var query: String?
@@ -4459,7 +4459,7 @@ struct SyncFileBlob: Codable, Equatable {
   var totalSize: Int? = nil
 }
 
-struct ComputerUseArtifactSummary: Codable, Identifiable, Equatable {
+struct ComputerUseArtifactSummary: Codable, Identifiable, Hashable {
   var id: String
   var artifactKind: String
   var backendStyle: String

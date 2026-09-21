@@ -516,7 +516,8 @@ final class WorkComposerDraftAttachmentTests: XCTestCase {
     draft.bind(persistenceKey: draftKey)
     draft.text = "look at this screenshot"
 
-    XCTAssertEqual(draft.beginPendingSend(), "look at this screenshot")
+    let firstSend = draft.beginPendingSend()
+    XCTAssertEqual(firstSend.text, "look at this screenshot")
     XCTAssertEqual(draft.text, "")
     // Still in flight: the stored copy is the only surviving one, so leaving the
     // chat now must find it.
@@ -528,13 +529,13 @@ final class WorkComposerDraftAttachmentTests: XCTestCase {
     draft.flushDraft()
     XCTAssertEqual(WorkComposerDraftStore.load(draftKey), "look at this screenshot")
 
-    draft.finishPendingSend(sent: false)
+    draft.finishPendingSend(firstSend, sent: false)
     XCTAssertFalse(draft.isSendInFlight(for: draftKey))
     XCTAssertEqual(WorkComposerDraftStore.load(draftKey), "look at this screenshot")
 
     draft.text = "look at this screenshot"
-    _ = draft.beginPendingSend()
-    draft.finishPendingSend(sent: true)
+    let retry = draft.beginPendingSend()
+    draft.finishPendingSend(retry, sent: true)
     XCTAssertEqual(WorkComposerDraftStore.load(draftKey), "", "a confirmed send consumes the draft")
   }
 
@@ -549,7 +550,7 @@ final class WorkComposerDraftAttachmentTests: XCTestCase {
     let draft = WorkChatComposerDraftState()
     draft.bind(persistenceKey: draftKey)
     draft.text = "first message"
-    _ = draft.beginPendingSend()
+    let firstSend = draft.beginPendingSend()
 
     draft.text = "second message"
     draft.flushDraft()
@@ -559,7 +560,7 @@ final class WorkComposerDraftAttachmentTests: XCTestCase {
       "the unconfirmed send owns the stored draft"
     )
 
-    draft.finishPendingSend(sent: true)
+    draft.finishPendingSend(firstSend, sent: true)
     XCTAssertEqual(WorkComposerDraftStore.load(draftKey), "second message")
   }
 
@@ -594,6 +595,82 @@ final class WorkComposerDraftAttachmentTests: XCTestCase {
       WorkComposerDraftAttachmentCache.read(entry?.localFiles ?? [], for: draftKey).first?.uploadData,
       Data("jpeg-bytes".utf8)
     )
+  }
+
+  /// Queued steering lets a second message leave the composer while the first
+  /// is still unconfirmed. Both sends used to share one marker, so the first
+  /// completion cleared the second one's stored text and attachments and a
+  /// later failure had nothing to restore.
+  @MainActor
+  func testAnOlderSendConfirmingDoesNotClearANewerPendingSendsDraft() {
+    let draftKey = key()
+    defer { WorkComposerDraftStore.clear(draftKey) }
+
+    let draft = WorkChatComposerDraftState()
+    draft.bind(persistenceKey: draftKey)
+
+    draft.text = "first"
+    let sendA = draft.beginPendingSend()
+    XCTAssertEqual(sendA.text, "first")
+
+    draft.text = "second"
+    let sendB = draft.beginPendingSend()
+    XCTAssertEqual(sendB.text, "second")
+    XCTAssertNotEqual(sendA.token, sendB.token, "each pending send owns its own token")
+
+    let queued = WorkChatInputAttachment(
+      uploadData: Data("png-bytes".utf8),
+      filename: "second.png",
+      mimeType: "image/png",
+      kind: .image,
+      state: .ready
+    )
+    workChatPersistComposerAttachments([queued], for: draftKey)
+    XCTAssertEqual(WorkComposerDraftStore.load(draftKey), "second")
+
+    // A completes. It no longer owns the stored draft, so it must leave B's
+    // text and attachments alone.
+    draft.finishPendingSend(sendA, sent: true)
+    XCTAssertEqual(WorkComposerDraftStore.load(draftKey), "second")
+    XCTAssertEqual(
+      WorkComposerDraftStore.loadEntry(draftKey)?.localFiles.first?.filename,
+      "second.png"
+    )
+    XCTAssertTrue(draft.isSendInFlight(for: draftKey), "B is still unconfirmed")
+
+    // B fails: both halves are still there to restore.
+    draft.finishPendingSend(sendB, sent: false)
+    XCTAssertFalse(draft.isSendInFlight(for: draftKey))
+    XCTAssertEqual(WorkComposerDraftStore.load(draftKey), "second")
+    let entry = WorkComposerDraftStore.loadEntry(draftKey)
+    XCTAssertEqual(entry?.localFiles.first?.filename, "second.png")
+    XCTAssertEqual(
+      WorkComposerDraftAttachmentCache.read(entry?.localFiles ?? [], for: draftKey).first?.uploadData,
+      Data("png-bytes".utf8)
+    )
+  }
+
+  /// The mirror case: the newest send is the one that owns the store, so when
+  /// it confirms the draft is consumed even though an older send is still out.
+  @MainActor
+  func testTheNewestPendingSendOwnsTheStoredDraft() {
+    let draftKey = key()
+    defer { WorkComposerDraftStore.clear(draftKey) }
+
+    let draft = WorkChatComposerDraftState()
+    draft.bind(persistenceKey: draftKey)
+
+    draft.text = "first"
+    let sendA = draft.beginPendingSend()
+    draft.text = "second"
+    let sendB = draft.beginPendingSend()
+
+    draft.finishPendingSend(sendB, sent: true)
+    XCTAssertEqual(WorkComposerDraftStore.load(draftKey), "", "the owning send consumed the draft")
+    XCTAssertTrue(draft.isSendInFlight(for: draftKey), "A has still not settled")
+
+    draft.finishPendingSend(sendA, sent: true)
+    XCTAssertFalse(draft.isSendInFlight(for: draftKey))
   }
 
   /// The copy the retry row shows. Short, plain, and one sentence — it is also
