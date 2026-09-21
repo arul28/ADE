@@ -6012,8 +6012,8 @@ export function AgentChatPane({
     if (!cursorCloudCanLaunch && cursorCloudMode) setCursorCloudMode(false);
   }, [cursorCloudCanLaunch, cursorCloudMode, setCursorCloudMode]);
   useEffect(() => {
-    if (!devinCloudCanLaunch && devinCloudMode && devinCloudUnavailableReason) setDevinCloudMode(false);
-  }, [devinCloudCanLaunch, devinCloudMode, devinCloudUnavailableReason]);
+    if (!devinCloudCanLaunch && devinCloudMode) setDevinCloudMode(false);
+  }, [devinCloudCanLaunch, devinCloudMode, setDevinCloudMode]);
   const applyCursorCloudModelSwitch = useCallback((nextModelId: string) => {
     setModelId(nextModelId);
     setReasoningEffort(null);

@@ -263,6 +263,26 @@ function normalizeV1Message(record: Record<string, unknown>): DevinCloudMessage 
   };
 }
 
+/**
+ * Proof attachments render in-app, so bytes that smell like markup/script
+ * (HTML, SVG, XML) are refused regardless of the remote's declared name or
+ * content-type — a hostile or confused response must not enter the artifact
+ * store as something renderable.
+ */
+function sniffIsActiveMarkup(bytes: Uint8Array): boolean {
+  const head = new TextDecoder("utf-8", { fatal: false })
+    .decode(bytes.subarray(0, 512))
+    .trimStart()
+    .toLowerCase();
+  return (
+    head.startsWith("<!doctype html")
+    || head.startsWith("<html")
+    || head.startsWith("<?xml")
+    || head.startsWith("<svg")
+    || head.startsWith("<script")
+  );
+}
+
 export type DevinCloudListSessionsArgs = {
   first?: number;
   after?: string | null;
@@ -675,6 +695,13 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
           bytes.set(chunk, offset);
           offset += chunk.length;
         }
+        if (sniffIsActiveMarkup(bytes)) {
+          args.logger?.warn?.("devin_cloud.attachment_active_markup", {
+            attachmentId: attachment.attachmentId,
+            name: attachment.name,
+          });
+          return null;
+        }
         return bytes;
       }
       if (!response.arrayBuffer) return null;
@@ -686,7 +713,15 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
         });
         return null;
       }
-      return new Uint8Array(buffer);
+      const bytes = new Uint8Array(buffer);
+      if (sniffIsActiveMarkup(bytes)) {
+        args.logger?.warn?.("devin_cloud.attachment_active_markup", {
+          attachmentId: attachment.attachmentId,
+          name: attachment.name,
+        });
+        return null;
+      }
+      return bytes;
     } catch {
       return null;
     } finally {

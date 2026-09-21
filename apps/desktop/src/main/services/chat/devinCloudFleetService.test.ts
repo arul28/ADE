@@ -18,7 +18,7 @@ const logger = {
 function session(overrides: Partial<DevinCloudSessionSummary> & { sessionId: string }): DevinCloudSessionSummary {
   return {
     title: `Session ${overrides.sessionId}`,
-    status: "working",
+    status: "running",
     statusDetail: "working",
     isArchived: false,
     url: `https://app.devin.ai/sessions/${overrides.sessionId}`,

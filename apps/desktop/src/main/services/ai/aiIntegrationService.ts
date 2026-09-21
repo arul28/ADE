@@ -1627,9 +1627,17 @@ export function createAiIntegrationService(args: {
     if (devinCloudCaller && devinCloudCaller.apiKey === apiKey) {
       return devinCloudCaller.userId;
     }
+    // v1 keys have no self endpoint — their null is permanent, so cache it. For
+    // v3 keys only a successful read is cached; a transient /v3/self failure
+    // must not pin Mine=false for the life of the credential.
+    if (detectDevinAuthMode(apiKey) === "v1") {
+      devinCloudCaller = { apiKey, userId: null };
+      return null;
+    }
     const client = await devinCloudClient();
     const self = await client.getSelf().catch(() => null);
-    devinCloudCaller = { apiKey, userId: self?.userId ?? null };
+    if (!self) return null;
+    devinCloudCaller = { apiKey, userId: self.userId };
     return devinCloudCaller.userId;
   };
 
