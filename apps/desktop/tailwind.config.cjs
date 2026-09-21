@@ -13,6 +13,12 @@ module.exports = {
         border: "var(--color-border)",
         accent: "var(--color-accent)",
         "accent-fg": "var(--color-accent-fg)",
+        // The bare token, which the product spells and the config did not
+        // register: `--color-surface` exists in BOTH themes in index.css,
+        // three `surface-*` variants were registered, and `surface` itself
+        // was not — so `bg-surface` compiled to nothing and the two places
+        // that use it rendered with no background at all.
+        surface: "var(--color-surface)",
         "surface-raised": "var(--color-surface-raised)",
         "surface-recessed": "var(--color-surface-recessed)",
         "surface-overlay": "var(--color-surface-overlay)",
