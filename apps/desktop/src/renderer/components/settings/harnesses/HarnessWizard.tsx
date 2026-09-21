@@ -183,6 +183,11 @@ export function HarnessWizard({
   const { catalog: runtimeCatalog, loading: catalogLoading } = useRuntimeCatalogForFamily(
     step === 2,
     sourceFamily,
+    // A preset is only selectable for a chat — the composer hides the Custom
+    // tab in CLI mode — so this enumerates Cursor's chat-capable models, the
+    // same source the composer's picker asks for.
+    undefined,
+    "sdk",
   );
   const modelChoices = useMemo(
     () => modelChoicesForSource(draft.source, selectedKeyRow, runtimeCatalog),

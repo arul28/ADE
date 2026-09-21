@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { act, render, renderHook, waitFor } from "@testing-library/react";
 import type { AgentChatModelCatalog } from "../../../../shared/types";
 import { resetModelPickerRuntimeCatalogForTests } from "./runtimeCatalogCache";
 import { useRuntimeCatalogForFamily } from "./useRuntimeCatalogForFamily";
@@ -62,6 +62,51 @@ describe("useRuntimeCatalogForFamily", () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.catalog?.fetchedAt).toBe("2026-01-01T00:00:00.000Z");
     expect(modelCatalog).toHaveBeenCalled();
+  });
+
+  it("reports loading on the very first render, before the effect runs", () => {
+    // React runs effects after paint, and `renderHook` flushes them before the
+    // test can look — so read the render itself. A hook that starts at
+    // loading:false tells its caller the list is settled for one frame, and a
+    // caller choosing between a select and a text box paints the wrong control
+    // and then swaps it.
+    modelCatalog.mockReturnValue(deferred<AgentChatModelCatalog>().promise);
+    const seen: boolean[] = [];
+    function Probe(): null {
+      seen.push(useRuntimeCatalogForFamily(true, "cursor").loading);
+      return null;
+    }
+
+    render(<Probe />);
+
+    expect(seen[0]).toBe(true);
+  });
+
+  it("re-arms loading on the render that first sees the control open", () => {
+    // Same frame problem one step later: on the render where the inputs change
+    // the stored flag still belongs to the previous ones, so it must be
+    // re-armed during that render rather than one effect later.
+    modelCatalog.mockReturnValue(deferred<AgentChatModelCatalog>().promise);
+    // Each render records whether the fetch has started yet. Re-arming during
+    // render produces a render with the flag set and no fetch yet; leaving it
+    // to the effect produces one only after the fetch has already begun, which
+    // is one painted frame too late.
+    const seen: Array<{ loading: boolean; fetches: number }> = [];
+    function Probe({ enabled }: { enabled: boolean }): null {
+      seen.push({
+        loading: useRuntimeCatalogForFamily(enabled, "cursor").loading,
+        fetches: modelCatalog.mock.calls.length,
+      });
+      return null;
+    }
+
+    const view = render(<Probe enabled={false} />);
+    expect(seen.at(-1)).toEqual({ loading: false, fetches: 0 });
+
+    seen.length = 0;
+    view.rerender(<Probe enabled />);
+
+    expect(seen).toContainEqual({ loading: true, fetches: 0 });
   });
 
   it("does not ask an older host that has no catalog bridge", async () => {

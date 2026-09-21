@@ -114,7 +114,15 @@ export function sourceNeedsFreeTextModel(
   return modelChoicesForSource(source, keyRow, catalog).length === 0;
 }
 
-/** Rows the live catalog reports for one family, in catalog order. */
+/**
+ * Rows the live catalog reports for one family, in catalog order.
+ *
+ * Cursor reports a union of models reachable through its SDK, its CLI, or
+ * both, and a preset is only ever selectable for a chat — the composer hides
+ * the Custom tab in CLI mode. A CLI-only row offered here would save cleanly
+ * and then be rejected at session creation, so it is filtered out for the same
+ * reason the composer's own picker filters it.
+ */
 function runtimeModelChoices(
   catalog: AgentChatModelCatalog | null | undefined,
   family: ProviderFamily | null,
@@ -125,7 +133,9 @@ function runtimeModelChoices(
     (model) => model.family === family,
     DEFAULT_RUNTIME_CATALOG_SCOPE,
   );
-  return models.map((model) => ({ id: model.id, label: model.displayName }));
+  return models
+    .filter((model) => model.family !== "cursor" || model.cursorAvailability?.sdk === true)
+    .map((model) => ({ id: model.id, label: model.displayName }));
 }
 
 /**

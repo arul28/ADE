@@ -1,7 +1,12 @@
 import type { AgentChatModelCatalog } from "../../../../shared/types";
 
 /**
- * A catalog shaped like the host's, carrying one runtime-only Cursor model.
+ * A catalog shaped like the host's, carrying two runtime-only Cursor models.
+ *
+ * Cursor reports a union: some models are reachable through its SDK, some only
+ * through its CLI. The fixture carries one of each so a surface that starts
+ * chats can prove it offers the SDK-capable one and withholds the CLI-only
+ * one.
  *
  * Shared by the wizard and model-choice tests so both prove their behaviour
  * against the same shape; two copies of a fixture are two things to keep in
@@ -23,7 +28,7 @@ export function cursorCatalog(): AgentChatModelCatalog {
             key: "cursor",
             displayName: "Cursor",
             badgeColor: "#000000",
-            modelCount: 1,
+            modelCount: 2,
             subsections: [
               {
                 key: "cursor",
@@ -34,6 +39,14 @@ export function cursorCatalog(): AgentChatModelCatalog {
                     displayName: "Composer 9",
                     groupKey: "cursor",
                     isAvailable: true,
+                    cursorAvailability: { sdk: true, cli: true },
+                  },
+                  {
+                    id: "cursor/cli-only",
+                    displayName: "CLI Only",
+                    groupKey: "cursor",
+                    isAvailable: true,
+                    cursorAvailability: { sdk: false, cli: true },
                   },
                 ],
               },

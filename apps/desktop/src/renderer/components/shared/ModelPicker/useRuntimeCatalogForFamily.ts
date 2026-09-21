@@ -30,15 +30,60 @@ import {
  * cached → refresh-stale → force ladder the composer's provider rail performs;
  * the rest are satisfied by whatever the shared bucket already holds.
  */
+/**
+ * Whether this render will fetch — the one condition, shared by the initial
+ * state and the effect.
+ *
+ * The initial value matters as much as the effect's. React runs effects after
+ * paint, so a hook that starts at `loading: false` tells its caller the list is
+ * settled for one frame. A caller that decides between a select and a text box
+ * on that answer paints the wrong control and then swaps it, which is the seam
+ * this hook exists to close.
+ */
+function willFetchCatalog(
+  enabled: boolean,
+  family: ProviderFamily | null,
+  scopeKey: string,
+  cursorSource?: "cli" | "sdk",
+): boolean {
+  if (!enabled) return false;
+  if (typeof window.ade?.agentChat?.modelCatalog !== "function") return false;
+  const shared = getSharedRuntimeCatalog(scopeKey);
+  if (!shared) return true;
+  const refreshProvider = family ? refreshProviderForFamily(family) : null;
+  if (!refreshProvider) return false;
+  const flavor = refreshProvider === "cursor" ? cursorSource : undefined;
+  return !runtimeCatalogProviderIsFresh(refreshProvider, flavor, scopeKey);
+}
+
 export function useRuntimeCatalogForFamily(
   enabled: boolean,
   family: ProviderFamily | null,
   scopeKey: string = DEFAULT_RUNTIME_CATALOG_SCOPE,
+  /**
+   * Which Cursor source to enumerate. A surface that starts chats must say
+   * `"sdk"`: Cursor reports a union of SDK-capable and CLI-only models, and a
+   * chat session rejects a CLI-only one.
+   */
+  cursorSource?: "cli" | "sdk",
 ): { catalog: AgentChatModelCatalog | null; loading: boolean } {
   const [catalog, setCatalog] = useState<AgentChatModelCatalog | null>(
     () => getSharedRuntimeCatalog(scopeKey),
   );
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(() => willFetchCatalog(enabled, family, scopeKey, cursorSource));
+
+  // Re-arm during render, not in the effect. React runs effects after paint,
+  // so on the render that first sees a new family the flag would still belong
+  // to the previous one — and a caller choosing between a select and a text
+  // box reads it on exactly that render. Deriving it on every render instead
+  // would be worse: a provider the host never marks fresh would pin it true
+  // forever. This is React's documented adjust-state-on-prop-change pattern.
+  const inputs = `${enabled}\u0000${family ?? ""}\u0000${scopeKey}\u0000${cursorSource ?? ""}`;
+  const [previousInputs, setPreviousInputs] = useState(inputs);
+  if (inputs !== previousInputs) {
+    setPreviousInputs(inputs);
+    setLoading(willFetchCatalog(enabled, family, scopeKey, cursorSource));
+  }
 
   useEffect(() => {
     // Every exit path settles the flag. An early return that left it set was
@@ -52,13 +97,14 @@ export function useRuntimeCatalogForFamily(
     const refreshProvider = family ? refreshProviderForFamily(family) : null;
     const shared = getSharedRuntimeCatalog(scopeKey);
     if (shared) setCatalog(shared);
-    const alreadyFresh = Boolean(shared)
-      && (!refreshProvider || runtimeCatalogProviderIsFresh(refreshProvider, undefined, scopeKey));
-    if (alreadyFresh) {
+    if (!willFetchCatalog(enabled, family, scopeKey, cursorSource)) {
       setLoading(false);
       return;
     }
 
+    // Only a Cursor refresh carries a flavor, the same rule the composer's
+    // picker follows.
+    const cursorFlavor = refreshProvider === "cursor" ? cursorSource : undefined;
     let cancelled = false;
     setLoading(true);
     void (async () => {
@@ -67,6 +113,7 @@ export function useRuntimeCatalogForFamily(
           scopeKey,
           mode,
           ...(mode === "cached" || !refreshProvider ? {} : { refreshProvider }),
+          ...(cursorFlavor ? { cursorSource: cursorFlavor } : {}),
         });
         return result.status === "ok" ? result.catalog : null;
       };
@@ -77,7 +124,7 @@ export function useRuntimeCatalogForFamily(
         if (cancelled) return;
         if (cached) setCatalog(cached);
         if (!refreshProvider) return;
-        if (cached && runtimeCatalogProviderIsFresh(refreshProvider, undefined, scopeKey)) return;
+        if (cached && runtimeCatalogProviderIsFresh(refreshProvider, cursorFlavor, scopeKey)) return;
 
         const refreshed = await load("refresh-stale");
         if (cancelled) return;
@@ -100,7 +147,7 @@ export function useRuntimeCatalogForFamily(
       cancelled = true;
       setLoading(false);
     };
-  }, [enabled, family, scopeKey]);
+  }, [cursorSource, enabled, family, scopeKey]);
 
   return { catalog, loading };
 }

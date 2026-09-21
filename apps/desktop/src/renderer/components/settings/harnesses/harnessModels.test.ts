@@ -23,6 +23,10 @@ describe("harness model choices", () => {
     const choices = modelChoicesForSource(source, cursorKey, catalog);
 
     expect(choices).toContainEqual({ id: "cursor/composer-9", label: "Composer 9" });
+    // A preset is only selectable for a chat, and a chat session rejects a
+    // Cursor model its SDK cannot reach. Offering one would save cleanly and
+    // fail at launch.
+    expect(choices.map((choice) => choice.id)).not.toContain("cursor/cli-only");
     // The catalog is what makes the list non-empty, so it is what turns the
     // text box off. Without it this same source has nothing to offer.
     expect(sourceNeedsFreeTextModel(source, cursorKey, catalog)).toBe(false);
