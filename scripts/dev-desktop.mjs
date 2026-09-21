@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import {
   buildRuntimeCliForDevClient,
+  printDevIsolationReport,
   assertRuntimeFresh,
   canConnectToSocket,
   devRuntimeEnv,
@@ -126,6 +127,7 @@ async function main() {
     } else {
       runtimeStartedByLauncher = await ensureRuntime(options.socketPath, options.projectRoot);
     }
+    printDevIsolationReport(options.socketPath, options.projectRoot);
     const desktopScript = options.clean ? "dev:clean" : "dev";
     await runNpm(
       ["--prefix", "apps/desktop", "run", desktopScript],

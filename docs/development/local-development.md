@@ -64,6 +64,8 @@ npm run dev
 
 That aliases to `npm run dev:desktop`: it rebuilds `apps/ade-cli`, refreshes the shared dev runtime at `/tmp/ade-runtime-dev.sock` when needed, launches the Electron desktop app, and points desktop at that runtime. This is the normal desktop-dev flow.
 
+**This is the only supported way to run a dev app on a machine that also runs the installed ADE.** The dev brain shares `~/.ade` (your account, projects, and sync identity are served by the installed brain) and is started with `--no-sync`, so it can never take the machine-wide sync host lease. It stamps and respects chat runtime ownership, so it never adopts a chat the installed brain is driving. An unpackaged app never installs or repairs the launchd brain service. The launcher prints a dev isolation report (state root, socket, sync, project, installed brain untouched) before the window opens; read it. Do not start `ade serve` by hand, do not set a fresh `ADE_HOME` (a never-signed-in home shows the account gate), and do not copy `~/.ade` secrets into another home. `ADE_DEV_RUNTIME_SYNC=1` opts a dev brain into sync on purpose and is almost never what you want.
+
 When these commands are run from an ADE lane worktree under `.ade/worktrees/`,
 they still run code from that lane checkout, but they open the primary checkout's
 project data by default. For example, running from
