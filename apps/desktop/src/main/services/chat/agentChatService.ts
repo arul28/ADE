@@ -51,6 +51,7 @@ import { buildClaudeV2MessageAsync, inferAttachmentMediaType } from "./buildClau
 import { listPromptStashAttachmentPaths } from "./promptStashService";
 import { ClaudeInputPump } from "./claudeInputPump";
 import {
+  claudePluginDeliveryForSource,
   normalizeClaudeInterruptReceipt,
   normalizeClaudeRewindSkippedLinks,
   normalizeClaudeSdkSessionMessageModel,
@@ -540,7 +541,11 @@ import {
   formatProviderRetryActivityDetail,
   isProviderRetryActivityEvent,
 } from "../../../shared/providerRetryPresentation";
-import { buildClaudeToolApprovalOptions, claudeToolNeedsDefaultToNo } from "../../../shared/claudePermissionDialog";
+import {
+  buildClaudeToolApprovalOptions,
+  claudeApprovalDecisionFromOptionAnswers,
+  claudeToolApprovalFlags,
+} from "../../../shared/claudePermissionDialog";
 import {
   collectClaudeTerminalSlashCommandNames,
   filterClaudeGuiSlashCommands,
@@ -1038,6 +1043,7 @@ import {
 } from "../../../shared/permissionPolicy";
 import {
   claudeBuiltInIsReadOnly,
+  claudeToolAllowedInPlanMode,
   claudeToolInputPaths,
   claudeToolNeedsApproval,
   normalizeToolNameForApproval,
@@ -1150,7 +1156,7 @@ function resolveClaudeAgentSdkVersion(): string {
   } catch {
     // The package metadata can be unavailable in partial development installs.
   }
-  return "0.3.258";
+  return "0.3.278";
 }
 
 const CLAUDE_AGENT_SDK_VERSION = resolveClaudeAgentSdkVersion();
@@ -6750,6 +6756,7 @@ type ClaudeResultMetadata = {
   queuedTurnCount?: number;
   thinkingTokens?: number;
   costBasis?: ClaudeModelUsageCostBasis;
+  startupFailureReason?: string;
 };
 
 function extractClaudeResultMetadata(result: Record<string, unknown>): ClaudeResultMetadata {
@@ -6757,6 +6764,7 @@ function extractClaudeResultMetadata(result: Record<string, unknown>): ClaudeRes
   const usageExtras = extractClaudeModelUsageExtras(result.modelUsage);
   const userMessageUuid = normalizeReportedModelName(result.user_message_uuid);
   const queuedTurnCount = numberOrNull(result.queued_turn_count);
+  const startupFailureReason = firstNonEmptyString(result.startup_failure_reason);
   const fastModeDisabledReason = typeof result.fast_mode_disabled_reason === "string"
     ? result.fast_mode_disabled_reason
     : result.fast_mode_disabled_reason
@@ -6770,7 +6778,31 @@ function extractClaudeResultMetadata(result: Record<string, unknown>): ClaudeRes
     ...(userMessageUuid ? { userMessageUuid } : {}),
     ...(typeof result.request_sent_wall_ms === "number" ? { requestSentWallMs: result.request_sent_wall_ms } : {}),
     ...(queuedTurnCount != null ? { queuedTurnCount } : {}),
+    ...(startupFailureReason ? { startupFailureReason } : {}),
   };
+}
+
+/**
+ * The CLI reports why it could not start (`startup_failure_reason` on a zeroed
+ * error result, added upstream after SDK 0.3.258) instead of ending with
+ * stderr alone — but only when the host sets
+ * `CLAUDE_CODE_STARTUP_FAILURE_RESULTS`, which `buildClaudeQueryOptions` does.
+ * Surface it at warn so a session that produced nothing has a cause in the
+ * logs.
+ */
+function logClaudeStartupFailure(
+  logger: Logger,
+  managed: ManagedChatSession,
+  metadata: ClaudeResultMetadata,
+  turnId: string | null | undefined,
+): void {
+  if (!metadata.startupFailureReason) return;
+  logger.warn("agent_chat.claude_startup_failure", {
+    sessionId: managed.session.id,
+    turnId,
+    reason: metadata.startupFailureReason,
+    ...CLAUDE_AGENT_SDK_TELEMETRY_TAGS,
+  });
 }
 
 function resolveClaudeTurnModelPayload(
@@ -9005,6 +9037,11 @@ export function createAgentChatService(args: {
    * because another client already configured the joined session.
    */
   onClaudeHooksIgnored?: (event: { sessionId: string }) => void;
+  /**
+   * Content-free hook fired when the CLI reports it did not apply every plugin
+   * a query carried — the session silently lacks ADE's agent-skill roots.
+   */
+  onClaudePluginsIgnored?: (event: { sessionId: string }) => void;
   /** Content-free hook fired when a send's composer @-mentions were expanded into pointer blocks. */
   onChatMentionsExpanded?: (event: { sessionId: string | null }) => void;
   /**
@@ -9105,6 +9142,7 @@ export function createAgentChatService(args: {
     onEvent,
     onTurnSettled,
     onClaudeHooksIgnored,
+    onClaudePluginsIgnored,
     onChatMentionsExpanded,
     onChatHandoffReplay,
     onSessionMetadataRegenerated,
@@ -10258,6 +10296,31 @@ export function createAgentChatService(args: {
       return { behavior: "deny", message: "Denied by the host permission policy." };
     }
 
+    // ── Plan-mode fence ──
+    // Plan mode is inspect-only, and the CLI enforces that for the calls it
+    // handles itself. It cannot for one case: a `bypassPermissions` (full-auto)
+    // session that entered plan mode mid-run still has bypass underneath, so a
+    // mutating call can be deferred here instead of denied. Answering `allow`
+    // would silently lift the fence the session just raised — the same failure
+    // the ExitPlanMode gate exists to prevent.
+    //
+    // The test is an allowlist (`claudeToolAllowedInPlanMode`), not the
+    // mutating heuristic: that heuristic is deliberately coarse and would admit
+    // a mutating MCP tool or a Windows shell under a name it does not
+    // recognize. Anything not on the plan allowlist is refused; read-only
+    // built-ins, subagent exploration, and the plan-flow tools stay usable.
+    if (isSessionInPlanMode(managed.session) && !claudeToolAllowedInPlanMode(toolName)) {
+      logger.warn("agent_chat.plan_mode_tool_denied", {
+        sessionId: managed.session.id,
+        turnId: runtime.activeTurnId ?? undefined,
+        tool: toolName,
+      });
+      return {
+        behavior: "deny",
+        message: "Plan mode is inspect-only. Present the plan and exit plan mode before making changes.",
+      };
+    }
+
     // ── EnterPlanMode interception ──
     // Sync ADE session state when the SDK enters plan mode mid-session so
     // the permission-mode picker in the UI stays in sync.
@@ -10568,14 +10631,30 @@ export function createAgentChatService(args: {
       ? policyDecision === "ask"
       : claudeToolNeedsApproval(toolName, input, effectivePermMode);
     if (needsApproval) {
+      // `suppressAlwaysAllowRule` says the persistent rule this approval would
+      // write is broader than the ask itself. Read it before anything answers
+      // this ask: the session-wide option is dropped, a client that sends
+      // `accept_for_session` anyway is downgraded to a one-shot allow, and an
+      // override from an earlier ask does not auto-answer this card — the SDK
+      // raised it because the rule is not enough for this call.
+      const approvalFlags = claudeToolApprovalFlags(sdkOptions);
       // Check session-wide overrides — user already said "Allow for Session" for this tool
-      if (runtime.approvalOverrides.has(normalizedToolName)) {
+      if (!approvalFlags.suppressAlwaysAllowRule && runtime.approvalOverrides.has(normalizedToolName)) {
         return { behavior: "allow", updatedInput: input };
       }
 
       const approvalItemId = randomUUID();
       const turnId = runtime.activeTurnId ?? undefined;
       const description = buildClaudeToolApprovalDescription(toolName, input, sdkOptions);
+      if (sdkOptions?.mcpServer) {
+        logger.debug("agent_chat.claude_tool_approval_mcp_server", {
+          sessionId: managed.session.id,
+          turnId,
+          tool: toolName,
+          serverName: sdkOptions.mcpServer.name,
+          serverSource: sdkOptions.mcpServer.source,
+        });
+      }
       const request: PendingInputRequest = {
         requestId: approvalItemId,
         itemId: approvalItemId,
@@ -10587,9 +10666,7 @@ export function createAgentChatService(args: {
           id: "tool_decision",
           header: toolName,
           question: description,
-          options: buildClaudeToolApprovalOptions({
-            defaultToNo: claudeToolNeedsDefaultToNo(sdkOptions),
-          }),
+          options: buildClaudeToolApprovalOptions(approvalFlags),
           allowsFreeform: true,
         }],
         allowsFreeform: true,
@@ -10623,8 +10700,17 @@ export function createAgentChatService(args: {
       }
 
       const approved = response.decision === "accept" || response.decision === "accept_for_session";
-      if (response.decision === "accept_for_session") {
+      // A suppressed ask must not persist anything, even if a client sends
+      // `accept_for_session` anyway (an older client, a deeplink, a scripted
+      // answer). Downgrade it to a one-shot accept rather than honoring it.
+      const sessionWide = response.decision === "accept_for_session" && !approvalFlags.suppressAlwaysAllowRule;
+      if (sessionWide) {
         runtime.approvalOverrides.add(normalizedToolName);
+        // Persist now, not on the next provider event: the resolution receipt
+        // was already written by `deliverInputResponse` before this promise
+        // continuation runs, so a crash before that next event would drop the
+        // session-wide choice the user just made.
+        persistChatState(managed);
       }
       if (approved) {
         rememberUserAuthoredClassifierContext(runtime, sdkOptions?.toolUseID, {
@@ -10633,7 +10719,7 @@ export function createAgentChatService(args: {
         });
         return {
           behavior: "allow",
-          ...(response.decision === "accept_for_session" && sdkOptions?.suggestions?.length
+          ...(sessionWide && sdkOptions?.suggestions?.length
             ? { updatedPermissions: sdkOptions.suggestions }
             : {}),
         };
@@ -23712,6 +23798,7 @@ export function createAgentChatService(args: {
         state.costUsd = resultMsg.total_cost_usd;
       }
       const metadata = extractClaudeResultMetadata(resultMsg);
+      logClaudeStartupFailure(logger, managed, metadata, turnId);
       state.canonicalModel = metadata.canonicalModel;
       state.modelProvider = metadata.modelProvider;
       state.apiErrorStatus = metadata.apiErrorStatus;
@@ -25975,6 +26062,7 @@ export function createAgentChatService(args: {
             reportedUsageModels.add(modelName);
           }
           const metadata = extractClaudeResultMetadata(resultMsg);
+          logClaudeStartupFailure(logger, managed, metadata, turnId);
           resultCanonicalModel = metadata.canonicalModel;
           resultModelProvider = metadata.modelProvider;
           resultApiErrorStatus = metadata.apiErrorStatus;
@@ -34829,6 +34917,11 @@ export function createAgentChatService(args: {
       // the agent-tree UX, so keep the harness behavior deterministic.
       CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: "3",
       CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: "20",
+      // The host's documented opt-in: a known startup failure then writes a
+      // zeroed error result carrying `startup_failure_reason` before the CLI
+      // exits, instead of ending with stderr alone. Without it those failures
+      // reach ADE as an exit code with no cause.
+      CLAUDE_CODE_STARTUP_FAILURE_RESULTS: "1",
     };
     const claudeExecutable = resolveClaudeCodeExecutable({ env: claudeEnv });
     const outputStyle = resolveManagedClaudeOutputStyle(managed);
@@ -34840,6 +34933,11 @@ export function createAgentChatService(args: {
     const pluginPaths = personalSession
       ? []
       : [...new Set([...bundledPluginPaths, ...discoverClaudePluginPaths(managed.laneWorktreePath)])];
+    // ADE ships one plugin directory per agent-skill root; on Windows the
+    // per-plugin argv can outgrow the 32,767-character command line. Managed
+    // binaries take the list over stdin instead; a user-supplied binary keeps
+    // argv delivery because its version is unknown.
+    const claudePluginDelivery = claudePluginDeliveryForSource(claudeExecutable.source);
     const claudeDescriptor = resolveSessionModelDescriptor(managed.session);
     const opts: ClaudeSDKOptions = {
       cwd: managed.laneWorktreePath,
@@ -34878,7 +34976,12 @@ export function createAgentChatService(args: {
         ...(workflowSizeGuideline ? { workflowSizeGuideline } : {}),
         dialogExpiry: "never",
       },
-      ...(pluginPaths.length ? { plugins: pluginPaths.map((pluginPath) => ({ type: "local" as const, path: pluginPath })) } : {}),
+      ...(pluginPaths.length
+        ? {
+            plugins: pluginPaths.map((pluginPath) => ({ type: "local" as const, path: pluginPath })),
+            ...(claudePluginDelivery ? { pluginDelivery: claudePluginDelivery } : {}),
+          }
+        : {}),
       permissionMode: claudePermissionMode as any,
       ...(claudePermissionMode === "bypassPermissions" ? { allowDangerouslySkipPermissions: true } as any : {}),
       includePartialMessages: true,
@@ -34967,7 +35070,8 @@ export function createAgentChatService(args: {
       const permissionPolicy = managed.session.permissionPolicy;
       if (permissionPolicy) {
         // The two lists are the enforcement, not a fast path. Measured against
-        // Agent SDK 0.3.258: `allowedTools` and `disallowedTools` are applied
+        // Agent SDK 0.3.258 and not re-measured against a later pin:
+        // `allowedTools` and `disallowedTools` are applied
         // by the CLI, which removes a denied tool from the model's catalog,
         // while `canUseTool` did not fire on any permission mode tried. So a
         // policy that only wired the prompt would enforce nothing.
@@ -35521,7 +35625,7 @@ export function createAgentChatService(args: {
     }
   };
 
-  const observeClaudeInitializationHooks = (
+  const observeClaudeInitializationResult = (
     managed: ManagedChatSession,
     sessionQuery: ClaudeQuery,
   ): void => {
@@ -35531,6 +35635,20 @@ export function createAgentChatService(args: {
     if (!initializationResult) return;
     const sessionId = managed.session.id;
     void initializationResult().then((response) => {
+      // `plugins_applied` is reported when the query carried a `plugins` list.
+      // False means the CLI did not load every listed plugin — a repeated
+      // initialize or a transport that cannot carry the request. On the
+      // `initialize` delivery path an older CLI never gets this far: it exits
+      // at startup on the unknown option. A user-supplied binary keeps argv
+      // delivery, so it reaches this code but reports the field only if it is
+      // new enough to know it.
+      if (response?.plugins_applied === false) {
+        logger.warn("agent_chat.claude_plugins_ignored", {
+          sessionId,
+          ...CLAUDE_AGENT_SDK_TELEMETRY_TAGS,
+        });
+        onClaudePluginsIgnored?.({ sessionId });
+      }
       if (response?.hooks_applied !== false) return;
       logger.warn("agent_chat.claude_hooks_ignored", {
         sessionId,
@@ -35624,7 +35742,7 @@ export function createAgentChatService(args: {
     runtime.query = sessionQuery;
     runtime.inputPump = pump;
     runtime.warmQuery = null;
-    observeClaudeInitializationHooks(managed, sessionQuery);
+    observeClaudeInitializationResult(managed, sessionQuery);
     if (runtime.forkFromSdkSessionId) {
       runtime.forkFromSdkSessionId = null;
       persistChatState(managed);
@@ -51243,10 +51361,27 @@ export function createAgentChatService(args: {
         return;
       }
       managed.runtime.approvals.delete(itemId);
-      pending.resolve({ decision: resolvedDecision, answers, responseText });
+      // A question-card client (iOS) renders a tool approval's options as chips
+      // and answers with `accept` plus the chosen value in `answers` — or, for
+      // a typed note, only in `responseText`. The approval's decision is what
+      // canUseTool reads, so without this a chip labeled "Deny" would allow the
+      // tool and a note saying "deny" would too. Only an `accept` needs
+      // reading: the verdict controls already send the decision itself.
+      // `runtime.approvals` also holds `AskUserQuestion` (kind "question") and
+      // the plan approval (request kind "plan_approval", vocabulary
+      // approve/reject), so the REQUEST kind guards the mapping: only a tool
+      // approval's options are this vocabulary.
+      const approvalAnswers = pending.request?.kind === "approval"
+        ? normalizePendingInputAnswers(pending.request, answers, responseText)
+        : null;
+      const optionDecision = resolvedDecision === "accept" && approvalAnswers
+        ? claudeApprovalDecisionFromOptionAnswers(pending.request?.questions, approvalAnswers)
+        : null;
+      const effectiveDecision = optionDecision ?? resolvedDecision;
+      pending.resolve({ decision: effectiveDecision, answers, responseText });
       emitPendingInputResolved(managed, {
         itemId,
-        decision: resolvedDecision,
+        decision: effectiveDecision,
         turnId: pending.request?.turnId ?? null,
         answers,
         responseText,

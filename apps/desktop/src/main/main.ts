@@ -83,6 +83,7 @@ import {
   captureChatHandoffReplayAnalytics,
   captureChatMentionsExpandedAnalytics,
   captureClaudeHooksIgnoredAnalytics,
+  captureClaudePluginsIgnoredAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "./services/analytics/agentTurnProductAnalytics";
 import { capturePendingInputDismissedAnalytics } from "./services/analytics/featureProductAnalytics";
@@ -4114,6 +4115,11 @@ app.whenReady().then(async () => {
         event,
       }),
       onClaudeHooksIgnored: (event) => captureClaudeHooksIgnoredAnalytics({
+        analytics: productAnalyticsService,
+        projectId,
+        event,
+      }),
+      onClaudePluginsIgnored: (event) => captureClaudePluginsIgnoredAnalytics({
         analytics: productAnalyticsService,
         projectId,
         event,

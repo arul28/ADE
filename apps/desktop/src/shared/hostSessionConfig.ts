@@ -182,7 +182,8 @@ export const SETTING_SOURCES_SUPPORT = {
 /**
  * What Claude's answer depends on that no other provider's does: the fallback.
  *
- * Measured against Agent SDK 0.3.258 — `allowedTools` and `disallowedTools` are
+ * Measured against Agent SDK 0.3.258 and not re-measured against a later pin
+ * — `allowedTools` and `disallowedTools` are
  * enforced, because the CLI removes a denied tool from the model's catalog, but
  * `canUseTool` did not fire on any permission mode tried. So the two lists are
  * the enforceable surface and the prompt path is not.

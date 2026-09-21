@@ -2183,6 +2183,42 @@ function writePersistedChatState(sessionId: string, nextState: Record<string, un
   );
 }
 
+/**
+ * The setup every Claude approval test shares: one session whose stream never
+ * yields, so the only state writes are the host's own. Returning `canUseTool`
+ * (rather than raising a card here) lets each test drive its own asks.
+ */
+async function openClaudeApprovalHarness(sdkSessionId: string) {
+  const events: AgentChatEventEnvelope[] = [];
+  vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+    send: vi.fn().mockResolvedValue(undefined),
+    stream: vi.fn(async function* () { return; }),
+    close: vi.fn(),
+    sessionId: sdkSessionId,
+    setPermissionMode: vi.fn().mockResolvedValue(undefined),
+  } as any);
+
+  const { service } = createService({
+    onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+  });
+  const session = await service.createSession({
+    laneId: "lane-1",
+    provider: "claude",
+    model: "sonnet",
+  });
+  await vi.waitFor(() => { expect(claudeSdkCreateSessionCompat).toHaveBeenCalled(); });
+
+  const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
+    canUseTool?: (
+      tool: string,
+      input: Record<string, unknown>,
+      options: Record<string, unknown>,
+    ) => Promise<Record<string, unknown>>;
+  } | undefined;
+
+  return { service, session, events, opts };
+}
+
 async function waitForEvent<T extends AgentChatEventEnvelope>(
   events: AgentChatEventEnvelope[],
   predicate: (event: AgentChatEventEnvelope) => event is T,
@@ -18067,32 +18103,7 @@ describe("createAgentChatService", () => {
       // Without a `pending_input_resolved` per item the summary's restart
       // fallback keeps naming a card nothing can answer, and the row stays
       // stuck on "Needs you" with no way out.
-      const events: AgentChatEventEnvelope[] = [];
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send: vi.fn().mockResolvedValue(undefined),
-        stream: vi.fn(async function* () { return; }),
-        close: vi.fn(),
-        sessionId: "sdk-session-settle-receipts",
-        setPermissionMode: vi.fn().mockResolvedValue(undefined),
-      } as any);
-
-      const { service } = createService({
-        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-      });
-      await vi.waitFor(() => { expect(claudeSdkCreateSessionCompat).toHaveBeenCalled(); });
-
-      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
-        canUseTool?: (
-          tool: string,
-          input: Record<string, unknown>,
-          options: Record<string, unknown>,
-        ) => Promise<Record<string, unknown>>;
-      } | undefined;
+      const { service, session, events, opts } = await openClaudeApprovalHarness("sdk-session-settle-receipts");
       expect(opts?.canUseTool).toBeDefined();
 
       const firstWaiter = opts!.canUseTool!(
@@ -18123,6 +18134,264 @@ describe("createAgentChatService", () => {
       for (const itemId of raisedItemIds) {
         expect(resolvedItemIds.filter((candidate) => candidate === itemId)).toHaveLength(1);
       }
+    });
+
+    it("a suppressed always-allow rule drops the session option and never persists one", async () => {
+      // `suppressAlwaysAllowRule` says the rule this approval would write is
+      // broader than the ask itself. The card must not offer "Allow for
+      // Session", and a client that sends `accept_for_session` anyway — an
+      // older build, a scripted answer — must be downgraded to a one-shot
+      // allow, or the SDK's refusal is silently overridden by ADE.
+      const { service, session, events, opts } = await openClaudeApprovalHarness("sdk-session-suppress-always-allow");
+      expect(opts?.canUseTool).toBeDefined();
+
+      const raisedCards = () => events.filter((event) => event.event.type === "approval_request");
+      const suppressed = opts!.canUseTool!(
+        "Bash",
+        { command: "rm -rf ./build" },
+        {
+          signal: new AbortController().signal,
+          toolUseID: "tool-suppress-1",
+          suppressAlwaysAllowRule: true,
+          suggestions: [{ type: "addRules", rules: [{ toolName: "Bash" }] }],
+        },
+      );
+      const raised = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } => event.event.type === "approval_request",
+      );
+      const request = (raised.event.detail as { request: PendingInputRequest }).request;
+      expect(request.questions[0]?.options?.map((option) => option.value)).toEqual(["allow", "deny"]);
+
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: raised.event.itemId,
+        decision: "accept_for_session",
+      });
+      // No updatedPermissions, and no persisted override: the SDK's suggestions
+      // are not forwarded for an ask whose rule it suppressed.
+      await expect(suppressed).resolves.toEqual({ behavior: "allow" });
+
+      const second = opts!.canUseTool!(
+        "Bash",
+        { command: "echo still asking" },
+        { signal: new AbortController().signal, toolUseID: "tool-suppress-2" },
+      );
+      await waitForCondition(() => raisedCards().length >= 2, "a second approval card for the same tool");
+      const secondCard = raisedCards()[1]!.event as Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: secondCard.itemId,
+        decision: "decline",
+      });
+      await expect(second).resolves.toMatchObject({ behavior: "deny" });
+    });
+
+    it("does not let a session-wide override auto-answer a suppressed ask", async () => {
+      // The test above pins "a suppressed ask never persists a rule". This one
+      // pins the other direction: a rule persisted from an earlier ask —
+      // possibly restored from a previous app run — must not answer a
+      // suppressed ask either, or the SDK's refusal is defeated by state ADE
+      // kept for a different call. The override stays usable for ordinary asks.
+      const { service, session, events, opts } = await openClaudeApprovalHarness("sdk-session-suppress-vs-override");
+      const raisedCards = () => events.filter((event) => event.event.type === "approval_request");
+
+      const ordinary = opts!.canUseTool!(
+        "Bash",
+        { command: "ls" },
+        { signal: new AbortController().signal, toolUseID: "tool-override-1" },
+      );
+      const ordinaryCard = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } => event.event.type === "approval_request",
+      );
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: ordinaryCard.event.itemId,
+        decision: "accept_for_session",
+      });
+      await expect(ordinary).resolves.toMatchObject({ behavior: "allow" });
+
+      const suppressed = opts!.canUseTool!(
+        "Bash",
+        { command: "rm -rf ./build" },
+        {
+          signal: new AbortController().signal,
+          toolUseID: "tool-override-2",
+          suppressAlwaysAllowRule: true,
+        },
+      );
+      await waitForCondition(() => raisedCards().length >= 2, "a card for the suppressed ask despite the override");
+      const suppressedCard = raisedCards()[1]!.event as Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      expect((suppressedCard.detail as { request: PendingInputRequest }).request.questions[0]?.options?.map((option) => option.value)).toEqual(["allow", "deny"]);
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: suppressedCard.itemId,
+        decision: "accept",
+      });
+      await expect(suppressed).resolves.toMatchObject({ behavior: "allow" });
+
+      // The override itself survives: an ordinary ask for the same tool after
+      // the suppressed one is still answered from it, without a card.
+      await expect(
+        opts!.canUseTool!("Bash", { command: "pwd" }, { signal: new AbortController().signal, toolUseID: "tool-override-3" }),
+      ).resolves.toMatchObject({ behavior: "allow" });
+      expect(raisedCards()).toHaveLength(2);
+    });
+
+    it("persists a session-wide override before the next provider event", async () => {
+      // The resolution receipt is the only state write before the `canUseTool`
+      // continuation runs, and it cannot see the override the continuation
+      // adds. Without an explicit persist there, "Allow for Session" survives
+      // a crash only if the provider happens to emit another event first — the
+      // user's choice must not depend on that.
+      const { service, session, events, opts } = await openClaudeApprovalHarness("sdk-session-override-persist");
+
+      const persistedOverrides = (): string[] =>
+        (readPersistedChatState(session.id).approvalOverrides as string[] | undefined) ?? [];
+
+      const ask = opts!.canUseTool!(
+        "Bash",
+        { command: "ls" },
+        { signal: new AbortController().signal, toolUseID: "tool-persist-override-1" },
+      );
+      const card = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } => event.event.type === "approval_request",
+      );
+      expect(persistedOverrides()).toEqual([]);
+
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: card.event.itemId,
+        decision: "accept_for_session",
+      });
+      await expect(ask).resolves.toMatchObject({ behavior: "allow" });
+      // The override stores the normalized tool name, which is what the gate
+      // reads back on the next ask.
+      await waitFor(() => persistedOverrides().includes("bash"));
+      expect(persistedOverrides()).toContain("bash");
+    });
+
+    it("reads a question-card option answer as the approval decision", async () => {
+      // iOS renders an approval's options as chips and answers with `accept`
+      // plus the chosen value in `answers`. The host reads `decision`, so
+      // without this a chip labeled "Deny" would allow the tool — the exact
+      // opposite of what the user tapped.
+      const { service, session, events, opts } = await openClaudeApprovalHarness("sdk-session-option-answer");
+      const raisedCards = () => events.filter((event) => event.event.type === "approval_request");
+
+      const denied = opts!.canUseTool!(
+        "Bash",
+        { command: "rm -rf ./build" },
+        { signal: new AbortController().signal, toolUseID: "tool-option-answer-1" },
+      );
+      const deniedCard = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } => event.event.type === "approval_request",
+      );
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: deniedCard.event.itemId,
+        decision: "accept",
+        answers: { tool_decision: "deny" },
+      });
+      await expect(denied).resolves.toMatchObject({ behavior: "deny" });
+      // The durable receipt records the effective decision, not the raw
+      // `accept`, or the transcript disagrees with what the tool did.
+      const deniedReceipt = events.find((event) =>
+        event.event.type === "pending_input_resolved"
+        && (event.event as { itemId?: string }).itemId === deniedCard.event.itemId)?.event as
+        { resolution?: string } | undefined;
+      expect(deniedReceipt?.resolution).toBe("declined");
+
+      // A typed answer rides the same channel: iOS freeform-only submissions
+      // send `answers: nil` with the text in `responseText`.
+      const typedDeny = opts!.canUseTool!(
+        "Bash",
+        { command: "rm -rf ./build" },
+        { signal: new AbortController().signal, toolUseID: "tool-option-answer-typed" },
+      );
+      await waitForCondition(() => raisedCards().length >= 2, "a card for the typed answer");
+      const typedCard = raisedCards()[1]!.event as Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: typedCard.itemId,
+        decision: "accept",
+        responseText: "deny",
+      });
+      await expect(typedDeny).resolves.toMatchObject({ behavior: "deny" });
+      expect(raisedCards()).toHaveLength(2);
+
+      // The session-wide chip persists the same override the desktop button
+      // would: the next ask for the tool is answered without a card.
+      const sessionWide = opts!.canUseTool!(
+        "Bash",
+        { command: "echo still asking" },
+        { signal: new AbortController().signal, toolUseID: "tool-option-answer-2" },
+      );
+      await waitForCondition(() => raisedCards().length >= 3, "a third card for the session-wide chip");
+      const sessionWideCard = raisedCards()[2]!.event as Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: sessionWideCard.itemId,
+        decision: "accept",
+        answers: { tool_decision: "allow_session" },
+      });
+      await expect(sessionWide).resolves.toMatchObject({ behavior: "allow" });
+      await expect(
+        opts!.canUseTool!("Bash", { command: "pwd" }, { signal: new AbortController().signal, toolUseID: "tool-option-answer-3" }),
+      ).resolves.toMatchObject({ behavior: "allow" });
+      expect(raisedCards()).toHaveLength(3);
+    });
+
+    it("does not read an AskUserQuestion option named deny as an approval verdict", async () => {
+      // The approval mapping is guarded by pending kind: runtime.approvals also
+      // holds AskUserQuestion (kind "question"), whose option values are
+      // model-authored labels. Without the guard, an option a model happened to
+      // spell `deny` would deny the whole question and drop the user's answer.
+      const { service, session, events, opts } = await openClaudeApprovalHarness("sdk-session-question-deny-option");
+
+      const asked = opts!.canUseTool!(
+        "AskUserQuestion",
+        {
+          questions: [{
+            id: "q1",
+            question: "Which option?",
+            header: "Pick",
+            multiSelect: false,
+            options: [
+              { label: "deny", description: "an option the model named" },
+              { label: "keep", description: "the other" },
+            ],
+          }],
+        },
+        { signal: new AbortController().signal, toolUseID: "tool-question-deny-option" },
+      );
+      const askedCard = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } => event.event.type === "approval_request",
+      );
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: askedCard.event.itemId,
+        decision: "accept",
+        answers: { q1: "deny" },
+      });
+
+      const result = await asked;
+      expect(result).toMatchObject({ behavior: "allow" });
+      expect(result.updatedInput).toMatchObject({ answers: { "Which option?": "deny" } });
     });
 
     it("clears the attention markers once an input card settles", async () => {
@@ -32836,6 +33105,110 @@ describe("createAgentChatService", () => {
       const summary = await service.getSessionSummary(session.id);
       expect(summary?.claudePermissionMode).toBe("bypassPermissions");
       expect(summary?.permissionMode).toBe("full-auto");
+    });
+
+    it("fences a mutating tool call in plan mode even when bypass sits underneath", async () => {
+      // A full-auto session that entered plan mode still has bypass as its
+      // access mode. The CLI handles most plan-mode enforcement itself, but a
+      // deferred mutating call reaches canUseTool — and a host that answers
+      // `allow` silently lifts the fence the session just raised. The fence is
+      // an allowlist, so a Windows shell and a mutating MCP tool are refused
+      // even though neither name matches the legacy mutating heuristic.
+      const events: AgentChatEventEnvelope[] = [];
+      let enterResult: Record<string, unknown> | undefined;
+      let writeResult: Record<string, unknown> | undefined;
+      let readResult: Record<string, unknown> | undefined;
+      let powershellResult: Record<string, unknown> | undefined;
+      let mcpDeleteResult: Record<string, unknown> | undefined;
+      let agentResult: Record<string, unknown> | undefined;
+      let streamCall = 0;
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-plan-fence",
+            slash_commands: [],
+          };
+          return;
+        }
+
+        const sessionOpts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as any;
+        const options = { signal: new AbortController().signal };
+        enterResult = await sessionOpts.canUseTool("EnterPlanMode", {}, {
+          ...options,
+          toolUseID: "tool-plan-fence-enter",
+        });
+        writeResult = await sessionOpts.canUseTool(
+          "Write",
+          { file_path: "src/app.ts", content: "x" },
+          { ...options, toolUseID: "tool-plan-fence-write" },
+        );
+        powershellResult = await sessionOpts.canUseTool(
+          "PowerShell",
+          { command: "Remove-Item -Recurse ./build" },
+          { ...options, toolUseID: "tool-plan-fence-powershell" },
+        );
+        mcpDeleteResult = await sessionOpts.canUseTool(
+          "mcp__filesystem__delete_file",
+          { path: "src/app.ts" },
+          {
+            ...options,
+            toolUseID: "tool-plan-fence-mcp",
+            mcpServer: { name: "filesystem", source: "user" },
+          },
+        );
+        agentResult = await sessionOpts.canUseTool(
+          "Agent",
+          { description: "explore", prompt: "find the entry point" },
+          { ...options, toolUseID: "tool-plan-fence-agent" },
+        );
+        readResult = await sessionOpts.canUseTool(
+          "Read",
+          { file_path: "src/app.ts" },
+          { ...options, toolUseID: "tool-plan-fence-read" },
+        );
+
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-plan-fence",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        modelId: "anthropic/claude-sonnet-5",
+        permissionMode: "full-auto",
+        claudePermissionMode: "bypassPermissions",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Plan, then try to write before exiting plan mode.",
+      });
+
+      expect(enterResult).toMatchObject({ behavior: "allow" });
+      expect(writeResult).toMatchObject({ behavior: "deny" });
+      expect(powershellResult).toMatchObject({ behavior: "deny" });
+      expect(mcpDeleteResult).toMatchObject({ behavior: "deny" });
+      // Subagent exploration is part of plan mode's own allowlist.
+      expect(agentResult).toMatchObject({ behavior: "allow" });
+      // Read-only built-ins stay usable: plan mode is inspect-only, not inert.
+      expect(readResult).toMatchObject({ behavior: "allow" });
+      const planned = await service.getSessionSummary(session.id);
+      expect(planned?.claudePermissionMode).toBe("plan");
     });
 
     it("preserves Claude access overrides when entering and exiting plan mode", async () => {
@@ -48654,6 +49027,57 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
     );
   });
 
+  it("warns and records the plugins-ignored fact when the CLI applies no plugin", async () => {
+    const initializationResult = vi.fn().mockResolvedValue({ hooks_applied: true, plugins_applied: false });
+    const onClaudePluginsIgnored = vi.fn();
+    const onClaudeHooksIgnored = vi.fn();
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+      ...makeDefaultClaudeSession(),
+      initializationResult,
+    });
+    const { service, logger } = createService({ onClaudePluginsIgnored, onClaudeHooksIgnored });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
+    });
+    await service.sendMessage({ sessionId: session.id, text: "hello" });
+    await vi.waitFor(() => {
+      expect(onClaudePluginsIgnored).toHaveBeenCalledWith({ sessionId: session.id });
+    });
+    expect(logger.warn).toHaveBeenCalledWith(
+      "agent_chat.claude_plugins_ignored",
+      expect.objectContaining({ sessionId: session.id }),
+    );
+    // Plugins and hooks are independent reports; a plugin miss must not be
+    // reported as a hooks miss.
+    expect(logger.warn).not.toHaveBeenCalledWith("agent_chat.claude_hooks_ignored", expect.anything());
+    expect(onClaudeHooksIgnored).not.toHaveBeenCalled();
+  });
+
+  it("logs why the CLI could not start when a result frame carries a startup failure", async () => {
+    const harness = await createClaudeStreamFixture({
+      sdkSessionId: "sdk-startup-failure",
+      messages: [
+        {
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          startup_failure_reason: "cwd_unavailable",
+          errors: ["cwd unavailable"],
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+      ],
+    });
+    await vi.waitFor(() => {
+      expect(harness.logger.warn).toHaveBeenCalledWith(
+        "agent_chat.claude_startup_failure",
+        expect.objectContaining({ reason: "cwd_unavailable" }),
+      );
+    });
+  });
+
   it("lets natural compaction suppress the 97% fallback", async () => {
     const harness = await createClaudeStreamFixture({
       sdkSessionId: "sdk-natural-compact",
@@ -55513,6 +55937,31 @@ describe("host permission policy", () => {
     await expect(callTool(opts, "Bash", { command: "ls" }, "tool-bash-allowed-1"))
       .resolves.toEqual({ behavior: "allow", updatedInput: { command: "ls" } });
     expect(events.some((event) => event.event.type === "approval_request")).toBe(false);
+  });
+});
+
+describe("Claude query environment", () => {
+  it("opts the CLI into writing startup-failure results", async () => {
+    // `startup_failure_reason` is only written when the host sets this, so the
+    // log that reads it has no input without the opt-in. This is host query
+    // config, not policy: it rides every Claude session.
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(
+      claudeSdkSession("sdk-startup-failure-env") as any,
+    );
+    const { service } = createService();
+    await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "sonnet",
+      sessionProfile: "light",
+    } as never);
+    await vi.waitFor(() => {
+      expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+    });
+    const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as {
+      env?: Record<string, string>;
+    };
+    expect(opts.env).toMatchObject({ CLAUDE_CODE_STARTUP_FAILURE_RESULTS: "1" });
   });
 });
 
