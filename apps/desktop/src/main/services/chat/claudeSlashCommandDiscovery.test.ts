@@ -626,6 +626,7 @@ describe("resolveClaudeSlashCommandInvocation", () => {
     ): DiscoveredClaudeSlashCommand => ({
       description: "desc",
       source: "skill",
+      modelInvocable: true,
       ...over,
     });
 

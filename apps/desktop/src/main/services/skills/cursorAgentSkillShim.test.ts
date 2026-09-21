@@ -17,9 +17,9 @@ function writeSkill(root: string, name: string, body: string): void {
   fs.writeFileSync(path.join(dir, "SKILL.md"), body);
 }
 
-/** The setting sources a normal chat and an orchestration lead actually get. */
-const NORMAL_SOURCES = cursorSdkSettingSources({ orchestrationLead: false });
-const LEAD_SOURCES = cursorSdkSettingSources({ orchestrationLead: true });
+/** The setting sources a normal chat and a strict-MCP orchestration lead get. */
+const NORMAL_SOURCES = cursorSdkSettingSources({ strictMcpConfig: false });
+const LEAD_SOURCES = cursorSdkSettingSources({ strictMcpConfig: true });
 
 describe("prepareCursorAgentSkillShim", () => {
   let tmp: string;

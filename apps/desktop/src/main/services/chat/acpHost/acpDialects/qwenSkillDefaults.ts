@@ -10,7 +10,8 @@ import { existingAgentSkillRoots } from "../../../skills/agentSkillRuntimeServic
  * ADE's bundled agent skills, delivered to Qwen Code through Qwen's OWN
  * discovery instead of a path mentioned in prose.
  *
- * Verified against the installed `@qwen-code/qwen-code` 0.22.3 bundle:
+ * Verified against the pinned `@qwen-code/qwen-code` bundle when this shipped
+ * (the chunk hashes below are from that bundle; re-check them on a Qwen bump):
  *
  * - `skills.directories` is a real settings key. Its schema entry
  *   (`chunk-ZEYFMJQA.js`) reads "Additional directories to scan for skills
@@ -90,7 +91,7 @@ export function qwenAdeSkillDefaultsPath(args: {
 /**
  * Where Qwen would have looked for system defaults had ADE not redirected it.
  *
- * Mirrors `getSystemDefaultsPath()` in the 0.22.3 bundle. ADE reads that file
+ * Mirrors `getSystemDefaultsPath()` in the pinned Qwen bundle. ADE reads that file
  * and layers on top of it, because pointing the env var at an ADE file would
  * otherwise silently hide an administrator-installed one.
  */
