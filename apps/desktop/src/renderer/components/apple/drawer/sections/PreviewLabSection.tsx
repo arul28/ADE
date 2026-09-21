@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { DotsThree } from "@phosphor-icons/react";
 import type { IosSimulatorPreviewTarget } from "../../../../../shared/types";
-import { cn } from "../../../ui/cn";
-import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS } from "../../../ui/paneMenuTokens";
-import { PaneTooltip } from "../../../ui/PaneTooltip";
-import { DRAWER_BUTTON, DRAWER_GHOST_BUTTON, DRAWER_ICON_BUTTON, DrawerMenu, Row, Section, SwitchRow } from "../drawerPrimitives";
+import {
+  DRAWER_BUTTON,
+  DRAWER_GHOST_BUTTON,
+  DRAWER_PRIMARY_BUTTON,
+  DrawerMenu,
+  Row,
+  Subhead,
+  SwitchRow,
+} from "../drawerPrimitives";
 import type { AppleDrawerContext } from "../drawerContext";
 
 export type AppleRenderedPreview = { dataUrl: string; targetLabel: string };
@@ -36,10 +39,15 @@ export function changeMatchesTarget(changedPath: string, target: IosSimulatorPre
 }
 
 /**
- * §8.8 — Preview Lab as one section: a target picker grouped by file, Render,
- * and a "Watch file" switch. A render hands the picture to the pane, which
- * swaps its viewport into the `preview` state with the "← Back to device"
- * chip; nothing is drawn here. Workspace actions live under the `⋯`.
+ * §B1's **Preview Lab** group: a target picker grouped by file, Render, and a
+ * "Watch file" switch. A render hands the picture to the pane, which swaps its
+ * viewport into the `preview` state with the "← Back to device" chip; nothing
+ * is drawn here. Workspace actions live under the `⋯`, which the drawer hangs
+ * in this group's header.
+ *
+ * The group's `⋯` is exported separately from its body because the card's
+ * header owns the right-hand slot: a menu rendered inside the body would sit
+ * under the rows it acts on rather than on the card it belongs to.
  */
 export function PreviewLabSection({
   ctx,
@@ -163,46 +171,9 @@ export function PreviewLabSection({
   }, [laneId, pinRef, selected, visible, watch]);
 
   const busy = loading || rendering;
-  const menu = (
-    <DropdownMenu.Root>
-      <PaneTooltip label="Preview Lab actions" side="left">
-        <DropdownMenu.Trigger asChild>
-          <button type="button" className={DRAWER_ICON_BUTTON} aria-label="Preview Lab actions" disabled={!visible}>
-            <DotsThree size={14} weight="bold" aria-hidden="true" />
-          </button>
-        </DropdownMenu.Trigger>
-      </PaneTooltip>
-      <DropdownMenu.Portal>
-        <DropdownMenu.Content align="end" sideOffset={4} className={MENU_CONTENT_CLASS}>
-          <DropdownMenu.Item
-            className={cn(MENU_ITEM_CLASS, "text-[12px]")}
-            onSelect={() => {
-              void window.ade.iosSimulator.ensurePreviewWorkspace({ laneId, openIfNeeded: true }, pinRef.current)
-                .then((result) => { if (!result.ok && result.error) actions.reportError(new Error(result.error)); })
-                .catch((cause: unknown) => actions.reportError(cause));
-            }}
-          >
-            Open project in Xcode
-          </DropdownMenu.Item>
-          <DropdownMenu.Item
-            className={cn(MENU_ITEM_CLASS, "text-[12px]")}
-            onSelect={() => {
-              void window.ade.iosSimulator.openPreviewWorkspace({ laneId }, pinRef.current)
-                .catch((cause: unknown) => actions.reportError(cause));
-            }}
-          >
-            Reveal Xcode workspace
-          </DropdownMenu.Item>
-          <DropdownMenu.Item className={cn(MENU_ITEM_CLASS, "text-[12px]")} onSelect={() => setRefreshNonce((nonce) => nonce + 1)}>
-            Refresh previews
-          </DropdownMenu.Item>
-        </DropdownMenu.Content>
-      </DropdownMenu.Portal>
-    </DropdownMenu.Root>
-  );
 
   return (
-    <Section title="Preview Lab" right={menu} testId="apple-drawer-preview-lab">
+    <>
       <Row label="Target">
         <DrawerMenu
           ariaLabel="Preview target"
@@ -214,7 +185,7 @@ export function PreviewLabSection({
         />
       </Row>
       <div className="flex min-h-7 items-center gap-1.5">
-        <button type="button" className={DRAWER_BUTTON} disabled={!visible || busy || !selected} onClick={() => { void render(); }}>
+        <button type="button" className={DRAWER_PRIMARY_BUTTON} disabled={!visible || busy || !selected} onClick={() => { void render(); }}>
           {rendering ? "Rendering…" : "Render"}
         </button>
         <button
@@ -227,6 +198,41 @@ export function PreviewLabSection({
         </button>
       </div>
       <SwitchRow label="Watch file" checked={watch} disabled={!visible || !selected} onChange={setWatch} />
-    </Section>
+
+      <Subhead label="Workspace" />
+      <div className="flex min-h-7 flex-wrap items-center gap-1.5">
+        <button
+          type="button"
+          className={DRAWER_BUTTON}
+          disabled={!visible}
+          onClick={() => {
+            void window.ade.iosSimulator.ensurePreviewWorkspace({ laneId, openIfNeeded: true }, pinRef.current)
+              .then((result) => { if (!result.ok && result.error) actions.reportError(new Error(result.error)); })
+              .catch((cause: unknown) => actions.reportError(cause));
+          }}
+        >
+          Open in Xcode
+        </button>
+        <button
+          type="button"
+          className={DRAWER_BUTTON}
+          disabled={!visible}
+          onClick={() => {
+            void window.ade.iosSimulator.openPreviewWorkspace({ laneId }, pinRef.current)
+              .catch((cause: unknown) => actions.reportError(cause));
+          }}
+        >
+          Reveal workspace
+        </button>
+        <button
+          type="button"
+          className={DRAWER_GHOST_BUTTON}
+          disabled={!visible || busy}
+          onClick={() => setRefreshNonce((nonce) => nonce + 1)}
+        >
+          Refresh previews
+        </button>
+      </div>
+    </>
   );
 }

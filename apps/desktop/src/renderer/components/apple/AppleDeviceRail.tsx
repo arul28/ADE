@@ -4,18 +4,16 @@ import {
   ArrowsOut,
   ArrowsClockwise,
   Camera,
+  Crosshair,
   Cube,
   DeviceMobile,
   DotsThree,
   House,
-  Moon,
   PictureInPicture,
   Power,
   Record,
   SlidersHorizontal,
   Stop,
-  Sun,
-  TextAa,
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
@@ -26,7 +24,6 @@ import {
   MENU_LABEL_CLASS,
   MENU_SEPARATOR_CLASS,
 } from "../ui/paneMenuTokens";
-import { APPLE_TEXT_SIZES, type AppleDeviceControls } from "./useAppleDeviceControls";
 
 /** Below this the rail keeps Home, Tools and More, and nothing else. */
 export const APPLE_RAIL_COMPACT_WIDTH = 360;
@@ -36,7 +33,6 @@ export type AppleDeviceRailProps = {
   containerWidth: number;
   deviceName: string;
   deviceRuntime: string | null;
-  controls: AppleDeviceControls;
   /** False while the input socket is down: every device control is refused. */
   inputConnected: boolean;
   mode: "flat" | "3d";
@@ -44,12 +40,17 @@ export type AppleDeviceRailProps = {
   /** Why 3D is unavailable, when it is. */
   threeDisabledReason: string | null;
   toolsOpen: boolean;
+  /** §A4: Inspect is a rail toggle now, not a drawer switch. */
+  inspecting: boolean;
+  /** §A5: Record is a rail toggle now, with a red active state. */
   recording: boolean;
   screenshotPending: boolean;
   onHome: () => void;
   onRotate: () => void;
   onScreenshot: () => void;
   onToggleTools: () => void;
+  onToggleInspect: () => void;
+  /** §A2: ONE button. It switches to the other view and shows which is on. */
   onMode: (mode: "flat" | "3d") => void;
   onResetView: () => void;
   onToggleRecording: () => void;
@@ -71,29 +72,33 @@ export type AppleDeviceRailProps = {
 /**
  * The device's controls, in one pill on the right edge of the picture.
  *
- * Round 1 stacked twelve unlabelled icons down the column with a second strip
- * of word-buttons at the bottom, two of which did nothing. Everything here has
- * a name and a tooltip, the destructive action is last inside a menu, and
- * `Shake` — which the service refuses with `APPLE_BUTTON_UNSUPPORTED` — does
- * not exist as a control at all, because a button that can only fail is worse
- * than no button.
+ * Round 4 §A5 fixes the order and the contents: Home, Rotate, Inspect,
+ * Screenshot, Record, View, Tools, More. Appearance and Text size are GONE
+ * from here — they were duplicated in the drawer, which is where device
+ * settings live; Inspect and Record came the other way, out of the drawer,
+ * because they act on the picture rather than on the device's settings.
+ *
+ * `Shake` — which the service refuses with `APPLE_BUTTON_UNSUPPORTED` — still
+ * does not exist as a control at all, because a button that can only fail is
+ * worse than no button.
  */
 export function AppleDeviceRail({
   containerWidth,
   deviceName,
   deviceRuntime,
-  controls,
   inputConnected,
   mode,
   canUse3d,
   threeDisabledReason,
   toolsOpen,
+  inspecting,
   recording,
   screenshotPending,
   onHome,
   onRotate,
   onScreenshot,
   onToggleTools,
+  onToggleInspect,
   onMode,
   onResetView,
   onToggleRecording,
@@ -103,10 +108,14 @@ export function AppleDeviceRail({
   extraControls,
 }: AppleDeviceRailProps) {
   const compact = containerWidth < APPLE_RAIL_COMPACT_WIDTH;
-  const appearance = controls.settings?.appearance;
-  const nextAppearance = appearance === "dark" ? "light" : "dark";
-  const textSize = controls.settings?.contentSize;
   const hardwareDisabled = !inputConnected;
+  const threeD = mode === "3d";
+  const viewDisabled = !canUse3d && !threeD;
+  const viewDescription = viewDisabled
+    ? threeDisabledReason ?? "3D view is unavailable"
+    : threeD
+      ? "Switch to flat view"
+      : "Switch to 3D view";
 
   return (
     <aside
@@ -141,45 +150,51 @@ export function AppleDeviceRail({
         {compact ? null : (
           <>
             <RailButton
-              label={`Switch device to ${nextAppearance} mode`}
-              disabled={controls.disabled || !appearance || appearance === "unsupported"}
-              onClick={() => void controls.act({ type: "setAppearance", value: nextAppearance })}
+              label="Inspect elements"
+              description={inspecting ? "Stop inspecting" : "Inspect elements"}
+              pressed={inspecting}
+              onClick={onToggleInspect}
             >
-              {appearance === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+              <Crosshair size={16} />
             </RailButton>
-            <RailMenu
-              label="Device text size"
-              disabled={controls.disabled || !textSize}
-              icon={<TextAa size={16} />}
+            <RailButton
+              label={screenshotPending ? "Capturing screenshot" : "Save screenshot"}
+              disabled={screenshotPending}
+              onClick={onScreenshot}
             >
-              <div className={MENU_LABEL_CLASS}>Text size</div>
-              {APPLE_TEXT_SIZES.map((entry) => (
-                <DropdownMenu.Item
-                  key={entry.value}
-                  className={MENU_ITEM_CLASS}
-                  onSelect={() => void controls.act({ type: "setTextSize", value: entry.value })}
-                >
-                  <span className="flex-1">{entry.label}</span>
-                  {textSize === entry.value ? <span aria-hidden="true">✓</span> : null}
-                </DropdownMenu.Item>
-              ))}
-            </RailMenu>
+              <Camera size={16} />
+            </RailButton>
+            <RailButton
+              label={recording ? "Stop recording" : "Record"}
+              pressed={recording}
+              /* The one control that is allowed a colour: a recording that is
+                 running has to be legible at a glance, from across the room. */
+              className={recording
+                ? "bg-[color-mix(in_srgb,var(--color-error)_22%,transparent)] text-[var(--color-error)] hover:text-[var(--color-error)]"
+                : undefined}
+              onClick={onToggleRecording}
+            >
+              {recording ? <Stop size={16} weight="fill" /> : <Record size={16} />}
+            </RailButton>
+            <RailButton
+              /* §A2: ONE toggle. The label says which view is on, the tooltip
+                 says what the click does — or why it cannot. */
+              label={threeD ? "View: 3D" : "View: Flat"}
+              description={viewDescription}
+              pressed={threeD}
+              disabled={viewDisabled}
+              onClick={() => onMode(threeD ? "flat" : "3d")}
+            >
+              {threeD ? <Cube size={16} /> : <DeviceMobile size={16} />}
+            </RailButton>
           </>
         )}
+
+        <RailDivider />
 
         <RailButton label="Device tools" pressed={toolsOpen} onClick={onToggleTools}>
           <SlidersHorizontal size={16} />
         </RailButton>
-
-        {compact ? null : (
-          <RailButton
-            label={screenshotPending ? "Capturing screenshot" : "Save screenshot"}
-            disabled={screenshotPending}
-            onClick={onScreenshot}
-          >
-            <Camera size={16} />
-          </RailButton>
-        )}
 
         {extraControls}
 
@@ -187,10 +202,12 @@ export function AppleDeviceRail({
           <div className={MENU_LABEL_CLASS}>
             {deviceRuntime ? `${deviceName} · ${deviceRuntime}` : deviceName}
           </div>
-          <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={onToggleRecording}>
-            {recording ? <Stop size={14} /> : <Record size={14} />}
-            {recording ? "Stop recording" : "Record"}
-          </DropdownMenu.Item>
+          {threeD ? (
+            <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={onResetView}>
+              <ArrowsOut size={14} />
+              Reset view
+            </DropdownMenu.Item>
+          ) : null}
           <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={onFloat}>
             <PictureInPicture size={14} />
             Float over chat
@@ -208,29 +225,6 @@ export function AppleDeviceRail({
             Power off
           </DropdownMenu.Item>
         </RailMenu>
-
-        {compact ? null : (
-          <>
-            <RailDivider />
-            <RailButton
-              label="3D view"
-              pressed={mode === "3d"}
-              disabled={!canUse3d}
-              description={canUse3d ? null : threeDisabledReason}
-              onClick={() => onMode("3d")}
-            >
-              <Cube size={16} />
-            </RailButton>
-            <RailButton label="Flat view" pressed={mode === "flat"} onClick={() => onMode("flat")}>
-              <DeviceMobile size={16} />
-            </RailButton>
-            {mode === "3d" ? (
-              <RailButton label="Reset view" onClick={onResetView}>
-                <ArrowsOut size={16} />
-              </RailButton>
-            ) : null}
-          </>
-        )}
       </div>
     </aside>
   );
@@ -256,6 +250,7 @@ function RailButton({
   description,
   disabled,
   pressed,
+  className,
   onClick,
   children,
 }: {
@@ -263,6 +258,7 @@ function RailButton({
   description?: string | null;
   disabled?: boolean;
   pressed?: boolean;
+  className?: string | undefined;
   onClick: () => void;
   children: ReactNode;
 }) {
@@ -275,7 +271,7 @@ function RailButton({
         aria-pressed={pressed}
         disabled={disabled}
         onClick={onClick}
-        className={cn(RAIL_BUTTON_CLASS, pressed && "bg-secondary text-fg")}
+        className={cn(RAIL_BUTTON_CLASS, pressed && "bg-secondary text-fg", className)}
       >
         {children}
       </Button>

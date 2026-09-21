@@ -31,6 +31,15 @@ export type ChatCompanionUiState = {
   /** Floating PR pane (left side). Persisted per chat; explicit open/close only. */
   prPaneOpen: boolean;
   /**
+   * Which card the Apple Development tools drawer has open (round 4 §B1).
+   *
+   * One of the four group ids, or null for a drawer collapsed to its four
+   * headers. Typed as a string here on purpose: this module is the chat shell's
+   * store and must not take a dependency on the Apple feature's union to hold a
+   * value it only ever round-trips. The drawer validates what it reads.
+   */
+  appleToolsGroup: string | null;
+  /**
    * The Work corner card's "off" markers for this chat, keyed by tool id.
    *
    * Mirror of lane mac-desktop (b18dd67ec) minus the mac-desktop tool; on merge,
@@ -50,6 +59,7 @@ export const DEFAULT_CHAT_COMPANION_UI_STATE: ChatCompanionUiState = {
   appControlOpen: false,
   terminalDrawerOpen: false,
   prPaneOpen: false,
+  appleToolsGroup: "device",
   workLiveCardClosedByTool: {},
 };
 
@@ -113,6 +123,11 @@ export function readChatCompanionUiState(key: string): ChatCompanionUiState {
         appControlOpen: parsed.appControlOpen === true,
         terminalDrawerOpen: parsed.terminalDrawerOpen === true,
         prPaneOpen: parsed.prPaneOpen === true,
+        // `undefined` is "never written", which is the default card; an explicit
+        // null is a drawer the user collapsed and must stay collapsed.
+        appleToolsGroup: parsed.appleToolsGroup === undefined
+          ? DEFAULT_CHAT_COMPANION_UI_STATE.appleToolsGroup
+          : (typeof parsed.appleToolsGroup === "string" ? parsed.appleToolsGroup : null),
         workLiveCardClosedByTool: normalizeWorkLiveCardClosedByTool(parsed.workLiveCardClosedByTool),
       };
       chatCompanionUiStateByKey.set(key, state);

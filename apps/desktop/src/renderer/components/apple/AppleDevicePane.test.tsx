@@ -14,11 +14,26 @@ import type * as AppleRecordingModule from "./appleRecording";
 
 // The stage decodes H.264 into a canvas and mounts a Three scene. Neither
 // survives jsdom, and neither is what these tests are about: the pane's job is
-// to choose a viewport and say the right sentence over it.
+// to choose a viewport, wire the presenter, and say the right sentence over it.
+// The stub keeps the last props so the wiring itself can be asserted, and
+// renders the overlay render prop with an identity mapping.
+const stage = vi.hoisted(() => ({
+  props: null as null | Record<string, unknown>,
+}));
+
 vi.mock("./AppleDeviceStage", () => ({
-  AppleDeviceStage: ({ children }: { children?: React.ReactNode }) => (
-    <div data-testid="apple-stage">{children}</div>
-  ),
+  AppleDeviceStage: (props: Record<string, unknown> & {
+    children?: React.ReactNode;
+    renderScreenOverlay?: (map: (point: { x: number; y: number }) => { x: number; y: number }) => React.ReactNode;
+  }) => {
+    stage.props = props;
+    return (
+      <div data-testid="apple-stage" data-mode={String(props.mode)}>
+        {props.renderScreenOverlay?.((point) => point)}
+        {props.children}
+      </div>
+    );
+  },
   isWebCodecsAvailable: () => true,
 }));
 
@@ -150,6 +165,27 @@ function setup(options: Setup = {}) {
     pressButton: vi.fn(async () => ({ ok: true })),
     rotate: vi.fn(async () => ({ applied: true })),
     tap: vi.fn(async () => ({ ok: true })),
+    getScreenSnapshot: vi.fn(async () => ({
+      deviceUdid: "pro",
+      elements: [
+        {
+          id: "sign-in",
+          source: "accessibility",
+          layer: "accessibility",
+          label: "Sign in",
+          value: null,
+          role: "button",
+          elementType: null,
+          identifier: "signInButton",
+          frame: { x: 100, y: 400, width: 120, height: 44 },
+          pixelFrame: { x: 300, y: 1_200, width: 360, height: 132 },
+          componentId: null,
+          sourceFile: null,
+          sourceLine: null,
+          metadata: {},
+        },
+      ],
+    })),
     onEvent: vi.fn((listener: (event: unknown) => void) => {
       listeners.push(listener);
       return () => {
@@ -157,11 +193,12 @@ function setup(options: Setup = {}) {
       };
     }),
   };
-  (window as unknown as { ade: unknown }).ade = { iosSimulator };
-  return { iosSimulator, deviceStart, settleStart: () => settleStart?.() };
+  const app = { writeClipboardText: vi.fn(async () => undefined) };
+  (window as unknown as { ade: unknown }).ade = { iosSimulator, app };
+  return { iosSimulator, app, deviceStart, settleStart: () => settleStart?.() };
 }
 
-function renderPane() {
+function renderPane(overrides: Partial<React.ComponentProps<typeof AppleDevicePane>> = {}) {
   return render(
     <AppleDevicePane
       sessionId="chat-1"
@@ -169,6 +206,7 @@ function renderPane() {
       projectRoot="/repo"
       runtimePin={null}
       ignoreChatOwnership
+      {...overrides}
     />,
   );
 }
@@ -178,6 +216,8 @@ const paneState = () =>
 
 beforeEach(() => {
   listeners = [];
+  stage.props = null;
+  window.localStorage.clear();
   // jsdom has neither, and the pane observes both for its container query and
   // its "stop the stream when nobody is looking" rule.
   (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
@@ -369,5 +409,115 @@ describe("AppleDevicePane surfaces (round 3 §B)", () => {
     const { container } = renderPane();
     await waitFor(() => expect(paneState()).toBe("no-device"));
     expectNoHorizontalOverflow(container, width);
+  });
+});
+
+/* ── Round 4 §A1–§A4: the viewport the rail drives ───────────────────────── */
+
+describe("AppleDevicePane viewport (round 4 §A1–§A4)", () => {
+  const live = () => setup({ lane: LANE_DEVICE, stream: "live" });
+
+  it("§A1: shows the real body in 3D, and never asks for a procedural one", async () => {
+    live();
+    renderPane();
+    await waitFor(() => expect(paneState()).toBe("live"));
+    expect(screen.getByTestId("apple-stage").getAttribute("data-mode")).toBe("3d");
+    // The prop that pinned round 3 to the procedural slab is gone entirely.
+    expect(stage.props && "realistic" in stage.props).toBe(false);
+  });
+
+  it("§A1: a body that cannot load falls back to FLAT and says so once", async () => {
+    live();
+    renderPane();
+    await waitFor(() => expect(paneState()).toBe("live"));
+    act(() => {
+      (stage.props?.onThreeUnavailable as (reason: string) => void)(
+        "The 3D body could not be loaded.",
+      );
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("apple-stage").getAttribute("data-mode")).toBe("flat"));
+    expect(screen.getByText("The 3D body could not be loaded. Showing the flat view.")).toBeTruthy();
+    // And a way back, rather than a pane stuck in flat forever.
+    fireEvent.click(screen.getByRole("button", { name: "Try 3D again" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("apple-stage").getAttribute("data-mode")).toBe("3d"));
+  });
+
+  it("§A2: the one view toggle switches the stage and is remembered per project", async () => {
+    live();
+    const first = renderPane();
+    await waitFor(() => expect(paneState()).toBe("live"));
+    fireEvent.click(screen.getByRole("button", { name: "View: 3D" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("apple-stage").getAttribute("data-mode")).toBe("flat"));
+    first.unmount();
+
+    // Same project: the choice survives. A different project keeps the 3D default.
+    renderPane();
+    await waitFor(() => expect(paneState()).toBe("live"));
+    expect(screen.getByTestId("apple-stage").getAttribute("data-mode")).toBe("flat");
+    cleanup();
+
+    renderPane({ projectRoot: "/other" });
+    await waitFor(() => expect(paneState()).toBe("live"));
+    expect(screen.getByTestId("apple-stage").getAttribute("data-mode")).toBe("3d");
+  });
+
+  it("§A4: Inspect is a rail toggle that reads the screen and draws frames", async () => {
+    const { iosSimulator } = live();
+    renderPane();
+    await waitFor(() => expect(paneState()).toBe("live"));
+    expect(screen.queryByTestId("apple-inspect-overlay")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Inspect elements" }));
+    expect(await screen.findByTestId("apple-inspect-overlay")).toBeTruthy();
+    expect(iosSimulator.getScreenSnapshot).toHaveBeenCalledWith(
+      { deviceUdid: "pro", laneId: "lane-1", projectRoot: "/repo" },
+      null,
+    );
+    // Inspect works in 3D too: the round-3 "Inspect is flat-view only" rule,
+    // which silently forced the view, is gone.
+    expect(screen.getByTestId("apple-stage").getAttribute("data-mode")).toBe("3d");
+
+    // A second click on the toggle puts the picture back.
+    fireEvent.click(screen.getByRole("button", { name: "Inspect elements" }));
+    await waitFor(() => expect(screen.queryByTestId("apple-inspect-overlay")).toBeNull());
+  });
+
+  it("§A4: the card inserts into chat and copies the tap command", async () => {
+    const { app } = live();
+    const onAddContext = vi.fn();
+    renderPane({ onAddContext });
+    await waitFor(() => expect(paneState()).toBe("live"));
+    fireEvent.click(screen.getByRole("button", { name: "Inspect elements" }));
+    const overlay = await screen.findByTestId("apple-inspect-overlay");
+    overlay.getBoundingClientRect = () => new DOMRect(0, 0, 390, 844);
+    fireEvent.click(overlay, { clientX: 110, clientY: 410 });
+
+    const card = await screen.findByTestId("apple-inspect-card");
+    expect(card.textContent).toContain("Sign in");
+    fireEvent.click(screen.getByTestId("apple-inspect-card-insert"));
+    expect(onAddContext).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "ios_element",
+      id: "sign-in",
+      accessibilityIdentifier: "signInButton",
+    }));
+    fireEvent.click(screen.getByTestId("apple-inspect-card-copy"));
+    expect(app.writeClipboardText).toHaveBeenCalledWith(
+      "ade --socket apple tap-element --identifier signInButton",
+    );
+
+    // Escape closes the card wherever the focus is.
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByTestId("apple-inspect-card")).toBeNull());
+  });
+
+  it("§A5: the rail no longer carries Appearance or Text size", async () => {
+    live();
+    renderPane();
+    await waitFor(() => expect(paneState()).toBe("live"));
+    expect(screen.queryByRole("button", { name: /dark mode|light mode/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Device text size" })).toBeNull();
   });
 });

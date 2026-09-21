@@ -1,14 +1,20 @@
-import { describe, expect, it } from "vitest";
-import type { AppleInstalledSimulator } from "../../../shared/types/iosSimulator";
+/* @vitest-environment jsdom */
+
+import { beforeEach, describe, expect, it } from "vitest";
+import type { AppleInstalledSimulator, IosScreenElement } from "../../../shared/types/iosSimulator";
 import {
+  APPLE_DEFAULT_VIEW_MODE,
   APPLE_DEVICE_ORIENTATION_CYCLE,
+  appleElementContextItem,
   appleInputAllowed,
   appleRailVisible,
   appleSimulatorDescription,
   appleToolCardSubtitle,
   isAppleSimulatorBooted,
   nextAppleDeviceOrientation,
+  readAppleViewMode,
   resolveAppleDeviceState,
+  writeAppleViewMode,
   sortAppleSimulators,
   type ResolveAppleDeviceStateInput,
 } from "./appleDeviceState";
@@ -159,5 +165,85 @@ describe("nextAppleDeviceOrientation", () => {
     expect(nextAppleDeviceOrientation("portrait-upside-down")).toBe("landscape-right");
     expect(nextAppleDeviceOrientation("landscape-right")).toBe("portrait");
     expect(APPLE_DEVICE_ORIENTATION_CYCLE).toHaveLength(4);
+  });
+});
+
+
+/* ── Round 4 §A2: the remembered view ─────────────────────────────────────── */
+
+describe("the view mode preference", () => {
+  beforeEach(() => window.localStorage.clear());
+
+  it("defaults to 3D, per round 4's first owner decision", () => {
+    expect(APPLE_DEFAULT_VIEW_MODE).toBe("3d");
+    expect(readAppleViewMode("/repo")).toBe("3d");
+    expect(readAppleViewMode(null)).toBe("3d");
+  });
+
+  it("remembers the choice per project", () => {
+    writeAppleViewMode("/repo", "flat");
+    expect(readAppleViewMode("/repo")).toBe("flat");
+    // Another project is untouched, and keeps the default.
+    expect(readAppleViewMode("/other")).toBe("3d");
+    writeAppleViewMode("/repo", "3d");
+    expect(readAppleViewMode("/repo")).toBe("3d");
+  });
+
+  it("treats a projectless pane as one more project, not as no memory", () => {
+    writeAppleViewMode(null, "flat");
+    expect(readAppleViewMode(null)).toBe("flat");
+    expect(readAppleViewMode("  ")).toBe("flat");
+  });
+
+  it("survives junk in storage rather than throwing at the pane", () => {
+    window.localStorage.setItem("ade.apple.viewMode.v1", "{not json");
+    expect(readAppleViewMode("/repo")).toBe("3d");
+    window.localStorage.setItem("ade.apple.viewMode.v1", JSON.stringify({ "/repo": "hologram" }));
+    expect(readAppleViewMode("/repo")).toBe("3d");
+  });
+});
+
+/* ── Round 4 §A4: the inspect card's chip ─────────────────────────────────── */
+
+describe("appleElementContextItem", () => {
+  const element: IosScreenElement = {
+    id: "sign-in",
+    source: "accessibility",
+    layer: "accessibility",
+    label: "Sign in",
+    value: null,
+    role: "button",
+    elementType: null,
+    identifier: "signInButton",
+    frame: { x: 100, y: 400, width: 120, height: 44 },
+    pixelFrame: { x: 300, y: 1_200, width: 360, height: 132 },
+    componentId: null,
+    sourceFile: null,
+    sourceLine: null,
+    metadata: {},
+  };
+
+  it("is the composer packet the shared insertion path speaks", () => {
+    const item = appleElementContextItem(element, new Date(0));
+    expect(item).toEqual({
+      kind: "ios_element",
+      id: "sign-in",
+      // No SwiftUI match: the id is still something the agent can look up.
+      componentId: "sign-in",
+      sourceFile: null,
+      sourceLine: null,
+      frame: { x: 100, y: 400, width: 120, height: 44 },
+      metadata: {},
+      accessibilityIdentifier: "signInButton",
+      selectedAt: "1970-01-01T00:00:00.000Z",
+    });
+  });
+
+  it("prefers the inspector's accessibility identifier over the raw one", () => {
+    const item = appleElementContextItem({
+      ...element,
+      metadata: { accessibilityIdentifier: "SignInButton.primary" },
+    });
+    expect(item.accessibilityIdentifier).toBe("SignInButton.primary");
   });
 });

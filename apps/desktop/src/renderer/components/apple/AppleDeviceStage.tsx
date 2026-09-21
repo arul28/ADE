@@ -3,6 +3,7 @@ import { IosSimH264Video, isWebCodecsAvailable } from "../chat/IosSimH264Video";
 import { cn } from "../ui/cn";
 import {
   AppleDevice3DView,
+  type AppleDevice3DFailure,
   type AppleDeviceFamily,
   type AppleDeviceOrientation,
 } from "./AppleDevice3DView";
@@ -33,13 +34,13 @@ export type AppleDeviceStageProps = {
   reconnectNonce: number;
   mode: AppleStageMode;
   /**
-   * Remounts the 3D view, which is what "Reset view" means: the orbit spring,
-   * the camera and the loaded body all live inside it.
+   * "Reset view". Handed to the 3D view as a value it acts on, NOT as a React
+   * key: remounting meant a new `WebGLRenderer`, and a browser only lends out
+   * so many GPU contexts before it starts taking the oldest one back.
    */
   viewNonce: number;
   family: AppleDeviceFamily;
   deviceTypeName: string | null;
-  realistic: boolean;
   orientation: AppleDeviceOrientation;
   /** Device size in POINTS. Null falls back to the decoded pixel size. */
   devicePointSize: { width: number; height: number } | null;
@@ -55,12 +56,20 @@ export type AppleDeviceStageProps = {
   /** Increments per drawn frame; the 3D view re-uploads its texture on change. */
   frameVersion: number;
   /**
+   * The 3D presenter cannot show this device (no WebGL, or the bundled body
+   * would not load). Round 4 §A1: there is no procedural slab to fall back
+   * to, so the HOST falls back to the flat view and says so once.
+   */
+  onThreeUnavailable?: ((reason: AppleDevice3DFailure) => void) | undefined;
+  /**
    * Drawn inside the screen box in flat mode — the live inspect overlay.
    *
    * A render prop rather than a node, because the overlay needs the presenter's
    * device→view mapping and only the presenter knows it. Null is passed
-   * whenever the presenter cannot map (before the first frame; 3D mid-orbit),
-   * which is exactly the contract `AppleInspectOverlay` already takes.
+   * whenever the presenter cannot map — before the first frame in flat, before
+   * the body has loaded in 3D — which is exactly the contract
+   * `AppleInspectOverlay` already takes. In 3D the mapping is the live camera
+   * projection, so the frames follow the device as it turns.
    */
   renderScreenOverlay?: (
     deviceToView: ((point: { x: number; y: number }) => { x: number; y: number }) | null,
@@ -70,14 +79,26 @@ export type AppleDeviceStageProps = {
   className?: string;
 };
 
-/** Off-screen but still laid out, because a 0×0 canvas never receives a frame. */
+/**
+ * Where the decoder lives while the 3D view is the one showing it.
+ *
+ * ON SCREEN, tiny, and all but invisible — not parked off-screen at
+ * `opacity: 0`, which is what round 3 did. A canvas the compositor has decided
+ * is not visible still answers `getImageData` (that readback is a CPU path)
+ * but hands WebGL a BLACK surface when it is used as a texture, so the 3D
+ * device rendered a perfect body with a dead screen that came alive for a
+ * moment whenever you touched it. Two pixels of real, composited canvas is
+ * enough to keep the source alive; the texture is read from the canvas's own
+ * backing store, which stays the full decoded frame whatever its CSS box says.
+ */
 const PARKED_CANVAS_STYLE = {
   position: "absolute" as const,
-  left: -100_000,
+  left: 0,
   top: 0,
-  width: 320,
-  height: 640,
-  opacity: 0,
+  width: 2,
+  height: 2,
+  opacity: 0.002,
+  overflow: "hidden" as const,
   pointerEvents: "none" as const,
 };
 
@@ -89,7 +110,6 @@ export function AppleDeviceStage({
   viewNonce,
   family,
   deviceTypeName,
-  realistic,
   orientation,
   devicePointSize,
   interactive,
@@ -100,6 +120,7 @@ export function AppleDeviceStage({
   onDimensions,
   onFrame,
   frameVersion,
+  onThreeUnavailable,
   renderScreenOverlay,
   children,
   className,
@@ -115,9 +136,9 @@ export function AppleDeviceStage({
     onDimensions(size);
   }, [onDimensions]);
 
-  // WebGL is a hard precondition for the 3D presenter, and the column disables
-  // its button when it is missing — but a stage asked for 3D anyway must still
-  // show the device rather than nothing.
+  // WebGL is a hard precondition for the 3D presenter. There is no procedural
+  // stand-in any more (§A1): a 3D view that cannot draw the real body reports
+  // it through `onThreeUnavailable`, and the host moves the stage to flat.
   const flat = mode === "flat";
 
   const videoStyle = useMemo(() => {
@@ -168,16 +189,20 @@ export function AppleDeviceStage({
         />
       ) : (
         <AppleDevice3DView
-          key={`apple-3d:${viewNonce}`}
           screenCanvas={canvas}
+          resetNonce={viewNonce}
           frameVersion={frameVersion}
           family={family}
           deviceTypeName={deviceTypeName}
-          realistic={realistic}
           orientation={orientation}
           screenPixelSize={screenPixelSize ?? { width: 0, height: 0 }}
+          devicePointSize={devicePointSize}
           interactive={interactive}
           onDeviceInput={onDeviceInput}
+          onDeviceScroll={onDeviceScroll}
+          onDeviceKey={onDeviceKey}
+          onUnavailable={onThreeUnavailable}
+          renderScreenOverlay={renderScreenOverlay}
         />
       )}
 

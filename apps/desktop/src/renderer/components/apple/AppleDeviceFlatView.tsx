@@ -66,19 +66,68 @@ export type AppleDeviceFlatViewProps = {
 };
 
 /**
+ * What the screen box is measured in.
+ *
+ * POINTS when the host actually knows them, decoded PIXELS otherwise. A
+ * present-but-degenerate point size — `{width: 0, height: 0}`, which is what
+ * the stream reports before its transport has answered — used to win the `??`
+ * and leave the pane with no screen box at all: a live device, 500 decoded
+ * frames in, and nothing on screen. Nullish coalescing cannot see that; this
+ * can.
+ */
+export function appleScreenContentSize(
+  pointSize: { width: number; height: number } | null | undefined,
+  pixelSize: { width: number; height: number } | null | undefined,
+): { width: number; height: number } | null {
+  if (pointSize && pointSize.width > 0 && pointSize.height > 0) return pointSize;
+  if (pixelSize && pixelSize.width > 0 && pixelSize.height > 0) return pixelSize;
+  return null;
+}
+
+/**
+ * How far the screen may grow past its point size (round 4 §A6).
+ *
+ * Round 3 clamped the fit with `Math.min(fit, 1)`, so a 393pt phone sat at
+ * 393 CSS pixels in the middle of a 900px pane and the pane read as empty.
+ * The real limit is not the point size, it is the stream's own resolution: a
+ * 3× phone decodes at 1179 pixels wide, so on a 2× display it can be drawn up
+ * to 589 CSS pixels — 1.5× its point size — before one source pixel has to
+ * cover more than one physical pixel. Past that the picture is genuinely
+ * being upscaled, which is the mush the old cap was protecting against.
+ *
+ * Never returns less than 1: a stream whose pixel size is unknown, or already
+ * below its point size, keeps the round-3 behaviour rather than shrinking.
+ */
+export function appleScreenMaxScale(
+  content: { width: number; height: number },
+  nativePixelSize: { width: number; height: number } | null | undefined,
+  pixelRatio: number,
+): number {
+  if (!nativePixelSize || nativePixelSize.width <= 0 || content.width <= 0) return 1;
+  const ratio = Number.isFinite(pixelRatio) && pixelRatio > 0 ? pixelRatio : 1;
+  return Math.max(1, nativePixelSize.width / ratio / content.width);
+}
+
+/**
  * The `object-contain` box for `content` inside `container`.
  *
- * Never upscaled past 1× device pixels, per the spec: a 393pt phone on a
- * 1400px column is centred at its own size rather than blown up into mush.
+ * Grows to fill the pane, capped by `appleScreenMaxScale` so the picture is
+ * never blown up past the resolution the stream actually carries.
  */
 export function measureAppleScreenBox(
   container: { width: number; height: number },
   content: { width: number; height: number },
+  options?: {
+    /** Decoded frame size in PIXELS — the ceiling on growth. */
+    nativePixelSize?: { width: number; height: number } | null;
+    /** CSS pixels per physical pixel. Defaults to 1. */
+    pixelRatio?: number;
+  },
 ): { left: number; top: number; width: number; height: number } | null {
   if (container.width <= 0 || container.height <= 0) return null;
   if (content.width <= 0 || content.height <= 0) return null;
   const fit = Math.min(container.width / content.width, container.height / content.height);
-  const scale = Math.min(fit, 1);
+  const scale = Math.min(fit, appleScreenMaxScale(content, options?.nativePixelSize, options?.pixelRatio ?? 1));
   const width = content.width * scale;
   const height = content.height * scale;
   return {
@@ -128,11 +177,16 @@ export function AppleDeviceFlatView({
    * twice; sizing it from points means the one number the mapping needs — points
    * per CSS pixel — falls out of the box directly.
    */
-  const contentSize = devicePointSize ?? screenPixelSize;
+  const contentSize = appleScreenContentSize(devicePointSize, screenPixelSize);
 
   const box = useMemo(() => (
-    contentSize ? measureAppleScreenBox(containerSize, contentSize) : null
-  ), [containerSize, contentSize]);
+    contentSize
+      ? measureAppleScreenBox(containerSize, contentSize, {
+        nativePixelSize: screenPixelSize,
+        pixelRatio: typeof window === "undefined" ? 1 : window.devicePixelRatio || 1,
+      })
+      : null
+  ), [containerSize, contentSize, screenPixelSize]);
 
   const geometry = useMemo<AppleDeviceGeometry | null>(() => {
     if (!box || !contentSize || box.width <= 0) return null;

@@ -19,6 +19,8 @@ import type {
 import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
 import { AppleDeviceStage, isWebCodecsAvailable } from "./AppleDeviceStage";
+import type { AppleDevice3DFailure } from "./AppleDevice3DView";
+import { AppleInspectOverlay } from "./AppleInspectOverlay";
 import { AppleDeviceLoadingCard, type AppleLoadingStage } from "./AppleDeviceLoadingCard";
 import { AppleDevicePicker } from "./AppleDevicePicker";
 import { AppleDeviceRail } from "./AppleDeviceRail";
@@ -31,19 +33,23 @@ import {
 } from "./AppleDeviceStatusStrip";
 import { appleDeviceIdentity, type AppleDeviceFamilyId } from "./appleDeviceFamily";
 import {
+  appleCommandForElement,
+  appleElementContextItem,
   appleInputAllowed,
   appleRailVisible,
   nextAppleDeviceOrientation,
+  readAppleViewMode,
   resolveAppleDeviceState,
+  writeAppleViewMode,
   type AppleDeviceState,
+  type AppleViewMode,
 } from "./appleDeviceState";
+import { inspectContextFor, type IosSimulatorSnapshotElement } from "./appleInspectGeometry";
 import { formatRecordingElapsed, recordingElapsedMs, useAppleRecordings } from "./appleRecording";
-import { useAppleDeviceControls } from "./useAppleDeviceControls";
 import { useAppleDeviceInput } from "./useAppleDeviceInput";
 import { AppleRecordingSavedRow } from "./AppleRecordingSavedRow";
 import { useAppleDeviceStream } from "./useAppleDeviceStream";
 import { openAppleMiniPlayer } from "./appleMiniPlayerStore";
-import type { AppleInspectNode } from "./drawer/AppleToolsDrawer";
 import type { AppleRenderedPreview } from "./drawer/sections/PreviewLabSection";
 
 /**
@@ -118,11 +124,19 @@ export function AppleDevicePane({
   const [startError, setStartError] = useState<unknown>(null);
   const [error, setError] = useState<unknown>(null);
 
-  const [mode, setMode] = useState<"flat" | "3d">("flat");
+  /**
+   * §A2: ONE toggle, 3D by default, remembered per project. A forced fallback
+   * to flat (§A1) deliberately does NOT overwrite the preference — a body that
+   * failed to fetch once must not permanently demote the pane.
+   */
+  const [mode, setModeState] = useState<AppleViewMode>(() => readAppleViewMode(projectRoot));
+  const [threeFailure, setThreeFailure] = useState<AppleDevice3DFailure | null>(null);
   const [viewNonce, setViewNonce] = useState(0);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [inspectOn, setInspectOn] = useState(false);
-  const [inspectSelected, setInspectSelected] = useState<AppleInspectNode | null>(null);
+  const [inspectElements, setInspectElements] = useState<IosSimulatorSnapshotElement[]>([]);
+  const [inspectHovered, setInspectHovered] = useState<string | null>(null);
+  const [inspectSelected, setInspectSelected] = useState<string | null>(null);
   const [preview, setPreview] = useState<AppleRenderedPreview | null>(null);
   const [confirmSwitch, setConfirmSwitch] = useState(false);
   const [screenshotPending, setScreenshotPending] = useState(false);
@@ -320,15 +334,119 @@ export function AppleDevicePane({
     return () => window.clearInterval(timer);
   }, [recordingActive]);
 
-  /* ── device settings, serialized ───────────────────────────────────────── */
+  /* ── the view toggle (§A2) and the 3D fallback (§A1) ───────────────────── */
 
-  const controls = useAppleDeviceControls({
-    deviceUdid: booted ? deviceUdid : null,
-    laneId,
-    chatSessionId: sessionId,
-    visible: !hidden && appleRailVisible(state),
-    runtimePinRef,
-  });
+  useEffect(() => {
+    setModeState(readAppleViewMode(projectRoot));
+    setThreeFailure(null);
+  }, [projectRoot]);
+
+  const setMode = useCallback((next: AppleViewMode) => {
+    setModeState(next);
+    if (next === "3d") setThreeFailure(null);
+    writeAppleViewMode(projectRoot, next);
+  }, [projectRoot]);
+
+  /**
+   * The 3D presenter cannot draw this device. Round 3 answered that with a
+   * procedural slab, which is why nobody ever saw an Apple logo; round 4 falls
+   * back to the FLAT view and says so once, with a way to try again.
+   */
+  const handleThreeUnavailable = useCallback((reason: AppleDevice3DFailure) => {
+    setThreeFailure(reason);
+    setModeState("flat");
+  }, []);
+
+  const retryThreeD = useCallback(() => {
+    setThreeFailure(null);
+    setModeState("3d");
+    setViewNonce((nonce) => nonce + 1);
+  }, []);
+
+  /* ── inspect (§A4) ─────────────────────────────────────────────────────── */
+
+  const toggleInspect = useCallback(() => {
+    setInspectOn((on) => !on);
+    setInspectSelected(null);
+    setInspectHovered(null);
+  }, []);
+
+  /**
+   * One snapshot per switch-on. The frames describe the screen as it was when
+   * Inspect was turned on; driving the device is off while it is on, so they
+   * cannot go stale underneath the pointer.
+   */
+  useEffect(() => {
+    if (!inspectOn || !deviceUdid || state !== "live") {
+      if (!inspectOn) setInspectElements([]);
+      return undefined;
+    }
+    let cancelled = false;
+    void window.ade.iosSimulator
+      .getScreenSnapshot({ deviceUdid, laneId, projectRoot }, runtimePinRef.current)
+      .then((snapshot) => {
+        if (!cancelled) setInspectElements(snapshot.elements ?? []);
+      })
+      .catch((cause: unknown) => {
+        if (!cancelled) setError(cause);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [deviceUdid, inspectOn, laneId, projectRoot, state]);
+
+  // Escape closes the card wherever the focus happens to be (§A4).
+  useEffect(() => {
+    if (!inspectSelected) return undefined;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setInspectSelected(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [inspectSelected]);
+
+  const insertInspectElement = useMemo(() => {
+    if (!onAddContext && !onInsertDraft) return undefined;
+    return (element: IosSimulatorSnapshotElement) => {
+      try {
+        if (onAddContext) onAddContext(appleElementContextItem(element));
+        else onInsertDraft?.(inspectContextFor(element, inspectElements));
+      } catch (cause: unknown) {
+        // `workToolContextInsertion` throws with the reason when there is no
+        // chat, draft or CLI session to insert into. Say it, never swallow it.
+        setError(cause);
+      }
+    };
+  }, [inspectElements, onAddContext, onInsertDraft]);
+
+  const copyInspectElement = useCallback((element: IosSimulatorSnapshotElement) => {
+    void window.ade.app.writeClipboardText(appleCommandForElement(element)).catch(() => {});
+  }, []);
+
+  const renderInspectOverlay = useCallback((
+    deviceToView: ((point: { x: number; y: number }) => { x: number; y: number }) | null,
+  ) => {
+    if (!inspectOn) return null;
+    return (
+      <AppleInspectOverlay
+        elements={inspectElements}
+        deviceToView={deviceToView}
+        hoveredRef={inspectHovered}
+        selectedRef={inspectSelected}
+        onHover={setInspectHovered}
+        onSelect={setInspectSelected}
+        onInsertIntoChat={insertInspectElement}
+        onCopy={copyInspectElement}
+      />
+    );
+  }, [
+    copyInspectElement,
+    insertInspectElement,
+    inspectElements,
+    inspectHovered,
+    inspectOn,
+    inspectSelected,
+  ]);
 
   /* ── actions ───────────────────────────────────────────────────────────── */
 
@@ -458,12 +576,18 @@ export function AppleDevicePane({
 
   /* ── viewport ──────────────────────────────────────────────────────────── */
 
-  const canUse3d = isWebCodecsAvailable() && !inspectOn && bodyWidth >= 420;
-  const threeDisabledReason = inspectOn
-    ? "Inspect is flat-view only"
-    : bodyWidth < 420
-      ? "3D view needs a wider pane"
-      : "3D view needs WebCodecs";
+  /*
+   * §A1/§A2: the only things that can stop 3D now are a window without
+   * WebCodecs — where there is no decoded canvas to put on the body at all —
+   * and a body the presenter has already reported it cannot draw. The round-3
+   * 420px floor and the "Inspect is flat-view only" rule are both gone: the
+   * inspect overlay projects through the live camera, so it works in 3D.
+   */
+  const webCodecs = isWebCodecsAvailable();
+  const canUse3d = webCodecs && threeFailure === null;
+  const threeDisabledReason = threeFailure
+    ?? (webCodecs ? null : "3D view needs WebCodecs, which this window does not have.");
+  const effectiveMode: AppleViewMode = canUse3d ? mode : "flat";
 
   const deviceName = laneDevice?.name ?? "Simulator";
   const inputConnected = state === "live";
@@ -540,11 +664,10 @@ export function AppleDevicePane({
             streamUrl={stream.url}
             streamToken={stream.token}
             reconnectNonce={stream.reconnectNonce}
-            mode={canUse3d ? mode : "flat"}
+            mode={effectiveMode}
             viewNonce={viewNonce}
             family={familyOf(laneDevice)}
             deviceTypeName={deviceName}
-            realistic={false}
             orientation="portrait"
             devicePointSize={stream.devicePointSize}
             interactive={appleInputAllowed(state)}
@@ -555,6 +678,8 @@ export function AppleDevicePane({
             onDimensions={stream.handleDimensions}
             onFrame={stream.noteFrame}
             frameVersion={stream.frameVersion}
+            onThreeUnavailable={handleThreeUnavailable}
+            renderScreenOverlay={renderInspectOverlay}
             className={cn("bg-transparent", state === "video-lost" && "opacity-40")}
           >
             {state === "stopped" ? (
@@ -617,7 +742,17 @@ export function AppleDevicePane({
             onAction={restart}
           />
         )
-        : null;
+        /* §A1: the ONE sentence a fallback to flat is allowed to say. */
+        : threeFailure
+          ? (
+            <AppleDeviceNoticeStrip
+              sentence={`${threeFailure} Showing the flat view.`}
+              actionLabel="Try 3D again"
+              onAction={retryThreeD}
+              onDismiss={() => setThreeFailure(null)}
+            />
+          )
+          : null;
 
   return (
     <div
@@ -640,18 +775,19 @@ export function AppleDevicePane({
               containerWidth={bodyWidth}
               deviceName={deviceName}
               deviceRuntime={laneDevice?.runtime ?? null}
-              controls={controls}
               inputConnected={inputConnected}
-              mode={canUse3d ? mode : "flat"}
+              mode={effectiveMode}
               canUse3d={canUse3d}
               threeDisabledReason={threeDisabledReason}
               toolsOpen={toolsOpen}
+              inspecting={inspectOn}
               recording={Boolean(recordingActive)}
               screenshotPending={screenshotPending}
               onHome={pressHome}
               onRotate={rotate}
               onScreenshot={screenshot}
               onToggleTools={() => setToolsOpen((open) => !open)}
+              onToggleInspect={toggleInspect}
               onMode={setMode}
               onResetView={() => setViewNonce((nonce) => nonce + 1)}
               onToggleRecording={() => (recordingActive ? recordings.stop() : recordings.start())}
@@ -716,24 +852,17 @@ export function AppleDevicePane({
               <AppleToolsDrawer
                 pin={runtimePin}
                 laneId={laneId ?? ""}
+                chatSessionId={sessionId}
                 device={laneDevice}
                 visible={toolsOpen && !hidden}
                 onClose={() => setToolsOpen(false)}
-                inspect={{
-                  enabled: inspectOn,
-                  setEnabled: setInspectOn,
-                  selected: inspectSelected,
-                }}
-                recording={{
-                  active: recordingActive,
-                  start: () => recordings.start(),
-                  stop: () => recordings.stop(),
-                }}
                 onPreviewRendered={setPreview}
-                onAddContext={onAddContext}
-                onInsertDraft={onInsertDraft}
+                /* Record is a RAIL control now (§A5), so the drawer's Capture
+                   card has no other way to know a recording just started or
+                   stopped. The id changes once per transition; its effect is
+                   what replaces a poll for the recordings this pane makes. */
+                activeRecordingId={recordingActive?.id ?? null}
                 onOpenProof={recordings.openProofArtifact}
-                onSelectInspectNode={setInspectSelected}
               />
             </Suspense>
           </div>

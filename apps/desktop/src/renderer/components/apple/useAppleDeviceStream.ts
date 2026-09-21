@@ -163,6 +163,15 @@ export function useAppleDeviceStream({
    * one unmounted first stopped the other's frames.
    */
   const leaseKeyRef = useRef<string | null>(null);
+  /**
+   * Which RUN of that stream this viewer's lease belongs to.
+   *
+   * Carried back to `releaseAppleStreamLease`, so an unmount that lands after
+   * another viewer has already started a NEW stream on the same key cannot
+   * stop it. The pane and the floating player hand the device to each other,
+   * and the one going away always releases after the one arriving has started.
+   */
+  const leaseEpochRef = useRef<number | null>(null);
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
 
@@ -181,8 +190,10 @@ export function useAppleDeviceStream({
   const releaseLease = useCallback((scope: { laneId: string | null; chatSessionId: string | null }) => {
     const key = leaseKeyRef.current;
     if (!key) return;
+    const epoch = leaseEpochRef.current ?? undefined;
     leaseKeyRef.current = null;
-    if (!releaseAppleStreamLease(key).last) return;
+    leaseEpochRef.current = null;
+    if (!releaseAppleStreamLease(key, epoch).last) return;
     void window.ade.iosSimulator
       .stopStream(runtimePinRef.current, { laneId: scope.laneId, chatSessionId: scope.chatSessionId })
       .catch(() => {});
@@ -231,8 +242,16 @@ export function useAppleDeviceStream({
       releaseLease({ laneId, chatSessionId });
     }
     if (!leaseKeyRef.current) {
-      acquireAppleStreamLease(leaseKey);
+      // The descriptor is what makes the lease answerable from outside: the
+      // mini-player handover reads it to learn, synchronously, that this lane
+      // has frames and which device they are of (round 4 §B4).
+      const { epoch } = acquireAppleStreamLease(leaseKey, {
+        laneId,
+        deviceUdid,
+        pinKey: runtimePinRef.current?.key ?? null,
+      });
       leaseKeyRef.current = leaseKey;
+      leaseEpochRef.current = epoch;
     }
 
     let cancelled = false;

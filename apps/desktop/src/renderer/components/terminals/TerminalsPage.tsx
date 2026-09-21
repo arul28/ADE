@@ -10,6 +10,7 @@ import { WorkLiveCornerCard } from "../work/WorkLiveCornerCard";
 import { WorkSidebar } from "./WorkSidebar";
 import type { WorkSidebarContextTarget } from "./workToolContextInsertion";
 import { AppleDeviceMiniPlayer } from "../apple/AppleDeviceMiniPlayer";
+import { AppleShutdownConfirmHost } from "../apple/AppleShutdownConfirm";
 import { NativeToolFeedsProvider } from "./NativeToolFeedsContext";
 import { useWorkSidebarTool } from "./useWorkSidebarTool";
 import {
@@ -1500,6 +1501,13 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
               point of it — and it is opened by the rail, never by ADE.
             */}
             <AppleDeviceMiniPlayer onOpenInPane={openAppleTool} />
+            {/*
+              §B3's "Shut down {device}?" — mounted beside the player because
+              they are the same story: one asks before the tab close powers the
+              device off, the other catches it when the pane merely closes. It
+              renders nothing until something asks.
+            */}
+            <AppleShutdownConfirmHost />
           </div>
           {/* Resize handle stays a row-level sibling so its width math is correct. */}
           {workSidebarVisible ? (

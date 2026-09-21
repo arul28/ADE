@@ -5,6 +5,7 @@ import {
   retakeAppleMiniPlayer,
   suppressAppleMiniPlayerHandoff,
 } from "../apple/appleMiniPlayerStore";
+import { forgetAppleStreamLeasesForLane } from "../apple/appleStreamLease";
 
 /**
  * Closing a tool's TAB closes the tool, not just its tab.
@@ -76,8 +77,15 @@ export function closeWorkToolForReal(
       // remember this chat as one that refuses the preview.
       retakeAppleMiniPlayer();
       /*
-       * A4: closing the Apple Development TAB closes the tool for real —
-       * this chat's stream lease first, then the device session.
+       * A4, extended by round 4 §B3: closing the Apple Development TAB closes
+       * the tool for real — this chat's stream lease first, then the device
+       * POWERS OFF.
+       *
+       * The question that makes powering off safe is asked upstream, in
+       * `useWorkSidebarTool.closeTool`, because Cancel has to keep the tab as
+       * well as the device and the tab is the caller's to keep. By the time
+       * this runs the user has already answered, or there was nothing booted to
+       * ask about.
        *
        * The stop comes first and the shutdown follows it either way. The
        * helper's capture is lane-scoped and outlives the panel that started
@@ -96,6 +104,17 @@ export function closeWorkToolForReal(
           .then(() => undefined)
           .catch((error) => logCloseFailure(tool, error))
         : Promise.resolve();
+      /*
+       * The device is powering off, so the renderer's count of who is watching
+       * its stream stops being a fact about the world.
+       *
+       * Dropped rather than decremented: the pane is still mounted at this
+       * point and will release on its own unmount, and a count left behind
+       * would mean the next viewer of a freshly started device is not seen as
+       * the first one. Forgetting is silent — the stop above and the shutdown
+       * below are what actually end the stream.
+       */
+      forgetAppleStreamLeasesForLane(laneId);
       void stopStream
         // The Work pane is the lane-scoped surface, so it asks the service to
         // stand the single-owner rule down rather than impersonating the owner.

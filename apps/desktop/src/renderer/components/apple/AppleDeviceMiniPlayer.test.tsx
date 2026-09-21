@@ -10,6 +10,9 @@ vi.mock("./AppleDeviceStage", () => ({
   isWebCodecsAvailable: () => true,
 }));
 
+/** Mutable so a test can mount the player BEFORE its first frame. */
+const stream = { frameVersion: 1 };
+
 vi.mock("./useAppleDeviceStream", () => ({
   useAppleDeviceStream: () => ({
     state: "live",
@@ -20,7 +23,7 @@ vi.mock("./useAppleDeviceStream", () => ({
     height: 2_556,
     error: null,
     chip: null,
-    frameVersion: 1,
+    frameVersion: stream.frameVersion,
     streamStatus: null,
     handleReaderStatus: vi.fn(),
     handleDimensions: vi.fn(),
@@ -35,8 +38,18 @@ const {
   openAppleMiniPlayer,
   closeAppleMiniPlayer,
   getAppleMiniPlayerTarget,
+  handoffAppleMiniPlayer,
+  noteAppleMiniPlayerLaneDevice,
+  noteAppleMiniPlayerPoster,
   resetAppleMiniPlayerForTests,
+  takeAppleMiniPlayerPoster,
 } = await import("./appleMiniPlayerStore");
+const {
+  acquireAppleStreamLease,
+  appleStreamLeaseCount,
+  appleStreamLeaseKey,
+  resetAppleStreamLeases,
+} = await import("./appleStreamLease");
 
 const TARGET = {
   laneId: "lane-1",
@@ -49,6 +62,8 @@ const TARGET = {
 };
 
 beforeEach(() => {
+  stream.frameVersion = 1;
+  resetAppleStreamLeases();
   resetAppleMiniPlayerForTests();
   (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
     observe() {}
@@ -60,6 +75,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   resetAppleMiniPlayerForTests();
+  resetAppleStreamLeases();
 });
 
 describe("appleMiniPlayerStore", () => {
@@ -140,5 +156,61 @@ describe("AppleDeviceMiniPlayer", () => {
     render(<AppleDeviceMiniPlayer onOpenInPane={vi.fn()} />);
     act(() => openAppleMiniPlayer(TARGET));
     expect(document.querySelectorAll("[data-apple-mini-resize]")).toHaveLength(8);
+  });
+
+  /*
+   * Round 4 §B4: the player used to open on a black box and fill in once the
+   * new reader had dialled the helper and been given a keyframe. It now mounts
+   * on the pane's own last frame, in the first paint, and the live picture
+   * takes over behind it.
+   */
+  describe("the handover", () => {
+    it("paints the pane's last frame in its very first render, on the stage's own box", () => {
+      stream.frameVersion = 0;
+      noteAppleMiniPlayerPoster("pro", "data:image/jpeg;base64,AAA");
+      render(<AppleDeviceMiniPlayer onOpenInPane={vi.fn()} />);
+      act(() => openAppleMiniPlayer(TARGET));
+      const poster = document.querySelector("[data-apple-mini-poster]") as HTMLImageElement | null;
+      expect(poster?.getAttribute("src")).toBe("data:image/jpeg;base64,AAA");
+      // Same `object-contain` rule the flat presenter draws the canvas with,
+      // so there is no jump when the decoder catches up.
+      expect(poster?.className).toContain("object-contain");
+      expect(poster?.className).toContain("pointer-events-none");
+      // Claimed: a second player must not repaint a stale session.
+      expect(takeAppleMiniPlayerPoster("pro")).toBeNull();
+    });
+
+    it("retires the poster the moment a real frame lands", () => {
+      stream.frameVersion = 1;
+      noteAppleMiniPlayerPoster("pro", "data:image/jpeg;base64,AAA");
+      render(<AppleDeviceMiniPlayer onOpenInPane={vi.fn()} />);
+      act(() => openAppleMiniPlayer(TARGET));
+      expect(document.querySelector("[data-apple-mini-poster]")).toBeNull();
+    });
+
+    it("shows no poster at all when the player was opened by hand", () => {
+      stream.frameVersion = 0;
+      render(<AppleDeviceMiniPlayer onOpenInPane={vi.fn()} />);
+      act(() => openAppleMiniPlayer(TARGET));
+      expect(document.querySelector("[data-apple-mini-poster]")).toBeNull();
+    });
+
+    it("hands the handover's lease back once it is mounted, and never lets the count reach zero", () => {
+      const key = appleStreamLeaseKey({ pinKey: null, laneId: "lane-1", deviceUdid: "pro" });
+      // The pane, open and streaming.
+      acquireAppleStreamLease(key, { laneId: "lane-1", deviceUdid: "pro", pinKey: null });
+      noteAppleMiniPlayerLaneDevice("lane-1", { udid: "pro", name: "iPhone 17 Pro", runtime: "iOS 26.2", family: "iphone" });
+      render(<AppleDeviceMiniPlayer onOpenInPane={vi.fn()} />);
+
+      act(() => {
+        // The pane's unmount: the handover takes a hold (2), the player mounts
+        // and gives it back (1).
+        handoffAppleMiniPlayer({ laneId: "lane-1", chatSessionId: "chat-1", runtimePin: null });
+      });
+      expect(getAppleMiniPlayerTarget()?.deviceUdid).toBe("pro");
+      // The stream hook is mocked out here, so this is the hold alone going
+      // back — the pane's own lease is still held and the capture never stopped.
+      expect(appleStreamLeaseCount(key)).toBe(1);
+    });
   });
 });

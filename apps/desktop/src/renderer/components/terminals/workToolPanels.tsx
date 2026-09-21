@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { Play, WarningCircle } from "@phosphor-icons/react";
 import type { ComponentType, ReactNode } from "react";
@@ -18,7 +18,11 @@ import { ChatAppControlPanel } from "../chat/ChatAppControlPanel";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
 import { AppleDevicePane } from "../apple/AppleDevicePane";
 import {
-  handoffAppleMiniPlayer,
+  getAppleMiniPlayerLaneDevice,
+  handoffAppleMiniPlayerAsync,
+  noteAppleMiniPlayerLaneDevice,
+  noteAppleMiniPlayerPoster,
+  releaseAppleMiniPlayerHandoverHold,
   retakeAppleMiniPlayer,
 } from "../apple/appleMiniPlayerStore";
 import { ChatTerminalDrawer } from "../chat/ChatTerminalDrawer";
@@ -343,11 +347,104 @@ function WorkIosTool({
   pinRef.current = runtimePin;
   const sessionRef = useRef(panelSessionId);
   sessionRef.current = panelSessionId;
+  /**
+   * The pane's own DOM, kept through the unmount.
+   *
+   * A callback ref that never takes the `null` React hands it on detach, so the
+   * layout cleanup below can still reach the decoder's canvas. The subtree is
+   * already out of the document by the time the next tool renders; holding it
+   * costs one detached node until this panel mounts again, and it is the only
+   * way to photograph the last frame — a canvas keeps its pixels after it is
+   * removed, but a ref React has already cleared points at nothing.
+   */
+  const paneNodeRef = useRef<HTMLDivElement | null>(null);
+  const holdPaneNode = useCallback((node: HTMLDivElement | null) => {
+    if (node) paneNodeRef.current = node;
+  }, []);
+
+  /*
+   * Keep the handover's cache warm while the tool is open (round 4 §B4).
+   *
+   * One read on mount and one per device-state event — no poll. The handover
+   * itself is synchronous and must stay that way, so the name and family it
+   * needs have to be here BEFORE the pane goes, not fetched after it.
+   */
   useEffect(() => {
+    if (!laneId) return undefined;
+    let cancelled = false;
+    const api = window.ade?.iosSimulator;
+    const read = () => {
+      if (!api?.deviceList) return;
+      void api.deviceList({ laneId, installed: true }, pinRef.current)
+        .then((listed) => {
+          if (cancelled) return;
+          const lane = listed?.lane ?? null;
+          noteAppleMiniPlayerLaneDevice(laneId, lane
+            ? { udid: lane.udid, name: lane.name, runtime: lane.runtime, family: lane.family }
+            : null);
+        })
+        .catch(() => {});
+    };
+    read();
+    const unsubscribe = api?.onEvent?.((event) => {
+      if (event.type !== "apple.device.state") return;
+      if (event.laneId && event.laneId !== laneId) return;
+      read();
+    }, pinRef.current);
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, [laneId]);
+
+  /*
+   * The handover, in a LAYOUT effect.
+   *
+   * Three things have to happen in this order for the floating player to appear
+   * without a gap, and only the mutation phase can give it to us:
+   *
+   *  1. photograph the last frame — the pane's canvas is still in the tree here
+   *     and gone by the passive phase;
+   *  2. take a lease on the stream, BEFORE the pane's own stream hook gives its
+   *     one back (that release is a passive cleanup, so it comes after this);
+   *  3. open the player, so its mount is flushed in this same commit rather
+   *     than a round trip later.
+   *
+   * Round 3 did all three in a passive cleanup behind a `deviceList` await,
+   * which is the "visible moment" §B4 describes.
+   */
+  /*
+   * The other half of the retake: give the hold back now that the pane holds a
+   * lease of its own.
+   *
+   * A passive effect in the PARENT, which React runs after every effect in the
+   * subtree below it — so the pane's stream hook has already acquired by the
+   * time this fires, and the count goes 2 → 1 rather than through zero. The
+   * hold expires by itself if this never runs; that is the safety net, not the
+   * mechanism.
+   */
+  useEffect(() => {
+    if (!laneId) return;
+    releaseAppleMiniPlayerHandoverHold();
+  });
+
+  useLayoutEffect(() => {
     if (!laneId) return undefined;
     retakeAppleMiniPlayer();
     return () => {
-      void handoffAppleMiniPlayer({
+      const canvas = paneNodeRef.current?.querySelector("canvas");
+      const udid = getAppleMiniPlayerLaneDevice(laneId)?.udid ?? null;
+      if (canvas && udid && canvas.width > 0 && canvas.height > 0) {
+        try {
+          // JPEG, not PNG: this is a photograph of a screen that is about to be
+          // replaced by the real thing, and a 300 KB PNG of it would cost more
+          // to hand around than the frame it is standing in for.
+          noteAppleMiniPlayerPoster(udid, canvas.toDataURL("image/jpeg", 0.7));
+        } catch {
+          // A tainted or zero-sized canvas is a poster we do without.
+        }
+      }
+      void handoffAppleMiniPlayerAsync({
         laneId,
         chatSessionId: sessionRef.current,
         runtimePin: pinRef.current,
@@ -360,16 +457,21 @@ function WorkIosTool({
   // this rebuild replaced.
   return (
     <NativePanelFrame warningReason={warningReason}>
-      <AppleDevicePane
-        key={`work-ios:${mountScope}`}
-        sessionId={panelSessionId}
-        laneId={laneId}
-        runtimePin={runtimePin}
-        projectRoot={laneRoot}
-        ignoreChatOwnership
-        onAddContext={canInsertContext ? onAddIosContext : undefined}
-        onInsertDraft={canInsertContext ? onInsertDraft : undefined}
-      />
+      {/* `contents`, so this ref holder generates no box at all and the pane
+          stays the flex child it was — the node exists only to be queried for
+          the decoder canvas during the unmount above. */}
+      <div ref={holdPaneNode} className="contents">
+        <AppleDevicePane
+          key={`work-ios:${mountScope}`}
+          sessionId={panelSessionId}
+          laneId={laneId}
+          runtimePin={runtimePin}
+          projectRoot={laneRoot}
+          ignoreChatOwnership
+          onAddContext={canInsertContext ? onAddIosContext : undefined}
+          onInsertDraft={canInsertContext ? onInsertDraft : undefined}
+        />
+      </div>
     </NativePanelFrame>
   );
 }

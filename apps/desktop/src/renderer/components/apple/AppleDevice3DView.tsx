@@ -1,4 +1,10 @@
-import { useEffect, useRef } from "react";
+// Ported from t3code packages/client-runtime/src/device/{modelScene,phoneScene}.ts
+// and apps/web/src/components/device/phoneTrackpad.ts (MIT, T3 Tools Inc.) —
+// the normalized-GLB display contract (one `device-screen` mesh, portrait,
+// front +Z, height 2.2), the planar display UVs, and the trackpad rule that
+// ctrl-wheel and pinch are camera zoom while a plain wheel is the DEVICE's
+// scroll.
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import type {
   BufferGeometry,
   CanvasTexture,
@@ -9,15 +15,11 @@ import type {
   Object3D,
   PerspectiveCamera,
   Scene,
-  Shape,
   Texture,
+  Vector3,
 } from "three";
 import { cn } from "../ui/cn";
-import {
-  appleDeviceModel,
-  type AppleDeviceModelId,
-  type AppleDeviceModelSource,
-} from "./appleDeviceModels";
+import { appleDeviceModel, type AppleDeviceModelId, type AppleDeviceModelSource } from "./appleDeviceModels";
 import { createAppleDeviceOrbit, type AppleDeviceOrbit } from "./appleDeviceOrbit";
 
 export type AppleDeviceFamily = "iphone" | "ipad";
@@ -27,6 +29,11 @@ export type AppleDeviceOrientation =
   | "landscape-left"
   | "landscape-right";
 
+/** Why the 3D presenter cannot show this device, in a sentence the strip can print. */
+export type AppleDevice3DFailure =
+  | "The 3D body could not be loaded."
+  | "3D view needs WebGL, which this window does not have.";
+
 export type AppleDevice3DViewProps = {
   /** The decoded device screen. The stage draws every frame into this canvas; the view samples it as a texture. */
   screenCanvas: HTMLCanvasElement | null;
@@ -35,12 +42,43 @@ export type AppleDevice3DViewProps = {
   family: AppleDeviceFamily;
   /** Product hint from the simulator device type, e.g. "iPhone 17 Pro"; the model map picks the closest body. */
   deviceTypeName: string | null;
-  realistic: boolean;
   orientation: AppleDeviceOrientation;
+  /** Decoded frame size in PIXELS — the texture's own aspect. */
   screenPixelSize: { width: number; height: number };
+  /**
+   * Device size in POINTS, which is the coordinate space the simulator's input
+   * and its accessibility frames are both in. Null falls back to pixels.
+   */
+  devicePointSize: { width: number; height: number } | null;
   interactive: boolean;
+  /**
+   * Bumped by "Reset view". Handled IN PLACE — the round-3 stage remounted the
+   * whole view for this, and a remount means a new `WebGLRenderer` and a new
+   * GPU context every time. Browsers cap live contexts (Chromium at 16) and
+   * drop the oldest to make room, so a pane you reset a dozen times started
+   * losing the context it was still drawing on.
+   */
+  resetNonce: number;
   onDeviceInput: (input: { phase: "begin" | "move" | "end"; x: number; y: number }) => void;
-  onReady?: (info: { modelId: string | null; procedural: boolean }) => void;
+  /** A wheel over the SCREEN is the device's scroll, in device points (§A3). */
+  onDeviceScroll?: ((delta: { x: number; y: number; deltaX: number; deltaY: number }) => void) | undefined;
+  /** A key pressed while the 3D surface holds focus. True = forwarded. */
+  onDeviceKey?: ((event: { key: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean }) => boolean) | undefined;
+  /** The real body is on screen. */
+  onReady?: ((info: { modelId: AppleDeviceModelId }) => void) | undefined;
+  /**
+   * There will be no 3D device (§A1). The pane falls back to the flat view and
+   * says this once; the view NEVER substitutes a procedural slab.
+   */
+  onUnavailable?: ((reason: AppleDevice3DFailure) => void) | undefined;
+  /**
+   * Drawn over the canvas — the live inspect overlay. The argument is the
+   * device-point → canvas-pixel projection, or null while there is nothing to
+   * project against (no body yet).
+   */
+  renderScreenOverlay?: ((
+    deviceToView: ((point: { x: number; y: number }) => { x: number; y: number }) | null,
+  ) => ReactNode) | undefined;
   className?: string;
 };
 
@@ -64,11 +102,8 @@ type DisplayLayout = {
 
 type ScreenHit = { x: number; y: number };
 
-type BodyKind = "procedural" | "imported";
-
 type DeviceBody = {
-  kind: BodyKind;
-  modelId: AppleDeviceModelId | null;
+  modelId: AppleDeviceModelId;
   root: Group;
   orientation: Group;
   display: Mesh;
@@ -77,10 +112,35 @@ type DeviceBody = {
   dispose: () => void;
 };
 
-const SCREEN_HEIGHT = 2.2;
+/**
+ * How far in front of the body the live display sits, in scene units.
+ *
+ * The bundled bodies keep Apple's own cover glass: on `iphone-18-pro` that is
+ * a BLACK slab whose front face is at z = 0.0430 — exactly the plane of the
+ * `device-screen` placeholder. Two coplanar opaque surfaces under Three's
+ * default `LessEqualDepth` are a coin flip decided by draw order, and the one
+ * that kept winning was the black one, which is why the first round-4 build
+ * drew a perfect phone with a dead screen.
+ *
+ * The lift alone was not enough. At the default camera distance the depth
+ * buffer could not tell 0.001 units apart, so the glass came back head-on and
+ * went away again as soon as you zoomed or turned the body — which read as
+ * "the picture only appears when you touch it". The lift is paired with a
+ * polygon offset on the screen material (the standard answer for coplanar
+ * geometry, applied in depth units rather than world units) and a near plane
+ * far enough out to leave the depth buffer some precision to spend.
+ */
+const SCREEN_LIFT = 0.002;
+
 const ZOOM_MIN = Math.log(0.55);
 const ZOOM_MAX = Math.log(2.4);
 const CAMERA_FOV = 32;
+/** The overlay re-projects at most this often while the body is still moving. */
+const POSE_NOTIFY_MS = 90;
+/** How long a lost context has to come back before the pane gives up on 3D. */
+const CONTEXT_RESTORE_MS = 2_000;
+/** The 3D screen is a few hundred CSS pixels wide; a 3× frame is wasted on it. */
+const MIRROR_MAX_WIDTH = 512;
 
 function orientationZ(orientation: AppleDeviceOrientation): number {
   switch (orientation) {
@@ -119,6 +179,23 @@ function displayLayout(
   };
 }
 
+/**
+ * The coordinate space a tap, a scroll and an inspect frame all speak.
+ *
+ * POINTS, not decoded pixels. Round 3's 3D view measured taps against the
+ * decoded frame — 1179×2556 on a 3× phone — and sent those numbers to a
+ * device that answers in 393×852, so every 3D tap landed three times too far
+ * down and to the right (clamped to the edge in practice), and the inspect
+ * frames it projected collapsed into the top-left third of the screen.
+ */
+export function appleDeviceInputSize(
+  pointSize: { width: number; height: number } | null | undefined,
+  pixelSize: { width: number; height: number },
+): { width: number; height: number } {
+  if (pointSize && pointSize.width > 0 && pointSize.height > 0) return pointSize;
+  return pixelSize;
+}
+
 function orientedPointSize(
   orientation: AppleDeviceOrientation,
   size: { width: number; height: number },
@@ -150,6 +227,60 @@ function portraitToOriented(
   }
 }
 
+/**
+ * §A3's one rule for a drag in 3D: on the glass it is the DEVICE's, off the
+ * glass it turns the body, and Alt always turns the body.
+ *
+ * Pure because it is the whole behaviour: the raycast that answers `onScreen`
+ * needs a GPU, but what we do with the answer must be checkable without one.
+ */
+export function appleDragIntent(input: {
+  onScreen: boolean;
+  altKey: boolean;
+  interactive: boolean;
+}): "input" | "orbit" {
+  if (!input.interactive || input.altKey || !input.onScreen) return "orbit";
+  return "input";
+}
+
+/**
+ * §A3's wheel rule, ported from t3code's `phoneTrackpad.ts`: ctrl (or cmd)
+ * plus wheel, and the Safari pinch gesture, are the CAMERA's zoom; a plain
+ * wheel over the glass is the DEVICE's scroll. Round 3 sent every wheel to the
+ * camera, so nothing on the simulator could be scrolled in 3D at all.
+ */
+export function appleWheelIntent(input: {
+  ctrlKey: boolean;
+  metaKey: boolean;
+  onScreen: boolean;
+  interactive: boolean;
+}): "zoom" | "scroll" {
+  if (input.ctrlKey || input.metaKey) return "zoom";
+  return input.onScreen && input.interactive ? "scroll" : "zoom";
+}
+
+/** The inverse of `portraitToOriented`: a point on the ORIENTED screen, back to the panel's own 0..1. */
+export function orientedToPortrait(
+  x: number,
+  y: number,
+  orientation: AppleDeviceOrientation,
+): { u: number; vFromBottom: number } {
+  switch (orientation) {
+    case "portrait":
+      return { u: x, vFromBottom: 1 - y };
+    case "portrait-upside-down":
+      return { u: 1 - x, vFromBottom: y };
+    case "landscape-left":
+      return { u: y, vFromBottom: x };
+    case "landscape-right":
+      return { u: 1 - y, vFromBottom: 1 - x };
+    default: {
+      const _exhaustive: never = orientation;
+      return _exhaustive;
+    }
+  }
+}
+
 function writeScreenUvs(
   THREE: ThreeNS,
   geometry: BufferGeometry,
@@ -174,23 +305,6 @@ function writeScreenUvs(
   uv.needsUpdate = true;
 }
 
-function roundedRect(THREE: ThreeNS, width: number, height: number, radius: number): Shape {
-  const x = -width / 2;
-  const y = -height / 2;
-  const path = new THREE.Shape();
-  const r = Math.min(radius, width / 2, height / 2);
-  path.moveTo(x + r, y);
-  path.lineTo(x + width - r, y);
-  path.quadraticCurveTo(x + width, y, x + width, y + r);
-  path.lineTo(x + width, y + height - r);
-  path.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
-  path.lineTo(x + r, y + height);
-  path.quadraticCurveTo(x, y + height, x, y + height - r);
-  path.lineTo(x, y + r);
-  path.quadraticCurveTo(x, y, x + r, y);
-  return path;
-}
-
 function meshMaterials(material: Mesh["material"]): Material[] {
   return Array.isArray(material) ? material : [material];
 }
@@ -211,87 +325,14 @@ function disposeImportedSubtree(root: Object3D, keep: Texture | null): void {
   }
 }
 
-function createProceduralBody(
-  THREE: ThreeNS,
-  family: AppleDeviceFamily,
-  texture: Texture | null,
-  layout: DisplayLayout,
-): DeviceBody {
-  const bezel = family === "ipad" ? 0.055 : 0.07;
-  const screenWidth = SCREEN_HEIGHT * layout.aspect;
-  const width = screenWidth + bezel * 2;
-  const height = SCREEN_HEIGHT + bezel * 2;
-  const depth = family === "ipad" ? 0.09 : 0.11;
-  const root = new THREE.Group();
-  const orientation = new THREE.Group();
-  root.add(orientation);
-
-  const metal = new THREE.MeshStandardMaterial({ color: 0xb8bfc8, metalness: 0.86, roughness: 0.28 });
-  const glass = new THREE.MeshPhysicalMaterial({
-    color: 0x12151c,
-    metalness: 0.18,
-    roughness: 0.22,
-    clearcoat: 1,
-  });
-  const body = new THREE.Mesh(
-    new THREE.ExtrudeGeometry(roundedRect(THREE, width, height, family === "ipad" ? 0.12 : 0.22), {
-      depth,
-      bevelEnabled: true,
-      bevelSize: 0.012,
-      bevelThickness: 0.012,
-      bevelSegments: 3,
-      steps: 1,
-      curveSegments: 12,
-    }),
-    metal,
-  );
-  body.position.z = 0.02 - depth;
-  orientation.add(body);
-
-  const face = new THREE.Mesh(
-    new THREE.ShapeGeometry(roundedRect(THREE, width - 0.016, height - 0.016, family === "ipad" ? 0.1 : 0.2), 16),
-    glass,
-  );
-  face.position.z = 0.038;
-  orientation.add(face);
-
-  const screenGeometry = new THREE.ShapeGeometry(
-    roundedRect(THREE, screenWidth, SCREEN_HEIGHT, family === "ipad" ? 0.04 : 0.12),
-    20,
-  );
-  writeScreenUvs(THREE, screenGeometry, screenWidth, SCREEN_HEIGHT, layout);
-  const screenMaterial = new THREE.MeshBasicMaterial({
-    map: texture,
-    color: texture ? 0xffffff : 0x111111,
-    toneMapped: false,
-  });
-  const display = new THREE.Mesh(screenGeometry, screenMaterial);
-  display.name = "device-screen";
-  display.position.z = 0.042;
-  orientation.add(display);
-
-  return {
-    kind: "procedural",
-    modelId: null,
-    root,
-    orientation,
-    display,
-    screenWidth,
-    screenHeight: SCREEN_HEIGHT,
-    dispose() {
-      root.traverse((object) => {
-        const mesh = object as Mesh;
-        if (!mesh.isMesh) return;
-        mesh.geometry.dispose();
-      });
-      metal.dispose();
-      glass.dispose();
-      screenMaterial.map = null;
-      screenMaterial.dispose();
-    },
-  };
-}
-
+/**
+ * The one mesh the live framebuffer goes on.
+ *
+ * The bundled bodies are converted with the display renamed to `device-screen`
+ * (see `assets/apple-device-models/sources.json`); the ids from the conversion
+ * record are kept as a fallback so a re-export that skips the rename still
+ * finds its screen instead of silently drawing a dead body.
+ */
 function findScreenMesh(root: Object3D, names: readonly string[]): Mesh | null {
   const wanted = new Set(names);
   let match: Mesh | null = null;
@@ -331,15 +372,20 @@ function createImportedBody(
     map: texture,
     color: texture ? 0xffffff : 0x111111,
     toneMapped: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -4,
+    polygonOffsetUnits: -8,
   });
   display.material = screenMaterial;
   display.name = "device-screen";
+  const restZ = display.position.z;
+  display.position.z = restZ + SCREEN_LIFT;
+  display.renderOrder = 1;
   const root = new THREE.Group();
   const orientation = new THREE.Group();
   orientation.add(asset);
   root.add(orientation);
   return {
-    kind: "imported",
     modelId: source.id,
     root,
     orientation,
@@ -347,6 +393,8 @@ function createImportedBody(
     screenWidth,
     screenHeight,
     dispose() {
+      display.position.z = restZ;
+      display.renderOrder = 0;
       display.material = originalMaterial;
       screenMaterial.map = null;
       screenMaterial.dispose();
@@ -360,13 +408,26 @@ function reducedMotionPreferred(): boolean {
   return globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
 }
 
+type ViewerHooks = {
+  /** The body moved: anything projected onto it has to be re-measured. */
+  onPose: () => void;
+  onReady: (info: { modelId: AppleDeviceModelId }) => void;
+  onUnavailable: (reason: AppleDevice3DFailure) => void;
+};
+
 type Viewer = {
   sync(props: AppleDevice3DViewProps): void;
   resize(width: number, height: number, pixelRatio: number): void;
-  pointerDown(nx: number, ny: number, now: number): "input" | "orbit" | "none";
+  pointerDown(nx: number, ny: number, now: number, forceOrbit: boolean): "input" | "orbit" | "none";
   pointerMove(nx: number, ny: number, dx: number, dy: number, now: number): void;
   pointerUp(nx: number, ny: number, now: number): void;
+  /** The device point under the pointer, or null when the pointer is off the screen. */
+  screenPointAt(nx: number, ny: number): ScreenHit | null;
+  /** A device point, projected to canvas-local CSS pixels. Null with no body. */
+  projectDevicePoint(point: { x: number; y: number }): { x: number; y: number } | null;
   zoomBy(logDelta: number): void;
+  /** "Reset view": back to the rest pose and the default zoom, same renderer. */
+  resetView(now: number): void;
   cancelGestures(now: number): void;
   dispose(): void;
 };
@@ -377,6 +438,7 @@ function createViewer(
   canvas: HTMLCanvasElement,
   initial: AppleDevice3DViewProps,
   getProps: () => AppleDevice3DViewProps,
+  hooks: ViewerHooks,
 ): Viewer {
   const renderer = new THREE.WebGLRenderer({
     canvas,
@@ -386,7 +448,10 @@ function createViewer(
   });
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   const scene: Scene = new THREE.Scene();
-  const camera: PerspectiveCamera = new THREE.PerspectiveCamera(CAMERA_FOV, 1, 0.1, 40);
+  // Near 0.1 with far 40 spends almost the whole depth buffer on the first
+  // centimetre in front of the lens; the body lives at ~5 units, where the
+  // remaining precision could not separate the display from its cover glass.
+  const camera: PerspectiveCamera = new THREE.PerspectiveCamera(CAMERA_FOV, 1, 0.5, 40);
   camera.position.z = 5.5;
   scene.add(new THREE.AmbientLight(0xffffff, 2.3));
   const key = new THREE.DirectionalLight(0xe4edff, 4.6);
@@ -402,11 +467,24 @@ function createViewer(
   motion.setPose(rest, performance.now(), true);
 
   let texture: CanvasTexture | null = null;
+  /**
+   * The decoder's canvas, and our own copy of it.
+   *
+   * WebGL is handed the COPY, never the decoder's canvas directly. Uploading
+   * the decoder's canvas worked for the first frame after a mount and then
+   * returned black for every frame after it, whatever the element's position,
+   * size or opacity — its backing store still answered `getImageData`, so the
+   * frames were always there; they just would not come back out through
+   * `texImage2D`. A plain detached canvas has none of that coupling: it is a
+   * bitmap, it is blitted once per drawn frame, and the upload reads what the
+   * blit just wrote.
+   */
+  let source: HTMLCanvasElement | null = null;
+  let mirror: HTMLCanvasElement | null = null;
+  let mirrorContext: CanvasRenderingContext2D | null = null;
   let layout = displayLayout(initial.orientation, initial.screenPixelSize, initial.screenCanvas);
-  let body = createProceduralBody(THREE, initial.family, null, layout);
-  scene.add(body.root);
-  body.root.quaternion.copy(motion.rotation);
-  body.orientation.rotation.z = layout.rotation;
+  /** Null until the real body is on screen. There is no procedural fallback (§A1). */
+  let body: DeviceBody | null = null;
 
   let disposed = false;
   let raf = 0;
@@ -420,18 +498,39 @@ function createViewer(
   let currentModelKey = "";
   let lastFrameVersion = Number.NaN;
   let lastCanvas: HTMLCanvasElement | null = null;
+  let lastPoseNotice = 0;
+  let restoreTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * Set by anything that MOVES the body, and by nothing else.
+   *
+   * Without it the notice fires once per drawn frame — 30 times a second over
+   * a live stream — and re-projects an inspect overlay that has not moved a
+   * pixel. A new texture is not a new pose.
+   */
+  let poseDirty = false;
 
   const raycaster = new THREE.Raycaster();
   const pointerNdc = new THREE.Vector2();
   const localHit = new THREE.Vector3();
+  const projected: Vector3 = new THREE.Vector3();
+
+  const notifyPose = (force: boolean) => {
+    if (!poseDirty) return;
+    const now = performance.now();
+    if (!force && now - lastPoseNotice < POSE_NOTIFY_MS) return;
+    lastPoseNotice = now;
+    poseDirty = false;
+    hooks.onPose();
+  };
 
   const applyPose = () => {
+    if (!body) return;
     body.root.quaternion.copy(motion.rotation);
     body.orientation.rotation.z = layout.rotation;
   };
 
   const fitCamera = () => {
-    if (!viewport.width || !viewport.height) return;
+    if (!viewport.width || !viewport.height || !body) return;
     camera.aspect = viewport.width / viewport.height;
     body.root.updateMatrixWorld(true);
     const bounds = new THREE.Box3().setFromObject(body.root);
@@ -449,7 +548,7 @@ function createViewer(
     raf = requestAnimationFrame(draw);
   };
 
-  const draw = () => {
+  function draw() {
     raf = 0;
     if (disposed || !viewport.width || !viewport.height) return;
     try {
@@ -461,24 +560,59 @@ function createViewer(
         renderer.setDrawingBufferSize(viewport.width, viewport.height, viewport.pixelRatio);
         drawingBuffer = { ...viewport };
       }
+      if (texture && mirrorFrame()) texture.needsUpdate = true;
       const now = performance.now();
-      if (motion.advance(now, reducedMotionPreferred())) applyPose();
+      if (motion.advance(now, reducedMotionPreferred())) {
+        applyPose();
+        poseDirty = true;
+        notifyPose(false);
+      }
       camera.position.z = fitDistance * Math.exp(zoomLog);
       camera.updateProjectionMatrix();
       renderer.render(scene, camera);
       if (motion.needsFrame()) invalidate();
+      else notifyPose(true);
     } catch {
-      // WebGL can throw on a lost context; the canvas listener reports unavailability.
+      // A render can throw while the context is gone; `webglcontextlost` is
+      // what decides whether that heals or becomes the flat fallback.
     }
+  }
+
+  /** Blit the decoded frame into our own bitmap. True when the texture should re-upload. */
+  const mirrorFrame = (): boolean => {
+    if (!source || !mirror || !mirrorContext) return false;
+    if (source.width <= 0 || source.height <= 0) return false;
+    const scale = Math.min(1, MIRROR_MAX_WIDTH / source.width);
+    const width = Math.max(1, Math.round(source.width * scale));
+    const height = Math.max(1, Math.round(source.height * scale));
+    if (mirror.width !== width || mirror.height !== height) {
+      mirror.width = width;
+      mirror.height = height;
+    }
+    try {
+      mirrorContext.drawImage(source, 0, 0, width, height);
+    } catch {
+      // A canvas mid-resize can throw; the next frame blits again.
+      return false;
+    }
+    return true;
   };
 
-  const attachTexture = (source: HTMLCanvasElement | null) => {
+  const attachTexture = (next: HTMLCanvasElement | null) => {
     if (texture) {
       texture.dispose();
       texture = null;
     }
-    if (!source) return;
-    texture = new THREE.CanvasTexture(source);
+    source = next;
+    if (!next) return;
+    if (!mirror) {
+      mirror = document.createElement("canvas");
+      mirrorContext = mirror.getContext("2d", { alpha: false });
+    }
+    mirror.width = Math.max(1, next.width);
+    mirror.height = Math.max(1, next.height);
+    mirrorFrame();
+    texture = new THREE.CanvasTexture(mirror);
     texture.colorSpace = THREE.SRGBColorSpace;
     texture.minFilter = THREE.LinearFilter;
     texture.magFilter = THREE.LinearFilter;
@@ -486,33 +620,39 @@ function createViewer(
   };
 
   const paintDisplay = () => {
+    if (!body) return;
     const material = body.display.material as MeshBasicMaterial;
     material.map = texture;
     material.color.set(texture ? 0xffffff : 0x111111);
     material.needsUpdate = true;
+    /*
+     * Ask for the upload here, not only on the next decoded frame.
+     *
+     * The body arrives a beat after the stream does, and an idle device sends
+     * NO further frames — an iOS home screen is perfectly still. Without this
+     * the texture was hung on the material and then never uploaded, so the
+     * first thing you saw on a quiet device was a perfect phone with a dead
+     * black screen, which came back the moment you touched it.
+     */
+    if (texture) texture.needsUpdate = true;
     writeScreenUvs(THREE, body.display.geometry, body.screenWidth, body.screenHeight, layout);
   };
 
-  const replaceBody = (next: DeviceBody) => {
-    scene.remove(body.root);
-    body.dispose();
+  const installBody = (next: DeviceBody) => {
+    if (body) {
+      scene.remove(body.root);
+      body.dispose();
+    }
     body = next;
     scene.add(body.root);
     applyPose();
     fitCamera();
+    poseDirty = true;
     invalidate();
+    notifyPose(true);
   };
 
-  const announce = (info: { modelId: string | null; procedural: boolean }) => {
-    getProps().onReady?.(info);
-  };
-
-  const installProcedural = (family: AppleDeviceFamily, ready: boolean) => {
-    replaceBody(createProceduralBody(THREE, family, texture, layout));
-    if (ready) announce({ modelId: null, procedural: true });
-  };
-
-  const loadRealistic = (source: AppleDeviceModelSource, family: AppleDeviceFamily) => {
+  const loadModel = (source: AppleDeviceModelSource) => {
     loadController?.abort();
     const controller = new AbortController();
     loadController = controller;
@@ -531,28 +671,33 @@ function createViewer(
         const imported = createImportedBody(THREE, gltf.scene, source, texture, layout);
         if (!imported) {
           disposeImportedSubtree(gltf.scene, texture);
-          installProcedural(family, true);
+          hooks.onUnavailable("The 3D body could not be loaded.");
           return;
         }
-        replaceBody(imported);
-        announce({ modelId: source.id, procedural: false });
+        installBody(imported);
+        paintDisplay();
+        hooks.onReady({ modelId: source.id });
       } catch (cause) {
         if (controller.signal.aborted || disposed || gen !== loadGen) return;
         void cause;
-        installProcedural(family, true);
+        // §A1: never a plain slab. The pane falls back to the flat view.
+        hooks.onUnavailable("The 3D body could not be loaded.");
       }
     })();
   };
 
   const screenPoint = (nx: number, ny: number, captured: boolean): ScreenHit | null => {
-    if (!viewport.width || !viewport.height) return null;
+    if (!viewport.width || !viewport.height || !body) return null;
     applyPose();
     body.orientation.updateWorldMatrix(true, true);
     camera.updateMatrixWorld(true);
     pointerNdc.set(nx * 2 - 1, 1 - ny * 2);
     raycaster.setFromCamera(pointerNdc, camera);
     const props = getProps();
-    const points = orientedPointSize(props.orientation, props.screenPixelSize);
+    const points = orientedPointSize(
+      props.orientation,
+      appleDeviceInputSize(props.devicePointSize, props.screenPixelSize),
+    );
     if (!captured) {
       const hit = raycaster.intersectObject(body.display, false)[0];
       if (!hit) return null;
@@ -575,10 +720,9 @@ function createViewer(
     if (disposed) return;
     layout = displayLayout(props.orientation, props.screenPixelSize, props.screenCanvas);
     const canvasChanged = props.screenCanvas !== lastCanvas;
-    const sizeChanged =
-      props.screenCanvas != null
-      && texture != null
-      && (texture.image?.width !== props.screenCanvas.width || texture.image?.height !== props.screenCanvas.height);
+    // The mirror is resized by the blit, so a source that changes resolution
+    // mid-stream needs nothing here; only a different ELEMENT does.
+    const sizeChanged = false;
     if (canvasChanged || sizeChanged) {
       lastCanvas = props.screenCanvas;
       attachTexture(props.screenCanvas);
@@ -590,32 +734,52 @@ function createViewer(
       if (texture) texture.needsUpdate = true;
       invalidate();
     }
-    body.orientation.rotation.z = layout.rotation;
-    writeScreenUvs(THREE, body.display.geometry, body.screenWidth, body.screenHeight, layout);
+    if (body) {
+      body.orientation.rotation.z = layout.rotation;
+      writeScreenUvs(THREE, body.display.geometry, body.screenWidth, body.screenHeight, layout);
+    }
 
-    const modelKey = props.realistic
-      ? `${props.family}:${appleDeviceModel(props.family, props.deviceTypeName).id}`
-      : `procedural:${props.family}`;
-    if (modelKey !== currentModelKey) {
-      currentModelKey = modelKey;
-      if (!props.realistic) {
-        loadController?.abort();
-        loadGen += 1;
-        installProcedural(props.family, true);
-      } else {
-        installProcedural(props.family, false);
-        loadRealistic(appleDeviceModel(props.family, props.deviceTypeName), props.family);
-      }
+    const source = appleDeviceModel(props.family, props.deviceTypeName);
+    if (source.id !== currentModelKey) {
+      currentModelKey = source.id;
+      loadModel(source);
     } else {
       applyPose();
       invalidate();
     }
   };
 
+  /*
+   * A LOST context is not a missing one.
+   *
+   * `preventDefault` is what lets the browser hand the context back, and
+   * `webglcontextrestored` is where the scene picks up again. Reporting it as
+   * "this window has no WebGL" was wrong twice over: the pane fell back to
+   * flat for something that heals by itself, and — because `dispose()` calls
+   * `forceContextLoss()` — every unmount raised the alarm on its way out.
+   */
   const onContextLost = (event: Event) => {
     event.preventDefault();
+    if (restoreTimer) clearTimeout(restoreTimer);
+    // One shot: give the browser its chance to hand the context back, and only
+    // then call 3D unavailable. `dispose()` unhooks this listener BEFORE it
+    // forces the loss, so an unmount can never reach here.
+    restoreTimer = setTimeout(() => {
+      restoreTimer = null;
+      if (!disposed) hooks.onUnavailable("3D view needs WebGL, which this window does not have.");
+    }, CONTEXT_RESTORE_MS);
+  };
+  const onContextRestored = () => {
+    if (restoreTimer) clearTimeout(restoreTimer);
+    restoreTimer = null;
+    if (disposed) return;
+    drawingBuffer = { width: 0, height: 0, pixelRatio: 0 };
+    if (texture) texture.needsUpdate = true;
+    fitCamera();
+    invalidate();
   };
   canvas.addEventListener("webglcontextlost", onContextLost);
+  canvas.addEventListener("webglcontextrestored", onContextRestored);
 
   sync(initial);
 
@@ -628,20 +792,26 @@ function createViewer(
       if (viewport.width === width && viewport.height === height && viewport.pixelRatio === ratio) return;
       viewport = { width, height, pixelRatio: ratio };
       fitCamera();
+      poseDirty = true;
       invalidate();
+      notifyPose(true);
     },
-    pointerDown(nx, ny, now) {
+    pointerDown(nx, ny, now, forceOrbit) {
       if (disposed) return "none";
       const props = getProps();
-      if (props.interactive) {
-        const hit = screenPoint(nx, ny, false);
-        if (hit) {
-          pointerMode = "input";
-          motion.hold(true, now);
-          props.onDeviceInput({ phase: "begin", ...hit });
-          invalidate();
-          return "input";
-        }
+      // §A3: a drag that starts ON the screen is input; one that starts off it
+      // orbits; Alt forces the orbit even over the glass.
+      const hit = props.interactive && !forceOrbit ? screenPoint(nx, ny, false) : null;
+      if (appleDragIntent({
+        onScreen: hit !== null,
+        altKey: forceOrbit,
+        interactive: props.interactive,
+      }) === "input" && hit) {
+        pointerMode = "input";
+        motion.hold(true, now);
+        props.onDeviceInput({ phase: "begin", ...hit });
+        invalidate();
+        return "input";
       }
       pointerMode = "orbit";
       motion.dragActive(true, now);
@@ -672,17 +842,66 @@ function createViewer(
       }
       invalidate();
     },
+    screenPointAt(nx, ny) {
+      if (disposed) return null;
+      return screenPoint(nx, ny, false);
+    },
+    projectDevicePoint(point) {
+      if (disposed || !body || !viewport.width || !viewport.height) return null;
+      const props = getProps();
+      const points = orientedPointSize(
+      props.orientation,
+      appleDeviceInputSize(props.devicePointSize, props.screenPixelSize),
+    );
+      if (points.width <= 0 || points.height <= 0) return null;
+      const { u, vFromBottom } = orientedToPortrait(
+        point.x / points.width,
+        point.y / points.height,
+        props.orientation,
+      );
+      body.display.geometry.computeBoundingBox();
+      const z = body.display.position.z + (body.display.geometry.boundingBox?.max.z ?? 0);
+      projected.set(
+        (u - 0.5) * body.screenWidth,
+        (vFromBottom - 0.5) * body.screenHeight,
+        z,
+      );
+      body.orientation.updateWorldMatrix(true, false);
+      camera.updateMatrixWorld(true);
+      body.orientation.localToWorld(projected);
+      projected.project(camera);
+      if (!Number.isFinite(projected.x) || !Number.isFinite(projected.y)) return null;
+      return {
+        x: ((projected.x + 1) / 2) * viewport.width,
+        y: ((1 - projected.y) / 2) * viewport.height,
+      };
+    },
     zoomBy(logDelta) {
       if (disposed || !Number.isFinite(logDelta) || logDelta === 0) return;
       zoomLog = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoomLog + logDelta));
+      poseDirty = true;
       invalidate();
+      notifyPose(false);
+    },
+    resetView(now) {
+      if (disposed) return;
+      zoomLog = 0;
+      motion.reset(rest.clone(), now);
+      applyPose();
+      fitCamera();
+      poseDirty = true;
+      invalidate();
+      notifyPose(true);
     },
     cancelGestures(now) {
       if (disposed) return;
       if (pointerMode === "input") {
         const props = getProps();
         if (props.interactive) {
-          const points = orientedPointSize(props.orientation, props.screenPixelSize);
+          const points = orientedPointSize(
+      props.orientation,
+      appleDeviceInputSize(props.devicePointSize, props.screenPixelSize),
+    );
           props.onDeviceInput({ phase: "end", x: points.width / 2, y: points.height / 2 });
         }
         motion.hold(false, now);
@@ -697,11 +916,20 @@ function createViewer(
       disposed = true;
       if (raf) cancelAnimationFrame(raf);
       raf = 0;
+      if (restoreTimer) clearTimeout(restoreTimer);
+      restoreTimer = null;
       loadController?.abort();
       canvas.removeEventListener("webglcontextlost", onContextLost);
-      scene.remove(body.root);
-      body.dispose();
+      canvas.removeEventListener("webglcontextrestored", onContextRestored);
+      if (body) {
+        scene.remove(body.root);
+        body.dispose();
+        body = null;
+      }
       texture?.dispose();
+      source = null;
+      mirror = null;
+      mirrorContext = null;
       renderer.dispose();
       renderer.forceContextLoss();
     },
@@ -717,6 +945,9 @@ export function AppleDevice3DView(props: AppleDevice3DViewProps) {
   propsRef.current = props;
   const viewerRef = useRef<Viewer | null>(null);
   const lastPointer = useRef({ x: 0, y: 0 });
+  /** Bumped whenever the body has moved, so anything projected onto it re-measures. */
+  const [poseVersion, setPoseVersion] = useState(0);
+  const [hasBody, setHasBody] = useState(false);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -725,16 +956,52 @@ export function AppleDevice3DView(props: AppleDevice3DViewProps) {
     let cancelled = false;
     let viewer: Viewer | null = null;
     let trackpadDispose: (() => void) | null = null;
+    let announcedFailure = false;
 
+    const fail = (reason: AppleDevice3DFailure) => {
+      if (announcedFailure) return;
+      announcedFailure = true;
+      setHasBody(false);
+      propsRef.current.onUnavailable?.(reason);
+    };
+
+    /*
+     * Ported from t3code's `phoneTrackpad.ts`: ctrl-wheel and the Safari pinch
+     * gesture are the CAMERA's zoom, a plain wheel is the DEVICE's scroll.
+     * Round 3 sent every wheel to the camera, so a list on the simulator could
+     * not be scrolled in 3D at all.
+     */
     const bindTrackpad = (target: HTMLCanvasElement, next: Viewer) => {
       let gestureScale: number | null = null;
       const consume = (event: Event) => {
         event.preventDefault();
         event.stopPropagation();
       };
+      const unitOf = (event: WheelEvent) =>
+        event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? target.getBoundingClientRect().height : 1;
       const wheel = (event: WheelEvent) => {
         consume(event);
-        const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? target.getBoundingClientRect().height : 1;
+        if (gestureScale !== null) return;
+        const unit = unitOf(event);
+        const rect = target.getBoundingClientRect();
+        const scroll = propsRef.current.onDeviceScroll;
+        const point = !event.ctrlKey && !event.metaKey && scroll && rect.width > 0 && rect.height > 0
+          ? next.screenPointAt(
+            (event.clientX - rect.left) / rect.width,
+            (event.clientY - rect.top) / rect.height,
+          )
+          : null;
+        const intent = appleWheelIntent({
+          ctrlKey: event.ctrlKey,
+          metaKey: event.metaKey,
+          onScreen: point !== null,
+          interactive: propsRef.current.interactive,
+        });
+        if (intent === "scroll" && point && scroll) {
+          scroll({ ...point, deltaX: event.deltaX * unit, deltaY: event.deltaY * unit });
+          return;
+        }
+        // Off the glass there is nothing to scroll, so the wheel is the zoom.
         next.zoomBy((-event.deltaY * unit) / 240);
       };
       const scaleOf = (event: GestureEventLike) =>
@@ -768,11 +1035,26 @@ export function AppleDevice3DView(props: AppleDevice3DViewProps) {
 
     void importThreeRuntime().then(({ THREE, GLTFLoader }) => {
       if (cancelled || !canvasRef.current || !hostRef.current) return;
-      viewer = createViewer(THREE, GLTFLoader, canvas, propsRef.current, () => propsRef.current);
+      try {
+        viewer = createViewer(THREE, GLTFLoader, canvas, propsRef.current, () => propsRef.current, {
+          onPose: () => setPoseVersion((version) => version + 1),
+          onReady: (info) => {
+            setHasBody(true);
+            propsRef.current.onReady?.(info);
+          },
+          onUnavailable: fail,
+        });
+      } catch {
+        // No WebGL context: the pane falls back to the flat view (§A1).
+        fail("3D view needs WebGL, which this window does not have.");
+        return;
+      }
       viewerRef.current = viewer;
       trackpadDispose = bindTrackpad(canvas, viewer);
       const { width, height } = host.getBoundingClientRect();
       viewer.resize(width, height, window.devicePixelRatio || 1);
+    }, () => {
+      if (!cancelled) fail("3D view needs WebGL, which this window does not have.");
     });
 
     const resize = () => {
@@ -795,16 +1077,21 @@ export function AppleDevice3DView(props: AppleDevice3DViewProps) {
   }, []);
 
   useEffect(() => {
+    viewerRef.current?.resetView(performance.now());
+  }, [props.resetNonce]);
+
+  useEffect(() => {
     viewerRef.current?.sync(propsRef.current);
   }, [
     props.screenCanvas,
     props.frameVersion,
     props.family,
     props.deviceTypeName,
-    props.realistic,
     props.orientation,
     props.screenPixelSize.width,
     props.screenPixelSize.height,
+    props.devicePointSize?.width,
+    props.devicePointSize?.height,
     props.interactive,
   ]);
 
@@ -820,18 +1107,52 @@ export function AppleDevice3DView(props: AppleDevice3DViewProps) {
     };
   };
 
+  const handleKeyDown = useCallback((event: KeyboardEvent<HTMLCanvasElement>) => {
+    const send = propsRef.current.onDeviceKey;
+    if (!propsRef.current.interactive || !send) return;
+    if (event.target !== event.currentTarget) return;
+    // Cmd-R and friends stay the app's, exactly as in the flat view.
+    if (event.metaKey || event.ctrlKey) return;
+    if (send({
+      key: event.key,
+      metaKey: event.metaKey,
+      ctrlKey: event.ctrlKey,
+      altKey: event.altKey,
+    })) {
+      event.preventDefault();
+    }
+  }, []);
+
+  /**
+   * The device→canvas projection the inspect overlay draws with. Re-made on
+   * every pose change so the frames follow the body as it turns.
+   */
+  const deviceToView = useMemo(() => {
+    if (!hasBody) return null;
+    void poseVersion;
+    return (point: { x: number; y: number }) =>
+      viewerRef.current?.projectDevicePoint(point) ?? { x: 0, y: 0 };
+  }, [hasBody, poseVersion]);
+
+  const overlay = props.renderScreenOverlay?.(deviceToView);
+
   return (
-    <div ref={hostRef} className={cn("relative h-full w-full min-h-0 min-w-0 bg-black", props.className)}>
+    <div ref={hostRef} className={cn("relative h-full w-full min-h-0 min-w-0", props.className)}>
       <canvas
         ref={canvasRef}
-        className="absolute inset-0 h-full w-full touch-none"
+        tabIndex={props.interactive ? 0 : -1}
+        aria-label="iOS Simulator screen"
+        role="application"
+        className="absolute inset-0 h-full w-full touch-none outline-none"
+        onKeyDown={handleKeyDown}
         onPointerDown={(event) => {
           if (event.button !== 0) return;
           const point = localPoint(event);
           lastPointer.current = { x: point.x, y: point.y };
-          const mode = viewerRef.current?.pointerDown(point.nx, point.ny, performance.now());
+          const mode = viewerRef.current?.pointerDown(point.nx, point.ny, performance.now(), event.altKey);
           if (!mode || mode === "none") return;
           event.preventDefault();
+          event.currentTarget.focus({ preventScroll: true });
           event.currentTarget.setPointerCapture(event.pointerId);
         }}
         onPointerMove={(event) => {
@@ -853,6 +1174,7 @@ export function AppleDevice3DView(props: AppleDevice3DViewProps) {
           viewerRef.current?.cancelGestures(performance.now());
         }}
       />
+      {overlay ? <div className="absolute inset-0">{overlay}</div> : null}
     </div>
   );
 }

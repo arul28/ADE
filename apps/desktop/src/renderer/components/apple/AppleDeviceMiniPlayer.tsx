@@ -15,7 +15,9 @@ import {
 } from "./appleMiniPlayerLayout";
 import {
   closeAppleMiniPlayer,
+  releaseAppleMiniPlayerHandoverHold,
   retakeAppleMiniPlayer,
+  takeAppleMiniPlayerPoster,
   useAppleMiniPlayerTarget,
   type AppleMiniPlayerTarget,
 } from "./appleMiniPlayerStore";
@@ -88,6 +90,16 @@ function AppleMiniPlayerFrameView({
   const [hovered, setHovered] = useState(false);
   const [pipActive, setPipActive] = useState(false);
   const [screen, setScreen] = useState<{ width: number; height: number } | null>(null);
+  /**
+   * The pane's last frame, claimed once at mount (round 4 §B4).
+   *
+   * Read in the initializer so it is on screen in the FIRST paint of the
+   * player: the picture does not fade in from black, it is already the picture
+   * the pane was showing, and the live decoder takes over behind it a frame or
+   * two later. Claimed destructively, so a later open with no handover behind
+   * it gets nothing rather than a photograph of an old session.
+   */
+  const [poster, setPoster] = useState<string | null>(() => takeAppleMiniPlayerPoster(target.deviceUdid));
 
   const noop = useCallback(() => {}, []);
   const stream = useAppleDeviceStream({
@@ -101,6 +113,24 @@ function AppleMiniPlayerFrameView({
     runtimePinRef: pinRef,
     onError: noop,
   });
+
+  /*
+   * Hand the HANDOVER's lease back, now that this player holds one of its own.
+   *
+   * Declared after `useAppleDeviceStream` on purpose: effects run in the order
+   * their hooks were called, so the stream's start effect — which is where the
+   * lease is acquired — has already run by the time this one does. Releasing
+   * first would drop the count to zero between the two and stop the capture,
+   * which is exactly the tear-down this whole mechanism exists to avoid.
+   */
+  useEffect(() => {
+    releaseAppleMiniPlayerHandoverHold();
+  }, []);
+
+  // The poster is a stand-in for frames, so the first real frame retires it.
+  useEffect(() => {
+    if (stream.frameVersion > 0) setPoster(null);
+  }, [stream.frameVersion]);
 
   useEffect(() => {
     const node = hostRef.current?.parentElement;
@@ -259,6 +289,19 @@ function AppleMiniPlayerFrameView({
         floating view read as dead. Moving it lives on one invisible strip
         under the top edge (inside the north resize zone) and on the chrome bar.
       */}
+      {poster ? (
+        /* Under the stage and inert: the stage's flat presenter draws the
+           decoded canvas `object-contain` with no bezel of its own, so the same
+           rule on the same box puts this frame exactly where the live one
+           lands — no jump when the decoder catches up. */
+        <img
+          src={poster}
+          alt=""
+          aria-hidden="true"
+          data-apple-mini-poster=""
+          className="pointer-events-none absolute inset-0 h-full w-full object-contain"
+        />
+      ) : null}
       <div ref={canvasHostRef} className="absolute inset-0">
         <AppleDeviceStage
           /*
@@ -281,7 +324,6 @@ function AppleMiniPlayerFrameView({
           viewNonce={0}
           family={target.family}
           deviceTypeName={target.deviceName}
-          realistic={false}
           orientation="portrait"
           devicePointSize={stream.devicePointSize}
           interactive

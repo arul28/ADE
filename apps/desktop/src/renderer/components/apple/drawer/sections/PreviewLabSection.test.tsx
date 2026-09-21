@@ -26,18 +26,38 @@ function target(overrides: Partial<IosSimulatorPreviewTarget> = {}): IosSimulato
 }
 
 describe("PreviewLabSection", () => {
-  it("renders the title, the target picker, Render, Back to device, Watch file and the ⋯", async () => {
+  it("renders the target picker, Render, Back to device, Watch file and the workspace verbs", async () => {
     const { iosSimulator } = installAdeMock();
     iosSimulator.listPreviewTargets.mockResolvedValue([target(), target({ id: "t-2", title: "Dark", sourceFile: "Views/Home.swift" })]);
     render(<PreviewLabSection ctx={makeCtx()} onPreviewRendered={vi.fn()} />);
-    expect(screen.getByRole("heading", { name: "Preview Lab" })).toBeTruthy();
+    // No heading of its own: the GROUP card is the heading now (§B1).
+    expect(screen.queryByRole("heading")).toBeNull();
     expect(screen.getByText("Target")).toBeTruthy();
     await waitFor(() => expect(screen.getByRole("button", { name: "Preview target" }).textContent).toContain("SignInView"));
     expect(screen.getByRole("button", { name: "Render" })).toBeTruthy();
     expect((screen.getByRole("button", { name: "Back to device" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByRole("switch", { name: "Watch file" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Preview Lab actions" })).toBeTruthy();
+    // The `⋯` is gone: three workspace verbs on the card beat a menu that hid
+    // them behind a glyph with no label (§B2).
+    expect(screen.queryByRole("button", { name: "Preview Lab actions" })).toBeNull();
+    expect(screen.getByText("Workspace")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open in Xcode" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reveal workspace" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Refresh previews" })).toBeTruthy();
     expect(iosSimulator.listPreviewTargets).toHaveBeenCalledWith({ laneId: "lane-1" }, null);
+  });
+
+  it("opens and reveals the lane's Xcode workspace, and re-reads the previews on demand", async () => {
+    const { iosSimulator } = installAdeMock();
+    iosSimulator.listPreviewTargets.mockResolvedValue([target()]);
+    render(<PreviewLabSection ctx={makeCtx()} onPreviewRendered={vi.fn()} />);
+    await waitFor(() => expect(iosSimulator.listPreviewTargets).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole("button", { name: "Open in Xcode" }));
+    await waitFor(() => expect(iosSimulator.ensurePreviewWorkspace).toHaveBeenCalledWith({ laneId: "lane-1", openIfNeeded: true }, null));
+    fireEvent.click(screen.getByRole("button", { name: "Reveal workspace" }));
+    await waitFor(() => expect(iosSimulator.openPreviewWorkspace).toHaveBeenCalledWith({ laneId: "lane-1" }, null));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh previews" }));
+    await waitFor(() => expect(iosSimulator.listPreviewTargets).toHaveBeenCalledTimes(2));
   });
 
   it("groups targets by file for the picker", () => {

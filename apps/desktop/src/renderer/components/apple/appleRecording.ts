@@ -245,9 +245,19 @@ export function useAppleRecordings({
    * sync.
    */
   const revealProofRow = useCallback((artifactId: string): boolean => {
-    const row = document.querySelector<HTMLElement>(
-      `[data-chat-proof-artifact="${CSS.escape(artifactId)}"]`,
-    );
+    let row: HTMLElement | null = null;
+    try {
+      // `CSS.escape` is not everywhere (jsdom has no `CSS` at all), and a
+      // selector that throws inside a click handler takes the whole row down
+      // rather than falling through to the file — which is the one thing this
+      // function exists to allow.
+      const escaped = typeof CSS !== "undefined" && typeof CSS.escape === "function"
+        ? CSS.escape(artifactId)
+        : artifactId.replace(/["\\]/gu, "\\$&");
+      row = document.querySelector<HTMLElement>(`[data-chat-proof-artifact="${escaped}"]`);
+    } catch {
+      return false;
+    }
     if (!row) return false;
     row.scrollIntoView({ block: "center", behavior: "smooth" });
     row.focus?.();
