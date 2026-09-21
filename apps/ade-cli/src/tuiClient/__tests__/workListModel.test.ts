@@ -129,6 +129,100 @@ describe("workListModel grouping", () => {
     expect(model.rows.filter((row) => row.kind === "session").every((row) => !row.showLaneIdentity)).toBe(true);
   });
 
+  it("nests same-lane subagent chats under the parent and keeps the lane header for remaining peers", () => {
+    const model = build({
+      lanes: [lane("lane-1", "Feature")],
+      sessions: [
+        session({
+          sessionId: "parent",
+          laneId: "lane-1",
+          title: "Lead",
+          status: "active",
+        }),
+        session({
+          sessionId: "helper",
+          laneId: "lane-1",
+          title: "Helper",
+          status: "active",
+          spawnKind: "subagent",
+          orchestrationParentSessionId: "parent",
+        }),
+        session({
+          sessionId: "peer",
+          laneId: "lane-1",
+          title: "Peer",
+          status: "active",
+          spawnKind: "peer",
+          orchestrationParentSessionId: "parent",
+        }),
+      ],
+      activeSessionId: null,
+    });
+
+    expect(model.rows.map((row) => (row.kind === "session" ? row.sessionId : row.key))).toEqual([
+      "lane:lane-1",
+      "parent",
+      "helper",
+      "peer",
+    ]);
+    expect(sessionRows(model).find((row) => row.sessionId === "helper")?.nested).toBe(true);
+    expect(sessionRows(model).find((row) => row.sessionId === "peer")?.nested).toBe(false);
+    expect(model.groups[0]!.header.sessionCount).toBe(2);
+  });
+
+  it("counts a parent plus nested helpers as one top-level unit, so the lane stays a singleton", () => {
+    const model = build({
+      lanes: [lane("lane-1", "Feature")],
+      sessions: [
+        session({ sessionId: "parent", laneId: "lane-1", title: "Lead" }),
+        session({
+          sessionId: "helper",
+          laneId: "lane-1",
+          title: "Helper",
+          spawnKind: "subagent",
+          orchestrationParentSessionId: "parent",
+        }),
+      ],
+      activeSessionId: null,
+    });
+
+    expect(model.rows.map((row) => row.kind)).toEqual(["session", "session"]);
+    expect(sessionRows(model).map((row) => [row.sessionId, row.nested, row.showLaneIdentity])).toEqual([
+      ["parent", false, true],
+      ["helper", true, false],
+    ]);
+  });
+
+  it("promotes a working subagent when the parent is settled", () => {
+    const model = build({
+      lanes: [lane("lane-1", "Feature")],
+      sessions: [
+        session({
+          sessionId: "parent",
+          laneId: "lane-1",
+          title: "Settled parent",
+          settledAt: "2026-05-12T11:30:00.000Z",
+        }),
+        session({
+          sessionId: "helper",
+          laneId: "lane-1",
+          title: "Still working helper",
+          status: "active",
+          runtimeState: "running",
+          spawnKind: "subagent",
+          orchestrationParentSessionId: "parent",
+        }),
+      ],
+      activeSessionId: null,
+    });
+
+    const helper = sessionRows(model).find((row) => row.sessionId === "helper");
+    expect(helper?.nested).toBe(false);
+    expect(model.rows[0]).toMatchObject({ kind: "session", sessionId: "helper" });
+    expect(model.settled.map((row) => row.sessionId)).toEqual(["parent"]);
+    expect(model.rows.some((row) => row.kind === "shelf" && row.shelf === "settled")).toBe(true);
+  });
+
   it("orders chats inside a lane by last activity, then session id, so the list does not shuffle", () => {
     const model = build({
       lanes: [lane("lane-1", "Feature")],
@@ -166,6 +260,43 @@ describe("workListModel grouping", () => {
     // A lane with no live sessions is the quiet tier, and sorts below both.
     expect(model.groups[0]!.header.tier).toBe("quiet");
     expect(model.groups[1]!.header.tier).toBe("active");
+  });
+
+  it("counts nested subagent activity when ordering lanes", () => {
+    const model = build({
+      lanes: [
+        lane("lane-idle", "Idle parent"),
+        lane("lane-other", "Other"),
+      ],
+      sessions: [
+        session({
+          sessionId: "parent",
+          laneId: "lane-idle",
+          title: "Lead",
+          lastActivityAt: "2026-05-12T08:00:00.000Z",
+        }),
+        session({
+          sessionId: "helper",
+          laneId: "lane-idle",
+          title: "Helper",
+          spawnKind: "subagent",
+          orchestrationParentSessionId: "parent",
+          lastActivityAt: "2026-05-12T11:59:00.000Z",
+        }),
+        session({
+          sessionId: "other",
+          laneId: "lane-other",
+          title: "Other chat",
+          lastActivityAt: "2026-05-12T10:00:00.000Z",
+        }),
+      ],
+      activeSessionId: null,
+    });
+
+    expect(model.groups.map((group) => group.header.laneId)).toEqual([
+      "lane-idle",
+      "lane-other",
+    ]);
   });
 
   it("drops the new-chat row for a lane whose worktree is gone, and marks the header", () => {

@@ -396,6 +396,7 @@ export const SessionCard = React.memo(function SessionCard({
   machineMarker = null,
   suppressMachineChip = false,
   suppressStatusLabel = false,
+  nestedSubagent = false,
 }: {
   session: TerminalSessionSummary;
   lane: LaneSummary | null;
@@ -474,6 +475,11 @@ export const SessionCard = React.memo(function SessionCard({
    * of being lost. See the `status` row below.
    */
   suppressStatusLabel?: boolean;
+  /**
+   * Compact nested-subagent drawer row: identicon + title + provider + status
+   * glyph (word only for Needs you / Failed). Distinct from a compact shell.
+   */
+  nestedSubagent?: boolean;
 }) {
   const navigate = useNavigate();
   // Hover INTENT, not hover: a one-second rest on the row, cancelled by any
@@ -1131,6 +1137,7 @@ export const SessionCard = React.memo(function SessionCard({
       actionsEnabled={!disabledReason}
       compact={compact}
       runtimePin={runtimePin}
+      hideLabelUnlessShout={nestedSubagent}
     />
   );
   /* Live activity, not a property of the session: the agent is driving the
@@ -1179,47 +1186,59 @@ export const SessionCard = React.memo(function SessionCard({
     </button>
   ) : null;
 
+  const nestedSubagentGlyph = nestedSubagent ? (
+    <span data-testid="nested-subagent-glyph" className="inline-flex shrink-0 items-center">
+      <ChatSubagentGlyph id={session.id} color={chatSubagentColor(session.id)} size={14} />
+    </span>
+  ) : null;
+
   /* COMPACT ROWS ONLY. The full row carries lineage on line 1 now, and two
      lineage indicators on one row is exactly the duplication this pass removes.
      Compact rows have no line 1 at all — dropping the glyph there would delete
      the affordance rather than move it — so the single-glyph form survives
-     here, and only here. */
-  const compactLineageGlyph = isCtoChild ? (
-    <button
-      type="button"
-      data-testid="session-cto-lineage"
-      data-session-parent-identity="cto"
-      className="inline-flex shrink-0 cursor-pointer items-center text-muted-fg/70 transition-colors hover:text-fg"
-      title={ctoChipTitle}
-      aria-label="Open the CTO"
-      onClick={(event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        navigate("/cto");
-      }}
-    >
-      <Brain size={11} weight="duotone" />
-    </button>
-  ) : session.orchestrationParentSessionId ? (
-    <button
-      type="button"
-      data-testid="session-spawn-lineage"
-      className="inline-flex shrink-0 cursor-pointer items-center opacity-70 transition-opacity hover:opacity-100"
-      title={
-        parentSessionTitle
-          ? `Spawned by "${parentSessionTitle}" — click to open parent thread`
-          : "Spawned by another chat — click to open parent thread"
-      }
-      aria-label="Open parent thread"
-      onClick={(event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        navigateToSpawnedChat(session.orchestrationParentSessionId, null);
-      }}
-    >
-      <ChatSubagentGlyph id={session.id} color={chatSubagentColor(session.id)} size={10} />
-    </button>
-  ) : null;
+     here, and only here. Nested subagent rows replace this with the identicon
+     at the start of the row; they already sit under the parent. */
+  let compactLineageGlyph: React.ReactNode = null;
+  if (!nestedSubagent && isCtoChild) {
+    compactLineageGlyph = (
+      <button
+        type="button"
+        data-testid="session-cto-lineage"
+        data-session-parent-identity="cto"
+        className="inline-flex shrink-0 cursor-pointer items-center text-muted-fg/70 transition-colors hover:text-fg"
+        title={ctoChipTitle}
+        aria-label="Open the CTO"
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          navigate("/cto");
+        }}
+      >
+        <Brain size={11} weight="duotone" />
+      </button>
+    );
+  } else if (!nestedSubagent && session.orchestrationParentSessionId) {
+    compactLineageGlyph = (
+      <button
+        type="button"
+        data-testid="session-spawn-lineage"
+        className="inline-flex shrink-0 cursor-pointer items-center opacity-70 transition-opacity hover:opacity-100"
+        title={
+          parentSessionTitle
+            ? `Spawned by "${parentSessionTitle}" — click to open parent thread`
+            : "Spawned by another chat — click to open parent thread"
+        }
+        aria-label="Open parent thread"
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          navigateToSpawnedChat(session.orchestrationParentSessionId, null);
+        }}
+      >
+        <ChatSubagentGlyph id={session.id} color={chatSubagentColor(session.id)} size={10} />
+      </button>
+    );
+  }
 
   const titleNode = (
     <span
@@ -1296,7 +1315,11 @@ export const SessionCard = React.memo(function SessionCard({
       }}
     >
       {compact ? (
-        <div className={cn("flex h-8 min-w-0 items-center gap-1.5", SESSION_ROW_INNER_PADDING_CLASS)}>
+        <div
+          className={cn("flex h-8 min-w-0 items-center gap-1.5", SESSION_ROW_INNER_PADDING_CLASS)}
+          data-testid={nestedSubagent ? "nested-subagent-row" : undefined}
+        >
+          {nestedSubagentGlyph}
           {titleNode}
           {compactLineageGlyph}
           {cursorCloudLink}

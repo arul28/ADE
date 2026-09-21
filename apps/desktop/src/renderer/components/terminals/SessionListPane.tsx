@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowClockwise, CaretDown, CaretRight, CircleNotch, Desktop, Funnel, Kanban, ListBullets, MagnifyingGlass, Moon, NotePencil, Plus, PushPin, Square, Terminal, Trash, WarningCircle, X } from "@phosphor-icons/react";
+import { ArrowClockwise, CaretDown, CaretRight, Circle, CircleNotch, Desktop, Funnel, Kanban, ListBullets, MagnifyingGlass, Moon, NotePencil, Plus, PushPin, Square, Terminal, Trash, UsersThree, WarningCircle, X } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import type { LaneSummary, OpenProjectBinding, PrSummary, TerminalSessionSummary } from "../../../shared/types";
@@ -88,6 +88,14 @@ import {
   type HandoffLaunchJob,
 } from "../../lib/handoffLaunchJobs";
 import { settingsRouteFor } from "../settings/settingsManifest";
+import {
+  attachedShellSectionId,
+  nestedSubagentDrawerAttention,
+  nestedSubagentSectionId,
+  workNestingDrawers,
+  type WorkNestingDrawers,
+} from "../../../shared/sessionSpawnNesting";
+import { SESSION_TONE_TEXT_CLASS } from "../../../shared/sessionStatusPresentation";
 
 
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
@@ -282,6 +290,7 @@ type ForeignLaneEntry = {
   quiet: ReturnType<typeof partitionQuietSessions>;
   /** Full-row partition used for stable shelving and collapse shape. */
   fullQuiet: ReturnType<typeof partitionQuietSessions>;
+  nesting: WorkNestingDrawers<TerminalSessionSummary>;
   shelf: "snoozed" | "settled" | null;
 };
 
@@ -337,6 +346,17 @@ function renderSharedBranchClusters(
     );
   }
   return nodes;
+}
+
+function countUnexcluded(
+  sessions: readonly TerminalSessionSummary[],
+  excluded: ReadonlySet<string>,
+): number {
+  let count = 0;
+  for (const session of sessions) {
+    if (!excluded.has(session.id)) count += 1;
+  }
+  return count;
 }
 
 function partitionQuietSessions(
@@ -1143,11 +1163,15 @@ export const SessionListPane = React.memo(function SessionListPane({
   }, [allSessionsUnfiltered, foreignRows]);
   const [foreignFilingEpoch, setForeignFilingEpoch] = useState(0);
   const foreignFilingNowMs = useMemo(() => {
-    // The epoch is a deadline tick; reading it makes this clock refresh when a
-    // foreign snooze expires even if the row arrays retain their identity.
+    // Epoch covers the standalone fallback timer. The Work path supplies a
+    // complete filing map and never arms that timer, so reading the map here
+    // is what lets nesting share the same tick that moved a parent out of
+    // snoozedFiltered — otherwise nowMs stays at mount time and a lapsed
+    // snooze still looks live to quiet-parent pull-up.
     void foreignFilingEpoch;
+    void effectiveFilingBucketsProp;
     return Date.now();
-  }, [foreignFilingEpoch]);
+  }, [effectiveFilingBucketsProp, foreignFilingEpoch]);
   useEffect(() => {
     // The normal Work hook already arms the complete-roster timer and supplies
     // its refreshed map. This local timer is only the standalone-pane fallback.
@@ -1325,33 +1349,37 @@ export const SessionListPane = React.memo(function SessionListPane({
     () => new Set(allSessions.map((session) => session.id)),
     [allSessions],
   );
-  // Build parent → children index. A child is a tracked terminal that records the
-  // chat session id of its parent (e.g. App Control launches, in-chat terminal
-  // drawer tabs). Children render indented under the parent when the parent is
-  // also visible. If the parent is filtered out, the child still renders at the
-  // top level so users do not lose access.
-  const childrenByParentId = useMemo(() => {
-    const map = new Map<string, TerminalSessionSummary[]>();
-    for (const session of allSessions) {
-      const parentId = session.chatSessionId;
-      if (!parentId || parentId === session.id) continue;
-      if (!visibleSessionIdSet.has(parentId)) continue;
-      const list = map.get(parentId) ?? [];
-      list.push(session);
-      map.set(parentId, list);
-    }
-    for (const list of map.values()) {
-      list.sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt));
+  // Same-lane `spawnKind: "subagent"` chats nest under the parent in by-lane
+  // list mode only. Status, time, and the board stay flat so a swarm cannot
+  // hide inside a column that is supposed to be one row per session.
+  const nestSubagents = isByLane && !isBoard;
+  // One filing pass for local by-lane drawers: nested subagents, remounted
+  // shells, and the ids that must not also render as top-level cards.
+  const workNesting = useMemo(
+    () => workNestingDrawers(allSessions, {
+      visibleParentIds: visibleSessionIdSet,
+      nestSubagents,
+      nowMs: foreignFilingNowMs,
+    }),
+    [allSessions, nestSubagents, visibleSessionIdSet, foreignFilingNowMs],
+  );
+  const unfilteredNesting = useMemo(
+    () => workNestingDrawers(allSessionsUnfiltered, {
+      nestSubagents,
+      nowMs: foreignFilingNowMs,
+    }),
+    [allSessionsUnfiltered, nestSubagents, foreignFilingNowMs],
+  );
+  const unfilteredForeignNestingByCompositeId = useMemo(() => {
+    const map = new Map<string, WorkNestingDrawers<TerminalSessionSummary>>();
+    for (const row of foreignRows) {
+      map.set(
+        `${row.machineId}:${row.lane.id}`,
+        workNestingDrawers(row.sessions, { nestSubagents, nowMs: foreignFilingNowMs }),
+      );
     }
     return map;
-  }, [allSessions, visibleSessionIdSet]);
-  const excludedTopLevelIds = useMemo(() => {
-    const set = new Set<string>();
-    for (const list of childrenByParentId.values()) {
-      for (const child of list) set.add(child.id);
-    }
-    return set;
-  }, [childrenByParentId]);
+  }, [foreignRows, nestSubagents, foreignFilingNowMs]);
   // Live-children badge: count, per spawner id, its still-running spawned chats.
   // Counts from the UNFILTERED session list (not `allSessions`, which is already
   // search/lane-filtered) so hiding a running child by filter does not undercount
@@ -1376,14 +1404,6 @@ export const SessionListPane = React.memo(function SessionListPane({
     }
     return map;
   }, [allSessionsUnfiltered]);
-  const isChildSectionCollapsed = useCallback(
-    (parentId: string) => workCollapsedSectionIds.includes(`chat:${parentId}`),
-    [workCollapsedSectionIds],
-  );
-  const toggleChildSection = useCallback(
-    (parentId: string) => toggleWorkSectionCollapsed(`chat:${parentId}`),
-    [toggleWorkSectionCollapsed],
-  );
   const timeBuckets = useMemo(
     () => bucketByTime(allSessions.filter((session) => !quietIdSet.has(session.id))),
     [allSessions, quietIdSet],
@@ -1587,26 +1607,33 @@ export const SessionListPane = React.memo(function SessionListPane({
     ) ?? row;
     const effectiveFilingBuckets = filingBucketsForForeignSessions(fullRow.sessions);
     const fullQuiet = partitionQuietSessions(fullRow.sessions, effectiveFilingBuckets);
+    const nowMs = foreignFilingNowMs;
+    const fullNesting = unfilteredForeignNestingByCompositeId.get(compositeLaneId)
+      ?? workNestingDrawers(fullRow.sessions, { nestSubagents, nowMs });
+    // Render drawers from the visible slice so a search-hidden parent cannot
+    // keep a still-visible child nested. Shelf from the full row so nested
+    // settled helpers cannot flip a snoozed parent into Settled.
+    const nesting = row.sessions === fullRow.sessions
+      ? fullNesting
+      : workNestingDrawers(row.sessions, {
+          visibleParentIds: new Set(row.sessions.map((session) => session.id)),
+          nestSubagents,
+          nowMs,
+        });
     const quiet = row.sessions === fullRow.sessions
       ? fullQuiet
       : partitionQuietSessions(row.sessions, effectiveFilingBuckets);
+    const excluded = fullNesting.excludedTopLevelIds;
     const shelf = ((): "snoozed" | "settled" | null => {
-      // The same two exemptions `laneShelfByLaneId` grants. A pin is an explicit
-      // "keep this where I can see it"; a Primary is the column's fixed landmark
-      // and must not migrate to the bottom on a quiet afternoon. Both pin keys
-      // are checked because a foreign lane is addressed by its composite id
-      // everywhere in this pane, while the pin store only ever writes lane ids.
       if (workPinnedLaneIdSet.has(compositeLaneId) || workPinnedLaneIdSet.has(row.lane.id)) return null;
       if (row.lane.laneType === "primary") return null;
-      if (row.sessions.length === 0 || fullQuiet.active.length > 0) return null;
-      const quietRows = fullQuiet.snoozed.length + fullQuiet.settled.length;
-      if (quietRows === 0) return null;
-      // Dominant kind, ties to Snoozed — the more visible shelf. Identical to
-      // the local rule, and safe for the same reason: the body renders flat and
-      // every card still states its own status.
-      return fullQuiet.settled.length > fullQuiet.snoozed.length ? "settled" : "snoozed";
+      if (row.sessions.length === 0 || countUnexcluded(fullQuiet.active, excluded) > 0) return null;
+      const snoozedRows = countUnexcluded(fullQuiet.snoozed, excluded);
+      const settledRows = countUnexcluded(fullQuiet.settled, excluded);
+      if (snoozedRows + settledRows === 0) return null;
+      return settledRows > snoozedRows ? "settled" : "snoozed";
     })();
-    return { row, compositeLaneId, quiet, fullQuiet, shelf };
+    return { row, compositeLaneId, quiet, fullQuiet, nesting, shelf };
   });
 
   /**
@@ -1688,6 +1715,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       let snoozedRows = 0;
       let settledRows = 0;
       for (const session of roster) {
+        if (unfilteredNesting.excludedTopLevelIds.has(session.id)) continue;
         if (unfilteredQuietBuckets.settled.has(session.id)) settledRows += 1;
         else if (unfilteredQuietBuckets.snoozed.has(session.id)) snoozedRows += 1;
       }
@@ -1695,7 +1723,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       map.set(laneId, settledRows > snoozedRows ? "settled" : "snoozed");
     }
     return map;
-  }, [isLaneQuiet, laneById, unfilteredQuietBuckets, unfilteredSessionsByLane, workPinnedLaneIdSet]);
+  }, [isLaneQuiet, laneById, unfilteredNesting.excludedTopLevelIds, unfilteredQuietBuckets, unfilteredSessionsByLane, workPinnedLaneIdSet]);
   const laneShelfFor = useCallback(
     (laneId: string): "snoozed" | "settled" | null => laneShelfByLaneId.get(laneId) ?? null,
     [laneShelfByLaneId],
@@ -1735,18 +1763,17 @@ export const SessionListPane = React.memo(function SessionListPane({
     // A singleton has no header to grab, and its card's drag gesture is already
     // claimed by the work-grid DnD.
     if (workLaneSortMode === "manual") return ids;
-    const isHeaderlessRoster = (roster: readonly TerminalSessionSummary[]): boolean => {
-      const rosterIds = new Set(roster.map((session) => session.id));
-      const topLevel = roster.filter((session) => {
-        const parentId = session.chatSessionId;
-        return !(parentId && parentId !== session.id && rosterIds.has(parentId));
-      });
-      return topLevel.length === 1;
-    };
+    const isHeaderlessRoster = (
+      roster: readonly TerminalSessionSummary[],
+      excluded: ReadonlySet<string>,
+    ): boolean => countUnexcluded(roster, excluded) === 1;
     for (const lane of orderedLanes) {
       if (workPinnedLaneIdSet.has(lane.id)) continue;
       if ((unfilteredHandoffCountByLaneId.get(lane.id) ?? 0) > 0) continue;
-      if (isHeaderlessRoster(unfilteredSessionsByLane.get(lane.id) ?? [])) ids.add(lane.id);
+      if (isHeaderlessRoster(
+        unfilteredSessionsByLane.get(lane.id) ?? [],
+        unfilteredNesting.excludedTopLevelIds,
+      )) ids.add(lane.id);
     }
     // `foreignRows`, NOT `visibleForeignRows`: the latter is already search- and
     // chip-filtered, so reading it here would let a three-chat lane collapse to
@@ -1769,11 +1796,9 @@ export const SessionListPane = React.memo(function SessionListPane({
       // — asserted by reading the same map rather than assumed, so this stays
       // correct if foreign handoffs ever land.
       if ((unfilteredHandoffCountByLaneId.get(compositeLaneId) ?? 0) > 0) continue;
-      // Foreign cards still render flat: unlike the local path, this renderer
-      // does not yet fold a parent chat and its spawned shells into one nested
-      // unit. Keep the header until it does, so singleton-only lane identity,
-      // marker, and context actions never leak onto each child card.
-      if (row.sessions.length === 1) ids.add(compositeLaneId);
+      const drawers = unfilteredForeignNestingByCompositeId.get(compositeLaneId);
+      if (!drawers) continue;
+      if (isHeaderlessRoster(row.sessions, drawers.excludedTopLevelIds)) ids.add(compositeLaneId);
     }
     return ids;
   }, [
@@ -1783,6 +1808,10 @@ export const SessionListPane = React.memo(function SessionListPane({
     unfilteredSessionsByLane,
     workLaneSortMode,
     workPinnedLaneIdSet,
+    nestSubagents,
+    foreignFilingNowMs,
+    unfilteredNesting.excludedTopLevelIds,
+    unfilteredForeignNestingByCompositeId,
   ]);
 
   // Cheap order signature for the sink animation: without it `layout` would
@@ -1857,20 +1886,36 @@ export const SessionListPane = React.memo(function SessionListPane({
         return leftName.localeCompare(rightName);
       });
   }, [handoffJobsByLaneId, lanes, missingLaneSessionGroups]);
-  const expandSessionWithChildren = useCallback((session: TerminalSessionSummary): string[] => {
-    const children = childrenByParentId.get(session.id) ?? [];
-    if (children.length === 0) return [session.id];
-    if (isChildSectionCollapsed(session.id)) return [session.id];
-    return [session.id, ...children.map((child) => child.id)];
-  }, [childrenByParentId, isChildSectionCollapsed]);
-  const collectVisibleIds = useCallback((sessions: TerminalSessionSummary[]): string[] => {
-    const ids: string[] = [];
-    for (const session of sessions) {
-      if (excludedTopLevelIds.has(session.id)) continue;
-      ids.push(...expandSessionWithChildren(session));
+  const expandSessionWithChildren = useCallback((
+    session: TerminalSessionSummary,
+    drawers: WorkNestingDrawers<TerminalSessionSummary> = workNesting,
+  ): string[] => {
+    const shells = drawers.shellsByParentId.get(session.id) ?? [];
+    const subagents = drawers.subagentsByParentId.get(session.id) ?? [];
+    const ids = [session.id];
+    if (subagents.length > 0 && !workCollapsedSectionIds.includes(nestedSubagentSectionId(session.id))) {
+      ids.push(...subagents.map((child) => child.id));
+    }
+    if (shells.length > 0 && !workCollapsedSectionIds.includes(attachedShellSectionId(session.id))) {
+      ids.push(...shells.map((child) => child.id));
     }
     return ids;
-  }, [excludedTopLevelIds, expandSessionWithChildren]);
+  }, [workCollapsedSectionIds, workNesting]);
+  const collectVisibleIdsFrom = useCallback((
+    sessions: TerminalSessionSummary[],
+    drawers: WorkNestingDrawers<TerminalSessionSummary>,
+  ): string[] => {
+    const ids: string[] = [];
+    for (const session of sessions) {
+      if (drawers.excludedTopLevelIds.has(session.id)) continue;
+      ids.push(...expandSessionWithChildren(session, drawers));
+    }
+    return ids;
+  }, [expandSessionWithChildren]);
+  const collectVisibleIds = useCallback(
+    (sessions: TerminalSessionSummary[]): string[] => collectVisibleIdsFrom(sessions, workNesting),
+    [collectVisibleIdsFrom, workNesting],
+  );
   const renderedSessionIds = useMemo(() => {
     // Board mode first: it replaces the list wholesale, so the ids downstream
     // consumers get (range selection, `onSelectSession`'s visible set) have to
@@ -2015,6 +2060,8 @@ export const SessionListPane = React.memo(function SessionListPane({
     machineMarker?: CrossMachineLaneMarker | null;
     /** Board cards only: the column states the status, so the card must not. */
     suppressStatusLabel?: boolean;
+    nestedSubagent?: boolean;
+    nesting?: WorkNestingDrawers<TerminalSessionSummary>;
   };
   const renderCardCore = (session: TerminalSessionSummary, options?: RenderCardOptions) => {
     const isFirst = !sessionItemAnchorEmitted;
@@ -2105,6 +2152,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         machineMarker={options?.machineMarker ?? null}
         suppressMachineChip={options?.suppressMachineChip}
         suppressStatusLabel={options?.suppressStatusLabel}
+        nestedSubagent={options?.nestedSubagent}
         deltaEnabled={!foreignRow}
         githubStack={isChatToolType(session.toolType) ? sessionPr?.stack ?? null : null}
         disabledReason={disabledReason}
@@ -2119,20 +2167,48 @@ export const SessionListPane = React.memo(function SessionListPane({
     );
   };
 
-  const renderChildSection = (parentId: string, children: TerminalSessionSummary[]) => {
+  const renderNestedSection = (
+    parentId: string,
+    kind: "shells" | "subagents",
+    children: TerminalSessionSummary[],
+    cardOptions?: RenderCardOptions,
+  ) => {
     if (children.length === 0) return null;
-    const collapsed = isChildSectionCollapsed(parentId);
+    const sectionId = kind === "shells"
+      ? attachedShellSectionId(parentId)
+      : nestedSubagentSectionId(parentId);
+    const collapsed = workCollapsedSectionIds.includes(sectionId);
+    const label = kind === "shells"
+      ? (children.length === 1 ? "1 shell" : `${children.length} shells`)
+      : (children.length === 1 ? "1 subagent" : `${children.length} subagents`);
+    const attention = kind === "subagents" ? nestedSubagentDrawerAttention(children, foreignFilingNowMs) : null;
+    let attentionBadge: React.ReactNode = null;
+    if (attention === "failed") {
+      attentionBadge = (
+        <span className={cn("ml-auto shrink-0 font-medium", SESSION_TONE_TEXT_CLASS.red)}>
+          Failed
+        </span>
+      );
+    } else if (attention === "needs_you") {
+      attentionBadge = (
+        <span className={cn("ml-auto inline-flex shrink-0", SESSION_TONE_TEXT_CLASS.amber)}>
+          <Circle size={7} weight="fill" aria-hidden />
+          <span className="sr-only">Needs you</span>
+        </span>
+      );
+    }
     return (
       // `data-indented` for the card's bleed rule, same as a lane group body:
       // these rows hang off their own rail, so a left bleed would cross it.
       <div
-        key={`children-${parentId}`}
+        key={`${kind}-${parentId}`}
         className="ml-3 mt-1 border-l border-white/[0.06] pl-1.5"
         data-indented="true"
+        data-testid={kind === "subagents" ? "nested-subagent-section" : "nested-shell-section"}
       >
         <button
           type="button"
-          onClick={() => toggleChildSection(parentId)}
+          onClick={() => toggleWorkSectionCollapsed(sectionId)}
           className={cn(
             "flex w-full items-center gap-1 rounded-md px-1.5 py-0.5 text-left text-[9px] transition-colors hover:bg-white/[0.03] hover:text-muted-fg/70",
             QUIET_LABEL_CLASS,
@@ -2144,15 +2220,27 @@ export const SessionListPane = React.memo(function SessionListPane({
           ) : (
             <CaretDown size={9} weight="bold" className="shrink-0 text-muted-fg/40" />
           )}
-          <Terminal size={9} weight="regular" className="shrink-0 text-muted-fg/40" />
-          <span className="truncate">
-            {children.length === 1 ? "1 shell" : `${children.length} shells`}
-          </span>
+          {kind === "shells" ? (
+            <Terminal size={9} weight="regular" className="shrink-0 text-muted-fg/40" />
+          ) : (
+            <UsersThree size={9} weight="regular" className="shrink-0 text-muted-fg/40" />
+          )}
+          <span className="truncate">{label}</span>
+          {attentionBadge}
         </button>
         {!collapsed ? (
           <div className={cn(ROW_STACK_CLASS, "mt-1")}>
             {children.map((child) => (
-              <div key={child.id}>{renderCardCore(child, { compact: true })}</div>
+              <div key={child.id}>
+                {renderCardCore(child, {
+                  ...cardOptions,
+                  compact: true,
+                  nestedSubagent: kind === "subagents",
+                  showLaneIdentity: false,
+                  laneActions: null,
+                  machineMarker: null,
+                })}
+              </div>
             ))}
           </div>
         ) : null}
@@ -2160,22 +2248,38 @@ export const SessionListPane = React.memo(function SessionListPane({
     );
   };
 
+  const renderParentNestedDrawers = (
+    parentId: string,
+    shells: TerminalSessionSummary[],
+    subagents: TerminalSessionSummary[],
+    cardOptions?: RenderCardOptions,
+  ) => (
+    <>
+      {renderNestedSection(parentId, "subagents", subagents, cardOptions)}
+      {renderNestedSection(parentId, "shells", shells, cardOptions)}
+    </>
+  );
+
   const renderCards = (list: TerminalSessionSummary[], options?: RenderCardOptions) => {
-    if (options?.foreignRow) {
-      const visibleSessionIds = list.map((session) => session.id);
-      return list.map((session) =>
-        renderCardCore(session, { ...options, visibleSessionIds }));
-    }
+    const drawers = options?.nesting ?? workNesting;
+    const cardOptions = options?.foreignRow
+      ? {
+          ...options,
+          nesting: drawers,
+          visibleSessionIds: collectVisibleIdsFrom(list, drawers),
+        }
+      : options;
     return list
-      .filter((session) => !excludedTopLevelIds.has(session.id))
+      .filter((session) => !drawers.excludedTopLevelIds.has(session.id))
       .map((session) => {
-        const children = childrenByParentId.get(session.id) ?? [];
-        const card = renderCardCore(session, options);
-        if (children.length === 0) return card;
+        const shells = drawers.shellsByParentId.get(session.id) ?? [];
+        const subagents = drawers.subagentsByParentId.get(session.id) ?? [];
+        const card = renderCardCore(session, cardOptions);
+        if (shells.length === 0 && subagents.length === 0) return card;
         return (
           <div key={`group-${session.id}`}>
             {card}
-            {renderChildSection(session.id, children)}
+            {renderParentNestedDrawers(session.id, shells, subagents, cardOptions)}
           </div>
         );
       });
@@ -2475,9 +2579,10 @@ export const SessionListPane = React.memo(function SessionListPane({
       // its own status, so the minority rows are labelled, not mislabelled.
       return <>{renderCards(list, { compact: true, ...cardOptions })}</>;
     }
-    const active = list.filter((session) => !quietIdSet.has(session.id));
-    const snoozed = list.filter((session) => snoozedIdSet.has(session.id));
-    const settled = list.filter((session) => settledIdSet.has(session.id));
+    const excluded = workNesting.excludedTopLevelIds;
+    const active = list.filter((session) => !quietIdSet.has(session.id) && !excluded.has(session.id));
+    const snoozed = list.filter((session) => snoozedIdSet.has(session.id) && !excluded.has(session.id));
+    const settled = list.filter((session) => settledIdSet.has(session.id) && !excluded.has(session.id));
     // A lane that stayed upstairs is genuinely mixed — quiet rows AND live ones
     // — which is exactly where the subsection carries information, so its tails
     // are untouched.
@@ -2749,8 +2854,14 @@ export const SessionListPane = React.memo(function SessionListPane({
         layoutDependency={laneOrderSignature}
         quietCounts={laneQuiet && collapsed
           ? {
-              snoozed: list.filter((session) => unfilteredQuietBuckets.snoozed.has(session.id)).length,
-              settled: list.filter((session) => unfilteredQuietBuckets.settled.has(session.id)).length,
+              snoozed: list.filter((session) =>
+                unfilteredQuietBuckets.snoozed.has(session.id)
+                && !workNesting.excludedTopLevelIds.has(session.id)
+              ).length,
+              settled: list.filter((session) =>
+                unfilteredQuietBuckets.settled.has(session.id)
+                && !workNesting.excludedTopLevelIds.has(session.id)
+              ).length,
             }
           : null}
         onToggleCollapsed={() => {
@@ -2815,7 +2926,7 @@ export const SessionListPane = React.memo(function SessionListPane({
    * shelve at all.
    */
   const renderForeignLaneGroup = (entry: ForeignLaneEntry) => {
-    const { row, compositeLaneId, quiet, fullQuiet, shelf } = entry;
+    const { row, compositeLaneId, quiet, fullQuiet, nesting, shelf } = entry;
     // One resolver, one answer — including for Primary, which used to get its
     // name spelled out here on the theory that two identically-named Primaries
     // are otherwise indistinguishable. Under the physical-machine rule they are
@@ -2850,7 +2961,13 @@ export const SessionListPane = React.memo(function SessionListPane({
     // A group WITH a header names the machine there, so its rows never repeat
     // it. A headerless group has no such header, so its lone card takes the
     // marker instead — the same trade `renderLaneGroup` makes.
-    const cardOptions: RenderCardOptions = { foreignRow: row, suppressMachineChip: true };
+    const cardOptions: RenderCardOptions = { foreignRow: row, suppressMachineChip: true, nesting };
+    const foreignExcluded = nesting.excludedTopLevelIds;
+    const quietTop = {
+      active: quiet.active.filter((session) => !foreignExcluded.has(session.id)),
+      snoozed: quiet.snoozed.filter((session) => !foreignExcluded.has(session.id)),
+      settled: quiet.settled.filter((session) => !foreignExcluded.has(session.id)),
+    };
     // The lane menu would otherwise have no right-click target once the divider
     // is gone. Same rescue `renderLaneGroup` performs for a local singleton,
     // routed through the foreign menu so its actions stay binding-aware.
@@ -2899,8 +3016,8 @@ export const SessionListPane = React.memo(function SessionListPane({
         machineMarker={headerMarker ? <LaneMachineMarker marker={headerMarker} /> : null}
         quietCounts={laneQuiet && collapsed
           ? {
-              snoozed: quiet.snoozed.length,
-              settled: quiet.settled.length,
+              snoozed: quietTop.snoozed.length,
+              settled: quietTop.settled.length,
             }
           : null}
         dimmed={!row.online}
@@ -2929,6 +3046,7 @@ export const SessionListPane = React.memo(function SessionListPane({
               lanePr: primaryPr,
               lanePrs,
               machineMarker: headerMarker,
+              nesting,
               ...(singletonLaneActions ? { laneActions: singletonLaneActions } : {}),
             })
           : shelf
@@ -2939,19 +3057,19 @@ export const SessionListPane = React.memo(function SessionListPane({
           ? renderCards(row.sessions, { compact: true, ...cardOptions })
           : (
             <>
-              {renderCards(quiet.active, cardOptions)}
+              {renderCards(quietTop.active, cardOptions)}
               {renderLaneQuietTail(
                 `snoozed-open:${compositeLaneId}`,
                 snoozedSectionIcon,
                 "snoozed",
-                quiet.snoozed,
+                quietTop.snoozed,
                 { compact: laneQuiet, ...cardOptions },
               )}
               {renderLaneQuietTail(
                 `settled-open:${compositeLaneId}`,
                 settledSectionIcon,
                 "settled",
-                quiet.settled,
+                quietTop.settled,
                 { compact: laneQuiet, ...cardOptions },
               )}
             </>

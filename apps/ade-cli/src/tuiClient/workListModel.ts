@@ -52,6 +52,7 @@ import { ACTIVITY_STATE_GLYPHS, activityStateGroup } from "../../../desktop/src/
 import type { TuiChatSessionSummary } from "./adeApi";
 import type { AdeCodeProvider } from "./types";
 import { getPreviewLine, toWorkSessionSummary, type SessionPreviewLine } from "./workRow";
+import { indexNestedSubagents } from "../../../desktop/src/shared/sessionSpawnNesting";
 
 export type WorkListShelfKind = "snoozed" | "settled";
 
@@ -105,6 +106,11 @@ export type WorkListSessionRow = {
   showLaneIdentity: boolean;
   laneColor: string | null;
   laneIcon: string | null;
+  /**
+   * Same-lane subagent nested under its parent. Compact one-line card; the
+   * parent already names the lane.
+   */
+  nested: boolean;
   /** Present on foreign rows so a hop can open the same project on that machine. */
   projectCanonicalId?: string | null;
   projectRootPath?: string | null;
@@ -282,12 +288,13 @@ function providerOf(session: TuiChatSessionSummary): AdeCodeProvider | null {
 
 function buildSessionRow(args: {
   session: TuiChatSessionSummary;
+  summary: TerminalSessionSummary;
   laneName: string | null;
   activeSessionId: string | null;
   draftSessionIds: ReadonlySet<string>;
   nowMs: number;
 }): WorkListSessionRow {
-  const summary = toWorkSessionSummary(args.session, args.laneName);
+  const summary = args.summary;
   const input = canonicalInputFromSummary(summary);
   const canonical = sessionCanonicalUiState({ ...input, nowMs: args.nowMs });
   const phase = canonical.phase;
@@ -337,6 +344,7 @@ function buildSessionRow(args: {
     showLaneIdentity: false,
     laneColor: null,
     laneIcon: null,
+    nested: false,
   };
 }
 
@@ -369,6 +377,7 @@ function buildForeignRow(foreign: WorkListForeignSession): WorkListSessionRow {
     showLaneIdentity: false,
     laneColor: null,
     laneIcon: null,
+    nested: false,
     projectCanonicalId: foreign.projectCanonicalId ?? null,
     projectRootPath: foreign.projectRootPath ?? null,
   };
@@ -485,24 +494,57 @@ export function buildWorkListModel(input: WorkListInput): WorkListModel {
   const unavailableLaneIds = input.unavailableLaneIds ?? new Set<string>();
   const laneById = new Map(input.lanes.map((lane) => [lane.id, lane] as const));
 
-  const rowsBySession = input.sessions.map((session) => buildSessionRow({
+  const prepared = input.sessions.map((session) => ({
     session,
-    laneName: laneById.get(session.laneId)?.name ?? null,
+    summary: toWorkSessionSummary(session, laneById.get(session.laneId)?.name ?? null),
+  }));
+  const sessionSummaries = prepared.map((entry) => entry.summary);
+  const rowsBySession = prepared.map((entry) => buildSessionRow({
+    session: entry.session,
+    summary: entry.summary,
+    laneName: laneById.get(entry.session.laneId)?.name ?? null,
     activeSessionId: input.activeSessionId,
     draftSessionIds,
     nowMs,
   }));
 
+  const nestIndex = indexNestedSubagents(sessionSummaries, { nowMs });
+  const nestedById = new Map<string, WorkListSessionRow>();
+
   // Quiet partition uses the shared filing rule, so a row's shelf and its status
-  // word can never disagree.
+  // word can never disagree. Nested subagents stay off the top-level shelves
+  // and reappear under their parent.
   const active: WorkListSessionRow[] = [];
   const snoozed: WorkListSessionRow[] = [];
   const settled: WorkListSessionRow[] = [];
   for (const row of rowsBySession) {
+    if (nestIndex.nestedChildIds.has(row.sessionId)) {
+      nestedById.set(row.sessionId, row);
+      continue;
+    }
     if (row.filing === "snoozed") snoozed.push(row);
     else if (row.filing === "settled") settled.push(row);
     else active.push(row);
   }
+
+  const expandNested = (list: readonly WorkListSessionRow[]): WorkListSessionRow[] => {
+    const out: WorkListSessionRow[] = [];
+    for (const row of list) {
+      out.push(row);
+      const children = nestIndex.childrenByRootParentId.get(row.sessionId) ?? [];
+      for (const child of children) {
+        const childRow = nestedById.get(child.id);
+        if (!childRow) continue;
+        out.push({
+          ...childRow,
+          nested: true,
+          showLaneIdentity: false,
+          preview: null,
+        });
+      }
+    }
+    return out;
+  };
 
   const foreignRows = (input.foreign ?? []).map(buildForeignRow);
   const laneNameIndex = new Map<string, LaneSummary>();
@@ -529,6 +571,15 @@ export function buildWorkListModel(input: WorkListInput): WorkListModel {
     }
   }
 
+  const lastActivityMsByLaneId = new Map<string, number>();
+  for (const row of rowsBySession) {
+    if (!row.laneId) continue;
+    const parsed = parseMs(row.activityAt);
+    if (parsed == null) continue;
+    const current = lastActivityMsByLaneId.get(row.laneId);
+    if (current == null || parsed > current) lastActivityMsByLaneId.set(row.laneId, parsed);
+  }
+
   const localByLane = new Map<string, WorkListSessionRow[]>();
   for (const row of active) {
     if (!row.laneId) continue;
@@ -540,10 +591,7 @@ export function buildWorkListModel(input: WorkListInput): WorkListModel {
   const orderInputs = input.lanes.map((lane) => {
     const laneRows = localByLane.get(lane.id) ?? [];
     const quiet = laneRows.length === 0;
-    const lastActivityMs = laneRows.reduce<number | null>((latest, row) => {
-      const parsed = parseMs(row.activityAt);
-      return parsed != null && (latest == null || parsed > latest) ? parsed : latest;
-    }, null);
+    const lastActivityMs = lastActivityMsByLaneId.get(lane.id) ?? null;
     return {
       id: lane.id,
       name: lane.name,
@@ -586,12 +634,12 @@ export function buildWorkListModel(input: WorkListInput): WorkListModel {
     const headerless = laneRows.length === 1
       && (input.laneSortMode ?? "activity") !== "manual"
       && worktreeAvailable;
-    const sessions = laneRows.map((row) => ({
+    const sessions = expandNested(laneRows.map((row) => ({
       ...row,
       showLaneIdentity: headerless,
       laneColor: lane.color ?? null,
       laneIcon: lane.icon ?? null,
-    }));
+    })));
     groups.push({ header, sessions, newChat: null });
     // Fully-quiet lanes have no live rows. Desktop files them under
     // snoozed/settled; emitting an empty header here duplicated the lane name
@@ -642,12 +690,20 @@ export function buildWorkListModel(input: WorkListInput): WorkListModel {
     const shelfRows = shelf === "snoozed" ? snoozed : settled;
     if (shelfRows.length === 0) continue;
     const expanded = expandedShelves.has(shelf);
-    const contents = decorateShelfRows(
+    const decorated = decorateShelfRows(
       shelfRows,
       orderedLaneIds,
       laneById,
       input.laneSortMode ?? "activity",
     );
+    const expandedContents: WorkListRow[] = [];
+    for (const row of decorated) {
+      if (row.kind !== "session") {
+        expandedContents.push(row);
+        continue;
+      }
+      expandedContents.push(...expandNested([row]));
+    }
     rows.push({
       kind: "shelf",
       key: `shelf:${shelf}`,
@@ -655,7 +711,7 @@ export function buildWorkListModel(input: WorkListInput): WorkListModel {
       count: shelfRows.length,
       expanded,
     });
-    if (expanded) rows.push(...contents);
+    if (expanded) rows.push(...expandedContents);
   }
 
   return { rows, groups, snoozed, settled };

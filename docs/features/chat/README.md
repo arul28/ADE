@@ -144,6 +144,7 @@ for its separate RPC, sync, storage, and UI contracts.
 | `apps/desktop/src/renderer/components/chat/AdeCard.tsx` | Provider-independent `ade_card` renderer built only from the shared primitives. Shape follows state rather than variant: terminal success is one line, live work adds progress, failures show only warning rows, unknown variants fall back to text + deeplink, and degraded re-emits preserve prior detail as stale rather than blanking it. |
 | `apps/desktop/src/renderer/components/chat/SubagentActivityCards.tsx` | Inline subagent transcript cards mounted by `AgentChatMessageList` from the render events `chatTranscriptRows.ts` derives. `SubagentSpawnCard` anchors where the agent started (identicon/colour from `chatSubagentIdentity`, task title, agent-type/background chips, a single live `running · <activity> · <N> tools · <elapsed>` line that ticks each second, and a `jump to result` link once the agent ends); `SubagentResultCard` renders at the settle position (status + duration, ~2-line report preview, View transcript, `jump to start`, warm amber tones for stopped/failed instead of red error blocks). Both carry a bottom-right provider mark — the same 20px `ToolLogo` a Work session row uses, via `chatToolTypeForProvider` — resolved from the child session's own provider when a spawned ADE chat's provider is known and from the chat's runtime otherwise; the mark is omitted for a blank provider rather than rendering an empty glyph. `BackgroundJobLine` is the whole in-thread presence of a backgrounded shell command — one quiet centered rule-line in the scheduled-wake/spawn-return divider idiom (deliberately not a card), pushed when the job starts with a live ticking elapsed and mutated in place to `✓/✗ · exit <code> · <duration>` when it exits, with an `open` affordance that dispatches `ade:chat:open-info` to reveal the actions pane's agents tab where the job's full state lives — omitted entirely on a host that registers no chat-info listener, so it is never a button that does nothing. Its ticker is the file's one shared `useLiveDurationMs` hook (also driving the spawn card), anchored to the real start timestamp so scrolling the row out of the virtualizer and back keeps the true elapsed; it freezes on an ended session, and a job still marked `running` there drops its duration entirely rather than assert an elapsed nobody should read. Status glyphs are Phosphor components, not bare `⚙`/`✓`/`✗` codepoints, which Windows resolves to off-baseline emoji; `SubagentStoppedGroupCard` collapses a run of interrupt-stopped subagents into one amber "N agents stopped when you interrupted" line that expands to a per-agent list with `jump to start` links. All inherit `--chat-accent`. |
 | `apps/desktop/src/renderer/components/chat/spawnNavigation.ts` | One canonical `navigateToSpawnedChat(sessionId, laneId?)` helper that dispatches the `ade:work:select-session` window event (behind a try/catch, no-op on a falsy id). Every spawn surface routes through it: the inline `SubagentSpawnCard`, `spawn_wake_divider` and `spawn_completed` completion rows, spawned-chat rows in `ChatSubagentsPanel`, the `AgentChatPane` parent-thread breadcrumb, and the `SessionCard` lineage glyph. `TerminalsPage` resolves an omitted lane from the loaded session list before focusing the target, so cross-lane jumps land on the correct lane. |
+| `apps/desktop/src/shared/sessionSpawnNesting.ts` | One Work by-lane filing rule: same-lane `spawnKind: "subagent"` chats (and tracked CLI `--type subagent`) nest under the parent; peers stay top-level; demote un-nests; quiet parents pull up not-done children; grandchildren flatten into the root parent's one drawer. Owns `isChatToolType` so filing can tell a chat from a tracked CLI subagent without importing the renderer. Desktop, ADE Code, and the iOS Swift mirror consult this so they cannot disagree. `ade chat list` stays flat. |
 | `apps/desktop/src/renderer/components/chat/ChatActionsDrawerPanel.tsx`, `ChatSourcesPanel.tsx`, `chatSources.ts` | Codex Chat Actions source inventory. Sources is the first available tab and derives a deduplicated list of attachments/files, web searches/results, MCP apps/tools, and external resource URLs from the current transcript. HTTP(S) rows open in ADE's built-in browser; internal `node_repl` plumbing and unsafe protocols are excluded. |
 | `apps/desktop/src/renderer/components/chat/ChatGitToolbar.tsx` | Git / PR quick-action toolbar above the composer. If the lane already has a linked PR, the PR button opens or toggles that PR; otherwise it routes to the PR workspace with a create-PR handoff (`create=1&sourceLaneId=<lane>&target=primary`). When the chat PR pane or compact PR menu opens, it asks `prReadCache.refreshLinkedPrCoalesced` for a targeted `prs.refresh({ prIds })` so the badge picks up merged/closed/check transitions without broad GitHub polling. An unmapped lane PR (a `github_pr_projections`-derived summary with `pr.unmapped === true` and a synthetic `gh:` id) has no DB row to refresh or fetch checks for, so both the live refresh and `getChecks` are skipped for it. The toolbar is a **status strip only** — the manual PR-sync (↻) control lives in the PR pane's title bar, so surfaces that render the toolbar without a PR pane heal through reconcile-on-focus and `prs-updated` instead. It takes an optional `runtimePin` — the CLI session header renders it with its own pin and no `ChatRuntimeScopeProvider` above it, so it derives its scope with `useChatRuntimeScopeForPin(runtimePin, laneId)` rather than from context. A lane's PR row lives in its own machine's database, so a chat on another machine reads and subscribes through that machine's runtime rather than showing the bare create-PR button for a session that already has one. Effects key on the pin's `key`, not the object, which is rebuilt on every cross-machine merge. Under a pin the unpinned `diff.getChanges` status read is skipped and PR *creation* is withheld — see [Pull requests](../pull-requests/README.md#which-machine-answers-a-pr-read). |
 | `apps/desktop/src/renderer/components/chat/ChatPrPane.tsx`, `ChatPrInlineCreator.tsx` | Left floating PR pane for Work chat, with its own title bar (`Pull request` + ↻ refresh + ✕ close) — the manual PR-sync control lives here, not in `ChatGitToolbar`. Renders cached lane PR details immediately, then performs the same cooldown-bound targeted PR refresh as the toolbar before settling the state. Terminal PRs hide stale running-check labels so merged/closed PRs do not keep showing in-progress CI from an old cache row. An unmapped (`pr.unmapped`) lane PR skips the live refresh and the checks/reviews/status enrichment, since it has no DB row behind the synthetic `gh:` id. With no PR it embeds `ChatPrInlineCreator`, whose title defaults to the chat session title — unless the pane carries a `runtimePin`, in which case it says `Switch to <machine> to open one`, because the creator derives its branch, base, and Linear links from the bound machine's lanes and `createFromLane` is unpinned. Reads and the event subscription do follow the pin. The pane's open/closed state is per chat and persisted across restarts through `chatCompanionUiState` — see [Composer and chat UI](composer-and-ui.md#source-file-map). |
@@ -2221,6 +2222,17 @@ without resolving the parent summary first. It is host-stamped, because identity
 rows are filtered out of every roster and a renderer cannot see the parent to
 ask it.
 
+The Work by-lane list (desktop, ADE Code, iOS) nests same-lane
+`spawnKind: "subagent"` chats and tracked CLI `--type subagent` sessions under
+the parent. Peers stay top-level. Demote un-nests; promote nests again.
+Cross-lane children stay top-level in their own lane with the lineage chip. A
+quiet parent (snoozed or settled) pulls not-done children up; done children
+stay nested. Grandchildren flatten into the root parent's one drawer. Desktop
+and iOS render that drawer as **N subagents** (`chat-subagents:<parentId>`);
+ADE Code indents one-line rows instead — a terminal cannot paint provider
+logos. `ade chat list` stays a flat table. See
+[Session sidebar](../terminals-and-sessions/ui-surfaces.md#session-sidebar-sessionlistpanetsx).
+
 ### Type-decided completion reporting
 
 When any spawned chat child completes a turn, `reportChildSpawnEnded` in
@@ -2403,10 +2415,12 @@ Work sidebar can therefore render, without any extra fetch:
 - a live-children badge (`▸N`) counting a spawner's still-`running`
   children, derived in `SessionListPane` from the already-loaded session
   list, and
-- a small status-optional lineage identicon immediately left of the status dot
-  on every child with a parent. Its tooltip names the parent from the
-  unfiltered session-title index when available; clicking it opens the parent
-  without selecting the child card.
+- a small status-optional lineage identicon immediately left of the status
+  slot on every *top-level* child with a parent (cross-lane rows and peers).
+  Nested same-lane subagents already sit under the parent, so the identicon
+  leads the compact row instead. The tooltip names the parent from the
+  unfiltered session-title index when available; clicking the top-level
+  glyph opens the parent without selecting the child card.
 
 `AgentChatPane` renders a type-tinted **Go to parent thread** header link for
 a spawned chat. The tooltip names the parent when its title is available, and
@@ -3472,6 +3486,9 @@ config service):
   that creates chats on this engine through the personal-chat machine RPC.
 - [Agents README](../agents/README.md) -- the CTO identity, persona
   overlays, and tool policy.
+- [Terminals and sessions](../terminals-and-sessions/README.md) -- Work
+  session list nesting for same-lane subagent chats, including the
+  [session sidebar](../terminals-and-sessions/ui-surfaces.md#session-sidebar-sessionlistpanetsx).
 - [History README](../history/README.md) -- chat sessions are not
   recorded in the operations timeline, but the turns that cause git
   state changes (lane creation, PR creation, commits) are.

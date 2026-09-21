@@ -52,6 +52,503 @@ final class WorkSessionGroupingTests: XCTestCase {
     XCTAssertEqual(presentation.sessionGroups.first?.isHeaderless, true)
   }
 
+  func testChatWithNestedSubagentsStaysHeaderless() {
+    let lane = makeLane(id: "lane-a", name: "feature/one")
+    let presentation = makePresentation(
+      sessions: [
+        makeSession(id: "chat-1", laneId: lane.id),
+        makeSession(
+          id: "sub-1",
+          laneId: lane.id,
+          spawnKind: .subagent,
+          orchestrationParentSessionId: "chat-1"
+        ),
+        makeSession(
+          id: "sub-2",
+          laneId: lane.id,
+          spawnKind: .subagent,
+          orchestrationParentSessionId: "chat-1"
+        ),
+      ],
+      lanes: [lane]
+    )
+
+    XCTAssertEqual(presentation.sessionGroups.first?.isHeaderless, true)
+    XCTAssertEqual(presentation.sessionGroups.first?.sessions.map(\.id), ["chat-1"])
+    XCTAssertEqual(nestedSubagentGroup(presentation, parentId: "chat-1")?.children.map(\.id).sorted(), ["sub-1", "sub-2"])
+    XCTAssertEqual(presentation.topLevelDisplaySessionIds, Set(["chat-1"]))
+  }
+
+  func testDrawerAttentionDoesNotTreatUsageLimitAsFailed() throws {
+    var child = makeSession(
+      id: "sub-1",
+      laneId: "lane-a",
+      status: "ended",
+      runtimeState: "exited"
+    )
+    child.lastTurnFailedAt = iso(now)
+    child.exitCode = 1
+    var summary = try JSONDecoder().decode(
+      AgentChatSessionSummary.self,
+      from: Data("""
+      {
+        "sessionId":"sub-1",
+        "laneId":"lane-a",
+        "provider":"claude",
+        "model":"claude-sonnet",
+        "status":"failed",
+        "startedAt":"\(iso(now))",
+        "lastActivityAt":"\(iso(now))"
+      }
+      """.utf8)
+    )
+    summary.usageLimitResume = AgentChatUsageLimitResume(
+      state: .armed,
+      provider: "claude",
+      fireAt: iso(now.addingTimeInterval(180))
+    )
+    XCTAssertEqual(
+      workNestedSubagentDrawerAttention([child], chatSummaries: ["sub-1": summary], now: now),
+      .none
+    )
+    summary.usageLimitResume = nil
+    XCTAssertEqual(
+      workNestedSubagentDrawerAttention([child], chatSummaries: ["sub-1": summary], now: now),
+      .failed
+    )
+  }
+
+  func testPresentationSignatureChangesWhenNestedUsageLimitArrives() throws {
+    let lane = makeLane(id: "lane-a", name: "feature/one")
+    var child = makeSession(
+      id: "sub-1",
+      laneId: lane.id,
+      status: "ended",
+      runtimeState: "exited",
+      spawnKind: .subagent,
+      orchestrationParentSessionId: "chat-1"
+    )
+    child.lastTurnFailedAt = iso(now)
+    child.exitCode = 1
+    var summary = try JSONDecoder().decode(
+      AgentChatSessionSummary.self,
+      from: Data("""
+      {
+        "sessionId":"sub-1",
+        "laneId":"lane-a",
+        "provider":"claude",
+        "model":"claude-sonnet",
+        "status":"failed",
+        "startedAt":"\(iso(now))",
+        "lastActivityAt":"\(iso(now))"
+      }
+      """.utf8)
+    )
+    let sessions = [
+      makeSession(id: "chat-1", laneId: lane.id),
+      child,
+    ]
+    let failed = buildWorkRootSessionPresentation(
+      sessions: sessions,
+      optimisticSessions: [:],
+      chatSummaries: ["sub-1": summary],
+      archivedSessionIds: [],
+      selectedStatus: .all,
+      selectedLaneId: "all",
+      searchText: "",
+      organization: .byLane,
+      orderedLanes: [lane],
+      now: now
+    )
+    summary.usageLimitResume = AgentChatUsageLimitResume(
+      state: .armed,
+      provider: "claude",
+      fireAt: iso(now.addingTimeInterval(180))
+    )
+    let parked = buildWorkRootSessionPresentation(
+      sessions: sessions,
+      optimisticSessions: [:],
+      chatSummaries: ["sub-1": summary],
+      archivedSessionIds: [],
+      selectedStatus: .all,
+      selectedLaneId: "all",
+      searchText: "",
+      organization: .byLane,
+      orderedLanes: [lane],
+      now: now
+    )
+    XCTAssertEqual(nestedSubagentGroup(failed, parentId: "chat-1")?.attention, .failed)
+    XCTAssertEqual(
+      nestedSubagentGroup(parked, parentId: "chat-1")?.attention,
+      WorkNestedDrawerAttention.none
+    )
+    XCTAssertNotEqual(failed, parked)
+  }
+
+  func testSearchHiddenSubagentDoesNotAppearInDrawer() {
+    let lane = makeLane(id: "lane-a", name: "feature/one")
+    let presentation = makePresentation(
+      sessions: [
+        makeSession(id: "chat-1", laneId: lane.id, title: "Lead chat"),
+        makeSession(
+          id: "sub-1",
+          laneId: lane.id,
+          title: "Helper subagent",
+          spawnKind: .subagent,
+          orchestrationParentSessionId: "chat-1"
+        ),
+      ],
+      lanes: [lane],
+      searchText: "Lead"
+    )
+
+    XCTAssertEqual(presentation.displaySessionIds, ["chat-1"])
+    XCTAssertNil(nestedSubagentGroup(presentation, parentId: "chat-1"))
+    XCTAssertEqual(presentation.topLevelDisplaySessionIds, Set(["chat-1"]))
+  }
+
+  func testPeerSpawnDoesNotNest() {
+    let lane = makeLane(id: "lane-a", name: "feature/one")
+    let presentation = makePresentation(
+      sessions: [
+        makeSession(id: "chat-1", laneId: lane.id),
+        makeSession(
+          id: "peer-1",
+          laneId: lane.id,
+          spawnKind: .peer,
+          orchestrationParentSessionId: "chat-1"
+        ),
+      ],
+      lanes: [lane]
+    )
+
+    XCTAssertFalse(hasNestedSubagentGroups(presentation))
+    XCTAssertEqual(presentation.topLevelDisplaySessionIds.sorted(), ["chat-1", "peer-1"])
+  }
+
+  func testQuietParentPromotesWorkingSubagent() {
+    let lane = makeLane(id: "lane-a", name: "feature/one")
+    let presentation = makePresentation(
+      sessions: [
+        makeSession(
+          id: "chat-1",
+          laneId: lane.id,
+          status: "idle",
+          runtimeState: "idle",
+          settledAt: iso(now.addingTimeInterval(-120))
+        ),
+        makeSession(
+          id: "sub-1",
+          laneId: lane.id,
+          spawnKind: .subagent,
+          orchestrationParentSessionId: "chat-1"
+        ),
+      ],
+      lanes: [lane]
+    )
+
+    XCTAssertFalse(hasNestedSubagentGroups(presentation))
+    XCTAssertTrue(presentation.topLevelDisplaySessionIds.contains("sub-1"))
+  }
+
+  func testSnoozedParentWithNestedSettledHelpersFilesOntoSnoozedShelf() {
+    let lane = makeLane(id: "lane-a", name: "feature/one")
+    let presentation = makePresentation(
+      sessions: [
+        makeSession(
+          id: "chat-1",
+          laneId: lane.id,
+          title: "Sleeping lead",
+          status: "idle",
+          runtimeState: "idle",
+          snoozedUntil: iso(now.addingTimeInterval(3_600)),
+          snoozedAt: iso(now.addingTimeInterval(-60))
+        ),
+        makeSession(
+          id: "sub-1",
+          laneId: lane.id,
+          title: "Nested helper one",
+          status: "completed",
+          runtimeState: "idle",
+          settledAt: iso(now.addingTimeInterval(-30)),
+          spawnKind: .subagent,
+          orchestrationParentSessionId: "chat-1"
+        ),
+        makeSession(
+          id: "sub-2",
+          laneId: lane.id,
+          title: "Nested helper two",
+          status: "completed",
+          runtimeState: "idle",
+          settledAt: iso(now.addingTimeInterval(-10)),
+          spawnKind: .subagent,
+          orchestrationParentSessionId: "chat-1"
+        ),
+      ],
+      lanes: [lane]
+    )
+
+    XCTAssertEqual(presentation.sessionGroups.map(\.id), ["status:snoozed"])
+    XCTAssertEqual(presentation.sessionGroups.first?.sessions.map(\.id), ["chat-1"])
+    XCTAssertEqual(
+      nestedSubagentGroup(presentation, parentId: "chat-1")?.children.map(\.id).sorted(),
+      ["sub-1", "sub-2"]
+    )
+    XCTAssertEqual(presentation.topLevelDisplaySessionIds, Set(["chat-1"]))
+  }
+
+  func testGrandchildrenFlattenIntoTheRootParentDrawer() {
+    let lane = makeLane(id: "lane-a", name: "feature/one")
+    let presentation = makePresentation(
+      sessions: [
+        makeSession(id: "chat-1", laneId: lane.id),
+        makeSession(
+          id: "mid",
+          laneId: lane.id,
+          spawnKind: .subagent,
+          orchestrationParentSessionId: "chat-1"
+        ),
+        makeSession(
+          id: "leaf",
+          laneId: lane.id,
+          spawnKind: .subagent,
+          orchestrationParentSessionId: "mid"
+        ),
+      ],
+      lanes: [lane]
+    )
+
+    XCTAssertEqual(
+      nestedSubagentGroup(presentation, parentId: "chat-1")?.children.map(\.id).sorted(),
+      ["leaf", "mid"]
+    )
+    XCTAssertNil(nestedSubagentGroup(presentation, parentId: "mid"))
+    XCTAssertEqual(presentation.topLevelDisplaySessionIds, Set(["chat-1"]))
+    XCTAssertEqual(presentation.sessionGroups.first?.sessions.map(\.id), ["chat-1"])
+  }
+
+  func testCrossLaneSubagentStaysTopLevel() {
+    let parentLane = makeLane(id: "lane-a", name: "feature/one")
+    let childLane = makeLane(id: "lane-b", name: "feature/two")
+    let presentation = makePresentation(
+      sessions: [
+        makeSession(id: "chat-1", laneId: parentLane.id),
+        makeSession(
+          id: "sub-1",
+          laneId: childLane.id,
+          spawnKind: .subagent,
+          orchestrationParentSessionId: "chat-1"
+        ),
+      ],
+      lanes: [parentLane, childLane]
+    )
+
+    XCTAssertFalse(hasNestedSubagentGroups(presentation))
+    XCTAssertEqual(presentation.topLevelDisplaySessionIds.sorted(), ["chat-1", "sub-1"])
+  }
+
+  func testTrackedCliSubagentNestsTheSameWayAsAChat() {
+    let lane = makeLane(id: "lane-a", name: "feature/one")
+    let presentation = makePresentation(
+      sessions: [
+        makeSession(id: "chat-1", laneId: lane.id),
+        makeSession(
+          id: "cli-child",
+          laneId: lane.id,
+          toolType: "claude",
+          spawnKind: .subagent,
+          orchestrationParentSessionId: "chat-1"
+        ),
+      ],
+      lanes: [lane]
+    )
+
+    XCTAssertEqual(
+      nestedSubagentGroup(presentation, parentId: "chat-1")?.children.map(\.id),
+      ["cli-child"]
+    )
+    XCTAssertEqual(presentation.topLevelDisplaySessionIds, Set(["chat-1"]))
+  }
+
+  func testNestedChildShellRemountsOntoTheRootParent() {
+    let lane = makeLane(id: "lane-a", name: "feature/one")
+    let presentation = makePresentation(
+      sessions: [
+        makeSession(id: "chat-1", laneId: lane.id),
+        makeSession(
+          id: "mid",
+          laneId: lane.id,
+          spawnKind: .subagent,
+          orchestrationParentSessionId: "chat-1"
+        ),
+        makeSession(
+          id: "shell-1",
+          laneId: lane.id,
+          toolType: "shell",
+          chatSessionId: "mid"
+        ),
+      ],
+      lanes: [lane]
+    )
+
+    let shells = presentation.nestedGroupsByParentId["chat-1"]?.first { $0.kind == .shells }
+    XCTAssertEqual(shells?.children.map(\.id), ["shell-1"])
+    XCTAssertNil(presentation.nestedGroupsByParentId["mid"]?.first { $0.kind == .shells })
+    XCTAssertEqual(presentation.topLevelDisplaySessionIds, Set(["chat-1"]))
+  }
+
+  func testStatusOrganizationKeepsSubagentsFlat() {
+    let lane = makeLane(id: "lane-a", name: "feature/one")
+    let presentation = makePresentation(
+      sessions: [
+        makeSession(id: "chat-1", laneId: lane.id),
+        makeSession(
+          id: "sub-1",
+          laneId: lane.id,
+          spawnKind: .subagent,
+          orchestrationParentSessionId: "chat-1"
+        ),
+      ],
+      lanes: [lane],
+      organization: .byStatus
+    )
+
+    XCTAssertFalse(hasNestedSubagentGroups(presentation))
+    XCTAssertEqual(presentation.topLevelDisplaySessionIds.sorted(), ["chat-1", "sub-1"])
+  }
+
+  func testPulledUpWorkingMidOwnsItsWorkingGrandchild() {
+    let lane = makeLane(id: "lane-a", name: "feature/one")
+    let presentation = makePresentation(
+      sessions: [
+        makeSession(
+          id: "chat-1",
+          laneId: lane.id,
+          status: "idle",
+          runtimeState: "idle",
+          settledAt: iso(now.addingTimeInterval(-120))
+        ),
+        makeSession(
+          id: "mid",
+          laneId: lane.id,
+          spawnKind: .subagent,
+          orchestrationParentSessionId: "chat-1"
+        ),
+        makeSession(
+          id: "leaf",
+          laneId: lane.id,
+          spawnKind: .subagent,
+          orchestrationParentSessionId: "mid"
+        ),
+      ],
+      lanes: [lane]
+    )
+
+    XCTAssertNil(nestedSubagentGroup(presentation, parentId: "chat-1"))
+    XCTAssertEqual(
+      nestedSubagentGroup(presentation, parentId: "mid")?.children.map(\.id),
+      ["leaf"]
+    )
+    XCTAssertEqual(presentation.topLevelDisplaySessionIds.sorted(), ["chat-1", "mid"])
+  }
+
+  func testChatSummarySpawnKindNestsWhenSessionOmitsIt() throws {
+    let lane = makeLane(id: "lane-a", name: "feature/one")
+    let child = makeSession(id: "sub-1", laneId: lane.id)
+    var summary = try makeChatSummary(sessionId: child.id, laneId: lane.id)
+    summary.spawnKind = .subagent
+    summary.orchestrationParentSessionId = "chat-1"
+    let presentation = buildWorkRootSessionPresentation(
+      sessions: [
+        makeSession(id: "chat-1", laneId: lane.id),
+        child,
+      ],
+      optimisticSessions: [:],
+      chatSummaries: [child.id: summary],
+      archivedSessionIds: [],
+      selectedStatus: .all,
+      selectedLaneId: "all",
+      searchText: "",
+      organization: .byLane,
+      orderedLanes: [lane],
+      now: now
+    )
+
+    XCTAssertEqual(nestedSubagentGroup(presentation, parentId: "chat-1")?.children.map(\.id), ["sub-1"])
+    XCTAssertEqual(presentation.sessionGroups.first?.sessions.map(\.id), ["chat-1"])
+    XCTAssertEqual(presentation.topLevelDisplaySessionIds, Set(["chat-1"]))
+  }
+
+  func testSessionSpawnKindWinsOverStaleSummaryPeer() throws {
+    let lane = makeLane(id: "lane-a", name: "feature/one")
+    let child = makeSession(
+      id: "sub-1",
+      laneId: lane.id,
+      spawnKind: .subagent,
+      orchestrationParentSessionId: "chat-1"
+    )
+    var summary = try makeChatSummary(sessionId: child.id, laneId: lane.id)
+    summary.spawnKind = .peer
+    summary.orchestrationParentSessionId = "chat-1"
+    let presentation = buildWorkRootSessionPresentation(
+      sessions: [
+        makeSession(id: "chat-1", laneId: lane.id),
+        child,
+      ],
+      optimisticSessions: [:],
+      chatSummaries: [child.id: summary],
+      archivedSessionIds: [],
+      selectedStatus: .all,
+      selectedLaneId: "all",
+      searchText: "",
+      organization: .byLane,
+      orderedLanes: [lane],
+      now: now
+    )
+
+    XCTAssertEqual(nestedSubagentGroup(presentation, parentId: "chat-1")?.children.map(\.id), ["sub-1"])
+    XCTAssertEqual(presentation.sessionGroups.first?.sessions.map(\.id), ["chat-1"])
+  }
+
+  func testPresentationSignatureChangesWhenSummarySpawnKindArrives() throws {
+    let lane = makeLane(id: "lane-a", name: "feature/one")
+    let child = makeSession(id: "sub-1", laneId: lane.id)
+    var summary = try makeChatSummary(sessionId: child.id, laneId: lane.id)
+    let sessions = [
+      makeSession(id: "chat-1", laneId: lane.id),
+      child,
+    ]
+    let flat = buildWorkRootSessionPresentation(
+      sessions: sessions,
+      optimisticSessions: [:],
+      chatSummaries: [child.id: summary],
+      archivedSessionIds: [],
+      selectedStatus: .all,
+      selectedLaneId: "all",
+      searchText: "",
+      organization: .byLane,
+      orderedLanes: [lane],
+      now: now
+    )
+    summary.spawnKind = .subagent
+    summary.orchestrationParentSessionId = "chat-1"
+    let nested = buildWorkRootSessionPresentation(
+      sessions: sessions,
+      optimisticSessions: [:],
+      chatSummaries: [child.id: summary],
+      archivedSessionIds: [],
+      selectedStatus: .all,
+      selectedLaneId: "all",
+      searchText: "",
+      organization: .byLane,
+      orderedLanes: [lane],
+      now: now
+    )
+    XCTAssertNil(nestedSubagentGroup(flat, parentId: "chat-1"))
+    XCTAssertEqual(nestedSubagentGroup(nested, parentId: "chat-1")?.children.map(\.id), ["sub-1"])
+    XCTAssertNotEqual(flat, nested)
+  }
+
   func testPinnedLaneKeepsItsHeader() {
     let lane = makeLane(id: "lane-a", name: "feature/one")
     let presentation = makePresentation(
@@ -1075,7 +1572,9 @@ final class WorkSessionGroupingTests: XCTestCase {
     snoozedAt: String? = nil,
     chatSessionId: String? = nil,
     pendingInputItemId: String? = nil,
-    chatIdleSinceAt: String? = nil
+    chatIdleSinceAt: String? = nil,
+    spawnKind: AgentChatSpawnKind? = nil,
+    orchestrationParentSessionId: String? = nil
   ) -> TerminalSessionSummary {
     TerminalSessionSummary(
       id: id,
@@ -1106,7 +1605,10 @@ final class WorkSessionGroupingTests: XCTestCase {
       resumeMetadata: nil,
       chatIdleSinceAt: chatIdleSinceAt,
       chatSessionId: chatSessionId,
-      pendingInputItemId: pendingInputItemId
+      pendingInputItemId: pendingInputItemId,
+      parentIdentityKey: nil,
+      orchestrationParentSessionId: orchestrationParentSessionId,
+      spawnKind: spawnKind
     )
   }
 
@@ -1138,5 +1640,35 @@ final class WorkSessionGroupingTests: XCTestCase {
       createdAt: createdAt,
       archivedAt: nil
     )
+  }
+
+  private func makeChatSummary(sessionId: String, laneId: String) throws -> AgentChatSessionSummary {
+    try JSONDecoder().decode(
+      AgentChatSessionSummary.self,
+      from: Data("""
+      {
+        "sessionId":"\(sessionId)",
+        "laneId":"\(laneId)",
+        "provider":"claude",
+        "model":"claude-sonnet",
+        "status":"running",
+        "startedAt":"\(iso(now))",
+        "lastActivityAt":"\(iso(now))"
+      }
+      """.utf8)
+    )
+  }
+
+  private func nestedSubagentGroup(
+    _ presentation: WorkRootSessionPresentation,
+    parentId: String
+  ) -> WorkSessionChildGroup? {
+    presentation.nestedGroupsByParentId[parentId]?.first { $0.kind == .subagents }
+  }
+
+  private func hasNestedSubagentGroups(_ presentation: WorkRootSessionPresentation) -> Bool {
+    presentation.nestedGroupsByParentId.values.contains { groups in
+      groups.contains { $0.kind == .subagents }
+    }
   }
 }

@@ -50,6 +50,7 @@ function sessionRow(id: string, overrides: Partial<WorkListSessionRow> = {}): Wo
     showLaneIdentity: false,
     laneColor: null,
     laneIcon: null,
+    nested: false,
     ...overrides,
   };
 }
@@ -68,6 +69,22 @@ describe("workListRowHeight", () => {
       hasDraft: false,
       machine: null,
     }))).toBe(3);
+  });
+
+  it("charges a nested subagent one line with no gap under its parent", () => {
+    const helper = sessionRow("helper", { nested: true });
+    expect(workListRowHeight(helper)).toBe(1);
+    expect(workListRowMarginTop(helper, false)).toBe(0);
+
+    const rows: WorkListRow[] = [sessionRow("parent"), helper];
+    const layout = computeWorkListLayout({ panelHeight: 40, rows });
+    expect(layout.placements.map((entry) => [entry.key, entry.height, entry.marginTop])).toEqual([
+      ["session:parent", 3, 0],
+      ["session:helper", 1, 0],
+    ]);
+    const parent = layout.placements[0]!;
+    const nested = layout.placements[1]!;
+    expect(nested.y).toBe(parent.y + parent.height);
   });
 
   it("gives every non-session entry exactly one line", () => {

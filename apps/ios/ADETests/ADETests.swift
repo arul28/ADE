@@ -17669,8 +17669,14 @@ final class ADETests: XCTestCase {
       orderedLanes: [lane]
     )
 
-    XCTAssertEqual(presentation.childGroupsByParentId["chat-parent"]?.children.map(\.id), ["shell-older", "shell-newer"])
-    XCTAssertEqual(presentation.childGroupsByParentId["chat-parent"]?.collapsedSectionId, "chat:chat-parent")
+    XCTAssertEqual(
+      presentation.nestedGroupsByParentId["chat-parent"]?.first { $0.kind == .shells }?.children.map(\.id),
+      ["shell-older", "shell-newer"]
+    )
+    XCTAssertEqual(
+      presentation.nestedGroupsByParentId["chat-parent"]?.first { $0.kind == .shells }?.collapsedSectionId,
+      "chat:chat-parent"
+    )
     XCTAssertFalse(presentation.topLevelDisplaySessionIds.contains("shell-older"))
     XCTAssertFalse(presentation.topLevelDisplaySessionIds.contains("shell-newer"))
     XCTAssertTrue(presentation.topLevelDisplaySessionIds.contains("chat-parent"))
