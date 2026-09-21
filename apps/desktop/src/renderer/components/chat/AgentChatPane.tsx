@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { showToast } from "../app/toast/toastStore";
 import { AnimatePresence, motion } from "motion/react";
 import { ArrowLeft, ArrowsLeftRight, CaretRight, CircleNotch, CloudArrowUp, Cube, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitFork, Lightning, Plus, Terminal, TreeStructure, X, type Icon } from "@phosphor-icons/react";
 import {
@@ -4968,12 +4969,28 @@ export function AgentChatPane({
    * always show defaults from the tab path.
    */
   const openAutoHandoff = useCallback(async () => {
-    openHandoffTab();
     const sessionId = selectedSessionId;
     const requestId = ++autoHandoffRequestRef.current;
-    const rules = sessionId ? await loadAutoHandoffRulesForSession(sessionId) : [];
+    // Read through the chat's own machine pin: a chat that lives on another
+    // machine must read and later save its rules there, not in this tab's
+    // bound project.
+    const rules = sessionId
+      ? await loadAutoHandoffRulesForSession(sessionId, chatRuntimePinRef.current)
+      : null;
     if (autoHandoffRequestRef.current !== requestId) return;
-    setAutoHandoffRules(sessionId ? { sessionId, rules } : null);
+    if (!sessionId) return;
+    // A failed read is not "no rules": opening the editor on defaults would let
+    // Save delete conditions the read never saw. Keep it closed and say so.
+    if (rules === null) {
+      showToast({
+        id: `auto-handoff-read:${sessionId}`,
+        title: "Couldn't load auto handoff",
+        message: "The rules for this chat didn't load. Try again in a moment.",
+      });
+      return;
+    }
+    openHandoffTab();
+    setAutoHandoffRules({ sessionId, rules });
     setAutoHandoffOpen(true);
   }, [openHandoffTab, selectedSessionId]);
 

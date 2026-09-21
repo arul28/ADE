@@ -209,6 +209,7 @@ type SessionContextMenuProps = {
   onOpenChatHandoff: (
     session: TerminalSessionSummary,
     intent: ChatHandoffIntent,
+    binding?: OpenProjectBinding | null,
   ) => void;
   pinnedSessionIds?: string[];
   /** Session ids currently in any work grid (drives the "Remove from grid" item). */
@@ -361,12 +362,15 @@ function SessionContextMenuPanel({
     }
     let cancelled = false;
     setScopedHandoffRules(null);
-    void loadAutoHandoffRulesForSession(session.id).then((rules) => {
+    void loadAutoHandoffRulesForSession(session.id, binding).then((rules) => {
       if (cancelled) return;
+      // `null` is a failed/unavailable read and stays null, which keeps the
+      // Auto handoff item disabled rather than opening the editor on defaults
+      // that would delete rules this read never saw.
       setScopedHandoffRules(rules);
     });
     return () => { cancelled = true; };
-  }, [isChat, session.id]);
+  }, [binding, isChat, session.id]);
   const canonicalPhase = sessionCanonicalUiState(session).phase;
   const isActivelyRunning = sessionIsMidFlight(session);
   const canDismissNeedsYou =
@@ -710,7 +714,7 @@ function SessionContextMenuPanel({
               data-testid="session-menu-handoff-local"
               className={MENU_ITEM_CLASS}
               onClick={() => {
-                onOpenChatHandoff(session, "local");
+                onOpenChatHandoff(session, "local", binding);
                 onClose();
               }}
             >
@@ -722,7 +726,7 @@ function SessionContextMenuPanel({
               data-testid="session-menu-handoff-remote"
               className={MENU_ITEM_CLASS}
               onClick={() => {
-                onOpenChatHandoff(session, "remote");
+                onOpenChatHandoff(session, "remote", binding);
                 onClose();
               }}
             >
@@ -734,8 +738,10 @@ function SessionContextMenuPanel({
               type="button"
               data-testid="session-menu-auto-handoff"
               className={MENU_ITEM_CLASS}
+              disabled={scopedHandoffRules === null}
               onClick={() => {
-                onOpenAutoHandoff({ session, binding, existingRules: scopedHandoffRules ?? [] });
+                if (scopedHandoffRules === null) return;
+                onOpenAutoHandoff({ session, binding, existingRules: scopedHandoffRules });
                 onClose();
               }}
             >
@@ -748,7 +754,7 @@ function SessionContextMenuPanel({
                 data-testid="session-menu-remove-auto-handoff"
                 className={MENU_ITEM_CLASS}
                 onClick={() => {
-                  void removeAutomationRules(scopedHandoffRules.map((rule) => rule.id));
+                  void removeAutomationRules(scopedHandoffRules.map((rule) => rule.id), binding);
                   onClose();
                 }}
               >

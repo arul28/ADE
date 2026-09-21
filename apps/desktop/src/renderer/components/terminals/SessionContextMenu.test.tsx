@@ -787,7 +787,7 @@ describe("SessionContextMenu handoff submenu", () => {
     fireEvent.click(screen.getByTestId("session-menu-handoff"));
     fireEvent.click(screen.getByTestId("session-menu-handoff-local"));
 
-    expect(onOpenChatHandoff).toHaveBeenCalledWith(expect.objectContaining({ id: "chat-1" }), "local");
+    expect(onOpenChatHandoff).toHaveBeenCalledWith(expect.objectContaining({ id: "chat-1" }), "local", null);
     expect(onClose).toHaveBeenCalled();
   });
 
@@ -798,13 +798,33 @@ describe("SessionContextMenu handoff submenu", () => {
     fireEvent.click(screen.getByTestId("session-menu-handoff"));
     fireEvent.click(screen.getByTestId("session-menu-handoff-remote"));
 
-    expect(onOpenChatHandoff).toHaveBeenCalledWith(expect.objectContaining({ id: "chat-1" }), "remote");
+    expect(onOpenChatHandoff).toHaveBeenCalledWith(expect.objectContaining({ id: "chat-1" }), "remote", null);
     expect(onClose).toHaveBeenCalled();
   });
 
   it("hides the whole handoff submenu on a non-chat row", () => {
     renderMenu(makeSession({ toolType: "shell", status: "disposed", endedAt: "2026-07-10T13:00:00.000Z" }));
     expect(screen.queryByTestId("session-menu-handoff")).toBeNull();
+  });
+
+  it("forwards the row's binding with the handoff intent", () => {
+    const onOpenChatHandoff = vi.fn();
+    const binding = {
+      kind: "remote",
+      targetId: "studio",
+      projectId: "proj-1",
+      rootPath: "/srv/app",
+    } as unknown as OpenProjectBinding;
+    renderMenu(makeSession(), { onOpenChatHandoff, binding });
+
+    fireEvent.click(screen.getByTestId("session-menu-handoff"));
+    fireEvent.click(screen.getByTestId("session-menu-handoff-local"));
+
+    expect(onOpenChatHandoff).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "chat-1" }),
+      "local",
+      binding,
+    );
   });
 });
 
@@ -876,7 +896,7 @@ describe("SessionContextMenu auto handoff", () => {
 
     fireEvent.click(remove);
     await waitFor(() => {
-      expect(deleteRule).toHaveBeenCalledWith({ id: "auto-handoff-chat-1-limit" });
+      expect(deleteRule).toHaveBeenCalledWith({ id: "auto-handoff-chat-1-limit" }, null);
     });
     expect(onClose).toHaveBeenCalled();
   });
@@ -886,5 +906,25 @@ describe("SessionContextMenu auto handoff", () => {
     expect(screen.queryByTestId("session-menu-handoff")).toBeNull();
     expect(screen.queryByTestId("session-menu-auto-handoff")).toBeNull();
     expect(list).not.toHaveBeenCalled();
+  });
+
+  it("reads rules through the row's binding and keeps the editor disabled after a failed read", async () => {
+    const binding = {
+      kind: "remote",
+      targetId: "studio",
+      projectId: "proj-1",
+      rootPath: "/srv/app",
+    } as unknown as OpenProjectBinding;
+    list.mockRejectedValueOnce(new Error("offline"));
+    renderMenu(makeSession(), { binding });
+
+    fireEvent.click(screen.getByTestId("session-menu-handoff"));
+
+    await waitFor(() => expect(list).toHaveBeenCalledWith(binding));
+    // A failed read must not present an editor whose Save would delete rules
+    // this read never saw.
+    await waitFor(() => {
+      expect((screen.getByTestId("session-menu-auto-handoff") as HTMLButtonElement).disabled).toBe(true);
+    });
   });
 });

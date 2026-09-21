@@ -377,11 +377,19 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
    * render.
    */
   const handleOpenChatHandoff = useCallback(
-    (session: TerminalSessionSummary, intent: ChatHandoffIntent) => {
+    (
+      session: TerminalSessionSummary,
+      intent: ChatHandoffIntent,
+      binding?: OpenProjectBinding | null,
+    ) => {
+      // The menu carries the row's complete binding. Re-remember it before the
+      // selection so a cross-machine slice reload between menu-open and select
+      // cannot drop the entry and fall back to the tab's bound machine.
+      if (binding) machineRouter.rememberSessionPin(session, binding);
       openChatHandoff(session.id, intent);
       handleSelectSession(session.id);
     },
-    [handleSelectSession],
+    [handleSelectSession, machineRouter],
   );
 
   const handleInfoClick = useCallback(

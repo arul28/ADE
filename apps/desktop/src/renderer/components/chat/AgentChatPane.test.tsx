@@ -659,6 +659,11 @@ function installAdeMocks(options?: {
     app: {
       writeClipboardText,
     },
+    automations: {
+      list: vi.fn().mockResolvedValue([]),
+      saveDraft: vi.fn().mockResolvedValue({ ok: true }),
+      deleteRule: vi.fn().mockResolvedValue([]),
+    },
     project: {
       listRecent: vi.fn().mockResolvedValue([]),
     },

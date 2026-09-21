@@ -170,14 +170,22 @@ export function selectAutoHandoffRulesForSession(
 }
 
 /**
- * The rules a chat's Auto handoff editor should open with, or `[]` when the
- * automations surface is unavailable or the read fails. One canonical read so
+ * The rules a chat's Auto handoff editor should open with, or `null` when the
+ * read failed or the automations surface is unavailable. One canonical read so
  * the session menu and the Handoff tab cannot disagree about what is scoped to
- * a chat.
+ * a chat. `null` is deliberately distinct from `[]`: the editor deletes
+ * conditions by their deterministic ids, so a failed read must keep the editor
+ * closed rather than present defaults that would delete rules it never saw.
+ * `pin` targets the chat's own machine for a chat that is not this tab's.
  */
-export async function loadAutoHandoffRulesForSession(sessionId: string): Promise<AutomationRuleSummary[]> {
-  if (!sessionId || !automationRulesReadable()) return [];
-  return selectAutoHandoffRulesForSession(await listAutomationRules(), sessionId);
+export async function loadAutoHandoffRulesForSession(
+  sessionId: string,
+  pin?: OpenProjectBinding | null,
+): Promise<AutomationRuleSummary[] | null> {
+  if (!sessionId || !automationRulesReadable()) return null;
+  const rules = await listAutomationRules(pin);
+  if (rules === null) return null;
+  return selectAutoHandoffRulesForSession(rules, sessionId);
 }
 
 /** Rebuilds the form from the rules already saved for this chat. */
@@ -479,10 +487,10 @@ export function AutoHandoffModal({ session, binding = null, existingRules, onClo
       scope,
     });
     setSaving(true);
-    const ok = await saveAutoHandoffRules({ drafts, staleRuleIds: stale, sessionId: session.id });
+    const ok = await saveAutoHandoffRules({ drafts, staleRuleIds: stale, sessionId: session.id, pin: binding });
     setSaving(false);
     if (ok) onClose();
-  }, [existingRules, form, onClose, saving, session]);
+  }, [binding, existingRules, form, onClose, saving, session]);
 
   const body = (
     <div
