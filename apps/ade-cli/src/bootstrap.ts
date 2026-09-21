@@ -144,6 +144,7 @@ import {
   captureChatAutoResumeAnalytics,
   captureChatMentionsExpandedAnalytics,
   captureClaudeHooksIgnoredAnalytics,
+  captureClaudePluginsIgnoredAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "../../desktop/src/main/services/analytics/agentTurnProductAnalytics";
 import { capturePendingInputDismissedAnalytics } from "../../desktop/src/main/services/analytics/featureProductAnalytics";
@@ -1601,6 +1602,11 @@ export async function createAdeRuntime(args: {
           event,
         }),
         onClaudeHooksIgnored: (event) => captureClaudeHooksIgnoredAnalytics({
+          analytics: productAnalyticsService,
+          projectId,
+          event,
+        }),
+        onClaudePluginsIgnored: (event) => captureClaudePluginsIgnoredAnalytics({
           analytics: productAnalyticsService,
           projectId,
           event,

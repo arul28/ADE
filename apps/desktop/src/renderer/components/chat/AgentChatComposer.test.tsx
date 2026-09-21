@@ -2419,6 +2419,69 @@ describe("AgentChatComposer", () => {
     expect(screen.queryByRole("button", { name: "Always allow" })).toBeNull();
   });
 
+  it("omits Accept all for a Claude ask that suppresses the persistent rule", () => {
+    // The options list is the contract: an elevated ask arrives without the
+    // session-wide choice, and the card must not offer what the ask refuses.
+    renderComposer({
+      pendingInput: {
+        requestId: "claude-suppressed-1",
+        itemId: "claude-suppressed-1",
+        source: "claude",
+        kind: "approval",
+        title: "Allow Bash?",
+        description: "Claude wants to run: rm -rf ./build",
+        questions: [{
+          id: "tool_decision",
+          header: "Bash",
+          question: "Claude wants to run: rm -rf ./build",
+          options: [
+            { label: "Allow", value: "allow" },
+            { label: "Deny", value: "deny" },
+          ],
+          allowsFreeform: true,
+        }],
+        allowsFreeform: true,
+        blocking: true,
+        canProceedWithoutAnswer: false,
+        turnId: "turn-1",
+      },
+    });
+
+    expect(screen.getByRole("button", { name: "Accept" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Accept all" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Decline" })).toBeTruthy();
+  });
+
+  it("keeps Accept all for an ordinary Claude approval", () => {
+    renderComposer({
+      pendingInput: {
+        requestId: "claude-ordinary-1",
+        itemId: "claude-ordinary-1",
+        source: "claude",
+        kind: "approval",
+        title: "Allow Bash?",
+        description: "Claude wants to run: ls",
+        questions: [{
+          id: "tool_decision",
+          header: "Bash",
+          question: "Claude wants to run: ls",
+          options: [
+            { label: "Allow", value: "allow", recommended: true },
+            { label: "Allow for Session", value: "allow_session" },
+            { label: "Deny", value: "deny" },
+          ],
+          allowsFreeform: true,
+        }],
+        allowsFreeform: true,
+        blocking: true,
+        canProceedWithoutAnswer: false,
+        turnId: "turn-1",
+      },
+    });
+
+    expect(screen.getByRole("button", { name: "Accept all" })).toBeTruthy();
+  });
+
   it("avoids promising option chips when a pending question is freeform only", () => {
     renderComposer({
       draft: "",
