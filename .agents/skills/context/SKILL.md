@@ -164,6 +164,12 @@ open the relevant one only when a task needs it.
 - **Lanes & git** → `ade-lanes-git`. **PR workflows** → `ade-pr-workflows`.
 - **App / browser / Apple-device control** → `ade-app-control`,
   `ade-browser`, `ade-apple` (old name `ade-ios-simulator` still resolves).
+  Read `ade-apple` before you touch `xcodebuild`, `xcrun` or `simctl` by hand.
+  Running an iOS app on a simulator, seeing a SwiftUI change, driving a screen,
+  or capturing proof of one is `ade apple`, and `ade apple launch` resolves,
+  builds, installs and starts a target in a single call. A screenshot taken
+  with `simctl` and attached afterwards loses the owner that makes it visible
+  in the drawer.
 - **Linear** (no API key needed; routed through ADE) → `ade-linear`.
 - **Proof & computer-use** (screenshots, video, traces → proof drawer) →
   `ade-proof-artifacts`. **Deeplinks** → `ade-deeplinks`.
