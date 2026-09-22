@@ -251,6 +251,14 @@ export type AppleRecordingArtifactFiler = {
  * hard dependency on the broker's result shape would make both of those carry
  * the whole `computerUseArtifacts` type surface.
  */
+/** The owners a finished recording is filed under: its chat, and its lane. */
+function recordingOwners(record: { chatSessionId?: string | null; laneId?: string | null }): Array<{ kind: "chat_session" | "lane"; id: string }> {
+  return [
+    ...(record.chatSessionId ? [{ kind: "chat_session" as const, id: record.chatSessionId }] : []),
+    ...(record.laneId ? [{ kind: "lane" as const, id: record.laneId }] : []),
+  ];
+}
+
 export function readArtifactId(result: unknown): string | null {
   if (!result || typeof result !== "object") return null;
   const artifacts = (result as { artifacts?: unknown }).artifacts;
@@ -586,7 +594,11 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
     try {
       const result = deps.artifactFiler?.ingest({
         backend: { name: "apple-device", style: "local_fallback", toolName: "apple_record" },
-        ...(record.chatSessionId ? { owners: [{ kind: "chat_session", id: record.chatSessionId }] } : {}),
+        // Same rule as the screenshot path: own it by LANE as well as by chat,
+        // so an agent-started recording with no chat session still belongs to
+        // the lane instead of to nobody. An artifact with an empty owner list
+        // is returned by no `ade proof list` scope, project-wide included.
+        ...(recordingOwners(record).length ? { owners: recordingOwners(record) } : {}),
         ...(deps.projectRoot ? { callerRoot: deps.projectRoot } : {}),
         inputs: [
           {

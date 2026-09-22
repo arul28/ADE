@@ -245,7 +245,7 @@ describe("simRecordingService", () => {
     expect(filed).toHaveLength(1);
     expect(filed[0]).toMatchObject({
       inputs: [expect.objectContaining({ kind: "video_recording", path: started.path, mimeType: "video/mp4" })],
-      owners: [{ kind: "chat_session", id: "chat-1" }],
+      owners: [{ kind: "chat_session", id: "chat-1" }, { kind: "lane", id: lane }],
     });
     expect((await service.list({ laneId: lane }))[0]!.proof).toBe(true);
   });
@@ -323,7 +323,7 @@ describe("simRecordingService", () => {
     expect(stopped).toMatchObject({ proof: true });
     expect(filed).toHaveLength(1);
     expect(filed[0]).toMatchObject({
-      owners: [{ kind: "chat_session", id: "chat-7" }],
+      owners: [{ kind: "chat_session", id: "chat-7" }, { kind: "lane", id: lane }],
       inputs: [expect.objectContaining({
         kind: "video_recording",
         title: "Simulator recording · ADE Repro · 0:04",
@@ -331,6 +331,22 @@ describe("simRecordingService", () => {
       })],
     });
     named.dispose();
+  });
+
+  it("owns an agent's recording by lane when no chat drove it", async () => {
+    /*
+     * The broker links an artifact to its owners and derives the lane from
+     * them, so a chat-only claim left a CLI-started recording with an EMPTY
+     * owner list: `ade proof list` returned it under no scope, project-wide
+     * included, while the caller still got a real artifact id back. It looked
+     * filed and was unreachable.
+     */
+    const started = await service.start({ laneId: lane, udid });
+    fs.writeFileSync(started.path, "mp4");
+
+    await service.stop({ laneId: lane });
+    expect(filed).toHaveLength(1);
+    expect(filed[0]!.owners).toEqual([{ kind: "lane", id: lane }]);
   });
 
   it("keeps the video when the drawer refuses it", async () => {

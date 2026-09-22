@@ -4272,10 +4272,26 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       || null;
     const caption = arg.caption?.trim()
       || `Simulator screenshot · ${deviceLabelForUdid(shot.deviceUdid)}`;
+    /*
+     * Own it by LANE as well as by chat, and by the lane alone when no chat
+     * drove the capture.
+     *
+     * The broker links an artifact to its owners and derives the lane from
+     * them. With a chat owner only, a capture taken by the CLI — where there is
+     * no chat session — arrived with an EMPTY owner list, so it belonged to
+     * nobody: `ade proof list` returned it under no scope, project-wide
+     * included, while `screenshot` still handed back a real artifact id. It
+     * looked filed and was unreachable. `ade proof attach` never had the bug
+     * because it claims both owners.
+     */
+    const owners: Array<{ kind: "chat_session" | "lane"; id: string }> = [
+      ...(chatSessionId ? [{ kind: "chat_session" as const, id: chatSessionId }] : []),
+      ...(runtime.key ? [{ kind: "lane" as const, id: runtime.key }] : []),
+    ];
     try {
       const result = filer.ingest({
         backend: { name: "apple-device", style: "local_fallback", toolName: "apple_screenshot" },
-        ...(chatSessionId ? { owners: [{ kind: "chat_session", id: chatSessionId }] } : {}),
+        ...(owners.length ? { owners } : {}),
         ...(args.projectRoot ? { callerRoot: args.projectRoot } : {}),
         inputs: [
           {
