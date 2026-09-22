@@ -189,17 +189,6 @@ import type {
   AutomationSaveDraftResult,
   AutomationSimulateRequest,
   AutomationSimulateResult,
-  ReviewEventPayload,
-  ReviewFeedbackRecord,
-  ReviewLaunchContext,
-  ReviewListRunsArgs,
-  ReviewListSuppressionsArgs,
-  ReviewQualityReport,
-  ReviewRecordFeedbackArgs,
-  ReviewRun,
-  ReviewRunDetail,
-  ReviewSuppression,
-  ReviewStartRunArgs,
   AdeActionRegistryEntry,
   AdeCliInstallResult,
   AdeCliStatus,
@@ -520,6 +509,8 @@ import type {
   AgentChatCancelScheduledWorkArgs,
   AgentChatResumeUsageLimitNowArgs,
   AgentChatResumeUsageLimitNowResult,
+  AgentChatContinueUsageLimitOnAlternateArgs,
+  AgentChatContinueUsageLimitOnAlternateResult,
   AgentChatCancelScheduledWorkResult,
   AgentChatClaudePlugin,
   AgentChatClaudePluginsArgs,
@@ -1777,6 +1768,7 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "createScheduledWork",
   "cancelScheduledWork",
   "resumeUsageLimitNow",
+  "continueUsageLimitOnAlternate",
   "setScheduledWorkPaused",
   "ensureCtoSession",
   "warmupModel",
@@ -2525,11 +2517,6 @@ const remoteSyncStatusEventFanout = createRemoteRuntimeFanout<SyncStatusEventPay
       : null
   ),
 });
-const remoteReviewEventFanout = createRemoteRuntimeFanout<ReviewEventPayload>({
-  eventType: "review_event",
-  label: "review",
-  onSubscribe: () => ensureRemoteRuntimeEventPump(),
-});
 const remoteUsageUpdateEventFanout = createRemoteRuntimeFanout<UsageSnapshot>({
   eventType: "usage",
   label: "usage",
@@ -2619,7 +2606,6 @@ export const REMOTE_RUNTIME_FANOUTS: readonly RemoteRuntimeFanoutEntry[] = [
   remotePrAiResolutionEventFanout,
   remoteProjectStateEventFanout,
   remoteSyncStatusEventFanout,
-  remoteReviewEventFanout,
   remoteUsageUpdateEventFanout,
   remoteAutomationsEventFanout,
   remoteConflictEventFanout,
@@ -3159,12 +3145,6 @@ function subscribeRemoteSyncStatusEvents(
   cb: (payload: SyncStatusEventPayload) => void,
 ): () => void {
   return remoteSyncStatusEventFanout.subscribe(cb);
-}
-
-function subscribeRemoteReviewEvents(
-  cb: (payload: ReviewEventPayload) => void,
-): () => void {
-  return remoteReviewEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteSessionChangedEvents(
@@ -3799,6 +3779,11 @@ function clearProjectScopedReadCaches(): void {
   computerUseOwnerSnapshotCache.clear();
   imageDataUrlCache.clear();
   projectIconCache.clear();
+  // A binding change is a fresh chance for the in-process simulator service to
+  // exist (a project opened where before none was bound). Without this the
+  // latch stayed true for the life of the preload and every local Apple call
+  // kept reporting "needs an open project" even after one opened.
+  iosSimulatorLocalServiceMissing = false;
 }
 
 function clearIosSimulatorStatusCaches(): void {
@@ -5317,8 +5302,8 @@ const adeBridge = {
       ),
   },
   automations: {
-    list: async (): Promise<AutomationRuleSummary[]> =>
-      callProjectRuntimeActionOr("automations", "list", {}, () =>
+    list: async (pin?: OpenProjectBinding | null): Promise<AutomationRuleSummary[]> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "automations", "list", {}, () =>
         ipcRenderer.invoke(IPC.automationsList),
       ),
     toggle: async (args: {
@@ -5330,8 +5315,9 @@ const adeBridge = {
       ),
     deleteRule: async (
       args: AutomationDeleteRuleRequest,
+      pin?: OpenProjectBinding | null,
     ): Promise<AutomationRuleSummary[]> =>
-      callProjectRuntimeActionOr("automations", "deleteRule", { args }, () =>
+      callPinnedOrBoundRuntimeActionOr(pin, "automations", "deleteRule", { args }, () =>
         ipcRenderer.invoke(IPC.automationsDeleteRule, args),
       ),
     triggerManually: async (
@@ -5410,12 +5396,10 @@ const adeBridge = {
       ),
     saveDraft: async (
       req: AutomationSaveDraftRequest,
+      pin?: OpenProjectBinding | null,
     ): Promise<AutomationSaveDraftResult> =>
-      callProjectRuntimeActionOr(
-        "automation_planner",
-        "saveDraft",
-        { args: req },
-        () => ipcRenderer.invoke(IPC.automationsSaveDraft, req),
+      callPinnedOrBoundRuntimeActionOr(pin, "automation_planner", "saveDraft", { args: req }, () =>
+        ipcRenderer.invoke(IPC.automationsSaveDraft, req),
       ),
     simulate: async (
       req: AutomationSimulateRequest,
@@ -5471,74 +5455,6 @@ const adeBridge = {
         ),
     },
     onEvent: subscribeAutomationsEvents,
-  },
-  review: {
-    listLaunchContext: async (): Promise<ReviewLaunchContext> =>
-      callProjectRuntimeActionOr("review", "listLaunchContext", {}, () =>
-        ipcRenderer.invoke(IPC.reviewListLaunchContext),
-      ),
-    listRuns: async (args: ReviewListRunsArgs = {}): Promise<ReviewRun[]> =>
-      callProjectRuntimeActionOr("review", "listRuns", { args }, () =>
-        ipcRenderer.invoke(IPC.reviewListRuns, args),
-      ),
-    getRunDetail: async (runId: string): Promise<ReviewRunDetail | null> =>
-      callProjectRuntimeActionOr(
-        "review",
-        "getRunDetail",
-        { args: { runId } },
-        () => ipcRenderer.invoke(IPC.reviewGetRunDetail, { runId }),
-      ),
-    startRun: async (args: ReviewStartRunArgs): Promise<ReviewRun> =>
-      callProjectRuntimeActionStrictOr("review", "startRun", { args }, () =>
-        ipcRenderer.invoke(IPC.reviewStartRun, args),
-      ),
-    rerun: async (runId: string): Promise<ReviewRun> =>
-      callProjectRuntimeActionOr("review", "rerun", { arg: runId }, () =>
-        ipcRenderer.invoke(IPC.reviewRerun, { runId }),
-      ),
-    cancelRun: async (runId: string): Promise<ReviewRun | null> =>
-      callProjectRuntimeActionOr(
-        "review",
-        "cancelRun",
-        { args: { runId } },
-        () => ipcRenderer.invoke(IPC.reviewCancelRun, { runId }),
-      ),
-    recordFeedback: async (
-      args: ReviewRecordFeedbackArgs,
-    ): Promise<ReviewFeedbackRecord> =>
-      callProjectRuntimeActionOr("review", "recordFeedback", { args }, () =>
-        ipcRenderer.invoke(IPC.reviewRecordFeedback, args),
-      ),
-    listSuppressions: async (
-      args: ReviewListSuppressionsArgs = {},
-    ): Promise<ReviewSuppression[]> =>
-      callProjectRuntimeActionOr("review", "listSuppressions", { args }, () =>
-        ipcRenderer.invoke(IPC.reviewListSuppressions, args),
-      ),
-    deleteSuppression: async (suppressionId: string): Promise<boolean> =>
-      callProjectRuntimeActionOr(
-        "review",
-        "deleteSuppression",
-        { args: { suppressionId } },
-        () =>
-          ipcRenderer.invoke(IPC.reviewDeleteSuppression, { suppressionId }),
-      ),
-    qualityReport: async (): Promise<ReviewQualityReport> =>
-      callProjectRuntimeActionOr("review", "qualityReport", {}, () =>
-        ipcRenderer.invoke(IPC.reviewQualityReport),
-      ),
-    onEvent: (cb: (ev: ReviewEventPayload) => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: ReviewEventPayload,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.reviewEvent, listener);
-      const removeRemote = subscribeRemoteReviewEvents(cb);
-      return () => {
-        removeRemote();
-        ipcRenderer.removeListener(IPC.reviewEvent, listener);
-      };
-    },
   },
   actions: {
     listRegistry: async (): Promise<AdeActionRegistryEntry[]> => {
@@ -7340,6 +7256,21 @@ const adeBridge = {
       agentChatSummaryCache.clear();
       return result;
     },
+    continueUsageLimitOnAlternate: async (
+      args: AgentChatContinueUsageLimitOnAlternateArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatContinueUsageLimitOnAlternateResult> => {
+      agentChatSummaryCache.clear();
+      const result = await callPinnedOrBoundRuntimeActionOr(
+        pin,
+        "chat",
+        "continueUsageLimitOnAlternate",
+        { args },
+        () => ipcRenderer.invoke(IPC.agentChatContinueUsageLimitOnAlternate, args),
+      );
+      agentChatSummaryCache.clear();
+      return result;
+    },
     setScheduledWorkPaused: async (
       args: AgentChatSetScheduledWorkPausedArgs,
       pin?: OpenProjectBinding | null,
@@ -8127,7 +8058,9 @@ const adeBridge = {
       args: IosSimulatorStartStreamArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorStreamStatus> =>
-      callIosSimulatorMutation(pin, "startStream", args, IPC.iosSimulatorStartStream),
+      // `localViewer` marks a stream a renderer on this machine is watching, so
+      // the relay does not stop it when the last remote viewer leaves.
+      callIosSimulatorMutation(pin, "startStream", { ...args, localViewer: true }, IPC.iosSimulatorStartStream),
     // `pin` stays FIRST on these two. Every renderer call site passes only a
     // pin, and reordering to put the new lane scope first would have silently
     // turned a binding into a scope object at ~10 call sites this unit does not
@@ -8136,7 +8069,7 @@ const adeBridge = {
       pin?: OpenProjectBinding | null,
       args: { laneId?: string | null; chatSessionId?: string | null } = {},
     ): Promise<IosSimulatorStreamStatus> =>
-      callIosSimulatorMutation(pin, "stopStream", args, IPC.iosSimulatorStopStream),
+      callIosSimulatorMutation(pin, "stopStream", { ...args, localViewer: true }, IPC.iosSimulatorStopStream),
     getStreamStatus: async (
       pin?: OpenProjectBinding | null,
       args: { laneId?: string | null; chatSessionId?: string | null } = {},

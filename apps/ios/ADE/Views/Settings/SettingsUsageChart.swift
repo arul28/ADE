@@ -191,6 +191,10 @@ struct SettingsUsagePaceProvider: View {
     adeUsageLimitCards(provider: provider, windows: windows, accounts: accounts)
   }
 
+  private var accountsWithoutWindows: [ADEUsageAccountView] {
+    adeUsageAccountsMissingWindows(provider: provider, windows: windows, accounts: accounts)
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: ADEUsageLayout.rowGap) {
       header
@@ -201,7 +205,7 @@ struct SettingsUsagePaceProvider: View {
           .foregroundStyle(ADEColor.warning)
       }
 
-      if cards.isEmpty {
+      if cards.isEmpty && accountsWithoutWindows.isEmpty {
         Text(status?.state == "ok" ? "Waiting for the next reading." : "No limits reported yet.")
           .font(ADEUsageType.detailFont())
           .foregroundStyle(ADEColor.textMuted)
@@ -212,6 +216,11 @@ struct SettingsUsagePaceProvider: View {
             tint: ADEColor.providerBrand(for: provider),
             onSelect: { detail = $0 }
           )
+        }
+        ForEach(accountsWithoutWindows) { account in
+          Text("\(adeUsageAccountTitle(account)) · No usage yet")
+            .font(ADEUsageType.detailFont())
+            .foregroundStyle(ADEColor.textMuted)
         }
       }
 
@@ -383,14 +392,16 @@ private struct SettingsUsageAccountRow: View {
               .truncationMode(.middle)
           }
           Spacer(minLength: 4)
-          Label(
-            adeUsageDurationLabel(milliseconds: segment.resetsInMs),
-            systemImage: "arrow.clockwise"
-          )
-          .font(ADEUsageType.microFont())
-          .monospacedDigit()
-          .foregroundStyle(ADEColor.textMuted)
-          .labelStyle(.titleAndIcon)
+          if adeUsageParseISODate(segment.window.resetsAt) != nil || segment.resetsInMs > 0 {
+            Label(
+              adeUsageDurationLabel(milliseconds: segment.resetsInMs),
+              systemImage: "arrow.clockwise"
+            )
+            .font(ADEUsageType.microFont())
+            .monospacedDigit()
+            .foregroundStyle(ADEColor.textMuted)
+            .labelStyle(.titleAndIcon)
+          }
         }
 
         GeometryReader { proxy in
@@ -436,7 +447,9 @@ struct ADEUsageAccountDetailSheet: View {
           row("Plan", segment.account?.plan ?? "Unknown")
           row("Via", segment.account?.machines.map(\.label).joined(separator: " · ") ?? "This machine")
           row("Left", "\(Int(segment.percentLeft.rounded()))%")
-          row("Resets", resetsValue)
+          if let resetsValue {
+            row("Resets", resetsValue)
+          }
           if segment.restoresPercentOfPool >= 0.5 {
             row("Restores", "+\(Int(segment.restoresPercentOfPool.rounded()))% of pool")
           }
@@ -465,9 +478,10 @@ struct ADEUsageAccountDetailSheet: View {
     .presentationDetents([.medium])
   }
 
-  private var resetsValue: String {
+  private var resetsValue: String? {
     let countdown = adeUsageDurationLabel(milliseconds: segment.resetsInMs)
     guard let date = adeUsageParseISODate(segment.window.resetsAt) else {
+      guard segment.resetsInMs > 0 else { return nil }
       return "in \(countdown)"
     }
     let absolute = date.formatted(.dateTime.month(.defaultDigits).day().hour().minute())

@@ -1175,6 +1175,10 @@ enum ADEPreviewScreen: String, CaseIterable {
   /// Scroll benchmark over a real transcript file. See `WorkChatScrollBench.swift`.
   case chatScroll = "chat-scroll"
   case queuedSteerDetail = "queued-steer"
+  /// The real Work root with one offline machine seeded into the activity model,
+  /// to screenshot that the list does NOT banner it. See
+  /// `WorkConnectivityBannerPreviewHost`.
+  case connectivityBanner = "connectivity-banner"
 
   /// `-adePreviewScreen <value>`. Matches the shape `simctl launch` and the
   /// Xcode scheme editor both use for launch arguments.
@@ -1236,6 +1240,8 @@ struct ADEPreviewScreenHost: View {
       // detents and drag indicator the sheet declares are the ones in the
       // screenshot.
       WorkQueuedSteerPreviewHost()
+    case .connectivityBanner:
+      WorkConnectivityBannerPreviewHost()
     }
   }
 }
@@ -1323,5 +1329,77 @@ private enum WorkQueuedSteerPreviewData {
   ADEPreviewScreenHost(screen: .tools)
     .environmentObject(WorkPreviewData.syncService)
     .preferredColorScheme(.dark)
+}
+
+/// Fixture-only render of the real Work tab root with one offline machine in the
+/// activity model. It exists so a simulator screenshot can show that the Work
+/// list does NOT banner that machine — presence is surfaced per-row in the
+/// Activity drawer, not as a list-level banner — without needing a second Mac to
+/// actually go offline. Reached with `-adePreviewScreen connectivity-banner`.
+///
+/// It deliberately mounts `WorkRootScreen` — not a hand-built lookalike — so the
+/// screenshot exercises the real list, the real filter row, and the real
+/// placement of anything that sits above the lane groups.
+struct WorkConnectivityBannerPreviewHost: View {
+  @EnvironmentObject private var syncService: SyncService
+  @StateObject private var drawer = ActivityDrawerModel()
+  @State private var seeded = false
+
+  var body: some View {
+    WorkRootScreen(isTabActive: true)
+      .environmentObject(drawer)
+      .onAppear(perform: seed)
+  }
+
+  private func seed() {
+    guard !seeded else { return }
+    seeded = true
+
+    let projectId = "ade-connectivity-preview"
+    syncService.setActiveProjectForTesting(projectId: projectId, rootPath: nil)
+
+    let now = Date()
+    let offline = AccountAttentionMachine(
+      machineKey: "studio-preview",
+      name: "Arul’s Mac Studio",
+      online: false,
+      lastSeenAt: now.addingTimeInterval(-4 * 24 * 60 * 60)
+    )
+    let item = AccountAttentionItem(
+      id: "preview-offline",
+      revision: 1,
+      fingerprint: "preview-offline:1",
+      kind: .agent,
+      eventKind: .agentRunning,
+      phase: .running,
+      activityTier: nil,
+      machine: offline,
+      project: AccountAttentionProject(projectId: projectId, name: "ADE"),
+      title: "Offline preview session",
+      preview: "Working",
+      privacyPreview: "Agent working",
+      destination: .session(sessionId: "preview-offline", itemId: nil, eventId: nil),
+      occurredAt: now,
+      updatedAt: now,
+      seenAt: nil,
+      dismissedAt: nil,
+      expiresAt: nil
+    )
+    drawer.rebuild(from: AccountAttentionSnapshot(
+      revision: 1,
+      generatedAt: now,
+      machines: nil,
+      items: [item],
+      tombstones: nil,
+      itemsTruncated: false
+    ))
+  }
+}
+
+#Preview("Connectivity banner") {
+  ADEPreviewScreenHost(screen: .connectivityBanner)
+    .environmentObject(WorkPreviewData.syncService)
+    .environmentObject(WorkPreviewData.dictationController)
+    .preferredColorScheme(.light)
 }
 #endif

@@ -25,6 +25,7 @@ import type {
   TerminalSessionSummary,
 } from "../../../shared/types";
 import { createDynamicCursorCliModelDescriptor, getModelById } from "../../../shared/modelRegistry";
+import { openChatHandoff, takeChatHandoff } from "../../lib/chatHandoffIntent";
 import { invalidateAgentChatSessionListCache } from "../../lib/agentChatSessionListCache";
 import { invalidateAgentChatSlashCommandsCache } from "../../lib/agentChatSlashCommandsCache";
 import {
@@ -657,6 +658,11 @@ function installAdeMocks(options?: {
   globalThis.window.ade = {
     app: {
       writeClipboardText,
+    },
+    automations: {
+      list: vi.fn().mockResolvedValue([]),
+      saveDraft: vi.fn().mockResolvedValue({ ok: true }),
+      deleteRule: vi.fn().mockResolvedValue([]),
     },
     project: {
       listRecent: vi.fn().mockResolvedValue([]),
@@ -5706,7 +5712,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(await screen.findByText("Handoff is not available for this chat.")).toBeTruthy();
   });
 
-  it("greys out both handoff menu cards with a notice while the turn is active", async () => {
+  it("greys out the two live handoff cards with a notice while the turn is active, but keeps the auto rule editor reachable", async () => {
     const session = buildSession("session-1");
     installAdeMocks({
       transcript: buildStatusStartedTranscript(session.sessionId),
@@ -5718,15 +5724,87 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
     const remoteCard = await screen.findByRole("button", { name: /Continue on another machine/i });
     const localCard = await screen.findByRole("button", { name: /Hand off locally/i });
+    const autoCard = await screen.findByRole("button", { name: /Auto handoff/i });
     await waitFor(() => {
       expect((remoteCard as HTMLButtonElement).disabled).toBe(true);
       expect((localCard as HTMLButtonElement).disabled).toBe(true);
     });
+    // Auto handoff is a rule editor rather than a move, so arming a rule while
+    // the turn runs is allowed and matches the session menu's ungated row.
+    expect((autoCard as HTMLButtonElement).disabled).toBe(false);
     expect(screen.getByText(/A turn is running — wait for it to finish/i)).toBeTruthy();
 
     // Clicking the disabled local card must not navigate into the local view.
     fireEvent.click(localCard);
     expect(screen.queryByText("Local handoff")).toBeNull();
+
+    // The auto editor opens even mid-turn.
+    fireEvent.click(autoCard);
+    expect(await screen.findByRole("heading", { name: "Auto handoff" })).toBeTruthy();
+  });
+
+  it("opens the local handoff view from a queued context-menu intent", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    installAdeMocks({ sessions: [session] });
+
+    renderPane(session);
+    await screen.findByRole("button", { name: "Open chat actions drawer" });
+
+    // Right-click → Hand off… → Local handoff arrives with the drawer closed;
+    // the pane must land on the local view, not reset to the landing menu.
+    await act(async () => {
+      openChatHandoff(session.sessionId, "local");
+    });
+
+    expect(await screen.findByTestId("handoff-local")).toBeTruthy();
+  });
+
+  it("leaves a handoff intent for the active surface instead of a hidden tile consuming it", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    installAdeMocks({ sessions: [session] });
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={session.laneId}
+          lockSessionId={session.sessionId}
+          hideSessionTabs
+          initialSessionSummary={session}
+          isTileActive={false}
+          onSessionCreated={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+
+    await act(async () => {
+      openChatHandoff(session.sessionId, "local");
+    });
+
+    // A hidden tile stays mounted for the same session; it must not drain the
+    // one-slot queue off-screen, so the intent survives for the visible pane.
+    expect(screen.queryByTestId("handoff-local")).toBeNull();
+    expect(takeChatHandoff(session.sessionId)).toBe("local");
+  });
+
+  it("refuses a context-menu handoff intent while a turn is active", async () => {
+    const session = buildSession("session-1");
+    installAdeMocks({
+      transcript: buildStatusStartedTranscript(session.sessionId),
+    });
+
+    renderPane(session);
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+    await screen.findByText(/A turn is running — wait for it to finish/i);
+
+    // The menu names a destination without seeing the pane's gate; the pane
+    // must refuse it exactly as the disabled card would, not deep-link past it.
+    await act(async () => {
+      openChatHandoff(session.sessionId, "local");
+    });
+
+    expect(screen.getByTestId("handoff-menu")).toBeTruthy();
+    expect(screen.queryByTestId("handoff-local")).toBeNull();
   });
 
   it("creates a sibling handoff chat and opens the returned work tab", async () => {
@@ -6284,6 +6362,20 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Continue on another machine/i }));
 
     expect(await screen.findByRole("heading", { name: /Continue on another computer/i })).toBeTruthy();
+  });
+
+  it("opens the auto handoff editor from the third handoff card", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    installAdeMocks({ sessions: [session] });
+
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Auto handoff/i }));
+
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Auto handoff" })).toBeTruthy();
   });
 
   it("does not wait for onSessionCreated before sending the first message in a new chat", async () => {

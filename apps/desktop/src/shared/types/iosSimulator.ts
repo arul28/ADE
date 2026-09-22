@@ -214,6 +214,7 @@ export const APPLE_AGENT_ACTIONS = [
   "recordStop",
   "recordList",
   "recordDelete",
+  "recordingsTotalBytes",
 
   /* SwiftUI previews. */
   "getPreviewCapability",
@@ -627,6 +628,14 @@ export type IosSimulatorStartStreamArgs = {
   compressionQuality?: number | null;
   /** Caps the encoder's bitrate. Defaults to the `apple.remoteBitrateKbpsCap` setting. */
   bitrateKbps?: number | null;
+  /**
+   * Set by the desktop preload when a renderer on this machine is the caller.
+   *
+   * The relay consults it before stopping a capture for its last remote viewer:
+   * a web tab can start the capture that the desktop column then joins, and
+   * without this the tab closing would black out the column.
+   */
+  localViewer?: boolean;
 };
 
 export type IosSimulatorFrame = {
@@ -1613,6 +1622,12 @@ export type AppleScrollArgs = {
    */
   anchorX?: number | null;
   anchorY?: number | null;
+  /**
+   * Whether the gesture came from a person at this window or from an agent.
+   * The preload stamps `"user"` on the pane's wheel handler; without it a
+   * human scroll would look like agent input and start an auto-recording.
+   */
+  source?: AppleInputSource;
 };
 
 export type AppleScrollResult = {

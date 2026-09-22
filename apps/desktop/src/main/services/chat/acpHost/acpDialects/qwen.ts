@@ -20,6 +20,12 @@
  * advertised methods are `openai` and `openai-responses` (both use
  * `OPENAI_API_KEY`); ADE selects the stable `openai` probe and does not write
  * `~/.qwen`, reusing whatever the Qwen CLI already has.
+ *
+ * `QWEN_CODE_SYSTEM_DEFAULTS_PATH` is how ADE's bundled agent skills reach a
+ * Qwen session through Qwen's own `skills.directories` discovery — still
+ * without writing `~/.qwen`, because the file it names is ADE's own. The
+ * caller writes it; see `qwenSkillDefaults.ts` for the mechanism and for what
+ * was verified in the bundle.
  */
 
 import {
@@ -38,6 +44,7 @@ import {
   transportGatedMcpInjection,
   withOptionalEnv,
 } from "./shared";
+import { QWEN_SYSTEM_DEFAULTS_PATH_ENV } from "./qwenSkillDefaults";
 
 /** Config option ids Qwen exposes through `session/set_config_option`. */
 export const QWEN_CONFIG_OPTION_IDS = ["mode", "model", "reasoning_effort"] as const;
@@ -47,7 +54,10 @@ function buildSpawnPlan(context: AcpSpawnContext): AcpSpawnPlan {
     command: context.binaryPath,
     args: ["--acp"],
     cwd: context.cwd,
-    env: withOptionalEnv(context.baseEnv, { QWEN_HOME: context.configHome }),
+    env: withOptionalEnv(context.baseEnv, {
+      QWEN_HOME: context.configHome,
+      [QWEN_SYSTEM_DEFAULTS_PATH_ENV]: context.adeSkillDefaultsPath,
+    }),
   };
 }
 
@@ -59,7 +69,17 @@ export const qwenDialect = defineAcpDialect({
   buildSpawnPlan,
 
   cancelStyle: "request",
-  poolEnvKeys: ["QWEN_HOME", "QWEN_RUNTIME_DIR", "OPENAI_BASE_URL", "OPENAI_API_KEY"],
+  // The skill-defaults path is a pool key for the same reason the config home
+  // is: two chats whose agents were handed different settings files are not
+  // interchangeable, even though Qwen's one-process-per-session rule already
+  // keeps them apart today.
+  poolEnvKeys: [
+    "QWEN_HOME",
+    QWEN_SYSTEM_DEFAULTS_PATH_ENV,
+    "QWEN_RUNTIME_DIR",
+    "OPENAI_BASE_URL",
+    "OPENAI_API_KEY",
+  ],
   // 0.24.0 has no `session/close`. A process may never be shared.
   oneProcessPerSession: true,
   advertiseFsCapability: false,

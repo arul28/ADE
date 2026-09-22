@@ -142,9 +142,10 @@ actor CaptureEngine {
     }
 
     func addAVCCConsumer(
-        onFrame: sending @escaping (Dimensions, Data, Int32) async -> Void
+        onFrame: sending @escaping (Dimensions, Data, Int32) async -> Void,
+        bitrateKbps: Int? = nil
     ) -> (@Sendable () async -> Void) {
-        addConsumer(encoder: AVCCEncoder()) { [weak self] encoded in
+        addConsumer(encoder: AVCCEncoder(bitrateKbps: bitrateKbps)) { [weak self] encoded in
             let flagDescription: Int32 = 1 << 0
             let flagKeyframe: Int32 = 1 << 1
 
@@ -198,10 +199,16 @@ actor MJPEGEncoder: FrameEncoder {
 actor AVCCEncoder: FrameEncoder {
     private static let timeout: Duration = .milliseconds(500)
 
-    let h264Encoder = H264Encoder(fps: 60)
+    let h264Encoder: H264Encoder
     var forceKeyframe = true
 
-    init() {}
+    // ADE delta (see VENDORED.md): upstream fixes the encoder at 6 Mbps. ADE
+    // accepts a caller cap in kbps so a remote viewer's `apple.remoteBitrateKbpsCap`
+    // reaches the encoder. `nil` keeps the upstream default.
+    init(bitrateKbps: Int? = nil) {
+        let kbps = min(max(bitrateKbps ?? 6_000, 100), 20_000)
+        h264Encoder = H264Encoder(fps: 60, bitrate: kbps * 1_000)
+    }
 
     func encode(_ frame: Frame) async throws -> H264Encoder.Encoded {
         // TODO: cancel after timeout using TaskGroup

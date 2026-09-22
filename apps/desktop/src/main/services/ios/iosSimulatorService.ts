@@ -683,6 +683,18 @@ export function clampStreamRatio(value: number | null | undefined): number | nul
 }
 
 /**
+ * The encoder bitrate a caller asked for, in kbps, or null to leave the helper
+ * at its default. Bounds match the helper protocol so a bad value is refused
+ * here rather than as an NDJSON parse failure after the device has booted.
+ */
+export function clampStreamBitrateKbps(value: number | null | undefined): number | null {
+  if (value == null) return null;
+  const kbps = Number(value);
+  if (!Number.isFinite(kbps)) return null;
+  return Math.max(100, Math.min(20_000, Math.round(kbps)));
+}
+
+/**
  * The frame rate the stream asks the encoder for.
  *
  * `Math.round(NaN)` is NaN and every clamp around it keeps it, so a caller that
@@ -4924,6 +4936,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
 
   const stopStream = async (streamArgs: { laneId?: string | null; chatSessionId?: string | null } = {}): Promise<IosSimulatorStreamStatus> => {
     const runtime = resolveRuntime(streamArgs);
+    // A stopped stream has no local viewer. Cleared for every stop — the
+    // renderer's own, the relay's, and the internal one that swaps devices —
+    // so the flag cannot outlive the capture it described.
+    if (runtime.laneId) localViewerLanes.delete(runtime.laneId);
     await stopCapture(runtime);
     const next = setStreamStopped(runtime, null);
     emit({ type: "stream-stopped", status: next });
@@ -5024,6 +5040,26 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   /* ───────────────────────── live view ───────────────────────── */
 
   /**
+   * Lanes a renderer on this machine is watching.
+   *
+   * The relay asks `hasLocalViewer` before it stops a capture for its last
+   * remote viewer, so a web tab closing cannot black out the desktop column
+   * that joined the same stream. Tracked here rather than in a main-process
+   * registry because the runtime-action path — the one the desktop renderer
+   * actually uses with a project open — never reaches the IPC handler that used
+   * to populate one. Cleared on any stop: a stream that is gone has no viewer.
+   */
+  const localViewerLanes = new Set<string>();
+  const markLocalViewer = (laneId: string | null | undefined): void => {
+    const lane = typeof laneId === "string" ? laneId.trim() : "";
+    if (lane) localViewerLanes.add(lane);
+  };
+  const hasLocalViewer = (laneId: string | null | undefined): boolean => {
+    const lane = typeof laneId === "string" ? laneId.trim() : "";
+    return lane ? localViewerLanes.has(lane) : false;
+  };
+
+  /**
    * Encodes the device screen on the machine that owns it and serves it over
    * loopback.
    *
@@ -5044,11 +5080,20 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const device = await resolveDevice(streamArgs.deviceUdid ?? runtime.activeSession?.deviceUdid, runtime);
     const requestedFps = clampStreamFps(streamArgs.fps);
     const scale = clampStreamRatio(streamArgs.scaleFactor) ?? 1;
+    const bitrateKbps = clampStreamBitrateKbps(streamArgs.bitrateKbps);
     if (
       runtime.streamStatus.running
       && runtime.streamStatus.deviceUdid === device.udid
       && runtime.streamStatus.targetFps === requestedFps
+      // A running capture is reusable only if it already honors the requested
+      // cap. `null` means the caller asked for no cap, which must not downgrade
+      // a capped stream a remote viewer already started; a non-null cap that
+      // differs restarts so the encoder actually picks it up.
+      && (bitrateKbps == null || (runtime.streamStatus.bitrateKbps ?? null) === bitrateKbps)
     ) {
+      // Already running for this device: a renderer joining an existing capture
+      // still counts as a local viewer.
+      if (streamArgs.localViewer) markLocalViewer(runtime.laneId);
       return runtime.streamStatus;
     }
     // A capture already running on this lane for another device has to go
@@ -5060,11 +5105,15 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     // a remote viewer's `apple.streamTicket` from failing on a lane whose device
     // was shut down from Xcode or by a reboot.
     await ensureDeviceBooted(device);
+    if (streamArgs.localViewer) markLocalViewer(runtime.laneId);
     const payload = await helper().send({
       type: "capture-start",
       udid: device.udid,
       fps: requestedFps,
       scale,
+      // Only when a caller asked for one: omitting it keeps the helper's own
+      // default, which is what a local viewer wants.
+      ...(bitrateKbps != null ? { bitrateKbps } : {}),
     });
     const url = typeof payload.url === "string" ? payload.url : null;
     const token = typeof payload.token === "string" ? payload.token : null;
@@ -5092,6 +5141,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       degradationReason: null,
       fps: null,
       targetFps: requestedFps,
+      // The requested cap, remembered so a later `startStream` can tell whether
+      // the running capture already honors it.
+      bitrateKbps,
       frameCount: null,
       startedAt: nowIso(),
       lastFrameAt: null,
@@ -5440,8 +5492,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       await helper().send({ type: "scroll", udid: deviceUdid, deltaX, deltaY, ...(anchor ?? {}) });
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
       // A scroll IS injected input under the auto-record contract: it changes
-      // what is on screen, and a video that skips it shows a jump cut.
-      noteInput(runtime, { udid: deviceUdid, kind: "drag" });
+      // what is on screen, and a video that skips it shows a jump cut. The
+      // source is carried through so a person scrolling the pane does not look
+      // like an agent and start a recording.
+      noteInput(runtime, { udid: deviceUdid, kind: "drag", source: scrollArgs.source });
       return { ok: true as const, direction, deltaX, deltaY };
     });
   };
@@ -5918,6 +5972,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     startStream,
     stopStream,
     getStreamStatus,
+    /** Is a renderer on this machine still watching this lane's stream? */
+    hasLocalViewer,
     frame,
     tap,
     pressButton,

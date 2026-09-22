@@ -3,12 +3,13 @@ import UIKit
 
 /// Read-only view of the Work tools pane running on the user's Mac.
 ///
-/// Three cards, in the order a user actually asks about them: what the desktop
-/// has open right now (with the last frame it captured), what the browser has
-/// in it, and what App Control is driving. There are no controls anywhere in
-/// this sheet — the browser is a `WebContentsView` in ADE Desktop and App
-/// Control is a CDP socket to a local process; neither can be reached from a
-/// phone, so offering a button would be a lie.
+/// Four cards, in the order a user actually asks about them: what the desktop
+/// has open right now (with the last frame it captured), the lane's Apple
+/// device (a view-only live stream), what the browser has in it, and what App
+/// Control is driving. Apart from the Apple card's view-only `Watch` button,
+/// there are no controls in this sheet — the browser is a `WebContentsView` in
+/// ADE Desktop and App Control is a CDP socket to a local process; neither can
+/// be reached from a phone, so offering a button would be a lie.
 ///
 /// Refresh is a poll, not a subscription. The brain has no generic named-event
 /// channel to the phone — its push surface is cr-sqlite changesets and this

@@ -86,6 +86,7 @@ import { chatLivenessReader, createPrMergeAutoSettlementService } from "../../de
 import { createPrSummaryService } from "../../desktop/src/main/services/prs/prSummaryService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
 import { createCtoMemoryService } from "../../desktop/src/main/services/cto/ctoMemoryService";
+import { projectContextAccountPort } from "../../desktop/src/main/services/cto/projectContextStore";
 import { createCtoVoiceRuntimeService } from "../../desktop/src/main/services/cto/ctoVoiceRuntimeService";
 import type { createLinearCredentialService } from "../../desktop/src/main/services/cto/linearCredentialService";
 import { createLinearOAuthService } from "../../desktop/src/main/services/cto/linearOAuthService";
@@ -115,10 +116,10 @@ import { createFeedbackReporterService } from "../../desktop/src/main/services/f
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
   ADE_BUNDLED_AGENT_SKILLS_DIR_ENV,
-  getAdeAgentSkillRootsForPrompt,
   joinAdeAgentSkillRoots,
   splitAdeAgentSkillRoots,
 } from "../../desktop/src/shared/agentSkillRoots";
+import { adePromptAgentSkillRoots } from "../../desktop/src/main/services/skills/agentSkillRuntimeService";
 import {
   attachSharedUsageTrackingScope,
   createUsageTrackingService,
@@ -144,11 +145,11 @@ import {
   captureChatAutoResumeAnalytics,
   captureChatMentionsExpandedAnalytics,
   captureClaudeHooksIgnoredAnalytics,
+  captureClaudePluginsIgnoredAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "../../desktop/src/main/services/analytics/agentTurnProductAnalytics";
 import { capturePendingInputDismissedAnalytics } from "../../desktop/src/main/services/analytics/featureProductAnalytics";
 import { createSessionDeltaService } from "../../desktop/src/main/services/sessions/sessionDeltaService";
-import { createReviewService } from "../../desktop/src/main/services/review/reviewService";
 import { createProcessRegistryService } from "../../desktop/src/main/services/runtime/processRegistryService";
 import type { createAutoUpdateService } from "../../desktop/src/main/services/updates/autoUpdateService";
 import {
@@ -395,7 +396,6 @@ export type AdeRuntime = {
   storageInsightsService?: ReturnType<typeof createStorageInsightsService> | null;
   budgetCapService?: ReturnType<typeof createBudgetCapService> | null;
   sessionDeltaService?: ReturnType<typeof createSessionDeltaService> | null;
-  reviewService?: ReturnType<typeof createReviewService> | null;
   searchService?: SearchService | null;
   externalSessionsService?: ReturnType<typeof createExternalSessionsService> | null;
   autoUpdateService?: ReturnType<typeof createAutoUpdateService> | null;
@@ -637,7 +637,7 @@ export function createHeadlessAdeCliAgentEnv(
     next[ADE_AGENT_SKILLS_DIRS_ENV],
     inferredSkillRoots.catalogRoot,
   );
-  next[ADE_AGENT_SKILLS_DIRS_ENV] = joinAdeAgentSkillRoots(getAdeAgentSkillRootsForPrompt({
+  next[ADE_AGENT_SKILLS_DIRS_ENV] = joinAdeAgentSkillRoots(adePromptAgentSkillRoots({
     env: next,
     cwd: options.cwd ?? process.cwd(),
   }));
@@ -1363,6 +1363,9 @@ export async function createAdeRuntime(args: {
     const ctoMemoryService = createCtoMemoryService({
       adeDir: paths.adeDir,
       logger,
+      account: accountSettingsStore
+        ? projectContextAccountPort({ projectRoot, store: accountSettingsStore })
+        : null,
     });
     const ctoStateService = createCtoStateService({
       db,
@@ -1685,6 +1688,11 @@ export async function createAdeRuntime(args: {
           projectId,
           event,
         }),
+        onClaudePluginsIgnored: (event) => captureClaudePluginsIgnoredAnalytics({
+          analytics: productAnalyticsService,
+          projectId,
+          event,
+        }),
         onChatMentionsExpanded: (event) => captureChatMentionsExpandedAnalytics({
           analytics: productAnalyticsService,
           projectId,
@@ -1747,23 +1755,6 @@ export async function createAdeRuntime(args: {
     if (resolvedArgs.chatRuntime === "agent" && !agentChatService) {
       throw new Error("Agent chat runtime was requested but the agent chat service was not initialized.");
     }
-    const reviewService = agentChatService
-      ? createReviewService({
-        db,
-        logger,
-        projectId,
-        projectRoot,
-        projectDefaultBranch: baseRef,
-        laneService,
-        gitService,
-        agentChatService,
-        sessionService,
-        sessionDeltaService,
-        testService,
-        prService: headlessLinearServices.prService,
-        onEvent: (event) => pushEvent("runtime", { type: "review_event", event }),
-      })
-      : null;
     // Automations are unattended work the machine's own ADE schedules and owns.
     // An embedded runtime runs inside somebody else's process on somebody
     // else's lifecycle, so it must not start rules, fire ingress dispatches, or
@@ -2540,7 +2531,6 @@ export async function createAdeRuntime(args: {
       laneWorktreeLockService,
       ptyService,
       testService,
-      reviewService,
       searchService,
       externalSessionsService,
       aiIntegrationService,

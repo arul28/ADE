@@ -598,6 +598,12 @@ export type AppleStreamOwningService = {
     } | null;
   }>;
   stopStream(args: { laneId?: string | null }): Promise<unknown>;
+  /**
+   * Is a renderer on this machine still watching this lane's stream? The
+   * service tracks it, so the answer is the same whether the renderer reached
+   * the service through IPC or a runtime action.
+   */
+  hasLocalViewer?: (laneId: string) => boolean;
 };
 
 /**
@@ -633,7 +639,13 @@ export function createAppleStreamRelayForService(deps: {
     logger: deps.logger,
     connect: deps.connect,
     publicOrigin: deps.publicOrigin,
-    hasLocalViewer: deps.hasLocalViewer,
+    // Fall back to the service's own tracker, so the brain (which passes no
+    // registry) still sees a desktop renderer that joined a remote-started
+    // capture.
+    hasLocalViewer: deps.hasLocalViewer
+      ?? (deps.service.hasLocalViewer
+        ? (laneId: string) => deps.service.hasLocalViewer?.(laneId) ?? false
+        : undefined),
     openSource: async ({ laneId }) => {
       const alreadyRunning = deps.service.getStreamStatus({ laneId }).running;
       const status = await deps.service.startStream({

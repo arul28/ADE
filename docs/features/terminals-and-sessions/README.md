@@ -917,12 +917,20 @@ Renderer surfaces:
   own `renderCardCore`, so click, context menu, hover card, PR pill, provider
   glyph, and lineage chip are literally the same component in both views.
 - `apps/desktop/src/renderer/components/terminals/AutoHandoffModal.tsx` —
-  the chat menu's front door to the automation platform: it arms rules that hand
-  a chat to another model when it dies. Pure layer first
+  the front door to the automation platform from the chat context menu and the
+  Chat actions → Handoff tab: it arms rules that hand a chat to another model
+  when it dies. Pure layer first
   (`AUTO_HANDOFF_CONDITIONS`, `AUTO_HANDOFF_LANE_TARGETS`,
   `autoHandoffRuleId`, `buildAutoHandoffDrafts`, `formFromRules`,
   `selectAutoHandoffRulesForSession`, `staleAutoHandoffRuleIds`,
-  `autoHandoffFormIsValid`), then the dialog. It writes **one rule per
+  `autoHandoffFormIsValid`), then the dialog. `loadAutoHandoffRulesForSession`
+  is the one canonical async read both entry points use to seed the editor with
+  a chat's existing rules (`null` when the automations surface is unreadable or
+  the read fails — deliberately distinct from `[]`, "authoritatively no rules",
+  so a failed read can never delete rules it never saw), and
+  the `AutoHandoffSession` prop shape is the minimal chat identity the editor
+  reads, so the chat pane's `AgentChatSession` and a `TerminalSessionSummary`
+  both fit without widening either. It writes **one rule per
   condition**, because both the draft normalizer and the runtime normalizer
   collapse a rule to a single trigger; rule ids are deterministic so a second
   Save upserts instead of appending `-2`. Its default target model is the first
@@ -1623,7 +1631,11 @@ Renderer surfaces:
   overlay. The context menu sections identity, Lifecycle, Go to, Copy, optional
   **Open in**, optional singleton-lane actions, and fenced destructive rows;
   chat rows also expose a `Name & status` submenu for inline Rename and the
-  three metadata-generation choices, while Copy, Snooze, Lane, and Open in
+  three metadata-generation choices, and a `Hand off…` submenu (Local handoff /
+  Another machine / Auto handoff…, plus Remove auto handoff once rules exist)
+  whose Local and Another-machine rows queue the destination through
+  `renderer/lib/chatHandoffIntent.ts` and select the row so the chat pane can
+  open the matching surface, while Copy, Snooze, Lane, and Open in
   remain pointer/keyboard submenus. Every action row carries a duotone glyph.
   `openIn` is an `OpenInTarget` from
   `resolveOpenInTarget`. Local and headerless foreign singleton rows omit
@@ -1939,10 +1951,28 @@ hand translation at the drop handler.
 
 | Column | Membership | Drop target |
 | --- | --- | --- |
-| **Needs you** | the awaiting-input partition | yes |
+| **Needs you** | the `needs_you` phase only — a raised hand | yes |
 | **Working** | what is left of the running partition after Waiting takes its share | yes |
 | **Waiting** | snoozed rows, plus running rows whose lane PR is mid-CI or has a review requested | **no** |
-| **Done** | ended rows, then settled rows (settled is the quieter tier, so it sinks) | yes |
+| **Done** | resting rows (`ready`/`idle`), then ended rows, then settled rows | yes |
+
+The first column takes the `needs_you` phase, **not** the list's whole
+`awaiting-input` partition. That partition is a container holding three phases —
+`needs_you`, `ready` and `idle` — which is why the list names it "Your move" and
+lets each card state its own phase. The board's first column is a claim, not a
+container: it is amber and it says the row is blocked on the user. `ready` and
+`idle` are already emerald "Done" on their own cards, so they file under Done
+here, loudest tier first — resting rows are live sessions that just finished a
+turn, settled is what the user already filed away.
+
+The host's `deriveWorkBoardColumn` maps a phase through
+`canonicalBoardColumnForPhase`; the renderer's `buildWorkBoardModel` reaches the
+same answer one level up, from the list's filing buckets plus a `needs_you`
+split. The two must agree, or a drag's host-authored "you moved this chat from
+<column>" message names a column the user never saw. They previously both filed
+the whole `awaiting-input` partition under "Needs you", so a board could claim
+five sessions were blocked on the user while every one of those cards showed an
+emerald "Done" dot and none had a raised hand.
 
 Waiting is not droppable because a row sits there for a reason a drag cannot
 assert — it is snoozed, or its PR is waiting on someone else. `canAcceptDrop`

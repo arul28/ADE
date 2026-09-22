@@ -96,6 +96,8 @@ type CursorSdkPoolEntry = {
   socketPath: string;
   cleanupStateRoot: boolean;
   idleTimer: ReturnType<typeof setTimeout> | null;
+  /** The `local.dirs` this worker was launched with; see `sameSkillDirs`. */
+  agentSkillDirs: string[];
 };
 
 const pools = new Map<string, CursorSdkPoolEntry>();
@@ -103,6 +105,14 @@ const pendingInits = new Map<string, Promise<CursorSdkPooled>>();
 /** Poisoned/released workers still shutting down, keyed by pool key. */
 const departingWorkers = new Map<string, Promise<void>>();
 const STALE_INIT_RETRY_LIMIT = 2;
+
+/** Order-sensitive compare of the workspace dirs a worker was launched with. */
+function sameSkillDirs(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
+  const left = a ?? [];
+  const right = b ?? [];
+  if (left.length !== right.length) return false;
+  return left.every((value, index) => value === right[index]);
+}
 /**
  * How long the worker gets to answer the IPC `dispose` request before the pool
  * kills its process tree. It has to cover cancelling an in-flight run and
@@ -526,15 +536,28 @@ export async function acquireCursorSdkConnection(args: {
   sessionId: string;
   policy: CursorSdkPermissionPolicy;
   mcpServers?: Record<string, unknown>;
+  /**
+   * Extra Cursor workspace roots carrying ADE's bundled agent skills. The
+   * caller materializes them (see `prepareCursorAgentSkillShim`); the pool only
+   * forwards them, and `ADE_AGENT_SKILLS_DIRS` stays on the worker env as the
+   * fallback for a session that gets none.
+   */
+  agentSkillDirs?: string[];
   cleanupStateRoot?: boolean;
   logger?: Logger;
 }): Promise<{ pooled: CursorSdkPooled; generation: number }> {
   for (let staleInitRetries = 0; ; staleInitRetries += 1) {
     const existing = pools.get(args.poolKey);
     if (existing && isCursorSdkPooledAlive(existing.pooled)) {
-      clearCursorSdkIdleTimer(existing);
-      existing.ref += 1;
-      return { pooled: existing.pooled, generation: existing.generation };
+      // A live worker cannot pick up a different `local.dirs` without a
+      // restart. Reuse only when the skill roots it was launched with still
+      // match; otherwise replace it so the new roots are not silently ignored.
+      if (sameSkillDirs(existing.agentSkillDirs, args.agentSkillDirs)) {
+        clearCursorSdkIdleTimer(existing);
+        existing.ref += 1;
+        return { pooled: existing.pooled, generation: existing.generation };
+      }
+      disposeCursorSdkPoolEntry(args.poolKey, existing);
     }
     if (existing) disposeCursorSdkPoolEntry(args.poolKey, existing);
     await waitForDepartingCursorSdkWorker(args.poolKey);
@@ -923,6 +946,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
     agentName: args.agentName ?? null,
     policy: args.policy,
     ...(args.mcpServers ? { mcpServers: args.mcpServers } : {}),
+    ...(args.agentSkillDirs?.length ? { agentSkillDirs: [...args.agentSkillDirs] } : {}),
   };
   let result: { agentId: string };
   try {
@@ -961,6 +985,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
     socketPath: paths.socketPath,
     cleanupStateRoot: args.cleanupStateRoot === true,
     idleTimer: null,
+    agentSkillDirs: [...(args.agentSkillDirs ?? [])],
   });
   return pooled;
 }

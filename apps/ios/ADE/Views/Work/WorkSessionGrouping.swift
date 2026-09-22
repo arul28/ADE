@@ -999,45 +999,6 @@ func workSessionGroupsByTime(sessions: [TerminalSessionSummary]) -> [WorkSession
   return groups
 }
 
-// MARK: - Offline machine banner
-
-/// One "this machine is gone" banner for the Work list. Presentation only: the
-/// rows themselves keep working, they just stop pretending they can be acted on.
-struct WorkOfflineMachineBanner: Identifiable, Equatable {
-  let id: String
-  let machineName: String
-  let lastSeenLabel: String?
-}
-
-/// Which offline machines own work in the project the Work list is showing.
-///
-/// The connected host is online by definition — that is what "connected" means —
-/// so anything this returns is a foreign machine whose lanes are visible through
-/// the account feed. Scope match is by project id, falling back to lane id for
-/// items published before a project id was carried.
-func workOfflineMachineBanners(
-  scopes: [ActivityOfflineScope],
-  activeProjectId: String?,
-  laneIds: Set<String> = [],
-  now: Date = Date()
-) -> [WorkOfflineMachineBanner] {
-  let project = activeProjectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-  var seen: Set<String> = []
-  var banners: [WorkOfflineMachineBanner] = []
-  for scope in scopes {
-    let matchesProject = !project.isEmpty && scope.projectId == project
-    let matchesLane = scope.laneId.map(laneIds.contains) ?? false
-    guard matchesProject || matchesLane else { continue }
-    guard seen.insert(scope.machineKey).inserted else { continue }
-    banners.append(WorkOfflineMachineBanner(
-      id: scope.machineKey,
-      machineName: scope.machineName,
-      lastSeenLabel: scope.lastSeenLabel(now: now)
-    ))
-  }
-  return banners.sorted { $0.machineName.localizedCaseInsensitiveCompare($1.machineName) == .orderedAscending }
-}
-
 /// Persistence helper for the comma-separated collapsed-section-ids string stored in AppStorage.
 func workParseCollapsedSectionIds(_ raw: String) -> Set<String> {
   Set(raw.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })

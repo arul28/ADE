@@ -309,9 +309,8 @@ function isCacheFresh(
 }
 
 /**
- * Account identity for the providers that expose one locally. Cursor has no
- * local account record ADE already reads, so it is deliberately absent rather
- * than probed.
+ * Account identity for Claude and Codex, which keep it in local files. Cursor,
+ * Copilot, Grok, and OpenCode stamp identity from their quota poll instead.
  */
 export async function resolveProviderAccounts(
   nowMs: number = Date.now(),

@@ -32,7 +32,52 @@ export function usageWindowAccountLabel(
   const providerAccounts = (accounts ?? []).filter((account) => account.provider === window.provider);
   const match = providerAccounts.find((candidate) => candidate.id === window.accountId)
     ?? (providerAccounts.length === 1 ? providerAccounts[0] : undefined);
-  return match?.email;
+  if (!match) return undefined;
+  return match.email?.trim() || match.label?.trim() || undefined;
+}
+
+/**
+ * Signed-in accounts that have not been named on any window.
+ *
+ * A single account that owns unattributed windows is already on those rows.
+ * Every other login still belongs in the pane, or a second account with no
+ * reading yet looks like it was never added.
+ */
+export function usageAccountsMissingWindows(
+  accounts: UsageAccount[] | undefined,
+  windows: Array<Pick<UsageWindow, "provider" | "accountId">>,
+): UsageAccount[] {
+  const byProvider = new Map<string, UsageAccount[]>();
+  for (const account of accounts ?? []) {
+    const rows = byProvider.get(account.provider) ?? [];
+    rows.push(account);
+    byProvider.set(account.provider, rows);
+  }
+  const missing: UsageAccount[] = [];
+  for (const [provider, providerAccounts] of byProvider) {
+    const providerWindows = windows.filter((window) => window.provider === provider);
+    if (
+      providerAccounts.length === 1
+      && providerWindows.some((window) => !window.accountId?.trim())
+    ) {
+      continue;
+    }
+    const represented = new Set(
+      providerWindows
+        .map((window) => window.accountId?.trim())
+        .filter((id): id is string => Boolean(id)),
+    );
+    for (const account of providerAccounts) {
+      if (!represented.has(account.id)) missing.push(account);
+    }
+  }
+  return missing;
+}
+
+export function usageAccountDisplayName(
+  account: Pick<UsageAccount, "email" | "label" | "id">,
+): string {
+  return account.email?.trim() || account.label?.trim() || account.id;
 }
 
 /**
@@ -212,6 +257,7 @@ export function UsagePane({
   }
 
   const windows = content.quotaWindows ?? [];
+  const quietAccounts = content.quietAccounts ?? [];
   const providerStatuses = content.providerStatuses ?? [];
   const session = content.session ?? null;
   const spendControlReached = content.spendControlReached === true;
@@ -261,9 +307,14 @@ export function UsagePane({
             marginTop={providerStatuses.length > 0 || index > 0 ? 1 : 0}
           />
         ))
-      ) : (
+      ) : quietAccounts.length ? null : (
         <Text color={theme.color.t4} dimColor>Quota windows unavailable.</Text>
       )}
+      {quietAccounts.map((account) => (
+        <Text key={account.id} color={theme.color.t4} dimColor>
+          {endTruncate(`${account.label} · No usage yet`, inner)}
+        </Text>
+      ))}
 
       <Box flexDirection="column" marginTop={1}>
         <Text color={theme.color.t2} bold>This session</Text>

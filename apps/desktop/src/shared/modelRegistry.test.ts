@@ -210,24 +210,26 @@ describe("modelRegistry", () => {
       reasoningTiers: ["low", "medium", "high", "max"],
     });
     expect(opus).toMatchObject({
-      id: "opencode/anthropic/claude-opus-4-8",
-      displayName: "Claude Opus 4.8",
-      providerModelId: "anthropic/claude-opus-4-8",
-      openCodeModelId: "claude-opus-4-8",
-      contextWindow: 1_000_000,
-      maxOutputTokens: 128_000,
-      capabilities: expect.objectContaining({ tools: true, vision: true, reasoning: true }),
-      reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
-      serviceTiers: ["fast"],
-    });
-    expect(currentOpus).toMatchObject({
       id: "opencode/anthropic/claude-opus-5",
       displayName: "Claude Opus 5",
       providerModelId: "anthropic/claude-opus-5",
       openCodeModelId: "claude-opus-5",
       contextWindow: 1_000_000,
       maxOutputTokens: 128_000,
+      capabilities: expect.objectContaining({ tools: true, vision: true, reasoning: true }),
       reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "high",
+      serviceTiers: ["fast"],
+    });
+    expect(currentOpus).toMatchObject({
+      id: "opencode/anthropic/claude-opus-5-5",
+      displayName: "Claude Opus 5.5",
+      providerModelId: "anthropic/claude-opus-5-5",
+      openCodeModelId: "claude-opus-5-5",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "medium",
       serviceTiers: ["fast"],
     });
   });
@@ -242,7 +244,7 @@ describe("modelRegistry", () => {
 
   it("resolveModelSlug returns canonical id for registry input and codex-hinted refs", () => {
     const byId = resolveModelSlug("  anthropic/claude-opus-4-8  ");
-    expect(byId).toBe("anthropic/claude-opus-4-8");
+    expect(byId).toBe("anthropic/claude-opus-5");
     expect(resolveModelSlug("gpt-5.4")).toBe("openai/gpt-5.4");
     expect(resolveModelSlug("gpt-5.5")).toBe("openai/gpt-5.5");
     expect(resolveModelSlug("sol", "codex")).toBe("openai/gpt-5.6-sol");
@@ -491,10 +493,10 @@ describe("modelRegistry", () => {
     it("orders the Claude model registry for picker display", () => {
       expect(MODEL_REGISTRY.filter((model) => model.family === "anthropic").slice(0, 5).map((model) => model.id)).toEqual([
         "anthropic/claude-fable-5-1",
-        "anthropic/claude-opus-5",
+        "anthropic/claude-opus-5-5",
         "anthropic/claude-sonnet-5",
         "anthropic/claude-haiku-4-5",
-        "anthropic/claude-opus-4-8",
+        "anthropic/claude-opus-5",
       ]);
       const fable = getModelById("anthropic/claude-fable-5-1");
       expect(fable).toBeTruthy();
@@ -514,11 +516,30 @@ describe("modelRegistry", () => {
       expect(resolveModelAlias("fable")?.id).toBe("anthropic/claude-fable-5-1");
       expect(resolveModelAlias("claude-fable-5")?.id).toBe("anthropic/claude-fable-5-1");
 
+      const opus55 = getModelById("anthropic/claude-opus-5-5");
+      expect(opus55).toBeTruthy();
+      expect(opus55).toMatchObject({
+        displayName: "Claude Opus 5.5",
+        shortId: "opus",
+        family: "anthropic",
+        providerRoute: "claude-cli",
+        providerModelId: "claude-opus-5-5",
+        contextWindow: 1_000_000,
+        maxOutputTokens: 128_000,
+        inputPricePer1M: 4,
+        outputPricePer1M: 20,
+        defaultReasoningEffort: "medium",
+      });
+      expect(opus55?.reasoningTiers).toEqual(["low", "medium", "high", "xhigh", "max"]);
+      expect(opus55?.serviceTiers).toEqual(["fast"]);
+      expect(resolveModelAlias("opus")?.id).toBe("anthropic/claude-opus-5-5");
+      expect(getRuntimeModelRefForDescriptor(opus55!, "claude")).toBe("claude-opus-5-5");
+
       const opus5 = getModelById("anthropic/claude-opus-5");
       expect(opus5).toBeTruthy();
       expect(opus5).toMatchObject({
         displayName: "Claude Opus 5",
-        shortId: "opus",
+        shortId: "opus-5",
         family: "anthropic",
         providerRoute: "claude-cli",
         providerModelId: "claude-opus-5",
@@ -530,24 +551,8 @@ describe("modelRegistry", () => {
       });
       expect(opus5?.reasoningTiers).toEqual(["low", "medium", "high", "xhigh", "max"]);
       expect(opus5?.serviceTiers).toEqual(["fast"]);
-      expect(resolveModelAlias("opus")?.id).toBe("anthropic/claude-opus-5");
+      expect(resolveModelAlias("opus-5")?.id).toBe("anthropic/claude-opus-5");
       expect(getRuntimeModelRefForDescriptor(opus5!, "claude")).toBe("claude-opus-5");
-
-      const opus48 = getModelById("anthropic/claude-opus-4-8");
-      expect(opus48).toBeTruthy();
-      expect(opus48).toMatchObject({
-        displayName: "Claude Opus 4.8",
-        shortId: "opus-4.8",
-        family: "anthropic",
-        providerRoute: "claude-cli",
-        providerModelId: "claude-opus-4-8",
-        contextWindow: 1_000_000,
-        maxOutputTokens: 128_000,
-        inputPricePer1M: 5,
-        outputPricePer1M: 25,
-      });
-      expect(opus48?.reasoningTiers).toEqual(["low", "medium", "high", "xhigh", "max", "ultracode"]);
-      expect(opus48?.serviceTiers).toEqual(["fast"]);
       expect(getDefaultModelDescriptor("claude")?.id).toBe("anthropic/claude-fable-5-1");
     });
 
@@ -564,28 +569,34 @@ describe("modelRegistry", () => {
       expect(getRuntimeModelRefForDescriptor(sonnet!, "claude")).toBe("claude-sonnet-5");
     });
 
-    it("drops Opus 4.7 entirely and forwards its aliases to Opus 4.8", () => {
+    it("drops Opus 4.8 entirely and forwards its aliases to Opus 5", () => {
+      expect(MODEL_REGISTRY.some((model) => model.id === "anthropic/claude-opus-4-8")).toBe(false);
       expect(MODEL_REGISTRY.some((model) => model.id === "anthropic/claude-opus-4-7")).toBe(false);
       expect(MODEL_REGISTRY.some((model) => model.id === "anthropic/claude-opus-4-7-1m")).toBe(false);
-      expect(resolveModelAlias("opus[1m]")?.id).toBe("anthropic/claude-opus-4-8");
-      expect(resolveModelAlias("anthropic/claude-opus-4-6")?.id).toBe("anthropic/claude-opus-4-8");
-      expect(resolveModelAlias("anthropic/claude-opus-4-7")?.id).toBe("anthropic/claude-opus-4-8");
-      expect(resolveModelAlias("anthropic/claude-opus-4-6-1m")?.id).toBe("anthropic/claude-opus-4-8");
-      expect(resolveModelAlias("anthropic/claude-opus-4-7-1m")?.id).toBe("anthropic/claude-opus-4-8");
-      expect(getModelById("claude-opus-4-6")?.id).toBe("anthropic/claude-opus-4-8");
-      expect(getModelById("claude-opus-4-6[1m]")?.id).toBe("anthropic/claude-opus-4-8");
+      expect(resolveModelAlias("opus[1m]")?.id).toBe("anthropic/claude-opus-5");
+      expect(resolveModelAlias("anthropic/claude-opus-4-6")?.id).toBe("anthropic/claude-opus-5");
+      expect(resolveModelAlias("anthropic/claude-opus-4-7")?.id).toBe("anthropic/claude-opus-5");
+      expect(resolveModelAlias("anthropic/claude-opus-4-8")?.id).toBe("anthropic/claude-opus-5");
+      expect(resolveModelAlias("anthropic/claude-opus-4-6-1m")?.id).toBe("anthropic/claude-opus-5");
+      expect(resolveModelAlias("anthropic/claude-opus-4-7-1m")?.id).toBe("anthropic/claude-opus-5");
+      expect(getModelById("claude-opus-4-6")?.id).toBe("anthropic/claude-opus-5");
+      expect(getModelById("claude-opus-4-8")?.id).toBe("anthropic/claude-opus-5");
+      expect(getModelById("claude-opus-4-6[1m]")?.id).toBe("anthropic/claude-opus-5");
     });
 
-    it("canonicalizes Anthropic runtime aliases including Opus 4.8 1M forms", () => {
+    it("canonicalizes Anthropic runtime aliases including retired Opus 4.8 forms", () => {
       expect(normalizeAnthropicRuntimeAlias("claude-fable-5")?.modelId).toBe("claude-fable-5-1");
       expect(normalizeAnthropicRuntimeAlias("fable-5.0")?.modelId).toBe("claude-fable-5-1");
-      expect(normalizeAnthropicRuntimeAlias("opus-4.8")?.modelId).toBe("claude-opus-4-8");
-      expect(normalizeAnthropicRuntimeAlias("opus-4.8-1m")?.modelId).toBe("claude-opus-4-8");
-      expect(normalizeAnthropicRuntimeAlias("claude-opus-4-8-1m")?.modelId).toBe("claude-opus-4-8");
-      expect(normalizeAnthropicRuntimeAlias("claude-opus-4-8[1m]")?.modelId).toBe("claude-opus-4-8");
-      expect(normalizeAnthropicRuntimeAlias("anthropic/claude-opus-4-8-1m")?.modelId).toBe("claude-opus-4-8");
-      expect(normalizeAnthropicRuntimeAlias("claude-opus-4-8")?.wasAlias).toBe(false);
-      expect(normalizeAnthropicRuntimeAlias("opus-4.8-1m")?.wasAlias).toBe(true);
+      expect(normalizeAnthropicRuntimeAlias("opus")?.modelId).toBe("claude-opus-5-5");
+      expect(normalizeAnthropicRuntimeAlias("claude-opus-5-5")?.wasAlias).toBe(false);
+      expect(normalizeAnthropicRuntimeAlias("opus-5")?.modelId).toBe("claude-opus-5");
+      expect(normalizeAnthropicRuntimeAlias("opus-4.8")?.modelId).toBe("claude-opus-5");
+      expect(normalizeAnthropicRuntimeAlias("opus-4.8-1m")?.modelId).toBe("claude-opus-5");
+      expect(normalizeAnthropicRuntimeAlias("claude-opus-4-8-1m")?.modelId).toBe("claude-opus-5");
+      expect(normalizeAnthropicRuntimeAlias("claude-opus-4-8[1m]")?.modelId).toBe("claude-opus-5");
+      expect(normalizeAnthropicRuntimeAlias("anthropic/claude-opus-4-8-1m")?.modelId).toBe("claude-opus-5");
+      expect(normalizeAnthropicRuntimeAlias("claude-opus-4-8")?.wasAlias).toBe(true);
+      expect(normalizeAnthropicRuntimeAlias("claude-opus-5")?.wasAlias).toBe(false);
     });
 
     it("maps removed Sonnet aliases forward without listing Sonnet 4.6 as a row", () => {
@@ -656,25 +667,25 @@ describe("modelRegistry", () => {
       reasoningTiers: ["low", "medium", "high", "max"],
     });
     expect(opus).toMatchObject({
-      id: "droid/claude-opus-4-8",
-      providerModelId: "claude-opus-4-8",
-      displayName: "Opus 4.8",
-      contextWindow: 1_000_000,
-      maxOutputTokens: 128_000,
-      reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
-      serviceTiers: ["fast"],
-    });
-    expect(getModelById("droid/claude-opus-4-6-fast")).toMatchObject({
-      id: "droid/claude-opus-4-8",
-      providerModelId: "claude-opus-4-8",
-      displayName: "Opus 4.8",
-    });
-    expect(opus5).toMatchObject({
       id: "droid/claude-opus-5",
       providerModelId: "claude-opus-5",
       displayName: "Opus 5",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
       reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
-      defaultReasoningEffort: "high",
+    });
+    expect(opus?.serviceTiers).toBeUndefined();
+    expect(getModelById("droid/claude-opus-4-6-fast")).toMatchObject({
+      id: "droid/claude-opus-5",
+      providerModelId: "claude-opus-5",
+      displayName: "Opus 5",
+    });
+    expect(opus5).toMatchObject({
+      id: "droid/claude-opus-5-5",
+      providerModelId: "claude-opus-5-5",
+      displayName: "Opus 5.5",
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "medium",
     });
     expect(opus5?.serviceTiers).toBeUndefined();
   });

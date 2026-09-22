@@ -83,6 +83,7 @@ import {
   captureChatHandoffReplayAnalytics,
   captureChatMentionsExpandedAnalytics,
   captureClaudeHooksIgnoredAnalytics,
+  captureClaudePluginsIgnoredAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "./services/analytics/agentTurnProductAnalytics";
 import { capturePendingInputDismissedAnalytics } from "./services/analytics/featureProductAnalytics";
@@ -309,7 +310,6 @@ import { createCursorCloudIngressService } from "./services/automations/cursorCl
 import { createCursorCloudFleetService } from "./services/chat/cursorCloudFleetService";
 import { buildCursorCloudAutomationDispatches } from "./services/automations/cursorCloudAutomationDispatch";
 import { openCursorCloudCredentialStore } from "./services/chat/cursorCloudCreateOptions";
-import { createReviewService } from "./services/review/reviewService";
 import { createGithubPollingService } from "./services/automations/githubPollingService";
 import type { AutomationAdeActionRegistry } from "./services/automations/automationService";
 import {
@@ -4090,7 +4090,6 @@ app.whenReady().then(async () => {
       // later in this same bootstrap, and the CTO's tool map is only built when
       // a CTO session actually runs.
       getAutomationPlannerService: () => automationPlannerService,
-      getReviewService: () => reviewService,
       getUsageService: () => usageTrackingService,
       getBudgetService: () => budgetCapService,
       // Names and metadata only. `projectSecretService.get`/`exportEnv` are
@@ -4123,6 +4122,11 @@ app.whenReady().then(async () => {
         event,
       }),
       onClaudeHooksIgnored: (event) => captureClaudeHooksIgnoredAnalytics({
+        analytics: productAnalyticsService,
+        projectId,
+        event,
+      }),
+      onClaudePluginsIgnored: (event) => captureClaudePluginsIgnoredAnalytics({
         analytics: productAnalyticsService,
         projectId,
         event,
@@ -4308,21 +4312,6 @@ app.whenReady().then(async () => {
           emitProjectEvent(projectRoot, IPC.automationsEvent, event),
       });
     }
-    const reviewService = createReviewService({
-      db,
-      logger,
-      projectId,
-      projectRoot,
-      projectDefaultBranch: baseRef,
-      laneService,
-      gitService,
-      agentChatService,
-      sessionService,
-      sessionDeltaService,
-      testService,
-      prService,
-      onEvent: (event) => emitProjectEvent(projectRoot, IPC.reviewEvent, event),
-    });
     // Constructed even when automations are unavailable (packaged builds):
     // the relay poll feeds prService.ingestGithubWebhook for PR freshness,
     // while automation rule dispatch stays gated on automationService.
@@ -4663,8 +4652,11 @@ app.whenReady().then(async () => {
       service: iosSimulatorService,
       remoteBitrateKbpsCap: () => DEFAULT_APPLE_REMOTE_BITRATE_KBPS,
       // This host has a renderer, so the last phone or web viewer leaving must
-      // not stop a capture the Apple column is still showing.
-      hasLocalViewer: hasAppleLocalViewer,
+      // not stop a capture the Apple column is still showing. Ask both the
+      // main-process registry (direct IPC starts) and the service's own tracker
+      // (runtime-action starts, which never reach the IPC handler).
+      hasLocalViewer: (laneId) =>
+        hasAppleLocalViewer(laneId) || (iosSimulatorService.hasLocalViewer?.(laneId) ?? false),
       logger,
     });
     const detachAppleStreamRoute = setActiveAppleStreamRouter(appleStreamRelay);
@@ -5528,7 +5520,6 @@ app.whenReady().then(async () => {
       iosSimulatorService,
       appControlService,
       prSummaryService,
-      reviewService,
       searchService,
       externalSessionsService,
       jobEngine,
@@ -5741,7 +5732,6 @@ app.whenReady().then(async () => {
       prService: null,
       prPollingService: null,
       prSummaryService: null,
-      reviewService: null,
       jobEngine: null,
       transcriptionService: getSharedTranscriptionService(logger),
       automationService: null,
@@ -6021,11 +6011,6 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.automationService?.dispose();
-    } catch {
-      // ignore
-    }
-    try {
-      ctx.reviewService?.dispose?.();
     } catch {
       // ignore
     }

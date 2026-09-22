@@ -216,6 +216,10 @@ export function useAppleDeviceStream({
       setState("idle");
       setUrl(null);
       setToken(null);
+      // A device that went away still owes its lease back. This effect run is
+      // the terminal owner of whatever an earlier run acquired; the superseded
+      // run no longer releases on cancellation (see `run` below).
+      releaseLease({ laneId, chatSessionId });
       return;
     }
     if (!wanted) {
@@ -276,7 +280,11 @@ export function useAppleDeviceStream({
         runtimePinRef.current,
       );
       if (cancelled) {
-        releaseLease({ laneId, chatSessionId });
+        // A superseded run does not own the lease. The effect that replaced it
+        // either reused it (same device) or released it and took a fresh one
+        // (device swap), so releasing here would decrement a lease a live
+        // viewer still holds — and drop the count to zero under the run that
+        // just started the stream, stopping the capture the viewer is watching.
         return;
       }
       setStreamStatus(status);
@@ -305,11 +313,11 @@ export function useAppleDeviceStream({
     };
 
     void run().catch((caught: unknown) => {
-      // A start that never produced a stream owes no stop, but it does owe the
-      // lease back — otherwise a failed viewer pins the count above zero and
+      if (cancelled) return;
+      // A terminal failure of the run this effect owns: nothing else will
+      // release the lease, so the viewer does not pin the count above zero and
       // the last real viewer's stop never fires.
       releaseLease({ laneId, chatSessionId });
-      if (cancelled) return;
       setState("error");
       forwardError(caught instanceof Error ? caught.message : String(caught));
     });

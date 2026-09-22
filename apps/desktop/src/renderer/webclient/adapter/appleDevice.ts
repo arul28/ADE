@@ -298,13 +298,35 @@ export function createAppleDeviceNamespace(
     getForegroundApp: (async (args?: unknown) => invoke("getForegroundApp", args ?? {}, true)) as never,
     setAppearance: (async (args?: unknown) => invoke("setAppearance", args ?? {}, false)) as never,
     setContentSize: (async (args?: unknown) => invoke("setContentSize", args ?? {}, false)) as never,
+    // Device-state switches the Device drawer renders. Absent before, so a web
+    // tab showed the controls and every press threw.
+    setAccessibilityOption: (async (args?: unknown) => invoke("setAccessibilityOption", args ?? {}, false)) as never,
+    setLocation: (async (args?: unknown) => invoke("setLocation", args ?? {}, false)) as never,
+    clearLocation: (async (args?: unknown) => invoke("clearLocation", args ?? {}, false)) as never,
+    setStatusBar: (async (args?: unknown) => invoke("setStatusBar", args ?? {}, false)) as never,
+    clearStatusBar: (async (args?: unknown) => invoke("clearStatusBar", args ?? {}, false)) as never,
     relaunchApp: (async (args?: unknown) => invoke("relaunchApp", args ?? {}, false)) as never,
     terminateApp: (async (args?: unknown) => invoke("terminateApp", args ?? {}, false)) as never,
+    // App-section switches and the app's own log.
+    setPermission: (async (args?: unknown) => invoke("setPermission", args ?? {}, false)) as never,
+    sendPushNotification: (async (args?: unknown) => invoke("sendPushNotification", args ?? {}, false)) as never,
+    startEventLog: (async (args?: unknown) => invoke("startEventLog", args ?? {}, false)) as never,
+    stopEventLog: (async (args?: unknown) => invoke("stopEventLog", args ?? {}, false)) as never,
+    getEventLog: (async (args?: unknown) => invoke("getEventLog", args ?? {}, true)) as never,
     // The rail's Home/volume/Siri and its orientation control. Absent before
     // round 5, so a web tab rendered both and neither did anything.
     pressButton: (async (args?: unknown) => invoke("pressButton", args ?? {}, false)) as never,
     rotate: (async (args?: unknown) => invoke("rotate", args ?? {}, false)) as never,
     frame: (async (args?: unknown) => invoke("frame", args ?? {}, false)) as never,
+    // SwiftUI preview lab. The drawer mounts these on open, so a web tab that
+    // lacked them threw in an effect rather than degrading.
+    listPreviewTargets: (async (args?: unknown) => invoke("listPreviewTargets", args ?? {}, true)) as never,
+    ensurePreviewWorkspace: (async (args?: unknown) => invoke("ensurePreviewWorkspace", args ?? {}, false)) as never,
+    renderCurrentPreview: (async (args?: unknown) => invoke("renderCurrentPreview", args ?? {}, false)) as never,
+    renderPreview: (async (args?: unknown) => invoke("renderPreview", args ?? {}, false)) as never,
+    openPreviewWorkspace: (async (args?: unknown) => invoke("openPreviewWorkspace", args ?? {}, false)) as never,
+    // The Cheap read the Diagnostics row uses, rather than walking the tree.
+    recordingsTotalBytes: (async (args?: unknown) => invoke("recordingsTotalBytes", args ?? {}, true)) as never,
 
     // Apple device events are not on the sync event bus yet; the pane polls
     // status, so an inert unsubscribe is the honest answer rather than a

@@ -633,9 +633,15 @@ export function resolveDevAdeHome() {
  * wrong home therefore looks completely normal, which is why the line now
  * states which of the two roots it is rather than asserting a sharing.
  */
-export function printDevIsolationReport(socketPath, projectRoot) {
+export function printDevIsolationReport(socketPath, projectRoot, { ownsRuntime = false } = {}) {
   const { home, isDefault } = resolveDevAdeHome();
-  const sync = process.env.ADE_DEV_RUNTIME_SYNC === "1" ? "ON (ADE_DEV_RUNTIME_SYNC=1)" : "off (--no-sync)";
+  const requested = process.env.ADE_DEV_RUNTIME_SYNC === "1" ? "ON (ADE_DEV_RUNTIME_SYNC=1)" : "off (--no-sync)";
+  // Reusing or attaching to a brain does not change the flags it was started
+  // with. Saying "sync off" in that case is how a still-syncing process gets
+  // reported as isolated.
+  const sync = ownsRuntime
+    ? requested
+    : `${requested} requested; this launch left the process already on the socket alone`;
   const homeNote = isDefault
     ? "(shared with the installed brain)"
     : "(ADE_HOME override — NOT the installed brain's machine state: different account, runtime dir and heartbeat)";

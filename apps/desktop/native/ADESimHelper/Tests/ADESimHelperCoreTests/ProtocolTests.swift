@@ -89,6 +89,30 @@ final class ProtocolTests: XCTestCase {
         }
     }
 
+    /// A remote viewer's cap reaches the encoder only if `capture-start` carries
+    /// it; the field is optional so an older caller keeps the helper default.
+    func testCaptureStartCarriesAnOptionalBitrateCap() {
+        guard case let .success(.captureStart(_, _, _, _, bitrateKbps)) = parse(
+            #"{"type":"capture-start","id":"1","udid":"U","bitrateKbps":2500}"#
+        ) else { return XCTFail("Expected success") }
+        XCTAssertEqual(bitrateKbps, 2500)
+
+        guard case let .success(.captureStart(_, _, _, _, absent)) = parse(
+            #"{"type":"capture-start","id":"1","udid":"U"}"#
+        ) else { return XCTFail("Expected success") }
+        XCTAssertNil(absent)
+    }
+
+    func testRejectsAnOutOfRangeBitrateCap() {
+        for kbps in [50, 25_000] {
+            guard case .failure(.invalid) = parse(
+                #"{"type":"capture-start","id":"1","udid":"U","bitrateKbps":\#(kbps)}"#
+            ) else {
+                return XCTFail("Expected bitrateKbps \(kbps) to be invalid")
+            }
+        }
+    }
+
     /// Half an anchor is a caller bug, not a request to centre.
     func testScrollRejectsHalfAnAnchor() {
         guard case .failure(.invalid) = parse(#"{"type":"scroll","id":"1","udid":"U","deltaX":0,"deltaY":1,"anchorX":5}"#) else {

@@ -87,7 +87,7 @@ Point Cursor’s browser inspector at the served page for layout debugging. The 
 | `apps/ade-cli/src/tuiClient/components/ModelPicker/ModelWizardPane.tsx` / `modelWizardGeometry.ts` | Wizard render and its shared painted-row / click hit-test geometry (header lines, row window, per-option rects), mirroring the `modelPickerGeometry` discipline so a click always lands on the row the user sees. |
 | `apps/ade-cli/src/tuiClient/components/ExternalSessionPreview.tsx` | Centre-pane transcript preview for `/import`: renders the highlighted external session's sampled exchanges before `↵` commits the import. |
 | `apps/ade-cli/src/services/modelPickerStore.ts` | Cross-surface (desktop + TUI + iOS) favorites and recents stored in the per-project `ade.db` tables `model_picker_favorites` and `model_picker_recents`, with `~/.ade/modelPicker.json` imported once as a legacy migration source. `MAX_RECENTS` caps the recents list in app code because the CRR tables are primary-key-only. Exposed through the top-level `modelPicker.getFavorites` / `setFavorites` / `toggleFavorite` / `getRecents` / `pushRecent` JSON-RPC methods on `adeRpcServer` and through matching iOS sync commands. |
-| `apps/ade-cli/src/tuiClient/components/UsagePane.tsx` | The `/usage` right pane: per-provider status rows and quota window rows. A provider status row prints the signed-in account (`accountEmail`) under the provider label when the host resolved one. A quota row is tagged with an account only when saying so adds something — `usageWindowAccountLabel` returns a label only if that provider has more than one account in the snapshot, which is the same rule desktop encodes in `poolAccounts` / `buildLimitCards`. The two bundles share no code, so the rule lives beside the pane that renders it rather than inline in `app.tsx`. |
+| `apps/ade-cli/src/tuiClient/components/UsagePane.tsx` | The `/usage` right pane: per-provider status rows and quota window rows. A provider status row prints the signed-in account (`accountEmail`) under the provider label when the host resolved one. Every quota row names its login. A signed-in account with no window yet is a line that says `No usage yet`, not a missing row. `usageWindowAccountLabel` and `usageAccountsMissingWindows` live beside the pane. |
 | `apps/desktop/src/shared/types/chat.ts` | Canonical chat DTOs (`AgentChatEventEnvelope`, sessions, pending input, `AgentChatContextUsage`, `AgentChatClaudeOutputStyle`, `AgentChatClaudePlugin`, subagent kinds, scheduled-work/retraction events, `AgentChatModelCatalog*`). Imported per-module so ade-cli typecheck stays scoped. |
 | `apps/desktop/src/shared/modelRegistry.ts` | Default model selection for new sessions (`getDefaultModelDescriptor`). |
 | `apps/desktop/src/main/utils/codexComputerUse.ts`, `apps/desktop/src/shared/cliLaunch.ts` | Explicit-opt-in, OpenAI-signature-verified Computer Use MCP resolution plus the Codex CLI start/resume flags reused by attached and embedded ADE Code runtime actions. |
@@ -272,9 +272,11 @@ of a row nobody can act on. The TUI reads the same session summary and renders
 the resume state in Chat Info rather than inventing a second command-local
 state machine.
 
-Inside the TUI the same two host actions are reachable as slash commands:
+Inside the TUI the same host actions are reachable as slash commands:
 `/resume-now` and its alias `/chat resume-now` call `chat.resumeUsageLimitNow`
-(and print the host's refusal sentence when it declines), while
+(and print the host's refusal sentence when it declines),
+`/continue-on-account` and `/chat continue-on-account` call
+`chat.continueUsageLimitOnAlternate` when another account still has room, while
 `/chat auto-resume on|off` writes the per-chat switch through
 `chat.updateSession` (`autoContinueAtUsageLimit`) — the bare `/chat auto-resume`
 with no argument explains itself instead of guessing a direction.

@@ -3425,19 +3425,37 @@ final class DatabaseService {
     "pull_request_snapshots",
   ]
 
-  private static let retiredExecutionTables: Set<String> = [
+  private static let retiredExecutionTables: [String] = [
     "process_definitions",
     "process_runtime",
     "process_runs",
     "stack_buttons",
   ]
 
+  /// The AI review schema was removed from ADE; older desktop peers may still
+  /// export its CRR changesets, so upgraded installs drop the tables outright.
+  /// Child-first: an install that never completed CRR conversion still has the
+  /// review foreign keys, and a parent drop would fail while children exist.
+  private static let retiredReviewTables: [String] = [
+    "review_finding_feedback",
+    "review_candidate_findings",
+    "review_reviewer_runs",
+    "review_run_artifacts",
+    "review_run_publications",
+    "review_findings",
+    "review_runs",
+    "review_suppressions",
+  ]
+
   /// Tables removed locally that older desktop or phone peers may still export.
-  private static let droppedIncomingSyncTables: Set<String> = retiredExecutionTables.union([
-    "queue_landing_state",
-    "unified_memories",
-    "unified_memories_fts",
-  ])
+  /// Ordered (not a Set) so the drop loop below is deterministic.
+  private static let droppedIncomingSyncTables: [String] = retiredExecutionTables
+    + retiredReviewTables
+    + [
+      "queue_landing_state",
+      "unified_memories",
+      "unified_memories_fts",
+    ]
 
   private static let excludedCrrTables = localOnlyCacheTables.union(hydrationOwnedCrrExcludedTables)
 

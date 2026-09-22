@@ -24,7 +24,6 @@ import type {
   UsageWindow,
 } from "../../../shared/types";
 import { usageProviderAccountUrl } from "../../../shared/types";
-import { hasLocalProviderConnectionSignal } from "../../lib/aiProviderStatus";
 import { formatCost } from "../../lib/format";
 import { openExternalUrl } from "../../lib/openExternal";
 import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
@@ -36,6 +35,7 @@ import {
   USAGE_BAR_TRACK_CLASS,
   USAGE_BUTTON_CLASS,
   USAGE_CARD_CLASS,
+  USAGE_DIVIDER_COLOR_CLASS,
   USAGE_HAIRLINE_CLASS,
   USAGE_NUMERIC_CLASS,
   USAGE_TEXT,
@@ -47,28 +47,31 @@ import {
   type UsageAccountView,
   buildAccountRows,
   poolAccounts,
+  quotaPopoverProviders,
 } from "./usageLimitModel";
 import type { UsageRefreshOutcome, UsageSnapshotSource } from "./useUsageSnapshot";
-
-const PROVIDER_ORDER: UsageProvider[] = ["claude", "codex"];
 
 // Display names only. The limits URL is NOT re-listed here: it comes from
 // `usageProviderAccountUrl`, which is also what the host stamps onto
 // `UsageProviderStatus.accountUrl` for iOS and the web client. A second map of
 // the same thing is one edit away from the popover and the heading opening
 // different pages.
-const PROVIDER_META: Record<UsageProvider, { label: string }> = {
-  claude: { label: "Claude" },
-  codex: { label: "Codex" },
-  cursor: { label: "Cursor" },
-};
-
 function providerConnection(
   connections: AiProviderConnections | null,
   provider: UsageProvider,
 ): AiProviderConnectionStatus | null {
-  return connections?.[provider] ?? null;
+  if (!connections || provider === "opencode") return null;
+  return connections[provider] ?? null;
 }
+
+const PROVIDER_META: Record<UsageProvider, { label: string }> = {
+  claude: { label: "Claude" },
+  codex: { label: "Codex" },
+  cursor: { label: "Cursor" },
+  copilot: { label: "Copilot" },
+  grok: { label: "Grok" },
+  opencode: { label: "OpenCode" },
+};
 
 function providerSourceLabel(status: UsageProviderStatus | null): string {
   if (status?.source === "oauth") return "OAuth";
@@ -344,13 +347,11 @@ export function UsageLimitsBand({
     };
   }, [bindingRevision]);
 
-  const visibleProviders = useMemo<UsageProvider[]>(() => {
-    if (!providerConnections) return PROVIDER_ORDER;
-    return PROVIDER_ORDER.filter((provider) => {
-      const conn = providerConnection(providerConnections, provider);
-      return hasLocalProviderConnectionSignal(conn);
-    });
-  }, [providerConnections]);
+  const visibleProviders = useMemo<UsageProvider[]>(() => quotaPopoverProviders({
+    connections: providerConnections,
+    windows: snapshot?.windows,
+    statuses: snapshot?.providerStatus,
+  }), [providerConnections, snapshot?.windows, snapshot?.providerStatus]);
 
   const windowsByProvider = useMemo(() => {
     const grouped: Partial<Record<UsageProvider, UsageWindow[]>> = {};
@@ -388,11 +389,9 @@ export function UsageLimitsBand({
           </div>
         </div>
       ) : (
-        // One box per provider, in that provider's own colour, rather than one
-        // card with hairlines between providers: the colour is what tells a
-        // Claude reading from a Codex one at a glance, and a shared card made
-        // both of them read as sections of a single table.
-        <div className="flex flex-col gap-2.5">
+        // A logo, a hairline, then the accounts. The old rounded box made every
+        // provider a card stacked on the popover's own card.
+        <div className="flex flex-col">
           {visibleProviders.map((provider) => (
             <ProviderLimitsRow
               key={provider}
@@ -478,32 +477,8 @@ function ProviderLimitsRow({
   onRefresh: () => Promise<UsageRefreshOutcome>;
 }) {
   const meta = PROVIDER_META[provider];
-  const tone = providerColor(provider, theme);
   const isAuthed = connection?.authAvailable !== false;
   const isUsageUnauthed = status?.state === "unauthed";
-
-  const [hovering, setHovering] = useState(false);
-  const handleEnter = useCallback(() => setHovering(true), []);
-  const handleLeave = useCallback(() => setHovering(false), []);
-
-  /**
-   * The provider's own box.
-   *
-   * `overflow-hidden` is load-bearing: the header's tinted fill and the meter
-   * fills inside are square-cornered rectangles, and without the clip they
-   * painted straight through the box's rounded corners — the "colored fills
-   * escape the radius" defect. The radius belongs to the box, so the clip has
-   * to as well.
-   */
-  const rowClass = cn(
-    "flex min-w-0 flex-col overflow-hidden rounded-lg border transition-[background-color] duration-150 motion-reduce:transition-none",
-  );
-  const rowStyle = {
-    borderColor: `color-mix(in srgb, ${tone} 34%, transparent)`,
-    background: hovering
-      ? `color-mix(in srgb, ${tone} 9%, var(--color-surface-raised))`
-      : `color-mix(in srgb, ${tone} 5%, var(--color-surface-raised))`,
-  };
 
   // Dismissal is per mount, so it survives re-renders and provider polls but
   // not closing the popover or leaving the page.
@@ -557,22 +532,12 @@ function ProviderLimitsRow({
     : [{ key: `${provider}:this-machine`, provider, account: null, cells: [] }];
 
   return (
-    <div
-      className={rowClass}
-      style={rowStyle}
-      onMouseEnter={handleEnter}
-      onMouseLeave={handleLeave}
-    >
-      {/* Provider mark left, its limits page right. The provider's NAME is not
-          here: the mark is the name, and the row beneath it is the account —
-          spelling out "Claude" above `ada@example.com` was the popover saying
-          the same thing twice in the space it had. */}
-      <div
-        className="flex min-w-0 items-center justify-between gap-2 px-3 py-1.5"
-        style={{ background: `color-mix(in srgb, ${tone} 13%, transparent)` }}
-      >
+    <section data-provider-limits={provider} className="flex min-w-0 flex-col gap-2 py-2 first:pt-0">
+      {/* Logo, then a hairline, then the accounts. The name stays for the
+          screen reader; the mark is what the row shows. */}
+      <div className="flex min-w-0 items-center justify-between gap-2">
         <span className="flex min-w-0 items-center gap-2" title={`${meta.label} · ${sourceLine}`}>
-          <ProviderMark provider={provider} size={16} dim={dim} />
+          <ProviderMark provider={provider} size={18} dim={dim} />
           <span className="sr-only">{meta.label}</span>
         </span>
         {usageUrl ? (
@@ -587,8 +552,9 @@ function ProviderLimitsRow({
           </button>
         ) : null}
       </div>
+      <div data-provider-divider className={cn("border-b", USAGE_DIVIDER_COLOR_CLASS)} />
 
-      <div className="flex min-w-0 flex-col gap-2 px-3 py-2.5">
+      <div className="flex min-w-0 flex-col gap-2">
       {spendControlReached ? <NoticeRow message="Spending cap reached" /> : null}
 
       {/* A failed refresh sits above the readings it could not update — with
@@ -644,7 +610,7 @@ function ProviderLimitsRow({
         <SkeletonRows />
       )}
       </div>
-    </div>
+    </section>
   );
 }
 

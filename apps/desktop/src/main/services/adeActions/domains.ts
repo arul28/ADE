@@ -54,7 +54,6 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "app_control",
   "built_in_browser",
   "automations",
-  "review",
   "issue",
   "search",
   "external-sessions",

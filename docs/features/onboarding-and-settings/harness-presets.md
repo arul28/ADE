@@ -187,9 +187,10 @@ Pinning Explore, Plan or general-purpose sends an SDK `agents` entry. The SDK
 has no "same agent, different model" overlay — an entry replaces the whole
 definition — so ADE supplies its own copy of Anthropic's prompt and the
 built-in's `disallowedTools` alongside the model. Those copies live in
-`shared/claudeBuiltinAgentPrompts.ts` with the CLI version they came from, and
-they stop tracking upstream the moment they are used. The wizard says so at the
-point of the choice.
+`shared/claudeBuiltinAgentPrompts.ts`, stamped with the CLI version they came
+from (`CLAUDE_BUILTIN_AGENT_PROMPT_SOURCE_VERSION`) and re-extracted from the
+pinned binary whenever the SDK pin moves; a pinned agent stops tracking upstream
+the moment it is used. The wizard says so at the point of the choice.
 
 ### The CLI gate
 
@@ -282,7 +283,8 @@ not list presets at all, so the choice cannot be made and then ignored.
   present, default selection, per-provider settings, and the config home each
   account resolves to.
 - `apps/desktop/src/shared/claudeBuiltinAgentPrompts.ts` — ADE's copies of the
-  three built-in agent prompts, with the CLI version they were taken from.
+  three built-in agent prompts, stamped with the CLI version they were taken
+  from and re-extracted from the pinned binary when the SDK pin moves.
 - `apps/desktop/src/shared/harnessPresetCliGate.ts` — the locked CLI gate.
 - `apps/desktop/resources/agent-skills/ade-harnesses/SKILL.md` — how an agent
   discovers and uses a preset.

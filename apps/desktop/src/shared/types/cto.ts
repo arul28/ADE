@@ -356,6 +356,12 @@ export type CtoMemorySnapshot = {
   dailyLog: string;
   dailyLogDate: string;
   updatedAt: string | null;
+  /** The one project brief. Null until the CTO writes one. */
+  projectBrief: string | null;
+  /** Threads the CTO has directed. Null when none have been recorded. */
+  projectThreads: string | null;
+  /** Ranked project facts. Null when the context store has nothing to show. */
+  projectItems: string | null;
 };
 
 export type CtoGetMemoryArgs = Record<string, never>;
@@ -370,7 +376,7 @@ export type CtoSearchMemoryArgs = {
 };
 
 export type CtoMemorySearchRow = {
-  file: "MEMORY.md" | "thread-state.md" | "daily" | "memory-archive.md";
+  file: "MEMORY.md" | "thread-state.md" | "daily" | "memory-archive.md" | "context";
   date: string | null;
   line: number;
   snippet: string;

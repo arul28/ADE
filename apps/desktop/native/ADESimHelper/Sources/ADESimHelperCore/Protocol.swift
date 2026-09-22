@@ -52,7 +52,7 @@ public struct DevicePoint: Equatable, Sendable {
 /// One NDJSON line from ADE on stdin.
 public enum SimHelperCommand: Equatable, Sendable {
     case listDevices(id: String)
-    case captureStart(id: String, udid: String, fps: Int, scale: Double)
+    case captureStart(id: String, udid: String, fps: Int, scale: Double, bitrateKbps: Int?)
     case captureStop(id: String, udid: String)
     case touch(id: String, udid: String, phase: TouchPhase, point: DevicePoint)
     case multiTouch(id: String, udid: String, phase: TouchPhase, first: DevicePoint, second: DevicePoint)
@@ -74,7 +74,7 @@ public enum SimHelperCommand: Equatable, Sendable {
     public var id: String {
         switch self {
         case let .listDevices(id): return id
-        case let .captureStart(id, _, _, _): return id
+        case let .captureStart(id, _, _, _, _): return id
         case let .captureStop(id, _): return id
         case let .touch(id, _, _, _): return id
         case let .multiTouch(id, _, _, _, _): return id
@@ -98,7 +98,7 @@ public enum SimHelperCommand: Equatable, Sendable {
     public var udid: String? {
         switch self {
         case .listDevices, .quit: return nil
-        case let .captureStart(_, udid, _, _): return udid
+        case let .captureStart(_, udid, _, _, _): return udid
         case let .captureStop(_, udid): return udid
         case let .touch(_, udid, _, _): return udid
         case let .multiTouch(_, udid, _, _, _): return udid
@@ -192,7 +192,17 @@ public enum SimHelperCommandParser {
                 guard scale > 0, scale <= 1 else {
                     throw Invalid.message("`scale` must be greater than 0 and at most 1.")
                 }
-                return .success(.captureStart(id: id, udid: udid, fps: fps, scale: scale))
+                // Optional. A remote viewer's cap arrives here; the encoder
+                // applies it. Values outside the sane range are refused rather
+                // than silently clamped, so a caller learns it sent nonsense.
+                var bitrateKbps: Int?
+                if let raw = number("bitrateKbps") {
+                    guard raw >= 100, raw <= 20_000 else {
+                        throw Invalid.message("`bitrateKbps` must be between 100 and 20000.")
+                    }
+                    bitrateKbps = Int(raw)
+                }
+                return .success(.captureStart(id: id, udid: udid, fps: fps, scale: scale, bitrateKbps: bitrateKbps))
 
             case "capture-stop":
                 return .success(.captureStop(id: id, udid: try requireUdid()))

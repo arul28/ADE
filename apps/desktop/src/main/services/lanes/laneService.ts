@@ -2866,6 +2866,20 @@ export function createLaneService({
       duplicateId,
       projectId,
     ]);
+    // The lane's Apple simulator binding follows the keeper too. `lane_id` is
+    // the table's primary key, so keep the keeper's binding when it already has
+    // one and only adopt the duplicate's otherwise. Without this the duplicate's
+    // row is dropped by the cleanup below and the keeper forgets its simulator,
+    // so a later lane delete never releases the clone.
+    const keeperHasAppleDevice = db.get<{ one: number }>(
+      "select 1 as one from lane_apple_devices where lane_id = ? limit 1",
+      [keeperId],
+    );
+    if (keeperHasAppleDevice) {
+      db.run("delete from lane_apple_devices where lane_id = ?", [duplicateId]);
+    } else {
+      db.run("update lane_apple_devices set lane_id = ? where lane_id = ?", [keeperId, duplicateId]);
+    }
     // Everything else lane-scoped on the duplicate cascades away. The duplicate
     // is a create/recover race artifact, not a lane the user made, and its
     // sessions now belong to the keeper — so its tombstone preserves whatever
@@ -3981,14 +3995,6 @@ export function createLaneService({
       detachedAt: new Date().toISOString(),
     });
     db.run("delete from pr_auto_link_ignores where lane_id = ? and project_id = ?", [laneId, projectId]);
-
-    db.run("delete from review_run_publications where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
-    db.run("delete from review_finding_feedback where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
-    db.run("delete from review_run_artifacts where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
-    db.run("delete from review_findings where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
-    db.run("delete from review_candidate_findings where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
-    db.run("delete from review_reviewer_runs where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
-    db.run("delete from review_runs where lane_id = ? and project_id = ?", [laneId, projectId]);
 
     db.run("delete from file_directory_snapshots where workspace_id in (select id from files_workspaces where lane_id = ?)", [laneId]);
     db.run("delete from file_content_snapshots where workspace_id in (select id from files_workspaces where lane_id = ?)", [laneId]);
@@ -7665,7 +7671,12 @@ export function createLaneService({
             projectRoot,
             store: db,
             run: async (command, commandArgs, options) => {
-              const result = await execFileAsync(command, commandArgs, { timeout: options?.timeoutMs ?? 30_000 });
+              const result = await execFileAsync(command, commandArgs, {
+                timeout: options?.timeoutMs ?? 30_000,
+                // No console window on Windows, and no argv shell parsing on any
+                // platform — the simctl arguments are literal.
+                windowsHide: true,
+              });
               return { stdout: result.stdout?.toString() ?? "", stderr: result.stderr?.toString() ?? "" };
             },
             removeDirectory: (directory) => fs.promises.rm(directory, { recursive: true, force: true }),

@@ -9595,6 +9595,91 @@ final class ADETests: XCTestCase {
     database.close()
   }
 
+  func testDatabaseDropsRetiredReviewTablesAndIgnoresLegacyIncomingChanges() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = DatabaseService(baseURL: baseURL, bootstrapSQL: """
+      create table if not exists review_runs (
+        id text primary key,
+        project_id text not null
+      );
+      create table if not exists review_findings (
+        id text primary key,
+        run_id text not null,
+        foreign key(run_id) references review_runs(id) on delete cascade
+      );
+      create table if not exists review_run_publications (
+        id text primary key,
+        run_id text not null,
+        foreign key(run_id) references review_runs(id) on delete cascade
+      );
+      create table if not exists review_run_artifacts (
+        id text primary key,
+        run_id text not null,
+        foreign key(run_id) references review_runs(id) on delete cascade
+      );
+      create table if not exists review_reviewer_runs (
+        id text primary key,
+        run_id text not null,
+        foreign key(run_id) references review_runs(id) on delete cascade
+      );
+      create table if not exists review_candidate_findings (
+        id text primary key,
+        run_id text not null,
+        reviewer_run_id text not null,
+        foreign key(run_id) references review_runs(id) on delete cascade,
+        foreign key(reviewer_run_id) references review_reviewer_runs(id) on delete cascade
+      );
+      create table if not exists review_finding_feedback (
+        id text primary key,
+        finding_id text not null,
+        foreign key(finding_id) references review_findings(id) on delete cascade
+      );
+      create table if not exists review_suppressions (
+        id text primary key,
+        project_id text not null
+      );
+      insert or ignore into review_runs (id, project_id) values ('run-1', 'project-1');
+      insert or ignore into review_reviewer_runs (id, run_id) values ('reviewer-1', 'run-1');
+      insert or ignore into review_findings (id, run_id) values ('finding-1', 'run-1');
+      insert or ignore into review_candidate_findings (id, run_id, reviewer_run_id) values ('candidate-1', 'run-1', 'reviewer-1');
+      insert or ignore into review_finding_feedback (id, finding_id) values ('feedback-1', 'finding-1');
+      insert or ignore into review_run_publications (id, run_id) values ('publication-1', 'run-1');
+      insert or ignore into review_run_artifacts (id, run_id) values ('artifact-1', 'run-1');
+      insert or ignore into review_suppressions (id, project_id) values ('suppression-1', 'project-1');
+    """)
+    XCTAssertNil(database.initializationError)
+
+    for table in [
+      "review_finding_feedback",
+      "review_candidate_findings",
+      "review_reviewer_runs",
+      "review_run_artifacts",
+      "review_run_publications",
+      "review_findings",
+      "review_runs",
+      "review_suppressions",
+    ] {
+      XCTAssertFalse(try tableExists(in: baseURL, table: table), "\(table) was not dropped on upgrade")
+    }
+    XCTAssertFalse(try tableExists(in: baseURL, table: "review_runs__crsql_clock"))
+
+    let initialVersion = database.currentDbVersion()
+    let siteId = "b00e9b92c864a27958669c1595fcb2c3"
+    let changes: [CrsqlChangeRow] = [
+      CrsqlChangeRow(table: "review_runs", pk: .string("run-2"), cid: "project_id", val: .string("project-1"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 0),
+      CrsqlChangeRow(table: "review_findings", pk: .string("finding-2"), cid: "run_id", val: .string("run-2"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 1),
+    ]
+
+    let result = try database.applyChanges(changes)
+
+    XCTAssertEqual(result.appliedCount, 0)
+    XCTAssertEqual(result.dbVersion, initialVersion)
+    XCTAssertTrue(result.touchedTables.isEmpty)
+    XCTAssertFalse(database.skippedUnknownSyncTables.contains("review_runs"))
+    XCTAssertFalse(database.skippedUnknownSyncTables.contains("review_findings"))
+    database.close()
+  }
+
   func testDatabaseChangeNotificationDoesNotDeadlockMainObserverReadingDatabase() throws {
     let database = DatabaseService(baseURL: makeTemporaryDirectory(), bootstrapSQL: """
       create table if not exists notify_deadlock_rows (
@@ -19242,6 +19327,7 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(memory.threadState.contains("Open loop"))
     XCTAssertEqual(memory.dailyLogDate, "2026-07-04")
     XCTAssertEqual(memory.updatedAt, "2026-07-04T12:00:00.000Z")
+    XCTAssertNil(memory.projectBrief)
     XCTAssertFalse(memory.isEmpty)
   }
 
@@ -21616,8 +21702,8 @@ final class ADETests: XCTestCase {
     let claudeGroup = groups.first(where: { $0.key == "claude" })
     let anthropicProvider = claudeGroup?.providers.first(where: { $0.key == "anthropic" })
     let fable = anthropicProvider?.models.first(where: { $0.id == "claude-fable-5-1" })
+    let opus55 = anthropicProvider?.models.first(where: { $0.id == "claude-opus-5-5" })
     let opus5 = anthropicProvider?.models.first(where: { $0.id == "claude-opus-5" })
-    let opus48 = anthropicProvider?.models.first(where: { $0.id == "claude-opus-4-8" })
     let openCodeAnthropic = groups
       .first(where: { $0.key == "opencode" })?
       .providers
@@ -21633,17 +21719,17 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(anthropicProvider?.models.map(\.id), [
       "claude-fable-5-1",
-      "claude-opus-5",
+      "claude-opus-5-5",
       "claude-sonnet-5",
       "claude-haiku-4-5",
-      "claude-opus-4-8",
+      "claude-opus-5",
     ])
     XCTAssertEqual(openCodeAnthropic?.models.map(\.id), [
       "opencode/anthropic/claude-fable-5-1",
-      "opencode/anthropic/claude-opus-5",
+      "opencode/anthropic/claude-opus-5-5",
       "opencode/anthropic/claude-sonnet-5",
       "opencode/anthropic/claude-haiku-4-5",
-      "opencode/anthropic/claude-opus-4-8",
+      "opencode/anthropic/claude-opus-5",
     ])
     XCTAssertEqual(workDefaultCatalogModelId(provider: "claude"), "claude-fable-5-1")
     XCTAssertEqual(fable?.displayName, "Claude Fable 5.1")
@@ -21657,8 +21743,14 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(workKnownModelDisplayName("fable-5.0"), "Claude Fable 5.1")
     XCTAssertEqual(workKnownModelDisplayName("opencode/anthropic/claude-fable-5-1"), "Claude Fable 5.1")
     XCTAssertNotNil(ADEColor.modelBrand(for: "opencode/anthropic/claude-fable-5-1"))
+    XCTAssertEqual(opus55?.displayName, "Claude Opus 5.5")
+    XCTAssertEqual(opus55?.tagline, "Agentic coding · 1M context")
+    XCTAssertEqual(opus55?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(opus55?.defaultReasoningEffort, "medium")
+    XCTAssertTrue(opus55?.supportsCodexFastMode == true)
+    XCTAssertNotNil(ADEColor.modelBrand(for: "claude-opus-5-5"))
     XCTAssertEqual(opus5?.displayName, "Claude Opus 5")
-    XCTAssertEqual(opus5?.tagline, "Agentic coding · 1M context")
+    XCTAssertEqual(opus5?.tagline, "Previous Opus · 1M context")
     XCTAssertEqual(opus5?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(opus5?.defaultReasoningEffort, "high")
     XCTAssertTrue(opus5?.supportsCodexFastMode == true)
@@ -21668,9 +21760,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(droidOpus5?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(droidOpus5?.defaultReasoningEffort, "high")
     XCTAssertFalse(droidOpus5?.supportsCodexFastMode == true)
-    XCTAssertEqual(opus48?.displayName, "Claude Opus 4.8")
-    XCTAssertEqual(opus48?.tier, .flagship)
-    XCTAssertEqual(opus48?.tagline, "Previous Opus · 1M context")
+    XCTAssertEqual(opus5?.tier, .flagship)
     XCTAssertNotNil(ADEColor.modelBrand(for: "claude-opus-4-8"))
     XCTAssertEqual(gpt55?.displayName, "GPT-5.5")
     XCTAssertEqual(gpt55?.tier, .flagship)
@@ -21740,12 +21830,14 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-opus-5"), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-opus-5"), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "opus"), ["low", "medium", "high", "xhigh", "max"])
-    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-opus-4-8"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
-    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-opus-4-8-api"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
-    XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-opus-4-8"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
-    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-opus-4-7"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
-    XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-opus-4-7"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
-    XCTAssertEqual(ADEColor.reasoningTiers(for: "opus[1m]"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-opus-5-5"), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-opus-5-5"), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-opus-4-8"), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-opus-4-8-api"), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-opus-4-8"), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-opus-4-7"), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-opus-4-7"), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "opus[1m]"), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-sonnet-5"), ["low", "medium", "high", "max"])
     XCTAssertNil(ADEColor.reasoningTiers(for: "claude-haiku-4-5"))
     XCTAssertEqual(ADEColor.reasoningTiers(for: "astra"), ["low", "medium", "high", "xhigh", "max"])
@@ -22498,21 +22590,21 @@ final class ADETests: XCTestCase {
   }
 
   func testWorkModelCatalogMapsCurrentAndMigratedOpusAliases() {
-    XCTAssertTrue(workModelIdsEquivalent("opus", "claude-opus-5"))
+    XCTAssertTrue(workModelIdsEquivalent("opus", "claude-opus-5-5"))
     XCTAssertTrue(workModelIdsEquivalent("anthropic/claude-opus-5-api", "claude-opus-5"))
-    XCTAssertTrue(workModelIdsEquivalent("opencode/anthropic/opus", "claude-opus-5"))
+    XCTAssertTrue(workModelIdsEquivalent("opencode/anthropic/opus", "claude-opus-5-5"))
     XCTAssertTrue(workModelIdsEquivalent("opencode/anthropic/claude-opus-5", "claude-opus-5"))
-    XCTAssertTrue(workModelIdsEquivalent("opencode/anthropic/claude-opus-4-8", "claude-opus-4-8"))
+    XCTAssertTrue(workModelIdsEquivalent("opencode/anthropic/claude-opus-4-8", "claude-opus-5"))
     XCTAssertEqual(workKnownModelDisplayName("anthropic/claude-opus-5-api"), "Claude Opus 5")
-    XCTAssertEqual(workKnownModelDisplayName("opencode/anthropic/opus"), "Claude Opus 5")
-    XCTAssertTrue(workModelIdsEquivalent("claude-opus-4-6", "claude-opus-4-8"))
-    XCTAssertTrue(workModelIdsEquivalent("anthropic/claude-opus-4-8-api", "claude-opus-4-8"))
-    XCTAssertTrue(workModelIdsEquivalent("anthropic/claude-opus-4-6", "anthropic/claude-opus-4-8"))
-    XCTAssertTrue(workModelIdsEquivalent("opus-4-6", "claude-opus-4-8"))
-    XCTAssertTrue(workModelIdsEquivalent("opus-4.6", "claude-opus-4-8"))
+    XCTAssertEqual(workKnownModelDisplayName("opencode/anthropic/opus"), "Claude Opus 5.5")
+    XCTAssertTrue(workModelIdsEquivalent("claude-opus-4-6", "claude-opus-5"))
+    XCTAssertTrue(workModelIdsEquivalent("anthropic/claude-opus-4-8-api", "claude-opus-5"))
+    XCTAssertTrue(workModelIdsEquivalent("anthropic/claude-opus-4-6", "anthropic/claude-opus-5"))
+    XCTAssertTrue(workModelIdsEquivalent("opus-4-6", "claude-opus-5"))
+    XCTAssertTrue(workModelIdsEquivalent("opus-4.6", "claude-opus-5"))
     XCTAssertTrue(workModelIdsEquivalent("claude-opus-4-6-1m", "claude-opus-4-7-1m"))
     XCTAssertTrue(workModelIdsEquivalent("claude-opus-4-6[1m]", "claude-opus-4-7-1m"))
-    XCTAssertEqual(workKnownModelDisplayName("anthropic/claude-opus-4-6"), "Claude Opus 4.8")
+    XCTAssertEqual(workKnownModelDisplayName("anthropic/claude-opus-4-6"), "Claude Opus 5")
   }
 
   func testExtractWorkNavigationTargetsFindsFilePathsAndPullRequestNumbers() {

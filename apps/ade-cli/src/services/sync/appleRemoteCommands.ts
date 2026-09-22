@@ -182,6 +182,10 @@ export function buildAppleStatusPayload(laneId: string, status: unknown): AppleS
     ?? asString(deviceSession?.deviceUdid);
   const name = asString(activeDevice?.name) ?? asString(laneDevice?.name);
   const origin = asString(laneDevice?.origin);
+  // A chat can hold the device through either an app session or a bare device
+  // session (`open-device`); an owner that only read `activeSession` reported a
+  // device-session claim as unclaimed, which let any remote caller drive it.
+  const ownerSessionId = asString(activeSession?.chatSessionId) ?? asString(deviceSession?.chatSessionId);
   return {
     laneId,
     unavailable: source.supported === false
@@ -221,8 +225,8 @@ export function buildAppleStatusPayload(laneId: string, status: unknown): AppleS
         mode: recording.mode === "manual" ? "manual" : recording.mode === "auto" ? "auto" : null,
       }
       : null,
-    owner: activeSession
-      ? { chatSessionId: asString(activeSession.chatSessionId), chatTitle: null }
+    owner: ownerSessionId
+      ? { chatSessionId: ownerSessionId, chatTitle: null }
       : null,
   };
 }
@@ -453,9 +457,15 @@ export function createAppleRemoteCommandHandlers(deps: {
           throw new Error(`apple.invoke: '${method}' is not available in this runtime.`);
         }
         const invoke = call as (args: Record<string, unknown>) => Promise<unknown>;
-        const laneId = asString(payload.laneId);
         const chatSessionId = asString(payload.chatSessionId);
-        if (laneId && !APPLE_UNGUARDED_METHODS.has(method)) {
+        // A guarded (mutating) method must name its lane. Without one it used to
+        // run against whatever device was active, bypassing the cooperative chat
+        // lock entirely; unguarded reads may still omit it.
+        const guardedMethod = !APPLE_UNGUARDED_METHODS.has(method);
+        const laneId = guardedMethod
+          ? requireString(payload.laneId, `apple.invoke '${method}' requires laneId.`)
+          : asString(payload.laneId);
+        if (laneId && guardedMethod) {
           assertAppleInputAllowed(await statusFor(laneId), chatSessionId);
         }
         const methodArgs = isRecord(payload.args) ? payload.args : {};

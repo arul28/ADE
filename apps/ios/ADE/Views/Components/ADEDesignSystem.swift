@@ -153,9 +153,11 @@ enum ADEColor {
     "anthropic/claude-fable-5-api": 0xD97706,
     "claude-fable-5": 0xD97706,
     "fable": 0xD97706,
+    "anthropic/claude-opus-5-5": 0xD97706,
+    "claude-opus-5-5": 0xD97706,
+    "opus": 0xD97706,
     "anthropic/claude-opus-5": 0xD97706,
     "claude-opus-5": 0xD97706,
-    "opus": 0xD97706,
     "anthropic/claude-opus-4-8": 0xD97706,
     "claude-opus-4-8": 0xD97706,
     "anthropic/claude-sonnet-5": 0x8B5CF6,
@@ -248,26 +250,32 @@ enum ADEColor {
       append("claude-fable-5")
       append("opencode/anthropic/claude-fable-5")
       append("fable")
-    case "opus", "opus-5", "opus-5.0", "opus-5-0",
+    case "opus", "opus-5.5", "opus-5-5",
+         "anthropic/claude-opus-5-5", "anthropic/claude-opus-5-5-api", "claude-opus-5-5",
+         "opencode/anthropic/opus", "opencode/anthropic/claude-opus-5-5":
+      append("anthropic/claude-opus-5-5")
+      append("claude-opus-5-5")
+      append("opencode/anthropic/claude-opus-5-5")
+      append("opus")
+    case "opus-5", "opus-5.0", "opus-5-0",
          "anthropic/claude-opus-5", "anthropic/claude-opus-5-api", "claude-opus-5",
-         "opencode/anthropic/opus", "opencode/anthropic/claude-opus-5":
+         "opencode/anthropic/claude-opus-5":
       append("anthropic/claude-opus-5")
       append("claude-opus-5")
       append("opencode/anthropic/claude-opus-5")
-      append("opus")
     case "anthropic/claude-opus-4-8", "anthropic/claude-opus-4-8-api", "claude-opus-4-8",
          "opus-4.8", "opus-4-8", "opus-4.8-1m", "opus-4.8[1m]", "opus-4-8-1m",
          "anthropic/claude-opus-4-8-1m", "claude-opus-4-8-1m", "claude-opus-4-8[1m]",
          "opencode/anthropic/claude-opus-4-8":
-      append("anthropic/claude-opus-4-8")
-      append("claude-opus-4-8")
-      append("opencode/anthropic/claude-opus-4-8")
+      append("anthropic/claude-opus-5")
+      append("claude-opus-5")
+      append("opencode/anthropic/claude-opus-5")
     case "anthropic/claude-opus-4-7", "anthropic/claude-opus-4-7-api", "claude-opus-4-7":
-      append("anthropic/claude-opus-4-8")
-      append("claude-opus-4-8")
+      append("anthropic/claude-opus-5")
+      append("claude-opus-5")
     case "opus[1m]", "opus-1m", "anthropic/claude-opus-4-7-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]":
-      append("anthropic/claude-opus-4-8")
-      append("claude-opus-4-8")
+      append("anthropic/claude-opus-5")
+      append("claude-opus-5")
     case "sonnet", "anthropic/claude-sonnet-5", "claude-sonnet-5",
          "anthropic/claude-sonnet-4-6", "claude-sonnet-4-6",
          "opencode/anthropic/claude-sonnet-5":
@@ -331,11 +339,13 @@ enum ADEColor {
     "anthropic/claude-fable-5-api": ["low", "medium", "high", "xhigh", "max", "ultracode"],
     "claude-fable-5": ["low", "medium", "high", "xhigh", "max", "ultracode"],
     "fable": ["low", "medium", "high", "xhigh", "max", "ultracode"],
+    "anthropic/claude-opus-5-5": ["low", "medium", "high", "xhigh", "max"],
+    "claude-opus-5-5": ["low", "medium", "high", "xhigh", "max"],
+    "opus": ["low", "medium", "high", "xhigh", "max"],
     "anthropic/claude-opus-5": ["low", "medium", "high", "xhigh", "max"],
     "claude-opus-5": ["low", "medium", "high", "xhigh", "max"],
-    "opus": ["low", "medium", "high", "xhigh", "max"],
-    "anthropic/claude-opus-4-8": ["low", "medium", "high", "xhigh", "max", "ultracode"],
-    "claude-opus-4-8": ["low", "medium", "high", "xhigh", "max", "ultracode"],
+    "anthropic/claude-opus-4-8": ["low", "medium", "high", "xhigh", "max"],
+    "claude-opus-4-8": ["low", "medium", "high", "xhigh", "max"],
     "anthropic/claude-sonnet-5": ["low", "medium", "high", "max"],
     "claude-sonnet-5": ["low", "medium", "high", "max"],
     "sonnet": ["low", "medium", "high", "max"],

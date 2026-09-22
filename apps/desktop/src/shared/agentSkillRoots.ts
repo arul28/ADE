@@ -65,29 +65,6 @@ function addAncestorSkillRoots(
   }
 }
 
-/**
- * Could this directory be an ADE checkout at all?
- *
- * The filesystem root is the case that matters. A brain started by launchd or
- * systemd inherits cwd `/`, and `joinPath` normalizes a trailing separator
- * away — so `joinPath("/", "apps", "desktop", …)` produced
- * `/apps/desktop/resources/agent-skills`, and every agent that brain launched
- * carried two paths at the root of the disk in `ADE_AGENT_SKILLS_DIRS`. They
- * resolve to nothing, and worse, they took the place of the lane-worktree
- * lookup they were added to perform, so a lane shipping its own updated
- * `ade-*` skill was invisible to agents under the installed brain while
- * working fine under a dev app (whose cwd IS the worktree).
- *
- * A Windows drive root (`C:\`) is rejected for the same reason.
- */
-function isPlausibleRepoRoot(value: string | null | undefined): value is string {
-  const normalized = normalizePathEntry(value);
-  if (!normalized) return false;
-  // `normalizePathEntry` strips trailing separators, so "/" becomes "" and a
-  // drive root becomes "C:".
-  return !/^[a-zA-Z]:$/.test(normalized);
-}
-
 export function splitAdeAgentSkillRoots(value: string | null | undefined): string[] {
   const roots: string[] = [];
   const seen = new Set<string>();
@@ -104,10 +81,36 @@ export function joinAdeAgentSkillRoots(roots: readonly string[]): string {
   return normalizedRoots.join(pathDelimiter());
 }
 
+/**
+ * Adds the two repo-relative bundled-skill shapes for one base directory.
+ *
+ * Two guards keep this from minting roots that cannot exist. A packaged app
+ * runs with `process.cwd() === "/"`, which used to yield the absolute
+ * `/apps/desktop/resources/agent-skills` and `/resources/agent-skills`; a dev
+ * run started from `apps/desktop` used to yield a doubled
+ * `<repo>/apps/desktop/apps/desktop/resources/agent-skills`. Both shipped in
+ * agent prompts and in `ADE_AGENT_SKILLS_DIRS`, and because the prompt list is
+ * capped they pushed the real root out of the list.
+ */
+function addBundledSkillRootsForBase(roots: string[], seen: Set<string>, base: string | null | undefined): void {
+  // `normalizePathEntry` strips trailing separators, so a POSIX root ("/")
+  // normalizes to the empty string. A bare Windows drive ("C:\") normalizes to
+  // "C:". Neither belongs to a checkout or an install, so joining onto them
+  // only produces paths that cannot exist.
+  const normalized = normalizePathEntry(base);
+  if (!normalized || /^[a-z]:$/i.test(normalized)) return;
+  // Prefer the active lane worktree before inherited app roots.
+  if (!/[\\/]apps[\\/]desktop$/i.test(normalized)) {
+    addPath(roots, seen, joinPath(normalized, "apps", "desktop", "resources", "agent-skills"));
+  }
+  addPath(roots, seen, joinPath(normalized, "resources", "agent-skills"));
+}
+
 export function getAdeAgentSkillRootCandidates(options: {
   env?: NodeJS.ProcessEnv;
   resourcesPath?: string | null;
   cwd?: string | null;
+  processCwd?: string | null;
   dirname?: string | null;
   includeDeepSourceFallbacks?: boolean;
 } = {}): string[] {
@@ -116,13 +119,11 @@ export function getAdeAgentSkillRootCandidates(options: {
   const roots: string[] = [];
   const seen = new Set<string>();
 
-  const cwd = options.cwd ?? (typeof proc?.cwd === "function" ? proc.cwd() : null);
-  const processCwd = typeof proc?.cwd === "function" ? proc.cwd() : null;
+  const liveCwd = typeof proc?.cwd === "function" ? proc.cwd() : null;
+  const cwd = options.cwd ?? liveCwd;
+  const processCwd = options.processCwd === undefined ? liveCwd : options.processCwd;
   for (const rootCwd of [cwd, processCwd]) {
-    if (!isPlausibleRepoRoot(rootCwd)) continue;
-    // Prefer the active lane worktree before inherited app roots.
-    addPath(roots, seen, joinPath(rootCwd, "apps", "desktop", "resources", "agent-skills"));
-    addPath(roots, seen, joinPath(rootCwd, "resources", "agent-skills"));
+    addBundledSkillRootsForBase(roots, seen, rootCwd);
   }
 
   for (const root of splitAdeAgentSkillRoots(env[ADE_AGENT_SKILLS_DIRS_ENV])) addPath(roots, seen, root);
@@ -175,12 +176,27 @@ export function getAgentSkillRootCandidates(options: {
   return roots;
 }
 
+/**
+ * The prompt- and env-facing slice of the bundled skill roots.
+ *
+ * `exists` is optional because this module is also bundled into the renderer,
+ * which has no filesystem. Every Node caller must pass one: the list is capped,
+ * so without the filter a root that does not exist on disk takes a slot from a
+ * root that does, and the agent is told to read a path it cannot open. The
+ * filter runs before the cap for exactly that reason.
+ */
 export function getAdeAgentSkillRootsForPrompt(options: {
   env?: NodeJS.ProcessEnv;
   resourcesPath?: string | null;
   cwd?: string | null;
+  processCwd?: string | null;
+  dirname?: string | null;
+  includeDeepSourceFallbacks?: boolean;
+  exists?: (candidate: string) => boolean;
 } = {}): string[] {
-  return getAdeAgentSkillRootCandidates(options).slice(0, promptAgentSkillRootLimit);
+  const candidates = getAdeAgentSkillRootCandidates(options);
+  const usable = options.exists ? candidates.filter((root) => options.exists?.(root)) : candidates;
+  return usable.slice(0, promptAgentSkillRootLimit);
 }
 
 export function formatAdeAgentSkillRootsForPrompt(roots: readonly string[]): string {

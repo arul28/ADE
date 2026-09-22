@@ -51,20 +51,20 @@ describe("Codex dynamic tool deferral", () => {
     // Named anchors, so a pack rename cannot make the loop vacuously true.
     expect(byName.get("spawnChat")!.deferLoading).toBe(false);
     expect(byName.get("loadCtoTools")!.deferLoading).toBe(false);
-    expect(byName.get("startReviewRun")!.deferLoading).toBe(true);
+    expect(byName.get("searchProject")!.deferLoading).toBe(true);
     expect(byName.get("getUsageStats")!.deferLoading).toBe(true);
   });
 
   it("stops deferring a pack once it has been loaded", () => {
     const tools = ctoTools();
-    const loaded = new Set<CtoToolPack>(["review"]);
+    const loaded = new Set<CtoToolPack>(["search"]);
     const specs = buildCodexDynamicToolSpecs(
       tools,
       "ade_cto",
       (_name, definition) => codexDeferCtoTool(definition, loaded),
     );
     const byName = new Map(specs.map((spec) => [spec.name, spec]));
-    expect(byName.get("startReviewRun")!.deferLoading).toBe(false);
+    expect(byName.get("searchProject")!.deferLoading).toBe(false);
     expect(byName.get("getUsageStats")!.deferLoading).toBe(true);
   });
 

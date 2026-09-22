@@ -83,7 +83,7 @@ describe("TabNav", () => {
 
     expect(screen.getByRole("link", { name: "Chats" }).getAttribute("data-active")).toBe("true");
     expect(screen.getByRole("link", { name: "Work" }).getAttribute("aria-disabled")).toBe("true");
-    expect(screen.getByRole("link", { name: "Review" }).getAttribute("aria-disabled")).toBe("true");
+    expect(screen.getByRole("link", { name: "PRs" }).getAttribute("aria-disabled")).toBe("true");
   });
 
   it("places sidebar tooltips beside navigation rows", () => {

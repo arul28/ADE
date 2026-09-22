@@ -441,10 +441,19 @@ export function createSimHelperClient(options: SimHelperClientOptions): SimHelpe
     }
     const killTimer = setTimeout(() => {
       if (active.exitCode == null && active.signalCode == null) {
+        // The helper is spawned `detached`, so it leads its own process group
+        // and any children it forked inherit it. Signal the group; fall back to
+        // the leader if the group is already gone.
+        const pid = active.pid;
         try {
-          active.kill("SIGKILL");
+          if (pid != null) process.kill(-pid, "SIGKILL");
+          else active.kill("SIGKILL");
         } catch {
-          // Already reaped.
+          try {
+            active.kill("SIGKILL");
+          } catch {
+            // Already reaped.
+          }
         }
       }
     }, GRACEFUL_SHUTDOWN_MS);

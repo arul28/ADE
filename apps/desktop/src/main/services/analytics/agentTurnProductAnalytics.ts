@@ -138,6 +138,35 @@ export function captureClaudeHooksIgnoredAnalytics(args: {
   });
 }
 
+/**
+ * One coarse fact when the CLI reports it did not apply every plugin a query
+ * carried. The plugins are ADE's agent-skill roots, so a miss means the
+ * session silently lacks them. Identity only — no plugin names, paths, or
+ * counts. Dedupe per session with a one-hour minimum interval, the same shape
+ * as the hooks-ignored fact it sits beside.
+ */
+export function captureClaudePluginsIgnoredAnalytics(args: {
+  analytics: AgentTurnAnalytics;
+  projectId: string;
+  event: { sessionId: string };
+}): void {
+  args.analytics.captureInternal({
+    event: "ade_feature_used",
+    surface: "api",
+    projectId: args.projectId,
+    sessionId: args.event.sessionId,
+    dedupeKey: `chat_plugins_ignored:${args.event.sessionId}`,
+    minimumIntervalMs: 60 * 60_000,
+    properties: {
+      feature: "chat",
+      action: "plugins_ignored",
+      outcome: "failed",
+      provider: "claude",
+      source: "runtime",
+    },
+  });
+}
+
 export function captureAgentTurnSettledAnalytics(args: {
   analytics: AgentTurnAnalytics;
   projectId: string;

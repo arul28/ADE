@@ -20,10 +20,13 @@ describe("queued steer action styles", () => {
     const insideHoverMedia = (selector: string) => {
       const start = css.indexOf(selector);
       expect(start).toBeGreaterThanOrEqual(0);
-      const opener = css.lastIndexOf("@media (hover:hover)", start);
+      // Tailwind nests the media query INSIDE the utility rule
+      // (`.sel { @media (hover:hover) { … } }`), so the opener follows the
+      // selector; walk forward to it and confirm the rule is still open.
+      const opener = css.indexOf("@media (hover:hover)", start);
       if (opener < 0) return false;
       let depth = 0;
-      for (const ch of css.slice(opener, start)) {
+      for (const ch of css.slice(start, opener)) {
         if (ch === "{") depth += 1;
         else if (ch === "}") depth -= 1;
       }

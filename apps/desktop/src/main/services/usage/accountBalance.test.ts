@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ProviderInstance } from "../../../shared/types/providerInstances";
 import type { UsageAccount, UsageWindow } from "../../../shared/types/usage";
-import { pickInstanceForNewChat } from "./accountBalance";
+import { pickAlternateInstanceForLimitedChat, pickInstanceForNewChat } from "./accountBalance";
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const WEEK_START = Date.parse("2026-09-14T00:00:00.000Z");
@@ -131,5 +131,95 @@ describe("pickInstanceForNewChat", () => {
     });
 
     expect(result).toEqual({ instanceId: "claude", reason: "no usage data" });
+  });
+});
+
+describe("pickAlternateInstanceForLimitedChat", () => {
+  const base = {
+    provider: "claude" as const,
+    instances: [instance("claude"), instance("work", { label: "Work" })],
+    accounts: accounts("claude", "work"),
+    nowMs: WEEK_START,
+  };
+
+  it("picks the other signed-in account that still has room", () => {
+    expect(pickAlternateInstanceForLimitedChat({
+      ...base,
+      currentInstanceId: "claude",
+      windowsByAccountId: windowsFor({
+        claude: { fiveHour: 10, weekly: 10 },
+        work: { fiveHour: 40, weekly: 20 },
+      }),
+    })).toEqual({
+      instanceId: "work",
+      label: "Work",
+      reason: "weighted headroom",
+    });
+  });
+
+  it("ignores the blocked account even when its snapshot still looks freer", () => {
+    expect(pickAlternateInstanceForLimitedChat({
+      ...base,
+      currentInstanceId: "work",
+      windowsByAccountId: windowsFor({
+        claude: { fiveHour: 90, weekly: 90 },
+        work: { fiveHour: 5, weekly: 5 },
+      }),
+    })?.instanceId).toBe("claude");
+  });
+
+  it("returns null when the other account has no windows", () => {
+    expect(pickAlternateInstanceForLimitedChat({
+      ...base,
+      currentInstanceId: "claude",
+      windowsByAccountId: windowsFor({ claude: { fiveHour: 20, weekly: 10 } }),
+    })).toBeNull();
+  });
+
+  it("returns null when a window on the other account is already full", () => {
+    expect(pickAlternateInstanceForLimitedChat({
+      ...base,
+      currentInstanceId: "claude",
+      windowsByAccountId: windowsFor({
+        claude: { fiveHour: 100, weekly: 10 },
+        work: { fiveHour: 100, weekly: 10 },
+      }),
+    })).toBeNull();
+    expect(pickAlternateInstanceForLimitedChat({
+      ...base,
+      currentInstanceId: "claude",
+      windowsByAccountId: windowsFor({
+        claude: { fiveHour: 10, weekly: 100 },
+        work: { fiveHour: 10, weekly: 100 },
+      }),
+    })).toBeNull();
+  });
+
+  it("offers a complete account when the higher partial score has a missing window", () => {
+    const windows = windowsFor({
+      claude: { fiveHour: 100, weekly: 10 },
+      personal: { fiveHour: 20, weekly: 20 },
+    });
+    const weeklyOnly = usageWindow("work", "weekly", 10, WEEK_START + WEEK_MS);
+    windows.set(weeklyOnly[0], weeklyOnly[1]);
+    expect(pickAlternateInstanceForLimitedChat({
+      ...base,
+      instances: [instance("claude"), instance("work", { label: "Work" }), instance("personal", { label: "Personal" })],
+      accounts: accounts("claude", "work", "personal"),
+      currentInstanceId: "claude",
+      windowsByAccountId: windows,
+    })?.instanceId).toBe("personal");
+  });
+
+  it("returns null when the only other account is signed out", () => {
+    expect(pickAlternateInstanceForLimitedChat({
+      ...base,
+      instances: [instance("claude"), instance("work", { signedIn: false, label: "Work" })],
+      currentInstanceId: "claude",
+      windowsByAccountId: windowsFor({
+        claude: { fiveHour: 100, weekly: 10 },
+        work: { fiveHour: 10, weekly: 10 },
+      }),
+    })).toBeNull();
   });
 });

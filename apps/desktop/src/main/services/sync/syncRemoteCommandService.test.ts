@@ -343,6 +343,9 @@ const CTO_MEMORY_SNAPSHOT = {
   dailyLog: "# 2026-07-04\n\n09:00 — do a thing → done",
   dailyLogDate: "2026-07-04",
   updatedAt: "2026-07-04T09:00:00.000Z",
+  projectBrief: null,
+  projectThreads: null,
+  projectItems: null,
 };
 
 describe("createSyncRemoteCommandService", () => {
@@ -2385,13 +2388,13 @@ describe("createSyncRemoteCommandService", () => {
       }));
 
       const call = ptyService.create.mock.calls.at(-1)?.[0];
-      expect(call?.args).toEqual(expect.arrayContaining(["--model", "claude-opus-4-8"]));
+      expect(call?.args).toEqual(expect.arrayContaining(["--model", "claude-opus-5"]));
       // The model is a flag ADE controls and always rides argv. The prompt is
       // user text, and on Windows it must not: cmd.exe expands `%VAR%`,
       // flattens newlines, and fails outright past 8191 characters. It goes
       // over the PTY as `initialInput` instead, which the launch still owns —
       // hence no separate write from this service on either platform.
-      expect(call?.startupCommand).toContain("claude-opus-4-8");
+      expect(call?.startupCommand).toContain("claude-opus-5");
       if (process.platform === "win32") {
         expect(call?.args?.at(-1)).not.toContain("hello?");
         expect(call?.startupCommand ?? "").not.toContain("hello?");

@@ -336,6 +336,79 @@ struct CtoSettingsScreen: View {
   }
 }
 
+private enum CtoMemoryLayout {
+  struct BriefField: Identifiable {
+    let label: String
+    let value: String
+    var id: String { label }
+  }
+
+  struct Fact: Identifiable {
+    let status: String
+    let text: String
+    var id: String { "\(status):\(text)" }
+  }
+
+  struct DirectedThread: Identifiable {
+    let title: String
+    let lane: String
+    let chat: String
+    let objective: String
+    var id: String { "\(chat):\(title)" }
+  }
+
+  private static let briefLabels = ["Goal", "Done when", "Constraints", "Conventions", "Open loops"]
+
+  static func parseBrief(_ text: String) -> [BriefField]? {
+    var fields: [BriefField] = []
+    for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
+      let line = raw.trimmingCharacters(in: .whitespaces)
+      if line.isEmpty { continue }
+      guard let range = line.range(of: ": ") else { return nil }
+      let label = String(line[..<range.lowerBound])
+      let value = String(line[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+      guard briefLabels.contains(label), !value.isEmpty else { return nil }
+      fields.append(BriefField(label: label, value: value))
+    }
+    return fields.isEmpty ? nil : fields
+  }
+
+  static func parseFacts(_ text: String) -> [Fact]? {
+    var facts: [Fact] = []
+    for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
+      let line = raw.trimmingCharacters(in: .whitespaces)
+      if line.isEmpty { continue }
+      guard line.hasPrefix("- ("), let close = line.range(of: ") ") else { return nil }
+      let statusStart = line.index(line.startIndex, offsetBy: 3)
+      let status = String(line[statusStart..<close.lowerBound])
+      guard ["pinned", "active", "archived"].contains(status) else { return nil }
+      let body = String(line[close.upperBound...])
+      guard !body.isEmpty else { return nil }
+      facts.append(Fact(status: status, text: body))
+    }
+    return facts.isEmpty ? nil : facts
+  }
+
+  static func parseThreads(_ text: String) -> [DirectedThread]? {
+    var rows: [DirectedThread] = []
+    for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
+      let line = raw.trimmingCharacters(in: .whitespaces)
+      if line.isEmpty { continue }
+      let body = line.hasPrefix("- ") ? String(line.dropFirst(2)) : line
+      let parts = body.components(separatedBy: " · ")
+      guard parts.count >= 3, parts[1].hasPrefix("lane "), parts[2].hasPrefix("chat ") else { return nil }
+      let objective = parts.count > 3 ? parts.dropFirst(3).joined(separator: " · ") : ""
+      rows.append(DirectedThread(
+        title: parts[0],
+        lane: String(parts[1].dropFirst("lane ".count)),
+        chat: String(parts[2].dropFirst("chat ".count)),
+        objective: objective
+      ))
+    }
+    return rows.isEmpty ? nil : rows
+  }
+}
+
 // MARK: - Memory card
 
 /// Renders the CTO's durable memory and rolling thread state as scrollable
@@ -361,6 +434,27 @@ private struct CtoMemoryCard: View {
         if !trimmedMemory.isEmpty {
           memoryBlock(title: "Durable facts", body: trimmedMemory)
         }
+        if let brief = memory.projectBrief?.trimmingCharacters(in: .whitespacesAndNewlines), !brief.isEmpty {
+          if let fields = CtoMemoryLayout.parseBrief(brief) {
+            briefFields(fields)
+          } else {
+            memoryBlock(title: "Project brief", body: brief)
+          }
+        }
+        if let items = memory.projectItems?.trimmingCharacters(in: .whitespacesAndNewlines), !items.isEmpty {
+          if let facts = CtoMemoryLayout.parseFacts(items) {
+            factRows(facts)
+          } else {
+            memoryBlock(title: "Project memory", body: items)
+          }
+        }
+        if let threads = memory.projectThreads?.trimmingCharacters(in: .whitespacesAndNewlines), !threads.isEmpty {
+          if let directed = CtoMemoryLayout.parseThreads(threads) {
+            threadRows(directed)
+          } else {
+            memoryBlock(title: "Directed threads", body: threads)
+          }
+        }
         if !trimmedThread.isEmpty {
           memoryBlock(title: "Current thread", body: trimmedThread)
         }
@@ -377,6 +471,96 @@ private struct CtoMemoryCard: View {
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .adeListCard()
+  }
+
+  private func briefFields(_ fields: [CtoMemoryLayout.BriefField]) -> some View {
+    let goal = fields.first { $0.label == "Goal" }
+    let rest = fields.filter { $0.label != "Goal" }
+    return VStack(alignment: .leading, spacing: 8) {
+      Text("PROJECT BRIEF")
+        .font(.caption2.weight(.semibold))
+        .tracking(0.4)
+        .foregroundStyle(ADEColor.textMuted)
+      if let goal {
+        VStack(alignment: .leading, spacing: 4) {
+          Text("Goal")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(ADEColor.textMuted)
+          Text(goal.value)
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(ADEColor.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      }
+      if !rest.isEmpty {
+        VStack(alignment: .leading, spacing: 8) {
+          ForEach(rest) { field in
+            VStack(alignment: .leading, spacing: 2) {
+              Text(field.label)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(ADEColor.textMuted)
+              Text(field.value)
+                .font(.system(size: 13))
+                .foregroundStyle(ADEColor.textSecondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(10)
+            .background(ADEColor.recessedBackground.opacity(0.78), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+          }
+        }
+      }
+    }
+  }
+
+  private func factRows(_ facts: [CtoMemoryLayout.Fact]) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text("WHAT THE CTO KNOWS")
+        .font(.caption2.weight(.semibold))
+        .tracking(0.4)
+        .foregroundStyle(ADEColor.textMuted)
+      ForEach(facts) { fact in
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+          Text(fact.status.capitalized)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(fact.status == "pinned" ? ADEColor.accent : ADEColor.textMuted)
+          Text(fact.text)
+            .font(.system(size: 13))
+            .foregroundStyle(ADEColor.textPrimary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(10)
+        .background(ADEColor.recessedBackground.opacity(0.78), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+      }
+    }
+  }
+
+  private func threadRows(_ threads: [CtoMemoryLayout.DirectedThread]) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text("DIRECTED THREADS")
+        .font(.caption2.weight(.semibold))
+        .tracking(0.4)
+        .foregroundStyle(ADEColor.textMuted)
+      ForEach(threads) { thread in
+        VStack(alignment: .leading, spacing: 3) {
+          Text(thread.title)
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+          if !thread.objective.isEmpty {
+            Text(thread.objective)
+              .font(.system(size: 13))
+              .foregroundStyle(ADEColor.textSecondary)
+          }
+          Text("Lane \(thread.lane) · Chat \(thread.chat)")
+            .font(.caption)
+            .foregroundStyle(ADEColor.textMuted)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(ADEColor.recessedBackground.opacity(0.78), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+      }
+    }
   }
 
   private func memoryBlock(title: String, body: String) -> some View {

@@ -284,7 +284,7 @@ shape, fps, and bitrate with `url` and `token` null; only `stream-start`
 returns those.
 
 A viewer that is not visible stops its stream. A stall of ~3s shows
-Reconnect. First frame timeout is 8s.
+Reconnect. First frame timeout is 5s.
 
 ## Semantic actions
 

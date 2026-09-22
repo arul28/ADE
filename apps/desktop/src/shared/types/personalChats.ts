@@ -23,6 +23,7 @@ import type {
   AgentChatResolveUnprocessedMessageResult,
   AgentChatRespondToInputArgs,
   AgentChatResumeUsageLimitNowArgs,
+  AgentChatContinueUsageLimitOnAlternateArgs,
   AgentChatSendArgs,
   AgentChatSession,
   AgentChatSessionSummary,
@@ -58,6 +59,7 @@ export const PERSONAL_CHAT_ACTIONS = [
   "cancelScheduledWork",
   "setScheduledWorkPaused",
   "resumeUsageLimitNow",
+  "continueUsageLimitOnAlternate",
   "updateSession",
   "archive",
   "unarchive",
@@ -89,9 +91,11 @@ export function isPersonalChatActionQueueable(action: PersonalChatAction): boole
 export function isPersonalChatActionViewerAllowed(action: PersonalChatAction): boolean {
   // Cancellation and pause/resume are explicit recovery affordances for
   // paired viewers. Creating new unattended work remains owner-only, and so
-  // does resuming a usage-limited chat now: it spends a provider turn against
-  // the owner's quota rather than merely cancelling something.
-  return action !== "createScheduledWork" && action !== "resumeUsageLimitNow";
+  // does spending a provider turn: resuming now, or continuing on another
+  // account, both use the owner's quota rather than merely cancelling something.
+  return action !== "createScheduledWork"
+    && action !== "resumeUsageLimitNow"
+    && action !== "continueUsageLimitOnAlternate";
 }
 
 /**
@@ -137,6 +141,7 @@ export type PersonalChatCallArgs =
   | { action: "cancelScheduledWork"; args: AgentChatCancelScheduledWorkArgs }
   | { action: "setScheduledWorkPaused"; args: AgentChatSetScheduledWorkPausedArgs }
   | { action: "resumeUsageLimitNow"; args: AgentChatResumeUsageLimitNowArgs }
+  | { action: "continueUsageLimitOnAlternate"; args: AgentChatContinueUsageLimitOnAlternateArgs }
   | { action: "updateSession"; args: AgentChatUpdateSessionArgs }
   | { action: "archive" | "unarchive" | "delete"; args: { sessionId: string } }
   | { action: "models"; args?: { provider?: string } }

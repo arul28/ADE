@@ -802,16 +802,16 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.startupCommand).not.toContain("stream-json");
     });
 
-    it("passes an optional Claude Code model alias for fresh launches", () => {
+    it("forwards a retired Claude Opus 4.8 alias to Opus 5 for fresh launches", () => {
       const launch = buildTrackedCliLaunchCommand({
         provider: "claude",
         permissionMode: "default",
         sessionId: "00000000-0000-0000-0000-000000000001",
         model: "anthropic/claude-opus-4-8",
       });
-      expect(launch.args).toEqual(expect.arrayContaining(["--model", "claude-opus-4-8"]));
+      expect(launch.args).toEqual(expect.arrayContaining(["--model", "claude-opus-5"]));
       expect(launch.startupCommand).toContain("--model");
-      expect(launch.startupCommand).toContain("claude-opus-4-8");
+      expect(launch.startupCommand).toContain("claude-opus-5");
     });
 
     it("launches Claude Opus 5 with its supported effort and fast-mode settings", () => {
@@ -1695,7 +1695,7 @@ describe("tracked CLI resume helpers", () => {
       targetId: "claude-session-1",
       launch: { permissionMode: "default", model: "anthropic/claude-opus-4-8", fastMode: true },
     })).toBe(
-      "claude --permission-mode default --model claude-opus-4-8 --settings \"{\\\"fastMode\\\":true}\" --resume claude-session-1",
+      "claude --permission-mode default --model claude-opus-5 --settings \"{\\\"fastMode\\\":true}\" --resume claude-session-1",
     );
 
     expect(buildTrackedCliResumeCommand({
@@ -1704,7 +1704,7 @@ describe("tracked CLI resume helpers", () => {
       targetId: "claude-session-1",
       launch: { permissionMode: "default", model: "anthropic/claude-opus-4-8", fastMode: false },
     })).toBe(
-      "claude --permission-mode default --model claude-opus-4-8 --settings \"{\\\"fastMode\\\":false}\" --resume claude-session-1",
+      "claude --permission-mode default --model claude-opus-5 --settings \"{\\\"fastMode\\\":false}\" --resume claude-session-1",
     );
 
     expect(buildTrackedCliResumeCommand({

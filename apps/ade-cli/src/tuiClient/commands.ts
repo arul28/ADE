@@ -100,6 +100,8 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   // `/chat rename` pair.
   { name: "/resume-now", description: "Send the usage-limit continue prompt now instead of waiting for the reset", placement: "right", category: "Chats" },
   { name: "/chat resume-now", description: "Send the usage-limit continue prompt now instead of waiting for the reset", placement: "right", category: "Chats" },
+  { name: "/continue-on-account", description: "Continue a usage-limited chat on another account that still has room", placement: "right", category: "Chats" },
+  { name: "/chat continue-on-account", description: "Continue a usage-limited chat on another account that still has room", placement: "right", category: "Chats" },
   { name: "/chat auto-resume", description: "Turn this chat's usage-limit auto-resume on or off", placement: "right", argumentHint: "[on|off]", category: "Chats" },
   { name: "/chat ask", description: "Escalate a blocking question from the active session", placement: "right", argumentHint: "<question>", category: "Chats" },
   { name: "/chat note", description: "Update the active session status line", placement: "right", argumentHint: "[note]", category: "Chats" },

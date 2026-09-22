@@ -1146,6 +1146,7 @@ vi.mock("./droidSdkPool", () => ({
 import {
   buildOpenCodeStreamMessages,
   buildComputerUseDirective,
+  computerUseDirectiveFingerprint,
   buildLinearSessionDirective,
   codexServerSupportsForkBeforeTurn,
   parseCodexServerVersion,
@@ -1189,6 +1190,7 @@ import {
 } from "../../../shared/modelRegistry";
 import { CLAUDE_MUTATING_BUILTIN_TOOLS } from "../../../shared/permissionPolicy";
 import { CLAUDE_READ_ONLY_TOOLS } from "./claudeToolGate";
+import { SessionTurnAbandonedError } from "./sessionTurnLimits";
 import { HOST_TOOL_APPROVAL_NAMES } from "../../../shared/__fixtures__/hostToolApprovalNames";
 
 /**
@@ -2183,6 +2185,42 @@ function writePersistedChatState(sessionId: string, nextState: Record<string, un
   );
 }
 
+/**
+ * The setup every Claude approval test shares: one session whose stream never
+ * yields, so the only state writes are the host's own. Returning `canUseTool`
+ * (rather than raising a card here) lets each test drive its own asks.
+ */
+async function openClaudeApprovalHarness(sdkSessionId: string) {
+  const events: AgentChatEventEnvelope[] = [];
+  vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+    send: vi.fn().mockResolvedValue(undefined),
+    stream: vi.fn(async function* () { return; }),
+    close: vi.fn(),
+    sessionId: sdkSessionId,
+    setPermissionMode: vi.fn().mockResolvedValue(undefined),
+  } as any);
+
+  const { service } = createService({
+    onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+  });
+  const session = await service.createSession({
+    laneId: "lane-1",
+    provider: "claude",
+    model: "sonnet",
+  });
+  await vi.waitFor(() => { expect(claudeSdkCreateSessionCompat).toHaveBeenCalled(); });
+
+  const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
+    canUseTool?: (
+      tool: string,
+      input: Record<string, unknown>,
+      options: Record<string, unknown>,
+    ) => Promise<Record<string, unknown>>;
+  } | undefined;
+
+  return { service, session, events, opts };
+}
+
 async function waitForEvent<T extends AgentChatEventEnvelope>(
   events: AgentChatEventEnvelope[],
   predicate: (event: AgentChatEventEnvelope) => event is T,
@@ -2377,6 +2415,14 @@ function claudeInputText(message: unknown): string {
         ? String((block as { text: string }).text)
         : "")
     .join("");
+}
+
+async function settleDirectiveBookkeeping(): Promise<void> {
+  // `runSessionTurn`'s collector resolves on the turn's `done` event, which is
+  // emitted inside the provider run; the directive keys are marked when that run
+  // returns. A macrotask yield lets the run's promise chain finish so the next
+  // send sees the marked key. Not a wall-clock wait — nothing is being timed.
+  await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
 async function waitForSessionTitle(sessionService: ReturnType<typeof createMockSessionService>, sessionId: string, title: string): Promise<void> {
@@ -2632,8 +2678,20 @@ describe("buildComputerUseDirective", () => {
     expect(result).toBeNull();
   });
 
-  it("returns a directive when backendStatus is null (unknown status)", () => {
-    const result = buildComputerUseDirective(null);
+  it("emits no directive when no artifact broker is attached", () => {
+    // `getBackendStatus()` is synchronous and never returns null, so a null
+    // status means the session has no artifact broker — no backends, no local
+    // fallback, no capability. This used to default `hasLocalFallback` to true
+    // and emit the full 2KB directive anyway, telling the agent it could
+    // capture proof on a session that could not. The broker attaches later in
+    // startup, and the fingerprint gate re-sends the directive at that point.
+    expect(buildComputerUseDirective(null)).toBeNull();
+  });
+
+  it("still describes the local fallback when it is the only capability", () => {
+    const result = buildComputerUseDirective(
+      makeBackendStatus({ ghostOs: false, agentBrowser: false, localFallback: true }),
+    );
     expect(result).not.toBeNull();
     expect(result).toContain("Computer Use");
     expect(result).toContain("get_computer_use_backend_status");
@@ -2642,6 +2700,21 @@ describe("buildComputerUseDirective", () => {
     expect(result).toContain("mcp__computer_use");
     expect(result).toContain("do not bootstrap `@oai/sky`");
     expect(result).toContain("does not passively ingest");
+  });
+
+  it("gives one rendering one fingerprint, and a changed capability set a new one", () => {
+    const localOnly = buildComputerUseDirective(
+      makeBackendStatus({ ghostOs: false, agentBrowser: false, localFallback: true }),
+    );
+    const withGhostOs = buildComputerUseDirective(makeBackendStatus({ ghostOs: true }));
+    expect(localOnly).not.toBeNull();
+    expect(withGhostOs).not.toBeNull();
+    expect(computerUseDirectiveFingerprint(localOnly!)).toBe(
+      computerUseDirectiveFingerprint(localOnly!),
+    );
+    expect(computerUseDirectiveFingerprint(localOnly!)).not.toBe(
+      computerUseDirectiveFingerprint(withGhostOs!),
+    );
   });
 
   it("includes Ghost OS section when Ghost OS backend is available", () => {
@@ -3091,6 +3164,95 @@ describe("createAgentChatService", () => {
   });
 
   // --------------------------------------------------------------------------
+  // computer-use directive cadence
+  // --------------------------------------------------------------------------
+
+  describe("computer-use directive cadence", () => {
+    const availableBackendStatus = {
+      backends: [{
+        name: "agent-browser",
+        available: true,
+        state: "installed",
+        detail: "installed",
+        supportedKinds: ["screenshot"],
+      }],
+      localFallback: { available: false },
+    };
+
+    function installAvailableBroker(service: ReturnType<typeof createService>["service"]): void {
+      service.setComputerUseArtifactBrokerService({
+        getBackendStatus: vi.fn(() => availableBackendStatus),
+        listArtifacts: vi.fn(() => []),
+        ingest: vi.fn(),
+      } as any);
+    }
+
+    it("delivers the directive once, then suppresses it while the capability set holds", async () => {
+      // The gate is a fingerprint of the rendered directive, and it is marked at
+      // the dispatch commitment point — not in `prepareSendMessage` and not in
+      // the local `/fast` handler. This is the regression guard for the bug
+      // where the key was written only by `/fast`: a normal send never marked
+      // it (so the directive rode every turn, the exact cost this gate exists to
+      // remove) and a `/fast` first message suppressed it for the whole session.
+      const fixture = installClaudeResponseFixture({ sdkSessionId: "sdk-cu-cadence", responseText: "ok" });
+      const { service } = createService();
+      installAvailableBroker(service);
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+
+      await service.runSessionTurn({ sessionId: session.id, text: "first" });
+      await settleDirectiveBookkeeping();
+      await service.runSessionTurn({ sessionId: session.id, text: "second" });
+
+      const prompts = fixture.send.mock.calls.map(([message]) => claudeInputText(message));
+      const carryingDirective = prompts.filter((text) => text.includes("## Computer Use"));
+      expect(carryingDirective).toHaveLength(1);
+      expect(prompts.at(-1) ?? "").not.toContain("## Computer Use");
+      service.forceDisposeAll();
+    });
+
+    it("does not let a local `/fast` suppress the directive for later real turns", async () => {
+      const fixture = installClaudeResponseFixture({ sdkSessionId: "sdk-cu-fast", responseText: "ok" });
+      const { service } = createService();
+      installAvailableBroker(service);
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+
+      // `/fast` is handled entirely locally: it never hands `promptText` — the
+      // carrier of the directive — to a provider, so it must not mark the key.
+      await service.sendMessage({ sessionId: session.id, text: "/fast on" });
+      await service.runSessionTurn({ sessionId: session.id, text: "real turn" });
+
+      const prompts = fixture.send.mock.calls.map(([message]) => claudeInputText(message));
+      expect(prompts.some((text) => text.includes("## Computer Use"))).toBe(true);
+      service.forceDisposeAll();
+    });
+
+    it("does not let a provider slash-command turn consume the directive", async () => {
+      // A provider slash-command turn replaces the user text with the command's
+      // own markdown and never runs `composeLaunchDirectives`, so the directive
+      // is not in that turn's prompt. The key must be null for it, or it would
+      // be marked delivered without delivery and suppressed for what follows.
+      const { service } = createService();
+      installAvailableBroker(service);
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "droid",
+        model: "custom:claude-sonnet-5-thinking-32000",
+        modelId: "droid/custom:claude-sonnet-5-thinking-32000",
+      });
+
+      await service.sendMessage({ sessionId: session.id, text: "/somecommand" }, { awaitDispatch: true });
+      await vi.waitFor(() => { expect(mockState.droidPromptCalls.length).toBe(1); });
+      await settleDirectiveBookkeeping();
+      await service.sendMessage({ sessionId: session.id, text: "real turn" }, { awaitDispatch: true });
+      await vi.waitFor(() => { expect(mockState.droidPromptCalls.length).toBe(2); });
+
+      expect(JSON.stringify(mockState.droidPromptCalls[0])).not.toContain("## Computer Use");
+      expect(JSON.stringify(mockState.droidPromptCalls[1])).toContain("## Computer Use");
+      service.forceDisposeAll();
+    });
+  });
+
+  // --------------------------------------------------------------------------
   // createSession
   // --------------------------------------------------------------------------
 
@@ -3502,7 +3664,7 @@ describe("createAgentChatService", () => {
       expect(session.model).toBe("claude-sonnet-5");
     });
 
-    it("maps retired Claude Opus 4.7 1M aliases onto Opus 4.8", async () => {
+    it("maps retired Claude Opus 4.7 1M aliases onto Opus 5", async () => {
       const { service } = createService();
       const session = await service.createSession({
         laneId: "lane-1",
@@ -3510,14 +3672,14 @@ describe("createAgentChatService", () => {
         model: "claude-opus-4-7[1m]",
       });
 
-      expect(session.modelId).toBe("anthropic/claude-opus-4-8");
-      expect(session.model).toBe("claude-opus-4-8");
+      expect(session.modelId).toBe("anthropic/claude-opus-5");
+      expect(session.model).toBe("claude-opus-5");
     });
 
     it.each([
-      { reportedModel: "opus", usageModel: "claude-opus-4-8", expectedModel: "claude-opus-4-8" },
-      { reportedModel: "claude-opus-4-7-1m", usageModel: "claude-opus-4-7-1m", expectedModel: "claude-opus-4-8" },
-    ])("preserves the Claude Opus 4.8 modelId in done events when the SDK reports $reportedModel", async ({
+      { reportedModel: "opus", usageModel: "claude-opus-4-8", expectedModel: "claude-opus-5" },
+      { reportedModel: "claude-opus-4-7-1m", usageModel: "claude-opus-4-7-1m", expectedModel: "claude-opus-5" },
+    ])("preserves the Claude Opus 5 modelId in done events when the SDK reports $reportedModel", async ({
       reportedModel,
       usageModel,
       expectedModel,
@@ -3593,10 +3755,10 @@ describe("createAgentChatService", () => {
       const doneEvent = events.filter((event) => event.event.type === "done").at(-1);
       expect(doneEvent?.event.type).toBe("done");
       expect((doneEvent!.event as any).model).toBe(expectedModel);
-      expect((doneEvent!.event as any).modelId).toBe("anthropic/claude-opus-4-8");
+      expect((doneEvent!.event as any).modelId).toBe("anthropic/claude-opus-5");
     });
 
-    it("maps retired Claude Opus 4.7 1M sessions onto Opus 4.8 even when the SDK reports bare Opus 4.7", async () => {
+    it("maps retired Claude Opus 4.7 1M sessions onto Opus 5 even when the SDK reports bare Opus 4.7", async () => {
       const events: AgentChatEventEnvelope[] = [];
       let streamCall = 0;
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
@@ -3667,8 +3829,8 @@ describe("createAgentChatService", () => {
 
       const doneEvent = events.filter((event) => event.event.type === "done").at(-1);
       expect(doneEvent?.event.type).toBe("done");
-      expect((doneEvent!.event as any).model).toBe("claude-opus-4-8");
-      expect((doneEvent!.event as any).modelId).toBe("anthropic/claude-opus-4-8");
+      expect((doneEvent!.event as any).model).toBe("claude-opus-5");
+      expect((doneEvent!.event as any).modelId).toBe("anthropic/claude-opus-5");
     });
 
     it("suppresses Claude EDE diagnostics without hiding real result errors", async () => {
@@ -4192,7 +4354,7 @@ describe("createAgentChatService", () => {
         fastMode: true,
       });
 
-      // Opus 4.8 also supports fast mode, so the toggle should survive the switch.
+      // Opus 5 also supports fast mode, so the toggle should survive the switch.
       await service.updateSession({
         sessionId: session.id,
         modelId: "anthropic/claude-opus-4-8",
@@ -5175,23 +5337,43 @@ describe("createAgentChatService", () => {
       );
     });
 
-    it("appends discovered project slash commands to the Claude system prompt", async () => {
+    it("appends only the slash commands and skills Claude cannot discover itself", async () => {
+      // `.claude/` is Claude Code's own root and this session sets
+      // `settingSources: ["user","project","local"]`, so Claude already lists
+      // these two. Repeating them spent system-prompt budget to say what the
+      // model was about to be told anyway.
       const commandsDir = path.join(tmpRoot, ".claude", "commands");
       fs.mkdirSync(commandsDir, { recursive: true });
-      fs.writeFileSync(path.join(commandsDir, "audit.md"), [
+      fs.writeFileSync(path.join(commandsDir, "zz-native-cmd.md"), [
         "---",
-        "description: Audit recent work for bugs and gaps",
+        "description: Claude Code reads this command root itself",
         "---",
         "",
         "Audit the recent changes.",
         "",
       ].join("\n"));
-      fs.writeFileSync(path.join(commandsDir, "ship-lane.md"), [
+      const claudeSkillDir = path.join(tmpRoot, ".claude", "skills", "native-only");
+      fs.mkdirSync(claudeSkillDir, { recursive: true });
+      fs.writeFileSync(path.join(claudeSkillDir, "SKILL.md"), [
         "---",
-        "description: Drive a lane through CI + review",
+        "name: native-only",
+        "description: Claude Code finds this one without ADE",
         "---",
         "",
-        "Ship the active lane.",
+        "Body.",
+        "",
+      ].join("\n"));
+      // `.agents/` is NOT a Claude-native root — verified against the shipped
+      // binary — so this one only reaches the model because ADE lists it.
+      const agentsSkillDir = path.join(tmpRoot, ".agents", "skills", "ade-injected-only");
+      fs.mkdirSync(agentsSkillDir, { recursive: true });
+      fs.writeFileSync(path.join(agentsSkillDir, "SKILL.md"), [
+        "---",
+        "name: ade-injected-only",
+        "description: Only ADE can tell Claude about this one",
+        "---",
+        "",
+        "Body.",
         "",
       ].join("\n"));
 
@@ -5216,10 +5398,47 @@ describe("createAgentChatService", () => {
       });
 
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
-      expect(opts?.systemPrompt?.append).toContain("## Project slash commands");
-      expect(opts?.systemPrompt?.append).toContain("pre-expands the file's body");
-      expect(opts?.systemPrompt?.append).toContain("/audit — Audit recent work for bugs and gaps");
-      expect(opts?.systemPrompt?.append).toContain("/ship-lane — Drive a lane through CI + review");
+      const append = opts?.systemPrompt?.append ?? "";
+      expect(append).toContain("## Project slash commands");
+      expect(append).toContain("pre-expands the file's body");
+      expect(append).toContain("/ade-injected-only — Only ADE can tell Claude about this one");
+      expect(append).not.toContain("/zz-native-cmd");
+      expect(append).not.toContain("/native-only");
+    });
+
+    it("clips an over-long skill description instead of letting it set the prompt size", async () => {
+      const agentsSkillDir = path.join(tmpRoot, ".agents", "skills", "verbose-skill");
+      fs.mkdirSync(agentsSkillDir, { recursive: true });
+      fs.writeFileSync(path.join(agentsSkillDir, "SKILL.md"), [
+        "---",
+        "name: verbose-skill",
+        `description: ${"x".repeat(5000)}`,
+        "---",
+        "",
+        "Body.",
+        "",
+      ].join("\n"));
+
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn(),
+        stream: vi.fn(async function* () {
+          return;
+        }),
+        close: vi.fn(),
+        sessionId: "sdk-session-verbose-skill",
+      } as any);
+
+      const { service } = createService();
+      await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => {
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+      });
+
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
+      const append = opts?.systemPrompt?.append ?? "";
+      expect(append).toContain("/verbose-skill");
+      expect(append).not.toContain("x".repeat(2000));
+      expect(append).toContain("…");
     });
 
     it("lists bundled ADE skills when no lane command files exist", async () => {
@@ -5251,7 +5470,7 @@ describe("createAgentChatService", () => {
       expect(opts?.systemPrompt?.append).not.toContain("Commands (file-backed prompts):");
     });
 
-    it("caps discovered command listings in the injected Claude prompt", async () => {
+    it("does not re-list lane commands Claude Code reads for itself", async () => {
       const commandsDir = path.join(tmpRoot, ".claude", "commands");
       fs.mkdirSync(commandsDir, { recursive: true });
       for (let index = 0; index < 25; index += 1) {
@@ -5286,10 +5505,15 @@ describe("createAgentChatService", () => {
       });
 
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
-      expect(opts?.systemPrompt?.append).toContain("/cmd-00 — Command 0");
-      expect(opts?.systemPrompt?.append).toContain("/cmd-19 — Command 19");
-      expect(opts?.systemPrompt?.append).not.toContain("/cmd-24 — Command 24");
-      expect(opts?.systemPrompt?.append).toContain("5 more command(s) hidden to keep startup context lean");
+      const append = opts?.systemPrompt?.append ?? "";
+      // All 25 live in the lane's own `.claude/commands`, which Claude Code
+      // reads for itself, so none of them belongs in ADE's listing — the cap
+      // that used to hide five of them never had to run. The cap itself is
+      // covered directly in claudeSlashCommandDiscovery.test.ts.
+      expect(append).not.toContain("/cmd-00");
+      expect(append).not.toContain("/cmd-19");
+      expect(append).not.toContain("/cmd-24");
+      expect(append).not.toContain("more command(s) hidden to keep startup context lean");
     });
 
     it("does not attach ADE-owned tool definitions to Claude SDK sessions", async () => {
@@ -16004,7 +16228,7 @@ describe("createAgentChatService", () => {
       expect((row!.event as any).description).toBe("Fix flaky tests");
       expect((row!.event as any).spawnKind).toBe("subagent");
       expect((row!.event as any).model).toBe(child.model);
-      expect(child.model).toBe("claude-opus-5");
+      expect(child.model).toBe("claude-opus-5-5");
 
       expect(child.orchestrationParentSessionId).toBe(parent.id);
       expect(child.spawnKind).toBe("subagent");
@@ -18067,32 +18291,7 @@ describe("createAgentChatService", () => {
       // Without a `pending_input_resolved` per item the summary's restart
       // fallback keeps naming a card nothing can answer, and the row stays
       // stuck on "Needs you" with no way out.
-      const events: AgentChatEventEnvelope[] = [];
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send: vi.fn().mockResolvedValue(undefined),
-        stream: vi.fn(async function* () { return; }),
-        close: vi.fn(),
-        sessionId: "sdk-session-settle-receipts",
-        setPermissionMode: vi.fn().mockResolvedValue(undefined),
-      } as any);
-
-      const { service } = createService({
-        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-      });
-      await vi.waitFor(() => { expect(claudeSdkCreateSessionCompat).toHaveBeenCalled(); });
-
-      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
-        canUseTool?: (
-          tool: string,
-          input: Record<string, unknown>,
-          options: Record<string, unknown>,
-        ) => Promise<Record<string, unknown>>;
-      } | undefined;
+      const { service, session, events, opts } = await openClaudeApprovalHarness("sdk-session-settle-receipts");
       expect(opts?.canUseTool).toBeDefined();
 
       const firstWaiter = opts!.canUseTool!(
@@ -18123,6 +18322,264 @@ describe("createAgentChatService", () => {
       for (const itemId of raisedItemIds) {
         expect(resolvedItemIds.filter((candidate) => candidate === itemId)).toHaveLength(1);
       }
+    });
+
+    it("a suppressed always-allow rule drops the session option and never persists one", async () => {
+      // `suppressAlwaysAllowRule` says the rule this approval would write is
+      // broader than the ask itself. The card must not offer "Allow for
+      // Session", and a client that sends `accept_for_session` anyway — an
+      // older build, a scripted answer — must be downgraded to a one-shot
+      // allow, or the SDK's refusal is silently overridden by ADE.
+      const { service, session, events, opts } = await openClaudeApprovalHarness("sdk-session-suppress-always-allow");
+      expect(opts?.canUseTool).toBeDefined();
+
+      const raisedCards = () => events.filter((event) => event.event.type === "approval_request");
+      const suppressed = opts!.canUseTool!(
+        "Bash",
+        { command: "rm -rf ./build" },
+        {
+          signal: new AbortController().signal,
+          toolUseID: "tool-suppress-1",
+          suppressAlwaysAllowRule: true,
+          suggestions: [{ type: "addRules", rules: [{ toolName: "Bash" }] }],
+        },
+      );
+      const raised = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } => event.event.type === "approval_request",
+      );
+      const request = (raised.event.detail as { request: PendingInputRequest }).request;
+      expect(request.questions[0]?.options?.map((option) => option.value)).toEqual(["allow", "deny"]);
+
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: raised.event.itemId,
+        decision: "accept_for_session",
+      });
+      // No updatedPermissions, and no persisted override: the SDK's suggestions
+      // are not forwarded for an ask whose rule it suppressed.
+      await expect(suppressed).resolves.toEqual({ behavior: "allow" });
+
+      const second = opts!.canUseTool!(
+        "Bash",
+        { command: "echo still asking" },
+        { signal: new AbortController().signal, toolUseID: "tool-suppress-2" },
+      );
+      await waitForCondition(() => raisedCards().length >= 2, "a second approval card for the same tool");
+      const secondCard = raisedCards()[1]!.event as Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: secondCard.itemId,
+        decision: "decline",
+      });
+      await expect(second).resolves.toMatchObject({ behavior: "deny" });
+    });
+
+    it("does not let a session-wide override auto-answer a suppressed ask", async () => {
+      // The test above pins "a suppressed ask never persists a rule". This one
+      // pins the other direction: a rule persisted from an earlier ask —
+      // possibly restored from a previous app run — must not answer a
+      // suppressed ask either, or the SDK's refusal is defeated by state ADE
+      // kept for a different call. The override stays usable for ordinary asks.
+      const { service, session, events, opts } = await openClaudeApprovalHarness("sdk-session-suppress-vs-override");
+      const raisedCards = () => events.filter((event) => event.event.type === "approval_request");
+
+      const ordinary = opts!.canUseTool!(
+        "Bash",
+        { command: "ls" },
+        { signal: new AbortController().signal, toolUseID: "tool-override-1" },
+      );
+      const ordinaryCard = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } => event.event.type === "approval_request",
+      );
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: ordinaryCard.event.itemId,
+        decision: "accept_for_session",
+      });
+      await expect(ordinary).resolves.toMatchObject({ behavior: "allow" });
+
+      const suppressed = opts!.canUseTool!(
+        "Bash",
+        { command: "rm -rf ./build" },
+        {
+          signal: new AbortController().signal,
+          toolUseID: "tool-override-2",
+          suppressAlwaysAllowRule: true,
+        },
+      );
+      await waitForCondition(() => raisedCards().length >= 2, "a card for the suppressed ask despite the override");
+      const suppressedCard = raisedCards()[1]!.event as Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      expect((suppressedCard.detail as { request: PendingInputRequest }).request.questions[0]?.options?.map((option) => option.value)).toEqual(["allow", "deny"]);
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: suppressedCard.itemId,
+        decision: "accept",
+      });
+      await expect(suppressed).resolves.toMatchObject({ behavior: "allow" });
+
+      // The override itself survives: an ordinary ask for the same tool after
+      // the suppressed one is still answered from it, without a card.
+      await expect(
+        opts!.canUseTool!("Bash", { command: "pwd" }, { signal: new AbortController().signal, toolUseID: "tool-override-3" }),
+      ).resolves.toMatchObject({ behavior: "allow" });
+      expect(raisedCards()).toHaveLength(2);
+    });
+
+    it("persists a session-wide override before the next provider event", async () => {
+      // The resolution receipt is the only state write before the `canUseTool`
+      // continuation runs, and it cannot see the override the continuation
+      // adds. Without an explicit persist there, "Allow for Session" survives
+      // a crash only if the provider happens to emit another event first — the
+      // user's choice must not depend on that.
+      const { service, session, events, opts } = await openClaudeApprovalHarness("sdk-session-override-persist");
+
+      const persistedOverrides = (): string[] =>
+        (readPersistedChatState(session.id).approvalOverrides as string[] | undefined) ?? [];
+
+      const ask = opts!.canUseTool!(
+        "Bash",
+        { command: "ls" },
+        { signal: new AbortController().signal, toolUseID: "tool-persist-override-1" },
+      );
+      const card = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } => event.event.type === "approval_request",
+      );
+      expect(persistedOverrides()).toEqual([]);
+
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: card.event.itemId,
+        decision: "accept_for_session",
+      });
+      await expect(ask).resolves.toMatchObject({ behavior: "allow" });
+      // The override stores the normalized tool name, which is what the gate
+      // reads back on the next ask.
+      await waitFor(() => persistedOverrides().includes("bash"));
+      expect(persistedOverrides()).toContain("bash");
+    });
+
+    it("reads a question-card option answer as the approval decision", async () => {
+      // iOS renders an approval's options as chips and answers with `accept`
+      // plus the chosen value in `answers`. The host reads `decision`, so
+      // without this a chip labeled "Deny" would allow the tool — the exact
+      // opposite of what the user tapped.
+      const { service, session, events, opts } = await openClaudeApprovalHarness("sdk-session-option-answer");
+      const raisedCards = () => events.filter((event) => event.event.type === "approval_request");
+
+      const denied = opts!.canUseTool!(
+        "Bash",
+        { command: "rm -rf ./build" },
+        { signal: new AbortController().signal, toolUseID: "tool-option-answer-1" },
+      );
+      const deniedCard = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } => event.event.type === "approval_request",
+      );
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: deniedCard.event.itemId,
+        decision: "accept",
+        answers: { tool_decision: "deny" },
+      });
+      await expect(denied).resolves.toMatchObject({ behavior: "deny" });
+      // The durable receipt records the effective decision, not the raw
+      // `accept`, or the transcript disagrees with what the tool did.
+      const deniedReceipt = events.find((event) =>
+        event.event.type === "pending_input_resolved"
+        && (event.event as { itemId?: string }).itemId === deniedCard.event.itemId)?.event as
+        { resolution?: string } | undefined;
+      expect(deniedReceipt?.resolution).toBe("declined");
+
+      // A typed answer rides the same channel: iOS freeform-only submissions
+      // send `answers: nil` with the text in `responseText`.
+      const typedDeny = opts!.canUseTool!(
+        "Bash",
+        { command: "rm -rf ./build" },
+        { signal: new AbortController().signal, toolUseID: "tool-option-answer-typed" },
+      );
+      await waitForCondition(() => raisedCards().length >= 2, "a card for the typed answer");
+      const typedCard = raisedCards()[1]!.event as Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: typedCard.itemId,
+        decision: "accept",
+        responseText: "deny",
+      });
+      await expect(typedDeny).resolves.toMatchObject({ behavior: "deny" });
+      expect(raisedCards()).toHaveLength(2);
+
+      // The session-wide chip persists the same override the desktop button
+      // would: the next ask for the tool is answered without a card.
+      const sessionWide = opts!.canUseTool!(
+        "Bash",
+        { command: "echo still asking" },
+        { signal: new AbortController().signal, toolUseID: "tool-option-answer-2" },
+      );
+      await waitForCondition(() => raisedCards().length >= 3, "a third card for the session-wide chip");
+      const sessionWideCard = raisedCards()[2]!.event as Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: sessionWideCard.itemId,
+        decision: "accept",
+        answers: { tool_decision: "allow_session" },
+      });
+      await expect(sessionWide).resolves.toMatchObject({ behavior: "allow" });
+      await expect(
+        opts!.canUseTool!("Bash", { command: "pwd" }, { signal: new AbortController().signal, toolUseID: "tool-option-answer-3" }),
+      ).resolves.toMatchObject({ behavior: "allow" });
+      expect(raisedCards()).toHaveLength(3);
+    });
+
+    it("does not read an AskUserQuestion option named deny as an approval verdict", async () => {
+      // The approval mapping is guarded by pending kind: runtime.approvals also
+      // holds AskUserQuestion (kind "question"), whose option values are
+      // model-authored labels. Without the guard, an option a model happened to
+      // spell `deny` would deny the whole question and drop the user's answer.
+      const { service, session, events, opts } = await openClaudeApprovalHarness("sdk-session-question-deny-option");
+
+      const asked = opts!.canUseTool!(
+        "AskUserQuestion",
+        {
+          questions: [{
+            id: "q1",
+            question: "Which option?",
+            header: "Pick",
+            multiSelect: false,
+            options: [
+              { label: "deny", description: "an option the model named" },
+              { label: "keep", description: "the other" },
+            ],
+          }],
+        },
+        { signal: new AbortController().signal, toolUseID: "tool-question-deny-option" },
+      );
+      const askedCard = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } => event.event.type === "approval_request",
+      );
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: askedCard.event.itemId,
+        decision: "accept",
+        answers: { q1: "deny" },
+      });
+
+      const result = await asked;
+      expect(result).toMatchObject({ behavior: "allow" });
+      expect(result.updatedInput).toMatchObject({ answers: { "Which option?": "deny" } });
     });
 
     it("clears the attention markers once an input card settles", async () => {
@@ -24332,6 +24789,181 @@ describe("createAgentChatService", () => {
       );
 
       expect(service.hasActiveWorkloads()).toBe(false);
+    });
+
+    describe("runSessionTurn limits", () => {
+      const codexTurnStarts = (): number => mockState.codexRequestPayloads
+        .filter((payload) => payload.method === "turn/start").length;
+
+      /** Start a headless Codex turn that is busy running one command; `outcome()` is null while it waits. */
+      const startTurnRunningCommand = async (
+        service: any,
+        args: { sessionId: string; timeoutMs: number | null; idleTimeoutMs: number | null },
+      ) => {
+        const startsBefore = codexTurnStarts();
+        let outcome: string | null = null;
+        const turn = service.runSessionTurn({ ...args, text: "Wait on CI." });
+        turn.then(() => { outcome = "resolved"; }, (error: Error) => { outcome = error.message; });
+        await vi.waitFor(() => expect(codexTurnStarts()).toBeGreaterThan(startsBefore));
+        const turnId = `turn-${mockState.codexTurnCounter}`;
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "turn/started",
+          params: { turn: { id: turnId, status: "inProgress" } },
+        });
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "item/started",
+          params: {
+            turnId,
+            item: { id: "cmd-ci", type: "commandExecution", command: "gh run watch", cwd: "/tmp", status: "inProgress", commandActions: [] },
+          },
+        });
+        return { turnId, outcome: () => outcome };
+      };
+
+      it("stops a turn that goes quiet, but never while a command is still running", async () => {
+        const { service } = createService();
+        const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        try {
+          const { turnId, outcome } = await startTurnRunningCommand(service, {
+            sessionId: session.id,
+            timeoutMs: null,
+            idleTimeoutMs: 60_000,
+          });
+
+          // A 40-minute CI wait is one open command, not idleness.
+          await vi.advanceTimersByTimeAsync(40 * 60_000);
+          expect(outcome()).toBeNull();
+
+          mockState.emitCodexPayload({
+            jsonrpc: "2.0",
+            method: "item/completed",
+            params: {
+              turnId,
+              item: {
+                id: "cmd-ci",
+                type: "commandExecution",
+                command: "gh run watch",
+                cwd: "/tmp",
+                status: "completed",
+                aggregatedOutput: "ok",
+                exitCode: 0,
+                commandActions: [],
+              },
+            },
+          });
+          await vi.advanceTimersByTimeAsync(59_000);
+          expect(outcome()).toBeNull();
+
+          const interruptsBefore = mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/interrupt").length;
+          await vi.advanceTimersByTimeAsync(2_000);
+          expect(outcome()).toMatch(/Stopped after 1 min with no activity/);
+          await vi.waitFor(() => {
+            expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/interrupt").length)
+              .toBeGreaterThan(interruptsBefore);
+          });
+        } finally {
+          vi.useRealTimers();
+          service.forceDisposeAll();
+        }
+      });
+
+      it("counts provider retries as activity, so a retrying turn is not stopped as idle", async () => {
+        const { service } = createService();
+        const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        try {
+          const startsBefore = codexTurnStarts();
+          let outcome: string | null = null;
+          service.runSessionTurn({ sessionId: session.id, text: "Ship it.", timeoutMs: null, idleTimeoutMs: 60_000 })
+            .then(() => { outcome = "resolved"; }, (error: Error) => { outcome = error.message; });
+          await vi.waitFor(() => expect(codexTurnStarts()).toBeGreaterThan(startsBefore));
+          const turnId = `turn-${mockState.codexTurnCounter}`;
+          mockState.emitCodexPayload({
+            jsonrpc: "2.0",
+            method: "turn/started",
+            params: { turn: { id: turnId, status: "inProgress" } },
+          });
+
+          // Retry activity is live-only; every 40 s it must restart the 60 s watch.
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            await vi.advanceTimersByTimeAsync(40_000);
+            mockState.emitCodexPayload({
+              jsonrpc: "2.0",
+              method: "error",
+              params: { turnId, willRetry: true, error: { message: "Temporary upstream failure.", codexErrorInfo: "serverOverloaded" } },
+            });
+          }
+          await vi.advanceTimersByTimeAsync(40_000);
+          expect(outcome).toBeNull();
+
+          // A late retry from an earlier turn is not this turn's activity.
+          mockState.emitCodexPayload({
+            jsonrpc: "2.0",
+            method: "error",
+            params: { turnId: "turn-stale", willRetry: true, error: { message: "Temporary upstream failure.", codexErrorInfo: "serverOverloaded" } },
+          });
+          await vi.advanceTimersByTimeAsync(21_000);
+          expect(outcome).toMatch(/with no activity/);
+        } finally {
+          vi.useRealTimers();
+          service.forceDisposeAll();
+        }
+      });
+
+      it("applies no clock at all when the caller asks for none", async () => {
+        const { service } = createService();
+        const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        try {
+          const { turnId, outcome } = await startTurnRunningCommand(service, {
+            sessionId: session.id,
+            timeoutMs: null,
+            idleTimeoutMs: null,
+          });
+
+          // Well past the old 5-minute headless default and the old 20-minute rule cap.
+          await vi.advanceTimersByTimeAsync(90 * 60_000);
+          expect(outcome()).toBeNull();
+
+          mockState.emitCodexPayload({
+            jsonrpc: "2.0",
+            method: "turn/completed",
+            params: { turn: { id: turnId, status: "completed" } },
+          });
+          await vi.waitFor(() => expect(outcome()).toBe("resolved"));
+        } finally {
+          vi.useRealTimers();
+          service.forceDisposeAll();
+        }
+      });
+
+      it("releases a waiting turn when its chat session ends, as an abandoned turn", async () => {
+        const { service } = createService();
+        const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+        const startsBefore = codexTurnStarts();
+        const turn = service.runSessionTurn({ sessionId: session.id, text: "Long job.", timeoutMs: null });
+        const settled = turn.then(() => null, (error: unknown) => error);
+        await vi.waitFor(() => expect(codexTurnStarts()).toBeGreaterThan(startsBefore));
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "turn/started",
+          params: { turn: { id: `turn-${mockState.codexTurnCounter}`, status: "inProgress" } },
+        });
+
+        try {
+          await service.dispose({ sessionId: session.id });
+
+          // Without the release a caller with no clock (an automation) waits forever.
+          const error = await settled;
+          expect(error).toBeInstanceOf(SessionTurnAbandonedError);
+          expect((error as Error).message).toMatch(/ended before the turn finished/);
+        } finally {
+          service.forceDisposeAll();
+        }
+      });
     });
 
     describe("auto-resume after a provider usage limit resets", () => {
@@ -32838,6 +33470,110 @@ describe("createAgentChatService", () => {
       expect(summary?.permissionMode).toBe("full-auto");
     });
 
+    it("fences a mutating tool call in plan mode even when bypass sits underneath", async () => {
+      // A full-auto session that entered plan mode still has bypass as its
+      // access mode. The CLI handles most plan-mode enforcement itself, but a
+      // deferred mutating call reaches canUseTool — and a host that answers
+      // `allow` silently lifts the fence the session just raised. The fence is
+      // an allowlist, so a Windows shell and a mutating MCP tool are refused
+      // even though neither name matches the legacy mutating heuristic.
+      const events: AgentChatEventEnvelope[] = [];
+      let enterResult: Record<string, unknown> | undefined;
+      let writeResult: Record<string, unknown> | undefined;
+      let readResult: Record<string, unknown> | undefined;
+      let powershellResult: Record<string, unknown> | undefined;
+      let mcpDeleteResult: Record<string, unknown> | undefined;
+      let agentResult: Record<string, unknown> | undefined;
+      let streamCall = 0;
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-plan-fence",
+            slash_commands: [],
+          };
+          return;
+        }
+
+        const sessionOpts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as any;
+        const options = { signal: new AbortController().signal };
+        enterResult = await sessionOpts.canUseTool("EnterPlanMode", {}, {
+          ...options,
+          toolUseID: "tool-plan-fence-enter",
+        });
+        writeResult = await sessionOpts.canUseTool(
+          "Write",
+          { file_path: "src/app.ts", content: "x" },
+          { ...options, toolUseID: "tool-plan-fence-write" },
+        );
+        powershellResult = await sessionOpts.canUseTool(
+          "PowerShell",
+          { command: "Remove-Item -Recurse ./build" },
+          { ...options, toolUseID: "tool-plan-fence-powershell" },
+        );
+        mcpDeleteResult = await sessionOpts.canUseTool(
+          "mcp__filesystem__delete_file",
+          { path: "src/app.ts" },
+          {
+            ...options,
+            toolUseID: "tool-plan-fence-mcp",
+            mcpServer: { name: "filesystem", source: "user" },
+          },
+        );
+        agentResult = await sessionOpts.canUseTool(
+          "Agent",
+          { description: "explore", prompt: "find the entry point" },
+          { ...options, toolUseID: "tool-plan-fence-agent" },
+        );
+        readResult = await sessionOpts.canUseTool(
+          "Read",
+          { file_path: "src/app.ts" },
+          { ...options, toolUseID: "tool-plan-fence-read" },
+        );
+
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-plan-fence",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        modelId: "anthropic/claude-sonnet-5",
+        permissionMode: "full-auto",
+        claudePermissionMode: "bypassPermissions",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Plan, then try to write before exiting plan mode.",
+      });
+
+      expect(enterResult).toMatchObject({ behavior: "allow" });
+      expect(writeResult).toMatchObject({ behavior: "deny" });
+      expect(powershellResult).toMatchObject({ behavior: "deny" });
+      expect(mcpDeleteResult).toMatchObject({ behavior: "deny" });
+      // Subagent exploration is part of plan mode's own allowlist.
+      expect(agentResult).toMatchObject({ behavior: "allow" });
+      // Read-only built-ins stay usable: plan mode is inspect-only, not inert.
+      expect(readResult).toMatchObject({ behavior: "allow" });
+      const planned = await service.getSessionSummary(session.id);
+      expect(planned?.claudePermissionMode).toBe("plan");
+    });
+
     it("preserves Claude access overrides when entering and exiting plan mode", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
@@ -36745,10 +37481,42 @@ describe("createAgentChatService", () => {
       await service.sendMessage({ sessionId: session.id, text: "first" }, { awaitDispatch: true });
       await vi.waitFor(() => { expect(mockState.droidPromptCalls.length).toBe(1); });
       const first = JSON.stringify(mockState.droidPromptCalls[0]);
-      expect(first).toContain("ade chat note");
-      expect(first).toContain("ade chat ask");
+
+      // Droid's SDK takes no system prompt, so ADE prepends the whole harness
+      // prompt to every turn. That harness carries the shared ADE guidance —
+      // the note/ask mechanics included — which is why this asserts the harness
+      // was built for this turn rather than reading the block out of the
+      // payload: `buildCodingAgentSystemPrompt` is mocked to a sentinel here.
+      expect(vi.mocked(buildCodingAgentSystemPrompt)).toHaveBeenCalledWith(
+        expect.objectContaining({ runtime: "droid-sdk" }),
+      );
+      expect(first).toContain("system prompt");
+
+      // And the per-turn prefix must NOT carry a second copy. It used to, so
+      // every Droid turn paid for the ADE block twice.
+      expect(first.split("ade chat note").length - 1).toBeLessThanOrEqual(1);
       expect(first).not.toContain("Work board is derived");
       expect(first).not.toContain("Work-board column is derived");
+    });
+
+    it("still delivers the status mechanics per turn to a provider whose harness is not resent", async () => {
+      // Cursor has no persistent instruction channel AND no per-turn harness,
+      // so for it the lane guidance is the only delivery path — the Droid
+      // dedupe must not reach it.
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2.5",
+        modelId: "cursor/composer-2.5",
+      });
+
+      await service.sendMessage({ sessionId: session.id, text: "first" }, { awaitDispatch: true });
+      await vi.waitFor(() => { expect(mockState.cursorSdkSendCalls.length).toBeGreaterThan(0); });
+      const first = JSON.stringify(mockState.cursorSdkSendCalls[0]);
+      expect(first).toContain("ade chat note");
+      expect(first).toContain("ade chat ask");
     });
 
     it("keeps a durable marker for a plan card the user already answered", async () => {
@@ -45890,8 +46658,8 @@ describe("createAgentChatService", () => {
       );
       expect(doneEvents).toHaveLength(1);
       expect(interruptedDone.event).toMatchObject({
-        model: "claude-opus-4-8",
-        modelId: "anthropic/claude-opus-4-8",
+        model: "claude-opus-5",
+        modelId: "anthropic/claude-opus-5",
       });
       await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({ status: "active" });
       expect(close).toHaveBeenCalled();
@@ -48791,6 +49559,57 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
       "agent_chat.claude_hooks_ignored",
       expect.objectContaining({ sessionId: session.id }),
     );
+  });
+
+  it("warns and records the plugins-ignored fact when the CLI applies no plugin", async () => {
+    const initializationResult = vi.fn().mockResolvedValue({ hooks_applied: true, plugins_applied: false });
+    const onClaudePluginsIgnored = vi.fn();
+    const onClaudeHooksIgnored = vi.fn();
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+      ...makeDefaultClaudeSession(),
+      initializationResult,
+    });
+    const { service, logger } = createService({ onClaudePluginsIgnored, onClaudeHooksIgnored });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
+    });
+    await service.sendMessage({ sessionId: session.id, text: "hello" });
+    await vi.waitFor(() => {
+      expect(onClaudePluginsIgnored).toHaveBeenCalledWith({ sessionId: session.id });
+    });
+    expect(logger.warn).toHaveBeenCalledWith(
+      "agent_chat.claude_plugins_ignored",
+      expect.objectContaining({ sessionId: session.id }),
+    );
+    // Plugins and hooks are independent reports; a plugin miss must not be
+    // reported as a hooks miss.
+    expect(logger.warn).not.toHaveBeenCalledWith("agent_chat.claude_hooks_ignored", expect.anything());
+    expect(onClaudeHooksIgnored).not.toHaveBeenCalled();
+  });
+
+  it("logs why the CLI could not start when a result frame carries a startup failure", async () => {
+    const harness = await createClaudeStreamFixture({
+      sdkSessionId: "sdk-startup-failure",
+      messages: [
+        {
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          startup_failure_reason: "cwd_unavailable",
+          errors: ["cwd unavailable"],
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+      ],
+    });
+    await vi.waitFor(() => {
+      expect(harness.logger.warn).toHaveBeenCalledWith(
+        "agent_chat.claude_startup_failure",
+        expect.objectContaining({ reason: "cwd_unavailable" }),
+      );
+    });
   });
 
   it("lets natural compaction suppress the 97% fallback", async () => {
@@ -55652,6 +56471,31 @@ describe("host permission policy", () => {
     await expect(callTool(opts, "Bash", { command: "ls" }, "tool-bash-allowed-1"))
       .resolves.toEqual({ behavior: "allow", updatedInput: { command: "ls" } });
     expect(events.some((event) => event.event.type === "approval_request")).toBe(false);
+  });
+});
+
+describe("Claude query environment", () => {
+  it("opts the CLI into writing startup-failure results", async () => {
+    // `startup_failure_reason` is only written when the host sets this, so the
+    // log that reads it has no input without the opt-in. This is host query
+    // config, not policy: it rides every Claude session.
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(
+      claudeSdkSession("sdk-startup-failure-env") as any,
+    );
+    const { service } = createService();
+    await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "sonnet",
+      sessionProfile: "light",
+    } as never);
+    await vi.waitFor(() => {
+      expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+    });
+    const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as {
+      env?: Record<string, string>;
+    };
+    expect(opts.env).toMatchObject({ CLAUDE_CODE_STARTUP_FAILURE_RESULTS: "1" });
   });
 });
 

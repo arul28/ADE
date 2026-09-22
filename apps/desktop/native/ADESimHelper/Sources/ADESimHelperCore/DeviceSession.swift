@@ -21,6 +21,10 @@ public actor DeviceSession {
     private var server: FrameStreamServer?
     private var unsubscribeAVCC: (@Sendable () async -> Void)?
     private var parameterSets: AnnexB.ParameterSets?
+    /// The encoder bitrate the live stream asked for, in kbps, if any. Kept so
+    /// a forced-keyframe re-subscribe rebuilds the encoder with the same cap
+    /// rather than silently reverting to the default.
+    private var streamBitrateKbps: Int?
     private var recording: RecordingSession?
     /// True when capture exists only because a recording asked for it, so
     /// `record-stop` can put the device back the way it found it.
@@ -50,12 +54,13 @@ public actor DeviceSession {
         public let metrics: DeviceMetrics
     }
 
-    public func startCapture(fps: Int, scale: Double) async throws -> StartedCapture {
+    public func startCapture(fps: Int, scale: Double, bitrateKbps: Int? = nil) async throws -> StartedCapture {
         if let server, engine != nil {
             // Idempotent: a second `capture-start` for a live device returns the
             // endpoint it already has rather than orphaning a listener.
             return StartedCapture(url: server.url, token: server.token, metrics: metrics)
         }
+        streamBitrateKbps = bitrateKbps
 
         if let existing = engine {
             // Capture is running for a recording, with no stream server: the
@@ -107,9 +112,12 @@ public actor DeviceSession {
     }
 
     private func subscribe(engine: CaptureEngine, server: FrameStreamServer) async {
-        unsubscribeAVCC = await engine.addAVCCConsumer { [weak self] _, data, flags in
-            await self?.handleEncoded(data: data, flags: flags, server: server)
-        }
+        unsubscribeAVCC = await engine.addAVCCConsumer(
+            onFrame: { [weak self] _, data, flags in
+                await self?.handleEncoded(data: data, flags: flags, server: server)
+            },
+            bitrateKbps: streamBitrateKbps,
+        )
     }
 
     /// Re-subscribe to force a fresh IDR.
@@ -221,7 +229,7 @@ public actor DeviceSession {
         guard recording == nil else { throw SessionError.alreadyRecording }
 
         if engine == nil {
-            _ = try await startCapture(fps: fps, scale: 1)
+            _ = try await startCapture(fps: fps, scale: 1, bitrateKbps: nil)
             captureOwnedByRecording = true
         }
         guard let engine else { throw SessionError.notCapturing }

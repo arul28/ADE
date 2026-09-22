@@ -539,3 +539,36 @@ export function canonicalStatusBucket(phase: CanonicalSessionPhase): CanonicalSt
       return "ended";
   }
 }
+
+/**
+ * The Work board column a phase implies, before the snooze and PR overlays.
+ *
+ * This is NOT `canonicalStatusBucket` renamed, and the difference is the whole
+ * point. The `awaiting-input` bucket holds three phases — `needs_you`, `ready`
+ * and `idle` — because the list's "Your move" section is a container that lets
+ * each card state its own phase. The board's first column is not a container:
+ * it is amber, it is labelled "Needs you", and it claims the row is blocked on
+ * the user. Only `needs_you` earns that.
+ *
+ * `ready` and `idle` are already emerald "Done" in
+ * `sessionStatusPresentation.ts` — "finished, you have not looked" — which is
+ * exactly what the board's Done column means, so that is where they file.
+ * Filing the whole bucket under "Needs you" put finished and idle sessions in
+ * an amber column while their own status dot read Done.
+ *
+ * The host's `deriveWorkBoardColumn` calls this. The renderer's
+ * `buildWorkBoardModel` reaches the same answer one level up, from the list's
+ * filing buckets plus a `phase === "needs_you"` split, and the two must agree —
+ * or a drag's host-authored "you moved this chat from <column>" message names a
+ * column the user never saw.
+ *
+ * One known divergence, predating this mapping and confined to helper rows:
+ * `effectiveSessionFilingBuckets` files a non-chat helper under its settled
+ * parent, which the host's single-row derivation does not model.
+ */
+export function canonicalBoardColumnForPhase(
+  phase: CanonicalSessionPhase,
+): "needs_you" | "working" | "done" {
+  if (phase === "needs_you") return "needs_you";
+  return canonicalStatusBucket(phase) === "running" ? "working" : "done";
+}

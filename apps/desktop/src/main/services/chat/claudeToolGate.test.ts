@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   CLAUDE_READ_ONLY_TOOLS,
   claudeBuiltInIsReadOnly,
+  claudeToolAllowedInPlanMode,
   claudeToolInputPaths,
   claudeToolNeedsApproval,
   normalizeToolNameForApproval,
@@ -117,5 +118,32 @@ describe("claudeToolNeedsApproval", () => {
   it("is a substring test, which is why a policy replaces it", () => {
     expect(claudeToolNeedsApproval("mcp__srv__list_agents", {}, "default")).toBe(true);
     expect(claudeToolNeedsApproval("mcp__srv__delete_project", {}, "default")).toBe(false);
+  });
+});
+
+describe("claudeToolAllowedInPlanMode", () => {
+  it("keeps read-only built-ins and the plan flow usable", () => {
+    for (const tool of CLAUDE_READ_ONLY_TOOLS) {
+      expect(claudeToolAllowedInPlanMode(tool)).toBe(true);
+    }
+    for (const tool of ["EnterPlanMode", "ExitPlanMode", "AskUserQuestion", "ask_user", "Agent", "Task"]) {
+      expect(claudeToolAllowedInPlanMode(tool)).toBe(true);
+    }
+  });
+
+  it("refuses anything else, including names the mutating heuristic misses", () => {
+    // A mutating MCP tool and the Windows shell both slip past
+    // `claudeToolNeedsApproval`, which is exactly why the plan fence is an
+    // allowlist and not that heuristic.
+    for (const tool of ["Write", "Edit", "NotebookEdit", "Bash", "PowerShell", "mcp__filesystem__delete_file"]) {
+      expect(claudeToolAllowedInPlanMode(tool)).toBe(false);
+    }
+    expect(claudeToolNeedsApproval("mcp__filesystem__delete_file", {}, "default")).toBe(false);
+    expect(claudeToolNeedsApproval("PowerShell", {}, "default")).toBe(false);
+  });
+
+  it("does not infer membership from a substring", () => {
+    expect(claudeToolAllowedInPlanMode("mcp__srv__read")).toBe(false);
+    expect(claudeToolAllowedInPlanMode("ReadTheDatabase")).toBe(false);
   });
 });

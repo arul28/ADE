@@ -22,7 +22,7 @@ The **Automations** tab is rolling out. In production builds it currently shows 
     Either an `agent-session` (a scoped AI chat) or `built-in` (deterministic ADE actions).
   </Card>
   <Card title="Guardrails" icon="shield-halved">
-    Confidence threshold, duration cap, human review, and path/lane allowlists.
+    Confidence threshold, human review, path/lane allowlists, and optional agent time limits.
   </Card>
   <Card title="Output" icon="paper-plane">
     Where results go — a comment, a follow-up lane or task, a draft PR, or evidence only.
@@ -77,10 +77,18 @@ Automations publish effects — comments, PRs, Linear updates, webhooks. Guardra
 | Guardrail | What it does |
 |-----------|--------------|
 | Confidence threshold | A run below the threshold (baseline ~0.65) lands in review instead of publishing. |
-| Duration cap | Runs that exceed `maxDurationMin` (baseline 10 min) are cancelled. |
 | Require human | Force human review regardless of confidence. |
 | Verify before publish | The run must pass a verification step — or a reviewer's approval — before external effects apply. |
 | Path / lane allowlists | Built-in shell and file actions are sandboxed to specific lane worktrees or subpaths. |
+
+### Time limits
+
+An automation's agent has **no time limit by default**. Like a chat you start yourself, it runs until the work is done — a release that waits an hour on CI and notarization is fine. If you want a backstop, open **Limits** on the agent step:
+
+- **Stop after** — end the agent's turn after this many minutes, whatever it is doing.
+- **Stop when idle for** — end it after this many minutes with no activity. Waiting on a command, a tool, a subagent working in the foreground, or an approval does not count as idle; background tasks and long silent thinking can, so leave some room.
+
+Either one interrupts the agent and keeps its chat open. A **Run command** step has its own **Time limit** (default 5 minutes) that stops the command if it hangs.
 
 Each rule also carries a **review profile** (quick, incremental, full, security, release-risk, cross-repo-contract) that sets the base confidence — `security` and `release-risk` start higher than `quick`.
 

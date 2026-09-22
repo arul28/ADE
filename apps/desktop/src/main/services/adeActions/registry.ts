@@ -955,6 +955,14 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       });
     };
   }
+  if (typeof base.continueUsageLimitOnAlternate === "function") {
+    service.continueUsageLimitOnAlternate = (args?: unknown) => {
+      const record = readObjectActionArg(args, "chat.continueUsageLimitOnAlternate");
+      return agentChatService.continueUsageLimitOnAlternate({
+        sessionId: requireNonEmptyString(record.sessionId, "sessionId"),
+      });
+    };
+  }
   if (typeof base.getChatEventHistory === "function") {
     service.getChatEventHistory = (args?: unknown, positionalOptions?: unknown) => {
       const actionArgs = positionalOptions === undefined ? args : [args, positionalOptions];
@@ -3425,7 +3433,6 @@ export function getAdeActionDomainServices(
     app_control: toService(runtime.appControlService),
     built_in_browser: toService(runtime.builtInBrowserService),
     automations: automationsEnabled ? toService(buildAutomationsDomainService(runtime)) : null,
-    review: toService(runtime.reviewService),
     issue: toService(buildIssueDomainService(runtime)),
     search: toService(buildSearchDomainService(runtime)),
     "external-sessions": toService(buildExternalSessionsDomainService(runtime)),

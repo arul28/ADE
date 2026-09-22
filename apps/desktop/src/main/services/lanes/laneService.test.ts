@@ -5738,32 +5738,6 @@ describe("laneService delete teardown + cancellation + streaming", () => {
       `,
       [projectId, "acme", "demo", 1, "lane-child", "feature/child", now],
     );
-    db.run(
-      `
-        insert into review_runs(
-          id, project_id, lane_id, target_json, config_json, target_label,
-          status, created_at, started_at, updated_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `,
-      ["review-run-child", projectId, "lane-child", "{}", "{}", "Lane review", "completed", now, now, now],
-    );
-    db.run(
-      `
-        insert into review_reviewer_runs(
-          id, run_id, reviewer_key, label, focus, status, created_at, updated_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?)
-      `,
-      ["reviewer-run-child", "review-run-child", "diff-risk", "Diff risk", "Diff risk", "completed", now, now],
-    );
-    db.run(
-      `
-        insert into review_candidate_findings(
-          id, run_id, reviewer_run_id, reviewer_key, title, severity, body, anchor_state, created_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `,
-      ["candidate-child", "review-run-child", "reviewer-run-child", "diff-risk", "Candidate", "medium", "Body", "anchored", now],
-    );
-
     await service.delete({ laneId: "lane-child", deleteBranch: false });
 
     const count = (table: string, where: string, params: any[] = []) =>
@@ -5809,9 +5783,6 @@ describe("laneService delete teardown + cancellation + streaming", () => {
       ),
     ).toEqual({ files_json: null, checks_json: null, comments_json: null, reviews_json: null });
     expect(count("pr_auto_link_ignores", "lane_id = ?", ["lane-child"])).toBe(0);
-    expect(count("review_runs", "id = ?", ["review-run-child"])).toBe(0);
-    expect(count("review_reviewer_runs", "id = ?", ["reviewer-run-child"])).toBe(0);
-    expect(count("review_candidate_findings", "id = ?", ["candidate-child"])).toBe(0);
     expect(count("claude_sessions", "lane_id = ?", ["lane-child"])).toBe(0);
     expect(count("session_linear_issues", "lane_id = ? or session_id in (?, ?)", ["lane-child", "session-child", "chat-child"])).toBe(0);
     expect(count("terminal_sessions", "lane_id = ?", ["lane-child"])).toBe(0);

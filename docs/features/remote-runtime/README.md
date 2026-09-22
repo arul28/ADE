@@ -901,7 +901,7 @@ user, port, key, and route information for fallback. A **remote project** is a
 path on that machine that has been registered with its ADE runtime (via
 `projects.add`). Opening a remote project does not copy local files or move a
 local lane by default. Normal project opening still expects Git to move code
-between clones; the explicit **Send to machine** flow adds a guarded clean-lane
+between clones; the explicit **Continue on another machine** flow adds a guarded clean-lane
 handoff that publishes the exact source commit, prepares or clones the
 destination project, creates or reuses the destination lane, and starts a new
 chat from a bounded portable capsule.

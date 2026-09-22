@@ -20,7 +20,7 @@ The destination model, reasoning-effort, and permission pickers are unaffected b
 
 ## Product flow
 
-The action lives in the chat actions drawer under **Handoff** as **Send to machine**.
+The action lives in the chat actions drawer under **Handoff** as **Continue on another machine**, and is also reachable from any chat row's right-click **Hand off…** submenu (alongside Local handoff, which routes through `lib/chatHandoffIntent.ts`, and Auto handoff, which opens the rule editor directly).
 
 1. ADE checks the source chat and Git lane.
 2. The user selects an eligible connected machine and may add a continuation note. The picker reports each machine's repository presence while it is open, resolved from the same `listProjects` call the prepare step consumes, so the hint costs no extra round trip.
@@ -29,7 +29,7 @@ The action lives in the chat actions drawer under **Handoff** as **Send to machi
 5. If the repository is missing, ADE shows the destination path, free-space result, route warning, and an explicit clone confirmation.
 6. ADE checks destination provider/model access, the published branch commit, and any existing destination lane.
 7. The user reviews the bounded-context and transport disclosures, then confirms.
-8. ADE rechecks the source chat, clean worktree, upstream, remote branch, and exact commit, then pins the transfer to the route shown in the review.
+8. ADE rechecks the source chat, clean worktree, upstream, remote branch, and exact commit, then binds the transfer to the route kind present at send time.
 9. The destination recreates or reuses the lane, starts the chat, and either dispatches the first continuation turn or completes a fork whose default continuation needs no new turn.
 10. Only after the destination runtime acknowledges a requested turn, or the no-turn fork reaches its durable dispatched checkpoint, does ADE mark the source chat as handed off.
 
@@ -182,9 +182,9 @@ The handoff uses the existing authenticated remote runtime connection selected b
 
 - SSH and Tailscale routes are shown as encrypted;
 - direct LAN paired WebSocket and ADE relay routes are shown as authenticated but not end-to-end encrypted by ADE; and
-- LAN/relay routes require an additional explicit confirmation before the capsule is sent.
+- that LAN/relay disclosure renders as an informational notice on the review step, whose Send button is the confirmation, rather than as a separate checkbox.
 
-The renderer follows live connection snapshots while setup is open. Final acceptance is bound to the exact reviewed route kind, and this sensitive action is not automatically replayed after a disconnect. A route change—especially an encrypted-to-LAN/relay downgrade—returns the user to review instead of sending silently.
+The renderer follows live connection snapshots while setup is open. Final acceptance is bound to the route kind present at send time, and this sensitive action is not automatically replayed after a disconnect.
 
 The source side is not desktop-only either. The `chat` action-domain actions
 `prepareCrossMachineHandoff`, `validateCrossMachineSource`, and
