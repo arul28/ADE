@@ -136,15 +136,21 @@ client.
 - **Phone and hosted web client.** Both read the `macDesktop` slice of
   `WorkToolsLaneState` (`apps/desktop/src/shared/types/workTools.ts`): the
   display, its parked windows, the lease line, the stream state, and the last
-  frame fetched through `workTools.readObservationPreview`. The phone cannot
-  take over — view-only by product decision. The hosted web client can, when
-  the host advertises `hello.features.macDesktopControl`: the pane then carries
-  a Take control affordance, forwards pointer and keyboard through the same
-  real-input hook the desktop panel uses, and heartbeats the lease over the
-  sync socket. Without that bit (an older host, a chat-only runtime)
+  frame fetched through `workTools.readObservationPreview`. The phone and the
+  hosted web client can both take over when the host advertises
+  `hello.features.macDesktopControl`: each gets a Take control affordance,
+  forwards pointer events (and a hardware keyboard, where the client has one)
+  through `macDesktop.input`, heartbeats the lease, and treats Escape as the
+  way out — it lifts a held button and returns the lease, and it is never
+  typed into the lane. A phone has no system pointer of its own, so the same
+  key is also the Return to agent button. Without that bit (an older host, a
+  chat-only runtime) the phone stays on the still image and
   `WORK_TOOLS_CONTROL_HINT` still says control stays on the desktop. A missing
   `macDesktop` key, or `supported: false`, hides the tool rather than drawing
-  an empty pane.
+  an empty pane. Clicks from any of these clients land on the host's cursor,
+  which nobody at the viewing machine is holding, so they do not jump the
+  person's own pointer. Driving from the Mac that owns the display still does,
+  and the pane says so.
 
   Both gain a live picture when the host advertises
   `hello.features.macDesktopStream` and the `macDesktop.streamSubscribe`
@@ -160,7 +166,8 @@ client.
   a P-frame whose reference was skipped.
 
   On the web client the live pane can also `macDesktop.start`/`stop` the lane's
-  display; the phone is view-only by product decision and never calls either.
+  display. The phone never calls either: watching and driving a display the
+  Mac already started is the phone's job, and creating one from a pocket is not.
   Both keep the still image until the first keyframe and when the feature (or a
   WebCodecs decoder) is absent.
 
@@ -170,6 +177,21 @@ client.
   unsubscribes on disappear, background, sheet close, or socket teardown. The
   hosted web client does the same with WebCodecs, unsubscribing on unmount, tab
   hidden, or socket close and re-subscribing after a reconnect.
+
+  A second ADE desktop, pointed at a remote lane, uses the same panel as the
+  host Mac. Its stream is the port-forwarded loopback the live view already
+  opened, and pointer events — including hover, which the host Mac deliberately
+  does not post — go to that stream's input endpoint. Escape there omits
+  `home`: those coordinates are the viewer's screen, and the host would warp
+  its own cursor to a point it has never drawn. The host falls back to the
+  cursor hold it recorded itself.
+
+  Phone takeover is the same four commands over the sync socket
+  (`macDesktop.takeControl` / `returnControl` / `renewLease` / `input`). The
+  sheet maps a finger through the shared letterbox arithmetic, refuses a
+  display that did not report its origin (a click without one would land on
+  the person's real screen), and gives the lease back when the sheet closes,
+  the app backgrounds, or the socket drops. It does not send `home`.
 
   Web takeover is the desktop interaction over that same socket:
   `macDesktop.takeControl` / `returnControl` / `renewLease` / `input`, all
@@ -438,8 +460,9 @@ subscription is not a chat. The `config` and `frame` records arrive as
 `macDesktop.streamRecord` pushes with the frames already keyframed-first, and
 `macDesktop.streamUnsubscribe` — or the socket closing — removes the owner. It
 uses the same keyframe-on-attach path every other reader gets, so a viewer
-opening the card never waits on a still desktop. The phone is view-only; the
-web client can also `macDesktop.start`/`stop`. Pushes are best-effort: past
+opening the card never waits on a still desktop. The phone can take over a
+display the Mac already started, and never calls `macDesktop.start`/`stop`;
+the web client can also start and stop the display. Pushes are best-effort: past
 2 MiB queued they skip to the next keyframe instead of growing the socket
 buffer without bound, and a record the sync host's own 4 MiB gate refuses is
 treated as a broken reference chain — the next record sent is a keyframe.
@@ -546,7 +569,12 @@ removed — it never reaches the proof drawer.
   view draws a local pointer instead. Agent real-input does not restore: the
   pointer stays where the action put it. The flag is `restoreCursor` on the
   nested input payload, and the service only sets it when the call is a
-  silent takeover (`silent` plus a `controllerId`).
+  silent takeover (`silent` plus a `controllerId`). A remote controller —
+  web, phone, or another computer's ADE window — does not send `home` on
+  Escape. That point is the viewer's own screen, and applying it on the host
+  would throw the host's cursor at an arbitrary coordinate. The sync host
+  drops `homeX`/`homeY` for the same reason; the desktop pane only attaches
+  them when the lane's Mac is the one the person is sitting at.
 - **Window ids are not stable across relaunch.** A claimed window id dies with
   its process. `windows` re-enumerates; do not cache an id across a restart.
 - **Two chats in one lane can race to start.** `start` is idempotent and

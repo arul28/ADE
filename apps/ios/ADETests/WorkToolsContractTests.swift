@@ -489,6 +489,7 @@ final class WorkToolsContractTests: XCTestCase {
     XCTAssertEqual(macDesktop.display?.name, "ADE · fix-header")
     XCTAssertEqual(macDesktop.display?.width, 2560)
     XCTAssertEqual(macDesktop.display?.mode, "virtual")
+    XCTAssertEqual(macDesktop.display?.origin, MacDesktopPoint(x: 0, y: 0))
     XCTAssertEqual(macDesktop.windows?.map(\.appName), ["Safari"])
     XCTAssertEqual(macDesktop.windows?.first?.id, 11)
     XCTAssertEqual(macDesktop.stream?.running, true)

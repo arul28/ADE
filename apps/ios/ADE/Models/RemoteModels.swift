@@ -6468,13 +6468,20 @@ struct WorkToolsLaneState: Codable, Equatable {
   var macDesktop: WorkToolsMacDesktopState?
 }
 
+/// A point on the host's global screen plane. `x` and `y` are display points,
+/// the same unit `CGEvent` posts in.
+struct MacDesktopPoint: Codable, Equatable {
+  var x: Double
+  var y: Double
+}
+
 /// The lane's private macOS screen, as the phone sees it.
 ///
-/// Read-only, like everything else in this mirror, and cut down further than
-/// the desktop's own state: the host sends a display, its windows, the lease,
-/// the stream summary and the last frame, and the phone renders exactly those.
-/// Anything that would need a pointer or a lease to be useful is deliberately
-/// not decoded, because there is no way to act on it from here.
+/// The snapshot is still a description: display, windows, lease, stream, and
+/// the last frame. Taking the pointer is a separate set of commands
+/// (`macDesktop.takeControl` and the three beside it), announced by
+/// `hello_ok.features.macDesktopControl`. The display origin is decoded
+/// because a click without it would land on the person's real screen.
 ///
 /// A host with no Mac Desktop service at all omits the whole `macDesktop` key,
 /// and a host that has one but cannot hold a display sends `supported: false`.
@@ -6486,6 +6493,10 @@ struct WorkToolsMacDesktopDisplay: Codable, Equatable {
   /// `virtual` | `offscreen-region` | `unavailable`, kept as a raw string so a
   /// newer mode renders verbatim instead of failing to decode.
   var mode: String
+  /// Origin of the display on the host's global plane. Optional because an
+  /// older host omits it; a client that clicks without one would post the
+  /// event on the person's real screen, so control stays off until it arrives.
+  var origin: MacDesktopPoint?
 }
 
 /// One window parked on the lane's display. The host also sends a pid, a frame
@@ -6502,6 +6513,24 @@ struct WorkToolsMacDesktopWindow: Codable, Equatable, Identifiable {
 struct WorkToolsMacDesktopLease: Codable, Equatable {
   var holder: String
   var holderLabel: String?
+  /// Present when the host named who holds the lease. The phone compares it
+  /// with the id `takeControl` returned, so a poll can tell "still me" from
+  /// "someone else took it".
+  var holderId: String?
+}
+
+/// The lease `macDesktop.takeControl` / `renewLease` / `returnControl` return.
+///
+/// Separate from `WorkToolsMacDesktopLease` because those replies always carry
+/// the holder id the next call has to name, and a missing one is a failed
+/// decode rather than "an older snapshot".
+struct MacDesktopControlLease: Codable, Equatable {
+  var laneId: String
+  var holder: String
+  var holderId: String
+  var holderLabel: String?
+  var grantedAt: String
+  var expiresAt: String
 }
 
 /// Whether frames are flowing, and how hard. Never carries the stream token —

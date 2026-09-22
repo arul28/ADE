@@ -6,10 +6,10 @@ import UIKit
 /// Four cards, in the order a user actually asks about them: what the desktop
 /// has open right now (with the last frame it captured), what the browser has
 /// in it, what App Control is driving, and — when this Mac can host one — the
-/// lane's own private screen. There are no controls anywhere in
-/// this sheet — the browser is a `WebContentsView` in ADE Desktop and App
-/// Control is a CDP socket to a local process; neither can be reached from a
-/// phone, so offering a button would be a lie.
+/// lane's own private screen. The browser is a `WebContentsView` in ADE
+/// Desktop and App Control is a CDP socket to a local process; neither can be
+/// reached from a phone, so those cards stay read-only. Mac Desktop is the
+/// exception: when the host advertises takeover, the picture takes a finger.
 ///
 /// Refresh is a poll, not a subscription. The brain has no generic named-event
 /// channel to the phone — its push surface is cr-sqlite changesets and this
@@ -98,7 +98,9 @@ struct WorkToolsSheet: View {
         browserCard
         appControlCard
         macDesktopCard
-        Text("Control from the desktop")
+        Text(syncService.supportsMacDesktopControl
+          ? "Browser and App Control stay on the desktop."
+          : "Control from the desktop")
           .font(.caption)
           .foregroundStyle(ADEColor.textMuted)
           .frame(maxWidth: .infinity, alignment: .center)
@@ -265,9 +267,9 @@ struct WorkToolsSheet: View {
   ///
   /// Absent entirely unless the host both has the feature and can host a
   /// display, because a card that only ever says "not available here" is worse
-  /// than no card on every phone whose Mac will never grow one. Read-only like
-  /// the rest of the sheet: the lease is taken on the Mac, and the sheet's own
-  /// "Control from the desktop" line already says so.
+  /// than no card on every phone whose Mac will never grow one. Takeover, when
+  /// the host advertises it, lives on the picture; the rest of the sheet does
+  /// not grow a control.
   @ViewBuilder
   private var macDesktopCard: some View {
     if let macDesktop = state?.macDesktop, macDesktop.supported {
@@ -345,19 +347,14 @@ struct WorkToolsSheet: View {
   @ViewBuilder
   private var macDesktopPicture: some View {
     let isLive = syncService.supportsMacDesktopStream && liveSession != nil
-    if isLive, let session = liveSession {
-      MacDesktopLivePicture(session: session, placeholder: macDesktopFrame)
-    } else if let macDesktopFrame {
-      Image(uiImage: macDesktopFrame)
-        .resizable()
-        .scaledToFit()
-        .frame(maxWidth: .infinity)
-        .background(
-          Color.black.opacity(0.12),
-          in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .accessibilityLabel("The last captured frame of this lane's Mac Desktop")
+    if let display = state?.macDesktop?.display,
+       (isLive && liveSession != nil) || macDesktopFrame != nil {
+      MacDesktopControlPicture(
+        laneId: laneId,
+        display: display,
+        session: isLive ? liveSession : nil,
+        placeholder: macDesktopFrame
+      )
     } else if isFetchingMacDesktopFrame {
       HStack(spacing: 10) {
         ProgressView()

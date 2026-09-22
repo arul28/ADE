@@ -581,3 +581,356 @@ struct MacDesktopLivePicture: View {
     .padding(8)
   }
 }
+
+// MARK: - Takeover
+
+/// The letterboxed picture inside the view, in the view's own pixels.
+struct MacDesktopViewRect: Equatable {
+  var width: Double
+  var height: Double
+}
+
+/// The lane display, in host points, plus where it sits on the global plane.
+struct MacDesktopDisplayGeometry: Equatable {
+  var width: Double
+  var height: Double
+  var originX: Double
+  var originY: Double
+}
+
+/// View pixels to a point on the host's global plane.
+///
+/// The same letterbox rule as `macDesktopGeometry.ts`: a finger in the black
+/// bars is not a click, and the display's origin is added because `CGEvent`
+/// posts on the global plane. A missing or zero size returns nil rather than
+/// clamping onto the person's real screen.
+enum MacDesktopGeometry {
+  static func displayPoint(
+    localX: Double,
+    localY: Double,
+    view: MacDesktopViewRect,
+    display: MacDesktopDisplayGeometry
+  ) -> MacDesktopPoint? {
+    guard view.width > 0, view.height > 0, display.width > 0, display.height > 0 else { return nil }
+    let scale = min(view.width / display.width, view.height / display.height)
+    let drawnWidth = display.width * scale
+    let drawnHeight = display.height * scale
+    let x = localX - (view.width - drawnWidth) / 2
+    let y = localY - (view.height - drawnHeight) / 2
+    guard x >= 0, y >= 0, x <= drawnWidth, y <= drawnHeight else { return nil }
+    return MacDesktopPoint(x: display.originX + x / scale, y: display.originY + y / scale)
+  }
+}
+
+/// What one finger-up, or Escape, asks the host to do.
+enum MacDesktopControlEvent: Equatable {
+  case move(MacDesktopPoint)
+  case click(MacDesktopPoint)
+  case drag(from: MacDesktopPoint, to: MacDesktopPoint)
+  case release(button: String?)
+}
+
+enum MacDesktopControlGesture {
+  /// A press and release farther apart than this, in host points, is a drag.
+  static let dragSlop: Double = 4
+
+  static func ended(from: MacDesktopPoint?, to: MacDesktopPoint) -> MacDesktopControlEvent {
+    if let from, abs(from.x - to.x) > dragSlop || abs(from.y - to.y) > dragSlop {
+      return .drag(from: from, to: to)
+    }
+    return .click(to)
+  }
+}
+
+enum MacDesktopControlWire {
+  static func call(laneId: String, controllerId: String, event: MacDesktopControlEvent) -> [String: Any] {
+    var args: [String: Any] = [
+      "laneId": laneId,
+      "controllerId": controllerId,
+      "mode": "real",
+      "silent": true,
+    ]
+    let kind: String
+    switch event {
+    case .move(let point):
+      kind = "move"
+      args["x"] = point.x
+      args["y"] = point.y
+    case .click(let point):
+      kind = "click"
+      args["x"] = point.x
+      args["y"] = point.y
+      args["button"] = "left"
+      args["count"] = 1
+    case .drag(let from, let to):
+      kind = "drag"
+      args["from"] = ["x": from.x, "y": from.y]
+      args["to"] = ["x": to.x, "y": to.y]
+    case .release(let button):
+      kind = "releaseInput"
+      if let button { args["button"] = button }
+    }
+    return ["kind": kind, "args": args]
+  }
+}
+
+/// One in-flight move at a time, always the latest point.
+///
+/// A finger produces a point per frame. Sending each one and waiting would
+/// queue a trail of stale positions behind the finger; dropping the ones that
+/// arrive while a send is out is what a pointer actually is.
+@MainActor
+final class MacDesktopPointerPump {
+  private var busy = false
+  private var latest: MacDesktopPoint?
+
+  func push(_ point: MacDesktopPoint, send: @escaping (MacDesktopPoint) async -> Void) {
+    latest = point
+    guard !busy else { return }
+    busy = true
+    Task { await self.drain(send: send) }
+  }
+
+  private func drain(send: @escaping (MacDesktopPoint) async -> Void) async {
+    while !Task.isCancelled {
+      guard let point = latest else { break }
+      latest = nil
+      await send(point)
+    }
+    busy = false
+    if latest != nil, !Task.isCancelled {
+      busy = true
+      await drain(send: send)
+    }
+  }
+}
+
+/// The lane's picture plus, when the host allows it, the finger that drives it.
+struct MacDesktopControlPicture: View {
+  let laneId: String
+  let display: WorkToolsMacDesktopDisplay
+  var session: MacDesktopLiveSession?
+  var placeholder: UIImage?
+
+  @EnvironmentObject private var syncService: SyncService
+  @Environment(\.scenePhase) private var scenePhase
+  @FocusState private var focused: Bool
+
+  @State private var token = UUID().uuidString
+  @State private var holderId: String?
+  @State private var busy = false
+  @State private var errorText: String?
+  @State private var notice: String?
+  @State private var dragStart: MacDesktopPoint?
+  @State private var pressOutstanding = false
+  @State private var pictureSize: CGSize = .zero
+  @State private var pump = MacDesktopPointerPump()
+
+  private var controlling: Bool { holderId != nil }
+
+  private var geometry: MacDesktopDisplayGeometry? {
+    guard let origin = display.origin, display.width > 0, display.height > 0 else { return nil }
+    return MacDesktopDisplayGeometry(
+      width: Double(display.width),
+      height: Double(display.height),
+      originX: origin.x,
+      originY: origin.y
+    )
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      gesturedPicture
+        .focusable(controlling)
+        .focused($focused)
+        .onKeyPress(.escape) {
+          guard controlling else { return .ignored }
+          releaseNow()
+          return .handled
+        }
+        .onChange(of: controlling) { _, next in
+          focused = next
+        }
+      controls
+    }
+    .task(id: holderId) { await heartbeat() }
+    .onDisappear { releaseNow() }
+    .onChange(of: scenePhase) { _, phase in
+      if phase != .active { releaseNow() }
+    }
+    .onChange(of: syncService.connectionState) { _, state in
+      if state != .connected { releaseNow() }
+    }
+  }
+
+  @ViewBuilder
+  private var gesturedPicture: some View {
+    if controlling {
+      measuredPicture.highPriorityGesture(drag)
+    } else {
+      measuredPicture
+    }
+  }
+
+  private var measuredPicture: some View {
+    pictureBody.background(
+      GeometryReader { proxy in
+        Color.clear
+          .onAppear { pictureSize = proxy.size }
+          .onChange(of: proxy.size) { _, size in pictureSize = size }
+      }
+    )
+  }
+
+  @ViewBuilder
+  private var pictureBody: some View {
+    if let session {
+      MacDesktopLivePicture(session: session, placeholder: placeholder)
+    } else if let placeholder {
+      Image(uiImage: placeholder)
+        .resizable()
+        .scaledToFit()
+        .frame(maxWidth: .infinity)
+        .background(
+          Color.black.opacity(0.12),
+          in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .accessibilityLabel("The last captured frame of this lane's Mac Desktop")
+    }
+  }
+
+  private var drag: some Gesture {
+    DragGesture(minimumDistance: 0, coordinateSpace: .local)
+      .onChanged { value in
+        guard controlling, let geometry else { return }
+        guard let point = MacDesktopGeometry.displayPoint(
+          localX: Double(value.location.x),
+          localY: Double(value.location.y),
+          view: MacDesktopViewRect(width: pictureSize.width, height: pictureSize.height),
+          display: geometry
+        ) else { return }
+        if dragStart == nil { dragStart = point }
+        pressOutstanding = true
+        let service = syncService
+        let lane = laneId
+        let id = token
+        pump.push(point) { point in
+          let call = MacDesktopControlWire.call(laneId: lane, controllerId: id, event: .move(point))
+          try? await service.macDesktopInput(laneId: lane, call: call)
+        }
+      }
+      .onEnded { value in
+        let start = dragStart
+        dragStart = nil
+        pressOutstanding = false
+        guard controlling, let geometry else { return }
+        guard let point = MacDesktopGeometry.displayPoint(
+          localX: Double(value.location.x),
+          localY: Double(value.location.y),
+          view: MacDesktopViewRect(width: pictureSize.width, height: pictureSize.height),
+          display: geometry
+        ) else { return }
+        let event = MacDesktopControlGesture.ended(from: start, to: point)
+        let service = syncService
+        let lane = laneId
+        let id = token
+        Task {
+          let call = MacDesktopControlWire.call(laneId: lane, controllerId: id, event: event)
+          try? await service.macDesktopInput(laneId: lane, call: call)
+        }
+      }
+  }
+
+  @ViewBuilder
+  private var controls: some View {
+    if syncService.supportsMacDesktopControl {
+      if geometry == nil {
+        Text("This Mac's ADE doesn't say where the screen sits, so clicks stay off.")
+          .font(.caption)
+          .foregroundStyle(ADEColor.textMuted)
+      } else if controlling {
+        HStack(spacing: 8) {
+          Text("You have control")
+            .font(.footnote)
+            .foregroundStyle(ADEColor.warning)
+          Button("Return to agent") { releaseNow() }
+            .font(.footnote)
+          Text("Esc")
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textMuted)
+        }
+      } else {
+        Button(busy ? "Taking control…" : "Take control") {
+          Task { await take() }
+        }
+        .font(.footnote)
+        .disabled(busy)
+      }
+      if let notice {
+        Text(notice)
+          .font(.caption)
+          .foregroundStyle(ADEColor.warning)
+      }
+      if let errorText {
+        Text(errorText)
+          .font(.caption)
+          .foregroundStyle(ADEColor.warning)
+      }
+    }
+  }
+
+  private func take() async {
+    guard geometry != nil else { return }
+    busy = true
+    errorText = nil
+    notice = nil
+    defer { busy = false }
+    do {
+      let lease = try await syncService.macDesktopTakeControl(
+        laneId: laneId,
+        controllerId: token,
+        controllerLabel: MacDesktopLiveSession.defaultViewerLabel()
+      )
+      holderId = lease.holderId
+    } catch {
+      errorText = (error as NSError).localizedDescription
+    }
+  }
+
+  private func heartbeat() async {
+    guard holderId != nil else { return }
+    while !Task.isCancelled {
+      try? await Task.sleep(for: .seconds(20))
+      if Task.isCancelled || holderId == nil { return }
+      let lease = try? await syncService.macDesktopRenewLease(laneId: laneId, controllerId: token)
+      if lease == nil {
+        holderId = nil
+        notice = "Control ended."
+        return
+      }
+    }
+  }
+
+  /// Local first. The socket call is not awaited by the key or the button:
+  /// a wedged connection is the usual reason someone is trying to get out.
+  private func releaseNow() {
+    guard holderId != nil else { return }
+    let service = syncService
+    let lane = laneId
+    let id = token
+    let button = pressOutstanding ? "left" : nil
+    holderId = nil
+    pressOutstanding = false
+    dragStart = nil
+    Task {
+      let call = MacDesktopControlWire.call(
+        laneId: lane,
+        controllerId: id,
+        event: .release(button: button)
+      )
+      try? await service.macDesktopInput(laneId: lane, call: call)
+      _ = try? await service.macDesktopReturnControl(laneId: lane, controllerId: id)
+    }
+  }
+}

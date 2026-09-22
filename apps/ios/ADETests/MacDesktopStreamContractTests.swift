@@ -136,6 +136,7 @@ final class MacDesktopStreamContractTests: XCTestCase {
     XCTAssertTrue(status.supported)
     XCTAssertEqual(status.display?.width, 2560)
     XCTAssertEqual(status.display?.mode, "virtual")
+    XCTAssertEqual(status.display?.origin, MacDesktopPoint(x: 0, y: 0))
     XCTAssertEqual(status.windows?.map(\.id), [11])
     XCTAssertEqual(status.stream?.running, false)
     XCTAssertEqual(status.stream?.idle, true)
@@ -290,6 +291,120 @@ final class MacDesktopStreamContractTests: XCTestCase {
         XCTAssertEqual((error as NSError).userInfo["ADEErrorCode"] as? String, "unsupported_action")
       }
     }
+  }
+
+  // MARK: - Takeover
+
+  func testLetterboxMapsTheCenterOfThePictureAndDropsTheBars() {
+    let display = MacDesktopDisplayGeometry(width: 2560, height: 1440, originX: 8000, originY: 0)
+    let view = MacDesktopViewRect(width: 1000, height: 1000)
+    // 2560×1440 fitted into 1000×1000 is 1000×562.5, centered. The middle of
+    // the view is the middle of the picture: (1280, 720) plus the origin.
+    let center = MacDesktopGeometry.displayPoint(localX: 500, localY: 500, view: view, display: display)
+    XCTAssertEqual(center?.x ?? -1, 8000 + 1280, accuracy: 0.01)
+    XCTAssertEqual(center?.y ?? -1, 720, accuracy: 0.01)
+    // The top of the view is letterbox, not the top of the screen.
+    XCTAssertNil(MacDesktopGeometry.displayPoint(localX: 500, localY: 10, view: view, display: display))
+    XCTAssertNil(MacDesktopGeometry.displayPoint(
+      localX: 10, localY: 10,
+      view: MacDesktopViewRect(width: 0, height: 0),
+      display: display
+    ))
+  }
+
+  func testAShortPressIsAClickAndATravelledOneIsADrag() {
+    let start = MacDesktopPoint(x: 10, y: 10)
+    let nearby = MacDesktopPoint(x: 12, y: 11)
+    let far = MacDesktopPoint(x: 40, y: 10)
+    XCTAssertEqual(MacDesktopControlGesture.ended(from: start, to: nearby), .click(nearby))
+    XCTAssertEqual(MacDesktopControlGesture.ended(from: start, to: far), .drag(from: start, to: far))
+    XCTAssertEqual(MacDesktopControlGesture.ended(from: nil, to: far), .click(far))
+  }
+
+  func testReleaseOmitsTheViewersOwnScreenPoint() {
+    let call = MacDesktopControlWire.call(
+      laneId: "lane-1",
+      controllerId: "tab-1",
+      event: .release(button: "left")
+    )
+    XCTAssertEqual(call["kind"] as? String, "releaseInput")
+    let args = call["args"] as? [String: Any]
+    XCTAssertEqual(args?["laneId"] as? String, "lane-1")
+    XCTAssertEqual(args?["controllerId"] as? String, "tab-1")
+    XCTAssertEqual(args?["button"] as? String, "left")
+    XCTAssertNil(args?["homeX"])
+    XCTAssertNil(args?["homeY"])
+    XCTAssertNil(args?["home"])
+  }
+
+  @MainActor
+  func testMacDesktopControlRequiresTheFeatureBitAndEveryCommand() throws {
+    let actions = [
+      "macDesktop.takeControl", "macDesktop.returnControl",
+      "macDesktop.renewLease", "macDesktop.input",
+    ]
+    try withService { service in
+      try service.applyHelloPayloadForTesting([
+        "brain": ["deviceId": "mac-host", "deviceName": "Mac Studio"],
+        "features": [
+          "commandRouting": ["actions": actions.map(Self.controllerDescriptor)] as [String: Any],
+          "macDesktopControl": true,
+        ] as [String: Any],
+      ])
+      XCTAssertTrue(service.supportsMacDesktopControl)
+    }
+    try withService { service in
+      try service.applyHelloPayloadForTesting([
+        "brain": ["deviceId": "mac-host", "deviceName": "Mac Studio"],
+        "features": [
+          "commandRouting": ["actions": actions.map(Self.controllerDescriptor)] as [String: Any],
+          "macDesktopControl": false,
+        ] as [String: Any],
+      ])
+      XCTAssertFalse(service.supportsMacDesktopControl)
+    }
+    try withService { service in
+      // Take without input would show a button that cannot click.
+      try service.applyHelloPayloadForTesting([
+        "brain": ["deviceId": "mac-host", "deviceName": "Mac Studio"],
+        "features": [
+          "commandRouting": ["actions": [Self.controllerDescriptor("macDesktop.takeControl")]] as [String: Any],
+          "macDesktopControl": true,
+        ] as [String: Any],
+      ])
+      XCTAssertFalse(service.supportsMacDesktopControl)
+    }
+  }
+
+  @MainActor
+  func testUnadvertisedMacDesktopControlFailsLocallyInsteadOfGoingOnTheWire() async throws {
+    try await withServiceAsync { service in
+      try service.applyHelloPayloadForTesting([
+        "brain": ["deviceId": "legacy-host", "deviceName": "Old Mac"],
+        "features": [
+          "commandRouting": ["actions": [Self.descriptor("work.listSessions")]] as [String: Any],
+        ] as [String: Any],
+      ])
+      do {
+        _ = try await service.macDesktopTakeControl(laneId: "lane-1", controllerId: "tab", controllerLabel: "iPhone")
+        XCTFail("An unadvertised takeover must not be attempted.")
+      } catch {
+        XCTAssertEqual((error as NSError).userInfo["ADEErrorCode"] as? String, "unsupported_action")
+      }
+      do {
+        try await service.macDesktopInput(laneId: "lane-1", call: ["kind": "click"])
+        XCTFail("An unadvertised click must not be attempted.")
+      } catch {
+        XCTAssertEqual((error as NSError).userInfo["ADEErrorCode"] as? String, "unsupported_action")
+      }
+    }
+  }
+
+  private static func controllerDescriptor(_ action: String) -> [String: Any] {
+    [
+      "action": action,
+      "policy": ["viewerAllowed": false, "controllerAllowed": true] as [String: Any],
+    ]
   }
 
   // MARK: - Sample attachments

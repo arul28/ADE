@@ -4479,6 +4479,9 @@ final class SyncService: ObservableObject {
   /// `hello.features.macDesktopStream`: the host can push the lane's Mac
   /// Desktop video over this socket. Absent or false keeps the still image.
   private var advertisesMacDesktopStream = false
+  /// `hello.features.macDesktopControl`: this host accepts a takeover from a
+  /// paired controller. Absent keeps the sheet on the picture alone.
+  private var advertisesMacDesktopControl = false
   private let chatSnapshotRequestCoalescingInterval: TimeInterval = 5
   private let chatEventUnsubscribeRetentionLimit = 4
   private var recentFullChatSnapshotRequestBySession: [
@@ -15047,7 +15050,7 @@ final class SyncService: ObservableObject {
     return try? decode(result, as: WorkToolsObservationPreview.self)
   }
 
-  // MARK: - Mac Desktop live stream (view-only)
+  // MARK: - Mac Desktop live stream and takeover
 
   /// Whether this host can stream a lane's Mac Desktop to the phone.
   ///
@@ -15162,6 +15165,97 @@ final class SyncService: ObservableObject {
         code: 17,
         userInfo: [
           NSLocalizedDescriptionKey: "Live Mac Desktop video is not available on this machine version.",
+          "ADEErrorCode": "unsupported_action",
+        ]
+      )
+    }
+  }
+
+  /// Whether this host lets a paired controller drive the lane's screen.
+  ///
+  /// All four commands have to be advertised. Take without input is a lease
+  /// the phone cannot use, and take without return leaves the Mac held until
+  /// the TTL. The feature bit is the contract's support signal; a bit without
+  /// the commands would show a button whose first RPC the host rejects.
+  var supportsMacDesktopControl: Bool {
+    guard advertisesMacDesktopControl else { return false }
+    return ["macDesktop.takeControl", "macDesktop.returnControl", "macDesktop.renewLease", "macDesktop.input"]
+      .allSatisfy(supportsViewerRemoteAction)
+  }
+
+  func macDesktopTakeControl(
+    laneId: String,
+    controllerId: String,
+    controllerLabel: String
+  ) async throws -> MacDesktopControlLease {
+    try requireMacDesktopControlAction("macDesktop.takeControl")
+    return try decode(
+      try await sendMacDesktopControl(
+        action: "macDesktop.takeControl",
+        args: [
+          "laneId": laneId,
+          "controllerId": controllerId,
+          "controllerLabel": controllerLabel,
+        ]
+      ),
+      as: MacDesktopControlLease.self
+    )
+  }
+
+  /// Hands the lease back. A null reply means it was released; a thrown error
+  /// is a refusal, and the caller still drops its local "I have control" line
+  /// because the TTL is the backstop.
+  func macDesktopReturnControl(laneId: String, controllerId: String) async throws -> MacDesktopControlLease? {
+    try requireMacDesktopControlAction("macDesktop.returnControl")
+    return try decodeMacDesktopControlLease(
+      try await sendMacDesktopControl(
+        action: "macDesktop.returnControl",
+        args: ["laneId": laneId, "controllerId": controllerId]
+      )
+    )
+  }
+
+  func macDesktopRenewLease(laneId: String, controllerId: String) async throws -> MacDesktopControlLease? {
+    try requireMacDesktopControlAction("macDesktop.renewLease")
+    return try decodeMacDesktopControlLease(
+      try await sendMacDesktopControl(
+        action: "macDesktop.renewLease",
+        args: ["laneId": laneId, "controllerId": controllerId]
+      )
+    )
+  }
+
+  func macDesktopInput(laneId: String, call: [String: Any]) async throws {
+    try requireMacDesktopControlAction("macDesktop.input")
+    _ = try await sendMacDesktopControl(
+      action: "macDesktop.input",
+      args: ["laneId": laneId, "call": call]
+    )
+  }
+
+  /// Control is never queued. A click replayed after a reconnect lands on
+  /// whatever the lane is showing then, which is a different gesture.
+  private func sendMacDesktopControl(action: String, args: [String: Any]) async throws -> Any {
+    try await sendCommand(
+      action: action,
+      args: args,
+      disconnectOnTimeout: false,
+      attemptedLiveFailurePolicy: .preserveForManualRetry
+    )
+  }
+
+  private func decodeMacDesktopControlLease(_ result: Any) throws -> MacDesktopControlLease? {
+    if result is NSNull { return nil }
+    return try decode(result, as: MacDesktopControlLease.self)
+  }
+
+  private func requireMacDesktopControlAction(_ action: String) throws {
+    guard supportsMacDesktopControl, supportsViewerRemoteAction(action) else {
+      throw NSError(
+        domain: "ADE",
+        code: 17,
+        userInfo: [
+          NSLocalizedDescriptionKey: "Controlling this Mac Desktop is not available on this machine version.",
           "ADEErrorCode": "unsupported_action",
         ]
       )
@@ -19098,6 +19192,7 @@ final class SyncService: ObservableObject {
     supportsProjectCatalog = featureEnabled("projectCatalog", "project_catalog")
     supportsProjectActions = featureEnabled("projectActions", "project_actions")
     advertisesMacDesktopStream = featureEnabled("macDesktopStream", "mac_desktop_stream")
+    advertisesMacDesktopControl = featureEnabled("macDesktopControl", "mac_desktop_control")
     supportsChangesetAck = featureEnabled("changesetAck", "changeset_ack")
     supportsTerminalInputAcknowledgements = featureEnabled("terminalInputAck", "terminal_input_ack")
     if let chunking = features?["chunkedEnvelopes"] as? [String: Any],
