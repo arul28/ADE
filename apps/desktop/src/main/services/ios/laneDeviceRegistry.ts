@@ -596,7 +596,25 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
     if (!match) {
       throw new Error(`No installed simulator matches ${wanted}. Run device-list --installed to see what this Mac has.`);
     }
-    const previous = readAll().find((device) => device.udid === match.udid && device.laneId !== laneId) ?? null;
+    /*
+     * EVERY other lane holding this udid, not just the first.
+     *
+     * `rebind` moves one row. On the owner's machine ADE Repro was bound to
+     * two lanes at once — a state this code is supposed to make impossible,
+     * and which predates the atomic move — and a takeover would have moved one
+     * row and left the other, so the duplicate survived the very operation
+     * meant to end it. Two lanes believing they own one simulator is how one
+     * powers it off under the other.
+     */
+    const holders = readAll().filter((device) => device.udid === match.udid && device.laneId !== laneId);
+    if (holders.length > 1) {
+      // Impossible by construction, so say so rather than repairing in silence.
+      deps.logger.warn?.("apple.lane_device_multiple_holders", {
+        udid: match.udid,
+        laneIds: holders.map((device) => device.laneId),
+      });
+    }
+    const previous = holders[0] ?? null;
     const device: AppleLaneDevice = {
       laneId,
       udid: match.udid,
@@ -641,6 +659,10 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
         });
       }
       rebind(previous, device);
+      // Any remaining holder is dropped, never moved: the binding has already
+      // landed on this lane, and a second `rebind` would move it straight back
+      // out again.
+      for (const stale of holders.slice(1)) forget(stale.laneId);
       deps.logger.info("apple.lane_device_moved", {
         laneId,
         fromLaneId: previous.laneId,

@@ -197,6 +197,33 @@ describe("laneDeviceRegistry device lifecycle", () => {
     ]);
   });
 
+  it("regression: a takeover ends EVERY stale binding, not just the first", async () => {
+    // On the owner's machine ADE Repro was bound to two lanes at once — a
+    // state this file is supposed to make impossible, from before the move was
+    // atomic. `rebind` moves one row, so a takeover moved one and left the
+    // other, and the duplicate survived the operation meant to end it.
+    const run = vi.fn(async (..._call: unknown[]) => ({ stdout: "", stderr: "" }));
+    const { registry, store } = registryWith(run);
+    store.rows["lane-a"] = {
+      lane_id: "lane-a",
+      udid: "template-1",
+      name: "Shared",
+      origin: "attached",
+      family: "iphone",
+      runtime: "iOS 26.3",
+      created_at: "2026-09-20T00:00:00.000Z",
+      template_udid: null,
+    };
+    store.rows["lane-b"] = { ...store.rows["lane-a"], lane_id: "lane-b" };
+
+    await registry.deviceAttach({ laneId: "lane-c", simulator: "template-1" });
+
+    expect(registry.list().filter((device) => device.udid === "template-1").map((d) => d.laneId))
+      .toEqual(["lane-c"]);
+    expect(store.rows["lane-a"]).toBeUndefined();
+    expect(store.rows["lane-b"]).toBeUndefined();
+  });
+
   it("deletes an installed simulator no lane holds, shutting it down first", async () => {
     const run = vi.fn(async (..._call: unknown[]) => ({ stdout: "", stderr: "" }));
     const { registry } = registryWith(run);
