@@ -168,6 +168,14 @@ function isNonNegativeNumber(value: unknown): value is number {
 // its own known CLI, known families/auth/efforts, and plain model ids. It can
 // add rows and change metadata; it cannot point ADE at a new binary.
 
+/**
+ * Provider keys `defaults.providers` may name. Kept here (not imported) because
+ * the registry imports this module; a test pins it to MODEL_PROVIDER_GROUPS.
+ */
+export const MODEL_MANIFEST_PROVIDER_GROUPS = [
+  "claude", "codex", "cursor", "opencode", "pi", "copilot", "grok", "droid", "kimi", "qwen",
+] as const satisfies readonly ModelProviderGroup[];
+
 /** Every route a manifest may use, with the only CLI that route may launch. */
 export const MODEL_MANIFEST_ROUTE_CLI: Readonly<Record<string, string>> = {
   "claude-cli": "claude",
@@ -338,6 +346,10 @@ export function parseModelManifest(
         } else {
           const providers: ModelManifestDefaults["providers"] = {};
           for (const [provider, list] of Object.entries(raw.defaults.providers)) {
+            if (!(MODEL_MANIFEST_PROVIDER_GROUPS as readonly string[]).includes(provider)) {
+              errors.push(`defaults.providers.${provider} is not a provider ADE knows`);
+              continue;
+            }
             const parsed = parseDefaultList(list, `defaults.providers.${provider}`, errors);
             if (parsed.length) providers[provider as ModelProviderGroup] = parsed;
           }

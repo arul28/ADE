@@ -107,6 +107,26 @@ describe("modelManifestService", () => {
     expect(getActiveModelManifest()?.manifest.updatedAt).toBe("2099-01-01T00:00:00Z");
   });
 
+  it("does not cache a same-timestamp copy with different content", async () => {
+    const cacheFile = path.join(home.dir, ".ade", "model-manifest.json");
+    fetchMock.mockResolvedValueOnce(jsonResponse(NEWER_MANIFEST, { etag: "\"v2\"" }));
+    initializeModelManifestService({ adeVersion: "1.2.80" });
+    await settle();
+    await refreshModelManifest();
+    expect(JSON.parse(fs.readFileSync(cacheFile, "utf-8")).etag).toBe("\"v2\"");
+
+    // Edited without bumping updatedAt.
+    fetchMock.mockResolvedValueOnce(jsonResponse(
+      { ...NEWER_MANIFEST, defaults: { app: [{ model: "openai/gpt-6-luna" }] } },
+      { etag: "\"v2-unbumped\"" },
+    ));
+    await refreshModelManifest();
+    const cached = JSON.parse(fs.readFileSync(cacheFile, "utf-8"));
+    expect(cached.etag).toBe("\"v2\"");
+    expect(cached.manifest.defaults.app[0].model).toBe("openai/gpt-6-sol");
+    expect(getAppDefaultModelDescriptor()?.id).toBe("openai/gpt-6-sol");
+  });
+
   it("lets a later agent runtime turn fetching on after an offline runtime started it", async () => {
     initializeModelManifestService({ adeVersion: "1.2.80", fetchRemote: false });
     await settle();

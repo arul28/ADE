@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveClaudeCliModelAlias } from "./claudeCliModels";
-import { modelManifestGateAllows, parseModelManifest, type ModelManifest } from "./modelManifest";
+import { MODEL_MANIFEST_PROVIDER_GROUPS, modelManifestGateAllows, parseModelManifest, type ModelManifest } from "./modelManifest";
 import {
   adoptHostModelManifest,
   applyModelManifest,
@@ -10,6 +10,7 @@ import {
   getDefaultModelDescriptor,
   getModelById,
   listModelDescriptorsForProvider,
+  MODEL_PROVIDER_GROUPS,
   MODEL_REGISTRY,
   onModelManifestApplied,
   resolveModelAlias,
@@ -95,6 +96,18 @@ describe("parseModelManifest", () => {
     expect(withFields({ providerModelId: "gpt-7 --dangerous" })).toBe(false);
     expect(withFields({ color: "red; background: url(x)" })).toBe(false);
     expect(withFields({ reasoningTiers: ["low", "turbo"] })).toBe(false);
+  });
+
+  it("rejects a defaults key that is not a provider ADE knows", () => {
+    const parsed = parseModelManifest({
+      version: 1,
+      updatedAt: "2030-01-01T00:00:00Z",
+      defaults: { providers: { cladue: [{ model: "anthropic/claude-opus-5-5" }] } },
+      models: [],
+    });
+    expect(parsed.ok).toBe(false);
+    // The manifest's own list must track the registry's provider groups.
+    expect([...MODEL_MANIFEST_PROVIDER_GROUPS].sort()).toEqual([...MODEL_PROVIDER_GROUPS].sort());
   });
 
   it("rejects a malformed version gate instead of ignoring it", () => {
@@ -233,6 +246,10 @@ describe("adoptHostModelManifest", () => {
     expect(getModelById("openai/gpt-5.6-terra")?.deprecated).toBe(true);
     // Same file, same host version: nothing to do.
     expect(adoptHostModelManifest({ manifest: gated, adeVersion: "1.3.1" })).toBe(false);
+    // Switching to a host with an older file still takes that host's view.
+    const olderUngated = manifest({ updatedAt: "2029-01-01T00:00:00Z" });
+    expect(adoptHostModelManifest({ manifest: olderUngated, adeVersion: "1.2.90" })).toBe(true);
+    expect(getModelById("openai/gpt-5.6-terra")?.deprecated).toBeFalsy();
   });
 
   it("adopts only a manifest newer than the active one", () => {

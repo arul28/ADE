@@ -1196,10 +1196,11 @@ export function adoptHostModelManifest(
   const active = activeManifest;
   const activeAt = modelManifestUpdatedAtMs(active);
   const incomingAt = modelManifestUpdatedAtMs(parsed.manifest);
-  // Same file gated for a different host version (a host switch) must re-gate.
-  const sameFileNewGate = activeAt === incomingAt && activeManifestAdeVersion !== (snapshot.adeVersion?.trim() || null);
-  if (active && activeAt > incomingAt) return false;
-  if (active && activeAt === incomingAt && !sameFileNewGate) return false;
+  // A different host version (a host switch) takes that host's directory as
+  // is, even if older: the models must be the ones that host can run. For the
+  // same host, newest wins so a picker never steps backwards.
+  const hostChanged = active != null && activeManifestAdeVersion !== (snapshot.adeVersion?.trim() || null);
+  if (active && !hostChanged && activeAt >= incomingAt) return false;
   return applyModelManifest(parsed.manifest, { adeVersion: snapshot.adeVersion }).applied;
 }
 

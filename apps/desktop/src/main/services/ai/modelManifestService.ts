@@ -54,6 +54,7 @@ let pollTimer: ReturnType<typeof setInterval> | null = null;
  * Apply a manifest only when it moves the directory forward: never older than
  * the bundled copy, never older than (or identical to) what is active.
  */
+/** `current`: identical to the active directory; `rejected`: must not be cached. */
 type ApplyOutcome = "applied" | "current" | "rejected";
 
 function applyIfNewer(manifest: ModelManifest, source: string): ApplyOutcome {
@@ -63,7 +64,14 @@ function applyIfNewer(manifest: ModelManifest, source: string): ApplyOutcome {
   if (active && active.adeVersion === adeVersion) {
     const activeAt = modelManifestUpdatedAtMs(active.manifest);
     if (activeAt > incomingAt) return "rejected";
-    if (activeAt === incomingAt) return "current";
+    if (activeAt === incomingAt) {
+      // Same timestamp, different content means someone edited the file
+      // without bumping updatedAt. Keep running what is active and do not
+      // cache the other copy for the next launch to pick up.
+      if (JSON.stringify(active.manifest) === JSON.stringify(manifest)) return "current";
+      logger?.warn("ai.model_manifest.unbumped_edit", { source, updatedAt: manifest.updatedAt });
+      return "rejected";
+    }
   }
   const result = applyModelManifest(manifest, { adeVersion });
   if (!result.applied) {
