@@ -341,10 +341,13 @@ describe("simRecordingService", () => {
      * included, while the caller still got a real artifact id back. It looked
      * filed and was unreachable.
      */
-    const started = await service.start({ laneId: lane, udid });
+    // `chatSessionId: null` is the point of the case, not an omission: it is
+    // what a CLI or agent capture looks like, and what used to leave the
+    // artifact with no owner at all.
+    const started = await service.start({ laneId: lane, udid, chatSessionId: null });
     fs.writeFileSync(started.path, "mp4");
 
-    await service.stop({ laneId: lane });
+    await service.stop({ laneId: lane, chatSessionId: null });
     expect(filed).toHaveLength(1);
     expect(filed[0]!.owners).toEqual([{ kind: "lane", id: lane }]);
   });
