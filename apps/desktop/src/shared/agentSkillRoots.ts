@@ -65,6 +65,29 @@ function addAncestorSkillRoots(
   }
 }
 
+/**
+ * Could this directory be an ADE checkout at all?
+ *
+ * The filesystem root is the case that matters. A brain started by launchd or
+ * systemd inherits cwd `/`, and `joinPath` normalizes a trailing separator
+ * away — so `joinPath("/", "apps", "desktop", …)` produced
+ * `/apps/desktop/resources/agent-skills`, and every agent that brain launched
+ * carried two paths at the root of the disk in `ADE_AGENT_SKILLS_DIRS`. They
+ * resolve to nothing, and worse, they took the place of the lane-worktree
+ * lookup they were added to perform, so a lane shipping its own updated
+ * `ade-*` skill was invisible to agents under the installed brain while
+ * working fine under a dev app (whose cwd IS the worktree).
+ *
+ * A Windows drive root (`C:\`) is rejected for the same reason.
+ */
+function isPlausibleRepoRoot(value: string | null | undefined): value is string {
+  const normalized = normalizePathEntry(value);
+  if (!normalized) return false;
+  // `normalizePathEntry` strips trailing separators, so "/" becomes "" and a
+  // drive root becomes "C:".
+  return !/^[a-zA-Z]:$/.test(normalized);
+}
+
 export function splitAdeAgentSkillRoots(value: string | null | undefined): string[] {
   const roots: string[] = [];
   const seen = new Set<string>();
@@ -96,7 +119,7 @@ export function getAdeAgentSkillRootCandidates(options: {
   const cwd = options.cwd ?? (typeof proc?.cwd === "function" ? proc.cwd() : null);
   const processCwd = typeof proc?.cwd === "function" ? proc.cwd() : null;
   for (const rootCwd of [cwd, processCwd]) {
-    if (!rootCwd) continue;
+    if (!isPlausibleRepoRoot(rootCwd)) continue;
     // Prefer the active lane worktree before inherited app roots.
     addPath(roots, seen, joinPath(rootCwd, "apps", "desktop", "resources", "agent-skills"));
     addPath(roots, seen, joinPath(rootCwd, "resources", "agent-skills"));
