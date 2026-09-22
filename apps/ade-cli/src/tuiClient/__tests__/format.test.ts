@@ -846,6 +846,46 @@ describe("renderChatLines", () => {
     })]);
   });
 
+  it("folds a later todo update into the plan for that turn", () => {
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          sequence: 1,
+          event: {
+            type: "plan",
+            turnId: "t1",
+            steps: [
+              { text: "Read", status: "pending" },
+              { text: "Write", status: "pending" },
+            ],
+          } as never,
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:01.000Z",
+          sequence: 2,
+          event: {
+            type: "todo_update",
+            turnId: "t1",
+            items: [
+              { id: "1", description: "Read", status: "completed" },
+              { id: "2", description: "Write", status: "in_progress" },
+            ],
+          } as never,
+        },
+      ],
+    });
+    const planLines = lines.filter((line) => line.body.startsWith("plan"));
+    expect(planLines).toHaveLength(1);
+    expect(planLines[0]?.body).toContain("1/2");
+    expect(planLines[0]?.body).toContain("Read");
+    expect(planLines[0]?.body).toContain("Write");
+  });
+
   it("renders the new event variants (status, error, done, todo, subagent, completion_report, turn_diff_summary, codex_context_compaction)", () => {
     const lines = renderChatLines({
       activeSession: null,
@@ -934,7 +974,7 @@ describe("renderChatLines", () => {
     expect(body).toContain("[status] completed");
     expect(body).toContain("[error] rate limited");
     expect(body).toMatch(/\[done\] completed/);
-    expect(body).toContain("todos");
+    expect(body).toContain("plan  1/2");
     expect(body).toContain("● Read");
     expect(body).toContain("◐ Write");
     expect(body).toContain("[agent] do thing (started)");

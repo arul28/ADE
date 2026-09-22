@@ -5,7 +5,7 @@ import {
 
 import type { PrWithConflicts } from "../../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../../lanes/laneDesignTokens";
-import { BranchIcon, LaneIcon } from "../../ui/vcsIcons";
+import { BranchIcon } from "../../ui/vcsIcons";
 import { SmartTooltip } from "../../ui/SmartTooltip";
 import { getPrStateBadge, InlinePrBadge } from "../shared/prVisuals";
 import { isTerminalPrState } from "../../../lib/prState";
@@ -132,7 +132,6 @@ export type PrDetailHeaderProps = {
   onStartTitleEdit: () => void;
   onCancelTitleEdit: () => void;
   onSubmitTitle: () => void;
-  onShowInGraph?: (laneId: string) => void;
   unmappedAffordance?: UnmappedAffordance | null;
 };
 
@@ -159,7 +158,6 @@ export const PrDetailHeader = React.memo(function PrDetailHeader({
   onStartTitleEdit,
   onCancelTitleEdit,
   onSubmitTitle,
-  onShowInGraph,
   unmappedAffordance = null,
 }: PrDetailHeaderProps) {
   const tabs: Array<{ id: DetailTab; label: string; icon: React.ElementType; count?: number }> = [
@@ -350,18 +348,6 @@ export const PrDetailHeader = React.memo(function PrDetailHeader({
             summary instead. */}
         {!pr.laneId && unmappedAffordance && !isTerminalPrState(pr.state) ? (
           <UnmappedPrBanner affordance={unmappedAffordance} />
-        ) : null}
-        {/* The one control here that genuinely needs a lane: the graph focuses a
-            lane node, and an unmapped PR carries an empty `laneId` that would
-            build a route with nothing to focus. */}
-        {onShowInGraph && pr.laneId ? (
-          <button
-            type="button"
-            onClick={() => onShowInGraph(pr.laneId)}
-            style={outlineButton({ height: 26, padding: "0 10px", color: COLORS.info, borderColor: "color-mix(in srgb, var(--color-info) 40%, transparent)" })}
-          >
-            <LaneIcon size={14} /> Graph
-          </button>
         ) : null}
         <SmartTooltip content={{ label: "Open on GitHub", description: "Open this pull request in your browser." }}>
           <button

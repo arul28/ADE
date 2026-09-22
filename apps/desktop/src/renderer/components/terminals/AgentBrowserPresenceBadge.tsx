@@ -10,9 +10,8 @@ export const AGENT_BROWSER_PRESENCE_LABEL = "Using the browser";
  *
  * Deliberately the smallest possible mark: no words, no count, no colour of its
  * own beyond the accent — the row's job is still the chat's title and status,
- * and this is a live-activity glyph, not a status label. The slow pulse is the
- * whole difference between "this chat can use the browser" (which is every
- * chat, and therefore not worth showing) and "it is using it right now".
+ * and this is a live-activity glyph, not a status label. It stays still: the
+ * glyph is the signal, and a pulse on every browsing row reads as an alarm.
  *
  * Renders nothing when the chat is not browsing, so every caller can place it
  * unconditionally.
@@ -41,11 +40,6 @@ export function AgentBrowserPresenceBadge({
         // making it bigger than the marks around it.
         "relative inline-flex shrink-0 items-center justify-center rounded-full text-accent",
         "shadow-[0_0_0_2px_color-mix(in_srgb,var(--color-accent)_28%,transparent)]",
-        // 1.2s, and only when the person has not asked for less motion: a
-        // permanent throb in a sidebar full of rows is exactly what
-        // `prefers-reduced-motion` is for. Without the animation the glyph is
-        // still present and still says the same thing.
-        "motion-safe:animate-pulse motion-safe:[animation-duration:1.2s]",
         className,
       )}
     >

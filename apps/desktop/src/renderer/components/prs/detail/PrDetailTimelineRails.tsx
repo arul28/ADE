@@ -227,6 +227,8 @@ type Props = {
   onSubmitReview: (event: PrReviewEvent, body: string) => void;
   /** Check the PR branch out as a lane; ADE review needs a working tree. */
   onOpenAsLane?: () => void;
+  /** Narrow tools pane: rail content above the thread, one column. */
+  layout?: "split" | "stack";
 };
 
 function shortenSha(sha: string): string {
@@ -778,6 +780,7 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
       onReopen,
       onSubmitReview,
       onOpenAsLane,
+      layout = "split",
     } = props;
 
     const timelineRef = useRef<PrTimelineRef | null>(null);
@@ -946,6 +949,160 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
       [rightWidthKey],
     );
 
+    const commandPalettes = (
+      <PrCommandPalettes
+        open={paletteKind}
+        onClose={() => setPaletteKind(null)}
+        commits={paletteCommits}
+        threads={paletteThreads}
+        files={paletteFiles}
+        onPickCommit={(sha) => {
+          setPaletteKind(null);
+          handleSelectCommit(sha);
+        }}
+        onPickThread={(id) => {
+          setPaletteKind(null);
+          const target = events.find(
+            (e) => e.type === "review_thread" && e.threadId === id,
+          );
+          if (target) timelineRef.current?.focusEvent(target.id);
+        }}
+        onPickFile={(path) => {
+          setPaletteKind(null);
+          if (!path) return;
+          navigate("/files", {
+            state: {
+              openFilePath: path,
+              laneId: pr.laneId,
+              mode: "diff",
+            },
+          });
+        }}
+      />
+    );
+
+    if (layout === "stack") {
+      return (
+        <>
+          <div
+            className="flex h-full min-h-0 w-full flex-col"
+            style={{ background: COLORS.prSurface }}
+            data-testid="pr-detail-timeline-rails"
+            data-layout="stack"
+          >
+            <div
+              className="flex max-h-[46%] min-h-0 shrink-0 flex-col gap-2 overflow-y-auto px-2 pt-2"
+              data-testid="pr-detail-right-rail"
+            >
+              <PrDetailRightMetadataRail
+                pr={pr}
+                lane={lane}
+                detail={detail}
+                status={status}
+                reviews={reviews}
+                checks={checks}
+                actionRuns={actionRuns}
+                showReviewerEditor={showReviewerEditor}
+                setShowReviewerEditor={setShowReviewerEditor}
+                reviewerInput={reviewerInput}
+                setReviewerInput={setReviewerInput}
+                showLabelEditor={showLabelEditor}
+                setShowLabelEditor={setShowLabelEditor}
+                labelInput={labelInput}
+                setLabelInput={setLabelInput}
+                onRequestReviewers={onRequestReviewers}
+                onSetLabels={onSetLabels}
+                actionBusy={actionBusy}
+                onSubmitReview={onSubmitReview}
+                onOpenAsLane={onOpenAsLane}
+                onSelectCheck={onSelectCheck}
+                onOpenChecksTab={onOpenChecksTab}
+                onRerunChecks={onRerunChecks}
+              />
+              <PrFilesChangedCard files={files} onOpenFilesTab={onOpenFilesTab} />
+              <div data-testid="pr-detail-merge-pane">
+                {pr.stack ? (
+                  <div style={{ display: "grid", gap: 10, padding: 14 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#C4B5FD" }}>
+                      <Stack size={16} weight="fill" />
+                      <span style={{ fontFamily: SANS_FONT, fontSize: 12, fontWeight: 700 }}>
+                        GitHub Stack {pr.stack.position} of {pr.stack.size}
+                      </span>
+                    </div>
+                    <p style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 11, lineHeight: 1.5, color: COLORS.textMuted }}>
+                      GitHub manages this stack&apos;s rebases, review requirements, and merge order. Finish the merge on GitHub.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void window.ade.app.openExternal(pr.githubUrl);
+                      }}
+                      style={primaryButton({ height: 34, justifyContent: "center" })}
+                    >
+                      <ArrowSquareOut size={13} />
+                      Review and merge on GitHub
+                    </button>
+                  </div>
+                ) : (
+                  <PrDetailMergeRail
+                    pr={pr}
+                    status={status}
+                    checks={checks}
+                    reviews={reviews}
+                    commits={commitSnapshots}
+                    mergeMethod={mergeMethod}
+                    actionBusy={actionBusy}
+                    onMerge={onMerge}
+                    onUpdateBranch={onUpdateBranch}
+                    updateBranchBusy={updateBranchBusy}
+                    updateBranchNotice={updateBranchNotice}
+                    onDeleteBranch={onDeleteBranch}
+                    deleteBranchBusy={deleteBranchBusy}
+                    onOpenManageLane={onOpenManageLane}
+                    onClose={onClose}
+                    onReopen={onReopen}
+                  />
+                )}
+              </div>
+            </div>
+            <div className="relative flex min-h-0 flex-1 flex-col" data-testid="pr-detail-thread-panel">
+              <PrTimeline
+                ref={timelineRef}
+                events={events}
+                prId={pr.id}
+                laneId={pr.laneId}
+                repoOwner={pr.repoOwner}
+                repoName={pr.repoName}
+                viewerLogin={viewerLogin}
+                writeViewerLogin={writeViewerLogin}
+                filters={filters}
+                onFiltersChange={onFiltersChange}
+                onVisibleEventChange={handleVisibleEventChange}
+                footer={
+                  <PrCommentComposer
+                    value={commentDraft}
+                    onChange={setCommentDraft}
+                    repoOwner={pr.repoOwner}
+                    repoName={pr.repoName}
+                    busy={actionBusy}
+                    onSubmit={onAddComment}
+                  />
+                }
+              />
+              <PrCommitTickPill
+                commits={tickCommits}
+                activeSha={activeCommitSha}
+                onSelectCommit={handleSelectCommit}
+                className="absolute z-20"
+                style={{ top: COMMIT_TICK_PILL_INSET_PX, left: COMMIT_TICK_PILL_INSET_PX }}
+              />
+            </div>
+          </div>
+          {commandPalettes}
+        </>
+      );
+    }
+
     return (
       <>
       <Group
@@ -1108,35 +1265,7 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
       </Group>
 
       {/* Outside the Group: only Panel/Separator may be Group children. */}
-      <PrCommandPalettes
-        open={paletteKind}
-        onClose={() => setPaletteKind(null)}
-        commits={paletteCommits}
-        threads={paletteThreads}
-        files={paletteFiles}
-        onPickCommit={(sha) => {
-          setPaletteKind(null);
-          handleSelectCommit(sha);
-        }}
-        onPickThread={(id) => {
-          setPaletteKind(null);
-          const target = events.find(
-            (e) => e.type === "review_thread" && e.threadId === id,
-          );
-          if (target) timelineRef.current?.focusEvent(target.id);
-        }}
-        onPickFile={(path) => {
-          setPaletteKind(null);
-          if (!path) return;
-          navigate("/files", {
-            state: {
-              openFilePath: path,
-              laneId: pr.laneId,
-              mode: "diff",
-            },
-          });
-        }}
-      />
+      {commandPalettes}
       </>
     );
   },

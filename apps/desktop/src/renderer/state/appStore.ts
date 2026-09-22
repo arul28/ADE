@@ -150,7 +150,8 @@ export type WorkSidebarTab =
   | "files"
   | "ios"
   | "app-control"
-  | "browser";
+  | "browser"
+  | "pr";
 export type WorkDraftKind = "chat" | "cli";
 /** How sessions are grouped in the Work sidebar list. */
 export type WorkSessionListOrganization =
@@ -376,6 +377,7 @@ function normalizeWorkSidebarTool(value: unknown): WorkSidebarTab | null {
     || value === "ios"
     || value === "app-control"
     || value === "browser"
+    || value === "pr"
   ) return value;
   return null;
 }

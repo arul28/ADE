@@ -307,6 +307,7 @@ export function WorkSidebar({
 
   // Status now spans every tool, not just the one on screen: the picker cards
   // and the header's activity dots both report on tools nobody is looking at.
+  const panelSessionId = contextTarget?.kind === "chat" ? contextTarget.sessionId : null;
   const {
     statuses,
     loading: statusesLoading,
@@ -318,6 +319,7 @@ export function WorkSidebar({
     lane: activeLane,
     runtimePin,
     terminalOwnerSessionId: statusOwnerSessionId,
+    prSessionId: panelSessionId,
     activeTool: tool,
   });
 
@@ -341,7 +343,6 @@ export function WorkSidebar({
   const contextDisabledReason = targetDisabledReason;
   const canInsertContext = Boolean(contextTarget && !contextDisabledReason);
   const shouldPersistPanelAttachment = canInsertContext && contextTarget?.kind === "pty";
-  const panelSessionId = contextTarget?.kind === "chat" ? contextTarget.sessionId : null;
 
   const dispatchTargetRef = useRef({ contextTarget, contextDisabledReason });
   dispatchTargetRef.current = { contextTarget, contextDisabledReason };

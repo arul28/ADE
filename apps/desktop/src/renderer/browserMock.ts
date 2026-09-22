@@ -5505,27 +5505,54 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       getEventHistory: async (arg: {
         sessionId: string;
         maxEvents?: number;
-      }) => ({
-        sessionId: typeof arg?.sessionId === "string" ? arg.sessionId : "",
-        events: (() => {
-          const sessionId =
-            typeof arg?.sessionId === "string" ? arg.sessionId : "";
-          const events = getMockChatTranscriptEvents(sessionId);
-          const maxEvents = Number.isFinite(arg?.maxEvents)
-            ? Math.max(1, Math.floor(arg.maxEvents!))
-            : events.length;
-          return events.length > maxEvents ? events.slice(-maxEvents) : events;
-        })(),
-        truncated: (() => {
-          const sessionId =
-            typeof arg?.sessionId === "string" ? arg.sessionId : "";
-          const events = getMockChatTranscriptEvents(sessionId);
-          const maxEvents = Number.isFinite(arg?.maxEvents)
-            ? Math.max(1, Math.floor(arg.maxEvents!))
-            : events.length;
-          return events.length > maxEvents;
-        })(),
-      }),
+      }) => {
+        const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId : "";
+        const events = getMockChatTranscriptEvents(sessionId);
+        const maxEvents = Number.isFinite(arg?.maxEvents)
+          ? Math.max(1, Math.floor(arg.maxEvents!))
+          : events.length;
+        const omitted = Math.max(0, events.length - maxEvents);
+        return {
+          sessionId,
+          events: omitted > 0 ? events.slice(omitted) : events,
+          truncated: omitted > 0,
+          hasOlderHistory: omitted > 0,
+          tailStartOffset: omitted > 0 ? omitted : null,
+        };
+      },
+      getEventHistoryPage: async (arg: {
+        sessionId: string;
+        beforeOffset: number;
+        maxBytes?: number;
+      }) => {
+        const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId : "";
+        const events = getMockChatTranscriptEvents(sessionId);
+        const before = Number.isFinite(arg?.beforeOffset)
+          ? Math.max(0, Math.floor(arg.beforeOffset))
+          : 0;
+        const older = events.slice(0, Math.min(before, events.length));
+        const maxBytes = Number.isFinite(arg?.maxBytes) && arg.maxBytes! > 0
+          ? arg.maxBytes!
+          : 256 * 1024;
+        const page: typeof older = [];
+        let bytes = 0;
+        for (let index = older.length - 1; index >= 0; index -= 1) {
+          const raw = JSON.stringify(older[index]);
+          if (page.length > 0 && bytes + raw.length > maxBytes) break;
+          page.push(older[index]!);
+          bytes += raw.length;
+          if (page.length >= 200) break;
+        }
+        page.reverse();
+        const startOffset = older.length - page.length;
+        return {
+          sessionId,
+          events: page,
+          startOffset,
+          hasMore: startOffset > 0,
+          sessionFound: events.length > 0,
+        };
+      },
     },
     appControl: {
       getStatus: resolved({
@@ -7013,10 +7040,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       set: resolvedArg2(undefined),
     },
     tilingTree: {
-      get: resolvedArg(null),
-      set: resolvedArg2(undefined),
-    },
-    graphState: {
       get: resolvedArg(null),
       set: resolvedArg2(undefined),
     },

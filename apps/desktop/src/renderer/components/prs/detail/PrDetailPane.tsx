@@ -360,7 +360,8 @@ type PrDetailPaneProps = {
   mergeMethod: MergeMethod;
   onRefresh: (args?: { prId?: string; prIds?: string[] }) => Promise<void>;
   onNavigate: (path: string) => void;
-  onShowInGraph?: (laneId: string) => void;
+  /** `stack` puts the right rail above the comment thread for a narrow pane. */
+  layout?: "split" | "stack";
   onOpenRebaseTab?: (laneId?: string) => void;
   initialDetailTab?: DetailTab | null;
   onDetailTabChange?: (tab: DetailTab) => void;
@@ -396,7 +397,7 @@ export function PrDetailPane({
   mergeMethod,
   onRefresh,
   onNavigate: _onNavigate,
-  onShowInGraph,
+  layout = "split",
   onOpenRebaseTab,
   initialDetailTab,
   onDetailTabChange,
@@ -1357,7 +1358,6 @@ export function PrDetailPane({
         onStartTitleEdit={handleStartTitleEdit}
         onCancelTitleEdit={handleCancelTitleEdit}
         onSubmitTitle={handleUpdateTitle}
-        onShowInGraph={onShowInGraph}
         unmappedAffordance={unmappedAffordance}
       />
 
@@ -1394,6 +1394,7 @@ export function PrDetailPane({
         {activeTab === "overview" && (
           <TimelineRailsOverview
             ref={timelineRailsRef}
+            layout={layout}
             pr={pr}
             detail={detail}
             status={status}

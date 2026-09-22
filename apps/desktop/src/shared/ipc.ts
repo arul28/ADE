@@ -976,8 +976,6 @@ export const IPC = {
   layoutSet: "ade.layout.set",
   tilingTreeGet: "ade.tilingTree.get",
   tilingTreeSet: "ade.tilingTree.set",
-  graphStateGet: "ade.graph.state.get",
-  graphStateSet: "ade.graph.state.set",
   testsListSuites: "ade.tests.listSuites",
   testsRun: "ade.tests.run",
   testsStop: "ade.tests.stop",

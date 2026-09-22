@@ -393,7 +393,6 @@
 /* Neutral zinc — work surface matches rest of UI, not a second brand tint. */
 .tab-tint-work { --tab-tint-rgb: 113, 113, 122; }
 .tab-tint-conflicts { --tab-tint-rgb: 239, 68, 68; }
-.tab-tint-graph { --tab-tint-rgb: 99, 102, 241; }
 .tab-tint-prs { --tab-tint-rgb: 167, 139, 250; }
 .tab-tint-history { --tab-tint-rgb: 217, 119, 6; }
 .tab-tint-automations { --tab-tint-rgb: 249, 115, 22; }
@@ -1665,13 +1664,22 @@ h6 {
 }
 
 /* Global input focus ring (ensures all inputs get consistent treatment) */
-input:not([type="checkbox"]):not([type="radio"]):not(.xterm-helper-textarea):focus,
+input:not([type="checkbox"]):not([type="radio"]):not(.xterm-helper-textarea):not(.ade-palette-search):focus,
 textarea:focus,
 select:focus {
   border-color: var(--color-accent);
   box-shadow: 0 0 0 2px var(--color-accent-muted);
   outline: none;
   transition: border-color 150ms, box-shadow 150ms;
+}
+
+/* The command palette search is autofocused. The global ring reads as a
+   mouse-selection outline around the whole top bar. */
+input.ade-palette-search:focus,
+input.ade-palette-search:focus-visible {
+  border-color: transparent;
+  box-shadow: none;
+  outline: none;
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -2675,23 +2683,6 @@ button:active, [role="button"]:active {
       rgba(239, 68, 68, 0.03) 30px);
   animation: ade-breathe 6s ease-in-out infinite;
   opacity: 0.5;
-}
-
-/* 7. Graph — Constellation / Star-field (indigo #6366f1) */
-.ade-tab-bg-graph::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background:
-    radial-gradient(circle at 15% 15%, rgba(99, 102, 241, 0.12) 0px, rgba(99, 102, 241, 0.12) 1px, transparent 1px),
-    radial-gradient(circle at 45% 25%, rgba(99, 102, 241, 0.08) 0px, rgba(99, 102, 241, 0.08) 1px, transparent 1px),
-    radial-gradient(circle at 75% 35%, rgba(99, 102, 241, 0.10) 0px, rgba(99, 102, 241, 0.10) 1px, transparent 1px),
-    radial-gradient(circle at 25% 55%, rgba(99, 102, 241, 0.07) 0px, rgba(99, 102, 241, 0.07) 1px, transparent 1px),
-    radial-gradient(circle at 85% 65%, rgba(99, 102, 241, 0.09) 0px, rgba(99, 102, 241, 0.09) 1px, transparent 1px),
-    radial-gradient(circle at 55% 75%, rgba(99, 102, 241, 0.06) 0px, rgba(99, 102, 241, 0.06) 1px, transparent 1px),
-    radial-gradient(circle at 35% 85%, rgba(99, 102, 241, 0.08) 0px, rgba(99, 102, 241, 0.08) 1px, transparent 1px),
-    radial-gradient(circle at 65% 90%, rgba(99, 102, 241, 0.11) 0px, rgba(99, 102, 241, 0.11) 1px, transparent 1px);
-  animation: ade-particle-drift 30s ease-in-out infinite;
 }
 
 /* Review — inspection / findings (sky #38bdf8) */

@@ -36,6 +36,7 @@ import {
 import { DRAFT_LAUNCH_JOB_STALE_AFTER_MS } from "../../lib/draftLaunchJobs";
 import { invalidateProjectConfigCache } from "../../lib/projectConfigCache";
 import { useAppStore } from "../../state/appStore";
+import { requestChatHandoff } from "./chatHandoffLaunch";
 import { descriptorsFromAgentChatModelCatalog } from "../shared/ModelPicker/modelCatalog";
 import {
   rememberRuntimeCatalog,
@@ -1068,6 +1069,12 @@ afterEach(() => {
   }
 });
 
+function openChatHandoff(sessionId: string, kind: "local" | "remote") {
+  act(() => {
+    requestChatHandoff({ sessionId, kind });
+  });
+}
+
 function renderPane(session: AgentChatSessionSummary) {
   return render(
     <MemoryRouter>
@@ -2074,8 +2081,7 @@ describe("AgentChatPane companion drawers", () => {
     renderDrawerPane();
 
     fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Proof" }));
-    expect(screen.getByText("No proof collected yet")).toBeTruthy();
+    expect(screen.queryByText("No proof collected yet")).toBeNull();
 
     // Chat actions is an info pane: it floats over the right gutter created by
     // the centered transcript, so it does NOT get a resizable split divider.
@@ -2141,7 +2147,6 @@ describe("AgentChatPane companion drawers", () => {
     renderPane(session);
 
     fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Proof" }));
     expect(await screen.findByText("Proof to delete")).toBeTruthy();
 
     act(() => {
@@ -2154,7 +2159,7 @@ describe("AgentChatPane companion drawers", () => {
     });
 
     await waitFor(() => expect(screen.queryByText("Proof to delete")).toBeNull());
-    expect(await screen.findByText("No proof collected yet")).toBeTruthy();
+    expect(screen.queryByText("No proof collected yet")).toBeNull();
     expect(window.ade.computerUse.getOwnerSnapshot).toHaveBeenCalledTimes(2);
   });
 
@@ -2164,7 +2169,6 @@ describe("AgentChatPane companion drawers", () => {
     renderPane(session);
 
     fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Agents" }));
 
     act(() => {
       emitChatEvent({
@@ -5599,17 +5603,14 @@ describe("AgentChatPane submit recovery", () => {
     installAdeMocks();
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
-    expect(await screen.findByRole("button", { name: /Hand off locally/i })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /Continue on another machine/i })).toBeTruthy();
+    openChatHandoff(session.sessionId, "local");
+    expect(await screen.findByText("Local handoff")).toBeTruthy();
 
     cleanup();
     installAdeMocks();
     renderResolverPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+    openChatHandoff(session.sessionId, "local");
     await waitFor(() => {
       expect(screen.getByText("Handoff is not available for this chat.")).toBeTruthy();
     });
@@ -5624,9 +5625,7 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
+    openChatHandoff(session.sessionId, "local");
     // Brief tab has the unconstrained model picker where Cursor models appear.
     fireEvent.click(await screen.findByRole("button", { name: /^Brief$/ }));
 
@@ -5670,9 +5669,7 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
+    openChatHandoff(session.sessionId, "local");
     fireEvent.click(await screen.findByRole("button", { name: /^Brief$/ }));
 
     const localView = await screen.findByTestId("handoff-local");
@@ -5701,12 +5698,11 @@ describe("AgentChatPane submit recovery", () => {
       </MemoryRouter>,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+    openChatHandoff(session.sessionId, "local");
     expect(await screen.findByText("Handoff is not available for this chat.")).toBeTruthy();
   });
 
-  it("greys out both handoff menu cards with a notice while the turn is active", async () => {
+  it("says a turn is running inside the handoff modal instead of hiding the form", async () => {
     const session = buildSession("session-1");
     installAdeMocks({
       transcript: buildStatusStartedTranscript(session.sessionId),
@@ -5714,19 +5710,10 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
-    const remoteCard = await screen.findByRole("button", { name: /Continue on another machine/i });
-    const localCard = await screen.findByRole("button", { name: /Hand off locally/i });
-    await waitFor(() => {
-      expect((remoteCard as HTMLButtonElement).disabled).toBe(true);
-      expect((localCard as HTMLButtonElement).disabled).toBe(true);
-    });
+    openChatHandoff(session.sessionId, "local");
+    expect(await screen.findByText("Local handoff")).toBeTruthy();
     expect(screen.getByText(/A turn is running — wait for it to finish/i)).toBeTruthy();
-
-    // Clicking the disabled local card must not navigate into the local view.
-    fireEvent.click(localCard);
-    expect(screen.queryByText("Local handoff")).toBeNull();
+    expect((await screen.findByRole("button", { name: "Fork chat" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("creates a sibling handoff chat and opens the returned work tab", async () => {
@@ -5751,9 +5738,7 @@ describe("AgentChatPane submit recovery", () => {
       </MemoryRouter>,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
+    openChatHandoff(session.sessionId, "local");
     fireEvent.click(await screen.findByRole("button", { name: /^Brief$/ }));
     fireEvent.change(await screen.findByLabelText("Extra instructions"), {
       target: { value: "Prioritize the drawer regression before broad cleanup." },
@@ -5793,9 +5778,7 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
+    openChatHandoff(session.sessionId, "local");
     fireEvent.click(await screen.findByRole("button", { name: /^Brief$/ }));
     fireEvent.click(await screen.findByRole("button", { name: "Start brief handoff" }));
 
@@ -5843,9 +5826,7 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
+    openChatHandoff(session.sessionId, "local");
     // Cross-provider (codex → Claude) selection is only offered in Brief mode.
     fireEvent.click(await screen.findByRole("button", { name: /^Brief$/ }));
 
@@ -5893,10 +5874,8 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+    openChatHandoff(session.sessionId, "local");
     // Claude source lands on the Fork tab by default; the picker is same-provider.
-    fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
 
     const localViewFork = await screen.findByTestId("handoff-local");
     fireEvent.click(within(localViewFork).getByRole("button", { name: /^Select model/ }));
@@ -5926,9 +5905,7 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
+    openChatHandoff(session.sessionId, "local");
 
     // Fork is offered for every source now — Cursor forks by replaying the
     // full transcript into a new chat rather than via a native provider fork.
@@ -5962,9 +5939,7 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
+    openChatHandoff(session.sessionId, "local");
 
     // Fork is the default tab, and its picker is no longer constrained to the
     // source provider's own family — an Anthropic target is selectable.
@@ -6009,9 +5984,7 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
+    openChatHandoff(session.sessionId, "local");
 
     const localView = await screen.findByTestId("handoff-local");
     fireEvent.click(within(localView).getByRole("button", { name: /^Select model/ }));
@@ -6032,9 +6005,7 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
+    openChatHandoff(session.sessionId, "local");
     fireEvent.click(await screen.findByRole("button", { name: /^Brief$/ }));
 
     fireEvent.click(await screen.findByRole("button", { name: "Destination lane for handoff" }));
@@ -6096,15 +6067,22 @@ describe("AgentChatPane submit recovery", () => {
         },
       } as any,
     });
+    (window.ade as any).remoteRuntime = {
+      onConnectionSnapshotChanged: vi.fn().mockReturnValue(() => {}),
+      getConnectionSnapshot: vi.fn().mockResolvedValue({ connections: [] }),
+    };
+    (window.ade as any).git = {
+      ...(window.ade as any).git,
+      getSyncStatus: vi.fn().mockResolvedValue({}),
+      getOriginRemote: vi.fn().mockResolvedValue(null),
+    };
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+    openChatHandoff(session.sessionId, "remote");
 
-    const card = await screen.findByRole("button", { name: /Continue on another machine/i });
-    expect((card as HTMLButtonElement).disabled).toBe(false);
-    expect(screen.queryByText(/cross-machine handoff/i)).toBeNull();
+    expect(await screen.findByRole("heading", { name: /Continue on another computer/i })).toBeTruthy();
+    expect(screen.queryByText(/This chat runs on/i)).toBeNull();
   });
 
   /**
@@ -6154,12 +6132,9 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+    openChatHandoff(session.sessionId, "remote");
 
-    const card = await screen.findByRole("button", { name: /Continue on another machine/i });
-    expect((card as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText(/This chat runs on Mac Studio\./i)).toBeTruthy();
+    expect(await screen.findByText(/This chat runs on Mac Studio\./i)).toBeTruthy();
   });
 
   /**
@@ -6210,9 +6185,7 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
+    openChatHandoff(session.sessionId, "local");
     fireEvent.click(await screen.findByRole("button", { name: /^Brief$/ }));
 
     fireEvent.click(await screen.findByRole("button", { name: "Destination lane for handoff" }));
@@ -6251,9 +6224,7 @@ describe("AgentChatPane submit recovery", () => {
       </MemoryRouter>,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
+    openChatHandoff(session.sessionId, "local");
     fireEvent.click(await screen.findByRole("button", { name: /^Brief$/ }));
 
     fireEvent.click(await screen.findByRole("button", { name: "Destination lane for handoff" }));
@@ -6279,9 +6250,7 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Continue on another machine/i }));
+    openChatHandoff(session.sessionId, "remote");
 
     expect(await screen.findByRole("heading", { name: /Continue on another computer/i })).toBeTruthy();
   });
@@ -11567,8 +11536,7 @@ describe("AgentChatPane per-chat runtime routing", () => {
       machineB,
     ));
 
-    fireEvent.click(screen.getByRole("button", { name: "Handoff" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
+    openChatHandoff(session.sessionId, "local");
     fireEvent.click(await screen.findByRole("button", { name: /^Brief$/ }));
     fireEvent.click(await screen.findByRole("button", { name: "Start brief handoff" }));
     await waitFor(() => expect(mocks.handoff).toHaveBeenCalledWith(

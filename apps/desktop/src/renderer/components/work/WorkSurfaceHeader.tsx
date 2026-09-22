@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { ChatGitToolbar } from "../chat/ChatGitToolbar";
+import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
+import { useAppStore } from "../../state/appStore";
 import { WorkHeaderToolsToggle } from "./WorkHeaderPaneToggles";
 import { LaneBranchDriftChip } from "../lanes/LaneBranchDrift";
 import { LaneChip } from "../terminals/LaneChip";
@@ -146,7 +148,13 @@ export type WorkSurfaceHeaderProps = {
   trailingActions?: ReactNode;
   /** Far-right Tools-pane toggle. When provided, renders after trailingActions. */
   onToggleToolsPane?: () => void;
+  /** Icon immediately left of the Tools toggle. Chat progress uses this. */
+  actionsToggle?: ReactNode;
   toolsPaneOpen?: boolean;
+  /** Center the thread title and drop the lane chip from this row. */
+  centerTitle?: boolean;
+  /** Hide the "create a PR" button. The badge stays when a pull request exists. */
+  prBadgeOnly?: boolean;
   className?: string;
   /**
    * Right-click handler for the whole header row. CLI session surfaces wire this
@@ -183,7 +191,10 @@ export function WorkSurfaceHeader({
   runtimePin = null,
   trailingActions,
   onToggleToolsPane,
+  actionsToggle,
   toolsPaneOpen = false,
+  centerTitle = false,
+  prBadgeOnly = false,
   className,
   onContextMenu,
   testId,
@@ -191,10 +202,65 @@ export function WorkSurfaceHeader({
   // When this header is the title row of a grid tile (FloatingPane with hidden
   // header), the embedded chrome lets the title act as the tile's drag handle —
   // so the chat/CLI surface looks identical in or out of a grid.
+  const theme = useAppStore((state) => state.theme);
   const embeddedChrome = useFloatingPaneEmbeddedChrome();
   const tileDragProps = embeddedChrome?.dragHandleProps ?? null;
   const generatingTitle = useSessionFieldGenerating(lifecycleSessionId, "title");
   const namingLane = useLaneNamePending(laneId);
+  const gitToolbar = showGitToolbar && laneId ? (
+    <ChatGitToolbar
+      laneId={laneId}
+      sessionId={prSessionId}
+      onTogglePrPane={onTogglePrPane}
+      prPaneOpen={prPaneOpen}
+      runtimePin={runtimePin}
+      linkedPrOnly={prBadgeOnly}
+    />
+  ) : null;
+  const rightCluster = (
+    <div className="relative z-10 ml-auto flex shrink-0 items-center gap-2">
+      {centerTitle && snoozeSessionId ? <SessionSnoozeChip sessionId={snoozeSessionId} runtimePin={runtimePin} /> : null}
+      {centerTitle && showCacheBadge ? (
+        <ClaudeCacheTtlBadge idleSinceAt={cacheIdleSinceAt ?? null} />
+      ) : null}
+      {gitToolbar}
+      {trailingActions}
+      {actionsToggle || onToggleToolsPane ? (
+        <div className="flex items-center gap-3">
+          {actionsToggle}
+          {onToggleToolsPane ? (
+            <WorkHeaderToolsToggle open={toolsPaneOpen} onToggle={onToggleToolsPane} />
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+
+  if (centerTitle) {
+    return (
+      <div className={cn(WORK_SURFACE_HEADER_CLASS, "relative", className)} data-testid={testId} onContextMenu={onContextMenu}>
+        <div className="pointer-events-none absolute -inset-x-2 inset-y-0 overflow-hidden" aria-hidden>
+          <div className="relative h-full w-full">
+            <WorkToolPickerBackdrop theme={theme} variant="header" />
+          </div>
+        </div>
+        <div className="relative z-10 flex w-full items-center">
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-16">
+            <div
+              className={cn("pointer-events-auto flex min-w-0 max-w-full items-center gap-2", tileDragProps && "cursor-grab active:cursor-grabbing")}
+              {...(tileDragProps ?? {})}
+              title={tileDragProps ? "Drag to rearrange or out of the grid" : undefined}
+            >
+              <WorkSurfaceTitle title={title} generating={generatingTitle} />
+              {titleAccessory}
+            </div>
+          </div>
+          {rightCluster}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className={cn(WORK_SURFACE_HEADER_CLASS, className)} data-testid={testId} onContextMenu={onContextMenu}>
       <div className="flex w-full items-center gap-2">
@@ -220,25 +286,7 @@ export function WorkSurfaceHeader({
             <ClaudeCacheTtlBadge idleSinceAt={cacheIdleSinceAt ?? null} />
           ) : null}
         </div>
-
-        {showGitToolbar && laneId ? (
-          <ChatGitToolbar
-            laneId={laneId}
-            sessionId={prSessionId}
-            onTogglePrPane={onTogglePrPane}
-            prPaneOpen={prPaneOpen}
-            runtimePin={runtimePin}
-          />
-        ) : null}
-
-        {trailingActions || onToggleToolsPane ? (
-          <div className="ml-auto flex shrink-0 items-center gap-2">
-            {trailingActions}
-            {onToggleToolsPane ? (
-              <WorkHeaderToolsToggle open={toolsPaneOpen} onToggle={onToggleToolsPane} />
-            ) : null}
-          </div>
-        ) : null}
+        {rightCluster}
       </div>
     </div>
   );

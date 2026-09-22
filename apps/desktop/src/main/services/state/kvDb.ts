@@ -154,7 +154,6 @@ export type AdeDbSyncApi = {
  *   "context_doc_last_run"        -> { provider; generatedAt; prdPath; archPath }
  *   "dock:<projectId>"            -> DockLayout
  *   "file-tree:<projectId>"       -> unknown (file tree state)
- *   "graph-state:<projectId>"     -> GraphPersistedState
  *   "agent-chat-parallel-launch:<projectRoot>:<laneId>" -> AgentChatParallelLaunchState
  *   "agent-chat:scheduled-work:v1" -> durable Claude wakeup/cron/loop scheduler state
  *   "auto-rebase:<laneId>"        -> StoredStatus

@@ -960,9 +960,7 @@ open lanes; primary lanes render with a home icon.
 
 - `LaneRebaseBanner` subscribes to `rebase-suggestions-updated` events
   and surfaces dismiss/defer/rebase buttons.
-- `LaneStackPane` shows a mini stack graph with a one-click "Open
-  Canvas" action that navigates to `/graph` — the full
-  [workspace graph](../workspace-graph/README.md).
+- `LaneStackPane` shows the lane stack for the selected lane.
 - `LaneWorkPane` toggles between an xterm.js terminal view
   (`LaneTerminalsPanel`) and an agent chat view (`AgentChatPane`).
   Chat sessions inherit `cwd = lane.worktreePath`.

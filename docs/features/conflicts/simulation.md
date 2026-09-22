@@ -252,8 +252,7 @@ ai:
 ```
 
 The conflict resolution dialog reads and writes these values via
-`projectConfigService`. The workspace graph no longer opens a
-conflict-resolution flyout; edge clicks run `simulateMerge` only.
+`projectConfigService`. Merge simulation runs from the integration and lane surfaces.
 
 ## Gotchas
 

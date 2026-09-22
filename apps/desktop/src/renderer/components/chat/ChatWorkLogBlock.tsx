@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { ArrowSquareOut, CaretDown, CaretRight, Check, Globe, Terminal, Warning, XCircle } from "@phosphor-icons/react";
+import { ArrowDown, ArrowSquareOut, ArrowUp, CaretDown, CaretRight, Check, Clock, GitDiff, Globe, Terminal, Warning, Wrench, XCircle } from "@phosphor-icons/react";
 import type { OperatorNavigationSuggestion } from "../../../shared/types";
 import {
   deriveWebSearchResultDisplay,
@@ -11,6 +11,8 @@ import {
   type ChatWorkLogGroupEvent,
   type ChatWorkLogEntry,
   type ChatWorkLogFileChange,
+  formatTurnTokenParts,
+  type TurnTokenUsage,
 } from "./chatTranscriptRows";
 import { cn } from "../ui/cn";
 import { getToolMeta } from "./chatToolAppearance";
@@ -971,6 +973,37 @@ export const ChatTurnFilesChangedSummary = React.memo(function ChatTurnFilesChan
   );
 });
 
+function TurnTokenBlurb({ usage }: { usage: TurnTokenUsage | null | undefined }) {
+  const parts = formatTurnTokenParts(usage);
+  if (!parts) return null;
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1 font-mono tabular-nums">
+      {parts.input ? (
+        <span className="inline-flex items-center gap-0.5 text-amber-300/90">
+          <ArrowUp size={9} weight="bold" aria-hidden />
+          <span className="text-[9px] font-semibold tracking-wide">IN</span>
+          {parts.input}
+        </span>
+      ) : null}
+      {parts.input && (parts.output || parts.cached) ? <span className="text-fg/25">/</span> : null}
+      {parts.output ? (
+        <span className="inline-flex items-center gap-0.5 text-red-400/90">
+          <ArrowDown size={9} weight="bold" aria-hidden />
+          <span className="text-[9px] font-semibold tracking-wide">OUT</span>
+          {parts.output}
+        </span>
+      ) : null}
+      {parts.output && parts.cached ? <span className="text-fg/25">/</span> : null}
+      {parts.cached ? (
+        <span className="inline-flex items-center gap-0.5 text-emerald-300/90">
+          <span aria-hidden>~</span>
+          {parts.cached}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 export function ChatTurnWorkSummary({
   toolEntries,
   fileEntries,
@@ -979,7 +1012,10 @@ export function ChatTurnWorkSummary({
   onInsertDraft,
   onRevealChatTerminal,
   sessionId,
-  chrome,
+  leading,
+  tokenUsage,
+  checkpointFiles = null,
+  checkpointDetail = null,
 }: {
   toolEntries: ChatWorkLogEntry[];
   fileEntries: ChatWorkLogEntry[];
@@ -988,60 +1024,102 @@ export function ChatTurnWorkSummary({
   onInsertDraft?: (text: string) => void;
   onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
   sessionId?: string | null;
-  /** Time/usage hairline rendered last, under the summary and any expanded activity. */
-  chrome?: React.ReactNode;
+  /** Clock, duration, and timestamp that open the line. */
+  leading?: React.ReactNode;
+  tokenUsage?: TurnTokenUsage | null;
+  /**
+   * Checkpoint diff for this turn. When the provider recorded one, it replaces
+   * the entry-derived file list and sits on this same line.
+   */
+  checkpointFiles?: { count: number; additions: number; deletions: number } | null;
+  checkpointDetail?: React.ReactNode;
 }) {
   const workspacePaths = useChatWorkspacePaths();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState<null | "tools" | "files">(null);
   const tools = useMemo(() => dedupeChatToolActivityEntries(toolEntries), [toolEntries]);
   const files = useMemo(
     () => aggregateFilesFromEntries(fileEntries.filter(isCodeChangeEntry)),
     [fileEntries],
   );
-  const label = formatTurnWorkSummaryLabel(tools.length, files.length);
-  if (!label && !chrome) return null;
-  const Caret = open ? CaretDown : CaretRight;
+  const fileStat = checkpointFiles ?? (files.length > 0
+    ? {
+        count: files.length,
+        additions: files.reduce((sum, file) => sum + file.additions, 0),
+        deletions: files.reduce((sum, file) => sum + file.deletions, 0),
+      }
+    : null);
+  const tokens = <TurnTokenBlurb usage={tokenUsage} />;
+  if (!leading && !tokens && tools.length === 0 && !fileStat) return null;
+
+  const toggle = (which: "tools" | "files") => {
+    if (which === "files") workspacePaths?.ensureWorkspacesLoaded?.();
+    setOpen((current) => (current === which ? null : which));
+  };
 
   return (
     <div className="w-full min-w-0">
-      {label ? (
-        <div className="mb-1 flex justify-start">
-          <button
-            type="button"
-            aria-expanded={open}
-            aria-label={`${open ? "Hide" : "Show"} ${label} from this turn`}
-            onClick={() => {
-              if (!open) workspacePaths?.ensureWorkspacesLoaded?.();
-              setOpen((value) => !value);
-            }}
-            className="flex max-w-full items-center gap-1.5 rounded-md py-0.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/55 transition-colors hover:text-fg/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/35"
-          >
-            <Caret size={9} weight="bold" className="shrink-0 text-fg/35" />
-            <span className="font-medium">{label}</span>
-          </button>
+      <div className="flex min-w-0 flex-nowrap items-center gap-2 py-1 font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/55">
+        <div className="flex min-w-0 items-center gap-2 overflow-hidden">
+          {leading}
+          {leading && tokens ? <span className="shrink-0 text-fg/25" aria-hidden>·</span> : null}
+          {tokens}
         </div>
-      ) : null}
-      {label && open ? (
-        <div className="mb-2 min-w-0 overflow-hidden border-l border-white/[0.08] pl-4">
+        <div className="ml-auto flex shrink-0 items-center gap-3">
           {tools.length > 0 ? (
-            <ChatToolActivityDetails
-              entries={tools}
-              onNavigateSuggestion={onNavigateSuggestion}
-              onInsertDraft={onInsertDraft}
-              onRevealChatTerminal={onRevealChatTerminal}
-              sessionId={sessionId}
-            />
+            <button
+              type="button"
+              aria-expanded={open === "tools"}
+              aria-label={`${open === "tools" ? "Hide" : "Show"} ${tools.length} tool${tools.length === 1 ? "" : "s"} from this turn`}
+              onClick={() => toggle("tools")}
+              className="inline-flex items-center gap-1 text-fg/55 transition-colors hover:text-fg/85"
+            >
+              <Wrench size={11} weight="bold" aria-hidden />
+              <span className="font-mono tabular-nums">{tools.length}</span>
+              <span>tools</span>
+              {open === "tools"
+                ? <CaretDown size={9} weight="bold" aria-hidden />
+                : <CaretRight size={9} weight="bold" aria-hidden />}
+            </button>
           ) : null}
-          {files.length > 0 ? (
-            <ChatTurnFilesChangedSummary
-              entries={fileEntries}
-              onReviewInFiles={onReviewInFiles}
-              embedded
-            />
+          {fileStat ? (
+            <button
+              type="button"
+              aria-expanded={open === "files"}
+              aria-label={`${open === "files" ? "Hide" : "Show"} files changed`}
+              onClick={() => toggle("files")}
+              className="inline-flex items-center gap-1 text-fg/55 transition-colors hover:text-fg/85"
+            >
+              <GitDiff size={11} weight="bold" aria-hidden />
+              <span>{fileStat.count} {fileStat.count === 1 ? "file" : "files"} changed</span>
+              {fileStat.additions > 0 ? <span className="font-mono tabular-nums text-emerald-300/85">+{fileStat.additions}</span> : null}
+              {fileStat.deletions > 0 ? <span className="font-mono tabular-nums text-red-400/85">−{fileStat.deletions}</span> : null}
+              {open === "files"
+                ? <CaretDown size={9} weight="bold" aria-hidden />
+                : <CaretRight size={9} weight="bold" aria-hidden />}
+            </button>
           ) : null}
         </div>
+      </div>
+      {open === "tools" ? (
+        <div className="mb-2 min-w-0 overflow-hidden border-l border-white/[0.08] pl-4">
+          <ChatToolActivityDetails
+            entries={tools}
+            onNavigateSuggestion={onNavigateSuggestion}
+            onInsertDraft={onInsertDraft}
+            onRevealChatTerminal={onRevealChatTerminal}
+            sessionId={sessionId}
+          />
+        </div>
       ) : null}
-      {chrome}
+      {open === "files" ? (
+        checkpointDetail ?? (
+          <ChatTurnFilesChangedSummary
+            entries={fileEntries}
+            onReviewInFiles={onReviewInFiles}
+            embedded
+          />
+        )
+      ) : null}
     </div>
   );
 }

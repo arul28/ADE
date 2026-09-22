@@ -20,7 +20,7 @@ The destination model, reasoning-effort, and permission pickers are unaffected b
 
 ## Product flow
 
-The action lives in the chat actions drawer under **Handoff** as **Send to machine**.
+The action lives on a session card's right-click menu: Lifecycle → Handoff → **Handoff to remote machine**.
 
 1. ADE checks the source chat and Git lane.
 2. The user selects an eligible connected machine and may add a continuation note. The picker reports each machine's repository presence while it is open, resolved from the same `listProjects` call the prepare step consumes, so the hint costs no extra round trip.

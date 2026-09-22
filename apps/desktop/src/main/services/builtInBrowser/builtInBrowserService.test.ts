@@ -2855,6 +2855,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       ownerChatSessionId: null,
       ownerLeaseExpiresAt: null,
     });
+    expect(service.getStatus().tabs.find((tab) => tab.id === tabId)?.groupLaneId).toBe("lane-1");
     const popup = fakes.webContentsInstances[0]?.openWindow("https://example.test/human-popup");
     expect(popup?.action).toBe("allow");
   });
@@ -4390,6 +4391,12 @@ describe("createBuiltInBrowserService — switchTab and navigate inspect/selecti
       expect.objectContaining({
         method: "Runtime.addBinding",
         params: { name: "__adeBuiltInBrowserInspectSelect" },
+      }),
+      expect.objectContaining({
+        method: "Runtime.evaluate",
+        params: expect.objectContaining({
+          expression: expect.stringContaining("document.documentElement || document.body"),
+        }),
       }),
       expect.objectContaining({
         method: "Runtime.evaluate",

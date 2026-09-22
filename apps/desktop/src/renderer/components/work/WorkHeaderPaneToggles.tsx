@@ -35,15 +35,13 @@ export function WorkHeaderToolsToggle({
   return (
     <button
       type="button"
-      className="ade-shell-control inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-fg/55 transition-colors hover:text-fg/85"
-      data-variant="ghost"
-      style={{ opacity: open ? 1 : 0.7 }}
+      className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.85)] transition-opacity hover:opacity-80"
       onClick={onToggle}
       title={open ? "Close Tools pane" : "Open Tools pane"}
       aria-label={open ? "Close Tools pane" : "Open Tools pane"}
       aria-pressed={open}
     >
-      <SidebarSimple size={16} weight="regular" className="-scale-x-100" />
+      <SidebarSimple size={16} weight="bold" className="-scale-x-100" />
     </button>
   );
 }

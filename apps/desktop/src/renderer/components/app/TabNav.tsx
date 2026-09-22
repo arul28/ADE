@@ -4,7 +4,6 @@ import {
   GitBranch,
   FileCode,
   Terminal,
-  Graph,
   GitPullRequest,
   MagnifyingGlass,
   Clock,
@@ -87,13 +86,6 @@ const mainItems: TabNavItem[] = [
     icon: Robot,
     description: "Chat with the persistent project CTO and manage its identity and settings.",
     docUrl: docs.ctoOverview,
-  },
-  {
-    to: "/graph",
-    label: "Graph",
-    icon: Graph,
-    description: "See lane topology, conflict risk, PR overlays, sync presence, and integration proposals on one canvas.",
-    docUrl: docs.workspaceGraph,
   },
   {
     to: "/history",

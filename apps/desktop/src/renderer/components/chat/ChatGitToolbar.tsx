@@ -56,6 +56,8 @@ type ChatGitToolbarProps = {
    * shows the bare "PR" create button for a session that already has one.
    */
   runtimePin?: OpenProjectBinding | null;
+  /** When set, the create button stays hidden until a pull request exists. */
+  linkedPrOnly?: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -138,6 +140,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   onTogglePrPane,
   prPaneOpen,
   runtimePin = null,
+  linkedPrOnly = false,
 }: ChatGitToolbarProps) {
   const navigate = useNavigate();
   const runtime = useLaneGitActionRuntimeState(laneId);
@@ -692,7 +695,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
             {prMenuOpen ? prMenu : null}
           </AnimatePresence>
         </div>
-      ) : (
+      ) : linkedPrOnly ? null : (
         <div className="flex items-center gap-1.5">
           <button
             type="button"

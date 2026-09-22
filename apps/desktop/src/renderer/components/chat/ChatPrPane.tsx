@@ -17,6 +17,8 @@ import {
 import { cn } from "../ui/cn";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import type { OpenProjectBinding, PrCheck, PrReview, PrStatus, PrSummary } from "../../../shared/types";
+import { PrDetailPane } from "../prs/detail/PrDetailPane";
+import { PrsProvider } from "../prs/state/PrsContext";
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { PrUserAvatar } from "../prs/shared/PrUserAvatar";
 import { ChatPrInlineCreator, inputBase } from "./ChatPrInlineCreator";
@@ -401,6 +403,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   sessionId = null,
   onClose,
   runtimePin = null,
+  variant = "pane",
 }: {
   laneId: string;
   branchName?: string | null;
@@ -416,6 +419,12 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   onClose?: () => void;
   /** See `ChatGitToolbar.runtimePin` — the machine this lane's PR row lives on. */
   runtimePin?: OpenProjectBinding | null;
+  /**
+   * `pane` is the compact card. `tools` is the Work tools tab: the create form
+   * when nothing is open, and the PRs-tab detail view stacked for a narrow pane
+   * when a pull request exists.
+   */
+  variant?: "pane" | "tools";
 }) {
   const navigate = useNavigate();
   // Also rendered from the Work view area, which has no chat scope above it,
@@ -735,6 +744,85 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   // The ↻ spins for a manual sync in flight OR a backend reconcile-on-focus.
   const syncSpinning = syncing || reconciling;
 
+  const prChips = linkedPrs.length > 1 ? (
+    <div className="mb-2 flex flex-wrap gap-1.5 px-3 pt-2">
+      {linkedPrs.map((entry) => {
+        const selected = entry.id === pr?.id;
+        return (
+          <button
+            key={entry.id}
+            type="button"
+            onClick={() => {
+              pinnedPrIdRef.current = entry.id;
+              setCurrentPr(entry);
+            }}
+            title={entry.title || `#${entry.githubPrNumber}`}
+            className={`inline-flex max-w-full items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] leading-4 transition-colors ${
+              selected
+                ? "border-fg/25 bg-fg/[0.10] text-fg/90"
+                : "border-border/15 bg-transparent text-fg/55 hover:bg-fg/[0.06]"
+            }`}
+          >
+            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${prStateTone(entry.state).dot}`} />
+            <span className="shrink-0 font-medium">#{entry.githubPrNumber}</span>
+            <span className="truncate opacity-70">{entry.title || ""}</span>
+          </button>
+        );
+      })}
+    </div>
+  ) : null;
+
+  if (variant === "tools") {
+    if (loading) {
+      return <p className="px-3 py-6 text-center text-[12px] text-fg/40">Loading…</p>;
+    }
+    if (pr) {
+      return (
+        <div className="flex h-full min-h-0 min-w-0 flex-col">
+          {prChips}
+          <div className="min-h-0 min-w-0 flex-1">
+            <PrsProvider active={false}>
+              <PrDetailPane
+                pr={{ ...pr, conflictAnalysis: null }}
+                status={status}
+                checks={checks ?? []}
+                reviews={reviews ?? []}
+                comments={[]}
+                detailBusy={false}
+                lanes={scope.lane ? [scope.lane] : []}
+                mergeMethod="squash"
+                onRefresh={async () => { await refresh({ live: true }); }}
+                onNavigate={(path) => navigate(path)}
+                layout="stack"
+              />
+            </PrsProvider>
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div className="flex h-full min-h-0 flex-col overflow-y-auto p-3.5">
+        <p className="px-1 pb-3 text-[12px] font-medium text-fg/70">No pull request open</p>
+        {runtimePin ? (
+          <p className="px-1 text-[12px] leading-relaxed text-fg/40">
+            Switch to {pinMachineName ?? "this chat's machine"} to open one.
+          </p>
+        ) : (
+          <>
+            <ChatPrInlineCreator
+              laneId={laneId}
+              branchName={branchName ?? null}
+              sessionTitle={sessionTitle}
+              sessionId={sessionId}
+              onCreated={handleCreated}
+            />
+            <ChatPrLinkRow laneId={laneId} sessionId={sessionId} onLinked={handleLinked} />
+          </>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col font-sans" style={accentShadow ? { boxShadow: accentShadow } : undefined}>
       <div className="flex h-9 shrink-0 items-center gap-1.5 border-b border-white/[0.06] px-3">
@@ -765,33 +853,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
           <p className="px-1 py-6 text-center text-[12px] text-fg/40">Loading…</p>
         ) : pr ? (
           <>
-            {linkedPrs.length > 1 ? (
-              <div className="mb-3 flex flex-wrap gap-1.5">
-                {linkedPrs.map((entry) => {
-                  const selected = entry.id === pr.id;
-                  return (
-                    <button
-                      key={entry.id}
-                      type="button"
-                      onClick={() => {
-                        pinnedPrIdRef.current = entry.id;
-                        setCurrentPr(entry);
-                      }}
-                      title={entry.title || `#${entry.githubPrNumber}`}
-                      className={`inline-flex max-w-full items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] leading-4 transition-colors ${
-                        selected
-                          ? "border-fg/25 bg-fg/[0.10] text-fg/90"
-                          : "border-border/15 bg-transparent text-fg/55 hover:bg-fg/[0.06]"
-                      }`}
-                    >
-                      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${prStateTone(entry.state).dot}`} />
-                      <span className="shrink-0 font-medium">#{entry.githubPrNumber}</span>
-                      <span className="truncate opacity-70">{entry.title || ""}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            ) : null}
+            {prChips}
           <PrDetails
             pr={pr}
             checks={checks}

@@ -1264,13 +1264,6 @@ export const SessionCard = React.memo(function SessionCard({
     </span>
   );
 
-  /* Recede rule (inbox-zero): rows the presentation marks non-prominent —
-     Working, Starting, Stale, Stopped, Ended, Snoozed — and settled rows fade
-     back so the handful that actually want a human stand out. The status label
-     keeps its hue either way, so a working row is still findable. Selection
-     always wins: whatever you are looking at renders at full strength. */
-  const shouldRecede = !isHighlighted && !presentation?.prominent;
-
   const row = (
     <div
       role="button"
@@ -1290,11 +1283,9 @@ export const SessionCard = React.memo(function SessionCard({
         // hairline corner, not a card's.
         "group/v2-row relative w-full select-none overflow-hidden rounded-md text-left outline-none transition-[background-color,opacity] duration-100",
         disabledReason ? "cursor-default" : "cursor-pointer",
-        isHighlighted ? "bg-white/[0.06]" : "bg-transparent hover:bg-white/[0.035]",
+        isHighlighted ? "bg-white/[0.06]" : "hover:bg-white/[0.05]",
         isMultiSelected && "ring-1 ring-accent/35",
-        shouldRecede && "opacity-70 hover:opacity-100",
       )}
-      data-session-recede={shouldRecede ? "true" : undefined}
       {...(disabledReason
         ? { "aria-label": `${primaryText}: ${disabledReason}` }
         : { "aria-label": primaryText })}

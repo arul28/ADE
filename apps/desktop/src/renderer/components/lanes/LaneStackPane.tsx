@@ -1,11 +1,9 @@
 import React from "react";
-import { ArrowSquareOut, GitMerge } from "@phosphor-icons/react";
-import { useNavigate } from "react-router-dom";
+import { GitMerge } from "@phosphor-icons/react";
 import type { LaneLinearIssue, LaneSummary } from "../../../shared/types";
 import type { IntegrationLaneSource } from "../../lib/integrationLanes";
-import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, outlineButton } from "./laneDesignTokens";
+import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT } from "./laneDesignTokens";
 import { logRendererDebugEvent } from "../../lib/debugLog";
-import { SmartTooltip } from "../ui/SmartTooltip";
 import { LaneAccentDot } from "./LaneAccentDot";
 import { LinearIssueBadge } from "./LinearIssueBadge";
 import { LaneAgentList } from "./LaneAgentList";
@@ -389,7 +387,6 @@ export function LaneStackPane({
   highlightedSessionIds?: Set<string>;
   onOpenAgent?: (agent: LaneAgent) => void;
 }) {
-  const navigate = useNavigate();
   React.useEffect(() => {
     logRendererDebugEvent("renderer.lanes.stack_pane_mount", {
       laneCount: lanes.length,
@@ -418,16 +415,6 @@ export function LaneStackPane({
         style={{ height: 36, padding: "0 16px", background: COLORS.cardBg, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderBottom: `1px solid ${COLORS.border}` }}
       >
         <span style={{ ...LABEL_STYLE, color: COLORS.textDim }}>STACK GRAPH</span>
-        <SmartTooltip content={{ label: "Open Canvas", description: "Open the full workspace canvas view showing all lanes and their relationships." }}>
-          <button
-            type="button"
-            style={outlineButton({ height: 24, gap: 4, padding: "4px 8px", fontSize: 10, fontWeight: 500, color: COLORS.textMuted })}
-            onClick={() => navigate("/graph")}
-          >
-            <ArrowSquareOut size={12} />
-            CANVAS
-          </button>
-        </SmartTooltip>
       </div>
       {selectedIntegrationSources.length > 0 ? (
         <div

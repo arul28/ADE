@@ -636,6 +636,64 @@ export function latestExpandableFailureId(events: AgentChatEventEnvelope[]): str
   return null;
 }
 
+type FoldedPlanStep = { text: string; status: string };
+
+function planStatusFromTodo(status: string): FoldedPlanStep["status"] {
+  switch (status) {
+    case "completed":
+    case "in_progress":
+    case "pending":
+      return status;
+    default:
+      return "pending";
+  }
+}
+
+function foldTodoItemsIntoPlanSteps(
+  steps: readonly FoldedPlanStep[],
+  items: readonly { description?: string; status?: string }[],
+): FoldedPlanStep[] {
+  const next = steps.map((step) => ({ text: step.text, status: step.status }));
+  for (const item of items) {
+    const text = item.description?.trim() ?? "";
+    if (!text) continue;
+    const status = planStatusFromTodo(item.status ?? "pending");
+    const existing = next.find((step) => step.text.trim() === text);
+    if (existing) existing.status = status;
+    else next.push({ text, status });
+  }
+  return next;
+}
+
+/**
+ * A later todo_update writes onto the plan already emitted for that turn.
+ * The todo row is dropped only after that write. A todo that arrives before
+ * any plan still renders on its own.
+ */
+function foldTodoUpdatesIntoPlans(events: AgentChatEventEnvelope[]): {
+  stepsByPlanIndex: Map<number, FoldedPlanStep[]>;
+  foldedTodoIndexes: Set<number>;
+} {
+  const stepsByPlanIndex = new Map<number, FoldedPlanStep[]>();
+  const latestPlanIndexByTurn = new Map<string, number>();
+  const foldedTodoIndexes = new Set<number>();
+  events.forEach((envelope, index) => {
+    const event = envelope.event;
+    if (event.type === "plan" && event.turnId) {
+      latestPlanIndexByTurn.set(event.turnId, index);
+      stepsByPlanIndex.set(index, event.steps.map((step) => ({ text: step.text, status: step.status })));
+    }
+    if (event.type !== "todo_update" || !event.turnId) return;
+    const planIndex = latestPlanIndexByTurn.get(event.turnId);
+    if (planIndex == null) return;
+    const current = stepsByPlanIndex.get(planIndex);
+    if (!current) return;
+    stepsByPlanIndex.set(planIndex, foldTodoItemsIntoPlanSteps(current, event.items));
+    foldedTodoIndexes.add(index);
+  });
+  return { stepsByPlanIndex, foldedTodoIndexes };
+}
+
 export function renderChatLines(args: {
   events: AgentChatEventEnvelope[];
   notices: LocalNotice[];
@@ -645,6 +703,7 @@ export function renderChatLines(args: {
 }): RenderedChatLine[] {
   const lines: RenderedChatLine[] = [];
   const terminalReasonByTurnId = new Map<string, string>();
+  const foldedPlanSteps = foldTodoUpdatesIntoPlans(args.events);
   for (const envelope of args.events) {
     const event = envelope.event;
     if (event.type !== "done" || event.status === "completed") continue;
@@ -918,11 +977,16 @@ export function renderChatLines(args: {
       continue;
     }
     if (event.type === "plan") {
-      const completed = event.steps.filter((step) => step.status === "completed").length;
+      const stepsForTurn = foldedPlanSteps.stepsByPlanIndex.get(index);
+      const planSteps = stepsForTurn ?? event.steps;
+      const completed = planSteps.filter((step) => step.status === "completed").length;
+      const name = event.explanation?.trim();
       const header = event.streamingText
         ? `plan ${event.state ?? "updated"}  ${singleLine(event.streamingText, 110)}`
-        : `plan ${completed}/${event.steps.length} complete`;
-      const steps = event.steps
+        : name
+          ? `plan  ${singleLine(name, 80)}  ${completed}/${planSteps.length}`
+          : `plan  ${completed}/${planSteps.length}`;
+      const steps = planSteps
         .slice(0, 8)
         .map((step) => `${glyphFor(step.status)} ${step.text}`)
         .join("\n");
@@ -1255,10 +1319,25 @@ export function renderChatLines(args: {
       continue;
     }
     if (event.type === "todo_update") {
+      if (foldedPlanSteps.foldedTodoIndexes.has(index)) continue;
+      const allDone = event.items.length > 0 && event.items.every((todo) => todo.status === "completed");
+      if (allDone) {
+        lines.push({
+          id,
+          tone: "notice",
+          body: event.items.map((todo) => `● ${todo.description}  task complete`).join("\n"),
+        });
+        continue;
+      }
+      const completed = event.items.filter((todo) => todo.status === "completed").length;
       const todoLines = event.items
         .slice(0, 12)
         .map((todo) => `${glyphFor(todo.status)} ${todo.description}`);
-      lines.push({ id, tone: "notice", body: `todos\n${todoLines.join("\n")}` });
+      lines.push({
+        id,
+        tone: "notice",
+        body: [`plan  ${completed}/${event.items.length}`, ...todoLines].join("\n"),
+      });
       continue;
     }
     if (event.type === "subagent_started") {

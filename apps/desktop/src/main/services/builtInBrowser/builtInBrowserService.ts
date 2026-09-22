@@ -285,6 +285,7 @@ export type BrowserTabState = {
   lastNetworkActivityAtMs: number;
   waiters: Set<() => void>;
   actionTrace: BuiltInBrowserActionTraceEntry[];
+  groupLaneId: string | null;
   ownerLaneId: string | null;
   ownerChatSessionId: string | null;
   ownerClaimedAt: string | null;
@@ -2173,6 +2174,20 @@ function createBuiltInBrowserWindowService(args: {
     return changed;
   };
 
+  /**
+   * Lane group is sticky and is not a lease. A later human navigation clears
+   * the owner and must leave the group where it was, so tabs opened in a lane
+   * stay outlined with that lane after the agent lets go.
+   */
+  const assignTabGroupLane = (
+    tab: BrowserTabState,
+    input: { groupLaneId?: string | null; laneId?: string | null },
+  ): void => {
+    if (tab.groupLaneId) return;
+    const groupLaneId = stringOrNull(input.groupLaneId) ?? stringOrNull(input.laneId);
+    if (groupLaneId) tab.groupLaneId = groupLaneId;
+  };
+
   const assertTabLeaseAvailable = (
     tab: BrowserTabState,
     input: Pick<BuiltInBrowserClaimArgs, "laneId" | "chatSessionId" | "force"> = {},
@@ -2300,6 +2315,7 @@ function createBuiltInBrowserWindowService(args: {
 
   const copyTabOwner = (from: BrowserTabState | null, to: BrowserTabState): void => {
     if (!from) return;
+    to.groupLaneId = from.groupLaneId;
     to.ownerLaneId = from.ownerLaneId;
     to.ownerChatSessionId = from.ownerChatSessionId;
     to.ownerClaimedAt = from.ownerClaimedAt;
@@ -2993,6 +3009,7 @@ function createBuiltInBrowserWindowService(args: {
       lastNetworkActivityAtMs: Date.now(),
       waiters: new Set(),
       actionTrace: [],
+      groupLaneId: null,
       ownerLaneId: null,
       ownerChatSessionId: null,
       ownerClaimedAt: null,
@@ -4229,6 +4246,7 @@ function createBuiltInBrowserWindowService(args: {
     }
     reclaimTabForHumanNavigation(tab, input);
     claimTabOwnerFromInput(tab, input);
+    assignTabGroupLane(tab, input);
     armAgentNavigationGuard(tab, input);
     const wc = tab.webContents;
     attachViewsToCurrentWindow();
@@ -4264,6 +4282,7 @@ function createBuiltInBrowserWindowService(args: {
     // and never issues a request you did not ask for.
     tab.isLaunchpad = !normalizedUrl;
     claimTabOwnerFromInput(tab, input);
+    assignTabGroupLane(tab, input);
     armAgentNavigationGuard(tab, input);
     tabs = [...tabs, tab];
     if (willActivate) activeTabId = tab.id;
@@ -5849,6 +5868,7 @@ function tabStatus(tab: BrowserTabState): BuiltInBrowserTab {
     isLoading: wc.isDestroyed() ? false : wc.isLoading(),
     canGoBack: wc.isDestroyed() ? false : wc.canGoBack(),
     canGoForward: wc.isDestroyed() ? false : wc.canGoForward(),
+    groupLaneId: tab.groupLaneId,
     ownerLaneId: tab.ownerLaneId,
     ownerChatSessionId: tab.ownerChatSessionId,
     ownerClaimedAt: tab.ownerClaimedAt,
@@ -6196,7 +6216,11 @@ function inspectOverlayInstallScript(bindingName: string): string {
     existing.dispose();
   }
 
-  const host = document.body || document.documentElement;
+  // Body carries the preview's CSS zoom. A fixed box appended there is
+  // painted in pre-zoom pixels, so a viewport rect lands left of the element
+  // whenever zoom is below 1 (and right of it when zoom is above 1). Host the
+  // outline on the document element, outside that zoom.
+  const host = document.documentElement || document.body;
   if (!host) return;
 
   const overlay = document.createElement("div");
@@ -6214,8 +6238,9 @@ function inspectOverlayInstallScript(bindingName: string): string {
     borderRadius: "3px",
     background: "rgba(168, 85, 247, 0.08)",
     boxShadow: "0 0 0 1px rgba(168, 85, 247, 0.35), 0 10px 28px rgba(88, 28, 135, 0.22)",
-    transform: "translate3d(0, 0, 0)",
-    transition: "transform 90ms cubic-bezier(0.2, 0.8, 0.2, 1), width 90ms cubic-bezier(0.2, 0.8, 0.2, 1), height 90ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 70ms ease",
+    transform: "none",
+    zoom: "1",
+    transition: "left 90ms cubic-bezier(0.2, 0.8, 0.2, 1), top 90ms cubic-bezier(0.2, 0.8, 0.2, 1), width 90ms cubic-bezier(0.2, 0.8, 0.2, 1), height 90ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 70ms ease",
     zIndex: "2147483647"
   });
   host.appendChild(overlay);
@@ -6354,11 +6379,37 @@ function inspectOverlayInstallScript(bindingName: string): string {
     y: Math.round(event.clientY)
   });
 
+  const bodyZoom = () => {
+    const raw = document.body ? window.getComputedStyle(document.body).zoom : "1";
+    const parsed = parseFloat(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+  };
+
+  // elementFromPoint under CSS zoom can answer in layout pixels while the
+  // pointer and getBoundingClientRect are viewport pixels. Keep the candidate
+  // whose box actually contains the pointer.
+  const elementAtViewportPoint = (point) => {
+    const zoom = bodyZoom();
+    const probes = [{ x: point.x, y: point.y }];
+    if (zoom !== 1) {
+      probes.push({ x: point.x / zoom, y: point.y / zoom });
+      probes.push({ x: point.x * zoom, y: point.y * zoom });
+    }
+    let fallback = null;
+    for (const probe of probes) {
+      const hit = document.elementFromPoint(probe.x, probe.y);
+      if (!hit || hit === overlay) continue;
+      if (!fallback) fallback = hit;
+      if (containsPoint(hit, point)) return hit;
+    }
+    return fallback;
+  };
+
   const moveOutline = (point) => {
     if (disposed || selected) return;
-    const fallback = document.elementFromPoint(point.x, point.y);
+    const fallback = elementAtViewportPoint(point);
     const element = smallestElementAtPoint(fallback, point);
-    if (!element || element === overlay) {
+    if (!element || element === overlay || !containsPoint(element, point)) {
       overlay.style.opacity = "0";
       return;
     }
@@ -6368,7 +6419,9 @@ function inspectOverlayInstallScript(bindingName: string): string {
       return;
     }
     overlay.style.opacity = "1";
-    overlay.style.transform = "translate3d(" + Math.round(rect.left) + "px, " + Math.round(rect.top) + "px, 0)";
+    overlay.style.transform = "none";
+    overlay.style.left = Math.round(rect.left) + "px";
+    overlay.style.top = Math.round(rect.top) + "px";
     overlay.style.width = Math.max(1, Math.round(rect.width)) + "px";
     overlay.style.height = Math.max(1, Math.round(rect.height)) + "px";
   };
@@ -6527,9 +6580,26 @@ function(pointArg) {
       }
     };
     visitRoot(fallback);
-    const hits = typeof document.elementsFromPoint === "function"
-      ? document.elementsFromPoint(point.x, point.y)
-      : [];
+    const zoomRaw = document.body ? window.getComputedStyle(document.body).zoom : "1";
+    const zoom = parseFloat(zoomRaw);
+    const zoomFactor = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
+    const hitProbes = [{ x: point.x, y: point.y }];
+    if (zoomFactor !== 1) {
+      hitProbes.push({ x: point.x / zoomFactor, y: point.y / zoomFactor });
+      hitProbes.push({ x: point.x * zoomFactor, y: point.y * zoomFactor });
+    }
+    const hits = [];
+    const seenHits = new Set();
+    for (const probe of hitProbes) {
+      const probeHits = typeof document.elementsFromPoint === "function"
+        ? document.elementsFromPoint(probe.x, probe.y)
+        : [];
+      for (const hit of probeHits) {
+        if (!hit || seenHits.has(hit)) continue;
+        seenHits.add(hit);
+        hits.push(hit);
+      }
+    }
     for (const hit of hits) {
       addCandidate(hit);
       visitRoot(hit);

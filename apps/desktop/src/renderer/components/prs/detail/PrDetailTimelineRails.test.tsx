@@ -539,17 +539,6 @@ describe("PrDetailHeader", () => {
     expect(onStartTitleEdit).toHaveBeenCalledTimes(1);
   });
 
-  // The opposite case: the graph focuses a lane node, so with no lane the
-  // button would build a route with nothing to focus.
-  it("hides Graph for a PR with no lane", () => {
-    renderHeader({ onShowInGraph: vi.fn() });
-    expect(screen.getByText("Graph")).toBeTruthy();
-
-    cleanup();
-    renderHeader({ pr: makePr({ laneId: null as unknown as string }), onShowInGraph: vi.fn() });
-    expect(screen.queryByText("Graph")).toBeNull();
-  });
-
   it("commits the title on Enter and abandons it on Escape", () => {
     const onSubmitTitle = vi.fn();
     const onCancelTitleEdit = vi.fn();

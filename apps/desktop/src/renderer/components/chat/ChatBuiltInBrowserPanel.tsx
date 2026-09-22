@@ -96,6 +96,7 @@ import { BrowserOverflowMenu } from "./browser/BrowserOverflowMenu";
 import { BrowserProfilePanel } from "./browser/BrowserProfilePanel";
 import { BrowserStage, type BrowserLaunchpadGroup } from "./browser/BrowserStage";
 import { BrowserTabStrip } from "./browser/BrowserTabStrip";
+import { orderBrowserTabsByLane } from "./browser/browserTabGroups";
 import { BrowserToolbarRow } from "./browser/BrowserToolbarRow";
 import {
   MENU_ITEM_CLASS,
@@ -189,6 +190,12 @@ type ChatBuiltInBrowserPanelProps = {
   onAddAttachment?: (attachment: AgentChatFileRef) => void;
   onInsertDraft?: (text: string) => void;
   runtimePin?: OpenProjectBinding | null;
+  /**
+   * Lane whose tabs lead the strip, and the group a tab opened from this pane
+   * joins. The Work browser is shared across the project, so this has to be a
+   * prop: the pane is not inside the chat's runtime scope.
+   */
+  groupLaneId?: string | null;
 };
 
 type MessageTone = "info" | "error";
@@ -288,6 +295,7 @@ export function ChatBuiltInBrowserPanel({
   onAddAttachment,
   onInsertDraft,
   runtimePin = null,
+  groupLaneId = null,
 }: ChatBuiltInBrowserPanelProps) {
   // Also rendered from the Work sidebar and the personal-chats page, so the
   // scope is derived from the pin this panel is handed.
@@ -296,6 +304,15 @@ export function ChatBuiltInBrowserPanel({
   // lane" tunnel grants are stored against it; outside a chat provider there is
   // no lane and the grant falls back to the project scope.
   const contextLaneId = useChatRuntimeScope().laneId;
+  const activeGroupLaneId = groupLaneId ?? contextLaneId;
+  const lanes = useAppStore((state) => state.lanes);
+  const laneColorById = useMemo(() => {
+    const colors = new Map<string, string>();
+    for (const lane of lanes) {
+      if (lane.color) colors.set(lane.id, lane.color);
+    }
+    return colors;
+  }, [lanes]);
   const projectRoot = projectRootOverride === undefined
     ? chatScope.rootPath
     : projectRootOverride;
@@ -569,6 +586,10 @@ export function ChatBuiltInBrowserPanel({
   }, [ensureTunnelApproval]);
 
   const browserTabs = useMemo(() => status?.tabs ?? [], [status?.tabs]);
+  const orderedBrowserTabs = useMemo(
+    () => orderBrowserTabsByLane(browserTabs, activeGroupLaneId),
+    [activeGroupLaneId, browserTabs],
+  );
   const tabIdsSignature = useMemo(() => browserTabs.map((tab) => tab.id).join("|"), [browserTabs]);
   const activeTabId = status?.activeTabId ?? browserTabs[0]?.id ?? null;
   const activeTabTunnel = activeTabId ? tabTunnels[activeTabId] ?? null : null;
@@ -1107,7 +1128,10 @@ export function ChatBuiltInBrowserPanel({
           setMessage({ tone: "error", text: prepared.reason ?? "Navigation was not allowed." });
           return;
         }
-        await api.navigate(withBrowserScope({ url: nextUrl }), runtimePinRef.current);
+        await api.navigate(withBrowserScope({
+          url: nextUrl,
+          ...(activeGroupLaneId ? { groupLaneId: activeGroupLaneId } : {}),
+        }), runtimePinRef.current);
         setUrlInput(nextUrl);
         /*
           Submitting is the end of typing.
@@ -1126,7 +1150,7 @@ export function ChatBuiltInBrowserPanel({
         await refreshStatus();
       });
     },
-    [prepareRemoteNavigation, refreshStatus, rememberTabTunnel, restoreLiveBrowserView, runBusy, withBrowserScope],
+    [activeGroupLaneId, prepareRemoteNavigation, refreshStatus, rememberTabTunnel, restoreLiveBrowserView, runBusy, withBrowserScope],
   );
 
   const handleNavigate = useCallback(
@@ -1154,11 +1178,14 @@ export function ChatBuiltInBrowserPanel({
       if (captureModeRef.current) restoreLiveBrowserView();
       const api = requireBrowserApi();
       if (!api.createTab) throw new Error("This ADE build does not support browser tabs.");
-      const nextStatus = await api.createTab(withBrowserScope({ activate: true }), runtimePinRef.current);
+      const nextStatus = await api.createTab(withBrowserScope({
+        activate: true,
+        ...(activeGroupLaneId ? { groupLaneId: activeGroupLaneId } : {}),
+      }), runtimePinRef.current);
       applyStatus(nextStatus);
       setUrlInput("");
     });
-  }, [applyStatus, restoreLiveBrowserView, runBusy, withBrowserScope]);
+  }, [activeGroupLaneId, applyStatus, restoreLiveBrowserView, runBusy, withBrowserScope]);
 
   const handleSwitchTab = useCallback((tabId: string) => {
     void runBusy("switch-tab", async () => {
@@ -2653,7 +2680,8 @@ export function ChatBuiltInBrowserPanel({
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-md border border-white/[0.08] bg-[var(--color-bg)]">
         <BrowserTabStrip
           stripRef={tabStripRef}
-          tabs={browserTabs}
+          tabs={orderedBrowserTabs}
+          laneColorById={laneColorById}
           activeTabId={activeTabId}
           tabTunnels={tabTunnels}
           failedFavicons={failedFavicons}

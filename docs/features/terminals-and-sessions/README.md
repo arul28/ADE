@@ -726,7 +726,9 @@ Renderer surfaces:
   active tool**: `terminal` (attached shells), `browser` (mounts
   `ChatBuiltInBrowserPanel` over the current ADE window's
   `WebContentsView`-backed built-in browser), `git` (lane git actions +
-  selection-driven diff), `files` (mounts `FilesTab` in `embedded` mode
+  selection-driven diff), `pr` (the lane's pull request: the create form
+  when none is open, and the PRs detail view stacked for the narrow pane
+  when one is), `files` (mounts `FilesTab` in `embedded` mode
   with the lane worktree pre-selected), `ios` (mounts
   `ChatIosSimulatorPanel` against the active lane), `app-control`
   (mounts `ChatAppControlPanel`). Which tool is open persists **per lane**; open/closed and width
@@ -2330,8 +2332,9 @@ in-memory reset stays separate.
   right `WorkSidebar` open/width) to `localStorage` under
   `ade.workViewState.v1`. The sidebar fields are
   `workSidebarOpen: boolean`, `workSidebarWidthPct: number` (clamped to
-  26–55), and `workSidebarTool: "terminal" | "browser" | "git" | "files" |
-  "ios" | "app-control" | null` (null = the picker page).
+  26–55), and `workSidebarTool: "terminal" | "browser" | "git" | "pr" | "files" |
+  "ios" | "app-control" | null` (null = the picker page). The PR tool is
+  per lane: no pull request, one open, or several.
   `workSidebarTool` is read and written on the **lane** scope, falling back
   to the project scope when no lane is bound; the other two are always
   project-wide. Lane-scoped state uses a composite

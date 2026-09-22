@@ -172,7 +172,7 @@ import {
 import { readPendingInputRequest, buildLegacyPendingInputFromApprovalEvent } from "./pendingInput";
 import { AnsweredQuestionReceipt, OpenQuestionReceipt } from "./QuestionReceipts";
 import { isQuestionKind } from "../../../shared/pendingInputAnswers";
-import { CodexPlanCard } from "./codex/CodexPlanCard";
+import { ChatPlanChecklist, CodexPlanCard } from "./codex/CodexPlanCard";
 import { CodexImageGenerationCard } from "./codex/CodexImageGenerationCard";
 import { CodexImageViewLine } from "./codex/CodexImageViewLine";
 import { ContextCompactDivider } from "./ContextCompactDivider";
@@ -180,6 +180,7 @@ import { terminalReasonLabel, formatTimedOutAfter, formatGrepTotalsPrefix } from
 import { peekPendingSessionAnchor, takePendingSessionAnchor } from "../terminals/pendingSessionAnchors";
 import { ChatTurnFileChangesPanel, aggregateFiles } from "./ChatFileChangesPanel";
 import {
+  CHAT_CARD_WIDTH_CLASS,
   ChatCard,
   ChatCardFaint,
   ChatCardRow,
@@ -1470,6 +1471,20 @@ function activityBundleSummary(items: ChatActivityBundleItem[]): string {
   return "Work updates";
 }
 
+function TaskCompleteLines({ items }: { items: Array<{ id: string; description: string }> }) {
+  return (
+    <div className="flex w-full min-w-0 flex-col gap-1 py-1" data-testid="task-complete-lines">
+      {items.map((item) => (
+        <div key={item.id} className="flex min-w-0 items-center gap-2 text-[length:calc(var(--chat-font-size)*12/14)]">
+          <CheckCircle size={13} weight="fill" className="shrink-0 text-emerald-300" aria-hidden />
+          <span className="min-w-0 truncate text-fg/75">{item.description}</span>
+          <span className="shrink-0 text-emerald-300/80">task complete</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ActivityBundleRow({
   item,
   sessionId,
@@ -1479,6 +1494,18 @@ function ActivityBundleRow({
   sessionId?: string | null;
   standalone?: boolean;
 }) {
+  if (item.event.type === "todo_update") {
+    const todos = item.event.items;
+    const allComplete = todos.length > 0 && todos.every((todo) => todo.status === "completed");
+    if (allComplete) return <TaskCompleteLines items={todos} />;
+    return (
+      <div className={cn(CHAT_CARD_WIDTH_CLASS, "rounded-[calc(var(--chat-radius-card)-6px)] bg-white/[0.03] px-3 py-2.5")}>
+        <ChatPlanChecklist
+          steps={todos.map((todo) => ({ text: todo.description, status: todo.status }))}
+        />
+      </div>
+    );
+  }
   const kind = activityBundleKind(item);
   const detail = activityBundleDetail(item);
   const title = activityBundleTitle(item);
@@ -4459,6 +4486,8 @@ function DoneTurnDivider({
   onReviewInFiles,
   turnFileEntries,
   hasCheckpointDiffSummary,
+  turnDiffSummary = null,
+  turnDiffSummaries = null,
   usageLimitResumeTurnId,
 }: {
   event: Extract<AgentChatEvent, { type: "done" }>;
@@ -4481,6 +4510,8 @@ function DoneTurnDivider({
    * The entry-derived fallback stays out of the way in that case.
    */
   hasCheckpointDiffSummary?: boolean;
+  turnDiffSummary?: TurnDiffSummary | null;
+  turnDiffSummaries?: TurnDiffSummary[] | null;
   proofArtifacts?: ComputerUseArtifactView[];
   resolveProofThumbnailSrc?: (artifact: ComputerUseArtifactView) => string | null;
   onOpenProofDrawer?: () => void;
@@ -4534,6 +4565,13 @@ function DoneTurnDivider({
             <span className="font-medium">{modelLabel}</span>
           </span>
         ) : null}
+        {ranFor ? (
+          <span className="inline-flex items-center gap-1">
+            <Clock size={11} weight="bold" aria-hidden />
+            <span>{ranFor}</span>
+          </span>
+        ) : null}
+        {ranFor ? <span className="text-fg/25" aria-hidden>·</span> : null}
         {completed ? (
           <span>{formatTime(timestamp)}</span>
         ) : (
@@ -4545,23 +4583,38 @@ function DoneTurnDivider({
             <span className="font-sans normal-case">{reasonLabel}</span>
           </>
         ) : null}
-        {ranFor ? (
-          <>
-            <span className="opacity-40">·</span>
-            <span>{ranFor}</span>
-          </>
-        ) : null}
-        {tokenLine ? (
-          <>
-            <span className="opacity-40">·</span>
-            <span>{tokenLine}</span>
-          </>
-        ) : null}
     </span>
   );
-  const timeUsageRow = (
-    <div className="flex items-center gap-3">
-      <span className="h-px flex-1 bg-white/[0.06]" />
+  const checkpointFileList = turnDiffSummary ? aggregateFiles([turnDiffSummary]) : [];
+  const checkpointFiles = checkpointFileList.length > 0
+    ? {
+        count: checkpointFileList.length,
+        additions: checkpointFileList.reduce((sum, file) => sum + file.additions, 0),
+        deletions: checkpointFileList.reduce((sum, file) => sum + file.deletions, 0),
+      }
+    : null;
+  const checkpointDetail = turnDiffSummary && sessionId && checkpointFiles ? (
+    <ChatTurnFileChangesPanel
+      turnSummary={turnDiffSummary}
+      threadSummaries={turnDiffSummaries?.length ? turnDiffSummaries : [turnDiffSummary]}
+      sessionId={sessionId}
+      variant="detail"
+    />
+  ) : null;
+  const proofChip = turnProof.length > 0 ? (
+    <button
+      type="button"
+      aria-expanded={proofOpen}
+      onClick={() => setProofOpen((open) => !open)}
+      title={proofOpen ? "Hide the proof captured in this turn" : "Show the proof captured in this turn"}
+      className="inline-flex shrink-0 items-center gap-1 rounded-[5px] border border-white/[0.07] px-1.5 py-px font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] tabular-nums text-fg/45 transition-colors hover:border-white/[0.16] hover:text-fg/75"
+    >
+      <Cube size={10} weight="bold" aria-hidden />
+      {turnProof.length} proof
+    </button>
+  ) : null;
+  const turnLeading = (
+    <span className="inline-flex min-w-0 items-center gap-2">
       {usageLimitDetails ? (
         <button
           type="button"
@@ -4573,20 +4626,8 @@ function DoneTurnDivider({
           {content}
         </button>
       ) : content}
-      {turnProof.length > 0 ? (
-        <button
-          type="button"
-          aria-expanded={proofOpen}
-          onClick={() => setProofOpen((open) => !open)}
-          title={proofOpen ? "Hide the proof captured in this turn" : "Show the proof captured in this turn"}
-          className="inline-flex shrink-0 items-center gap-1 rounded-[5px] border border-white/[0.07] px-1.5 py-px font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] tabular-nums text-fg/45 transition-colors hover:border-white/[0.16] hover:text-fg/75"
-        >
-          <Cube size={10} weight="bold" aria-hidden />
-          {turnProof.length} proof
-        </button>
-      ) : null}
-      <span className="h-px flex-1 bg-white/[0.06]" />
-    </div>
+      {proofChip}
+    </span>
   );
 
   return (
@@ -4599,7 +4640,10 @@ function DoneTurnDivider({
         onInsertDraft={onInsertDraft}
         onRevealChatTerminal={onRevealChatTerminal}
         sessionId={sessionId}
-        chrome={timeUsageRow}
+        leading={turnLeading}
+        tokenUsage={usageLimitPaused ? null : event.usage}
+        checkpointFiles={checkpointFiles}
+        checkpointDetail={checkpointDetail}
       />
       <AnimatePresence initial={false}>
         {usageLimitDetails && usageDetailsOpen ? (
@@ -5065,6 +5109,7 @@ const EventRow = React.memo(function EventRow({
   pacedTextReveal,
 }: EventRowProps) {
   const chatInfoHostAvailable = React.useContext(ChatInfoHostContext);
+  const doneTurnId = envelope.event.type === "done" ? envelope.event.turnId : null;
   return (
     <div
       data-chat-anchored-row={anchored ? "true" : undefined}
@@ -5157,6 +5202,10 @@ const EventRow = React.memo(function EventRow({
           onReviewInFiles={onReviewChanges}
           turnFileEntries={turnFileEntries}
           hasCheckpointDiffSummary={hasCheckpointDiffSummary}
+          turnDiffSummary={doneTurnId
+            ? (turnDiffSummaries?.find((summary) => summary.turnId === doneTurnId) ?? null)
+            : null}
+          turnDiffSummaries={turnDiffSummaries}
           usageLimitResumeTurnId={usageLimitResumeTurnId}
         />
       ) : null}
@@ -6047,16 +6096,32 @@ function AgentChatMessageListMain({
     previousToolActivityRef.current = stabilized;
     return stabilized;
   }, [allGroupedRows]);
+  const doneTurnIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const row of allGroupedRows) {
+      if (row.event.type === "done" && row.event.turnId) ids.add(row.event.turnId);
+    }
+    return ids;
+  }, [allGroupedRows]);
   const groupedRows = useMemo(
     // `work_log_group` rows no longer render anything in the timeline: tool
     // calls are shown by the working indicator / done divider, and file changes
     // are summarized ONCE per turn at the done divider instead of once per
-    // burst. Dropping the rows outright (rather than rendering an empty block)
-    // keeps them from consuming a `--chat-row-gap` on each side.
+    // burst. A checkpoint `turn_diff_summary` folds into that same line when
+    // the turn has a done row. Dropping the rows outright (rather than
+    // rendering an empty block) keeps them from consuming a `--chat-row-gap`.
     () => mergeAdjacentActivityBundleRows(
-      allGroupedRows.filter((row) => row.event.type !== "work_log_group"),
+      allGroupedRows.filter((row) => {
+        if (row.event.type === "work_log_group") return false;
+        if (
+          row.event.type === "turn_diff_summary"
+          && row.event.turnId
+          && doneTurnIds.has(row.event.turnId)
+        ) return false;
+        return true;
+      }),
     ),
-    [allGroupedRows],
+    [allGroupedRows, doneTurnIds],
   );
   // `groupedRows` gets a fresh array on every streaming delta (the streaming row
   // is rebuilt), but the ROW KEYS only move when rows are added, removed or

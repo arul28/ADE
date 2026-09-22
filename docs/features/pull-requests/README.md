@@ -396,9 +396,7 @@ for an unattributed run.
 `PrChecksStatus` has five values. `none` means nothing was observed **and**
 nothing led ADE to expect anything — a repo without CI stays quiet. `not_run`
 means something was expected and nothing verified the commit; it is the only one
-of the two that is a finding. It reads muted everywhere — never the danger colour: a hollow dashed ring on desktop PR rows and PR detail and on iOS, and a muted dot or label on Lanes, the workspace graph, the `pr_ci` chat card, and the TUI.
-the danger colour — absence is not failure) on desktop PR rows, Lanes, the
-workspace graph, PR detail, the Work-chat `pr_ci` card, iOS, and the TUI. The
+of the two that is a finding. It reads muted everywhere — never the danger colour: a hollow dashed ring on desktop PR rows and PR detail and on iOS, and a muted dot or label on Lanes, the Work-chat `pr_ci` card, and the TUI. The
 merge checklist and `deriveMergeBlockers` surface it as a neutral "No CI has run
 on this commit" row rather than a pass.
 

@@ -96,7 +96,7 @@ if (!existsSync(dbPath)) {
 const db = new DatabaseSync(dbPath, { readOnly: true, open: true });
 db.exec("PRAGMA busy_timeout = 5000");
 
-const MAX_CHAT_TRANSCRIPT_EVENTS_PER_SESSION = 5000;
+const MAX_CHAT_TRANSCRIPT_EVENTS_PER_SESSION = 12000;
 
 function hasTable(name) {
   const row = db

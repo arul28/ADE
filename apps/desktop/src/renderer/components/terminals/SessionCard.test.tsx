@@ -1539,8 +1539,8 @@ describe("SessionCard status vocabulary", () => {
   });
 });
 
-describe("SessionCard recede rule", () => {
-  it("recedes a working row and leaves a Needs-you row at full strength", () => {
+describe("SessionCard row color", () => {
+  it("leaves unselected rows unfilled", () => {
     const { container, rerender } = render(
       <SessionCard
         session={makeSession({ toolType: "codex", status: "running", runtimeState: "running" })}
@@ -1550,8 +1550,9 @@ describe("SessionCard recede rule", () => {
         onContextMenu={vi.fn()}
       />,
     );
-    expect(row(container).getAttribute("data-session-recede")).toBe("true");
-    expect(row(container).className).toContain("opacity-70");
+    expect(row(container).className).not.toContain("bg-white/[0.035]");
+    expect(row(container).className).toContain("hover:bg-white/[0.05]");
+    expect(row(container).className).not.toContain("opacity-70");
 
     rerender(
       <SessionCard
@@ -1565,10 +1566,12 @@ describe("SessionCard recede rule", () => {
         onContextMenu={vi.fn()}
       />,
     );
-    expect(row(container).getAttribute("data-session-recede")).toBeNull();
+    expect(row(container).className).not.toContain("bg-white/[0.035]");
+    expect(row(container).className).toContain("hover:bg-white/[0.05]");
+    expect(row(container).className).not.toContain("opacity-70");
   });
 
-  it("never recedes the row you are looking at", () => {
+  it("uses the stronger fill for the row you are looking at", () => {
     const { container } = render(
       <SessionCard
         session={makeSession({ toolType: "codex", status: "running", runtimeState: "running" })}
@@ -1579,8 +1582,8 @@ describe("SessionCard recede rule", () => {
       />,
     );
 
-    expect(row(container).getAttribute("data-session-recede")).toBeNull();
     expect(row(container).className).toContain("bg-white/[0.06]");
+    expect(row(container).className).not.toContain("opacity-70");
   });
 
   it("spends surface on interaction only — no lane tint, border or shadow at rest", () => {
@@ -1599,8 +1602,8 @@ describe("SessionCard recede rule", () => {
     );
 
     const element = row(container);
-    expect(element.className).toContain("bg-transparent");
-    expect(element.className).toContain("hover:bg-white/[0.035]");
+    expect(element.className).not.toContain("bg-white/[0.035]");
+    expect(element.className).toContain("hover:bg-white/[0.05]");
     expect(element.getAttribute("style") ?? "").not.toContain("box-shadow");
     expect(element.getAttribute("style") ?? "").not.toContain("border");
   });

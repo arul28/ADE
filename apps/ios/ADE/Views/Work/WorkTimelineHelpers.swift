@@ -2850,6 +2850,16 @@ func buildWorkEventCards(
     if redundantWorkTerminalStatus(envelope.event, terminalDoneTurnIds: terminalDoneTurnIds) {
       continue
     }
+    if case .todoUpdate(let items, let turnId) = envelope.event,
+       let turnId,
+       !turnId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      let planId = workPlanCardId(sessionId: envelope.sessionId, turnId: turnId, fallback: envelope.id)
+      if let existing = byId[planId], existing.kind == "plan" {
+        let steps = foldingWorkTodoLines(items, into: existing.planSteps)
+        byId[planId] = workPlanCard(existing, planSteps: steps)
+        continue
+      }
+    }
     if case .codexTurnStalled(_, _, let turnId, _, _) = envelope.event,
        let turnId = normalizedWorkTurnId(turnId),
        recoveredCodexTurnIds.contains(turnId) {
@@ -3063,6 +3073,58 @@ private let workHostSleepCardIdPrefix = "host-sleep"
 /// True for either half of a host-sleep chip, which share one card id.
 private func workIsHostSleepCardId(_ id: String) -> Bool {
   id.hasPrefix(workHostSleepCardIdPrefix + ":")
+}
+
+/// Parser stores a todo as `"In Progress: description"`. Match that back onto
+/// the plan step the same way desktop matches `description` and writes status.
+private func foldingWorkTodoLines(_ lines: [String], into steps: [WorkPlanStep]) -> [WorkPlanStep] {
+  let prefixes: [(String, String)] = [
+    ("in progress: ", "in_progress"),
+    ("completed: ", "completed"),
+    ("pending: ", "pending"),
+  ]
+  var next = steps
+  for line in lines {
+    let lowered = line.lowercased()
+    guard let match = prefixes.first(where: { lowered.hasPrefix($0.0) }) else { continue }
+    let text = String(line.dropFirst(match.0.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !text.isEmpty else { continue }
+    if let index = next.firstIndex(where: { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) == text }) {
+      next[index] = WorkPlanStep(text: next[index].text, status: match.1)
+    } else {
+      next.append(WorkPlanStep(text: text, status: match.1))
+    }
+  }
+  return next
+}
+
+private func workPlanCard(_ card: WorkEventCardModel, planSteps: [WorkPlanStep]) -> WorkEventCardModel {
+  WorkEventCardModel(
+    id: card.id,
+    kind: card.kind,
+    title: card.title,
+    icon: card.icon,
+    tint: card.tint,
+    timestamp: card.timestamp,
+    body: card.body,
+    bullets: planSteps.map(\.text),
+    metadata: card.metadata,
+    planSteps: planSteps,
+    isInProgress: card.isInProgress,
+    questionModel: card.questionModel,
+    planApprovalModel: card.planApprovalModel,
+    resolution: card.resolution,
+    recoveryOptions: card.recoveryOptions,
+    recoveryTurnId: card.recoveryTurnId,
+    recoverySessionId: card.recoverySessionId,
+    recoveryContext: card.recoveryContext,
+    recoveryReceipt: card.recoveryReceipt,
+    diagnosticModerationChecks: card.diagnosticModerationChecks,
+    diagnosticIntegrationFailures: card.diagnosticIntegrationFailures,
+    spawnCompletionChildId: card.spawnCompletionChildId,
+    technicalDetail: card.technicalDetail,
+    nextAction: card.nextAction
+  )
 }
 
 private func workPlanCardId(

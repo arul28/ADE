@@ -294,7 +294,6 @@ import type {
   DevToolsCheckResult,
   DiffChanges,
   DockLayout,
-  GraphPersistedState,
   FileChangeEvent,
   FileContent,
   FileDiff,
@@ -11413,19 +11412,6 @@ const adeBridge = {
         "set",
         { args: { layoutId, tree } },
         () => ipcRenderer.invoke(IPC.tilingTreeSet, { layoutId, tree }),
-      ).then(() => undefined),
-  },
-  graphState: {
-    get: async (projectId: string): Promise<GraphPersistedState | null> =>
-      callProjectRuntimeActionOr("graph_state", "get", {}, () =>
-        ipcRenderer.invoke(IPC.graphStateGet, { projectId }),
-      ),
-    set: async (projectId: string, state: GraphPersistedState): Promise<void> =>
-      callProjectRuntimeActionOr(
-        "graph_state",
-        "set",
-        { args: { state } },
-        () => ipcRenderer.invoke(IPC.graphStateSet, { projectId, state }),
       ).then(() => undefined),
   },
   /**

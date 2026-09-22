@@ -50,8 +50,6 @@ Renderer:
 
 | File | Responsibility |
 |------|---------------|
-| `renderer/components/graph/shared/RiskMatrix.tsx` | Animated pairwise risk grid |
-| `renderer/components/graph/shared/RiskTooltip.tsx` | Hover detail for a matrix cell |
 | `renderer/components/lanes/mergeSimulation/*` | Conflict file diff, merge simulation panel, language detection |
 | `renderer/components/shared/conflictResolver/ResolverTerminalModal.tsx` | External CLI resolver terminal modal |
 | `renderer/components/prs/ConflictFilePreview.tsx` | Conflict marker preview (re-used from PR flows) |

@@ -2368,36 +2368,6 @@ function buildTilingTreeDomainService(runtime: AdeRuntime): TilingTreeService | 
   };
 }
 
-type GraphStateService = {
-  get(): unknown;
-  set(args: { state?: unknown }): { projectId: string; state: unknown };
-};
-
-function buildGraphStateDomainService(runtime: AdeRuntime): GraphStateService | null {
-  if (!runtime.db) return null;
-  return {
-    // graph_state is strictly scoped to the current runtime project. The caller
-    // cannot override `projectId`; the field is intentionally absent from the
-    // args surface to prevent cross-project reads/writes via `run_ade_action`.
-    get() {
-      const projectId = runtime.projectId;
-      return runtime.db.getJson(`graph_state:${projectId}`);
-    },
-    set(args) {
-      const projectId = runtime.projectId;
-      if (!args || !Object.prototype.hasOwnProperty.call(args, "state")) {
-        throw new Error("Missing required 'state'. Pass an explicit null to clear.");
-      }
-      const state = args.state;
-      if (state !== null && (typeof state !== "object" || Array.isArray(state))) {
-        throw new Error("Expected 'state' to be a plain object or null.");
-      }
-      runtime.db.setJson(`graph_state:${projectId}`, state);
-      return { projectId, state };
-    },
-  };
-}
-
 type TerminalDomainService = {
   list(args?: unknown): unknown;
   read(args?: unknown): Promise<unknown>;
@@ -3418,7 +3388,6 @@ export function getAdeActionDomainServices(
     terminal: toService(buildTerminalDomainService(runtime)),
     layout: toService(buildLayoutDomainService(runtime)),
     tiling_tree: toService(buildTilingTreeDomainService(runtime)),
-    graph_state: toService(buildGraphStateDomainService(runtime)),
     work_tools: toService(runtime.workToolsStateService),
     computer_use_artifacts: toService(buildComputerUseArtifactsDomainService(runtime)),
     ios_simulator: toService(runtime.iosSimulatorService),

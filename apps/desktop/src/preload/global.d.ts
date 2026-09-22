@@ -91,7 +91,6 @@ import type {
   DevToolsCheckResult,
   DiffChanges,
   DockLayout,
-  GraphPersistedState,
   FileChangeEvent,
   FileContent,
   FileDiff,
@@ -3656,10 +3655,6 @@ declare global {
       tilingTree: {
         get: (layoutId: string) => Promise<unknown>;
         set: (layoutId: string, tree: unknown) => Promise<void>;
-      };
-      graphState: {
-        get: (projectId: string) => Promise<GraphPersistedState | null>;
-        set: (projectId: string, state: GraphPersistedState) => Promise<void>;
       };
       /** Read-only Work tools-pane mirror; `null` when no runtime is bound. */
       workTools: {

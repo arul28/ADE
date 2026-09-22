@@ -6,7 +6,10 @@ import type {
   IosSimulatorSession,
   LaneSummary,
   OpenProjectBinding,
+  PrSummary,
 } from "../../../shared/types";
+import { selectPrsForChatInLane } from "../../lib/prChatScope";
+import { selectChatPrs } from "../lanes/lanePageModel";
 import type { WorkSidebarTab } from "../../state/appStore";
 import { browserHostLabel } from "../../lib/browserUrl";
 import { relativeWhen } from "../../lib/format";
@@ -72,6 +75,46 @@ const IDLE: WorkToolStatus = { line: null, live: false, errorCount: 0, errored: 
  * so a new optional field meant thirteen edits. Spreading the idle shape states
  * the defaults once and leaves each builder saying only what is different.
  */
+function prToolStatusLine(count: number | null): WorkToolStatus {
+  if (count == null) return IDLE;
+  if (count <= 0) return statusLine("No pull request open", false);
+  if (count === 1) return statusLine("Pull request open", false);
+  return statusLine(`${count} pull requests open`, false);
+}
+
+function isOpenPullRequest(state: PrSummary["state"]): boolean {
+  switch (state) {
+    case "open":
+    case "draft":
+      return true;
+    case "merged":
+    case "closed":
+      return false;
+    default: {
+      const unreachable: never = state;
+      return unreachable;
+    }
+  }
+}
+
+/**
+ * Open and draft pull requests the PR tool will actually show.
+ *
+ * The card says "open". A merged or closed row still opens in the tool from
+ * the header badge, but it is not an open pull request. The session id is the
+ * pane's chat id (null on a CLI row), the same one `ChatPrPane` scopes with.
+ */
+export function openPullRequestCount(
+  prs: readonly PrSummary[],
+  lane: Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef"> | null,
+  laneId: string,
+  sessionId?: string | null,
+): number {
+  const scoped = selectPrsForChatInLane(prs, laneId, sessionId);
+  const visible = lane ? selectChatPrs(lane, scoped, sessionId) : scoped;
+  return visible.filter((pr) => isOpenPullRequest(pr.state)).length;
+}
+
 function statusLine(line: string | null, live: boolean, extra?: Partial<WorkToolStatus>): WorkToolStatus {
   return { ...IDLE, line, live, ...extra };
 }
@@ -386,6 +429,12 @@ export function useWorkToolStatuses(args: {
   /** Chat/CLI session that owns the attached terminals, if any. */
   terminalOwnerSessionId: string | null;
   /**
+   * Chat id the PR tool pane uses. Null on a CLI row, where the pane is not
+   * scoped to a chat. This is not the terminal owner: a pty id would hide the
+   * lane's pull requests from the card while the pane still showed them.
+   */
+  prSessionId?: string | null;
+  /**
    * The tool on screen, or null for the picker page.
    *
    * Only ever a re-read TRIGGER, never part of an answer: arriving at the
@@ -405,10 +454,11 @@ export function useWorkToolStatuses(args: {
   iosSession: IosSimulatorSession | null;
   appControlSession: AppControlSession | null;
 } {
-  const { enabled, laneId, lane, runtimePin, terminalOwnerSessionId, activeTool = null } = args;
+  const { enabled, laneId, lane, runtimePin, terminalOwnerSessionId, prSessionId = null, activeTool = null } = args;
 
   const [browserErrors, setBrowserErrors] = useState<WorkToolErrorsByTab>(EMPTY_WORK_TOOL_ERRORS);
   const [terminalTitles, setTerminalTitles] = useState<string[] | null>(null);
+  const [prCount, setPrCount] = useState<number | null>(null);
   const [settled, setSettled] = useState(false);
 
   const runtimePinKey = runtimePin?.key ?? null;
@@ -513,6 +563,35 @@ export function useWorkToolStatuses(args: {
     // card at once, so that is the moment the list has to be current.
   }, [activeTool, enabled, offline, panelShellCount, runtimePinKey, terminalEpoch, terminalOwnerSessionId]);
 
+  useEffect(() => {
+    if (!enabled || !laneId) {
+      setPrCount(null);
+      return undefined;
+    }
+    let cancelled = false;
+    const load = () => {
+      const prs = window.ade?.prs;
+      if (!prs?.listAll && !prs?.getForLane) {
+        if (!cancelled) setPrCount(0);
+        return;
+      }
+      const read = prs.listAll
+        ? prs.listAll(runtimePinRef.current).then((all: PrSummary[]) => openPullRequestCount(all, lane, laneId, prSessionId))
+        : prs.getForLane(laneId, runtimePinRef.current).then((one: PrSummary | null) => (one && isOpenPullRequest(one.state) ? 1 : 0));
+      void read.then((count) => {
+        if (!cancelled) setPrCount(count);
+      }).catch(() => {
+        if (!cancelled) setPrCount(null);
+      });
+    };
+    load();
+    const dispose = window.ade?.prs?.onEvent?.(() => load());
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+  }, [enabled, lane, laneId, prSessionId, runtimePinKey]);
+
   const statuses = useMemo<WorkToolStatusMap>(() => ({
     terminal: terminalStatusLine(terminalTitles, panelShellCount),
     browser: offline
@@ -522,6 +601,7 @@ export function useWorkToolStatuses(args: {
     files: filesStatusLine(lane),
     ios: offline ? IDLE : iosStatusLine(iosSession),
     "app-control": offline ? IDLE : appControlStatusLine(appControlSession),
+    pr: prToolStatusLine(prCount),
   }), [
     appControlSession,
     browserErrors,
@@ -531,6 +611,7 @@ export function useWorkToolStatuses(args: {
     laneId,
     offline,
     panelShellCount,
+    prCount,
     terminalTitles,
   ]);
 

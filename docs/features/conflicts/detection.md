@@ -135,8 +135,7 @@ Stale predictions are still returned by `getBatchAssessment` and
 `getLaneStatus` with their original `lastPredictedAt` timestamp.
 The UI decorates them rather than refetching:
 
-- Risk matrix cells render at reduced opacity with a clock icon
-  (`renderer/components/graph/shared/RiskMatrix.tsx`).
+- Stale predictions stay in the assessment payload with their original timestamp.
 - Hover tooltip shows "Last computed N min ago. Click to refresh."
 - Clicking triggers `runPrediction` for the specific pair.
 

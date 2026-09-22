@@ -122,13 +122,59 @@ function rowTone(bucket: JobBucket): AdeCardRow["tone"] {
   return "neutral";
 }
 
+function formatCheckDuration(
+  startedAt: string | null | undefined,
+  completedAt: string | null | undefined,
+): string | null {
+  const start = Date.parse(startedAt ?? "");
+  const end = Date.parse(completedAt ?? "");
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+  const seconds = Math.round((end - start) / 1000);
+  if (seconds < 1) return null;
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remSeconds = seconds % 60;
+  if (minutes < 60) return remSeconds ? `${minutes}m ${remSeconds}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remMinutes = minutes % 60;
+  return remMinutes ? `${hours}h ${remMinutes}m` : `${hours}h`;
+}
+
+/**
+ * What failed, in place of "CI · failed".
+ *
+ * A job that names the step that actually went red ("Run vitest") and how long
+ * it ran is the detail a person can act on. A check with neither a step nor a
+ * duration keeps the group label the other surfaces already render.
+ */
+function failureDetail(item: PrActionJob | PrCheck): string | null {
+  const steps = "steps" in item && Array.isArray(item.steps) ? item.steps : [];
+  const failedStep = steps.find((step) => (
+    step.conclusion === "failure"
+    || step.conclusion === "timed_out"
+    || step.conclusion === "cancelled"
+    || step.conclusion === "action_required"
+  ));
+  const duration = formatCheckDuration(item.startedAt, item.completedAt);
+  const outcome = failedStep?.name?.trim()
+    || (item.conclusion === "timed_out" ? "timed out"
+      : item.conclusion === "cancelled" ? "cancelled"
+      : item.conclusion === "action_required" ? "action required"
+      : null);
+  if (outcome && duration) return `${outcome} · ${duration}`;
+  if (outcome) return outcome;
+  if (duration) return `failed · ${duration}`;
+  return null;
+}
+
 function toRows(entries: RankedItem[], group: "CI" | "Other"): AdeCardRow[] {
   return entries.map(({ item, bucket }) => ({
     icon: jobIcon(bucket),
     text: item.name,
     // The group name travels in `detail` so every surface — desktop, TUI, iOS —
     // shows the split without needing a new payload field to render headers.
-    detail: `${group} · ${bucket}`,
+    // A failure with a step or a duration replaces that generic label.
+    detail: (bucket === "failed" ? failureDetail(item) : null) ?? `${group} · ${bucket}`,
     tone: rowTone(bucket),
   }));
 }
@@ -425,7 +471,7 @@ export function buildPrConflictCard(args: {
 }): AdeCardPayload {
   const { pr, kind } = args;
   const behind = Math.max(0, pr.behindBaseBy ?? 0);
-  const title = kind === "conflict" ? "Merge conflicts appeared" : "Branch fell behind base";
+  const title = kind === "conflict" ? "Merge conflicts appeared" : `Branch behind ${pr.baseBranch}`;
   return {
     cardId: `pr-conflict:${pr.id}:${pr.headSha?.trim() || "head"}:${kind}`,
     variant: "pr_conflict",
@@ -433,7 +479,10 @@ export function buildPrConflictCard(args: {
     title,
     subtitle: `PR #${pr.githubPrNumber} · ${pr.baseBranch}`,
     metrics: kind === "behind"
-      ? [{ label: behind === 1 ? "commit behind" : "commits behind", value: String(behind), tone: "warning" }]
+      ? [
+          { label: "branch", value: pr.headBranch, tone: "neutral" },
+          { label: behind === 1 ? "commit behind" : "commits behind", value: String(behind), tone: "warning" },
+        ]
       : [{ label: "merge state", value: "conflicted", tone: "warning" }],
     navTarget: prNavTarget(pr, "overview"),
     fallbackText: kind === "behind"

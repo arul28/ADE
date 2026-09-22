@@ -602,6 +602,75 @@ function changedTodoItems(
   });
 }
 
+function planStatusFromTodo(
+  status: TodoUpdateTranscriptEvent["items"][number]["status"],
+): PlanTranscriptEvent["steps"][number]["status"] {
+  switch (status) {
+    case "completed":
+      return "completed";
+    case "in_progress":
+      return "in_progress";
+    case "pending":
+      return "pending";
+    default: {
+      const unreachable: never = status;
+      return unreachable;
+    }
+  }
+}
+
+/** A later todo write updates the plan already on screen instead of adding a second card. */
+function foldTodoUpdateIntoExistingPlan(
+  rows: ChatTranscriptRenderEnvelope[],
+  turnId: string,
+  items: TodoUpdateTranscriptEvent["items"],
+): boolean {
+  const matchIndex = [...rows].reverse().findIndex((candidate) =>
+    candidate.event.type === "plan" && (candidate.event.turnId ?? null) === turnId,
+  );
+  if (matchIndex < 0) return false;
+  const actualIndex = rows.length - 1 - matchIndex;
+  const current = rows[actualIndex];
+  if (!current || current.event.type !== "plan") return false;
+  const steps = current.event.steps.map((step) => ({ ...step }));
+  for (const item of items) {
+    const text = item.description.trim();
+    if (!text) continue;
+    const existing = steps.find((step) => step.text.trim() === text);
+    const status = planStatusFromTodo(item.status);
+    if (existing) existing.status = status;
+    else steps.push({ text, status });
+  }
+  rows[actualIndex] = {
+    ...current,
+    event: { ...current.event, steps },
+  };
+  return true;
+}
+
+/**
+ * Cursor emits a todo_update and a plan for the same list. The plan card is
+ * the one that stays; the todo row would only repeat it.
+ */
+function dropTodoRowsCoveredByPlan(
+  rows: ChatTranscriptRenderEnvelope[],
+  turnId: string | null,
+  steps: readonly { text: string }[],
+  context?: CollapseTranscriptContext,
+): void {
+  const texts = new Set(steps.map((step) => step.text.trim()).filter((text) => text.length > 0));
+  if (!texts.size) return;
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const event = rows[index]?.event;
+    if (!event || event.type !== "todo_update") continue;
+    if ((event.turnId ?? null) !== turnId) continue;
+    const covered = event.items.length > 0 && event.items.every((item) => texts.has(item.description.trim()));
+    if (!covered) continue;
+    rows.splice(index, 1);
+    if (context) repairIndexedTranscriptRowsAfterSplice(context, index);
+  }
+}
+
 function mergePlanTranscriptEvent(previous: PlanTranscriptEvent, incoming: PlanTranscriptEvent): PlanTranscriptEvent {
   const hasIncomingSteps = incoming.steps.length > 0;
   const nextState = incoming.state ?? (hasIncomingSteps ? "updated" : previous.state);
@@ -2316,6 +2385,7 @@ export function appendCollapsedChatTranscriptEvent(
     const snapshotKey = todoSnapshotKey(nextTurn);
     const displayItems = changedTodoItems(context?.latestTodoItemsByTurn.get(snapshotKey), event.items);
     context?.latestTodoItemsByTurn.set(snapshotKey, event.items);
+    if (nextTurn !== null && foldTodoUpdateIntoExistingPlan(rows, nextTurn, event.items)) return;
     if (!displayItems.length) return;
     rows.push({
       key: buildRenderKey(envelope, sequence),
@@ -2336,13 +2406,16 @@ export function appendCollapsedChatTranscriptEvent(
         );
       if (matchIndex >= 0) {
         const actualIndex = rows.length - 1 - matchIndex;
+        const merged = mergePlanTranscriptEvent(rows[actualIndex]!.event as PlanTranscriptEvent, event);
         rows[actualIndex] = {
           ...rows[actualIndex]!,
           timestamp: envelope.timestamp,
-          event: mergePlanTranscriptEvent(rows[actualIndex]!.event as PlanTranscriptEvent, event),
+          event: merged,
         };
+        dropTodoRowsCoveredByPlan(rows, nextTurn, merged.steps, context);
         return;
       }
+      dropTodoRowsCoveredByPlan(rows, nextTurn, event.steps, context);
     }
   }
 
@@ -3519,26 +3592,43 @@ export function deriveTurnDividerData(events: AgentChatEventEnvelope[]): Map<str
   return turns;
 }
 
-export function formatDoneTurnTokenLine(usage: {
+export type TurnTokenUsage = {
   inputTokens?: number | null;
   outputTokens?: number | null;
   cacheReadTokens?: number | null;
   cacheCreationTokens?: number | null;
   reasoningTokens?: number | null;
-} | null | undefined): string | null {
+};
+
+function formatTokenCount(value: number | null | undefined): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+  return String(Math.round(value));
+}
+
+/** Colored turn-line counts: input, output, and cache read. */
+export function formatTurnTokenParts(usage: TurnTokenUsage | null | undefined): {
+  input: string | null;
+  output: string | null;
+  cached: string | null;
+} | null {
   if (!usage) return null;
-  const format = (value: number | null | undefined): string | null => {
-    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
-    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-    if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
-    return String(Math.round(value));
-  };
+  const input = formatTokenCount(usage.inputTokens);
+  const output = formatTokenCount(usage.outputTokens);
+  const cached = formatTokenCount(usage.cacheReadTokens);
+  if (!input && !output && !cached) return null;
+  return { input, output, cached };
+}
+
+export function formatDoneTurnTokenLine(usage: TurnTokenUsage | null | undefined): string | null {
+  if (!usage) return null;
   const segments: string[] = [];
-  const inLabel = format(usage.inputTokens);
-  const outLabel = format(usage.outputTokens);
-  const cacheLabel = format(usage.cacheReadTokens);
-  const cacheWriteLabel = format(usage.cacheCreationTokens);
-  const reasoningLabel = format(usage.reasoningTokens);
+  const inLabel = formatTokenCount(usage.inputTokens);
+  const outLabel = formatTokenCount(usage.outputTokens);
+  const cacheLabel = formatTokenCount(usage.cacheReadTokens);
+  const cacheWriteLabel = formatTokenCount(usage.cacheCreationTokens);
+  const reasoningLabel = formatTokenCount(usage.reasoningTokens);
   if (inLabel) segments.push(`in ${inLabel}`);
   if (outLabel) segments.push(`out ${outLabel}`);
   if (cacheLabel) segments.push(`cached ${cacheLabel} ✶`);

@@ -457,12 +457,12 @@ Which tool an installation opens in the Work tools pane records the existing
 palette, and the reveal channel a dev-server chip uses) with `feature: "work"`,
 `action: "tool_opened"`, `source: "renderer_route"`, and the tool id on a
 closed, prefixed `outcome`: `tool_terminal`, `tool_git`, `tool_files`,
-`tool_ios`, `tool_app_control`, or `tool_browser`. It is emitted from
+`tool_ios`, `tool_app_control`, `tool_browser`, or `tool_pr`. It is emitted from
 the renderer because tool selection has no durable backend mutation — the
 runtime publish that mirrors it to iOS and the hosted web client is a
 device-mirror push, not a record of the choice.
 
-The product question is only which of the six tools an installation actually
+The product question is only which Work tool an installation actually
 uses; `ade_screen_viewed` `work` says the surface was reached and cannot tell a
 Browser install from a Git one. Nothing finer crosses the boundary: no lane,
 project, tab, URL, session, ordering, or dwell time — a tool id says what was

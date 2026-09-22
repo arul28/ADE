@@ -49,7 +49,6 @@ export const MARKETING_FEATURES = {
   DEMO_SUBAGENTS: "demo_subagents",
   DEMO_AUTO_CREATE_WORKTREES: "demo_auto_create_worktrees",
   DEMO_PR_FROM_CHAT: "demo_pr_from_chat",
-  DEMO_WORKTREE_GRAPH: "demo_worktree_graph",
   DEMO_ADE_CODE: "demo_ade_code",
   DEMO_BROWSER: "demo_browser",
   DEMO_REMOTE_RUNTIMES: "demo_remote_runtimes",

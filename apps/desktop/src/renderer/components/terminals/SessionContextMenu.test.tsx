@@ -789,8 +789,20 @@ describe("SessionContextMenu auto handoff", () => {
     vi.clearAllMocks();
   });
 
+  function openHandoffMenu() {
+    fireEvent.click(screen.getByTestId("session-menu-handoff"));
+  }
+
+  it("offers remote and local handoff from any chat card", () => {
+    renderMenu(makeSession());
+    openHandoffMenu();
+    expect((screen.getByTestId("session-menu-handoff-remote") as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByTestId("session-menu-handoff-local") as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it("offers the add form when this chat has no scoped rule", async () => {
     renderMenu(makeSession());
+    openHandoffMenu();
     // The row paints before the lookup answers, so the add label is correct
     // immediately and never flickers into existence.
     expect(screen.getByTestId("session-menu-auto-handoff").textContent).toContain("Auto handoff…");
@@ -802,6 +814,7 @@ describe("SessionContextMenu auto handoff", () => {
   it("settles into the edit label once a scoped rule comes back", async () => {
     list.mockResolvedValue([handoffRule("auto-handoff-chat-1-limit", "chat-1")]);
     renderMenu(makeSession());
+    openHandoffMenu();
 
     expect(screen.getByTestId("session-menu-auto-handoff").textContent).toContain("Auto handoff…");
     await waitFor(() => {
@@ -812,12 +825,14 @@ describe("SessionContextMenu auto handoff", () => {
   it("shows Remove only for a rule scoped to this very chat, and deletes it", async () => {
     list.mockResolvedValue([handoffRule("auto-handoff-other-limit", "some-other-chat")]);
     renderMenu(makeSession());
+    openHandoffMenu();
     await waitFor(() => expect(list).toHaveBeenCalled());
     expect(screen.queryByTestId("session-menu-remove-auto-handoff")).toBeNull();
 
     cleanup();
     list.mockResolvedValue([handoffRule("auto-handoff-chat-1-limit", "chat-1")]);
     const { onClose } = renderMenu(makeSession());
+    openHandoffMenu();
     const remove = await screen.findByTestId("session-menu-remove-auto-handoff");
 
     fireEvent.click(remove);
@@ -829,6 +844,7 @@ describe("SessionContextMenu auto handoff", () => {
 
   it("offers nothing on a non-chat row", async () => {
     renderMenu(makeSession({ toolType: "shell", status: "disposed", endedAt: "2026-07-10T13:00:00.000Z" }));
+    expect(screen.queryByTestId("session-menu-handoff")).toBeNull();
     expect(screen.queryByTestId("session-menu-auto-handoff")).toBeNull();
     expect(list).not.toHaveBeenCalled();
   });

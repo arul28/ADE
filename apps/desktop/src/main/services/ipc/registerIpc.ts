@@ -277,7 +277,6 @@ import type {
   ResolveLaneBranchDriftResult,
   DeleteLaneArgs,
   DockLayout,
-  GraphPersistedState,
   FileChangeEvent,
   FileContent,
   FileTreeNode,
@@ -6862,18 +6861,6 @@ export function registerIpc({
     const key = `tiling_tree:${arg.layoutId}`;
     ctx.db.setJson(key, arg.tree);
     ctx.logger.debug("tilingTree.set", { key });
-  });
-
-  ipcMain.handle(IPC.graphStateGet, async (_event, arg: { projectId: string }): Promise<GraphPersistedState | null> => {
-    const ctx = ensureDbContext();
-    const key = `graph_state:${arg.projectId}`;
-    return ctx.db.getJson<GraphPersistedState>(key);
-  });
-
-  ipcMain.handle(IPC.graphStateSet, async (_event, arg: { projectId: string; state: GraphPersistedState }): Promise<void> => {
-    const ctx = ensureDbContext();
-    const key = `graph_state:${arg.projectId}`;
-    ctx.db.setJson(key, arg.state);
   });
 
   const ensureLaneContext = (): AppContextWith<"laneService"> => {

@@ -215,8 +215,7 @@ Shared conflict IPC consumed by PR flows:
   from the parsed output.
 - `IntegrationPrContextPanel.tsx` shows the integration proposal's
   evidence inline on the PR detail.
-- `graph/shared/RiskMatrix.tsx` renders the full pairwise matrix
-  (see [`../workspace-graph/README.md`](../workspace-graph/README.md)).
+- The pairwise matrix is the conflicts service assessment. Integration and lane surfaces read it; there is no separate canvas page.
 
 ## Gotchas
 

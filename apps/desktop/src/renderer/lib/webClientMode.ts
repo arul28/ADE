@@ -47,7 +47,6 @@ export const WEB_CLIENT_TAB_PATHS = new Set([
   "/prs",
   "/chats",
   "/cto",
-  "/graph",
   "/history",
   "/settings",
 ]);

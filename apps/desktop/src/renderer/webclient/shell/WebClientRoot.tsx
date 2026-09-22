@@ -84,7 +84,6 @@ const APP_ROUTE_ROOTS = [
   "/automations",
   "/cto",
   "/settings",
-  "/graph",
   "/chats",
 ];
 

@@ -69,7 +69,7 @@ import {
 } from "../../../shared/types/chat";
 import { showToast } from "../app/toast/toastStore";
 import { findGridSetForSession } from "../../lib/workGrid";
-import { iconGlyph } from "../graph/graphHelpers";
+import { iconGlyph } from "../lanes/laneIconGlyph";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";

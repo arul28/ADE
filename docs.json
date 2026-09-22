@@ -93,7 +93,6 @@
               "tools/pull-requests",
               "guides/stacked-prs",
               "tools/conflicts",
-              "tools/workspace-graph",
               "tools/history"
             ]
           },

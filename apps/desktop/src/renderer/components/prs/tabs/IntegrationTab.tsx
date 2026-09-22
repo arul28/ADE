@@ -2032,11 +2032,6 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                 }
                 setActiveTab("rebase");
               }}
-              onShowInGraph={(laneId) => {
-                window.location.hash = laneId
-                  ? `#/graph?focusLane=${encodeURIComponent(laneId)}`
-                  : "#/graph";
-              }}
             />
           </div>
         ) : null}
@@ -2087,31 +2082,6 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                 PROPOSED
               </span>
               <OutcomeBadge outcome={selectedProposal.overallOutcome} />
-              <button
-                className="flex items-center font-mono font-bold uppercase tracking-[1px]"
-                style={{
-                  fontSize: 9,
-                  gap: 4,
-                  padding: "2px 8px",
-                  background: "#A78BFA18",
-                  color: "#A78BFA",
-                  border: "1px solid #A78BFA30",
-                  cursor: "pointer",
-                }}
-                title="View this proposal in the workspace graph"
-                onClick={() => {
-                  const integrationLaneId = resolutionState?.integrationLaneId ?? selectedProposal.sourceLaneIds[0];
-                  const proposalKey = selectedProposal.proposalId;
-                  const params = new URLSearchParams();
-                  if (integrationLaneId) params.set("focusLane", integrationLaneId);
-                  if (proposalKey) params.set("focusProposal", proposalKey);
-                  const qs = params.toString();
-                  window.location.hash = qs ? `#/graph?${qs}` : "#/graph";
-                }}
-              >
-                <ArrowSquareOut size={12} weight="bold" />
-                VIEW IN GRAPH
-              </button>
             </div>
           </div>
 
@@ -2992,31 +2962,6 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                 </button>
               );
             })()}
-
-            {/* View in graph */}
-            {resolutionState?.integrationLaneId && (
-              <button
-                type="button"
-                className="inline-flex items-center font-mono font-bold uppercase tracking-[1px] transition-all duration-100"
-                style={{
-                  fontSize: 10,
-                  height: 32,
-                  padding: "0 14px",
-                  background: "transparent",
-                  color: "#A1A1AA",
-                  border: "1px solid #27272A",
-                  cursor: "pointer",
-                }}
-                onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#A78BFA50"; e.currentTarget.style.color = "#FAFAFA"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#27272A"; e.currentTarget.style.color = "#A1A1AA"; }}
-                onClick={() => {
-                  window.location.hash = `#/graph?focusLane=${encodeURIComponent(resolutionState.integrationLaneId)}`;
-                }}
-              >
-                <GitBranch size={14} weight="regular" style={{ marginRight: 6 }} />
-                VIEW IN GRAPH
-              </button>
-            )}
 
             {/* Re-simulate */}
             <button

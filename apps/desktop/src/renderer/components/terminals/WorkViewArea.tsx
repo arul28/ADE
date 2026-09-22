@@ -43,8 +43,7 @@ import { resolveModelDescriptorWithRuntimeCatalog, createUnknownModelPlaceholder
 import { WorkStartSurface } from "./WorkStartSurface";
 import { WorkToolPickerBackdrop } from "./WorkToolPickerBackdrop";
 import { CliSessionWorkSurfaceHeader } from "./CliSessionWorkSurfaceHeader";
-import { ChatPrPane } from "../chat/ChatPrPane";
-import { useChatPrPaneOpen } from "../chat/useChatPrPaneOpen";
+import { useWorkSidebarTool } from "./useWorkSidebarTool";
 import { isChatToolType, primarySessionLabel, providerFromChatToolType, stripTerminalLabelControls, formatToolTypeLabel } from "../../lib/sessions";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
@@ -742,18 +741,9 @@ function ClosedCliSessionSurface({
   );
 }
 
-const CLI_PR_PANE_FADE = { duration: 0.16, ease: STANDARD_EASE } as const;
-const CLI_FLOATING_PANE_CARD_CLASS =
-  "ade-floating-side-pane flex w-full flex-col overflow-y-auto rounded-xl border border-white/[0.07] bg-[color:var(--work-sidebar-bg,#161618)] shadow-[0_20px_60px_-30px_rgba(0,0,0,0.8)]";
-
 /**
- * CLI session work surface: the header + PTY terminal, with the floating PR pane
- * overlaid on top of the terminal. The overlay is absolutely positioned inside a
- * wrapper that sizes the terminal — it never changes the terminal host's box, so
- * the PTY's ResizeObserver never fires and the running CLI process is not
- * re-flowed (no SIGWINCH). The pill in the header toggles it; it never
- * auto-opens and shares the persisted open state with the ADE chat pane via the
- * same useChatPrPaneOpen hook.
+ * CLI session work surface: the header + PTY terminal. The PR pill opens the
+ * per-lane PR tools tab and does not overlay the terminal.
  */
 function CliSessionSurface({
   session,
@@ -785,13 +775,7 @@ function CliSessionSurface({
   onToggleToolsPane?: () => void;
   toolsPaneOpen?: boolean;
 }) {
-  // Persist the pane per CLI session so reopening the surface restores it, the
-  // same way the ADE chat pane keys its companion UI state.
-  // PR reads follow the lane's machine now, so a foreign CLI session gets the
-  // same pill and pane as a local one — the pin just routes them.
-  const { prPaneOpen, setPrPaneOpen } = useChatPrPaneOpen(session.id);
-  const supportsSplit = layoutVariant !== "grid-tile";
-  const prFloating = prPaneOpen && Boolean(session.laneId) && supportsSplit;
+  const workSidebar = useWorkSidebarTool(session.laneId, runtimePin);
   return (
     <div className="flex h-full min-h-0 w-full flex-col overflow-hidden">
       {layoutVariant !== "grid-tile" ? (
@@ -804,9 +788,10 @@ function CliSessionSurface({
           onStopRunningSession={onStopRunningSession}
           onToggleToolsPane={onToggleToolsPane}
           toolsPaneOpen={toolsPaneOpen}
-          onTogglePrPane={session.laneId ? () => setPrPaneOpen((v) => !v) : undefined}
-          prPaneOpen={prPaneOpen}
+          onTogglePrPane={session.laneId ? () => workSidebar.setTool("pr") : undefined}
+          prPaneOpen={workSidebar.tool === "pr"}
           runtimePin={runtimePin}
+          prBadgeOnly
         />
       ) : null}
       <div className="relative min-h-0 w-full flex-1 overflow-hidden">
@@ -821,27 +806,6 @@ function CliSessionSurface({
           imagePasteMode="runtime-attachment"
           className="h-full w-full"
         />
-        <AnimatePresence initial={false}>
-          {prFloating && session.laneId ? (
-            <motion.div
-              key="cli-pr-floating-pane"
-              className="absolute left-3 top-3 z-20 flex max-h-[calc(100%-1.5rem)] w-[min(16.5rem,calc(100%-1.5rem))]"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={CLI_PR_PANE_FADE}
-            >
-              <div className={CLI_FLOATING_PANE_CARD_CLASS}>
-                <ChatPrPane
-                  laneId={session.laneId}
-                  branchName={null}
-                  onClose={() => setPrPaneOpen(false)}
-                  runtimePin={runtimePin}
-                />
-              </div>
-            </motion.div>
-          ) : null}
-        </AnimatePresence>
       </div>
     </div>
   );
