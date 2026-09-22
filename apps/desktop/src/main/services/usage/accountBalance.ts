@@ -156,22 +156,24 @@ export function pickAlternateInstanceForLimitedChat({
   const candidates = instances.filter((instance) => (
     instance.provider === provider && instance.signedIn && instance.id !== blockedId
   ));
-  if (candidates.length === 0) return null;
+  const withRoom = candidates.filter((instance) => {
+    const account = accounts.find((candidate) => (
+      candidate.provider === provider && candidate.instanceId === instance.id
+    ));
+    const accountId = account?.id ?? `${provider}:${instance.id}`;
+    return hasImmediateRoom(windowsForAccount(windowsByAccountId, accountId));
+  });
+  if (withRoom.length === 0) return null;
   const pick = pickInstanceForNewChat({
     provider,
-    instances: candidates,
+    instances: withRoom,
     accounts,
     windowsByAccountId,
     nowMs,
   });
   if (pick.reason === "no usage data" || pick.reason === "no signed-in instances") return null;
-  const chosen = candidates.find((instance) => instance.id === pick.instanceId);
+  const chosen = withRoom.find((instance) => instance.id === pick.instanceId);
   if (!chosen) return null;
-  const account = accounts.find((candidate) => (
-    candidate.provider === provider && candidate.instanceId === chosen.id
-  ));
-  const accountId = account?.id ?? `${provider}:${chosen.id}`;
-  if (!hasImmediateRoom(windowsForAccount(windowsByAccountId, accountId))) return null;
   const label = chosen.label.trim() || chosen.id;
   return { instanceId: chosen.id, label, reason: pick.reason };
 }

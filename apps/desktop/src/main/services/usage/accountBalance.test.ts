@@ -195,6 +195,22 @@ describe("pickAlternateInstanceForLimitedChat", () => {
     })).toBeNull();
   });
 
+  it("offers a complete account when the higher partial score has a missing window", () => {
+    const windows = windowsFor({
+      claude: { fiveHour: 100, weekly: 10 },
+      personal: { fiveHour: 20, weekly: 20 },
+    });
+    const weeklyOnly = usageWindow("work", "weekly", 10, WEEK_START + WEEK_MS);
+    windows.set(weeklyOnly[0], weeklyOnly[1]);
+    expect(pickAlternateInstanceForLimitedChat({
+      ...base,
+      instances: [instance("claude"), instance("work", { label: "Work" }), instance("personal", { label: "Personal" })],
+      accounts: accounts("claude", "work", "personal"),
+      currentInstanceId: "claude",
+      windowsByAccountId: windows,
+    })?.instanceId).toBe("personal");
+  });
+
   it("returns null when the only other account is signed out", () => {
     expect(pickAlternateInstanceForLimitedChat({
       ...base,
