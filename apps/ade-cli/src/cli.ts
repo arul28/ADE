@@ -3233,6 +3233,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade apple device-create --text             Clone the project's last-used simulator
     $ ade apple device-attach --simulator <id>   Bind an existing simulator to this lane
     $ ade apple start [--udid <id>|--create <id>] Attach or clone, boot, wait, and stream
+    $ ade apple stop --text                     Power the lane's device OFF (session-only: shutdown)
     $ ade apple device-list --installed --text   Installed simulators for a picker
     $ ade apple device-list --lane --text        The one device this lane owns
     $ ade apple device-delete --text             Delete a clone (attached devices refuse)
@@ -3261,6 +3262,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade apple status-bar --time 9:41 --wifi-bars 3
     $ ade apple status-bar --clear               Drop the status bar override
     $ ade apple app-state --bundle-id <id>       Report running state and pid
+    $ ade apple foreground --text                Which app the device has in front
 
   Event log:
     $ ade apple log-start --bundle-id <id>       Start the device event log
@@ -3286,6 +3288,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade apple tap 120 420                      Tap in the simulator
     $ ade apple drag 120 700 120 250             Drag in the simulator
     $ ade apple swipe 120 700 120 250            Swipe in the simulator
+    $ ade apple scroll --x 200 --y 500 --dy -400 Scroll at a point
     $ ade apple type "hello" --text              Type into the launched app
 
   A coordinate tap is a guess that the layout did not move. Prefer

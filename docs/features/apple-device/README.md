@@ -62,6 +62,30 @@ Components if none exist.
 `--force`, and `--force` only detaches it. The clone is deleted on lane
 archive.
 
+## Desktop surface
+
+The tool is **Apple Development**, one pane inside the Work tools pane. There
+is no separate column.
+
+- The floating rail carries Home, Rotate, Inspect, Screenshot, Record, the
+  3D/Flat view toggle, Tools and More. Every button is labelled.
+- The drawer has four collapsible groups — Device, App, Capture, Preview Lab —
+  one open at a time, and a closed group is unmounted so its polling stops.
+- 3D is the default view and renders the real Apple body. Flat is the same
+  stream without it.
+- Closing the tool's **tab** powers the device off, behind a confirmation when
+  the device is booted. Minimising the tools pane leaves it running and shows
+  a floating preview, which the user can turn off per chat.
+
+## Agent discovery
+
+`getStatus` returns `capabilities`, the list of every `ios_simulator` action an
+agent may call, spread from `APPLE_AGENT_ACTIONS` in
+`shared/types/iosSimulator.ts`. That same constant feeds the action allowlist,
+so the surface an agent is told about and the surface it is allowed to use
+cannot drift apart. An agent landing in a lane reads `status` and learns the
+device, its state and what it may do, without reading source.
+
 ## Source file map
 
 | Path | Role |
@@ -118,6 +142,11 @@ ade --socket apple record-stop [--keep|--discard] --text
 ade --socket apple record-list --text
 ade --socket apple record-delete --id <id> --text
 
+ade --socket apple start [--udid <udid>|--create <sourceUdid>] --text
+ade --socket apple stop [--force] --text
+ade --socket apple scroll --x <x> --y <y> --dy <delta> --text
+ade --socket apple foreground --text
+
 ade --socket apple frame [--out <path>] --text
 ade --socket apple button home --text
 ade --socket apple rotate landscape-left --text
@@ -146,8 +175,11 @@ error.
    to manual (no restart, no gap) and clears the 10-minute cap.
 3. An agent may `record-delete` a recording it owns that is not marked
    `proof`. Anything else is `APPLE_RECORDING_PINNED`.
-4. `proof-bundle` pins the active recording — or this chat's most recent one
-   — copies it to the proof drawer, and makes it undeletable by any agent.
+4. **Every recording files itself in the proof drawer the moment it stops**,
+   whoever started it, and carries the resulting `proofArtifactId`. A
+   screenshot does the same. There is no pin step; `proof-bundle` exists to
+   add the machine, device, elements and log alongside the picture, not to
+   make a recording count as proof.
 5. There is no auto-delete. Recordings live under
    `<projectRoot>/.ade/artifacts/apple-recordings/<laneId>/`.
 6. A second chat sees `APPLE_OWNED_BY_OTHER_SESSION` with the owning chat,
