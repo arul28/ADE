@@ -396,6 +396,15 @@ type CreateIosSimulatorServiceArgs = {
    * had not written.
    */
   resolveLaneWorktreePath?: ((laneId: string) => Promise<string | null> | string | null) | null;
+  /**
+   * The reverse: which lane's worktree contains this path.
+   *
+   * Synchronous, because `resolveRuntime` is. Without it a caller that names
+   * no lane — every OpenCode agent, whose shell has no `ADE_LANE_ID` — is
+   * resolved by guessing which lane is busy, and its captures land in a
+   * stranger's proof drawer.
+   */
+  resolveLaneIdForPath?: ((absolutePath: string) => string | null) | null;
   /** Human name for a lane, used to name its cloned simulator. */
   resolveLaneName?: ((laneId: string) => string | null) | null;
   /**
@@ -2180,7 +2189,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * anything does the un-laned bucket answer — which is also what a fresh
    * process with no sessions at all returns.
    */
-  const resolveRuntime = (scope: { laneId?: string | null; chatSessionId?: string | null } = {}): LaneRuntime => {
+  const resolveLaneIdForPath = args.resolveLaneIdForPath ?? null;
+
+  const resolveRuntime = (
+    scope: { laneId?: string | null; chatSessionId?: string | null; projectRoot?: string | null } = {},
+  ): LaneRuntime => {
     const explicit = laneKey(scope.laneId);
     if (explicit) return runtimeForKey(explicit);
     const chatSessionId = scope.chatSessionId?.trim();
@@ -2189,6 +2202,24 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         if (runtime.activeSession?.chatSessionId === chatSessionId) return runtime;
         if (runtime.hub?.getDeviceSession()?.chatSessionId === chatSessionId) return runtime;
       }
+    }
+    /*
+     * The lane the caller is STANDING IN, before any guess about what is busy.
+     *
+     * `ade apple` sends the caller's workspace as `projectRoot` when it has no
+     * lane id to send — which is always, for an agent whose shell carries no
+     * `ADE_LANE_ID`: a shared `opencode serve` cannot hold a per-chat
+     * environment, so every OpenCode agent is in that position. The service
+     * used the path for the BUILD root and then resolved the lane by the
+     * fallback below, so a capture taken by lane A was filed against lane B
+     * because B happened to be the one lane with something running. That is a
+     * cross-lane leak of an agent's own proof, and it is fixed by using the
+     * answer the caller already gave.
+     */
+    const callerPath = scope.projectRoot?.trim();
+    if (callerPath && resolveLaneIdForPath) {
+      const laneFromPath = laneKey(resolveLaneIdForPath(callerPath));
+      if (laneFromPath) return runtimeForKey(laneFromPath);
     }
     // Neither said anything, and exactly one lane is running something: that is
     // what the caller means. This is what keeps the cooperative ownership rule

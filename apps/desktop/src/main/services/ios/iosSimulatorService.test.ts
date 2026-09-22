@@ -2397,6 +2397,51 @@ describe("iosSimulatorService device tool targeting", () => {
       platformSpy.mockRestore();
     }
   });
+
+  it("regression: places a lane-less caller by the worktree it stands in, not by whichever lane is busy", async () => {
+    // A shell with no ADE_LANE_ID — every OpenCode agent, because a shared
+    // `opencode serve` cannot carry a per-chat environment — sends its
+    // workspace as projectRoot and no lane id. The service used that path for
+    // the BUILD root and then resolved the lane by "the one lane running
+    // something", so lane-b's screenshot was filed against lane-a. That is a
+    // cross-lane leak of an agent's own proof.
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const runMock = vi.fn(async (command: string, commandArgs: string[]) => {
+      if (command === "xcrun" && commandArgs.join(" ") === "simctl list devices available --json") {
+        return { stdout: twoBootedIphonesJson, stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    });
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run: runMock, commandExists: () => true });
+    const laneRoots: Record<string, string> = {
+      "lane-a": path.join(os.tmpdir(), "ade-lane-a"),
+      "lane-b": path.join(os.tmpdir(), "ade-lane-b"),
+    };
+    const service = createIosSimulatorService({
+      projectRoot: os.tmpdir(),
+      logger: noopLogger,
+      resolveLaneWorktreePath: (laneId) => laneRoots[laneId] ?? null,
+      resolveLaneIdForPath: (absolutePath) =>
+        Object.entries(laneRoots).find(([, root]) => absolutePath.startsWith(root))?.[0] ?? null,
+    });
+
+    try {
+      // lane-a is the only lane with anything running.
+      await service.openDevice({ laneId: "lane-a", deviceUdid: "device-2", chatSessionId: "chat-a", openWindow: false });
+
+      // An anonymous call standing in lane-b's worktree is lane-b's.
+      const status = await service.getStatus({ projectRoot: path.join(laneRoots["lane-b"]!, "apps", "ios") } as never);
+      expect(status.laneId).toBe("lane-b");
+
+      // And a caller standing nowhere in particular still reaches the one
+      // occupied lane, which is the behaviour that guard was added for.
+      expect((await service.getStatus()).laneId).toBe("lane-a");
+    } finally {
+      service.dispose();
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
 });
 
 describe("iosSimulatorService boot contract", () => {

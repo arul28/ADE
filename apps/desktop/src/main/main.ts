@@ -4631,6 +4631,15 @@ app.whenReady().then(async () => {
           return null;
         }
       },
+      // The reverse, so a caller that names no lane is placed by the worktree
+      // it is standing in rather than by whichever lane happens to be busy.
+      resolveLaneIdForPath: (absolutePath: string): string | null => {
+        try {
+          return laneService.getLaneIdForPath(absolutePath);
+        } catch {
+          return null;
+        }
+      },
       // The lanes DB backs `lane_apple_devices`; without it a lane device is
       // remembered only for the life of the process.
       laneDeviceStore: db,

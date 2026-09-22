@@ -7770,6 +7770,39 @@ export function createLaneService({
       return row.worktree_path;
     },
 
+    /**
+     * Which lane's worktree contains this path — the reverse of
+     * `getLaneWorktreePath`, and synchronous because its callers are.
+     *
+     * A caller that names no lane is not necessarily anonymous: an agent
+     * standing inside a lane worktree has said which lane it means, and the
+     * longest containing worktree is the answer. Longest wins because a lane
+     * can be nested inside another lane's tree.
+     *
+     * This exists because guessing was worse. An `ade apple` call from a shell
+     * with no `ADE_LANE_ID` — every OpenCode agent has one, since a shared
+     * `opencode serve` cannot carry a per-chat environment — used to fall back
+     * to "whichever single lane is running something", and filed one agent's
+     * screenshot into an unrelated lane's proof drawer.
+     */
+    getLaneIdForPath(absolutePath: string): string | null {
+      const candidate = normAbs(absolutePath);
+      if (!candidate) return null;
+      const rows = db.all<Pick<LaneRow, "id" | "worktree_path">>(
+        "select id, worktree_path from lanes where project_id = ? and archived_at is null",
+        [projectId],
+      );
+      let best: { id: string; length: number } | null = null;
+      for (const row of rows) {
+        const root = normAbs(row.worktree_path ?? "");
+        if (!root) continue;
+        const contained = candidate === root || candidate.startsWith(`${root}${path.sep}`);
+        if (!contained) continue;
+        if (!best || root.length > best.length) best = { id: row.id, length: root.length };
+      }
+      return best?.id ?? null;
+    },
+
     getLaneBaseAndBranch(laneId: string): { baseRef: string; branchRef: string; worktreePath: string; laneType: LaneType; linearIssue: LaneLinearIssue | null } {
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Lane not found: ${laneId}`);
