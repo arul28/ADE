@@ -5972,8 +5972,11 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("ai.getDevinCloudAuthStatus", { viewerAllowed: true }, async () =>
     requireService(args.aiIntegrationService, "AI integration service not available.").getDevinCloudAuthStatus());
   register("ai.setDevinCloudCredentials", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
+    if (typeof payload.apiKey !== "string") {
+      throw new Error("ai.setDevinCloudCredentials requires apiKey.");
+    }
     const status = await requireService(args.aiIntegrationService, "AI integration service not available.").setDevinCloudCredentials({
-      apiKey: requireString(payload.apiKey, "ai.setDevinCloudCredentials requires apiKey."),
+      apiKey: payload.apiKey,
       ...(typeof payload.orgId === "string" ? { orgId: payload.orgId } : {}),
     });
     args.devinCloudFleetService?.invalidateCache();
