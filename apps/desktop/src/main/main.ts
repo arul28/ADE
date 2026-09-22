@@ -363,6 +363,10 @@ import { createLinearChatLinkPublisher, publishLinearLaneCard } from "./services
 import { createComputerUseArtifactBrokerService } from "./services/computerUse/computerUseArtifactBrokerService";
 import { sceneDocumentStore } from "./services/scenes/sceneDocumentStore";
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
+import { createAppleStreamRelayForService } from "./services/ios/appleStreamRelay";
+import { hasAppleLocalViewer } from "./services/ios/appleLocalViewers";
+import { setActiveAppleStreamRouter } from "../../../ade-cli/src/services/sync/appleStreamListenerRoute";
+import { DEFAULT_APPLE_REMOTE_BITRATE_KBPS } from "../shared/appleDeviceSettings";
 import { createAppControlService } from "./services/appControl/appControlService";
 import { createBuiltInBrowserService } from "./services/builtInBrowser/builtInBrowserService";
 import { createBuiltInBrowserHandoffSessionListener } from "./services/builtInBrowser/builtInBrowserHandoffSession";
@@ -1945,6 +1949,11 @@ app.whenReady().then(async () => {
     && process.env.NODE_ENV !== "test"
     && process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL !== "1";
   const localRuntimePool = new LocalRuntimeConnectionPool(app.getVersion(), localRuntimeLogger, {
+    // A dev app's brain must never compete for the machine-wide sync host
+    // lease: on 2026-09-21 a lane dev brain on a custom socket took the lease
+    // from the installed ADE twice, and the agents running under that brain
+    // died with it. Set ADE_DEV_RUNTIME_SYNC=1 to opt a dev brain in on purpose.
+    disableSync: !app.isPackaged && process.env.ADE_DEV_RUNTIME_SYNC !== "1",
     preferServiceRepair: shouldRepairRuntimeServiceOnFallback,
     desktopBridgeAuthToken: builtInBrowserBridgeServer?.authToken ?? null,
     onRuntimeStatusChange: (status) => {
@@ -4638,8 +4647,40 @@ app.whenReady().then(async () => {
           return null;
         }
       },
+      // The lanes DB backs `lane_apple_devices`; without it a lane device is
+      // remembered only for the life of the process.
+      laneDeviceStore: db,
+      // The recording halves that live outside the simulator service. Overlay
+      // switches are account-synced and reach the main process only through
+      // the renderer today, so the recorder's own defaults (both ON) stand
+      // until a main-process reader exists; the proof-drawer broker is real.
+      recordingDeps: { artifactFiler: computerUseArtifactBrokerService },
       onEvent: (payload) =>
         emitProjectEvent(projectRoot, IPC.iosSimulatorEvent, payload),
+    });
+    /**
+     * Brain-side video forwarder for this embedded host.
+     *
+     * The daemon brain wires the same relay from `bootstrap.ts`; this is the
+     * desktop-embedded sync host, which serves the same `apple.*` commands to a
+     * phone or a web tab when the desktop is the one hosting. Without an
+     * account settings store here the remote cap is the shipped default.
+     */
+    const appleStreamRelay = createAppleStreamRelayForService({
+      service: iosSimulatorService,
+      remoteBitrateKbpsCap: () => DEFAULT_APPLE_REMOTE_BITRATE_KBPS,
+      // This host has a renderer, so the last phone or web viewer leaving must
+      // not stop a capture the Apple column is still showing. Ask both the
+      // main-process registry (direct IPC starts) and the service's own tracker
+      // (runtime-action starts, which never reach the IPC handler).
+      hasLocalViewer: (laneId) =>
+        hasAppleLocalViewer(laneId) || (iosSimulatorService.hasLocalViewer?.(laneId) ?? false),
+      logger,
+    });
+    const detachAppleStreamRoute = setActiveAppleStreamRouter(appleStreamRelay);
+    app.on("will-quit", () => {
+      detachAppleStreamRoute();
+      appleStreamRelay.dispose();
     });
     agentChatService.registerChatSessionEndedListener((sessionId) => {
       void iosSimulatorService.releaseIfOwnedBy(sessionId).catch((error) => {
@@ -4771,6 +4812,9 @@ app.whenReady().then(async () => {
       rebaseSuggestionService,
       autoRebaseService,
       computerUseArtifactBrokerService,
+      appleDeviceService: iosSimulatorService,
+      appleStreamRelay,
+      getAppleRemoteBitrateKbpsCap: () => DEFAULT_APPLE_REMOTE_BITRATE_KBPS,
       agentChatService,
       cursorCloudFleetService,
       devinCloudFleetService,

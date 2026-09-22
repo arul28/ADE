@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
+import { execFile as execFileCallback } from "node:child_process";
+import { promisify } from "node:util";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { AdeDb } from "../state/kvDb";
@@ -92,6 +94,10 @@ import {
   resolveAppliedAutoLaneBranchFragment,
 } from "../../../shared/laneNameFallback";
 
+import { releaseLaneAppleDevice } from "../ios/laneDeviceRegistry";
+
+/** `simctl` for the Apple-device half of a lane delete. Nothing else shells out here. */
+const execFileAsync = promisify(execFileCallback);
 type LaneRow = {
   id: string;
   project_id: string;
@@ -2860,6 +2866,20 @@ export function createLaneService({
       duplicateId,
       projectId,
     ]);
+    // The lane's Apple simulator binding follows the keeper too. `lane_id` is
+    // the table's primary key, so keep the keeper's binding when it already has
+    // one and only adopt the duplicate's otherwise. Without this the duplicate's
+    // row is dropped by the cleanup below and the keeper forgets its simulator,
+    // so a later lane delete never releases the clone.
+    const keeperHasAppleDevice = db.get<{ one: number }>(
+      "select 1 as one from lane_apple_devices where lane_id = ? limit 1",
+      [keeperId],
+    );
+    if (keeperHasAppleDevice) {
+      db.run("delete from lane_apple_devices where lane_id = ?", [duplicateId]);
+    } else {
+      db.run("update lane_apple_devices set lane_id = ? where lane_id = ?", [keeperId, duplicateId]);
+    }
     // Everything else lane-scoped on the duplicate cascades away. The duplicate
     // is a create/recover race artifact, not a lane the user made, and its
     // sessions now belong to the keeper — so its tombstone preserves whatever
@@ -7640,6 +7660,28 @@ export function createLaneService({
             throw error;
           }
           const removedProofFiles = removeLaneArtifactFiles(laneId, laneArtifactFiles);
+          // The lane's Apple device and its recordings go with it. Not awaited:
+          // `simctl delete` can take tens of seconds on a large device set and
+          // the lane row is already gone, so blocking the delete on it would
+          // only make the progress UI look wedged. It deletes a CLONE and only
+          // detaches an attached device — ADE never deletes a simulator it did
+          // not create.
+          void releaseLaneAppleDevice({
+            laneId,
+            projectRoot,
+            store: db,
+            run: async (command, commandArgs, options) => {
+              const result = await execFileAsync(command, commandArgs, {
+                timeout: options?.timeoutMs ?? 30_000,
+                // No console window on Windows, and no argv shell parsing on any
+                // platform — the simctl arguments are literal.
+                windowsHide: true,
+              });
+              return { stdout: result.stdout?.toString() ?? "", stderr: result.stderr?.toString() ?? "" };
+            },
+            removeDirectory: (directory) => fs.promises.rm(directory, { recursive: true, force: true }),
+            logger,
+          });
           if (!laneArtifactFiles.length || removedProofFiles === 0) return undefined;
           return removedProofFiles === laneArtifactFiles.length
             ? { detail: `${removedProofFiles} proof file(s) removed` }

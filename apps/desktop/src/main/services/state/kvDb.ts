@@ -890,6 +890,10 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   "github_pr_stacks",
   "github_pr_stack_entries",
   "github_webhook_deliveries",
+  // A lane's cloned simulator lives in ONE Mac's CoreSimulator device set, so
+  // its udid means nothing on another machine. Replicating it would make a
+  // second machine (or a phone) believe the lane owns a device it cannot see.
+  "lane_apple_devices",
   "lane_detail_snapshots",
   "lane_list_snapshots",
   "pr_auto_link_ignores",
@@ -2318,6 +2322,33 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
     )
   `);
   db.run("create index if not exists idx_lane_state_snapshots_updated_at on lane_state_snapshots(updated_at)");
+
+  /**
+   * The one Apple simulator a lane owns.
+   *
+   * `lane_id` is the primary key because the model is one device per lane —
+   * and deliberately the ONLY unique index on the table: cr-sqlite refuses a
+   * CRR with "unique indices besides the primary key", and a second index on
+   * `udid` (tempting, since two lanes must not share a clone) would be exactly
+   * that. The registry enforces the udid rule in code instead.
+   *
+   * Excluded from CRR below (`LOCAL_ONLY_CRR_EXCLUDED_TABLES`): a simulator
+   * udid names a device inside ONE Mac's CoreSimulator device set, so
+   * replicating the row to a second machine or a phone would tell it a lane
+   * owns a device that does not exist there.
+   */
+  db.run(`
+    create table if not exists lane_apple_devices (
+      lane_id text primary key,
+      udid text not null,
+      name text not null,
+      origin text not null default 'clone',
+      family text not null default 'iphone',
+      runtime text not null default '',
+      created_at text not null,
+      template_udid text
+    )
+  `);
 
   db.run(`
     create table if not exists terminal_sessions (

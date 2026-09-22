@@ -12,13 +12,19 @@ import {
   formatWorkLiveActionCaption,
   workLiveActionVerb,
   formatWorkLiveAge,
+  isWorkLivePictureInPictureSupported,
   isWorkLiveScreenTool,
   clampWorkLiveCardRect,
   commitWorkLiveCardDismissal,
   normalizeWorkLiveCardDismissals,
   normalizeWorkLiveCardPosition,
+  selectWorkLiveCards,
   selectWorkLiveCardTool,
   updateWorkLiveScrubCaption,
+  workLiveCardSelectionKey,
+  workLiveIosCaption,
+  workLiveIosDismissalKey,
+  workLiveIosStreamRequestUrl,
   workLiveScrubFrameKey,
   workLiveSource,
   workLiveCardDragConstraints,
@@ -31,6 +37,7 @@ import {
   workLivePreviewMaxWidth,
   workLiveScrubIndex,
   type WorkLiveActivity,
+  type WorkLiveIosDevice,
   type WorkLiveScrubFrame,
 } from "./workLiveCard";
 
@@ -144,14 +151,16 @@ describe("dismissals", () => {
     expect(dismissals.browser).toBe(5_000);
   });
 
-  it("drops keys that are not screen tools and stamps that are not stamps", () => {
+  it("keeps a per-device simulator dismissal and drops junk keys", () => {
     expect(normalizeWorkLiveCardDismissals({
       browser: 1_000,
       git: 2_000,
       ios: "soon",
       "app-control": -4,
-    })).toEqual({ browser: 1_000 });
+      "ios:DEVICE-1": 9_000,
+    })).toEqual({ browser: 1_000, "ios:DEVICE-1": 9_000 });
     expect(normalizeWorkLiveCardDismissals({ git: 1 })).toBeNull();
+    expect(normalizeWorkLiveCardDismissals({ "ios:": 1 })).toBeNull();
     expect(normalizeWorkLiveCardDismissals(null)).toBeNull();
     expect(normalizeWorkLiveCardDismissals([1, 2])).toBeNull();
     expect(normalizeWorkLiveCardDismissals("nope")).toBeNull();
@@ -589,13 +598,25 @@ describe("workLiveSource", () => {
     expect(workLiveSource("app-control", { ...empty, appControlSession: { status: "failed" } }).live).toBe(true);
   });
 
-  it("only the browser can be recording", () => {
-    expect(workLiveSource("ios", { ...empty, iosSession: { appName: "ADE" } })).toMatchObject({
+  it("reads a simulator recording from status, and captions app over device", () => {
+    expect(workLiveSource("ios", {
+      ...empty,
+      iosSession: {
+        appName: "ADE",
+        deviceName: "iPhone 17",
+        chatSessionId: "chat-9",
+        recording: { id: "rec-1" },
+      },
+    })).toMatchObject({
       live: true,
       caption: "ADE",
-      recording: null,
-      ownerLabel: null,
+      recording: { id: "rec-1" },
+      ownerLabel: "agent",
     });
+    expect(workLiveSource("ios", {
+      ...empty,
+      iosSession: { deviceName: "iPhone 17" },
+    }).caption).toBe("iPhone 17");
   });
 
   it("reports nothing for a tool with no state", () => {
@@ -621,3 +642,87 @@ describe("workLiveCardObjectFit", () => {
     expect(workLiveCardObjectFit("ios")).toBe("contain");
   });
 });
+
+function iosDevice(overrides: Partial<WorkLiveIosDevice> & Pick<WorkLiveIosDevice, "udid">): WorkLiveIosDevice {
+  return {
+    laneId: "lane-1",
+    name: "iPhone 17",
+    appName: null,
+    chatSessionId: null,
+    recording: null,
+    lastActivityAt: 1_000,
+    ...overrides,
+  };
+}
+
+describe("selectWorkLiveCards", () => {
+  const activities = [
+    activity({ tool: "browser", lastActivityAt: 500 }),
+    activity({ tool: "ios", lastActivityAt: 700 }),
+  ];
+
+  it("keys one card per device when several lanes have devices", () => {
+    const cards = selectWorkLiveCards({
+      activeTool: "git",
+      activities,
+      dismissals: null,
+      iosAvailable: true,
+      iosDevices: [
+        iosDevice({ udid: "phone", name: "iPhone 17", laneId: "lane-a", lastActivityAt: 2_000 }),
+        iosDevice({ udid: "tablet", name: "iPad Pro", laneId: "lane-b", appName: "ADE", lastActivityAt: 1_500 }),
+      ],
+    });
+    expect(cards).toEqual([
+      { kind: "ios", deviceUdid: "phone" },
+      { kind: "ios", deviceUdid: "tablet" },
+      { kind: "tool", tool: "browser" },
+    ]);
+    expect(workLiveCardSelectionKey(cards[0]!)).toBe("ios:phone");
+    expect(workLiveCardSelectionKey(cards[1]!)).toBe("ios:tablet");
+  });
+
+  it("hides every device card while the Apple column is the active tool", () => {
+    expect(selectWorkLiveCards({
+      activeTool: "ios",
+      activities,
+      dismissals: null,
+      iosAvailable: true,
+      iosDevices: [iosDevice({ udid: "phone" })],
+    })).toEqual([{ kind: "tool", tool: "browser" }]);
+  });
+
+  it("silences only the dismissed device", () => {
+    const cards = selectWorkLiveCards({
+      activeTool: null,
+      activities,
+      dismissals: { [workLiveIosDismissalKey("phone")]: 3_000 },
+      iosAvailable: true,
+      iosDevices: [
+        iosDevice({ udid: "phone", lastActivityAt: 2_000 }),
+        iosDevice({ udid: "tablet", lastActivityAt: 1_500 }),
+      ],
+    });
+    expect(cards.map((card) => workLiveCardSelectionKey(card))).toEqual(["ios:tablet", "browser"]);
+  });
+});
+
+describe("workLiveIosCaption", () => {
+  it("prefers the foreground app, then the device name", () => {
+    expect(workLiveIosCaption({ appName: "MyApp", name: "iPhone 17" })).toBe("MyApp");
+    expect(workLiveIosCaption({ appName: null, name: "iPhone 17" })).toBe("iPhone 17");
+    expect(workLiveIosCaption({ appName: "  ", name: "  " })).toBeNull();
+  });
+});
+
+describe("picture-in-picture gating", () => {
+  it("is off in jsdom, where the document has no PiP API", () => {
+    expect(isWorkLivePictureInPictureSupported()).toBe(false);
+    expect(isWorkLivePictureInPictureSupported({ pictureInPictureEnabled: false })).toBe(false);
+  });
+
+  it("strips the query string the helper never reads", () => {
+    expect(workLiveIosStreamRequestUrl("http://127.0.0.1:9/stream?token=secret"))
+      .toBe("http://127.0.0.1:9/stream");
+  });
+});
+

@@ -17,7 +17,7 @@ _    ____  _____
     $ ade help <command...>                         Display help for a command
     $ ade connect [--status]                        Link this machine to your ADE account
     $ ade setup                                     Finish or redo install setup (agent CLIs, account, desktop app)
-    $ ade login [--headless] [--max-wait <seconds>] Sign in to the optional ADE account
+    $ ade login [--headless] [--max-wait <seconds>] Sign in to your ADE account
     $ ade logout                                    Sign out of the ADE account
     $ ade auth status                               Show ADE account sign-in status
     $ ade account token create                      Print a durable token for ADE_ACCOUNT_TOKEN
@@ -57,7 +57,8 @@ _    ____  _____
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
     $ ade chat list | create | send | ask | note | interrupt
                                                     Work with ADE agent chats
-    $ ade session show | snooze | wake | clear-woke Manage a session's lifecycle (snooze until a deadline)
+    $ ade session show | move | snooze | wake | clear-woke
+                                                    Manage a session's lifecycle (file it on the board, snooze until a deadline)
     $ ade linear attach | comment | set-state | issue | graphql
                                                     Read and write attached Linear issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
@@ -65,13 +66,17 @@ _    ____  _____
     $ ade coordinator <tool>                        Call coordinator runtime tools
     $ ade tests list | run | stop | runs | logs     Run configured test suites
     $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
-    $ ade ios-sim devices | apps | launch | tap    Control iOS Simulator apps, capture, and input
+    $ ade apple devices | apps | launch | tap      Control Apple simulators, capture, and input
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
-    $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets for agents
+    $ ade providers accounts list | add | remove | rename | default
+                                                    Manage this machine's Claude/Codex logins
+    $ ade proxy status | start | stop | login | logout
+                                                    Manage local subscription sign-ins
+    $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets (account or device)
     $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
@@ -101,8 +106,8 @@ _    ____  _____
     $ ade prs create --lane <lane> --base main --draft
     $ ade prs checks <pr-id-or-number-or-url> --text
     $ ade proof record --seconds 20
-    $ ade ios-sim apps --text
-    $ ade ios-sim launch --target <id> --text
+    $ ade apple apps --text
+    $ ade apple launch --target <id> --text
     $ ade app-control launch --command "pnpm dev" --text
     $ ade --socket browser open http://localhost:5173 --new-tab --text
     $ ade terminal read --chat-session <owner-session-id> --text
@@ -133,8 +138,9 @@ _    ____  _____
 
   ADE Account
 
-  ADE accounts are optional. Signing in unlocks remote-machine and account
-  directory features; every local ADE workflow continues to work signed out.
+  ADE requires an account. Signing in carries your settings, secrets, and
+  provider keys to every machine you use, and connects them to each other.
+  Work already on this machine is never blocked while you are signed out.
 
     $ ade login                    Sign in with loopback OAuth or auto-detected device flow
     $ ade login --headless         Print a verification URL + code for another browser
@@ -163,7 +169,7 @@ _    ____  _____
     $ ade help <command...>                         Display help for a command
     $ ade connect [--status]                        Link this machine to your ADE account
     $ ade setup                                     Finish or redo install setup (agent CLIs, account, desktop app)
-    $ ade login [--headless] [--max-wait <seconds>] Sign in to the optional ADE account
+    $ ade login [--headless] [--max-wait <seconds>] Sign in to your ADE account
     $ ade logout                                    Sign out of the ADE account
     $ ade auth status                               Show ADE account sign-in status
     $ ade account token create                      Print a durable token for ADE_ACCOUNT_TOKEN
@@ -203,7 +209,8 @@ _    ____  _____
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
     $ ade chat list | create | send | ask | note | interrupt
                                                     Work with ADE agent chats
-    $ ade session show | snooze | wake | clear-woke Manage a session's lifecycle (snooze until a deadline)
+    $ ade session show | move | snooze | wake | clear-woke
+                                                    Manage a session's lifecycle (file it on the board, snooze until a deadline)
     $ ade linear attach | comment | set-state | issue | graphql
                                                     Read and write attached Linear issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
@@ -211,13 +218,17 @@ _    ____  _____
     $ ade coordinator <tool>                        Call coordinator runtime tools
     $ ade tests list | run | stop | runs | logs     Run configured test suites
     $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
-    $ ade ios-sim devices | apps | launch | tap    Control iOS Simulator apps, capture, and input
+    $ ade apple devices | apps | launch | tap      Control Apple simulators, capture, and input
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
-    $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets for agents
+    $ ade providers accounts list | add | remove | rename | default
+                                                    Manage this machine's Claude/Codex logins
+    $ ade proxy status | start | stop | login | logout
+                                                    Manage local subscription sign-ins
+    $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets (account or device)
     $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
@@ -247,8 +258,8 @@ _    ____  _____
     $ ade prs create --lane <lane> --base main --draft
     $ ade prs checks <pr-id-or-number-or-url> --text
     $ ade proof record --seconds 20
-    $ ade ios-sim apps --text
-    $ ade ios-sim launch --target <id> --text
+    $ ade apple apps --text
+    $ ade apple launch --target <id> --text
     $ ade app-control launch --command "pnpm dev" --text
     $ ade --socket browser open http://localhost:5173 --new-tab --text
     $ ade terminal read --chat-session <owner-session-id> --text
@@ -512,6 +523,8 @@ _    ____  _____
     $ ade files mkdir --workspace <lane> src/new
     $ ade files search --workspace <lane> -q <text> Search text in a workspace
     $ ade files quick-open --workspace <lane> -q app
+    $ ade files quick-open --workspace <lane> -q src --include-directories
+                                                    Also offer folders; they print with a trailing slash
 
 ## ade search --help
 _    ____  _____
@@ -636,6 +649,9 @@ _    ____  _____
   After start, use the returned session id with:
     $ ade terminal read --terminal <session-id> --text
 
+  Provider CLI launches accept --instance for Claude/Codex accounts and
+  --preset or --credential for saved harness brains.
+
   Prefer ade new chat --mode cli for new tracked provider CLI sessions. start-cli
   remains as the compatibility command behind that mode.
 
@@ -724,10 +740,12 @@ _    ____  _____
     $ ade chat steer <session> --text "context" --dispatch interrupt
                                                     Deliver into the running turn: inline | interrupt.
                                                     Omit --dispatch to stage for the next turn.
-                                                    Claude takes inline and interrupt; Cursor takes
-                                                    interrupt (cancel + resend on the same thread).
-                                                    Other providers reject the flag outright and nothing
-                                                    is sent; omit --dispatch to stage the message.
+                                                    Claude and Cursor take inline and interrupt; Codex and
+                                                    OpenCode take inline only. Cursor's interrupt cancels
+                                                    and resends on the same thread, and a Cursor cloud run
+                                                    declines inline and stages instead. Other providers
+                                                    reject the flag outright and nothing is sent; omit
+                                                    --dispatch to stage the message.
     $ ade chat wait <session> --for idle --timeout-ms 600000
                                                     Wait for idle, active, awaiting-input, or terminal
     $ ade chat recover <session> --turn <turn-id> --action nudge
@@ -875,7 +893,7 @@ _    ____  _____
     $ ade help <command...>                         Display help for a command
     $ ade connect [--status]                        Link this machine to your ADE account
     $ ade setup                                     Finish or redo install setup (agent CLIs, account, desktop app)
-    $ ade login [--headless] [--max-wait <seconds>] Sign in to the optional ADE account
+    $ ade login [--headless] [--max-wait <seconds>] Sign in to your ADE account
     $ ade logout                                    Sign out of the ADE account
     $ ade auth status                               Show ADE account sign-in status
     $ ade account token create                      Print a durable token for ADE_ACCOUNT_TOKEN
@@ -915,7 +933,8 @@ _    ____  _____
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
     $ ade chat list | create | send | ask | note | interrupt
                                                     Work with ADE agent chats
-    $ ade session show | snooze | wake | clear-woke Manage a session's lifecycle (snooze until a deadline)
+    $ ade session show | move | snooze | wake | clear-woke
+                                                    Manage a session's lifecycle (file it on the board, snooze until a deadline)
     $ ade linear attach | comment | set-state | issue | graphql
                                                     Read and write attached Linear issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
@@ -923,13 +942,17 @@ _    ____  _____
     $ ade coordinator <tool>                        Call coordinator runtime tools
     $ ade tests list | run | stop | runs | logs     Run configured test suites
     $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
-    $ ade ios-sim devices | apps | launch | tap    Control iOS Simulator apps, capture, and input
+    $ ade apple devices | apps | launch | tap      Control Apple simulators, capture, and input
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
-    $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets for agents
+    $ ade providers accounts list | add | remove | rename | default
+                                                    Manage this machine's Claude/Codex logins
+    $ ade proxy status | start | stop | login | logout
+                                                    Manage local subscription sign-ins
+    $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets (account or device)
     $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
@@ -959,8 +982,8 @@ _    ____  _____
     $ ade prs create --lane <lane> --base main --draft
     $ ade prs checks <pr-id-or-number-or-url> --text
     $ ade proof record --seconds 20
-    $ ade ios-sim apps --text
-    $ ade ios-sim launch --target <id> --text
+    $ ade apple apps --text
+    $ ade apple launch --target <id> --text
     $ ade app-control launch --command "pnpm dev" --text
     $ ade --socket browser open http://localhost:5173 --new-tab --text
     $ ade terminal read --chat-session <owner-session-id> --text
@@ -1084,7 +1107,7 @@ _    ____  _____
     $ ade help <command...>                         Display help for a command
     $ ade connect [--status]                        Link this machine to your ADE account
     $ ade setup                                     Finish or redo install setup (agent CLIs, account, desktop app)
-    $ ade login [--headless] [--max-wait <seconds>] Sign in to the optional ADE account
+    $ ade login [--headless] [--max-wait <seconds>] Sign in to your ADE account
     $ ade logout                                    Sign out of the ADE account
     $ ade auth status                               Show ADE account sign-in status
     $ ade account token create                      Print a durable token for ADE_ACCOUNT_TOKEN
@@ -1124,7 +1147,8 @@ _    ____  _____
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
     $ ade chat list | create | send | ask | note | interrupt
                                                     Work with ADE agent chats
-    $ ade session show | snooze | wake | clear-woke Manage a session's lifecycle (snooze until a deadline)
+    $ ade session show | move | snooze | wake | clear-woke
+                                                    Manage a session's lifecycle (file it on the board, snooze until a deadline)
     $ ade linear attach | comment | set-state | issue | graphql
                                                     Read and write attached Linear issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
@@ -1132,13 +1156,17 @@ _    ____  _____
     $ ade coordinator <tool>                        Call coordinator runtime tools
     $ ade tests list | run | stop | runs | logs     Run configured test suites
     $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
-    $ ade ios-sim devices | apps | launch | tap    Control iOS Simulator apps, capture, and input
+    $ ade apple devices | apps | launch | tap      Control Apple simulators, capture, and input
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
-    $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets for agents
+    $ ade providers accounts list | add | remove | rename | default
+                                                    Manage this machine's Claude/Codex logins
+    $ ade proxy status | start | stop | login | logout
+                                                    Manage local subscription sign-ins
+    $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets (account or device)
     $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
@@ -1168,8 +1196,8 @@ _    ____  _____
     $ ade prs create --lane <lane> --base main --draft
     $ ade prs checks <pr-id-or-number-or-url> --text
     $ ade proof record --seconds 20
-    $ ade ios-sim apps --text
-    $ ade ios-sim launch --target <id> --text
+    $ ade apple apps --text
+    $ ade apple launch --target <id> --text
     $ ade app-control launch --command "pnpm dev" --text
     $ ade --socket browser open http://localhost:5173 --new-tab --text
     $ ade terminal read --chat-session <owner-session-id> --text
@@ -1286,115 +1314,137 @@ _    ____  _____
   / ___ \| |_| | |___
  /_/   \_\____/|_____|
 
-  iOS Simulator
+  Apple Development
 
-  iOS simulator commands build, launch, mirror, inspect, and control the ADE
-  drawer simulator. Aliases: `ade ios` and `ade simulator` route to the same
-  surface. For drawer/shared session state, prefer attached runtime mode
-  (--socket) so launch/select/tap operate on the same long-lived ADE service.
-  Launch keeps Simulator.app in the background; pass --foreground to raise it,
-  or --open-drawer when the user should see the iOS drawer. Optional simulator
-  control tools enable tap, drag, type, and inspect actions.
+  Apple device commands build, launch, stream, inspect, and control a per-lane
+  iOS simulator through ADE's vendored helper. `ade ios-sim` is a deprecated
+  alias for one minor release (`ade ios` and `ade simulator` still route here).
+  For shared session state, prefer attached runtime mode (--socket) so
+  launch/select/tap operate on the same long-lived ADE service. Launch keeps
+  the device in the background; pass --open-drawer when the user should see the
+  Apple column. Tap, drag, type, and inspect go through the helper — no idb,
+  no Screen Recording grant, and no Simulator.app window.
 
   Every rooted subcommand builds and captures in the lane worktree: an explicit
   --project-root wins, else --lane/ADE_LANE_ID, else the worktree the shell is
   in. Pass --project-root to target the primary checkout from inside a lane.
 
   A launched simulator session belongs to one chat at a time. Run
-  "ios-sim shutdown" from the owning chat before launching it from a different
+  "apple shutdown" from the owning chat before launching it from a different
   one; shutting down a session another chat owns is refused, and
   "shutdown --force" or "launch --force" takes it over deliberately. The refusal
-  is a guard rail against accidents, not a lock — see "ios-sim shutdown --help".
-  Use "ios-sim claim --lane <lane-id>" to attach the drawer session to a lane.
+  is a guard rail against accidents, not a lock — see "apple shutdown --help".
+  Use "apple claim --lane <lane-id>" to attach the drawer session to a lane.
 
   Discovery and lifecycle:
-    $ ade ios-sim status --text                    Show simulator readiness
-    $ ade ios-sim devices --text                   List available simulators
-    $ ade ios-sim apps --device <udid> --text      List launchable apps
-    $ ade --socket ios-sim launch --target <id>    Build, install, and launch an app
-    $ ade --socket ios-sim launch --follow         Same, announcing the wait before the summary
-    $ ade --socket ios-sim claim --lane <lane-id>  Attribute the drawer session to a lane
-    $ ade --socket ios-sim launch --bundle-id com.example Launch installed app
-    $ ade --socket ios-sim shutdown                Tear down the active simulator session (alias: stop)
-    $ ade --socket ios-sim shutdown --force        Force-release a session owned by another chat
-    $ ade --socket ios-sim launch --force          Take the simulator over in one step
-    $ ade ios-sim actions --text                   List every callable ios_simulator action
+    $ ade apple status --text                    Show simulator readiness
+    $ ade apple devices --text                   List available simulators
+    $ ade apple apps --device <udid> --text      List launchable apps
+    $ ade --socket apple launch --target <id>    Build, install, and launch an app
+    $ ade --socket apple launch --follow         Same, announcing the wait before the summary
+    $ ade --socket apple claim --lane <lane-id>  Attribute the drawer session to a lane
+    $ ade --socket apple launch --bundle-id com.example Launch installed app
+    $ ade --socket apple shutdown                Tear down the active simulator session (alias: stop)
+    $ ade --socket apple shutdown --force        Force-release a session owned by another chat
+    $ ade --socket apple launch --force          Take the simulator over in one step
+    $ ade apple actions --text                   List every callable ios_simulator action
 
   ADE discovers Xcode projects from the project root and apps/* folders.
 
   Capture and inspection:
-    $ ade ios-sim screenshot --out shot.png --text Capture a screenshot to a file
-    $ ade ios-sim proof --caption "<what>" --text  Screenshot into the proof drawer
-    $ ade ios-sim snapshot --text                  Capture selectable UI context
-    $ ade ios-sim inspector --text                 Show current inspector data
-    $ ade ios-sim inspect --x 120 --y 420 --text   Inspect a point in the simulator
-    $ ade ios-sim preview-status --text           Xcode MCP readiness for Preview Lab
-    $ ade ios-sim previews --source <file> --text  List nearby #Preview definitions
-    $ ade ios-sim preview-match --source <file>    Resolve best Preview Lab match
-    $ ade ios-sim preview-ensure --text            Open/wait for Xcode Preview Lab
-    $ ade ios-sim preview-current --text           Render preview for the selected simulator UI
-    $ ade ios-sim preview-render --source <file>   Render a SwiftUI preview through Xcode MCP
+    $ ade apple screenshot --out shot.png --text Capture a screenshot to a file
+    $ ade apple proof --caption "<what>" --text  Screenshot into the proof drawer
+    $ ade apple snapshot --text                  Capture selectable UI context
+    $ ade apple inspector --text                 Show current inspector data
+    $ ade apple inspect --x 120 --y 420 --text   Inspect a point in the simulator
+    $ ade apple preview-status --text           Xcode MCP readiness for Preview Lab
+    $ ade apple previews --source <file> --text  List nearby #Preview definitions
+    $ ade apple preview-match --source <file>    Resolve best Preview Lab match
+    $ ade apple preview-ensure --text            Open/wait for Xcode Preview Lab
+    $ ade apple preview-current --text           Render preview for the selected simulator UI
+    $ ade apple preview-render --source <file>   Render a SwiftUI preview through Xcode MCP
 
   Device sessions:
-    $ ade --socket ios-sim open-device --text      Boot a simulator with no app
-    $ ade --socket ios-sim open-device --no-window Keep the device headless
-    $ ade --socket ios-sim settings --text         Read appearance, text size, a11y
-    $ ade --socket ios-sim close-device --text     Release the device session
+    $ ade --socket apple open-device --text      Boot a simulator with no app
+    $ ade --socket apple open-device --no-window Keep the device headless
+    $ ade --socket apple device-session --text   Report the tracked device session
+    $ ade --socket apple settings --text         Read appearance, text size, a11y
+    $ ade --socket apple close-device --text     Release the device session
 
   An app session names a bundle id, a build root, and a lane. A device session
   is a booted simulator with no app. ADE never shuts down a device it did not
   boot unless you pass "close-device --shutdown".
 
-  Live view:
-    $ ade ios-sim live-start --fps 60              Show the running simulator in ADE
-    $ ade ios-sim window-start --fps 60            Same live view, explicit alias
-    $ ade ios-sim stream-start --backend idb-h264  Encode on the simulator's own machine
-    $ ade ios-sim stream-status --text             Show live view and input state
-    $ ade ios-sim stream-stop                      Stop the live view
+  Live view (helper H.264; no Screen Recording grant, no Simulator window):
+    $ ade apple stream-start --fps 60            Stream the device framebuffer
+    $ ade apple stream-status --text             Show live view and input state
+    $ ade apple stream-stop                      Stop the live view
 
-  Use simulator-window-capture for a local simulator. Use idb-h264 when the
-  simulator runs on another machine, or when Screen Recording is not granted.
+  Per-lane devices:
+    $ ade apple device-create --text             Clone the project's last-used simulator
+    $ ade apple device-attach --simulator <id>   Bind an existing simulator to this lane
+    $ ade apple start [--udid <id>|--create <id>] Attach or clone, boot, wait, and stream
+    $ ade apple stop --text                     Power the lane's device OFF (session-only: shutdown)
+    $ ade apple device-list --installed --text   Installed simulators for a picker
+    $ ade apple device-list --lane --text        The one device this lane owns
+    $ ade apple device-delete --text             Delete a clone (attached devices refuse)
+
+  Recording:
+    $ ade apple record-start --text              Start a manual recording
+    $ ade apple record-stop --keep --text        Stop and keep (or --discard)
+    $ ade apple record-list --text               List recordings for this lane
+    $ ade apple record-delete --id <id> --text   Delete a recording this chat owns
+    $ ade apple frame --out shot.png --text      Grab one decoded stream frame
 
   Device tools:
-    $ ade ios-sim appearance dark --text           Switch to dark mode
-    $ ade ios-sim content-size accessibility-large Set Dynamic Type size
-    $ ade ios-sim accessibility reduce-motion on   Set one accessibility option
-    $ ade ios-sim location 37.7749 -122.4194       Set the simulated location
-    $ ade ios-sim location --clear                 Clear the simulated location
-    $ ade ios-sim permission grant photos --bundle-id <id>
-    $ ade ios-sim push --bundle-id <id> --title Hi --body "You have mail"
-    $ ade ios-sim open-url myapp://settings        Open a deeplink
-    $ ade ios-sim relaunch --bundle-id <id>        Restart without rebuilding
-    $ ade ios-sim terminate --bundle-id <id>       Stop a running app
-    $ ade ios-sim uninstall --bundle-id <id>       Remove an app and its container
-    $ ade ios-sim status-bar --time 9:41 --wifi-bars 3
-    $ ade ios-sim status-bar --clear               Drop the status bar override
-    $ ade ios-sim app-state --bundle-id <id>       Report running state and pid
+    $ ade apple button home --text               Press Home (also lock, volume-up, volume-down, siri)
+    $ ade apple rotate landscape-left --text     Set orientation
+    $ ade apple appearance dark --text           Switch to dark mode
+    $ ade apple content-size accessibility-large Set Dynamic Type size
+    $ ade apple accessibility reduce-motion on   Set one accessibility option
+    $ ade apple location 37.7749 -122.4194       Set the simulated location
+    $ ade apple location --clear                 Clear the simulated location
+    $ ade apple permission grant photos --bundle-id <id>
+    $ ade apple push --bundle-id <id> --title Hi --body "You have mail"
+    $ ade apple open-url myapp://settings        Open a deeplink
+    $ ade apple relaunch --bundle-id <id>        Restart without rebuilding
+    $ ade apple terminate --bundle-id <id>       Stop a running app
+    $ ade apple uninstall --bundle-id <id>       Remove an app and its container
+    $ ade apple status-bar --time 9:41 --wifi-bars 3
+    $ ade apple status-bar --clear               Drop the status bar override
+    $ ade apple app-state --bundle-id <id>       Report running state and pid
+    $ ade apple foreground --text                Which app the device has in front
 
   Event log:
-    $ ade ios-sim log-start --bundle-id <id>       Start the device event log
-    $ ade ios-sim log --since <cursor> --text      Read new rows
-    $ ade ios-sim log-stop --text                  Stop the log
+    $ ade apple log-start --bundle-id <id>       Start the device event log
+    $ ade apple log --since <cursor> --text      Read new rows
+    $ ade apple log-stop --text                  Stop the log
+
+  --bundle-id is required: "log stream" reads the whole device. There is one
+  log process per host, so the chat that started the running log is the only
+  one that can stop it; --force takes it.
 
   Semantic actions:
-    $ ade ios-sim snapshot --text                  Read the refs on screen first
-    $ ade ios-sim find-element --label Continue    Find one element by query
-    $ ade ios-sim tap-element --label Continue     Tap the element, not a pixel
-    $ ade ios-sim fill-element --identifier email --value ada@example.com
-    $ ade ios-sim wait-for-element --label Welcome --timeout-ms 8000
-    $ ade ios-sim wait-for-element --label Spinner --gone
-    $ ade ios-sim assert-visible --label "Order confirmed"
-    $ ade ios-sim proof-bundle --caption "<what>"  Screenshot plus proof metadata
+    $ ade apple snapshot --text                  Read the refs on screen first
+    $ ade apple find-element --label Continue    Find one element by query
+    $ ade apple tap-element --label Continue     Tap the element, not a pixel
+    $ ade apple fill-element --identifier email --value ada@example.com
+    $ ade apple wait-for-element --label Welcome --timeout-ms 8000
+    $ ade apple wait-for-element --label Spinner --gone
+    $ ade apple assert-visible --label "Order confirmed"
+    $ ade apple proof-bundle --caption "<what>"  Screenshot plus proof metadata
 
   Input and selection:
-    $ ade --socket ios-sim select --x 120 --y 420  Add simulator UI context to chat
-    $ ade ios-sim tap 120 420                      Tap in the simulator
-    $ ade ios-sim drag 120 700 120 250             Drag in the simulator
-    $ ade ios-sim swipe 120 700 120 250            Swipe in the simulator
-    $ ade ios-sim type "hello" --text              Type into the launched app
+    $ ade --socket apple select --x 120 --y 420  Add simulator UI context to chat
+    $ ade apple tap 120 420                      Tap in the simulator
+    $ ade apple drag 120 700 120 250             Drag in the simulator
+    $ ade apple swipe 120 700 120 250            Swipe in the simulator
+    $ ade apple scroll --x 200 --y 500 --dy -400 Scroll at a point
+    $ ade apple type "hello" --text              Type into the launched app
 
   A coordinate tap is a guess that the layout did not move. Prefer
   tap-element and fill-element; fall back to tap when no query matches.
+ade ios-sim is now ade apple; the alias goes away next minor release
 
 ## ade app-control --help
 _    ____  _____
@@ -1696,7 +1746,7 @@ _    ____  _____
     $ ade help <command...>                         Display help for a command
     $ ade connect [--status]                        Link this machine to your ADE account
     $ ade setup                                     Finish or redo install setup (agent CLIs, account, desktop app)
-    $ ade login [--headless] [--max-wait <seconds>] Sign in to the optional ADE account
+    $ ade login [--headless] [--max-wait <seconds>] Sign in to your ADE account
     $ ade logout                                    Sign out of the ADE account
     $ ade auth status                               Show ADE account sign-in status
     $ ade account token create                      Print a durable token for ADE_ACCOUNT_TOKEN
@@ -1736,7 +1786,8 @@ _    ____  _____
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
     $ ade chat list | create | send | ask | note | interrupt
                                                     Work with ADE agent chats
-    $ ade session show | snooze | wake | clear-woke Manage a session's lifecycle (snooze until a deadline)
+    $ ade session show | move | snooze | wake | clear-woke
+                                                    Manage a session's lifecycle (file it on the board, snooze until a deadline)
     $ ade linear attach | comment | set-state | issue | graphql
                                                     Read and write attached Linear issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
@@ -1744,13 +1795,17 @@ _    ____  _____
     $ ade coordinator <tool>                        Call coordinator runtime tools
     $ ade tests list | run | stop | runs | logs     Run configured test suites
     $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
-    $ ade ios-sim devices | apps | launch | tap    Control iOS Simulator apps, capture, and input
+    $ ade apple devices | apps | launch | tap      Control Apple simulators, capture, and input
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
-    $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets for agents
+    $ ade providers accounts list | add | remove | rename | default
+                                                    Manage this machine's Claude/Codex logins
+    $ ade proxy status | start | stop | login | logout
+                                                    Manage local subscription sign-ins
+    $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets (account or device)
     $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
@@ -1780,8 +1835,8 @@ _    ____  _____
     $ ade prs create --lane <lane> --base main --draft
     $ ade prs checks <pr-id-or-number-or-url> --text
     $ ade proof record --seconds 20
-    $ ade ios-sim apps --text
-    $ ade ios-sim launch --target <id> --text
+    $ ade apple apps --text
+    $ ade apple launch --target <id> --text
     $ ade app-control launch --command "pnpm dev" --text
     $ ade --socket browser open http://localhost:5173 --new-tab --text
     $ ade terminal read --chat-session <owner-session-id> --text

@@ -144,10 +144,6 @@ import { runGit } from "../git/git";
 import type {
   AdeCleanupResult,
   AdeProjectSnapshot,
-  IosSimulatorDevice,
-  IosSimulatorSession,
-  IosSimulatorStatus,
-  IosSimulatorToolStatus,
   ProjectSecretDeleteArgs,
   ProjectSecretEnvFile,
   ProjectSecretGetArgs,
@@ -159,25 +155,11 @@ import type {
   ProjectSecretSetArgs,
   ProjectSecretSummary,
   ProjectSecretValueResult,
-  IosSimulatorPrivacyPane,
-  IosSimulatorWindowSourcesResult,
 } from "../../../shared/types";
 import {
-  activeSimulatorParkingWindow,
-  attachSimulatorWindowForCapture,
-  ensureSimulatorWindowCapturable,
-  followSimulatorWindowUnderAde,
-  getSimulatorWindowState,
-  listSimulatorWindowSources,
-  openSimulatorPrivacyPane,
-  readSimulatorSessionHint,
-  reattachSimulatorWindowForCapture,
-  releaseSimulatorParkingFollowAfter,
-  releaseSimulatorParkingHolder,
-  retainSimulatorParkingFollow,
-  revealSimulatorWindow,
-  SIMULATOR_SOURCE_DISCOVERY_BUDGET_MS,
-} from "../ios/simulatorWindowCapture";
+  noteAppleLocalViewerStarted,
+  noteAppleLocalViewerStopped,
+} from "../ios/appleLocalViewers";
 import {
   readGitOriginUrl,
   toShallowRecentProjectSummary,
@@ -1764,7 +1746,6 @@ export function registerIpc({
   resolveSyncService,
   runWithIpcWindow,
   getWindowSession,
-  getProjectContext,
   setWindowProjectTabs,
   bindRemoteProject,
   localRuntimeConnectionPool,
@@ -2559,129 +2540,6 @@ export function registerIpc({
       throw new Error("iOS Simulator service is not available.");
     }
     return service;
-  };
-  const readProjectRootArg = (arg: unknown): string | null => {
-    if (!arg || typeof arg !== "object" || Array.isArray(arg)) return null;
-    const value = (arg as { projectRoot?: unknown }).projectRoot;
-    return typeof value === "string" && value.trim() ? value.trim() : null;
-  };
-  const isOptionalString = (value: unknown): value is string | null =>
-    value === null || typeof value === "string";
-  const isIosSimulatorToolStatus = (value: unknown): value is IosSimulatorToolStatus =>
-    isRecord(value)
-    && (value.name === "xcrun"
-      || value.name === "xcodebuild"
-      || value.name === "simulator_window"
-      || value.name === "idb"
-      || value.name === "idb_companion")
-    && typeof value.available === "boolean"
-    && typeof value.detail === "string"
-    && typeof value.installHint === "string";
-  const isIosSimulatorDevice = (value: unknown): value is IosSimulatorDevice =>
-    isRecord(value)
-    && typeof value.udid === "string"
-    && typeof value.name === "string"
-    && typeof value.runtime === "string"
-    && typeof value.state === "string"
-    && typeof value.isAvailable === "boolean";
-  const isIosSimulatorSession = (value: unknown): value is IosSimulatorSession =>
-    isRecord(value)
-    && typeof value.id === "string"
-    && typeof value.deviceUdid === "string"
-    && isOptionalString(value.deviceName)
-    && typeof value.bundleId === "string"
-    && isOptionalString(value.appName)
-    && isOptionalString(value.appBundlePath)
-    && isOptionalString(value.targetId)
-    && isOptionalString(value.projectRoot)
-    && isOptionalString(value.laneId)
-    && isOptionalString(value.chatSessionId)
-    && (value.mode === "snapshot" || value.mode === "live")
-    && (value.keepSimulatorInBackground === undefined
-      || value.keepSimulatorInBackground === null
-      || typeof value.keepSimulatorInBackground === "boolean")
-    && isOptionalString(value.bridgeUrl)
-    && typeof value.startedAt === "string"
-    && isOptionalString(value.claimedAt);
-  const normalizeIosSimulatorStatus = (value: unknown): IosSimulatorStatus | null => {
-    if (!isRecord(value)) return null;
-    const activeDevice = value.activeDevice;
-    const activeSession = value.activeSession;
-    if (
-      typeof value.platform !== "string"
-      || typeof value.supported !== "boolean"
-      || !Array.isArray(value.tools)
-      || !value.tools.every(isIosSimulatorToolStatus)
-      || (activeDevice !== null && !isIosSimulatorDevice(activeDevice))
-      || (activeSession !== null && !isIosSimulatorSession(activeSession))
-    ) {
-      return null;
-    }
-    return {
-      platform: value.platform as NodeJS.Platform,
-      supported: value.supported,
-      tools: value.tools,
-      activeDevice,
-      activeSession,
-    };
-  };
-  const getIosSimulatorContextForEvent = (event: IpcMainInvokeEvent, arg?: unknown): AppContext | null => {
-    const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
-    const session = getWindowSession?.(windowId) ?? null;
-    const boundLocalRoot = session?.binding?.kind === "local"
-      ? session.binding.rootPath
-      : null;
-    const explicitRoot = readProjectRootArg(arg);
-    const resolveProjectContext = (projectRoot: string) =>
-      getProjectContext ? getProjectContext(projectRoot) ?? null : getCtx();
-    if (explicitRoot) {
-      if (!boundLocalRoot || explicitRoot !== boundLocalRoot) {
-        throw new Error("iOS Simulator access is only allowed for the window's bound local project.");
-      }
-      return resolveProjectContext(explicitRoot);
-    }
-    const sessionRoot = boundLocalRoot ?? session?.project?.rootPath ?? null;
-    if (sessionRoot) return resolveProjectContext(sessionRoot);
-    return getWindowSession ? null : getCtx();
-  };
-  const throwIosSimulatorUnavailableForEvent = (ctx: AppContext | null, arg?: unknown, channel = IPC.iosSimulatorListWindowSources): never => {
-    const requestedProjectRoot = readProjectRootArg(arg);
-    const projectRoot = requestedProjectRoot ?? ctx?.project?.rootPath ?? null;
-    const logger = ctx?.logger ?? getCtx().logger;
-    logger.warn("ios_simulator.service_unavailable", {
-      channel,
-      requestedProjectRoot,
-      contextProjectRoot: ctx?.project?.rootPath ?? null,
-      hasUserSelectedProject: ctx?.hasUserSelectedProject ?? false,
-    });
-    throw new Error(
-      projectRoot
-        ? `iOS Simulator service is not available for ${projectRoot}.`
-        : "iOS Simulator service is not available because no local project is bound to this window.",
-    );
-  };
-  const getIosSimulatorStatusForEvent = async (
-    event: IpcMainInvokeEvent,
-    arg?: unknown,
-    channel = IPC.iosSimulatorListWindowSources,
-  ): Promise<IosSimulatorStatus> => {
-    const ctx = getIosSimulatorContextForEvent(event, arg);
-    const service = ctx?.iosSimulatorService;
-    if (service) {
-      const status = normalizeIosSimulatorStatus(await service.getStatus());
-      if (status) return status;
-    }
-
-    const runtimeStatus = await tryLocalRuntimeSync(event, async (pool, rootPath) => {
-      const response = await pool.callActionForRoot(rootPath, {
-        domain: "ios_simulator",
-        action: "getStatus",
-        args: {},
-      });
-      return normalizeIosSimulatorStatus(response.result);
-    });
-    if (runtimeStatus) return runtimeStatus;
-    return throwIosSimulatorUnavailableForEvent(ctx, arg, channel);
   };
 
   const ensureAppControl = (): NonNullable<AppContext["appControlService"]> => {
@@ -9434,42 +9292,7 @@ export function registerIpc({
   ipcMain.handle(IPC.iosSimulatorListLaunchTargets, async (_event, arg = {}) =>
     ensureIosSimulator().listLaunchTargets(arg));
 
-  // One Simulator.app, many ADE windows: whichever window claims it first owns
-  // the parking follow until it releases or is forced out. Everything the claim
-  // then does to the window lives in `../ios/simulatorWindowCapture`.
-  const claimSimulatorParkingWindow = (
-    window: BrowserWindow | null,
-    options: { force?: boolean } = {},
-  ): BrowserWindow | null => {
-    const current = activeSimulatorParkingWindow();
-    if (current && !options.force) {
-      // There is one Simulator window and many ADE windows. Losing the claim is
-      // silent to the user, so at least say so in the log when a second window
-      // asks for a simulator that is already parked against another.
-      if (current !== window && window && !window.isDestroyed()) {
-        getCtx().logger.info("ios_simulator.parking_window_already_claimed", {
-          claimedWindowId: current.id,
-          requestedWindowId: window.id,
-        });
-      }
-      return current;
-    }
-    if (!window || window.isDestroyed()) return current;
-    followSimulatorWindowUnderAde(window);
-    return window;
-  };
-
-  ipcMain.handle(IPC.iosSimulatorLaunch, async (event, arg = {}) => {
-    const result = await ensureIosSimulator().launch(arg);
-    const keepSimulatorInBackgroundPayload = (arg as { keepSimulatorInBackground?: unknown } | null)?.keepSimulatorInBackground;
-    const keepSimulatorInBackground = keepSimulatorInBackgroundPayload === true;
-    if (!keepSimulatorInBackground) {
-      const browserWindow = BrowserWindow.fromWebContents(event.sender);
-      const parkingWindow = claimSimulatorParkingWindow(browserWindow, { force: true });
-      await attachSimulatorWindowForCapture(parkingWindow);
-    }
-    return result;
-  });
+  ipcMain.handle(IPC.iosSimulatorLaunch, async (_event, arg = {}) => ensureIosSimulator().launch(arg));
 
   ipcMain.handle(IPC.iosSimulatorAttachToChatSession, async (_event, arg) => {
     // Tolerate null/undefined payloads (treated as detach) and reject malformed
@@ -9489,11 +9312,7 @@ export function registerIpc({
     });
   });
 
-  // The follow is dropped *after* the shutdown resolves, never before: the
-  // service refuses a foreign caller by throwing, and a refusal must leave the
-  // owning chat's parking follow exactly as it found it.
-  ipcMain.handle(IPC.iosSimulatorShutdown, async (_event, arg = {}) =>
-    releaseSimulatorParkingFollowAfter(() => ensureIosSimulator().shutdown(arg)));
+  ipcMain.handle(IPC.iosSimulatorShutdown, async (_event, arg = {}) => ensureIosSimulator().shutdown(arg));
 
   ipcMain.handle(IPC.iosSimulatorScreenshot, async (_event, arg = {}) => ensureIosSimulator().screenshot(arg));
 
@@ -9525,146 +9344,52 @@ export function registerIpc({
   ipcMain.handle(IPC.iosSimulatorOpenPreviewWorkspace, async (_event, arg = {}) =>
     ensureIosSimulator().openPreviewWorkspace(arg));
 
-  ipcMain.handle(IPC.iosSimulatorStartStream, async (event, arg = {}) => {
-    const result = await ensureIosSimulator().startStream(arg);
-    if (result.backend === "simulator-window-capture") {
-      const browserWindow = BrowserWindow.fromWebContents(event.sender);
-      const parkingWindow = claimSimulatorParkingWindow(browserWindow);
-      // Deliberately does NOT take a holder. With a local project bound this
-      // handler never runs — preload routes `startStream` to the brain daemon,
-      // which has no BrowserWindow and no parking concept — so a retain wired
-      // here would leave the count permanently at zero in production. The
-      // renderer takes its holder over `IPC.iosSimulatorRetainWindowParking`,
-      // the local-only mirror of `releaseWindowParking`, so there is exactly
-      // one claimant of the count and it is on the same transport as its
-      // release.
-      // A stream starting is the capture session attaching: place the window
-      // once here, then leave it to the user.
-      await attachSimulatorWindowForCapture(parkingWindow);
-    }
-    return result;
+  ipcMain.handle(IPC.iosSimulatorStartStream, async (_event, arg = {}) => {
+    const status = await ensureIosSimulator().startStream(arg);
+    // A renderer on this machine is watching this lane. The Apple stream relay
+    // asks before it stops a capture for its last REMOTE viewer, and without
+    // this it always heard "nobody is watching" — so a web tab that started a
+    // capture the desktop column later joined took the column's frames with it
+    // when it closed.
+    noteAppleLocalViewerStarted((arg as { laneId?: string | null } | null)?.laneId ?? null);
+    return status;
   });
 
-  ipcMain.handle(IPC.iosSimulatorStopStream, async () => ensureIosSimulator().stopStream());
-
-  ipcMain.handle(IPC.iosSimulatorGetStreamStatus, async () => ensureIosSimulator().getStreamStatus());
-
-  ipcMain.handle(IPC.iosSimulatorGetWindowState, async () => getSimulatorWindowState());
-
-  // The one place ADE takes focus for the Simulator is the user's own Reveal.
-  ipcMain.handle(IPC.iosSimulatorRevealWindow, async (): Promise<{ ok: boolean; message: string | null }> =>
-    revealSimulatorWindow());
-
-  ipcMain.handle(IPC.iosSimulatorListWindowSources, async (event, arg = {}): Promise<IosSimulatorWindowSourcesResult> => {
-    const status = await getIosSimulatorStatusForEvent(event, arg, IPC.iosSimulatorListWindowSources);
-    if (!status.supported) {
-      return { sources: [], windowState: null, message: "The iOS Simulator is not available on this machine." };
-    }
-    // The clock starts here, not above: the status call is a remote-runtime
-    // round trip on a bound project and has nothing to do with the window
-    // budget. Counting it left the discovery work with less time than its own
-    // subprocess ceilings need.
-    const startedAt = Date.now();
-    const remainingMs = () => SIMULATOR_SOURCE_DISCOVERY_BUDGET_MS - (Date.now() - startedAt);
-    // The Electron-main simulator service never sees a launch the brain daemon
-    // owns, so its `activeSession` is always null and parking used to be dead in
-    // production. Trust the caller's session when it has one.
-    const hasActiveSession = Boolean(readSimulatorSessionHint(arg)) || Boolean(status.activeSession);
-
-    const windowState = await getSimulatorWindowState();
-    if (windowState.issue === "screen-recording-permission" || windowState.issue === "automation-denied") {
-      // Capture cannot succeed and parking cannot run; name the blocker instead
-      // of sweeping every window for nothing.
-      return { sources: [], windowState, message: windowState.message };
-    }
-
-    const senderWindow = BrowserWindow.fromWebContents(event.sender);
-    const parkingWindow = hasActiveSession ? claimSimulatorParkingWindow(senderWindow) : null;
-    if (hasActiveSession) {
-      await ensureSimulatorWindowCapturable(parkingWindow, { windowState, remainingMs });
-    }
-
-    let sources = await listSimulatorWindowSources();
-    if (!sources.length && hasActiveSession && remainingMs() > 700) {
-      await reattachSimulatorWindowForCapture(parkingWindow, { remainingMs });
-      sources = await listSimulatorWindowSources();
-    }
-    if (sources.length) return { sources, windowState, message: null };
-
-    // The park above is allowed to change every fact the read at the top of the
-    // handler established: it starts Simulator.app, un-hides it and
-    // un-minimizes it. Re-read before judging, or the verdict is an instruction
-    // describing what ADE just did — a cold start answered "The simulator is
-    // not running. Launch it from ADE again." *because ADE had launched it*,
-    // and the drawer treats any message as terminal and gave up on the first
-    // sweep. Only the parked path needs the second read; without a session
-    // nothing moved.
-    const settledWindowState = hasActiveSession ? await getSimulatorWindowState() : windowState;
-
-    // `message` is a verdict, and the drawer asks only once, so every answer is
-    // final: a permission blocker, a missing session and an exhausted budget
-    // each name themselves, and the caller shows that text verbatim.
-    //
-    // The remaining branch — empty sources, a live session, budget left, and no
-    // window-state message — is left deliberately verdict-free. It is the case
-    // where a cold Simulator's window is a beat behind the app it just started,
-    // and the host genuinely does not know why it found nothing. Naming it here
-    // would replace the drawer's fallback ("ADE could not find the <device>
-    // window. Make sure the simulator is running and its window is open, then
-    // try again."), which is both truthful about the outcome and more
-    // actionable than anything this layer could assert, with a guess. The host
-    // reports the absence; the caller owns the wording.
-    const message = settledWindowState.message
-      ?? (!hasActiveSession
-        ? "No simulator session is running. Launch the app from ADE first."
-        : remainingMs() <= 0
-          ? "Timed out finding the simulator window. Try again."
-          : null);
-    return { sources, windowState: settledWindowState, message };
+  ipcMain.handle(IPC.iosSimulatorStopStream, async (_event, arg = {}) => {
+    // A renderer viewer let go. Told to the local-viewer registry BEFORE the
+    // stop, so the relay's `closeSource` can never see a lane as unwatched
+    // while this call is still in flight.
+    noteAppleLocalViewerStopped((arg as { laneId?: string | null } | null)?.laneId ?? null);
+    return ensureIosSimulator().stopStream(arg);
   });
 
-  // The window-parking follow is armed by the discovery call above and has to be
-  // dropped when the drawer stops capturing. The shutdown handler below is not
-  // enough on its own: with a runtime bound, `shutdown` goes to the runtime
-  // action and this process never sees it, so a stale follow kept nudging (and
-  // relaunching) Simulator.app on every ADE window move.
-  //
-  // Scoped to the claimant, and refcounted within it: two drawers can be open
-  // in one window (a chat pane plus the Work sidebar's iOS tab), and the first
-  // to close must not drop a claim the other still depends on.
-  //
-  // The retain side has to live on this same local-only channel: `startStream`
-  // — the event that owes a release — is routed to the brain daemon whenever a
-  // local project is bound, so its ipcMain handler never runs in the case that
-  // window capture actually requires. A holder taken there would never exist.
-  //
-  // `ok` is the truth, not an acknowledgement: a sender that does not own the
-  // claim is silently not counted, and a renderer that believed otherwise would
-  // later release a holder it never took — the incumbent drawer's.
-  //
-  // The sender travels with the holder because it is the only thing that can
-  // report a renderer reload: that throws away the drawer without running its
-  // release and never closes the window, so a window-scoped count leaked a
-  // holder for the life of the process. The reload signal is the sender's
-  // main-frame navigation, not `destroyed` — the webContents object outlives
-  // any number of reloads.
-  ipcMain.handle(IPC.iosSimulatorRetainWindowParking, async (event): Promise<{ ok: boolean }> => ({
-    ok: retainSimulatorParkingFollow(BrowserWindow.fromWebContents(event.sender), event.sender),
-  }));
+  ipcMain.handle(IPC.iosSimulatorGetStreamStatus, async (_event, arg = {}) => ensureIosSimulator().getStreamStatus(arg));
 
-  ipcMain.handle(IPC.iosSimulatorReleaseWindowParking, async (event): Promise<{ ok: true }> => {
-    releaseSimulatorParkingHolder(BrowserWindow.fromWebContents(event.sender), event.sender);
-    return { ok: true };
-  });
-
-  ipcMain.handle(IPC.iosSimulatorOpenSystemSettings, async (_event, arg = {}): Promise<{ ok: boolean }> => {
-    const pane: IosSimulatorPrivacyPane = (arg as { pane?: unknown } | null)?.pane === "automation"
-      ? "automation"
-      : "screen-recording";
-    return openSimulatorPrivacyPane(pane);
-  });
+  /* Per-lane devices and recordings. */
+  ipcMain.handle(IPC.iosSimulatorDeviceCreate, async (_event, arg = {}) => ensureIosSimulator().deviceCreate(arg));
+  ipcMain.handle(IPC.iosSimulatorDeviceAttach, async (_event, arg) => ensureIosSimulator().deviceAttach(arg));
+  ipcMain.handle(IPC.iosSimulatorDeviceStart, async (_event, arg = {}) => ensureIosSimulator().deviceStart(arg));
+  ipcMain.handle(IPC.iosSimulatorDeviceStop, async (_event, arg = {}) => ensureIosSimulator().deviceStop(arg));
+  ipcMain.handle(IPC.iosSimulatorDeviceList, async (_event, arg = {}) => ensureIosSimulator().deviceList(arg));
+  ipcMain.handle(IPC.iosSimulatorDeviceDelete, async (_event, arg = {}) => ensureIosSimulator().deviceDelete(arg));
+  ipcMain.handle(IPC.iosSimulatorFrame, async (_event, arg = {}) => ensureIosSimulator().frame(arg));
+  ipcMain.handle(IPC.iosSimulatorRecordStart, async (_event, arg = {}) => ensureIosSimulator().recordStart(arg));
+  ipcMain.handle(IPC.iosSimulatorRecordStop, async (_event, arg = {}) => ensureIosSimulator().recordStop(arg));
+  ipcMain.handle(IPC.iosSimulatorRecordList, async (_event, arg = {}) => ensureIosSimulator().recordList(arg));
+  ipcMain.handle(IPC.iosSimulatorRecordDelete, async (_event, arg) => ensureIosSimulator().recordDelete(arg));
+  // One number, read from the recorder's own sidecars. The Diagnostics row it
+  // feeds used to get it by walking `.ade/artifacts/apple-recordings/` through
+  // the files API — a recursive tree listing to add up sizes the recorder
+  // already knows.
+  ipcMain.handle(IPC.iosSimulatorRecordingsTotalBytes, async (_event, arg = {}) =>
+    ensureIosSimulator().recordingsTotalBytes(arg));
 
   ipcMain.handle(IPC.iosSimulatorTap, async (_event, arg) => ensureIosSimulator().tap(arg));
+
+  ipcMain.handle(IPC.iosSimulatorPressButton, async (_event, arg) => ensureIosSimulator().pressButton(arg));
+
+  ipcMain.handle(IPC.iosSimulatorRotate, async (_event, arg) => ensureIosSimulator().rotate(arg));
+  ipcMain.handle(IPC.iosSimulatorScroll, async (_event, arg) => ensureIosSimulator().scroll(arg));
 
   ipcMain.handle(IPC.iosSimulatorTypeText, async (_event, arg) => ensureIosSimulator().typeText(arg));
 
@@ -9714,6 +9439,8 @@ export function registerIpc({
     ensureIosSimulator().clearStatusBar(arg));
 
   ipcMain.handle(IPC.iosSimulatorGetAppState, async (_event, arg) => ensureIosSimulator().getAppState(arg));
+  ipcMain.handle(IPC.iosSimulatorGetForegroundApp, async (_event, arg = {}) =>
+    ensureIosSimulator().getForegroundApp(arg));
 
   ipcMain.handle(IPC.iosSimulatorStartEventLog, async (_event, arg = {}) =>
     ensureIosSimulator().startEventLog(arg));

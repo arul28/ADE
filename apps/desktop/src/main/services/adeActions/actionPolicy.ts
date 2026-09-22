@@ -3,6 +3,7 @@ import {
   BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS,
 } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
 import { CTO_VOICE_ACTIONS, type CtoVoiceAction } from "../../../shared/types/ctoVoice";
+import { APPLE_AGENT_ACTIONS } from "../../../shared/types/iosSimulator";
 import type { AdeActionDomain } from "./domains";
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -869,7 +870,11 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "recoverArtifact",
     "updateArtifactReview",
   ],
-  ios_simulator: ["getStatus", "claim", "listDevices", "listLaunchTargets", "launch", "attachToChatSession", "shutdown", "screenshot", "getScreenSnapshot", "getInspectorSnapshot", "inspectPoint", "getPreviewCapability", "listPreviewTargets", "resolvePreviewMatch", "ensurePreviewWorkspace", "renderCurrentPreview", "renderPreview", "openPreviewWorkspace", "startStream", "stopStream", "getStreamStatus", "tap", "typeText", "drag", "swipe", "selectPoint", "openDevice", "closeDevice", "getDeviceSession", "getDeviceSettings", "setAppearance", "setContentSize", "setAccessibilityOption", "setLocation", "clearLocation", "setPermission", "sendPushNotification", "openUrl", "relaunchApp", "terminateApp", "uninstallApp", "setStatusBar", "clearStatusBar", "getAppState", "startEventLog", "stopEventLog", "getEventLog", "findElement", "tapElement", "fillElement", "waitForElement", "assertVisible", "captureProofBundle"],
+  // ONE list, in `shared/types/iosSimulator.ts`, spread here rather than
+  // retyped: `getStatus().capabilities` reports it to agents and `apple.invoke`
+  // gates the phone/web client on it, and three hand-kept copies is how an
+  // action ships reachable on one surface and unnamed on the other two.
+  ios_simulator: [...APPLE_AGENT_ACTIONS],
   app_control: ["getStatus", "claim", "launch", "launchInTerminal", "connect", "stop", "focusWindow", "minimizeWindow", "screenshot", "getSnapshot", "inspectPoint", "selectPoint", "click", "typeText", "scroll", "dispatchKey", "listTargets", "attachToTarget", "readTerminal", "writeTerminal", "signalTerminal", "listDrivers", "observe", "agentClick", "agentHover", "agentFill", "agentClear", "agentType", "agentPress", "agentScroll", "agentWait", "getTrace", "windows", "switchWindow"],
   // `acknowledgeRemoteRequest` is not a `BuiltInBrowserService` method: it is
   // served by the runtime daemon itself, so a desktop that took a forwarded

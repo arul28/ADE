@@ -8,26 +8,16 @@ import {
 } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type {
-  AgentChatFileRef,
-  AppControlContextItem,
   GitCommitSummary,
-  IosElementContextItem,
   LaneSummary,
   OpenProjectBinding,
   TerminalSessionSummary,
-  TerminalToolType,
 } from "../../../shared/types";
-import { useAppStore, type WorkDraftKind, type WorkSidebarTab } from "../../state/appStore";
+import { useAppStore, type WorkSidebarTab } from "../../state/appStore";
 import {
-  formatAppControlContextForPrompt,
-  formatBuiltInBrowserContextForPrompt,
-  formatIosElementContextForPrompt,
-  normalizeBuiltInBrowserContextItem,
-} from "../../lib/visualContextFormatting";
-import {
-  dispatchWorkPtyContextInserted,
-  type WorkPtyContextInsertKind,
-} from "../../lib/workPtyContextEvents";
+  useWorkToolContextInsertion,
+  type WorkSidebarContextTarget,
+} from "./workToolContextInsertion";
 import { useLanesForPin } from "../../state/crossMachineLanes";
 import { machineNameForBinding } from "../../../shared/machineIdentity";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
@@ -86,14 +76,12 @@ function escapeIsClaimedInside(target: Element): boolean {
   return value.length > 0;
 }
 
-export type WorkSidebarContextTarget =
-  | { kind: "chat"; sessionId: string }
-  | { kind: "draft"; draftTargetId: string; laneId: string; draftKind: WorkDraftKind }
-  | { kind: "pty"; sessionId: string; ptyId: string; toolType: TerminalToolType | null };
-
-const NO_CONTEXT_TARGET_ERROR = "Open a chat, draft, or agent CLI session in this lane before inserting tool context.";
-const BRACKETED_PASTE_START = "\x1b[200~";
-const BRACKETED_PASTE_END = "\x1b[201~";
+/**
+ * Re-exported so the many callers that import it from the pane keep working;
+ * it lives with the insertion hook now because the Apple column pane needs the
+ * same target without importing the sidebar.
+ */
+export type { WorkSidebarContextTarget };
 
 function shortLaneId(laneId: string): string {
   return laneId.length <= 8 ? laneId : `${laneId.slice(0, 4)}...${laneId.slice(-3)}`;
@@ -113,40 +101,6 @@ function laneMismatchMessage(
   const ownerLane = laneDisplayName(lanes, ownerLaneId);
   const activeLane = laneDisplayName(lanes, activeLaneId);
   return `This ${toolName} view is claimed by ${ownerLane}, not ${activeLane}. You can still view, inspect, and attach context here. Claim it from ${activeLane} to move ownership.`;
-}
-
-function dispatchAgentChatEvent<T>(
-  eventName: string,
-  target: Extract<WorkSidebarContextTarget, { kind: "chat" | "draft" }>,
-  key: string,
-  value: T,
-): void {
-  const targetDetail = target.kind === "chat"
-    ? { sessionId: target.sessionId }
-    : {
-        draftTargetId: target.draftTargetId,
-        laneId: target.laneId,
-        draftKind: target.draftKind,
-      };
-  window.dispatchEvent(new CustomEvent(eventName, {
-    detail: {
-      ...targetDetail,
-      [key]: value,
-    },
-  }));
-}
-
-function bracketedPaste(text: string): string {
-  return `${BRACKETED_PASTE_START}${text.trimEnd()}\n${BRACKETED_PASTE_END}`;
-}
-
-function formatAttachmentForPty(attachment: AgentChatFileRef): string {
-  return [
-    "ADE visual attachment saved by the Work sidebar.",
-    `Path: ${attachment.path}`,
-    `Type: ${attachment.type}`,
-    "",
-  ].join("\n");
 }
 
 function hideBuiltInBrowserView(projectRoot: string | null): void {
@@ -343,105 +297,14 @@ export function WorkSidebar({
   const shouldPersistPanelAttachment = canInsertContext && contextTarget?.kind === "pty";
   const panelSessionId = contextTarget?.kind === "chat" ? contextTarget.sessionId : null;
 
-  const dispatchTargetRef = useRef({ contextTarget, contextDisabledReason });
-  dispatchTargetRef.current = { contextTarget, contextDisabledReason };
+  const {
+    addAttachment,
+    addIosContext,
+    addAppControlContext,
+    addBuiltInBrowserContext,
+    insertDraft,
+  } = useWorkToolContextInsertion({ contextTarget, contextDisabledReason, runtimePin });
 
-  const insertIntoPty = useCallback((
-    target: Extract<WorkSidebarContextTarget, { kind: "pty" }>,
-    text: string,
-    kind: WorkPtyContextInsertKind,
-  ) => {
-    const payload = text.trimEnd();
-    if (!payload) return;
-    void window.ade.terminal.write({
-      terminalId: target.sessionId,
-      ptyId: target.ptyId,
-      data: bracketedPaste(payload),
-    }, runtimePin)
-      .then(() => {
-        dispatchWorkPtyContextInserted({
-          sessionId: target.sessionId,
-          ptyId: target.ptyId,
-          toolType: target.toolType,
-          kind,
-        });
-      })
-      .catch((error: unknown) => {
-        console.error("[WorkSidebar] Failed to insert context into PTY", {
-          sessionId: target.sessionId,
-          toolType: target.toolType,
-          error,
-        });
-      });
-  }, [runtimePin]);
-
-  const withContextTarget = useCallback((
-    fallbackError: string,
-    action: (target: WorkSidebarContextTarget) => void,
-  ) => {
-    const { contextTarget: target, contextDisabledReason: targetReason } = dispatchTargetRef.current;
-    if (!target || targetReason) {
-      throw new Error(targetReason ?? fallbackError);
-    }
-    action(target);
-  }, []);
-
-  const insertContext = useCallback(<T,>(
-    eventName: string,
-    key: string,
-    value: T,
-    kind: WorkPtyContextInsertKind,
-    formatForPty: (value: T) => string | null,
-  ) => {
-    withContextTarget(NO_CONTEXT_TARGET_ERROR, (target) => {
-      if (target.kind === "chat" || target.kind === "draft") {
-        dispatchAgentChatEvent(eventName, target, key, value);
-        return;
-      }
-      const text = formatForPty(value);
-      if (text) insertIntoPty(target, text, kind);
-    });
-  }, [insertIntoPty, withContextTarget]);
-
-  const addAttachment = useCallback((attachment: AgentChatFileRef) => {
-    insertContext(
-      "ade:agent-chat:add-attachment",
-      "attachment",
-      attachment,
-      "attachment",
-      formatAttachmentForPty,
-    );
-  }, [insertContext]);
-  const addIosContext = useCallback((item: IosElementContextItem) => {
-    insertContext(
-      "ade:agent-chat:add-ios-context",
-      "item",
-      item,
-      "ios",
-      (value) => formatIosElementContextForPrompt([value]),
-    );
-  }, [insertContext]);
-  const addAppControlContext = useCallback((item: AppControlContextItem) => {
-    insertContext(
-      "ade:agent-chat:add-app-control-context",
-      "item",
-      item,
-      "app-control",
-      (value) => formatAppControlContextForPrompt([value]),
-    );
-  }, [insertContext]);
-  const addBuiltInBrowserContext = useCallback((item: unknown) => {
-    insertContext(
-      "ade:agent-chat:add-builtin-browser-context",
-      "item",
-      item,
-      "browser",
-      (value) => {
-        const browserItem = normalizeBuiltInBrowserContextItem(value);
-        return browserItem ? formatBuiltInBrowserContextForPrompt([browserItem]) : null;
-      },
-    );
-  }, [insertContext]);
   // Resuming from here is the same call the Work row's Resume makes; the pane
   // owns it because the pane is where you notice the session is gone.
   const [resumingSession, setResumingSession] = useState(false);
@@ -463,16 +326,6 @@ export function WorkSidebar({
       })
       .finally(() => setResumingSession(false));
   }, [activeSession, resumingSession, runtimePin]);
-
-  const insertDraft = useCallback((text: string) => {
-    withContextTarget("Open a chat, draft, or agent CLI session in this lane before inserting draft text.", (target) => {
-      if (target.kind === "chat" || target.kind === "draft") {
-        dispatchAgentChatEvent("ade:agent-chat:insert-draft", target, "text", text);
-        return;
-      }
-      insertIntoPty(target, text, "draft");
-    });
-  }, [insertIntoPty, withContextTarget]);
 
   const selectFile = useCallback((path: string, mode: "staged" | "unstaged") => {
     setSelectedPath(path);

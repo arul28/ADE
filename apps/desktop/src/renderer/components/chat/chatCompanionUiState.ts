@@ -1,4 +1,12 @@
+import { useCallback, useSyncExternalStore } from "react";
 import type { ChatActionsTab } from "./ChatActionsDrawerPanel";
+import {
+  isWorkLiveCardClosed,
+  isWorkLivePreviewDisabled,
+  normalizeWorkLiveCardClosedByTool,
+  type WorkLiveCardClosedByTool,
+  type WorkLiveScreenTool,
+} from "../../state/workLiveCardState";
 
 /**
  * Per-chat companion UI state — which side panes/drawers a given chat had open.
@@ -22,6 +30,26 @@ export type ChatCompanionUiState = {
   terminalDrawerOpen: boolean;
   /** Floating PR pane (left side). Persisted per chat; explicit open/close only. */
   prPaneOpen: boolean;
+  /**
+   * Which card the Apple Development tools drawer has open (round 4 §B1).
+   *
+   * One of the four group ids, or null for a drawer collapsed to its four
+   * headers. Typed as a string here on purpose: this module is the chat shell's
+   * store and must not take a dependency on the Apple feature's union to hold a
+   * value it only ever round-trips. The drawer validates what it reads.
+   */
+  appleToolsGroup: string | null;
+  /**
+   * The Work corner card's "off" markers for this chat, keyed by tool id.
+   *
+   * Mirror of lane mac-desktop (b18dd67ec) minus the mac-desktop tool; on merge,
+   * take theirs. Written by × on a floating preview (valued with the session key
+   * that was closed) and by the "Show preview when minimized" toggle (valued
+   * with a sentinel). Presence is what disables the preview, so the reader is
+   * `isWorkLivePreviewEnabled`, not a session-key comparison. Per chat because
+   * the preview belongs to the conversation you are reading.
+   */
+  workLiveCardClosedByTool: WorkLiveCardClosedByTool;
 };
 
 export const DEFAULT_CHAT_COMPANION_UI_STATE: ChatCompanionUiState = {
@@ -31,6 +59,8 @@ export const DEFAULT_CHAT_COMPANION_UI_STATE: ChatCompanionUiState = {
   appControlOpen: false,
   terminalDrawerOpen: false,
   prPaneOpen: false,
+  appleToolsGroup: "device",
+  workLiveCardClosedByTool: {},
 };
 
 const CHAT_COMPANION_UI_STORAGE_PREFIX = "ade.chat.companionUiState.";
@@ -93,6 +123,12 @@ export function readChatCompanionUiState(key: string): ChatCompanionUiState {
         appControlOpen: parsed.appControlOpen === true,
         terminalDrawerOpen: parsed.terminalDrawerOpen === true,
         prPaneOpen: parsed.prPaneOpen === true,
+        // `undefined` is "never written", which is the default card; an explicit
+        // null is a drawer the user collapsed and must stay collapsed.
+        appleToolsGroup: parsed.appleToolsGroup === undefined
+          ? DEFAULT_CHAT_COMPANION_UI_STATE.appleToolsGroup
+          : (typeof parsed.appleToolsGroup === "string" ? parsed.appleToolsGroup : null),
+        workLiveCardClosedByTool: normalizeWorkLiveCardClosedByTool(parsed.workLiveCardClosedByTool),
       };
       chatCompanionUiStateByKey.set(key, state);
       return state;
@@ -105,6 +141,7 @@ export function readChatCompanionUiState(key: string): ChatCompanionUiState {
 
 export function writeChatCompanionUiState(key: string, state: ChatCompanionUiState): void {
   chatCompanionUiStateByKey.set(key, state);
+  notifyChatCompanionUiState(key);
   try {
     const record: StoredChatCompanionUiState = { ...state, savedAtMs: Date.now() };
     window.localStorage.setItem(chatCompanionUiStorageKey(key), JSON.stringify(record));
@@ -133,6 +170,132 @@ export function patchChatCompanionUiState(
   const next: ChatCompanionUiState = { ...readChatCompanionUiState(key), ...patch };
   writeChatCompanionUiState(key, next);
   return next;
+}
+
+/* ── Live-preview markers ────────────────────────────────────────────────────
+ * Mirror of lane mac-desktop (b18dd67ec) minus the mac-desktop tool; on merge,
+ * take theirs.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Per-key change listeners.
+ *
+ * The floating preview (which reads a chat's closed flags) and the toggle in
+ * the tool's own header (which writes them) live in different subtrees, so a
+ * plain module read would go stale without a write. `useSyncExternalStore` over
+ * this map is the smallest thing that keeps them in step; every write replaces
+ * the cached object, so the snapshot identity changes exactly when the state
+ * does.
+ */
+const chatCompanionUiSubscribers = new Map<string, Set<() => void>>();
+
+function notifyChatCompanionUiState(key: string): void {
+  const listeners = chatCompanionUiSubscribers.get(key);
+  if (!listeners) return;
+  for (const listener of [...listeners]) listener();
+}
+
+export function subscribeChatCompanionUiState(key: string, listener: () => void): () => void {
+  let listeners = chatCompanionUiSubscribers.get(key);
+  if (!listeners) {
+    listeners = new Set();
+    chatCompanionUiSubscribers.set(key, listeners);
+  }
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0) chatCompanionUiSubscribers.delete(key);
+  };
+}
+
+/**
+ * The companion UI state for a chat, reactively.
+ *
+ * A null key is the projectless/draft surface: it answers the defaults and
+ * subscribes to nothing, so a caller can always call this hook.
+ */
+export function useChatCompanionUiState(key: string | null): ChatCompanionUiState {
+  const subscribe = useCallback(
+    (listener: () => void) => (key ? subscribeChatCompanionUiState(key, listener) : () => undefined),
+    [key],
+  );
+  const snapshot = useCallback(
+    () => (key ? readChatCompanionUiState(key) : DEFAULT_CHAT_COMPANION_UI_STATE),
+    [key],
+  );
+  return useSyncExternalStore(subscribe, snapshot, snapshot);
+}
+
+/** Has this tool's preview been closed for this chat at the given session key? */
+export function isWorkLiveCardClosedForChat(
+  key: string,
+  tool: WorkLiveScreenTool,
+  sessionKey: string | null,
+): boolean {
+  return isWorkLiveCardClosed(readChatCompanionUiState(key).workLiveCardClosedByTool, tool, sessionKey);
+}
+
+/** × for one chat's preview: remember the session key it was closed at. */
+export function closeWorkLiveCardForChat(
+  key: string,
+  tool: WorkLiveScreenTool,
+  sessionKey: string,
+): ChatCompanionUiState {
+  const current = readChatCompanionUiState(key);
+  return patchChatCompanionUiState(key, {
+    workLiveCardClosedByTool: { ...current.workLiveCardClosedByTool, [tool]: sessionKey },
+  });
+}
+
+/** Clears the closed marker: the preview is welcome again in this chat. */
+export function floatWorkLiveCardForChat(
+  key: string,
+  tool: WorkLiveScreenTool,
+): ChatCompanionUiState {
+  const current = readChatCompanionUiState(key);
+  const closed = { ...current.workLiveCardClosedByTool };
+  delete closed[tool];
+  return patchChatCompanionUiState(key, { workLiveCardClosedByTool: closed });
+}
+
+/**
+ * The marker the "Show preview when minimized" toggle writes when it is OFF.
+ *
+ * A non-empty sentinel rather than an absent / empty key, because the closed
+ * map is the same one × writes: presence of a marker is what reads as "off",
+ * and `normalizeWorkLiveCardClosedByTool` drops empty keys on the way back in.
+ */
+export const WORK_LIVE_PREVIEW_DISABLED_KEY = "preview-off";
+
+/**
+ * Is the per-chat preview for this tool ON?
+ *
+ * Default ON — a tool only stops previewing once the user pressed × or turned
+ * the toggle off. Presence-based rather than session-keyed: the toggle is a
+ * statement about the tool in this chat, and it survives the next session.
+ */
+export function isWorkLivePreviewEnabled(
+  state: Pick<ChatCompanionUiState, "workLiveCardClosedByTool">,
+  tool: WorkLiveScreenTool,
+): boolean {
+  return !isWorkLivePreviewDisabled(state.workLiveCardClosedByTool, tool);
+}
+
+/**
+ * The per-chat "Show preview when minimized" toggle, one per screen tool.
+ *
+ * ON clears the tool's closed marker; OFF writes the same marker × does, so the
+ * two affordances can never disagree. A missing key (projectless surface) is a
+ * no-op.
+ */
+export function setWorkLivePreviewEnabledForChat(
+  key: string | null,
+  tool: WorkLiveScreenTool,
+  enabled: boolean,
+): ChatCompanionUiState | null {
+  if (!key) return null;
+  if (enabled) return floatWorkLiveCardForChat(key, tool);
+  return closeWorkLiveCardForChat(key, tool, WORK_LIVE_PREVIEW_DISABLED_KEY);
 }
 
 function readSavedAtMs(storage: Storage, storageKey: string): number {

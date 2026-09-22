@@ -1258,6 +1258,10 @@ describe("createIosDeviceTools setters", () => {
         key: "ReduceTransparencyEnabled",
         notification: "com.apple.Accessibility.ReduceTransparencyEnabledChanged",
       },
+      "button-shapes": {
+        key: "ButtonShapesEnabled",
+        notification: "com.apple.Accessibility.ButtonShapesEnabledChanged",
+      },
       "bold-text": {
         key: "BoldTextEnabled",
         notification: "com.apple.Accessibility.BoldTextEnabledChanged",
@@ -1396,6 +1400,7 @@ describe("readSettings", () => {
         "increase-contrast": true,
         "reduce-motion": true,
         "reduce-transparency": false,
+        "button-shapes": false,
         "bold-text": false,
         "invert-colors": false,
         grayscale: false,
@@ -1443,8 +1448,8 @@ describe("readSettings", () => {
   it("reads every toggle concurrently in one pass", async () => {
     const harness = toolsCreateHarness({ respond: respondWithDefaults });
     await harness.tools.readSettings(TOOLS_DEVICE_UDID);
-    // appearance + content_size + increase_contrast + 6 defaults reads.
-    expect(harness.calls).toHaveLength(9);
+    // appearance + content_size + increase_contrast + 7 defaults reads.
+    expect(harness.calls).toHaveLength(10);
   });
 
   it("rejects an empty device udid", async () => {

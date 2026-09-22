@@ -100,6 +100,19 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // aggregator at all.
   "workTools.getLaneState",
   "workTools.readObservationPreview",
+  // Apple device environment. Optional in both directions: an older brain
+  // simply omits them and the phone's Simulator card says the Mac needs an
+  // update, rather than a version mismatch flipping the phone to "limited".
+  "apple.status",
+  "apple.streamTicket",
+  "apple.input",
+  "apple.invoke",
+  "apple.deviceList",
+  "apple.deviceCreate",
+  "apple.deviceAttach",
+  "apple.recordList",
+  "apple.recordStart",
+  "apple.recordStop",
 ] as const satisfies readonly SyncRemoteCommandAction[];
 
 export const MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS = [

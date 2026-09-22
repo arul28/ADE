@@ -2,9 +2,11 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
+  useState,
   type ReactNode,
 } from "react";
 import type {
@@ -19,7 +21,6 @@ import type {
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { useMachineEntryForBinding } from "../../state/crossMachineLanes";
 import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
-import { isMacPlatform } from "../../lib/platform";
 import { isWebClientMode } from "../../lib/webClientMode";
 import type { WorkToolContext } from "./workTools";
 import {
@@ -133,14 +134,23 @@ export function NativeToolFeedsProvider({
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const projectBinding = useAppStore((state) => state.projectBinding);
   const pinnedMachine = useMachineEntryForBinding(runtimePin);
+  // Optimistic true until the bound runtime answers: a Windows desktop pinned
+  // to a Mac must not flash "not a Mac" while `getStatus` is in flight, and a
+  // false default would never ask because the session feed used to gate on it.
+  const [supportsIosSimulator, setSupportsIosSimulator] = useState(true);
+  const runtimePinKey = runtimePin?.key ?? null;
+  useEffect(() => {
+    setSupportsIosSimulator(true);
+  }, [runtimePinKey]);
 
   // Capability flags, never a platform sniff: the hosted web client renders
-  // these same components with stubbed native namespaces. Simulator is macOS
-  // only; App Control follows the session machine, including a remote pin.
+  // these same components with stubbed native namespaces. Every tool follows
+  // the session machine, including a remote pin; Apple additionally follows
+  // that runtime's `getStatus().supported`, not this window's OS.
   const context = useMemo<WorkToolContext>(() => ({
-    supportsIosSimulator: isMacPlatform(),
+    supportsIosSimulator,
     isWebClient: isWebClientMode(),
-  }), []);
+  }), [supportsIosSimulator]);
 
   // Collection identity follows the session machine. A Studio pin must keep
   // Studio's checkout after the tab dropdown moves, including `kind: "remote"`
@@ -191,6 +201,7 @@ export function NativeToolFeedsProvider({
     onBrowserEvent,
     onAppControlEvent,
     onIosEvent,
+    onIosSupported: setSupportsIosSimulator,
   });
 
   const pinnedMachineId = pinnedMachine?.machineId ?? null;

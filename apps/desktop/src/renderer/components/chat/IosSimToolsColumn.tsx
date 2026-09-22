@@ -48,6 +48,7 @@ const ACCESSIBILITY_LABELS: Record<IosSimulatorAccessibilityOption, string> = {
   "increase-contrast": "Increase contrast",
   "reduce-motion": "Reduce motion",
   "reduce-transparency": "Reduce transparency",
+  "button-shapes": "Show Borders",
   "bold-text": "Bold text",
   "invert-colors": "Invert colours",
   grayscale: "Greyscale",

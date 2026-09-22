@@ -1696,28 +1696,30 @@ describe("CommandPalette", () => {
         supportsIosSimulator: true,
         isWebClient: false,
       });
-      expect(local).toContain("Tools: Simulator");
+      expect(local).toContain("Tools: Apple Development");
       expect(local).toContain("Tools: Browser");
       expect(local).toContain("Tools: App Control");
 
-      // No simulator here, so the command that lands on a "macOS only" card is
+      // No Mac runtime, so the command that lands on a "not a Mac" card is
       // not offered at all.
       expect(
         titlesFor({
           supportsIosSimulator: false,
           isWebClient: false,
         }),
-      ).not.toContain("Tools: Simulator");
+      ).not.toContain("Tools: Apple Development");
 
-      // The hosted client can WATCH the browser and App Control, so those stay;
-      // the simulator pane is a video stream with nothing to report.
+      // The hosted client can WATCH the browser and App Control, so those stay
+      // read-only. Apple is the one tool the web client DRIVES for real: the
+      // brain forwards H.264 one way and `apple.input` the other, and the web
+      // renders the same column the desktop does (spec §2i, full interact).
       const web = titlesFor({
         supportsIosSimulator: true,
         isWebClient: true,
       });
       expect(web).toContain("Tools: Browser");
       expect(web).toContain("Tools: App Control");
-      expect(web).not.toContain("Tools: Simulator");
+      expect(web).toContain("Tools: Apple Development");
     });
 
     /**

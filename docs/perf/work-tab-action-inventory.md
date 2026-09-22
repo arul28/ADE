@@ -1717,8 +1717,9 @@ Result: passed (`1` focused test).
 Rows promoted to `measured`:
 
 - `work.ios.stream-retry`: the simulator panel test emitted a `stream-error`
-  event after the initial stream start and verified the drawer kept the
-  `simulator-window-capture` backend instead of switching stream modes.
+  event after the initial stream start and verified the drawer kept its
+  backend instead of switching stream modes. (Measured before the rebuild;
+  there is one backend now, so the switch it guarded against cannot happen.)
 
 ### Focused fixture evidence: iOS simulator state controls
 

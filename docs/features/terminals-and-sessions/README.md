@@ -736,9 +736,12 @@ Renderer surfaces:
   inspect mode. The browser is not lane-scoped: each ADE window owns its
   own tabs and active inspect state, while all windows share the same
   `persist:ade-browser` partition for authentication. On a web-client Work
-  surface Simulator is disabled ("Desktop app only") and Browser / App Control
-  stay read-only. Desktop Simulator and App Control follow the session
-  machine, including a remote Mac. An active tool that becomes
+  surface Browser / App Control stay read-only, while Apple is full-interact
+  (its helper runs on the bound runtime, so the browser tab needs no native
+  namespace). Every tool follows the session machine, including a remote Mac;
+  Apple is additionally gated on that runtime's
+  `iosSimulator.getStatus().supported`, which reads "The runtime for this
+  project is not a Mac" when false. An active tool that becomes
   unavailable falls back to the picker. It still flows selections to the
   active chat through the same dispatch path as before. The active
   Work session picks the sidebar's insertion target
@@ -893,9 +896,9 @@ Renderer surfaces:
   unconditionally. See
   [Chat › An agent is using the browser](../chat/README.md#an-agent-is-using-the-browser).
 - `apps/desktop/src/renderer/components/work/WorkLiveCornerCard.tsx`,
-  `workLiveCard.ts`, `iosSimulatorPreviewStream.ts` — the floating
+  `workLiveCard.ts`, `WorkLiveIosStreamView.tsx` — the floating
   live-preview card for the most recently active screen tool that is *not*
-  in the pane. See
+  in the pane, plus one H.264 card per Apple device. See
   [UI surfaces](ui-surfaces.md#the-floating-live-preview-card-worklivecornercardtsx).
 - `apps/desktop/src/renderer/components/terminals/workLaneBranchClusters.ts` —
   same-branch adjacency for the Work by-lane list: normalize `branchRef`, skip

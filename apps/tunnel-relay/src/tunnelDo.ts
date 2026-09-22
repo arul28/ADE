@@ -87,6 +87,12 @@ function logTunnel(kind: string, fields: Record<string, unknown> = {}): void {
 
 type SocketRole = "control" | "client" | "pipe";
 
+/**
+ * The one non-sync pipe kind. A client that asks for it also names the local
+ * path on the brain's sync listener; anything else is refused brain-side.
+ */
+export const APPLE_STREAM_PIPE_KIND = "apple-stream";
+
 type SocketAttachment = {
   role: SocketRole;
   id?: string;
@@ -427,6 +433,16 @@ export class TunnelDurableObject implements DurableObject {
     const readyVersion = url.searchParams.get("ready") === String(RELAY_READY_VERSION)
       ? RELAY_READY_VERSION
       : undefined;
+    // Pipe kind. The brain-side bridge dials the sync listener's root path by
+    // default; the Apple device video pipe is a second socket on that same
+    // listener at a ticketed path, so the client names the local path it wants
+    // and the brain validates it against a strict shape before dialing. The DO
+    // never interprets it — the ticket is opaque here and the bytes stay
+    // verbatim in both directions.
+    const pipeKind = url.searchParams.get("kind") === APPLE_STREAM_PIPE_KIND
+      ? APPLE_STREAM_PIPE_KIND
+      : undefined;
+    const pipePath = pipeKind ? url.searchParams.get("path") ?? undefined : undefined;
     const id = generateConnectionId();
     let negotiationAccepted = true;
     const response = await this.acceptSocket({
@@ -458,6 +474,7 @@ export class TunnelDurableObject implements DurableObject {
             id,
             epoch: controlEpoch,
             ...(readyVersion ? { readyVersion } : {}),
+            ...(pipeKind ? { kind: pipeKind, path: pipePath } : {}),
           }));
     } catch {
       // The control socket died between lookup and signaling. Do not leave the

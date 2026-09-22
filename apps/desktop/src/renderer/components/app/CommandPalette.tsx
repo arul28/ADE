@@ -525,12 +525,26 @@ export function CommandPalette({
   // Capability flags, never a platform sniff — the same three the Work tools
   // pane gates its picker on. The palette must agree with the pane about which
   // tools exist here, so both read `workToolAvailability` from this one shape.
+  // Apple follows the bound runtime's `getStatus().supported`, not this
+  // window's OS: a Windows desktop pinned to a Mac still offers the tool.
+  const [supportsIosSimulator, setSupportsIosSimulator] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    void window.ade?.iosSimulator?.getStatus()?.then((status) => {
+      if (!cancelled && typeof status.supported === "boolean") {
+        setSupportsIosSimulator(status.supported);
+      }
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [projectBinding]);
   const workToolContext = useMemo<WorkToolContext>(
     () => ({
-      supportsIosSimulator: isMacPlatform(),
+      supportsIosSimulator,
       isWebClient: isWebClientMode(),
     }),
-    [],
+    [supportsIosSimulator],
   );
 
   const commands: Command[] = useMemo(() => {

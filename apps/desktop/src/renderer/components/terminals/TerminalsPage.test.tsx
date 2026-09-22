@@ -303,6 +303,8 @@ vi.mock("../../state/appStore", () => ({
     setLaneWorkViewState: typeof workMocks.fns.setLaneWorkViewState;
     laneWorkViewByScope: Record<string, unknown>;
     workViewByProject: Record<string, unknown>;
+    /** Read by `useLanesForPin`, which the page uses to resolve a pinned lane's worktree. */
+    laneCacheByProject: Record<string, unknown>;
     lanes: LaneSummary[];
     openRemoteProjectTabs: OpenProjectBinding[];
     openProjectTabRoots: string[];
@@ -322,6 +324,7 @@ vi.mock("../../state/appStore", () => ({
       setLaneWorkViewState: workMocks.fns.setLaneWorkViewState,
       laneWorkViewByScope: workMocks.laneWorkViewByScope,
       workViewByProject: workMocks.workViewByProject,
+      laneCacheByProject: {},
       project: workMocks.projectRoot
         ? { rootPath: workMocks.projectRoot }
         : null,
@@ -2468,4 +2471,71 @@ describe("TerminalsPage chat session activation", () => {
     fireEvent.click(show);
     expect(workMocks.currentWork.setWorkFocusSessionsHidden).toHaveBeenCalledWith(false);
   });
+
+  /* ── Apple device ────────────────────────────────────────────────────── */
+
+  const APPLE_DEVICE = {
+    laneId: "lane-primary",
+    udid: "UDID-1",
+    name: "iPhone 17 — lane-primary",
+    origin: "clone" as const,
+    family: "iphone" as const,
+    runtime: "iOS 26.0",
+    createdAt: "2026-09-21T10:00:00.000Z",
+    templateUdid: "TEMPLATE-1",
+  };
+
+  function mockAdeWithDevice(lane: typeof APPLE_DEVICE | null) {
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: {
+        builtInBrowser: { onEvent: vi.fn(() => vi.fn()) },
+        iosSimulator: {
+          deviceList: vi.fn(async () => ({ installed: [], lane })),
+          onEvent: vi.fn(() => vi.fn()),
+        },
+      },
+    });
+  }
+
+  it("gives the device no pane of its own — it lives in the tools pane", async () => {
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      workSidebarOpen: true,
+      workSidebarWidthPct: 36,
+      closingPtyIds: new Set<string>(),
+    };
+    mockAdeWithDevice(APPLE_DEVICE);
+
+    render(<TerminalsPage />);
+
+    await waitFor(() => expect(sidebarProps.latest).not.toBeNull());
+    // §0: the sibling column, its gutter and its persisted width are gone.
+    expect(screen.queryByTestId("work-apple-column-pane")).toBeNull();
+    expect(screen.queryByRole("separator", { name: "Resize Apple device column" })).toBeNull();
+    // So the chat column gives up exactly one share: the tools pane's.
+    const content = document.querySelector<HTMLElement>("[data-tour=\"work.chatColumn\"]")
+      ?? (screen.getByTestId("work-sidebar").parentElement?.parentElement
+        ?.firstElementChild as HTMLElement | null);
+    expect(content?.style.flexGrow).toBe("64");
+    expect((sidebarProps.latest as unknown as { appleColumnOpen?: unknown } | null)?.appleColumnOpen)
+      .toBeUndefined();
+  });
+
+  it("floats no device until one is asked for", async () => {
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      workSidebarOpen: true,
+      closingPtyIds: new Set<string>(),
+    };
+    mockAdeWithDevice(APPLE_DEVICE);
+
+    render(<TerminalsPage />);
+
+    await waitFor(() => expect(sidebarProps.latest).not.toBeNull());
+    // The corner card used to surface a running simulator on its own. §7
+    // replaced it with a player the rail opens.
+    expect(document.querySelector("[data-apple-mini-player]")).toBeNull();
+  });
+
 });
