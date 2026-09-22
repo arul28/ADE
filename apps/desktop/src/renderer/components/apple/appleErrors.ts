@@ -1,5 +1,6 @@
 import {
   APPLE_BUTTON_UNSUPPORTED_CODE,
+  APPLE_DEVICE_ALREADY_RECORDING_CODE,
   APPLE_DEVICE_ATTACHED_NOT_DELETABLE_CODE,
   APPLE_DEVICE_EXISTS_CODE,
   APPLE_HELPER_UNAVAILABLE_CODE,
@@ -107,6 +108,7 @@ const RULES: readonly Rule[] = [
   { test: matches(/which is no longer available/i), sentence: "That simulator is no longer installed." },
   { test: matches(/No framebuffer display descriptor|Failed to get device IO|No IO client|Failed to get IO ports|registerScreenCallbacks/i), sentence: "The simulator screen could not be read.", action: "reconnect" },
   { test: matches(/screenshot-failed|screenshot could not be written|screenshot path could not be opened|captured frame could not be decoded/i), sentence: "The screenshot could not be saved." },
+  { test: includes(APPLE_DEVICE_ALREADY_RECORDING_CODE), sentence: "Another lane is recording this device." },
   { test: matches(/already-recording/i), sentence: "A recording is already running." },
   { test: matches(/not-recording/i), sentence: "No recording is running." },
   { test: matches(/record-no-frames/i), sentence: "The recording captured no frames." },

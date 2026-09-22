@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  APPLE_DEVICE_ALREADY_RECORDING_CODE,
   APPLE_OWNED_BY_OTHER_SESSION_CODE,
   APPLE_RECORDING_PINNED_CODE,
   AUTO_RECORDING_MAX_MS,
@@ -11,7 +12,7 @@ import {
   createSimRecordingService,
   type SimRecordingService,
 } from "./simRecordingService";
-import type { SimHelperTransport } from "../simHelperClient";
+import { SimHelperError, type SimHelperTransport } from "../simHelperClient";
 
 /**
  * A helper that answers instead of running.
@@ -398,5 +399,168 @@ describe("simRecordingService", () => {
     expect(appleRecordingsDirectory("/p", "lane-x")).toBe(
       path.join("/p", ".ade", "artifacts", "apple-recordings", "lane-x"),
     );
+  });
+});
+
+/**
+ * A helper with the real one's state: one recording slot per device.
+ *
+ * The stateless fake above answers every `record-stop`, so it cannot show the
+ * failure these tests pin — the helper still writing a movie that the service
+ * no longer knows about. This one refuses a second `record-start` on a busy
+ * device and a `record-stop` on an idle one, with the codes
+ * `SimHelperRuntime.code(for:)` sends.
+ */
+function createStatefulHelper(): SimHelperTransport & {
+  recording: Map<string, string>;
+  loseNextStartReply(): void;
+  typed(type: string): Array<Record<string, unknown>>;
+} {
+  const recording = new Map<string, string>();
+  const commands: Array<Record<string, unknown>> = [];
+  let loseStartReply = false;
+  return {
+    recording,
+    binaryPath: "/fake/ade-sim-helper",
+    loseNextStartReply() {
+      loseStartReply = true;
+    },
+    typed(type: string) {
+      return commands.filter((command) => command.type === type);
+    },
+    async send(command) {
+      commands.push(command);
+      const deviceUdid = String(command.udid ?? "");
+      if (command.type === "record-start") {
+        if (recording.has(deviceUdid)) {
+          throw new SimHelperError("already-recording", "This device is already recording.");
+        }
+        recording.set(deviceUdid, String(command.path));
+        fs.writeFileSync(String(command.path), "movie");
+        if (loseStartReply) {
+          // The helper began; the reply did not reach ADE in time.
+          loseStartReply = false;
+          throw new SimHelperError("timeout", "The simulator helper did not answer `record-start` within 30s.");
+        }
+        return { path: command.path };
+      }
+      if (command.type === "record-stop") {
+        const moviePath = recording.get(deviceUdid);
+        if (!moviePath) throw new SimHelperError("not-recording", "This device is not recording.");
+        recording.delete(deviceUdid);
+        return { path: moviePath, durationMs: 3000, bytes: 5 };
+      }
+      return {};
+    },
+    onEvent() {
+      return () => {};
+    },
+  };
+}
+
+describe("simRecordingService against the helper's per-device state", () => {
+  let root: string;
+  let helper: ReturnType<typeof createStatefulHelper>;
+  let filed: Array<Record<string, unknown>>;
+  let service: SimRecordingService;
+  const udid = "UDID-1";
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-apple-rec-state-"));
+    helper = createStatefulHelper();
+    filed = [];
+    service = createSimRecordingService({
+      transport: helper,
+      projectRoot: root,
+      artifactFiler: {
+        ingest(request) {
+          filed.push(request as Record<string, unknown>);
+          return { artifacts: [], links: [] };
+        },
+      },
+    });
+  });
+
+  afterEach(() => {
+    service.dispose();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("regression: a start whose reply was lost does not lock the device", async () => {
+    // Live on 2026-09-22: `record-stop` returned null from every lane while
+    // `record-start` said "This device is already recording.", and the state
+    // survived a stream restart and a power cycle. Only killing the helper
+    // cleared it.
+    helper.loseNextStartReply();
+    await expect(service.start({ laneId: "lane-a", udid, chatSessionId: null })).rejects.toThrow(/did not answer/);
+    expect(helper.recording.has(udid)).toBe(true);
+    expect(service.active({ laneId: "lane-a" })).toBeNull();
+
+    const next = await service.start({ laneId: "lane-a", udid, chatSessionId: null });
+
+    expect(service.active({ laneId: "lane-a" })?.id).toBe(next.id);
+    expect(helper.recording.get(udid)).toBe(next.path);
+    // The orphan's video is kept and filed, like any stopped recording.
+    expect(filed).toHaveLength(1);
+    const finished = (await service.list({ laneId: "lane-a" })).filter((record) => record.endedAt);
+    expect(finished).toHaveLength(1);
+    expect(finished[0]).toMatchObject({ udid, laneId: "lane-a", proof: true, durationMs: 3000 });
+  });
+
+  it("regression: record-stop reaches a recording the service lost", async () => {
+    helper.loseNextStartReply();
+    await service.start({ laneId: "lane-a", udid, chatSessionId: null }).catch(() => null);
+
+    const stopped = await service.stop({ laneId: "lane-a", chatSessionId: null, udid });
+
+    expect(stopped).toMatchObject({ udid, laneId: "lane-a", proof: true });
+    expect(helper.recording.has(udid)).toBe(false);
+  });
+
+  it("stops without touching the helper when neither side is recording", async () => {
+    await expect(service.stop({ laneId: "lane-a", chatSessionId: null, udid })).resolves.toBeNull();
+    expect(filed).toEqual([]);
+  });
+
+  it("names the lane that holds the device instead of taking its recording", async () => {
+    await service.start({ laneId: "lane-a", udid, chatSessionId: null });
+
+    await expect(service.start({ laneId: "lane-b", udid, chatSessionId: null })).rejects.toMatchObject({
+      code: APPLE_DEVICE_ALREADY_RECORDING_CODE,
+      laneId: "lane-a",
+    });
+    // Nor may lane B's stop end it.
+    await expect(service.stop({ laneId: "lane-b", chatSessionId: null, udid })).resolves.toBeNull();
+    expect(service.active({ laneId: "lane-a" })).not.toBeNull();
+    expect(helper.typed("record-stop")).toEqual([]);
+  });
+
+  it("ends a device's recording in whichever lane holds it", async () => {
+    await service.start({ laneId: "lane-a", udid, chatSessionId: null });
+
+    const stopped = await service.stopDevice({ udid, reason: "device-off" });
+
+    expect(stopped).toMatchObject({ laneId: "lane-a", proof: true });
+    expect(service.active({ laneId: "lane-a" })).toBeNull();
+    expect(helper.recording.has(udid)).toBe(false);
+  });
+
+  it("ends a device's orphan recording too", async () => {
+    helper.loseNextStartReply();
+    await service.start({ laneId: "lane-a", udid, chatSessionId: null }).catch(() => null);
+
+    await expect(service.stopDevice({ udid, reason: "released" })).resolves.toMatchObject({ laneId: "lane-a" });
+    expect(helper.recording.has(udid)).toBe(false);
+  });
+
+  it("marks a recording ended when the service is disposed under it", async () => {
+    const started = await service.start({ laneId: "lane-a", udid, chatSessionId: null });
+
+    service.dispose();
+
+    const sidecar = JSON.parse(
+      fs.readFileSync(path.join(appleRecordingsDirectory(root, "lane-a"), `${started.id}.json`), "utf8"),
+    ) as { endedAt: string | null };
+    expect(sidecar.endedAt).not.toBeNull();
   });
 });

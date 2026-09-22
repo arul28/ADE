@@ -1365,6 +1365,8 @@ export const APPLE_HELPER_UNAVAILABLE_CODE = "APPLE_HELPER_UNAVAILABLE" as const
 export const APPLE_STREAM_NOT_RUNNING_CODE = "APPLE_STREAM_NOT_RUNNING" as const;
 /** A recording marked `proof` cannot be deleted by an agent. */
 export const APPLE_RECORDING_PINNED_CODE = "APPLE_RECORDING_PINNED" as const;
+/** Another lane's recording holds this device; the message names the lane. */
+export const APPLE_DEVICE_ALREADY_RECORDING_CODE = "APPLE_DEVICE_ALREADY_RECORDING" as const;
 /**
  * A hardware button this helper (and this Xcode's `simctl`) cannot press.
  *

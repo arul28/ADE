@@ -125,6 +125,7 @@ import {
   IOS_SIMULATOR_LAUNCH_IN_PROGRESS_CODE,
   IOS_SIMULATOR_NO_BUILDABLE_TARGET_CODE,
   IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE,
+  APPLE_DEVICE_ALREADY_RECORDING_CODE,
   IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE,
   IOS_SIMULATOR_PRIVACY_SERVICES,
   IOS_SIMULATOR_TARGET_ROOT_MISMATCH_CODE,
@@ -11233,6 +11234,9 @@ function iosSimulatorErrorHint(
   }
   if (message.includes(IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE)) {
     return "--out must land inside the build root named above — drop --out to use the default cache path, or pass a path under that root.";
+  }
+  if (message.includes(APPLE_DEVICE_ALREADY_RECORDING_CODE)) {
+    return "Another lane is recording this device — stop it there with: ade apple record-stop --lane <lane named above>";
   }
   return null;
 }

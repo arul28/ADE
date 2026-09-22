@@ -34,6 +34,8 @@ describe("describeAppleError", () => {
     [Object.assign(new Error("The screenshot could not be written."), { code: "screenshot-failed" }), "The screenshot could not be saved.", undefined],
     [new Error("The captured frame could not be decoded."), "The screenshot could not be saved.", undefined],
     [Object.assign(new Error("x"), { code: "already-recording" }), "A recording is already running.", undefined],
+    // The service's own code names the lane; it must not read as this lane's recording.
+    [new Error("APPLE_DEVICE_ALREADY_RECORDING: lane lane-a is recording device UDID-1."), "Another lane is recording this device.", undefined],
     [Object.assign(new Error("x"), { code: "not-recording" }), "No recording is running.", undefined],
     [Object.assign(new Error("x"), { code: "record-no-frames" }), "The recording captured no frames.", undefined],
     [Object.assign(new Error("x"), { code: "record-write-failed" }), "The recording could not be written.", undefined],

@@ -2064,6 +2064,7 @@ describe("iosSimulatorService screenshots and platform guards", () => {
         active: () => null,
         start: async () => { throw new Error("unused"); },
         stop: async () => null,
+        stopDevice: async () => null,
         list: async () => [],
         remove: async () => {},
         pinActiveOrLatest: async () => null,
@@ -2121,6 +2122,7 @@ describe("iosSimulatorService screenshots and platform guards", () => {
         active: () => null,
         start: async () => { throw new Error("unused"); },
         stop: async () => null,
+        stopDevice: async () => null,
         list: async () => [],
         remove: async () => {},
         pinActiveOrLatest: async () => null,
@@ -2216,6 +2218,7 @@ describe("iosSimulatorService screenshots and platform guards", () => {
         active: () => null,
         start: async () => { throw new Error("unused"); },
         stop: async () => null,
+        stopDevice: async () => null,
         list: async () => [],
         remove: async () => {},
         pinActiveOrLatest: async () => null,
@@ -2337,6 +2340,7 @@ describe("iosSimulatorService screenshots and platform guards", () => {
         active: () => null,
         start: async () => { throw new Error("unused"); },
         stop: async () => null,
+        stopDevice: async () => null,
         list: async () => [],
         remove: async () => {},
         pinActiveOrLatest: async () => null,
@@ -2591,7 +2595,7 @@ describe("iosSimulatorService boot contract", () => {
    * appends the clone as Shutdown, and `simctl boot` flips a device to Booted,
    * so `resolveDevice` after either sees what the real `simctl` would report.
    */
-  function bootAwareRun(options: { bootError?: string | null } = {}) {
+  function bootAwareRun(options: { bootError?: string | null; onShutdown?: (udid: string) => void } = {}) {
     const devices = [
       { name: "iPhone 17 Pro", udid: "device-1", state: "Booted", isAvailable: true, deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro" },
       { name: "iPhone 17", udid: "device-2", state: "Shutdown", isAvailable: true, deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-17" },
@@ -2607,6 +2611,9 @@ describe("iosSimulatorService boot contract", () => {
         devices.push({ name: commandArgs[3] ?? "clone", udid: "device-clone", state: "Shutdown", isAvailable: true, deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro" });
         return { stdout: "device-clone\n", stderr: "" };
       }
+      if (command === "xcrun" && commandArgs[0] === "simctl" && commandArgs[1] === "shutdown") {
+        options.onShutdown?.(commandArgs[2] ?? "");
+      }
       if (command === "xcrun" && commandArgs[0] === "simctl" && commandArgs[1] === "boot") {
         if (options.bootError) throw new Error(options.bootError);
         const target = devices.find((device) => device.udid === commandArgs[2]);
@@ -2617,7 +2624,7 @@ describe("iosSimulatorService boot contract", () => {
     return { run, calls };
   }
 
-  function setup(options: { bootError?: string | null; captureError?: string | null } = {}) {
+  function setup(options: { bootError?: string | null; captureError?: string | null; onShutdown?: (udid: string) => void } = {}) {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     const { run, calls } = bootAwareRun(options);
     const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
@@ -2762,6 +2769,40 @@ describe("iosSimulatorService boot contract", () => {
       // device is not a takeover.
       expect(calls).not.toContain("xcrun simctl shutdown device-2");
       expect(service.getStreamStatus({ laneId: "lane-b" }).running).toBe(true);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("regression: deviceStop ends the device's recording before it powers the device off", async () => {
+    // A recording outlived its device's power cycle on 2026-09-22, and every
+    // later `record-start` on the device was refused until the helper was killed.
+    let sentAtShutdown: string[] = [];
+    const { service, calls, helper, dispose } = setup({
+      onShutdown: () => { sentAtShutdown = helper.sent.map((command) => `${String(command.type)} ${String(command.udid ?? "")}`); },
+    });
+    try {
+      await service.deviceStart({ laneId: "lane-a", udid: "device-2" });
+      await service.recordStart({ laneId: "lane-a" });
+
+      await service.deviceStop({ laneId: "lane-a" });
+
+      expect(calls).toContain("xcrun simctl shutdown device-2");
+      expect(sentAtShutdown).toContain("record-stop device-2");
+    } finally {
+      dispose();
+    }
+  });
+
+  it("a takeover ends the losing lane's recording", async () => {
+    const { service, helper, dispose } = setup();
+    try {
+      await service.deviceStart({ laneId: "lane-a", udid: "device-2", chatSessionId: "chat-a" });
+      await service.recordStart({ laneId: "lane-a", chatSessionId: "chat-a" });
+
+      await service.deviceStart({ laneId: "lane-b", udid: "device-2", chatSessionId: "chat-b" });
+
+      expect(helper.sent).toContainEqual({ type: "record-stop", udid: "device-2" });
     } finally {
       dispose();
     }

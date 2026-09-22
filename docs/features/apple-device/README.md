@@ -215,6 +215,17 @@ identical and is deliberately not claimed.
    `<projectRoot>/.ade/artifacts/apple-recordings/<laneId>/`.
 6. A second chat sees `APPLE_OWNED_BY_OTHER_SESSION` with the owning chat,
    lane, and age.
+7. The helper keeps one recording per **device**; the service keeps one per
+   **lane**. The helper is the truth. When the service has no recording but
+   the helper refuses `record-start` with `already-recording`, the service
+   stops the orphan, files its video as proof, and starts again. When
+   another lane holds the device, the refusal is
+   `APPLE_DEVICE_ALREADY_RECORDING` and names that lane. `record-stop` asks the
+   helper about the lane's device even when the service has no recording.
+8. A recording ends before its device goes away: `device-stop`,
+   `device-delete`, and a takeover by another lane each stop it first. A
+   recording that outlived its device used to block every later
+   `record-start` on that device until the helper process was killed.
 
 Overlays (tap rings and typed-text badges) are composited into the saved file
 only. Live viewers never show them. Secure text is excluded before it is
@@ -325,6 +336,7 @@ recording. With no `outDir` the bundle lands in
 | `APPLE_BUTTON_UNSUPPORTED` | That button is not a helper `button` name, and this Xcode's `simctl` has no equivalent (today: `shake`). |
 | `APPLE_DEVICE_ATTACHED_NOT_DELETABLE` | `device-delete --force` detaches; it does not delete the user's simulator. |
 | `APPLE_RECORDING_PINNED` | Proof-marked recordings cannot be deleted by an agent. |
+| `APPLE_DEVICE_ALREADY_RECORDING` | Another lane records this device. Run `record-stop --lane <that lane>`. |
 | `IOS_SIMULATOR_OWNED_BY_OTHER_SESSION` | Ask, then `shutdown --force` / `open-device --force` / `claim --ignore-ownership`. |
 | `IOS_SIMULATOR_TARGET_ROOT_MISMATCH` | Re-run `ade --socket apple apps --text`. |
 | `IOS_SIMULATOR_LAUNCH_IN_PROGRESS` | Wait, or `ade --socket apple shutdown --force --text`. |

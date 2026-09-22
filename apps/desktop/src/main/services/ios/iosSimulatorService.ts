@@ -2463,6 +2463,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
      * simulator owned by two lanes.
      */
     releaseLaneDevice: async (device) => {
+      // The old lane's recording ends with its hold on the device. Left
+      // running, it would record the new lane's work under the old lane, and
+      // the new lane's `record-start` would be refused.
+      await stopDeviceRecording(device.udid, "released");
       const runtime = runtimes.get(laneKey(device.laneId));
       if (!runtime) return;
       await shutdown({ laneId: runtime.laneId, ignoreOwnership: true }).catch((error: unknown) => {
@@ -5760,6 +5764,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const previousState = await resolveDevice(udid, runtime)
       .then((device) => device.state)
       .catch(() => null);
+    await stopDeviceRecording(udid, "device-off");
     let poweredOff = false;
     await run("xcrun", ["simctl", "shutdown", udid], { timeoutMs: 60_000 })
       .then(() => {
@@ -5842,6 +5847,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     // a running stream leaves the reader waiting on bytes that never come.
     await shutdown({ laneId: runtime.laneId, chatSessionId: deviceArgs.chatSessionId, ignoreOwnership: true })
       .catch(() => ({ released: false, previousSession: null }));
+    const deletedUdid = laneDevices.get(runtime.key)?.udid;
+    if (deletedUdid) await stopDeviceRecording(deletedUdid, "device-off");
     await laneDevices.deviceDelete({ laneId: runtime.key, force: deviceArgs.force });
     invalidateStatus(runtime);
   };
@@ -5865,6 +5872,24 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
 
   /* ───────────────────────── recording ───────────────────────── */
 
+  /**
+   * Stop the recording on a device before the device goes away.
+   *
+   * The helper keeps one recording slot per device, and nothing on the device
+   * side ends it: a recording outlives a power-off, and afterwards every
+   * `record-start` on that device is refused. Never allowed to fail the caller —
+   * the power-off, delete or takeover the user asked for still happens.
+   */
+  const stopDeviceRecording = async (udid: string, reason: "device-off" | "released"): Promise<void> => {
+    await recordings.stopDevice({ udid, reason }).catch((error: unknown) => {
+      args.logger.warn("apple.recording_device_stop_failed", {
+        udid,
+        reason,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+
   const recordStart = async (recordArgs: AppleRecordStartArgs = {}): Promise<SimRecording> => {
     assertDarwin();
     const runtime = requireLaneScope(recordArgs);
@@ -5885,6 +5910,13 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       keep: recordArgs.keep ?? undefined,
       discard: recordArgs.discard ?? undefined,
       chatSessionId: recordArgs.chatSessionId ?? runtime.activeSession?.chatSessionId ?? null,
+      // Resolved without a boot or a fallback to another lane's device: the
+      // helper is asked about THIS lane's device only.
+      udid: laneDevices.get(runtime.key)?.udid
+        || runtime.activeSession?.deviceUdid
+        || runtime.hub?.getDeviceSession()?.deviceUdid
+        || runtime.streamStatus.deviceUdid
+        || null,
     });
   };
 

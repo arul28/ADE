@@ -3,7 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { ADE_ACCENT_COLOR } from "../../../../shared/themeTokens";
-import type { AppleInputSource } from "../../../../shared/types/iosSimulator";
+import { APPLE_DEVICE_ALREADY_RECORDING_CODE, type AppleInputSource } from "../../../../shared/types/iosSimulator";
 import type { SimHelperTransport } from "../simHelperClient";
 
 /**
@@ -100,7 +100,21 @@ export interface SimRecordingService {
     keep?: boolean;
     discard?: boolean;
     chatSessionId: string | null;
+    /**
+     * The lane's device. When this service has no recording for the lane but
+     * the helper is still writing one on this device, the stop reaches the
+     * helper anyway. Without it a recording the service lost track of could
+     * not be stopped by any ADE command.
+     */
+    udid?: string | null;
   }): Promise<SimRecording | null>;
+  /**
+   * Stop whatever records this device, in any lane. Called before the device
+   * powers off, is deleted, or moves to another lane. A recording that
+   * outlives its device keeps the helper's slot for that device, and every
+   * later `record-start` on it is refused.
+   */
+  stopDevice(args: { udid: string; reason: "device-off" | "released" }): Promise<SimRecording | null>;
   list(args: { laneId: string }): Promise<SimRecording[]>;
   remove(args: {
     laneId: string;
@@ -205,6 +219,34 @@ export class AppleRecordingOwnedBySessionError extends Error {
     this.currentChatSessionId = args.owner;
     this.laneId = args.laneId;
   }
+}
+
+export { APPLE_DEVICE_ALREADY_RECORDING_CODE };
+
+/**
+ * Another lane's recording holds this device.
+ *
+ * The helper records per device and this service records per lane, so the
+ * helper's refusal alone cannot say who holds the device. This error names
+ * the lane, so that the caller can stop the recording there.
+ */
+export class AppleDeviceAlreadyRecordingError extends Error {
+  readonly code = APPLE_DEVICE_ALREADY_RECORDING_CODE;
+  readonly laneId: string;
+  readonly udid: string;
+
+  constructor(args: { laneId: string; udid: string }) {
+    super(`${APPLE_DEVICE_ALREADY_RECORDING_CODE}: lane ${args.laneId} is recording device ${args.udid}.`);
+    this.name = "AppleDeviceAlreadyRecordingError";
+    this.laneId = args.laneId;
+    this.udid = args.udid;
+  }
+}
+
+/** The helper's error code, when the error came from the helper. */
+function helperErrorCode(error: unknown): string | null {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "string" ? code : null;
 }
 
 export class AppleRecordingUnavailableError extends Error {
@@ -470,7 +512,7 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
     fs.mkdirSync(path.dirname(target), { recursive: true });
 
     const overlays = args.overlays ?? overlaysEnabled();
-    await transport.send({
+    const sendStart = () => transport.send({
       type: "record-start",
       udid: args.udid,
       path: target,
@@ -478,6 +520,24 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
       fps: deps.fps ?? 30,
       accentColor: accent(),
     });
+    try {
+      await sendStart();
+    } catch (error) {
+      if (helperErrorCode(error) !== "already-recording") throw error;
+      // The helper holds a recording on this device. If one of this service's
+      // lanes owns it, that is a real conflict, and the caller must hear
+      // which lane. If none does, the recording is an orphan: this service
+      // lost it (a `record-start` that timed out after the helper began, or a
+      // `record-stop` whose reply never arrived). Finish the orphan so that
+      // its video is not lost, then start again.
+      for (const [laneId, entry] of active) {
+        if (entry.record.udid === args.udid) {
+          throw new AppleDeviceAlreadyRecordingError({ laneId, udid: args.udid });
+        }
+      }
+      await reclaimHelperRecording(args.udid, "orphan-on-start");
+      await sendStart();
+    }
 
     const record: SimRecording = {
       id,
@@ -512,7 +572,7 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
    */
   const stopActive = async (
     laneId: string,
-    options: { reason: "requested" | "turn-end" | "cap"; discard?: boolean },
+    options: { reason: "requested" | "turn-end" | "cap" | "device-off" | "released"; discard?: boolean },
   ): Promise<SimRecording | null> => {
     const entry = active.get(laneId);
     if (!entry) return null;
@@ -658,6 +718,96 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
     }
   };
 
+  /**
+   * The record for a movie the helper finished but this service had lost.
+   *
+   * The helper replies with the movie path, and the path names the lane and
+   * the id (`apple-recordings/<laneId>/<id>.mp4`). If the sidecar from the
+   * start is still there, it keeps the owner and the label. If not, the
+   * record is rebuilt from the path. A path outside this project's recordings
+   * directory is not this service's to file, so it stays where it is.
+   */
+  const orphanRecord = (
+    moviePathFromHelper: string,
+    udid: string,
+    durationMs: number | null,
+    bytes: number | null,
+  ): SimRecording | null => {
+    const root = path.join(requireRoot(), ".ade", "artifacts", "apple-recordings");
+    const relative = path.relative(root, moviePathFromHelper);
+    const parts = relative.split(/[\\/]/);
+    if (relative.startsWith("..") || path.isAbsolute(relative) || parts.length !== 2 || !parts[1]!.endsWith(".mp4")) {
+      warn("apple.recording.orphan_outside_project", { udid, path: moviePathFromHelper });
+      return null;
+    }
+    const laneId = parts[0]!;
+    const id = parts[1]!.slice(0, -".mp4".length);
+    let size = bytes;
+    if (size === null) {
+      try {
+        size = fs.statSync(moviePathFromHelper).size;
+      } catch {
+        size = null;
+      }
+    }
+    const endedAt = new Date().toISOString();
+    const known = readSidecar(laneId, id);
+    if (known) return { ...known, endedAt, durationMs, bytes: size };
+    return {
+      id,
+      laneId,
+      udid,
+      chatSessionId: null,
+      path: moviePathFromHelper,
+      startedAt: new Date(Date.now() - (durationMs ?? 0)).toISOString(),
+      endedAt,
+      durationMs,
+      bytes: size,
+      mode: "auto",
+      proof: false,
+      label: null,
+      overlays: overlaysEnabled(),
+    };
+  };
+
+  /**
+   * Stop the recording the helper has on a device, whether or not this
+   * service knows about it.
+   *
+   * The helper records per device and is the only one that knows what is
+   * recording. This service's per-lane map is a copy, and a copy can drift:
+   * a `record-start` can time out after the helper began, and a `record-stop`
+   * reply can fail after the service forgot the entry. Before this, a drifted
+   * recording could be stopped by no ADE command, survived a stream restart
+   * and a power cycle, and made every later `record-start` on the device fail
+   * with "This device is already recording." Only killing the helper
+   * process cleared it.
+   *
+   * Returns null when the helper had nothing on the device.
+   */
+  const reclaimHelperRecording = async (
+    udid: string,
+    reason: "orphan-on-start" | "orphan-on-stop" | "device-off" | "released",
+  ): Promise<SimRecording | null> => {
+    let reply: Record<string, unknown>;
+    try {
+      reply = await requireTransport().send({ type: "record-stop", udid });
+    } catch (error) {
+      if (helperErrorCode(error) === "not-recording") return null;
+      throw error;
+    }
+    const moviePathFromHelper = typeof reply.path === "string" ? reply.path : null;
+    const durationMs = typeof reply.durationMs === "number" ? reply.durationMs : null;
+    const bytes = typeof reply.bytes === "number" ? reply.bytes : null;
+    warn("apple.recording.orphan_reclaimed", { udid, reason, path: moviePathFromHelper, durationMs });
+    if (!moviePathFromHelper) return null;
+    const record = orphanRecord(moviePathFromHelper, udid, durationMs, bytes);
+    if (!record) return null;
+    const filed = fileAsProof(record);
+    writeSidecar(filed);
+    return filed;
+  };
+
   const listLane = (laneId: string): SimRecording[] => {
     let dir: string;
     try {
@@ -762,11 +912,43 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
     },
 
     async stop(args) {
-      const entry = active.get(args.laneId);
-      if (!entry) return null;
-      assertOwner(entry, args.chatSessionId);
       const discard = args.discard === true && args.keep !== true;
+      const entry = active.get(args.laneId);
+      if (!entry) {
+        // This service has no recording on the lane. The helper can still
+        // have one on the lane's device (see `reclaimHelperRecording`), so
+        // ask it. A recording that no command can stop is the bug this
+        // closes.
+        const udid = args.udid?.trim();
+        if (!udid || disposed || !deps.transport) return null;
+        // Another lane's recording on the same device is not this caller's
+        // to stop.
+        for (const other of active.values()) {
+          if (other.record.udid === udid) return null;
+        }
+        const reclaimed = await reclaimHelperRecording(udid, "orphan-on-stop");
+        if (reclaimed && discard) {
+          removeFiles(reclaimed);
+          return null;
+        }
+        return reclaimed;
+      }
+      assertOwner(entry, args.chatSessionId);
       return stopActive(args.laneId, { reason: "requested", discard });
+    },
+
+    async stopDevice(args) {
+      if (disposed) return null;
+      const lanes = [...active].filter(([, entry]) => entry.record.udid === args.udid).map(([laneId]) => laneId);
+      if (lanes.length === 0) {
+        if (!deps.transport) return null;
+        return reclaimHelperRecording(args.udid, args.reason);
+      }
+      let stopped: SimRecording | null = null;
+      for (const laneId of lanes) {
+        stopped = await stopActive(laneId, { reason: args.reason });
+      }
+      return stopped;
     },
 
     async list(args) {
@@ -890,6 +1072,14 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
       for (const entry of active.values()) {
         if (entry.capTimer) clearTimeout(entry.capTimer);
         entry.capTimer = null;
+        // The helper finishes the movie when it quits (`SimHelperRuntime.
+        // shutdown`), which follows this call. Mark the sidecar ended, so that
+        // the drawer does not list a recording that runs forever.
+        try {
+          writeSidecar({ ...entry.record, endedAt: new Date().toISOString() });
+        } catch (error) {
+          warn("apple.recording.dispose_mark_failed", { id: entry.record.id, error: String(error) });
+        }
       }
       active.clear();
     },
