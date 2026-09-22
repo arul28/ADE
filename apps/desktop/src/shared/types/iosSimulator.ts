@@ -1315,6 +1315,18 @@ export type IosSimulatorProofBundle = {
   logPath: string | null;
   caption: string | null;
   capturedAt: string;
+  /** The device the bundle was taken from, carried so the drawer row can name it. */
+  deviceUdid: string;
+  width: number | null;
+  height: number | null;
+  /**
+   * The proof-drawer row for `screen.png`, or null when no filer is attached.
+   *
+   * `proof-bundle` is a proof verb and filed nothing at all until this existed:
+   * it wrote the directory and returned, so a reviewer had no row to open and
+   * an agent reporting "proof filed" was wrong.
+   */
+  proofArtifactId?: string | null;
 };
 
 /* ───────────────────────── Apple device environment ───────────────────────── */

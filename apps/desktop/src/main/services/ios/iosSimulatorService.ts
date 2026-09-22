@@ -5988,7 +5988,36 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
           });
         });
       }
-      return bundle;
+      /*
+       * File the bundle's own screen as the artifact.
+       *
+       * `ade apple proof-bundle` is documented as a proof verb — the skill
+       * lists it beside `screenshot` under "proof is automatic" — and it filed
+       * NOTHING. It wrote a directory and returned. An agent that ran it and
+       * reported proof was wrong, and the only reason that was ever noticed is
+       * that one went on to `proof attach` the screenshot by hand.
+       *
+       * The inner screenshot still runs with `proof: false`, so this is the
+       * one row for the capture rather than a second one. The bundle's other
+       * halves — elements, log, metadata — travel as metadata on it, because
+       * the drawer shows a picture and a reviewer opening it wants the path to
+       * the rest.
+       */
+      const proofArtifactId = fileScreenshotAsProof(
+        {
+          deviceUdid: bundle.deviceUdid,
+          filePath: bundle.screenshotPath,
+          capturedAt: bundle.capturedAt,
+          width: bundle.width,
+          height: bundle.height,
+        } as IosSimulatorScreenshot,
+        {
+          ...proofArgs,
+          ...(bundle.caption ? { caption: bundle.caption } : {}),
+        },
+        runtime,
+      );
+      return { ...bundle, proofArtifactId };
     },
 
     getLastSelectedItem: () => lastSelectedItem,

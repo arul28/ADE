@@ -998,6 +998,17 @@ describe("iosDeviceHub proof bundle", () => {
     expect(harness.mkdirs).toEqual([bundle.dir]);
     expect(bundle.screenshotPath).toBe(SCREENSHOT.filePath);
     expect(bundle.metadataPath).toBe(path.join(bundle.dir, "metadata.json"));
+    /*
+     * The device and the size travel WITH the bundle.
+     *
+     * Not decoration: the service files `screen.png` as the proof-drawer row
+     * for this capture, and without these it would have to take a second
+     * screenshot to learn what it just captured. `proof-bundle` filed nothing
+     * at all before that — a proof verb that wrote a directory and returned.
+     */
+    expect(bundle.deviceUdid).toBe(SCREENSHOT.deviceUdid);
+    expect(bundle.width).toBe(SCREENSHOT.width);
+    expect(bundle.height).toBe(SCREENSHOT.height);
     expect(bundle.elementsPath).toBe(path.join(bundle.dir, "elements.json"));
     expect(bundle.logPath).toBe(path.join(bundle.dir, "log.json"));
     const { elementsPath, logPath } = bundle;

@@ -181,8 +181,10 @@ not a detail.
 - `screenshot` round-trips `simctl` and works with no stream running.
 - `frame` grabs one decoded frame from the live stream and fails with
   `APPLE_STREAM_NOT_RUNNING` when there is none. Prefer it while streaming.
-- `proof-bundle` adds the machine, device, elements and log alongside the
-  picture when you want the whole context in one artifact.
+- `proof-bundle` files the same single drawer row as `screenshot`, and also
+  writes `elements.json`, the log and `metadata.json` next to `screen.png` in a
+  directory under the build root. Use it when a reviewer wants the whole
+  context; the row it returns is the picture.
 
 ## Recording, and what starts one
 
