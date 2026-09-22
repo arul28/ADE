@@ -5007,6 +5007,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       runtime.streamStatus.running
       && runtime.streamStatus.deviceUdid === device.udid
       && runtime.streamStatus.targetFps === requestedFps
+      // A running capture is reusable only if it already honors the requested
+      // cap. `null` means the caller asked for no cap, which must not downgrade
+      // a capped stream a remote viewer already started; a non-null cap that
+      // differs restarts so the encoder actually picks it up.
+      && (bitrateKbps == null || (runtime.streamStatus.bitrateKbps ?? null) === bitrateKbps)
     ) {
       // Already running for this device: a renderer joining an existing capture
       // still counts as a local viewer.
@@ -5058,6 +5063,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       degradationReason: null,
       fps: null,
       targetFps: requestedFps,
+      // The requested cap, remembered so a later `startStream` can tell whether
+      // the running capture already honors it.
+      bitrateKbps,
       frameCount: null,
       startedAt: nowIso(),
       lastFrameAt: null,

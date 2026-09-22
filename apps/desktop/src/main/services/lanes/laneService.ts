@@ -2866,6 +2866,20 @@ export function createLaneService({
       duplicateId,
       projectId,
     ]);
+    // The lane's Apple simulator binding follows the keeper too. `lane_id` is
+    // the table's primary key, so keep the keeper's binding when it already has
+    // one and only adopt the duplicate's otherwise. Without this the duplicate's
+    // row is dropped by the cleanup below and the keeper forgets its simulator,
+    // so a later lane delete never releases the clone.
+    const keeperHasAppleDevice = db.get<{ one: number }>(
+      "select 1 as one from lane_apple_devices where lane_id = ? limit 1",
+      [keeperId],
+    );
+    if (keeperHasAppleDevice) {
+      db.run("delete from lane_apple_devices where lane_id = ?", [duplicateId]);
+    } else {
+      db.run("update lane_apple_devices set lane_id = ? where lane_id = ?", [keeperId, duplicateId]);
+    }
     // Everything else lane-scoped on the duplicate cascades away. The duplicate
     // is a create/recover race artifact, not a lane the user made, and its
     // sessions now belong to the keeper — so its tombstone preserves whatever

@@ -1988,7 +1988,6 @@ const IOS_SIMULATOR_HELP_ALIASES: Record<string, string> = {
   launchable: "apps",
   launchables: "apps",
   open: "launch",
-  stop: "shutdown",
   teardown: "shutdown",
   end: "shutdown",
   "end-session": "shutdown",
@@ -11746,12 +11745,13 @@ function buildIosSimulatorPlan(
     });
     const anchorX = readNumberOption(args, ["--anchor-x"]);
     const anchorY = readNumberOption(args, ["--anchor-y"]);
+    // Read once: `readNumberOption` splices the flag out of `args`, so a second
+    // read returns undefined and silently dropped the caller's distance.
+    const amount = readNumberOption(args, ["--amount", "--distance"]);
     return iosAction("Apple device scroll", "scroll", {
       deviceUdid: readIosSimulatorDevice(args),
       direction,
-      ...(readNumberOption(args, ["--amount", "--distance"]) != null
-        ? { amount: readNumberOption(args, ["--amount", "--distance"]) }
-        : {}),
+      ...(amount != null ? { amount } : {}),
       ...(anchorX != null ? { anchorX } : {}),
       ...(anchorY != null ? { anchorY } : {}),
     });
@@ -11801,9 +11801,12 @@ function buildIosSimulatorPlan(
     sub === "power-off" ||
     sub === "poweroff"
   ) {
+    // Read once: the reader splices `--udid`/`--device` out of `args`, so a
+    // second call in the value position returned null and dropped the target.
+    const stopUdid = readIosSimulatorDevice(args);
     return iosAction("Apple device stop", "deviceStop", {
       chatSessionId: claimArgs.chatSessionId,
-      ...(readIosSimulatorDevice(args) ? { udid: readIosSimulatorDevice(args) } : {}),
+      ...(stopUdid ? { udid: stopUdid } : {}),
       ...(readFlag(args, ["--force", "-f"]) ? { force: true } : {}),
       ...(readFlag(args, ["--ignore-ownership", "--ignore-owner"])
         ? { ignoreOwnership: true }
