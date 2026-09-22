@@ -213,6 +213,37 @@ describe("device authorization bridge", () => {
     });
   });
 
+  /**
+   * The bug a person actually hit: ADE Alpha on a MacBook could never finish
+   * signing in. "Open sign-in page" led to a page headed "Confirmation
+   * required" telling them to open the ADE sign-in page — the page they were
+   * already on, with nothing to click.
+   *
+   * The confirmation was refused because the browser sent no `Origin` on a
+   * same-origin form POST, and the check compared it to the origin directly.
+   */
+  it("confirms a same-origin submission whose browser sent no Origin", async () => {
+    const env = makeEnv();
+    const now = Date.parse("2026-07-14T12:00:00.000Z");
+    const created = await handleRequest(
+      request("POST", "/device/code", undefined, {
+        device_secret: "daemon-device-secret-with-at-least-32-bytes",
+      }),
+      env,
+      { now: () => now },
+    );
+    const device = await created.json() as Record<string, unknown>;
+
+    const confirmed = await handleRequest(
+      deviceConfirmationRequest(String(device.user_code), { origin: "", "sec-fetch-site": "same-origin" }),
+      env,
+      { now: () => now },
+    );
+
+    expect(confirmed.status).toBe(302);
+    expect(env.DB.deviceRows[0]).toMatchObject({ code_verifier: expect.any(String) });
+  });
+
   it("keeps verification-link GET previews read-only until explicit confirmation", async () => {
     const env = makeEnv();
     const now = Date.parse("2026-07-14T12:00:00.000Z");
@@ -254,6 +285,24 @@ describe("device authorization bridge", () => {
     expect(crossSiteSubmit.status).toBe(403);
     expect(env.DB.deviceRows[0]).toEqual(rowBeforePreview);
     expect(Array.from(env.DB.approvalRateLimits)).toEqual(limitsBeforePreview);
+
+    // A browser may omit `Origin` on a same-origin form POST. That refused a
+    // real confirmation and left the person on a page telling them to open the
+    // page they were already on. `Sec-Fetch-Site` decides it instead, and a
+    // submission carrying neither header is still refused.
+    const noOriginCrossSite = await handleRequest(
+      deviceConfirmationRequest(String(device.user_code), { origin: "", "sec-fetch-site": "cross-site" }),
+      env,
+      { now: () => now },
+    );
+    expect(noOriginCrossSite.status).toBe(403);
+    const noOriginNoHint = await handleRequest(
+      deviceConfirmationRequest(String(device.user_code), { origin: "" }),
+      env,
+      { now: () => now },
+    );
+    expect(noOriginNoHint.status).toBe(403);
+    expect(env.DB.deviceRows[0]).toEqual(rowBeforePreview);
 
     const confirmed = await handleRequest(
       deviceConfirmationRequest(String(device.user_code)),

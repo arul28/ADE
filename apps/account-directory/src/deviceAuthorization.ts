@@ -397,6 +397,30 @@ async function handleDeviceCode(
   });
 }
 
+/**
+ * Is this confirmation a same-origin submission of our own form?
+ *
+ * `Origin` alone answered this, and it was wrong for real people: a browser
+ * may omit `Origin` entirely on a same-origin form POST, so a legitimate
+ * confirmation arrived with none and `null !== url.origin` refused it. What
+ * the person saw was a page headed "Confirmation required" telling them to
+ * open the ADE sign-in page — which is the page they were already on, with
+ * nothing on it to click. The sign-in could never complete.
+ *
+ * `Sec-Fetch-Site` answers the same question when `Origin` is absent. The
+ * browser attaches it and a page cannot set it, which is why this worker
+ * already trusts it in `diagnostics.ts`.
+ *
+ * A request with neither header is still refused. A cross-site POST is exactly
+ * what this check exists to stop, and nothing here weakens that: an `Origin`
+ * that is present and wrong fails, as it did before.
+ */
+function isSameOriginConfirmation(request: Request, url: URL): boolean {
+  const origin = request.headers.get("origin");
+  if (origin) return origin === url.origin;
+  return request.headers.get("sec-fetch-site")?.trim().toLowerCase() === "same-origin";
+}
+
 async function handleDeviceApproval(
   request: Request,
   env: DeviceAuthorizationEnv,
@@ -417,7 +441,7 @@ async function handleDeviceApproval(
     return approvalFormForQuery(rawUserCode, machineName);
   }
   if (request.method !== "POST") return new Response("method not allowed", { status: 405 });
-  if (request.headers.get("origin") !== url.origin) {
+  if (!isSameOriginConfirmation(request, url)) {
     return approvalMessage("Confirmation required", "Open the ADE sign-in page and confirm this device code.", 403);
   }
 
