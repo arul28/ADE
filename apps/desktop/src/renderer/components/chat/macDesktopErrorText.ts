@@ -55,9 +55,15 @@ const MAC_DESKTOP_MISSING_DOMAIN = /Domain ['"]mac_desktop['"] is unavailable in
 function macDesktopMissingDomainText(options?: MacDesktopErrorTextOptions): string {
   const machine = options?.machineName?.trim() || "That machine";
   const version = options?.machineVersion?.trim();
+  // Not "an older ADE". The host is whatever build owns that lane, and it can
+  // easily be NEWER than the one reading this: a released 1.2.76 has no Mac
+  // Desktop, while an unreleased 1.2.75-alpha built from the feature branch
+  // does. Saying "older" states a fact the code has not checked and that was
+  // false the first time a person hit this. The version, when known, is the
+  // fact worth printing; the remedy stays the same either way.
   return version
     ? `${machine} runs ADE ${version}, which has no Mac Desktop. Update ADE there.`
-    : `${machine} runs an older ADE, which has no Mac Desktop. Update ADE there.`;
+    : `${machine} runs an ADE without Mac Desktop. Update ADE there.`;
 }
 
 /**

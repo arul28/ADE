@@ -67,10 +67,10 @@ describe("macDesktopErrorText", () => {
 
     it("still says what to do when the version is not known", () => {
       expect(macDesktopErrorText(RAW, { machineName: "Mac Studio" }))
-        .toBe("Mac Studio runs an older ADE, which has no Mac Desktop. Update ADE there.");
+        .toBe("Mac Studio runs an ADE without Mac Desktop. Update ADE there.");
       // No caller-provided name at all degrades to a machine, never to the code.
       expect(macDesktopErrorText(RAW))
-        .toBe("That machine runs an older ADE, which has no Mac Desktop. Update ADE there.");
+        .toBe("That machine runs an ADE without Mac Desktop. Update ADE there.");
     });
 
     it("leaves a different unavailable domain alone", () => {
