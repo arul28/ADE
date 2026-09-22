@@ -48,6 +48,21 @@ resolve docs + the matching `ade-perf-*` skill via `references/doc-map.md`.
   starts its brain with `--no-sync`, respects chat runtime ownership, never
   touches the installed brain service, and prints a dev isolation report first.
   Never hand-start `ade serve`, never set a fresh `ADE_HOME`, never copy secrets.
+- **Start it DETACHED, with its own socket.** The command runs in the foreground
+  for as long as the app is open, so running it normally holds your turn open
+  and the window dies with the turn. Background it, give the lane its own
+  socket, and wait for the report:
+
+  ```bash
+  npm run dev:desktop -- --socket /tmp/ade-runtime-<lane>.sock > /tmp/ade-dev-<lane>.log 2>&1 &
+  until grep -q 'dev isolation report' /tmp/ade-dev-<lane>.log; do sleep 1; done
+  cat /tmp/ade-dev-<lane>.log
+  ```
+
+  The default socket is shared, and two dev brains on one socket restart each
+  other. If the report says `sync : ON`, stop: a dev brain holding the
+  machine-wide sync lease drops the installed brain's tunnel and kills the
+  agents under it.
   Details: `docs/development/local-development.md`.
 - `docs/README.md` — the internal-docs navigation map.
 - `docs/PRD.md` — what ADE is, who it's for, the feature index.

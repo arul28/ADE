@@ -21,6 +21,37 @@ Day-to-day work follows a five-stage loop, each stage an agent-folder skill unde
 - **/test** — test steward: prune/consolidate/add + docs/mobile/CLI/TUI parity + CI-mirrored shards; records a named regression test or exact alternate verification for every accepted correctness finding.
 - **/ship** — autonomous PR→merge loop (poll → fix → rebase → merge). Run baseline `/quality` and `/test` first; after any ship-loop mutation, ship reruns commit-bound `/quality` revalidation before pushing or merging. Wraps `docs/playbooks/ship-lane.md`.
 
+### Running the dev app
+
+One command, from the lane worktree, and **detached**:
+
+```bash
+npm run dev:desktop -- --socket /tmp/ade-runtime-<lane>.sock > /tmp/ade-dev-<lane>.log 2>&1 &
+until grep -q 'dev isolation report' /tmp/ade-dev-<lane>.log; do sleep 1; done
+cat /tmp/ade-dev-<lane>.log
+```
+
+Four rules, each of which has already cost someone a session:
+
+- **Detach it.** The command runs in the foreground for as long as the app is
+  open. An agent that runs it normally holds its turn open, and the harness
+  kills the process group at the end of the turn — so the window the human was
+  about to look at closes.
+- **Give the lane its own socket.** The default `/tmp/ade-runtime-dev.sock` is
+  shared, and two dev brains on one socket restart each other.
+- **Read the isolation report.** It names the state root, the socket, whether
+  sync is on, the project, and that the installed brain is untouched. If sync
+  is ON, stop: a dev brain holding the machine-wide sync lease drops the
+  installed brain's tunnel and kills every agent running under it.
+- **Never hand-start `ade serve`**, never set a fresh `ADE_HOME` (a
+  never-signed-in home shows the account gate), never copy `~/.ade` secrets,
+  and never run a packaged build on a machine serving live agents.
+
+`--no-sync` protects the sync lease only. It does not isolate the database: a
+dev brain still sees every chat and task in every lane, so do not restart one
+casually while other lanes are working. Details:
+`docs/development/local-development.md`.
+
 **"Run the dev loop"** — when the user says this (or "dev loop") after work is implemented, it names one task, not a suggestion: invoke `/quality`, then `/test`, then `/ship`, in that order. Actually invoke each skill — approximating one (running tests is not `/test`; green CI is not `/quality`) does not count. Print each skill's summary, then continue to the next without stopping; stop early only for a genuine blocker (a failing gate or a decision only the user can make) and name it.
 
 Utilities (run when relevant, not part of the core loop): **/audit** (targeted bug hunt), **/finalize** (optional pre-push local-CI gate), **/optimize** (perf profiling), **/release** (cut a release).

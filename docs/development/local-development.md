@@ -66,6 +66,29 @@ That aliases to `npm run dev:desktop`: it rebuilds `apps/ade-cli`, refreshes the
 
 **This is the only supported way to run a dev app on a machine that also runs the installed ADE.** The dev brain shares `~/.ade` (your account, projects, and sync identity are served by the installed brain) and is started with `--no-sync`, so it can never take the machine-wide sync host lease. It stamps and respects chat runtime ownership, so it never adopts a chat the installed brain is driving. An unpackaged app never installs or repairs the launchd brain service. The launcher prints a dev isolation report (state root, socket, sync, project, installed brain untouched) before the window opens; read it. Do not start `ade serve` by hand, do not set a fresh `ADE_HOME` (a never-signed-in home shows the account gate), and do not copy `~/.ade` secrets into another home. `ADE_DEV_RUNTIME_SYNC=1` opts a dev brain into sync on purpose and is almost never what you want.
 
+### If you are an agent, start it detached
+
+`npm run dev:desktop` runs in the foreground for as long as the app is open. An
+agent that runs it as an ordinary command holds its turn open until the app
+exits, and when the harness ends the turn it kills the process group — so the
+window the human was about to look at closes. Start it in the background and
+wait for the report instead:
+
+```bash
+npm run dev:desktop -- --socket /tmp/ade-runtime-<lane>.sock > /tmp/ade-dev-<lane>.log 2>&1 &
+until grep -q 'dev isolation report' /tmp/ade-dev-<lane>.log; do sleep 1; done
+cat /tmp/ade-dev-<lane>.log
+```
+
+Two rules go with it:
+
+- **Pick your own socket.** The default is `/tmp/ade-runtime-dev.sock` and it is
+  shared. Two dev brains on one socket restart each other. Use one path per
+  lane and keep using the same one, so `--attach` finds it.
+- **Read the isolation report before anything else.** If it says `sync : ON`,
+  stop and fix that: a dev brain holding the machine-wide sync host lease drops
+  the installed brain's tunnel and kills the agents running under it.
+
 When these commands are run from an ADE lane worktree under `.ade/worktrees/`,
 they still run code from that lane checkout, but they open the primary checkout's
 project data by default. For example, running from
