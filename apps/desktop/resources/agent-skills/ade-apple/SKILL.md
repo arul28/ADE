@@ -30,12 +30,41 @@ ade --socket apple status --text
 - `tools.helper` (`present`, `path`, `version`) is the check when every device
   call fails at once.
 
+## A busy device is not a blocker
+
+**If the device you find is owned by another chat or lane, do not ask a human
+for it. Make your own.** One simulator runtime serves an unlimited number of
+devices, so creating one for your lane is cheap and takes seconds — it is a new
+folder of app data, not another copy of iOS. `start --create <sourceUdid>` does
+it in a single call.
+
+This is worth saying plainly because the failure looks reasonable from the
+inside: you find a booted simulator, the guard tells you another chat owns it,
+and stopping to ask seems polite. It is not. It blocks the work for no reason
+and hands the human a decision they should never have been given.
+
+**And when the request was for simulator proof, simulator proof is what you
+owe.** A passing unit test is not a substitute for a screen. If you cannot
+reach the screen, say exactly what stopped you rather than offering evidence of
+a different kind and calling it done.
+
 ## The lane's device
 
 One simulator per lane. ADE creates one on first ask, or binds one you already
 have. **ADE never downloads a runtime.** With none installed you get
 `APPLE_NO_INSTALLED_SIMULATORS` — tell the user to open Xcode ▸ Settings ▸
 Components.
+
+Two facts that decide what you should do:
+
+- A **runtime** is the iOS image. It is the large download, one per iOS
+  version, and ADE will not fetch one.
+- A **device** is an instance made from a runtime. Creating one copies no iOS,
+  so it is cheap. A device that is `Shutdown` is installed and ready — it needs
+  a boot, which takes seconds, not an install.
+
+So "no device free" is almost never true. If every installed device is busy,
+clone one.
 
 ```bash
 ade --socket apple device-list --installed --text   # what a picker shows
