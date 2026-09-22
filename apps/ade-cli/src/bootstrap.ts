@@ -1412,6 +1412,24 @@ export async function createAdeRuntime(args: {
             return null;
           }
         },
+        /*
+         * The reverse map, and it matters MORE here than in the desktop.
+         *
+         * Agent `ade apple` calls arrive at the brain, and an agent whose shell
+         * carries no `ADE_LANE_ID` — every OpenCode agent, since one shared
+         * `opencode serve` cannot hold a per-chat environment — names no lane.
+         * Without this the service falls back to "whichever single lane is
+         * running something", and one agent's screenshot was filed against an
+         * unrelated lane. The desktop got this dep first and the brain did not,
+         * which is exactly why the live check still failed after the fix.
+         */
+        resolveLaneIdForPath: (absolutePath: string): string | null => {
+          try {
+            return laneService.getLaneIdForPath(absolutePath);
+          } catch {
+            return null;
+          }
+        },
         // The lanes DB backs `lane_apple_devices`; without it a lane device is
         // remembered only for the life of the process.
         laneDeviceStore: db,

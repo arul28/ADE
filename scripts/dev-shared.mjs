@@ -627,15 +627,18 @@ export function resolveDevAdeHome() {
  * unconditionally. On 2026-09-22 a relaunch inherited
  * `ADE_HOME=~/.ade-alpha` from the shell that ran it, and the report said the
  * alpha root was shared with the installed brain — which is the opposite of
- * true. A dev app on the wrong home looks completely normal and silently tests
- * a different database, so the line now states which of the two it is.
+ * true. The PROJECT database follows the project root, so the data is the
+ * same; what moves is the machine state — account and credentials, the runtime
+ * directory, the machine heartbeat, the socket directory. A dev app on the
+ * wrong home therefore looks completely normal, which is why the line now
+ * states which of the two roots it is rather than asserting a sharing.
  */
 export function printDevIsolationReport(socketPath, projectRoot) {
   const { home, isDefault } = resolveDevAdeHome();
   const sync = process.env.ADE_DEV_RUNTIME_SYNC === "1" ? "ON (ADE_DEV_RUNTIME_SYNC=1)" : "off (--no-sync)";
   const homeNote = isDefault
     ? "(shared with the installed brain)"
-    : "(ADE_HOME override — NOT the installed brain's state; this app sees a different database)";
+    : "(ADE_HOME override — NOT the installed brain's machine state: different account, runtime dir and heartbeat)";
   process.stdout.write([
     "[ade] dev isolation report",
     `[ade]   state root : ${home} ${homeNote}`,
@@ -651,10 +654,11 @@ export function printDevIsolationReport(socketPath, projectRoot) {
  * Stop a dev launch that inherited somebody else's state root.
  *
  * `ADE_HOME` is almost never set on purpose for a dev app: the point of the
- * dev app is to drive the state the installed brain already has. An inherited
- * one — an alpha shell, a packaged-build shell — produces an app that starts
- * cleanly, shows an empty or foreign project, and quietly verifies nothing.
- * That cost a night's test run, so it is a refusal rather than a warning.
+ * dev app is to drive the machine state the installed brain already has. An
+ * inherited one — an alpha shell, a packaged-build shell — produces an app on
+ * a different account and runtime directory, which is how one dev brain came
+ * to publish the machine heartbeat under the wrong pid. It starts cleanly and
+ * says nothing, so it is a refusal rather than a warning.
  *
  * `ADE_DEV_ALLOW_ALT_HOME=1` opts in for the case where a different root IS
  * the point.
@@ -665,8 +669,8 @@ export function assertDevAdeHome() {
   throw new Error(
     [
       `ADE_HOME is set to ${home}, which is not the installed brain's state root (${defaultAdeHome()}).`,
-      "A dev app on a different root starts cleanly and then shows a different database,",
-      "so this is refused rather than warned about.",
+      "A dev app on a different root starts cleanly and then carries a different account,",
+      "runtime directory and machine heartbeat, so this is refused rather than warned about.",
       "",
       "  unset ADE_HOME && npm run dev:desktop -- --socket <path>",
       "",
