@@ -605,23 +605,74 @@ function openDevRuntimeLogFd(logPath) {
   }
 }
 
+/** Where the installed brain keeps its state, and the only root a dev app shares. */
+export function defaultAdeHome() {
+  return path.join(os.homedir(), ".ade");
+}
+
+/** The state root this launch will actually use, and whether it is the default. */
+export function resolveDevAdeHome() {
+  const fromEnv = process.env.ADE_HOME?.trim();
+  const fallback = defaultAdeHome();
+  const home = fromEnv || fallback;
+  return { home, isDefault: path.resolve(home) === path.resolve(fallback), fromEnv: Boolean(fromEnv) };
+}
+
 /**
  * One glance at what this dev launch touches and what it leaves alone. Printed
  * before the window opens so a reader (or an agent) never has to guess whether
  * the installed brain is at risk.
+ *
+ * The state-root line used to say "(shared with the installed brain)"
+ * unconditionally. On 2026-09-22 a relaunch inherited
+ * `ADE_HOME=~/.ade-alpha` from the shell that ran it, and the report said the
+ * alpha root was shared with the installed brain — which is the opposite of
+ * true. A dev app on the wrong home looks completely normal and silently tests
+ * a different database, so the line now states which of the two it is.
  */
 export function printDevIsolationReport(socketPath, projectRoot) {
-  const adeHome = process.env.ADE_HOME?.trim() || path.join(os.homedir(), ".ade");
+  const { home, isDefault } = resolveDevAdeHome();
   const sync = process.env.ADE_DEV_RUNTIME_SYNC === "1" ? "ON (ADE_DEV_RUNTIME_SYNC=1)" : "off (--no-sync)";
+  const homeNote = isDefault
+    ? "(shared with the installed brain)"
+    : "(ADE_HOME override — NOT the installed brain's state; this app sees a different database)";
   process.stdout.write([
     "[ade] dev isolation report",
-    `[ade]   state root : ${adeHome} (shared with the installed brain)`,
+    `[ade]   state root : ${home} ${homeNote}`,
     `[ade]   dev socket : ${socketPath}`,
     `[ade]   sync       : ${sync}`,
     `[ade]   project    : ${projectRoot ?? "(launcher default)"}`,
     "[ade]   installed brain: untouched (its own socket, its own sync lease, service never repaired by a dev app)",
     "",
   ].join("\n"));
+}
+
+/**
+ * Stop a dev launch that inherited somebody else's state root.
+ *
+ * `ADE_HOME` is almost never set on purpose for a dev app: the point of the
+ * dev app is to drive the state the installed brain already has. An inherited
+ * one — an alpha shell, a packaged-build shell — produces an app that starts
+ * cleanly, shows an empty or foreign project, and quietly verifies nothing.
+ * That cost a night's test run, so it is a refusal rather than a warning.
+ *
+ * `ADE_DEV_ALLOW_ALT_HOME=1` opts in for the case where a different root IS
+ * the point.
+ */
+export function assertDevAdeHome() {
+  const { home, isDefault } = resolveDevAdeHome();
+  if (isDefault || process.env.ADE_DEV_ALLOW_ALT_HOME === "1") return;
+  throw new Error(
+    [
+      `ADE_HOME is set to ${home}, which is not the installed brain's state root (${defaultAdeHome()}).`,
+      "A dev app on a different root starts cleanly and then shows a different database,",
+      "so this is refused rather than warned about.",
+      "",
+      "  unset ADE_HOME && npm run dev:desktop -- --socket <path>",
+      "",
+      "Set ADE_DEV_ALLOW_ALT_HOME=1 if the other root really is what you want.",
+    ].join("\n"),
+  );
 }
 
 export async function ensureRuntime(socketPath, projectRoot = null) {
