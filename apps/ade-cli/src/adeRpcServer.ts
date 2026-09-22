@@ -2746,6 +2746,9 @@ const SCOPED_CHAT_ACTIONS = new Set([
   // aim it at its OWN row; without this entry a bound agent could force any
   // usage-limited chat on the machine to burn its retry.
   "resumeUsageLimitNow",
+  // Continuing on another account spends a turn on a different login. A
+  // session-bound agent may only aim it at its own row.
+  "continueUsageLimitOnAlternate",
   "requestSessionAttention",
   "setSessionStatusNote",
   // `settleSelfSession` / `unsettleSelfSession` used to be scoped here so a

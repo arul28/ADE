@@ -126,6 +126,10 @@ describe("PersonalChatScope", () => {
         ok: true,
         turnId: `turn-${sessionId}`,
       })),
+      continueUsageLimitOnAlternate: vi.fn(async ({ sessionId }: { sessionId: string }) => ({
+        ok: true,
+        sessionId: `next-${sessionId}`,
+      })),
       updateSession: vi.fn(async () => summary),
       ensureSessionSurface: vi.fn(),
       archiveSession: vi.fn(async () => undefined),
@@ -628,6 +632,14 @@ describe("PersonalChatScope", () => {
     expect(scope.capabilities().actions).toContain("resumeUsageLimitNow");
     expect(isPersonalChatActionViewerAllowed("resumeUsageLimitNow")).toBe(false);
     expect(isPersonalChatActionQueueable("resumeUsageLimitNow")).toBe(false);
+
+    await expect(scope.call("continueUsageLimitOnAlternate", { sessionId: "chat-1" })).resolves.toMatchObject({
+      action: "continueUsageLimitOnAlternate",
+      result: { ok: true, sessionId: "next-chat-1" },
+    });
+    expect(service.continueUsageLimitOnAlternate).toHaveBeenCalledWith({ sessionId: "chat-1" });
+    expect(isPersonalChatActionViewerAllowed("continueUsageLimitOnAlternate")).toBe(false);
+    expect(isPersonalChatActionQueueable("continueUsageLimitOnAlternate")).toBe(false);
     await scope.dispose();
   });
 

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import type { Logger } from "../logging/logger";
 import { isRecord, safeJsonParse } from "../shared/utils";
@@ -150,10 +151,32 @@ export type ClaudeCredentialReadOptions = {
    * Absent means this machine's DEFAULT account, and that path is byte-for-byte
    * what this module has always done: `~/.claude/.credentials.json` plus the
    * macOS Keychain. Present means "read exactly this directory and nothing
-   * else" — a second login must never fall back to the first one's token.
+   * else" — a second login must never fall back to the first one's token. On
+   * macOS that includes the Keychain item Claude Code namespaces with this
+   * directory (see {@link claudeKeychainServiceName}).
    */
   configHome?: string;
 };
+
+/**
+ * The macOS Keychain item Claude Code files one account's OAuth credentials in.
+ *
+ * The Keychain has no notion of a config directory, so Claude Code namespaces
+ * the item itself: the default login is the bare `Claude Code-credentials`, and
+ * a `CLAUDE_CONFIG_DIR` login appends the first 8 hex characters of the SHA-256
+ * of that directory (`Claude Code-credentials-ceba6810` for
+ * `/Users/…/provider-homes/claude/1028`). A scoped account on macOS commonly
+ * has NO `<configHome>/.credentials.json` — the Keychain item is the only place
+ * its login exists — so ADE has to derive the same name to read the login the
+ * CLI actually wrote. Pass a config directory the CLI never signed in, and the
+ * lookup simply misses; it can never return the default account's token.
+ */
+export function claudeKeychainServiceName(configHome?: string): string {
+  const scoped = configHome?.trim();
+  if (!scoped) return "Claude Code-credentials";
+  const digest = createHash("sha256").update(path.resolve(scoped)).digest("hex").slice(0, 8);
+  return `Claude Code-credentials-${digest}`;
+}
 
 /**
  * Where one account's OAuth credentials live.
@@ -185,15 +208,17 @@ function claudeCacheKey(configHome?: string): string {
 export async function readClaudeCredentials(
   options: ClaudeCredentialReadOptions = {},
 ): Promise<ClaudeLocalAuthCredentials | null> {
-  // The Keychain item `Claude Code-credentials` is the MACHINE's login — the
-  // one the CLI writes when no `CLAUDE_CONFIG_DIR` is set. There is no
-  // per-instance Keychain equivalent, so a scoped account must never consult
-  // it: doing so would hand account B the default account's token. Windows and
-  // Linux never had this branch, so they behave identically minus the Keychain.
-  if (!options.configHome?.trim() && process.platform === "darwin" && options.allowKeychain !== false) {
+  // Claude Code stores OAuth credentials in the macOS Keychain, one item per
+  // config directory. Reading the item named after THIS account's directory is
+  // what keeps a scoped login readable (and parseable) without ever handing it
+  // another account's token; the default account keeps the bare item. Windows
+  // and Linux never had this branch — the CLI writes a credentials file in the
+  // config home there, which is the fallback below.
+  if (process.platform === "darwin" && options.allowKeychain !== false) {
+    const service = claudeKeychainServiceName(options.configHome);
     try {
       const result = await runShellCommand(
-        "security find-generic-password -s 'Claude Code-credentials' -w",
+        `security find-generic-password -s '${service}' -w`,
         5_000,
       );
       if (result.exitCode === 0 && result.stdout.trim()) {
@@ -204,10 +229,11 @@ export async function readClaudeCredentials(
         if (credentials) {
           // The Keychain holds the CLI's live login while the credentials file
           // can be a stale leftover from an older install. Cache every valid
-          // Keychain read so background pollers (which must not touch the
-          // Keychain) can reuse it instead of the possibly-dead file token.
+          // Keychain read — under its own account — so background pollers
+          // (which must not touch the Keychain) can reuse it instead of the
+          // possibly-dead file token.
           if (!isClaudeTokenExpiredOrExpiring(credentials)) {
-            cacheClaudeCredentials(credentials);
+            cacheClaudeCredentials(credentials, options.configHome);
           }
           return credentials;
         }

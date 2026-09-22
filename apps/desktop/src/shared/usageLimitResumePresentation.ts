@@ -15,6 +15,7 @@
 
 import type {
   AgentChatProvider,
+  AgentChatUsageLimitAlternateAccount,
   AgentChatUsageLimitResume,
   AgentChatUsageLimitResumeState,
 } from "./types/chat";
@@ -59,6 +60,7 @@ export function parseUsageLimitResume(value: unknown): AgentChatUsageLimitResume
   const attempts = typeof record.attempts === "number" && Number.isFinite(record.attempts)
     ? Math.max(0, Math.trunc(record.attempts))
     : 0;
+  const alternateAccount = parseUsageLimitAlternateAccount(record.alternateAccount);
   return {
     state: state as AgentChatUsageLimitResumeState,
     provider: provider as AgentChatProvider,
@@ -69,7 +71,21 @@ export function parseUsageLimitResume(value: unknown): AgentChatUsageLimitResume
     providerDetail: trimmedOrNull(record.providerDetail),
     turnId: trimmedOrNull(record.turnId),
     updatedAt: isoOrNull(record.updatedAt) ?? new Date(0).toISOString(),
+    ...(alternateAccount ? { alternateAccount } : {}),
   };
+}
+
+/**
+ * A bad alternate is dropped, not the whole resume. The countdown is still
+ * true when the account offer is missing or malformed.
+ */
+function parseUsageLimitAlternateAccount(value: unknown): AgentChatUsageLimitAlternateAccount | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const instanceId = typeof record.instanceId === "string" ? record.instanceId.trim() : "";
+  const label = typeof record.label === "string" ? record.label.trim() : "";
+  if (!instanceId || !label) return null;
+  return { instanceId, label };
 }
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -261,6 +277,11 @@ export type UsageLimitResumePopoverModel = {
   showDontContinue: boolean;
   /** Raw provider text in the HOST's zone. Rendered verbatim, never reformatted. */
   providerDetail: string | null;
+  /**
+   * Another account that still has room. Null when the host published none.
+   * The button continues the task there; it does not resume this chat.
+   */
+  continueOnAccount: { instanceId: string; label: string } | null;
 };
 
 const USAGE_LIMIT_RESUME_REASSURANCE = "Nothing is lost. Subagents restart with it.";
@@ -306,6 +327,7 @@ export function usageLimitResumePopover(
       break;
   }
 
+  const alternate = resume.alternateAccount;
   return {
     title: `${provider} usage limit`,
     body,
@@ -313,6 +335,9 @@ export function usageLimitResumePopover(
     primary,
     showDontContinue: resume.state !== "opted_out",
     providerDetail: resume.providerDetail?.trim() || null,
+    continueOnAccount: alternate?.instanceId && alternate.label
+      ? { instanceId: alternate.instanceId, label: alternate.label }
+      : null,
   };
 }
 

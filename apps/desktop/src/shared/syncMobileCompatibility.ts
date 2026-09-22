@@ -45,6 +45,9 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // phone does not go limited against a newer host, and an older host simply
   // omits the action.
   "chat.resumeUsageLimitNow",
+  // Usage-limit "Continue on <account>". Optional for the same reason as
+  // Resume now: older phones keep their connection and simply omit the button.
+  "chat.continueUsageLimitOnAlternate",
   // GitHub Stacked PRs are in public preview. Mobile clients can expose these
   // actions as they adopt stack management without limiting older builds.
   "prs.listGithubStacks",

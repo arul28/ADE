@@ -505,6 +505,8 @@ import type {
   AgentChatCancelScheduledWorkArgs,
   AgentChatResumeUsageLimitNowArgs,
   AgentChatResumeUsageLimitNowResult,
+  AgentChatContinueUsageLimitOnAlternateArgs,
+  AgentChatContinueUsageLimitOnAlternateResult,
   AgentChatCancelScheduledWorkResult,
   AgentChatClaudePlugin,
   AgentChatClaudePluginsArgs,
@@ -1755,6 +1757,7 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "createScheduledWork",
   "cancelScheduledWork",
   "resumeUsageLimitNow",
+  "continueUsageLimitOnAlternate",
   "setScheduledWorkPaused",
   "ensureCtoSession",
   "warmupModel",
@@ -7185,6 +7188,21 @@ const adeBridge = {
         "resumeUsageLimitNow",
         { args },
         () => ipcRenderer.invoke(IPC.agentChatResumeUsageLimitNow, args),
+      );
+      agentChatSummaryCache.clear();
+      return result;
+    },
+    continueUsageLimitOnAlternate: async (
+      args: AgentChatContinueUsageLimitOnAlternateArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatContinueUsageLimitOnAlternateResult> => {
+      agentChatSummaryCache.clear();
+      const result = await callPinnedOrBoundRuntimeActionOr(
+        pin,
+        "chat",
+        "continueUsageLimitOnAlternate",
+        { args },
+        () => ipcRenderer.invoke(IPC.agentChatContinueUsageLimitOnAlternate, args),
       );
       agentChatSummaryCache.clear();
       return result;

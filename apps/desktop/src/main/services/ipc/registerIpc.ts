@@ -523,6 +523,8 @@ import type {
   AgentChatCancelScheduledWorkResult,
   AgentChatResumeUsageLimitNowArgs,
   AgentChatResumeUsageLimitNowResult,
+  AgentChatContinueUsageLimitOnAlternateArgs,
+  AgentChatContinueUsageLimitOnAlternateResult,
   AgentChatSetClaudeOutputStyleArgs,
   AgentChatSlashCommand,
   AgentChatSlashCommandsArgs,
@@ -8641,6 +8643,17 @@ export function registerIpc({
     ): Promise<AgentChatResumeUsageLimitNowResult> => {
       const ctx = ensureAgentChatContext();
       return ctx.agentChatService.resumeUsageLimitNow(arg);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.agentChatContinueUsageLimitOnAlternate,
+    async (
+      _event,
+      arg: AgentChatContinueUsageLimitOnAlternateArgs,
+    ): Promise<AgentChatContinueUsageLimitOnAlternateResult> => {
+      const ctx = ensureAgentChatContext();
+      return ctx.agentChatService.continueUsageLimitOnAlternate(arg);
     },
   );
 

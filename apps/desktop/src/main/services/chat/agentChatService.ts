@@ -575,6 +575,13 @@ import {
 } from "../../../shared/pendingInputAnswers";
 import { retainUnresolvedApprovalRequests } from "../../../shared/chatPendingInputRetention";
 import { defaultProviderInstanceId } from "../../../shared/types/providerInstances";
+import { pickAlternateInstanceForLimitedChat } from "../usage/accountBalance";
+import { usageLimitHandoffPrompt } from "../../../shared/usageLimitAccountHandoff";
+import type {
+  AgentChatContinueUsageLimitOnAlternateResult,
+  AgentChatUsageLimitAlternateAccount,
+} from "../../../shared/types/chat";
+import type { UsageAccount, UsageWindow } from "../../../shared/types/usage";
 import {
   CLAUDE_RESUME_RETURN_OPTIONS,
   claudeResumeReturnChoiceFromAnswer,
@@ -17081,7 +17088,9 @@ export function createAgentChatService(args: {
       && a.scheduleId === b.scheduleId
       && a.attempts === b.attempts
       && a.turnId === b.turnId
-      && a.providerDetail === b.providerDetail;
+      && a.providerDetail === b.providerDetail
+      && (a.alternateAccount?.instanceId ?? null) === (b.alternateAccount?.instanceId ?? null)
+      && (a.alternateAccount?.label ?? null) === (b.alternateAccount?.label ?? null);
   };
 
   /**
@@ -17113,14 +17122,158 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * Arms the durable resume for a chat that just hit a STRUCTURED provider
-   * usage limit. The opt-out is ADE's own, so it is honoured here rather than
-   * asked of the provider: a chat with Don't continue set records the live
-   * limit and arms nothing.
+   * Chats created to continue a limited chat, so a limit on the new chat
+   * offers the move again instead of hopping forever between two accounts.
    */
-  const armUsageLimitAutoResume = (
+  const usageLimitHandoffSessionIds = new Set<string>();
+  /** Source chats whose work already moved. A second limit must not start another. */
+  const usageLimitHandedOffTargets = new Map<string, string>();
+  const usageLimitHandoffInFlight = new Set<string>();
+
+  /**
+   * Another signed-in account with readable room, plus whether smart balance
+   * should move the work there without asking. Subagents stay put: a child
+   * limit is the parent's story, not a new chat.
+   */
+  const readUsageLimitAlternate = (
     managed: ManagedChatSession,
-    turnId?: string | null,
+  ): (AgentChatUsageLimitAlternateAccount & { autoContinue: boolean }) | null => {
+    if (managed.session.spawnKind === "subagent") return null;
+    const rawProvider = managed.session.provider;
+    let provider: "claude" | "codex" | null = null;
+    if (rawProvider === "claude") provider = "claude";
+    else if (rawProvider === "codex") provider = "codex";
+    if (!provider) return null;
+    try {
+      const store = getMachineProviderInstanceStore();
+      const settings = store.getProviderSettings(provider);
+      const usage = getUsageService?.() as {
+        getUsageSnapshot?: () => { windows?: UsageWindow[]; accounts?: UsageAccount[] };
+      } | null | undefined;
+      const snapshot = usage?.getUsageSnapshot?.();
+      if (!snapshot) return null;
+      const windowsByAccountId = new Map<string, UsageWindow[]>();
+      for (const window of snapshot.windows ?? []) {
+        if (window.provider !== provider || !window.accountId) continue;
+        const existing = windowsByAccountId.get(window.accountId) ?? [];
+        existing.push(window);
+        windowsByAccountId.set(window.accountId, existing);
+      }
+      const pick = pickAlternateInstanceForLimitedChat({
+        provider,
+        currentInstanceId: managed.session.instanceId?.trim()
+          || defaultProviderInstanceId(provider),
+        instances: store.list(provider),
+        accounts: (snapshot.accounts ?? []).filter((account) => account.provider === provider),
+        windowsByAccountId,
+        nowMs: Date.now(),
+      });
+      if (!pick) return null;
+      return {
+        instanceId: pick.instanceId,
+        label: pick.label,
+        autoContinue: settings.smartBalance === true
+          && !usageLimitHandoffSessionIds.has(managed.session.id),
+      };
+    } catch (error) {
+      logger.warn("agent_chat.usage_limit_alternate_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  };
+
+  /**
+   * Starts the interrupted task on another account. The provider thread cannot
+   * move with it, so this is a new chat in the same lane, and the original
+   * stops waiting to resume.
+   */
+  const handOffUsageLimitChat = async (
+    managed: ManagedChatSession,
+    alternate: AgentChatUsageLimitAlternateAccount,
+  ): Promise<AgentChatContinueUsageLimitOnAlternateResult> => {
+    const existing = usageLimitHandedOffTargets.get(managed.session.id);
+    if (existing) return { ok: true, sessionId: existing };
+    if (!managed.session.laneId.trim()) {
+      return {
+        ok: false,
+        reason: "handoff_failed",
+        message: "This chat has no lane, so ADE can't start the other account here.",
+      };
+    }
+    let createdId: string | null = null;
+    try {
+      const created = await createSessionInternal({
+        laneId: managed.session.laneId,
+        provider: managed.session.provider,
+        model: managed.session.model,
+        ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+        ...(managed.autoTitleSeed?.trim()
+          ? { title: managed.autoTitleSeed.trim().slice(0, 80) }
+          : {}),
+        instanceId: alternate.instanceId,
+        ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
+        ...(typeof managed.session.fastMode === "boolean" ? { fastMode: managed.session.fastMode } : {}),
+        ...(managed.session.permissionMode ? { permissionMode: managed.session.permissionMode } : {}),
+        ...(managed.session.interactionMode ? { interactionMode: managed.session.interactionMode } : {}),
+        ...(managed.session.claudePermissionMode ? { claudePermissionMode: managed.session.claudePermissionMode } : {}),
+        ...(managed.session.codexApprovalPolicy ? { codexApprovalPolicy: managed.session.codexApprovalPolicy } : {}),
+        ...(managed.session.codexSandbox ? { codexSandbox: managed.session.codexSandbox } : {}),
+        ...(managed.session.codexConfigSource ? { codexConfigSource: managed.session.codexConfigSource } : {}),
+        ...(managed.session.opencodePermissionMode ? { opencodePermissionMode: managed.session.opencodePermissionMode } : {}),
+        ...(managed.session.droidPermissionMode ? { droidPermissionMode: managed.session.droidPermissionMode } : {}),
+      });
+      createdId = created.id;
+      usageLimitHandoffSessionIds.add(created.id);
+      await sendMessage({
+        sessionId: created.id,
+        text: usageLimitHandoffPrompt({
+          accountLabel: alternate.label,
+          title: managed.autoTitleSeed,
+          task: managed.session.goal,
+          summary: managed.continuitySummary,
+        }),
+      });
+    } catch (error) {
+      if (createdId) usageLimitHandoffSessionIds.delete(createdId);
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn("agent_chat.usage_limit_handoff_failed", {
+        sessionId: managed.session.id,
+        instanceId: alternate.instanceId,
+        error: message,
+      });
+      return {
+        ok: false,
+        reason: "handoff_failed",
+        message: `ADE couldn't continue on ${alternate.label}. ${message}`,
+      };
+    }
+    if (!createdId) {
+      return {
+        ok: false,
+        reason: "handoff_failed",
+        message: `ADE couldn't continue on ${alternate.label}.`,
+      };
+    }
+    usageLimitHandedOffTargets.set(managed.session.id, createdId);
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "rate_limit",
+      severity: "info",
+      message: `Continuing on ${alternate.label}.`,
+      detail: `This chat hit a usage limit, so ADE started a new chat on ${alternate.label}. This chat will not also resume.`,
+    });
+    await autoResume.cancelForSession(managed.session.id, "usage_limit_account_handoff");
+    setUsageLimitResume(managed, null);
+    if (managed.session.provider === "claude") dismissClaudeSessionQuota(managed);
+    return { ok: true, sessionId: createdId };
+  };
+
+  const publishUsageLimitResumeArm = (
+    managed: ManagedChatSession,
+    turnId: string | null | undefined,
+    alternateAccount: AgentChatUsageLimitAlternateAccount | null,
   ): void => {
     const resetAtMs = usageLimitResetAtMs(managed);
     const providerDetail = usageLimitProviderDetail(managed);
@@ -17135,6 +17288,7 @@ export function createAgentChatService(args: {
         providerDetail,
         turnId: turnId ?? null,
         updatedAt: nowIso(),
+        ...(alternateAccount ? { alternateAccount } : {}),
       });
       return;
     }
@@ -17143,12 +17297,82 @@ export function createAgentChatService(args: {
       provider: managed.session.provider,
       resetAtMs,
       providerDetail,
+      ...(alternateAccount ? { alternateAccount } : {}),
       error: {
         message: "Provider usage limit",
         errorInfo: { category: "rate_limit" },
         ...(turnId ? { turnId } : {}),
       },
     });
+  };
+
+  /**
+   * Arms the durable resume for a chat that just hit a STRUCTURED provider
+   * usage limit. The opt-out is ADE's own, so it is honoured here rather than
+   * asked of the provider: a chat with Don't continue set records the live
+   * limit and arms nothing.
+   *
+   * Smart balance, when it is on and another account still has room, does not
+   * wait: it continues the task on that account. With it off, the same account
+   * is only an offer on the resume pill.
+   */
+  const armUsageLimitAutoResume = (
+    managed: ManagedChatSession,
+    turnId?: string | null,
+    options?: { allowAccountHandoff?: boolean },
+  ): void => {
+    if (usageLimitHandedOffTargets.has(managed.session.id)) return;
+    const alternate = readUsageLimitAlternate(managed);
+    const alternateAccount = alternate
+      ? { instanceId: alternate.instanceId, label: alternate.label }
+      : null;
+    // Turn on / Try again re-arms THIS chat. Hopping there would ignore a
+    // choice the user just made about this thread.
+    if (options?.allowAccountHandoff !== false && alternate?.autoContinue) {
+      if (usageLimitHandoffInFlight.has(managed.session.id)) return;
+      usageLimitHandoffInFlight.add(managed.session.id);
+      void handOffUsageLimitChat(managed, alternate).then((result) => {
+        usageLimitHandoffInFlight.delete(managed.session.id);
+        if (result.ok) return;
+        publishUsageLimitResumeArm(managed, turnId, alternateAccount);
+      }).catch((error) => {
+        usageLimitHandoffInFlight.delete(managed.session.id);
+        logger.warn("agent_chat.usage_limit_handoff_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        publishUsageLimitResumeArm(managed, turnId, alternateAccount);
+      });
+      return;
+    }
+    publishUsageLimitResumeArm(managed, turnId, alternateAccount);
+  };
+
+  const continueUsageLimitOnAlternate = async ({
+    sessionId,
+  }: { sessionId: string }): Promise<AgentChatContinueUsageLimitOnAlternateResult> => {
+    const normalizedSessionId = sessionId.trim();
+    if (!normalizedSessionId) throw new Error("Chat session id is required.");
+    const already = usageLimitHandedOffTargets.get(normalizedSessionId);
+    if (already) return { ok: true, sessionId: already };
+    const managed = ensureManagedSession(normalizedSessionId);
+    const live = resolveUsageLimitResumeState(managed.usageLimitResume ?? null);
+    if (!live) {
+      return {
+        ok: false,
+        reason: "no_live_usage_limit",
+        message: "No usage limit is live for this chat.",
+      };
+    }
+    const alternate = live.alternateAccount ?? null;
+    if (!alternate?.instanceId || !alternate.label) {
+      return {
+        ok: false,
+        reason: "no_alternate_account",
+        message: "No other account has room for this chat.",
+      };
+    }
+    return handOffUsageLimitChat(managed, alternate);
   };
 
   /**
@@ -53747,7 +53971,7 @@ export function createAgentChatService(args: {
         const liveLimit = managed.usageLimitResume;
         if (liveLimit) {
           autoResume.resetStreak(sessionId);
-          armUsageLimitAutoResume(managed, liveLimit.turnId);
+          armUsageLimitAutoResume(managed, liveLimit.turnId, { allowAccountHandoff: false });
         }
       }
     }
@@ -56565,6 +56789,7 @@ export function createAgentChatService(args: {
     getScheduledWorkState,
     cancelScheduledWork,
     resumeUsageLimitNow,
+    continueUsageLimitOnAlternate,
     setScheduledWorkPaused,
     refreshScheduledWork,
     readTranscript,

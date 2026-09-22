@@ -1,7 +1,7 @@
 /**
  * usageTrackingService.ts
  *
- * Polls live usage data from Claude and Codex providers.
+ * Polls live usage for Claude, Codex, Cursor, Copilot, Grok, and OpenCode.
  * Scans local provider ledgers for ADE-supported runtime cost/token aggregation.
  * Computes pacing relative to provider reset windows.
  */
@@ -45,6 +45,7 @@ import {
   ADE_USAGE_RANGE_PRESETS,
   isAdeUsageRangePreset,
   isAdeUsageScope,
+  LIVE_QUOTA_PROVIDERS,
   usageProviderAccountUrl,
 } from "../../../shared/types";
 import { isRecord, nowIso, getErrorMessage, safeJsonParse } from "../shared/utils";
@@ -157,6 +158,12 @@ import type {
   UsageProviderStrategy,
   UsageRefreshReason,
 } from "./usageProviderStrategies";
+import {
+  pollCopilotQuota,
+  pollCursorQuota,
+  pollGrokQuota,
+  pollOpenCodeQuota,
+} from "./extraProviderQuota";
 import { localDayKey, localDayOffset, localDayStart } from "./localDay";
 import {
   EMPTY_GITHUB_STATS,
@@ -650,6 +657,8 @@ type QuotaInstance = {
   isDefault: boolean;
   /** What the registry last recorded for this account, if anything. */
   account?: ProviderAccountIdentity;
+  /** Present when the registry knows whether this account has a login. */
+  signedIn?: boolean;
 };
 
 /** Providers that can hold more than one local login. */
@@ -716,8 +725,9 @@ function listQuotaInstances(provider: QuotaInstanceProvider): QuotaInstance[] {
  * `undefined` is load-bearing rather than lazy: the credential readers treat an
  * absent home as "this machine's default account" and run exactly the code path
  * they ran before accounts existed — the fixed `~/.claude/.credentials.json`
- * and, on macOS, the Keychain item that has no per-account equivalent. Passing
- * the default account's resolved home instead would quietly change both. The
+ * and, on macOS, the bare `Claude Code-credentials` Keychain item. Passing the
+ * default account's resolved home instead would quietly change both (a scoped
+ * home reads its own credentials file and its own suffixed Keychain item). The
  * selected/default flag is mutable: a secondary account can be promoted to
  * default, but it must still read its own home.
  */
@@ -729,12 +739,35 @@ function scopedConfigHome(
 }
 
 /**
+ * Whether this Claude poll may open the macOS Keychain.
+ *
+ * The default account's background polls stay on the credentials file and the
+ * in-memory cache: that Keychain lookup is what used to prompt and stall
+ * unattended refreshes. A scoped account often has no credentials file at
+ * all — Claude Code files its login under a namespaced Keychain item — so a
+ * background poll that refuses the Keychain can never see it. The read is
+ * cached per account, so the Keychain is opened once per process, then the
+ * cache serves every later poll.
+ */
+export function claudePollAllowsKeychain(
+  reason: UsageProviderPollContext["reason"],
+  configHome: string | undefined,
+): boolean {
+  if (configHome?.trim()) return true;
+  return reason === "user";
+}
+
+/**
  * Fold one provider's per-account results into the single result the scheduler
  * consumes.
  *
- * `null` means the account holds no login at all: it contributes no windows and
- * no error, because a second account the user has not signed into yet must not
- * raise a failure a single-account machine would never have seen.
+ * `null` means the account holds no login ADE can read in this pass: it
+ * contributes no windows and no error, because a second account the user has
+ * not signed into yet must not raise a failure a single-account machine would
+ * never have seen. It is not a sign-out, though — a scoped macOS login can
+ * live only in the Keychain, and a miss still happens — so the account's last
+ * windows are carried forward (bounded by their own reset times) instead of
+ * vanishing on every restart.
  *
  * Windows are stamped with their own account here, which is the only place that
  * knows which home produced them. Provider-level facts that cannot be plural
@@ -748,12 +781,16 @@ function mergeInstancePollResults(
   previousSnapshot?: UsageSnapshot,
 ): UsageProviderPollResult {
   const fresh: Array<{ instance: QuotaInstance; result: FreshUsageProviderPollResult }> = [];
+  const unreadableAccounts: QuotaInstance[] = [];
   let preservedSource: UsageProviderSource | undefined;
   let preservedDefaultSource: UsageProviderSource | undefined;
   let preservedDefault: QuotaInstance | undefined;
   let preserved = false;
   for (const entry of entries) {
-    if (!entry.result) continue;
+    if (!entry.result) {
+      if (!entry.instance.isDefault) unreadableAccounts.push(entry.instance);
+      continue;
+    }
     if (entry.result.disposition === "preserve_previous") {
       preserved = true;
       if (entry.instance.isDefault) {
@@ -763,6 +800,7 @@ function mergeInstancePollResults(
       preservedSource = preservedSource ?? entry.result.source;
       continue;
     }
+    if (entry.result.disposition === "not_signed_in") continue;
     fresh.push({ instance: entry.instance, result: entry.result });
   }
   if (fresh.length === 0) {
@@ -808,6 +846,27 @@ function mergeInstancePollResults(
       ));
     }
     errors.push(...result.errors);
+  }
+  const freshWindowCount = fresh.reduce((sum, entry) => sum + entry.result.windows.length, 0);
+  if (freshWindowCount > 0) {
+    for (const instance of unreadableAccounts) {
+      // No login was readable for this account this pass. Keep its last reading
+      // (until its own reset) rather than erasing a signed-in account's quota
+      // because the only copy of its token is a Keychain item a background poll
+      // may not open. A genuinely signed-out account has no previous windows to
+      // carry, and a removed one is no longer in `entries` at all.
+      //
+      // Only when something was actually read elsewhere: with zero fresh
+      // windows the whole-provider reconciliation in `buildProviderWindows`
+      // already carries every previous window and marks the provider stale.
+      const accountId = accountIdForInstance(provider, instance.id);
+      windows.push(...filterUnexpiredCarriedWindows(
+        previousSnapshot?.windows.filter((window) => (
+          window.provider === provider && window.accountId === accountId
+        )) ?? [],
+        polledAt,
+      ));
+    }
   }
   const previousExtraUsage = preservedDefault
     ? previousSnapshot?.extraUsage.find((extra) => extra.provider === provider)
@@ -856,16 +915,18 @@ async function pollClaudeInstance(
   context: UsageProviderPollContext,
   instance: QuotaInstance,
 ): Promise<UsageProviderPollResult | null> {
-  // The interactive fallbacks belong to the default account alone: the macOS
-  // Keychain item is the machine's login, and the `/usage` CLI probe drives the
-  // CLI with the ambient environment. A scoped account reads its own directory.
-  const allowInteractiveSources = context.reason === "user" && instance.isDefault;
+  // The CLI probe is for a user who just asked — background polls must not
+  // spawn Claude. The Keychain is narrower: the default account still skips
+  // it on background polls (that lookup can prompt), but a scoped account's
+  // only login is its namespaced Keychain item, so those polls may open it.
+  // A successful read is cached per account, and later polls reuse the cache.
+  const allowInteractiveSources = context.reason === "user";
   const configHome = scopedConfigHome("claude", instance);
   const creds = await measureUsagePhase(
     logger,
     { provider: "claude", phase: "credentials", reason: context.reason },
     () => readClaudeCredentialsWithRefresh(logger, {
-      allowKeychain: allowInteractiveSources,
+      allowKeychain: claudePollAllowsKeychain(context.reason, configHome),
       ...(configHome ? { configHome } : {}),
     }),
   );
@@ -2673,6 +2734,9 @@ const PROVIDER_DISPLAY_NAME: Record<UsageProvider, string> = {
   claude: "Claude",
   codex: "Codex",
   cursor: "Cursor",
+  copilot: "Copilot",
+  grok: "Grok",
+  opencode: "OpenCode",
 };
 
 /**
@@ -2764,10 +2828,10 @@ async function readInstanceAccountIdentity(
  *    accounts has two quotas and a window has to say which one it describes.
  *
  * The default account is always listed, so a machine that has never added a
- * second one produces the single account it always did. A second account is
- * listed once it has an identity to show or has actually reported a window —
- * an account the user created but has not signed into yet would otherwise
- * render as a blank row with no numbers in it.
+ * second one produces the single account it always did. A signed-in account is
+ * listed even before its email or its first window can be read, so the usage
+ * box can say it has no readings yet. An account the user created but has not
+ * signed into stays out — that row would have no login and no numbers.
  *
  * The limits URL is a constant, so it is always rewritten.
  */
@@ -2804,13 +2868,21 @@ async function stampProviderAccounts(
     const checkedAt = status.updatedAt ?? status.lastSuccessAt ?? undefined;
     const machines = [{ label: machineLabel, ...(checkedAt ? { checkedAt } : {}) }];
     if (!isQuotaInstanceProvider(key)) {
-      // A provider with exactly one local identity keeps the older id shape.
-      stampStatus(baseIdentity);
+      // One login per machine. The poller may already have learned the email
+      // from the quota response; the shared identity reader only covers
+      // Claude and Codex.
+      const identity = baseIdentity.email || baseIdentity.plan
+        ? baseIdentity
+        : {
+          ...(status.accountEmail ? { email: status.accountEmail } : {}),
+          ...(status.accountPlan ? { plan: status.accountPlan } : {}),
+        };
+      stampStatus(identity);
       accounts.push({
-        id: accountIdFor(key, baseIdentity.email),
+        id: accountIdFor(key, identity.email),
         provider: key,
-        ...(baseIdentity.email ? { email: baseIdentity.email } : {}),
-        ...(baseIdentity.plan ? { plan: baseIdentity.plan } : {}),
+        ...(identity.email ? { email: identity.email } : {}),
+        ...(identity.plan ? { plan: identity.plan } : {}),
         machines,
         ...(url ? { url } : {}),
       });
@@ -2832,7 +2904,8 @@ async function stampProviderAccounts(
         : await readInstanceAccountIdentity(key, instance);
       if (instance.isDefault) defaultIdentity = identity;
       const known = Boolean(identity.email || identity.plan);
-      if (!instance.isDefault && !known && !activeAccountIds.has(id)) continue;
+      const signedIn = instance.signedIn === true;
+      if (!instance.isDefault && !known && !signedIn && !activeAccountIds.has(id)) continue;
       // Codex-only: Claude grants no reset credits, so the field stays absent
       // there and every client reads that as "nothing to spend".
       const resetCredits = key === "codex"
@@ -2987,6 +3060,10 @@ type LocalMachineIdentity = { machineKey: string; label: string; platform: strin
 type UsageTrackingDependencies = {
   pollClaudeUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
   pollCodexUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
+  pollCursorUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
+  pollCopilotUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
+  pollGrokUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
+  pollOpenCodeUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
   scanClaudeLogs?: () => Promise<TokenEntry[]>;
   scanCodexLogs?: () => Promise<TokenEntry[]>;
   scanCursorLogs?: () => Promise<TokenEntry[]>;
@@ -3320,7 +3397,7 @@ export function createUsageTrackingService({
   // Track the last poll that returned real windows per provider so carried-forward
   // (stale) data can still report when it was genuinely fresh.
   const providerLastSuccess: Partial<Record<UsageProvider, string>> = {};
-  for (const provider of ["claude", "codex"] as const) {
+  for (const provider of LIVE_QUOTA_PROVIDERS) {
     const cachedStatus = diskCachedSnapshot?.providerStatus?.[provider];
     if (cachedStatus?.lastSuccessAt) {
       providerLastSuccess[provider] = cachedStatus.lastSuccessAt;
@@ -3346,9 +3423,29 @@ export function createUsageTrackingService({
     ?? ((context) => pollClaudeUsage(logger, context, readQuotaInstances("claude")));
   const runCodexUsagePoll = dependencies?.pollCodexUsage
     ?? ((context) => pollCodexUsage(logger, context, readQuotaInstances("codex")));
+  // Vitest imports this module. The extra pollers read the developer machine's
+  // Cursor session and would call the network from unrelated quota tests.
+  // Production has no VITEST, so the real pollers run there. An injected poller
+  // still runs under test.
+  const defaultExtraPoll = (
+    poll: (context: UsageProviderPollContext) => Promise<UsageProviderPollResult>,
+  ): ((context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>) => (context) => {
+    if (process.env.VITEST === "true" && process.env.ADE_USAGE_EXTRA_PROVIDERS !== "1") {
+      return Promise.resolve({ disposition: "not_signed_in", windows: [], errors: [] });
+    }
+    return poll(context ?? { reason: "automatic" });
+  };
+  const runCursorUsagePoll = dependencies?.pollCursorUsage ?? defaultExtraPoll(pollCursorQuota);
+  const runCopilotUsagePoll = dependencies?.pollCopilotUsage ?? defaultExtraPoll(pollCopilotQuota);
+  const runGrokUsagePoll = dependencies?.pollGrokUsage ?? defaultExtraPoll(pollGrokQuota);
+  const runOpenCodeUsagePoll = dependencies?.pollOpenCodeUsage ?? defaultExtraPoll(pollOpenCodeQuota);
   const providerStrategies: UsageProviderStrategy[] = [
     { provider: "claude", poll: (context) => runClaudeUsagePoll(context) },
     { provider: "codex", poll: (context) => runCodexUsagePoll(context) },
+    { provider: "cursor", poll: (context) => runCursorUsagePoll(context) },
+    { provider: "copilot", poll: (context) => runCopilotUsagePoll(context) },
+    { provider: "grok", poll: (context) => runGrokUsagePoll(context) },
+    { provider: "opencode", poll: (context) => runOpenCodeUsagePoll(context) },
   ];
   const scanClaudeCostLogs = dependencies?.scanClaudeLogs ?? scanClaudeLogs;
   const scanCodexCostLogs = dependencies?.scanCodexLogs ?? scanCodexLogs;
@@ -4122,6 +4219,7 @@ export function createUsageTrackingService({
               // A user-initiated refresh that gets skipped is still an attempt,
               // and the snapshot has to say so — see `backoffSkipped` below.
               backoffSkipped: reason !== "automatic",
+              absent: false,
               result: {
                 windows: [],
                 source: previousStatus?.source,
@@ -4132,11 +4230,16 @@ export function createUsageTrackingService({
           }
           try {
             const result = await strategy.poll({ reason, previousSnapshot: lastSnapshot });
-            if (result.disposition === "preserve_previous") {
+            if (result.disposition === "preserve_previous" || result.disposition === "not_signed_in") {
+              if (result.disposition === "not_signed_in") {
+                providerFailureCount[strategy.provider] = 0;
+                providerNextRetryAtMs[strategy.provider] = 0;
+              }
               return {
                 provider: strategy.provider,
                 skipped: true as const,
                 backoffSkipped: false,
+                absent: result.disposition === "not_signed_in",
                 result,
               };
             }
@@ -4148,7 +4251,7 @@ export function createUsageTrackingService({
               providerFailureCount[strategy.provider] = failureCount;
               providerNextRetryAtMs[strategy.provider] = Date.now() + providerBackoffMs(result, failureCount);
             }
-            return { provider: strategy.provider, skipped: false as const, backoffSkipped: false, result };
+            return { provider: strategy.provider, skipped: false as const, backoffSkipped: false, absent: false, result };
           } catch (error) {
             const message = `${strategy.provider}: poll failed: ${getErrorMessage(error)}`;
             logger.warn(`usage.poll.${strategy.provider}_failed`, { error: message });
@@ -4160,6 +4263,7 @@ export function createUsageTrackingService({
               provider: strategy.provider,
               skipped: false as const,
               backoffSkipped: false,
+              absent: false,
               result: {
                 windows: [],
                 errors: [message],
@@ -4192,6 +4296,9 @@ export function createUsageTrackingService({
         for (const entry of providerResults) {
           const { provider, result, skipped, backoffSkipped } = entry;
           const previousStatus = lastSnapshot.providerStatus?.[provider] ?? null;
+          // Signed out, or never signed in. Drop any previous windows so the
+          // chip leaves with the credential instead of lingering as stale.
+          if (entry.absent) continue;
           if (skipped) {
             /*
              * A user asked for this refresh and the provider was skipped because
@@ -4262,7 +4369,17 @@ export function createUsageTrackingService({
             nextRetryMs > Date.now() ? new Date(nextRetryMs).toISOString() : null,
           );
           if (merged.lastSuccessAt) providerLastSuccess[provider] = merged.lastSuccessAt;
-          providerStatus[provider] = merged.status;
+          const accountEmail = "accountEmail" in result && typeof result.accountEmail === "string"
+            ? result.accountEmail
+            : undefined;
+          const accountPlan = "accountPlan" in result && typeof result.accountPlan === "string"
+            ? result.accountPlan
+            : undefined;
+          providerStatus[provider] = {
+            ...merged.status,
+            ...(accountEmail ? { accountEmail } : {}),
+            ...(accountPlan ? { accountPlan } : {}),
+          };
           mergedRaw.push(...merged.windows);
         }
 

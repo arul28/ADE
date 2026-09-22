@@ -284,6 +284,26 @@ describe("parseUsageLimitResume", () => {
     });
   });
 
+  it("keeps a valid other-account offer and drops a malformed one", () => {
+    const withOffer = parseUsageLimitResume({
+      ...resume(),
+      alternateAccount: { instanceId: "1028", label: "  1028  " },
+    });
+    expect(withOffer?.alternateAccount).toEqual({ instanceId: "1028", label: "1028" });
+    expect(usageLimitResumePopover(withOffer!, NOW).continueOnAccount).toEqual({
+      instanceId: "1028",
+      label: "1028",
+    });
+
+    const dropped = parseUsageLimitResume({
+      ...resume(),
+      alternateAccount: { instanceId: "1028" },
+    });
+    expect(dropped?.state).toBe("armed");
+    expect(dropped?.alternateAccount).toBeUndefined();
+    expect(usageLimitResumePopover(dropped!, NOW).continueOnAccount).toBeNull();
+  });
+
   it("floors attempts at a finite, non-negative integer", () => {
     expect(parseUsageLimitResume({ ...resume(), attempts: 2.9 })?.attempts).toBe(2);
     expect(parseUsageLimitResume({ ...resume(), attempts: -4 })?.attempts).toBe(0);

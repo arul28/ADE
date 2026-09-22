@@ -972,6 +972,8 @@ struct AgentChatUsageLimitResume: Codable, Equatable {
   /// Turn that hit the limit. Anchors the state to the failure in the transcript.
   var turnId: String?
   var updatedAt: String
+  /// Another signed-in account that still has room. Absent when none does.
+  var alternateAccount: AgentChatUsageLimitAlternateAccount?
 
   init(
     state: AgentChatUsageLimitResumeState,
@@ -982,7 +984,8 @@ struct AgentChatUsageLimitResume: Codable, Equatable {
     attempts: Int = 0,
     providerDetail: String? = nil,
     turnId: String? = nil,
-    updatedAt: String = ""
+    updatedAt: String = "",
+    alternateAccount: AgentChatUsageLimitAlternateAccount? = nil
   ) {
     self.state = state
     self.provider = provider
@@ -993,6 +996,7 @@ struct AgentChatUsageLimitResume: Codable, Equatable {
     self.providerDetail = providerDetail
     self.turnId = turnId
     self.updatedAt = updatedAt
+    self.alternateAccount = alternateAccount
   }
 
   init(from decoder: Decoder) throws {
@@ -1007,7 +1011,20 @@ struct AgentChatUsageLimitResume: Codable, Equatable {
     self.providerDetail = try container.decodeIfPresent(String.self, forKey: .providerDetail)
     self.turnId = try container.decodeIfPresent(String.self, forKey: .turnId)
     self.updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt) ?? ""
+    // A missing or malformed offer must not drop the whole resume. The pill
+    // still works without the other-account button.
+    self.alternateAccount = try? container.decode(
+      AgentChatUsageLimitAlternateAccount.self,
+      forKey: .alternateAccount
+    )
   }
+}
+
+/// Another account that can take a usage-limited chat. The host only publishes
+/// this when that account is signed in and still has room.
+struct AgentChatUsageLimitAlternateAccount: Codable, Equatable {
+  var instanceId: String
+  var label: String
 }
 
 /// Result of `chat.resumeUsageLimitNow` / `personalChats.resumeUsageLimitNow`.
