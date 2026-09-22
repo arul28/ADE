@@ -2166,6 +2166,9 @@ describe("iosSimulatorService screenshots and platform guards", () => {
   });
 
   it("reads the foreground app from the helper and maps SpringBoard or a missing app to null", async () => {
+    // `getForegroundApp` is darwin-gated (`assertDarwin`), so the platform must
+    // be mocked for this to hold on the Linux CI runner.
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-front-`);
     const { run } = simulatorRunMock();
     const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
@@ -2191,6 +2194,7 @@ describe("iosSimulatorService screenshots and platform guards", () => {
       restoreHelper();
       fs.rmSync(projectRoot, { recursive: true, force: true });
       restoreHooks();
+      platformSpy.mockRestore();
     }
   });
 

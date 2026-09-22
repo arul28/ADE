@@ -15441,8 +15441,11 @@ describe("ADE CLI", () => {
       expect(
         iosSimulatorSubcommandFromArgv(["--project-root", "/tmp/root", "ios", "claim"]),
       ).toBe("claim");
-      // Aliases resolve to the canonical name the hint keys on.
-      expect(iosSimulatorSubcommandFromArgv(["ios-sim", "stop"])).toBe("shutdown");
+      // Aliases resolve to the canonical name the hint keys on. `stop` is NOT
+      // one: it powers the device off (`deviceStop`), while `shutdown` and its
+      // aliases end the chat session alone.
+      expect(iosSimulatorSubcommandFromArgv(["ios-sim", "stop"])).toBe("stop");
+      expect(iosSimulatorSubcommandFromArgv(["ios-sim", "teardown"])).toBe("shutdown");
       expect(iosSimulatorSubcommandFromArgv(["ios-sim", "open"])).toBe("launch");
       expect(iosSimulatorSubcommandFromArgv(["ios-sim"])).toBe("status");
       expect(iosSimulatorSubcommandFromArgv(["apple", "device-create"])).toBe("device-create");
