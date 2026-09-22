@@ -355,6 +355,10 @@ describe("discoverDroidCliModelDescriptors", () => {
             model: "claude-opus-5",
             model_display_name: "Canonical Opus custom proxy",
           },
+          {
+            model: "claude-opus-5-5",
+            model_display_name: "Canonical Opus 5.5 custom proxy",
+          },
         ],
       }),
       "utf8",
@@ -377,6 +381,14 @@ describe("discoverDroidCliModelDescriptors", () => {
       maxOutputTokens: 128_000,
       reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
       defaultReasoningEffort: "high",
+    });
+    expect(descriptors.find((descriptor) => descriptor.id === "droid/custom:claude-opus-5-5")).toMatchObject({
+      providerModelId: "custom:claude-opus-5-5",
+      customProxy: true,
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "medium",
     });
   });
 

@@ -226,7 +226,10 @@ function canonicalDroidReplacementForAlias(
       reasoningTiers: ["low", "medium", "high", "max"],
     };
   }
-  if (normalized === "opus") {
+  if (
+    normalized === "opus"
+    || (options?.customProxy && normalized === "claude-opus-5-5")
+  ) {
     return {
       id: `${idPrefix}claude-opus-5-5`,
       displayName: "Opus 5.5",
