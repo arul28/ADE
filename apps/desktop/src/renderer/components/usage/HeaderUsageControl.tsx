@@ -5,9 +5,9 @@ import type {
   UsageProvider,
   UsageSnapshot,
 } from "../../../shared/types";
-import { hasLocalProviderConnectionSignal } from "../../lib/aiProviderStatus";
 import { navigateToAppTarget } from "../../lib/openExternal";
 import { cn } from "../ui/cn";
+import { headerUsageProviders } from "./usageLimitModel";
 import { UsageLimitsBand } from "./UsageLimitsBand";
 import {
   USAGE_BUTTON_CLASS,
@@ -16,28 +16,29 @@ import {
   USAGE_NUMERIC_CLASS,
   USAGE_OVERLAY_BG_CLASS,
   USAGE_TEXT,
-  usagePressureColor,
 } from "./usageDesign";
 import { formatUpdatedAge } from "./usageWindowFormat";
-import { ClaudeLogo, CodexLogo } from "../terminals/ToolLogos";
+import { useAppStore } from "../../state/appStore";
+import { usageProviderLogo } from "../terminals/ToolLogos";
+import { providerColor } from "./providerColors";
 import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
 import { useUsageSnapshot } from "./useUsageSnapshot";
 
-const TRACKED_PROVIDERS: UsageProvider[] = ["claude", "codex"];
-
 const PROVIDER_LABEL: Record<UsageProvider, string> = {
   claude: "Claude",
   codex: "Codex",
   cursor: "Cursor",
+  copilot: "Copilot",
+  grok: "Grok",
+  opencode: "OpenCode",
 };
 
 function ProviderLogo({ provider, size = 14 }: { provider: UsageProvider; size?: number }) {
-  if (provider === "claude") return <ClaudeLogo size={size} />;
-  if (provider === "codex") return <CodexLogo size={size} />;
-  return null;
+  const Logo = usageProviderLogo(provider);
+  return <Logo size={size} />;
 }
 
 const WARNING_COLOR = "var(--color-usage-warn, #F5A623)";
@@ -81,30 +82,28 @@ function percentLabel(percent: number | null): string {
 }
 
 /**
- * The chip speaks headroom, like every row in the popup it opens ("19% left").
- * It used to print the consumed share while the popup printed the remaining
- * one, so the same window read "wk 81%" in the top bar and "wk 19% left" one
- * click later.
+ * Headroom, matching the popup ("19% left"). The ring and the accessible name
+ * both use this number. The bar used to print the consumed share, so the same
+ * window read "wk 81%" in the top bar and "wk 19% left" one click later.
  */
+function headroomPercent(percentUsed: number | null): number | null {
+  if (percentUsed == null) return null;
+  return Math.max(0, Math.min(100, Math.round(100 - percentUsed)));
+}
+
 function headroomLabel(percentUsed: number | null): string {
-  return percentUsed == null ? "…" : `${Math.max(0, Math.round(100 - percentUsed))}% left`;
+  const left = headroomPercent(percentUsed);
+  return left == null ? "…" : `${left}% left`;
 }
 
-// The chip stays quota-led: it is the ambient "am I about to be cut off"
-// signal. Its thresholds are the shared ones, so "nearly dry" means the same
-// thing in the top bar as it does on the Usage page. Below the warn threshold
-// it reads calm green rather than a provider brand colour, because the chip
-// carries no provider identity.
-function percentStyle(percent: number | null): React.CSSProperties {
-  return {
-    color: percent == null
-      ? "var(--color-muted-fg)"
-      : usagePressureColor(percent, "var(--color-usage-ok, #34D399)"),
-  };
-}
-
-function formatUsageTitle(usage: HeaderUsageWindowSummary): string {
-  return `${usage.planLabel} ${headroomLabel(usage.planPercent)}, 5h ${headroomLabel(usage.fiveHourPercent)}`;
+function formatUsageTitle(provider: UsageProvider, usage: HeaderUsageWindowSummary): string {
+  const plan = `${usage.planLabel} ${headroomLabel(usage.planPercent)}`;
+  // Claude and Codex always speak both windows. A provider that only has a
+  // plan window (Cursor, Copilot, Grok) does not grow an empty 5h slot.
+  if (provider === "claude" || provider === "codex" || usage.fiveHourPercent != null) {
+    return `${plan}, 5h ${headroomLabel(usage.fiveHourPercent)}`;
+  }
+  return plan;
 }
 
 function formatUpdatedAgo(snapshot: UsageSnapshot | null, nowMs: number): string {
@@ -130,26 +129,82 @@ function usageWarning(snapshot: UsageSnapshot | null): { warn: boolean; detail: 
   return { warn: issues.length > 0, detail: issues.length > 0 ? issues.join(" · ") : null };
 }
 
-function HeaderProviderUsageChip({
+const USAGE_RING_SIZE = 22;
+const USAGE_RING_STROKE = 1.5;
+const USAGE_RING_LOGO = 16;
+
+/**
+ * One provider mark, drawn tight around the logo.
+ *
+ * The pale arc is what has been used. It starts at 12 o'clock and grows
+ * clockwise as usage goes up. What is left stays the saturated brand colour.
+ * The pale tint is opaque and much lighter than the brand, so a small change
+ * in the week is visible. A provider with no week uses its month.
+ */
+function HeaderProviderUsageRing({
   provider,
   usage,
 }: {
   provider: UsageProvider;
   usage: HeaderUsageWindowSummary;
 }) {
+  const theme = useAppStore((state) => state.theme);
+  const color = providerColor(provider, theme);
+  const left = headroomPercent(usage.planPercent);
+  const used = left == null ? null : 100 - left;
+  const center = USAGE_RING_SIZE / 2;
+  const radius = (USAGE_RING_SIZE - USAGE_RING_STROKE) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const usedDash = used == null ? 0 : (used / 100) * circumference;
+  // Pale and opaque, far from the brand. On a dark header that is almost
+  // white; on a light header a near-white arc would vanish, so the light
+  // theme stays a pale tint of the page instead.
+  const unshaded = theme === "light"
+    ? `color-mix(in srgb, ${color} 14%, #eceae6)`
+    : `color-mix(in srgb, ${color} 8%, white)`;
+  const title = `${PROVIDER_LABEL[provider]} ${formatUsageTitle(provider, usage)}`;
   return (
-    <div
-      className="flex items-center gap-1"
-      title={`${PROVIDER_LABEL[provider]} ${formatUsageTitle(usage)}`}
+    <span
+      className="relative inline-flex shrink-0 items-center justify-center"
+      style={{ width: USAGE_RING_SIZE, height: USAGE_RING_SIZE }}
+      title={title}
+      data-usage-provider={provider}
+      data-usage-window={usage.planLabel}
+      data-usage-left={left == null ? "" : String(left)}
+      data-usage-unshaded={used == null ? "" : String(used)}
     >
-      <ProviderLogo provider={provider} size={14} />
-      <span
-        className={cn("inline-flex items-center gap-0.5 font-semibold", USAGE_TEXT.micro, USAGE_NUMERIC_CLASS)}
+      <svg
+        width={USAGE_RING_SIZE}
+        height={USAGE_RING_SIZE}
+        viewBox={`0 0 ${USAGE_RING_SIZE} ${USAGE_RING_SIZE}`}
+        aria-hidden="true"
       >
-        <span className="text-muted-fg">{usage.planLabel}</span>
-        <span style={percentStyle(usage.planPercent)}>{headroomLabel(usage.planPercent)}</span>
+        <circle
+          cx={center}
+          cy={center}
+          r={radius}
+          fill="none"
+          stroke={left == null ? unshaded : color}
+          strokeWidth={USAGE_RING_STROKE}
+        />
+        {used != null && used > 0 ? (
+          <circle
+            cx={center}
+            cy={center}
+            r={radius}
+            fill="none"
+            stroke={unshaded}
+            strokeWidth={USAGE_RING_STROKE}
+            strokeDasharray={used >= 100 ? undefined : `${usedDash} ${circumference - usedDash}`}
+            transform={`rotate(-90 ${center} ${center})`}
+            data-ring-unshaded="true"
+          />
+        ) : null}
+      </svg>
+      <span className="absolute inset-0 flex items-center justify-center" aria-hidden="true">
+        <ProviderLogo provider={provider} size={USAGE_RING_LOGO} />
       </span>
-    </div>
+    </span>
   );
 }
 
@@ -241,18 +296,11 @@ export function HeaderUsageControl({
     };
   }, [bindingRevision, deferInitialRead, open]);
 
-  const detectedProviders = useMemo<UsageProvider[]>(() => {
-    const providersWithUsage = TRACKED_PROVIDERS.filter((provider) =>
-      snapshot?.windows.some((window) => window.provider === provider),
-    );
-    if (!providerConnections) {
-      return providersWithUsage;
-    }
-    const configuredProviders = TRACKED_PROVIDERS.filter(
-      (provider) => hasLocalProviderConnectionSignal(providerConnections[provider]),
-    );
-    return configuredProviders.length > 0 ? configuredProviders : providersWithUsage;
-  }, [providerConnections, snapshot?.windows]);
+  const detectedProviders = useMemo<UsageProvider[]>(() => headerUsageProviders({
+    connections: providerConnections,
+    windows: snapshot?.windows,
+    statuses: snapshot?.providerStatus,
+  }), [providerConnections, snapshot?.windows, snapshot?.providerStatus]);
 
   useEffect(() => {
     if (!open) return;
@@ -282,7 +330,7 @@ export function HeaderUsageControl({
   const updatedAgo = formatUpdatedAgo(snapshot, nowMs);
 
   const titleParts = providersWithUsage.map(
-    ({ provider, usage }) => `${PROVIDER_LABEL[provider]} ${formatUsageTitle(usage)}`,
+    ({ provider, usage }) => `${PROVIDER_LABEL[provider]} ${formatUsageTitle(provider, usage)}`,
   );
   let buttonTitle: string;
   if (titleParts.length > 0) {
@@ -331,7 +379,7 @@ export function HeaderUsageControl({
     <button
       type="button"
       className={cn(
-        "ade-shell-control shrink-0 inline-flex items-center gap-1.5 rounded-md px-2 py-1",
+        "ade-shell-control shrink-0 inline-flex items-center gap-0.5 rounded-md px-0.5 py-0.5",
         "font-medium transition-colors duration-150",
         USAGE_TEXT.micro,
       )}
@@ -343,9 +391,9 @@ export function HeaderUsageControl({
       style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
     >
       {providersWithUsage.length > 0 ? (
-        <div className="flex items-center gap-2">
+        <div className="flex flex-nowrap items-center justify-end gap-0.5">
           {providersWithUsage.map(({ provider, usage }) => (
-            <HeaderProviderUsageChip key={provider} provider={provider} usage={usage} />
+            <HeaderProviderUsageRing key={provider} provider={provider} usage={usage} />
           ))}
         </div>
       ) : (

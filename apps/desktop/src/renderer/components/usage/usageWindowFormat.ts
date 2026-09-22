@@ -22,6 +22,7 @@ export { displayPercent, windowLabel } from "../../../shared/usageWindowPresenta
 export const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
 
 export function formatResetIn(resetsAt: string, nowMs: number): string {
+  if (!resetsAt || !Number.isFinite(Date.parse(resetsAt))) return "";
   const ms = computeResetsInMs(resetsAt, nowMs);
   if (ms <= 0) return "resetting now";
   const days = Math.floor(ms / 86_400_000);
@@ -146,12 +147,13 @@ export function headroomTitle(window: UsageWindow, nowMs: number): string {
   const reset = formatResetIn(window.resetsAt, nowMs);
   const pacing = window.pacing;
   const pct = Math.round(displayPercent(window, nowMs));
-  if (!pacing || pacing.etaHours == null) return `${pct}% used · ${reset}`;
-  if (pacing.etaHours <= 0) return `Quota exhausted · ${reset}`;
+  const resetSuffix = reset ? ` · ${reset}` : "";
+  if (!pacing || pacing.etaHours == null) return `${pct}% used${resetSuffix}`;
+  if (pacing.etaHours <= 0) return `Quota exhausted${resetSuffix}`;
   const left = formatHoursShort(pacing.etaHours);
   return pacing.willLastToReset
-    ? `~${left} of headroom at this pace · ${reset}`
-    : `~${left} left at this pace — would run dry before reset · ${reset}`;
+    ? `~${left} of headroom at this pace${resetSuffix}`
+    : `~${left} left at this pace — would run dry before reset${resetSuffix}`;
 }
 
 /**

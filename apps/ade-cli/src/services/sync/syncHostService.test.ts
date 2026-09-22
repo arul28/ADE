@@ -6343,6 +6343,7 @@ describe("CTO-gated Linear sync commands", () => {
         "chat.dismissSubagentTakeoverPrompt",
         "chat.regenerateSessionMetadata",
         "chat.resumeUsageLimitNow",
+        "chat.continueUsageLimitOnAlternate",
         "prs.listGithubStacks",
         "prs.syncGithubStacks",
         "prs.createGithubStack",
@@ -6393,6 +6394,7 @@ describe("CTO-gated Linear sync commands", () => {
         // Resuming spends a provider turn, so it is a host mutation a
         // read-only viewer never gets to make.
         "chat.resumeUsageLimitNow",
+        "chat.continueUsageLimitOnAlternate",
         // Cursor Cloud writes are controller-only: phone/browser controllers
         // may invoke them, but a desktop viewer must not.
         "ai.createCursorCloudRun",

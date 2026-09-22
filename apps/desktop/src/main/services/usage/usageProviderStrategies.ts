@@ -28,6 +28,9 @@ export type FreshUsageProviderPollResult = {
   extraUsage?: ExtraUsage | null;
   dailyUsage7d?: number[];
   providerMessages?: UsageProviderMessage[];
+  /** Identity learned while reading quota. The tracker stamps it onto the account row. */
+  accountEmail?: string;
+  accountPlan?: string;
 };
 
 type PreserveUsageProviderPollResult = {
@@ -42,11 +45,33 @@ type PreserveUsageProviderPollResult = {
   extraUsage?: never;
   dailyUsage7d?: never;
   providerMessages?: never;
+  accountEmail?: never;
+  accountPlan?: never;
+};
+
+type AbsentUsageProviderPollResult = {
+  /**
+   * No local credential. The provider is not an error and must not publish a
+   * status row — the header chip appears only once a sign-in exists.
+   */
+  disposition: "not_signed_in";
+  windows: [];
+  errors: [];
+  source?: never;
+  spendControlReached?: never;
+  errorKind?: never;
+  retryAfterMs?: never;
+  extraUsage?: never;
+  dailyUsage7d?: never;
+  providerMessages?: never;
+  accountEmail?: never;
+  accountPlan?: never;
 };
 
 export type UsageProviderPollResult =
   | FreshUsageProviderPollResult
-  | PreserveUsageProviderPollResult;
+  | PreserveUsageProviderPollResult
+  | AbsentUsageProviderPollResult;
 
 /**
  * Boundary between the quota scheduler and provider-specific auth/fallback
@@ -54,6 +79,6 @@ export type UsageProviderPollResult =
  * interface: quota refresh must remain independent from corpus size.
  */
 export type UsageProviderStrategy = {
-  provider: Extract<UsageProvider, "claude" | "codex">;
+  provider: UsageProvider;
   poll(context: UsageProviderPollContext): Promise<UsageProviderPollResult>;
 };

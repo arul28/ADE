@@ -14,6 +14,7 @@ import {
 import type {
   AgentChatEvent,
   AgentChatProvider,
+  AgentChatUsageLimitAlternateAccount,
   AgentChatUsageLimitResume,
 } from "../../../shared/types/chat";
 import type { Logger } from "../logging/logger";
@@ -95,6 +96,11 @@ export type ChatAutoResumeArmArgs = {
   resetAtMs: number | null;
   /** Raw provider text for the details toggle. Never parsed. */
   providerDetail?: string | null;
+  /**
+   * Another account that still has room. Carried on every resume state this
+   * arm publishes so a later transition does not drop the offer.
+   */
+  alternateAccount?: AgentChatUsageLimitAlternateAccount | null;
   error: AutoResumeErrorInput;
 };
 
@@ -246,6 +252,8 @@ type AutoResumeSessionState = {
   provider: AgentChatProvider | null;
   /** In-flight arm, awaited by `whenArmed`. */
   armPromise: Promise<void> | null;
+  /** Account offer published with this limit. Cleared when the limit ends. */
+  alternateAccount: AgentChatUsageLimitAlternateAccount | null;
 };
 
 /** Consecutive arms allowed with no intervening user message. */
@@ -286,6 +294,7 @@ export function createChatAutoResumeCoordinator(
       resumeTurnHitLimit: false,
       provider: null,
       armPromise: null,
+      alternateAccount: null,
     };
     stateBySession.set(sessionId, created);
     return created;
@@ -309,26 +318,33 @@ export function createChatAutoResumeCoordinator(
     }
   };
 
-  const buildResumeState = (args: {
-    state: AgentChatUsageLimitResume["state"];
-    provider: AgentChatProvider;
-    fireAtMs: number | null;
-    resetAtMs: number | null;
-    scheduleId: string | null;
-    attempts: number;
-    providerDetail?: string | null;
-    turnId?: string | undefined;
-  }): AgentChatUsageLimitResume => ({
-    state: args.state,
-    provider: args.provider,
-    fireAt: args.fireAtMs == null ? null : new Date(args.fireAtMs).toISOString(),
-    resetAt: args.resetAtMs == null ? null : new Date(args.resetAtMs).toISOString(),
-    scheduleId: args.scheduleId,
-    attempts: args.attempts,
-    providerDetail: args.providerDetail?.trim() || null,
-    turnId: args.turnId ?? null,
-    updatedAt: new Date().toISOString(),
-  });
+  const buildResumeState = (
+    sessionId: string,
+    args: {
+      state: AgentChatUsageLimitResume["state"];
+      provider: AgentChatProvider;
+      fireAtMs: number | null;
+      resetAtMs: number | null;
+      scheduleId: string | null;
+      attempts: number;
+      providerDetail?: string | null;
+      turnId?: string | undefined;
+    },
+  ): AgentChatUsageLimitResume => {
+    const alternateAccount = stateBySession.get(sessionId)?.alternateAccount ?? null;
+    return {
+      state: args.state,
+      provider: args.provider,
+      fireAt: args.fireAtMs == null ? null : new Date(args.fireAtMs).toISOString(),
+      resetAt: args.resetAtMs == null ? null : new Date(args.resetAtMs).toISOString(),
+      scheduleId: args.scheduleId,
+      attempts: args.attempts,
+      providerDetail: args.providerDetail?.trim() || null,
+      turnId: args.turnId ?? null,
+      updatedAt: new Date().toISOString(),
+      ...(alternateAccount ? { alternateAccount } : {}),
+    };
+  };
 
   /**
    * One coarse fact per auto-resume transition. Every call site is a state
@@ -599,6 +615,8 @@ export function createChatAutoResumeCoordinator(
     const { sessionId } = args;
     const turnId = args.error.turnId;
     const tracked = stateBySession.get(sessionId);
+    const stateForOffer = tracked ?? ensureState(sessionId);
+    stateForOffer.alternateAccount = args.alternateAccount ?? null;
     // Recorded before the reset instant is even consulted: a repeat limit with
     // no publishable reset still means the resume we spent was wasted.
     if (tracked?.resumeTurnPending) {
@@ -609,7 +627,7 @@ export function createChatAutoResumeCoordinator(
     // manual recovery path is the only one. The limit is still live, and the
     // contract has a state for exactly that.
     if (fireAt == null) {
-      reportResumeState(sessionId, buildResumeState({
+      reportResumeState(sessionId, buildResumeState(sessionId, {
         state: "no_reset",
         provider: args.provider,
         fireAtMs: null,
@@ -636,7 +654,7 @@ export function createChatAutoResumeCoordinator(
         // at the limit reports the pause once per streak rather than once per
         // failure.
         captureOutcome("paused", args.provider);
-        reportResumeState(sessionId, buildResumeState({
+        reportResumeState(sessionId, buildResumeState(sessionId, {
           state: "paused",
           provider: args.provider,
           fireAtMs: fireAt,
@@ -683,7 +701,7 @@ export function createChatAutoResumeCoordinator(
      * dispatch that already reported the previous state as gone.
      */
     const reportPausedRowState = (): void => {
-      reportResumeState(sessionId, buildResumeState({
+      reportResumeState(sessionId, buildResumeState(sessionId, {
         state: "no_reset",
         provider: args.provider,
         fireAtMs: null,
@@ -794,7 +812,7 @@ export function createChatAutoResumeCoordinator(
         // Reported before the notice de-dupe below, not after: a repeat error
         // event for the same fire time must still refresh the state clients
         // render from even when it adds no second transcript line.
-        reportResumeState(sessionId, buildResumeState({
+        reportResumeState(sessionId, buildResumeState(sessionId, {
           state: "armed",
           provider: args.provider,
           fireAtMs: fireAt,

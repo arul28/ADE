@@ -349,6 +349,11 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { sessionId: string }",
       example: "ade actions run chat.resumeUsageLimitNow --input-json '{\"sessionId\":\"chat-123\"}' --text",
     },
+    continueUsageLimitOnAlternate: {
+      description: "Continue a usage-limited chat on another signed-in account that still has room. Starts a new chat; the original thread stays parked.",
+      input: "object { sessionId: string }",
+      example: "ade actions run chat.continueUsageLimitOnAlternate --input-json '{\"sessionId\":\"chat-123\"}' --text",
+    },
     readTranscript: {
       description: "Read a bounded recent window of user/assistant messages for any project-backed chat on this machine.",
       input: "object { sessionId: string, limit?: number, maxChars?: number, since?: ISO timestamp }",

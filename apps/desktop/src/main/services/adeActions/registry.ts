@@ -955,6 +955,14 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       });
     };
   }
+  if (typeof base.continueUsageLimitOnAlternate === "function") {
+    service.continueUsageLimitOnAlternate = (args?: unknown) => {
+      const record = readObjectActionArg(args, "chat.continueUsageLimitOnAlternate");
+      return agentChatService.continueUsageLimitOnAlternate({
+        sessionId: requireNonEmptyString(record.sessionId, "sessionId"),
+      });
+    };
+  }
   if (typeof base.getChatEventHistory === "function") {
     service.getChatEventHistory = (args?: unknown, positionalOptions?: unknown) => {
       const actionArgs = positionalOptions === undefined ? args : [args, positionalOptions];

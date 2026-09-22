@@ -856,7 +856,7 @@ transition, so a chat open on three devices updates on all three at once.
 `usageLimitParkedUntil` remains only as a deprecated mirror of `fireAt` for old
 iOS builds, published for `armed` and `resuming` and null otherwise.
 
-**Four actions, all in the `chat.*` daemon action domain.** Don't continue is
+**Five actions, all in the `chat.*` daemon action domain.** Don't continue is
 `chat.updateSession {autoContinueAtUsageLimit: false}` — it cancels the row and
 leaves the chat `opted_out` rather than pretending nothing happened. Turn on /
 Try again is the same call with `true` — it resets the streak and arms once more
@@ -882,6 +882,18 @@ that fails outright reports `no_reset`, never `armed` with no row behind it.
 summary, the same way `chat.createScheduledWork` does, so a CLI caller can
 render `fireAt` and `nextWakeAt` in the zone the brain schedules in. Fork is the
 existing quota-card `fork-local` action.
+
+When another signed-in Claude or Codex account still has room, the resume
+state also carries `alternateAccount` (`instanceId` and `label`). Smart balance
+on starts a new chat on that account, sends a continuation prompt, posts a
+notice on the source, and cancels the source auto-resume so both do not run.
+Smart balance off leaves the park in place and the pill, TUI, and iOS sheet
+offer **Continue on** that account through `chat.continueUsageLimitOnAlternate`.
+The provider thread itself is not moved. A chat created by that handoff does
+not auto-hop again, and a subagent is never offered the move. The action is
+owner-only: it spends a turn on the other account. Refusals are
+`no_live_usage_limit`, `no_alternate_account`, and `handoff_failed`, each with
+a ready-to-render `message`.
 
 Three rules are specific to the schedule itself:
 
@@ -2489,6 +2501,7 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 | `ade.agentChat.cancelScheduledWork` | invoke | Cancel one managed job by exact `sessionId` + `scheduleId`. ADE-only jobs cancel immediately. Claude-owned jobs are paused and routed through that chat's `CronDelete`; the result reports `providerCancellationRequested` and `providerCancellationConfirmed` instead of pretending an unconfirmed request already succeeded. If the stored owner is an earlier SDK session, ADE explicitly tombstones its local mirror and reports both provider fields false. |
 | `ade.agentChat.setScheduledWorkPaused` | invoke | Pause or resume every durable wakeup/cron/loop schedule for one eligible session. Returns the resulting pause state and recomputed `nextWakeAt`; overdue work follows the one-late-fire rule after resume. |
 | `ade.agentChat.resumeUsageLimitNow` | invoke | Send the usage-limit continue prompt now instead of waiting for the published reset: cancels the `auto-resume:<sessionId>` row, resets the two-arm streak, dismisses the quota card, and sends `AUTO_RESUME_PROMPT` as an ordinary user turn tagged `metadata.usageLimitResume: "manual"`. Because it spends a real turn it refuses rather than fires when the chat has no live limit (`{ok: false, reason: "no_live_usage_limit"}`) or the row is already due and delivering (`"resume_in_flight"`); both refusals send and mutate nothing and carry a ready-to-render `message`. The row cancellation is awaited before the dispatch, and a dispatch that fails or is refused downstream throws after restoring the armed state, its mirror and the durable row. |
+| `ade.agentChat.continueUsageLimitOnAlternate` | invoke | Continue a usage-limited Claude or Codex chat on another signed-in account that still has room. Starts a new chat in the same lane and sends a continuation prompt; the original thread is not moved, and its auto-resume is cancelled so both do not run. The account comes from the live resume's `alternateAccount`, not from the caller. Answers `{ ok: true, sessionId }` or `{ ok: false, reason: "no_live_usage_limit" \| "no_alternate_account" \| "handoff_failed", message }`. Owner-only. CLI: `ade chat continue-on-account`. |
 | `ade.agentChat.getEventHistory` | invoke | Return `AgentChatEventHistorySnapshot` for a session. Runtime clients use one object argument (`{ sessionId, maxEvents?, maxBytes? }`); the registry temporarily accepts the legacy positional call for packaged-client compatibility. `sessionFound: false` is the explicit stale-session signal used by renderer surfaces to clear dead locked panes; `unavailable: true` means the bound runtime could not be reached and is **not** an authoritative miss (clients keep what they have). `hasOlderHistory` is the authoritative "there is more to scroll back to" bit — derived from the tail read, not from cursor bookkeeping — and `tailStartOffset` is the `beforeOffset` cursor for paging older. See [History snapshots, scroll-back, and misses](transcript-and-turns.md#history-snapshots-scroll-back-and-misses). |
 | `ade.agentChat.dismissPendingInput` | invoke | Throw away one non-blocking provider question without answering it (`{ sessionId, itemId }`). Allowed only when the request carries `providerMetadata.dismissible: true`; anything else is rejected with "This question needs an answer. Answer it or stop the turn." Emits `pending_input_resolved` with `resolution: "cancelled"` plus a "Question dismissed" notice, so the card cannot be redrawn by the next re-derivation. Mirrored as the `chat.dismissPendingInput` runtime action and sync command (`viewerAllowed: true`). |
 | `ade.usage.consumeResetCredit` | invoke | Spend one banked Codex reset credit for `{ accountId }`, clearing that account's rate-limit windows. Single-flight per account with the idempotency key HELD across a timeout, so a retry after a timed-out spend cannot burn a second credit. Returns `{ ok, status: "reset" \| "nothingToReset" \| "noCredit" \| "alreadyRedeemed" \| "failure", message? }` and forces a quota refresh before returning. Mirrored as the `usage.consumeResetCredit` runtime action and sync command (`viewerAllowed: false` — it changes the account, not this machine's view of it). |

@@ -58,6 +58,21 @@ export const GrokLogo: React.FC<LogoProps> = ({ size = 16, className }) => (
   <Grok.Avatar size={size} className={lobeMarkClass(className)} />
 );
 
+const USAGE_PROVIDER_LOGOS = {
+  claude: ClaudeLogo,
+  codex: CodexLogo,
+  cursor: CursorAgentLogo,
+  copilot: CopilotLogo,
+  grok: GrokLogo,
+  opencode: OpenCodeLogo,
+} as const;
+
+export function usageProviderLogo(
+  provider: keyof typeof USAGE_PROVIDER_LOGOS,
+): React.FC<LogoProps> {
+  return USAGE_PROVIDER_LOGOS[provider];
+}
+
 const LOGO_MAP: Partial<Record<TerminalToolType, React.FC<LogoProps>>> = {
   claude: ClaudeLogo,
   "claude-chat": ClaudeLogo,

@@ -536,6 +536,12 @@ export class PersonalChatScope {
         result = await service.resumeUsageLimitNow({ sessionId });
         break;
       }
+      case "continueUsageLimitOnAlternate": {
+        const sessionId = readSessionId(args);
+        await this.requirePersonalSession(service, sessionId);
+        result = await service.continueUsageLimitOnAlternate({ sessionId });
+        break;
+      }
       case "updateSession": {
         const sessionId = readSessionId(args);
         await this.requirePersonalSession(service, sessionId);

@@ -14,6 +14,7 @@ import {
   resolveNpmInvocation,
   resolveDevSocketPath,
   resolveDevSpawnInvocation,
+  printDevIsolationReport,
   shutdownRuntime,
 } from "./dev-shared.mjs";
 
@@ -257,6 +258,29 @@ test("an agent shell does not see a healthy cto daemon as stale", () => {
     ) ?? "",
     /default role agent != cto/,
   );
+});
+
+test("isolation report names live sync only when this launch started the brain", () => {
+  const previous = process.env.ADE_DEV_RUNTIME_SYNC;
+  delete process.env.ADE_DEV_RUNTIME_SYNC;
+  const chunks = [];
+  const write = process.stdout.write;
+  process.stdout.write = (chunk) => {
+    chunks.push(String(chunk));
+    return true;
+  };
+  try {
+    printDevIsolationReport("/tmp/ade-runtime-dev.sock", "/work", { ownsRuntime: true });
+    printDevIsolationReport("/tmp/ade-runtime-dev.sock", "/work", { ownsRuntime: false });
+  } finally {
+    process.stdout.write = write;
+    if (previous === undefined) delete process.env.ADE_DEV_RUNTIME_SYNC;
+    else process.env.ADE_DEV_RUNTIME_SYNC = previous;
+  }
+  const [owned, reused] = chunks.join("").split("[ade] dev isolation report").slice(1);
+  assert.match(owned, /sync\s+: off \(--no-sync\)/);
+  assert.doesNotMatch(owned, /left the process already on the socket/);
+  assert.match(reused, /off \(--no-sync\) requested; this launch left the process already on the socket alone/);
 });
 
 test("only local runtimes may be auto-started or stopped", () => {

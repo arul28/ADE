@@ -355,6 +355,27 @@ extension WorkSessionDestinationView {
     }
   }
 
+  /// Continue the interrupted task on another signed-in account. The original
+  /// thread stays parked; the host starts a new chat.
+  @MainActor
+  func continueUsageLimitOnAlternate() async {
+    do {
+      let result = try await syncService.continueUsageLimitOnAlternate(sessionId: sessionId)
+      if let refusal = result.refusalMessage {
+        ADEHaptics.error()
+        await refreshChatStateAfterAction(forceRemote: true)
+        errorMessage = refusal
+        return
+      }
+      ADEHaptics.success()
+      await refreshChatStateAfterAction(forceRemote: true)
+      errorMessage = nil
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+
   @MainActor
   func stopChatTask(taskId: String) async {
     do {

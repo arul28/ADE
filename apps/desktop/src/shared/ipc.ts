@@ -363,6 +363,7 @@ export const IPC = {
   agentChatListScheduledWork: "ade.agentChat.scheduledWork.list",
   agentChatCancelScheduledWork: "ade.agentChat.scheduledWork.cancel",
   agentChatResumeUsageLimitNow: "ade.agentChat.resumeUsageLimitNow",
+  agentChatContinueUsageLimitOnAlternate: "ade.agentChat.continueUsageLimitOnAlternate",
   agentChatSetScheduledWorkPaused: "ade.agentChat.scheduledWork.pause",
   agentChatWarmupModel: "ade.agentChat.warmupModel",
   agentChatSlashCommands: "ade.agentChat.slashCommands",

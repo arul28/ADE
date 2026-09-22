@@ -76,6 +76,7 @@ export function UsagePaceBar({
   const expected = quotaWindow.pacing?.expectedPercent;
   const showTick = typeof expected === "number" && expected > 1 && expected < 99;
   const trend = showTrend ? trendSentence(quotaWindow.pacing, nowMs) : null;
+  const resetLabel = formatResetIn(quotaWindow.resetsAt, nowMs);
 
   // Grow from zero on mount so the bar reads as a measurement arriving rather
   // than a static block. Skipped entirely under reduced motion.
@@ -126,7 +127,7 @@ export function UsagePaceBar({
       </div>
 
       <div className={cn(USAGE_TEXT.micro, USAGE_NUMERIC_CLASS, "text-muted-fg")}>
-        {formatUsagePercent(percent)} used · {formatResetIn(quotaWindow.resetsAt, nowMs)}
+        {formatUsagePercent(percent)} used{resetLabel ? ` · ${resetLabel}` : ""}
       </div>
 
       {trend ? <div className={cn(USAGE_TEXT.micro, "text-muted-fg")}>{trend}</div> : null}

@@ -201,6 +201,20 @@ describe("ProviderAccountsPanel", () => {
     expect(within(work).queryByText("Default")).toBeNull();
   });
 
+  it("says a signed-in account has no usage yet when it has no windows", async () => {
+    const extra = instance({
+      id: "claude-extra",
+      label: "Extra",
+      account: { email: "extra@example.com", plan: "Max" },
+    });
+    installBridge({ instances: [DEFAULT_INSTANCE, WORK_INSTANCE, extra] });
+    renderPanel();
+
+    expect(await screen.findByText("Accounts · 3")).toBeTruthy();
+    const row = screen.getByRole("group", { name: "Extra account" });
+    expect(within(row).getByText("No usage yet")).toBeTruthy();
+  });
+
   it("offers a sign-in for an account whose config home has no login", async () => {
     installBridge({
       instances: [instance({ id: "claude", label: "Personal", isDefault: true, signedIn: false })],
