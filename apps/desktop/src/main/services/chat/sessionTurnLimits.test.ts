@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentChatEvent } from "../../../shared/types";
-import { clampTurnTimerMs, trackTurnInFlight } from "./sessionTurnLimits";
+import { clampTurnTimerMs, isForeignTurnEvent, trackTurnInFlight } from "./sessionTurnLimits";
 
 const event = (value: Record<string, unknown>) => value as unknown as AgentChatEvent;
 
@@ -29,6 +29,16 @@ describe("trackTurnInFlight", () => {
     expect(inFlight.has("tool:t1")).toBe(true);
     trackTurnInFlight(inFlight, event({ type: "tool_result", tool: "Bash", result: "done", itemId: "t1", status: "completed" }));
     expect(inFlight.has("tool:t1")).toBe(false);
+  });
+});
+
+describe("isForeignTurnEvent", () => {
+  it("drops only events stamped with a different turn", () => {
+    expect(isForeignTurnEvent("turn-2", "turn-1")).toBe(true);
+    expect(isForeignTurnEvent("turn-2", "turn-2")).toBe(false);
+    // Unknown on either side is not evidence of another turn.
+    expect(isForeignTurnEvent(null, "turn-1")).toBe(false);
+    expect(isForeignTurnEvent("turn-2", undefined)).toBe(false);
   });
 });
 

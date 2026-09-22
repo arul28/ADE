@@ -24899,6 +24899,12 @@ describe("createAgentChatService", () => {
           await vi.advanceTimersByTimeAsync(40_000);
           expect(outcome).toBeNull();
 
+          // A late retry from an earlier turn is not this turn's activity.
+          mockState.emitCodexPayload({
+            jsonrpc: "2.0",
+            method: "error",
+            params: { turnId: "turn-stale", willRetry: true, error: { message: "Temporary upstream failure.", codexErrorInfo: "serverOverloaded" } },
+          });
           await vi.advanceTimersByTimeAsync(21_000);
           expect(outcome).toMatch(/with no activity/);
         } finally {

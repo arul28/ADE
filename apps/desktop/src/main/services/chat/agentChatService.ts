@@ -50,7 +50,7 @@ import { z, type ZodType } from "zod";
 import { buildClaudeV2MessageAsync, inferAttachmentMediaType } from "./buildClaudeV2Message";
 import { listPromptStashAttachmentPaths } from "./promptStashService";
 import { ClaudeInputPump } from "./claudeInputPump";
-import { clampTurnTimerMs, SessionTurnAbandonedError, trackTurnInFlight } from "./sessionTurnLimits";
+import { clampTurnTimerMs, isForeignTurnEvent, SessionTurnAbandonedError, trackTurnInFlight } from "./sessionTurnLimits";
 import {
   claudePluginDeliveryForSource,
   normalizeClaudeInterruptReceipt,
@@ -17742,7 +17742,7 @@ export function createAgentChatService(args: {
     // Never let late text/error/done events from that abandoned turn satisfy a
     // newly-created blocking runSessionTurn collector.
     if (!collector.turnStarted) return;
-    if (collector.turnId && liveEvent.turnId && liveEvent.turnId !== collector.turnId) return;
+    if (isForeignTurnEvent(collector.turnId, liveEvent.turnId)) return;
     if (!collector.turnId && liveEvent.turnId && liveEvent.type !== "done") {
       collector.turnId = liveEvent.turnId;
     }
@@ -17870,7 +17870,10 @@ export function createAgentChatService(args: {
     // Retries and reconnects are live-only, but they are the provider working:
     // they must restart a headless turn's idle watch like any committed event.
     const collector = sessionTurnCollectors.get(managed.session.id);
-    if (collector?.turnStarted) noteSessionTurnActivity(managed.session.id, collector, event);
+    const eventTurnId = "turnId" in event ? event.turnId : undefined;
+    if (collector?.turnStarted && !isForeignTurnEvent(collector.turnId, eventTurnId)) {
+      noteSessionTurnActivity(managed.session.id, collector, event);
+    }
   };
 
   const flushBufferedText = (

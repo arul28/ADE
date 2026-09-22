@@ -14,6 +14,14 @@ export function clampTurnTimerMs(ms: number): number {
   return Math.min(MAX_TIMER_DELAY_MS, Math.max(15_000, Math.floor(ms)));
 }
 
+/** An event stamped with a different turn than the one the collector is waiting on. */
+export function isForeignTurnEvent(
+  collectorTurnId: string | null | undefined,
+  eventTurnId: string | null | undefined,
+): boolean {
+  return Boolean(collectorTurnId && eventTurnId && eventTurnId !== collectorTurnId);
+}
+
 /**
  * Update the set of work a turn still has open from one of its events. While
  * the set is non-empty the turn is waiting, not idle: a command running a long
