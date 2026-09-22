@@ -133,6 +133,35 @@ public final class InputLeaseStore: @unchecked Sendable {
         return lease
     }
 
+    /// The gate for a release, which an expired lease must not block.
+    ///
+    /// `authorize` refuses a lapsed lease, and that is right for every command
+    /// that MAKES input happen. A release only ever UNDOES input: it lifts a
+    /// button the holder pressed and puts the cursor back. A wedged pane whose
+    /// heartbeat already lapsed is the usual reason a person presses Escape, so
+    /// refusing it there leaves a mouse button held down on the lane's display,
+    /// selecting everything the cursor passes over, with no way out at all.
+    ///
+    /// The boundary is unchanged in every other respect. A caller with no
+    /// holder, a lane with no lease, or a holder that is not the recorded one
+    /// is refused exactly as before — an expired lease is forgiving only to the
+    /// holder that is cleaning up after itself.
+    public func authorizeRelease(
+        laneId: String,
+        holderId: String?
+    ) throws -> InputLease {
+        guard let holderId, !holderId.isEmpty else {
+            throw InputLeaseError.holderRequired(laneId: laneId)
+        }
+        guard let lease = lease(forLane: laneId) else {
+            throw InputLeaseError.missing(laneId: laneId)
+        }
+        if holderId != lease.holderId {
+            throw InputLeaseError.heldByOther(laneId: laneId, holderId: lease.holderId)
+        }
+        return lease
+    }
+
     public static func expiryMilliseconds(_ value: JSONValue?) -> Double? {
         guard let value else { return nil }
         if let number = value.doubleValue { return number }

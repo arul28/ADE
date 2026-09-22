@@ -102,6 +102,50 @@ final class RealInput {
     /// Drops a hold without warping. For a lane whose display is going away.
     func forgetCursorHold(laneId: String) { cursorHold.removeValue(forKey: laneId) }
 
+    /// The panic release. Escape in the viewer, a closing pane, a lost socket.
+    ///
+    /// Unconditional, which is the whole difference from `endCursorHold`: that
+    /// one returns immediately unless a cursor hold was started, and a desktop
+    /// takeover never starts one, so the path that most needs a way out did
+    /// nothing at all. This always lifts the button and always warps.
+    ///
+    /// `button` is sent only when the viewer knows a press is outstanding, so
+    /// this does not post mouse-ups nobody asked for. `home` is the viewer's
+    /// own pointer in screen coordinates; only the viewing window knows where
+    /// its person is, because the last warp may have left the cursor stranded
+    /// on this lane's display.
+    func releaseInput(
+        laneId: String,
+        holderId: String?,
+        button: String?,
+        home: CGPoint?
+    ) throws {
+        try authorizeRelease(laneId: laneId, holderId: holderId)
+        let held = cursorHold.removeValue(forKey: laneId)
+        if let button {
+            let at = quartzCursorLocation() ?? .zero
+            if button == "right" {
+                if let up = CGEvent(
+                    mouseEventSource: hidSource,
+                    mouseType: .rightMouseUp,
+                    mouseCursorPosition: at,
+                    mouseButton: .right
+                ) {
+                    postMouse(up)
+                }
+            } else {
+                releaseButton(at: at)
+            }
+            log("released a held \(button) button on lane \(laneId)")
+        }
+        // The viewer's own reading wins: it is measured on the machine the
+        // person is actually looking at. The saved hold is the fallback for a
+        // caller that cannot report one, such as a closing socket.
+        if let destination = home ?? held {
+            warpCursorBack(to: destination)
+        }
+    }
+
     /// The gate. Called first by every method below, and by nothing else.
     @discardableResult
     func authorize(laneId: String, holderId: String?, now: Date = Date()) throws -> InputLease {
@@ -109,6 +153,18 @@ final class RealInput {
             return try leases.authorize(laneId: laneId, holderId: holderId, now: now)
         } catch let error as InputLeaseError {
             log("refused real input on lane \(laneId): \(error.driverError.message)")
+            throw error.driverError
+        }
+    }
+
+    /// The gate for a release, which forgives a lapsed lease. See
+    /// `InputLeaseStore.authorizeRelease`.
+    @discardableResult
+    func authorizeRelease(laneId: String, holderId: String?) throws -> InputLease {
+        do {
+            return try leases.authorizeRelease(laneId: laneId, holderId: holderId)
+        } catch let error as InputLeaseError {
+            log("refused a release on lane \(laneId): \(error.driverError.message)")
             throw error.driverError
         }
     }

@@ -26,6 +26,7 @@ import {
   type MacDesktopObserveArgs,
   type MacDesktopRealInputCommand,
   type MacDesktopPressArgs,
+  type MacDesktopReleaseInputArgs,
   type MacDesktopScreenshotArgs,
   type MacDesktopScreenshotResult,
   type MacDesktopScrollArgs,
@@ -515,6 +516,49 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         caption: "move",
         target: { x: args.x, y: args.y },
       });
+    },
+
+    /**
+     * The panic release behind Escape. See {@link MacDesktopReleaseInputArgs}.
+     *
+     * Deliberately not `runAction`: that path re-observes the screen and files
+     * the result, and this call exists for the moment when the viewer's
+     * transport is already misbehaving. It posts one command and returns.
+     *
+     * `home` is passed straight through without the display check every other
+     * command gets. It is the only coordinate in this file that points AWAY
+     * from the lane on purpose — it is the person's own pointer, on their own
+     * screen, and clamping it to the lane's display would strand the cursor
+     * exactly where Escape is trying to rescue it from.
+     */
+    async releaseInput(args: MacDesktopReleaseInputArgs): Promise<MacDesktopInputResult> {
+      const laneId = args.laneId.trim();
+      const button = args.button === "right" ? "right" : args.button === "left" ? "left" : null;
+      const home = args.homeX == null || args.homeY == null
+        ? null
+        : { x: args.homeX, y: args.homeY };
+      await postRealInput({
+        laneId,
+        command: "releaseInput",
+        payload: {
+          ...(button ? { button } : {}),
+          ...(home ? { home } : {}),
+        },
+        // Required, not optional: the release is real input and is checked
+        // against the lease like any other. A caller with no controller id
+        // holds nothing, so it has nothing to release.
+        controllerId: (args.controllerId ?? "").trim(),
+        chatSessionId: args.chatSessionId ?? null,
+      });
+      return {
+        ok: true,
+        action: "releaseInput",
+        mode: "real",
+        silent: true,
+        resolved: null,
+        observation: null,
+        trace: null,
+      };
     },
 
     async wait(args: MacDesktopWaitArgs): Promise<MacDesktopWaitResult> {

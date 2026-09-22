@@ -195,6 +195,7 @@ import type {
   SyncMacDesktopStatus,
   MacDesktopClickArgs,
   MacDesktopDragArgs,
+  MacDesktopReleaseInputArgs,
   MacDesktopMoveArgs,
   MacDesktopPressArgs,
   MacDesktopScrollArgs,
@@ -5328,7 +5329,17 @@ const MAC_DESKTOP_SYNC_TEXT_MAX_BYTES = 4 * 1024;
 /** A per-tab token longer than this is not one ADE minted. */
 const MAC_DESKTOP_SYNC_TOKEN_MAX_LENGTH = 128;
 
-const MAC_DESKTOP_SYNC_INPUT_KINDS = ["click", "move", "scroll", "type", "press", "drag"] as const;
+/**
+ * `releaseInput` is here deliberately, and it is the only kind that is not an
+ * event. It is the panic release behind Escape: it lifts a button a remote
+ * controller pressed but never released, and puts the host's cursor back. A
+ * controller whose network stalls mid-drag is the one caller that can leave a
+ * Mac in another room with the mouse held down, so refusing this kind over the
+ * wire would leave the remote path with no way out.
+ */
+const MAC_DESKTOP_SYNC_INPUT_KINDS = [
+  "click", "move", "scroll", "type", "press", "drag", "releaseInput",
+] as const;
 
 type MacDesktopSyncInput = {
   kind: (typeof MAC_DESKTOP_SYNC_INPUT_KINDS)[number];
@@ -5561,6 +5572,16 @@ function registerMacDesktopRemoteCommands({
         silent: true,
         controllerId: holderId,
       };
+      // `releaseInput` carries the VIEWER's own pointer so the host can put its
+      // cursor back, and the desktop pane means the host's own screen by that.
+      // A web controller means a screen in another building, so the number
+      // would send the host's cursor to an arbitrary point — and it is the one
+      // coordinate `assertMacDesktopSyncPointsInDisplay` cannot check, because
+      // pointing off the lane's display is the whole purpose of it. It is
+      // dropped here instead. The driver then falls back to the cursor hold it
+      // recorded itself, which is the only reading the host can trust.
+      delete inputArgs.homeX;
+      delete inputArgs.homeY;
       if (call.kind === "type") {
         const text = inputArgs.text;
         if (typeof text !== "string" || !text.length) {
@@ -5585,6 +5606,8 @@ function registerMacDesktopRemoteCommands({
           return await macDesktopService.press(inputArgs as unknown as MacDesktopPressArgs);
         case "drag":
           return await macDesktopService.drag(inputArgs as unknown as MacDesktopDragArgs);
+        case "releaseInput":
+          return await macDesktopService.releaseInput(inputArgs as unknown as MacDesktopReleaseInputArgs);
       }
     });
   }

@@ -104,6 +104,8 @@ const macDesktop = {
   stopRecording: vi.fn(),
   listWindows: vi.fn(async () => []),
   claimWindow: vi.fn(async () => undefined),
+  // Present so a test can prove Escape is NOT forwarded as a keystroke.
+  press: vi.fn(async () => undefined),
   releaseWindow: vi.fn(async () => undefined),
 };
 
@@ -319,6 +321,80 @@ describe("ChatMacDesktopPanel actions on a pinned machine", () => {
       { laneId: "lane-1", controllerId: CONTROLLER_ID },
       STUDIO_PIN,
     ));
+  });
+
+  /**
+   * Escape is the way out when the pointer misbehaves, so it is tested as a
+   * contract rather than left to the pane.
+   *
+   * It used to bind only while the pane was expanded, and only shrink it. In
+   * the ordinary pane it did nothing, and worse: the surface's key handler
+   * forwarded it to the lane's Mac, so the one key a person presses when the
+   * mouse is stuck was delivered to the wrong computer.
+   */
+  describe("Escape", () => {
+    const heldStatus = () => makeStatus({
+      lease: {
+        laneId: "lane-1",
+        holder: "user",
+        holderId: CONTROLLER_ID,
+        holderLabel: "You",
+        grantedAt: "2026-09-18T19:00:00.000Z",
+        expiresAt: "2026-09-18T19:10:00.000Z",
+      },
+    });
+
+    it("gives the lane back without the pane being expanded first", async () => {
+      macDesktop.getStatus.mockResolvedValue(heldStatus());
+      macDesktop.returnControl.mockResolvedValue(null);
+
+      renderPanel();
+      await screen.findByText("Return to agent");
+      fireEvent.keyDown(window, { key: "Escape" });
+
+      await waitFor(() => expect(macDesktop.returnControl).toHaveBeenCalledWith(
+        { laneId: "lane-1", controllerId: CONTROLLER_ID },
+        STUDIO_PIN,
+      ));
+    });
+
+    it("never reaches the lane's Mac as a keystroke", async () => {
+      macDesktop.getStatus.mockResolvedValue(heldStatus());
+      macDesktop.returnControl.mockResolvedValue(null);
+
+      renderPanel();
+      await screen.findByText("Return to agent");
+      fireEvent.keyDown(window, { key: "Escape" });
+
+      await waitFor(() => expect(macDesktop.returnControl).toHaveBeenCalled());
+      // The forwarder builds a `press` for Escape. If this ever fires, the
+      // escape hatch is being typed into whatever app is focused over there.
+      expect(macDesktop.press).not.toHaveBeenCalled();
+    });
+
+    it("leaves Escape alone when this pane holds nothing", async () => {
+      macDesktop.getStatus.mockResolvedValue(makeStatus({ lease: null }));
+
+      renderPanel();
+      await screen.findByTestId("mac-desktop-takeover");
+      const event = new KeyboardEvent("keydown", { key: "Escape", cancelable: true, bubbles: true });
+      window.dispatchEvent(event);
+
+      // A global capture listener that swallowed every Escape in the window
+      // would close nothing and break every dialog in the app.
+      expect(event.defaultPrevented).toBe(false);
+      expect(macDesktop.returnControl).not.toHaveBeenCalled();
+    });
+
+    it("ignores a modified Escape, which belongs to macOS", async () => {
+      macDesktop.getStatus.mockResolvedValue(heldStatus());
+
+      renderPanel();
+      await screen.findByText("Return to agent");
+      fireEvent.keyDown(window, { key: "Escape", metaKey: true });
+
+      expect(macDesktop.returnControl).not.toHaveBeenCalled();
+    });
   });
 });
 

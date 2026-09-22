@@ -25,6 +25,7 @@ import {
   macDesktopMoveCall,
   macDesktopPointerUpCall,
   macDesktopReleaseCursorCall,
+  macDesktopReleaseInputCall,
   macDesktopWheelCall,
   useMacDesktopRealInput,
   type MacDesktopInputCall,
@@ -341,7 +342,17 @@ function pointerEvent(
     button: 0,
     detail: 1,
     pointerId: 7,
-    currentTarget: { focus: vi.fn(), setPointerCapture: vi.fn() },
+    // Screen coordinates are what Escape warps the cursor home to, and they
+    // are deliberately NOT the client coordinates: a pane inset in a window
+    // makes the two differ, and warping to a client point would put the
+    // pointer in the wrong place on the person's screen.
+    screenX: clientX + 1000,
+    screenY: clientY + 500,
+    currentTarget: {
+      focus: vi.fn(),
+      setPointerCapture: vi.fn(),
+      releasePointerCapture: vi.fn(),
+    },
     ...overrides,
   } as unknown as ReactPointerEvent<HTMLDivElement>;
 }
@@ -681,5 +692,109 @@ describe("a locked takeover", () => {
     expect(call.args.silent).toBe(true);
     // Nothing to shape: the driver reads only the lane and the holder.
     expect(macDesktopDriverPayload(call)).toEqual({});
+  });
+});
+
+
+/**
+ * The release arguments, with the discriminant checked rather than cast.
+ * `args` is the union of every real-input payload, and only `releaseInput`
+ * carries `button`.
+ */
+function releaseArgs(call: MacDesktopInputCall) {
+  if (call.kind !== "releaseInput") throw new Error(`expected releaseInput, got ${call.kind}`);
+  return call.args;
+}
+
+describe("Escape: the panic release", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it("carries the release as the driver's own payload shape", () => {
+    const call = macDesktopReleaseInputCall(context, {
+      button: "left",
+      home: { x: 1440, y: 900 },
+    });
+    expect(call.kind).toBe("releaseInput");
+    expect(call.args.controllerId).toBe("ade-window:abc");
+    expect(call.args).toMatchObject({ laneId: "lane-1", button: "left", homeX: 1440, homeY: 900, silent: true });
+    // Flat args on the wire, a nested point at the driver. Forwarding the
+    // renderer's flat shape is what left `click` and `scroll` unrecognised
+    // once before, so the translation is asserted rather than assumed.
+    expect(macDesktopDriverPayload(call)).toEqual({ button: "left", home: { x: 1440, y: 900 } });
+  });
+
+  it("omits the button when no press is outstanding, so the driver posts no stray mouse-up", () => {
+    const call = macDesktopReleaseInputCall(context, { button: null, home: null });
+    expect(call.args.button).toBeNull();
+    expect(macDesktopDriverPayload(call)).toEqual({});
+  });
+
+  it("reports a held button and releases it, with the pointer's own screen point", async () => {
+    const sent: MacDesktopInputCall[] = [];
+    const sender: MacDesktopInputSender = async (call) => { sent.push(call); return null; };
+    const { result } = renderInput(sender);
+
+    const down = pointerEvent(40, 50);
+    await act(async () => {
+      result.current.onPointerMove(pointerEvent(40, 50));
+      result.current.onPointerDown(down);
+    });
+    sent.length = 0;
+
+    // The case Escape exists for: the press happened, the release warp moved
+    // the cursor, and `pointerup` never arrived.
+    let hadPress = false;
+    await act(async () => { hadPress = result.current.cancelInput(); });
+
+    expect(hadPress).toBe(true);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.kind).toBe("releaseInput");
+    expect(sent[0]!.args).toMatchObject({ button: "left", homeX: 1040, homeY: 550 });
+    // The pane must stop swallowing the page's pointer events.
+    const target = down.currentTarget as unknown as { releasePointerCapture: ReturnType<typeof vi.fn> };
+    expect(target.releasePointerCapture).toHaveBeenCalledWith(7);
+  });
+
+  it("sends no button when the gesture already closed, and never repeats a release", async () => {
+    const sent: MacDesktopInputCall[] = [];
+    const sender: MacDesktopInputSender = async (call) => { sent.push(call); return null; };
+    const { result } = renderInput(sender);
+
+    await act(async () => {
+      result.current.onPointerDown(pointerEvent(10, 10));
+      result.current.onPointerUp(pointerEvent(10, 10));
+    });
+    sent.length = 0;
+
+    let hadPress = true;
+    await act(async () => { hadPress = result.current.cancelInput(); });
+    expect(hadPress).toBe(false);
+    expect(releaseArgs(sent[0]!).button).toBeNull();
+
+    // A second Escape is not a second button release.
+    await act(async () => { expect(result.current.cancelInput()).toBe(false); });
+    expect(sent.every((call) => releaseArgs(call).button === null)).toBe(true);
+  });
+
+  it("still releases locally when the transport refuses", async () => {
+    const sender: MacDesktopInputSender = async () => { throw new Error("socket closed"); };
+    const { result } = renderInput(sender);
+    const down = pointerEvent(10, 10);
+    await act(async () => { result.current.onPointerDown(down); });
+
+    // The whole point: a wedged transport is the usual reason for pressing
+    // Escape, so the local half cannot depend on the remote half.
+    let hadPress = false;
+    await act(async () => { hadPress = result.current.cancelInput(); });
+    expect(hadPress).toBe(true);
+    const target = down.currentTarget as unknown as { releasePointerCapture: ReturnType<typeof vi.fn> };
+    expect(target.releasePointerCapture).toHaveBeenCalledWith(7);
+  });
+
+  it("is a command every host accepts, on the wire and at the driver", () => {
+    expect(MAC_DESKTOP_REAL_INPUT_COMMANDS).toContain("releaseInput");
   });
 });

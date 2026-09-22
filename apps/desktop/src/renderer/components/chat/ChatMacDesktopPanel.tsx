@@ -60,7 +60,6 @@ import { useMacDesktopLiveView } from "./useMacDesktopLiveView";
 import {
   createMacDesktopFastInputSender,
   useMacDesktopRealInput,
-  type MacDesktopPoint,
 } from "./useMacDesktopRealInput";
 import { useMacDesktopStatus } from "./useMacDesktopStatus";
 import { MacDesktopClaimPicker } from "./MacDesktopClaimPicker";
@@ -300,24 +299,6 @@ export function ChatMacDesktopPanel({
    * landing at pane coordinates over a full-screen picture.
    */
   const [surfaceNode, setSurfaceNode] = useState<HTMLDivElement | null>(null);
-  /**
-   * The viewer's pointer is locked to the picture, so this pane is driving.
-   *
-   * macOS has one system cursor for every display, including this lane's. A
-   * takeover posts real events at points on that display, which moves that one
-   * cursor there — so with the person's own pointer still free, the two fight
-   * over it: the cursor was left stranded on the lane's display, this pane
-   * stopped receiving pointer events, and the local glyph froze where it had
-   * been abandoned. Warping it home after every event was the previous answer,
-   * and it cost four warps and three main-queue hops per event, which is where
-   * a wheel turn arriving seconds later came from.
-   *
-   * Locking is what every remote desktop does instead: the browser hides and
-   * pins the local cursor, movement arrives as deltas, and the lane's cursor
-   * is simply left on the lane's display until control goes back. Esc unlocks.
-   */
-  /** Where the lane's pointer is, in display points, while locked. */
-  const lockedPointRef = useRef<MacDesktopPoint | null>(null);
 
   /**
    * The decoder's home, which is a node and not a place in the tree.
@@ -801,24 +782,53 @@ export function ChatMacDesktopPanel({
   const releaseWindowById = useCallback((windowId: number) => { void releaseWindow(windowId); }, [releaseWindow]);
 
   /**
-   * Escape leaves the expanded screen.
+   * Escape: the way out, and it is not only about full screen.
    *
-   * Capturing, and before the surface's own key handler: while the user holds
-   * the lease every key on that surface is forwarded to the lane's Mac, so an
-   * Escape typed to get out of full screen would otherwise go to whatever app
-   * is focused over there and never come back here.
+   * This used to bind only while expanded, and only called `setExpanded`.
+   * That left the one key a person reaches for when the pointer misbehaves
+   * doing nothing in the pane — worse, the surface's own handler forwarded it
+   * to the lane's Mac, so the escape hatch was delivered to the wrong
+   * computer. It is bound here whenever there is something to escape FROM.
+   *
+   * Order matters. The listener is on `window` in the capture phase, so it
+   * runs before the surface's key forwarder, which is a bubble-phase listener
+   * on the surface node. Escape therefore never reaches the lane.
+   *
+   * The release is local first and asks the host second. Everything the
+   * person feels — the gesture forgotten, the pump stopped, the page's
+   * pointer events freed, the pane back to its normal size — happens in this
+   * handler with no round trip. `cancelInput` posts the button release and
+   * the cursor warp without awaiting, and `returnControl` gives the lease
+   * back. A wedged transport is the usual reason for pressing Escape, so
+   * nothing here may wait on one.
    */
+  const escapeRef = useRef<() => boolean>(() => false);
+  escapeRef.current = () => {
+    // Nothing of ours to escape from: let the key through to whatever dialog
+    // or menu is open. A global capture listener that swallowed every Escape
+    // in the window would break the rest of the app.
+    if (!iHaveControl && !expanded) return false;
+    if (iHaveControl) {
+      realInput.cancelInput();
+      heartbeat.stop();
+      void returnControl();
+    }
+    if (expanded) setExpanded(false);
+    return true;
+  };
   useEffect(() => {
-    if (!expanded) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      // No modifier: Cmd-Escape and friends belong to macOS, and a person
+      // holding a modifier is not panicking.
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (!escapeRef.current()) return;
       event.preventDefault();
       event.stopPropagation();
-      setExpanded(false);
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [expanded]);
+  }, []);
 
   useEffect(() => {
     if (!expanded || typeof document === "undefined") return;

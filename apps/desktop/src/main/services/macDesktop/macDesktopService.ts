@@ -40,6 +40,7 @@ import {
   type MacDesktopOpenResult,
   type MacDesktopPermissions,
   type MacDesktopPressArgs,
+  type MacDesktopReleaseInputArgs,
   type MacDesktopPresentArgs,
   type MacDesktopRecordStartArgs,
   type MacDesktopRecordingStatus,
@@ -1006,6 +1007,11 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     async drag(args: MacDesktopDragArgs): Promise<MacDesktopInputResult> {
       assertSupported();
       return await input.drag(args);
+    },
+
+    async releaseInput(args: MacDesktopReleaseInputArgs): Promise<MacDesktopInputResult> {
+      assertSupported();
+      return await input.releaseInput(args);
     },
 
     async move(args: MacDesktopMoveArgs): Promise<MacDesktopInputResult> {

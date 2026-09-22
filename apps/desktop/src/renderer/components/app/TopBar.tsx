@@ -879,7 +879,7 @@ function ProjectTabIcon({
         <Dialog.Content
           className={cn(
             "fixed left-1/2 top-1/2 z-[121] w-[min(320px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2",
-            "rounded-lg border border-border bg-surface-raised p-4 text-fg shadow-2xl",
+            "rounded-lg border border-border bg-surface p-4 text-fg shadow-2xl",
           )}
           onClick={(event) => event.stopPropagation()}
         >

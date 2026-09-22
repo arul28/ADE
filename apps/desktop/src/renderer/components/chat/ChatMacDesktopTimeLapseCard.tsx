@@ -56,7 +56,7 @@ export function ChatMacDesktopTimeLapseCard({
   return (
     <div
       data-testid="mac-desktop-time-lapse"
-      className="pointer-events-auto w-[240px] overflow-hidden rounded-[10px] border border-border bg-surface-raised shadow-float"
+      className="pointer-events-auto w-[240px] overflow-hidden rounded-[10px] border border-border bg-surface shadow-float"
     >
       <div className="flex items-center gap-2 px-2 py-1">
         <span className="min-w-0 flex-1 truncate text-[11px] text-muted-fg">

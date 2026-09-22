@@ -288,6 +288,22 @@ extension DriverRuntime {
             )
         case "releaseCursor":
             try realInput.endCursorHold(laneId: laneId, holderId: holderId)
+        case "releaseInput":
+            // NOT clamped to the lane's display: `home` is the viewer's own
+            // pointer on their own screen, which is the one coordinate in this
+            // file that deliberately points away from the lane.
+            let home: CGPoint? = {
+                guard let object = payload["home"]?.objectValue,
+                      let x = object["x"]?.doubleValue,
+                      let y = object["y"]?.doubleValue else { return nil }
+                return CGPoint(x: x, y: y)
+            }()
+            try realInput.releaseInput(
+                laneId: laneId,
+                holderId: holderId,
+                button: payload["button"]?.stringValue,
+                home: home
+            )
         case "scroll":
             let target = try point("at")
             try realInput.scroll(

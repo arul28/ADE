@@ -458,6 +458,31 @@ export type MacDesktopReleaseCursorArgs = MacDesktopControllerArgs & MacDesktopS
   chatSessionId?: string | null;
 };
 
+/**
+ * The panic release. Escape, a closing pane, a lost connection.
+ *
+ * Distinct from {@link MacDesktopReleaseCursorArgs}, which only undoes a
+ * deliberate cursor hold and does nothing when no hold was started — which is
+ * every desktop takeover, because absolute pointing holds nothing. This one
+ * always acts: it lifts a mouse button the viewer pressed but never released,
+ * and it puts the one system cursor back on the person's own screen.
+ *
+ * `button` is set only when a press is genuinely outstanding. A mouse-up with
+ * no matching down is ignored by AppKit, but sending one anyway would make the
+ * driver's logs lie about what the viewer did.
+ *
+ * `homeX` / `homeY` are the viewer's own pointer in SCREEN coordinates, taken
+ * from the last pointer event over the pane. The driver warps there rather
+ * than guessing, because only the viewing window knows where its person is.
+ */
+export type MacDesktopReleaseInputArgs = MacDesktopControllerArgs & MacDesktopSilentArgs & {
+  laneId: string;
+  chatSessionId?: string | null;
+  button?: "left" | "right" | null;
+  homeX?: number | null;
+  homeY?: number | null;
+};
+
 export type MacDesktopWaitArgs = {
   laneId: string;
   /** Wait until an element matching this text exists. */
@@ -1054,13 +1079,20 @@ export const MAC_DESKTOP_IDLE_RELEASE_MS = 10 * 60_000;
 /**
  * Everything a human takeover may post straight to the driver.
  *
- * `releaseCursor` is not an event: it is how a takeover ends. While a person
- * drives, their viewer locks its pointer and the driver keeps the one system
- * cursor on the lane's display, instead of warping it home after every event.
- * This is the call that puts it back.
+ * Two of these are not events.
+ *
+ * `releaseCursor` undoes a deliberate cursor hold: while a viewer drives with
+ * a locked pointer, the driver keeps the one system cursor on the lane's
+ * display instead of warping it home after every event, and this puts it
+ * back. It does nothing when no hold was started.
+ *
+ * `releaseInput` is the panic release behind Escape, and it always acts. It
+ * lifts a mouse button the viewer pressed but never released, and warps the
+ * cursor to the viewer's own pointer. A desktop takeover holds no cursor, so
+ * `releaseCursor` alone left that path with no way out at all.
  */
 export const MAC_DESKTOP_REAL_INPUT_COMMANDS = [
-  "move", "click", "drag", "scroll", "press", "type", "releaseCursor",
+  "move", "click", "drag", "scroll", "press", "type", "releaseCursor", "releaseInput",
 ] as const;
 
 export type MacDesktopRealInputCommand = (typeof MAC_DESKTOP_REAL_INPUT_COMMANDS)[number];
@@ -1161,6 +1193,12 @@ export type MacDesktopServiceApi = {
   press(args: MacDesktopPressArgs): Promise<MacDesktopInputResult>;
   scroll(args: MacDesktopScrollArgs): Promise<MacDesktopInputResult>;
   drag(args: MacDesktopDragArgs): Promise<MacDesktopInputResult>;
+  /**
+   * The panic release behind Escape: lift a button the viewer never released,
+   * and put the one system cursor back on the viewer's own screen. Real-only
+   * and always silent, and refused without the lease like any real input.
+   */
+  releaseInput(args: MacDesktopReleaseInputArgs): Promise<MacDesktopInputResult>;
   /** Real-only, always silent. Refused without the lease like any real input. */
   move(args: MacDesktopMoveArgs): Promise<MacDesktopInputResult>;
   wait(args: MacDesktopWaitArgs): Promise<MacDesktopWaitResult>;

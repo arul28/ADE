@@ -13,6 +13,7 @@ import type {
   MacDesktopMoveArgs,
   MacDesktopPressArgs,
   MacDesktopReleaseCursorArgs,
+  MacDesktopReleaseInputArgs,
   MacDesktopScrollArgs,
   MacDesktopTypeArgs,
 } from "../../../shared/types/macDesktop";
@@ -54,7 +55,9 @@ export type MacDesktopInputCall =
   | { kind: "type"; args: MacDesktopTypeArgs }
   | { kind: "press"; args: MacDesktopPressArgs }
   /** Not an event: the end of a takeover. See {@link MacDesktopReleaseCursorArgs}. */
-  | { kind: "releaseCursor"; args: MacDesktopReleaseCursorArgs };
+  | { kind: "releaseCursor"; args: MacDesktopReleaseCursorArgs }
+  /** Not an event either: the panic release. See {@link MacDesktopReleaseInputArgs}. */
+  | { kind: "releaseInput"; args: MacDesktopReleaseInputArgs };
 
 /** A press and release more than a few points apart is a drag, not a click. */
 export const MAC_DESKTOP_DRAG_SLOP_PX = 4;
@@ -237,6 +240,31 @@ export function macDesktopReleaseCursorCall(
   };
 }
 
+/**
+ * Everything the viewer has to undo to hand the Mac back, in one call.
+ *
+ * Sent by Escape, and by any path that ends a takeover while a gesture may
+ * still be open. `releaseCursor` cannot do this job: it is a no-op unless a
+ * cursor hold was started, and the desktop never starts one.
+ */
+export function macDesktopReleaseInputCall(
+  context: MacDesktopInputContext,
+  state: { button: "left" | "right" | null; home: { x: number; y: number } | null },
+): Extract<MacDesktopInputCall, { kind: "releaseInput" }> {
+  return {
+    kind: "releaseInput",
+    args: {
+      laneId: context.laneId,
+      button: state.button,
+      homeX: state.home?.x ?? null,
+      homeY: state.home?.y ?? null,
+      silent: true,
+      controllerId: context.controllerId,
+      chatSessionId: context.chatSessionId,
+    },
+  };
+}
+
 /** Pointer moves forwarded per second while the user drives. */
 export const MAC_DESKTOP_MOVE_HZ = 60;
 export const MAC_DESKTOP_MOVE_INTERVAL_MS = Math.round(1_000 / MAC_DESKTOP_MOVE_HZ);
@@ -336,6 +364,16 @@ export type UseMacDesktopRealInput = {
    * takeover found it. Safe to call when no hold was ever started.
    */
   releaseCursor: () => void;
+  /**
+   * Hand the Mac back right now: stop the move pump, forget any open gesture,
+   * lift a button still held, and put the person's cursor back on their own
+   * screen. Returns true when a press really was outstanding.
+   *
+   * Every step is local and synchronous except the one call to the driver,
+   * which is deliberately not awaited: Escape has to feel instant even when
+   * the transport is the thing that is wedged.
+   */
+  cancelInput: () => boolean;
 };
 
 /**
@@ -391,6 +429,13 @@ export function macDesktopDriverPayload(
       return { ...hold, key: call.args.key, modifiers: call.args.modifiers ?? [] };
     case "releaseCursor":
       return {};
+    case "releaseInput":
+      return {
+        ...(call.args.button ? { button: call.args.button } : {}),
+        ...(call.args.homeX == null || call.args.homeY == null
+          ? {}
+          : { home: { x: call.args.homeX, y: call.args.homeY } }),
+      };
   }
 }
 
@@ -441,10 +486,11 @@ function sendMacDesktopInputCall(
   runtimePin: OpenProjectBinding | null,
 ): Promise<MacDesktopInputResult> {
   const api = macDesktopApi();
-  // Nothing to release: only the fast path ever asks the driver to hold the
-  // cursor, so a takeover that fell back to IPC never started a hold.
-  if (call.kind === "releaseCursor") {
-    return Promise.resolve({ ok: true, action: "releaseCursor", mode: "real", silent: true, resolved: null, observation: null, trace: null });
+  // Nothing to release on this path. Only the fast path holds the cursor, and
+  // only the fast path sends a press and its release as two events — the IPC
+  // dispatch posts whole clicks and drags, so it cannot leave a button down.
+  if (call.kind === "releaseCursor" || call.kind === "releaseInput") {
+    return Promise.resolve({ ok: true, action: call.kind, mode: "real", silent: true, resolved: null, observation: null, trace: null });
   }
   return call.kind === "move" ? api.move(call.args, runtimePin)
     : call.kind === "click" ? api.click(call.args, runtimePin)
@@ -487,6 +533,23 @@ export function useMacDesktopRealInput(args: {
     toDisplayPoint,
   } = args;
   const dragStartRef = useRef<MacDesktopPoint | null>(null);
+  /**
+   * The viewer's own pointer, in screen coordinates, as last seen over the
+   * pane. This is where Escape puts the cursor back. It is read from the
+   * browser event rather than asked of the host, because the host's idea of
+   * "home" is whatever the last warp left behind — which, when the pointer is
+   * stuck on the lane's display, is the wrong screen entirely.
+   */
+  const homeRef = useRef<{ x: number; y: number } | null>(null);
+  /**
+   * The element holding pointer capture, and for which pointer.
+   *
+   * The browser releases capture on `pointerup`, so this is null almost
+   * always. It matters in exactly the case Escape exists for: the release
+   * warp moved the cursor, `pointerup` never arrived, and the pane is still
+   * swallowing every pointer event on the page.
+   */
+  const captureRef = useRef<{ node: Element; pointerId: number } | null>(null);
   const loggedRef = useRef<string | null>(null);
   const [inputError, setInputError] = useState<string | null>(null);
 
@@ -541,6 +604,7 @@ export function useMacDesktopRealInput(args: {
 
   const onPointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (!enabled) return;
+    homeRef.current = { x: event.screenX, y: event.screenY };
     const point = toDisplayPoint(event.clientX, event.clientY);
     // The local glyph is the pointer the person sees. Hover `CGEvent`s are
     // not sent by the desktop: each one teleports the one system cursor onto
@@ -559,6 +623,7 @@ export function useMacDesktopRealInput(args: {
 
   const onPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (!enabled) return;
+    homeRef.current = { x: event.screenX, y: event.screenY };
     event.currentTarget.focus({ preventScroll: true });
     // Restore-after-post warps the system cursor off this element for a beat
     // and would otherwise cancel the gesture before `pointerup`. Capture keeps
@@ -568,6 +633,7 @@ export function useMacDesktopRealInput(args: {
     // against so it reads as a click rather than a drag.
     try {
       event.currentTarget.setPointerCapture?.(event.pointerId);
+      captureRef.current = { node: event.currentTarget, pointerId: event.pointerId };
     } catch {
       // Capture failed; continue with the gesture.
     }
@@ -578,6 +644,7 @@ export function useMacDesktopRealInput(args: {
     if (!enabled) return;
     const from = dragStartRef.current;
     dragStartRef.current = null;
+    captureRef.current = null;
     const to = toDisplayPoint(event.clientX, event.clientY);
     if (!to) return;
     send(macDesktopPointerUpCall(
@@ -627,6 +694,38 @@ export function useMacDesktopRealInput(args: {
     }));
   }, []);
 
+  /**
+   * The panic path. Never throws and never awaits: a wedged transport is the
+   * most likely reason somebody is pressing Escape in the first place.
+   */
+  const cancelInput = useCallback((): boolean => {
+    const hadPress = dragStartRef.current !== null;
+    dragStartRef.current = null;
+    movePumpRef.current?.stop();
+    const captured = captureRef.current;
+    captureRef.current = null;
+    if (captured) {
+      try {
+        (captured.node as Element & { releasePointerCapture?: (id: number) => void })
+          .releasePointerCapture?.(captured.pointerId);
+      } catch {
+        // Already released, or the node is gone. Either way it is not holding
+        // the page's pointer events any more, which is the point.
+      }
+    }
+    const context = contextRef.current;
+    try {
+      sendRef.current(macDesktopReleaseInputCall(
+        { laneId: context.laneId, chatSessionId: context.sessionId, controllerId: context.controllerId },
+        { button: hadPress ? "left" : null, home: homeRef.current },
+      ));
+    } catch {
+      // The local half above already happened, and that is the half the
+      // person feels. A refused release costs at most one lease TTL.
+    }
+    return hadPress;
+  }, []);
+
   return {
     onPointerDown,
     onPointerMove,
@@ -638,5 +737,6 @@ export function useMacDesktopRealInput(args: {
     inputError,
     clearInputError,
     releaseCursor,
+    cancelInput,
   };
 }

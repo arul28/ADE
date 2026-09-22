@@ -27,6 +27,7 @@ import type { PairedRuntimeSyncEnvelope } from "./pairedRuntime";
 import type {
   MacDesktopClickArgs,
   MacDesktopDragArgs,
+  MacDesktopReleaseInputArgs,
   MacDesktopMoveArgs,
   MacDesktopPressArgs,
   MacDesktopScrollArgs,
@@ -1982,12 +1983,17 @@ export type SyncMacDesktopStreamSubscribeResult = {
 /**
  * One forwarded real-input call from a web controller.
  *
- * The same six calls the desktop's `useMacDesktopRealInput` builds, so the
+ * The same calls the desktop's `useMacDesktopRealInput` builds, so the
  * translation from a browser event is one shared function rather than a second
  * implementation per surface. The args are the service's own shapes; the host
  * strips every caller-asserted identity from them (`controllerId`, `holderId`,
  * `chatSessionId`), forces `silent`, and re-fills the controller id it derives
  * from the socket, so nothing here can name a lease it does not hold.
+ *
+ * `releaseInput` is not an event: it is the panic release behind Escape, and
+ * a remote controller needs it more than the desktop does, not less. Its
+ * network is the thing most likely to stall mid-gesture, and it is the one
+ * caller that can leave a button held down on a Mac in another room.
  */
 export type SyncMacDesktopInputCall =
   | { kind: "click"; args: MacDesktopClickArgs }
@@ -1995,7 +2001,8 @@ export type SyncMacDesktopInputCall =
   | { kind: "scroll"; args: MacDesktopScrollArgs }
   | { kind: "type"; args: MacDesktopTypeArgs }
   | { kind: "press"; args: MacDesktopPressArgs }
-  | { kind: "drag"; args: MacDesktopDragArgs };
+  | { kind: "drag"; args: MacDesktopDragArgs }
+  | { kind: "releaseInput"; args: MacDesktopReleaseInputArgs };
 
 /**
  * The lane's macOS screen as a sync client may read it. `MacDesktopStatus` is

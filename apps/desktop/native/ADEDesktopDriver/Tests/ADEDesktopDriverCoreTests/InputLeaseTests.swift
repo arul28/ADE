@@ -37,6 +37,19 @@ final class InputLeaseTests: XCTestCase {
         }
     }
 
+    /// A lapsed lease must not trap a held mouse button on the lane's display.
+    /// Escape is pressed precisely when the pane has stopped keeping its lease
+    /// alive, so the release gate forgives expiry for the recorded holder.
+    func testAReleaseIsAllowedAfterTheLeaseLapses() throws {
+        let input = RealInput(leases: store(expiringIn: -1), log: { _ in })
+        let lease = try input.authorizeRelease(laneId: "lane-a", holderId: "chat-1")
+        XCTAssertEqual(lease.holderId, "chat-1")
+        // The forgiveness is only about time. Everything else still refuses.
+        XCTAssertThrowsError(try input.authorizeRelease(laneId: "lane-a", holderId: "chat-2"))
+        XCTAssertThrowsError(try input.authorizeRelease(laneId: "lane-a", holderId: nil))
+        XCTAssertThrowsError(try input.authorizeRelease(laneId: "lane-b", holderId: "chat-1"))
+    }
+
     func testRealInputRefusesAHolderTheLeaseIsNotHeldBy() {
         let input = RealInput(leases: store(expiringIn: 60, holderId: "chat-1"), log: { _ in })
         XCTAssertThrowsError(try input.authorize(laneId: "lane-a", holderId: "chat-2", now: now)) { error in

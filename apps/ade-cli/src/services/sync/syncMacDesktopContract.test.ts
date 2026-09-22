@@ -81,6 +81,15 @@ function createService() {
     observation: null,
     trace: null,
   }));
+  const releaseInput = vi.fn(async (_args: Record<string, unknown>) => ({
+    ok: true as const,
+    action: "releaseInput",
+    mode: "real" as const,
+    silent: true as const,
+    resolved: null,
+    observation: null,
+    trace: null,
+  }));
   const service = createSyncRemoteCommandService({
     laneService: {},
     prService: {},
@@ -97,6 +106,7 @@ function createService() {
       renewLease,
       click,
       move,
+      releaseInput,
     },
     macDesktopSyncStream: { subscribe, unsubscribe },
     logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -114,6 +124,7 @@ function createService() {
     renewLease,
     click,
     move,
+    releaseInput,
   };
 }
 
@@ -404,6 +415,43 @@ describe("macDesktop web takeover contract", () => {
       laneId: fixture.laneId,
       call: { kind: "teleport", args: {} },
     }), CONTROL_CONTEXT)).rejects.toThrow(/does not support 'teleport'/);
+  });
+
+  /**
+   * The remote release must not steer the host's cursor.
+   *
+   * `homeX`/`homeY` mean "where the person watching is pointing", which the
+   * desktop pane can answer about the host's own screen. A web controller is
+   * pointing at a screen in another building, so honouring its number would
+   * fling the host's cursor to an arbitrary place — and it is the one
+   * coordinate the display check cannot catch, because pointing off the lane's
+   * display is the purpose of it.
+   */
+  it("keeps a remote release, but never lets it name where the host's cursor goes", async () => {
+    const { service, releaseInput } = createService();
+
+    await service.execute(makePayload("macDesktop.input", {
+      laneId: fixture.laneId,
+      call: {
+        kind: "releaseInput",
+        args: {
+          laneId: fixture.laneId,
+          button: "left",
+          homeX: 99_999,
+          homeY: -4_000,
+          controllerId: "tab-token-1",
+        },
+      },
+    }), CONTROL_CONTEXT);
+
+    expect(releaseInput).toHaveBeenCalledTimes(1);
+    const args = releaseInput.mock.calls[0]![0]!;
+    // The button still gets lifted: that is the point of the call.
+    expect(args.button).toBe("left");
+    expect(args).not.toHaveProperty("homeX");
+    expect(args).not.toHaveProperty("homeY");
+    // And the identity is still the host's own, not the caller's assertion.
+    expect(args.silent).toBe(true);
   });
 
   it("bounds text at 4 KiB and refuses points off the display", async () => {
