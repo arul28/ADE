@@ -2157,6 +2157,45 @@ describe("adeRpcServer", () => {
     );
   });
 
+  it("infers the lane for a standalone caller when the brain's ceiling is cto, as a real brain's is", async () => {
+    // The helper above sets ADE_DEFAULT_ROLE to whatever role the test asks
+    // for, so every existing case runs against an "agent" ceiling. A real
+    // brain runs at "cto" — `ps -wwE` on the installed service and on a dev
+    // brain both say so — and this is the only dimension the fixture fakes.
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    const laneRoot = fixture.runtime.laneService.getLaneWorktreePath("lane-1");
+    fs.mkdirSync(laneRoot, { recursive: true });
+
+    const previousRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    try {
+      await handler({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "ade/initialize",
+        params: { identity: { callerId: "ade-cli:4242", role: "agent" } },
+      });
+      const response = await callTool(handler, "ingest_computer_use_artifacts", {
+        backendStyle: "manual",
+        backendName: "ade-cli",
+        toolName: "proof attach",
+        callerRoot: laneRoot,
+        inputs: [{ kind: "screenshot", title: "Proof", path: path.join(laneRoot, "proof.png") }],
+      });
+
+      expect(response.isError).toBeUndefined();
+      expect(fixture.runtime.computerUseArtifactBrokerService.ingest).toHaveBeenCalledWith(
+        expect.objectContaining({
+          owners: expect.arrayContaining([expect.objectContaining({ kind: "lane", id: "lane-1" })]),
+        }),
+      );
+    } finally {
+      if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
+      else process.env.ADE_DEFAULT_ROLE = previousRole;
+    }
+  });
+
   it("accepts the lane an unbound caller names while standing inside its worktree", async () => {
     // An OpenCode agent's shell carries no chat session: one `opencode serve`
     // is shared across chats, so it cannot hold a per-chat environment. Naming
