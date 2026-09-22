@@ -18,10 +18,13 @@ import tailwind from "@tailwindcss/postcss";
  *
  * So this compiles the real stylesheet and fails on a dead colour class.
  *
- * On the `@config` line: I compiled index.css with and without it through
- * `@tailwindcss/postcss` 4.1 and the emitted rules were byte-identical, so the
- * plugin still finds `tailwind.config.cjs` on its own. The directive stays
- * because that is a v3 compatibility path rather than a v4 guarantee.
+ * On the `@config` line: it is load-bearing, and an earlier note here said the
+ * opposite. That note came from a probe that compiled both variants in one
+ * process under the same `from` path, and `@tailwindcss/postcss` caches per
+ * path, so it measured the first compile twice. Compiled as separate builds
+ * under 4.2.1: 765,034 bytes with the line and 702,484 without, and
+ * `.bg-surface`, `.bg-surface-overlay`, `.text-fg` and `.border-border` are
+ * emitted only with it. Without `@config` the whole vocabulary is dead.
  */
 describe("tailwind token wiring", () => {
   const desktopRoot = path.resolve(__dirname, "..", "..");
@@ -63,19 +66,30 @@ describe("tailwind token wiring", () => {
 
     /**
      * Only classes in this product's own colour vocabulary. A name counts when
-     * it is a token, or shares a family with one — `bg-surface` is in scope
-     * because `surface-raised` exists, which is the case that shipped broken.
-     * Everything else in a class string (`border-box` in an inline style, a
-     * stock Tailwind colour) is somebody else's problem and is skipped.
+     * it is a token, shares a family with one, or has a `--color-<name>` of its
+     * own in index.css. That last rule matters: a colour the stylesheet defines
+     * but the config never registers is dead in exactly the same way, and the
+     * family rule alone cannot see it — `surface` was defined in both themes
+     * and absent from the config, so `bg-surface` compiled to nothing while
+     * this guard stayed green. Everything else in a class string (`border-box`
+     * in an inline style, a stock Tailwind colour) is skipped.
      */
+    const defined = new Set(
+      [...css.matchAll(/--color-([a-z0-9-]+)\s*:/g)].map((match) => match[1]!),
+    );
     const ours = (name: string): boolean =>
-      tokens.some((token) => token === name || token.startsWith(`${name}-`) || name.startsWith(`${token}-`));
+      defined.has(name)
+      || tokens.some((token) => token === name || token.startsWith(`${name}-`) || name.startsWith(`${token}-`));
 
     const dead = new Map<string, Set<string>>();
     for (const file of files) {
-      for (const literal of fs.readFileSync(file, "utf8").matchAll(/"([^"\n]*)"|'([^'\n]*)'|`([^`\n]*)`/g)) {
+      const source = fs.readFileSync(file, "utf8");
+      for (const literal of source.matchAll(/"([^"\n]*)"|'([^'\n]*)'|`([^`\n]*)`/g)) {
         const text = literal[1] ?? literal[2] ?? literal[3] ?? "";
         if (!/\b(?:bg|text|border|ring)-/.test(text)) continue;
+        // A React `key` is not a class string. ChatSubagentsPanel spells one
+        // `key="bg-command-details"`, which reads as a dead class and is not.
+        if (/\bkey=$/.test(source.slice(Math.max(0, literal.index - 5), literal.index))) continue;
         // Opacity modifiers escape as `\/` in the output; the plain class is
         // the reliable signal and catches the same authoring mistake.
         for (const match of text.matchAll(/(?:^|\s)((?:[a-z-]+:)*(?:bg|text|border|ring)-[a-z][a-z0-9-]*)(?=\s|$)/g)) {

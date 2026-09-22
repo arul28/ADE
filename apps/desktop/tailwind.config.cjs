@@ -24,7 +24,16 @@ module.exports = {
         "surface-overlay": "var(--color-surface-overlay)",
         separator: "var(--color-separator)",
         "separator-active": "var(--color-separator-active)",
-        glow: "var(--color-glow)"
+        glow: "var(--color-glow)",
+        // The status tones. index.css defines all four in both themes and the
+        // config registered none, so TimelineEntry's twelve utilities
+        // (`text-info`, `bg-info/10`, `border-info/20` and the same for
+        // success, warning and error) compiled to nothing and every CTO
+        // timeline entry rendered with no tone at all.
+        info: "var(--color-info)",
+        success: "var(--color-success)",
+        warning: "var(--color-warning)",
+        error: "var(--color-error)"
       },
       borderRadius: {
         xl: "16px",

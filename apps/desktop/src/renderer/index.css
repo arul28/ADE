@@ -1,12 +1,11 @@
 @import "tailwindcss";
-/* The config, named rather than found. `@tailwindcss/postcss` 4.1 still
-   auto-detects `tailwind.config.cjs` beside package.json — I compiled the
-   stylesheet both ways and the emitted rules are byte-identical — so this line
-   changes nothing today. It is here because that auto-detection is a v3
-   compatibility path, not a documented v4 guarantee: the day it goes, every
-   token utility (`bg-surface`, `text-fg`, `border-border` …) compiles to
-   nothing and every panel using one renders see-through. Naming the config
-   costs nothing and removes that cliff. */
+/* The config, named rather than found, and load-bearing today.
+   `@tailwindcss/postcss` 4.2.1 does NOT auto-detect `tailwind.config.cjs`
+   beside package.json. I compiled this stylesheet both ways: with the line,
+   765,034 bytes and `.bg-surface`, `.text-fg` and `.border-border` all
+   present; without it, 702,484 bytes and none of the three emitted. Every
+   token utility then compiles to nothing and every panel that uses one
+   renders see-through. Do not remove this line. */
 @config "../../tailwind.config.cjs";
 
 [data-theme="dark"] .editor-target-logo--invert-in-dark {
