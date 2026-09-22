@@ -1,0 +1,33 @@
+---
+title: "v1.2.77"
+description: "Release notes for ADE v1.2.77 - September 22, 2026"
+---
+
+Live usage limits per signed-in account, Claude Agent SDK 0.3.278, redesigned chat handoff, CTO project memory that survives restarts, bundled skills delivered natively to every provider, and the retired Review tab.
+
+---
+
+## Usage
+
+- **Every signed-in account gets its own limits row.** The top bar and the Limits popover list each Claude, Codex, Cursor, Copilot, Grok, and OpenCode login separately. The header mark is a thin ring whose arc grows clockwise with usage.
+- **A limited chat can continue on another account** that still has room. A failed move rolls back instead of leaving an empty chat, and incomplete accounts are skipped when the handoff target is chosen.
+- Cursor quota reads now authenticate correctly, and a second login without a window yet is kept instead of dropped.
+
+## Providers
+
+- **Claude Agent SDK 0.3.278.** Asks that suppress the session-wide allow rule omit "Allow for Session" and never auto-answer from an earlier override. Plan mode refuses tools outside its allowlist even in a full-auto session. ADE-managed binaries receive the plugin list over stdin so the Windows command line stays under its limit, and startup failures report their reason.
+- **Bundled skills reach every provider.** Dead skill roots are no longer advertised, the Claude skill listing drops duplicates and stays within budget, and Cursor, Qwen, and OpenCode receive ADE's skills through their native mechanisms. Kimi and Grok remain unreachable because their only route writes the user's config home.
+
+## Work
+
+- **Chat handoff is redesigned.** Handoff controls move into the session menu, auto-handoff rules are pinned to the chat's machine, and the rule editor lists the models and lanes that exist on that machine.
+- **CTO project memory lives outside the chat and the git repo.** The brief, facts, and directed threads survive a restart and a cleared session, and the memory pane shows the brief as fields.
+- The board's Needs-you column no longer files ready and idle sessions as needing you.
+
+## Removed
+
+- **The Review tab and its AI review engine are retired.** GitHub PR review, proof-artifact review, and provider `/review` slash commands are untouched. Upgraded installs drop the dead synced tables, and older peers' review changesets are ignored.
+
+## iOS
+
+- Per-account usage rows and rings match the desktop, and the retired review tables are dropped on upgrade.
