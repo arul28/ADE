@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Providers
+
+- Claude Opus 5.5 (`claude-opus-5-5`) is the generic Opus model, with medium effort and Fast mode. Opus 5 stays selectable. Opus 4.8 is removed from the picker and its saved ids resolve to Opus 5.
+- Claude Agent SDK 0.3.280.
+
 ## [1.2.77] - 2026-09-22
 
 ### Usage

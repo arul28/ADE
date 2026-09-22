@@ -69,6 +69,7 @@ const STATIC_TOKEN_PRICES: Record<string, TokenPrice> = {
   "claude-3-haiku": tokenPrice(0.25, 1.25, 0.03, 0.3),
   "claude-fable-5-1": tokenPrice(10, 50, 0.25, 12.5),
   "claude-fable-5": tokenPrice(10, 50, 1, 12.5),
+  "claude-opus-5-5": tokenPrice(4, 20, 0.2, 5),
   "claude-opus-5": tokenPrice(5, 25, 0.5, 6.25),
   "claude-opus-4-1": tokenPrice(15, 75, 1.5, 18.75),
   "claude-opus-4": tokenPrice(15, 75, 1.5, 18.75),
@@ -81,7 +82,7 @@ const STATIC_TOKEN_PRICES: Record<string, TokenPrice> = {
   "claude-sonnet-4-5": tokenPrice(3, 15, 0.3, 3.75),
   "claude-sonnet-4": tokenPrice(3, 15, 0.3, 3.75),
   "claude-haiku-4-5": tokenPrice(1, 5, 0.1, 1.25),
-  "claude-opus": tokenPrice(5, 25),
+  "claude-opus": tokenPrice(4, 20, 0.2, 5),
   "claude-sonnet": tokenPrice(3, 15),
   "claude-haiku": tokenPrice(1, 5),
   "gpt-6-astra": tokenPrice(10, 50, 1),
@@ -476,9 +477,12 @@ function findPriceInMap(pricing: Map<string, TokenPrice>, model: string, kind: "
   if (exactCanonical) return exactCanonical;
 
   for (const key of sortedKeysFor(pricing, kind)) {
-    if (canonical === key || canonical.startsWith(`${key}-`)) {
-      return pricing.get(key) ?? null;
-    }
+    if (canonical === key) return pricing.get(key) ?? null;
+    if (!canonical.startsWith(`${key}-`)) continue;
+    // A shorter dynamic key is a different model. `claude-opus-5` is a prefix
+    // of `claude-opus-5-5`, and the static table names 5.5 exactly.
+    if (kind === "dynamic" && canonical in STATIC_TOKEN_PRICES) return null;
+    return pricing.get(key) ?? null;
   }
   return null;
 }

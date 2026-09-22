@@ -4191,10 +4191,10 @@ the stats and shows update guidance.
   (`WorkModelCatalog.swift`, mirroring desktop's
   `resolveCliProviderForModel`), so adding a provider means updating
   both the runtime registry and the phone's model-catalog grouping
-  together; the Claude picker order mirrors desktop (Fable 5.1, Opus 5,
-  Sonnet 5, Haiku 4.5, Opus 4.8) and legacy Sonnet 4.6 /
-  Fable 5 / Opus 4.7 selections normalize forward instead of appearing as
-  rows, while the generic `opus` alias resolves to Opus 5. The OpenAI picker
+  together; the Claude picker order mirrors desktop (Fable 5.1, Opus 5.5,
+  Sonnet 5, Haiku 4.5, Opus 5) and legacy Sonnet 4.6 /
+  Fable 5 / Opus 4.8 / Opus 4.7 selections normalize forward instead of
+  appearing as rows, while the generic `opus` alias resolves to Opus 5.5. The OpenAI picker
   always promotes GPT-6 Astra, then GPT-5.6 Sol, Terra, Luna in that
   order even when a host returns another order; Astra is the fallback default
   and GPT-5.5 remains below them. The phone prefers host-advertised reasoning
