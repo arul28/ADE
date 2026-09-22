@@ -19327,6 +19327,7 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(memory.threadState.contains("Open loop"))
     XCTAssertEqual(memory.dailyLogDate, "2026-07-04")
     XCTAssertEqual(memory.updatedAt, "2026-07-04T12:00:00.000Z")
+    XCTAssertNil(memory.projectBrief)
     XCTAssertFalse(memory.isEmpty)
   }
 

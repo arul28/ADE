@@ -1603,30 +1603,38 @@ struct CtoAttention: Codable, Hashable {
   static let idle = CtoAttention(status: .idle, awaitingInput: false, since: nil)
 }
 
-/// Returned by the `cto.getMemory` sync command: the durable facts the CTO
-/// keeps (`MEMORY.md`), the rolling `thread-state.md`, and today's daily log.
-/// Every field is tolerant of a missing/null value so a partial host response
-/// still decodes — older hosts that don't implement the command surface as a
-/// command error, not a decode failure.
+/// Returned by the `cto.getMemory` sync command: local notes, the rolling
+/// thread state, today's daily log, and the project brief, facts, and directed
+/// threads when the host sends them. Missing keys stay nil so an older host
+/// still decodes.
 struct CtoMemory: Codable, Hashable {
   var memory: String
   var threadState: String
   var dailyLog: String
   var dailyLogDate: String
   var updatedAt: String?
+  var projectBrief: String?
+  var projectThreads: String?
+  var projectItems: String?
 
   init(
     memory: String = "",
     threadState: String = "",
     dailyLog: String = "",
     dailyLogDate: String = "",
-    updatedAt: String? = nil
+    updatedAt: String? = nil,
+    projectBrief: String? = nil,
+    projectThreads: String? = nil,
+    projectItems: String? = nil
   ) {
     self.memory = memory
     self.threadState = threadState
     self.dailyLog = dailyLog
     self.dailyLogDate = dailyLogDate
     self.updatedAt = updatedAt
+    self.projectBrief = projectBrief
+    self.projectThreads = projectThreads
+    self.projectItems = projectItems
   }
 
   init(from decoder: Decoder) throws {
@@ -1639,6 +1647,9 @@ struct CtoMemory: Codable, Hashable {
     dailyLog = str(.dailyLog) ?? ""
     dailyLogDate = str(.dailyLogDate) ?? ""
     updatedAt = str(.updatedAt)
+    projectBrief = str(.projectBrief)
+    projectThreads = str(.projectThreads)
+    projectItems = str(.projectItems)
   }
 
   /// True when the host returned no substantive memory content yet.
@@ -1646,6 +1657,9 @@ struct CtoMemory: Codable, Hashable {
     memory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       && threadState.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       && dailyLog.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && (projectBrief ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && (projectThreads ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && (projectItems ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 }
 
