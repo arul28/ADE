@@ -425,7 +425,7 @@ export function ChatMacDesktopPanel({
 
   useEffect(() => {
     const node = surfaceNode;
-    if (!node || typeof ResizeObserver === "undefined") return;
+    if (!node) return;
     const measure = () => {
       const rect = node.getBoundingClientRect();
       setViewRect((current) =>
@@ -434,7 +434,11 @@ export function ChatMacDesktopPanel({
           ? current
           : { left: rect.left, top: rect.top, width: rect.width, height: rect.height });
     };
+    // The first reading does not wait on ResizeObserver. A test DOM, and any
+    // browser that has the rect API without the observer, still has to know
+    // where the picture is or every click maps to nothing.
     measure();
+    if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(measure);
     observer.observe(node);
     window.addEventListener("scroll", measure, true);
@@ -581,11 +585,16 @@ export function ChatMacDesktopPanel({
     toDisplayPoint,
     runtimePin,
     sender: fastSender,
-    // Hover is never posted. A hover `CGEvent` warps the one system cursor onto
-    // the lane's display, and doing that sixty times a second is the jitter
-    // this pane is named for. Clicks, drags and scrolls warp once and the
-    // driver puts the cursor straight back.
-    forwardPointerMoves: false,
+    // Hover posts only when the person is not sitting at the host. On this
+    // Mac a hover `CGEvent` warps the one system cursor onto the lane's
+    // display, and doing that sixty times a second is the jitter this pane is
+    // named for — the local glyph is the pointer instead. From another
+    // computer the host's cursor is free, and the picture has to track it.
+    forwardPointerMoves: !laneHostIsLocal,
+    // `home` is this window's own pointer. It is only meaningful on the Mac
+    // that owns the display; a remote window's screen coordinates would send
+    // the host's cursor somewhere that Mac has never drawn.
+    reportCursorHome: laneHostIsLocal,
   });
 
   useEffect(() => {
@@ -1067,6 +1076,7 @@ export function ChatMacDesktopPanel({
               >
                 Return to agent
               </button>
+              <span className="text-[10px] text-muted-fg">Esc</span>
             </span>
           ) : null}
 
@@ -1346,6 +1356,14 @@ export function ChatMacDesktopPanel({
       <div className={cn(WORK_TOOL_CHROME_ROW, "relative flex-nowrap gap-1")}>
         {renderChromeRow("pane")}
       </div>
+      {iHaveControl && laneHostIsLocal ? (
+        <p
+          data-testid="mac-desktop-same-machine-note"
+          className="px-1 text-[11px] leading-snug text-amber-200/90"
+        >
+          You're on this Mac, so each click moves its pointer. Escape puts it back.
+        </p>
+      ) : null}
 
       {/* ── Permission banner over a live picture ──────────────────────
           The picture streams without Accessibility; the mouse does not work.

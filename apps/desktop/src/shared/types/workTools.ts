@@ -9,10 +9,11 @@
  * private macOS display, and the last frame any of them captured.
  *
  * So iOS and the hosted web client render this shape and nothing else. There is
- * no control surface here on purpose; see `WORK_TOOLS_CONTROL_HINT`. The one
- * exception is web Mac Desktop takeover, which is negotiated separately over
- * the sync socket (`macDesktop.takeControl` and friends) and is announced by
- * `hello_ok.features.macDesktopControl`; this state shape still carries only
+ * no control surface in the snapshot on purpose; see `WORK_TOOLS_CONTROL_HINT`.
+ * Mac Desktop takeover is the exception, and it is negotiated separately over
+ * the sync socket (`macDesktop.takeControl` and friends) for both the phone and
+ * the hosted web client. The host announces it with
+ * `hello_ok.features.macDesktopControl`. This state shape still carries only
  * the description either way.
  */
 
@@ -198,11 +199,12 @@ export type WorkToolsAgentBrowserPresence = {
 /**
  * The lane's private macOS screen, as a read-only client sees it.
  *
- * A deliberately small cut of `MacDesktopStatus`. The phone and the hosted web
- * client cannot drive the display — there is no lease to take from here and no
- * pointer to move — so only what explains the lane travels: whether this host
- * can host a screen at all, the display itself, what is parked on it, who is
- * driving, whether frames are flowing, and the last frame that was captured.
+ * A deliberately small cut of `MacDesktopStatus`. Driving the display — the
+ * lease, the pointer — is a sync command (`macDesktop.takeControl` /
+ * `macDesktop.input`), not a field of this snapshot, so only what explains the
+ * lane travels: whether this host can host a screen at all, the display
+ * itself, what is parked on it, who is driving, whether frames are flowing,
+ * and the last frame that was captured.
  *
  * `supported: false` is how a non-macOS host says "this tool does not apply
  * here", exactly as `MacDesktopStatus.supported` does; clients hide the tool on

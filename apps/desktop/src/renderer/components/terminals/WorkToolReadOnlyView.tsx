@@ -579,6 +579,10 @@ function MacDesktopPanel({
     // controller needs the lane's pointer to track, so the same pump is opted
     // in here — one call per frame, latest position only.
     forwardPointerMoves: controlSupported,
+    // This tab's screen coordinates are not the host's. The sync host drops
+    // `home` either way; omitting it here means a stalled socket never carries
+    // a point that would warp the Mac's cursor to a screen it does not have.
+    reportCursorHome: false,
   });
 
   // A refused forwarded event lands in the pane's one error line, which clears
@@ -662,6 +666,29 @@ function MacDesktopPanel({
   controlHolderIdRef.current = controlHolderId;
   const returnControlRef = useRef(returnControl);
   returnControlRef.current = returnControl;
+  const cancelInputRef = useRef(realInput.cancelInput);
+  cancelInputRef.current = realInput.cancelInput;
+  /**
+   * Escape returns the lane, on this tab the same way it does in the desktop
+   * pane. Capture phase on `window` so it runs before the surface's key
+   * forwarder, which would otherwise type Escape into the app on the Mac.
+   * The local half — forget the gesture, stop the pump, free pointer capture —
+   * happens inside `cancelInput` and is not awaited: a wedged socket is the
+   * usual reason the key was pressed.
+   */
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (!controlHolderIdRef.current) return;
+      cancelInputRef.current();
+      void returnControlRef.current();
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, []);
   useEffect(() => {
     const release = (): void => {
       void returnControlRef.current();
@@ -796,6 +823,7 @@ function MacDesktopPanel({
                 >
                   Return to agent
                 </button>
+                <span className="text-[10px] text-muted-fg">Esc</span>
               </span>
             ) : (
               <button

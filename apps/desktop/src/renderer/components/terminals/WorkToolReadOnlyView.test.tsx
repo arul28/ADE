@@ -559,4 +559,31 @@ describe("WorkToolReadOnlyView", () => {
       },
     });
   });
+
+  it("returns control on Escape and does not type that key into the lane", async () => {
+    const api = controlApi();
+    installAde(
+      {
+        getLaneState: vi.fn(async () => laneState({ macDesktop: macDesktopState() })),
+        readObservationPreview: vi.fn(async () => null),
+      },
+      api,
+    );
+
+    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" />);
+    fireEvent.click(await screen.findByTestId("mac-desktop-web-takeover"));
+    await act(async () => {});
+    expect(screen.getByText("Esc")).toBeTruthy();
+
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    await waitFor(() => expect(api.returnControl).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      controllerId: api.takeControl.mock.calls[0]?.[0]?.controllerId,
+    }));
+    const calls = api.input.mock.calls.map((entry) => (entry[0] as { call?: { kind?: string } })?.call);
+    expect(calls.some((call) => call?.kind === "releaseInput")).toBe(true);
+    expect(calls.some((call) => call?.kind === "press")).toBe(false);
+    expect(screen.queryByTestId("mac-desktop-web-takeover-banner")).toBeNull();
+  });
 });

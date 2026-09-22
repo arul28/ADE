@@ -758,6 +758,24 @@ describe("Escape: the panic release", () => {
     expect(target.releasePointerCapture).toHaveBeenCalledWith(7);
   });
 
+  it("omits the viewer's screen point when this window is not on the host Mac", async () => {
+    const sent: MacDesktopInputCall[] = [];
+    const sender: MacDesktopInputSender = async (call) => { sent.push(call); return null; };
+    const { result } = renderInput(sender, { reportCursorHome: false });
+
+    await act(async () => {
+      result.current.onPointerMove(pointerEvent(40, 50));
+      result.current.onPointerDown(pointerEvent(40, 50));
+      result.current.cancelInput();
+    });
+
+    const release = sent.find((call) => call.kind === "releaseInput");
+    expect(release).toBeTruthy();
+    expect(releaseArgs(release!).homeX).toBeNull();
+    expect(releaseArgs(release!).homeY).toBeNull();
+    expect(releaseArgs(release!).button).toBe("left");
+  });
+
   it("sends no button when the gesture already closed, and never repeats a release", async () => {
     const sent: MacDesktopInputCall[] = [];
     const sender: MacDesktopInputSender = async (call) => { sent.push(call); return null; };
