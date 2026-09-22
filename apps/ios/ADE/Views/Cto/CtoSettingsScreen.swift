@@ -361,6 +361,15 @@ private struct CtoMemoryCard: View {
         if !trimmedMemory.isEmpty {
           memoryBlock(title: "Durable facts", body: trimmedMemory)
         }
+        if let brief = memory.projectBrief?.trimmingCharacters(in: .whitespacesAndNewlines), !brief.isEmpty {
+          memoryBlock(title: "Project brief", body: brief)
+        }
+        if let items = memory.projectItems?.trimmingCharacters(in: .whitespacesAndNewlines), !items.isEmpty {
+          memoryBlock(title: "Project memory", body: items)
+        }
+        if let threads = memory.projectThreads?.trimmingCharacters(in: .whitespacesAndNewlines), !threads.isEmpty {
+          memoryBlock(title: "Directed threads", body: threads)
+        }
         if !trimmedThread.isEmpty {
           memoryBlock(title: "Current thread", body: trimmedThread)
         }

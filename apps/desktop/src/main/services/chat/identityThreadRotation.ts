@@ -262,8 +262,8 @@ export function createIdentityThreadRotation<TManaged>(
    * conversation is distilled into durable memory, appended to the daily log,
    * flushed through the same continuity routine a compaction uses, and then
    * ENDED — which is what puts it in History with its turn count, transcript
-   * and all. Identity, memory, daily log and project state are untouched. Only
-   * the conversation starts over.
+   * and all. Identity, the project context store, MEMORY.md, the daily log, and
+   * project state are untouched. Only the conversation starts over.
    *
    * Refuses while a turn is running. Every entry point here — the settings
    * card, the IPC bridge, `cto_state.startFreshSession` — can be reached

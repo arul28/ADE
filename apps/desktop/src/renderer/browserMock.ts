@@ -5548,6 +5548,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         dailyLog: "09:12 — Asked for PR queue summary → 3 PRs ready, 1 blocked on CI.",
         dailyLogDate: now.slice(0, 10),
         updatedAt: now,
+        projectBrief: null,
+        projectThreads: null,
+        projectItems: null,
       }),
       updateMemory: async (arg: { memory?: string }) => ({
         memory: arg?.memory ?? "",
@@ -5555,6 +5558,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         dailyLog: "",
         dailyLogDate: now.slice(0, 10),
         updatedAt: now,
+        projectBrief: null,
+        projectThreads: null,
+        projectItems: null,
       }),
       searchMemory: resolvedArg({ query: "", rows: [] }),
       ensureSession: resolvedArg({

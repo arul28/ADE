@@ -18,6 +18,7 @@ const MONO = "var(--font-mono, ui-monospace, SFMono-Regular, monospace)";
 
 /** The files behind this pane, relative to the project. */
 const MEMORY_PATHS = [
+  { label: "Context", path: ".ade/cto/context-store.json" },
   { label: "Notes", path: ".ade/cto/MEMORY.md" },
   { label: "Working summary", path: ".ade/cto/thread-state.md" },
   { label: "Daily log", path: ".ade/cto/daily/<date>.md" },
@@ -94,8 +95,53 @@ export function CtoMemoryPanel({ accent = "#34D399" }: { accent?: string } = {})
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }} data-testid="cto-memory-panel">
       <CtoCard
-        title="Notes the CTO keeps"
-        description="You write these. The CTO reads them back on every turn, and they survive a model switch."
+        title="Project brief"
+        description="The one brief for this repository. The CTO writes it. It stays on this machine and follows the ADE account when the repo has a git remote."
+        accent={accent}
+        testId="cto-memory-brief"
+      >
+        {snapshot?.projectBrief?.trim() ? (
+          <TextBlock text={snapshot.projectBrief.trim()} />
+        ) : (
+          <p style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textMuted }}>
+            No brief yet. The CTO writes the goal, what done looks like, and the constraints.
+          </p>
+        )}
+      </CtoCard>
+
+      <CtoCard
+        title="What the CTO knows"
+        description="Facts the CTO saved for the project. They survive a restart, a crash, and a cleared session."
+        accent={accent}
+        testId="cto-memory-items"
+      >
+        {snapshot?.projectItems?.trim() ? (
+          <TextBlock text={snapshot.projectItems.trim()} collapsedHeight={180} />
+        ) : (
+          <p style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textMuted }}>
+            Nothing saved yet.
+          </p>
+        )}
+      </CtoCard>
+
+      <CtoCard
+        title="Threads the CTO directed"
+        description="Chats the CTO started. The record stays after the conversation is cleared."
+        accent={accent}
+        testId="cto-memory-threads"
+      >
+        {snapshot?.projectThreads?.trim() ? (
+          <TextBlock text={snapshot.projectThreads.trim()} collapsedHeight={160} />
+        ) : (
+          <p style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textMuted }}>
+            No threads yet.
+          </p>
+        )}
+      </CtoCard>
+
+      <CtoCard
+        title="Notes"
+        description="A local notes file. The brief and facts above are the copy that follows the account."
         accent={accent}
         testId="cto-memory-notes"
         right={
@@ -198,11 +244,16 @@ export function CtoMemoryPanel({ accent = "#34D399" }: { accent?: string } = {})
         )}
       </CtoCard>
 
-      <CtoCard title="Where it lives" accent={accent} testId="cto-memory-paths">
+      <CtoCard
+        title="Where it lives"
+        description="Local cache on this machine. context-store.json is not a git file. It follows the ADE account when the repo has a remote."
+        accent={accent}
+        testId="cto-memory-paths"
+      >
         <dl
           style={{
             display: "grid",
-            gridTemplateColumns: "minmax(0, 120px) minmax(0, 1fr)",
+            gridTemplateColumns: "minmax(0, 140px) minmax(0, 1fr)",
             gap: "6px 16px",
             margin: 0,
           }}

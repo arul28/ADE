@@ -86,6 +86,7 @@ import { chatLivenessReader, createPrMergeAutoSettlementService } from "../../de
 import { createPrSummaryService } from "../../desktop/src/main/services/prs/prSummaryService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
 import { createCtoMemoryService } from "../../desktop/src/main/services/cto/ctoMemoryService";
+import { projectContextAccountPort } from "../../desktop/src/main/services/cto/projectContextStore";
 import { createCtoVoiceRuntimeService } from "../../desktop/src/main/services/cto/ctoVoiceRuntimeService";
 import type { createLinearCredentialService } from "../../desktop/src/main/services/cto/linearCredentialService";
 import { createLinearOAuthService } from "../../desktop/src/main/services/cto/linearOAuthService";
@@ -1353,6 +1354,9 @@ export async function createAdeRuntime(args: {
     const ctoMemoryService = createCtoMemoryService({
       adeDir: paths.adeDir,
       logger,
+      account: accountSettingsStore
+        ? projectContextAccountPort({ projectRoot, store: accountSettingsStore })
+        : null,
     });
     const ctoStateService = createCtoStateService({
       db,
