@@ -316,7 +316,7 @@ import {
   startBrainLoopWatchdog,
 } from "./services/runtime/brainLoopWatchdog";
 import type { BrainMemoryRestartGuard } from "./services/runtime/brainMemoryRestart";
-import { startBrainHeartbeat } from "./services/runtime/brainHeartbeat";
+import { servesMachineRuntimeEndpoint, startBrainHeartbeat } from "./services/runtime/brainHeartbeat";
 
 export type JsonObject = Record<string, unknown>;
 
@@ -21130,11 +21130,6 @@ async function runServe(
   // `com.ade.watchdog` launch agent on macOS, the PowerShell supervisor loop on
   // Windows. It ticks even when the brain is completely idle, which is exactly
   // the state a wedge otherwise hides in.
-  stopBrainHeartbeat = startBrainHeartbeat({
-    runtimeDir: layout.runtimeDir,
-    warn: (event, meta) => headlessProjectLogger.warn(event, meta),
-    info: (event, meta) => headlessProjectLogger.info(event, meta),
-  });
   const rawSocketPath =
     readValue(args, ["--socket"]) ??
     process.env.ADE_RPC_SOCKET_PATH?.trim() ??
@@ -21142,6 +21137,44 @@ async function runServe(
   const socketPath = isAdeRuntimeNamedPipePath(rawSocketPath)
     ? rawSocketPath
     : path.resolve(rawSocketPath);
+  /*
+   * Only the MACHINE brain publishes the machine heartbeat.
+   *
+   * `layout` is the machine layout, so `layout.runtimeDir` is the one
+   * `~/.ade/runtime` every brain on the box shares. This call used to run
+   * unconditionally, and before `--socket` or `--no-sync` had even been read —
+   * so the last `ade serve` to start, dev brain included, overwrote
+   * `heartbeat.json` with its own pid. On the owner's machine that file named a
+   * lane's dev brain for five hours while the installed brain ran untouched
+   * beside it.
+   *
+   * It is not a cosmetic file. `com.ade.watchdog` reads it from outside the
+   * process to tell a wedged brain from a busy one, and a stale heartbeat plus
+   * a live pid is its definition of a wedge. Pointing it at the wrong process
+   * makes every judgement it reaches meaningless.
+   *
+   * The socket is the exact test, and a better one than `--no-sync`: a brain
+   * serving the machine endpoint IS the machine brain, whatever its flags.
+   */
+  const servesMachineEndpoint = servesMachineRuntimeEndpoint({
+    requestedSocketPath: rawSocketPath,
+    resolvedSocketPath: socketPath,
+    machineSocketPath: layout.socketPath,
+    isNamedPipe: isAdeRuntimeNamedPipePath(rawSocketPath),
+    resolve: (value) => path.resolve(value),
+  });
+  if (servesMachineEndpoint) {
+    stopBrainHeartbeat = startBrainHeartbeat({
+      runtimeDir: layout.runtimeDir,
+      warn: (event, meta) => headlessProjectLogger.warn(event, meta),
+      info: (event, meta) => headlessProjectLogger.info(event, meta),
+    });
+  } else {
+    headlessProjectLogger.info("brain.heartbeat_skipped_non_machine_socket", {
+      socketPath,
+      machineSocketPath: layout.socketPath,
+    });
+  }
   const port = parseOptionalPort(readValue(args, ["--port"]), "--port");
   const syncEnabled = !readFlag(args, ["--no-sync"]);
   // `--profile embedded` marks this runtime as a guest inside an external

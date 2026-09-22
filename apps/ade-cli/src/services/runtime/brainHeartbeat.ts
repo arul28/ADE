@@ -25,6 +25,38 @@ export { writeJsonAtomic };
 
 export const BRAIN_HEARTBEAT_FILE = "heartbeat.json";
 
+/**
+ * May THIS brain publish the machine heartbeat?
+ *
+ * Only the brain serving the machine endpoint may. `~/.ade/runtime` is shared
+ * by every brain on the box, so an unconditional publish meant the last
+ * `ade serve` to start — a lane's dev brain, launched with its own `--socket`
+ * — replaced the machine brain's pid with its own. On the owner's machine that
+ * file named a dev brain for five hours while the installed brain ran beside
+ * it, and `com.ade.watchdog` reads it from outside the process to tell a
+ * wedged brain from a busy one.
+ *
+ * The socket is a better test than `--no-sync`: a brain serving the machine
+ * endpoint is the machine brain whatever its flags, and a brain on its own
+ * socket is not, whatever its flags.
+ */
+export function servesMachineRuntimeEndpoint(args: {
+  /** The socket as the caller spelled it, before resolution. */
+  requestedSocketPath: string;
+  /** The same path resolved, or the pipe name unchanged on Windows. */
+  resolvedSocketPath: string;
+  machineSocketPath: string;
+  isNamedPipe: boolean;
+  resolve: (value: string) => string;
+}): boolean {
+  if (args.isNamedPipe) {
+    // Named pipes are compared verbatim: there is no filesystem to resolve
+    // them against, and case-insensitivity is the pipe server's business.
+    return args.requestedSocketPath === args.machineSocketPath;
+  }
+  return args.resolvedSocketPath === args.resolve(args.machineSocketPath);
+}
+
 /** How often the brain refreshes the heartbeat. */
 export const BRAIN_HEARTBEAT_INTERVAL_MS = 15_000;
 
