@@ -84,6 +84,7 @@ const DISK: AppleDeviceDiskUsage = {
   devices: [
     { udid: "pro", bytes: 5 * 1024 ** 3 },
     { udid: "repro", bytes: 2 * 1024 ** 3 },
+    { udid: "pad", bytes: 3 * 1024 ** 3 },
   ],
   root: "/devices",
   measuredAt: "2026-09-21T00:00:00.000Z",
@@ -264,11 +265,25 @@ describe("AppleDevicePicker the per-device menu", () => {
 });
 
 describe("AppleDevicePicker create a new one", () => {
-  it("sits at the foot of the page with a row per installed device", () => {
+  it("sits at the foot of the page and offers only devices a clone can be made FROM", () => {
     const { container } = renderPicker();
     const section = sectionOf(container, "Create a new one");
     expect(section).toBeTruthy();
-    expect(section.querySelectorAll("[data-apple-create-source]")).toHaveLength(5);
+    // `simctl clone` fails on a booted device, and a device another lane holds
+    // is not this panel's to copy. Five installed, two booted (one of those
+    // held elsewhere) leaves three.
+    expect(section.querySelectorAll("[data-apple-create-source]")).toHaveLength(3);
+    expect(section.querySelector('[data-apple-create-source="pro"]')).toBeNull();
+    expect(section.querySelector('[data-apple-create-source="repro"]')).toBeNull();
+  });
+
+  it("names the source device plainly, without repeating its own model", () => {
+    const { container } = renderPicker();
+    // `appleDeviceModelLine` renders "iPad Pro 13-inch M4 · iPad Pro 13-inch
+    // M4" when the name already IS the model, which is what the row showed.
+    const row = container.querySelector('[data-apple-create-source="pad"]') as HTMLElement;
+    const label = row.querySelector("span")?.textContent ?? "";
+    expect(label).toBe("iPad Pro 13-inch M4");
   });
 
   it("says what a copy costs, and that nothing is downloaded", () => {
@@ -276,32 +291,29 @@ describe("AppleDevicePicker create a new one", () => {
     // `simctl clone` duplicates the source's data directory, so the source's
     // measured size IS the estimate. The runtime is not fetched again.
     expect(
-      (container.querySelector('[data-apple-create-source="pro"]') as HTMLElement).textContent,
-    ).toContain("copy costs about 5.0 GB, no download");
+      (container.querySelector('[data-apple-create-source="pad"]') as HTMLElement).textContent,
+    ).toContain("copy costs about 3.0 GB, no download");
     // Unmeasured devices still say the part that is certain.
     expect(
-      (container.querySelector('[data-apple-create-source="pad"]') as HTMLElement).textContent,
+      (container.querySelector('[data-apple-create-source="max"]') as HTMLElement).textContent,
     ).toContain("already installed, no download");
   });
 
   it("says it is measuring rather than guessing a number", () => {
     const { container } = renderPicker({ measuringDisk: true });
     expect(
-      (container.querySelector('[data-apple-create-source="pro"]') as HTMLElement).textContent,
+      (container.querySelector('[data-apple-create-source="pad"]') as HTMLElement).textContent,
     ).toContain("measuring…");
   });
 
   it("defaults to a template that can actually be cloned, and creates from it", () => {
     const { container, onCreate } = renderPicker({ lastUsedUdid: "repro" });
-    // "repro" is the last used AND held by another lane, so it must not be the
-    // default the Create button acts on.
+    // "repro" is the last used AND held by another lane, so it is not offered
+    // as a source at all and must not be what Create acts on.
+    expect(container.querySelector('[data-apple-create-source="repro"]')).toBeNull();
     fireEvent.click(screen.getByLabelText("Create a new simulator for this lane"));
     expect(onCreate).toHaveBeenCalledTimes(1);
     expect(vi.mocked(onCreate).mock.calls[0]?.[0]).not.toBe("repro");
-    expect(
-      (container.querySelector('[data-apple-create-source="repro"]') as HTMLElement)
-        .getAttribute("aria-checked"),
-    ).toBe("false");
   });
 
   it("creates from the row the user picked", () => {

@@ -29,7 +29,6 @@ import {
 } from "../ui/appleIcons";
 import {
   appleDeviceIdentity,
-  appleDeviceModelLine,
   groupAppleSimulatorsByFamily,
   type AppleDeviceFamilyId,
 } from "./appleDeviceFamily";
@@ -191,6 +190,14 @@ export function AppleDevicePicker({
   );
 
   const freeCount = partition.available.length;
+  const cannotClone = useMemo(
+    () => new Set(
+      entries
+        .filter((entry) => entry.owner || isAppleSimulatorBooted(entry.simulator))
+        .map((entry) => entry.simulator.udid),
+    ),
+    [entries],
+  );
 
   const defaultTemplate = useMemo(
     () => appleDefaultTemplateUdid({ installed, lastUsedUdid, owners }),
@@ -251,6 +258,7 @@ export function AppleDevicePicker({
 
           <CreateSection
             templates={templates}
+            cannotClone={cannotClone}
             value={selectedSource}
             disk={disk}
             measuringDisk={measuringDisk}
@@ -287,7 +295,7 @@ function PickerPage({
       <WorkToolPickerBackdrop theme={theme} playing={playing} />
       <div className="relative flex h-full min-h-0 min-w-0 flex-col overflow-y-auto">
         <div
-          className="relative m-auto flex w-full min-w-0 flex-col gap-4 px-5 py-6"
+          className="relative mx-auto flex w-full min-w-0 flex-col gap-4 px-5 py-6"
           style={{ maxWidth: COLUMN_MAX_PX }}
         >
           {children}
@@ -342,12 +350,12 @@ function AvailableHeading({
               {group.devices.map((simulator) => (
                 <Glyph
                   key={simulator.udid}
-                  size={13}
+                  size={15}
                   aria-hidden="true"
                   data-apple-glyph={takenUdids.has(simulator.udid) ? "taken" : "free"}
                   className={cn(
                     "shrink-0",
-                    takenUdids.has(simulator.udid) ? "text-muted-fg/35" : "text-fg/70",
+                    takenUdids.has(simulator.udid) ? "text-muted-fg/55" : "text-fg",
                   )}
                 />
               ))}
@@ -584,6 +592,7 @@ function DeviceMenu({
  */
 function CreateSection({
   templates,
+  cannotClone,
   value,
   disk,
   measuringDisk,
@@ -594,6 +603,8 @@ function CreateSection({
   onCreate,
 }: {
   templates: readonly AppleInstalledSimulator[];
+  /** Udids no clone can be made from: booted, or held by another lane. */
+  cannotClone: ReadonlySet<string>;
   value: string | null;
   disk: AppleDeviceDiskUsage | null | undefined;
   measuringDisk: boolean;
@@ -604,6 +615,15 @@ function CreateSection({
   onChange: (udid: string) => void;
   onCreate: () => void;
 }) {
+  /*
+   * Only devices a clone can actually be made FROM.
+   *
+   * `simctl clone` fails on a booted device, and a device another lane holds is
+   * not this panel's to copy. The list used to offer every installed device, so
+   * the top row on the owner's machine was a booted simulator on hold
+   * elsewhere — a source that could only ever fail.
+   */
+  const sources = templates.filter((entry) => !cannotClone.has(entry.udid));
   const costFor = (simulator: AppleInstalledSimulator): string => {
     const size = appleDeviceDiskLabel(disk, simulator.udid);
     if (size) return `${simulator.runtime} · copy costs about ${size}, no download`;
@@ -633,7 +653,7 @@ function CreateSection({
           aria-label="Device to copy"
           className="flex min-w-0 flex-col"
         >
-          {templates.map((simulator) => {
+          {sources.map((simulator) => {
             const selected = simulator.udid === value;
             return (
               <button
@@ -657,7 +677,7 @@ function CreateSection({
                     selected ? "font-medium text-fg" : "text-fg/80",
                   )}
                 >
-                  {appleDeviceModelLine(simulator)}
+                  {simulator.name}
                 </span>
                 <span className="min-w-0 shrink-0 font-sans text-[10px] leading-4 text-muted-fg">
                   {costFor(simulator)}
