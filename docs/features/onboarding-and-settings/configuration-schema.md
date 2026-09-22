@@ -443,6 +443,14 @@ built-in), `executor`, `contextSources`,
 git events, file changes, lane lifecycle, Linear webhooks, GitHub
 webhooks, and schedules.
 
+`coerceAutomationGuardrails` keeps `confidenceThreshold`, `maxFindings`,
+`reserveBudget`, and `activeHours`; there is no duration or dollar
+guardrail, so legacy `maxDurationMin` / `budgetUsd` keys are dropped on
+load. Optional agent limits (`stopAfterMin`, `stopWhenIdleMin`) are read
+from `execution.session` and from `agent-session` actions through
+`normalizeAutomationAgentLimits` (`shared/automationLimits.ts`); see
+[automations guardrails](../automations/guardrails.md#agent-limits-opt-in).
+
 ## Linear sync
 
 ```ts

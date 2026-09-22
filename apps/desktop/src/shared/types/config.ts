@@ -723,7 +723,8 @@ export type AutomationTrigger = {
   activeHours?: AutomationActiveHours;
 };
 
-export type AutomationAction = {
+/** Agent limits apply to `agent-session` actions only. */
+export type AutomationAction = AutomationAgentLimits & {
   type: AutomationActionType;
   /** Template for create-lane action names. Supports {{trigger.*}} placeholders. */
   laneNameTemplate?: string;
@@ -739,6 +740,11 @@ export type AutomationAction = {
   continueOnFailure?: boolean;
   /** Run this action even when an earlier non-continuable step failed. */
   alwaysRun?: boolean;
+  /**
+   * Kill a `run-command` step's process after this long (default 5 minutes).
+   * Agent steps ignore it: their optional limits are `stopAfterMin` and
+   * `stopWhenIdleMin`.
+   */
   timeoutMs?: number;
   retry?: number;
   /** Options forwarded to laneService.delete by delete-lane actions. */
@@ -792,6 +798,21 @@ export type AutomationAction = {
   reasoningEffort?: ThinkingLevel | null;
 };
 
+/**
+ * Optional limits on an automation's agent turn. Unset means no limit, the
+ * same as a chat started by hand; either one interrupts the turn and leaves
+ * the chat open.
+ */
+export type AutomationAgentLimits = {
+  /** Stop the turn after this many minutes, whatever it is doing. */
+  stopAfterMin?: number;
+  /**
+   * Stop the turn after this many minutes with no activity. Open tool calls,
+   * commands, subagents and approvals do not count as idle.
+   */
+  stopWhenIdleMin?: number;
+};
+
 export type AutomationExecutionKind = "agent-session" | "built-in";
 
 export type AutomationLaneMode = "create" | "reuse" | "require-on-trigger";
@@ -831,7 +852,7 @@ export type AutomationExecution = {
    * Agent-session specific hints. Sessions launched from automations stay in
    * automation history and are intentionally hidden from the Work tab.
    */
-  session?: {
+  session?: AutomationAgentLimits & {
     title?: string | null;
     reasoningEffort?: string | null;
     fastMode?: boolean;
@@ -864,8 +885,6 @@ export type AutomationContextSource = {
 };
 
 export type AutomationGuardrails = {
-  budgetUsd?: number;
-  maxDurationMin?: number;
   activeHours?: AutomationActiveHours;
   confidenceThreshold?: number;
   maxFindings?: number;

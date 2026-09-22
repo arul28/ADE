@@ -80,10 +80,16 @@ export async function requestModelCatalog(
     throw new Error("Agent chat model catalog is not available in this ADE runtime.");
   }
   const pin = options.pin ?? null;
-  return adoptCatalogModelManifest(pin ? await bridge(args ?? {}, pin) : await bridge(args ?? {}));
+  if (pin) {
+    // A pinned (foreign) machine's rows already live in its own catalog scope;
+    // only the primary host drives the process-wide registry, so two hosts on
+    // different ADE versions cannot overwrite each other's directory.
+    return await bridge(args ?? {}, pin);
+  }
+  return adoptCatalogModelManifest(await bridge(args ?? {}));
 }
 
-/** Overlay the host's model directory before any picker reads the registry. */
+/** Overlay the primary host's model directory before any picker reads the registry. */
 function adoptCatalogModelManifest(catalog: AgentChatModelCatalog): AgentChatModelCatalog {
   adoptHostModelManifest(catalog?.modelManifest);
   return catalog;
