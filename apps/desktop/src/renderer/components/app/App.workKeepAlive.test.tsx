@@ -48,6 +48,16 @@ const appStoreState = vi.hoisted(() => ({
   launchPromptClipboardNoticeEnabled: true,
   promptStashButtonEnabled: true,
   voiceInputEnabled: true,
+  // `App` mounts the account-settings sync, which subscribes to the Apple
+  // device preferences on the ROOT store. Without the slice the selector reads
+  // `undefined.realisticBody` and every test in this file dies at render.
+  appleDevice: {
+    realisticBody: true,
+    recordingTapRings: true,
+    recordingKeyBadges: true,
+    remoteBitrateKbpsCap: 2500,
+    recordingsWarnBytes: 5 * 1024 ** 3,
+  },
   workViewByProject: {} as Record<string, Record<string, unknown>>,
   setWorkViewState: vi.fn((projectRoot: string | null | undefined, next: Record<string, unknown>) => {
     if (!projectRoot) return;

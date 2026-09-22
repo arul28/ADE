@@ -829,6 +829,7 @@ import type { CtoMemoryService } from "../cto/ctoMemoryService";
 import type { IssueTracker } from "../cto/issueTracker";
 import type { createPrService } from "../prs/prService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
+import { notifySimRecordingTurnEnded } from "../ios/recording/simRecordingService";
 import {
   buildOpenCodePromptParts,
   buildOpenCodeV2PromptAttachments,
@@ -16800,6 +16801,12 @@ export function createAgentChatService(args: {
     const turnStartedAt = managed.session.currentTurnStartedAt;
     setSessionIdle(managed, { idleSinceAt: nowIso() });
     maybeRefreshIdleStatusLine(managed, turnStartedAt);
+    // Auto-recording on an Apple device is owned by the turn that started it
+    // (`docs/plans/apple-device-env.md` §5). This is the provider-agnostic
+    // place every turn settles, so it is the only place the hook belongs.
+    // `turnStartedAt` is the same guard `maybeRefreshIdleStatusLine` uses: no
+    // turn ran, nothing ended. Fire-and-forget and error-safe by construction.
+    if (turnStartedAt) notifySimRecordingTurnEnded(managed.session.id);
   };
 
   const recoverDetachedChatAfterRestart = (

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { RuntimeRpcClient, type RuntimeRpcTransport, type RuntimeRpcTransportCloseInfo } from "./runtimeRpcClient";
+import { describeRuntimeRpcCall, RuntimeRpcClient, type RuntimeRpcTransport, type RuntimeRpcTransportCloseInfo } from "./runtimeRpcClient";
 
 class MockTransport implements RuntimeRpcTransport {
   readonly writes: string[] = [];
@@ -357,5 +357,24 @@ describe("RuntimeRpcClient", () => {
     unsubscribe();
     transport.emitData({ jsonrpc: "2.0", method: "runtime/event", params: { projectId: "project-2" } });
     expect(onRuntimeEvent).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("describeRuntimeRpcCall", () => {
+  it("names the action a timeout was waiting for", () => {
+    // Every runtime action in the product travels as `ade/actions/call`, so
+    // the round-2 Apple log was dozens of identical timeout lines that named
+    // nothing. The envelope already knew.
+    expect(describeRuntimeRpcCall("ade/actions/call", {
+      projectId: "p",
+      name: "run_ade_action",
+      arguments: { domain: "ios_simulator", action: "tap", args: { x: 1, y: 2 } },
+    })).toBe("ade/actions/call ios_simulator.tap");
+  });
+
+  it("falls back to the bare method when there is no action in it", () => {
+    expect(describeRuntimeRpcCall("projects.list", {})).toBe("projects.list");
+    expect(describeRuntimeRpcCall("ade/actions/call", { name: "run_ade_action" }))
+      .toBe("ade/actions/call");
   });
 });

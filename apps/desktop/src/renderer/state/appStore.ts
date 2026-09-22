@@ -8,6 +8,12 @@ import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
 import { originUrlForBinding } from "../components/lanes/laneMachines";
 import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry";
 import { normalizeHarnessPresetList, type HarnessPreset } from "../../shared/harnessPresets";
+import {
+  DEFAULT_APPLE_DEVICE_PREFERENCES,
+  normalizeAppleDevicePreferences,
+  serializeAppleDevicePreferences,
+  type AppleDevicePreferences,
+} from "../../shared/appleDeviceSettings";
 import { parseCodedErrorMessage } from "../lib/codedError";
 import { toAdeRecoveryErrorCode, type AdeRecoveryErrorCode } from "../../shared/types/recovery";
 import { isWebClientMode } from "../lib/webClientMode";
@@ -953,6 +959,11 @@ type PersistedUserPreferences = {
    * you sign in on converges on the same list.
    */
   harnessPresets: HarnessPreset[];
+  /**
+   * Apple simulator/preview presentation. Persisted under `apple` in the
+   * blob so the keys match `docs/plans/apple-device-env-contracts.md`.
+   */
+  appleDevice: AppleDevicePreferences;
   /** Set true the first time the user changes the chat font size; locks the
    *  large-screen auto-size so it never overrides their choice again. */
   userOverrodeChatFontSize: boolean;
@@ -1019,6 +1030,10 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
       chatChromeTint: coercePersistedChatChromeTint(parsed as Record<string, unknown>),
       chatShellGeometry: normalizeChatShellGeometry(parsed.chatShellGeometry),
       harnessPresets: normalizeHarnessPresetList(parsed.harnessPresets),
+      appleDevice: normalizeAppleDevicePreferences(
+        (parsed as { apple?: unknown; appleDevice?: unknown }).apple
+          ?? (parsed as { appleDevice?: unknown }).appleDevice,
+      ),
       userOverrodeChatFontSize: parsed.userOverrodeChatFontSize === true,
     };
   } catch {
@@ -1064,13 +1079,18 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
     chatChromeTint: "colored",
     chatShellGeometry: "default",
     harnessPresets: [],
+    appleDevice: { ...DEFAULT_APPLE_DEVICE_PREFERENCES },
     userOverrodeChatFontSize: false,
   };
 }
 
 function persistUserPreferences(prefs: PersistedUserPreferences) {
   try {
-    window.localStorage.setItem(USER_PREFERENCES_STORAGE_KEY, JSON.stringify(prefs));
+    const { appleDevice, ...rest } = prefs;
+    window.localStorage.setItem(USER_PREFERENCES_STORAGE_KEY, JSON.stringify({
+      ...rest,
+      apple: serializeAppleDevicePreferences(appleDevice),
+    }));
   } catch {
     // ignore
   }
@@ -1095,6 +1115,7 @@ function persistUserPreferencesFrom(state: {
   chatChromeTint: ChatChromeTint;
   chatShellGeometry: ChatShellGeometry;
   harnessPresets: HarnessPreset[];
+  appleDevice: AppleDevicePreferences;
   userOverrodeChatFontSize: boolean;
 }) {
   persistUserPreferences({
@@ -1115,6 +1136,7 @@ function persistUserPreferencesFrom(state: {
     chatChromeTint: state.chatChromeTint,
     chatShellGeometry: state.chatShellGeometry,
     harnessPresets: state.harnessPresets,
+    appleDevice: state.appleDevice,
     userOverrodeChatFontSize: state.userOverrodeChatFontSize,
   });
 }
@@ -1277,6 +1299,7 @@ export type AppState = {
   chatShellGeometry: ChatShellGeometry;
   /** Saved harness presets, newest edit last. See `shared/harnessPresets.ts`. */
   harnessPresets: HarnessPreset[];
+  appleDevice: AppleDevicePreferences;
   providerMode: ProviderMode;
   availableModels: ModelDescriptor[];
   laneInspectorTabs: Record<string, LaneInspectorTab>;
@@ -1432,6 +1455,7 @@ export type AppState = {
   setHarnessPresets: (
     next: HarnessPreset[] | ((prev: HarnessPreset[]) => HarnessPreset[]),
   ) => void;
+  setAppleDevicePreferences: (next: Partial<AppleDevicePreferences>) => void;
   /** Resets only theme + chat font size (narrow restore — per product spec). */
   resetThemeAndChatFontDefaults: () => void;
   setTerminalPreferences: (
@@ -1725,6 +1749,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   chatChromeTint: initialUserPreferences.chatChromeTint,
   chatShellGeometry: initialUserPreferences.chatShellGeometry,
   harnessPresets: initialUserPreferences.harnessPresets,
+  appleDevice: initialUserPreferences.appleDevice,
   providerMode: "guest",
   availableModels: [...MODEL_REGISTRY].filter((m) => !m.deprecated),
   laneInspectorTabs: {},
@@ -2209,6 +2234,12 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       const value = normalizeHarnessPresetList(resolved);
       persistUserPreferencesFrom({ ...prev, harnessPresets: value });
       return { harnessPresets: value };
+    }),
+  setAppleDevicePreferences: (next) =>
+    set((prev) => {
+      const appleDevice = normalizeAppleDevicePreferences({ ...prev.appleDevice, ...next });
+      persistUserPreferencesFrom({ ...prev, appleDevice });
+      return { appleDevice };
     }),
   resetThemeAndChatFontDefaults: () =>
     set((prev) => {
@@ -3122,6 +3153,7 @@ export function createProjectAppStore(
     chatChromeTint: rootState.chatChromeTint,
     chatShellGeometry: rootState.chatShellGeometry,
     harnessPresets: rootState.harnessPresets,
+    appleDevice: rootState.appleDevice,
     smartTooltipsEnabled: rootState.smartTooltipsEnabled,
     launchPromptClipboardEnabled: rootState.launchPromptClipboardEnabled,
     launchPromptClipboardNoticeEnabled: rootState.launchPromptClipboardNoticeEnabled,
@@ -3139,6 +3171,7 @@ export function createProjectAppStore(
     setChatChromeTint: rootState.setChatChromeTint,
     setChatShellGeometry: rootState.setChatShellGeometry,
     setHarnessPresets: rootState.setHarnessPresets,
+    setAppleDevicePreferences: rootState.setAppleDevicePreferences,
     resetThemeAndChatFontDefaults: rootState.resetThemeAndChatFontDefaults,
     setSmartTooltipsEnabled: rootState.setSmartTooltipsEnabled,
     setLaunchPromptClipboardEnabled: rootState.setLaunchPromptClipboardEnabled,

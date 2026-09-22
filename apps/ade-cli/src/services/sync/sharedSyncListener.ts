@@ -33,6 +33,7 @@ import {
   createAttachmentUploadRegistry,
   type AttachmentUploadRegistry,
 } from "./attachmentUploadService";
+import { APPLE_STREAM_PATH_PREFIX, tryRouteAppleStreamSocket } from "./appleStreamListenerRoute";
 
 // Re-exported so existing importers (and `ade doctor`) keep their entry point.
 export {
@@ -572,8 +573,17 @@ export function createSharedSyncListener(options: {
         server: candidateHttpServer,
         maxPayload: maxPayloadBytes,
         perMessageDeflate: SYNC_PER_MESSAGE_DEFLATE_OPTIONS,
-        path: SYNC_WEBSOCKET_PATH,
-        verifyClient: (info: { origin?: string }) => {
+        // Deliberately no `path` option: this listener serves TWO socket
+        // shapes — the sync protocol at `/`, and the Apple device video pipe
+        // at `/apple/stream/<ticket>`. `ws`'s built-in path filter accepts
+        // exactly one, so the check moves here where it can accept both and
+        // still refuse everything else at the HTTP layer with a 401.
+        verifyClient: (info: { origin?: string; req?: { url?: string | null } }) => {
+          const pathname = (info.req?.url ?? SYNC_WEBSOCKET_PATH).split("?")[0] ?? SYNC_WEBSOCKET_PATH;
+          if (pathname !== SYNC_WEBSOCKET_PATH && !pathname.startsWith(APPLE_STREAM_PATH_PREFIX)) {
+            logger.debug?.("sync_listener.path_rejected", { pathname });
+            return false;
+          }
           const origin = info.origin?.trim();
           if (!origin || SYNC_BROWSER_ORIGINS.has(origin)) return true;
           logger.debug?.("sync_listener.origin_rejected", { origin });
@@ -584,6 +594,11 @@ export function createSharedSyncListener(options: {
       // Install the handler before the validation RTT so a LAN peer that
       // arrives in that narrow window is parked/owned instead of orphaned.
       candidateServer.on("connection", (ws, request) => {
+        // Apple device video rides a second socket on this listener
+        // (`/apple/stream/<ticket>`). Divert it before any host or the parking
+        // lot sees it: it is a binary pipe, not a sync peer, and parking one
+        // would hand a video socket to the next project's host on a switch.
+        if (tryRouteAppleStreamSocket(ws, request)) return;
         const connection: SharedSyncListenerConnection = {
           ws,
           remoteAddress: request.socket.remoteAddress ?? null,

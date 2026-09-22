@@ -1,12 +1,12 @@
 import { useState } from "react";
-import { Copy, CursorClick, Desktop, DeviceMobile, Wrench } from "@phosphor-icons/react";
+import { Copy, Desktop, DeviceMobile, Lightning, Wrench } from "@phosphor-icons/react";
 import type { IosSimulatorDevice, IosSimulatorStatus, IosSimulatorToolStatus } from "../../../shared/types";
 import { cn } from "../ui/cn";
 
 export type IosSimChipState = "ok" | "warn" | "missing";
 
 export type IosSimToolChip = {
-  key: "macos" | "xcode" | "runtime" | "controls";
+  key: "macos" | "xcode" | "runtime" | "helper";
   label: string;
   state: IosSimChipState;
   /** One line. A shell command when there is one, otherwise a short instruction. */
@@ -19,7 +19,7 @@ const CHIP_ICON: Record<IosSimToolChip["key"], typeof Desktop> = {
   macos: Desktop,
   xcode: Wrench,
   runtime: DeviceMobile,
-  controls: CursorClick,
+  helper: Lightning,
 };
 
 /** Per-chip accent so a healthy row reads as a palette, not a grey list. */
@@ -27,14 +27,14 @@ const CHIP_OK_TONE: Record<IosSimToolChip["key"], string> = {
   macos: "border-sky-300/20 bg-sky-400/[0.07] text-sky-50/80",
   xcode: "border-violet-300/20 bg-violet-400/[0.07] text-violet-50/80",
   runtime: "border-emerald-300/20 bg-emerald-400/[0.07] text-emerald-50/80",
-  controls: "border-cyan-300/20 bg-cyan-400/[0.07] text-cyan-50/80",
+  helper: "border-cyan-300/20 bg-cyan-400/[0.07] text-cyan-50/80",
 };
 
 const CHIP_OK_DOT: Record<IosSimToolChip["key"], string> = {
   macos: "bg-sky-300/85",
   xcode: "bg-violet-300/85",
   runtime: "bg-emerald-300/85",
-  controls: "bg-cyan-300/85",
+  helper: "bg-cyan-300/85",
 };
 
 const WARN_TONE = "border-amber-300/24 bg-amber-400/[0.09] text-amber-50/85";
@@ -52,12 +52,12 @@ function firstHint(...tools: Array<IosSimulatorToolStatus | undefined>): string 
 
 function looksLikeCommand(hint: string | null): boolean {
   if (!hint) return false;
-  return /^(brew|xcode-select|sudo|npm|pip|gh|open|softwareupdate|idb)\b/u.test(hint.trim());
+  return /^(brew|xcode-select|sudo|npm|pip|gh|open|softwareupdate)\b/u.test(hint.trim());
 }
 
 /**
  * Collapses the tool matrix into four chips. Required gaps read rose, the
- * interact-only gap (idb) reads amber, everything healthy keeps its own accent.
+ * helper gap reads amber, everything healthy keeps its own accent.
  *
  * `devices` is the available-device list, and it is what makes the Runtime chip
  * mean what it says: `simulator_window` alone is only "Simulator.app exists",
@@ -73,17 +73,19 @@ export function buildIosSimToolChips(
   const xcrun = byName.get("xcrun");
   const xcodebuild = byName.get("xcodebuild");
   const simulatorWindow = byName.get("simulator_window");
-  const idb = byName.get("idb");
-  const idbCompanion = byName.get("idb_companion");
+  // There is one engine now: the vendored Swift helper replaced idb and
+  // idb_companion, so one tool entry answers for tap, type, drag, the
+  // framebuffer and the accessibility tree.
+  const helper = byName.get("helper");
   const onMac = status ? status.platform === "darwin" : true;
 
   const xcodeOk = Boolean(xcrun?.available && xcodebuild?.available);
   const hasRuntimeDevice = devices.some((simulator) => simulator.isAvailable);
   const runtimeOk = Boolean(simulatorWindow?.available) && hasRuntimeDevice;
-  const controlsOk = Boolean(idb?.available && idbCompanion?.available);
+  const helperOk = Boolean(helper?.available);
   const xcodeHint = firstHint(xcodebuild, xcrun);
   const runtimeHint = firstHint(simulatorWindow);
-  const controlsHint = firstHint(idb, idbCompanion);
+  const helperHint = firstHint(helper);
 
   return [
     {
@@ -108,12 +110,13 @@ export function buildIosSimToolChips(
       hintIsCommand: runtimeOk ? false : looksLikeCommand(runtimeHint),
     },
     {
-      key: "controls",
-      label: "Controls",
-      // idb is optional for viewing but is exactly what tap/type/drag need.
-      state: controlsOk ? "ok" : "warn",
-      hint: controlsOk ? null : controlsHint ?? "brew install facebook/fb/idb-companion",
-      hintIsCommand: controlsOk ? false : looksLikeCommand(controlsHint) || !controlsHint,
+      key: "helper",
+      label: "Helper",
+      // The helper ships with ADE, so a missing one is a broken build rather
+      // than something the user forgot to install: warn, not missing.
+      state: helperOk ? "ok" : "warn",
+      hint: helperOk ? null : helperHint ?? "The ADE simulator helper is missing from this build.",
+      hintIsCommand: helperOk ? false : looksLikeCommand(helperHint),
     },
   ];
 }

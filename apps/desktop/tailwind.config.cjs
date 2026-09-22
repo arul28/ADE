@@ -13,6 +13,21 @@ module.exports = {
         border: "var(--color-border)",
         accent: "var(--color-accent)",
         "accent-fg": "var(--color-accent-fg)",
+        // `bg-surface` is used across the Apple feature (and the round-3 rule is
+        // that every panel in it is opaque), but the scale only had the three
+        // `surface-*` variants — so every `bg-surface` in the product compiled
+        // to nothing and those panels rendered fully transparent. The variable
+        // has been in `index.css` the whole time.
+        // index.css has defined these in both themes all along; without a token
+        // the class compiles to nothing. `bg-secondary` is a rail button's
+        // PRESSED state, so a toggled-on control showed no background at all,
+        // and the CTO timeline's info/success/warning/error text had no colour.
+        secondary: "var(--color-secondary)",
+        success: "var(--color-success)",
+        warning: "var(--color-warning)",
+        info: "var(--color-info)",
+        error: "var(--color-error)",
+        surface: "var(--color-surface)",
         "surface-raised": "var(--color-surface-raised)",
         "surface-recessed": "var(--color-surface-recessed)",
         "surface-overlay": "var(--color-surface-overlay)",

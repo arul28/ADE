@@ -7,7 +7,10 @@ import { SessionListPane } from "./SessionListPane";
 import { WorkViewArea } from "./WorkViewArea";
 import { WorkHeaderSidebarToggle } from "../work/WorkHeaderPaneToggles";
 import { WorkLiveCornerCard } from "../work/WorkLiveCornerCard";
-import { WorkSidebar, type WorkSidebarContextTarget } from "./WorkSidebar";
+import { WorkSidebar } from "./WorkSidebar";
+import type { WorkSidebarContextTarget } from "./workToolContextInsertion";
+import { AppleDeviceMiniPlayer } from "../apple/AppleDeviceMiniPlayer";
+import { AppleShutdownConfirmHost } from "../apple/AppleShutdownConfirm";
 import { NativeToolFeedsProvider } from "./NativeToolFeedsContext";
 import { useWorkSidebarTool } from "./useWorkSidebarTool";
 import {
@@ -120,6 +123,8 @@ type SessionMutationOptions<T> = {
  * it at mousedown instead of carrying one.
  */
 const WORK_SIDEBAR_PANE_ATTR = "data-work-sidebar-pane";
+
+/** The Apple column's pane, found the same way and for the same reason. */
 
 function dispatchWorkSidebarBrowserResizeEvent(type: "start" | "end"): void {
   window.dispatchEvent(new Event(
@@ -1095,6 +1100,10 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   }
 
   const workSidebarVisible = active && work.workSidebarOpen;
+
+  /* ── Apple device ──────────────────────────────────────────────────────── */
+
+
   // Which tool the tools pane shows is per LANE, so it hangs off the lane this
   // page has resolved rather than off the project-wide work view state.
   const {
@@ -1102,7 +1111,19 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     openTools: workSidebarOpenTools,
     setTool: setWorkSidebarTool,
     closeTool: closeWorkSidebarTool,
-  } = useWorkSidebarTool(activeLaneId, activeWorkSessionRuntimePin);
+    // The focused work item is the chat the pane's tools are attached to, which
+    // is what a tab close has to name when it stops the tool for real (A4).
+  } = useWorkSidebarTool(activeLaneId, activeWorkSessionRuntimePin, activeWorkSession?.id ?? null);
+
+  /**
+   * The floating device asks to come back into the pane. The pane IS the Apple
+   * tool, so "open in pane" is exactly "open the Apple tool" — there is no
+   * column to restore and no width to remember.
+   */
+  const openAppleTool = useCallback(() => {
+    setWorkSidebarTool("ios");
+  }, [setWorkSidebarTool]);
+
   useEffect(() => {
     if (!active) return;
     const openBrowserSidebar = () => {
@@ -1500,6 +1521,19 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
               runtimePin={activeWorkSessionRuntimePin}
               onPick={setWorkSidebarTool}
             />
+            {/*
+              §7's floating device. It lives over the chat column rather than
+              in a pane of its own, because "float over chat" is the whole
+              point of it — and it is opened by the rail, never by ADE.
+            */}
+            <AppleDeviceMiniPlayer onOpenInPane={openAppleTool} />
+            {/*
+              §B3's "Shut down {device}?" — mounted beside the player because
+              they are the same story: one asks before the tab close powers the
+              device off, the other catches it when the pane merely closes. It
+              renders nothing until something asks.
+            */}
+            <AppleShutdownConfirmHost />
           </div>
           {/* Resize handle stays a row-level sibling so its width math is correct. */}
           {workSidebarVisible ? (
@@ -1589,6 +1623,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       workSidebarVisible,
       workViewArea,
       activeLaneDeleteProgress,
+      openAppleTool,
     ],
   );
 

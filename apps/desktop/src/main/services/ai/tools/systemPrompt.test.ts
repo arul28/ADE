@@ -297,6 +297,7 @@ describe("buildCodingAgentSystemPrompt", () => {
     expect(result).toContain("## ADE");
     expect(result).toContain("read the matching `ade-*` skill");
     expect(result).toContain("ADE capabilities ship as Agent Skills");
+    expect(result).toContain("ade-apple");
     expect(result).toContain("ade-ios-simulator");
     expect(result).toContain("ade-cli-control-plane");
     expect(result).not.toContain("ade-orchestrator");

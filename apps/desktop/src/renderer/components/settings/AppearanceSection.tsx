@@ -1,15 +1,8 @@
 import React, { useState } from "react";
 import {
-  CHAT_FONT_SIZE_MAX_PX,
-  CHAT_FONT_SIZE_MIN_PX,
-  CHAT_CHROME_TINT_IDS,
-  CHAT_SHELL_GEOMETRY_IDS,
-  CHAT_TRANSCRIPT_DENSITY_IDS,
-  CODE_BLOCK_COPY_POSITION_IDS,
   DEFAULT_TERMINAL_FONT_FAMILY,
   THEME_IDS,
   useAppStore,
-  useRootAppStore,
 } from "../../state/appStore";
 import type {
   ChatChromeTint,
@@ -28,19 +21,16 @@ import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../lanes/laneDesign
 import {
   SettingsCard,
   SettingsGroup,
-  SettingsSegmented,
   SettingsSelect,
-  SettingsSlider,
-  SettingsToggle,
 } from "./primitives";
+import { AppleDevicesSection } from "./AppleDevicesSection";
 
 /**
  * Appearance settings.
  *
- * Everything here is app-scoped (renderer `appStore` → localStorage), so no
- * card carries a scope chip — nothing about "this install only" surprises for
- * a font size. Writes land immediately; the store is synchronous, so there is
- * nothing to fail and nothing to confirm.
+ * Theme, terminal, and Apple device rows persist in the renderer `appStore`
+ * (localStorage) and the Apple keys also sync with the signed-in account,
+ * same as the rest of Appearance. Writes land immediately.
  */
 
 export const THEME_META: Record<
@@ -186,9 +176,6 @@ export const SHELL_GEOMETRY_LABEL: Record<ChatShellGeometry, string> = {
 export function AppearanceSection() {
   const theme = useAppStore((s) => s.theme);
   const setTheme = useAppStore((s) => s.setTheme);
-
-  const chatFontSizePx = useAppStore((s) => s.chatFontSizePx);
-  const setChatFontSizePx = useAppStore((s) => s.setChatFontSizePx);
   const resetThemeAndChatFontDefaults = useAppStore((s) => s.resetThemeAndChatFontDefaults);
 
   const terminalPreferences = useAppStore((s) => s.terminalPreferences);
@@ -323,6 +310,8 @@ export function AppearanceSection() {
           ) : null}
         </SettingsCard>
       </SettingsGroup>
+
+      <AppleDevicesSection />
     </div>
   );
 }

@@ -226,14 +226,22 @@ describe("shared sync listener upgrade policy", () => {
     }
   });
 
-  it("accepts only the sync root path", async () => {
+  it("accepts the sync root and the Apple stream path, and nothing else", async () => {
     const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
     const port = await listener.ensureListening([0]);
     const accepted = await connect(port, "/");
     try {
       expect(accepted.readyState).toBe(WebSocket.OPEN);
-      expect(await reject(port, "/anything")).toBe(400);
-      expect(await reject(port, "/connect/machine-key")).toBe(400);
+      // 401, not 400: the path check lives in `verifyClient` now, because this
+      // listener serves two socket shapes and ws's own filter accepts one.
+      expect(await reject(port, "/anything")).toBe(401);
+      expect(await reject(port, "/connect/machine-key")).toBe(401);
+      // The Apple device video pipe upgrades here too. With no relay
+      // registered it is closed straight after the handshake, which is a
+      // connect-then-close, not a refused upgrade.
+      const appleSocket = await connect(port, "/apple/stream/ticket-abc");
+      expect(appleSocket.readyState).toBe(WebSocket.OPEN);
+      appleSocket.terminate();
     } finally {
       accepted.terminate();
       await listener.close();

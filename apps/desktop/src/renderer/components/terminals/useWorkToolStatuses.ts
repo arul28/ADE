@@ -23,6 +23,11 @@ import {
   getWorkTerminalShellCount,
   subscribeWorkTerminalShells,
 } from "./workTerminalShells";
+import { appleToolCardSubtitle } from "../apple/appleDeviceState";
+import {
+  useAppleLaneDeviceCard,
+  type AppleLaneDeviceCard,
+} from "../apple/useAppleLaneDeviceCard";
 import { useNativeToolFeedHandlers, useNativeToolFeeds } from "./NativeToolFeedsContext";
 import type { WorkToolAvailability, WorkToolDefinition } from "./workTools";
 
@@ -256,12 +261,20 @@ function relativeCommitAge(iso: string | null | undefined): string | null {
   return relativeWhen(iso);
 }
 
-export function iosStatusLine(session: IosSimulatorSession | null): WorkToolStatus {
-  if (!session) return statusLine("Not booted", false);
-  // The dot already says "booted"; the words are for the device name, which is
-  // the part that is long ("iPhone 17 Pro Max") and the part you asked for.
-  const device = session.deviceName?.trim() || "Simulator";
-  return statusLine(device, true);
+/**
+ * §9's card subtitle: `No device` | `{name} · Starting` | `{name} · Running` |
+ * `{name} · Off`.
+ *
+ * The LANE's device, not the app session: a lane can own a booted simulator
+ * with nothing installed on it, and "Not booted" over a running iPhone was the
+ * card lying about the one thing it is for. The dot follows the same fact —
+ * green only while the device is actually up.
+ */
+export function iosStatusLine(device: AppleLaneDeviceCard | null): WorkToolStatus {
+  if (!device) return statusLine(appleToolCardSubtitle(null), false);
+  return statusLine(appleToolCardSubtitle(device), device.state === "running", {
+    attention: device.state === "starting",
+  });
 }
 
 /**
@@ -440,6 +453,18 @@ export function useWorkToolStatuses(args: {
   } = useNativeToolFeeds();
   useNativeToolFeedHandlers(useMemo(() => ({ onBrowserEvent }), [onBrowserEvent]));
 
+  /*
+    The lane's Apple device, for the card's one line. Polled here rather than
+    added to the feed provider because it is a lanes-DB read keyed by LANE, and
+    the feeds are keyed by machine — different lifetimes, and the card is the
+    only reader.
+  */
+  const appleDevice = useAppleLaneDeviceCard({
+    laneId,
+    runtimePin,
+    enabled: enabled && !offline,
+  });
+
   useEffect(() => {
     if (!enabled || offline || !canBrowser) setBrowserErrors(EMPTY_WORK_TOOL_ERRORS);
   }, [canBrowser, enabled, offline]);
@@ -520,13 +545,13 @@ export function useWorkToolStatuses(args: {
       : browserStatusLine(browserStatus, laneId, workToolBrowserErrorCount(browserErrors, browserStatus)),
     git: gitStatusLine(lane),
     files: filesStatusLine(lane),
-    ios: offline ? IDLE : iosStatusLine(iosSession),
+    ios: offline ? IDLE : iosStatusLine(appleDevice),
     "app-control": offline ? IDLE : appControlStatusLine(appControlSession),
   }), [
     appControlSession,
+    appleDevice,
     browserErrors,
     browserStatus,
-    iosSession,
     lane,
     laneId,
     offline,

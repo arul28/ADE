@@ -185,6 +185,15 @@ import { createPushRegistrationStore } from "./services/push/pushRegistrationSto
 import { createPushRelayClient } from "./services/push/pushRelayClient";
 import { createAccountRuntimeLifecycle } from "./services/account/accountRuntimeLifecycle";
 import type { AccountSettingsStore } from "./services/account/accountSettingsStore";
+import { createAppleStreamRelayForService } from "../../desktop/src/main/services/ios/appleStreamRelay";
+import { setActiveAppleStreamRouter } from "./services/sync/appleStreamListenerRoute";
+import { ACCOUNT_SCOPE_ALL } from "../../desktop/src/shared/accountSettingsScope";
+import {
+  APPLE_DEVICE_SETTING_KEYS,
+  DEFAULT_APPLE_REMOTE_BITRATE_KBPS,
+  clampAppleRemoteBitrateKbps,
+} from "../../desktop/src/shared/appleDeviceSettings";
+import { ADE_ACCENT_COLOR } from "../../desktop/src/shared/themeTokens";
 import type { AccountVaultStore } from "./services/account/accountVaultStore";
 import { getSharedPushPublisherService, resolvePushRelayStateFile, type PushPrNotification, type PushPublisherDeps, type PushPublisherService } from "./services/push/pushPublisherService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
@@ -1406,9 +1415,62 @@ export async function createAdeRuntime(args: {
             return null;
           }
         },
+        // The lanes DB backs `lane_apple_devices`; without it a lane device is
+        // remembered only for the life of the process.
+        laneDeviceStore: db,
+        // The recording halves that live outside the simulator service: the
+        // proof-drawer broker that files a pinned recording, and the overlay
+        // switches from account settings. Without these the constructed
+        // recorder writes video nobody can find and draws overlays the user
+        // switched off.
+        recordingDeps: {
+          artifactFiler: computerUseArtifactBrokerService,
+          readOverlaySetting: (key) => {
+            const value = accountSettingsStore?.get(ACCOUNT_SCOPE_ALL, key);
+            return typeof value === "boolean" ? value : undefined;
+          },
+          // ADE's own accent, mirrored in `shared/themeTokens.ts` and guarded
+          // by a test against `renderer/index.css`. The recorder ran on its
+          // own hardcoded blue before this, so every tap ring in every proof
+          // video was a colour that appears nowhere in the product.
+          accentColor: () => ADE_ACCENT_COLOR,
+        },
         onEvent: (event) => pushEvent("runtime", { type: "ios_simulator_event", event }),
       });
     teardown.push(() => iosSimulatorService?.dispose());
+    /**
+     * Brain-side video forwarder for remote viewers.
+     *
+     * Only the brain can read the helper's loopback body, so this is the one
+     * hop between a phone / web tab / Windows desktop and the device screen.
+     * It registers itself with the sync listener's socket router rather than
+     * being threaded through the listener constructors: the listener is
+     * machine-wide and outlives project switches, while this is per-project.
+     */
+    const appleRemoteBitrateKbpsCap = (): number | null => {
+      try {
+        const value = accountSettingsStore?.get(ACCOUNT_SCOPE_ALL, APPLE_DEVICE_SETTING_KEYS.remoteBitrateKbpsCap);
+        return typeof value === "number" && Number.isFinite(value)
+          ? clampAppleRemoteBitrateKbps(value)
+          : DEFAULT_APPLE_REMOTE_BITRATE_KBPS;
+      } catch {
+        return DEFAULT_APPLE_REMOTE_BITRATE_KBPS;
+      }
+    };
+    const appleStreamRelay = iosSimulatorService
+      ? createAppleStreamRelayForService({
+        service: iosSimulatorService,
+        remoteBitrateKbpsCap: appleRemoteBitrateKbpsCap,
+        logger,
+      })
+      : null;
+    if (appleStreamRelay) {
+      const detachAppleStreamRoute = setActiveAppleStreamRouter(appleStreamRelay);
+      teardown.push(() => {
+        detachAppleStreamRoute();
+        appleStreamRelay.dispose();
+      });
+    }
     // Late-bound chat session lookup. agentChatService is created after
     // appControlService below, so we capture a holder that the resolveLaneId
     // closure reads at call time. The chat session store lives in agentChatService
@@ -2289,6 +2351,9 @@ export async function createAdeRuntime(args: {
         getLinearIssueTracker: () => headlessLinearServices.linearIssueTracker,
         getExternalSessionsService: () => externalSessionsService,
         workToolsStateService,
+        appleDeviceService: iosSimulatorService,
+        appleStreamRelay,
+        getAppleRemoteBitrateKbpsCap: appleRemoteBitrateKbpsCap,
         sharedSyncListener: syncRuntimeOptions.sharedSyncListener ?? null,
         hostStartupEnabled: syncRuntimeOptions.hostStartupEnabled ?? true,
         hostDiscoveryEnabled: syncRuntimeOptions.hostDiscoveryEnabled ?? true,

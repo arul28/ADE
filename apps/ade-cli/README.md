@@ -663,8 +663,8 @@ ade --socket ios-sim permission grant photos --bundle-id com.example.app --text
 ade --socket ios-sim push --bundle-id com.example.app --title Hi --body "You have mail" --text
 ade --socket ios-sim open-url myapp://settings --text              # also: relaunch, terminate, uninstall, app-state
 ade --socket ios-sim status-bar --time 9:41 --wifi-bars 3 --text   # --clear drops the override
-# Live view: the host encodes H.264 next to the simulator, so a remote client still sees it.
-ade --socket ios-sim live-start --fps 60 --text                    # aliases: window-start, stream-start
+# Live view: the vendored Swift helper encodes H.264 next to the simulator, so a remote client still sees it.
+ade --socket apple stream-start --fps 60 --text                    # live-start and --backend are gone: one encoder
 ade --socket ios-sim stream-status --text                          # live view plus input state; stream-stop ends it
 # Device event log: the app's own log rows interleaved with what ADE did.
 ade --socket ios-sim log-start --bundle-id com.example.app --text   # --bundle-id is required; only the chat that started the log can stop it

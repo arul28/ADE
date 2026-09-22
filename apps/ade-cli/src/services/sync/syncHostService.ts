@@ -247,6 +247,7 @@ import {
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
 import { createSyncRemoteCommandService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
 import type { WorkToolsStateService } from "../workTools/workToolsStateService";
+import type { AppleDeviceRemoteService, AppleStreamTicketIssuer } from "./appleRemoteCommands";
 import { prepareProductAnalyticsRemoteCommand } from "./productAnalyticsRemoteCommand";
 import { buildPairingConnectInfo } from "./syncPairingConnectInfo";
 import type { PushPublisherService } from "../push/pushPublisherService";
@@ -293,6 +294,7 @@ import {
   type AttachmentUploadRegistry,
   type AttachmentUploadTicket,
 } from "./attachmentUploadService";
+import { tryRouteAppleStreamSocket } from "./appleStreamListenerRoute";
 import { MAX_CHAT_ATTACHMENT_BYTES } from "../../../../desktop/src/shared/chatAttachmentLimits";
 import { CURSOR_CLOUD_ARTIFACT_MAX_BYTES } from "../../../../desktop/src/shared/cursorCloudArtifactLimits";
 export { selectChangesetBatchChunk } from "./changesetPump";
@@ -1153,6 +1155,9 @@ type SyncHostServiceArgs = {
    * optional action that is never advertised is one a phone can never adopt.
    */
   workToolsStateService?: WorkToolsStateService | null;
+  appleDeviceService?: AppleDeviceRemoteService | null;
+  appleStreamRelay?: AppleStreamTicketIssuer | null;
+  getAppleRemoteBitrateKbpsCap?: () => number | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   getLinearIssueTracker?: () => ReturnType<typeof createLinearIssueTracker> | null;
   projectConfigService?: ReturnType<typeof createProjectConfigService>;
@@ -2261,6 +2266,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     ctoStateService: args.ctoStateService,
     ctoMemoryService: args.ctoMemoryService,
     workToolsStateService: args.workToolsStateService,
+    appleDeviceService: args.appleDeviceService,
+    appleStreamRelay: args.appleStreamRelay,
+    getAppleRemoteBitrateKbpsCap: args.getAppleRemoteBitrateKbpsCap,
     linearCredentialService: args.linearCredentialService,
     getLinearIssueTracker: args.getLinearIssueTracker,
     projectConfigService: args.projectConfigService,
@@ -3649,6 +3657,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   }
 
   server?.on("connection", (ws, request) => {
+    // The Apple device video pipe rides its own socket on this same listener
+    // (`/apple/stream/<ticket>`). It is not a sync peer: it never says hello,
+    // carries no JSON envelope, and must not occupy a peer slot.
+    if (tryRouteAppleStreamSocket(ws, request)) return;
     registerPeer(ws, sanitizeRemoteAddress(request.socket.remoteAddress), request.socket.remotePort ?? null, "direct");
   });
 

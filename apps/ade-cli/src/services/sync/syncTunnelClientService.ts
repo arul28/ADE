@@ -281,7 +281,32 @@ type ControlOpenMessage = {
   id: string;
   epoch?: string;
   readyVersion?: typeof RELAY_READY_VERSION;
+  /**
+   * Pipe kind. Absent means the sync protocol — this bridge's only shape until
+   * the Apple device video pipe, which is a second socket on the SAME local
+   * listener at a ticketed path. The relay never interprets it; the path shape
+   * is validated here, on the machine whose loopback is about to be dialed.
+   */
+  kind?: typeof APPLE_STREAM_PIPE_KIND;
+  path?: string;
 };
+
+export const APPLE_STREAM_PIPE_KIND = "apple-stream" as const;
+
+/**
+ * The only local path a relayed pipe may name besides the root.
+ *
+ * Deliberately a whitelist rather than an escape: a `path` that reached the
+ * local dial unvalidated would let anyone who can reach the relay aim this
+ * machine's bridge at any path on its own sync listener.
+ */
+const APPLE_STREAM_PIPE_PATH = /^\/apple\/stream\/[A-Za-z0-9_-]{8,128}(\?token=[A-Za-z0-9_-]{8,128})?$/;
+
+export function relayPipeLocalPath(message: { kind?: string; path?: string }): string {
+  if (message.kind !== APPLE_STREAM_PIPE_KIND) return "";
+  const path = typeof message.path === "string" ? message.path : "";
+  return APPLE_STREAM_PIPE_PATH.test(path) ? path : "";
+}
 
 export type ControlMessage = ControlOpenMessage | {
   t: "pong";
@@ -308,11 +333,16 @@ export function parseControlMessage(raw: string): ControlMessage | null {
       || !/^[a-f0-9]{32}$/i.test(epoch)
       || (readyVersion != null && readyVersion !== RELAY_READY_VERSION)
     ) return null;
+    const kind = (parsed as { kind?: unknown }).kind;
+    const path = (parsed as { path?: unknown }).path;
     return {
       t: "open",
       id,
       epoch,
       ...(readyVersion === RELAY_READY_VERSION ? { readyVersion } : {}),
+      ...(kind === APPLE_STREAM_PIPE_KIND && typeof path === "string"
+        ? { kind: APPLE_STREAM_PIPE_KIND, path }
+        : {}),
     };
   }
   if (t === "pong") return { t: "pong" };
@@ -1663,7 +1693,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     let local: WebSocket | null = null;
     try {
       pipe = createWebSocket(pipeUrl);
-      local = createWebSocket(`ws://127.0.0.1:${String(port)}`, {
+      local = createWebSocket(`ws://127.0.0.1:${String(port)}${relayPipeLocalPath(message)}`, {
         headers: { [SYNC_RELAY_BRIDGE_PROOF_HEADER]: relayBridgeProof },
       });
     } catch (error) {

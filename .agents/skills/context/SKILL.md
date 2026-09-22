@@ -43,6 +43,12 @@ resolve docs + the matching `ade-perf-*` skill via `references/doc-map.md`.
 ## Step 2 — Baseline (always read)
 
 - `AGENTS.md` — how to run/build/test, working norms, gotchas, the dev loop.
+- **Run the dev app one way only:** `npm run dev:desktop` from the lane worktree
+  (add `--project-root <path>` to open a different project). It shares `~/.ade`,
+  starts its brain with `--no-sync`, respects chat runtime ownership, never
+  touches the installed brain service, and prints a dev isolation report first.
+  Never hand-start `ade serve`, never set a fresh `ADE_HOME`, never copy secrets.
+  Details: `docs/development/local-development.md`.
 - `docs/README.md` — the internal-docs navigation map.
 - `docs/PRD.md` — what ADE is, who it's for, the feature index.
 - `docs/ARCHITECTURE.md` — read the **section** relevant to the touched area
@@ -141,8 +147,8 @@ open the relevant one only when a task needs it.
   `ade help <command>` and `ade actions list --text`, not memory.
   → `ade-cli-control-plane`.
 - **Lanes & git** → `ade-lanes-git`. **PR workflows** → `ade-pr-workflows`.
-- **App / browser / iOS-sim control** → `ade-app-control`,
-  `ade-browser`, `ade-ios-simulator`.
+- **App / browser / Apple-device control** → `ade-app-control`,
+  `ade-browser`, `ade-apple` (old name `ade-ios-simulator` still resolves).
 - **Linear** (no API key needed; routed through ADE) → `ade-linear`.
 - **Proof & computer-use** (screenshots, video, traces → proof drawer) →
   `ade-proof-artifacts`. **Deeplinks** → `ade-deeplinks`.

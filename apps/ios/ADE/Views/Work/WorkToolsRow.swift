@@ -161,9 +161,16 @@ func workToolsDisplayName(_ toolId: String?) -> String? {
   case "terminal": return "Terminal"
   case "git": return "Git"
   case "files": return "Files"
-  case "ios": return "Simulator"
+  case "ios": return "Apple"
   case "app-control": return "App Control"
   case "browser": return "Browser"
   default: return toolId
+  }
+}
+
+func workToolsAccessibilityHint(_ toolId: String?) -> String? {
+  switch toolId {
+  case "ios": return "Apple simulators and previews"
+  default: return nil
   }
 }

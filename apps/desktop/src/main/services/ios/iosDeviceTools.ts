@@ -61,6 +61,13 @@ export const IOS_ACCESSIBILITY_PREFERENCES: Record<
     key: "ReduceTransparencyEnabled",
     notification: "com.apple.Accessibility.ReduceTransparencyEnabledChanged",
   },
+  // Settings › Accessibility › Button Shapes. t3code/serve-sim drive the
+  // same flag through `_AXSSetButtonShapesEnabled`; the preference plus its
+  // change notification is what that setter writes.
+  "button-shapes": {
+    key: "ButtonShapesEnabled",
+    notification: "com.apple.Accessibility.ButtonShapesEnabledChanged",
+  },
   "bold-text": {
     key: "BoldTextEnabled",
     notification: "com.apple.Accessibility.BoldTextEnabledChanged",
