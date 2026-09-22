@@ -628,17 +628,7 @@ export async function ensureRuntime(socketPath, projectRoot = null) {
   process.stdout.write(
     `[ade] starting dev runtime at ${socketPath}${logFd === null ? "" : ` (log: ${logPath})`}\n`,
   );
-  // `--no-sync` unless the developer asks for sync on purpose, which matches
-  // the guard the desktop's own main process applies when it is unpackaged.
-  //
-  // There are two writers to this invariant and only one was fixed. A dev
-  // brain that starts sync takes the machine-wide sync host from the INSTALLED
-  // ADE, and on 2026-09-21 that stopped the agents running under it. `main.ts`
-  // learned to pass the flag; this launcher path did not, so `npm run
-  // dev:desktop` still produced a sync-enabled brain and the port-8787
-  // singleton was the only thing standing between a dev run and that incident.
-  const syncArgs = process.env.ADE_DEV_RUNTIME_SYNC === "1" ? [] : ["--no-sync"];
-  const child = spawn(process.execPath, [cliPath(), "serve", "--socket", socketPath, ...syncArgs], {
+  const child = spawn(process.execPath, [cliPath(), "serve", "--socket", socketPath], {
     cwd: repoRoot,
     env: detachedDevRuntimeEnv(socketPath, projectRoot),
     detached: true,
