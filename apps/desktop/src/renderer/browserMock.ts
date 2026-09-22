@@ -5548,9 +5548,18 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         dailyLog: "09:12 — Asked for PR queue summary → 3 PRs ready, 1 blocked on CI.",
         dailyLogDate: now.slice(0, 10),
         updatedAt: now,
-        projectBrief: null,
-        projectThreads: null,
-        projectItems: null,
+        projectBrief: [
+          "Goal: Keep one CTO who already knows this project.",
+          "Done when: A new idea can be handed over without restating the repo.",
+          "Constraints: The CTO directs agents. It does not commit the repository.",
+          "Open loops: Account copy still uploads from the brain process.",
+        ].join("\n"),
+        projectItems: [
+          "- (pinned) Desktop releases ship from tagged commits on main.",
+          "- (active) The team prefers concise status updates with a next action.",
+          "- (active) Current focus is the mobile sync transport.",
+        ].join("\n"),
+        projectThreads: "- Sync transport · lane lane-sync · chat chat-sync · Harden the phone sync path",
       }),
       updateMemory: async (arg: { memory?: string }) => ({
         memory: arg?.memory ?? "",
@@ -5558,9 +5567,18 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         dailyLog: "",
         dailyLogDate: now.slice(0, 10),
         updatedAt: now,
-        projectBrief: null,
-        projectThreads: null,
-        projectItems: null,
+        projectBrief: [
+          "Goal: Keep one CTO who already knows this project.",
+          "Done when: A new idea can be handed over without restating the repo.",
+          "Constraints: The CTO directs agents. It does not commit the repository.",
+          "Open loops: Account copy still uploads from the brain process.",
+        ].join("\n"),
+        projectItems: [
+          "- (pinned) Desktop releases ship from tagged commits on main.",
+          "- (active) The team prefers concise status updates with a next action.",
+          "- (active) Current focus is the mobile sync transport.",
+        ].join("\n"),
+        projectThreads: "- Sync transport · lane lane-sync · chat chat-sync · Harden the phone sync path",
       }),
       searchMemory: resolvedArg({ query: "", rows: [] }),
       ensureSession: resolvedArg({
