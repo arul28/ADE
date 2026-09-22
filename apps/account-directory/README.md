@@ -8,9 +8,17 @@ The Worker also hosts ADE's device-authorization bridge for headless sign-in:
 
 - `POST /device/code` creates a short-lived code bound to a daemon-generated secret.
   An optional `machine_key` names the machine signing in, which is what a pairing
-  grant (below) can later be spent on.
-- `GET /device` renders a read-only human-code confirmation page.
+  grant (below) can later be spent on. An optional `machine_name` (cleaned, at
+  most 80 characters) is display text only.
+- `GET /device` renders a read-only human-code confirmation page. With a
+  `machine_name`, it says "A computer named … asked to sign in to ADE" and tells
+  the reader to continue only if they started it there, because the name is
+  the client's claim. Without one, it says "ADE on your computer".
 - `POST /device` confirms the code and redirects through Clerk OAuth + PKCE.
+  It accepts only a same-origin form POST: the `Origin` must match, or, when a
+  browser sends no `Origin` or the text `null`, `Sec-Fetch-Site` must be
+  `same-origin`. The page is served with `referrer-policy: same-origin`, because
+  under `no-referrer` a browser sends `Origin: null` for its own form.
 - `GET /device/callback` exchanges the Clerk code and holds the token pair briefly.
 - `POST /device/token` lets the initiating daemon redeem the pair once, and returns
   a `pairing_grant` alongside it when the request declared a `machine_key`.

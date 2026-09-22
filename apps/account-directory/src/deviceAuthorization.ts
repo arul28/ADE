@@ -9,6 +9,7 @@ const APPROVAL_RATE_LIMIT_MAX_ATTEMPTS = 10;
 const DEVICE_AUTHORIZATION_RETENTION_MS = 60 * 60_000;
 const USER_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const MAX_MACHINE_KEY_CHARS = 128;
+const MAX_MACHINE_NAME_CHARS = 80;
 
 export interface DeviceAuthorizationEnv {
   DB: D1Database;
@@ -44,8 +45,9 @@ type DeviceAuthorizationRow = {
   /** Machine this login was started from, or null for a non-machine login. */
   machine_key: string | null;
   /**
-   * Optional display name for `machine_key`. Not populated by every writer, so
-   * the confirmation page treats an absent value as "your computer".
+   * Display name the client sent for the computer that started this sign-in.
+   * Older clients send none, so the confirmation page treats an absent value
+   * as "your computer".
    */
   machine_name?: string | null;
   status: "pending" | "approved" | "consumed" | "expired" | "error";
@@ -101,6 +103,18 @@ function redirect(location: string): Response {
       "referrer-policy": "no-referrer",
     },
   });
+}
+
+/**
+ * The computer name a client sent with `/device/code`. Display text only: it
+ * is cleaned and cut to length rather than refused, so an odd name can never
+ * block a sign-in.
+ */
+function readMachineName(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const cleaned = value.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim();
+  if (!cleaned) return null;
+  return Array.from(cleaned).slice(0, MAX_MACHINE_NAME_CHARS).join("").trim() || null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -213,11 +227,18 @@ function approvalForm(userCode = ""): Response {
  * field; the only action is Continue.
  */
 function confirmationPage(userCode: string, machineName: string | null): Response {
-  const who = machineName?.trim() || "your computer";
+  // The name comes from the client that started the sign-in, so it is shown
+  // as what that computer says it is, with a line that tells the reader to
+  // stop if they did not start this.
+  const name = machineName?.trim();
+  const who = name
+    ? `<p>A computer named <strong>${escapeHtml(name)}</strong> asked to sign in to ADE.</p>
+      <p>Continue only if you started this on that computer.</p>`
+    : "<p>ADE on your computer asked to sign in.</p>";
   return page({
     title: "Confirm this sign-in",
     body: `<h1>Confirm this sign-in</h1>
-      <p>ADE on ${escapeHtml(who)} asked to sign in.</p>
+      ${who}
       <div style="margin:1.5rem 0 .5rem;font-weight:600">Device code</div>
       <p style="margin:0 0 1rem;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:1.4rem;letter-spacing:.18em;color:#f5f5f5">${escapeHtml(userCode)}</p>
       <form method="post" action="/device">
@@ -355,6 +376,8 @@ async function handleDeviceCode(
     return json({ error: "invalid_request", error_description: "machine_key is too long" }, { status: 400 });
   }
 
+  const machineName = readMachineName(body?.machine_name);
+
   const now = options.now();
   if (!(await checkDeviceRateLimit(request, env, now, "issuance", DEVICE_CODE_RATE_LIMIT_MAX_ATTEMPTS))) {
     return json(
@@ -372,8 +395,8 @@ async function handleDeviceCode(
       await env.DB.prepare(`
         insert into device_authorizations (
           device_code, user_code, device_secret_hash, status, poll_interval_seconds,
-          created_at, expires_at, machine_key
-        ) values (?, ?, ?, 'pending', ?, ?, ?, ?)
+          created_at, expires_at, machine_key, machine_name
+        ) values (?, ?, ?, 'pending', ?, ?, ?, ?, ?)
       `).bind(
         deviceCode,
         userCode,
@@ -382,6 +405,7 @@ async function handleDeviceCode(
         now,
         expiresAt,
         machineKey,
+        machineName,
       ).run();
       break;
     } catch (error) {
@@ -435,9 +459,7 @@ async function handleDeviceApproval(
   if (request.method === "GET") {
     const rawUserCode = url.searchParams.get("user_code");
     if (!rawUserCode) return approvalForm();
-    // A read-only preview may look up the name the machine bound to this code.
-    // The record does not carry one today, so the page falls back to "your
-    // computer"; naming it works the moment the field is populated.
+    // A read-only preview looks up the name the client sent with this code.
     const previewCode = normalizeUserCode(rawUserCode);
     const row = previewCode ? await findByUserCode(env, previewCode) : null;
     const machineName = typeof row?.machine_name === "string" && row.machine_name.trim()

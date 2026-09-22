@@ -76,6 +76,7 @@ function normalizePlatform(value: unknown): SyncPeerPlatform {
 
 let cachedDeviceDisplayName: string | null = null;
 let deviceDisplayNameRefreshStarted = false;
+let deviceDisplayNameRefresh: Promise<void> | null = null;
 
 function externalIdentityProbesEnabled(): boolean {
   return process.env.VITEST !== "true" && process.env.NODE_ENV !== "test";
@@ -118,12 +119,23 @@ export function resolveDeviceDisplayName(): string {
     && externalIdentityProbesEnabled()
   ) {
     deviceDisplayNameRefreshStarted = true;
-    void execFileText("scutil", ["--get", "ComputerName"], 2_000).then((value) => {
+    deviceDisplayNameRefresh = execFileText("scutil", ["--get", "ComputerName"], 2_000).then((value) => {
       const computerName = value?.trim() ?? "";
       if (computerName) cachedDeviceDisplayName = computerName;
     });
   }
   return cachedDeviceDisplayName;
+}
+
+/**
+ * `resolveDeviceDisplayName`, after the macOS ComputerName probe settles. For
+ * a caller that can wait up to the probe's 2 s timeout and must not show the
+ * network hostname (for example "MacBook-Pro-567.local") instead.
+ */
+export async function resolveDeviceDisplayNameSettled(): Promise<string> {
+  const immediate = resolveDeviceDisplayName();
+  await deviceDisplayNameRefresh;
+  return cachedDeviceDisplayName ?? immediate;
 }
 
 function readJsonArray(raw: string | null | undefined): string[] {

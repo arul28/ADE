@@ -32,6 +32,7 @@ export type StoredDeviceAuthorization = {
   user_code: string;
   device_secret_hash: string;
   machine_key: string | null;
+  machine_name?: string | null;
   status: "pending" | "approved" | "consumed" | "expired" | "error";
   code_verifier: string | null;
   oauth_state_hash: string | null;
@@ -482,6 +483,7 @@ export class FakeD1Database {
         user_code: userCode,
         device_secret_hash: String(values[2]),
         machine_key: values[6] == null ? null : String(values[6]),
+        machine_name: values[7] == null ? null : String(values[7]),
         status: "pending",
         code_verifier: null,
         oauth_state_hash: null,

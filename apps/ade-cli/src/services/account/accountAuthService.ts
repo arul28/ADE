@@ -979,6 +979,12 @@ export function createAccountAuthService(args: {
    * without it the login still works and the grant path is simply unavailable.
    */
   getMachineKey?: () => string | null;
+  /**
+   * This computer's display name, with its channel (for example "MacBook Pro ·
+   * Alpha"). Sent when a device login starts so the browser page can say which
+   * computer asked. Optional: without it the page says "your computer".
+   */
+  getMachineName?: () => Promise<string | null> | string | null;
   fetchImpl?: (input: string, init?: RequestInit) => Promise<Response>;
   deviceBridgeRequestTimeoutMs?: number;
   userinfoRequestTimeoutMs?: number;
@@ -1997,6 +2003,13 @@ export function createAccountAuthService(args: {
       // An unreadable machine identity costs the grant, never the sign-in.
       machineKey = null;
     }
+    let machineName: string | null = null;
+    try {
+      machineName = (await args.getMachineName?.())?.trim() || null;
+    } catch {
+      // The name only labels the browser page; it never blocks a sign-in.
+      machineName = null;
+    }
     let response: Response;
     try {
       response = await requestDeviceBridge(`${bridgeUrl}/device/code`, {
@@ -2005,6 +2018,7 @@ export function createAccountAuthService(args: {
         body: JSON.stringify({
           device_secret: deviceSecret,
           ...(machineKey ? { machine_key: machineKey } : {}),
+          ...(machineName ? { machine_name: machineName } : {}),
         }),
       });
     } catch (error) {

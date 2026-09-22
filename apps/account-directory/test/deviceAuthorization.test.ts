@@ -288,6 +288,55 @@ describe("device authorization bridge", () => {
     expect(env.DB.deviceRows[0]).toMatchObject({ code_verifier: expect.any(String) });
   });
 
+  /**
+   * The page said "ADE on your computer", so a person with two installs on one
+   * Mac could not tell which one asked. The client now sends the name. It is
+   * the client's claim, so the page shows it as one and tells the reader to
+   * stop if they did not start this.
+   */
+  it("names the computer that asked, as a claim, and cleans the name", async () => {
+    const env = makeEnv();
+    const now = Date.parse("2026-07-14T12:00:00.000Z");
+    const created = await handleRequest(
+      request("POST", "/device/code", undefined, {
+        device_secret: "daemon-device-secret-with-at-least-32-bytes",
+        machine_name: "  MacBook Pro · Alpha\n<script>x</script>  ",
+      }),
+      env,
+      { now: () => now },
+    );
+    const device = await created.json() as Record<string, unknown>;
+    expect(env.DB.deviceRows[0]?.machine_name).toBe("MacBook Pro · Alpha <script>x</script>");
+
+    const preview = await handleRequest(new Request(String(device.verification_uri_complete)), env, { now: () => now });
+    const html = await preview.text();
+    expect(html).toContain("A computer named <strong>MacBook Pro · Alpha &lt;script&gt;x&lt;/script&gt;</strong> asked to sign in to ADE.");
+    expect(html).toContain("Continue only if you started this on that computer.");
+    expect(html).not.toContain("<script>x");
+
+    const long = await handleRequest(
+      request("POST", "/device/code", undefined, {
+        device_secret: "daemon-device-secret-with-at-least-32-bytes-two",
+        machine_name: "x".repeat(500),
+      }),
+      env,
+      { now: () => now },
+    );
+    expect(long.status).toBe(200);
+    expect(env.DB.deviceRows[1]?.machine_name).toHaveLength(80);
+
+    const unnamed = await handleRequest(
+      request("POST", "/device/code", undefined, {
+        device_secret: "daemon-device-secret-with-at-least-32-bytes-three",
+      }),
+      env,
+      { now: () => now },
+    );
+    const unnamedDevice = await unnamed.json() as Record<string, unknown>;
+    const unnamedPreview = await handleRequest(new Request(String(unnamedDevice.verification_uri_complete)), env, { now: () => now });
+    expect(await unnamedPreview.text()).toContain("ADE on your computer asked to sign in.");
+  });
+
   it("keeps verification-link GET previews read-only until explicit confirmation", async () => {
     const env = makeEnv();
     const now = Date.parse("2026-07-14T12:00:00.000Z");
