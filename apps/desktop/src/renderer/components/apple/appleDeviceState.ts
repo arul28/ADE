@@ -303,3 +303,103 @@ export function appleElementContextItem(
     selectedAt: now.toISOString(),
   };
 }
+
+/* ── Orientation control (round 5 §V2) ────────────────────────────────────── */
+
+/**
+ * What the rail's orientation control calls each value.
+ *
+ * Round 4 had one "Rotate device" button that cycled blind: nothing on screen
+ * said which way up the device was, and the owner could not find the control
+ * at all. §V2 replaces it with a menu that NAMES the current orientation, so
+ * these strings are the control's whole vocabulary — they are what the button
+ * announces and what each menu item reads.
+ */
+export function appleOrientationLabel(orientation: AppleDeviceOrientation): string {
+  switch (orientation) {
+    case "portrait":
+      return "Portrait";
+    case "portrait-upside-down":
+      return "Portrait upside down";
+    case "landscape-left":
+      return "Landscape left";
+    case "landscape-right":
+      return "Landscape right";
+    default: {
+      const _exhaustive: never = orientation;
+      return _exhaustive;
+    }
+  }
+}
+
+/** The menu's order: the two portraits, then the two landscapes. */
+export const APPLE_ORIENTATION_CHOICES = [
+  "portrait",
+  "portrait-upside-down",
+  "landscape-left",
+  "landscape-right",
+] as const satisfies readonly AppleDeviceOrientation[];
+
+/**
+ * How far to turn the control's own glyph so it reads as the device's pose.
+ *
+ * The same sign convention as the picture (`appleScreenRotation`): positive is
+ * clockwise, so a device in `landscape-left` shows an icon turned the way the
+ * device itself is turned.
+ */
+export function appleOrientationIconDegrees(orientation: AppleDeviceOrientation): number {
+  switch (orientation) {
+    case "portrait":
+      return 0;
+    case "portrait-upside-down":
+      return 180;
+    case "landscape-left":
+      return 90;
+    case "landscape-right":
+      return -90;
+    default: {
+      const _exhaustive: never = orientation;
+      return _exhaustive;
+    }
+  }
+}
+
+/** Portrait and upside-down are one shape; the two landscapes are the other. */
+export function appleOrientationFamily(
+  orientation: AppleDeviceOrientation,
+): "portrait" | "landscape" {
+  return orientation === "landscape-left" || orientation === "landscape-right"
+    ? "landscape"
+    : "portrait";
+}
+
+/**
+ * Which way up the device ACTUALLY is, read from the accessibility tree.
+ *
+ * There is no "read the orientation" call — `rotate` is write-only, and it
+ * answers `applied: true` as soon as the GSEvent is sent, which is not the
+ * same as iOS having turned. On a Mac with no `Simulator.app` (a trimmed
+ * Xcode install has none) the event is accepted and nothing rotates at all.
+ * A pane that believed the request then drew an upright picture on its side —
+ * the very defect §V1 exists to remove, in reverse.
+ *
+ * The interface's own frames are the oracle: the app is laid out in the
+ * orientation it is really in, so the widest element extent against the
+ * tallest says which shape the screen is. Null when there is nothing to
+ * measure, which the caller must treat as "do not know", never as portrait.
+ */
+export function appleObservedOrientationFamily(
+  elements: readonly IosScreenElement[],
+): "portrait" | "landscape" | null {
+  let width = 0;
+  let height = 0;
+  for (const element of elements) {
+    const frame = element.frame;
+    if (!frame) continue;
+    width = Math.max(width, frame.x + frame.width);
+    height = Math.max(height, frame.y + frame.height);
+  }
+  if (width <= 0 || height <= 0) return null;
+  if (width === height) return null;
+  return width > height ? "landscape" : "portrait";
+}

@@ -2,8 +2,8 @@ import type { ReactNode } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   ArrowsOut,
-  ArrowsClockwise,
   Camera,
+  Check,
   Crosshair,
   Cube,
   DeviceMobile,
@@ -15,6 +15,12 @@ import {
   SlidersHorizontal,
   Stop,
 } from "@phosphor-icons/react";
+import type { AppleDeviceOrientation } from "../../../shared/types/iosSimulator";
+import {
+  APPLE_ORIENTATION_CHOICES,
+  appleOrientationIconDegrees,
+  appleOrientationLabel,
+} from "./appleDeviceState";
 import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
 import { PaneTooltip } from "../ui/PaneTooltip";
@@ -45,8 +51,13 @@ export type AppleDeviceRailProps = {
   /** §A5: Record is a rail toggle now, with a red active state. */
   recording: boolean;
   screenshotPending: boolean;
+  /** §V2: what the orientation control shows, and which item it checks. */
+  orientation: AppleDeviceOrientation;
+  /** A rotation is in flight and the device has not confirmed it yet. */
+  orientationPending?: boolean;
   onHome: () => void;
-  onRotate: () => void;
+  /** §V2: rotate TO a named orientation. The blind cycle is gone. */
+  onOrientation: (orientation: AppleDeviceOrientation) => void;
   onScreenshot: () => void;
   onToggleTools: () => void;
   onToggleInspect: () => void;
@@ -94,8 +105,10 @@ export function AppleDeviceRail({
   inspecting,
   recording,
   screenshotPending,
+  orientation,
+  orientationPending = false,
   onHome,
-  onRotate,
+  onOrientation,
   onScreenshot,
   onToggleTools,
   onToggleInspect,
@@ -139,11 +152,42 @@ export function AppleDeviceRail({
         <RailButton label="Home" disabled={hardwareDisabled} onClick={onHome}>
           <House size={16} />
         </RailButton>
-        {compact ? null : (
-          <RailButton label="Rotate device" disabled={hardwareDisabled} onClick={onRotate}>
-            <ArrowsClockwise size={16} />
-          </RailButton>
-        )}
+        {/*
+          * §V2: the orientation control, which SHOWS the orientation.
+          *
+          * It survives the 360px collapse, unlike the "Rotate device" button it
+          * replaces: the owner's complaint was that the control could not be
+          * found, and a control that disappears in a narrow pane is one more
+          * way not to find it. Its glyph turns with the device, its name says
+          * the orientation out loud, and its menu names all four.
+          */}
+        <RailMenu
+          label={orientationPending
+            ? "Rotating device"
+            : `Orientation: ${appleOrientationLabel(orientation)}`}
+          disabled={hardwareDisabled || orientationPending}
+          icon={(
+            <DeviceMobile
+              size={16}
+              style={{ transform: `rotate(${appleOrientationIconDegrees(orientation)}deg)` }}
+            />
+          )}
+        >
+          <div className={MENU_LABEL_CLASS}>Orientation</div>
+          {APPLE_ORIENTATION_CHOICES.map((choice) => (
+            <DropdownMenu.Item
+              key={choice}
+              className={MENU_ITEM_CLASS}
+              aria-checked={choice === orientation}
+              onSelect={() => onOrientation(choice)}
+            >
+              {choice === orientation
+                ? <Check size={14} weight="bold" />
+                : <span className="w-[14px]" aria-hidden="true" />}
+              {appleOrientationLabel(choice)}
+            </DropdownMenu.Item>
+          ))}
+        </RailMenu>
 
         <RailDivider />
 

@@ -195,6 +195,35 @@ describe("AppleDeviceMiniPlayer", () => {
       expect(document.querySelector("[data-apple-mini-poster]")).toBeNull();
     });
 
+    it("refuses picture-in-picture until a frame has actually been drawn", () => {
+      /*
+       * A decoder canvas is 300×150 until its first frame sizes it — landscape,
+       * and black under `alpha: false`. PiP takes its shape from the first
+       * frame it is handed and does not reshape itself afterwards, so entering
+       * early pins a black landscape window over a portrait phone.
+       */
+      // jsdom has no PiP at all, so support is stubbed in: without this the
+      // button is disabled for the OTHER reason and the test proves nothing.
+      Object.defineProperty(document, "pictureInPictureEnabled", { value: true, configurable: true });
+      (HTMLVideoElement.prototype as unknown as { requestPictureInPicture: unknown })
+        .requestPictureInPicture = vi.fn();
+
+      stream.frameVersion = 0;
+      const view = render(<AppleDeviceMiniPlayer onOpenInPane={vi.fn()} />);
+      act(() => openAppleMiniPlayer(TARGET));
+      fireEvent.pointerEnter(screen.getByRole("group", { name: "iPhone 17 Pro, floating" }));
+      expect((screen.getByRole("button", { name: "Picture in picture" }) as HTMLButtonElement).disabled).toBe(true);
+
+      // Disabled, never hidden: the control keeps its place in the bar.
+      stream.frameVersion = 1;
+      view.rerender(<AppleDeviceMiniPlayer onOpenInPane={vi.fn()} />);
+      fireEvent.pointerEnter(screen.getByRole("group", { name: "iPhone 17 Pro, floating" }));
+      expect((screen.getByRole("button", { name: "Picture in picture" }) as HTMLButtonElement).disabled).toBe(false);
+
+      Reflect.deleteProperty(document, "pictureInPictureEnabled");
+      Reflect.deleteProperty(HTMLVideoElement.prototype, "requestPictureInPicture");
+    });
+
     it("hands the handover's lease back once it is mounted, and never lets the count reach zero", () => {
       const key = appleStreamLeaseKey({ pinKey: null, laneId: "lane-1", deviceUdid: "pro" });
       // The pane, open and streaming.

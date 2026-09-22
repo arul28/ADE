@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  appleCanvasHasDecoded,
   appleDeviceInputSize,
   appleDragIntent,
   appleWheelIntent,
@@ -104,5 +105,35 @@ describe("appleDeviceInputSize (round 4 §A3/§A4)", () => {
     expect(appleDeviceInputSize(null, PIXELS)).toEqual(PIXELS);
     expect(appleDeviceInputSize(undefined, PIXELS)).toEqual(PIXELS);
     expect(appleDeviceInputSize({ width: 0, height: 0 }, PIXELS)).toEqual(PIXELS);
+  });
+});
+
+
+describe("appleCanvasHasDecoded", () => {
+  function canvas(width: number, height: number): HTMLCanvasElement {
+    const node = document.createElement("canvas");
+    node.width = width;
+    node.height = height;
+    return node;
+  }
+
+  it("refuses the untouched 300×150 default", () => {
+    // The placeholder is LANDSCAPE, so a layout measured from it comes back
+    // rotated — and the body writes its UVs once, at install. A device that
+    // goes idle at that moment keeps a sideways screen forever.
+    expect(appleCanvasHasDecoded(document.createElement("canvas"))).toBe(false);
+    expect(appleCanvasHasDecoded(canvas(300, 150))).toBe(false);
+  });
+
+  it("refuses a canvas with no size, and no canvas at all", () => {
+    expect(appleCanvasHasDecoded(canvas(0, 0))).toBe(false);
+    expect(appleCanvasHasDecoded(null)).toBe(false);
+  });
+
+  it("accepts a real decoded frame, portrait or landscape", () => {
+    expect(appleCanvasHasDecoded(canvas(1_179, 2_556))).toBe(true);
+    expect(appleCanvasHasDecoded(canvas(2_556, 1_179))).toBe(true);
+    // 300 wide is fine as long as it is not the 300×150 pair.
+    expect(appleCanvasHasDecoded(canvas(300, 650))).toBe(true);
   });
 });

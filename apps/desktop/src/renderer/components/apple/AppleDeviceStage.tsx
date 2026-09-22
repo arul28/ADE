@@ -9,6 +9,7 @@ import {
 } from "./AppleDevice3DView";
 import {
   AppleDeviceFlatView,
+  appleScreenMediaRect,
   type AppleDeviceGeometry,
   type AppleDeviceInput,
 } from "./AppleDeviceFlatView";
@@ -141,15 +142,26 @@ export function AppleDeviceStage({
   // it through `onThreeUnavailable`, and the host moves the stage to flat.
   const flat = mode === "flat";
 
+  /**
+   * Where the decoder's canvas sits in flat mode.
+   *
+   * §V1: the frame is the device's RAW framebuffer, which stays portrait
+   * however the device is held, so a landscape device is drawn by giving this
+   * holder the TRANSPOSED size and turning it about the screen box's centre.
+   * The canvas inside is `h-full w-full` of this holder and needs no rotation
+   * of its own, which is what keeps the picture unsquashed and uncropped.
+   */
   const videoStyle = useMemo(() => {
     if (!flat) return PARKED_CANVAS_STYLE;
     if (!geometry) return { ...PARKED_CANVAS_STYLE, opacity: 0 };
+    const rect = appleScreenMediaRect(geometry, geometry.rotation);
     return {
       position: "absolute" as const,
-      left: geometry.left,
-      top: geometry.top,
-      width: geometry.width,
-      height: geometry.height,
+      left: rect.left,
+      top: rect.top,
+      width: rect.width,
+      height: rect.height,
+      ...(rect.transform ? { transform: rect.transform } : {}),
       borderRadius: 10,
       overflow: "hidden" as const,
     };
@@ -180,6 +192,7 @@ export function AppleDeviceStage({
         <AppleDeviceFlatView
           screenPixelSize={screenPixelSize}
           devicePointSize={devicePointSize}
+          orientation={orientation}
           interactive={interactive}
           onDeviceInput={onDeviceInput}
           onDeviceScroll={onDeviceScroll}
@@ -214,6 +227,11 @@ export function AppleDeviceStage({
 /**
  * The device→view mapping for the flat presenter, in the shape the inspect
  * overlay takes. Null in 3D, where the presenter cannot answer mid-orbit.
+ *
+ * The points it takes are ORIENTED points — the accessibility tree describes
+ * the app's own interface, which turns with the device — and `geometry` is the
+ * drawn box, which turns with it too (§V1). So a rotated device needs no extra
+ * term here: both sides rotated together, and the one scale still holds.
  */
 export function flatDeviceToView(
   geometry: AppleDeviceGeometry | null,

@@ -11,8 +11,11 @@ import type { WorkToolPanelProps } from "./workToolPanels";
  * The pane itself is stubbed with a canvas — this is a test about the handover,
  * not about the device.
  */
+/** 300×150 is the HTML default: a decoder canvas that has never drawn a frame. */
+const decoder = { width: 320, height: 640 };
+
 vi.mock("../apple/AppleDevicePane", () => ({
-  AppleDevicePane: () => <canvas data-testid="fake-decoder" width={320} height={640} />,
+  AppleDevicePane: () => <canvas data-testid="fake-decoder" width={decoder.width} height={decoder.height} />,
 }));
 
 const { WORK_TOOL_COMPONENTS } = await import("./workToolPanels");
@@ -81,6 +84,8 @@ let deviceList: ReturnType<typeof vi.fn>;
 let onEvent: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
+  decoder.width = 320;
+  decoder.height = 640;
   resetAppleStreamLeases();
   resetAppleMiniPlayerForTests();
   deviceList = vi.fn(async () => ({ lane: LANE_DEVICE, installed: [{ udid: UDID, state: "Booted" }] }));
@@ -137,6 +142,27 @@ describe("the Apple tool panel's handover", () => {
     // cold path asks the runtime instead.
     expect(takeAppleMiniPlayerPoster(UDID)).toBe("data:image/jpeg;base64,POSTER");
     expect(appleStreamLeaseCount(KEY)).toBe(0);
+  });
+
+  it("takes no photograph of a decoder that has never drawn a frame", async () => {
+    /*
+     * `IosSimH264Video` only sizes its canvas on the first decode, so before
+     * one it is the HTML default 300×150 — and, drawn with `alpha: false`,
+     * solid black. The poster is painted full-bleed over the floating player,
+     * so photographing that placeholder would stretch a black rectangle across
+     * the picture: the exact failure the poster exists to prevent.
+     */
+    decoder.width = 300;
+    decoder.height = 150;
+    acquireAppleStreamLease(KEY, { laneId: LANE, deviceUdid: UDID, pinKey: null });
+    const view = render(<WorkIosTool {...props()} />);
+    await vi.waitFor(() => expect(getAppleMiniPlayerLaneDevice(LANE)).not.toBeNull());
+    view.unmount();
+
+    expect(takeAppleMiniPlayerPoster(UDID)).toBeNull();
+    // The handover itself still happens — it just opens on the live stream
+    // rather than on a photograph of nothing.
+    expect(getAppleMiniPlayerTarget()).toMatchObject({ deviceUdid: UDID });
   });
 
   it("does nothing at all without a lane", () => {

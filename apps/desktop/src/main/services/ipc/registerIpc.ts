@@ -9292,6 +9292,7 @@ export function registerIpc({
   ipcMain.handle(IPC.iosSimulatorDeviceCreate, async (_event, arg = {}) => ensureIosSimulator().deviceCreate(arg));
   ipcMain.handle(IPC.iosSimulatorDeviceAttach, async (_event, arg) => ensureIosSimulator().deviceAttach(arg));
   ipcMain.handle(IPC.iosSimulatorDeviceStart, async (_event, arg = {}) => ensureIosSimulator().deviceStart(arg));
+  ipcMain.handle(IPC.iosSimulatorDeviceStop, async (_event, arg = {}) => ensureIosSimulator().deviceStop(arg));
   ipcMain.handle(IPC.iosSimulatorDeviceList, async (_event, arg = {}) => ensureIosSimulator().deviceList(arg));
   ipcMain.handle(IPC.iosSimulatorDeviceDelete, async (_event, arg = {}) => ensureIosSimulator().deviceDelete(arg));
   ipcMain.handle(IPC.iosSimulatorFrame, async (_event, arg = {}) => ensureIosSimulator().frame(arg));
@@ -9311,6 +9312,7 @@ export function registerIpc({
   ipcMain.handle(IPC.iosSimulatorPressButton, async (_event, arg) => ensureIosSimulator().pressButton(arg));
 
   ipcMain.handle(IPC.iosSimulatorRotate, async (_event, arg) => ensureIosSimulator().rotate(arg));
+  ipcMain.handle(IPC.iosSimulatorScroll, async (_event, arg) => ensureIosSimulator().scroll(arg));
 
   ipcMain.handle(IPC.iosSimulatorTypeText, async (_event, arg) => ensureIosSimulator().typeText(arg));
 

@@ -201,10 +201,12 @@ export function createAppleDeviceNamespace(
       unavailable(NO_HOST),
       false,
     )) as never,
-    // Through the allowlisted passthrough rather than a new wire action: the
-    // boot is a mutation on the owning machine and `apple.invoke` already
-    // carries the cooperative-ownership guard every other mutation gets.
+    // Through the allowlisted passthrough rather than new wire actions: the
+    // boot and the power-off are mutations on the owning machine, and
+    // `apple.invoke` already carries the cooperative-ownership guard every
+    // other mutation gets.
     deviceStart: (async (args?: unknown) => invoke("deviceStart", args ?? {}, false)) as never,
+    deviceStop: (async (args?: unknown) => invoke("deviceStop", args ?? {}, false)) as never,
     deviceDelete: (async (args?: unknown) => invoke("deviceDelete", args ?? {}, false)) as never,
 
     recordList: (async (args?: unknown) => call(
@@ -252,6 +254,12 @@ export function createAppleDeviceNamespace(
       unavailable(NO_HOST),
       false,
     )) as never,
+    scroll: (async (args: Record<string, unknown>) => call(
+      "apple.input",
+      { kind: "scroll", laneId: laneOf(args), chatSessionId: chatOf(args), ...args },
+      unavailable(NO_HOST),
+      false,
+    )) as never,
     tapElement: (async (args: Record<string, unknown>) => call(
       "apple.input",
       { kind: "tap-element", laneId: laneOf(args), chatSessionId: chatOf(args), ...args },
@@ -265,7 +273,7 @@ export function createAppleDeviceNamespace(
       false,
     )) as never,
 
-    /* Everything else the column reaches for, behind the host's allowlist. */
+    /* Everything else the pane reaches for, behind the host's allowlist. */
     launch: (async (args?: unknown) => invoke("launch", args ?? {}, false)) as never,
     attachToChatSession: (async (args?: unknown) => invoke("attachToChatSession", args ?? {}, false)) as never,
     shutdown: (async (args?: unknown) => invoke("shutdown", args ?? {}, false)) as never,
@@ -285,8 +293,13 @@ export function createAppleDeviceNamespace(
     setContentSize: (async (args?: unknown) => invoke("setContentSize", args ?? {}, false)) as never,
     relaunchApp: (async (args?: unknown) => invoke("relaunchApp", args ?? {}, false)) as never,
     terminateApp: (async (args?: unknown) => invoke("terminateApp", args ?? {}, false)) as never,
+    // The rail's Home/volume/Siri and its orientation control. Absent before
+    // round 5, so a web tab rendered both and neither did anything.
+    pressButton: (async (args?: unknown) => invoke("pressButton", args ?? {}, false)) as never,
+    rotate: (async (args?: unknown) => invoke("rotate", args ?? {}, false)) as never,
+    frame: (async (args?: unknown) => invoke("frame", args ?? {}, false)) as never,
 
-    // Apple device events are not on the sync event bus yet; the column polls
+    // Apple device events are not on the sync event bus yet; the pane polls
     // status, so an inert unsubscribe is the honest answer rather than a
     // listener that can never fire.
     onEvent: (() => () => {}) as never,

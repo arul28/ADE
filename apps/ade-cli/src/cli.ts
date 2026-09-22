@@ -11701,6 +11701,28 @@ function buildIosSimulatorPlan(
       y: readCoordinate("--y", 1),
     });
   }
+  if (sub === "scroll") {
+    // The helper's own scroll gesture, which re-anchors past the bezel, so a
+    // scroll longer than the screen keeps going. `drag` is one bounded stroke.
+    const direction = readIosSimulatorEnum(args, {
+      sub,
+      names: ["--direction"],
+      label: "direction",
+      noun: "direction",
+      valid: ["up", "down", "left", "right"] as const,
+    });
+    const anchorX = readNumberOption(args, ["--anchor-x"]);
+    const anchorY = readNumberOption(args, ["--anchor-y"]);
+    return iosAction("Apple device scroll", "scroll", {
+      deviceUdid: readIosSimulatorDevice(args),
+      direction,
+      ...(readNumberOption(args, ["--amount", "--distance"]) != null
+        ? { amount: readNumberOption(args, ["--amount", "--distance"]) }
+        : {}),
+      ...(anchorX != null ? { anchorX } : {}),
+      ...(anchorY != null ? { anchorY } : {}),
+    });
+  }
   if (sub === "drag" || sub === "swipe") {
     return iosAction(`iOS simulator ${sub}`, sub, {
       deviceUdid: readIosSimulatorDevice(args),
@@ -11730,9 +11752,34 @@ function buildIosSimulatorPlan(
       ),
     });
   }
+  /*
+   * `stop` is the opposite of `start`, and until round 5 it was not.
+   *
+   * `start` (`deviceStart`) boots the lane's simulator and opens the live
+   * view. `stop` was an alias of `shutdown`, which ends the CHAT'S SESSION and
+   * leaves the simulator running — so `ade apple start` followed by
+   * `ade apple stop` left a booted device behind and nothing said so. It now
+   * powers the device off, which is what every caller of a verb named `stop`
+   * meant; `shutdown` and its other aliases still end the session alone.
+   */
+  if (
+    sub === "stop" ||
+    sub === "device-stop" ||
+    sub === "power-off" ||
+    sub === "poweroff"
+  ) {
+    return iosAction("Apple device stop", "deviceStop", {
+      chatSessionId: claimArgs.chatSessionId,
+      ...(readIosSimulatorDevice(args) ? { udid: readIosSimulatorDevice(args) } : {}),
+      ...(readFlag(args, ["--force", "-f"]) ? { force: true } : {}),
+      ...(readFlag(args, ["--ignore-ownership", "--ignore-owner"])
+        ? { ignoreOwnership: true }
+        : {}),
+      ...rootArgs(),
+    });
+  }
   if (
     sub === "shutdown" ||
-    sub === "stop" ||
     sub === "teardown" ||
     sub === "end" ||
     sub === "end-session"
@@ -12021,6 +12068,14 @@ function buildIosSimulatorPlan(
       ...(cellularBars == null ? {} : { cellularBars }),
       ...(batteryLevel == null ? {} : { batteryLevel }),
       ...(batteryState ? { batteryState } : {}),
+    });
+  }
+  if (sub === "foreground" || sub === "foreground-app" || sub === "front") {
+    // `getAppState` answers about a bundle id the caller already knows.
+    // This one answers "what is on screen", from the helper's accessibility
+    // bridge — the question an agent that has just arrived actually has.
+    return iosAction("Apple device foreground app", "getForegroundApp", {
+      deviceUdid: readIosSimulatorDevice(args),
     });
   }
   if (sub === "app-state") {

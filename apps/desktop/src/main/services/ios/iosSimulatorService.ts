@@ -7,6 +7,8 @@ import type {
   AppleDeviceAttachArgs,
   AppleDeviceStartArgs,
   AppleDeviceStatePhase,
+  AppleDeviceStopArgs,
+  AppleDeviceStopResult,
   AppleDeviceCreateArgs,
   AppleDeviceDeleteArgs,
   AppleDeviceListArgs,
@@ -19,6 +21,9 @@ import type {
   ApplePressButtonResult,
   AppleRotateArgs,
   AppleRotateResult,
+  AppleScrollArgs,
+  AppleScrollDirection,
+  AppleScrollResult,
   AppleHelperToolInfo,
   AppleInstalledSimulator,
   AppleLaneDevice,
@@ -93,6 +98,7 @@ import type {
   IosSimulatorStopEventLogArgs,
   IosSimulatorStatus,
   IosSimulatorStatusArgs,
+  IosSimulatorStatusRecording,
   IosSimulatorStatusStream,
   IosSimulatorStatusBarArgs,
   IosSimulatorTapElementArgs,
@@ -100,8 +106,10 @@ import type {
   IosSimulatorWaitForElementArgs,
 } from "../../../shared/types";
 import {
+  APPLE_AGENT_ACTIONS,
   APPLE_BUTTON_UNSUPPORTED_CODE,
   APPLE_DEVICE_ORIENTATIONS,
+  APPLE_SCROLL_DIRECTIONS,
   APPLE_HARDWARE_BUTTONS,
   APPLE_STREAM_NOT_RUNNING_CODE,
   IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE,
@@ -128,6 +136,7 @@ import {
 } from "./simHelperClient";
 import {
   createSimRecordingService,
+  readArtifactId,
   type AppleInputSource,
   type SimRecording,
   type SimRecordingService,
@@ -187,6 +196,33 @@ function isAppleHardwareButtonName(value: string): value is AppleHardwareButtonN
 function isAppleDeviceOrientation(value: string): value is AppleDeviceOrientation {
   return (APPLE_DEVICE_ORIENTATIONS as readonly string[]).includes(value);
 }
+
+function isAppleScrollDirection(value: string): value is AppleScrollDirection {
+  return (APPLE_SCROLL_DIRECTIONS as readonly string[]).includes(value);
+}
+
+/**
+ * One screenful, near enough, in device pixels.
+ *
+ * The helper's gain maps a wheel notch (~120) to a full-screen drag, so a
+ * default of five notches is "keep going until I see something new" — the
+ * amount an agent means when it asks to scroll and says nothing else. It
+ * re-anchors past the bezel, so overshooting costs nothing.
+ */
+const APPLE_SCROLL_DEFAULT_AMOUNT = 600;
+
+/**
+ * Viewport direction to the helper's content-movement delta.
+ *
+ * Inverted on purpose: the finger moves opposite to the content, so revealing
+ * what is BELOW (`down`) moves the content UP, which is a negative deltaY.
+ */
+const APPLE_SCROLL_DELTAS: Record<AppleScrollDirection, (amount: number) => { deltaX: number; deltaY: number }> = {
+  down: (amount) => ({ deltaX: 0, deltaY: -amount }),
+  up: (amount) => ({ deltaX: 0, deltaY: amount }),
+  right: (amount) => ({ deltaX: -amount, deltaY: 0 }),
+  left: (amount) => ({ deltaX: amount, deltaY: 0 }),
+};
 
 type RunCommand = (command: string, args: string[], options?: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv }) => Promise<{ stdout: string; stderr: string }>;
 type SpawnProcess = typeof spawn;
@@ -2027,6 +2063,18 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     streamRequestContext: Pick<IosSimulatorStreamStatus, "requestedBackend" | "fallbackReason" | "degradationReason">;
     hub: IosDeviceHub | null;
     cachedStatus: { value: IosSimulatorStatus; computedAt: number; inflight: Promise<IosSimulatorStatus> | null };
+    /**
+     * Serialises `deviceStart` against `deviceStop` for this lane.
+     *
+     * Bringing a device up is boot → bootstatus → capture, several seconds
+     * long; powering it off is one `simctl shutdown`. Without a queue the two
+     * interleave, and the interleaving that matters is the one round 5 §S1
+     * names: the tab's close powers the device off while a start that was
+     * already in flight — a retry, a second viewer, the pane's own effect
+     * re-running — boots it straight back and the user watches the simulator
+     * they just closed come back to life.
+     */
+    deviceLifecycleQueue: Promise<unknown>;
   };
 
   const runtimes = new Map<string, LaneRuntime>();
@@ -2041,6 +2089,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     streamStatus: emptyStreamStatus(),
     streamRequestContext: { requestedBackend: null, fallbackReason: null, degradationReason: null },
     hub: null,
+    deviceLifecycleQueue: Promise.resolve(),
     cachedStatus: {
       value: {
         platform: process.platform,
@@ -2144,7 +2193,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         resolveDevice: (deviceUdid) => resolveDevice(deviceUdid, runtime),
         resolveControlDeviceUdid: (deviceUdid) => resolveControlDeviceUdid(deviceUdid, runtime),
         getScreenSnapshot: (snapshotArgs) => getScreenSnapshot({ ...snapshotArgs, laneId: snapshotArgs.laneId ?? runtime.laneId }),
-        screenshot: (shotArgs) => screenshot({ ...shotArgs, laneId: shotArgs.laneId ?? runtime.laneId }),
+        // `proof: false`: this dep serves `captureProofBundle`, whose `screen.png`
+        // is already the artifact. Filing it again would put two rows in the
+        // drawer for one capture.
+        screenshot: (shotArgs) => screenshot({ ...shotArgs, laneId: shotArgs.laneId ?? runtime.laneId, proof: false }),
         tap: (tapArgs) => tap({ ...tapArgs, laneId: runtime.laneId }),
         typeText: (textArgs) => typeText({ ...textArgs, laneId: runtime.laneId }),
         resolveBuildRoot: (scope) => resolveScopedRootForSession(scope, runtime),
@@ -3016,6 +3068,24 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     lastError: runtime.streamStatus.lastError,
   });
 
+  /**
+   * The lane's live recording, redacted to what a status reader needs.
+   *
+   * The path and the byte count are deliberately absent: status is polled into
+   * transcripts and onto a phone, and the file is `record-list`'s to describe.
+   */
+  const currentStatusRecording = (runtime: LaneRuntime): IosSimulatorStatusRecording | null => {
+    if (!runtime.key) return null;
+    const record = recordings.active({ laneId: runtime.key });
+    if (!record) return null;
+    return {
+      id: record.id,
+      startedAt: record.startedAt,
+      mode: record.mode,
+      chatSessionId: record.chatSessionId,
+    };
+  };
+
   const computeStatus = async (runtime: LaneRuntime): Promise<IosSimulatorStatus> => {
     const isDarwin = process.platform === "darwin";
     const tools = buildToolStatuses();
@@ -3048,6 +3118,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       // The same redaction rule as `getStreamStatus`: the shape, never the
       // address or the token.
       stream: currentStatusStream(runtime),
+      recording: currentStatusRecording(runtime),
+      // Round 5 §S4: an agent that has just landed in a lane learns what it may
+      // do with the device from the call it already makes, instead of reading
+      // source or guessing verb names. Same list the action allowlist spreads.
+      capabilities: APPLE_AGENT_ACTIONS,
     };
   };
 
@@ -3065,6 +3140,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         deviceSession: hub(runtime).getDeviceSession(),
         laneDevice: laneDevices.get(runtime.key),
         stream: currentStatusStream(runtime),
+        recording: currentStatusRecording(runtime),
       };
     }
     const inflight = computeStatus(runtime)
@@ -4161,14 +4237,87 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     };
   };
 
+  /** The lane device's name for a udid, for captions. Falls back to the udid. */
+  const deviceLabelForUdid = (udid: string): string => {
+    for (const runtime of runtimes.values()) {
+      const device = laneDevices.get(runtime.key);
+      if (device?.udid === udid) return device.name;
+    }
+    return udid.slice(0, 8);
+  };
+
+  /**
+   * File a captured still in the proof drawer, and never fail the capture.
+   *
+   * Round 5 §S3: a recording has filed itself since round 3, but a screenshot
+   * had to be promoted by a second command — `ade apple proof`, which wraps
+   * `screenshot` in an `ingest_computer_use_artifacts` step. Agents took the
+   * still and skipped the promotion, and the rail's Screenshot button never
+   * promoted anything at all: it wrote a PNG into a cache directory under the
+   * build root and told nobody. A screenshot nobody can see is not evidence.
+   *
+   * Returns the artifact id or null. Null is not an error the caller should
+   * hear about: the PNG on disk is the result that was asked for, and a drawer
+   * that refused the row must not turn a good capture into a thrown call.
+   */
+  const fileScreenshotAsProof = (
+    shot: IosSimulatorScreenshot,
+    arg: IosSimulatorScreenshotArgs,
+    runtime: LaneRuntime,
+  ): string | null => {
+    const filer = args.recordingDeps?.artifactFiler;
+    if (!filer) return null;
+    const chatSessionId = arg.chatSessionId?.trim()
+      || runtime.activeSession?.chatSessionId
+      || null;
+    const caption = arg.caption?.trim()
+      || `Simulator screenshot · ${deviceLabelForUdid(shot.deviceUdid)}`;
+    try {
+      const result = filer.ingest({
+        backend: { name: "apple-device", style: "local_fallback", toolName: "apple_screenshot" },
+        ...(chatSessionId ? { owners: [{ kind: "chat_session", id: chatSessionId }] } : {}),
+        ...(args.projectRoot ? { callerRoot: args.projectRoot } : {}),
+        inputs: [
+          {
+            kind: "screenshot",
+            title: caption,
+            description: `Screen of the lane's Apple device at ${shot.capturedAt}.`,
+            path: shot.filePath,
+            mimeType: "image/png",
+            metadata: {
+              laneId: runtime.key || null,
+              udid: shot.deviceUdid,
+              width: shot.width,
+              height: shot.height,
+              capturedAt: shot.capturedAt,
+            },
+          },
+        ],
+      });
+      return readArtifactId(result);
+    } catch (error) {
+      args.logger.debug("apple.screenshot_proof_file_failed", {
+        udid: shot.deviceUdid,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  };
+
   const screenshot = async (arg: IosSimulatorScreenshotArgs = {}): Promise<IosSimulatorScreenshot> => {
     assertDarwin();
     const runtime = resolveRuntime(arg);
-    return captureScreenshot(
+    const shot = await captureScreenshot(
       arg,
       await resolveScopedRootForSession({ projectRoot: arg.projectRoot, laneId: arg.laneId }, runtime),
       runtime,
     );
+    // Default ON. `proof: false` is for the internal callers that already
+    // produce their own artifact — the proof bundle's `screen.png` and the
+    // inspector hit-test still — which would otherwise file a second, duplicate
+    // row for the same pixels.
+    if (arg.proof === false) return shot;
+    return { ...shot, proofArtifactId: fileScreenshotAsProof(shot, arg, runtime) };
   };
 
   const getAppContainerPath = async (
@@ -4966,6 +5115,51 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     });
   };
 
+  /**
+   * Scroll, through the helper's own gesture rather than a bounded drag.
+   *
+   * The helper turns the delta into a touch drag on the digitizer and
+   * re-anchors the finger when it nears an edge, so a scroll longer than the
+   * screen keeps going. `drag` cannot do that: one stroke, bounded by the
+   * bezel. This is why `scroll` is its own verb and not sugar over `drag`.
+   *
+   * The direction is the VIEWPORT's, so `down` reveals what is below. The
+   * helper speaks in content movement, where that is a negative delta — the
+   * flip lives here so no caller carries both models.
+   */
+  const scroll = async (scrollArgs: AppleScrollArgs): Promise<AppleScrollResult> => {
+    assertDarwin();
+    const direction = typeof scrollArgs.direction === "string" ? scrollArgs.direction.trim() : "";
+    if (!isAppleScrollDirection(direction)) {
+      throw new Error(`direction must be ${APPLE_SCROLL_DIRECTIONS.join(", ")}.`);
+    }
+    const amount = scrollArgs.amount ?? APPLE_SCROLL_DEFAULT_AMOUNT;
+    if (!Number.isFinite(amount) || amount <= 0) throw new Error("amount must be a positive number of device pixels.");
+    const hasAnchorX = scrollArgs.anchorX != null;
+    const hasAnchorY = scrollArgs.anchorY != null;
+    // Half an anchor is a caller bug, not a request for the centre — the same
+    // rule the helper's own parser enforces, stated here so the error names the
+    // argument rather than arriving as a helper protocol failure.
+    if (hasAnchorX !== hasAnchorY) throw new Error("anchorX and anchorY must be given together.");
+    const anchor = hasAnchorX
+      ? {
+        anchorX: normalizeCoordinate(scrollArgs.anchorX, "anchorX"),
+        anchorY: normalizeCoordinate(scrollArgs.anchorY, "anchorY"),
+      }
+      : null;
+    const { deltaX, deltaY } = APPLE_SCROLL_DELTAS[direction](amount);
+    const runtime = resolveRuntime(scrollArgs);
+    const deviceUdid = await resolveControlDeviceUdid(scrollArgs.deviceUdid, runtime);
+    return enqueueControl("scroll", async () => {
+      await helper().send({ type: "scroll", udid: deviceUdid, deltaX, deltaY, ...(anchor ?? {}) });
+      runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
+      // A scroll IS injected input under the auto-record contract: it changes
+      // what is on screen, and a video that skips it shows a jump cut.
+      noteInput(runtime, { udid: deviceUdid, kind: "drag" });
+      return { ok: true as const, direction, deltaX, deltaY };
+    });
+  };
+
   const typeText = async (input: { deviceUdid?: string | null; text: string; laneId?: string | null; chatSessionId?: string | null; source?: AppleInputSource }): Promise<{ ok: true }> => {
     assertDarwin();
     const runtime = resolveRuntime(input);
@@ -5083,8 +5277,29 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * thrown, because the caller's promise is the contract and the event is only
    * the narration.
    */
+  /**
+   * Run one device-lifecycle step for a lane, with nothing else running.
+   *
+   * Rejections do not poison the queue: the chain is advanced with a settled
+   * promise and the caller gets the original rejection, so a failed boot never
+   * wedges every later stop behind it.
+   */
+  const serializeDeviceLifecycle = <T>(runtime: LaneRuntime, step: () => Promise<T>): Promise<T> => {
+    const next = runtime.deviceLifecycleQueue.then(step, step);
+    runtime.deviceLifecycleQueue = next.then(() => undefined, () => undefined);
+    return next;
+  };
+
   const deviceStart = async (deviceArgs: AppleDeviceStartArgs = {}): Promise<IosSimulatorStreamStatus> => {
+    // Both guards ahead of the queue, in the order they were in before it:
+    // "this is not a Mac" and "this call names no lane" are answers this
+    // service can give without waiting behind another lane's boot.
     assertDarwin();
+    const runtime = requireLaneScope(deviceArgs);
+    return serializeDeviceLifecycle(runtime, () => deviceStartStep(deviceArgs));
+  };
+
+  const deviceStartStep = async (deviceArgs: AppleDeviceStartArgs = {}): Promise<IosSimulatorStreamStatus> => {
     const runtime = requireLaneScope(deviceArgs);
     const laneId = runtime.key;
     const requestedUdid = deviceArgs.udid?.trim() || null;
@@ -5119,6 +5334,121 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       phase("failed", error instanceof Error ? error.message : String(error));
       throw error;
     }
+  };
+
+  /**
+   * The lane's simulator, powered OFF — `deviceStart`'s actual opposite.
+   *
+   * Round 4 wired "Close and shut down" to `shutdown`, which is the verb for
+   * ending a chat's SESSION: it drops the ownership claim and stops the
+   * stream, and the simulator keeps running. The tools card kept reading
+   * "ADE Repro · Running", reopening the tab found the device still booted,
+   * and the dialog the user had just answered had done nothing they could see.
+   * There was no power-off verb anywhere in the service to wire it to — the
+   * only `simctl shutdown` in ADE lives in the device hub's
+   * `releaseTrackedDevice`, which is reachable only through `closeDevice` and
+   * only when a hub device session exists, and the pane's `deviceStart` path
+   * never opens one. This is that verb.
+   *
+   * Three things, in this order, and all three matter:
+   *
+   * 1. `shutdown` first, which stops the stream and releases the claim — and
+   *    carries the cooperative single-owner guard, so `deviceStop` refuses to
+   *    power off a device another chat is driving unless told to.
+   * 2. The hub's device session, forgotten WITHOUT its own shutdown. It has
+   *    its own `simctl shutdown` behind `bootedByAde`, and two shutdowns
+   *    racing on one udid is how `simctl` starts reporting states nobody asked
+   *    about. The power-off below is unconditional instead, because the user
+   *    asked for it by name — "did ADE boot this?" is the right question for
+   *    cleanup and the wrong one for an explicit request.
+   * 3. `simctl shutdown`, tolerating a device that was already off.
+   *
+   * The lane device stays REGISTERED. Powering a device off says nothing about
+   * which device the lane uses, so the pane's next visit reads
+   * "{name} is off. [Start]" rather than dropping back to the picker.
+   * `deviceDelete` is the verb that un-registers.
+   *
+   * Queued against `deviceStart` (see `serializeDeviceLifecycle`) so a start
+   * already in flight cannot boot the device back up behind the stop.
+   */
+  const deviceStop = async (stopArgs: AppleDeviceStopArgs = {}): Promise<AppleDeviceStopResult> => {
+    assertDarwin();
+    const runtime = resolveRuntime(stopArgs);
+    return serializeDeviceLifecycle(runtime, () => deviceStopStep(stopArgs, runtime));
+  };
+
+  const deviceStopStep = async (
+    stopArgs: AppleDeviceStopArgs,
+    runtime: LaneRuntime,
+  ): Promise<AppleDeviceStopResult> => {
+    const laneDevice = runtime.key ? laneDevices.get(runtime.key) : null;
+    // Widest-to-narrowest, the same precedence `resolveControlDeviceUdid`
+    // uses, minus its final "whatever iPhone is booted" fallback: powering off
+    // a simulator this lane never claimed is not a reasonable reading of
+    // "stop my device".
+    const udid = stopArgs.udid?.trim()
+      || laneDevice?.udid
+      || runtime.activeSession?.deviceUdid
+      || runtime.hub?.getDeviceSession()?.deviceUdid
+      || runtime.streamStatus.deviceUdid
+      || null;
+    if (!udid) {
+      return { udid: null, poweredOff: false, previousState: null, released: false, stillRegistered: false };
+    }
+    const released = await shutdown({
+      laneId: runtime.laneId,
+      chatSessionId: stopArgs.chatSessionId ?? null,
+      force: stopArgs.force ?? null,
+      ignoreOwnership: stopArgs.ignoreOwnership ?? null,
+    });
+    if (runtime.hub?.getDeviceSession()?.deviceUdid === udid) {
+      await runtime.hub.closeDevice({
+        deviceUdid: udid,
+        chatSessionId: stopArgs.chatSessionId ?? null,
+        ignoreOwnership: true,
+        // The power-off below is this function's job, not the hub's.
+        shutdownDevice: false,
+      }).catch((error: unknown) => {
+        args.logger.debug("apple.device_stop_close_device_failed", {
+          udid,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
+    const previousState = await resolveDevice(udid, runtime)
+      .then((device) => device.state)
+      .catch(() => null);
+    let poweredOff = false;
+    await run("xcrun", ["simctl", "shutdown", udid], { timeoutMs: 60_000 })
+      .then(() => {
+        poweredOff = true;
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        // Already off is the result the caller wanted, not a failure. Anything
+        // else is: a stop that silently did nothing is exactly the bug this
+        // verb exists to fix, so it is not swallowed.
+        if (!/current state: Shutdown|Unable to shutdown device in current state|not booted|Invalid device state/i.test(message)) {
+          throw error;
+        }
+      });
+    invalidateStatus(runtime);
+    if (runtime.key) {
+      emit({ type: "apple.device.state", laneId: runtime.key, udid, phase: "stopped" });
+    }
+    args.logger.info("apple.device_stopped", {
+      laneId: runtime.key || null,
+      udid,
+      poweredOff,
+      previousState,
+    });
+    return {
+      udid,
+      poweredOff,
+      previousState,
+      released: released.released,
+      stillRegistered: Boolean(laneDevice),
+    };
   };
 
   const deviceList = async (deviceArgs: AppleDeviceListArgs = {}): Promise<AppleDeviceListResult> => {
@@ -5271,6 +5601,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     typeText,
     drag,
     swipe: drag,
+    /** The helper's re-anchoring scroll gesture, by viewport direction. */
+    scroll,
     selectPoint,
 
     /* Per-lane devices: one simulator per lane, created on first ask. */
@@ -5278,6 +5610,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     deviceAttach,
     /** Attach-or-create, boot, `bootstatus`, then `startStream`. The picker's one click. */
     deviceStart,
+    /** Power the lane's simulator off and leave it registered. Not `shutdown`. */
+    deviceStop,
     deviceList,
     deviceDelete,
     /** Lane archive/delete hook. Deletes a clone, only detaches an attached device. */

@@ -213,16 +213,19 @@ describe("useWorkSidebarTool", () => {
     };
 
     function installSimulator(listed: unknown) {
-      const shutdown = vi.fn(async () => undefined);
+      // `deviceStop` is the verb that runs `simctl shutdown`; `shutdown` only
+      // ends this chat's session and leaves the simulator running, which would
+      // make the dialog's "powers off the simulator" a lie.
+      const deviceStop = vi.fn(async () => undefined);
       const stopStream = vi.fn(async () => undefined);
       (window as unknown as { ade: unknown }).ade = {
         iosSimulator: {
           deviceList: vi.fn(async () => listed),
-          shutdown,
+          deviceStop,
           stopStream,
         },
       };
-      return { shutdown, stopStream };
+      return { deviceStop, stopStream };
     }
 
     afterEach(() => {
@@ -239,7 +242,7 @@ describe("useWorkSidebarTool", () => {
     }
 
     it("asks before it closes, and keeps the tab when the answer is Cancel", async () => {
-      const { shutdown } = installSimulator(BOOTED);
+      const { deviceStop } = installSimulator(BOOTED);
       const view = await openIosTab();
 
       await act(async () => { view.result.current.closeTool("ios"); });
@@ -247,17 +250,17 @@ describe("useWorkSidebarTool", () => {
       // Still open: the question is on screen and has not been answered.
       expect(view.result.current.openTools).toEqual(["ios"]);
       expect(getAppleShutdownConfirmRequest()?.deviceName).toBe("ADE Repro");
-      expect(shutdown).not.toHaveBeenCalled();
+      expect(deviceStop).not.toHaveBeenCalled();
 
       await act(async () => { getAppleShutdownConfirmRequest()?.resolve(false); });
       view.rerender();
       expect(view.result.current.openTools).toEqual(["ios"]);
       expect(view.result.current.tool).toBe("ios");
-      expect(shutdown).not.toHaveBeenCalled();
+      expect(deviceStop).not.toHaveBeenCalled();
     });
 
     it("drops the tab and powers the device off when the answer is Close and shut down", async () => {
-      const { shutdown, stopStream } = installSimulator(BOOTED);
+      const { deviceStop, stopStream } = installSimulator(BOOTED);
       const view = await openIosTab();
 
       await act(async () => { view.result.current.closeTool("ios"); });
@@ -267,20 +270,20 @@ describe("useWorkSidebarTool", () => {
       expect(view.result.current.tool).toBe(null);
       // The lease goes back before the power does.
       await vi.waitFor(() => expect(stopStream).toHaveBeenCalled());
-      await vi.waitFor(() => expect(shutdown).toHaveBeenCalledWith(
-        { chatSessionId: "chat-1", ignoreOwnership: true },
+      await vi.waitFor(() => expect(deviceStop).toHaveBeenCalledWith(
+        { laneId: "lane-1", chatSessionId: "chat-1", ignoreOwnership: true },
         undefined,
       ));
     });
 
     it("asks nothing at all when the lane's device is not booted", async () => {
-      const { shutdown } = installSimulator({ ...BOOTED, installed: [{ udid: "UDID-1", state: "Shutdown" }] });
+      const { deviceStop } = installSimulator({ ...BOOTED, installed: [{ udid: "UDID-1", state: "Shutdown" }] });
       const view = await openIosTab();
       await act(async () => { view.result.current.closeTool("ios"); });
       view.rerender();
       expect(getAppleShutdownConfirmRequest()).toBeNull();
       expect(view.result.current.openTools).toEqual([]);
-      await vi.waitFor(() => expect(shutdown).toHaveBeenCalled());
+      await vi.waitFor(() => expect(deviceStop).toHaveBeenCalled());
     });
 
     it("never asks for any other tool", async () => {

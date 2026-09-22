@@ -1909,6 +1909,7 @@ describe("iosSimulatorService screenshots and platform guards", () => {
       resolveLaneWorktreePath: () => projectRoot,
       recordingService: {
         noteInput: async (input) => { noted.push(input as unknown as Record<string, unknown>); },
+        active: () => null,
         start: async () => { throw new Error("unused"); },
         stop: async () => null,
         list: async () => [],
@@ -1965,6 +1966,7 @@ describe("iosSimulatorService screenshots and platform guards", () => {
       resolveLaneWorktreePath: () => projectRoot,
       recordingService: {
         noteInput: async (input) => { noted.push(input as unknown as Record<string, unknown>); },
+        active: () => null,
         start: async () => { throw new Error("unused"); },
         stop: async () => null,
         list: async () => [],
@@ -2059,6 +2061,7 @@ describe("iosSimulatorService screenshots and platform guards", () => {
       logger: noopLogger,
       recordingService: {
         noteInput: async (input) => { noted.push(input as unknown as Record<string, unknown>); },
+        active: () => null,
         start: async () => { throw new Error("unused"); },
         stop: async () => null,
         list: async () => [],
@@ -2142,6 +2145,7 @@ describe("iosSimulatorService screenshots and platform guards", () => {
       logger: noopLogger,
       recordingService: {
         noteInput: async (input) => { noted.push(input as unknown as Record<string, unknown>); },
+        active: () => null,
         start: async () => { throw new Error("unused"); },
         stop: async () => null,
         list: async () => [],

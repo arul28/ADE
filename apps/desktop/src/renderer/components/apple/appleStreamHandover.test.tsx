@@ -55,7 +55,12 @@ function installApi() {
       };
     }),
     stopStream: vi.fn(async () => { calls.push("stop"); return {}; }),
-    shutdown: vi.fn(async () => { calls.push("shutdown"); return { released: true, previousSession: null }; }),
+    // The tab close powers the device OFF (`deviceStop` → `simctl shutdown`),
+    // rather than merely releasing this chat's session.
+    deviceStop: vi.fn(async () => {
+      calls.push("deviceStop");
+      return { udid: UDID, poweredOff: true, previousState: "Booted", released: true, stillRegistered: true };
+    }),
     getStreamStatus: vi.fn(async () => ({ running: true })),
     resolveStreamUrl: vi.fn(async (url: string | null) => ({ url, forwarded: false, error: null })),
     deviceList: vi.fn(async () => ({ lane: null, installed: [] })),
@@ -152,7 +157,7 @@ describe("open → close → open again", () => {
     expect(appleStreamLeaseCount(KEY)).toBe(0);
     pane.unmount();
     expect(appleStreamLeaseCount(KEY)).toBe(0);
-    await waitFor(() => expect(calls).toContain("shutdown"));
+    await waitFor(() => expect(calls).toContain("deviceStop"));
 
     // A device started afterwards is seen as a first viewer, not a second one.
     expect(acquireAppleStreamLease(KEY).first).toBe(true);

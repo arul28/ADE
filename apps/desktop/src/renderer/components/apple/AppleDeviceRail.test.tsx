@@ -20,8 +20,9 @@ function renderRail(overrides: Partial<React.ComponentProps<typeof AppleDeviceRa
     inspecting: false,
     recording: false,
     screenshotPending: false,
+    orientation: "portrait",
     onHome: vi.fn(),
-    onRotate: vi.fn(),
+    onOrientation: vi.fn(),
     onScreenshot: vi.fn(),
     onToggleTools: vi.fn(),
     onToggleInspect: vi.fn(),
@@ -39,6 +40,9 @@ function renderRail(overrides: Partial<React.ComponentProps<typeof AppleDeviceRa
 
 const railButtons = () =>
   within(screen.getByRole("complementary", { name: "Device controls" })).getAllByRole("button");
+
+const openMenu = (name: string) =>
+  fireEvent.keyDown(screen.getByRole("button", { name }), { key: "Enter" });
 
 const openMore = () =>
   // Keyboard rather than pointer: jsdom has no PointerEvent, so Radix's
@@ -60,7 +64,7 @@ describe("AppleDeviceRail", () => {
     const labels = railButtons().map((button) => button.getAttribute("aria-label"));
     expect(labels).toEqual([
       "Home",
-      "Rotate device",
+      "Orientation: Portrait",
       "Inspect elements",
       "Save screenshot",
       "Record",
@@ -143,19 +147,54 @@ describe("AppleDeviceRail", () => {
     expect(screen.queryByRole("menuitem", { name: "Reset view" })).toBeNull();
   });
 
-  it("collapses to Home, Tools and More below 360px", () => {
+  it("collapses to Home, Orientation, Tools and More below 360px", () => {
+    // §V2: Orientation survives the collapse. The owner could not find the
+    // control it replaces, and a control that vanishes in a narrow pane is one
+    // more way not to find it.
     renderRail({ containerWidth: 320 });
     expect(railButtons().map((button) => button.getAttribute("aria-label"))).toEqual([
       "Home",
+      "Orientation: Portrait",
       "Device tools",
       "More device actions",
     ]);
   });
 
+  it("§V2: the orientation control NAMES the current orientation", () => {
+    renderRail({ orientation: "landscape-left" });
+    const control = screen.getByRole("button", { name: "Orientation: Landscape left" });
+    // The glyph turns with the device, so the pill reads as the pose even
+    // before the name is read out.
+    expect(control.querySelector("svg")?.getAttribute("style") ?? "").toContain("rotate(90deg)");
+    expect(screen.queryByRole("button", { name: "Rotate device" })).toBeNull();
+  });
+
+  it("§V2: offers all four orientations and checks the current one", () => {
+    const props = renderRail({ orientation: "landscape-left" });
+    openMenu("Orientation: Landscape left");
+    const items = screen.getAllByRole("menuitem").map((item) => item.textContent);
+    expect(items).toEqual([
+      "Portrait",
+      "Portrait upside down",
+      "Landscape left",
+      "Landscape right",
+    ]);
+    expect(
+      screen.getByRole("menuitem", { name: "Landscape left" }).getAttribute("aria-checked"),
+    ).toBe("true");
+    expect(
+      screen.getByRole("menuitem", { name: "Portrait" }).getAttribute("aria-checked"),
+    ).toBe("false");
+    fireEvent.click(screen.getByRole("menuitem", { name: "Landscape right" }));
+    expect(props.onOrientation).toHaveBeenCalledWith("landscape-right");
+  });
+
   it("refuses hardware buttons while the input socket is down", () => {
     renderRail({ inputConnected: false });
     expect(screen.getByRole("button", { name: "Home" }).hasAttribute("disabled")).toBe(true);
-    expect(screen.getByRole("button", { name: "Rotate device" }).hasAttribute("disabled")).toBe(true);
+    expect(
+      screen.getByRole("button", { name: "Orientation: Portrait" }).hasAttribute("disabled"),
+    ).toBe(true);
     // The view toggle is the renderer's own and stays usable.
     expect(screen.getByRole("button", { name: "View: 3D" }).hasAttribute("disabled")).toBe(false);
   });

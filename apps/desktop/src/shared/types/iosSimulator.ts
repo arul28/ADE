@@ -99,6 +99,23 @@ export type IosSimulatorStatus = {
   laneId?: string | null;
   /** The vendored Swift helper. Replaces the old `idb` / `idb_companion` pair. */
   helper?: AppleHelperToolInfo | null;
+  /**
+   * The recording running on this lane's device right now, or null.
+   *
+   * Here so one `getStatus` answers "is something already recording?" — an
+   * agent that starts a second one converts the auto recording to manual and
+   * then owns the stop, which it cannot decide without knowing this.
+   */
+  recording?: IosSimulatorStatusRecording | null;
+  /**
+   * Every action this service will accept from an agent (§S2).
+   *
+   * Carried on status so an agent in a lane can learn what it may do with the
+   * device from the tool it already calls, instead of reading source or
+   * guessing verb names. Same names on `ade apple`, on the action bus, and
+   * through `apple.invoke`.
+   */
+  capabilities?: readonly string[];
 };
 
 export type IosSimulatorStatusArgs = {
@@ -106,12 +123,131 @@ export type IosSimulatorStatusArgs = {
   chatSessionId?: string | null;
 };
 
+/**
+ * Every `ios_simulator` action an agent may call, in capability order.
+ *
+ * ONE list, read by three surfaces that used to keep three (round 5 §S2):
+ * `ADE_ACTION_ALLOWLIST.ios_simulator` spreads it, `getStatus().capabilities`
+ * reports it so an agent can discover the surface without reading source, and
+ * `apple.invoke` gates the phone/web client on the same names. A capability
+ * added to one of those and not the others is how `deviceStart` shipped
+ * reachable from the desktop and unnamed everywhere else.
+ *
+ * The names are the SERVICE method names, which is also what `ade apple`
+ * forwards for any subcommand it does not spell out. Add here first.
+ */
+export const APPLE_AGENT_ACTIONS = [
+  /* Discovery. `getStatus` is the one-shot answer: platform, helper, lane
+     device, stream, recording, and this list. */
+  "getStatus",
+  "listDevices",
+  "listLaunchTargets",
+  "claim",
+  "attachToChatSession",
+
+  /* The lane's device: find it, make one, bring it up, put it away. */
+  "deviceList",
+  "deviceCreate",
+  "deviceAttach",
+  "deviceStart",
+  "deviceStop",
+  "deviceDelete",
+
+  /* Video. */
+  "startStream",
+  "stopStream",
+  "getStreamStatus",
+  "frame",
+
+  /* The app. */
+  "launch",
+  "relaunchApp",
+  "terminateApp",
+  "uninstallApp",
+  "getAppState",
+  "getForegroundApp",
+  "openUrl",
+
+  /* Input. `drag` with a duration is the scroll: a drag with no duration reads
+     as a flick and scrolls nothing. */
+  "tap",
+  "typeText",
+  "drag",
+  "swipe",
+  "scroll",
+  "pressButton",
+  "rotate",
+  "selectPoint",
+
+  /* Reading the screen by name rather than by pixel. */
+  "getScreenSnapshot",
+  "getInspectorSnapshot",
+  "inspectPoint",
+  "findElement",
+  "tapElement",
+  "fillElement",
+  "waitForElement",
+  "assertVisible",
+
+  /* Device state, in place of a human in Settings. */
+  "getDeviceSettings",
+  "setAppearance",
+  "setContentSize",
+  "setAccessibilityOption",
+  "setLocation",
+  "clearLocation",
+  "setPermission",
+  "sendPushNotification",
+  "setStatusBar",
+  "clearStatusBar",
+
+  /* The app's own log. */
+  "startEventLog",
+  "stopEventLog",
+  "getEventLog",
+
+  /* Evidence. Screenshots and recordings file themselves (§S3). */
+  "screenshot",
+  "captureProofBundle",
+  "recordStart",
+  "recordStop",
+  "recordList",
+  "recordDelete",
+
+  /* SwiftUI previews. */
+  "getPreviewCapability",
+  "listPreviewTargets",
+  "resolvePreviewMatch",
+  "ensurePreviewWorkspace",
+  "renderCurrentPreview",
+  "renderPreview",
+  "openPreviewWorkspace",
+
+  /* Sessions. `shutdown` ends THIS CHAT'S claim; `deviceStop` powers the
+     simulator off. They are different verbs and always have been. */
+  "shutdown",
+  "openDevice",
+  "closeDevice",
+  "getDeviceSession",
+] as const;
+
+export type AppleAgentAction = (typeof APPLE_AGENT_ACTIONS)[number];
+
+/** The live recording, as `getStatus` reports it. */
+export type IosSimulatorStatusRecording = {
+  id: string;
+  startedAt: string;
+  mode: "auto" | "manual";
+  /** The chat that owns it, so a second chat knows not to stop it. */
+  chatSessionId: string | null;
+};
+
 /** The redacted live-view summary carried on `IosSimulatorStatus`. */
 export type IosSimulatorStatusStream = {
   running: boolean;
   backend: IosSimulatorStreamBackend | null;
   deviceUdid: string | null;
-  /** Measured by host-encoded backends only; null for window capture. */
+  /** Measured by the helper's own encoder. */
   fps: number | null;
   bitrateKbps: number | null;
   lastError: string | null;
@@ -250,6 +386,20 @@ export type IosSimulatorScreenshotArgs = {
   laneId?: string | null;
   /** Where to write the PNG. Relative paths resolve against the build root. */
   outPath?: string | null;
+  chatSessionId?: string | null;
+  /**
+   * File the PNG in the proof drawer. Default ON (round 5 §S3).
+   *
+   * A screenshot nobody can see is not evidence. Recordings have filed
+   * themselves since round 3; a still had to be promoted by a second command
+   * (`ade apple proof`) that agents forgot and the rail's Screenshot button
+   * never ran at all — it wrote a PNG into a cache directory and told nobody.
+   * Internal callers that already produce their own artifact — the proof
+   * bundle's `screen.png`, the inspector's hit-test still — pass `false`.
+   */
+  proof?: boolean | null;
+  /** Caption for the drawer row. Defaults to device + timestamp. */
+  caption?: string | null;
 };
 
 export type IosSimulatorScreenshot = {
@@ -260,6 +410,14 @@ export type IosSimulatorScreenshot = {
   width: number | null;
   height: number | null;
   capturedAt: string;
+  /**
+   * The proof-drawer row this screenshot was filed as, when it was filed.
+   *
+   * `null` means it was not filed (opted out, no drawer wired, or the drawer
+   * refused it). Never a reason to fail the capture: the PNG on disk is the
+   * result the caller asked for.
+   */
+  proofArtifactId?: string | null;
 };
 
 export type IosSimulatorStreamStatus = {
@@ -270,9 +428,9 @@ export type IosSimulatorStreamStatus = {
   fallbackReason?: string | null;
   degradationReason?: string | null;
   /**
-   * Measured frame rate. The service never measures frames — the renderer owns
-   * the Simulator.app window capture — so this stays null service-side instead
-   * of reporting a number nobody counted.
+   * Measured frame rate. The service never counts frames — the viewer that
+   * decodes them does — so this stays null service-side instead of reporting a
+   * number nobody counted.
    */
   fps: number | null;
   targetFps: number | null;
@@ -292,9 +450,9 @@ export type IosSimulatorStreamStatus = {
   latencyP95Ms?: number | null;
   helperPid?: number | null;
   inputBackend?: "helper" | null;
-  /** Set by host-encoded backends only. Null for window capture. */
+  /** Where a viewer connects, and with what token. Minted by `startStream`. */
   transport?: IosSimulatorStreamTransport | null;
-  /** Measured by host-encoded backends only. */
+  /** Measured by the helper's encoder. */
   bitrateKbps?: number | null;
 };
 
@@ -695,8 +853,11 @@ export type IosSimulatorEventPayload =
  * before `simctl boot`; `booted` once `bootstatus` returns; `streaming` once
  * the helper capture is open; `failed` on any error, with `detail` carrying
  * the message. The loading card advances its two segments on these.
+ *
+ * `stopped` is `deviceStop`'s: the simulator is powered off and the lane still
+ * owns it, so the pane swaps to "{name} is off. [Start]" without re-listing.
  */
-export type AppleDeviceStatePhase = "starting" | "booted" | "streaming" | "failed";
+export type AppleDeviceStatePhase = "starting" | "booted" | "streaming" | "failed" | "stopped";
 
 export type AppleDeviceStateEvent = {
   type: "apple.device.state";
@@ -1243,6 +1404,96 @@ export type AppleDeviceDeleteArgs = {
   laneId?: string | null;
   chatSessionId?: string | null;
   force?: boolean | null;
+};
+
+/**
+ * `deviceStop`: power the lane's simulator OFF and leave it registered.
+ *
+ * The opposite of `deviceStart`, and deliberately not `shutdown`. `shutdown`
+ * ends the chat's *session* — it releases the ownership claim and stops the
+ * stream, and the simulator keeps running. Round 4 wired "Close and shut down"
+ * to it, so the tools card still read "ADE Repro · Running" the moment the tab
+ * closed and the device came straight back. This is the verb that runs
+ * `simctl shutdown`.
+ *
+ * The lane device stays in the registry: powering a device off says nothing
+ * about which device the lane uses, so the pane's next visit offers Start
+ * rather than the picker. `deviceDelete` is the verb that un-registers.
+ */
+export type AppleDeviceStopArgs = {
+  laneId?: string | null;
+  chatSessionId?: string | null;
+  /** Power off this simulator instead of the lane's. Rarely needed. */
+  udid?: string | null;
+  /** Release a session another chat owns as well. */
+  force?: boolean | null;
+  /**
+   * Stop for whoever is running, without claiming to be them.
+   *
+   * The Work pane's close path: it is lane-scoped, it drives whatever session
+   * its lane is running, and it must not impersonate the owner to do it.
+   */
+  ignoreOwnership?: boolean | null;
+};
+
+export type AppleDeviceStopResult = {
+  /** The simulator that was asked to power off, or null when the lane owns none. */
+  udid: string | null;
+  /** `simctl shutdown` reported the device off. False when it was already off. */
+  poweredOff: boolean;
+  /** The device state before the call, as `simctl` reported it. */
+  previousState: string | null;
+  /** A chat session claim was released as part of this. */
+  released: boolean;
+  /** The lane still owns this device. Always true unless the lane owned none. */
+  stillRegistered: boolean;
+};
+
+/**
+ * Which way the VIEWPORT travels, the way a reader means it.
+ *
+ * `down` reveals what is below, like a page-down — which on a touch screen is
+ * a finger swiping UP. The sign flip lives in the service so no caller has to
+ * hold both models in its head; the helper's own `scroll` speaks in content
+ * movement, and `ade apple scroll down` has to mean what a person says.
+ */
+export const APPLE_SCROLL_DIRECTIONS = ["up", "down", "left", "right"] as const;
+export type AppleScrollDirection = (typeof APPLE_SCROLL_DIRECTIONS)[number];
+
+/**
+ * `scroll`: the helper's own scroll gesture, which nothing in ADE could reach.
+ *
+ * The vendored helper has had a `scroll` command since it was vendored — it
+ * turns the delta into a touch drag on the digitizer and RE-ANCHORS when the
+ * finger nears an edge, so a scroll longer than the screen keeps going instead
+ * of stopping at the bezel. Nothing in TypeScript ever sent it: the pane's
+ * wheel handler and every agent fell back to `drag`, which is one finger
+ * stroke bounded by the screen. Round 5 §S2 exposes it under its own name.
+ */
+export type AppleScrollArgs = {
+  laneId?: string | null;
+  chatSessionId?: string | null;
+  deviceUdid?: string | null;
+  direction: AppleScrollDirection;
+  /** How far, in device pixels. Defaults to roughly one screen. */
+  amount?: number | null;
+  /**
+   * Where the finger lands, in device POINTS. Both or neither.
+   *
+   * iOS hit-tests the scroll view under the touch, so an anchor is how a
+   * caller scrolls a bottom sheet rather than the map behind it. Omitted means
+   * the centre of the screen.
+   */
+  anchorX?: number | null;
+  anchorY?: number | null;
+};
+
+export type AppleScrollResult = {
+  ok: true;
+  direction: AppleScrollDirection;
+  /** What the helper was told, in its own content-movement convention. */
+  deltaX: number;
+  deltaY: number;
 };
 
 export type AppleFrameArgs = {

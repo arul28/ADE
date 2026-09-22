@@ -2,6 +2,10 @@ import type { SmartLinkPreview } from "../shared/smartLinks";
 import type {
   AppleDeviceAttachArgs,
   AppleDeviceStartArgs,
+  AppleDeviceStopArgs,
+  AppleDeviceStopResult,
+  AppleScrollArgs,
+  AppleScrollResult,
   AppleDeviceCreateArgs,
   AppleDeviceDeleteArgs,
   AppleDeviceListArgs,
@@ -2422,6 +2426,16 @@ declare global {
           args?: AppleDeviceStartArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<IosSimulatorStreamStatus>;
+        /**
+         * Power the lane's simulator OFF, leaving it registered.
+         *
+         * `deviceStart`'s opposite. NOT `shutdown`, which ends this chat's
+         * session and leaves the device booted (round 5 §S1).
+         */
+        deviceStop: (
+          args?: AppleDeviceStopArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleDeviceStopResult>;
         deviceList: (
           args?: AppleDeviceListArgs,
           pin?: OpenProjectBinding | null,
@@ -2473,6 +2487,11 @@ declare global {
           args: AppleRotateArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AppleRotateResult>;
+        /** The helper's re-anchoring scroll gesture, by viewport direction. */
+        scroll: (
+          args: AppleScrollArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleScrollResult>;
         typeText: (
           args: { deviceUdid?: string | null; text: string },
           pin?: OpenProjectBinding | null,

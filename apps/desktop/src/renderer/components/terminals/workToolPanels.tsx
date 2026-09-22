@@ -322,6 +322,25 @@ function WorkFilesTool({ laneId, runtimePin }: WorkToolPanelProps) {
   );
 }
 
+/**
+ * A canvas that has never been handed a frame is 300×150 — the HTML default —
+ * and `IosSimH264Video` only sizes it on the first decode. Drawn with
+ * `alpha: false`, that placeholder reads as solid black.
+ *
+ * It matters because the poster below is painted full-bleed over the floating
+ * player: photographing an unsized canvas would hand the handover a black
+ * rectangle and stretch it across the picture, which is precisely the failure
+ * the poster exists to prevent. Closing the pane before the first frame ever
+ * arrives is an ordinary thing to do, so this is an ordinary case, not an edge.
+ *
+ * Sized-but-different is the test rather than "non-zero": no Apple device
+ * decodes at exactly 300×150, so an untouched canvas is unambiguous.
+ */
+function hasDecodedFrame(canvas: HTMLCanvasElement): boolean {
+  if (canvas.width <= 0 || canvas.height <= 0) return false;
+  return canvas.width !== 300 || canvas.height !== 150;
+}
+
 function WorkIosTool({
   laneId,
   laneRoot,
@@ -434,14 +453,14 @@ function WorkIosTool({
     return () => {
       const canvas = paneNodeRef.current?.querySelector("canvas");
       const udid = getAppleMiniPlayerLaneDevice(laneId)?.udid ?? null;
-      if (canvas && udid && canvas.width > 0 && canvas.height > 0) {
+      if (canvas && udid && hasDecodedFrame(canvas)) {
         try {
           // JPEG, not PNG: this is a photograph of a screen that is about to be
           // replaced by the real thing, and a 300 KB PNG of it would cost more
           // to hand around than the frame it is standing in for.
           noteAppleMiniPlayerPoster(udid, canvas.toDataURL("image/jpeg", 0.7));
         } catch {
-          // A tainted or zero-sized canvas is a poster we do without.
+          // A tainted canvas is a poster we do without.
         }
       }
       void handoffAppleMiniPlayerAsync({

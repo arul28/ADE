@@ -163,13 +163,30 @@ function isLandscape(orientation: AppleDeviceOrientation): boolean {
   return orientation === "landscape-left" || orientation === "landscape-right";
 }
 
+/**
+ * Has this canvas ever been sized by a decode?
+ *
+ * A canvas element is 300×150 until something writes to it, and the decoder
+ * sets its real size on the first frame it draws. That placeholder is a
+ * LANDSCAPE shape, so a layout measured from it comes back rotated — and the
+ * body's UVs are written once at install, so a device that goes idle right
+ * then keeps a sideways screen with no frame coming to correct it. No Apple
+ * device decodes at 300×150, which makes the default unambiguous.
+ */
+export function appleCanvasHasDecoded(canvas: HTMLCanvasElement | null): boolean {
+  if (!canvas) return false;
+  if (canvas.width <= 0 || canvas.height <= 0) return false;
+  return !(canvas.width === 300 && canvas.height === 150);
+}
+
 function displayLayout(
   orientation: AppleDeviceOrientation,
   pixelSize: { width: number; height: number },
   canvas: HTMLCanvasElement | null,
 ): DisplayLayout {
-  const width = canvas?.width || pixelSize.width || 390;
-  const height = canvas?.height || pixelSize.height || 844;
+  const decoded = appleCanvasHasDecoded(canvas) ? canvas : null;
+  const width = decoded?.width || pixelSize.width || 390;
+  const height = decoded?.height || pixelSize.height || 844;
   const long = Math.max(width, height);
   const short = Math.min(width, height);
   return {
@@ -560,7 +577,9 @@ function createViewer(
         renderer.setDrawingBufferSize(viewport.width, viewport.height, viewport.pixelRatio);
         drawingBuffer = { ...viewport };
       }
-      if (texture && mirrorFrame()) texture.needsUpdate = true;
+      const blit = mirrorFrame();
+      if (blit.resized) rebuildTexture();
+      else if (texture && blit.drawn) texture.needsUpdate = true;
       const now = performance.now();
       if (motion.advance(now, reducedMotionPreferred())) {
         applyPose();
@@ -578,14 +597,31 @@ function createViewer(
     }
   }
 
-  /** Blit the decoded frame into our own bitmap. True when the texture should re-upload. */
-  const mirrorFrame = (): boolean => {
-    if (!source || !mirror || !mirrorContext) return false;
-    if (source.width <= 0 || source.height <= 0) return false;
+  /**
+   * Blit the decoded frame into our own bitmap.
+   *
+   * Returns whether the texture should re-upload, and whether the bitmap
+   * CHANGED SIZE while doing it — which is the difference between a re-upload
+   * and a rebuild, and the whole reason the 3D screen used to be black.
+   *
+   * A decoder canvas is 300×150 until its first frame sizes it. Three
+   * allocates a texture's storage from the image it is handed at construction,
+   * so a texture built against that placeholder is 300×150 forever; every
+   * upload afterwards asks the GPU to copy a 512×1111 bitmap into it and
+   * Chromium refuses the whole copy with
+   * `GL_INVALID_VALUE: glCopySubTextureCHROMIUM: Offset overflows texture
+   * dimensions` — 412 of them in one dev session. The copy fails silently as
+   * far as the page is concerned: no exception, no lost context, just a screen
+   * that stays black over a canvas that demonstrably holds the picture.
+   */
+  const mirrorFrame = (): { drawn: boolean; resized: boolean } => {
+    if (!source || !mirror || !mirrorContext) return { drawn: false, resized: false };
+    if (source.width <= 0 || source.height <= 0) return { drawn: false, resized: false };
     const scale = Math.min(1, MIRROR_MAX_WIDTH / source.width);
     const width = Math.max(1, Math.round(source.width * scale));
     const height = Math.max(1, Math.round(source.height * scale));
-    if (mirror.width !== width || mirror.height !== height) {
+    const resized = mirror.width !== width || mirror.height !== height;
+    if (resized) {
       mirror.width = width;
       mirror.height = height;
     }
@@ -593,9 +629,21 @@ function createViewer(
       mirrorContext.drawImage(source, 0, 0, width, height);
     } catch {
       // A canvas mid-resize can throw; the next frame blits again.
-      return false;
+      return { drawn: false, resized };
     }
-    return true;
+    return { drawn: true, resized };
+  };
+
+  /** A resized bitmap needs new storage, which means a new texture. */
+  const rebuildTexture = () => {
+    if (!mirror) return;
+    texture?.dispose();
+    texture = new THREE.CanvasTexture(mirror);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    texture.generateMipmaps = false;
+    paintDisplay();
   };
 
   const attachTexture = (next: HTMLCanvasElement | null) => {
@@ -609,8 +657,6 @@ function createViewer(
       mirror = document.createElement("canvas");
       mirrorContext = mirror.getContext("2d", { alpha: false });
     }
-    mirror.width = Math.max(1, next.width);
-    mirror.height = Math.max(1, next.height);
     mirrorFrame();
     texture = new THREE.CanvasTexture(mirror);
     texture.colorSpace = THREE.SRGBColorSpace;

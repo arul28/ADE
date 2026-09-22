@@ -804,6 +804,10 @@ import type {
   IosSimulatorShutdownResult,
   AppleDeviceAttachArgs,
   AppleDeviceStartArgs,
+  AppleDeviceStopArgs,
+  AppleDeviceStopResult,
+  AppleScrollArgs,
+  AppleScrollResult,
   AppleDeviceCreateArgs,
   AppleDeviceDeleteArgs,
   AppleDeviceListArgs,
@@ -8157,6 +8161,18 @@ const adeBridge = {
       pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorStreamStatus> =>
       callIosSimulatorMutation(pin, "deviceStart", args, IPC.iosSimulatorDeviceStart),
+    /**
+     * Power the lane's simulator OFF, leaving it registered.
+     *
+     * `deviceStart`'s opposite, and NOT `shutdown` — that one ends this chat's
+     * session and leaves the device booted, which is what "Close and shut down"
+     * used to do (round 5 §S1).
+     */
+    deviceStop: (
+      args: AppleDeviceStopArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleDeviceStopResult> =>
+      callIosSimulatorMutation(pin, "deviceStop", args, IPC.iosSimulatorDeviceStop),
     deviceList: async (
       args: AppleDeviceListArgs = {},
       pin?: OpenProjectBinding | null,
@@ -8232,6 +8248,21 @@ const adeBridge = {
       pin?: OpenProjectBinding | null,
     ): Promise<AppleRotateResult> =>
       callIosSimulatorMutation(pin, "rotate", args, IPC.iosSimulatorRotate),
+    /**
+     * The helper's own scroll gesture, by viewport direction.
+     *
+     * Not sugar over `drag`: the helper re-anchors the finger at the bezel, so
+     * a scroll longer than the screen keeps going.
+     */
+    scroll: async (
+      args: AppleScrollArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleScrollResult> => {
+      const stamped = asUserInput(args);
+      return callIosSimulatorActionOr(pin, "scroll", { args: stamped }, () =>
+        ipcRenderer.invoke(IPC.iosSimulatorScroll, stamped),
+      );
+    },
     typeText: async (
       args: { deviceUdid?: string | null; text: string; laneId?: string | null; chatSessionId?: string | null },
       pin?: OpenProjectBinding | null,

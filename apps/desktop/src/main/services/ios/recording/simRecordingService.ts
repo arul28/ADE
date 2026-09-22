@@ -118,6 +118,16 @@ export interface SimRecordingService {
      */
     allowProof?: boolean;
   }): Promise<void>;
+  /**
+   * The recording running on a lane right now, or null.
+   *
+   * Synchronous and in-memory: `getStatus` carries it (round 5 §S4) so one
+   * status read tells an agent whether something is already recording. An
+   * agent that does not know cannot decide whether its `record-start`
+   * converts an auto recording to manual — and therefore whether the stop is
+   * now its own job.
+   */
+  active(args: { laneId: string }): SimRecording | null;
   /** proof-bundle: pins the active recording, or the latest from this chat. */
   pinActiveOrLatest(args: { laneId: string; chatSessionId: string | null }): Promise<SimRecording | null>;
   /** Stops auto recordings owned by that chat. */
@@ -241,7 +251,7 @@ export type AppleRecordingArtifactFiler = {
  * hard dependency on the broker's result shape would make both of those carry
  * the whole `computerUseArtifacts` type surface.
  */
-function readArtifactId(result: unknown): string | null {
+export function readArtifactId(result: unknown): string | null {
   if (!result || typeof result !== "object") return null;
   const artifacts = (result as { artifacts?: unknown }).artifacts;
   if (!Array.isArray(artifacts) || artifacts.length === 0) return null;
@@ -658,6 +668,9 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
   };
 
   const service: SimRecordingService = {
+    active(args) {
+      return active.get(args.laneId)?.record ?? null;
+    },
     async noteInput(input) {
       if (disposed) return;
       try {

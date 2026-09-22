@@ -260,6 +260,21 @@ function AppleMiniPlayerFrameView({
   });
 
   const pipSupported = isWorkLivePictureInPictureSupported();
+  /*
+   * Picture-in-picture needs a canvas that has actually drawn something.
+   *
+   * A decoder canvas is 300×150 until its first frame sizes it — an untouched
+   * HTML default that is opaque black under `alpha: false`, and LANDSCAPE.
+   * `enterCanvasPictureInPicture` goes through `captureStream()` into a video
+   * element, and the PiP window takes its shape from the first frame it is
+   * given, so entering early hands the user a small black landscape window for
+   * a portrait phone and does not reshape itself when real frames arrive.
+   *
+   * `frameVersion` counts decoded frames, so it is the same "has anything been
+   * drawn" question the handover poster asks, answered from the stream rather
+   * than by measuring the canvas.
+   */
+  const hasPicture = stream.frameVersion > 0;
 
   return (
     <div
@@ -374,11 +389,17 @@ function AppleMiniPlayerFrameView({
             >
               Open in pane
             </button>
-            <PaneTooltip label={pipSupported ? "Picture in picture" : WORK_LIVE_PIP_UNSUPPORTED_LABEL}>
+            <PaneTooltip
+              label={!pipSupported
+                ? WORK_LIVE_PIP_UNSUPPORTED_LABEL
+                : hasPicture
+                  ? "Picture in picture"
+                  : "Waiting for the first frame"}
+            >
               <button
                 type="button"
                 aria-label="Picture in picture"
-                disabled={!pipSupported}
+                disabled={!pipSupported || !hasPicture}
                 className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-muted-fg hover:bg-white/[0.07] hover:text-fg disabled:opacity-40"
                 onClick={() => (pipActive ? stopPip() : void enterPip())}
               >

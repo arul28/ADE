@@ -97,7 +97,12 @@ describe("tailwind token wiring", () => {
         if (new RegExp(`(?:key|id|data-[a-z-]+)=["'\`]${text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`).test(fs.readFileSync(file, "utf8"))) continue;
         // Opacity modifiers escape as `\/` in the output; the plain class is
         // the reliable signal and catches the same authoring mistake.
-        for (const match of text.matchAll(/(?:^|\s)((?:[a-z-]+:)*(?:bg|text|border|ring)-[a-z][a-z0-9-]*)(?=\s|$)/g)) {
+        for (const match of text.matchAll(/(?:^|\s)((?:[a-z-]+:)*(?:bg|text|border|ring)-[a-z][a-z0-9-]*)(\/\d+)?(?=\s|$)/g)) {
+          // A class used ONLY with an opacity modifier (`bg-info/10`) was
+          // invisible to both lanes' first version, because the modifier broke
+          // the end-of-class lookahead. TimelineEntry spells exactly that:
+          // `text-info bg-info/10 border-info/20`. Drop the modifier and check
+          // the base utility, which is what has to exist for either to paint.
           const cls = match[1]!.replace(/^(?:[a-z-]+:)*/, "");
           const name = cls.replace(/^(?:bg|text|border|ring)-/, "");
           if (!ours(name)) continue;

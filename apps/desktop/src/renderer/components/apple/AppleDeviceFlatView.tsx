@@ -1,8 +1,10 @@
 // Ported from t3code apps/web/src/components/device/DeviceStreamView.tsx
 // (MIT, T3 Tools Inc.) — the fit rule, the normalise-against-the-drawn-frame
-// pointer mapping, and keyboard forwarding from a focused `role="application"`
-// surface.
+// pointer mapping, keyboard forwarding from a focused `role="application"`
+// surface, and (round 5 §V1) the `rotation`/`sideways` handling that draws the
+// raw PORTRAIT framebuffer inside a transposed landscape box.
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode, type WheelEvent } from "react";
+import type { AppleDeviceOrientation } from "../../../shared/types/iosSimulator";
 import { cn } from "../ui/cn";
 
 /**
@@ -17,13 +19,21 @@ import { cn } from "../ui/cn";
  */
 
 export type AppleDeviceGeometry = {
-  /** Rendered screen box in container-local CSS pixels. */
+  /**
+   * Rendered screen box in container-local CSS pixels.
+   *
+   * This is the box the user SEES, so on a landscape device it is landscape —
+   * wider than it is tall — even though the frames inside it are still the
+   * portrait framebuffer turned on its side (§V1).
+   */
   left: number;
   top: number;
   width: number;
   height: number;
-  /** Device POINTS per CSS pixel. */
+  /** Device POINTS per CSS pixel, in the ORIENTED (drawn) space. */
   scale: number;
+  /** How far the raw frame is turned to stand the picture upright. */
+  rotation: AppleScreenRotation;
 };
 
 export type AppleDeviceInput = {
@@ -36,8 +46,20 @@ export type AppleDeviceInput = {
 export type AppleDeviceFlatViewProps = {
   /** Decoded frame size in PIXELS. Null before the first frame. */
   screenPixelSize: { width: number; height: number } | null;
-  /** Device size in POINTS. Falls back to pixels when the host did not say. */
+  /**
+   * Device size in POINTS, as the helper reports it — which is the device's
+   * NATIVE (portrait) size whatever way up the device is. Falls back to pixels
+   * when the host did not say.
+   */
   devicePointSize: { width: number; height: number } | null;
+  /**
+   * Which way up the device is (§V1).
+   *
+   * Round 4 never passed this here at all — the word `orientation` did not
+   * appear in this file — so a rotated device drew its landscape picture
+   * inside a portrait box, lying on its side.
+   */
+  orientation: AppleDeviceOrientation;
   /** False while watching, or while inspect owns the pointer. */
   interactive: boolean;
   onDeviceInput: (input: AppleDeviceInput) => void;
@@ -138,9 +160,132 @@ export function measureAppleScreenBox(
   };
 }
 
+/* ── Rotation (round 5 §V1) ───────────────────────────────────────────────── */
+
+/**
+ * Degrees the RAW frame is turned by to stand the picture upright. CSS's
+ * sign convention: positive is clockwise.
+ */
+export type AppleScreenRotation = 0 | 90 | 180 | -90;
+
+/**
+ * How far to turn the frame for a device in `orientation`.
+ *
+ * Ported from t3code's `DeviceStreamView.tsx` `rotation` memo. The helper
+ * encodes the simulator's raw framebuffer, and a rotated iOS device keeps the
+ * SAME portrait framebuffer and draws its landscape UI sideways inside it — so
+ * the picture is turned here, in the viewer, exactly as t3code turns it.
+ *
+ * A frame that already arrives landscape is not turned: that is a helper that
+ * has rotated for us, and turning it again would put the picture back on its
+ * side. This is the `screen.width > screen.height` guard in the port.
+ */
+export function appleScreenRotation(
+  orientation: AppleDeviceOrientation,
+  framePixelSize?: { width: number; height: number } | null,
+): AppleScreenRotation {
+  if (framePixelSize && framePixelSize.width > 0 && framePixelSize.width > framePixelSize.height) {
+    return 0;
+  }
+  switch (orientation) {
+    case "landscape-left":
+      return 90;
+    case "landscape-right":
+      return -90;
+    case "portrait-upside-down":
+      return 180;
+    case "portrait":
+      return 0;
+    default: {
+      const _exhaustive: never = orientation;
+      return _exhaustive;
+    }
+  }
+}
+
+/** A quarter turn, which is what makes the drawn box a different shape. */
+export function appleRotationIsSideways(rotation: AppleScreenRotation): boolean {
+  return rotation === 90 || rotation === -90;
+}
+
+/**
+ * A size as the viewer DRAWS it: transposed by a quarter turn, unchanged
+ * otherwise. Used for both the point size (which sets the box's shape) and the
+ * pixel size (which sets the ceiling on how far it may grow).
+ */
+export function appleRotatedSize<T extends { width: number; height: number }>(
+  size: T,
+  rotation: AppleScreenRotation,
+): { width: number; height: number } {
+  return appleRotationIsSideways(rotation)
+    ? { width: size.height, height: size.width }
+    : { width: size.width, height: size.height };
+}
+
+/**
+ * Where to put the raw frame so it fills `box` once it is turned.
+ *
+ * Ported from t3code's `mediaStyle`: a sideways rotation draws the raw
+ * portrait frame into a landscape box by giving the media element the
+ * TRANSPOSED size and rotating it about the box's centre. Scaling a portrait
+ * frame into a landscape box instead — which is what "just set the width" does
+ * — squashes the picture, and rotating without transposing crops it.
+ */
+export function appleScreenMediaRect(
+  box: { left: number; top: number; width: number; height: number },
+  rotation: AppleScreenRotation,
+): { left: number; top: number; width: number; height: number; transform: string | undefined } {
+  if (!appleRotationIsSideways(rotation)) {
+    return {
+      left: box.left,
+      top: box.top,
+      width: box.width,
+      height: box.height,
+      transform: rotation === 0 ? undefined : `rotate(${rotation}deg)`,
+    };
+  }
+  return {
+    left: box.left + (box.width - box.height) / 2,
+    top: box.top + (box.height - box.width) / 2,
+    width: box.height,
+    height: box.width,
+    transform: `rotate(${rotation}deg)`,
+  };
+}
+
+/**
+ * A point inside the DRAWN box, back to the same point inside the RAW frame.
+ *
+ * Both are 0..1 fractions. This is the inverse of the CSS rotation above, and
+ * it is what a tap needs: the helper's HID layer normalises against the
+ * device's NATIVE portrait metrics and the simulator maps that through the
+ * interface orientation itself, so the device point a tap carries is a point
+ * on the framebuffer, not on the picture the user is looking at.
+ */
+export function appleViewToFrameFraction(
+  point: { x: number; y: number },
+  rotation: AppleScreenRotation,
+): { x: number; y: number } {
+  switch (rotation) {
+    case 90:
+      return { x: point.y, y: 1 - point.x };
+    case -90:
+      return { x: 1 - point.y, y: point.x };
+    case 180:
+      return { x: 1 - point.x, y: 1 - point.y };
+    case 0:
+      return { x: point.x, y: point.y };
+    default: {
+      const _exhaustive: never = rotation;
+      return _exhaustive;
+    }
+  }
+}
+
 export function AppleDeviceFlatView({
   screenPixelSize,
   devicePointSize,
+  orientation,
   interactive,
   onDeviceInput,
   onDeviceScroll,
@@ -177,21 +322,46 @@ export function AppleDeviceFlatView({
    * twice; sizing it from points means the one number the mapping needs — points
    * per CSS pixel — falls out of the box directly.
    */
-  const contentSize = appleScreenContentSize(devicePointSize, screenPixelSize);
+  const frameSize = useMemo(
+    () => appleScreenContentSize(devicePointSize, screenPixelSize),
+    [devicePointSize, screenPixelSize],
+  );
+
+  /**
+   * §V1: the box is measured in the orientation the user SEES.
+   *
+   * `frameSize` is the raw frame's own shape — portrait, because that is what
+   * the helper encodes whatever way up the device is. `contentSize` is that
+   * shape turned, which is what makes a landscape device draw a landscape box
+   * instead of a portrait one with the picture lying inside it. The pixel
+   * ceiling is transposed with it so the fit rule keeps comparing a long edge
+   * to a long edge.
+   */
+  const rotation = appleScreenRotation(orientation, screenPixelSize);
+  // Memoized on purpose: these feed `box`, which feeds `geometry`, which the
+  // host stores in state. A fresh object per render would make that a loop.
+  const contentSize = useMemo(
+    () => (frameSize ? appleRotatedSize(frameSize, rotation) : null),
+    [frameSize, rotation],
+  );
+  const rotatedPixelSize = useMemo(
+    () => (screenPixelSize ? appleRotatedSize(screenPixelSize, rotation) : null),
+    [rotation, screenPixelSize],
+  );
 
   const box = useMemo(() => (
     contentSize
       ? measureAppleScreenBox(containerSize, contentSize, {
-        nativePixelSize: screenPixelSize,
+        nativePixelSize: rotatedPixelSize,
         pixelRatio: typeof window === "undefined" ? 1 : window.devicePixelRatio || 1,
       })
       : null
-  ), [containerSize, contentSize, screenPixelSize]);
+  ), [containerSize, contentSize, rotatedPixelSize]);
 
   const geometry = useMemo<AppleDeviceGeometry | null>(() => {
     if (!box || !contentSize || box.width <= 0) return null;
-    return { ...box, scale: contentSize.width / box.width };
-  }, [box, contentSize]);
+    return { ...box, scale: contentSize.width / box.width, rotation };
+  }, [box, contentSize, rotation]);
 
   useEffect(() => {
     onGeometryChange?.(geometry);
@@ -209,7 +379,7 @@ export function AppleDeviceFlatView({
    */
   const toDevicePoint = useCallback((event: PointerEvent<HTMLDivElement> | WheelEvent<HTMLDivElement>) => {
     const node = containerRef.current;
-    if (!node || !geometry || !contentSize) return null;
+    if (!node || !geometry || !frameSize) return null;
     if (geometry.width <= 0 || geometry.height <= 0) return null;
     const rect = node.getBoundingClientRect();
     const normalizedX = (event.clientX - rect.left - geometry.left) / geometry.width;
@@ -218,11 +388,15 @@ export function AppleDeviceFlatView({
     // end at the edge, not vanish and leave the device holding a touch.
     const clampedX = Math.max(0, Math.min(1, normalizedX));
     const clampedY = Math.max(0, Math.min(1, normalizedY));
+    // §V1: back out the rotation before the fraction becomes a device point.
+    // The fraction above is of the picture on screen; the device answers in
+    // its own framebuffer, which the picture is a turned copy of.
+    const onFrame = appleViewToFrameFraction({ x: clampedX, y: clampedY }, geometry.rotation);
     return {
-      x: clampedX * contentSize.width,
-      y: clampedY * contentSize.height,
+      x: onFrame.x * frameSize.width,
+      y: onFrame.y * frameSize.height,
     };
-  }, [contentSize, geometry]);
+  }, [frameSize, geometry]);
 
   const handlePointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
     if (!interactive) return;

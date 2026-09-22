@@ -36,8 +36,9 @@ import {
   appleCommandForElement,
   appleElementContextItem,
   appleInputAllowed,
+  appleObservedOrientationFamily,
+  appleOrientationFamily,
   appleRailVisible,
-  nextAppleDeviceOrientation,
   readAppleViewMode,
   resolveAppleDeviceState,
   writeAppleViewMode,
@@ -111,7 +112,6 @@ export function AppleDevicePane({
   runtimePinRef.current = runtimePin;
 
   const bodyRef = useRef<HTMLDivElement | null>(null);
-  const orientationRef = useRef<AppleDeviceOrientation>("portrait");
 
   const [status, setStatus] = useState<IosSimulatorStatus | null>(null);
   const [installed, setInstalled] = useState<AppleInstalledSimulator[]>([]);
@@ -133,6 +133,18 @@ export function AppleDevicePane({
   const [threeFailure, setThreeFailure] = useState<AppleDevice3DFailure | null>(null);
   const [viewNonce, setViewNonce] = useState(0);
   const [toolsOpen, setToolsOpen] = useState(false);
+  /**
+   * Which way up the device is (§V1/§V2).
+   *
+   * STATE, not the ref round 4 kept: both presenters have to draw it and the
+   * rail has to show it, and none of that can be driven by a ref. It is what
+   * we last successfully asked for — the helper has no "read the orientation"
+   * call — so it is committed only when `rotate` reports `applied`, and a
+   * device that was already sideways before the pane opened starts out
+   * described as portrait until something rotates it.
+   */
+  const [orientation, setOrientation] = useState<AppleDeviceOrientation>("portrait");
+  const [rotating, setRotating] = useState(false);
   const [inspectOn, setInspectOn] = useState(false);
   const [inspectElements, setInspectElements] = useState<IosSimulatorSnapshotElement[]>([]);
   const [inspectHovered, setInspectHovered] = useState<string | null>(null);
@@ -385,7 +397,24 @@ export function AppleDevicePane({
     void window.ade.iosSimulator
       .getScreenSnapshot({ deviceUdid, laneId, projectRoot }, runtimePinRef.current)
       .then((snapshot) => {
-        if (!cancelled) setInspectElements(snapshot.elements ?? []);
+        if (cancelled) return;
+        const elements = snapshot.elements ?? [];
+        setInspectElements(elements);
+        /*
+         * Free truth. The snapshot describes the interface as it really is, so
+         * an orientation the pane has wrong — a device someone rotated before
+         * this pane opened, or a rotate the device quietly ignored — is
+         * corrected here at no extra cost. Only the SHAPE is corrected: the
+         * tree cannot tell landscape-left from landscape-right.
+         */
+        const observed = appleObservedOrientationFamily(elements);
+        if (observed) {
+          setOrientation((current) => (
+            appleOrientationFamily(current) === observed
+              ? current
+              : observed === "landscape" ? "landscape-left" : "portrait"
+          ));
+        }
       })
       .catch((cause: unknown) => {
         if (!cancelled) setError(cause);
@@ -529,14 +558,51 @@ export function AppleDevicePane({
       .catch((cause: unknown) => setError(cause));
   }, [deviceUdid, laneId, state]);
 
-  const rotate = useCallback(() => {
-    if (!appleInputAllowed(state)) return;
-    const next = nextAppleDeviceOrientation(orientationRef.current);
-    orientationRef.current = next;
+  /**
+   * §V2: rotate TO an orientation, and believe the DEVICE rather than the call.
+   *
+   * `rotate` is write-only and answers `applied: true` the moment the GSEvent
+   * is sent, which is not the same as iOS having turned: on a Mac whose Xcode
+   * ships no `Simulator.app` the event is accepted and the device does not
+   * move at all (measured on the owner's own machine, 2026-09-21 — the
+   * accessibility tree still read 393×852 after a landscape rotate that
+   * reported success). Turning the picture on that answer would draw an
+   * upright screen on its side, which is the defect §V1 exists to remove.
+   *
+   * So the picture follows the interface's own frames, read once after the
+   * request. A snapshot that cannot be taken falls back to trusting the
+   * request — that is round 4's behaviour, so a device this cannot measure is
+   * no worse off than before.
+   */
+  const rotateTo = useCallback((next: AppleDeviceOrientation) => {
+    if (!appleInputAllowed(state) || !deviceUdid) return;
+    setRotating(true);
     void window.ade.iosSimulator
       .rotate({ orientation: next, laneId, deviceUdid }, runtimePinRef.current)
-      .catch((cause: unknown) => setError(cause));
-  }, [deviceUdid, laneId, state]);
+      .then(async (result) => {
+        if (result?.applied === false) {
+          throw new Error("The simulator did not rotate. Its window has to be open for that.");
+        }
+        let observed: "portrait" | "landscape" | null = null;
+        try {
+          const snapshot = await window.ade.iosSimulator.getScreenSnapshot(
+            { deviceUdid, laneId, projectRoot },
+            runtimePinRef.current,
+          );
+          observed = appleObservedOrientationFamily(snapshot.elements ?? []);
+        } catch {
+          // Unreadable tree: trust the request, exactly as round 4 did.
+        }
+        if (observed && observed !== appleOrientationFamily(next)) {
+          throw new Error(
+            `The simulator stayed ${observed}. It did not take the rotation, so the picture has been left alone.`,
+          );
+        }
+        setOrientation(next);
+      })
+      .catch((cause: unknown) => setError(cause))
+      .finally(() => setRotating(false));
+  }, [deviceUdid, laneId, projectRoot, state]);
 
   const float = useCallback(() => {
     if (!deviceUdid || !laneDevice) return;
@@ -668,7 +734,7 @@ export function AppleDevicePane({
             viewNonce={viewNonce}
             family={familyOf(laneDevice)}
             deviceTypeName={deviceName}
-            orientation="portrait"
+            orientation={orientation}
             devicePointSize={stream.devicePointSize}
             interactive={appleInputAllowed(state)}
             onDeviceInput={input.send}
@@ -784,7 +850,9 @@ export function AppleDevicePane({
               recording={Boolean(recordingActive)}
               screenshotPending={screenshotPending}
               onHome={pressHome}
-              onRotate={rotate}
+              orientation={orientation}
+              orientationPending={rotating}
+              onOrientation={rotateTo}
               onScreenshot={screenshot}
               onToggleTools={() => setToolsOpen((open) => !open)}
               onToggleInspect={toggleInspect}

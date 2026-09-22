@@ -68,7 +68,7 @@ export function closeWorkToolForReal(
     }
     case "ios": {
       const ios = window.ade?.iosSimulator;
-      if (!ios?.shutdown) return;
+      if (!ios?.deviceStop) return;
       // The panel is about to unmount, which is also how a MINIMIZE looks.
       // Say which this is before it does, or the device floats on its way down.
       suppressAppleMiniPlayerHandoff();
@@ -77,9 +77,17 @@ export function closeWorkToolForReal(
       // remember this chat as one that refuses the preview.
       retakeAppleMiniPlayer();
       /*
-       * A4, extended by round 4 §B3: closing the Apple Development TAB closes
-       * the tool for real — this chat's stream lease first, then the device
-       * POWERS OFF.
+       * A4, extended by round 4 §B3 and fixed in round 5 §S1: closing the
+       * Apple Development TAB closes the tool for real — this chat's stream
+       * lease first, then the device POWERS OFF.
+       *
+       * Round 4 wired the second half to `ios.shutdown`, which is the verb for
+       * ending this chat's SESSION: it released the claim, stopped the stream,
+       * and left the simulator running. The dialog said "Closing this tab
+       * powers off the simulator", the tool returned at once, and the tools
+       * card kept reading "ADE Repro · Running". `deviceStop` is the verb that
+       * runs `simctl shutdown`; it releases the session on the way past, so
+       * nothing is lost by calling it instead.
        *
        * The question that makes powering off safe is asked upstream, in
        * `useWorkSidebarTool.closeTool`, because Cancel has to keep the tab as
@@ -118,7 +126,12 @@ export function closeWorkToolForReal(
       void stopStream
         // The Work pane is the lane-scoped surface, so it asks the service to
         // stand the single-owner rule down rather than impersonating the owner.
-        .then(() => ios.shutdown!({ chatSessionId, ignoreOwnership: true }, pin))
+        //
+        // `laneId` is what names the device to power off: the service resolves
+        // the LANE's registered device first, so a close that arrives after the
+        // session has already been released still powers off the right
+        // simulator rather than finding nothing to stop.
+        .then(() => ios.deviceStop!({ laneId, chatSessionId, ignoreOwnership: true }, pin))
         .catch((error) => logCloseFailure(tool, error));
       return;
     }

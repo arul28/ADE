@@ -40,6 +40,14 @@ export type AppleDeviceRemoteService = {
     endY: number;
     durationMs?: number | null;
   }): Promise<unknown>;
+  scroll(args: {
+    laneId?: string | null;
+    chatSessionId?: string | null;
+    direction: string;
+    amount?: number | null;
+    anchorX?: number | null;
+    anchorY?: number | null;
+  }): Promise<unknown>;
   tapElement(args: { laneId?: string | null; chatSessionId?: string | null; ref?: string; label?: string }): Promise<unknown>;
   openUrl(args: { laneId?: string | null; chatSessionId?: string | null; url: string }): Promise<unknown>;
   deviceCreate(args: { laneId: string; from?: string | null; name?: string | null }): Promise<unknown>;
@@ -395,6 +403,16 @@ export function createAppleRemoteCommandHandlers(deps: {
               endX: requireFiniteNumber(payload.endX, "endX"),
               endY: requireFiniteNumber(payload.endY, "endY"),
               durationMs: asNumber(payload.durationMs),
+            });
+            return { ok: true };
+          case "scroll":
+            await service.scroll({
+              laneId,
+              chatSessionId,
+              direction: requireString(payload.direction, "apple.input scroll requires a direction."),
+              amount: asNumber(payload.amount),
+              anchorX: asNumber(payload.anchorX),
+              anchorY: asNumber(payload.anchorY),
             });
             return { ok: true };
           case "tap-element":
