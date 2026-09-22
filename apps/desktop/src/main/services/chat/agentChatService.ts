@@ -123,6 +123,7 @@ import {
   codexServerSupportsPaginatedHistory,
   codexServerSupportsThreadQueue,
   codexServerSupportsThreadRevert,
+  codexServerSupportsThreadRollback,
   codexServerSupportsThreadSettings,
   codexServerSupportsUserShell,
 } from "./codexAppServerFeatures";
@@ -55838,7 +55839,7 @@ export function createAgentChatService(args: {
       const canRevert = codexServerSupportsThreadRevert(runtime.serverVersion) && plan.targetTurnId != null;
       const canForkBeforeTurn = codexServerSupportsForkBeforeTurn(runtime.serverVersion)
         && plan.targetTurnId != null;
-      // thread/rollback is deprecated upstream; retain it for <=0.144 servers and turns without a usable id.
+      // thread/rollback was removed in 0.156; retain it for older servers and turns without a usable id.
       // thread/revert is paginated-only (0.148+); fall back to fork, then rollback, when the server rejects it.
       let lifecycleResponse: CodexThreadLifecycleResponse | null = null;
       let rewindMethod: "revert" | "fork_before_turn" | "rollback" = "rollback";
@@ -55858,6 +55859,10 @@ export function createAgentChatService(args: {
             error: error instanceof Error ? error.message : String(error),
           });
         }
+      }
+      if (!lifecycleResponse && !canForkBeforeTurn && !codexServerSupportsThreadRollback(runtime.serverVersion)) {
+        // 0.156+ has no turn-count rollback; without a turn id there is nothing to revert or fork before.
+        throw new Error("Codex can't rewind this message: its turn id is missing and this Codex version removed turn-count rollback.");
       }
       if (!lifecycleResponse) {
         rewindMethod = canForkBeforeTurn ? "fork_before_turn" : "rollback";

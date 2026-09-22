@@ -1,5 +1,5 @@
 export const CODEX_COMPACTION_STALL_MS = 180_000;
-export const PINNED_CODEX_APP_SERVER_VERSION = "0.155.1";
+export const PINNED_CODEX_APP_SERVER_VERSION = "0.156.0";
 
 export type CodexAppServerVersion = {
   major: number;
@@ -25,7 +25,7 @@ export function codexServerSupportsDeferGoalContinuation(version: CodexAppServer
   return codexServerAtLeast(version, 145);
 }
 
-/** Durable FIFO `thread/queue/*` (0.146+; ADE pins 0.155.1). */
+/** Durable FIFO `thread/queue/*` (0.146+; ADE pins 0.156.0). */
 export function codexServerSupportsThreadQueue(version: CodexAppServerVersion | null): boolean {
   return codexServerAtLeast(version, 146);
 }
@@ -36,6 +36,11 @@ export function codexServerSupportsThreadSettings(version: CodexAppServerVersion
 
 export function codexServerSupportsThreadRevert(version: CodexAppServerVersion | null): boolean {
   return codexServerAtLeast(version, 148);
+}
+
+/** `thread/rollback` was removed in 0.156 (openai/codex#44915); revert and fork replace it. */
+export function codexServerSupportsThreadRollback(version: CodexAppServerVersion | null): boolean {
+  return !codexServerAtLeast(version, 156);
 }
 
 export function codexServerSupportsBackgroundTerminals(version: CodexAppServerVersion | null): boolean {

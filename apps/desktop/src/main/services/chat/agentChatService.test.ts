@@ -7948,6 +7948,31 @@ describe("createAgentChatService", () => {
       }
     });
 
+    it("never sends the removed thread/rollback to Codex 0.156 when the turn id is missing", async () => {
+      mockState.codexResponseOverrides.set("initialize", { userAgent: "codex/0.156.0" });
+      const { service, sessionService } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+      });
+      source.threadId = "source-thread-1";
+      source.status = "idle";
+      const transcriptPath = sessionService.get(source.id)?.transcriptPath;
+      const envelope = {
+        sessionId: source.id,
+        timestamp: "2026-09-22T20:00:00.000Z",
+        event: { type: "user_message", messageId: "user-1", text: "rewind this turn" },
+      } as AgentChatEventEnvelope;
+      fs.writeFileSync(String(transcriptPath), `${JSON.stringify(envelope)}\n`, "utf8");
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([envelope]);
+
+      await expect(service.rewindFiles({ sessionId: source.id, userMessageId: "user-1" }))
+        .rejects.toThrow(/removed turn-count rollback/);
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/rollback")).toBe(false);
+    });
+
     it("falls back to fork when thread/revert is rejected", async () => {
       mockState.codexResponseOverrides.set("initialize", { userAgent: "codex/0.149.1" });
       mockState.codexResponseOverrides.set("thread/revert", {
