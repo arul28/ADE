@@ -42,6 +42,14 @@ export type AppleDevice3DViewProps = {
   family: AppleDeviceFamily;
   /** Product hint from the simulator device type, e.g. "iPhone 17 Pro"; the model map picks the closest body. */
   deviceTypeName: string | null;
+  /**
+   * `com.apple.CoreSimulator.SimDeviceType.…` for this device, when known.
+   *
+   * Preferred over `deviceTypeName` because a simulator's NAME is whatever a
+   * person typed, and ADE names its clones after the lane — so a real Pro Max
+   * in a lane used to render on the smaller Pro body.
+   */
+  deviceTypeIdentifier?: string | null;
   orientation: AppleDeviceOrientation;
   /** Decoded frame size in PIXELS — the texture's own aspect. */
   screenPixelSize: { width: number; height: number };
@@ -843,7 +851,10 @@ function createViewer(
       writeScreenUvs(THREE, body.display.geometry, body.screenWidth, body.screenHeight, layout);
     }
 
-    const source = appleDeviceModel(props.family, props.deviceTypeName);
+    const source = appleDeviceModel(props.family, {
+      deviceTypeIdentifier: props.deviceTypeIdentifier ?? null,
+      deviceTypeName: props.deviceTypeName,
+    });
     if (source.id !== currentModelKey) {
       currentModelKey = source.id;
       loadModel(source);

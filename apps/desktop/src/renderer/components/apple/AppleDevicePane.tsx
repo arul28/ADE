@@ -712,6 +712,14 @@ export function AppleDevicePane({
   const effectiveMode: AppleViewMode = canUse3d ? mode : "flat";
 
   const deviceName = laneDevice?.name ?? "Simulator";
+  /*
+   * The lane device row carries no CoreSimulator type, so read it off the
+   * installed entry with the same udid. That entry is Apple's own record; the
+   * lane device's NAME is whatever ADE or a person called the clone.
+   */
+  const deviceTypeIdentifier = laneDevice
+    ? installed.find((entry) => entry.udid === laneDevice.udid)?.deviceTypeIdentifier ?? null
+    : null;
   const inputConnected = state === "live";
 
   const viewport = renderViewport();
@@ -795,6 +803,7 @@ export function AppleDevicePane({
             viewNonce={viewNonce}
             family={familyOf(laneDevice)}
             deviceTypeName={deviceName}
+            deviceTypeIdentifier={deviceTypeIdentifier}
             orientation={orientation}
             devicePointSize={stream.devicePointSize}
             interactive={appleInputAllowed(state)}

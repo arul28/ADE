@@ -42,6 +42,8 @@ export type AppleDeviceStageProps = {
   viewNonce: number;
   family: AppleDeviceFamily;
   deviceTypeName: string | null;
+  /** The device's CoreSimulator type id, preferred over its name for the body. */
+  deviceTypeIdentifier?: string | null;
   orientation: AppleDeviceOrientation;
   /** Device size in POINTS. Null falls back to the decoded pixel size. */
   devicePointSize: { width: number; height: number } | null;
@@ -111,6 +113,7 @@ export function AppleDeviceStage({
   viewNonce,
   family,
   deviceTypeName,
+  deviceTypeIdentifier,
   orientation,
   devicePointSize,
   interactive,
@@ -207,6 +210,7 @@ export function AppleDeviceStage({
           frameVersion={frameVersion}
           family={family}
           deviceTypeName={deviceTypeName}
+          deviceTypeIdentifier={deviceTypeIdentifier ?? null}
           orientation={orientation}
           screenPixelSize={screenPixelSize ?? { width: 0, height: 0 }}
           devicePointSize={devicePointSize}
