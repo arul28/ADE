@@ -26,8 +26,9 @@ Day-to-day work follows a five-stage loop, each stage an agent-folder skill unde
 One command, from the lane worktree, and **detached**:
 
 ```bash
-npm run dev:desktop -- --socket /tmp/ade-runtime-<lane>.sock > /tmp/ade-dev-<lane>.log 2>&1 &
-until grep -q 'dev isolation report' /tmp/ade-dev-<lane>.log; do sleep 1; done
+node scripts/dev-detached.mjs /tmp/ade-dev-<lane>.log \
+  npm run dev:desktop -- --socket /tmp/ade-runtime-<lane>.sock
+until grep -q 'dev isolation report' /tmp/ade-dev-<lane>.log; do sleep 2; done
 cat /tmp/ade-dev-<lane>.log
 ```
 

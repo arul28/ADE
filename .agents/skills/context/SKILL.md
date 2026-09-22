@@ -54,10 +54,15 @@ resolve docs + the matching `ade-perf-*` skill via `references/doc-map.md`.
   socket, and wait for the report:
 
   ```bash
-  npm run dev:desktop -- --socket /tmp/ade-runtime-<lane>.sock > /tmp/ade-dev-<lane>.log 2>&1 &
-  until grep -q 'dev isolation report' /tmp/ade-dev-<lane>.log; do sleep 1; done
+  node scripts/dev-detached.mjs /tmp/ade-dev-<lane>.log \
+    npm run dev:desktop -- --socket /tmp/ade-runtime-<lane>.sock
+  until grep -q 'dev isolation report' /tmp/ade-dev-<lane>.log; do sleep 2; done
   cat /tmp/ade-dev-<lane>.log
   ```
+
+  A plain `&` is not enough: it survives the shell exiting but not a SIGTERM to
+  the process group, which is how a turn is torn down. The script puts the app
+  in its own session, so `electron exited (code=143)` mid-run stops happening.
 
   The default socket is shared, and two dev brains on one socket restart each
   other. If the report says `sync : ON`, stop: a dev brain holding the
