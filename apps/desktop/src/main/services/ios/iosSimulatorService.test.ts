@@ -2473,6 +2473,33 @@ describe("iosSimulatorService boot contract", () => {
     }
   });
 
+  it("deviceDeleteInstalled refuses to delete without the owner's confirmation", async () => {
+    // Not a formality. Deleting a simulator is not recoverable, the owner's
+    // standing rule is that nothing deletes one without their approval, and
+    // this verb is reachable by any agent because ADE keeps one action list
+    // per domain. A caller that must write the claim out cannot arrive here by
+    // drifting through a default.
+    const { service, calls, dispose } = setup();
+    try {
+      await expect(
+        service.deviceDeleteInstalled({ udid: "device-2" } as never),
+      ).rejects.toThrow(/confirmedByUser/);
+      expect(calls).not.toContain("xcrun simctl delete device-2");
+    } finally {
+      dispose();
+    }
+  });
+
+  it("deviceDeleteInstalled deletes when the owner confirmed that device", async () => {
+    const { service, calls, dispose } = setup();
+    try {
+      await service.deviceDeleteInstalled({ udid: "device-2", confirmedByUser: true, laneId: "lane-a" });
+      expect(calls).toContain("xcrun simctl delete device-2");
+    } finally {
+      dispose();
+    }
+  });
+
   it("startStream skips simctl boot for a device that is already booted", async () => {
     const { service, calls, dispose } = setup();
     try {

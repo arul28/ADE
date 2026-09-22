@@ -550,6 +550,25 @@ export function AppleDevicePane({
     start({ laneId, chatSessionId: sessionId, create: { sourceUdid } }, "create");
   }, [laneId, sessionId, start]);
 
+  /**
+   * Delete a simulator from the picker's per-device menu.
+   *
+   * `confirmedByUser` is not a formality here: the picker asked, by name and
+   * with the measured size, and the service refuses the call without it. The
+   * list is re-read rather than patched, because `simctl delete` can fail for
+   * a device Xcode already removed and the truth is whatever `simctl list`
+   * says afterwards.
+   */
+  const deleteInstalled = useCallback((udid: string) => {
+    void window.ade.iosSimulator
+      .deviceDeleteInstalled(
+        { udid, confirmedByUser: true, ...(laneId ? { laneId } : { projectRoot }) },
+        runtimePinRef.current,
+      )
+      .catch((cause: unknown) => setError(cause))
+      .finally(() => refreshList());
+  }, [laneId, projectRoot, refreshList]);
+
   const restart = useCallback(() => {
     if (deviceUdid) start({ laneId, chatSessionId: sessionId, udid: deviceUdid }, deviceUdid);
   }, [deviceUdid, laneId, sessionId, start]);
@@ -726,6 +745,7 @@ export function AppleDevicePane({
             refreshing={refreshing}
             onStart={startInstalled}
             onCreate={createDevice}
+            onDelete={deleteInstalled}
             onRefresh={refreshList}
             playing={!hidden}
           />

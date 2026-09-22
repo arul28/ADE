@@ -127,14 +127,23 @@ export function appleDefaultTemplateUdid(input: {
   lastUsedUdid?: string | null;
   owners?: readonly AppleSimulatorOwner[] | null;
 }): string {
-  const lastUsed = input.lastUsedUdid?.trim();
-  if (lastUsed && input.installed.some((entry) => entry.udid === lastUsed)) return lastUsed;
   const heldElsewhere = new Set(
     (input.owners ?? []).filter((owner) => !owner.mine).map((owner) => owner.udid),
   );
   const cloneable = input.installed.filter(
     (entry) => entry.state !== "Booted" && !heldElsewhere.has(entry.udid),
   );
+  /*
+   * The last used template only wins if it is still CLONEABLE.
+   *
+   * It used to win on being installed alone, which put the project's last
+   * template in the Create slot even when it had since been booted or taken by
+   * another lane — and `simctl clone` on a booted device fails. So the one
+   * source the page offered by default was the one source that could not
+   * work, and the owner would have read the failure as "Create is broken".
+   */
+  const lastUsed = input.lastUsedUdid?.trim();
+  if (lastUsed && cloneable.some((entry) => entry.udid === lastUsed)) return lastUsed;
   const candidates = cloneable.length > 0 ? cloneable : input.installed;
   const phones = candidates.filter((entry) => entry.family === "iphone");
   const pool = phones.length > 0 ? phones : candidates;

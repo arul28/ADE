@@ -97,9 +97,10 @@ function renderPicker(overrides: Partial<React.ComponentProps<typeof AppleDevice
     pending: null,
     lastUsedUdid: null,
     refreshing: false,
-    onStart: vi.fn(),
-    onCreate: vi.fn(),
-    onRefresh: vi.fn(),
+    onStart: vi.fn<[string], void>(),
+    onCreate: vi.fn<[string], void>(),
+    onDelete: vi.fn<[string], void>(),
+    onRefresh: vi.fn<[], void>(),
     ...overrides,
   };
   const view = render(<AppleDevicePicker {...props} />);
@@ -109,268 +110,256 @@ function renderPicker(overrides: Partial<React.ComponentProps<typeof AppleDevice
 const sectionOf = (container: HTMLElement, label: string) =>
   container.querySelector(`[data-apple-picker-section="${label}"]`) as HTMLElement;
 
-describe("AppleDevicePicker inventory line", () => {
-  it("names the runtime and counts what is installed and running", () => {
-    const { container } = renderPicker();
-    expect(container.querySelector("[data-apple-inventory-line]")?.textContent)
-      .toBe("iOS 26.2 and watchOS 26.2 · 5 simulators installed · 2 running");
-  });
 
-  it("says that one runtime install serves any number of devices", () => {
-    renderPicker();
-    expect(screen.getByText(/One runtime install serves any number of simulators/)).toBeTruthy();
-  });
+const cardOf = (container: HTMLElement, udid: string) =>
+  container.querySelector(`[data-apple-device-card="${udid}"]`) as HTMLElement;
 
-  it("puts the disk total next to the counts, once it has been measured", () => {
+/**
+ * Keyboard rather than pointer: jsdom has no PointerEvent, so Radix's
+ * pointerdown path never fires here. Enter is the same open.
+ */
+const openMenu = (container: HTMLElement, udid: string) =>
+  fireEvent.keyDown(
+    container.querySelector(`[data-apple-device-menu="${udid}"]`) as HTMLElement,
+    { key: "Enter" },
+  );
+
+describe("AppleDevicePicker heading", () => {
+  it("leads with Available and drops the round-5 summary box entirely", () => {
     const { container } = renderPicker({ disk: DISK });
-    expect(container.querySelector("[data-apple-inventory-disk]")?.textContent).toBe("18.0 GB of device data");
+    // The owner read the box, counted its numbers, and asked for it to go: the
+    // list below says all of it, and a paragraph at the top of a picker sits
+    // between him and the thing he came to click.
+    expect(container.querySelector("[data-apple-inventory-line]")).toBeNull();
+    expect(container.querySelector("[data-apple-inventory-disk]")).toBeNull();
+    expect(screen.queryByText(/One runtime install serves any number/)).toBeNull();
+    expect(sectionOf(container, "Available")).toBeTruthy();
+  });
+
+  it("counts the FREE devices beside the word, not every installed one", () => {
+    const { container } = renderPicker();
+    // Five installed, one held by another lane.
+    expect(container.querySelector("[data-apple-available-count]")?.textContent).toBe("4");
+  });
+
+  it("puts one glyph per owned device next to the heading, grouped by family", () => {
+    const { container } = renderPicker();
+    const glyphs = container.querySelectorAll("[data-apple-glyph]");
+    expect(glyphs).toHaveLength(5);
+    // Three iPhones, one iPad, one watch — and the held one reads as taken, so
+    // the row shows what he has AND what he can reach.
+    expect([...glyphs].filter((g) => g.getAttribute("data-apple-glyph") === "taken")).toHaveLength(1);
+  });
+
+  it("says the same thing to a screen reader, which cannot count glyphs", () => {
+    renderPicker();
+    expect(screen.getByText("5 installed, 4 available")).toBeTruthy();
+  });
+
+  it("carries the refresh at the top, and nothing at the foot of the page", () => {
+    const { container, onRefresh } = renderPicker();
+    const refresh = container.querySelector("[data-apple-picker-refresh]") as HTMLElement;
+    expect(refresh).toBeTruthy();
+    fireEvent.click(refresh);
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/Only simulators already installed appear here/)).toBeNull();
+  });
+});
+
+describe("AppleDevicePicker device cards", () => {
+  it("groups by family and shows every installed device, held ones included", () => {
+    const { container } = renderPicker();
+    const families = [...container.querySelectorAll("[data-apple-family]")]
+      .map((node) => node.getAttribute("data-apple-family"));
+    expect(families).toEqual(["iphone", "ipad", "watch"]);
+    for (const udid of ["pro", "max", "repro", "pad", "watch"]) {
+      expect(cardOf(container, udid)).toBeTruthy();
+    }
+  });
+
+  it("reads name, then OS and model, for every card at the same height", () => {
+    const { container } = renderPicker();
+    // "ADE Repro" is renamed and "iPhone 17 Pro" is not; both still carry the
+    // model, so a grid of cards does not disagree about its own line count.
+    expect(cardOf(container, "repro").textContent).toContain("iOS 26.2 · iPhone 17 Pro");
+    expect(cardOf(container, "pro").textContent).toContain("iOS 26.2 · iPhone 17 Pro");
+  });
+
+  it("starts the device the card names, on one click anywhere on it", () => {
+    const { container, onStart } = renderPicker();
+    fireEvent.click(cardOf(container, "pad").querySelector("[data-apple-device-start]") as HTMLElement);
+    expect(onStart).toHaveBeenCalledWith("pad");
+  });
+
+  it("tags a booted device Running and says nothing about a stopped one", () => {
+    const { container } = renderPicker();
+    expect(cardOf(container, "pro").textContent).toContain("Running");
+    expect(cardOf(container, "max").textContent).not.toContain("Running");
+    expect(cardOf(container, "max").textContent).not.toContain("Stopped");
+  });
+
+  it("no longer explains that a stopped simulator only needs a boot", () => {
+    renderPicker();
+    expect(screen.queryByText(/only needs a boot/)).toBeNull();
+  });
+});
+
+describe("AppleDevicePicker a device another lane holds", () => {
+  it("says TAKEN, offers no menu, and cannot be started", () => {
+    const { container, onStart } = renderPicker();
+    const card = cardOf(container, "repro");
+    expect(card.getAttribute("data-apple-device-taken")).toBe("");
+    expect(card.textContent).toContain("Taken");
+    expect(card.querySelector("[data-apple-device-start]")).toBeNull();
+    expect(card.querySelector("[data-apple-device-menu]")).toBeNull();
+    fireEvent.click(card);
+    expect(onStart).not.toHaveBeenCalled();
+  });
+
+  it("offers no takeover at all, which round 5 did", () => {
+    renderPicker();
+    expect(screen.queryByText(/Take over/)).toBeNull();
+    expect(screen.queryByText(/In use by/)).toBeNull();
+  });
+
+  it("names the lane holding it for anyone who asks the card", () => {
+    const { container } = renderPicker();
+    expect(
+      cardOf(container, "repro").querySelector("[data-apple-owner-lane]")?.getAttribute("data-apple-owner-lane"),
+    ).toBe("dca9f144");
+  });
+
+  it("treats every device as free when the host cannot report ownership", () => {
+    const { container } = renderPicker({ owners: null });
+    expect(container.querySelector("[data-apple-device-taken]")).toBeNull();
+    expect(container.querySelector("[data-apple-available-count]")?.textContent).toBe("5");
+  });
+});
+
+describe("AppleDevicePicker the per-device menu", () => {
+  it("needs two clicks to delete, and names the measured size in the second", () => {
+    const { container, onDelete } = renderPicker({ disk: DISK });
+    openMenu(container, "pro");
+    fireEvent.click(screen.getByText("Delete simulator…"));
+    expect(onDelete).not.toHaveBeenCalled();
+    // The size is the whole reason he asked for this: 5 GB back is a different
+    // decision from "delete iPhone 17 Pro".
+    const confirm = screen.getByText("Delete for good — frees 5.0 GB");
+    fireEvent.click(confirm);
+    expect(onDelete).toHaveBeenCalledWith("pro");
+  });
+
+  it("still deletes when nothing has measured the device yet", () => {
+    const { container, onDelete } = renderPicker();
+    openMenu(container, "max");
+    fireEvent.click(screen.getByText("Delete simulator…"));
+    fireEvent.click(screen.getByText("Delete for good"));
+    expect(onDelete).toHaveBeenCalledWith("max");
+  });
+
+  it("is absent altogether when the host offers no delete", () => {
+    const { container } = renderPicker({ onDelete: undefined });
+    expect(container.querySelector("[data-apple-device-menu]")).toBeNull();
+  });
+});
+
+describe("AppleDevicePicker create a new one", () => {
+  it("sits at the foot of the page with a row per installed device", () => {
+    const { container } = renderPicker();
+    const section = sectionOf(container, "Create a new one");
+    expect(section).toBeTruthy();
+    expect(section.querySelectorAll("[data-apple-create-source]")).toHaveLength(5);
+  });
+
+  it("says what a copy costs, and that nothing is downloaded", () => {
+    const { container } = renderPicker({ disk: DISK });
+    // `simctl clone` duplicates the source's data directory, so the source's
+    // measured size IS the estimate. The runtime is not fetched again.
+    expect(
+      (container.querySelector('[data-apple-create-source="pro"]') as HTMLElement).textContent,
+    ).toContain("copy costs about 5.0 GB, no download");
+    // Unmeasured devices still say the part that is certain.
+    expect(
+      (container.querySelector('[data-apple-create-source="pad"]') as HTMLElement).textContent,
+    ).toContain("already installed, no download");
   });
 
   it("says it is measuring rather than guessing a number", () => {
     const { container } = renderPicker({ measuringDisk: true });
-    expect(container.querySelector("[data-apple-inventory-disk]")?.textContent).toBe("Measuring disk…");
-  });
-
-  it("shows no disk claim at all before the lazy read arrives", () => {
-    const { container } = renderPicker();
-    expect(container.querySelector("[data-apple-inventory-disk]")).toBeNull();
-  });
-});
-
-describe("AppleDevicePicker lane slot", () => {
-  it("shows NO hero when the lane owns nothing, and says so", () => {
-    const { container } = renderPicker({ laneDevice: null });
-    // The round-5 defect: the newest installed iPhone heroed as "your device".
-    expect(container.querySelector("[data-apple-hero-card]")).toBeNull();
-    expect(container.querySelector("[data-apple-no-lane-device]")).toBeTruthy();
-    expect(screen.getByText("This lane has no Apple device yet.")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Create a new simulator for this lane" })).toBeTruthy();
-  });
-
-  it("never heroes a device just because it is the newest iPhone", () => {
-    const { container } = renderPicker({
-      laneDevice: null,
-      owners: [],
-      installed: [
-        simulator({ udid: "old", name: "iPhone 16", runtime: "iOS 18.4" }),
-        simulator({ udid: "new", name: "iPhone Air", runtime: "iOS 26.2" }),
-      ],
-    });
-    expect(container.querySelector("[data-apple-hero-card]")).toBeNull();
-    // Both of them stay in Available, where they are one of two things to pick.
-    const available = sectionOf(container, "Available");
-    expect(within(available).getByRole("button", { name: "Start iPhone Air" })).toBeTruthy();
-    expect(within(available).getByRole("button", { name: "Start iPhone 16" })).toBeTruthy();
-  });
-
-  it("heroes the lane's OWN device, and keeps it out of Available", () => {
-    const { container } = renderPicker({ laneDevice: laneDevice({ udid: "max" }) });
-    const hero = container.querySelector("[data-apple-hero-card='max']") as HTMLElement;
-    expect(hero).toBeTruthy();
-    expect(within(hero).getByText("iPhone 17 Pro Max")).toBeTruthy();
-    expect(container.querySelector("[data-apple-device-card='max']")).toBeNull();
-    expect(screen.getAllByRole("button", { name: "Start iPhone 17 Pro Max" })).toHaveLength(1);
-  });
-
-  it("says the lane's registered device is gone rather than that it has none", () => {
-    renderPicker({ laneDevice: laneDevice({ udid: "deleted", name: "ADE · Mine" }) });
-    expect(screen.getByText("ADE · Mine is registered to this lane but is not installed any more."))
-      .toBeTruthy();
-    expect(screen.queryByText("This lane has no Apple device yet.")).toBeNull();
-  });
-
-  it("defaults Create to a template that can actually be cloned", () => {
-    const props = renderPicker();
-    const select = screen.getByLabelText("Device to copy") as HTMLSelectElement;
-    // `pro` and `repro` are booted (simctl refuses to clone a booted device)
-    // and `repro` is another lane's besides, so the default is the max.
-    expect(select.value).toBe("max");
     expect(
-      [...select.options].some((option) => option.textContent === "ADE Repro · iPhone 17 Pro · iOS 26.2"),
-    ).toBe(true);
-    fireEvent.click(screen.getByRole("button", { name: "Create a new simulator for this lane" }));
-    expect(props.onCreate).toHaveBeenCalledWith("max");
-  });
-});
-
-describe("AppleDevicePicker available group", () => {
-  it("holds every installed device no lane owns, and counts them", () => {
-    const { container } = renderPicker();
-    const available = sectionOf(container, "Available");
-    expect(available.querySelector("[data-apple-section-count]")?.textContent).toBe("4");
-    expect([...available.querySelectorAll("[data-apple-device-card]")].map((node) =>
-      node.getAttribute("data-apple-device-card"))).toEqual(["pro", "max", "pad", "watch"]);
+      (container.querySelector('[data-apple-create-source="pro"]') as HTMLElement).textContent,
+    ).toContain("measuring…");
   });
 
-  it("groups by family, in §B2's order, from the device type identifier", () => {
-    const { container } = renderPicker();
-    const available = sectionOf(container, "Available");
-    expect([...available.querySelectorAll("[data-apple-family] h4")].map((node) => node.textContent))
-      .toEqual(["iPhone", "iPad", "Apple Watch"]);
-    const pad = available.querySelector("[data-apple-family='ipad']") as HTMLElement;
-    expect(within(pad).getByRole("button", { name: "Start iPad Pro 13-inch M4" })).toBeTruthy();
-  });
-
-  it("files a device by its identifier even when the service's family disagrees", () => {
-    const { container } = renderPicker({
-      owners: [],
-      installed: [
-        // Both carry `family: "iphone"` from the service. The identifier wins.
-        simulator({ udid: "tv", name: "Apple TV 4K", runtime: "tvOS 26.2", deviceTypeIdentifier: `${T}Apple-TV-4K-3rd-generation-1080p` }),
-        simulator({ udid: "vision", name: "Apple Vision Pro", runtime: "visionOS 26.2", deviceTypeIdentifier: `${T}Apple-Vision-Pro` }),
-      ],
-    });
-    const tv = container.querySelector("[data-apple-family='tv']") as HTMLElement;
-    expect(within(tv).getByRole("button", { name: "Start Apple TV 4K" })).toBeTruthy();
-    const vision = container.querySelector("[data-apple-family='vision']") as HTMLElement;
-    expect(within(vision).getByRole("button", { name: "Start Apple Vision Pro" })).toBeTruthy();
-  });
-
-  it("says a stopped simulator only needs a boot, and downloads nothing", () => {
-    const { container } = renderPicker();
-    expect(container.querySelector("[data-apple-boot-hint]")?.textContent)
-      .toMatch(/stopped simulator only needs a boot/);
-  });
-
-  it("names the action for the device it acts on, and opens what is already booted", () => {
-    renderPicker();
-    expect(screen.getByRole("button", { name: "Open iPhone 17 Pro" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Start iPhone 17 Pro Max" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Start Series 10" })).toBeTruthy();
-  });
-
-  it("shows the model under a custom name, and never repeats a name that is the model", () => {
-    const { container } = renderPicker({
-      owners: [],
-      installed: [simulator({ udid: "repro", name: "ADE Repro" }), simulator({ udid: "max", name: "iPhone 17 Pro Max", deviceTypeIdentifier: `${T}iPhone-17-Pro-Max` })],
-    });
-    const repro = container.querySelector("[data-apple-device-card='repro']") as HTMLElement;
-    expect(within(repro).getByText("ADE Repro")).toBeTruthy();
-    expect(repro.querySelector("[data-apple-model-line]")?.textContent).toBe("iPhone 17 Pro");
-    const max = container.querySelector("[data-apple-device-card='max']") as HTMLElement;
-    expect(max.querySelector("[data-apple-model-line]")).toBeNull();
-  });
-
-  it("carries each device's own disk use once it is measured", () => {
-    const { container } = renderPicker({ disk: DISK });
-    const pro = container.querySelector("[data-apple-device-card='pro']") as HTMLElement;
-    expect(within(pro).getByText("iOS 26.2 · Running · 5.0 GB")).toBeTruthy();
-    // Unmeasured devices keep the plain line rather than claiming zero.
-    const pad = container.querySelector("[data-apple-device-card='pad']") as HTMLElement;
-    expect(within(pad).getByText("iOS 26.2 · Stopped")).toBeTruthy();
-  });
-
-  it("starts the device that was clicked, and locks every card while one is in flight", () => {
-    const props = renderPicker();
-    fireEvent.click(screen.getByRole("button", { name: "Start iPad Pro 13-inch M4" }));
-    expect(props.onStart).toHaveBeenCalledWith("pad");
-
-    cleanup();
-    renderPicker({ pending: "pad" });
-    expect(screen.getByRole("button", { name: "Open iPhone 17 Pro" }).hasAttribute("disabled")).toBe(true);
+  it("defaults to a template that can actually be cloned, and creates from it", () => {
+    const { container, onCreate } = renderPicker({ lastUsedUdid: "repro" });
+    // "repro" is the last used AND held by another lane, so it must not be the
+    // default the Create button acts on.
+    fireEvent.click(screen.getByLabelText("Create a new simulator for this lane"));
+    expect(onCreate).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(onCreate).mock.calls[0]?.[0]).not.toBe("repro");
     expect(
-      screen.getByRole("button", { name: "Create a new simulator for this lane" }).hasAttribute("disabled"),
-    ).toBe(true);
+      (container.querySelector('[data-apple-create-source="repro"]') as HTMLElement)
+        .getAttribute("aria-checked"),
+    ).toBe("false");
+  });
+
+  it("creates from the row the user picked", () => {
+    const { container, onCreate } = renderPicker();
+    fireEvent.click(container.querySelector('[data-apple-create-source="pad"]') as HTMLElement);
+    fireEvent.click(screen.getByLabelText("Create a new simulator for this lane"));
+    expect(onCreate).toHaveBeenCalledWith("pad");
+  });
+
+  it("says when the lane's registered device is gone, where the fix is", () => {
+    const { container } = renderPicker({
+      laneDevice: laneDevice({ udid: "deleted-in-xcode", name: "Old clone" }),
+    });
+    expect(
+      container.querySelector("[data-apple-lane-device-missing]")?.textContent,
+    ).toContain("Old clone is registered to this lane but is not installed any more.");
   });
 });
 
-describe("AppleDevicePicker in-use-elsewhere group", () => {
-  it("names the owning lane and offers NO Open or Start", () => {
-    const { container } = renderPicker();
-    const elsewhere = sectionOf(container, "In use elsewhere");
-    const card = within(elsewhere).getByText("ADE Repro").closest("[data-apple-elsewhere-card]") as HTMLElement;
-    expect(card.getAttribute("data-apple-elsewhere-card")).toBe("repro");
-    expect(within(card).getByText("In use by lane Apple sim preview")).toBeTruthy();
-    // The exact defect: Open on a device another lane is mid-test in.
-    expect(screen.queryByRole("button", { name: "Open ADE Repro" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Start ADE Repro" })).toBeNull();
-    expect(container.querySelector("[data-apple-device-card='repro']")).toBeNull();
-  });
-
-  it("keeps another lane's device out of Available and out of the hero", () => {
-    const { container } = renderPicker();
-    const available = sectionOf(container, "Available");
-    expect(within(available).queryByText("ADE Repro")).toBeNull();
+describe("AppleDevicePicker the lane's own device", () => {
+  it("stays in its family group, tagged Yours, and is still one click", () => {
+    const { container, onStart } = renderPicker({
+      laneDevice: laneDevice(),
+      owners: [REPRO_OWNER, { udid: "max", laneId: "lane-mine", laneName: "Mine", origin: "clone", mine: true }],
+    });
+    const card = cardOf(container, "max");
+    expect(card.textContent).toContain("Yours");
+    // No hero, no section of its own: round 4 lifted this card out of the
+    // family groups and five simulators then read as one plus four.
     expect(container.querySelector("[data-apple-hero-card]")).toBeNull();
-  });
-
-  it("puts a takeover behind a confirmation that names the lane it interrupts", () => {
-    const props = renderPicker();
-    fireEvent.click(screen.getByRole("button", { name: "Take over ADE Repro" }));
-
-    expect(screen.getByText(
-      "Take ADE Repro from lane Apple sim preview? That lane loses the device and its live view — the simulator itself keeps running.",
-    )).toBeTruthy();
-    // Nothing has happened yet — the first click only asks.
-    expect(props.onStart).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole("button", { name: "Take ADE Repro from lane Apple sim preview" }));
-    expect(props.onStart).toHaveBeenCalledWith("repro");
-  });
-
-  it("backs out of a takeover without touching the device", () => {
-    const props = renderPicker();
-    fireEvent.click(screen.getByRole("button", { name: "Take over ADE Repro" }));
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(screen.queryByText(/That lane loses the device/)).toBeNull();
-    expect(props.onStart).not.toHaveBeenCalled();
-  });
-
-  it("says 'another lane' rather than a hex id it cannot name", () => {
-    renderPicker({ owners: [{ ...REPRO_OWNER, laneName: null }] });
-    expect(screen.getByText("In use by another lane")).toBeTruthy();
-    expect(screen.queryByText(/dca9f144/)).toBeNull();
-  });
-
-  it("drops the group entirely when no other lane holds anything", () => {
-    const { container } = renderPicker({ owners: [] });
-    expect(container.querySelector("[data-apple-picker-section='In use elsewhere']")).toBeNull();
-    expect(sectionOf(container, "Available").querySelector("[data-apple-section-count]")?.textContent).toBe("5");
+    fireEvent.click(card.querySelector("[data-apple-device-start]") as HTMLElement);
+    expect(onStart).toHaveBeenCalledWith("max");
   });
 });
 
 describe("AppleDevicePicker page", () => {
-  it("never calls the page 'iOS Simulators' again", () => {
-    renderPicker();
-    expect(screen.queryByRole("heading", { name: "iOS Simulators" })).toBeNull();
-    expect(screen.queryByText("iOS Simulators")).toBeNull();
-  });
-
-  it("keeps §B2's footer, verbatim", () => {
-    renderPicker();
-    expect(screen.getByText("Only simulators already installed appear here.")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Refresh" })).toBeTruthy();
+  it("wears the tools grid's card and backdrop, and nothing see-through", () => {
+    const { container } = renderPicker();
+    expect(container.querySelector("[data-backdrop]")).toBeTruthy();
+    expect(cardOf(container, "pro").className).toContain("ade-tool-card");
   });
 
   it("says where simulators come from when there are none", () => {
-    renderPicker({ installed: [] });
-    expect(screen.getByText("No Apple simulators are installed.")).toBeTruthy();
-    expect(screen.getByText(/Install one in Xcode/)).toBeTruthy();
-    expect(screen.queryByText("This lane has no Apple device yet.")).toBeNull();
-  });
-
-  it("wears the tools grid's card and backdrop, and nothing see-through", () => {
-    const { container } = renderPicker();
-    expect(container.querySelector(".ade-tool-picker-backdrop")).toBeTruthy();
-    expect(container.querySelectorAll(".ade-tool-card").length).toBeGreaterThan(1);
-    // Rule zero: nothing in this feature is see-through over the device.
-    expect(container.querySelector(".bg-bg\\/80, .bg-bg\\/90, .bg-bg\\/95")).toBeNull();
-    // The page's statements of fact are opaque and still, not lifting cards.
-    expect(container.querySelector("[data-apple-inventory]")?.className)
-      .toContain("ade-tool-card-solid");
-  });
-
-  it("never truncates a device name with an ellipsis", () => {
-    const { container } = renderPicker({
-      owners: [],
-      installed: [simulator({ udid: "long", name: "iPhone 17 Pro Max (2nd generation)" })],
-    });
-    expect(container.querySelector(".truncate")).toBeNull();
-    expect(container.querySelector(".text-ellipsis")).toBeNull();
+    const { container } = renderPicker({ installed: [] });
+    expect(container.querySelector("[data-apple-picker-empty]")).toBeTruthy();
+    expect(screen.getByText(/Xcode → Settings → Components/)).toBeTruthy();
   });
 
   it.each([360, 900])("fits its container at %ipx", (width) => {
-    const { container } = renderPicker({ disk: DISK, laneDevice: laneDevice({ udid: "max" }) });
+    const { container } = renderPicker({ disk: DISK });
     expectNoHorizontalOverflow(container, width);
+  });
+
+  it("disables every control while a start is in flight", () => {
+    const { container, onStart } = renderPicker({ pending: "pro" });
+    const start = cardOf(container, "pad").querySelector("[data-apple-device-start]") as HTMLButtonElement;
+    expect(start.disabled).toBe(true);
+    fireEvent.click(start);
+    expect(onStart).not.toHaveBeenCalled();
   });
 });

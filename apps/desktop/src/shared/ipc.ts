@@ -456,6 +456,7 @@ export const IPC = {
   iosSimulatorDeviceStop: "ade.iosSimulator.deviceStop",
   iosSimulatorDeviceList: "ade.iosSimulator.deviceList",
   iosSimulatorDeviceDelete: "ade.iosSimulator.deviceDelete",
+  iosSimulatorDeviceDeleteInstalled: "ade.iosSimulator.deviceDeleteInstalled",
   iosSimulatorFrame: "ade.iosSimulator.frame",
   iosSimulatorRecordStart: "ade.iosSimulator.recordStart",
   iosSimulatorRecordStop: "ade.iosSimulator.recordStop",

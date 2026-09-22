@@ -632,8 +632,15 @@ describe("AppleDevicePane when another lane takes the device (round 5 picker)", 
     });
 
     await waitFor(() => expect(paneState()).toBe("no-device"));
-    // And the picker tells the truth about who has it now.
-    expect(await screen.findByText("In use by lane Repro fix")).toBeTruthy();
+    // And the picker tells the truth about who has it now. Round 6 says it in
+    // one word on the card and names the lane in its tooltip, because the
+    // owner asked for a device on hold elsewhere to be inert rather than
+    // explained at length.
+    const taken = await screen.findByText("Taken");
+    expect(taken).toBeTruthy();
+    expect(
+      document.querySelector('[data-apple-owner-lane="lane-2"]'),
+    ).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Open iPhone 17 Pro" })).toBeNull();
   });
 });

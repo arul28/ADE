@@ -12,6 +12,7 @@ import type {
   AppleDeviceStopResult,
   AppleDeviceCreateArgs,
   AppleDeviceDeleteArgs,
+  AppleDeviceDeleteInstalledArgs,
   AppleDeviceListArgs,
   AppleDeviceListResult,
   AppleDeviceOrientation,
@@ -5673,6 +5674,25 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     });
   };
 
+  /**
+   * Remove an installed simulator by udid — the picker's per-device menu.
+   *
+   * No `requireLaneScope`: the target is named outright and the registry's own
+   * guard is the one that matters (it refuses any device a lane holds). Asking
+   * for a lane scope here would only say which lane is doing the tidying.
+   */
+  const deviceDeleteInstalled = async (deviceArgs: AppleDeviceDeleteInstalledArgs): Promise<void> => {
+    assertDarwin();
+    if (deviceArgs?.confirmedByUser !== true) {
+      throw new Error(
+        "Deleting a simulator needs confirmedByUser: true — the owner has to have said yes to this device by name.",
+      );
+    }
+    const runtime = resolveRuntime(deviceArgs);
+    await laneDevices.deviceDeleteInstalled({ udid: deviceArgs.udid });
+    invalidateStatus(runtime);
+  };
+
   const deviceDelete = async (deviceArgs: AppleDeviceDeleteArgs = {}): Promise<void> => {
     const runtime = requireLaneScope(deviceArgs);
     // Whatever was driving it stops first: deleting a simulator out from under
@@ -5829,6 +5849,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     deviceStop,
     deviceList,
     deviceDelete,
+    deviceDeleteInstalled,
     /** Lane archive/delete hook. Deletes a clone, only detaches an attached device. */
     releaseLane,
 

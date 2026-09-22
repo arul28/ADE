@@ -8,6 +8,7 @@ import type {
   AppleScrollResult,
   AppleDeviceCreateArgs,
   AppleDeviceDeleteArgs,
+  AppleDeviceDeleteInstalledArgs,
   AppleDeviceListArgs,
   AppleDeviceListResult,
   AppleFrameArgs,
@@ -2451,6 +2452,10 @@ declare global {
         ) => Promise<AppleDeviceListResult>;
         deviceDelete: (
           args?: AppleDeviceDeleteArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<void>;
+        deviceDeleteInstalled: (
+          args: AppleDeviceDeleteInstalledArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<void>;
         frame: (

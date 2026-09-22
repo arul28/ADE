@@ -152,6 +152,7 @@ export const APPLE_AGENT_ACTIONS = [
   "deviceStart",
   "deviceStop",
   "deviceDelete",
+  "deviceDeleteInstalled",
 
   /* Video. */
   "startStream",
@@ -1322,6 +1323,14 @@ export type IosSimulatorProofBundle = {
 export const APPLE_DEVICE_ATTACHED_NOT_DELETABLE_CODE = "APPLE_DEVICE_ATTACHED_NOT_DELETABLE" as const;
 /** The lane already owns a device; delete it before creating another. */
 export const APPLE_DEVICE_EXISTS_CODE = "APPLE_DEVICE_EXISTS" as const;
+/**
+ * A lane holds this simulator, so it is not the picker's to delete.
+ *
+ * Deleting a device out from under another lane would take its live view away
+ * with no warning on that lane's screen. The lane that owns it gives it up
+ * through `deviceDelete`, which stops its stream first.
+ */
+export const APPLE_DEVICE_OWNED_BY_LANE_CODE = "APPLE_DEVICE_OWNED_BY_LANE" as const;
 /** No simulator runtime is installed, and ADE never downloads one. */
 export const APPLE_NO_INSTALLED_SIMULATORS_CODE = "APPLE_NO_INSTALLED_SIMULATORS" as const;
 /** The vendored Swift helper is missing, not running, or not answering. */
@@ -1482,6 +1491,29 @@ export type AppleDeviceDeleteArgs = {
   laneId?: string | null;
   chatSessionId?: string | null;
   force?: boolean | null;
+};
+
+/**
+ * `deviceDeleteInstalled`: remove one simulator the owner picked from the list.
+ *
+ * Not the same verb as `deviceDelete`, which means "this lane gives up its own
+ * device". This one is housekeeping — usually disk — and it refuses any
+ * simulator a lane holds with `APPLE_DEVICE_OWNED_BY_LANE`.
+ */
+export type AppleDeviceDeleteInstalledArgs = {
+  udid: string;
+  /**
+   * The owner said yes to THIS device, by name, in a confirmation.
+   *
+   * Required, and deliberately not defaulted. Deleting a simulator is not
+   * recoverable, the owner's standing rule is that nothing deletes one without
+   * their approval, and this verb is reachable by any agent because ADE keeps
+   * one action list per domain. A caller that has to write the claim out
+   * cannot arrive here by drifting through a default.
+   */
+  confirmedByUser: true;
+  laneId?: string | null;
+  projectRoot?: string | null;
 };
 
 /**

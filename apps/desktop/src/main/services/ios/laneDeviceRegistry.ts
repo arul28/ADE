@@ -12,6 +12,7 @@ import type {
 import {
   APPLE_DEVICE_ATTACHED_NOT_DELETABLE_CODE,
   APPLE_DEVICE_EXISTS_CODE,
+  APPLE_DEVICE_OWNED_BY_LANE_CODE,
   APPLE_NO_INSTALLED_SIMULATORS_CODE,
 } from "../../../shared/types/iosSimulator";
 
@@ -56,6 +57,15 @@ export class AppleDeviceAttachedNotDeletableError extends Error {
   constructor(readonly device: AppleLaneDevice) {
     super(`${APPLE_DEVICE_ATTACHED_NOT_DELETABLE_CODE}: ${device.name} was attached, not created by ADE, so ADE will not delete it. Pass force to detach it from lane ${device.laneId} instead.`);
     this.name = "AppleDeviceAttachedNotDeletableError";
+  }
+}
+
+export class AppleDeviceOwnedByLaneError extends Error {
+  readonly code = APPLE_DEVICE_OWNED_BY_LANE_CODE;
+
+  constructor(readonly device: AppleLaneDevice) {
+    super(`${APPLE_DEVICE_OWNED_BY_LANE_CODE}: ${device.name} (${device.udid}) is held by lane ${device.laneId}. That lane gives it up itself; deleting it here would take its live view away with no warning on its screen.`);
+    this.name = "AppleDeviceOwnedByLaneError";
   }
 }
 
@@ -126,6 +136,16 @@ export type LaneDeviceRegistry = {
     disk?: boolean | null;
   }): Promise<AppleDeviceListResult>;
   deviceDelete(args: { laneId: string; force?: boolean | null }): Promise<void>;
+  /**
+   * Delete an installed simulator by udid, for the picker's per-device menu.
+   *
+   * Separate from `deviceDelete`, which is "give up the device THIS lane
+   * owns". This one is the owner clearing out a simulator they are not using,
+   * usually for the disk, so it refuses any device a lane holds rather than
+   * silently unbinding that lane. Removing a lane's own device is still
+   * `deviceDelete`, which shuts its stream down first.
+   */
+  deviceDeleteInstalled(args: { udid: string }): Promise<void>;
   /** The lane's device without touching `simctl`. Null when the lane has none. */
   get(laneId: string): AppleLaneDevice | null;
   /** Every lane device this project knows about. */
@@ -673,9 +693,42 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
     deps.logger.info("apple.lane_device_deleted", { laneId, udid: device.udid });
   };
 
+  /**
+   * Delete one installed simulator the owner picked out of the list.
+   *
+   * Refuses anything a lane holds. The picker already renders those as taken
+   * and offers no menu, but the guard belongs here: a CLI caller and a stale
+   * renderer reach this same method, and the cost of getting it wrong is
+   * another lane's live view vanishing mid-test.
+   *
+   * ADE's "never delete a simulator it did not create" rule governs what ADE
+   * does BY ITSELF — on lane archive, without anyone asking. An owner clicking
+   * Delete on a named device in a confirmed menu is the opposite of that, and
+   * reclaiming the disk is usually the whole point.
+   */
+  const removeInstalled = async (args: { udid: string }): Promise<void> => {
+    const udid = args.udid?.trim();
+    if (!udid) throw new Error("A simulator udid is required.");
+    const holder = readAll().find((device) => device.udid === udid);
+    if (holder) throw new AppleDeviceOwnedByLaneError(holder);
+    // Same order as `remove`: `simctl delete` on a booted device leaves
+    // CoreSimulator holding the data directory and reports success having
+    // removed nothing.
+    await deps.run("xcrun", ["simctl", "shutdown", udid], { timeoutMs: 60_000 }).catch((error: unknown) => {
+      deps.logger.debug("apple.installed_device_shutdown_failed", {
+        udid,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { stdout: "", stderr: "" };
+    });
+    await deps.run("xcrun", ["simctl", "delete", udid], { timeoutMs: 120_000 });
+    deps.logger.info("apple.installed_device_deleted", { udid });
+  };
+
   return {
     deviceCreate: create,
     deviceAttach: attach,
+    deviceDeleteInstalled: removeInstalled,
     async deviceList(args = {}) {
       const wantInstalled = args.installed !== false;
       const installed = wantInstalled ? await deps.listInstalledSimulators() : [];

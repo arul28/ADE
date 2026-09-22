@@ -13,6 +13,7 @@ import {
 import {
   APPLE_DEVICE_ATTACHED_NOT_DELETABLE_CODE,
   APPLE_DEVICE_EXISTS_CODE,
+  APPLE_DEVICE_OWNED_BY_LANE_CODE,
   APPLE_NO_INSTALLED_SIMULATORS_CODE,
   type AppleInstalledSimulator,
 } from "../../../shared/types/iosSimulator";
@@ -194,6 +195,33 @@ describe("laneDeviceRegistry device lifecycle", () => {
       ["simctl", "shutdown"],
       ["simctl", "delete"],
     ]);
+  });
+
+  it("deletes an installed simulator no lane holds, shutting it down first", async () => {
+    const run = vi.fn(async (..._call: unknown[]) => ({ stdout: "", stderr: "" }));
+    const { registry } = registryWith(run);
+
+    await registry.deviceDeleteInstalled({ udid: "template-1" });
+
+    expect(run.mock.calls.map((call) => (call[1] as string[]).slice(0, 3))).toEqual([
+      ["simctl", "shutdown", "template-1"],
+      ["simctl", "delete", "template-1"],
+    ]);
+  });
+
+  it("refuses to delete a simulator a lane holds, and runs no simctl at all", async () => {
+    // The picker renders these as TAKEN with no menu, but the guard belongs
+    // here: a CLI caller and a stale renderer reach the same method, and the
+    // cost of getting it wrong is another lane's live view vanishing.
+    const run = vi.fn(async () => ({ stdout: "clone-udid\n", stderr: "" }));
+    const { registry } = registryWith(run);
+    const device = await registry.deviceCreate({ laneId: "lane-1" });
+    run.mockClear();
+
+    await expect(registry.deviceDeleteInstalled({ udid: device.udid })).rejects.toMatchObject({
+      code: APPLE_DEVICE_OWNED_BY_LANE_CODE,
+    });
+    expect(run).not.toHaveBeenCalled();
   });
 
   it("creates on first ask and returns the same device after", async () => {

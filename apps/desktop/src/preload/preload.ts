@@ -810,6 +810,7 @@ import type {
   AppleScrollResult,
   AppleDeviceCreateArgs,
   AppleDeviceDeleteArgs,
+  AppleDeviceDeleteInstalledArgs,
   AppleDeviceListArgs,
   AppleDeviceListResult,
   AppleFrameArgs,
@@ -8192,6 +8193,13 @@ const adeBridge = {
       pin?: OpenProjectBinding | null,
     ): Promise<void> =>
       callIosSimulatorMutation(pin, "deviceDelete", args, IPC.iosSimulatorDeviceDelete),
+
+    /** Remove one installed simulator by udid — the picker's per-device menu. */
+    deviceDeleteInstalled: (
+      args: AppleDeviceDeleteInstalledArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> =>
+      callIosSimulatorMutation(pin, "deviceDeleteInstalled", args, IPC.iosSimulatorDeviceDeleteInstalled),
 
     /**
      * One decoded frame from the running stream.
