@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { ClockCounterClockwise, PencilSimple, Play } from "@phosphor-icons/react";
-import { getDefaultModelDescriptor } from "../../../shared/modelRegistry";
+import { getAppDefaultModelDescriptor, getDefaultModelDescriptor } from "../../../shared/modelRegistry";
 import type {
   AiSettingsStatus,
   AutomationDraftConfirmationRequirement,
@@ -22,9 +22,10 @@ import { RuleList } from "./list/RuleList";
 import { RuleBuilder } from "./builder/RuleBuilder";
 import { RuleHistory } from "./history/RuleHistory";
 
-const DEFAULT_MODEL_ID =
-  getDefaultModelDescriptor("opencode")?.id
-  ?? getDefaultModelDescriptor("claude")?.id
+/** Read on use: the app-wide default can move with model-manifest.json. */
+const defaultModelId = (): string =>
+  getAppDefaultModelDescriptor()?.id
+  ?? getDefaultModelDescriptor("opencode")?.id
   ?? "anthropic/claude-sonnet-5";
 
 function createBlankDraft(): AutomationRuleDraft {
@@ -37,7 +38,7 @@ function createBlankDraft(): AutomationRuleDraft {
     trigger: { type: "manual" },
     execution: { kind: "agent-session", session: {} },
     executor: { mode: "automation-bot" },
-    modelConfig: { modelId: DEFAULT_MODEL_ID, thinkingLevel: "medium" },
+    modelConfig: { modelId: defaultModelId(), thinkingLevel: "medium" },
     prompt: "",
     reviewProfile: "quick",
     toolPalette: ["repo", "git"],

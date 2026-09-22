@@ -45,7 +45,7 @@ for vendored runtimes without changing the union.
 | Provider | Runtime | Adapter location |
 |---|---|---|
 | `claude` | `@anthropic-ai/claude-agent-sdk` `query()` stream with an ADE async input pump, `startup()` warmup, bundled Claude Code binary, SDK sessions, hooks, output styles, plugins, context usage, rewind, and slash-command dispatch. | `agentChatService.ts` (inline; the file carries the full Claude adapter). |
-| `codex` | Pinned `@openai/codex` 0.155.1 `codex app-server` subprocess, JSON-RPC protocol. Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter and thread config); executable resolution via `services/ai/codexExecutable.ts`. |
+| `codex` | Pinned `@openai/codex` 0.156.0 `codex app-server` subprocess, JSON-RPC protocol. Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter and thread config); executable resolution via `services/ai/codexExecutable.ts`. |
 | `opencode` | OpenCode server runtime: the provider catalog and model list come from OpenCode/Models.dev, with provider-native OAuth, API-key, custom, and local-server paths. | `agentChatService.ts` (OpenCode adapter); inventory in `openCodeInventory.ts`; auth in `openCodeAuthService.ts`. |
 | `cursor` | Official `@cursor/sdk` running in a Node worker pool. ADE owns permissions, hooks, and the system prompt; the SDK owns the model + tool execution. Slash commands are discovered from `.cursor/commands/`, `.cursor/agents/`, built-in subagents, and Agent Skill roots via `cursorSlashCommandDiscovery.ts`. A transport failure can wedge the server-side agent thread while the worker process stays alive, so every local turn carries a 90 s first-event watchdog and one automatic recycle-and-resend — see [Cursor thread recycling and the first-event watchdog](README.md#cursor-thread-recycling-and-the-first-event-watchdog). | `cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`, `cursorSdkErrors.ts`, `cursorSlashCommandDiscovery.ts`. |
 | `droid` | Factory Droid models exposed as dynamic `droid/<modelId>` descriptors and driven through the official `@factory/droid-sdk` running in a forked Node worker pool. The legacy ACP bridge (`droidAcpPool.ts`) has been retired. | `droidSdkPool.ts`, `droidSdkWorker.ts`, `droidSdkProtocol.ts`, `droidSdkEventMapper.ts`, `droidModelsDiscovery.ts`; model helpers in `modelRegistry.ts`. |
@@ -101,6 +101,59 @@ Helpers (also re-exported through `shared/modelRegistry.ts`):
   flags.
 - `getDynamicOpenCodeModelDescriptors()` / `listModelDescriptorsForProvider` -- discovery-aware lists.
 
+### Model manifest (models without a release)
+
+`shared/model-manifest.json` is the model directory ADE can change without
+shipping a build. It is bundled into every build and applied to
+`MODEL_REGISTRY` when the registry module loads, then
+`main/services/ai/modelManifestService.ts` re-fetches it from
+`raw.githubusercontent.com/arul28/ADE/main/apps/desktop/src/shared/model-manifest.json`.
+Merging a manifest edit to `main` reaches running installs within minutes.
+
+- **What it can do** (`shared/modelManifest.ts`): add a model the registry
+  does not have (every required descriptor field present, optional `after`
+  anchor for picker order), patch an existing row (price, context window,
+  aliases, efforts, `deprecated: true` to hide it), and set the app-wide
+  default (`defaults.app`) and per-provider defaults (`defaults.providers`).
+  Only whitelisted descriptor fields are patchable; one invalid field rejects
+  the whole file, and a file that would collide on an id or alias is rolled
+  back to the previous manifest.
+- **Trust boundary**: the file is fetched unsigned, so it can only use values
+  ADE already runs. Routes are an allowlist (`MODEL_MANIFEST_ROUTE_CLI`) and
+  each launches only its own CLI (`codex-cli` → `codex`, …). Families, auth
+  types, efforts, and service tiers are allowlists too; ids match a strict
+  pattern; colors must be `#RRGGBB`. Routing fields (`family`,
+  `providerRoute`, `cliCommand`, `isCliWrapped`, `authTypes`) can be set only
+  on a model the manifest adds, never changed on a built-in one. A new model
+  missing a required field, or a malformed version gate, rejects the whole file.
+- **Version gating**: every model and default entry takes `minAdeVersion` /
+  `maxAdeVersionExclusive`. Use it when a model needs code a release has to
+  ship (a new effort level, a runtime contract). Dev, prerelease, and unknown
+  versions see every entry.
+- **Freshness**: sources are, best first, the GitHub copy, the last good copy
+  in `~/.ade/model-manifest.json`, and the bundled copy. A copy older than the
+  bundled one is ignored, so always bump `updatedAt` on edits. The service
+  polls every 10 minutes with `If-None-Match` (unchanged = empty 304) and
+  re-checks when a model catalog is requested and the last check is over
+  3 minutes old; failures back off 5 minutes. Nothing waits on the network.
+- **Who runs it**: desktop main and the long-lived agent brain
+  (`createAdeRuntime` with `chatRuntime: "agent"`). One-shot CLI commands and
+  embedded runtimes use the bundled/disk copy only.
+- **Propagation**: an applied manifest marks the chat model catalog stale
+  (served once more while a background rebuild runs). Every catalog response
+  carries `modelManifest`, and renderer pickers adopt it when it is newer than
+  their own copy (`adoptHostModelManifest`), so desktop, web, and the TUI
+  agree with the host. iOS reads the host catalog.
+- **Defaults**: `getAppDefaultModelDescriptor()` is what ADE uses when nothing
+  names a provider (new automations, batch launch, a chat whose model
+  vanished). `getDefaultModelDescriptor(provider)` checks the manifest's
+  provider default before the built-in heuristics. Both are read on use, never
+  frozen at module load.
+- **Adding a model**: add it to the manifest first (it ships to current
+  installs), then fold it into `MODEL_REGISTRY` in a later release if code
+  depends on it. Verify the wire id against the real runtime before merging
+  (`codex exec -m <id>` / `claude -p --model <id>`).
+
 Dynamic local-model discovery (`localModelDiscovery.ts`) mutates the
 registry at runtime when LM Studio or Ollama report available models.
 These descriptors carry `discoverySource` and a `harnessProfile` that
@@ -116,7 +169,9 @@ Fable 5.1 adds `ultracode`; Sonnet 5 exposes `low|medium|high|max`;
 Haiku 4.5 has no reasoning control. The Claude registry is ordered as
 Fable 5.1, Opus 5.5, Sonnet 5, Haiku 4.5, then Opus 5.
 Opus 5.5 selects provider model `claude-opus-5-5`, defaults to `medium`
-effort, and exposes `low|medium|high|xhigh|max` plus Fast Mode.
+effort, and exposes `low|medium|high|xhigh|max` plus Fast Mode. It is the
+Claude default and the app-wide default (set in `model-manifest.json`), so
+pickers list it first.
 Opus 5 selects provider model `claude-opus-5`, defaults to `high`
 effort, and exposes `low|medium|high|xhigh|max` plus Fast Mode.
 Fable 5.1 selects provider model `claude-fable-5-1`, defaults to `high`
@@ -130,24 +185,31 @@ resolve to Fable 5.1.
 Passthrough to the provider config is unchanged (the tier string is
 forwarded directly to the CLI / SDK, with no synthesized token budgets).
 
-### GPT-6 Astra and GPT-5.6 Codex models
+### GPT-6 and GPT-5.6 Codex models
 
 The OpenAI section is pinned in this order on every ADE model surface:
 
 1. `openai/gpt-6-astra` (`gpt-6-astra`) — default Codex model; 1,050,000 context; default effort `low`. No `none` and no `ultra` on the API ladder.
-2. `openai/gpt-5.6-sol` (`gpt-5.6-sol`) — 372k context; default effort `low`.
-3. `openai/gpt-5.6-terra` (`gpt-5.6-terra`) — 372k context; default effort `medium`.
-4. `openai/gpt-5.6-luna` (`gpt-5.6-luna`) — 372k context; default effort `medium`.
+2. `openai/gpt-6-sol` (`gpt-6-sol`) — added by the model manifest; 1,050,000 context; default effort `medium`; `$2/$10`. Alias `sol`.
+3. `openai/gpt-6-luna` (`gpt-6-luna`) — added by the model manifest; 1,050,000 context; default effort `medium`; `$0.10/$0.50`. Alias `luna`.
+4. `openai/gpt-5.6-sol` (`gpt-5.6-sol`) — 372k context; default effort `low`. Codex advertises `gpt-6-sol` as its upgrade.
+5. `openai/gpt-5.6-terra` (`gpt-5.6-terra`) — 372k context; default effort `medium`.
+6. `openai/gpt-5.6-luna` (`gpt-5.6-luna`) — 372k context; default effort `medium`.
 
-GPT-5.5 remains selectable below them. Astra and Luna expose `low | medium |
-high | xhigh | max`; Sol and Terra expose `low | medium | high | xhigh | max |
-ultra`. Desktop, ADE Code, and iOS label those values Light, Medium, High,
-Extra High, Max, and (for Sol/Terra) Ultra. Runtime app-server ladders retain
+GPT-5.5 remains selectable below them. Astra and both Lunas expose `low |
+medium | high | xhigh | max`; both Sols and Terra expose `low | medium | high |
+xhigh | max | ultra`. Desktop, ADE Code, and iOS label those values Light,
+Medium, High, Extra High, Max, and (for the Sols/Terra) Ultra. Runtime app-server ladders retain
 their advertised order. `ultra` is the multi-agent tier and carries a usage
-warning. Codex 0.155.1 is the pinned app-server that advertises Astra; older
+warning. Codex 0.156.0 is the pinned app-server that advertises Astra; older
 PATH installs without Astra metadata cannot start it.
 
-On 0.155.1 ADE always enables `tools.update_plan` on `thread/start` and
+On 0.156.0 a resumed thread reports its `collaborationMode`; ADE adopts that
+mode (plan or default) as the chat's interaction mode, so the plan toggle
+matches a thread switched from another Codex client. `/personality` is not
+offered for Codex: 0.156 retired personality styles.
+
+On 0.156.0 ADE always enables `tools.update_plan` on `thread/start` and
 `thread/resume`, copies the thread's `model` / `reasoningEffort` into the
 session snapshot, and treats `item/tool/requestUserInput` `isBlocking:
 false` as live steering rather than Needs you. Computer Use appears as a
@@ -585,6 +647,10 @@ adapter can pick the right server call:
 - **Older servers, or a target without a usable turn id,** fall back to the
   deprecated `thread/rollback` with `{ threadId, numTurns: 1 }`, which only
   rewinds the latest user message.
+- **Codex 0.156.0 removed `thread/rollback`** (openai/codex#44915).
+  `codexServerSupportsThreadRollback` is false from 0.156, so a target with no
+  usable turn id on those servers fails with a clear error instead of sending
+  the removed method.
 
 `codexServerSupportsForkBeforeTurn(runtime.serverVersion)` (true for
 `major > 0` or `minor >= 145`) gates the choice. Invariant: `beforeTurnId` is
@@ -595,8 +661,8 @@ thread id; ADE's git-backed per-file restore plan runs the same way in both
 cases.
 
 What is version-gated today is exactly this fork-before-turn rewind. `thread/rollback`
-is deprecated upstream but retained for `<= 0.144` servers and for turns without
-a usable id, so it is not removed. Separately, 0.145 removes `mcpToolCall`
+is retained only for pre-0.156 servers (`<= 0.144`, or a turn without a usable
+id); 0.156 removed it upstream. Separately, 0.145 removes `mcpToolCall`
 `appContext.templateId` from the upstream schema; ADE keeps the field optional
 so historical transcripts that recorded it still decode. Finally, 0.145's
 paginated resume (`thread/resume` with backwards cursors and a paginated

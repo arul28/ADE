@@ -110,6 +110,7 @@ import {
   MODEL_REGISTRY,
   decodeOpenCodeRegistryId,
   getLocalModelIdTail,
+  getAppDefaultModelDescriptor,
   getLocalProviderDefaultEndpoint,
   getModelById,
   getRuntimeModelRefForDescriptor,
@@ -2014,6 +2015,15 @@ function readLastUsedModelId(): string | null {
     // ignore
   }
   return migrateOldPrefs();
+}
+
+/** Last-used model, then the app-wide default, then whatever is listed first. */
+function pickFallbackChatModelId(selectableModelIds: readonly string[]): string {
+  const preferred = readLastUsedModelId();
+  if (preferred && selectableModelIds.includes(preferred)) return preferred;
+  const appDefault = getAppDefaultModelDescriptor()?.id;
+  if (appDefault && selectableModelIds.includes(appDefault)) return appDefault;
+  return selectableModelIds[0]!;
 }
 
 function writeLastUsedModelId(modelId: string) {
@@ -7384,10 +7394,7 @@ export function AgentChatPane({
       // a same-provider alternative, a persisted curated row is stale and
       // must not survive into a fresh draft.
       if (currentModelDesc && !hasLiveAcpAlternative) return;
-      const preferred = readLastUsedModelId();
-      const nextModelId = preferred && selectableModelIds.includes(preferred)
-        ? preferred
-        : selectableModelIds[0]!;
+      const nextModelId = pickFallbackChatModelId(selectableModelIds);
       if (nextModelId !== modelId) setModelId(nextModelId);
       return;
     }
@@ -7398,12 +7405,7 @@ export function AgentChatPane({
       setModelId(selectedSessionModelId);
       return;
     }
-    const preferred = readLastUsedModelId();
-    if (preferred && selectableModelIds.includes(preferred)) {
-      setModelId(preferred);
-    } else {
-      setModelId(selectableModelIds[0]!);
-    }
+    setModelId(pickFallbackChatModelId(selectableModelIds));
   }, [loading, availableModelIds, effectiveAvailableModelIds, modelId, modelSelectionConstrained, modelCatalogScopeKey, selectedEvents.length, selectedSessionId, selectedSessionModelId]);
 
   useEffect(() => {

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { CaretDown, Timer } from "@phosphor-icons/react";
-import { getDefaultModelDescriptor } from "../../../../shared/modelRegistry";
+import { getAppDefaultModelDescriptor, getDefaultModelDescriptor } from "../../../../shared/modelRegistry";
 import type { ModelConfig, ThinkingLevel } from "../../../../shared/types";
 import { ModelPicker } from "../../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../../shared/ModelPicker/ReasoningEffortPicker";
@@ -12,9 +12,10 @@ import type { WorkflowStep } from "./draftBridge";
 import { MinutesInput } from "./MinutesInput";
 import { VariableInput, VariableTextarea } from "./VariableMenu";
 
-const DEFAULT_MODEL_ID =
-  getDefaultModelDescriptor("opencode")?.id
-  ?? getDefaultModelDescriptor("claude")?.id
+/** Read on use: the app-wide default can move with model-manifest.json. */
+const defaultModelId = (): string =>
+  getAppDefaultModelDescriptor()?.id
+  ?? getDefaultModelDescriptor("opencode")?.id
   ?? "anthropic/claude-sonnet-5";
 
 function PermissionPicker({
@@ -24,7 +25,7 @@ function PermissionPicker({
   step: WorkflowStep;
   onChange: (next: WorkflowStep) => void;
 }) {
-  const modelId = step.modelConfig?.modelId ?? DEFAULT_MODEL_ID;
+  const modelId = step.modelConfig?.modelId ?? defaultModelId();
   const meta = permissionControlsForModel(modelId);
   if (!meta) return null;
   const current = (step.permissionConfig?.providers as Record<string, string> | undefined)?.[meta.key] ?? "";
@@ -133,7 +134,7 @@ export function AgentStepEditor({
   triggerType: string;
   onChange: (next: WorkflowStep) => void;
 }) {
-  const modelId = step.modelConfig?.modelId ?? DEFAULT_MODEL_ID;
+  const modelId = step.modelConfig?.modelId ?? defaultModelId();
 
   const setModel = (nextId: string) => {
     const next: ModelConfig = { ...(step.modelConfig ?? { modelId: nextId }), modelId: nextId };

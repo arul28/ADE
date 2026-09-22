@@ -57,9 +57,13 @@ function usingFakeTimers(): boolean {
   }
 }
 
+// Captured before any test fakes timers. `realYield` lets pending real I/O
+// settle between fake-time steps for tests a loaded CI runner can outrun.
+const realSetImmediate = globalThis.setImmediate;
+
 async function waitForFakeTimers(
   assertion: () => unknown,
-  options: { steps?: number; stepMs?: number } = {},
+  options: { steps?: number; stepMs?: number; realYield?: boolean } = {},
 ): Promise<void> {
   if (!usingFakeTimers()) {
     await vi.waitFor(assertion);
@@ -76,6 +80,7 @@ async function waitForFakeTimers(
       lastError = error;
     }
     await vi.advanceTimersByTimeAsync(step === 0 ? 0 : stepMs);
+    if (options.realYield) await new Promise<void>((resolve) => realSetImmediate(() => resolve()));
   }
   throw lastError;
 }
@@ -7947,6 +7952,56 @@ describe("createAgentChatService", () => {
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/fork")).toBe(false);
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/revert")).toBe(false);
       }
+    });
+
+    it("explains a removed thread/rollback on a Codex whose version is unknown", async () => {
+      mockState.codexResponseOverrides.set("thread/rollback", {
+        error: { code: -32601, message: "Method not found" },
+      });
+      const { service, sessionService } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+      });
+      source.threadId = "source-thread-1";
+      source.status = "idle";
+      const envelope = {
+        sessionId: source.id,
+        timestamp: "2026-09-22T20:00:00.000Z",
+        event: { type: "user_message", messageId: "user-1", text: "rewind this turn" },
+      } as AgentChatEventEnvelope;
+      fs.writeFileSync(String(sessionService.get(source.id)?.transcriptPath), `${JSON.stringify(envelope)}\n`, "utf8");
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([envelope]);
+
+      await expect(service.rewindFiles({ sessionId: source.id, userMessageId: "user-1" }))
+        .rejects.toThrow(/removed turn-count rollback/);
+    });
+
+    it("never sends the removed thread/rollback to Codex 0.156 when the turn id is missing", async () => {
+      mockState.codexResponseOverrides.set("initialize", { userAgent: "codex/0.156.0" });
+      const { service, sessionService } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+      });
+      source.threadId = "source-thread-1";
+      source.status = "idle";
+      const transcriptPath = sessionService.get(source.id)?.transcriptPath;
+      const envelope = {
+        sessionId: source.id,
+        timestamp: "2026-09-22T20:00:00.000Z",
+        event: { type: "user_message", messageId: "user-1", text: "rewind this turn" },
+      } as AgentChatEventEnvelope;
+      fs.writeFileSync(String(transcriptPath), `${JSON.stringify(envelope)}\n`, "utf8");
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([envelope]);
+
+      await expect(service.rewindFiles({ sessionId: source.id, userMessageId: "user-1" }))
+        .rejects.toThrow(/removed turn-count rollback/);
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/rollback")).toBe(false);
     });
 
     it("falls back to fork when thread/revert is rejected", async () => {
@@ -40338,7 +40393,7 @@ describe("createAgentChatService", () => {
             && event.event.mcp?.pluginId === "local-plugin"
             && event.event.mcp?.appContext?.appName === "Local tools"
           )).toBe(true);
-        });
+        }, { steps: 200, realYield: true });
 
         expect(events.some((event) =>
           event.event.type === "tool_result"
@@ -41129,6 +41184,35 @@ describe("createAgentChatService", () => {
         status: "active",
         tokenBudget: null,
       });
+    });
+
+    it("adopts the plan mode a resumed Codex thread reports (0.156+)", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+      await service.setCodexGoal({ sessionId: session.id, objective: "Ship CLI parity" });
+      expect((await service.getSessionSummary(session.id))?.interactionMode ?? "default").toBe("default");
+
+      mockState.codexResponseOverrides.set("thread/resume", {
+        thread: { id: "thread-1" },
+        collaborationMode: { mode: "plan", settings: {} },
+      });
+      const resumed = createService().service;
+      await resumed.setCodexGoal({ sessionId: session.id, objective: "Keep shipping" });
+
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/resume")).toBe(true);
+      expect((await resumed.getSessionSummary(session.id))?.interactionMode).toBe("plan");
+    });
+
+    it("no longer offers the retired Codex /personality command", async () => {
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.5" });
+      const commands = await service.getSlashCommands({ sessionId: session.id });
+      expect(commands.some((command) => command.name === "/personality")).toBe(false);
+      expect(commands.some((command) => command.name === "/plan")).toBe(true);
     });
 
     it("rejects Codex goals over the app-server objective limit", async () => {

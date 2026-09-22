@@ -1191,15 +1191,11 @@ Renderer — settings:
   explicitly excludes authorization denials, which ADE also dresses in
   `methodNotFound`.
 - `apps/desktop/src/main/services/usage/usagePricing.ts` — per-model token
-  rates. The maintained public rate list (BerriAI/litellm's
-  `model_prices_and_context_window.json`, fetched with a 10 s timeout, cached to
-  `~/.ade/litellm-pricing.json`, refreshed daily, and also read from
-  codeburn's cache) wins whenever it prices the model; ADE's static table is the
-  fallback for an offline machine and for models the list has never heard of.
-  Missing fields fill one at a time — a list entry with input and output but no
-  cache-write rate takes that one field from the static row, then from the
-  conventional ratios — rather than dropping the whole entry back to the static
-  table. A cached list stops outranking the table after 30 days.
+  rates, all from models.dev (vendor row for a bare model id, the provider's
+  row for a `provider/model` name; fetched with a 10 s timeout, cached to
+  `~/.ade/models-dev-pricing.json`, refreshed daily, dropped after 30 days). A
+  model models.dev has not listed yet takes its registry / model-manifest
+  price. There is no hand-maintained rate table.
   `tokenPriceSource(model)` reports `list` or `fallback` so a cost headline can
   say where its rates came from. See
   [Usage tracking strategy](./usage-tracking.md#where-a-token-price-comes-from).

@@ -2,6 +2,7 @@
 // Agent chat types
 // ---------------------------------------------------------------------------
 
+import type { ModelManifest } from "../modelManifest";
 import type { AdeCardPayload } from "../adeCard";
 import type { ChatErrorPresentation } from "../chatErrorPresentation";
 import type { ModelId } from "./core";
@@ -2910,6 +2911,8 @@ export type AgentChatModelCatalog = {
   groups: AgentChatModelCatalogGroup[];
   fetchedAt: string;
   stale?: boolean;
+  /** The host's model directory, so clients overlay the same models and defaults. */
+  modelManifest?: { manifest: ModelManifest; adeVersion: string | null };
 };
 
 export type AgentChatModelCatalogRefreshProvider =
