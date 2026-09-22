@@ -21975,6 +21975,14 @@ async function runServe(
     await scopeRegistry.disposeAll();
     await personalChatScope.dispose();
     try {
+      // Scope disposal ends chat sessions, but the shared Cursor one-shot
+      // workers belong to no session, so release them here.
+      const { disposeAllCursorSdkConnections } = await import("../../desktop/src/main/services/chat/cursorSdkPool");
+      await disposeAllCursorSdkConnections();
+    } catch {
+      // Best effort: the workers also exit on their own once the IPC channel closes.
+    }
+    try {
       const {
         defaultProductAnalyticsStateFile,
         peekSharedProductAnalyticsService,
@@ -22446,6 +22454,12 @@ async function runServe(
       startBackgroundAgentToolsFetch(headlessProjectLogger);
     });
   }
+
+  // A brain that died without unwinding (the loop watchdog SIGKILLs it) left
+  // its Cursor SDK workers behind. Reap the ones whose owning brain is gone.
+  void import("../../desktop/src/main/services/chat/cursorSdkPool")
+    .then(({ recoverCursorSdkWorkerOrphans }) => recoverCursorSdkWorkerOrphans({ logger: headlessProjectLogger }))
+    .catch(() => {});
 
   const serviceCommand = resolveAdeServeCommand();
   const preparedServiceCommand = prepareMachineRuntimeDaemonCommand(serviceCommand);

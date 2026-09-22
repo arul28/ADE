@@ -2158,6 +2158,30 @@ new agent had all of the work and none of the thread. Staging is skipped
 entirely when the transcript has no turns, because a header announcing restored
 context with no context attached only misleads the model.
 
+### Cursor worker orphan guard
+
+A brain that dies without unwinding (its loop watchdog SIGKILLs it) cannot
+dispose its Cursor workers. The worker guards itself (`cursorSdkWorkerGuards.ts`).
+It drops messages once `process.connected` is false. It sends with a callback,
+so a failed send never becomes a process `'error'`. It ignores `'error'` on the
+process and on its stdio, where EPIPE shows after the parent dies. Its
+unhandled-error handler is not re-entrant. Before this, each send on the
+closed channel threw again, the worker spun at 100% CPU, and the starved
+microtask queue kept every promise-based exit from finishing, SIGTERM included.
+Every exit path now also arms a 2 s timer deadline, because timers still fire
+when promises cannot settle. The worker exits on `disconnect`, and it also
+polls its owner as a second guard. The pool puts the owner pid in argv
+(`--ade-owner-pid=<pid>`), so `ps` and the Windows CIM command line show it.
+`recoverCursorSdkWorkerOrphans` runs once at brain startup and before the first
+fork. It terminates only workers whose owner pid is dead: SIGTERM, then SIGKILL
+after 1.5 s on POSIX, and `taskkill /T /F` on Windows. A worker whose owner is
+alive is never touched, because that owner can be another brain. A worker from
+a build before the marker counts as orphaned only on POSIX with ppid 1. Windows
+keeps a dead parent's pid as the ppid, so the sweep leaves an unmarked worker
+alone there. At shutdown, `disposeAllCursorSdkConnections` releases every
+pooled worker, including the shared `cloud-oneshot:` and `local-oneshot:`
+workers that no session owns.
+
 ### Message delivery, turn health, and quiet diagnostics
 
 The transcript is the durable truth for whether ADE merely accepted a message

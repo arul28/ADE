@@ -1,4 +1,4 @@
-import { fork, type ChildProcess, type ForkOptions } from "node:child_process";
+import { execFile, fork, type ChildProcess, type ForkOptions } from "node:child_process";
 import { randomUUID, createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -9,6 +9,9 @@ import { buildPackagedRuntimeNodeModulePaths } from "../runtime/packagedNodePath
 import { pathKey } from "../shared/pathCompare";
 import { CURSOR_SDK_ONESHOT_POLICY } from "./cursorSdkPolicy";
 import { terminateChildProcessTree } from "../shared/utils";
+import { killWindowsProcessTree, windowsPowerShellCommand } from "../shared/processExecution";
+import { cursorSdkOwnerPidArg, readCursorSdkOwnerPid } from "./cursorSdkWorkerGuards";
+import { processIsAlive } from "../../../../../ade-cli/src/services/runtime/parentDeathWatchdog";
 import type {
   CursorSdkCloudArtifactDescriptor,
   CursorSdkErrorDetail,
@@ -603,7 +606,13 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
 
   // fork() forwards its options to spawn(), which supports windowsHide, but
   // the installed @types/node ForkOptions declaration omits that property.
-  const child = fork(workerPath, [], {
+  // A startup sweep, once per process: reap the workers a dead brain left
+  // behind. Not awaited, because it never touches a worker whose owner is
+  // alive, and the one forked below is owned by this process.
+  void recoverCursorSdkWorkerOrphans({ logger: args.logger }).catch(() => {});
+  // The owner pid rides in argv so the sweep can read it from a process
+  // listing on every platform.
+  const child = fork(workerPath, [cursorSdkOwnerPidArg(process.pid)], {
     cwd: args.workspacePath,
     env: buildCursorSdkWorkerEnv({
       baseEnv: args.baseEnv,
@@ -1466,4 +1475,221 @@ export async function runCursorSdkLocalPrompt(args: {
       }
     }
   });
+}
+
+/**
+ * Release every pooled worker, the shared one-shot workers included.
+ *
+ * The one-shot workers (`cloud-oneshot:`, `local-oneshot:`) belong to no chat
+ * session, so no session teardown ever releases them. Brain shutdown calls
+ * this. It waits for the workers to exit, capped by the replace wait, which
+ * covers the whole dispose-then-kill ladder.
+ */
+export async function disposeAllCursorSdkConnections(): Promise<void> {
+  for (const [poolKey, entry] of [...pools.entries()]) {
+    disposeCursorSdkPoolEntry(poolKey, entry);
+  }
+  const departing = [...departingWorkers.values()];
+  if (!departing.length) return;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  await Promise.race([
+    Promise.allSettled(departing),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, CURSOR_SDK_REPLACE_WAIT_MS);
+      timer.unref();
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+}
+
+type CursorSdkWorkerProcessRow = { pid: number; ppid: number; command: string };
+
+export type CursorSdkOrphanSweepDeps = {
+  platform?: NodeJS.Platform;
+  selfPid?: number;
+  listProcesses?: () => Promise<CursorSdkWorkerProcessRow[]>;
+  isAlive?: (pid: number) => boolean;
+  /** POSIX only. */
+  kill?: (pid: number, signal: NodeJS.Signals) => void;
+  /** Windows only: `taskkill /PID <pid> /T /F`. */
+  killTree?: (pid: number) => boolean;
+  waitMs?: (ms: number) => Promise<void>;
+};
+
+export type CursorSdkOrphanSweepResult = {
+  recoveredPids: number[];
+  failedPids: number[];
+};
+
+/** Time an orphan gets to exit after SIGTERM (or the first taskkill). */
+const CURSOR_SDK_ORPHAN_TERM_GRACE_MS = CURSOR_SDK_KILL_ESCALATION_MS;
+const CURSOR_SDK_ORPHAN_POLL_MS = 50;
+/** Script name of the worker bundle. Both the desktop and CLI builds use it. */
+const CURSOR_SDK_WORKER_SCRIPT_PATTERN = /(?:^|[\\/"\s])cursorSdkWorker\.cjs(?=["\s]|$)/;
+
+/**
+ * Pick the Cursor SDK workers that no live brain owns.
+ *
+ * A worker with the owner marker is an orphan only when that owner is dead.
+ * A live owner may be another brain (a dev brain next to the installed one),
+ * so its workers are never touched.
+ *
+ * A worker from a build before the marker is an orphan only on POSIX with
+ * ppid 1: it was reparented to init, so no brain holds its IPC channel, and
+ * the `cursorSdkWorker.cjs` script name is ADE's alone. Windows keeps a dead
+ * parent's pid as the ppid and recycles pids fast, so an unmarked worker there
+ * cannot be judged safely and is left alone.
+ */
+export function selectOrphanedCursorSdkWorkers(
+  rows: readonly CursorSdkWorkerProcessRow[],
+  args: { selfPid: number; platform: NodeJS.Platform; isAlive: (pid: number) => boolean },
+): Array<{ pid: number; ppid: number; ownerPid: number | null }> {
+  const orphans: Array<{ pid: number; ppid: number; ownerPid: number | null }> = [];
+  for (const row of rows) {
+    if (row.pid === args.selfPid) continue;
+    if (!CURSOR_SDK_WORKER_SCRIPT_PATTERN.test(row.command)) continue;
+    const ownerPid = readCursorSdkOwnerPid(row.command);
+    const orphaned = ownerPid != null
+      ? ownerPid !== args.selfPid && !args.isAlive(ownerPid)
+      : args.platform !== "win32" && row.ppid === 1;
+    if (orphaned) orphans.push({ pid: row.pid, ppid: row.ppid, ownerPid });
+  }
+  return orphans;
+}
+
+/** Parses `ps -axo pid=,ppid=,command=` or the tab-separated Windows query below. */
+export function parseCursorSdkWorkerProcessRows(stdout: string): CursorSdkWorkerProcessRow[] {
+  const rows: CursorSdkWorkerProcessRow[] = [];
+  for (const line of stdout.split(/\r?\n/)) {
+    const match = line.match(/^\s*(\d+)[\t ]+(\d+)[\t ]+(.*)$/);
+    if (!match) continue;
+    rows.push({ pid: Number(match[1]), ppid: Number(match[2]), command: match[3] ?? "" });
+  }
+  return rows;
+}
+
+function execFileStdout(command: string, args: string[]): Promise<string> {
+  return new Promise((resolve) => {
+    execFile(
+      command,
+      args,
+      { encoding: "utf8", windowsHide: true, timeout: 15_000, maxBuffer: 50 * 1024 * 1024 },
+      (error, stdout) => resolve(error ? "" : String(stdout ?? "")),
+    );
+  });
+}
+
+/**
+ * Lists the processes whose command line names the worker script.
+ *
+ * Async on purpose: the brain calls this at startup, and a synchronous
+ * PowerShell CIM query can block its event loop for seconds on Windows.
+ */
+async function listCursorSdkWorkerProcesses(platform: NodeJS.Platform): Promise<CursorSdkWorkerProcessRow[]> {
+  if (platform === "win32") {
+    // `Get-CimInstance`, not the deprecated wmic. Tab-separated because a
+    // Windows command line starts with a quoted, space-bearing path.
+    const script = "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue"
+      + " | Where-Object { $_.CommandLine -like '*cursorSdkWorker*' }"
+      + " | ForEach-Object { \"$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.CommandLine)\" }";
+    const stdout = await execFileStdout(
+      windowsPowerShellCommand(platform),
+      ["-NoProfile", "-NonInteractive", "-Command", script],
+    );
+    return parseCursorSdkWorkerProcessRows(stdout);
+  }
+  const stdout = await execFileStdout("ps", ["-ww", "-axo", "pid=,ppid=,command="]);
+  return parseCursorSdkWorkerProcessRows(stdout)
+    .filter((row) => row.command.includes("cursorSdkWorker"));
+}
+
+async function waitForCursorSdkOrphanExit(
+  pid: number,
+  isAlive: (pid: number) => boolean,
+  waitMs: (ms: number) => Promise<void>,
+): Promise<boolean> {
+  const attempts = Math.max(1, Math.ceil(CURSOR_SDK_ORPHAN_TERM_GRACE_MS / CURSOR_SDK_ORPHAN_POLL_MS));
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (!isAlive(pid)) return true;
+    await waitMs(CURSOR_SDK_ORPHAN_POLL_MS);
+  }
+  return !isAlive(pid);
+}
+
+let cursorSdkOrphanSweep: Promise<CursorSdkOrphanSweepResult> | null = null;
+
+/**
+ * Terminates Cursor SDK workers whose brain is gone.
+ *
+ * A brain that dies without unwinding (the loop watchdog SIGKILLs it) cannot
+ * dispose its workers. Current workers exit on their own when the IPC channel
+ * closes, but a worker from an older build spins at 100% CPU and ignores
+ * SIGTERM. So POSIX escalates SIGTERM to SIGKILL, and Windows uses
+ * `taskkill /T /F` on both passes.
+ *
+ * Runs once per process unless `force` is set, like
+ * `recoverManagedOpenCodeOrphans`.
+ */
+export function recoverCursorSdkWorkerOrphans(args: {
+  logger?: Logger;
+  force?: boolean;
+  deps?: CursorSdkOrphanSweepDeps;
+} = {}): Promise<CursorSdkOrphanSweepResult> {
+  if (cursorSdkOrphanSweep && !args.force) return cursorSdkOrphanSweep;
+  const deps = args.deps ?? {};
+  const platform = deps.platform ?? process.platform;
+  const isAlive = deps.isAlive ?? processIsAlive;
+  const waitMs = deps.waitMs ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const sweep = (async (): Promise<CursorSdkOrphanSweepResult> => {
+    const listProcesses = deps.listProcesses ?? (() => listCursorSdkWorkerProcesses(platform));
+    const selfPid = deps.selfPid ?? process.pid;
+    const findOrphans = async () => selectOrphanedCursorSdkWorkers(await listProcesses(), {
+      selfPid,
+      platform,
+      isAlive,
+    });
+    // Before a second, harder kill, confirm the pid still names the same
+    // orphan. A pid freed during the grace can be reused, fast on Windows.
+    const stillOrphaned = async (pid: number): Promise<boolean> => (
+      (await findOrphans()).some((candidate) => candidate.pid === pid)
+    );
+    const orphans = await findOrphans();
+    const recoveredPids: number[] = [];
+    const failedPids: number[] = [];
+    for (const orphan of orphans) {
+      let exited: boolean;
+      if (platform === "win32") {
+        const killTree = deps.killTree ?? ((pid: number) => killWindowsProcessTree(pid));
+        killTree(orphan.pid);
+        exited = await waitForCursorSdkOrphanExit(orphan.pid, isAlive, waitMs);
+        if (!exited && await stillOrphaned(orphan.pid)) {
+          killTree(orphan.pid);
+          exited = await waitForCursorSdkOrphanExit(orphan.pid, isAlive, waitMs);
+        }
+      } else {
+        const kill = deps.kill ?? ((pid: number, signal: NodeJS.Signals) => {
+          try {
+            process.kill(pid, signal);
+          } catch {
+            // Already gone, or not ours to signal.
+          }
+        });
+        kill(orphan.pid, "SIGTERM");
+        exited = await waitForCursorSdkOrphanExit(orphan.pid, isAlive, waitMs);
+        if (!exited && await stillOrphaned(orphan.pid)) {
+          // An older worker in the send loop never runs its SIGTERM handler.
+          kill(orphan.pid, "SIGKILL");
+          exited = await waitForCursorSdkOrphanExit(orphan.pid, isAlive, waitMs);
+        }
+      }
+      (exited ? recoveredPids : failedPids).push(orphan.pid);
+      args.logger?.warn(
+        exited ? "agent_chat.cursor_sdk_worker_orphan_recovered" : "agent_chat.cursor_sdk_worker_orphan_recovery_failed",
+        { pid: orphan.pid, ppid: orphan.ppid, ownerPid: orphan.ownerPid },
+      );
+    }
+    return { recoveredPids, failedPids };
+  })();
+  cursorSdkOrphanSweep = sweep;
+  return sweep;
 }

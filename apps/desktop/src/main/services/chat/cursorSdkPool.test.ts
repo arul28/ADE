@@ -12,18 +12,28 @@ import {
   buildCursorSdkWorkerEnv,
   cleanupCursorSdkRuntimePaths,
   CURSOR_SDK_REPLACE_WAIT_MS,
+  disposeAllCursorSdkConnections,
   isCursorSdkPooledAlive,
   MAX_CURSOR_SDK_SOCKET_PATH_BYTES,
+  parseCursorSdkWorkerProcessRows,
   poisonCursorSdkConnection,
+  recoverCursorSdkWorkerOrphans,
   releaseCursorSdkConnection,
   runCursorSdkLocalPrompt,
   releaseCursorSdkConnectionAfterIdle,
   resolveCursorSdkUserHome,
+  selectOrphanedCursorSdkWorkers,
 } from "./cursorSdkPool";
 import { CURSOR_SDK_ONESHOT_POLICY } from "./cursorSdkPolicy";
 import { buildPackagedRuntimeNodeModulePaths } from "../runtime/packagedNodePath";
 
 const forkMock = vi.hoisted(() => vi.fn());
+// The pool starts an orphan sweep before its first fork. Answer its process
+// listing with nothing, so no test ever lists or signals a real process.
+const execFileMock = vi.hoisted(() => vi.fn((...args: unknown[]) => {
+  const callback = args.at(-1) as (error: Error | null, stdout: string) => void;
+  callback(null, "");
+}));
 
 /** The guarded agent-mode policy every pool test acquires with. */
 const TEST_POLICY = {
@@ -37,6 +47,7 @@ const tempDirs: string[] = [];
 
 vi.mock("node:child_process", () => ({
   fork: (...args: unknown[]) => forkMock(...args),
+  execFile: (...args: unknown[]) => execFileMock(...args),
 }));
 
 class FakeSdkChild extends EventEmitter {
@@ -1426,5 +1437,169 @@ describe("Cursor SDK pool paths", () => {
       sessionId: "session-1",
       policy: { ...TEST_POLICY },
     })).rejects.toThrow(/NGHTTP2_ENHANCE_YOUR_CALM/);
+  });
+});
+
+describe("Cursor SDK worker orphan guard", () => {
+  const WORKER = "/Applications/ADE.app/Contents/Resources/ade-cli/cursorSdkWorker.cjs";
+
+  it("puts the owner pid in the worker argv", async () => {
+    const child = new FakeSdkChild();
+    forkMock.mockReturnValue(child);
+    const poolKey = `test-owner-arg:${Date.now()}:${Math.random()}`;
+    const acquired = await acquireCursorSdkConnection({
+      poolKey,
+      projectRoot: path.join(os.tmpdir(), "ade-project"),
+      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
+      modelSdkId: "cursor-model",
+      sessionId: "session-1",
+      policy: { ...TEST_POLICY },
+    });
+
+    expect(forkMock.mock.calls[0]?.[1]).toEqual([`--ade-owner-pid=${process.pid}`]);
+    releaseCursorSdkConnection(poolKey, acquired.generation);
+  });
+
+  it("releases the shared one-shot workers, which no session owns", async () => {
+    const child = new OneShotSdkChild();
+    const replacement = new OneShotSdkChild();
+    forkMock.mockReturnValueOnce(child).mockReturnValueOnce(replacement);
+    const workspacePath = path.join(os.tmpdir(), `ade-oneshot-dispose-all-${Date.now()}-${Math.random()}`);
+    // The prompt returns and leaves the worker warm for the idle window.
+    await runCursorSdkLocalPrompt(oneShotArgs(workspacePath));
+    expect(child.disposeCount).toBe(0);
+
+    await disposeAllCursorSdkConnections();
+
+    expect(child.disposeCount).toBe(1);
+    expect(child.exitCode).toBe(0);
+    // The warm entry is gone, so the next one-shot forks a fresh worker.
+    await runCursorSdkLocalPrompt(oneShotArgs(workspacePath));
+    expect(forkMock).toHaveBeenCalledTimes(2);
+    await disposeAllCursorSdkConnections();
+  });
+
+  it("selects only workers whose owner is dead", () => {
+    const alive = new Set([100, 200]);
+    const rows = [
+      { pid: 11, ppid: 100, command: `node ${WORKER} --ade-owner-pid=100` },
+      { pid: 12, ppid: 1, command: `node ${WORKER} --ade-owner-pid=300` },
+      { pid: 13, ppid: 200, command: `node ${WORKER} --ade-owner-pid=200` },
+      { pid: 14, ppid: 1, command: `node ${WORKER} --ade-owner-pid=500` },
+      { pid: 15, ppid: 1, command: "node /usr/local/bin/some-other-worker.cjs --ade-owner-pid=300" },
+    ];
+
+    const selected = selectOrphanedCursorSdkWorkers(rows, {
+      selfPid: 500,
+      platform: "darwin",
+      isAlive: (pid) => alive.has(pid),
+    });
+
+    // 11 and 13 have live owners (13 may be another brain). 14 is owned by
+    // this process. 15 is not a Cursor worker.
+    expect(selected).toEqual([{ pid: 12, ppid: 1, ownerPid: 300 }]);
+  });
+
+  it("treats an unmarked worker as orphaned only when POSIX reparented it to init", () => {
+    const rows = [
+      { pid: 21, ppid: 1, command: `node ${WORKER}` },
+      { pid: 22, ppid: 900, command: `node ${WORKER}` },
+    ];
+    const isAlive = () => true;
+
+    expect(selectOrphanedCursorSdkWorkers(rows, { selfPid: 1, platform: "linux", isAlive }).map((row) => row.pid))
+      .toEqual([21]);
+    // Windows keeps a dead parent's pid as the ppid, so an unmarked worker
+    // cannot be judged there.
+    expect(selectOrphanedCursorSdkWorkers(rows, { selfPid: 1, platform: "win32", isAlive })).toEqual([]);
+  });
+
+  it("parses POSIX ps rows and the tab-separated Windows query", () => {
+    expect(parseCursorSdkWorkerProcessRows(`  41   1 node ${WORKER} --ade-owner-pid=7\n`)).toEqual([
+      { pid: 41, ppid: 1, command: `node ${WORKER} --ade-owner-pid=7` },
+    ]);
+    const windowsLine = "42\t7\t\"C:\\Program Files\\ADE\\ADE.exe\" \"C:\\Program Files\\ADE\\resources\\ade-cli\\cursorSdkWorker.cjs\" --ade-owner-pid=7\r\n";
+    const [row] = parseCursorSdkWorkerProcessRows(windowsLine);
+    expect(row).toMatchObject({ pid: 42, ppid: 7 });
+    expect(selectOrphanedCursorSdkWorkers([row!], { selfPid: 1, platform: "win32", isAlive: () => false }))
+      .toEqual([{ pid: 42, ppid: 7, ownerPid: 7 }]);
+  });
+
+  it("uses a forced tree kill on Windows and never a POSIX signal", async () => {
+    const running = new Set([31]);
+    const killTree = vi.fn((pid: number) => {
+      running.delete(pid);
+      return true;
+    });
+    const kill = vi.fn();
+
+    const result = await recoverCursorSdkWorkerOrphans({
+      force: true,
+      deps: {
+        platform: "win32",
+        selfPid: 1,
+        listProcesses: async () => [
+          { pid: 31, ppid: 30, command: `"C:\\ADE\\ADE.exe" "C:\\ADE\\cursorSdkWorker.cjs" --ade-owner-pid=30` },
+          { pid: 32, ppid: 40, command: `"C:\\ADE\\ADE.exe" "C:\\ADE\\cursorSdkWorker.cjs" --ade-owner-pid=40` },
+        ],
+        isAlive: (pid) => pid === 40 || running.has(pid),
+        killTree,
+        kill,
+        waitMs: async () => {},
+      },
+    });
+
+    expect(killTree).toHaveBeenCalledTimes(1);
+    expect(killTree).toHaveBeenCalledWith(31);
+    expect(kill).not.toHaveBeenCalled();
+    expect(result).toEqual({ recoveredPids: [31], failedPids: [] });
+  });
+
+  it("escalates SIGTERM to SIGKILL for an orphan that ignores SIGTERM", async () => {
+    const running = new Set([51]);
+    const kill = vi.fn((pid: number, signal: NodeJS.Signals) => {
+      if (signal === "SIGKILL") running.delete(pid);
+    });
+    const listProcesses = vi.fn(async () => (
+      running.has(51) ? [{ pid: 51, ppid: 1, command: `node ${WORKER} --ade-owner-pid=50` }] : []
+    ));
+
+    const result = await recoverCursorSdkWorkerOrphans({
+      force: true,
+      deps: {
+        platform: "darwin",
+        selfPid: 1,
+        listProcesses,
+        isAlive: (pid) => running.has(pid),
+        kill,
+        waitMs: async () => {},
+      },
+    });
+
+    expect(kill.mock.calls).toEqual([[51, "SIGTERM"], [51, "SIGKILL"]]);
+    expect(result).toEqual({ recoveredPids: [51], failedPids: [] });
+  });
+
+  it("does not escalate against a pid that no longer names the orphan", async () => {
+    // The orphan survives SIGTERM, but by the recheck the pid belongs to
+    // something else, so SIGKILL must not go out.
+    let listed = 0;
+    const kill = vi.fn();
+    const result = await recoverCursorSdkWorkerOrphans({
+      force: true,
+      deps: {
+        platform: "linux",
+        selfPid: 1,
+        listProcesses: async () => (
+          listed++ === 0 ? [{ pid: 61, ppid: 1, command: `node ${WORKER} --ade-owner-pid=60` }] : []
+        ),
+        isAlive: (pid) => pid === 61,
+        kill,
+        waitMs: async () => {},
+      },
+    });
+
+    expect(kill.mock.calls).toEqual([[61, "SIGTERM"]]);
+    expect(result).toEqual({ recoveredPids: [], failedPids: [61] });
   });
 });

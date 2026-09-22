@@ -157,6 +157,7 @@ import { createAppCommandSender } from "./appCommandDispatch";
 import { createAiIntegrationService } from "./services/ai/aiIntegrationService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "./services/ai/cliExecutableResolver";
 import { createAgentChatService, writeSessionLinearIssueContextFile } from "./services/chat/agentChatService";
+import { disposeAllCursorSdkConnections } from "./services/chat/cursorSdkPool";
 import { createChatRuntimeBudget } from "./services/chat/chatRuntimeBudget";
 import { createGithubService } from "./services/github/githubService";
 import { createProjectScaffoldService } from "./services/projects/projectScaffoldService";
@@ -7069,6 +7070,10 @@ app.whenReady().then(async () => {
     }
 
     shutdownOpenCodeServersBestEffort();
+    // Chat disposal above leaves the shared Cursor one-shot workers, which
+    // belong to no session. The IPC dispose goes out now; the workers also
+    // exit on their own once this process is gone.
+    void disposeAllCursorSdkConnections().catch(() => {});
     terminateLoginImportWorkersBestEffort();
   };
 
