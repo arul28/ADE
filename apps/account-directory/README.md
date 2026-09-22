@@ -14,11 +14,15 @@ The Worker also hosts ADE's device-authorization bridge for headless sign-in:
   `machine_name`, it says "A computer named … asked to sign in to ADE" and tells
   the reader to continue only if they started it there, because the name is
   the client's claim. Without one, it says "ADE on your computer".
-- `POST /device` confirms the code and redirects through Clerk OAuth + PKCE.
+- `POST /device` confirms the code and opens Clerk OAuth + PKCE.
   It accepts only a same-origin form POST: the `Origin` must match, or, when a
   browser sends no `Origin` or the text `null`, `Sec-Fetch-Site` must be
   `same-origin`. The page is served with `referrer-policy: same-origin`, because
-  under `no-referrer` a browser sends `Origin: null` for its own form.
+  under `no-referrer` a browser sends `Origin: null` for its own form. A
+  confirmed POST answers with a small page that opens the Clerk sign-in (a
+  meta refresh and a link), not a 302: browsers apply the page's
+  `form-action 'self'` to every redirect after a form POST, and Clerk's
+  authorize URL redirects on through more hosts.
 - `GET /device/callback` exchanges the Clerk code and holds the token pair briefly.
 - `POST /device/token` lets the initiating daemon redeem the pair once, and returns
   a `pairing_grant` alongside it when the request declared a `machine_key`.

@@ -94,17 +94,6 @@ function html(value: string, status = 200): Response {
   });
 }
 
-function redirect(location: string): Response {
-  return new Response(null, {
-    status: 302,
-    headers: {
-      "cache-control": "no-store",
-      location,
-      "referrer-policy": "no-referrer",
-    },
-  });
-}
-
 /**
  * The computer name a client sent with `/device/code`. Display text only: it
  * is cleaned and cut to length rather than refused, so an odd name can never
@@ -182,12 +171,12 @@ function encodeQuery(entries: Array<[string, string]>): string {
   return entries.map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`).join("&");
 }
 
-function page(args: { title: string; body: string; status?: number }): Response {
+function page(args: { title: string; body: string; status?: number; head?: string }): Response {
   return html(`<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1">${args.head ?? ""}
     <title>${args.title}</title>
     <style>
       :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, sans-serif; }
@@ -198,6 +187,7 @@ function page(args: { title: string; body: string; status?: number }): Response 
       label { display: block; margin: 1.5rem 0 .5rem; font-weight: 600; }
       input { box-sizing: border-box; width: 100%; padding: .8rem; border: 1px solid #4d5058; border-radius: .5rem; background: #101114; color: inherit; font: inherit; letter-spacing: .12em; text-transform: uppercase; }
       button { width: 100%; margin-top: 1rem; padding: .8rem; border: 0; border-radius: .5rem; background: #f5f5f5; color: #101114; font: inherit; font-weight: 700; cursor: pointer; }
+      a { color: #f5f5f5; }
     </style>
   </head>
   <body><main>${args.body}</main></body>
@@ -259,6 +249,25 @@ function approvalFormForQuery(rawUserCode: string | null, machineName: string | 
     if (userCode) return confirmationPage(userCode, machineName);
   }
   return approvalForm();
+}
+
+/**
+ * The answer to a confirmed POST: a page that opens the Clerk sign-in.
+ *
+ * Not a 302. Browsers apply the page's `form-action 'self'` to every redirect
+ * that follows a form POST, and Clerk's authorize URL redirects on through
+ * more hosts. A 302 there was blocked in Chromium, and Continue left the
+ * person on the same page. A meta refresh starts a new navigation, which
+ * `form-action` does not cover, and the link is there if it does not fire.
+ */
+function continueToSignIn(authorizeUrl: string): Response {
+  const href = escapeHtml(authorizeUrl);
+  return page({
+    title: "Opening sign-in",
+    head: `\n    <meta http-equiv="refresh" content="0;url=${href}">`,
+    body: `<h1>Opening sign-in</h1>
+      <p>If nothing happens, <a href="${href}">open the sign-in page</a>.</p>`,
+  });
 }
 
 function escapeHtml(value: string): string {
@@ -537,7 +546,7 @@ async function handleDeviceApproval(
     ["state", oauthState],
     ["scope", "openid profile email offline_access"],
   ])}`;
-  return redirect(authorizeUrl);
+  return continueToSignIn(authorizeUrl);
 }
 
 async function handleDeviceCallback(

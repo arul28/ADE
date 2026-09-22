@@ -3,6 +3,7 @@ import { handleRequest } from "../src/directory";
 import worker from "../src/index";
 import {
   deviceConfirmationRequest,
+  signInUrlFrom,
   ISSUER,
   makeEnv,
   mintToken,
@@ -54,8 +55,14 @@ describe("device authorization bridge", () => {
       env,
       { now: () => now },
     );
-    expect(approval.status).toBe(302);
-    const clerkAuthorizeUrl = new URL(approval.headers.get("location")!);
+    // A page that opens Clerk, not a 302: browsers apply `form-action 'self'`
+    // to redirects after a form POST, and Chromium blocked the old 302.
+    expect(approval.status).toBe(200);
+    expect(approval.headers.get("location")).toBeNull();
+    expect(approval.headers.get("content-security-policy")).toContain("form-action 'self';");
+    const approvalHtml = await approval.clone().text();
+    expect(approvalHtml).toContain('<meta http-equiv="refresh" content="0;url=');
+    const clerkAuthorizeUrl = await signInUrlFrom(approval);
     expect(clerkAuthorizeUrl.origin + clerkAuthorizeUrl.pathname).toBe(`${ISSUER}/oauth/authorize`);
     expect(clerkAuthorizeUrl.searchParams.get("client_id")).toBe(OAUTH_CLIENT_ID);
     expect(clerkAuthorizeUrl.searchParams.get("code_challenge_method")).toBe("S256");
@@ -169,7 +176,7 @@ describe("device authorization bridge", () => {
       env,
       { now: () => now },
     );
-    const state = new URL(approval.headers.get("location")!).searchParams.get("state")!;
+    const state = (await signInUrlFrom(approval)).searchParams.get("state")!;
     const callbackUrl = `https://directory.test/device/callback?code=one-time-code&state=${encodeURIComponent(state)}`;
     env.DB.synchronizeOAuthStateReads(2);
 
@@ -240,7 +247,7 @@ describe("device authorization bridge", () => {
       { now: () => now },
     );
 
-    expect(confirmed.status).toBe(302);
+    expect((await signInUrlFrom(confirmed)).pathname).toBe("/oauth/authorize");
     expect(env.DB.deviceRows[0]).toMatchObject({ code_verifier: expect.any(String) });
   });
 
@@ -284,7 +291,7 @@ describe("device authorization bridge", () => {
       { now: () => now },
     );
 
-    expect(confirmed.status).toBe(302);
+    expect((await signInUrlFrom(confirmed)).pathname).toBe("/oauth/authorize");
     expect(env.DB.deviceRows[0]).toMatchObject({ code_verifier: expect.any(String) });
   });
 
@@ -402,7 +409,7 @@ describe("device authorization bridge", () => {
       env,
       { now: () => now },
     );
-    expect(confirmed.status).toBe(302);
+    expect((await signInUrlFrom(confirmed)).pathname).toBe("/oauth/authorize");
     expect(env.DB.deviceRows[0]).toMatchObject({
       status: "pending",
       code_verifier: expect.any(String),
