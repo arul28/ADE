@@ -13,9 +13,18 @@ export type PairedRuntimeRpcDataPayload = {
   data: string;
 };
 
+/**
+ * The host closed an RPC channel because a reply would pass its send budget.
+ * The host is alive and the next call opens a new channel, so a client must
+ * not report the machine as unreachable for it.
+ */
+export const PAIRED_RUNTIME_RPC_OVER_BUDGET_CODE = "rpc_over_budget";
+
 export type PairedRuntimeRpcClosePayload = {
   channelId: string;
   reason?: string | null;
+  /** Machine-readable cause. Absent on hosts older than the code. */
+  code?: typeof PAIRED_RUNTIME_RPC_OVER_BUDGET_CODE | null;
 };
 
 export type PairedRuntimeForwardOpenPayload = {

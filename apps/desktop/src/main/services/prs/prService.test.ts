@@ -2744,6 +2744,7 @@ describe("prService.ingestGithubWebhook", () => {
     });
     const events: unknown[] = [];
     service.setEventEmitter((event) => events.push(event));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 
     const result = await service.ingestGithubWebhook({
       eventName: "pull_request",
@@ -2799,10 +2800,57 @@ describe("prService.ingestGithubWebhook", () => {
       expect.stringContaining("insert into github_pr_projections"),
       expect.arrayContaining([REPO.owner, REPO.name, 90, "PR_webhook_90", "After webhook", "draft"]),
     );
+    // The event waits for the burst window, then carries the new row.
+    expect(events.filter((event: any) => event.type === "prs-updated")).toHaveLength(0);
+    vi.runOnlyPendingTimers();
+    vi.useRealTimers();
     expect(events).toContainEqual(expect.objectContaining({
       type: "prs-updated",
       prs: [expect.objectContaining({ title: "After webhook", state: "draft" })],
     }));
+  });
+
+  /**
+   * A CI run delivers dozens of `check_run` webhooks in a few seconds. One
+   * full-list `prs-updated` for each put megabytes on the runtime event stream
+   * and made a remote desktop's RPC channel close again and again.
+   */
+  it("folds a burst of check_run webhooks into one PR update", async () => {
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [makePrRow({ github_pr_number: 90, head_branch: "my-feature" })]);
+    const { service } = buildService({ db, laneService: makeLaneService([]) });
+    const events: unknown[] = [];
+    service.setEventEmitter((event) => events.push(event));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      for (let index = 0; index < 20; index += 1) {
+        const result = await service.ingestGithubWebhook({
+          eventName: "check_run",
+          deliveryId: `check-run-${index}`,
+          payload: {
+            action: "completed",
+            repository: {
+              full_name: `${REPO.owner}/${REPO.name}`,
+              owner: { login: REPO.owner },
+              name: REPO.name,
+            },
+            check_run: {
+              pull_requests: [{
+                number: 90,
+                head: { ref: "my-feature", repo: { owner: { login: REPO.owner }, name: REPO.name } },
+                base: { ref: "main", repo: { owner: { login: REPO.owner }, name: REPO.name } },
+              }],
+            },
+          },
+        });
+        expect(result.linkedPrIds).toEqual(["pr-row-1"]);
+      }
+      expect(events.filter((event: any) => event.type === "prs-updated")).toHaveLength(0);
+      vi.runOnlyPendingTimers();
+      expect(events.filter((event: any) => event.type === "prs-updated")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("reconciles and transactionally replaces the whole GitHub stack after a stacked webhook", async () => {
@@ -3223,6 +3271,7 @@ describe("prService.ingestGithubWebhook", () => {
     const { service } = buildService({ db, laneService: makeLaneService([]) });
     const events: unknown[] = [];
     service.setEventEmitter((event) => events.push(event));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 
     const result = await service.ingestGithubWebhook({
       eventName: "pull_request",
@@ -3248,6 +3297,8 @@ describe("prService.ingestGithubWebhook", () => {
       expect.stringContaining("insert into github_pr_projections"),
       expect.arrayContaining([REPO.owner, REPO.name, 404]),
     );
+    vi.runOnlyPendingTimers();
+    vi.useRealTimers();
     expect(events).toContainEqual(expect.objectContaining({
       type: "prs-updated",
       prs: [],

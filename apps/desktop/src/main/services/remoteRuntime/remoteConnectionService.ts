@@ -63,6 +63,7 @@ import {
 } from "./discoveredPairedRuntime";
 import { runRemoteRuntimeDoctor } from "./connectionDoctor";
 import {
+  isPairedRuntimeRpcOverBudgetError,
   PairedRuntimeRelayAuthRequiredError,
   PairedRuntimeSshTrustRequiredError,
   PairedRuntimeTransportUnavailableError,
@@ -265,6 +266,10 @@ export class RemoteConnectionService {
     (snapshot: RemoteRuntimeConnectionSnapshot) => void
   >();
   private autoconnectTimer: NodeJS.Timeout | null = null;
+  private readonly inFlightStreamEvents = new Map<
+    string,
+    Promise<RemoteRuntimeStreamEventsResult>
+  >();
 
   constructor(
     private readonly registry: RemoteTargetRegistry,
@@ -277,6 +282,9 @@ export class RemoteConnectionService {
       if (current?.state !== "connected" && current?.state !== "connecting") {
         return;
       }
+      // The host answered and refused one reply as too large. The next call
+      // opens a new channel, so the machine is still reachable.
+      if (isPairedRuntimeRpcOverBudgetError(error)) return;
       this.mergeStatus(targetId, {
         state: "error",
         ...errorStatusPatch(error),
@@ -1066,10 +1074,37 @@ export class RemoteConnectionService {
     }
   }
 
-  async streamEvents(
+  /**
+   * About eight event pumps (chat, PTY, PR, browser and others) poll one
+   * binding. When two ask for the same window at the same time, they share one
+   * read, so the host does not send the same reply twice on one socket.
+   */
+  streamEvents(
     targetId: string,
     projectId: string,
     request: RemoteRuntimeStreamEventsRequest = {},
+  ): Promise<RemoteRuntimeStreamEventsResult> {
+    const key = JSON.stringify([
+      targetId,
+      projectId,
+      request.cursor ?? null,
+      request.limit ?? null,
+      request.category ?? null,
+      request.replay ?? null,
+    ]);
+    const inFlight = this.inFlightStreamEvents.get(key);
+    if (inFlight) return inFlight;
+    const read = this.readStreamEvents(targetId, projectId, request).finally(() => {
+      if (this.inFlightStreamEvents.get(key) === read) this.inFlightStreamEvents.delete(key);
+    });
+    this.inFlightStreamEvents.set(key, read);
+    return read;
+  }
+
+  private async readStreamEvents(
+    targetId: string,
+    projectId: string,
+    request: RemoteRuntimeStreamEventsRequest,
   ): Promise<RemoteRuntimeStreamEventsResult> {
     const target = await this.requireTargetForImplicitUse(targetId);
     try {
@@ -1339,6 +1374,10 @@ export class RemoteConnectionService {
    */
   private markCallFailure(targetId: string, error: unknown): void {
     if (!isImplicitConnectionFailure(error)) return;
+    // One oversized reply closed one RPC channel. The host is alive, so the
+    // dot stays green and no reconnect backoff starts; the caller's own retry
+    // opens a new channel.
+    if (isPairedRuntimeRpcOverBudgetError(error)) return;
     this.mergeStatus(targetId, {
       state: "error",
       ...errorStatusPatch(

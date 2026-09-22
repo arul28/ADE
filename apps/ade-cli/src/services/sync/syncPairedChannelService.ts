@@ -8,6 +8,7 @@ import type {
   PairedRuntimeRpcOpenPayload,
   PairedRuntimeSyncEnvelope,
 } from "../../../../desktop/src/shared/types/pairedRuntime";
+import { PAIRED_RUNTIME_RPC_OVER_BUDGET_CODE } from "../../../../desktop/src/shared/types/pairedRuntime";
 import {
   startJsonRpcServer,
   type JsonRpcHandler,
@@ -43,6 +44,64 @@ export type SyncRuntimeRpcHandler = JsonRpcHandler & {
 };
 
 export type SyncRuntimeRpcHandlerFactory = () => SyncRuntimeRpcHandler;
+
+// Enough for every call a desktop has in flight; a channel whose replies never
+// arrive cannot grow the map without bound.
+const MAX_TRACKED_RPC_REQUESTS = 512;
+// A reply's id comes right after `"jsonrpc":"2.0",`, and a notification's
+// method at the same place. A short head is enough and keeps large replies
+// from being scanned.
+const RPC_ENVELOPE_HEAD_BYTES = 256;
+
+function rpcEnvelopeHead(bytes: Buffer): string {
+  return bytes.subarray(0, RPC_ENVELOPE_HEAD_BYTES).toString("utf8");
+}
+
+function rpcRequestIdKey(id: unknown): string | null {
+  if (typeof id === "number" && Number.isFinite(id)) return String(id);
+  if (typeof id === "string") return JSON.stringify(id);
+  return null;
+}
+
+/** The id of the JSON-RPC reply in `bytes`, in the key form of `rpcRequestIdKey`. */
+function readRpcReplyId(bytes: Buffer): string | null {
+  const match = /^(?:Content-Length: \d+\r\n\r\n)?\{"jsonrpc":"2\.0","id":(-?\d+(?:\.\d+)?|"(?:[^"\\]|\\.){0,128}")/
+    .exec(rpcEnvelopeHead(bytes));
+  return match?.[1] ?? null;
+}
+
+function readRpcNotificationMethod(bytes: Buffer): string | null {
+  return /^(?:Content-Length: \d+\r\n\r\n)?\{"jsonrpc":"2\.0","method":"([^"\\]{1,128})"/
+    .exec(rpcEnvelopeHead(bytes))?.[1] ?? null;
+}
+
+/**
+ * Records `method` (and the ADE action name, when there is one) for each
+ * request id, so a refused reply can be named in the host log.
+ */
+function trackRpcRequestLabels(
+  handler: SyncRuntimeRpcHandler,
+  labels: Map<string, string>,
+): SyncRuntimeRpcHandler {
+  const tracked = (async (request) => {
+    const key = rpcRequestIdKey(request.id);
+    if (key != null) {
+      const params = request.params as Record<string, unknown> | undefined;
+      const name = typeof params?.name === "string" ? params.name : null;
+      const method = request.method ?? "unknown";
+      labels.set(key, name ? `${method} ${name}` : method);
+      while (labels.size > MAX_TRACKED_RPC_REQUESTS) {
+        const oldest = labels.keys().next().value;
+        if (oldest === undefined) break;
+        labels.delete(oldest);
+      }
+    }
+    return await handler(request);
+  }) as SyncRuntimeRpcHandler;
+  if (handler.dispose) tracked.dispose = () => handler.dispose?.();
+  if (handler.setNotifier) tracked.setNotifier = (notify) => handler.setNotifier?.(notify);
+  return tracked;
+}
 
 let configuredRuntimeRpcHandlerFactory: SyncRuntimeRpcHandlerFactory | null = null;
 
@@ -186,8 +245,13 @@ export function createSyncPairedChannelService<TPeer extends object>(
     }
   };
 
-  const sendRpcClose = (peer: TPeer, channelId: string, reason: string): void => {
-    args.send(peer, "rpc_close", { channelId, reason });
+  const sendRpcClose = (
+    peer: TPeer,
+    channelId: string,
+    reason: string,
+    code?: PairedRuntimeRpcClosePayload["code"],
+  ): void => {
+    args.send(peer, "rpc_close", { channelId, reason, ...(code ? { code } : {}) });
   };
 
   const sendForwardClose = (peer: TPeer, forwardId: string, reason: string): void => {
@@ -199,6 +263,7 @@ export function createSyncPairedChannelService<TPeer extends object>(
     channelId: string,
     reason: string,
     notify: boolean,
+    code?: PairedRuntimeRpcClosePayload["code"],
   ): void => {
     const channels = peers.get(peer);
     const channel = channels?.rpc.get(channelId);
@@ -217,7 +282,7 @@ export function createSyncPairedChannelService<TPeer extends object>(
         error: error instanceof Error ? error.message : String(error),
       });
     }
-    if (notify) sendRpcClose(peer, channelId, closeReason(reason, "RPC channel closed."));
+    if (notify) sendRpcClose(peer, channelId, closeReason(reason, "RPC channel closed."), code);
     dropEmptyPeer(peer);
   };
 
@@ -363,6 +428,35 @@ export function createSyncPairedChannelService<TPeer extends object>(
     closeRpc(peer, channelId, "RPC channel replaced.", true);
 
     let receive: ((chunk: Buffer) => void) | null = null;
+    // Request id to method, so a reply the host refuses can be named in the
+    // log. Only replies are refused by size in practice, and a reply carries
+    // only its id.
+    const pendingRequestLabels = new Map<string, string>();
+    const closeOverBudget = (
+      bytes: Buffer,
+      sentBytes: number,
+      extraBytes: number,
+    ): void => {
+      const requestId = readRpcReplyId(bytes);
+      const label = requestId != null ? pendingRequestLabels.get(requestId) : undefined;
+      if (requestId != null) pendingRequestLabels.delete(requestId);
+      args.logger.warn("sync_paired.rpc_channel_over_budget", {
+        channelId,
+        method: label ?? readRpcNotificationMethod(bytes) ?? null,
+        replyBytes: bytes.byteLength,
+        sentBytes,
+        nextWriteBytes: extraBytes,
+        bufferedBytes: args.getBufferedAmount(peer),
+        budgetBytes: rpcBackpressureBytes,
+      });
+      closeRpc(
+        peer,
+        channelId,
+        "Runtime RPC channel fell behind the sync connection.",
+        true,
+        PAIRED_RUNTIME_RPC_OVER_BUDGET_CODE,
+      );
+    };
     const transport: JsonRpcTransport = {
       onData(callback) {
         receive = callback;
@@ -389,19 +483,24 @@ export function createSyncPairedChannelService<TPeer extends object>(
         // be caught before the rest of it is written. Only this channel is
         // closed: forwards belong to the peer, not to this channel, and other
         // lanes' live previews must not die because one response ran long.
+        //
+        // The close carries `rpc_over_budget`, so the client knows the host is
+        // alive and does not report the machine as unreachable.
         const overBudget = (extraBytes: number): boolean =>
           args.getBufferedAmount(peer) + extraBytes >= rpcBackpressureBytes;
         if (overBudget(bytes.byteLength)) {
-          closeRpc(peer, channelId, "Runtime RPC channel fell behind the sync connection.", true);
+          closeOverBudget(bytes, 0, bytes.byteLength);
           return;
         }
+        const replyId = readRpcReplyId(bytes);
+        if (replyId != null) pendingRequestLabels.delete(replyId);
         for (let offset = 0; offset < bytes.byteLength; offset += RPC_DATA_CHUNK_BYTES) {
           const chunk = bytes.subarray(
             offset,
             Math.min(bytes.byteLength, offset + RPC_DATA_CHUNK_BYTES),
           );
           if (offset > 0 && overBudget(chunk.byteLength)) {
-            closeRpc(peer, channelId, "Runtime RPC channel fell behind the sync connection.", true);
+            closeOverBudget(bytes, offset, chunk.byteLength);
             return;
           }
           if (!args.send(peer, "rpc_data", {
@@ -425,7 +524,7 @@ export function createSyncPairedChannelService<TPeer extends object>(
 
     let handler: SyncRuntimeRpcHandler;
     try {
-      handler = factory();
+      handler = trackRpcRequestLabels(factory(), pendingRequestLabels);
     } catch (error) {
       sendRpcClose(
         peer,

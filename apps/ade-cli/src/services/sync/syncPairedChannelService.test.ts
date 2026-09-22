@@ -1,7 +1,10 @@
 import { EventEmitter } from "node:events";
 import type net from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { PairedRuntimeSyncEnvelope } from "../../../../desktop/src/shared/types/pairedRuntime";
+import {
+  PAIRED_RUNTIME_RPC_OVER_BUDGET_CODE,
+  type PairedRuntimeSyncEnvelope,
+} from "../../../../desktop/src/shared/types/pairedRuntime";
 import {
   createSyncPairedChannelService,
   type SyncRuntimeRpcHandler,
@@ -104,8 +107,9 @@ function createHarness(options: {
   connectForward?: () => FakeForwardSocket;
 } = {}) {
   const sent: SentEnvelope[] = [];
+  const logger = { warn: vi.fn() };
   const service = createSyncPairedChannelService<Peer>({
-    logger: { warn: vi.fn() },
+    logger,
     createRpcHandler: options.createRpcHandler,
     getBufferedAmount: options.bufferedAmount ?? (() => 0),
     rpcBackpressureBytes: options.rpcBackpressureBytes,
@@ -120,7 +124,7 @@ function createHarness(options: {
       return true;
     },
   });
-  return { service, sent, peer: { id: "desktop" } };
+  return { service, sent, logger, peer: { id: "desktop" } };
 }
 
 function rpcText(sent: SentEnvelope[], channelId: string): string {
@@ -244,7 +248,7 @@ describe("createSyncPairedChannelService", () => {
     // 4001 the gate exists to prevent.
     const ceiling = 4 * 1024 * 1024;
     const big = "x".repeat(3 * 1024 * 1024);
-    const { service, sent, peer } = createHarness({
+    const { service, sent, peer, logger } = createHarness({
       createRpcHandler: () => (async () => ({ big })) as SyncRuntimeRpcHandler,
       // Comfortably under the ceiling on its own; over it once the response lands.
       bufferedAmount: () => 2 * 1024 * 1024,
@@ -254,8 +258,10 @@ describe("createSyncPairedChannelService", () => {
     await service.handleEnvelope(peer, "rpc_open", { channelId: "rpc-big" }, true, true);
     await service.handleEnvelope(peer, "rpc_data", {
       channelId: "rpc-big",
-      data: Buffer.from(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "read" })}\n`, "utf8")
-        .toString("base64"),
+      data: Buffer.from(
+        `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ade/actions/call", params: { name: "stream_events" } })}\n`,
+        "utf8",
+      ).toString("base64"),
     }, true, true);
 
     await waitFor(
@@ -263,10 +269,21 @@ describe("createSyncPairedChannelService", () => {
       "the RPC channel close",
     );
     expect(sent.some((envelope) => envelope.type === "rpc_data")).toBe(false);
+    // The close carries a code, so the client knows the host is alive.
     expect(sent.find((envelope) => envelope.type === "rpc_close")?.payload).toMatchObject({
       channelId: "rpc-big",
       reason: "Runtime RPC channel fell behind the sync connection.",
+      code: PAIRED_RUNTIME_RPC_OVER_BUDGET_CODE,
     });
+    // The host used to close for this reason and log nothing.
+    expect(logger.warn).toHaveBeenCalledWith("sync_paired.rpc_channel_over_budget", expect.objectContaining({
+      channelId: "rpc-big",
+      method: "ade/actions/call stream_events",
+      replyBytes: expect.any(Number),
+      budgetBytes: ceiling,
+    }));
+    const logged = logger.warn.mock.calls.find(([event]) => event === "sync_paired.rpc_channel_over_budget")?.[1];
+    expect(logged.replyBytes).toBeGreaterThan(big.length);
     service.dispose();
   });
 

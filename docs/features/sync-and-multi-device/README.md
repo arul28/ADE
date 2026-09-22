@@ -1143,7 +1143,14 @@ Runtime support files outside `services/sync/`:
   10,000 events / 16 MB total / 1 MB per event by default, emits live
   subscribers best-effort even for oversize events, and returns
   `eventEpoch`, `gap`, and `oldestCursor` from `drain()` so clients can
-  reset stale cursors when a daemon restarts or history was evicted.
+  reset stale cursors when a daemon restarts or history was evicted. One
+  `drain()` is one RPC reply, so it has a byte budget (1 MiB by default,
+  `DEFAULT_EVENT_BUFFER_DRAIN_MAX_BYTES`) as well as a count cap. It always
+  returns at least one event and sets `hasMore` when the budget stops it. A
+  `filter` option returns one category only; the cursor still moves past the
+  events it skipped. `stream_events` and the subscribe replay both drain
+  through it. Without the budget, 200 full-list PR events made an 11.5 MB
+  reply, and the host closed a remote desktop's RPC channel on every poll.
 - `apps/ade-cli/src/runtimeEventVolume.ts` — the one predicate for "this
   runtime event carries a video frame, not a state change"
   (`isHighVolumeRuntimeEvent`, currently App Control's `frame` events). App

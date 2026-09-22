@@ -5,9 +5,10 @@ import {
   sign,
 } from "node:crypto";
 import { WebSocket, type RawData } from "ws";
-import type {
-  DesktopPairedMachineCredentials,
-  PairedRuntimeHelloOkPayload,
+import {
+  PAIRED_RUNTIME_RPC_OVER_BUDGET_CODE,
+  type DesktopPairedMachineCredentials,
+  type PairedRuntimeHelloOkPayload,
 } from "../../../shared/types/pairedRuntime";
 import type {
   SyncEnvelope,
@@ -35,6 +36,7 @@ import type { RuntimeRpcTransport } from "./runtimeRpcClient";
 import {
   PairedRuntimeHelloRejectedError,
   PairedRuntimeRelayAuthRequiredError,
+  PairedRuntimeRpcOverBudgetError,
 } from "./pairedRuntimeErrors";
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
@@ -514,6 +516,17 @@ export async function openPairedSyncConnection(
   }
 }
 
+/**
+ * The host refused one reply as too large for its send budget. Hosts from
+ * before `PAIRED_RUNTIME_RPC_OVER_BUDGET_CODE` send only the reason, and this
+ * exact sentence is the only close they send for that cause.
+ */
+const LEGACY_RPC_OVER_BUDGET_REASON = "Runtime RPC channel fell behind the sync connection.";
+
+function isRpcOverBudgetClose(code: unknown, reason: string): boolean {
+  return code === PAIRED_RUNTIME_RPC_OVER_BUDGET_CODE || reason === LEGACY_RPC_OVER_BUDGET_REASON;
+}
+
 export async function openSyncRuntimeTransport(
   options: OpenSyncRuntimeTransportOptions,
 ): Promise<SyncRuntimeTransport> {
@@ -569,13 +582,19 @@ export async function openSyncRuntimeTransport(
       channelId?: unknown;
       data?: unknown;
       reason?: unknown;
+      code?: unknown;
     };
     if (payload.channelId !== id) return;
     if (envelope.type === "rpc_close") {
       const reason = typeof payload.reason === "string" && payload.reason.trim()
         ? payload.reason.trim()
         : "Runtime RPC channel closed.";
-      fail(new Error(reason), true);
+      fail(
+        isRpcOverBudgetClose(payload.code, reason)
+          ? new PairedRuntimeRpcOverBudgetError(reason)
+          : new Error(reason),
+        true,
+      );
       return;
     }
     const bytes = decodeStrictBase64(payload.data);

@@ -5939,17 +5939,18 @@ async function runTool(args: {
       );
     }
     if (category) {
-      // When filtering by category, drain a larger batch and filter client-side.
-      // Use the last *drained* event's ID (not last *filtered*) as nextCursor
-      // to advance past non-matching events and avoid infinite polling loops.
-      const batchSize = Math.min(1000, limit * 10);
-      const result = runtime.eventBuffer.drain(cursor, batchSize);
-      const filtered = result.events.filter((e) => e.category === category);
-      const sliced = filtered.slice(0, limit);
+      // The drain looks at up to ten times `limit` events and returns only this
+      // category. Its cursor moves past the events it skipped, so polling
+      // cannot stall, and it stops at the last event it returned, so a match
+      // past `limit` is not skipped.
+      const result = runtime.eventBuffer.drain(cursor, limit, {
+        filter: (e) => e.category === category,
+        maxScan: limit * 10
+      });
       return {
-        events: sliced,
+        events: result.events,
         nextCursor: result.nextCursor,
-        hasMore: filtered.length > limit || result.hasMore,
+        hasMore: result.hasMore,
         eventEpoch: result.eventEpoch,
         gap: result.gap === true,
         oldestCursor: result.oldestCursor ?? null

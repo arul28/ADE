@@ -327,6 +327,8 @@ const PR_ACTION_RUNS_LIMIT = 12;
  */
 const PR_ACTION_RUN_JOBS_LIMIT = PR_ACTION_RUNS_LIMIT;
 const PR_TERMINAL_ACTION_RUN_JOBS_LIMIT = 6;
+/** Trailing window that folds a webhook burst into one `prs-updated`. */
+const PRS_UPDATED_COALESCE_MS = 500;
 
 function chunkValues<T>(values: readonly T[], size = SQL_IN_CLAUSE_CHUNK_SIZE): T[][] {
   const chunks: T[][] = [];
@@ -10555,12 +10557,38 @@ export function createPrService({
     );
   };
 
+  let coalescedPrsUpdatedTimer: ReturnType<typeof setTimeout> | null = null;
+
   const emitPrsUpdated = (): void => {
+    // This event carries the full list, so it supersedes one that is waiting.
+    if (coalescedPrsUpdatedTimer) {
+      clearTimeout(coalescedPrsUpdatedTimer);
+      coalescedPrsUpdatedTimer = null;
+    }
     emitPrEvent?.({
       type: "prs-updated",
       polledAt: nowIso(),
       prs: withGithubStackMemberships(listRows().map(rowToSummary)),
     });
+  };
+
+  /**
+   * One `prs-updated` for a burst of webhooks, not one for each delivery.
+   *
+   * The event carries the whole PR list (about 225 KB for 194 PRs), and a CI
+   * run delivers dozens of `check_run` webhooks in a few seconds. One event
+   * for each delivery put megabytes on the runtime event stream, and a remote
+   * desktop that drained it lost its RPC channel again and again. The event is
+   * also a refresh signal (the chat PR pane reloads checks on it), so the
+   * burst still ends in one event; it is not dropped by a fingerprint.
+   */
+  const scheduleCoalescedPrsUpdated = (): void => {
+    if (coalescedPrsUpdatedTimer) return;
+    coalescedPrsUpdatedTimer = setTimeout(() => {
+      coalescedPrsUpdatedTimer = null;
+      emitPrsUpdated();
+    }, PRS_UPDATED_COALESCE_MS);
+    coalescedPrsUpdatedTimer.unref?.();
   };
 
   const findWebhookRelatedPrIds = (refs: Array<{ repoOwner: string; repoName: string; githubPrNumber: number }>): string[] => {
@@ -10820,7 +10848,7 @@ export function createPrService({
         }
         linkedPrIds = [...new Set(linkedPrIds)];
         invalidateGithubSnapshotCache();
-        emitPrsUpdated();
+        scheduleCoalescedPrsUpdated();
         db.run(
           `
             update github_webhook_deliveries
@@ -10858,7 +10886,7 @@ export function createPrService({
 
       const refs = webhookPrRefsFromPayload(eventName, payload);
       linkedPrIds = findWebhookRelatedPrIds(refs);
-      if (linkedPrIds.length > 0) emitPrsUpdated();
+      if (linkedPrIds.length > 0) scheduleCoalescedPrsUpdated();
       const firstRef = refs[0] ?? null;
       const processed = refs.length > 0;
       const reason = processed ? "invalidated_related_prs" : "unsupported_event";

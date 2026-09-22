@@ -9,6 +9,7 @@ import {
   SYNC_RUNTIME_ONLY_CAPABILITY,
   wsDataToText,
 } from "../sync/syncProtocol";
+import { isPairedRuntimeRpcOverBudgetError } from "./pairedRuntimeErrors";
 import { RuntimeRpcClient } from "./runtimeRpcClient";
 import {
   buildDesktopPairedHello,
@@ -267,6 +268,66 @@ describe("openSyncRuntimeTransport", () => {
     client.close();
     expect(transport.connection.endpoint).toBe("ws://sync.test/");
     expect(transport.connection).toBeDefined();
+  });
+
+  /**
+   * The host closes one RPC channel when a reply would pass its send budget.
+   * The client must tell that apart from a lost machine, or every oversized
+   * event drain turns the connection dot red. Newer hosts send a code; older
+   * hosts send only this one reason.
+   */
+  it.each([
+    ["the close code", { code: "rpc_over_budget", reason: "Runtime RPC channel fell behind the sync connection." }, true],
+    ["the reason an older host sends", { reason: "Runtime RPC channel fell behind the sync connection." }, true],
+    ["any other close", { reason: "Too many open runtime channels." }, false],
+  ])("types an RPC channel close from %s", async (_label, closePayload, overBudget) => {
+    const createWebSocket = () => new FakeWebSocket((text, ws) => {
+      const envelope = parseSyncEnvelope(wsDataToText(text));
+      if (envelope.type === "hello") {
+        ws.receive(encodeSyncEnvelope({
+          type: "hello_ok",
+          requestId: envelope.requestId,
+          payload: {
+            peer: (envelope.payload as { peer: unknown }).peer,
+            brain: {
+              deviceId: "host-1",
+              deviceName: "Mac Studio",
+              platform: "macOS",
+              deviceType: "desktop",
+              siteId: "host-site-1",
+              dbVersion: 0,
+            },
+            serverDbVersion: 0,
+            heartbeatIntervalMs: 5_000,
+            pollIntervalMs: 1_500,
+            features: { rpcChannel: true, portForward: true },
+          },
+        }));
+        return;
+      }
+      if (envelope.type !== "rpc_data") return;
+      const payload = envelope.payload as { channelId: string };
+      ws.receive(encodeSyncEnvelope({
+        type: "rpc_close",
+        payload: { channelId: payload.channelId, ...closePayload },
+      }));
+    }) as unknown as WebSocket;
+
+    const paired = credentials();
+    paired.endpoints = ["ws://sync.test"];
+    const transport = await openSyncRuntimeTransport({
+      credentials: paired,
+      channelId: "runtime-over-budget",
+      connectTimeoutMs: 2_000,
+      authTimeoutMs: 2_000,
+      createWebSocket,
+    });
+    const client = new RuntimeRpcClient(transport, 2_000);
+
+    const failure = await client.call("ade/actions/call", { name: "stream_events" }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(isPairedRuntimeRpcOverBudgetError(failure)).toBe(overBudget);
+    client.close();
   });
 
   it("rejects a saved endpoint when the host identity changed", async () => {

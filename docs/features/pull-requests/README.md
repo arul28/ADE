@@ -1579,6 +1579,14 @@ interval (clamped to 5 s–5 min, jittered ±10%). Each sweep:
    (opened, reopened, closed, merged, checks failing, review requested,
    changes requested, merge ready).
 
+`prService.ingestGithubWebhook` does not emit one `prs-updated` for each
+delivery. The event carries the whole PR list (about 225 KB for 194 PRs), and a
+CI run delivers dozens of `check_run` webhooks in a few seconds. A burst folds
+into one event, emitted 500 ms after the first delivery with the list as it is
+then. An immediate `prs-updated` from another path replaces a waiting one. The
+webhook path keeps no fingerprint guard, because consumers such as the chat PR
+pane reload checks on the event even when no row changed.
+
 A relay or local-webhook ingest can call `reconcilePrs(prIds)` before the next
 scheduled tick. The service coalesces those ids and runs one targeted
 `prService.refresh({ prIds })`; ids that arrive during a running tick schedule

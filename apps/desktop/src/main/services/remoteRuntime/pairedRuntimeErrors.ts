@@ -55,6 +55,30 @@ export class PairedRuntimeHelloRejectedError extends Error {
   }
 }
 
+/**
+ * The host closed this RPC channel because one reply would pass its send
+ * budget. The host is alive: it answered, and the next call opens a new
+ * channel. A caller must not report the machine as unreachable for it.
+ */
+export class PairedRuntimeRpcOverBudgetError extends Error {
+  readonly code = "PAIRED_RUNTIME_RPC_OVER_BUDGET" as const;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "PairedRuntimeRpcOverBudgetError";
+  }
+}
+
+/** True for `PairedRuntimeRpcOverBudgetError`, also when a wrapper carries it as `cause`. */
+export function isPairedRuntimeRpcOverBudgetError(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current instanceof Error; depth += 1) {
+    if (current instanceof PairedRuntimeRpcOverBudgetError) return true;
+    current = (current as Error & { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 export class PairedRuntimeCompatibilityError extends Error {
   readonly code = "PAIRED_RUNTIME_COMPATIBILITY" as const;
 

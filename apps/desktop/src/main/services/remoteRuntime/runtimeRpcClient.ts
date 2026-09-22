@@ -90,7 +90,9 @@ export class RuntimeRpcClient {
   ) {
     this.transport.onData((chunk) => this.onData(chunk.toString("utf8")));
     this.transport.onError?.((error) => {
-      this.failConnection(new Error(`Remote ADE service connection failed: ${error.message}`));
+      // `cause` keeps the transport's typed error, so a caller can tell an
+      // over-budget channel close from a lost machine.
+      this.failConnection(new Error(`Remote ADE service connection failed: ${error.message}`, { cause: error }));
     });
     this.transport.onClose?.((info) => {
       const details = [

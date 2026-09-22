@@ -27,6 +27,7 @@ import {
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
 import {
   PairedRuntimeRelayAuthRequiredError,
+  PairedRuntimeRpcOverBudgetError,
   PairedRuntimeSshTrustRequiredError,
   PairedRuntimeTransportUnavailableError,
 } from "./pairedRuntimeErrors";
@@ -1436,6 +1437,88 @@ describe("RemoteConnectionService", () => {
     expect(service.snapshot().connections[0]?.lastError).toMatch(
       /connection closed/i,
     );
+  });
+
+  it("shares one host read between pumps that ask for the same event window at once", async () => {
+    const previouslyConnected = target("previously-connected", 1_700_000_000);
+    const registry = {
+      list: vi.fn(() => [previouslyConnected]),
+      get: vi.fn((id: string) =>
+        id === previouslyConnected.id ? previouslyConnected : null,
+      ),
+    } as unknown as RemoteTargetRegistry;
+    const pendingReads: Array<() => void> = [];
+    const pool = {
+      connect: vi.fn(async (target: RemoteRuntimeTarget) => connectResult(target)),
+      disconnect: vi.fn(),
+      streamEventsForTarget: vi.fn(async (_target: RemoteRuntimeTarget, _projectId: string, request: { cursor?: number }) => {
+        await new Promise<void>((resolve) => pendingReads.push(resolve));
+        return { events: [], nextCursor: request.cursor ?? 0, hasMore: false };
+      }),
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+    const service = new RemoteConnectionService(registry, pool);
+    await service.connect(previouslyConnected.id, { explicit: true });
+
+    const first = service.streamEvents(previouslyConnected.id, "project-1", { cursor: 7, limit: 200 });
+    const second = service.streamEvents(previouslyConnected.id, "project-1", { cursor: 7, limit: 200 });
+    const otherCategory = service.streamEvents(previouslyConnected.id, "project-1", { cursor: 7, limit: 200, category: "pty" });
+    await vi.waitFor(() => expect(pendingReads).toHaveLength(2));
+    for (const resolve of pendingReads.splice(0)) resolve();
+    await expect(Promise.all([first, second, otherCategory])).resolves.toHaveLength(3);
+    expect(pool.streamEventsForTarget).toHaveBeenCalledTimes(2);
+
+    // The shared read is gone once it settles; the next poll reads again.
+    const later = service.streamEvents(previouslyConnected.id, "project-1", { cursor: 7, limit: 200 });
+    await vi.waitFor(() => expect(pendingReads).toHaveLength(1));
+    pendingReads.splice(0)[0]!();
+    await later;
+    expect(pool.streamEventsForTarget).toHaveBeenCalledTimes(3);
+  });
+
+  /**
+   * About eight event pumps poll one host. When one reply passed the host's
+   * send budget, the host closed that RPC channel, and each failed poll turned
+   * the dot red while the next success turned it green again. The host was
+   * alive the whole time.
+   */
+  it("keeps the connection green when the host closes one RPC channel for an oversized reply", async () => {
+    const previouslyConnected = target("previously-connected", 1_700_000_000);
+    const registry = {
+      list: vi.fn(() => [previouslyConnected]),
+      get: vi.fn((id: string) =>
+        id === previouslyConnected.id ? previouslyConnected : null,
+      ),
+    } as unknown as RemoteTargetRegistry;
+    let evicted: ((targetId: string, error: Error) => void) | null = null;
+    const overBudget = () => new Error(
+      "Remote ADE service connection failed: Runtime RPC channel fell behind the sync connection.",
+      { cause: new PairedRuntimeRpcOverBudgetError("Runtime RPC channel fell behind the sync connection.") },
+    );
+    const pool = {
+      connect: vi.fn(async (target: RemoteRuntimeTarget) =>
+        connectResult(target),
+      ),
+      disconnect: vi.fn(),
+      streamEventsForTarget: vi.fn(async () => {
+        throw overBudget();
+      }),
+      onEntryEvicted: vi.fn((listener: (targetId: string, error: Error) => void) => {
+        evicted = listener;
+        return () => {};
+      }),
+    } as unknown as RemoteConnectionPool;
+
+    const service = new RemoteConnectionService(registry, pool);
+    await service.connect(previouslyConnected.id, { explicit: true });
+
+    evicted!(previouslyConnected.id, overBudget());
+    await expect(
+      service.streamEvents(previouslyConnected.id, "project-1", { cursor: 0, limit: 200 }),
+    ).rejects.toThrow(/fell behind/i);
+
+    expect(service.snapshot().connections[0]?.state).toBe("connected");
+    expect(service.snapshot().connections[0]?.lastError).toBeNull();
   });
 });
 
