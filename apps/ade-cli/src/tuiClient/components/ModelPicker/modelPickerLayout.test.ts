@@ -229,10 +229,10 @@ describe("buildModelPickerLayout", () => {
     });
     expect(layout.entries.map((entry) => entry.modelId)).toEqual([
       "anthropic/claude-fable-5-1",
-      "anthropic/claude-opus-5",
+      "anthropic/claude-opus-5-5",
       "anthropic/claude-sonnet-5",
       "anthropic/claude-haiku-4-5",
-      "anthropic/claude-opus-4-8",
+      "anthropic/claude-opus-5",
     ]);
     expect(layout.entries.every((entry) => entry.family === "claude")).toBe(true);
   });

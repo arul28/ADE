@@ -16227,7 +16227,7 @@ describe("createAgentChatService", () => {
       expect((row!.event as any).description).toBe("Fix flaky tests");
       expect((row!.event as any).spawnKind).toBe("subagent");
       expect((row!.event as any).model).toBe(child.model);
-      expect(child.model).toBe("claude-opus-5");
+      expect(child.model).toBe("claude-opus-5-5");
 
       expect(child.orchestrationParentSessionId).toBe(parent.id);
       expect(child.spawnKind).toBe("subagent");
@@ -46482,8 +46482,8 @@ describe("createAgentChatService", () => {
       );
       expect(doneEvents).toHaveLength(1);
       expect(interruptedDone.event).toMatchObject({
-        model: "claude-opus-4-8",
-        modelId: "anthropic/claude-opus-4-8",
+        model: "claude-opus-5",
+        modelId: "anthropic/claude-opus-5",
       });
       await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({ status: "active" });
       expect(close).toHaveBeenCalled();
