@@ -856,8 +856,20 @@ export type IosSimulatorEventPayload =
  *
  * `stopped` is `deviceStop`'s: the simulator is powered off and the lane still
  * owns it, so the pane swaps to "{name} is off. [Start]" without re-listing.
+ *
+ * `released` is the opposite pair: the simulator keeps running and the lane no
+ * longer OWNS it, because another lane took it over. It is deliberately not
+ * `stopped` — nothing was powered off, and a pane told "off" would offer Start
+ * on a device that is not its own any more. The lane that lost it must
+ * re-list, which is the one phase that means "your binding changed".
  */
-export type AppleDeviceStatePhase = "starting" | "booted" | "streaming" | "failed" | "stopped";
+export type AppleDeviceStatePhase =
+  | "starting"
+  | "booted"
+  | "streaming"
+  | "failed"
+  | "stopped"
+  | "released";
 
 export type AppleDeviceStateEvent = {
   type: "apple.device.state";
@@ -1377,6 +1389,15 @@ export type AppleDeviceListArgs = {
   laneId?: string | null;
   chatSessionId?: string | null;
   installed?: boolean | null;
+  /**
+   * Also measure what CoreSimulator's device store costs on disk.
+   *
+   * OFF by default and asked for separately, because it is the one expensive
+   * part of this call: measuring means walking the device directories, and the
+   * picker must paint its list before it knows the numbers. The renderer makes
+   * a second, disk-only call after the first paint.
+   */
+  disk?: boolean | null;
 };
 
 /**
@@ -1395,9 +1416,66 @@ export type AppleDeviceStartArgs = {
   create?: { sourceUdid: string } | null;
 };
 
+/**
+ * Which lane holds a given simulator, by name.
+ *
+ * `deviceList` used to answer only "what is installed" and "what does MY lane
+ * own", which left the picker unable to tell a free device from one another
+ * lane is driving. It offered Open on a simulator lane B was mid-test in, and
+ * an agent that could not see the difference stopped to ask a human for
+ * permission instead of creating its own device. `laneName` is the display
+ * name and not the id on purpose: "in use by lane dca9f144" names nothing a
+ * person recognises.
+ */
+export type AppleSimulatorOwner = {
+  udid: string;
+  laneId: string;
+  /** The lane's display name, or null when the lane row is gone or unnamed. */
+  laneName: string | null;
+  origin: "clone" | "attached";
+  /** True when the owning lane is the lane this list was computed for. */
+  mine: boolean;
+};
+
+/** One device data directory's cost on disk. */
+export type AppleSimulatorDiskUsage = {
+  udid: string;
+  bytes: number;
+};
+
+/**
+ * What the simulators on this Mac cost on disk.
+ *
+ * Measured only when `deviceList` is asked for it. One `du` pass over
+ * CoreSimulator's device store answers both halves — the per-device rows and
+ * the store's own total — so the picker never pays for two walks.
+ */
+export type AppleDeviceDiskUsage = {
+  /** Every byte under the device store, including devices no lane owns. */
+  totalBytes: number;
+  /** Bytes per device directory. A device with no directory yet is absent. */
+  devices: AppleSimulatorDiskUsage[];
+  /** The directory that was measured, so a surprising number is checkable. */
+  root: string;
+  measuredAt: string;
+};
+
 export type AppleDeviceListResult = {
   installed: AppleInstalledSimulator[];
   lane: AppleLaneDevice | null;
+  /**
+   * Every lane binding this project knows about, mine flagged.
+   *
+   * Complete rather than filtered: the picker's three groups (mine, free, in
+   * use elsewhere) are a partition of the installed list against this array,
+   * and a payload that carried only the caller's lane could not express the
+   * third group at all.
+   */
+  owners: AppleSimulatorOwner[];
+  /** Which lane this list was computed for. Null for an un-laned caller. */
+  laneId: string | null;
+  /** Present only when `disk` was asked for. */
+  disk?: AppleDeviceDiskUsage | null;
 };
 
 export type AppleDeviceDeleteArgs = {
@@ -1553,13 +1631,70 @@ export type AppleRotateArgs = {
   orientation: AppleDeviceOrientation;
 };
 
+/**
+ * How `rotate` knows what it is telling you.
+ *
+ * `rotate` used to answer `applied: true` the instant the helper's GSEvent
+ * left the host, which says only that a mach message was sent. Measured on
+ * 2026-09-21 against a machine with no `Simulator.app` on it at all: the
+ * simulator accepts that event anyway and the DEVICE orientation really does
+ * change. What refuses is the foreground app. SpringBoard and Settings on an
+ * iPhone are portrait-only, so the framebuffer stayed 1179x2556 through four
+ * landscape rotates that all reported success — and then Safari, launched on
+ * the same device with the device already turned, came up at 2556x1179 on its
+ * first frame.
+ *
+ * So the send is never the answer. The framebuffer is.
+ */
+export const APPLE_ROTATE_VERIFICATIONS = [
+  /** The framebuffer turned onto the requested axis. Proof that it moved. */
+  "rotated",
+  /**
+   * The framebuffer was already on the requested axis. A 180-degree flip
+   * inside one axis (`portrait` <-> `portrait-upside-down`, or one landscape
+   * to the other) leaves the geometry identical, so that part is not
+   * observable from pixels and is deliberately not claimed.
+   */
+  "already-on-axis",
+  /** The event was sent and accepted, and the screen never turned. */
+  "not-adopted",
+  /** The helper could not send the event at all. */
+  "send-failed",
+  /** The framebuffer could not be read, so nothing is claimed either way. */
+  "unmeasurable",
+] as const;
+export type AppleRotateVerification = (typeof APPLE_ROTATE_VERIFICATIONS)[number];
+
+/** The device took the orientation; the app on screen kept its own. */
+export const APPLE_ROTATE_NOT_ADOPTED_CODE = "APPLE_ROTATE_NOT_ADOPTED";
+/** The helper never got the event onto the device. */
+export const APPLE_ROTATE_SEND_FAILED_CODE = "APPLE_ROTATE_SEND_FAILED";
+/** No framebuffer reading, so no claim. */
+export const APPLE_ROTATE_UNMEASURABLE_CODE = "APPLE_ROTATE_UNMEASURABLE";
+
+/** Framebuffer pixels, which is the only orientation reading iOS gives back. */
+export type AppleRotateFrame = {
+  width: number;
+  height: number;
+};
+
 export type AppleRotateResult = {
   /**
-   * The helper reports `false` when Simulator.app is not running — the
-   * GSEvent path needs PurpleWorkspacePort, which only exists then. Pass
-   * through rather than throwing: "did not rotate" is a state to show.
+   * True only when the framebuffer was **observed** showing the requested
+   * axis. A send that iOS ignored reports `false`, not `true`.
    */
   applied: boolean;
+  /** The orientation that was asked for. */
+  orientation: AppleDeviceOrientation;
+  /** Which of the five outcomes above this was. */
+  verification: AppleRotateVerification;
+  /** A machine-readable code. Present exactly when `applied` is false. */
+  reason: string | null;
+  /** One sentence, for a rail or a CLI line to show as-is. */
+  detail: string | null;
+  /** Framebuffer pixels read before the request, and after the wait. */
+  frameBefore: AppleRotateFrame | null;
+  frameAfter: AppleRotateFrame | null;
 };
 
 export type AppleRecordStartArgs = {

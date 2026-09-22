@@ -8173,6 +8173,13 @@ const adeBridge = {
       pin?: OpenProjectBinding | null,
     ): Promise<AppleDeviceStopResult> =>
       callIosSimulatorMutation(pin, "deviceStop", args, IPC.iosSimulatorDeviceStop),
+    /**
+     * The picker's one read: installed devices, this lane's device, and which
+     * lane owns each of the others (`owners`, with display names).
+     *
+     * `args.disk` adds the `du` measurement. It is a separate opt-in and the
+     * renderer asks for it in a SECOND call, after the list has painted.
+     */
     deviceList: async (
       args: AppleDeviceListArgs = {},
       pin?: OpenProjectBinding | null,

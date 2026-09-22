@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AppleInstalledSimulator,
   AppleLaneDevice,
+  AppleRotateResult,
   IosSimulatorStatus,
 } from "../../../shared/types/iosSimulator";
 import type { AppleStreamState } from "./useAppleDeviceStream";
@@ -163,7 +164,17 @@ function setup(options: Setup = {}) {
     setAppearance: vi.fn(),
     setContentSize: vi.fn(),
     pressButton: vi.fn(async () => ({ ok: true })),
-    rotate: vi.fn(async () => ({ applied: true })),
+    // Typed against the real result so a test can hand back a refusal:
+    // `applied` is now the framebuffer's answer, not the send's.
+    rotate: vi.fn(async (): Promise<AppleRotateResult> => ({
+      applied: true,
+      orientation: "portrait",
+      verification: "rotated",
+      reason: null,
+      detail: null,
+      frameBefore: null,
+      frameAfter: null,
+    })),
     tap: vi.fn(async () => ({ ok: true })),
     getScreenSnapshot: vi.fn(async () => ({
       deviceUdid: "pro",
@@ -519,5 +530,110 @@ describe("AppleDevicePane viewport (round 4 §A1–§A4)", () => {
     await waitFor(() => expect(paneState()).toBe("live"));
     expect(screen.queryByRole("button", { name: /dark mode|light mode/i })).toBeNull();
     expect(screen.queryByRole("button", { name: "Device text size" })).toBeNull();
+  });
+});
+
+/**
+ * Orientation, which the service now verifies against the real framebuffer.
+ *
+ * The rule these two pin: the picture turns only on a rotation the DEVICE
+ * confirmed, and a refusal says why in one sentence rather than doing nothing.
+ * Both were live defects — `rotate` answered `applied: true` for a mach
+ * message it had merely sent, and the pane's own excuse for a failure ("its
+ * window has to be open") named a cause that was never real.
+ */
+describe("AppleDevicePane orientation honesty", () => {
+  const live = () => setup({ lane: LANE_DEVICE, stream: "live" });
+
+  const chooseOrientation = async (label: string) => {
+    fireEvent.keyDown(
+      screen.getByRole("button", { name: /^Orientation: / }),
+      { key: "Enter" },
+    );
+    fireEvent.click(await screen.findByRole("menuitem", { name: label }));
+  };
+
+  it("turns the picture only when the service confirms the screen moved", async () => {
+    const { iosSimulator } = live();
+    renderPane();
+    await waitFor(() => expect(paneState()).toBe("live"));
+    iosSimulator.rotate.mockResolvedValue({
+      applied: true,
+      orientation: "landscape-left",
+      verification: "rotated",
+      reason: null,
+      detail: null,
+      frameBefore: { width: 1179, height: 2556 },
+      frameAfter: { width: 2556, height: 1179 },
+    });
+
+    await chooseOrientation("Landscape left");
+
+    expect(iosSimulator.rotate).toHaveBeenCalledWith(
+      { orientation: "landscape-left", laneId: "lane-1", deviceUdid: "pro" },
+      null,
+    );
+    await waitFor(() => expect(
+      screen.getByRole("button", { name: /^Orientation: / }).getAttribute("aria-label"),
+    ).toBe("Orientation: Landscape left"));
+  });
+
+  it("says why a refused rotation did nothing, and leaves the picture alone", async () => {
+    const { iosSimulator } = live();
+    renderPane();
+    await waitFor(() => expect(paneState()).toBe("live"));
+    iosSimulator.rotate.mockResolvedValue({
+      applied: false,
+      orientation: "landscape-left",
+      verification: "not-adopted",
+      reason: "APPLE_ROTATE_NOT_ADOPTED",
+      detail: "The device turned to landscape-left, and the app on screen stayed portrait.",
+      frameBefore: { width: 1179, height: 2556 },
+      frameAfter: { width: 1179, height: 2556 },
+    });
+
+    await chooseOrientation("Landscape left");
+
+    // One sentence naming the cause — not "Something went wrong", and not the
+    // wire text either.
+    const strip = await screen.findByText("The app on screen does not support that orientation.");
+    expect(strip).toBeTruthy();
+    // And the control still reads portrait, because that is what is on screen.
+    expect(
+      screen.getByRole("button", { name: /^Orientation: / }).getAttribute("aria-label"),
+    ).toBe("Orientation: Portrait");
+  });
+});
+
+describe("AppleDevicePane when another lane takes the device (round 5 picker)", () => {
+  it("re-lists on `released` and lands on the picker, not on 'Video stopped'", async () => {
+    const { iosSimulator } = setup({ lane: LANE_DEVICE, stream: "live" });
+    renderPane();
+    await waitFor(() => expect(paneState()).toBe("live"));
+
+    /*
+     * The takeover has already happened on the runtime: the binding moved, so
+     * the next list carries no lane device and names the new owner. Without
+     * the `released` handling the pane would sit on its dead stream and say
+     * "Video stopped" about a simulator that is running perfectly well for
+     * somebody else.
+     */
+    iosSimulator.deviceList.mockImplementation(async () => ({
+      installed: [PRO, MAX],
+      lane: null,
+      laneId: "lane-1",
+      owners: [{ udid: "pro", laneId: "lane-2", laneName: "Repro fix", origin: "attached", mine: false }],
+    }));
+
+    act(() => {
+      for (const listener of listeners) {
+        listener({ type: "apple.device.state", laneId: "lane-1", udid: "pro", phase: "released" });
+      }
+    });
+
+    await waitFor(() => expect(paneState()).toBe("no-device"));
+    // And the picker tells the truth about who has it now.
+    expect(await screen.findByText("In use by lane Repro fix")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Open iPhone 17 Pro" })).toBeNull();
   });
 });

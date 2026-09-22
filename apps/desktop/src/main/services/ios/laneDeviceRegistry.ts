@@ -1,7 +1,13 @@
+import os from "node:os";
+import path from "node:path";
+
 import type {
+  AppleDeviceDiskUsage,
+  AppleDeviceListResult,
   AppleInstalledSimulator,
   AppleLaneDevice,
   AppleLaneDeviceFamily,
+  AppleSimulatorOwner,
 } from "../../../shared/types/iosSimulator";
 import {
   APPLE_DEVICE_ATTACHED_NOT_DELETABLE_CODE,
@@ -80,6 +86,22 @@ export type LaneDeviceRegistryDeps = {
   resolveLaneName?: ((laneId: string) => string | null) | null;
   /** The lanes DB. Omitted in hosts that have none; the registry then keeps rows in memory. */
   store?: LaneDeviceStore | null;
+  /**
+   * Let go of a device a lane is about to LOSE to a takeover.
+   *
+   * The registry owns the binding and knows nothing about streams or chat
+   * sessions, so the host hands in the release. Called with the losing lane's
+   * device, before the binding moves, and allowed to fail: the move is what
+   * must not be left half-done.
+   */
+  releaseLaneDevice?: ((device: AppleLaneDevice) => Promise<void> | void) | null;
+  /**
+   * CoreSimulator's device store. Defaults to the real one under `$HOME`.
+   *
+   * Injectable so the disk measurement is testable without a Mac and without
+   * the test's answer depending on whose machine ran it.
+   */
+  deviceDataRoot?: string | null;
   logger: {
     info: (event: string, data?: Record<string, unknown>) => void;
     debug: (event: string, data?: Record<string, unknown>) => void;
@@ -90,11 +112,19 @@ export type LaneDeviceRegistryDeps = {
 
 export type LaneDeviceRegistry = {
   deviceCreate(args: { laneId: string; from?: string | null; name?: string | null }): Promise<AppleLaneDevice>;
+  /**
+   * Bind an installed simulator to a lane.
+   *
+   * Three outcomes, and exactly one lane owns the device after all of them:
+   * the lane already holds it (answered as-is), nobody holds it (a plain
+   * attach), or another lane holds it (the binding MOVES — see `rebind`).
+   */
   deviceAttach(args: { laneId: string; simulator: string }): Promise<AppleLaneDevice>;
-  deviceList(args?: { installed?: boolean | null; laneId?: string | null }): Promise<{
-    installed: AppleInstalledSimulator[];
-    lane: AppleLaneDevice | null;
-  }>;
+  deviceList(args?: {
+    installed?: boolean | null;
+    laneId?: string | null;
+    disk?: boolean | null;
+  }): Promise<AppleDeviceListResult>;
   deviceDelete(args: { laneId: string; force?: boolean | null }): Promise<void>;
   /** The lane's device without touching `simctl`. Null when the lane has none. */
   get(laneId: string): AppleLaneDevice | null;
@@ -122,6 +152,53 @@ export function appleRuntimeScore(runtime: string): number {
   const match = /(\d+)(?:\.(\d+))?(?:\.(\d+))?/.exec(runtime);
   if (!match) return 0;
   return (Number(match[1]) * 1_000_000) + (Number(match[2] ?? 0) * 1_000) + Number(match[3] ?? 0);
+}
+
+/** Where CoreSimulator keeps one directory per simulator, all of its data in it. */
+export function appleDeviceDataRoot(home = os.homedir()): string {
+  return path.join(home, "Library", "Developer", "CoreSimulator", "Devices");
+}
+
+/**
+ * `du -d 1 -k <root>` into per-device bytes plus the store's own total.
+ *
+ * ONE depth-1 pass answers both halves of the question the picker asks, which
+ * is why it is `-d 1` on the store rather than a `-s` per device: the store is
+ * tens of gigabytes and the owner who asked for this is at 15 GB free, so the
+ * measurement must not itself be the expensive thing. `du` prints children
+ * first and the argument last, so the line whose path IS the root is the
+ * total; on a machine where that line never arrives the sum of the children is
+ * the honest floor.
+ *
+ * Sizes are `-k`, so KiB. A child whose basename is not a udid-shaped
+ * directory (`.DS_Store`, a stray file) counts toward the total and produces
+ * no row, which is exactly what "total device data" should mean.
+ */
+export function parseAppleDeviceDiskUsage(input: {
+  stdout: string;
+  root: string;
+}): { totalBytes: number; devices: Array<{ udid: string; bytes: number }> } {
+  const root = input.root.replace(/\/+$/u, "");
+  const devices: Array<{ udid: string; bytes: number }> = [];
+  let total: number | null = null;
+  let sum = 0;
+  for (const line of input.stdout.split("\n")) {
+    const match = /^(\d+)\s+(.*\S)\s*$/u.exec(line);
+    if (!match) continue;
+    const bytes = Number(match[1]) * 1024;
+    const target = match[2]!.replace(/\/+$/u, "");
+    if (target === root) {
+      total = bytes;
+      continue;
+    }
+    if (path.dirname(target) !== root) continue;
+    sum += bytes;
+    const udid = path.basename(target);
+    // CoreSimulator names each directory for the udid. Anything else in the
+    // store is real disk use with no device to attribute it to.
+    if (/^[0-9A-F-]{20,}$/iu.test(udid)) devices.push({ udid, bytes });
+  }
+  return { totalBytes: total ?? sum, devices };
 }
 
 /**
@@ -183,6 +260,22 @@ export function appleLaneDeviceName(input: {
     if (!taken.has(candidate)) return candidate;
   }
   return `${base} (${Date.now()})`;
+}
+
+/**
+ * Does this string name the device the lane already holds?
+ *
+ * The same udid-then-name precedence `deviceAttach` matches installed
+ * simulators with, so "attach the device I already have" is recognised without
+ * a `simctl` call — and so a re-attach is never mistaken for a takeover of
+ * somebody else's device.
+ */
+export function namesLaneDevice(device: AppleLaneDevice, wanted: string): boolean {
+  const trimmed = wanted.trim();
+  if (!trimmed) return false;
+  return device.udid === trimmed
+    || device.name === trimmed
+    || device.name.toLowerCase() === trimmed.toLowerCase();
 }
 
 type LaneDeviceRow = {
@@ -278,6 +371,40 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
     );
   };
 
+  /**
+   * Move one device's binding from one lane to another, in ONE step.
+   *
+   * `lane_id` is this table's primary key, so re-keying the row IS the move:
+   * there is no instant at which both lanes own the device, and no row is left
+   * behind for the old lane to read. A delete-then-insert pair would have a
+   * window between the two statements, and a crash inside it would leave the
+   * device owned by nobody at best and by both at worst.
+   *
+   * `origin` and `template_udid` are deliberately not in the SET list — they
+   * describe the simulator, and they travel with it.
+   */
+  const rebind = (previous: AppleLaneDevice, device: AppleLaneDevice): void => {
+    if (!deps.store) {
+      memory.delete(previous.laneId);
+      memory.set(device.laneId, device);
+      return;
+    }
+    deps.store.run(
+      `update ${LANE_APPLE_DEVICES_TABLE}
+          set lane_id = ?, name = ?, family = ?, runtime = ?, created_at = ?
+        where lane_id = ? and udid = ?`,
+      [
+        device.laneId,
+        device.name,
+        device.family,
+        device.runtime,
+        device.createdAt,
+        previous.laneId,
+        previous.udid,
+      ],
+    );
+  };
+
   const forget = (laneId: string): void => {
     if (!deps.store) {
       memory.delete(laneId);
@@ -321,6 +448,65 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
     } catch {
       return null;
     }
+  };
+
+  /**
+   * Who holds what, by display name, for the lane that is asking.
+   *
+   * Built from EVERY lane's row, not the caller's: a picker that cannot see
+   * lane B's binding offers Open on lane B's device, which is the defect this
+   * exists to close. The lane name is resolved per row — five rows at most on
+   * a real machine — and a missing name degrades to null rather than to the
+   * id, so the renderer decides how to word "a lane we cannot name".
+   */
+  const ownersFor = (laneId: string | null): AppleSimulatorOwner[] =>
+    readAll().map((device) => ({
+      udid: device.udid,
+      laneId: device.laneId,
+      laneName: laneNameFor(device.laneId),
+      origin: device.origin,
+      mine: laneId != null && device.laneId === laneId,
+    }));
+
+  /**
+   * The disk measurement, cached for a minute.
+   *
+   * The picker asks once per open, but the pane re-lists on every refresh and
+   * on every device event; a `du` per event would turn a status poll into a
+   * filesystem walk. A minute is short enough that a delete the user just made
+   * shows up while they are still looking at the page.
+   */
+  let diskCache: { at: number; value: AppleDeviceDiskUsage } | null = null;
+  const DISK_CACHE_MS = 60_000;
+
+  const measureDisk = async (): Promise<AppleDeviceDiskUsage | null> => {
+    const root = deps.deviceDataRoot?.trim() || appleDeviceDataRoot();
+    const cached = diskCache;
+    if (cached && Date.now() - cached.at < DISK_CACHE_MS && cached.value.root === root) {
+      return cached.value;
+    }
+    let stdout = "";
+    try {
+      ({ stdout } = await deps.run("du", ["-d", "1", "-k", root], { timeoutMs: 120_000 }));
+    } catch (error) {
+      // A store that is not there yet, or a `du` that hit a permission wall, is
+      // an unknown number — never a failed device list. The picker simply says
+      // nothing about disk.
+      deps.logger.debug("apple.device_disk_measure_failed", {
+        root,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+    const parsed = parseAppleDeviceDiskUsage({ stdout, root });
+    const value: AppleDeviceDiskUsage = {
+      totalBytes: parsed.totalBytes,
+      devices: parsed.devices,
+      root,
+      measuredAt: now().toISOString(),
+    };
+    diskCache = { at: Date.now(), value };
+    return value;
   };
 
   const requireLaneId = (laneId: string | null | undefined): string => {
@@ -375,7 +561,13 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
     const wanted = args.simulator?.trim();
     if (!wanted) throw new Error("device-attach needs a simulator udid or name.");
     const existing = readOne(laneId);
-    if (existing) throw new AppleDeviceExistsError(existing);
+    if (existing) {
+      // Already ours. An attach of the device this lane holds is the state the
+      // caller asked for, so it is answered, not refused and not moved —
+      // checked before `simctl` is consulted, because it needs no device list.
+      if (namesLaneDevice(existing, wanted)) return existing;
+      throw new AppleDeviceExistsError(existing);
+    }
     const installed = await deps.listInstalledSimulators();
     if (!installed.length) throw new AppleNoInstalledSimulatorsError();
     const match = installed.find((device) => device.udid === wanted)
@@ -384,16 +576,60 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
     if (!match) {
       throw new Error(`No installed simulator matches ${wanted}. Run device-list --installed to see what this Mac has.`);
     }
+    const previous = readAll().find((device) => device.udid === match.udid && device.laneId !== laneId) ?? null;
     const device: AppleLaneDevice = {
       laneId,
       udid: match.udid,
       name: match.name,
-      origin: "attached",
+      /*
+       * On a takeover, `origin` and `templateUdid` travel WITH the device, not
+       * with the lane. They describe where the simulator came from: a clone ADE
+       * made is still ADE's to delete after it changes hands, and re-labelling
+       * it "attached" would leak that clone forever when the new lane is
+       * archived. `createdAt` is the opposite — it dates the BINDING, so it is
+       * now.
+       */
+      origin: previous?.origin ?? "attached",
       family: match.family,
       runtime: match.runtime,
       createdAt: now().toISOString(),
-      templateUdid: null,
+      templateUdid: previous?.templateUdid ?? null,
     };
+    if (previous) {
+      /*
+       * A takeover MOVES the binding. Nothing here may leave two lanes owning
+       * one simulator: both would believe it is theirs, and either could power
+       * it off or delete it out from under the other. The picker's "Take
+       * over…" button is what makes this reachable, so the rule lives at the
+       * only door — every surface attaches through here.
+       *
+       * The losing lane is released FIRST, while it still owns the row, so it
+       * never holds a live stream on a device it no longer owns. A release that
+       * fails is logged and the move still happens: a stream that would not
+       * stop must not strand the binding half-moved.
+       */
+      // try/catch rather than `.catch` on the returned promise: a hook that
+      // throws SYNCHRONOUSLY never produces a promise to attach a handler to,
+      // and that throw would have escaped and left the binding unmoved.
+      try {
+        await deps.releaseLaneDevice?.(previous);
+      } catch (error) {
+        deps.logger.warn?.("apple.lane_device_release_failed", {
+          laneId: previous.laneId,
+          udid: previous.udid,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      rebind(previous, device);
+      deps.logger.info("apple.lane_device_moved", {
+        laneId,
+        fromLaneId: previous.laneId,
+        udid: device.udid,
+        name: device.name,
+        origin: device.origin,
+      });
+      return device;
+    }
     write(device);
     deps.logger.info("apple.lane_device_attached", { laneId, udid: device.udid, name: device.name });
     return device;
@@ -443,8 +679,14 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
     async deviceList(args = {}) {
       const wantInstalled = args.installed !== false;
       const installed = wantInstalled ? await deps.listInstalledSimulators() : [];
-      const laneId = args.laneId?.trim();
-      return { installed, lane: laneId ? readOne(laneId) : null };
+      const laneId = args.laneId?.trim() || null;
+      return {
+        installed,
+        lane: laneId ? readOne(laneId) : null,
+        owners: ownersFor(laneId),
+        laneId,
+        disk: args.disk ? await measureDisk() : null,
+      };
     },
     deviceDelete: remove,
     get: (laneId: string) => readOne(laneId),

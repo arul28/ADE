@@ -62,6 +62,16 @@ Components if none exist.
 `--force`, and `--force` only detaches it. The clone is deleted on lane
 archive.
 
+**One lane owns a device at a time.** `device-attach` on a simulator another
+lane holds MOVES the binding rather than adding a second one: the losing lane's
+stream and session are released, its row is re-keyed to the new lane in one
+statement, and `origin`/`template_udid` travel with the device so a clone stays
+ADE's to delete. The simulator is NOT powered off — the new owner is about to
+drive it. The losing lane gets `apple.device.state` `phase: "released"` and
+re-lists, which lands it on the picker. Attaching the device a lane already
+holds is answered as-is; the picker only offers this behind a confirmation that
+names the lane being interrupted.
+
 ## Desktop surface
 
 The tool is **Apple Development**, one pane inside the Work tools pane. There
@@ -160,9 +170,30 @@ need a stream.
 helper. `shake` is a named button so the column can call it, but this Xcode's
 `simctl` has no shake verb and the helper does not implement it — the service
 refuses with `APPLE_BUTTON_UNSUPPORTED`. `rotate` sets portrait,
-portrait-upside-down, landscape-left, or landscape-right. The helper reports
-`applied: false` when Simulator.app is not running; that is a result, not an
-error.
+portrait-upside-down, landscape-left, or landscape-right.
+
+`rotate` verifies itself. The helper's `orientation` command answers `true`
+once its GSEvent reaches `PurpleWorkspacePort` with `KERN_SUCCESS`, which is a
+statement about a mach message and nothing else, so the service reads the real
+framebuffer either side of the send instead. What that measurement showed
+(2026-09-21, on a machine with no `Simulator.app` installed at all):
+
+- the send always succeeds and the **device** orientation really does change —
+  rotation does not need `Simulator.app`;
+- whether the **screen** turns is the foreground app's decision. SpringBoard
+  and Settings on an iPhone are portrait-only, so four landscape rotates
+  reported success while the framebuffer stayed 1179x2556; Safari, launched
+  afterwards onto the already-turned device, came up at 2556x1179 on its first
+  frame;
+- `portrait-upside-down` is refused the same way on an iPhone.
+
+So `applied: true` means the framebuffer was seen on the requested axis.
+`applied: false` carries `reason`: `APPLE_ROTATE_NOT_ADOPTED` (the app kept its
+own orientation), `APPLE_ROTATE_SEND_FAILED` (the helper never delivered the
+event) or `APPLE_ROTATE_UNMEASURABLE` (the screen could not be read, so nothing
+is claimed). `verification: already-on-axis` means the screen was already on
+that axis — a 180-degree turn inside one axis leaves the pixel geometry
+identical and is deliberately not claimed.
 
 ### Auto-record contract
 

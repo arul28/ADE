@@ -121,6 +121,27 @@ describe("describeAppleError", () => {
     expect(stripIpcPrefix("boom")).toBe("boom");
   });
 
+  /*
+   * Rotation, which fails by being refused rather than by erroring. The
+   * service's `detail` is a whole explanation — the app kept its orientation,
+   * the Home Screen and Settings are portrait-only, no iPhone does upside
+   * down — so without these rules every refusal read "Something went wrong
+   * with the simulator", which is the silence the rail was meant to replace.
+   */
+  it("names each rotation outcome instead of falling back to the generic sentence", () => {
+    const cases = {
+      APPLE_ROTATE_NOT_ADOPTED: "The app on screen does not support that orientation.",
+      APPLE_ROTATE_SEND_FAILED: "The rotation never reached the device.",
+      APPLE_ROTATE_UNMEASURABLE: "The rotation could not be confirmed.",
+    };
+    for (const [code, sentence] of Object.entries(cases)) {
+      const described = describeAppleError(new Error(`${code}: the device turned and the app stayed portrait`));
+      expect(described.sentence, code).toBe(sentence);
+      expect(described.sentence, code).not.toBe(APPLE_GENERIC_ERROR_SENTENCE);
+      expect(described.detail, code).toContain("the app stayed portrait");
+    }
+  });
+
   it("carries a string or non-Error object's message into detail", () => {
     expect(describeAppleError("APPLE_STREAM_NOT_RUNNING: gone").detail).toBe("APPLE_STREAM_NOT_RUNNING: gone");
     expect(describeAppleError({ message: "Video stopped: APPLE_STREAM_NOT_RUNNING" }).sentence).toBe("Video stopped.");

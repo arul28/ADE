@@ -185,7 +185,13 @@ export function createAppleDeviceNamespace(
 
     deviceList: (async (args?: unknown) => call(
       "apple.deviceList",
-      { laneId: laneOf(args), installed: true },
+      {
+        laneId: laneOf(args),
+        installed: true,
+        // The picker's second, disk-only read has to reach the host too, or the
+        // web client's inventory line is the one surface with no disk number.
+        disk: (args as { disk?: unknown } | null | undefined)?.disk === true,
+      },
       unavailable(NO_HOST),
       true,
     )) as never,

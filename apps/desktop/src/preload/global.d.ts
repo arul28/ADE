@@ -2436,6 +2436,15 @@ declare global {
           args?: AppleDeviceStopArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AppleDeviceStopResult>;
+        /**
+         * What this Mac has, what this lane owns, and who holds the rest.
+         *
+         * `owners` carries every lane's binding with the owning lane's display
+         * name, so the picker can partition the installed list into mine /
+         * free / in use elsewhere instead of offering Open on a device another
+         * lane is mid-test in. `disk` is measured only when `args.disk` asks
+         * for it — the picker calls twice, cheap first.
+         */
         deviceList: (
           args?: AppleDeviceListArgs,
           pin?: OpenProjectBinding | null,

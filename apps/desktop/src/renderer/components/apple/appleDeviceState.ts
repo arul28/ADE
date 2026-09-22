@@ -376,12 +376,12 @@ export function appleOrientationFamily(
 /**
  * Which way up the device ACTUALLY is, read from the accessibility tree.
  *
- * There is no "read the orientation" call — `rotate` is write-only, and it
- * answers `applied: true` as soon as the GSEvent is sent, which is not the
- * same as iOS having turned. On a Mac with no `Simulator.app` (a trimmed
- * Xcode install has none) the event is accepted and nothing rotates at all.
- * A pane that believed the request then drew an upright picture on its side —
- * the very defect §V1 exists to remove, in reverse.
+ * There is no "read the orientation" call. `rotate` verifies itself now — the
+ * service reads the framebuffer either side of the send — but that only
+ * covers rotations ADE asked for. This is the free reading that catches the
+ * rest: a device someone turned before the pane opened, or an app that
+ * rotated itself. A pane that trusted its own last request instead drew an
+ * upright picture on its side, which is the defect §V1 exists to remove.
  *
  * The interface's own frames are the oracle: the app is laid out in the
  * orientation it is really in, so the widest element extent against the

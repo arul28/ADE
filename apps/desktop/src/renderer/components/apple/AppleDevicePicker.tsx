@@ -1,6 +1,11 @@
 import { useMemo, useState, type ReactNode } from "react";
 import type { Icon } from "@phosphor-icons/react";
-import type { AppleInstalledSimulator } from "../../../shared/types/iosSimulator";
+import type {
+  AppleDeviceDiskUsage,
+  AppleInstalledSimulator,
+  AppleLaneDevice,
+  AppleSimulatorOwner,
+} from "../../../shared/types/iosSimulator";
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
@@ -21,23 +26,63 @@ import {
   type AppleDeviceFamilyId,
 } from "./appleDeviceFamily";
 import { isAppleSimulatorBooted } from "./appleDeviceState";
+import {
+  appleDefaultTemplateUdid,
+  appleDeviceDiskLabel,
+  appleDiskLabel,
+  appleInventorySummary,
+  appleOwnerLaneLabel,
+  partitionApplePickerDevices,
+} from "./applePickerInventory";
 
 /**
- * The pane's front door (§B2).
+ * The pane's front door (§B2), rebuilt in round 5 to tell the truth.
  *
- * Round 2 shipped a flat black list under the heading "iOS Simulators" — a
- * different page language from the tools grid it opens out of, and a row that
- * said nothing about what "ADE Repro" actually was. This is the same page as
- * the tools grid: the violet mesh behind, `.ade-tool-card` cards on top, one
- * hero for the device you are most likely to want, then a section per family
- * so an iPad is never filed under iPhone, and every card carries its MODEL as
- * well as its name.
+ * The page language is unchanged and deliberate: the tools grid's violet mesh,
+ * its `.ade-tool-card` geometry, a device's MODEL alongside its name, a section
+ * per family so an iPad is never filed under iPhone. What changed is what the
+ * page CLAIMS.
+ *
+ * The owner opened it with five simulators installed and read four, because the
+ * hero was lifted out of its family and so read as something other than one of
+ * the five. Worse, that hero was not his lane's device at all — his lane had
+ * none, so the picker heroed "the newest installed iPhone", a card that says
+ * *your device* and is not. And it offered Open on a simulator another lane
+ * owned, with nothing on screen to say so; the same blind spot made an agent
+ * stop and ask him for permission instead of creating its own device.
+ *
+ * So, in order down the page:
+ *
+ * 1. ONE inventory line — the runtime by name, how many simulators share it,
+ *    how many are running, and what the lot costs on disk. It names the runtime
+ *    because one install serves any number of devices and nothing on screen
+ *    used to say so.
+ * 2. This lane's device, or a slot that says the lane has none and offers
+ *    Create. Never a fallback hero.
+ * 3. **Available** — installed, unowned, grouped by family, each Running or
+ *    Stopped, under one line saying a stopped one only needs a boot.
+ * 4. **In use elsewhere** — owned by another lane, NAMED, with no Open. Taking
+ *    one over sits behind a confirmation that names the lane it interrupts.
  *
  * Start and Open remain the same single click — attach, boot, stream.
  */
 
 export type AppleDevicePickerProps = {
   installed: readonly AppleInstalledSimulator[];
+  /**
+   * `deviceList().owners` — every lane's binding, this lane's flagged `mine`.
+   *
+   * Absent means "ownership unknown", which the page renders as everything
+   * being free. That is the round-4 behaviour and it is only reachable from a
+   * host too old to answer; the live payload always carries it.
+   */
+  owners?: readonly AppleSimulatorOwner[] | null;
+  /** `deviceList().lane` — this lane's device, or null when it owns none. */
+  laneDevice?: AppleLaneDevice | null;
+  /** `deviceList({ disk: true }).disk`, which lands after the first paint. */
+  disk?: AppleDeviceDiskUsage | null;
+  /** True while that second, disk-only read is in flight. */
+  measuringDisk?: boolean;
   /** The udid a start is in flight for, or `"create"` while cloning. */
   pending: string | null;
   /** The project's last used template, when there is one. */
@@ -77,12 +122,28 @@ function verbFor(simulator: AppleInstalledSimulator): "Open" | "Start" {
   return isAppleSimulatorBooted(simulator) ? "Open" : "Start";
 }
 
-function statusFor(simulator: AppleInstalledSimulator): string {
-  return `${simulator.runtime} · ${isAppleSimulatorBooted(simulator) ? "Running" : "Stopped"}`;
+/**
+ * `iOS 26.2 · Stopped · 3.2 GB`.
+ *
+ * Disk joins the same line rather than taking one of its own: it is measured
+ * lazily, and a line that appears from nowhere a second after the page paints
+ * reflows the whole list under the cursor.
+ */
+function statusFor(
+  simulator: AppleInstalledSimulator,
+  disk: AppleDeviceDiskUsage | null | undefined,
+): string {
+  const running = isAppleSimulatorBooted(simulator) ? "Running" : "Stopped";
+  const size = appleDeviceDiskLabel(disk, simulator.udid);
+  return size ? `${simulator.runtime} · ${running} · ${size}` : `${simulator.runtime} · ${running}`;
 }
 
 export function AppleDevicePicker({
   installed,
+  owners,
+  laneDevice,
+  disk,
+  measuringDisk = false,
   pending,
   lastUsedUdid,
   refreshing,
@@ -97,34 +158,29 @@ export function AppleDevicePicker({
     [installed],
   );
 
-  /**
-   * The hero: this lane's own template if it has one, else the newest iPhone —
-   * "newest" being the highest runtime string, which is what `iOS 26.2`
-   * compares as anyway.
-   */
-  const hero = useMemo(() => {
-    if (lastUsedUdid) {
-      const remembered = installed.find((entry) => entry.udid === lastUsedUdid);
-      if (remembered) return remembered;
-    }
-    const iphones = installed.filter((entry) => appleDeviceIdentity(entry).family === "iphone");
-    const pool = iphones.length > 0 ? iphones : installed;
-    return [...pool].sort((a, b) => b.runtime.localeCompare(a.runtime, undefined, { numeric: true }))[0]
-      ?? null;
-  }, [installed, lastUsedUdid]);
-
-  /*
-   * The hero is LIFTED out of its family, not copied above it. Two cards with
-   * the same name and the same button on one page is the reader wondering
-   * which of them is the real one — and a duplicate accessible name is a
-   * picker no screen reader can describe.
-   */
-  const groups = useMemo(
-    () => groupAppleSimulatorsByFamily(installed.filter((entry) => entry.udid !== hero?.udid)),
-    [hero?.udid, installed],
+  const inventory = useMemo(() => appleInventorySummary(installed), [installed]);
+  const partition = useMemo(
+    () => partitionApplePickerDevices({ installed, owners, laneDevice }),
+    [installed, laneDevice, owners],
   );
 
-  const defaultTemplate = hero?.udid ?? "";
+  /*
+   * Grouped WITHIN the Available section, and the section is the whole of what
+   * is available. Round 4 lifted its hero out of the family sections, so five
+   * installed devices rendered as one card plus four — which is what the owner
+   * counted. Nothing is lifted here: the lane's own device sits in its own
+   * labelled slot because it is a different KIND of thing, and every other
+   * installed device is inside a family group under a heading that counts.
+   */
+  const groups = useMemo(
+    () => groupAppleSimulatorsByFamily(partition.available),
+    [partition.available],
+  );
+
+  const defaultTemplate = useMemo(
+    () => appleDefaultTemplateUdid({ installed, lastUsedUdid, owners }),
+    [installed, lastUsedUdid, owners],
+  );
   const [source, setSource] = useState<string | null>(null);
   const selectedSource = source && templates.some((entry) => entry.udid === source)
     ? source
@@ -138,46 +194,88 @@ export function AppleDevicePicker({
         <EmptyCard refreshing={refreshing} onRefresh={onRefresh} />
       ) : (
         <>
-          {hero ? (
-            <HeroCard
-              simulator={hero}
-              pending={pending === hero.udid}
-              disabled={busy}
-              onStart={() => onStart(hero.udid)}
-            />
+          <InventoryLine
+            summary={inventory}
+            disk={disk}
+            measuring={measuringDisk}
+          />
+
+          <Section label="This lane's device" count={null}>
+            {partition.mine ? (
+              <HeroCard
+                simulator={partition.mine}
+                disk={disk}
+                pending={pending === partition.mine.udid}
+                disabled={busy}
+                onStart={() => partition.mine && onStart(partition.mine.udid)}
+              />
+            ) : (
+              <NoLaneDeviceCard
+                missing={partition.laneDeviceMissing ? laneDevice : null}
+                templates={templates}
+                value={selectedSource}
+                disabled={busy}
+                creating={pending === "create"}
+                onChange={setSource}
+                onCreate={() => selectedSource && onCreate(selectedSource)}
+              />
+            )}
+          </Section>
+
+          {groups.length > 0 ? (
+            <Section label="Available" count={partition.available.length}>
+              <p
+                data-apple-boot-hint=""
+                className="min-w-0 px-0.5 font-sans text-[11px] leading-4 text-fg/70"
+              >
+                A stopped simulator only needs a boot — starting one takes a few
+                seconds and downloads nothing.
+              </p>
+              {groups.map((group) => (
+                <div
+                  key={group.family}
+                  data-apple-family={group.family}
+                  className="flex min-w-0 flex-col gap-2"
+                >
+                  <h4 className="px-0.5 font-sans text-[11px] font-medium leading-4 text-fg/70">
+                    {group.label}
+                  </h4>
+                  <div
+                    className="grid min-w-0 gap-2"
+                    style={{ gridTemplateColumns: `repeat(auto-fit, minmax(min(100%, ${CARD_MIN_TRACK_PX}px), 1fr))` }}
+                  >
+                    {group.devices.map((simulator) => (
+                      <DeviceCard
+                        key={simulator.udid}
+                        simulator={simulator}
+                        family={group.family}
+                        disk={disk}
+                        pending={pending === simulator.udid}
+                        disabled={busy}
+                        onStart={() => onStart(simulator.udid)}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </Section>
           ) : null}
 
-          {groups.map((group) => (
-            <section key={group.family} aria-label={group.label} data-apple-family={group.family} className="flex min-w-0 flex-col gap-2">
-              <h3 className="px-0.5 font-sans text-[11px] font-medium uppercase tracking-[0.08em] text-muted-fg">
-                {group.label}
-              </h3>
-              <div
-                className="grid min-w-0 gap-2"
-                style={{ gridTemplateColumns: `repeat(auto-fit, minmax(min(100%, ${CARD_MIN_TRACK_PX}px), 1fr))` }}
-              >
-                {group.devices.map((simulator) => (
-                  <DeviceCard
-                    key={simulator.udid}
-                    simulator={simulator}
-                    family={group.family}
-                    pending={pending === simulator.udid}
-                    disabled={busy}
-                    onStart={() => onStart(simulator.udid)}
-                  />
-                ))}
-              </div>
-            </section>
-          ))}
-
-          <CreateCard
-            templates={templates}
-            value={selectedSource}
-            disabled={busy}
-            creating={pending === "create"}
-            onChange={setSource}
-            onCreate={() => selectedSource && onCreate(selectedSource)}
-          />
+          {partition.elsewhere.length > 0 ? (
+            <Section label="In use elsewhere" count={partition.elsewhere.length}>
+              {partition.elsewhere.map((entry) => (
+                <ElsewhereCard
+                  key={entry.simulator.udid}
+                  simulator={entry.simulator}
+                  owner={entry.owner}
+                  disk={disk}
+                  pending={pending === entry.simulator.udid}
+                  disabled={busy}
+                  onTakeOver={() => onStart(entry.simulator.udid)}
+                />
+              ))}
+            </Section>
+          ) : null}
 
           <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 px-0.5">
             <p className="min-w-0 font-sans text-[11px] leading-4 text-muted-fg">
@@ -222,18 +320,106 @@ function PickerPage({
   );
 }
 
+/** One labelled group of the page, with its own count where a count helps. */
+function Section({
+  label,
+  count,
+  children,
+}: {
+  label: string;
+  count: number | null;
+  children: ReactNode;
+}) {
+  return (
+    <section
+      aria-label={label}
+      data-apple-picker-section={label}
+      className="flex min-w-0 flex-col gap-2"
+    >
+      <h3 className="flex min-w-0 items-center gap-1.5 px-0.5 font-sans text-[11px] font-medium uppercase tracking-[0.08em] text-muted-fg">
+        <span className="min-w-0">{label}</span>
+        {count === null ? null : (
+          <span data-apple-section-count="" className="shrink-0 font-normal normal-case tracking-normal text-fg/60">
+            {count}
+          </span>
+        )}
+      </h3>
+      {children}
+    </section>
+  );
+}
+
 /**
- * The one device the lane is most likely to want, at twice the size of the
- * rest, with one primary button. Wraps to a column below ~360px rather than
- * squeezing the button off the right edge.
+ * The one line at the top of the page.
+ *
+ * `iOS 26.3 · 5 simulators installed · 2 running`, then the disk total and the
+ * sentence the owner did not know. Solid rather than the picker's 82% card:
+ * this is the page's statement of fact, not one of the things you are choosing
+ * between, and it never lifts under the cursor because it is not a target.
+ */
+function InventoryLine({
+  summary,
+  disk,
+  measuring,
+}: {
+  summary: ReturnType<typeof appleInventorySummary>;
+  disk: AppleDeviceDiskUsage | null | undefined;
+  measuring: boolean;
+}) {
+  const total = appleDiskLabel(disk?.totalBytes);
+  return (
+    <div
+      data-apple-inventory=""
+      className="ade-tool-card ade-tool-card-solid flex min-w-0 flex-col gap-1 p-3"
+    >
+      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+        <p
+          data-apple-inventory-line=""
+          className="min-w-0 break-words font-sans text-[12px] font-medium leading-4 text-fg"
+        >
+          {summary.text}
+        </p>
+        {total ? (
+          <p
+            data-apple-inventory-disk=""
+            className="min-w-0 shrink-0 font-sans text-[12px] leading-4 text-muted-fg"
+          >
+            {`${total} of device data`}
+          </p>
+        ) : measuring ? (
+          <p
+            data-apple-inventory-disk="measuring"
+            className="min-w-0 shrink-0 font-sans text-[12px] leading-4 text-muted-fg"
+          >
+            Measuring disk…
+          </p>
+        ) : null}
+      </div>
+      <p className="min-w-0 break-words font-sans text-[11px] leading-4 text-muted-fg">
+        One runtime install serves any number of simulators — adding a device
+        costs disk, never another download.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * This lane's device, at twice the size of the rest, with one primary button.
+ *
+ * Reached ONLY when the lane really owns the simulator on it. There is no
+ * fallback: a card of this weight saying *your device* about a device the lane
+ * does not own is the round-5 defect, and the cure is that this component is
+ * unreachable without an owned udid.
  */
 function HeroCard({
   simulator,
+  disk,
   pending,
   disabled,
   onStart,
 }: {
   simulator: AppleInstalledSimulator;
+  disk: AppleDeviceDiskUsage | null | undefined;
   pending: boolean;
   disabled: boolean;
   onStart: () => void;
@@ -243,7 +429,7 @@ function HeroCard({
   const verb = verbFor(simulator);
   return (
     <div
-      data-apple-hero-card=""
+      data-apple-hero-card={simulator.udid}
       className="ade-tool-card flex min-w-0 flex-wrap items-center gap-x-4 gap-y-3 p-4"
     >
       <Glyph size={44} aria-hidden="true" className="shrink-0 text-fg/70" />
@@ -256,7 +442,9 @@ function HeroCard({
             {identity.model}
           </p>
         ) : null}
-        <p className="min-w-0 font-sans text-[11px] leading-4 text-muted-fg">{statusFor(simulator)}</p>
+        <p className="min-w-0 break-words font-sans text-[11px] leading-4 text-muted-fg">
+          {statusFor(simulator, disk)}
+        </p>
       </div>
       <Button
         variant="primary"
@@ -273,16 +461,95 @@ function HeroCard({
   );
 }
 
-/** One family row's card. The whole card is the button — one click, one device. */
+/**
+ * The lane owns nothing — said plainly, with the one button that fixes it.
+ *
+ * This slot is where round 4 put a device belonging to nobody in particular.
+ * It now says which it is, and the create control it used to hold at the foot
+ * of the page lives here, because "this lane has no device" and "make one" are
+ * one thought.
+ */
+function NoLaneDeviceCard({
+  missing,
+  templates,
+  value,
+  disabled,
+  creating,
+  onChange,
+  onCreate,
+}: {
+  /** Set when the lane's registry row points at a simulator that is gone. */
+  missing: AppleLaneDevice | null | undefined;
+  templates: readonly AppleInstalledSimulator[];
+  value: string;
+  disabled: boolean;
+  creating: boolean;
+  onChange: (udid: string) => void;
+  onCreate: () => void;
+}) {
+  return (
+    <div
+      data-apple-no-lane-device=""
+      className="ade-tool-card ade-tool-card-solid flex min-w-0 flex-col gap-2 p-4"
+    >
+      <p className="min-w-0 break-words font-sans text-[13px] font-medium leading-5 text-fg">
+        {missing
+          ? `${missing.name} is registered to this lane but is not installed any more.`
+          : "This lane has no Apple device yet."}
+      </p>
+      <p className="min-w-0 break-words font-sans text-[11px] leading-4 text-muted-fg">
+        {missing
+          ? "Create a fresh one, or start any available device below to bind it to this lane."
+          : "Create one of its own, or start any available device below to bind it to this lane."}
+      </p>
+      <div className="flex min-w-0 flex-wrap items-center gap-2 pt-0.5">
+        <label className="sr-only" htmlFor="apple-picker-source">
+          Device to copy
+        </label>
+        <select
+          id="apple-picker-source"
+          value={value}
+          disabled={disabled}
+          onChange={(event) => onChange(event.target.value)}
+          className={cn(
+            "h-7 min-w-0 flex-1 basis-40 rounded-md border border-border bg-surface px-2",
+            "font-sans text-[11px] text-fg disabled:opacity-50",
+          )}
+        >
+          {templates.map((entry) => (
+            <option key={entry.udid} value={entry.udid}>
+              {`${appleDeviceModelLine(entry)} · ${entry.runtime}`}
+            </option>
+          ))}
+        </select>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={disabled || !value}
+          aria-label="Create a new simulator for this lane"
+          onClick={onCreate}
+          className="shrink-0"
+        >
+          {creating ? <Spinner /> : null}
+          Create
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** One available device. The whole card is the button — one click, one device. */
 function DeviceCard({
   simulator,
   family,
+  disk,
   pending,
   disabled,
   onStart,
 }: {
   simulator: AppleInstalledSimulator;
   family: AppleDeviceFamilyId;
+  disk: AppleDeviceDiskUsage | null | undefined;
   pending: boolean;
   disabled: boolean;
   onStart: () => void;
@@ -325,66 +592,118 @@ function DeviceCard({
           </span>
         ) : null}
         <span className="min-w-0 break-words font-sans text-[11px] leading-4 text-muted-fg">
-          {statusFor(simulator)}
+          {statusFor(simulator, disk)}
         </span>
       </button>
     </PaneTooltip>
   );
 }
 
-/** The last card: a device type and one verb. Never a row inside a list. */
-function CreateCard({
-  templates,
-  value,
+/**
+ * A device another lane is driving.
+ *
+ * Never a target. It carries the owning lane's NAME, it has no Open and no
+ * Start, and it is not a button — which is the fix for the picker that offered
+ * the owner "Open" on a simulator lane `dca9f144` was mid-test in. Taking it
+ * over is possible, because two lanes wanting one device is a real situation
+ * and refusing outright would leave the user in Xcode; but it costs a second
+ * click behind a sentence that names the lane it interrupts.
+ *
+ * What the confirmation promises is what `laneDeviceRegistry.deviceAttach`
+ * does: the binding MOVES. The losing lane's row is re-keyed to this lane in
+ * one statement and its stream and session are released first, so the two
+ * lanes never both own the device — and the simulator is left running, because
+ * the lane taking it over is about to stream that same device.
+ */
+function ElsewhereCard({
+  simulator,
+  owner,
+  disk,
+  pending,
   disabled,
-  creating,
-  onChange,
-  onCreate,
+  onTakeOver,
 }: {
-  templates: readonly AppleInstalledSimulator[];
-  value: string;
+  simulator: AppleInstalledSimulator;
+  owner: AppleSimulatorOwner;
+  disk: AppleDeviceDiskUsage | null | undefined;
+  pending: boolean;
   disabled: boolean;
-  creating: boolean;
-  onChange: (udid: string) => void;
-  onCreate: () => void;
+  onTakeOver: () => void;
 }) {
+  const identity = appleDeviceIdentity(simulator);
+  const Glyph = FAMILY_GLYPH[identity.family];
+  const [confirming, setConfirming] = useState(false);
+  const laneLabel = appleOwnerLaneLabel(owner);
   return (
-    <div data-apple-create-card="" className="ade-tool-card flex min-w-0 flex-col gap-2 p-4">
-      <p className="min-w-0 font-sans text-[13px] font-medium leading-5 text-fg">
-        New simulator for this lane
-      </p>
-      <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <label className="sr-only" htmlFor="apple-picker-source">
-          Device to copy
-        </label>
-        <select
-          id="apple-picker-source"
-          value={value}
-          disabled={disabled}
-          onChange={(event) => onChange(event.target.value)}
-          className={cn(
-            "h-7 min-w-0 flex-1 basis-40 rounded-md border border-border bg-surface px-2",
-            "font-sans text-[11px] text-fg disabled:opacity-50",
-          )}
+    <div
+      data-apple-elsewhere-card={simulator.udid}
+      className="ade-tool-card ade-tool-card-solid flex min-w-0 flex-col gap-2 p-3"
+    >
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+        <Glyph size={16} aria-hidden="true" className="shrink-0 text-muted-fg" />
+        <span className="min-w-0 flex-1 basis-32 break-words font-sans text-[13px] font-medium leading-5 text-fg">
+          {simulator.name}
+        </span>
+        <span
+          data-apple-owner-lane={owner.laneId}
+          className="min-w-0 shrink-0 font-sans text-[11px] leading-4 text-warning"
         >
-          {templates.map((entry) => (
-            <option key={entry.udid} value={entry.udid}>
-              {`${appleDeviceModelLine(entry)} · ${entry.runtime}`}
-            </option>
-          ))}
-        </select>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={disabled || !value}
-          aria-label="Create a new simulator for this lane"
-          onClick={onCreate}
-          className="shrink-0"
-        >
-          {creating ? <Spinner /> : null}
-          Create
-        </Button>
+          {`In use by ${laneLabel}`}
+        </span>
       </div>
+      {identity.renamed && identity.model ? (
+        <span
+          data-apple-model-line=""
+          className="min-w-0 break-words font-sans text-[11px] leading-4 text-fg/70"
+        >
+          {identity.model}
+        </span>
+      ) : null}
+      <span className="min-w-0 break-words font-sans text-[11px] leading-4 text-muted-fg">
+        {statusFor(simulator, disk)}
+      </span>
+      {confirming ? (
+        <div data-apple-takeover-confirm="" className="flex min-w-0 flex-col gap-2 pt-0.5">
+          <p className="min-w-0 break-words font-sans text-[11px] leading-4 text-fg">
+            {`Take ${simulator.name} from ${laneLabel}? That lane loses the device and its live view — the simulator itself keeps running.`}
+          </p>
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={disabled}
+              onClick={() => setConfirming(false)}
+              className="shrink-0"
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={disabled}
+              aria-label={`Take ${simulator.name} from ${laneLabel}`}
+              onClick={onTakeOver}
+              className="shrink-0"
+            >
+              {pending ? <Spinner /> : null}
+              Take over
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex min-w-0 flex-wrap items-center gap-2 pt-0.5">
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={disabled}
+            aria-label={`Take over ${simulator.name}`}
+            onClick={() => setConfirming(true)}
+            className="shrink-0"
+          >
+            Take over…
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
@@ -394,14 +713,15 @@ function EmptyCard({ refreshing, onRefresh }: { refreshing: boolean; onRefresh: 
   return (
     <div
       data-apple-picker-empty=""
-      className="ade-tool-card flex min-w-0 flex-col items-center gap-3 p-6 text-center"
+      className="ade-tool-card ade-tool-card-solid flex min-w-0 flex-col items-center gap-3 p-6 text-center"
     >
       <AppleLogo size={28} aria-hidden="true" className="text-muted-fg/60" />
       <p className="min-w-0 font-sans text-sm font-medium text-fg">
         No Apple simulators are installed.
       </p>
       <p className="min-w-0 max-w-xs font-sans text-xs leading-5 text-muted-fg">
-        Install one in Xcode → Settings → Components.
+        Install one in Xcode → Settings → Components. One runtime install then
+        serves as many simulators as you care to make.
       </p>
       <RefreshButton refreshing={refreshing} onRefresh={onRefresh} />
     </div>

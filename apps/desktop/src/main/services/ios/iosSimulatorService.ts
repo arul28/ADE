@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { execFile as execFileCallback, spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type {
@@ -20,6 +21,7 @@ import type {
   ApplePressButtonArgs,
   ApplePressButtonResult,
   AppleRotateArgs,
+  AppleRotateFrame,
   AppleRotateResult,
   AppleScrollArgs,
   AppleScrollDirection,
@@ -109,6 +111,9 @@ import {
   APPLE_AGENT_ACTIONS,
   APPLE_BUTTON_UNSUPPORTED_CODE,
   APPLE_DEVICE_ORIENTATIONS,
+  APPLE_ROTATE_NOT_ADOPTED_CODE,
+  APPLE_ROTATE_SEND_FAILED_CODE,
+  APPLE_ROTATE_UNMEASURABLE_CODE,
   APPLE_SCROLL_DIRECTIONS,
   APPLE_HARDWARE_BUTTONS,
   APPLE_STREAM_NOT_RUNNING_CODE,
@@ -195,6 +200,60 @@ function isAppleHardwareButtonName(value: string): value is AppleHardwareButtonN
 
 function isAppleDeviceOrientation(value: string): value is AppleDeviceOrientation {
   return (APPLE_DEVICE_ORIENTATIONS as readonly string[]).includes(value);
+}
+
+/**
+ * Portrait and upside-down are one axis; the two landscapes are the other.
+ *
+ * The axis is all the framebuffer can tell you, because a 180-degree turn
+ * inside one axis produces exactly the same pixel geometry. Naming that limit
+ * here keeps `rotate` from pretending otherwise.
+ */
+function appleOrientationAxis(orientation: AppleDeviceOrientation): "portrait" | "landscape" {
+  return orientation === "landscape-left" || orientation === "landscape-right" ? "landscape" : "portrait";
+}
+
+function frameAxis(frame: AppleRotateFrame): "portrait" | "landscape" | null {
+  if (frame.width <= 0 || frame.height <= 0) return null;
+  if (frame.width === frame.height) return null;
+  return frame.width > frame.height ? "landscape" : "portrait";
+}
+
+/** How long to let iOS finish a rotation before calling it refused. */
+const APPLE_ROTATE_SETTLE_TIMEOUT_MS = 3_000;
+
+/**
+ * The framebuffer's pixel size, read from the device rather than from ADE.
+ *
+ * `simctl io screenshot` is the reading, not `simctl io enumerate`: enumerate
+ * reports the display's NATIVE surface and does not move with the interface
+ * (measured 2026-09-21 on a device sitting in landscape — screenshot said
+ * 2622x1206, enumerate still said 1206x2622). The screenshot round-trip costs
+ * about 390ms, which is the price of an answer that is true.
+ *
+ * Returns null when the reading cannot be taken at all, so a caller can say
+ * "do not know" instead of guessing.
+ */
+async function readSimulatorFramebufferGeometry(deviceUdid: string): Promise<AppleRotateFrame | null> {
+  const probePath = path.join(
+    os.tmpdir(),
+    `ade-orientation-probe-${randomUUID().slice(0, 8)}.png`,
+  );
+  try {
+    await run("xcrun", ["simctl", "io", deviceUdid, "screenshot", "--type=png", probePath], {
+      timeoutMs: 15_000,
+    });
+    const buffer = await fs.promises.readFile(probePath);
+    const dimensions = pngDimensions(buffer);
+    if (!dimensions?.width || !dimensions.height) return null;
+    return { width: dimensions.width, height: dimensions.height };
+  } catch {
+    return null;
+  } finally {
+    // A probe is not an artifact. Leaving multi-megabyte PNGs in the temp dir
+    // once per rotate is how a machine that is already short on disk runs out.
+    await fs.promises.rm(probePath, { force: true }).catch(() => {});
+  }
 }
 
 function isAppleScrollDirection(value: string): value is AppleScrollDirection {
@@ -2319,6 +2378,56 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     resolveLaneName: args.resolveLaneName ?? null,
     store: args.laneDeviceStore ?? null,
     logger: args.logger,
+    /**
+     * A lane is losing its device to another lane's takeover.
+     *
+     * What is released: the lane's live stream, its chat session claim, and
+     * its hub device session. What is NOT: the simulator's power. A takeover
+     * hands the running device over as it stands — the lane taking it is about
+     * to stream the same udid, and powering it off just to boot it again would
+     * cost the user the device's state for nothing.
+     *
+     * Deferred by design (this runs long after construction), and never
+     * allowed to fail the move: the registry logs a rejection and re-keys the
+     * binding anyway, because a stream that will not stop must not leave one
+     * simulator owned by two lanes.
+     */
+    releaseLaneDevice: async (device) => {
+      const runtime = runtimes.get(laneKey(device.laneId));
+      if (!runtime) return;
+      await shutdown({ laneId: runtime.laneId, ignoreOwnership: true }).catch((error: unknown) => {
+        args.logger.debug("apple.takeover_shutdown_failed", {
+          laneId: device.laneId,
+          udid: device.udid,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return { released: false, previousSession: null };
+      });
+      if (runtime.hub?.getDeviceSession()?.deviceUdid === device.udid) {
+        await runtime.hub.closeDevice({
+          deviceUdid: device.udid,
+          chatSessionId: null,
+          ignoreOwnership: true,
+          // The new owner is about to drive this device. Powering it off here
+          // would be a takeover that hands over a dead simulator.
+          shutdownDevice: false,
+        }).catch((error: unknown) => {
+          args.logger.debug("apple.takeover_close_device_failed", {
+            laneId: device.laneId,
+            udid: device.udid,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }
+      invalidateStatus(runtime);
+      // `released`, not `stopped`: the device is still running, it is just not
+      // this lane's any more, and this lane has to re-list to find that out.
+      emit({ type: "apple.device.state", laneId: device.laneId, udid: device.udid, phase: "released" });
+      args.logger.info("apple.lane_device_released_for_takeover", {
+        laneId: device.laneId,
+        udid: device.udid,
+      });
+    },
   });
 
   /**
@@ -5108,10 +5217,24 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
 
   /**
-   * Set the device orientation through the helper's `orientation` command.
+   * Set the device orientation, and then go and look.
    *
-   * The helper answers `applied: false` when Simulator.app is not running
-   * (GSEvent needs PurpleWorkspacePort). That is a result, not an error.
+   * The helper's `orientation` command answers `true` when its GSEvent reached
+   * `PurpleWorkspacePort` with `KERN_SUCCESS` — a statement about a mach
+   * message, not about iOS. Measured on 2026-09-21, on a machine with no
+   * `Simulator.app` installed anywhere:
+   *
+   * - the send always succeeds and the DEVICE orientation really does change;
+   * - whether the SCREEN turns is the foreground app's decision. SpringBoard
+   *   and Settings on an iPhone are portrait-only, so four landscape rotates
+   *   reported success and left the framebuffer at 1179x2556; Safari, launched
+   *   afterwards onto the already-turned device, came up at 2556x1179;
+   * - `portrait-upside-down` is refused the same way on an iPhone.
+   *
+   * So `applied` is decided by the framebuffer: read it, send, then wait for it
+   * to land on the requested axis. A rotation nobody can see is reported as
+   * `applied: false` with a reason, because the alternative is a viewer that
+   * draws an upright screen on its side.
    */
   const rotate = async (rotateArgs: AppleRotateArgs): Promise<AppleRotateResult> => {
     assertDarwin();
@@ -5124,10 +5247,79 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const runtime = resolveRuntime(rotateArgs);
     const deviceUdid = await resolveControlDeviceUdid(rotateArgs.deviceUdid, runtime);
     const value = HELPER_ORIENTATION_VALUE[rawOrientation];
+    const wantedAxis = appleOrientationAxis(rawOrientation);
     return enqueueControl("rotate", async () => {
+      const frameBefore = await readSimulatorFramebufferGeometry(deviceUdid);
       const payload = await helper().send({ type: "orientation", udid: deviceUdid, value });
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
-      return { applied: payload.applied === true };
+      if (payload.applied !== true) {
+        return {
+          applied: false,
+          orientation: rawOrientation,
+          verification: "send-failed",
+          reason: APPLE_ROTATE_SEND_FAILED_CODE,
+          detail: "The simulator helper could not deliver the orientation event to this device.",
+          frameBefore,
+          frameAfter: null,
+        };
+      }
+      const axisBefore = frameBefore ? frameAxis(frameBefore) : null;
+      if (!axisBefore) {
+        // No reading means no claim. The event went out and may well have been
+        // taken; saying `applied: true` on that basis is the bug this replaced.
+        return {
+          applied: false,
+          orientation: rawOrientation,
+          verification: "unmeasurable",
+          reason: APPLE_ROTATE_UNMEASURABLE_CODE,
+          detail: "The orientation event was sent, but this device's screen could not be read, so nothing is confirmed.",
+          frameBefore,
+          frameAfter: null,
+        };
+      }
+      if (axisBefore === wantedAxis) {
+        return {
+          applied: true,
+          orientation: rawOrientation,
+          verification: "already-on-axis",
+          reason: null,
+          detail: `The screen is ${wantedAxis}. A turn within ${wantedAxis} leaves the same pixel size, so the exact side is not confirmed.`,
+          frameBefore,
+          frameAfter: frameBefore,
+        };
+      }
+      const deadline = Date.now() + APPLE_ROTATE_SETTLE_TIMEOUT_MS;
+      let frameAfter = frameBefore;
+      for (;;) {
+        const reading = await readSimulatorFramebufferGeometry(deviceUdid);
+        if (reading) {
+          frameAfter = reading;
+          if (frameAxis(reading) === wantedAxis) {
+            return {
+              applied: true,
+              orientation: rawOrientation,
+              verification: "rotated",
+              reason: null,
+              detail: null,
+              frameBefore,
+              frameAfter,
+            };
+          }
+        }
+        if (Date.now() >= deadline) break;
+        // A reading that failed outright costs nothing, so pace the loop
+        // rather than spinning through the whole budget in one tick.
+        await delay(150);
+      }
+      return {
+        applied: false,
+        orientation: rawOrientation,
+        verification: "not-adopted",
+        reason: APPLE_ROTATE_NOT_ADOPTED_CODE,
+        detail: `The device turned to ${rawOrientation}, and the app on screen stayed ${axisBefore}. iOS only rotates the screen for an app that supports that orientation — the Home Screen and Settings are portrait-only on an iPhone, and no iPhone supports portrait upside down.`,
+        frameBefore,
+        frameAfter,
+      };
     });
   };
 
@@ -5471,7 +5663,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     // No `assertDarwin`: a Windows caller asking what is installed should get
     // an empty list and the lane's (absent) device, not an exception.
     const runtime = resolveRuntime(deviceArgs);
-    return laneDevices.deviceList({ installed: deviceArgs.installed, laneId: runtime.key || null });
+    return laneDevices.deviceList({
+      installed: deviceArgs.installed,
+      laneId: runtime.key || null,
+      // Opt-in: the picker paints its list from the cheap call and asks for the
+      // numbers afterwards, so a `du` over a 20 GB device store never sits in
+      // front of the first frame of the page.
+      disk: deviceArgs.disk,
+    });
   };
 
   const deviceDelete = async (deviceArgs: AppleDeviceDeleteArgs = {}): Promise<void> => {

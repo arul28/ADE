@@ -8,10 +8,12 @@ import React, {
 } from "react";
 import { AppleLogo } from "../ui/appleIcons";
 import type {
+  AppleDeviceDiskUsage,
   AppleDeviceOrientation,
   AppleDeviceStartArgs,
   AppleInstalledSimulator,
   AppleLaneDevice,
+  AppleSimulatorOwner,
   IosElementContextItem,
   IosSimulatorStatus,
   OpenProjectBinding,
@@ -116,6 +118,18 @@ export function AppleDevicePane({
   const [status, setStatus] = useState<IosSimulatorStatus | null>(null);
   const [installed, setInstalled] = useState<AppleInstalledSimulator[]>([]);
   const [laneDevice, setLaneDevice] = useState<AppleLaneDevice | null>(null);
+  /**
+   * Who owns the OTHER installed simulators (round 5's picker).
+   *
+   * The picker cannot tell a free device from one lane B is mid-test in
+   * without this, which is how it came to offer Open on a device it should
+   * not have — and how an agent came to ask a human for permission instead of
+   * creating its own.
+   */
+  const [owners, setOwners] = useState<AppleSimulatorOwner[]>([]);
+  /** Measured by a SECOND `deviceList`, after the list has painted. */
+  const [disk, setDisk] = useState<AppleDeviceDiskUsage | null>(null);
+  const [measuringDisk, setMeasuringDisk] = useState(false);
   const [listNonce, setListNonce] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -235,6 +249,30 @@ export function AppleDevicePane({
         if (cancelled) return;
         setInstalled(next.installed);
         setLaneDevice(next.lane);
+        setOwners(next.owners ?? []);
+        /*
+         * Disk is the picker's line and nothing else's, and the picker is on
+         * screen exactly when this lane owns no device. So it is asked for in
+         * a second, `installed: false` call that only measures — the first
+         * call must not wait behind a `du` over a 20 GB device store, which
+         * on this owner's machine is the difference between a list that
+         * paints and a list that hangs.
+         */
+        if (next.lane || next.installed.length === 0) return;
+        setMeasuringDisk(true);
+        void window.ade.iosSimulator
+          .deviceList(
+            { laneId, chatSessionId: sessionId, installed: false, disk: true },
+            runtimePinRef.current,
+          )
+          .then((measured) => {
+            if (!cancelled) setDisk(measured.disk ?? null);
+          })
+          // A measurement that fails costs the line its number, never the page.
+          .catch(() => undefined)
+          .finally(() => {
+            if (!cancelled) setMeasuringDisk(false);
+          });
       })
       .catch((cause: unknown) => {
         if (!cancelled) setError(cause);
@@ -300,6 +338,14 @@ export function AppleDevicePane({
           if (event.laneId && laneId && event.laneId !== laneId) return;
           if (event.phase === "failed") {
             setStartError(new Error(event.detail ?? "The device did not start."));
+            return;
+          }
+          if (event.phase === "released") {
+            // Another lane took this device over. The binding is gone, so the
+            // only honest thing this pane can do is re-read it — which lands
+            // on the picker rather than on "Video stopped" over a device that
+            // is still running for somebody else.
+            refreshList();
             return;
           }
           setLoadingStage(event.phase === "streaming" ? "streaming" : "starting");
@@ -561,48 +607,39 @@ export function AppleDevicePane({
   /**
    * §V2: rotate TO an orientation, and believe the DEVICE rather than the call.
    *
-   * `rotate` is write-only and answers `applied: true` the moment the GSEvent
-   * is sent, which is not the same as iOS having turned: on a Mac whose Xcode
-   * ships no `Simulator.app` the event is accepted and the device does not
-   * move at all (measured on the owner's own machine, 2026-09-21 — the
-   * accessibility tree still read 393×852 after a landscape rotate that
-   * reported success). Turning the picture on that answer would draw an
-   * upright screen on its side, which is the defect §V1 exists to remove.
+   * The verification now lives in the service, which reads the real
+   * framebuffer before and after the send and only answers `applied: true`
+   * when the screen was observed on the requested axis — so the CLI, agents
+   * and this pane all get the same truth instead of each guessing. `detail`
+   * is written to be shown as-is: when iOS takes the device orientation and
+   * the foreground app keeps its own (the Home Screen and Settings are
+   * portrait-only on an iPhone, and no iPhone does portrait upside down) that
+   * sentence is the one thing the rail can usefully say.
    *
-   * So the picture follows the interface's own frames, read once after the
-   * request. A snapshot that cannot be taken falls back to trusting the
-   * request — that is round 4's behaviour, so a device this cannot measure is
-   * no worse off than before.
+   * The picture is only turned on a confirmed rotation. Turning it on the
+   * request would draw an upright screen on its side, which is the defect §V1
+   * exists to remove.
    */
   const rotateTo = useCallback((next: AppleDeviceOrientation) => {
     if (!appleInputAllowed(state) || !deviceUdid) return;
     setRotating(true);
     void window.ade.iosSimulator
       .rotate({ orientation: next, laneId, deviceUdid }, runtimePinRef.current)
-      .then(async (result) => {
-        if (result?.applied === false) {
-          throw new Error("The simulator did not rotate. Its window has to be open for that.");
-        }
-        let observed: "portrait" | "landscape" | null = null;
-        try {
-          const snapshot = await window.ade.iosSimulator.getScreenSnapshot(
-            { deviceUdid, laneId, projectRoot },
-            runtimePinRef.current,
-          );
-          observed = appleObservedOrientationFamily(snapshot.elements ?? []);
-        } catch {
-          // Unreadable tree: trust the request, exactly as round 4 did.
-        }
-        if (observed && observed !== appleOrientationFamily(next)) {
-          throw new Error(
-            `The simulator stayed ${observed}. It did not take the rotation, so the picture has been left alone.`,
-          );
+      .then((result) => {
+        if (result?.applied !== true) {
+          // The reason CODE leads, because `describeAppleError` matches on it
+          // and would otherwise fall back to "Something went wrong" — which is
+          // the silence §3 is here to remove. `detail` stays in the message so
+          // the strip's `Details` still carries the whole explanation.
+          const reason = result?.reason ?? "";
+          const detail = result?.detail ?? "The simulator did not rotate, and it did not say why.";
+          throw new Error(reason ? `${reason}: ${detail}` : detail);
         }
         setOrientation(next);
       })
       .catch((cause: unknown) => setError(cause))
       .finally(() => setRotating(false));
-  }, [deviceUdid, laneId, projectRoot, state]);
+  }, [deviceUdid, laneId, state]);
 
   const float = useCallback(() => {
     if (!deviceUdid || !laneDevice) return;
@@ -680,6 +717,10 @@ export function AppleDevicePane({
         return (
           <AppleDevicePicker
             installed={installed}
+            owners={owners}
+            laneDevice={laneDevice}
+            disk={disk}
+            measuringDisk={measuringDisk}
             pending={pendingStart}
             lastUsedUdid={laneDevice?.templateUdid ?? null}
             refreshing={refreshing}

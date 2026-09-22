@@ -1204,6 +1204,21 @@ function encodeTargetId(parts: string[]): string {
   return Buffer.from(parts.join("|")).toString("base64url");
 }
 
+/**
+ * The 24 bytes of a PNG that `pngDimensions` reads.
+ *
+ * `rotate` decides `applied` from the framebuffer's pixel size, so a test that
+ * wrote the run mock's usual "not-a-real-png" placeholder would exercise only
+ * the unreadable-screen path.
+ */
+function makeTestPng(width: number, height: number): Buffer {
+  const buffer = Buffer.alloc(24);
+  buffer.write("\x89PNG\r\n\x1a\n", 0, "binary");
+  buffer.writeUInt32BE(width, 16);
+  buffer.writeUInt32BE(height, 20);
+  return buffer;
+}
+
 function simulatorRunMock(options: {
   projectName?: string;
   bundleId?: string;
@@ -2125,17 +2140,50 @@ describe("iosSimulatorService screenshots and platform guards", () => {
     }
   });
 
-  it("rotates through the helper and passes applied through", async () => {
+  /**
+   * `rotate` reports what the SCREEN did, never what was sent.
+   *
+   * The helper answers `applied: true` once its GSEvent reaches
+   * `PurpleWorkspacePort` with `KERN_SUCCESS`, which says a mach message left
+   * the host and nothing more. Measured on a machine with no `Simulator.app`
+   * installed: the device orientation really does change, and whether the
+   * screen follows is the foreground app's decision — SpringBoard and Settings
+   * on an iPhone are portrait-only, so four landscape rotates all reported
+   * success with the framebuffer still at 1179x2556. These cases pin each of
+   * the five answers the service is allowed to give.
+   */
+  it("rotates only when the framebuffer is observed turning, and names the reason when it does not", async () => {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-rotate-`);
-    const { run } = simulatorRunMock();
+    // The screen the fake device is showing, in framebuffer pixels. The test
+    // moves this to say whether iOS took the rotation.
+    let screen: { width: number; height: number } | "unreadable" = { width: 1179, height: 2556 };
+    let helperApplied = true;
+    const screenshots: string[] = [];
+    const run = vi.fn(async (command: string, commandArgs: string[]) => {
+      if (command === "xcrun" && commandArgs.join(" ") === "simctl list devices available --json") {
+        return { stdout: simulatorDevicesJson, stderr: "" };
+      }
+      if (command === "xcrun" && commandArgs[1] === "io" && commandArgs[3] === "screenshot") {
+        const outPath = commandArgs[commandArgs.length - 1];
+        screenshots.push(outPath);
+        if (screen === "unreadable") {
+          fs.writeFileSync(outPath, "not-a-real-png");
+          return { stdout: "", stderr: "" };
+        }
+        fs.writeFileSync(outPath, makeTestPng(screen.width, screen.height));
+        return { stdout: "", stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    });
     const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
     const helper = fakeSimHelper({
       onSend: (command) => {
-        if (command.type === "orientation") {
-          return { applied: command.value === 4 };
-        }
-        return {};
+        if (command.type !== "orientation") return {};
+        // iOS accepts the device orientation whatever the app does, which is
+        // exactly why the send cannot be the answer.
+        if (helperApplied && command.value === 4) screen = { width: 2556, height: 1179 };
+        return { applied: helperApplied };
       },
     });
     const restoreHelper = __testSetIosSimulatorHelperFactory(() => helper.client);
@@ -2159,7 +2207,7 @@ describe("iosSimulatorService screenshots and platform guards", () => {
 
     try {
       // landscape-left is helper value 4 (UIInterfaceOrientation), not 3.
-      const applied = await service.rotate({
+      const rotated = await service.rotate({
         orientation: "landscape-left",
         deviceUdid: "device-1",
         laneId: "lane-a",
@@ -2167,15 +2215,75 @@ describe("iosSimulatorService screenshots and platform guards", () => {
       expect(helper.sent).toEqual([
         expect.objectContaining({ type: "orientation", udid: "device-1", value: 4 }),
       ]);
-      expect(applied).toEqual({ applied: true });
+      expect(rotated).toMatchObject({
+        applied: true,
+        orientation: "landscape-left",
+        verification: "rotated",
+        reason: null,
+        frameBefore: { width: 1179, height: 2556 },
+        frameAfter: { width: 2556, height: 1179 },
+      });
       expect(noted).toEqual([]);
+      // The probe PNGs are temp files, not artifacts, and none may survive.
+      expect(screenshots.every((file) => !fs.existsSync(file))).toBe(true);
 
-      const skipped = await service.rotate({
+      // Asking for the axis the screen is already on cannot be proved either
+      // way, so it says so instead of claiming the exact side.
+      const already = await service.rotate({
+        orientation: "landscape-right",
+        deviceUdid: "device-1",
+      });
+      expect(already).toMatchObject({
+        applied: true,
+        orientation: "landscape-right",
+        verification: "already-on-axis",
+        reason: null,
+      });
+      expect(already.detail).toMatch(/not confirmed/i);
+
+      // The app on screen keeps its own orientation: the send succeeds, the
+      // framebuffer never moves, and `applied` must be false.
+      const refused = await service.rotate({
         orientation: "portrait",
         deviceUdid: "device-1",
       });
       expect(helper.sent.at(-1)).toMatchObject({ type: "orientation", value: 1 });
-      expect(skipped).toEqual({ applied: false });
+      expect(refused).toMatchObject({
+        applied: false,
+        orientation: "portrait",
+        verification: "not-adopted",
+        reason: "APPLE_ROTATE_NOT_ADOPTED",
+        frameBefore: { width: 2556, height: 1179 },
+        frameAfter: { width: 2556, height: 1179 },
+      });
+      expect(refused.detail).toMatch(/supports that orientation/i);
+
+      // An unreadable screen is "do not know", which is not success.
+      screen = "unreadable";
+      const unmeasurable = await service.rotate({
+        orientation: "portrait",
+        deviceUdid: "device-1",
+      });
+      expect(unmeasurable).toMatchObject({
+        applied: false,
+        verification: "unmeasurable",
+        reason: "APPLE_ROTATE_UNMEASURABLE",
+        frameBefore: null,
+        frameAfter: null,
+      });
+
+      // And a helper that could not deliver the event is its own answer.
+      screen = { width: 1179, height: 2556 };
+      helperApplied = false;
+      const sendFailed = await service.rotate({
+        orientation: "landscape-left",
+        deviceUdid: "device-1",
+      });
+      expect(sendFailed).toMatchObject({
+        applied: false,
+        verification: "send-failed",
+        reason: "APPLE_ROTATE_SEND_FAILED",
+      });
     } finally {
       service.dispose();
       restoreHelper();
@@ -2399,6 +2507,48 @@ describe("iosSimulatorService boot contract", () => {
       expect(calls).toContain("xcrun simctl bootstatus device-2 -b");
       const owned = await service.deviceList({ laneId: "lane-a", installed: false });
       expect(owned.lane).toMatchObject({ udid: "device-2", origin: "attached" });
+    } finally {
+      dispose();
+    }
+  });
+
+  it("a takeover MOVES the device: the losing lane is released, not powered off", async () => {
+    const { service, calls, events, dispose } = setup();
+    try {
+      // Lane A owns device-2 and is streaming it.
+      await service.deviceStart({ laneId: "lane-a", udid: "device-2", chatSessionId: "chat-a" });
+      expect(service.getStreamStatus({ laneId: "lane-a" }).running).toBe(true);
+
+      // Lane B takes it over — the picker's "Take over…", behind its
+      // confirmation, is exactly this call.
+      const status = await service.deviceStart({ laneId: "lane-b", udid: "device-2", chatSessionId: "chat-b" });
+      expect(status.deviceUdid).toBe("device-2");
+
+      // Exactly one lane owns it. Before the move, both did — and either could
+      // have powered it off or deleted it under the other.
+      const mine = await service.deviceList({ laneId: "lane-b", installed: false });
+      expect(mine.lane).toMatchObject({ udid: "device-2", laneId: "lane-b" });
+      expect(mine.owners).toEqual([
+        { udid: "device-2", laneId: "lane-b", laneName: null, origin: "attached", mine: true },
+      ]);
+      const theirs = await service.deviceList({ laneId: "lane-a", installed: false });
+      expect(theirs.lane).toBeNull();
+
+      // The losing lane's live view and session claim are gone.
+      expect(service.getStreamStatus({ laneId: "lane-a" }).running).toBe(false);
+      expect((await service.getStatus({ laneId: "lane-a" })).activeSession).toBeNull();
+      expect(events).toContainEqual(expect.objectContaining({
+        type: "apple.device.state",
+        laneId: "lane-a",
+        udid: "device-2",
+        phase: "released",
+      }));
+
+      // The simulator itself keeps running: the lane taking it over is about to
+      // stream the same device, and a takeover that hands over a powered-off
+      // device is not a takeover.
+      expect(calls).not.toContain("xcrun simctl shutdown device-2");
+      expect(service.getStreamStatus({ laneId: "lane-b" }).running).toBe(true);
     } finally {
       dispose();
     }

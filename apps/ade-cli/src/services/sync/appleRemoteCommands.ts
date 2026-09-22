@@ -52,7 +52,7 @@ export type AppleDeviceRemoteService = {
   openUrl(args: { laneId?: string | null; chatSessionId?: string | null; url: string }): Promise<unknown>;
   deviceCreate(args: { laneId: string; from?: string | null; name?: string | null }): Promise<unknown>;
   deviceAttach(args: { laneId: string; simulator: string }): Promise<unknown>;
-  deviceList(args: { laneId?: string | null; installed?: boolean }): Promise<unknown>;
+  deviceList(args: { laneId?: string | null; installed?: boolean; disk?: boolean }): Promise<unknown>;
   recordStart(args: { laneId?: string | null; chatSessionId?: string | null; label?: string | null }): Promise<unknown>;
   recordStop(args: { laneId?: string | null; chatSessionId?: string | null; keep?: boolean }): Promise<unknown>;
   recordList(args: { laneId?: string | null }): Promise<unknown>;
@@ -472,6 +472,9 @@ export function createAppleRemoteCommandHandlers(deps: {
       handler: async (payload) => service.deviceList({
         laneId: asString(payload.laneId),
         installed: payload.installed !== false,
+        // Opt-in, so the phone's list paints before the `du` and the web
+        // picker reports disk the same way the desktop one does.
+        disk: payload.disk === true,
       }),
     },
     {

@@ -411,6 +411,7 @@ type FormatterId =
   | "ios-sim-apps"
   | "ios-sim-launch"
   | "ios-sim-stream"
+  | "ios-sim-rotate"
   | "ios-sim-snapshot"
   | "ios-sim-selection"
   | "ios-sim-preview"
@@ -1956,13 +1957,21 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   rotate: `${ADE_BANNER}
   Apple device: rotate
 
-  Sets device orientation through the helper. The helper reports applied
-  false when Simulator.app is not running — that is a result, not an error.
+  Turns the device, then reads the screen to see whether it moved.
 
     $ ade --socket apple rotate landscape-left --text
     $ ade --socket apple rotate --orientation portrait --text
 
   Orientations: portrait, portrait-upside-down, landscape-left, landscape-right.
+
+  applied means the framebuffer was SEEN on the requested axis, not that an
+  event was sent. iOS always takes the device orientation; the app on screen
+  decides whether to follow it. The Home Screen and Settings are portrait-only
+  on an iPhone, and no iPhone supports portrait upside down, so a rotate with
+  one of those in front answers applied false with reason
+  APPLE_ROTATE_NOT_ADOPTED. Turning within one axis (the two portraits, or the
+  two landscapes) leaves the pixel size unchanged and reports
+  verification already-on-axis, which does not confirm the exact side.
 
   Flags:
     --orientation <o>      Orientation; also accepted as the next positional.
@@ -25063,6 +25072,34 @@ function formatIosSimStream(value: unknown): string {
   ]);
 }
 
+/**
+ * `rotate`, which reports what the SCREEN did rather than what was sent.
+ *
+ * `applied` used to be the only field and it meant "a mach message left the
+ * host". It now means "the framebuffer was seen on the requested axis", so the
+ * verification and the reason are the two lines a reader actually needs, and
+ * the pixel sizes are printed because they are the evidence.
+ */
+function formatIosSimRotate(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const frame = (entry: unknown): string | null => {
+    if (!isRecord(entry)) return null;
+    const width = entry.width;
+    const height = entry.height;
+    if (typeof width !== "number" || typeof height !== "number") return null;
+    return `${String(width)}x${String(height)}`;
+  };
+  return renderKeyValues("ADE Apple device rotate", [
+    ["applied", result.applied],
+    ["orientation", result.orientation],
+    ["verification", result.verification],
+    ["reason", result.reason],
+    ["screen before", frame(result.frameBefore)],
+    ["screen after", frame(result.frameAfter)],
+    ["detail", result.detail],
+  ]);
+}
+
 function formatIosSimSnapshot(value: unknown): string {
   const snapshot = isRecord(value) ? value : {};
   const screenshot = isRecord(snapshot.screenshot)
@@ -26495,6 +26532,8 @@ function formatTextOutput(
       return formatIosSimLaunch(value);
     case "ios-sim-stream":
       return formatIosSimStream(value);
+    case "ios-sim-rotate":
+      return formatIosSimRotate(value);
     case "ios-sim-snapshot":
       return formatIosSimSnapshot(value);
     case "ios-sim-selection":
@@ -26615,6 +26654,7 @@ function inferFormatter(
   if (label === "chat resume-now") return "chat-resume-now";
   if (label === "test runs") return "tests-runs";
   if (label === "proof list") return "proof-list";
+  if (label === "apple device rotate") return "ios-sim-rotate";
   if (label === "ios simulator status") return "ios-sim-status";
   if (label === "ios simulator devices") return "ios-sim-devices";
   if (label === "ios simulator launchable apps") return "ios-sim-apps";

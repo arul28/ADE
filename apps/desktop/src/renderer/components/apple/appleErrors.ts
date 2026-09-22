@@ -5,6 +5,9 @@ import {
   APPLE_HELPER_UNAVAILABLE_CODE,
   APPLE_NO_INSTALLED_SIMULATORS_CODE,
   APPLE_RECORDING_PINNED_CODE,
+  APPLE_ROTATE_NOT_ADOPTED_CODE,
+  APPLE_ROTATE_SEND_FAILED_CODE,
+  APPLE_ROTATE_UNMEASURABLE_CODE,
   APPLE_STREAM_NOT_RUNNING_CODE,
   IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE,
   IOS_SIMULATOR_LAUNCH_IN_PROGRESS_CODE,
@@ -109,6 +112,16 @@ const RULES: readonly Rule[] = [
   { test: matches(/record-no-frames/i), sentence: "The recording captured no frames." },
   { test: matches(/record-write-failed/i), sentence: "The recording could not be written." },
   { test: includes(APPLE_RECORDING_PINNED_CODE), sentence: "Pinned recordings cannot be deleted." },
+  /*
+   * Rotation, which is refused far more often than it fails. iOS takes the
+   * device orientation and then the foreground app decides: the Home Screen
+   * and Settings are portrait-only on an iPhone, and no iPhone supports
+   * portrait upside down. The service's own `detail` says all of that; the
+   * strip gets the twelve-word version and keeps the rest behind `Details`.
+   */
+  { test: includes(APPLE_ROTATE_NOT_ADOPTED_CODE), sentence: "The app on screen does not support that orientation." },
+  { test: includes(APPLE_ROTATE_SEND_FAILED_CODE), sentence: "The rotation never reached the device." },
+  { test: includes(APPLE_ROTATE_UNMEASURABLE_CODE), sentence: "The rotation could not be confirmed." },
   // The per-lane device registry.
   { test: includes(APPLE_NO_INSTALLED_SIMULATORS_CODE), sentence: "No iOS simulators are installed." },
   { test: includes(APPLE_DEVICE_EXISTS_CODE), sentence: "This lane already has a device." },

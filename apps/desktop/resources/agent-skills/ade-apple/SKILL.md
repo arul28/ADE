@@ -110,7 +110,17 @@ ade --socket apple assert-visible --label Welcome --text
   `siri`). `shake` is refused with `APPLE_BUTTON_UNSUPPORTED`, because neither
   the helper nor `simctl` has it.
 - Orientation: `rotate landscape-left` (also `portrait`,
-  `portrait-upside-down`, `landscape-right`).
+  `portrait-upside-down`, `landscape-right`). **Read the answer.** `rotate`
+  turns the device and then reads the screen, so `applied: true` means the
+  framebuffer was seen on the requested axis — not that a request was sent.
+  iOS always accepts the device orientation and then lets the foreground app
+  decide, so `applied: false` with `reason: APPLE_ROTATE_NOT_ADOPTED` means
+  that app kept its own orientation. The Home Screen and Settings are
+  portrait-only on an iPhone, and no iPhone supports portrait upside down —
+  put the app you are testing in front before you rotate, and do not treat a
+  refusal as a broken simulator. `verification: already-on-axis` means the
+  screen was on that axis before you asked; turning within one axis leaves
+  the pixel size unchanged, so the exact side is not confirmed.
 
 Agent launches stay in the background. Add `--open-drawer` when the user asked
 to watch. `launch --follow` waits out a cold build and prints the summary.
@@ -218,6 +228,10 @@ One chat owns a simulator session at a time. A second launch fails with
 - `APPLE_HELPER_UNAVAILABLE` — the helper binary is missing from this install.
   `status` → `tools.helper.present` is the check.
 - `APPLE_STREAM_NOT_RUNNING` — `frame` needs a live stream; use `screenshot`.
+- `APPLE_ROTATE_NOT_ADOPTED` — the device turned and the app on screen did
+  not. Launch a landscape-capable app first; it is not a fault to report.
+- `APPLE_ROTATE_UNMEASURABLE` — the screen could not be read, so the rotation
+  is unconfirmed either way. Check the device is still booted.
 - `APPLE_BUTTON_UNSUPPORTED` — that button has no helper or `simctl`
   equivalent. Today: `shake`.
 - `APPLE_DEVICE_ATTACHED_NOT_DELETABLE` — `device-delete` without `--force` on

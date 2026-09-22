@@ -1,9 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
 import {
+  appleDeviceDataRoot,
   appleDeviceFamily,
   appleLaneDeviceName,
   appleRuntimeScore,
   createLaneDeviceRegistry,
+  parseAppleDeviceDiskUsage,
   pickAppleTemplate,
   releaseLaneAppleDevice,
   type LaneDeviceStore,
@@ -45,6 +47,18 @@ function memoryStore(rows: Record<string, Record<string, unknown>> = {}): LaneDe
       if (/^insert into lane_apple_devices/i.test(sql.trim())) {
         const [lane_id, udid, name, origin, family, runtime, created_at, template_udid] = params;
         rows[String(lane_id)] = { lane_id, udid, name, origin, family, runtime, created_at, template_udid };
+        return;
+      }
+      // The takeover's one-statement move. `lane_id` is the table's primary
+      // key, so re-keying the row is the move — modelled here by deleting the
+      // old key and writing the new one in the same call, which is what SQLite
+      // does under the hood.
+      if (/^update lane_apple_devices/i.test(sql.trim())) {
+        const [lane_id, name, family, runtime, created_at, where_lane_id, where_udid] = params;
+        const current = rows[String(where_lane_id)];
+        if (!current || current.udid !== where_udid) return;
+        delete rows[String(where_lane_id)];
+        rows[String(lane_id)] = { ...current, lane_id, name, family, runtime, created_at };
         return;
       }
       throw new Error(`unexpected sql: ${sql}`);
@@ -259,5 +273,303 @@ describe("releaseLaneAppleDevice", () => {
     expect(result).toEqual({ deletedUdid: null, detachedUdid: "users-own", removedRecordings: false });
     expect(run).not.toHaveBeenCalled();
     expect(store.rows["lane-1"]).toBeUndefined();
+  });
+});
+
+describe("laneDeviceRegistry deviceList ownership and disk", () => {
+  const installed = [
+    simulator({ udid: "free-1", name: "iPhone 17 Pro" }),
+    simulator({ udid: "mine-1", name: "ADE · Mine" }),
+    simulator({ udid: "theirs-1", name: "ADE Repro" }),
+  ];
+
+  function listRegistry(run: ReturnType<typeof vi.fn> = vi.fn(async () => ({ stdout: "", stderr: "" }))) {
+    const store = memoryStore({
+      "lane-mine": {
+        lane_id: "lane-mine",
+        udid: "mine-1",
+        name: "ADE · Mine",
+        origin: "clone",
+        family: "iphone",
+        runtime: "iOS 26.3",
+        created_at: "2026-09-21T00:00:00.000Z",
+        template_udid: "free-1",
+      },
+      "lane-theirs": {
+        lane_id: "lane-theirs",
+        udid: "theirs-1",
+        name: "ADE Repro",
+        origin: "attached",
+        family: "iphone",
+        runtime: "iOS 26.3",
+        created_at: "2026-09-21T00:00:00.000Z",
+        template_udid: null,
+      },
+    });
+    return {
+      run,
+      store,
+      registry: createLaneDeviceRegistry({
+        run: run as never,
+        listInstalledSimulators: async () => installed,
+        store,
+        deviceDataRoot: "/devices",
+        logger: noopLogger,
+      }),
+    };
+  }
+
+  it("reports every lane's binding with the owning lane's NAME, mine flagged", async () => {
+    const { registry } = listRegistry();
+
+    const listed = await registry.deviceList({ laneId: "lane-mine", installed: true });
+
+    expect(listed.laneId).toBe("lane-mine");
+    expect(listed.lane?.udid).toBe("mine-1");
+    // The renderer partitions on this: a payload that carried only the caller's
+    // lane is how the picker offered Open on another lane's device.
+    expect(listed.owners).toEqual([
+      {
+        udid: "mine-1",
+        laneId: "lane-mine",
+        laneName: "Lane lane-mine",
+        origin: "clone",
+        mine: true,
+      },
+      {
+        udid: "theirs-1",
+        laneId: "lane-theirs",
+        laneName: "Lane lane-theirs",
+        origin: "attached",
+        mine: false,
+      },
+    ]);
+  });
+
+  it("flags nothing as mine for an un-laned caller, and still names the owners", async () => {
+    const { registry } = listRegistry();
+
+    const listed = await registry.deviceList({ installed: true });
+
+    expect(listed.laneId).toBeNull();
+    expect(listed.lane).toBeNull();
+    expect(listed.owners.every((owner) => owner.mine === false)).toBe(true);
+    expect(listed.owners.map((owner) => owner.udid)).toEqual(["mine-1", "theirs-1"]);
+  });
+
+  it("measures disk only when asked, in one depth-1 pass, and caches it", async () => {
+    const run = vi.fn(async () => ({
+      stdout: [
+        "3145728\t/devices/8A3E9C11-0F42-4E77-9B21-6D5C1A8F0E33",
+        "1048576\t/devices/1B2C3D4E-5F60-7182-93A4-B5C6D7E8F901",
+        "8\t/devices/.DS_Store",
+        "5242880\t/devices",
+      ].join("\n"),
+      stderr: "",
+    }));
+    const { registry } = listRegistry(run);
+
+    const cheap = await registry.deviceList({ laneId: "lane-mine", installed: true });
+    expect(cheap.disk ?? null).toBeNull();
+    expect(run).not.toHaveBeenCalled();
+
+    const measured = await registry.deviceList({ laneId: "lane-mine", installed: false, disk: true });
+    expect(run).toHaveBeenCalledWith("du", ["-d", "1", "-k", "/devices"], expect.anything());
+    expect(measured.disk?.root).toBe("/devices");
+    expect(measured.disk?.totalBytes).toBe(5_242_880 * 1024);
+    expect(measured.disk?.devices).toEqual([
+      { udid: "8A3E9C11-0F42-4E77-9B21-6D5C1A8F0E33", bytes: 3_145_728 * 1024 },
+      { udid: "1B2C3D4E-5F60-7182-93A4-B5C6D7E8F901", bytes: 1_048_576 * 1024 },
+    ]);
+
+    // A second ask inside the cache window must not walk the filesystem again:
+    // the pane re-lists on every device event.
+    await registry.deviceList({ laneId: "lane-mine", disk: true });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("answers an unknown number rather than failing the list when du cannot run", async () => {
+    const run = vi.fn(async () => { throw new Error("du: permission denied"); });
+    const { registry } = listRegistry(run);
+
+    const listed = await registry.deviceList({ laneId: "lane-mine", installed: true, disk: true });
+
+    expect(listed.disk).toBeNull();
+    expect(listed.installed).toHaveLength(3);
+  });
+});
+
+describe("apple device disk parsing", () => {
+  it("names CoreSimulator's device store under the home directory", () => {
+    expect(appleDeviceDataRoot("/Users/x")).toBe("/Users/x/Library/Developer/CoreSimulator/Devices");
+  });
+
+  it("splits du's depth-1 output into per-device rows and the store's total", () => {
+    const parsed = parseAppleDeviceDiskUsage({
+      root: "/devices/",
+      stdout: [
+        "2048\t/devices/8A3E9C11-0F42-4E77-9B21-6D5C1A8F0E33",
+        "1024\t/devices/1B2C3D4E-5F60-7182-93A4-B5C6D7E8F901/data",
+        "16\t/devices/.DS_Store",
+        "4096\t/devices",
+        "nonsense",
+      ].join("\n"),
+    });
+
+    // Only udid-shaped direct children become rows; the nested `data` path is
+    // not a device and `.DS_Store` is disk with no device to attribute it to.
+    expect(parsed.devices).toEqual([{ udid: "8A3E9C11-0F42-4E77-9B21-6D5C1A8F0E33", bytes: 2048 * 1024 }]);
+    expect(parsed.totalBytes).toBe(4096 * 1024);
+  });
+
+  it("falls back to the sum of the children when du never prints the root", () => {
+    const parsed = parseAppleDeviceDiskUsage({
+      root: "/devices",
+      stdout: [
+        "100\t/devices/8A3E9C11-0F42-4E77-9B21-6D5C1A8F0E33",
+        "200\t/devices/1B2C3D4E-5F60-7182-93A4-B5C6D7E8F901",
+      ].join("\n"),
+    });
+
+    expect(parsed.totalBytes).toBe(300 * 1024);
+    expect(parsed.devices).toHaveLength(2);
+  });
+});
+
+describe("laneDeviceRegistry takeover: one lane owns a device at a time", () => {
+  const installed = [
+    simulator({ udid: "repro", name: "ADE Repro" }),
+    simulator({ udid: "free", name: "iPhone Air" }),
+  ];
+
+  function takeoverRegistry(overrides: Partial<{ releaseLaneDevice: (device: unknown) => void }> = {}) {
+    const store = memoryStore({
+      "lane-a": {
+        lane_id: "lane-a",
+        udid: "repro",
+        name: "ADE Repro",
+        // A clone ADE made: its provenance must survive the move, or the clone
+        // leaks when the new owner's lane is archived.
+        origin: "clone",
+        family: "iphone",
+        runtime: "iOS 26.3",
+        created_at: "2026-09-01T00:00:00.000Z",
+        template_udid: "free",
+      },
+    });
+    const released: unknown[] = [];
+    const registry = createLaneDeviceRegistry({
+      run: (async () => ({ stdout: "", stderr: "" })) as never,
+      listInstalledSimulators: async () => installed,
+      store,
+      logger: noopLogger,
+      releaseLaneDevice: (device) => {
+        // Captured DURING the release, so the assertion below proves the old
+        // lane still owned the row when its stream was told to stop.
+        released.push({ device, ownerAtRelease: store.rows["lane-a"]?.lane_id ?? null });
+        overrides.releaseLaneDevice?.(device);
+      },
+      now: () => new Date("2026-09-22T12:00:00.000Z"),
+    });
+    return { registry, store, released };
+  }
+
+  it("MOVES the binding: the old lane loses it, the new lane gains it, no row left behind", async () => {
+    const { registry, store } = takeoverRegistry();
+
+    const device = await registry.deviceAttach({ laneId: "lane-b", simulator: "repro" });
+
+    expect(device.laneId).toBe("lane-b");
+    expect(registry.get("lane-b")?.udid).toBe("repro");
+    // The defect this test exists for: before the move, lane-a kept its row
+    // and two lanes each believed they owned one simulator — either could
+    // power it off or delete it under the other.
+    expect(registry.get("lane-a")).toBeNull();
+    expect(Object.keys(store.rows)).toEqual(["lane-b"]);
+    expect(registry.list().map((entry) => entry.laneId)).toEqual(["lane-b"]);
+    expect(registry.list()).toHaveLength(1);
+  });
+
+  it("carries the device's provenance and re-dates the binding", async () => {
+    const { registry } = takeoverRegistry();
+
+    const device = await registry.deviceAttach({ laneId: "lane-b", simulator: "ADE Repro" });
+
+    // `origin`/`templateUdid` describe the SIMULATOR and travel with it.
+    expect(device.origin).toBe("clone");
+    expect(device.templateUdid).toBe("free");
+    // `createdAt` dates the BINDING, which is new.
+    expect(device.createdAt).toBe("2026-09-22T12:00:00.000Z");
+  });
+
+  it("releases the losing lane before the row moves", async () => {
+    const { registry, released } = takeoverRegistry();
+
+    await registry.deviceAttach({ laneId: "lane-b", simulator: "repro" });
+
+    expect(released).toEqual([
+      {
+        device: expect.objectContaining({ laneId: "lane-a", udid: "repro" }),
+        ownerAtRelease: "lane-a",
+      },
+    ]);
+  });
+
+  it("moves the binding even when the release fails", async () => {
+    const { registry, store } = takeoverRegistry({
+      releaseLaneDevice: () => { throw new Error("stream will not stop"); },
+    });
+
+    const device = await registry.deviceAttach({ laneId: "lane-b", simulator: "repro" });
+
+    expect(device.laneId).toBe("lane-b");
+    expect(Object.keys(store.rows)).toEqual(["lane-b"]);
+  });
+
+  it("answers an attach of the device this lane already holds, and moves nothing", async () => {
+    const { registry, released } = takeoverRegistry();
+
+    for (const wanted of ["repro", "ADE Repro", "ade repro"]) {
+      const device = await registry.deviceAttach({ laneId: "lane-a", simulator: wanted });
+      expect(device).toMatchObject({ laneId: "lane-a", udid: "repro", createdAt: "2026-09-01T00:00:00.000Z" });
+    }
+    expect(released).toEqual([]);
+  });
+
+  it("still refuses a SECOND device for a lane that already has one", async () => {
+    const { registry, store } = takeoverRegistry();
+
+    await expect(registry.deviceAttach({ laneId: "lane-a", simulator: "free" })).rejects.toMatchObject({
+      code: APPLE_DEVICE_EXISTS_CODE,
+    });
+    expect(store.rows["lane-a"]).toMatchObject({ udid: "repro" });
+  });
+
+  it("is a plain attach when no lane owns the device", async () => {
+    const { registry, store, released } = takeoverRegistry();
+
+    const device = await registry.deviceAttach({ laneId: "lane-b", simulator: "free" });
+
+    expect(device).toMatchObject({ laneId: "lane-b", udid: "free", origin: "attached", templateUdid: null });
+    expect(released).toEqual([]);
+    expect(Object.keys(store.rows).sort()).toEqual(["lane-a", "lane-b"]);
+  });
+
+  it("moves the binding in hosts with no database, too", async () => {
+    const released: string[] = [];
+    const registry = createLaneDeviceRegistry({
+      run: (async () => ({ stdout: "", stderr: "" })) as never,
+      listInstalledSimulators: async () => installed,
+      logger: noopLogger,
+      releaseLaneDevice: (device) => { released.push(device.laneId); },
+    });
+
+    await registry.deviceAttach({ laneId: "lane-a", simulator: "repro" });
+    await registry.deviceAttach({ laneId: "lane-b", simulator: "repro" });
+
+    expect(registry.get("lane-a")).toBeNull();
+    expect(registry.get("lane-b")?.udid).toBe("repro");
+    expect(registry.list()).toHaveLength(1);
+    expect(released).toEqual(["lane-a"]);
   });
 });
