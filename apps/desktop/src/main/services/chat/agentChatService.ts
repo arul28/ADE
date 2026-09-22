@@ -1557,6 +1557,18 @@ type PersistedChatState = {
    */
   devinCloudConsumedEchoFingerprints?: string[];
   /**
+   * Devin attachment ids already filed into the proof drawer. Persisted so a
+   * restarted host does not download and ingest the same files again.
+   */
+  devinCloudSyncedAttachmentIds?: string[];
+  /**
+   * True while the Devin cloud mirror owns this chat's needs-you marker.
+   * Persisted so a restarted host can still clear the marker it raised once
+   * the remote session stops waiting — without it the row reads Needs you
+   * forever.
+   */
+  devinCloudAttentionRaised?: boolean;
+  /**
    * True once ADE told this chat that its ACP agent approves its own writes.
    * Persisted so the honest-degradation line stays once per chat rather than
    * once per runtime start.
@@ -15635,6 +15647,18 @@ export function createAgentChatService(args: {
         : prevPersisted?.devinCloudConsumedEchoFingerprints?.length
           ? { devinCloudConsumedEchoFingerprints: prevPersisted.devinCloudConsumedEchoFingerprints }
           : {})),
+      // Boolean, not a latch — the mirror clears this when Devin stops waiting,
+      // so a stale true must be rewritten false rather than carried forward.
+      ...(devinCloudAttentionRaised.has(managed.session.id)
+        ? { devinCloudAttentionRaised: true }
+        : prevPersisted?.devinCloudAttentionRaised
+          ? { devinCloudAttentionRaised: false }
+          : {}),
+      ...((devinCloudSyncedAttachmentIds.get(managed.session.id)?.size
+        ? { devinCloudSyncedAttachmentIds: [...(devinCloudSyncedAttachmentIds.get(managed.session.id) ?? new Set<string>())] }
+        : prevPersisted?.devinCloudSyncedAttachmentIds?.length
+          ? { devinCloudSyncedAttachmentIds: prevPersisted.devinCloudSyncedAttachmentIds }
+          : {})),
       // Latching: once said, always remembered. A live runtime that has not yet
       // tripped the invariant must not erase a flag an earlier run set.
       ...(managed.acpSupervisionNoticeShown || prevPersisted?.acpSupervisionNoticeShown
@@ -16048,6 +16072,10 @@ export function createAgentChatService(args: {
       const devinCloudConsumedEchoFingerprints = Array.isArray(record.devinCloudConsumedEchoFingerprints)
         ? record.devinCloudConsumedEchoFingerprints.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
         : [];
+      const devinCloudSyncedAttachmentIds = Array.isArray(record.devinCloudSyncedAttachmentIds)
+        ? record.devinCloudSyncedAttachmentIds.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+        : [];
+      const devinCloudAttentionRaised = record.devinCloudAttentionRaised === true;
       const acpSupervisionNoticeShown = record.acpSupervisionNoticeShown === true;
       if (!laneId || !model) return null;
       const recentConversationEntries = Array.isArray(record.recentConversationEntries)
@@ -16285,6 +16313,8 @@ export function createAgentChatService(args: {
         ...(acpConfigSnapshot ? { acpConfigSnapshot } : {}),
         ...(acpDegradationNotesShown.length ? { acpDegradationNotesShown } : {}),
         ...(devinCloudConsumedEchoFingerprints.length ? { devinCloudConsumedEchoFingerprints } : {}),
+        ...(devinCloudSyncedAttachmentIds.length ? { devinCloudSyncedAttachmentIds } : {}),
+        ...(devinCloudAttentionRaised ? { devinCloudAttentionRaised } : {}),
         ...(acpSupervisionNoticeShown ? { acpSupervisionNoticeShown } : {}),
         ...(instanceId ? { instanceId } : {}),
         ...(presetId ? { presetId } : {}),
@@ -45555,6 +45585,27 @@ export function createAgentChatService(args: {
     return list;
   };
 
+  const devinSyncedAttachmentIdsFor = (sessionId: string): Set<string> => {
+    let set = devinCloudSyncedAttachmentIds.get(sessionId);
+    if (!set) {
+      set = new Set(readPersistedState(sessionId)?.devinCloudSyncedAttachmentIds ?? []);
+      devinCloudSyncedAttachmentIds.set(sessionId, set);
+    }
+    return set;
+  };
+
+  /** Sessions whose persisted attention flag has been folded back into the live set. */
+  const devinCloudAttentionSeeded = new Set<string>();
+  const devinCloudAttentionIsRaised = (sessionId: string): boolean => {
+    if (!devinCloudAttentionSeeded.has(sessionId)) {
+      devinCloudAttentionSeeded.add(sessionId);
+      if (readPersistedState(sessionId)?.devinCloudAttentionRaised === true) {
+        devinCloudAttentionRaised.add(sessionId);
+      }
+    }
+    return devinCloudAttentionRaised.has(sessionId);
+  };
+
   const forgetDevinCloudHydrationState = (sessionId: string): void => {
     devinCloudHydratedEventIds.delete(sessionId);
     devinCloudRemoteNameReadAt.delete(sessionId);
@@ -45565,6 +45616,7 @@ export function createAgentChatService(args: {
     devinCloudPendingDoneTurn.delete(sessionId);
     devinCloudSyncedAttachmentIds.delete(sessionId);
     devinCloudAttentionRaised.delete(sessionId);
+    devinCloudAttentionSeeded.delete(sessionId);
     devinCloudConsumedEchoFingerprints.delete(sessionId);
   };
 
@@ -45579,6 +45631,7 @@ export function createAgentChatService(args: {
     devinCloudPendingDoneTurn.clear();
     devinCloudSyncedAttachmentIds.clear();
     devinCloudAttentionRaised.clear();
+    devinCloudAttentionSeeded.clear();
     devinCloudConsumedEchoFingerprints.clear();
   };
 
@@ -45625,8 +45678,7 @@ export function createAgentChatService(args: {
       return;
     }
     if (!attachments.length) return;
-    const seen = devinCloudSyncedAttachmentIds.get(managed.session.id) ?? new Set<string>();
-    devinCloudSyncedAttachmentIds.set(managed.session.id, seen);
+    const seen = devinSyncedAttachmentIdsFor(managed.session.id);
     for (const attachment of attachments) {
       if (attachment.source !== "devin") continue;
       if (seen.has(attachment.attachmentId)) continue;
@@ -45835,18 +45887,19 @@ export function createAgentChatService(args: {
       // wins; it is the stricter signal.
       if (remote && !hasLivePendingInput(managed)) {
         const needsYou = devinCloudFleetStatus(remote) === "needs_you";
-        if (needsYou && !devinCloudAttentionRaised.has(managed.session.id)) {
+        if (needsYou && !devinCloudAttentionIsRaised(managed.session.id)) {
           devinCloudAttentionRaised.add(managed.session.id);
           sessionService.requestAttention(
             managed.session.id,
             "Devin session is waiting for input",
             "provider_structured",
           );
-        } else if (!needsYou && devinCloudAttentionRaised.delete(managed.session.id)) {
+        } else if (!needsYou && devinCloudAttentionIsRaised(managed.session.id)) {
           // Only clear the marker this mirror raised — a user- or
           // runtime-raised attention belongs to whoever raised it. The
           // conditional clear also protects a newer provider_structured
           // request another source wrote after this mirror's.
+          devinCloudAttentionRaised.delete(managed.session.id);
           sessionService.clearAttentionRequest(managed.session.id, "provider_structured");
         }
       }
@@ -46294,13 +46347,23 @@ export function createAgentChatService(args: {
       ...(args.bypassApproval !== undefined ? { bypassApproval: args.bypassApproval } : {}),
       ...(args.platform?.trim() ? { platform: args.platform.trim() } : {}),
     });
-    const opened = await openDevinCloudChat({
-      devinSessionId: created.sessionId,
-      laneId: trimmedLane,
-      ...(args.sessionId ? { sessionId: args.sessionId } : {}),
-      ...(args.devinMode !== undefined ? { devinMode: args.devinMode } : {}),
-    });
-    return { ...opened, devinSessionId: created.sessionId };
+    try {
+      const opened = await openDevinCloudChat({
+        devinSessionId: created.sessionId,
+        laneId: trimmedLane,
+        ...(args.sessionId ? { sessionId: args.sessionId } : {}),
+        ...(args.devinMode !== undefined ? { devinMode: args.devinMode } : {}),
+      });
+      return { ...opened, devinSessionId: created.sessionId };
+    } catch (error) {
+      // The remote session exists but never linked — leaving it running would
+      // bill an orphan the user cannot see, and a retry would create a second.
+      await aiIntegrationService.terminateDevinCloudSession({
+        devinSessionId: created.sessionId,
+        archive: true,
+      }).catch(() => undefined);
+      throw error;
+    }
   };
 
   const droidPoolKeyFor = (managed: ManagedChatSession): string => [

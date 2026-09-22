@@ -247,7 +247,10 @@ export function createDevinCloudFleetService(deps: FleetServiceDeps) {
       cwd: worktreePath,
       timeoutMs: 10_000,
     });
-    if (status.exitCode === 0 && status.stdout.trim()) {
+    if (status.exitCode !== 0) {
+      throw new Error(`Could not read the worktree state for lane '${laneName}'.`);
+    }
+    if (status.stdout.trim()) {
       throw new Error(
         `Lane '${laneName}' has uncommitted changes. Commit or stash them before pulling a Devin branch into it.`,
       );
