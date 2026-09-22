@@ -4084,6 +4084,7 @@ export type AgentChatContinueUsageLimitOnAlternateArgs = {
 export type AgentChatContinueUsageLimitOnAlternateRefusal =
   | "no_live_usage_limit"
   | "no_alternate_account"
+  | "handoff_in_flight"
   | "handoff_failed";
 
 export type AgentChatContinueUsageLimitOnAlternateResult =

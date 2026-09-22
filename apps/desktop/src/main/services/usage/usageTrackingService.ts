@@ -709,6 +709,7 @@ function listQuotaInstances(provider: QuotaInstanceProvider): QuotaInstance[] {
         ...(instance.accentColor ? { accentColor: instance.accentColor } : {}),
         configHome: instance.configHome,
         isDefault: instance.isDefault,
+        signedIn: instance.signedIn,
         ...(instance.account ? { account: instance.account } : {}),
       }));
     if (mapped.length === 0) return [fallbackQuotaInstance(provider)];
@@ -927,11 +928,17 @@ async function pollClaudeInstance(
     { provider: "claude", phase: "credentials", reason: context.reason },
     () => readClaudeCredentialsWithRefresh(logger, {
       allowKeychain: claudePollAllowsKeychain(context.reason, configHome),
+      // A scoped background poll may open the Keychain once, then has to
+      // honor the miss cache. Treating allowKeychain as "user initiated"
+      // made every automatic poll of a missing login run `security` again.
+      skipMissCache: context.reason === "user",
       ...(configHome ? { configHome } : {}),
     }),
   );
   if (!creds) {
-    if (allowInteractiveSources) {
+    // A secondary account with no credentials file is simply unsigned-in.
+    // Spawning the Claude CLI for it holds a pty until the sign-in timeout.
+    if (allowInteractiveSources && instance.isDefault) {
       return await measureUsagePhase(
         logger,
         { provider: "claude", phase: "cli_fallback", reason: context.reason },

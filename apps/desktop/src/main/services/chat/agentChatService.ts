@@ -17195,6 +17195,15 @@ export function createAgentChatService(args: {
   ): Promise<AgentChatContinueUsageLimitOnAlternateResult> => {
     const existing = usageLimitHandedOffTargets.get(managed.session.id);
     if (existing) return { ok: true, sessionId: existing };
+    if (usageLimitHandoffInFlight.has(managed.session.id)) {
+      return {
+        ok: false,
+        reason: "handoff_in_flight",
+        message: "ADE is already moving this chat to another account.",
+      };
+    }
+    usageLimitHandoffInFlight.add(managed.session.id);
+    try {
     if (!managed.session.laneId.trim()) {
       return {
         ok: false,
@@ -17236,7 +17245,17 @@ export function createAgentChatService(args: {
         }),
       });
     } catch (error) {
-      if (createdId) usageLimitHandoffSessionIds.delete(createdId);
+      if (createdId) {
+        usageLimitHandoffSessionIds.delete(createdId);
+        try {
+          await deleteSession({ sessionId: createdId });
+        } catch (cleanupError) {
+          logger.warn("agent_chat.usage_limit_handoff_cleanup_failed", {
+            sessionId: createdId,
+            error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+          });
+        }
+      }
       const message = error instanceof Error ? error.message : String(error);
       logger.warn("agent_chat.usage_limit_handoff_failed", {
         sessionId: managed.session.id,
@@ -17268,6 +17287,9 @@ export function createAgentChatService(args: {
     setUsageLimitResume(managed, null);
     if (managed.session.provider === "claude") dismissClaudeSessionQuota(managed);
     return { ok: true, sessionId: createdId };
+    } finally {
+      usageLimitHandoffInFlight.delete(managed.session.id);
+    }
   };
 
   const publishUsageLimitResumeArm = (
@@ -17330,13 +17352,10 @@ export function createAgentChatService(args: {
     // choice the user just made about this thread.
     if (options?.allowAccountHandoff !== false && alternate?.autoContinue) {
       if (usageLimitHandoffInFlight.has(managed.session.id)) return;
-      usageLimitHandoffInFlight.add(managed.session.id);
       void handOffUsageLimitChat(managed, alternate).then((result) => {
-        usageLimitHandoffInFlight.delete(managed.session.id);
-        if (result.ok) return;
+        if (result.ok || result.reason === "handoff_in_flight") return;
         publishUsageLimitResumeArm(managed, turnId, alternateAccount);
       }).catch((error) => {
-        usageLimitHandoffInFlight.delete(managed.session.id);
         logger.warn("agent_chat.usage_limit_handoff_failed", {
           sessionId: managed.session.id,
           error: error instanceof Error ? error.message : String(error),

@@ -124,7 +124,7 @@ export function pickInstanceForNewChat({
 function hasImmediateRoom(windows: readonly UsageWindow[]): boolean {
   const fiveHourHeadroom = headroom(windowForType(windows, "five_hour"));
   const weeklyHeadroom = headroom(windowForType(windows, "weekly"));
-  if (fiveHourHeadroom === undefined && weeklyHeadroom === undefined) return false;
+  if (fiveHourHeadroom === undefined || weeklyHeadroom === undefined) return false;
   if (fiveHourHeadroom === 0 || weeklyHeadroom === 0) return false;
   return true;
 }

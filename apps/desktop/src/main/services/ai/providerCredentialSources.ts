@@ -146,6 +146,12 @@ export type ClaudeCredentialReadOptions = {
   /** Keychain reads can display macOS UI. Automatic/background callers must disable them. */
   allowKeychain?: boolean;
   /**
+   * When true, a recent miss does not short-circuit the read. User refreshes
+   * pass true. Background polls leave it false so a missing login is not
+   * re-probed on every cadence tick.
+   */
+  skipMissCache?: boolean;
+  /**
    * One ADE provider account's config directory (`CLAUDE_CONFIG_DIR`).
    *
    * Absent means this machine's DEFAULT account, and that path is byte-for-byte
@@ -412,8 +418,8 @@ export async function readClaudeCredentialsWithRefresh(
     return cached.credentials;
   }
 
-  const userInitiated = options.allowKeychain !== false;
-  if (!userInitiated && (cached?.missUntilMs ?? 0) > Date.now()) return null;
+  const skipMissCache = options.skipMissCache ?? (options.allowKeychain !== false);
+  if (!skipMissCache && (cached?.missUntilMs ?? 0) > Date.now()) return null;
 
   const creds = await readClaudeCredentials(options);
   if (!creds) {
