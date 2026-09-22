@@ -50,6 +50,7 @@ for its separate RPC, sync, storage, and UI contracts.
 | `apps/desktop/src/shared/callerMcpServers.ts` | Caller-injected MCP: validation (name/url/transport/reserved ADE names/`MAX_CALLER_MCP_SERVERS`), per-provider `CALLER_MCP_SUPPORT` (level / mechanism / residual / delivery), and `resolveCallerMcpCapability` — the one report `createSession` and model-switch both emit. Shared by desktop, ade-cli, and summarized by `@ade-dev/sdk`. |
 | `packages/sdk/` | Embeddable sidecar client. See [ADE SDK](../sdk/README.md). |
 | `apps/desktop/src/main/services/chat/buildClaudeV2Message.ts` | Builds Claude SDK user messages for the `query()` input stream. Handles base64 image content blocks and MIME inference. |
+| `apps/desktop/src/main/services/chat/sessionTurnLimits.ts` | Helpers for the blocking `runSessionTurn` limits: `clampTurnTimerMs` (15 s floor, Node timer ceiling), `trackTurnInFlight` (the open-work set that keeps the stop-when-idle watch disarmed while a tool call, running command, foreground subagent, or approval is open; background subagents are ignored), and `SessionTurnAbandonedError`, raised when the chat is ended, deleted, disposed, or shut down mid-turn so callers can skip retrying. |
 | `apps/desktop/src/main/services/chat/claudeInputPump.ts` | Async iterable input pump that feeds live user turns into the Claude Agent SDK `query()` stream. |
 | `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | Provider-runtime system-prompt assembly, including runtime-specific native-subagent versus ADE-child routing guidance and the shared scheduled-work contract. |
 | `apps/desktop/src/shared/claudeGuiSlashCommands.ts`, `claudePermissionDialog.ts`, `claudeAgentSdkFields.ts`, `chatSubagentTree.ts`, `chatTurnStatus.ts` | Claude Agent SDK 0.3.280 GUI adapters: drop terminal-only slash commands (`/exit`, `/quit`, `/statusline` plus init `terminal_slash_commands`) from every AgentChatSurface; `default_to_no` permission options and `suppress_always_allow_rule` suppression of the session-wide allow; ambient/`skip_transcript` housekeeping; spawn-depth tree connectors; dedicated `chat.getTurnStatus` snapshot used by `ade chat status`. `chatTurnStatus.ts` also exports `chatTurnStatusRow(key, text)` — the one owner of the header's key column width — and `formatChatTurnStatus(status, {extraRows})`, which renders caller-supplied rows inside the key/value block rather than after the subagent tree, where anything printed reads as a subagent. The CLI's `resume` line is built from both. |
@@ -1851,8 +1852,20 @@ happen to begin with `User request:`.
    Interactive chat sends are not wall-clock bounded by the service; the turn
    runs until the provider
    completes or the user/app interrupts it. The blocking `runSessionTurn`
-   helper used by automation has a 5 min default RPC timeout unless the caller
-   passes `timeoutMs: null`; background/headless chat launches opt out.
+   helper (automations, CTO voice, headless launches) defaults to a 5 min
+   `timeoutMs` when the argument is omitted; `null` or `0` means no clock, and
+   automations always pass `null` unless the agent step opts into a limit.
+   An optional `idleTimeoutMs` adds a stop-when-idle watch: the timer is armed
+   before the provider starts, restarts on every turn event, and stays
+   disarmed while a tool call, running command, foreground subagent, or
+   approval is open (`trackTurnInFlight` in `sessionTurnLimits.ts`; background
+   subagents are not tracked because they often outlive the turn). Both
+   timers are clamped by `clampTurnTimerMs` (at least 15 s, at most the Node
+   timer ceiling) and on expiry interrupt the turn but keep the chat open.
+   When the chat goes away mid-turn — `finishSession`, delete, dispose, or
+   shutdown — the waiting call rejects with `SessionTurnAbandonedError`, so a
+   headless caller never waits forever on a turn that cannot finish and can
+   tell "the chat was ended" apart from a provider failure.
 4. The runtime streams events through the main-process event emitter and
    into the renderer via `ade.agentChat.event` (a push channel owned by
    `registerIpc.ts`).

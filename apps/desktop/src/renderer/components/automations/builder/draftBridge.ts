@@ -8,11 +8,13 @@
 
 import type {
   AutomationAction,
+  AutomationAgentLimits,
   AutomationDraftAction,
   AutomationRuleDraft,
   ModelConfig,
 } from "../../../../shared/types";
 import type { AiPermissionSettings } from "../../../../shared/types";
+import { normalizeAutomationAgentLimits } from "../../../../shared/automationLimits";
 import type { StepKind } from "../actionCatalog";
 import {
   type LaneDeleteOptions,
@@ -29,12 +31,14 @@ export type AdeActionValue = {
   resolvers?: Record<string, string>;
 };
 
-export type WorkflowStep = {
+/** Agent limits (minutes) apply to agent-session steps only. */
+export type WorkflowStep = AutomationAgentLimits & {
   kind: StepKind;
   // Shared runtime controls
   targetLaneId?: string | null;
   condition?: string;
   continueOnFailure?: boolean;
+  /** run-command only: kill the process after this long. */
   timeoutMs?: number;
   retry?: number;
   /** "Always runs — even if earlier steps fail." Rendered on the step card. */
@@ -75,12 +79,17 @@ export function isRequireLaneMode(mode: string | null | undefined): boolean {
   return mode != null && REQUIRE_LANE_MODES.has(mode);
 }
 
+/** Only a shell command has a process to kill; other steps drop a stored timeoutMs. */
+function carriesTimeout(kind: AutomationAction["type"] | StepKind): boolean {
+  return kind === "run-command";
+}
+
 function actionRuntime(action: AutomationAction): Partial<WorkflowStep> {
   return {
     ...(action.targetLaneId ? { targetLaneId: action.targetLaneId } : {}),
     ...(action.condition ? { condition: action.condition } : {}),
     ...(typeof action.continueOnFailure === "boolean" ? { continueOnFailure: action.continueOnFailure } : {}),
-    ...(Number.isFinite(action.timeoutMs) ? { timeoutMs: action.timeoutMs } : {}),
+    ...(carriesTimeout(action.type) && Number.isFinite(action.timeoutMs) ? { timeoutMs: action.timeoutMs } : {}),
     ...(Number.isFinite(action.retry) ? { retry: action.retry } : {}),
     ...(readAlwaysRun(action) ? { alwaysRun: true } : {}),
   };
@@ -92,7 +101,7 @@ function stepRuntime(step: WorkflowStep): Partial<AutomationAction> {
     ...(step.condition?.trim() ? { condition: step.condition.trim() } : {}),
     ...(step.continueOnFailure ? { continueOnFailure: true } : {}),
     ...(step.alwaysRun ? { alwaysRun: true } : {}),
-    ...(Number.isFinite(step.timeoutMs) ? { timeoutMs: step.timeoutMs } : {}),
+    ...(carriesTimeout(step.kind) && Number.isFinite(step.timeoutMs) ? { timeoutMs: step.timeoutMs } : {}),
     ...(Number.isFinite(step.retry) ? { retry: step.retry } : {}),
   };
 }
@@ -102,7 +111,7 @@ function stepHasRuntimeOptions(step: WorkflowStep): boolean {
     step.targetLaneId
       || step.condition?.trim()
       || step.continueOnFailure
-      || Number.isFinite(step.timeoutMs)
+      || (carriesTimeout(step.kind) && Number.isFinite(step.timeoutMs))
       || Number.isFinite(step.retry)
       || step.alwaysRun,
   );
@@ -120,6 +129,7 @@ export function draftToSteps(draft: AutomationRuleDraft): WorkflowStep[] {
       modelConfig: draft.modelConfig,
       fastMode: execution.session?.fastMode === true,
       permissionConfig: draft.permissionConfig,
+      ...normalizeAutomationAgentLimits(execution.session),
     });
   } else if (execution?.kind === "built-in") {
     for (const action of execution.builtIn?.actions ?? []) {
@@ -155,6 +165,7 @@ function actionToStep(action: AutomationAction): WorkflowStep | null {
         modelConfig: action.modelConfig,
         fastMode: action.fastMode === true,
         permissionConfig: action.permissionConfig,
+        ...normalizeAutomationAgentLimits(action),
         ...runtime,
       };
     case "delete-lane":
@@ -194,7 +205,7 @@ export function actionToDraftAction(action: AutomationAction): AutomationDraftAc
     ...(action.condition ? { condition: action.condition } : {}),
     ...(typeof action.continueOnFailure === "boolean" ? { continueOnFailure: action.continueOnFailure } : {}),
     ...(action.alwaysRun ? { alwaysRun: true } : {}),
-    ...(Number.isFinite(action.timeoutMs) ? { timeoutMs: action.timeoutMs } : {}),
+    ...(carriesTimeout(action.type) && Number.isFinite(action.timeoutMs) ? { timeoutMs: action.timeoutMs } : {}),
     ...(Number.isFinite(action.retry) ? { retry: action.retry } : {}),
   };
   switch (action.type) {
@@ -218,6 +229,7 @@ export function actionToDraftAction(action: AutomationAction): AutomationDraftAc
         ...(action.modelConfig ? { modelConfig: action.modelConfig } : {}),
         ...(action.fastMode === true ? { fastMode: true } : {}),
         ...(action.permissionConfig ? { permissionConfig: action.permissionConfig } : {}),
+        ...normalizeAutomationAgentLimits(action),
       };
     case "delete-lane":
       return {
@@ -270,6 +282,7 @@ function stepToAction(step: WorkflowStep): AutomationAction {
         ...(step.permissionConfig ? { permissionConfig: step.permissionConfig } : {}),
         ...(step.prompt ? { prompt: step.prompt } : {}),
         ...(step.sessionTitle ? { sessionTitle: step.sessionTitle } : {}),
+        ...normalizeAutomationAgentLimits(step),
       } as AutomationAction;
     case "delete-lane":
       return {
@@ -314,6 +327,8 @@ export function applyStepsToDraft(draft: AutomationRuleDraft, steps: WorkflowSte
     const previousSession = draft.execution?.kind === "agent-session" ? draft.execution.session ?? {} : {};
     const sessionWithoutFast = { ...previousSession };
     delete sessionWithoutFast.fastMode;
+    delete sessionWithoutFast.stopAfterMin;
+    delete sessionWithoutFast.stopWhenIdleMin;
     return {
       ...draft,
       execution: {
@@ -323,6 +338,7 @@ export function applyStepsToDraft(draft: AutomationRuleDraft, steps: WorkflowSte
           ...sessionWithoutFast,
           title: first.sessionTitle || null,
           ...(first.fastMode === true ? { fastMode: true } : {}),
+          ...normalizeAutomationAgentLimits(first),
         },
       },
       ...(first.modelConfig ? { modelConfig: first.modelConfig } : {}),

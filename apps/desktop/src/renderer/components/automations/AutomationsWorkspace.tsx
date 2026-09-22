@@ -42,7 +42,7 @@ function createBlankDraft(): AutomationRuleDraft {
     reviewProfile: "quick",
     toolPalette: ["repo", "git"],
     contextSources: [],
-    guardrails: { maxDurationMin: 20 },
+    guardrails: {},
     outputs: { disposition: "comment-only", createArtifact: true },
     verification: { verifyBeforePublish: false, mode: "intervention" },
     billingCode: "auto:new-automation",

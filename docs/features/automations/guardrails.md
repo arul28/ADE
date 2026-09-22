@@ -10,12 +10,28 @@ Confidence scoring, queue evaluation, sandbox cwd checks, and secret resolution 
 - `apps/desktop/src/main/services/automations/automationSecretService.ts` — secret policy (env-ref only). The ADE runtime resolves `${env:VAR}` at dispatch time from the runtime process environment, not from the desktop renderer.
 - `apps/desktop/src/main/services/automations/automationPlannerService.ts` — rule validation before persistence.
 
+## Agent limits (opt-in)
+
+An automation's agent turn has **no clock by default** — it runs until it finishes or someone stops it, the same as a chat started by hand. Elapsed time is not a cost signal: an agent waiting on CI, notarization or TestFlight processing costs almost nothing. Cost is capped by the global budgets in the header Usage popup, not by rule time.
+
+Two optional limits live on the agent step (`execution.session` for a single-agent rule, the `agent-session` action for a chained step), typed as `AutomationAgentLimits`:
+
+- `stopAfterMin` — interrupt the turn after this many minutes, whatever it is doing.
+- `stopWhenIdleMin` — interrupt the turn after this many minutes with no activity. The watch restarts on every event of the turn and is paused while a tool call, command, foreground subagent or approval is open, so a long `gh run watch` never reads as idle.
+
+Either one calls the normal chat interrupt (`runSessionTurn`'s `timeoutMs` / `idleTimeoutMs`), fails the run with the reason, and leaves the chat open. With neither set, `agentTurnLimits` passes `timeoutMs: null`, so the chat service's own 5-minute headless default never applies to an automation. Values are normalized by `normalizeAutomationAgentLimits` (`shared/automationLimits.ts`) at save, at config load, and at dispatch, and clamped to 7 days; the chat service additionally floors each timer at 15 s. Background subagents are not tracked by the idle watch, so an agent that only waits on a background task can read as idle; long silent model thinking can too.
+
+A turn that ends `interrupted` (someone pressed Stop) or `failed` never counts as success: `unfinishedAgentTurn` fails the step, so later non-`alwaysRun` steps do not run, and a one-shot rule is not retired as a success. A stop, or a chat that is ended or deleted mid-turn (`SessionTurnAbandonedError`), is not retried even when the step sets `retry` (`NonRetryableActionError`); provider failures and limit stops still are, since a rule that sets `retry` asked for that. Non-positive values mean "no limit". The builder shows both behind a **Limits** row on every agent step; the collapsed row always states which limits apply.
+
+A `run-command` step's `timeoutMs` is a different thing: a kill switch for a hung shell process (default 5 min, max 12 h), shown as **Time limit** on the step. Agent steps ignore `timeoutMs`.
+
+There is no rule-level duration or dollar guardrail. A `guardrails.maxDurationMin` or `guardrails.budgetUsd` left in an older stored rule is ignored: `projectConfigService` drops it when the config is parsed and the planner normalizer drops it when the rule is saved.
+
 ## Guardrail structure on a rule
 
 `AutomationRule.guardrails` (typed via `shared/types`):
 
 - `confidenceThreshold: number` — 0..1. A run with computed confidence below this threshold lands in `verification-required` instead of publishing. Default baseline is ~0.65; raising the threshold tightens the gate.
-- `maxDurationMin: number` — upper bound on run duration. Exceeded runs are cancelled with `status: "cancelled"`; baseline `10` minutes (used as the `Math.floor(... * 60_000)` cap).
 - `requireHuman: boolean` — force human review regardless of confidence.
 - Path/lane allowlists — constrain `built-in` shell and file actions to specific lane worktrees or subpaths. `validateAutomationCwd` + `resolvePathWithinRoot` enforce them at dispatch.
 - `reviewProfile` — one of `quick` / `incremental` / `full` / `security` / `release-risk` / `cross-repo-contract`. Drives the confidence base:
@@ -141,7 +157,6 @@ Shared via the top-bar Usage popup. The popup (`HeaderUsageControl`, `UsageLimit
 
 Automations also support rule-level caps:
 
-- `guardrails.maxDurationMin` — duration cap.
 - Billing codes (`billingCode`) flag spend so operators can slice usage by rule.
 - `budgetCapService` enforces hard caps at the project level; `usd-per-run` caps match the automation rule but evaluate usage records keyed to the active run id, so a prior run's spend does not block the next one. Breaches pause runs with an intervention.
 

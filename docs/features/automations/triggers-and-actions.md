@@ -159,11 +159,12 @@ Baseline tools (always available) come from `buildClaudeReadOnlyWorkerAllowedToo
 `AutomationAction` is the shape of each action in a `built-in` rule. Each action has:
 
 - `type` — `AutomationActionType`.
-- Shared step controls: `condition` (gate string), `continueOnFailure`, `alwaysRun`, `timeoutMs`, `retry`. Once a non-continuable action fails, ordinary trailing actions do not run; trailing actions with `alwaysRun: true` still execute as cleanup/finally steps. Their results are recorded normally, but they never erase the original failed run status.
+- Shared step controls: `condition` (gate string), `continueOnFailure`, `alwaysRun`, `retry`. `timeoutMs` is `run-command` only — it kills the shell process (default 5 min, max 12 h) and is ignored on every other step. Once a non-continuable action fails, ordinary trailing actions do not run; trailing actions with `alwaysRun: true` still execute as cleanup/finally steps. Their results are recorded normally, but they never erase the original failed run status.
 - Per-action overrides (apply on top of `execution.*` defaults):
   - `targetLaneId` — overrides the lane this action runs against. Resolves through `getConfiguredTargetLaneId(rule, action)` → `execution.targetLaneId` → trigger lane → primary lane.
   - `modelConfig` (`agent-session` only) — `{ modelId, thinkingLevel? }` overriding the rule's model for this step. `thinkingLevel` also feeds the agent-session reasoning effort.
   - `codexFastMode` (`agent-session` only) — boolean that enables Codex Fast Mode for this step. Only applied when the resolved provider group is `codex` AND the resolved model descriptor supports fast mode (`modelSupportsFastMode`); silently ignored otherwise. Forwarded to the chat service as `codexFastMode: true` on the session create, which causes Codex `thread/start` + `turn/start` JSON-RPC calls to carry `serviceTier: "fast"`. Mirrors the rule-level `execution.session.codexFastMode` toggle and stacks the same way as `modelConfig` / `permissionConfig`.
+  - `stopAfterMin` / `stopWhenIdleMin` (`agent-session` only) — optional limits on the agent turn; unset means none. See `guardrails.md` → Agent limits.
   - `permissionConfig` (`agent-session` only) — provider permission config whose `cli`/`providers`/`inProcess` fields are merged onto the rule's permission config; `providers.allowedTools` and `cli.allowedTools` extend (not replace) the rule's allow-list. The `cursor` provider key is supported alongside `claude`/`codex`/`opencode`.
 - Action-specific config on the same object (`command`, `cwd`, `suiteId`, `adeAction`, `prompt`, `sessionTitle`, `laneNameTemplate`, `laneDescriptionTemplate`, `parentLaneId`, `laneDeleteOptions`, `afterMinutes`).
 
