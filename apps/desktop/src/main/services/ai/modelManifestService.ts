@@ -54,17 +54,21 @@ let pollTimer: ReturnType<typeof setInterval> | null = null;
  * Apply a manifest only when it moves the directory forward: never older than
  * the bundled copy, never older than (or identical to) what is active.
  */
-function applyIfNewer(manifest: ModelManifest, source: string): boolean {
+type ApplyOutcome = "applied" | "current" | "rejected";
+
+function applyIfNewer(manifest: ModelManifest, source: string): ApplyOutcome {
   const incomingAt = modelManifestUpdatedAtMs(manifest);
-  if (incomingAt < modelManifestUpdatedAtMs(BUNDLED_MODEL_MANIFEST)) return false;
+  if (incomingAt < modelManifestUpdatedAtMs(BUNDLED_MODEL_MANIFEST)) return "rejected";
   const active = getActiveModelManifest();
-  if (active && active.adeVersion === adeVersion && modelManifestUpdatedAtMs(active.manifest) >= incomingAt) {
-    return false;
+  if (active && active.adeVersion === adeVersion) {
+    const activeAt = modelManifestUpdatedAtMs(active.manifest);
+    if (activeAt > incomingAt) return "rejected";
+    if (activeAt === incomingAt) return "current";
   }
   const result = applyModelManifest(manifest, { adeVersion });
   if (!result.applied) {
     logger?.warn("ai.model_manifest.apply_failed", { source, errors: result.errors });
-    return false;
+    return "rejected";
   }
   logger?.info("ai.model_manifest.applied", {
     source,
@@ -74,7 +78,7 @@ function applyIfNewer(manifest: ModelManifest, source: string): boolean {
     skipped: result.skipped,
     ...(result.errors.length ? { errors: result.errors } : {}),
   });
-  return true;
+  return "applied";
 }
 
 async function loadCachedManifest(): Promise<void> {
@@ -120,8 +124,10 @@ async function fetchRemoteManifest(): Promise<void> {
       logger?.warn("ai.model_manifest.invalid_remote", { errors: parsed.errors.slice(0, 10) });
       return;
     }
+    // Only a copy that is (or matches) the active directory replaces the disk
+    // cache; an older or unappliable one must not evict the last good copy.
+    if (applyIfNewer(parsed.manifest, "remote") === "rejected") return;
     etag = response.headers.get("etag");
-    applyIfNewer(parsed.manifest, "remote");
     await persistManifest(raw);
   } finally {
     clearTimeout(timeout);
@@ -167,7 +173,16 @@ export function initializeModelManifestService(args: {
   logger?: ModelManifestLogger;
   fetchRemote?: boolean;
 }): void {
-  if (initialized) return;
+  if (initialized) {
+    // One process can host an offline runtime first and an agent runtime
+    // later; the later caller may turn fetching on, never off.
+    if (args.fetchRemote !== false && !enabled) {
+      enabled = true;
+      logger ??= args.logger ?? null;
+      startPolling();
+    }
+    return;
+  }
   initialized = true;
   adeVersion = args.adeVersion?.trim() || null;
   logger = args.logger ?? null;
@@ -175,11 +190,15 @@ export function initializeModelManifestService(args: {
   // Re-gate the bundled copy for this build's real version.
   applyModelManifest(getActiveModelManifest()?.manifest ?? BUNDLED_MODEL_MANIFEST, { adeVersion });
   void loadCachedManifest().then(() => {
-    if (!enabled) return;
-    void refreshModelManifest();
-    pollTimer = setInterval(() => void refreshModelManifest(), POLL_INTERVAL_MS);
-    pollTimer.unref?.();
+    if (enabled) startPolling();
   });
+}
+
+function startPolling(): void {
+  void refreshModelManifest();
+  if (pollTimer) return;
+  pollTimer = setInterval(() => void refreshModelManifest(), POLL_INTERVAL_MS);
+  pollTimer.unref?.();
 }
 
 /** Test/cleanup hook. */

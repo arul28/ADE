@@ -47,6 +47,15 @@ export const MODEL_MANIFEST_PATCHABLE_FIELDS = [
 export type ModelManifestPatchableField = (typeof MODEL_MANIFEST_PATCHABLE_FIELDS)[number];
 export type ModelManifestFields = Partial<Pick<ModelDescriptor, ModelManifestPatchableField>>;
 
+/** Fields that decide what runs; a manifest may set them only on a model it adds. */
+export const MODEL_MANIFEST_ROUTING_FIELDS = [
+  "family",
+  "providerRoute",
+  "cliCommand",
+  "isCliWrapped",
+  "authTypes",
+] as const satisfies readonly ModelManifestPatchableField[];
+
 /** Fields a manifest must supply to add a model the registry does not have. */
 const REQUIRED_FOR_NEW_MODEL = [
   "shortId",
@@ -146,10 +155,6 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
-}
-
 function isPositiveNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
@@ -158,24 +163,63 @@ function isNonNegativeNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
+// The manifest is fetched unsigned from GitHub, so every value it can set is
+// constrained to what ADE already knows how to run: a known route launched by
+// its own known CLI, known families/auth/efforts, and plain model ids. It can
+// add rows and change metadata; it cannot point ADE at a new binary.
+
+/** Every route a manifest may use, with the only CLI that route may launch. */
+export const MODEL_MANIFEST_ROUTE_CLI: Readonly<Record<string, string>> = {
+  "claude-cli": "claude",
+  "codex-cli": "codex",
+  "cursor-sdk": "cursor",
+  "droid-cli": "droid",
+  "copilot-acp": "copilot",
+  "grok-acp": "grok",
+  "kimi-acp": "kimi",
+  "qwen-acp": "qwen",
+};
+const ALLOWED_FAMILIES = new Set([
+  "anthropic", "openai", "google", "mistral", "deepseek", "xai", "cursor", "factory", "qwen", "moonshot", "github-copilot",
+]);
+const ALLOWED_AUTH_TYPES = new Set(["cli-subscription", "api-key", "oauth"]);
+const ALLOWED_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "ultracode"]);
+const ALLOWED_SERVICE_TIERS = new Set(["fast"]);
+const MODEL_REF_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/[\]-]{0,127}$/;
+const COLOR_PATTERN = /^#[0-9A-Fa-f]{6}$/;
+
+function isModelRef(value: unknown): value is string {
+  return typeof value === "string" && MODEL_REF_PATTERN.test(value);
+}
+
+function isAllowedList(allowed: Set<string>) {
+  return (value: unknown): boolean =>
+    Array.isArray(value) && value.every((entry) => typeof entry === "string" && allowed.has(entry));
+}
+
+function isDisplayName(value: unknown): boolean {
+  // Printable, single-line, short: it is rendered in pickers on every client.
+  return typeof value === "string" && value.trim().length > 0 && value.length <= 80 && !/[\u0000-\u001f\u007f]/.test(value);
+}
+
 const FIELD_VALIDATORS: Record<ModelManifestPatchableField, (value: unknown) => boolean> = {
-  shortId: isNonEmptyString,
-  aliases: isStringArray,
-  displayName: isNonEmptyString,
-  family: isNonEmptyString,
-  authTypes: isStringArray,
+  shortId: isModelRef,
+  aliases: (value) => Array.isArray(value) && value.every(isModelRef),
+  displayName: isDisplayName,
+  family: (value) => typeof value === "string" && ALLOWED_FAMILIES.has(value),
+  authTypes: isAllowedList(ALLOWED_AUTH_TYPES),
   contextWindow: isPositiveNumber,
   maxOutputTokens: isPositiveNumber,
   capabilities: (value) =>
     isRecord(value)
     && ["tools", "vision", "reasoning", "streaming"].every((key) => typeof value[key] === "boolean"),
-  reasoningTiers: isStringArray,
-  defaultReasoningEffort: isNonEmptyString,
-  serviceTiers: isStringArray,
-  color: isNonEmptyString,
-  providerRoute: isNonEmptyString,
-  providerModelId: isNonEmptyString,
-  cliCommand: isNonEmptyString,
+  reasoningTiers: isAllowedList(ALLOWED_EFFORTS),
+  defaultReasoningEffort: (value) => typeof value === "string" && ALLOWED_EFFORTS.has(value),
+  serviceTiers: isAllowedList(ALLOWED_SERVICE_TIERS),
+  color: (value) => typeof value === "string" && COLOR_PATTERN.test(value),
+  providerRoute: (value) => typeof value === "string" && Object.prototype.hasOwnProperty.call(MODEL_MANIFEST_ROUTE_CLI, value),
+  providerModelId: isModelRef,
+  cliCommand: (value) => typeof value === "string" && Object.values(MODEL_MANIFEST_ROUTE_CLI).includes(value),
   isCliWrapped: (value) => typeof value === "boolean",
   deprecated: (value) => typeof value === "boolean",
   inputPricePer1M: isNonNegativeNumber,
@@ -183,10 +227,20 @@ const FIELD_VALIDATORS: Record<ModelManifestPatchableField, (value: unknown) => 
   costTier: (value) => value === "low" || value === "medium" || value === "high" || value === "very_high",
 };
 
-function parseGate(raw: UnknownRecord): ModelManifestVersionGate {
+/**
+ * A gate that does not parse must fail the file: silently ignoring a typo'd
+ * `minAdeVersion` would expose the model to every build it was meant to skip.
+ */
+function parseGate(raw: UnknownRecord, path: string, errors: string[]): ModelManifestVersionGate {
   const gate: ModelManifestVersionGate = {};
-  if (isNonEmptyString(raw.minAdeVersion)) gate.minAdeVersion = raw.minAdeVersion.trim();
-  if (isNonEmptyString(raw.maxAdeVersionExclusive)) gate.maxAdeVersionExclusive = raw.maxAdeVersionExclusive.trim();
+  for (const key of ["minAdeVersion", "maxAdeVersionExclusive"] as const) {
+    if (raw[key] === undefined) continue;
+    if (typeof raw[key] !== "string" || !parseReleaseVersion(raw[key])) {
+      errors.push(`${path}.${key} must be a release version like 1.2.80`);
+      continue;
+    }
+    gate[key] = (raw[key] as string).trim();
+  }
   return gate;
 }
 
@@ -202,7 +256,11 @@ function parseDefaultList(raw: unknown, path: string, errors: string[]): ModelMa
       errors.push(`${path}[${index}].model must be a non-empty string`);
       return;
     }
-    list.push({ model: entry.model.trim(), ...parseGate(entry) });
+    if (!isModelRef(entry.model)) {
+      errors.push(`${path}[${index}].model is not a valid model id`);
+      return;
+    }
+    list.push({ model: entry.model.trim(), ...parseGate(entry, `${path}[${index}]`, errors) });
   });
   return list;
 }
@@ -230,8 +288,8 @@ export function parseModelManifest(
   const seenIds = new Set<string>();
   (raw.models as unknown[]).forEach((entry, index) => {
     const path = `models[${index}]`;
-    if (!isRecord(entry) || !isNonEmptyString(entry.id)) {
-      errors.push(`${path}.id must be a non-empty string`);
+    if (!isRecord(entry) || !isModelRef(entry.id)) {
+      errors.push(`${path}.id must be a valid model id`);
       return;
     }
     const id = entry.id.trim();
@@ -254,10 +312,15 @@ export function parseModelManifest(
       }
       fields[key] = value;
     }
+    const route = fields.providerRoute as string | undefined;
+    const cli = fields.cliCommand as string | undefined;
+    if (route && cli && MODEL_MANIFEST_ROUTE_CLI[route] !== cli) {
+      errors.push(`${path}: route ${route} cannot launch ${cli}`);
+    }
     models.push({
       id,
-      ...(isNonEmptyString(entry.after) ? { after: entry.after.trim() } : {}),
-      ...parseGate(entry),
+      ...(isModelRef(entry.after) ? { after: entry.after.trim() } : {}),
+      ...parseGate(entry, path, errors),
       fields: fields as ModelManifestFields,
     });
   });

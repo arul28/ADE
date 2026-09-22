@@ -84,6 +84,35 @@ describe("parseModelManifest", () => {
     expect(bad.ok).toBe(false);
   });
 
+  it("only accepts routes ADE runs, each launching its own CLI", () => {
+    const base = { version: 1, updatedAt: "2030-01-01T00:00:00Z" };
+    const withFields = (fields: Record<string, unknown>) =>
+      parseModelManifest({ ...base, models: [{ id: "openai/gpt-7-nova", fields }] }).ok;
+    expect(withFields({ providerRoute: "codex-cli", cliCommand: "codex" })).toBe(true);
+    expect(withFields({ providerRoute: "codex-cli", cliCommand: "claude" })).toBe(false);
+    expect(withFields({ cliCommand: "/bin/sh" })).toBe(false);
+    expect(withFields({ providerRoute: "shell" })).toBe(false);
+    expect(withFields({ providerModelId: "gpt-7 --dangerous" })).toBe(false);
+    expect(withFields({ color: "red; background: url(x)" })).toBe(false);
+    expect(withFields({ reasoningTiers: ["low", "turbo"] })).toBe(false);
+  });
+
+  it("rejects a malformed version gate instead of ignoring it", () => {
+    const parsed = parseModelManifest({
+      version: 1,
+      updatedAt: "2030-01-01T00:00:00Z",
+      models: [{ id: "openai/gpt-5.6-sol", minAdeVersion: "1.2", fields: { deprecated: true } }],
+    });
+    expect(parsed.ok).toBe(false);
+    const badDefault = parseModelManifest({
+      version: 1,
+      updatedAt: "2030-01-01T00:00:00Z",
+      defaults: { app: [{ model: "openai/gpt-5.6-sol", maxAdeVersionExclusive: "next" }] },
+      models: [],
+    });
+    expect(badDefault.ok).toBe(false);
+  });
+
   it("rejects wrongly typed values rather than applying half a file", () => {
     const bad = parseModelManifest({
       version: 1,
@@ -170,16 +199,42 @@ describe("applyModelManifest", () => {
     expect(getModelById("openai/gpt-6-sol")).toBeDefined();
   });
 
-  it("reports a new model missing required fields instead of adding a broken row", () => {
+  it("rejects the whole manifest when a new model is incomplete, keeping the last good one", () => {
     const result = applyModelManifest(manifest({
+      defaults: { app: [{ model: "openai/gpt-5.6-sol" }] },
       models: [{ id: "openai/gpt-7-nova", fields: { displayName: "GPT-7 Nova" } }],
     }));
+    expect(result.applied).toBe(false);
     expect(result.errors[0]).toContain("openai/gpt-7-nova");
     expect(getModelById("openai/gpt-7-nova")).toBeUndefined();
+    // The rest of the file did not half-apply.
+    expect(getAppDefaultModelDescriptor()?.id).toBe("anthropic/claude-opus-5-5");
+    expect(getActiveModelManifest()?.manifest).toBe(BUNDLED_MODEL_MANIFEST);
+  });
+
+  it("refuses to re-route a model the build ships", () => {
+    const result = applyModelManifest(manifest({
+      models: [{ id: "openai/gpt-6-astra", fields: { providerRoute: "claude-cli", cliCommand: "claude" } }],
+    }));
+    expect(result.applied).toBe(false);
+    expect(getModelById("openai/gpt-6-astra")?.providerRoute).toBe("codex-cli");
   });
 });
 
 describe("adoptHostModelManifest", () => {
+  it("re-gates the same file for a host on a different ADE version", () => {
+    const gated = manifest({
+      models: [{ id: "openai/gpt-5.6-terra", minAdeVersion: "1.3.0", fields: { deprecated: true } }],
+    });
+    expect(adoptHostModelManifest({ manifest: gated, adeVersion: "1.2.90" })).toBe(true);
+    expect(getModelById("openai/gpt-5.6-terra")?.deprecated).toBeFalsy();
+    // Same updatedAt, newer host: the gate now opens.
+    expect(adoptHostModelManifest({ manifest: gated, adeVersion: "1.3.1" })).toBe(true);
+    expect(getModelById("openai/gpt-5.6-terra")?.deprecated).toBe(true);
+    // Same file, same host version: nothing to do.
+    expect(adoptHostModelManifest({ manifest: gated, adeVersion: "1.3.1" })).toBe(false);
+  });
+
   it("adopts only a manifest newer than the active one", () => {
     const older = manifest({ updatedAt: "2020-01-01T00:00:00Z", defaults: { app: [{ model: "openai/gpt-5.6-luna" }] } });
     expect(adoptHostModelManifest({ manifest: older, adeVersion: null })).toBe(false);
@@ -191,6 +246,8 @@ describe("adoptHostModelManifest", () => {
 
 describe("resolveClaudeCliModelAlias", () => {
   it("passes Claude Opus 5.5 through instead of snapping it to Opus 5", () => {
+    expect(resolveClaudeCliModelAlias("claude-opus-5-5[1m]", null)).toBe("claude-opus-5-5");
+    expect(resolveClaudeCliModelAlias("anthropic/claude-opus-5-5-1m", null)).toBe("claude-opus-5-5");
     expect(resolveClaudeCliModelAlias("claude-opus-5-5", null)).toBe("claude-opus-5-5");
     expect(resolveClaudeCliModelAlias("anthropic/claude-opus-5-5", null)).toBe("claude-opus-5-5");
     expect(resolveClaudeCliModelAlias("opus", null)).toBe("claude-opus-5-5");

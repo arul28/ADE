@@ -94,6 +94,29 @@ describe("modelManifestService", () => {
     expect(getAppDefaultModelDescriptor()?.id).toBe("anthropic/claude-opus-5-5");
   });
 
+  it("does not let an older remote copy evict the last good disk cache", async () => {
+    const cacheFile = path.join(home.dir, ".ade", "model-manifest.json");
+    fs.mkdirSync(path.join(home.dir, ".ade"), { recursive: true });
+    fs.writeFileSync(cacheFile, JSON.stringify({ fetchedAtMs: 0, etag: "\"v2\"", manifest: NEWER_MANIFEST }));
+    fetchMock.mockResolvedValue(jsonResponse({ ...NEWER_MANIFEST, updatedAt: "2098-01-01T00:00:00Z" }, { etag: "\"old\"" }));
+    initializeModelManifestService({ adeVersion: "1.2.80" });
+    await settle();
+    await refreshModelManifest();
+    const cached = JSON.parse(fs.readFileSync(cacheFile, "utf-8"));
+    expect(cached.manifest.updatedAt).toBe("2099-01-01T00:00:00Z");
+    expect(getActiveModelManifest()?.manifest.updatedAt).toBe("2099-01-01T00:00:00Z");
+  });
+
+  it("lets a later agent runtime turn fetching on after an offline runtime started it", async () => {
+    initializeModelManifestService({ adeVersion: "1.2.80", fetchRemote: false });
+    await settle();
+    expect(fetchMock).not.toHaveBeenCalled();
+    fetchMock.mockResolvedValue(jsonResponse(null, { status: 304 }));
+    initializeModelManifestService({ adeVersion: "1.2.80", fetchRemote: true });
+    await settle();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("backs off after a failure so picker opens do not hammer the network", async () => {
     fetchMock.mockRejectedValue(new Error("offline"));
     initializeModelManifestService({ adeVersion: "1.2.80" });

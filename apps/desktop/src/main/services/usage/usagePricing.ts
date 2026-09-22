@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { getModelPricing, resolveModelDescriptor } from "../../../shared/modelRegistry";
+import { getModelListPrice, resolveModelDescriptor } from "../../../shared/modelRegistry";
 import { forEachModelsDevEntry, MODELS_DEV_API_URL, pickModelsDevEntries, type ModelsDevCost } from "../ai/modelsDevCatalog";
 import { isRecord } from "../shared/utils";
 
@@ -317,6 +317,16 @@ function loadDynamicTokenPricingFromDisk(): number {
 function ensureDynamicTokenPricingLoaded(): void {
   if (!dynamicTokenPricingLoaded) {
     loadDynamicTokenPricingFromDisk();
+    return;
+  }
+  // A long-lived process whose refreshes all fail must age out the same way a
+  // restart would (PRICING_CACHE_MAX_AGE_MS), handing lookups to the registry.
+  if (
+    dynamicTokenPricing.size > 0
+    && dynamicTokenPricingTimestamp > 0
+    && Date.now() - dynamicTokenPricingTimestamp > PRICING_CACHE_MAX_AGE_MS
+  ) {
+    installDynamicTokenPricing(new Map(), 0);
   }
 }
 
@@ -378,12 +388,14 @@ function findDynamicPrice(model: string, options?: { exactOnly?: boolean }): Tok
   // ADE's own aliases name the model a runtime actually ran, so they outrank a
   // reseller row that happens to share the raw name (models.dev lists a model
   // literally called `auto`, and a reseller's `gemini-3-flash`).
+  const withPrefix = withProviderPricingName(model);
   if (canonical !== rawCanonical) {
-    const aliased = pricing.get(canonical);
+    // `venice/claude-sonnet-4-5-thinking` → venice's own `claude-sonnet-4-5` row first.
+    const routePrefix = withPrefix.endsWith(rawCanonical) ? withPrefix.slice(0, withPrefix.length - rawCanonical.length) : "";
+    const aliased = (routePrefix ? pricing.get(`${routePrefix}${canonical}`) : undefined) ?? pricing.get(canonical);
     if (aliased) return aliased;
   }
 
-  const withPrefix = withProviderPricingName(model);
   const exactWithPrefix = pricing.get(withPrefix);
   if (exactWithPrefix) return exactWithPrefix;
 
@@ -393,6 +405,16 @@ function findDynamicPrice(model: string, options?: { exactOnly?: boolean }): Tok
   const exactCanonical = pricing.get(canonical);
   if (exactCanonical) return exactCanonical;
   if (options?.exactOnly) return null;
+
+  // A provider-qualified variant (`openrouter/anthropic/claude-sonnet-4-5-thinking`)
+  // takes that provider's row before the bare vendor row.
+  if (withPrefix.includes("/")) {
+    for (const key of sortedDynamicKeys()) {
+      if (!key.includes("/") || !withPrefix.startsWith(`${key}-`)) continue;
+      if (/^\d/.test(withPrefix.slice(key.length + 1))) continue;
+      return pricing.get(key) ?? null;
+    }
+  }
 
   for (const key of sortedDynamicKeys()) {
     if (canonical === key) return pricing.get(key) ?? null;
@@ -464,7 +486,7 @@ function resolveTokenPriceWithSource(model: string): { price: TokenPrice; source
 function exactOrRegistryPrice(model: string): { price: TokenPrice; source: TokenPriceSource } | null {
   const exact = findDynamicPrice(model, { exactOnly: true });
   if (exact) return { price: exact, source: "list" };
-  const registryPrice = getModelPricing(resolveAlias(canonicalPricingName(model)));
+  const registryPrice = getModelListPrice(resolveAlias(canonicalPricingName(model)));
   return registryPrice ? { price: tokenPrice(registryPrice.input, registryPrice.output), source: "fallback" } : null;
 }
 

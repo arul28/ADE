@@ -1187,6 +1187,32 @@ describe("resolveTokenPrice", () => {
     expect(tokenPriceSource("gemini-2.5-pro")).toBe("fallback");
   });
 
+  it("prices a provider-qualified variant at that provider's row", () => {
+    _pricingTesting.installModelsDevPricingForTest({
+      venice: { id: "venice", models: { "claude-sonnet-4-5": { id: "claude-sonnet-4-5", cost: { input: 3.75, output: 18.75 } } } },
+      anthropic: { id: "anthropic", models: { "claude-sonnet-4-5": { id: "claude-sonnet-4-5", cost: { input: 3, output: 15 } } } },
+    });
+    expect(resolveTokenPrice("venice/claude-sonnet-4-5-thinking").input).toBe(3.75 / 1_000_000);
+    expect(resolveTokenPrice("claude-sonnet-4-5-thinking").input).toBe(3 / 1_000_000);
+  });
+
+  it("drops models.dev rates older than 30 days even in a long-running process", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-09-01T00:00:00Z"));
+      _pricingTesting.setDynamicTokenPricingForTest({
+        "claude-sonnet-4-5": { input: 99 / 1_000_000, output: 99 / 1_000_000, cacheWrite: 0, cacheRead: 0 },
+      });
+      expect(resolveTokenPrice("claude-sonnet-4-5").input).toBe(99 / 1_000_000);
+      vi.setSystemTime(new Date("2026-10-05T00:00:00Z"));
+      // Expired: no stale list rate, and no undated models.dev override either.
+      expect(resolveTokenPrice("claude-sonnet-4-5").input).not.toBe(99 / 1_000_000);
+      expect(tokenPriceSource("claude-sonnet-4-5")).toBe("fallback");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("never prices a newer version at an older version's prefix row", () => {
     // Only Opus 5 on the list: `claude-opus-5` is a string prefix of
     // `claude-opus-5-5`, but 5.5 must take its own (registry) price, not 5/25.

@@ -38,7 +38,11 @@ export function codexServerSupportsThreadRevert(version: CodexAppServerVersion |
   return codexServerAtLeast(version, 148);
 }
 
-/** `thread/rollback` was removed in 0.156 (openai/codex#44915); revert and fork replace it. */
+/**
+ * `thread/rollback` was removed in 0.156 (openai/codex#44915); revert and fork
+ * replace it. An unknown version may still have it, so the caller tries it and
+ * turns a method-not-found answer into a clear error.
+ */
 export function codexServerSupportsThreadRollback(version: CodexAppServerVersion | null): boolean {
   return !codexServerAtLeast(version, 156);
 }

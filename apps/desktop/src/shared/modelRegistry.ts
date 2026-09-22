@@ -5,6 +5,8 @@
 import bundledModelManifestJson from "./model-manifest.json";
 import {
   missingFieldsForNewModel,
+  MODEL_MANIFEST_ROUTE_CLI,
+  MODEL_MANIFEST_ROUTING_FIELDS,
   modelManifestGateAllows,
   modelManifestUpdatedAtMs,
   parseModelManifest,
@@ -1087,6 +1089,14 @@ function applyManifestOverlay(manifest: ModelManifest, adeVersion: string | null
     }
     const existing = MODEL_REGISTRY.find((descriptor) => descriptor.id === entry.id);
     if (existing) {
+      // Re-routing a model the build ships would let an unsigned file change
+      // which binary runs it; only rows the manifest itself adds carry routing.
+      const rerouted = MODEL_MANIFEST_ROUTING_FIELDS.filter((key) =>
+        key in entry.fields && !manifestAddedIds.has(entry.id)
+        && JSON.stringify(entry.fields[key]) !== JSON.stringify((existing as Record<string, unknown>)[key]));
+      if (rerouted.length) {
+        throw new Error(`${entry.id}: a manifest cannot change ${rerouted.join(", ")} of a built-in model`);
+      }
       const target = existing as Record<string, unknown>;
       const previous: ManifestPatchUndo["previous"] = {};
       for (const [key, value] of Object.entries(entry.fields) as Array<[ModelManifestPatchableField, unknown]>) {
@@ -1099,8 +1109,13 @@ function applyManifestOverlay(manifest: ModelManifest, adeVersion: string | null
     }
     const missing = missingFieldsForNewModel(entry.fields);
     if (missing.length) {
-      result.errors.push(`${entry.id}: a new model needs ${missing.join(", ")}`);
-      continue;
+      // Fail the whole manifest: committing the rest would cache a partial
+      // directory instead of keeping the last good one.
+      throw new Error(`${entry.id}: a new model needs ${missing.join(", ")}`);
+    }
+    const expectedCli = MODEL_MANIFEST_ROUTE_CLI[entry.fields.providerRoute ?? ""];
+    if (entry.fields.isCliWrapped && entry.fields.cliCommand !== expectedCli) {
+      throw new Error(`${entry.id}: route ${entry.fields.providerRoute} must launch ${expectedCli}`);
     }
     insertManifestModel({ id: entry.id, ...cloneManifestValue(entry.fields) } as ModelDescriptor, entry.after);
     manifestAddedIds.add(entry.id);
@@ -1179,7 +1194,12 @@ export function adoptHostModelManifest(
   const parsed = parseModelManifest(snapshot.manifest);
   if (!parsed.ok) return false;
   const active = activeManifest;
-  if (active && modelManifestUpdatedAtMs(active) >= modelManifestUpdatedAtMs(parsed.manifest)) return false;
+  const activeAt = modelManifestUpdatedAtMs(active);
+  const incomingAt = modelManifestUpdatedAtMs(parsed.manifest);
+  // Same file gated for a different host version (a host switch) must re-gate.
+  const sameFileNewGate = activeAt === incomingAt && activeManifestAdeVersion !== (snapshot.adeVersion?.trim() || null);
+  if (active && activeAt > incomingAt) return false;
+  if (active && activeAt === incomingAt && !sameFileNewGate) return false;
   return applyModelManifest(parsed.manifest, { adeVersion: snapshot.adeVersion }).applied;
 }
 
@@ -2834,6 +2854,19 @@ export function enrichModelRegistry(enrichments: Map<string, ModelEnrichment>): 
 export function getModelPricing(providerModelId: string): { input: number; output: number } | undefined {
   const override = _dynamicPricingOverrides[providerModelId];
   if (override) return override;
+  const model = bySdkModelId.get(providerModelId);
+  if (model?.inputPricePer1M != null && model?.outputPricePer1M != null) {
+    return { input: model.inputPricePer1M, output: model.outputPricePer1M };
+  }
+  return undefined;
+}
+
+/**
+ * The price this build (or the model manifest) states for a model, ignoring
+ * models.dev overrides. Usage cost reads models.dev through its own dated
+ * cache; falling back to an undated override would keep stale rates alive.
+ */
+export function getModelListPrice(providerModelId: string): { input: number; output: number } | undefined {
   const model = bySdkModelId.get(providerModelId);
   if (model?.inputPricePer1M != null && model?.outputPricePer1M != null) {
     return { input: model.inputPricePer1M, output: model.outputPricePer1M };

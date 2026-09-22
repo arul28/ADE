@@ -118,6 +118,14 @@ Merging a manifest edit to `main` reaches running installs within minutes.
   Only whitelisted descriptor fields are patchable; one invalid field rejects
   the whole file, and a file that would collide on an id or alias is rolled
   back to the previous manifest.
+- **Trust boundary**: the file is fetched unsigned, so it can only use values
+  ADE already runs. Routes are an allowlist (`MODEL_MANIFEST_ROUTE_CLI`) and
+  each launches only its own CLI (`codex-cli` → `codex`, …). Families, auth
+  types, efforts, and service tiers are allowlists too; ids match a strict
+  pattern; colors must be `#RRGGBB`. Routing fields (`family`,
+  `providerRoute`, `cliCommand`, `isCliWrapped`, `authTypes`) can be set only
+  on a model the manifest adds, never changed on a built-in one. A new model
+  missing a required field, or a malformed version gate, rejects the whole file.
 - **Version gating**: every model and default entry takes `minAdeVersion` /
   `maxAdeVersionExclusive`. Use it when a model needs code a release has to
   ship (a new effort level, a runtime contract). Dev, prerelease, and unknown
@@ -195,6 +203,11 @@ Medium, High, Extra High, Max, and (for the Sols/Terra) Ultra. Runtime app-serve
 their advertised order. `ultra` is the multi-agent tier and carries a usage
 warning. Codex 0.156.0 is the pinned app-server that advertises Astra; older
 PATH installs without Astra metadata cannot start it.
+
+On 0.156.0 a resumed thread reports its `collaborationMode`; ADE adopts that
+mode (plan or default) as the chat's interaction mode, so the plan toggle
+matches a thread switched from another Codex client. `/personality` is not
+offered for Codex: 0.156 retired personality styles.
 
 On 0.156.0 ADE always enables `tools.update_plan` on `thread/start` and
 `thread/resume`, copies the thread's `model` / `reasoningEffort` into the

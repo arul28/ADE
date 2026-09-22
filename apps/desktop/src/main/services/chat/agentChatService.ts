@@ -2408,7 +2408,6 @@ const CODEX_BUILT_IN_SLASH_COMMANDS: AgentChatSlashCommand[] = [
   { name: "/model", description: "Choose the active model and reasoning effort.", source: "sdk" },
   { name: "/fast", description: "Toggle Fast mode for supported models.", source: "local", argumentHint: "[on|off|status]" },
   { name: "/plan", description: "Switch to plan mode and optionally send a prompt.", source: "local", argumentHint: "[prompt]" },
-  { name: "/personality", description: "Choose a communication style for responses.", source: "sdk" },
   { name: "/quit", description: "Exit the CLI.", source: "sdk" },
   { name: "/review", description: "Ask Codex to review your working tree, a branch, or a prompt.", source: "local", argumentHint: "[diff|branch <name>|prompt <text>]" },
   { name: "/status", description: "Display session configuration and token usage.", source: "sdk" },
@@ -7568,6 +7567,8 @@ type CodexThreadLifecycleResponse = {
   sandbox?: unknown;
   reasoningEffort?: unknown;
   serviceTier?: unknown;
+  /** 0.156+ `thread/resume`: the mode the thread is actually in. */
+  collaborationMode?: unknown;
 };
 
 const CODEX_SANDBOX_CAMEL_CASE_ALIASES: Record<string, AgentChatCodexSandbox> = {
@@ -7625,6 +7626,13 @@ function applyCodexEffectiveThreadState(
 
   if (Object.prototype.hasOwnProperty.call(response, "serviceTier")) {
     managed.session.codexServiceTier = normalizeCodexServiceTier(response.serviceTier);
+  }
+
+  // A resumed thread reports the mode it is really in (it may have been
+  // switched from another Codex client), so the plan toggle follows it.
+  const resumedMode = (response.collaborationMode as { mode?: unknown } | null | undefined)?.mode;
+  if (resumedMode === "plan" || resumedMode === "default") {
+    managed.session.interactionMode = resumedMode;
   }
 
   const threadModel = stringOrNull(response.thread?.model ?? response.model);
@@ -52133,7 +52141,9 @@ export function createAgentChatService(args: {
   // cached catalog is stale until the next rebuild — served once more while a
   // background refresh picks up the change, never rebuilt on the caller.
   let modelCatalogManifestStale = false;
+  let modelManifestGeneration = 0;
   const disposeModelManifestListener = onModelManifestApplied(() => {
+    modelManifestGeneration += 1;
     modelCatalogManifestStale = true;
   });
 
@@ -52631,6 +52641,8 @@ export function createAgentChatService(args: {
   };
 
   const buildModelCatalog = async (catalogArgs?: AgentChatModelCatalogArgs): Promise<AgentChatModelCatalog> => {
+    // A manifest that lands mid-build must leave the result stale, not fresh.
+    const manifestGenerationAtStart = modelManifestGeneration;
     const mode = catalogArgs?.mode ?? "refresh-stale";
     const refreshProvider = catalogArgs?.refreshProvider;
     if (mode === "cached" && modelCatalogCache) {
@@ -52946,7 +52958,7 @@ export function createAgentChatService(args: {
       })),
     };
     modelCatalogCache = catalog;
-    modelCatalogManifestStale = false;
+    if (modelManifestGeneration === manifestGenerationAtStart) modelCatalogManifestStale = false;
     if (mode !== "cached" && shouldMarkModelCatalogProviderFresh(catalog, refreshProvider, catalogArgs?.cursorSource)) {
       markModelCatalogProviderFresh(refreshProvider, Date.now(), catalogArgs?.cursorSource);
     }
@@ -55860,9 +55872,11 @@ export function createAgentChatService(args: {
           });
         }
       }
+      const rollbackRemovedMessage =
+        "Codex can't rewind this message: its turn id is missing and this Codex version removed turn-count rollback.";
       if (!lifecycleResponse && !canForkBeforeTurn && !codexServerSupportsThreadRollback(runtime.serverVersion)) {
         // 0.156+ has no turn-count rollback; without a turn id there is nothing to revert or fork before.
-        throw new Error("Codex can't rewind this message: its turn id is missing and this Codex version removed turn-count rollback.");
+        throw new Error(rollbackRemovedMessage);
       }
       if (!lifecycleResponse) {
         rewindMethod = canForkBeforeTurn ? "fork_before_turn" : "rollback";
@@ -55874,7 +55888,10 @@ export function createAgentChatService(args: {
           : await runtime.request<CodexThreadLifecycleResponse>("thread/rollback", {
               threadId,
               numTurns: 1,
-            }, { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
+            }, { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS }).catch((error: unknown) => {
+              // An unreported version may already be 0.156+.
+              throw isCodexRpcMethodNotFound(error) ? new Error(rollbackRemovedMessage) : error;
+            });
       }
       applyCodexEffectiveThreadState(managed, lifecycleResponse);
       adoptRuntimeSessionTitle(
