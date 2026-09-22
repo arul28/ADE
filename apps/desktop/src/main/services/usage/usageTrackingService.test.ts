@@ -1187,6 +1187,13 @@ describe("resolveTokenPrice", () => {
     expect(tokenPriceSource("gemini-2.5-pro")).toBe("fallback");
   });
 
+  it("keeps the Codex list price when another runtime shares the wire id", () => {
+    // No models.dev data: Copilot's unpriced `gpt-5.4` row must not hide Codex's.
+    _pricingTesting.resetDynamicTokenPricingForTest({ disableDiskCache: true });
+    expect(resolveTokenPrice("gpt-5.4").input).toBe(2.5 / 1_000_000);
+    expect(resolveTokenPrice("gpt-5.3-codex").input).toBeGreaterThan(0);
+  });
+
   it("prices a provider-qualified variant at that provider's row", () => {
     _pricingTesting.installModelsDevPricingForTest({
       venice: { id: "venice", models: { "claude-sonnet-4-5": { id: "claude-sonnet-4-5", cost: { input: 3.75, output: 18.75 } } } },

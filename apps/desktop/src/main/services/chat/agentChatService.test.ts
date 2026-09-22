@@ -57,9 +57,13 @@ function usingFakeTimers(): boolean {
   }
 }
 
+// Captured before any test fakes timers. `realYield` lets pending real I/O
+// settle between fake-time steps for tests a loaded CI runner can outrun.
+const realSetImmediate = globalThis.setImmediate;
+
 async function waitForFakeTimers(
   assertion: () => unknown,
-  options: { steps?: number; stepMs?: number } = {},
+  options: { steps?: number; stepMs?: number; realYield?: boolean } = {},
 ): Promise<void> {
   if (!usingFakeTimers()) {
     await vi.waitFor(assertion);
@@ -76,6 +80,7 @@ async function waitForFakeTimers(
       lastError = error;
     }
     await vi.advanceTimersByTimeAsync(step === 0 ? 0 : stepMs);
+    if (options.realYield) await new Promise<void>((resolve) => realSetImmediate(() => resolve()));
   }
   throw lastError;
 }
@@ -40388,7 +40393,7 @@ describe("createAgentChatService", () => {
             && event.event.mcp?.pluginId === "local-plugin"
             && event.event.mcp?.appContext?.appName === "Local tools"
           )).toBe(true);
-        });
+        }, { steps: 200, realYield: true });
 
         expect(events.some((event) =>
           event.event.type === "tool_result"

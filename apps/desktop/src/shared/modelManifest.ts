@@ -187,6 +187,8 @@ export const MODEL_MANIFEST_ROUTE_CLI: Readonly<Record<string, string>> = {
   "kimi-acp": "kimi",
   "qwen-acp": "qwen",
 };
+/** Routes whose runtime is an SDK rather than a wrapped CLI; every other route is CLI-wrapped. */
+export const MODEL_MANIFEST_SDK_ROUTES: ReadonlySet<string> = new Set(["cursor-sdk"]);
 const ALLOWED_FAMILIES = new Set([
   "anthropic", "openai", "google", "mistral", "deepseek", "xai", "cursor", "factory", "qwen", "moonshot", "github-copilot",
 ]);

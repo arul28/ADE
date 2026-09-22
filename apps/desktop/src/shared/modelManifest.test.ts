@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveClaudeCliModelAlias } from "./claudeCliModels";
-import { MODEL_MANIFEST_PROVIDER_GROUPS, modelManifestGateAllows, parseModelManifest, type ModelManifest } from "./modelManifest";
+import { MODEL_MANIFEST_PROVIDER_GROUPS, modelManifestGateAllows, parseModelManifest, type ModelManifest, type ModelManifestFields } from "./modelManifest";
 import {
   adoptHostModelManifest,
   applyModelManifest,
@@ -223,6 +223,18 @@ describe("applyModelManifest", () => {
     // The rest of the file did not half-apply.
     expect(getAppDefaultModelDescriptor()?.id).toBe("anthropic/claude-opus-5-5");
     expect(getActiveModelManifest()?.manifest).toBe(BUNDLED_MODEL_MANIFEST);
+  });
+
+  it("rejects a new model whose wrapping or CLI disagrees with its route", () => {
+    const fields: ModelManifestFields = { ...NEW_CODEX_FIELDS, aliases: ["gpt-7-nova"], authTypes: ["cli-subscription"], reasoningTiers: ["low"], capabilities: { ...NEW_CODEX_FIELDS.capabilities } };
+    const unwrapped = applyModelManifest(manifest({
+      models: [{ id: "openai/gpt-7-nova", fields: { ...fields, isCliWrapped: false } }],
+    }));
+    expect(unwrapped.applied).toBe(false);
+    const { cliCommand: _omit, ...noCli } = fields;
+    const missingCli = applyModelManifest(manifest({ models: [{ id: "openai/gpt-7-nova", fields: noCli }] }));
+    expect(missingCli.applied).toBe(false);
+    expect(getModelById("openai/gpt-7-nova")).toBeUndefined();
   });
 
   it("refuses to re-route a model the build ships", () => {

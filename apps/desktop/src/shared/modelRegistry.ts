@@ -7,6 +7,7 @@ import {
   missingFieldsForNewModel,
   MODEL_MANIFEST_ROUTE_CLI,
   MODEL_MANIFEST_ROUTING_FIELDS,
+  MODEL_MANIFEST_SDK_ROUTES,
   modelManifestGateAllows,
   modelManifestUpdatedAtMs,
   parseModelManifest,
@@ -1113,9 +1114,15 @@ function applyManifestOverlay(manifest: ModelManifest, adeVersion: string | null
       // directory instead of keeping the last good one.
       throw new Error(`${entry.id}: a new model needs ${missing.join(", ")}`);
     }
-    const expectedCli = MODEL_MANIFEST_ROUTE_CLI[entry.fields.providerRoute ?? ""];
-    if (entry.fields.isCliWrapped && entry.fields.cliCommand !== expectedCli) {
-      throw new Error(`${entry.id}: route ${entry.fields.providerRoute} must launch ${expectedCli}`);
+    // Provider resolution keys off isCliWrapped, not the route, so both must
+    // agree with the route or the model would launch through another runtime.
+    const route = entry.fields.providerRoute ?? "";
+    const expectedCli = MODEL_MANIFEST_ROUTE_CLI[route];
+    const expectedWrapped = !MODEL_MANIFEST_SDK_ROUTES.has(route);
+    if (entry.fields.isCliWrapped !== expectedWrapped || entry.fields.cliCommand !== expectedCli) {
+      throw new Error(
+        `${entry.id}: route ${route} needs isCliWrapped: ${expectedWrapped} and cliCommand: ${expectedCli}`,
+      );
     }
     insertManifestModel({ id: entry.id, ...cloneManifestValue(entry.fields) } as ModelDescriptor, entry.after);
     manifestAddedIds.add(entry.id);
@@ -2868,11 +2875,14 @@ export function getModelPricing(providerModelId: string): { input: number; outpu
  * cache; falling back to an undated override would keep stale rates alive.
  */
 export function getModelListPrice(providerModelId: string): { input: number; output: number } | undefined {
-  const model = bySdkModelId.get(providerModelId);
-  if (model?.inputPricePer1M != null && model?.outputPricePer1M != null) {
-    return { input: model.inputPricePer1M, output: model.outputPricePer1M };
-  }
-  return undefined;
+  // Runtimes share wire ids (Codex and Copilot both run `gpt-5.4`), and the
+  // one-per-id index keeps whichever row came last. Take the first row that
+  // actually states a price.
+  const model = MODEL_REGISTRY.find((entry) =>
+    entry.providerModelId === providerModelId
+    && entry.inputPricePer1M != null
+    && entry.outputPricePer1M != null);
+  return model ? { input: model.inputPricePer1M!, output: model.outputPricePer1M! } : undefined;
 }
 
 /** Dynamic pricing overrides — merged from models.dev at runtime */
