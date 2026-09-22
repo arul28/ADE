@@ -59,7 +59,7 @@ export function claudeBuiltInIsReadOnly(toolName: string): boolean {
  * plan-mode allowlist — read-only built-ins including `NotebookRead`,
  * `Agent`/`Task` subagent exploration, `Skill`, task bookkeeping,
  * `AskUserQuestion` — plus ADE's plan-flow and question tools. Verified against
- * the bundled CLI 2.1.278 that ships with Agent SDK 0.3.278; re-check it when
+ * the bundled CLI 2.1.280 that ships with Agent SDK 0.3.280; re-check it when
  * the SDK pin moves, the way the built-in agent prompts are re-extracted on a
  * pin move.
  *

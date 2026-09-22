@@ -228,8 +228,20 @@ function canonicalDroidReplacementForAlias(
   }
   if (
     normalized === "opus"
-    || (options?.customProxy && normalized === "claude-opus-5")
+    || (options?.customProxy && normalized === "claude-opus-5-5")
   ) {
+    return {
+      id: `${idPrefix}claude-opus-5-5`,
+      displayName: "Opus 5.5",
+      ...customProxy,
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      capabilities: CANONICAL_DROID_ANTHROPIC_CAPABILITIES,
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "medium",
+    };
+  }
+  if (options?.customProxy && normalized === "claude-opus-5") {
     return {
       id: `${idPrefix}claude-opus-5`,
       displayName: "Opus 5",
@@ -242,7 +254,10 @@ function canonicalDroidReplacementForAlias(
     };
   }
   if (
-    normalized === "claude-opus-4-7"
+    normalized === "claude-opus-4-8"
+    || normalized === "opus-4.8"
+    || normalized === "opus-4-8"
+    || normalized === "claude-opus-4-7"
     || normalized === "opus-4-7"
     || normalized === "opus-4.7"
     || normalized === "claude-opus-4-6"
@@ -253,17 +268,16 @@ function canonicalDroidReplacementForAlias(
     || normalized === "claude-opus-4-7[1m]"
     || normalized === "opus-1m"
     || normalized === "opus[1m]"
-    || (options?.customProxy && normalized === "claude-opus-4-8")
   ) {
     return {
-      id: `${idPrefix}claude-opus-4-8`,
-      displayName: "Opus 4.8",
+      id: `${idPrefix}claude-opus-5`,
+      displayName: "Opus 5",
       ...customProxy,
       contextWindow: 1_000_000,
       maxOutputTokens: 128_000,
       capabilities: CANONICAL_DROID_ANTHROPIC_CAPABILITIES,
-      reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
-      serviceTiers: ["fast"],
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "high",
     };
   }
   return null;

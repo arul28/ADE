@@ -345,32 +345,31 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     costTier: "very_high",
   },
   {
-    id: "anthropic/claude-opus-5",
+    id: "anthropic/claude-opus-5-5",
     shortId: "opus",
     aliases: [
       "opus",
-      "opus-5",
-      "opus-5.0",
-      "opus-5-0",
-      "claude-opus-5",
-      "anthropic/claude-opus-5-api",
+      "opus-5.5",
+      "opus-5-5",
+      "claude-opus-5-5",
+      "anthropic/claude-opus-5-5-api",
     ],
-    displayName: "Claude Opus 5",
+    displayName: "Claude Opus 5.5",
     family: "anthropic",
     authTypes: ["cli-subscription"],
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
     reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
-    defaultReasoningEffort: "high",
+    defaultReasoningEffort: "medium",
     serviceTiers: ["fast"],
     color: "#D97706",
     providerRoute: "claude-cli",
-    providerModelId: "claude-opus-5",
+    providerModelId: "claude-opus-5-5",
     cliCommand: "claude",
     isCliWrapped: true,
-    inputPricePer1M: 5,
-    outputPricePer1M: 25,
+    inputPricePer1M: 4,
+    outputPricePer1M: 20,
     costTier: "very_high",
   },
   {
@@ -422,10 +421,16 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     costTier: "low",
   },
   {
-    id: "anthropic/claude-opus-4-8",
-    shortId: "opus-4.8",
+    id: "anthropic/claude-opus-5",
+    shortId: "opus-5",
     aliases: [
+      "opus-5",
+      "opus-5.0",
+      "opus-5-0",
+      "claude-opus-5",
+      "anthropic/claude-opus-5-api",
       "claude-opus-4-8",
+      "anthropic/claude-opus-4-8",
       "opus-4.8",
       "opus-4-8",
       "opus-4.8-1m",
@@ -455,17 +460,18 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
       "anthropic/claude-opus-4-6-1m",
       "anthropic/claude-opus-4-7-1m",
     ],
-    displayName: "Claude Opus 4.8",
+    displayName: "Claude Opus 5",
     family: "anthropic",
     authTypes: ["cli-subscription"],
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+    reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+    defaultReasoningEffort: "high",
     serviceTiers: ["fast"],
     color: "#D97706",
     providerRoute: "claude-cli",
-    providerModelId: "claude-opus-4-8",
+    providerModelId: "claude-opus-5",
     cliCommand: "claude",
     isCliWrapped: true,
     inputPricePer1M: 5,
@@ -1518,26 +1524,30 @@ export function normalizeAnthropicRuntimeAlias(modelId: string): {
     };
   }
   if (
-    normalized === "claude-opus-5"
-    || normalized === "opus-5"
-    || normalized === "opus-5.0"
-    || normalized === "opus-5-0"
+    normalized === "claude-opus-5-5"
+    || normalized === "opus-5.5"
+    || normalized === "opus-5-5"
     || normalized === "opus"
   ) {
     return {
-      modelId: "claude-opus-5",
-      displayName: "Claude Opus 5",
+      modelId: "claude-opus-5-5",
+      displayName: "Claude Opus 5.5",
       contextWindow: 1_000_000,
       maxOutputTokens: 128_000,
       capabilities: ALL_CAPS,
       reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
-      defaultReasoningEffort: "high",
+      defaultReasoningEffort: "medium",
       serviceTiers: ["fast"],
-      wasAlias: normalized !== "claude-opus-5",
+      wasAlias: normalized !== "claude-opus-5-5",
     };
   }
   if (
-    normalized === "claude-opus-4-8"
+    normalized === "claude-opus-5"
+    || normalized === "opus-5"
+    || normalized === "opus-5.0"
+    || normalized === "opus-5-0"
+    || normalized === "claude-opus-4-8"
+    || normalized === "anthropic/claude-opus-4-8"
     || normalized === "opus-4.8"
     || normalized === "opus-4-8"
     || normalized === "opus-4.8-1m"
@@ -1562,14 +1572,15 @@ export function normalizeAnthropicRuntimeAlias(modelId: string): {
     || normalized === "claude-opus-4-6-1m"
   ) {
     return {
-      modelId: "claude-opus-4-8",
-      displayName: "Claude Opus 4.8",
+      modelId: "claude-opus-5",
+      displayName: "Claude Opus 5",
       contextWindow: 1_000_000,
       maxOutputTokens: 128_000,
       capabilities: ALL_CAPS,
-      reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "high",
       serviceTiers: ["fast"],
-      wasAlias: normalized !== "claude-opus-4-8",
+      wasAlias: normalized !== "claude-opus-5",
     };
   }
   return null;
@@ -2092,8 +2103,9 @@ function normalizeDroidEffortLabel(value: string): string {
 const KNOWN_DROID_COMPACT_DISPLAY_NAMES: Record<string, string> = {
   "claude-fable-5-1": "Fable 5.1",
   "claude-fable-5": "Fable 5",
+  "claude-opus-5-5": "Opus 5.5",
   "claude-opus-5": "Opus 5",
-  "claude-opus-4-8": "Opus 4.8",
+  "claude-opus-4-8": "Opus 5",
   "claude-opus-4-5-20251101": "Opus 4.5 (2x)",
   "claude-opus-4-6": "Opus 4.6 (2x)",
   "claude-opus-4-6-fast": "Opus 4.6 Fast Mode (12x)",
@@ -2195,9 +2207,10 @@ export function createDynamicDroidCliModelDescriptor(
     rawProviderModelId.replace(/^custom:/i, ""),
   )?.modelId;
   // Droid's SDK and CLI launch contracts do not consume a Fast toggle. Keep
-  // Opus 5 reasoning metadata, but never surface an inert service-tier control
+  // Opus reasoning metadata, but never surface an inert service-tier control
   // for built-in aliases, direct ids, or custom-proxy ids.
   const serviceTiers = canonicalDroidModelId === "claude-opus-5"
+    || canonicalDroidModelId === "claude-opus-5-5"
     ? undefined
     : options?.serviceTiers?.length
       ? options.serviceTiers

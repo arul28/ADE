@@ -156,26 +156,24 @@ defaults to `guarded` unless explicitly whitelisted.
 Claude's global quick-pick vocabulary is `low | medium | high | max`
 (`CLAUDE_THINKING_LEVELS` in `shared/modelProfiles.ts`), while model
 descriptors advertise their provider-native ladders to model-specific
-pickers. Opus 5 exposes `low|medium|high|xhigh|max`; Fable 5.1
-and Opus 4.8 add `ultracode`; Sonnet 5 exposes
-`low|medium|high|max`; Haiku 4.5 has no reasoning control. The Claude
-registry is ordered as
-Fable 5.1, Opus 5.5, Opus 5, Sonnet 5, Haiku 4.5, then Opus 4.8; pickers list
-the default (Opus 5.5) first.
-Opus 5.5 (added by the model manifest) selects provider model
-`claude-opus-5-5`, 1M context, `$4/$20`, defaults to `high` effort, and
-exposes `low|medium|high|xhigh|max` plus Fast Mode. It is the Claude default
-and the app-wide default.
+pickers. Opus 5.5 and Opus 5 expose `low|medium|high|xhigh|max`;
+Fable 5.1 adds `ultracode`; Sonnet 5 exposes `low|medium|high|max`;
+Haiku 4.5 has no reasoning control. The Claude registry is ordered as
+Fable 5.1, Opus 5.5, Sonnet 5, Haiku 4.5, then Opus 5.
+Opus 5.5 selects provider model `claude-opus-5-5`, defaults to `medium`
+effort, and exposes `low|medium|high|xhigh|max` plus Fast Mode. It is the
+Claude default and the app-wide default (set in `model-manifest.json`), so
+pickers list it first.
 Opus 5 selects provider model `claude-opus-5`, defaults to `high`
 effort, and exposes `low|medium|high|xhigh|max` plus Fast Mode.
 Fable 5.1 selects provider model `claude-fable-5-1`, defaults to `high`
 effort, and exposes `low|medium|high|xhigh|max|ultracode` plus Fast Mode.
 Sonnet 5 selects provider model `claude-sonnet-5`; retired Sonnet 4.6
 ids resolve forward for compatibility and no longer appear as picker
-rows. The basic Opus 4.7 row and the Opus 4.7 1M row are both removed;
-their old aliases, including `opus[1m]` / `opus-1m`, resolve to Opus 4.8.
-The generic `opus` alias selects Opus 5.5; `opus-5` selects Opus 5. Retired Fable 5 ids resolve to
-Fable 5.1. Opus 4.8 is labelled without a 1M suffix.
+rows. Opus 4.8, the basic Opus 4.7 row, and the Opus 4.7 1M row are
+removed; their old aliases, including `opus[1m]` / `opus-1m`, resolve to
+Opus 5. The generic `opus` alias selects Opus 5.5. Retired Fable 5 ids
+resolve to Fable 5.1.
 Passthrough to the provider config is unchanged (the tier string is
 forwarded directly to the CLI / SDK, with no synthesized token budgets).
 
@@ -1065,9 +1063,9 @@ access mode, and the `canUseTool` gate refuses any tool not on
 `isSessionInPlanMode` holds — so when the CLI defers a call to the host, a
 `bypassPermissions` session that entered plan mode mid-run cannot have it
 silently allowed. (The SDK's `canUseTool` firing is not re-measured against
-0.3.278 — see [the SDK surface](../sdk/README.md) — but the fence holds on every
+0.3.280 — see [the SDK surface](../sdk/README.md) — but the fence holds on every
 call that does reach it.) The allowlist is checked against the bundled CLI
-2.1.278's own plan-mode allowlist — read-only built-ins including
+2.1.280's own plan-mode allowlist — read-only built-ins including
 `NotebookRead`, `Agent`/`Task` subagent exploration, `Skill`, task bookkeeping,
 `AskUserQuestion` — plus ADE's plan-flow and question tools. It is an allowlist
 rather than a mutating denylist on purpose:

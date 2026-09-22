@@ -148,20 +148,20 @@ describe("discoverDroidCliModelDescriptors", () => {
 
     expect(descriptors.map((descriptor) => descriptor.id)).toEqual([
       "droid/claude-fable-5-1",
-      "droid/claude-opus-4-8",
       "droid/claude-opus-5",
+      "droid/claude-opus-5-5",
       "droid/claude-sonnet-5",
     ]);
     expect(descriptors.map((descriptor) => descriptor.displayName)).toEqual([
       "Fable 5.1",
-      "Opus 4.8",
       "Opus 5",
+      "Opus 5.5",
       "Sonnet 5 (1.2x)",
     ]);
     expect(descriptors.map((descriptor) => descriptor.providerModelId)).toEqual([
       "claude-fable-5-1",
-      "claude-opus-4-8",
       "claude-opus-5",
+      "claude-opus-5-5",
       "claude-sonnet-5",
     ]);
   });
@@ -301,8 +301,8 @@ describe("discoverDroidCliModelDescriptors", () => {
     const descriptors = await discoverDroidCliModelDescriptors("/mock/bin/droid");
 
     expect(new Set(descriptors.map((descriptor) => descriptor.id))).toEqual(new Set([
-      "droid/custom:claude-opus-4-8",
       "droid/custom:claude-opus-5",
+      "droid/custom:claude-opus-5-5",
       "droid/custom:claude-sonnet-5",
       "droid/custom:custom-real-model",
     ]));
@@ -314,15 +314,6 @@ describe("discoverDroidCliModelDescriptors", () => {
       maxOutputTokens: 128_000,
       reasoningTiers: ["low", "medium", "high", "max"],
     });
-    expect(descriptors.find((descriptor) => descriptor.id === "droid/custom:claude-opus-4-8")).toMatchObject({
-      providerModelId: "custom:claude-opus-4-8",
-      displayName: "Opus 4.8",
-      customProxy: true,
-      contextWindow: 1_000_000,
-      maxOutputTokens: 128_000,
-      serviceTiers: ["fast"],
-      reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
-    });
     expect(descriptors.find((descriptor) => descriptor.id === "droid/custom:claude-opus-5")).toMatchObject({
       providerModelId: "custom:claude-opus-5",
       displayName: "Opus 5",
@@ -331,6 +322,15 @@ describe("discoverDroidCliModelDescriptors", () => {
       maxOutputTokens: 128_000,
       reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
       defaultReasoningEffort: "high",
+    });
+    expect(descriptors.find((descriptor) => descriptor.id === "droid/custom:claude-opus-5-5")).toMatchObject({
+      providerModelId: "custom:claude-opus-5-5",
+      displayName: "Opus 5.5",
+      customProxy: true,
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "medium",
     });
     expect(
       descriptors.find((descriptor) => descriptor.id === "droid/custom:claude-opus-5")?.serviceTiers,
@@ -352,8 +352,12 @@ describe("discoverDroidCliModelDescriptors", () => {
             model_display_name: "Canonical Sonnet custom proxy",
           },
           {
-            model: "claude-opus-4-8",
+            model: "claude-opus-5",
             model_display_name: "Canonical Opus custom proxy",
+          },
+          {
+            model: "claude-opus-5-5",
+            model_display_name: "Canonical Opus 5.5 custom proxy",
           },
         ],
       }),
@@ -370,13 +374,21 @@ describe("discoverDroidCliModelDescriptors", () => {
       maxOutputTokens: 128_000,
       reasoningTiers: ["low", "medium", "high", "max"],
     });
-    expect(descriptors.find((descriptor) => descriptor.id === "droid/custom:claude-opus-4-8")).toMatchObject({
-      providerModelId: "custom:claude-opus-4-8",
+    expect(descriptors.find((descriptor) => descriptor.id === "droid/custom:claude-opus-5")).toMatchObject({
+      providerModelId: "custom:claude-opus-5",
       customProxy: true,
       contextWindow: 1_000_000,
       maxOutputTokens: 128_000,
-      serviceTiers: ["fast"],
-      reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "high",
+    });
+    expect(descriptors.find((descriptor) => descriptor.id === "droid/custom:claude-opus-5-5")).toMatchObject({
+      providerModelId: "custom:claude-opus-5-5",
+      customProxy: true,
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "medium",
     });
   });
 

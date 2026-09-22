@@ -1187,6 +1187,20 @@ describe("resolveTokenPrice", () => {
     expect(tokenPriceSource("gemini-2.5-pro")).toBe("fallback");
   });
 
+  it("never prices a newer version at an older version's prefix row", () => {
+    // Only Opus 5 on the list: `claude-opus-5` is a string prefix of
+    // `claude-opus-5-5`, but 5.5 must take its own (registry) price, not 5/25.
+    _pricingTesting.setDynamicTokenPricingForTest({
+      "claude-opus-5": { input: 5 / 1_000_000, output: 25 / 1_000_000, cacheWrite: 6.25 / 1_000_000, cacheRead: 0.5 / 1_000_000 },
+    });
+    expect(resolveTokenPrice("claude-opus-5-5").input).toBe(4 / 1_000_000);
+    expect(resolveTokenPrice("claude-opus-5-5").output).toBe(20 / 1_000_000);
+    // A variant suffix is still the same model.
+    expect(resolveTokenPrice("claude-opus-5-thinking").input).toBe(5 / 1_000_000);
+    // An unknown later version is unpriced rather than billed as Opus 5.
+    expect(resolveTokenPrice("claude-opus-5-9").input).toBe(0);
+  });
+
   it("prices variants by the closest models.dev prefix", () => {
     const thinking = resolveTokenPrice("claude-sonnet-4-5-thinking");
     expect(thinking.input).toBe(3 / 1_000_000);

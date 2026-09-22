@@ -1182,7 +1182,7 @@ function resolveClaudeAgentSdkVersion(): string {
   } catch {
     // The package metadata can be unavailable in partial development installs.
   }
-  return "0.3.278";
+  return "0.3.280";
 }
 
 const CLAUDE_AGENT_SDK_VERSION = resolveClaudeAgentSdkVersion();
@@ -6853,7 +6853,7 @@ function resolveClaudeTurnModelPayload(
   } else if (sessionModelId) {
     selectedDescriptor = getModelById(sessionModelId);
   }
-  const selectedIsOpus48 = selectedDescriptor?.id === "anthropic/claude-opus-4-8";
+  const selectedIsExplicitOpus5 = selectedDescriptor?.id === "anthropic/claude-opus-5";
 
   for (const candidate of candidates) {
     const normalized = normalizeReportedModelName(candidate);
@@ -6863,7 +6863,7 @@ function resolveClaudeTurnModelPayload(
       resolveClaudeCliModelIdFromRuntimeValue(normalized)
       ?? resolveClaudeCliModelIdFromRuntimeValue(normalizedCliModel);
     if (resolvedCliModelId) {
-      if (selectedIsOpus48 && isBareClaudeOpusRuntimeAlias(normalized)) {
+      if (selectedIsExplicitOpus5 && isBareClaudeOpusRuntimeAlias(normalized)) {
         return sessionPayload;
       }
       if (sessionModelId && resolvedCliModelId === sessionModelId) return sessionPayload;

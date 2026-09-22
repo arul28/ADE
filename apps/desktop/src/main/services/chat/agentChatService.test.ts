@@ -3663,7 +3663,7 @@ describe("createAgentChatService", () => {
       expect(session.model).toBe("claude-sonnet-5");
     });
 
-    it("maps retired Claude Opus 4.7 1M aliases onto Opus 4.8", async () => {
+    it("maps retired Claude Opus 4.7 1M aliases onto Opus 5", async () => {
       const { service } = createService();
       const session = await service.createSession({
         laneId: "lane-1",
@@ -3671,14 +3671,14 @@ describe("createAgentChatService", () => {
         model: "claude-opus-4-7[1m]",
       });
 
-      expect(session.modelId).toBe("anthropic/claude-opus-4-8");
-      expect(session.model).toBe("claude-opus-4-8");
+      expect(session.modelId).toBe("anthropic/claude-opus-5");
+      expect(session.model).toBe("claude-opus-5");
     });
 
     it.each([
-      { reportedModel: "opus", usageModel: "claude-opus-4-8", expectedModel: "claude-opus-4-8" },
-      { reportedModel: "claude-opus-4-7-1m", usageModel: "claude-opus-4-7-1m", expectedModel: "claude-opus-4-8" },
-    ])("preserves the Claude Opus 4.8 modelId in done events when the SDK reports $reportedModel", async ({
+      { reportedModel: "opus", usageModel: "claude-opus-4-8", expectedModel: "claude-opus-5" },
+      { reportedModel: "claude-opus-4-7-1m", usageModel: "claude-opus-4-7-1m", expectedModel: "claude-opus-5" },
+    ])("preserves the Claude Opus 5 modelId in done events when the SDK reports $reportedModel", async ({
       reportedModel,
       usageModel,
       expectedModel,
@@ -3754,10 +3754,10 @@ describe("createAgentChatService", () => {
       const doneEvent = events.filter((event) => event.event.type === "done").at(-1);
       expect(doneEvent?.event.type).toBe("done");
       expect((doneEvent!.event as any).model).toBe(expectedModel);
-      expect((doneEvent!.event as any).modelId).toBe("anthropic/claude-opus-4-8");
+      expect((doneEvent!.event as any).modelId).toBe("anthropic/claude-opus-5");
     });
 
-    it("maps retired Claude Opus 4.7 1M sessions onto Opus 4.8 even when the SDK reports bare Opus 4.7", async () => {
+    it("maps retired Claude Opus 4.7 1M sessions onto Opus 5 even when the SDK reports bare Opus 4.7", async () => {
       const events: AgentChatEventEnvelope[] = [];
       let streamCall = 0;
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
@@ -3828,8 +3828,8 @@ describe("createAgentChatService", () => {
 
       const doneEvent = events.filter((event) => event.event.type === "done").at(-1);
       expect(doneEvent?.event.type).toBe("done");
-      expect((doneEvent!.event as any).model).toBe("claude-opus-4-8");
-      expect((doneEvent!.event as any).modelId).toBe("anthropic/claude-opus-4-8");
+      expect((doneEvent!.event as any).model).toBe("claude-opus-5");
+      expect((doneEvent!.event as any).modelId).toBe("anthropic/claude-opus-5");
     });
 
     it("suppresses Claude EDE diagnostics without hiding real result errors", async () => {
@@ -4353,7 +4353,7 @@ describe("createAgentChatService", () => {
         fastMode: true,
       });
 
-      // Opus 4.8 also supports fast mode, so the toggle should survive the switch.
+      // Opus 5 also supports fast mode, so the toggle should survive the switch.
       await service.updateSession({
         sessionId: session.id,
         modelId: "anthropic/claude-opus-4-8",
@@ -16227,7 +16227,6 @@ describe("createAgentChatService", () => {
       expect((row!.event as any).description).toBe("Fix flaky tests");
       expect((row!.event as any).spawnKind).toBe("subagent");
       expect((row!.event as any).model).toBe(child.model);
-      // `opus` resolves to the newest Opus (model-manifest.json).
       expect(child.model).toBe("claude-opus-5-5");
 
       expect(child.orchestrationParentSessionId).toBe(parent.id);
@@ -46483,8 +46482,8 @@ describe("createAgentChatService", () => {
       );
       expect(doneEvents).toHaveLength(1);
       expect(interruptedDone.event).toMatchObject({
-        model: "claude-opus-4-8",
-        modelId: "anthropic/claude-opus-4-8",
+        model: "claude-opus-5",
+        modelId: "anthropic/claude-opus-5",
       });
       await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({ status: "active" });
       expect(close).toHaveBeenCalled();

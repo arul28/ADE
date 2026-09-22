@@ -395,9 +395,12 @@ function findDynamicPrice(model: string, options?: { exactOnly?: boolean }): Tok
   if (options?.exactOnly) return null;
 
   for (const key of sortedDynamicKeys()) {
-    if (canonical === key || canonical.startsWith(`${key}-`)) {
-      return pricing.get(key) ?? null;
-    }
+    if (canonical === key) return pricing.get(key) ?? null;
+    if (!canonical.startsWith(`${key}-`)) continue;
+    // `-<digit>` after a key is a different version, not a variant:
+    // `claude-opus-5` is a prefix of `claude-opus-5-5` but not its price.
+    if (/^\d/.test(canonical.slice(key.length + 1))) continue;
+    return pricing.get(key) ?? null;
   }
   return null;
 }
