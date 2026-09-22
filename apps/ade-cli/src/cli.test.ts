@@ -461,7 +461,8 @@ describe("ADE CLI", () => {
       connectRole: "cto",
       steps: [{
         method: "account.call",
-        params: { action: "deleteMachine", args: { machine: "mk_studio" } },
+        // The action refuses without the token, so the command forwards it.
+        params: { action: "deleteMachine", args: { machine: "mk_studio", confirmation: "REMOVE" } },
       }],
     });
     expect(shouldAutoRegisterProjectForPlan(remove)).toBe(false);

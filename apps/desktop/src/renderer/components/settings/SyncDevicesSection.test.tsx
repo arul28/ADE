@@ -886,6 +886,28 @@ describe("accountDirectorySummary", () => {
     );
   });
 
+  it("names a refusal instead of calling it a retry, and only for this computer", () => {
+    const status = {
+      routeHealth: {
+        accountDirectory: {
+          state: "http_error",
+          skipReason: null,
+          reachableEndpointCount: 0,
+          lastHttpStatus: 403,
+          lastHttpReason: "machine_revoked",
+          revokedAt: null,
+        },
+      },
+    } as unknown as SyncRoleSnapshot;
+    expect(accountDirectorySummary(status, "active").label).toBe(
+      "This computer was removed from your account",
+    );
+    // A remote-bound pane shows another machine's snapshot.
+    expect(accountDirectorySummary(status, "active", { describesThisComputer: false }).label).toBe(
+      "Signed in — can't reach your ADE account right now, retrying",
+    );
+  });
+
   it("never calls sync off while it is still trying to start", () => {
     // The regression: a brain whose sync host was failing and retrying reported
     // the same state as a brain with sync switched off, so the pane told the

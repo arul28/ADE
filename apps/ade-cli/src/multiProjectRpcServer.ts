@@ -20,7 +20,7 @@ import { inspectProjectPath } from "../../desktop/src/main/services/projects/pro
 import { createProjectScaffoldService } from "../../desktop/src/main/services/projects/projectScaffoldService";
 import { runGit } from "../../desktop/src/main/services/git/git";
 import type { Logger } from "../../desktop/src/main/services/logging/logger";
-import { isSearchDocKind } from "../../desktop/src/shared/types";
+import { ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION, isSearchDocKind } from "../../desktop/src/shared/types";
 import type {
   AttentionPreferences,
   AttentionPresence,
@@ -1692,6 +1692,16 @@ export function createMultiProjectRpcRequestHandler(
           // throws rather than reporting a clean removal when the roster row
           // went but its Activity did not, and that error is the user-facing
           // sentence — let it propagate unwrapped.
+          //
+          // The explicit token is the same one `ade machines remove --confirm
+          // REMOVE` requires. Without it, a CTO-role agent could remove a
+          // machine in one call and nobody would see a question first.
+          if (actionArgs.confirmation !== ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION) {
+            throw new JsonRpcError(
+              JsonRpcErrorCode.invalidParams,
+              `account.deleteMachine requires confirmation: "${ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION}". The removed machine can only rejoin when someone confirms it on that computer.`,
+            );
+          }
           const result = await machineDirectory.deleteMachine(
             typeof actionArgs.machine === "string" ? actionArgs.machine : "",
           );

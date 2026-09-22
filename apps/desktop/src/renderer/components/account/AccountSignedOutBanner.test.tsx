@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import type { AdeAccountSessionState } from "../../../shared/types";
 
@@ -44,7 +44,14 @@ vi.mock("../../lib/account", async () => {
   };
 });
 
+const runAccountDeviceLogin = vi.hoisted(() => vi.fn());
+vi.mock("../../lib/accountLogin", () => ({
+  runAccountDeviceLogin: (options?: unknown) => runAccountDeviceLogin(options),
+}));
+
 import { AccountSignedOutBanner } from "./AccountSignedOutBanner";
+import { resetLocalSyncStatusReaderForTests } from "../../lib/localSyncStatusReader";
+import { createSyncAccountDirectoryHealth, type SyncAccountDirectoryHealth } from "../../../shared/types";
 
 function renderBanner(route = "/work") {
   const navigate = vi.fn();
@@ -115,5 +122,138 @@ describe("AccountSignedOutBanner", () => {
     renderBanner("/account");
 
     expect(screen.queryByTestId("account-signed-out-banner")).toBeNull();
+  });
+});
+
+/**
+ * A signed-in person whose computer the account directory refuses. The repair
+ * loop used to give up with only a diagnostic toast, so one install sat
+ * removed for a month. The bar must name the date, offer the one button that
+ * fixes it, and never say "Sign in again" to someone who is signed in.
+ */
+describe("AccountSignedOutBanner — this computer refused", () => {
+  const originalAde = window.ade;
+  const repairMachinePairing = vi.fn();
+  const listMachines = vi.fn();
+  let health: SyncAccountDirectoryHealth;
+
+  function refusedHealth(overrides: Partial<SyncAccountDirectoryHealth> = {}): SyncAccountDirectoryHealth {
+    return createSyncAccountDirectoryHealth("http_error", "This machine was removed from your ADE account.", {
+      lastHttpStatus: 403,
+      lastHttpReason: "machine_revoked",
+      failingSinceMs: 1,
+      revokedAt: "2026-08-14T09:30:00.000Z",
+      ...overrides,
+    });
+  }
+
+  beforeEach(() => {
+    resetLocalSyncStatusReaderForTests();
+    accountState.signedIn = true;
+    accountState.sessionState = "active";
+    health = refusedHealth();
+    window.ade = {
+      sync: {
+        getLocalStatus: vi.fn(async () => ({ routeHealth: { accountDirectory: health } })),
+        onEvent: vi.fn(() => () => {}),
+      },
+      account: { repairMachinePairing, listMachines, getLocalMachineIdentity: vi.fn(async () => ({ machineKey: "this-key", deviceId: "this-dev" })) },
+    } as unknown as typeof window.ade;
+    listMachines.mockResolvedValue({ state: "ok", message: null, machines: [] });
+  });
+
+  afterEach(() => {
+    cleanup();
+    accountState.signedIn = false;
+    accountState.sessionState = "signed_out";
+    window.ade = originalAde;
+    repairMachinePairing.mockReset();
+    listMachines.mockReset();
+    runAccountDeviceLogin.mockReset();
+  });
+
+  it("names the removal date and offers Reconnect this computer", async () => {
+    renderBanner();
+
+    const banner = await screen.findByTestId("this-computer-refused-banner");
+    const removedOn = new Date("2026-08-14T09:30:00.000Z").toLocaleDateString(undefined, { day: "numeric", month: "long" });
+    expect(banner.textContent).toContain(`This computer was removed from your account on ${removedOn}`);
+    expect(screen.getByRole("button", { name: "Reconnect this computer" })).toBeTruthy();
+    expect(banner.textContent).not.toMatch(/sign in again/i);
+    // Lasting, not a toast: nothing to dismiss.
+    expect(screen.queryByRole("button", { name: /dismiss/i })).toBeNull();
+  });
+
+  it("says the automatic repair stopped once it gave up", async () => {
+    health = refusedHealth({ recoveryGaveUpAt: 5 });
+    renderBanner();
+
+    const banner = await screen.findByTestId("this-computer-refused-banner");
+    expect(banner.textContent).toContain("ADE stopped trying to reconnect it on its own.");
+  });
+
+  it("asks a refused re-pair to confirm it's you, not to sign in again", async () => {
+    health = refusedHealth({ lastHttpReason: "pairing_authentication_required" });
+    renderBanner();
+
+    const banner = await screen.findByTestId("this-computer-refused-banner");
+    expect(banner.textContent).toContain(
+      "This computer needs you to confirm it's you before it can rejoin your account",
+    );
+    expect(screen.getByRole("button", { name: "Confirm it's you" })).toBeTruthy();
+    expect(banner.textContent).not.toMatch(/sign in again/i);
+  });
+
+  it("runs the Account page's reconnect flow and shows the browser code", async () => {
+    repairMachinePairing.mockResolvedValue({
+      repaired: false,
+      wasRevoked: true,
+      published: false,
+      pushRestored: false,
+      state: "http_error",
+      reason: "Confirm it's you on this computer",
+      reasonCode: "pairing_authentication_required",
+    });
+    let finish!: () => void;
+    runAccountDeviceLogin.mockImplementation(async (options: {
+      onPrompt?: (prompt: { userCode: string; verificationUri: string; verificationUriComplete: string | null }) => void;
+    }) => {
+      options.onPrompt?.({ userCode: "WDJB-MJHT", verificationUri: "https://directory.test/device", verificationUriComplete: null });
+      await new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      return { status: "cancelled" as const };
+    });
+    renderBanner();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Reconnect this computer" }));
+
+    await waitFor(() => expect(repairMachinePairing).toHaveBeenCalledTimes(1));
+    expect(
+      await screen.findByText("Confirm it's you in your browser. If the page asks for a code, enter WDJB-MJHT."),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    finish();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Reconnect this computer" })).toBeTruthy());
+  });
+
+  it("stays silent for a healthy machine and for a 403 it cannot name", async () => {
+    health = createSyncAccountDirectoryHealth("published", null);
+    renderBanner();
+    await waitFor(() => expect(window.ade.sync.getLocalStatus).toHaveBeenCalled());
+    expect(screen.queryByTestId("this-computer-refused-banner")).toBeNull();
+    cleanup();
+
+    resetLocalSyncStatusReaderForTests();
+    health = refusedHealth({ lastHttpReason: "forbidden_by_proxy" });
+    renderBanner();
+    await waitFor(() => expect(window.ade.sync.getLocalStatus).toHaveBeenCalledTimes(2));
+    expect(screen.queryByTestId("this-computer-refused-banner")).toBeNull();
+  });
+
+  it("hides on the account page, whose card carries the same button", async () => {
+    renderBanner("/account");
+    await waitFor(() => expect(window.ade.sync.getLocalStatus).toHaveBeenCalled());
+    expect(screen.queryByTestId("this-computer-refused-banner")).toBeNull();
   });
 });

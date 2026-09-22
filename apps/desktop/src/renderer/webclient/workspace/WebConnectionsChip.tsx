@@ -8,6 +8,10 @@ import {
 } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, SANS_FONT } from "../../components/lanes/laneDesignTokens";
 import {
+  accountMachineRemovalConfirmBody,
+  accountMachineRowLabel,
+} from "../../../shared/accountDirectory";
+import {
   useOptionalWebWorkspace,
   useWebMachines,
   type WebWorkspaceContextValue,
@@ -387,8 +391,9 @@ function WebMachineRow({
               <span
                 className="min-w-0 truncate text-[12.5px] font-semibold"
                 style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}
+                title={machine.accountMachine?.adeHome ?? undefined}
               >
-                {machine.name}
+                {(machine.accountMachine && accountMachineRowLabel(machine.accountMachine)) || machine.name}
               </span>
             </span>
             {/* Connected is the one status worth spending colour on:
@@ -494,10 +499,14 @@ function WebMachineRow({
               label="Remove from account"
               destructive
               onSelect={() => {
-                const machineKey = machine.accountMachine?.machineKey;
-                if (!machineKey) return;
+                const accountMachine = machine.accountMachine;
+                const machineKey = accountMachine?.machineKey;
+                if (!accountMachine || !machineKey) return;
                 setMenuKey(null);
-                if (!window.confirm(`Remove ${machine.name} from your ADE account?`)) return;
+                // Same words as the desktop sheet, including the warning for a
+                // machine that reported in minutes ago.
+                const label = accountMachineRowLabel(accountMachine) ?? machine.name;
+                if (!window.confirm(`Remove ${label} from your ADE account?\n\n${accountMachineRemovalConfirmBody(accountMachine)}`)) return;
                 void run(machine, async () => {
                   await workspace.removeAccountMachine(machineKey);
                 });

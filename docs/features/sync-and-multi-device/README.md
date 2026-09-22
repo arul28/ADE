@@ -686,6 +686,14 @@ Runtime support files outside `services/sync/`:
   build advertises `<name> · Beta` and an Alpha build `<name> · Alpha`, while a
   stable build (or an already-suffixed name) is left untouched, so the same
   physical computer running two channels shows as two distinguishable directory rows.
+  The registration also sends the install as structured fields
+  (`describeAdeInstall`): `channel` (`stable` only for the default `~/.ade`
+  home, else `alpha`/`beta` from the package channel, omitted for a custom
+  home) and `adeHome` (the home relative to the user's home folder, as
+  `~/.ade-alpha`, never a username). The client shows them beside the name
+  (`accountMachineRowLabel`), which survives a custom name. The directory
+  ignores both fields until the Worker stores and returns them; rows then fall
+  back to the suffixed name.
   A LAN endpoint is only emitted for an address candidate whose `kind` is `lan`;
   because `syncPairingConnectInfo.buildAddressCandidates` now classifies the
   saved `lastHost` as `lan`/`tailscale` when it matches the current address set
@@ -847,13 +855,19 @@ Runtime support files outside `services/sync/`:
   a publish leg that cannot read a snapshot is not a pairing problem. Everything
   it does is logged (`account.machine_auto_repair_episode_started`,
   `_started`, `_failed`, `account.machine_auto_repaired`,
-  `_budget_exhausted`, `_episode_ended`) and none of it changes user-visible
-  state — an exhausted budget simply stops arguing and leaves whatever the
-  publisher already reports.
+  `_budget_exhausted`, `_episode_ended`). An exhausted budget stops arguing.
+  Its `onGaveUp` (wired in `cli.ts`) sends the auto-diagnostic report and calls
+  the publisher's `recordPairingRecoveryGaveUp`, so publisher health carries
+  `recoveryGaveUpAt` next to `revokedAt` until the next successful publish.
+  The desktop reads both from `routeHealth.accountDirectory` and shows a lasting
+  banner with the date and a **Reconnect this computer** button. The report on
+  its own was invisible whenever its upload failed.
 - `apps/desktop/src/shared/accountMachineRefusal.ts` — `readAccountRefusalCode`,
   the single decoder for "why did the directory refuse to register this
   machine", read by the auto-recovery loop above and by the desktop's
-  reliability telemetry. **403 only**: a 401 is an authentication problem with a
+  reliability telemetry. `readThisMachineRefusal` adds the optional
+  `revokedAt` and `recoveryGaveUpAt` health fields for the desktop's banner,
+  Account card and Connections pane. **403 only**: a 401 is an authentication problem with a
   different repair, and counting it as a refusal both mis-attributes the
   incident and hides the auth failure behind it. A refusal is the directory
   looking at a valid caller and saying no. An unrecognised 403 resolves to
@@ -3100,7 +3114,19 @@ than ten minutes old, which is the same window in which the directory would
 still accept the machine's existing sign-in. Waiting that window out means the
 only repair this loop can land is one granted on stale-but-valid grounds: a
 stale row, a key rotation, a directory hiccup. A deliberate removal stands, and
-recovering from it needs the user's next interactive sign-in.
+recovering from it needs the user's next interactive sign-in. When the loop
+gives up, the desktop says so in a lasting banner ("This computer was removed
+from your account on 14 August", with **Reconnect this computer**, or **Confirm
+it's you** when the directory wants a fresh sign-in) rather than only a
+diagnostic toast.
+
+Removal itself asks twice. Every Remove confirmation (desktop sheet and web
+client) names the install ("MacBook Pro · ADE Alpha") and warns when the
+machine reported in during the last five minutes. The `account.deleteMachine`
+action refuses unless the caller passes `confirmation: "REMOVE"`, the same
+token `ade machines remove --confirm REMOVE` takes, so a CTO-role agent cannot
+remove a machine in one unasked call. The desktop Account page and the web
+client remove through the directory directly, behind their own dialogs.
 
 Every refusal the Worker issues is also logged with its wire code, a finer
 `reason`, the correlation id, and 8-character identifier prefixes, because by

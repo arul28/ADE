@@ -1,7 +1,10 @@
 import { useCallback } from "react";
 import { useLocation, type NavigateFunction } from "react-router-dom";
 import { accountSessionBanner, accountSessionState, useAccountStatus } from "../../lib/account";
-import { Banner, type BannerModel } from "../shared/Banner";
+import { describeThisComputerRefusal, reconnectBrowserPromptText } from "../../lib/thisComputerRefusal";
+import { useReconnectThisComputer } from "../../hooks/useReconnectThisComputer";
+import { useThisComputerRefusal } from "../../hooks/useThisComputerRefusal";
+import { Banner, type BannerAction, type BannerModel } from "../shared/Banner";
 
 /**
  * The permanent bar ADE shows while the account is not usable.
@@ -20,12 +23,21 @@ import { Banner, type BannerModel } from "../shared/Banner";
  *
  * The copy for all four session states lives in one record in
  * `lib/account.ts`, so this component never decides what a state says.
+ *
+ * The same bar also carries the one account problem a signed-in person can
+ * have: the account directory refuses THIS computer (it was removed, or it
+ * needs a fresh confirmation to rejoin). The automatic repair gives up on that
+ * quietly, and a diagnostic toast was the only sign of it, so one install sat
+ * disconnected for a month. It is not dismissable for the same reason: the fix
+ * is one button away, and hiding it is how nobody noticed.
  */
 export function AccountSignedOutBanner({ navigate }: { navigate: NavigateFunction }): JSX.Element | null {
   const { status, loading } = useAccountStatus();
   const location = useLocation();
   const state = accountSessionState(status);
   const copy = accountSessionBanner(state);
+  const { refusal, refresh: refreshRefusal } = useThisComputerRefusal();
+  const reconnect = useReconnectThisComputer({ onSettled: refreshRefusal });
 
   const goToAccount = useCallback(() => {
     navigate("/account", {
@@ -35,22 +47,54 @@ export function AccountSignedOutBanner({ navigate }: { navigate: NavigateFunctio
 
   // Stay silent until the first status lands. A bar that claims "signed out"
   // for the half-second before the status arrives is wrong on every launch.
-  if (loading || !copy) return null;
+  if (loading) return null;
 
   // Already on the account page — the bar would point at the page you are on.
+  // The page's own card carries the same Reconnect button.
   if (location.pathname === "/account" || location.pathname.startsWith("/account/")) return null;
 
+  if (copy) {
+    const model: BannerModel = {
+      id: `account-${state}`,
+      severity: "warning",
+      title: copy.title,
+      detail: copy.detail,
+      actions: [{ label: copy.action, onClick: goToAccount, variant: "primary" }],
+      dismiss: false,
+    };
+    return (
+      <div className="shrink-0 mx-2 mt-1" data-testid="account-signed-out-banner" data-session-state={state}>
+        <Banner model={model} />
+      </div>
+    );
+  }
+
+  if (state !== "active" || !refusal || !reconnect.available) return null;
+
+  const refusalCopy = describeThisComputerRefusal(refusal);
+  let detail = refusalCopy.detail;
+  let actions: BannerAction[] = [{ label: refusalCopy.action, onClick: () => void reconnect.reconnect(), variant: "primary" }];
+  if (reconnect.signInPrompt) {
+    detail = reconnectBrowserPromptText(reconnect.signInPrompt.userCode);
+    actions = [{ label: "Cancel", onClick: reconnect.cancel, variant: "secondary" }];
+  } else if (reconnect.reconnecting) {
+    actions = [{ label: "Reconnecting…", onClick: () => undefined, variant: "primary" }];
+  } else if (reconnect.outcome && reconnect.outcome.tone !== "success") {
+    // A failed attempt keeps the button and says why, so the bar never
+    // dead-ends on the brain's reason.
+    detail = reconnect.outcome.message;
+  }
+
   const model: BannerModel = {
-    id: `account-${state}`,
+    id: "this-computer-refused",
     severity: "warning",
-    title: copy.title,
-    detail: copy.detail,
-    actions: [{ label: copy.action, onClick: goToAccount, variant: "primary" }],
+    title: refusalCopy.title,
+    detail,
+    actions,
     dismiss: false,
   };
-
   return (
-    <div className="shrink-0 mx-2 mt-1" data-testid="account-signed-out-banner" data-session-state={state}>
+    <div className="shrink-0 mx-2 mt-1" data-testid="this-computer-refused-banner" data-refusal-code={refusal.code}>
       <Banner model={model} />
     </div>
   );

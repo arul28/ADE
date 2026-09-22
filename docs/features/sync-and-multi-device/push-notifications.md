@@ -409,10 +409,12 @@ Four entry points reach it:
   server, CTO-gated alongside `renameMachine` so a subagent cannot re-pair on the
   owner's behalf, and also fired best-effort with `onlyIfRevoked: true` after any
   completed login.
-- **Reconnect this computer** in desktop Settings, over
-  `ade.account.repairMachinePairing`. It appears only when this machine is
-  missing from the account list and the bridge exposes the call, runs the same
-  device-login recovery when the directory demands fresh proof, and reports the
+- **Reconnect this computer** in the desktop, over
+  `ade.account.repairMachinePairing`. The Account page shows it when this
+  machine is missing from the account list; the shell bar and the Connections
+  pane show it when the directory refuses this machine. All three run one hook
+  (`useReconnectThisComputer`), which runs the same device-login recovery
+  ("Confirm it's you") when the directory demands fresh proof and reports the
   honest outcome — including the case where the machine re-joined but push has
   not resumed.
 - `machinePairingAutoRecovery`, the brain's own slow loop, which calls the same

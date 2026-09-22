@@ -1173,3 +1173,57 @@ describe("machine power and sleep state", () => {
     }));
   });
 });
+
+/**
+ * Stable and Alpha on one Mac are two machines in the account, and both
+ * reported the same hostname. The rows looked like a duplicate, and a person
+ * could remove the wrong one. The host now says which install it is.
+ */
+describe("machine install", () => {
+  it("stores the channel and ADE home, lists them, and keeps them across a heartbeat without them", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+
+    const first = await handleRequest(
+      request("POST", "/account/machines/register", token, {
+        ...registerBody("alpha-install"),
+        channel: "alpha",
+        adeHome: "~/.ade-alpha\n",
+      }),
+      env,
+    );
+    expect(first.status).toBe(200);
+    await expect(first.json()).resolves.toEqual(expect.objectContaining({
+      channel: "alpha",
+      adeHome: "~/.ade-alpha",
+    }));
+
+    // An older host, or one heartbeat that dropped the fields.
+    expect((await register(env, token, "alpha-install")).status).toBe(200);
+    const listed = await handleRequest(request("GET", "/account/machines", token), env);
+    const body = await listed.json() as { machines: Array<Record<string, unknown>> };
+    expect(body.machines.find((machine) => machine.machineKey === "alpha-install")).toEqual(
+      expect.objectContaining({ channel: "alpha", adeHome: "~/.ade-alpha" }),
+    );
+  });
+
+  it("drops an unknown channel and an empty home rather than refusing the heartbeat", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+
+    const response = await handleRequest(
+      request("POST", "/account/machines/register", token, {
+        ...registerBody("odd-install"),
+        channel: "nightly",
+        adeHome: "   ",
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual(expect.objectContaining({
+      channel: null,
+      adeHome: null,
+    }));
+  });
+});

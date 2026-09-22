@@ -41,6 +41,8 @@ type MachineRow = {
   power: string | null;
   sleep_state: string | null;
   sleep_state_at: number | null;
+  channel: string | null;
+  ade_home: string | null;
   last_seen_at: number | null;
   created_at: number | null;
 };
@@ -55,7 +57,7 @@ type MachineRow = {
  */
 const MACHINE_ROW_COLUMNS = `user_id, machine_key, device_id, name, custom_name, platform, device_type,
            pubkey, reachable_endpoints, power, sleep_state, sleep_state_at,
-           last_seen_at, created_at`;
+           channel, ade_home, last_seen_at, created_at`;
 
 type ReachableEndpoint = {
   kind: "lan" | "tailnet" | "relay";
@@ -116,6 +118,10 @@ type RegisterInput = {
   power: MachinePowerState | null;
   sleepState: MachineSleepStateValue | null;
   sleepStateAt: number | null;
+  /** Which ADE install this is. Null from hosts that do not say. */
+  channel: MachineInstallChannel | null;
+  /** "~/.ade-alpha", or a folder name. Null from hosts that do not say. */
+  adeHome: string | null;
   retainRelayEndpoints: boolean;
   /**
    * Set only for a deliberate, user-initiated link — never on the periodic
@@ -155,6 +161,8 @@ type MachineRecord = {
   sleepState: MachineSleepStateValue | null;
   /** Epoch ms at which `sleepState` last changed on the machine. */
   sleepStateAt: number | null;
+  channel: MachineInstallChannel | null;
+  adeHome: string | null;
   lastSeenAt: number | null;
   createdAt: number | null;
 };
@@ -300,6 +308,21 @@ function parseMachinePower(value: unknown): MachinePowerState | null {
   return { batteryPercent, charging, onExternalPower };
 }
 
+type MachineInstallChannel = "stable" | "beta" | "alpha";
+
+const MAX_ADE_HOME_CHARS = 120;
+
+function parseInstallChannel(value: unknown): MachineInstallChannel | null {
+  return value === "stable" || value === "beta" || value === "alpha" ? value : null;
+}
+
+/** Display text only. Cleaned and cut to length rather than refused. */
+function parseAdeHome(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const cleaned = value.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").trim();
+  return cleaned ? Array.from(cleaned).slice(0, MAX_ADE_HOME_CHARS).join("") : null;
+}
+
 function parseSleepState(value: unknown): MachineSleepStateValue | null {
   return value === "awake" || value === "asleep" ? value : null;
 }
@@ -324,6 +347,8 @@ function parseRegisterInput(value: unknown): RegisterInput | null {
   const power = parseMachinePower(value.power);
   const sleepState = parseSleepState(value.sleepState);
   const sleepStateAt = parseSleepStateAt(value.sleepStateAt);
+  const channel = parseInstallChannel(value.channel);
+  const adeHome = parseAdeHome(value.adeHome);
   const retainRelayEndpoints = value.retainRelayEndpoints ?? false;
   const pairing = value.pairing ?? false;
   const pairingGrant = optionalString(value, "pairingGrant");
@@ -360,6 +385,8 @@ function parseRegisterInput(value: unknown): RegisterInput | null {
     // A sleep state with no timestamp is still usable — the register's own
     // `last_seen_at` bounds it — so default rather than discard it.
     sleepStateAt: sleepState ? sleepStateAt ?? Date.now() : null,
+    channel,
+    adeHome,
     retainRelayEndpoints,
     pairing,
     pairingGrant,
@@ -412,6 +439,8 @@ function machineRecord(row: MachineRow): MachineRecord {
     power: parseStoredPower(row.power),
     sleepState,
     sleepStateAt: sleepState ? parseSleepStateAt(row.sleep_state_at) : null,
+    channel: parseInstallChannel(row.channel),
+    adeHome: parseAdeHome(row.ade_home),
     lastSeenAt: row.last_seen_at,
     createdAt: row.created_at,
   };
@@ -599,8 +628,8 @@ async function upsertMachine(
     insert into machines (
       user_id, machine_key, device_id, name, platform, device_type, pubkey,
       reachable_endpoints, power, sleep_state, sleep_state_at,
-      last_seen_at, created_at, hardware_id
-    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      last_seen_at, created_at, hardware_id, channel, ade_home
+    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     on conflict(user_id, machine_key) do update set
       device_id = excluded.device_id,
       -- coalesce, and not excluded.hardware_id: an anchor is optional on every
@@ -618,6 +647,9 @@ async function upsertMachine(
       power = coalesce(excluded.power, machines.power),
       sleep_state = coalesce(excluded.sleep_state, machines.sleep_state),
       sleep_state_at = coalesce(excluded.sleep_state_at, machines.sleep_state_at),
+      -- The same for the install fields: an older host sends neither.
+      channel = coalesce(excluded.channel, machines.channel),
+      ade_home = coalesce(excluded.ade_home, machines.ade_home),
       reachable_endpoints = case
         when ? = 1
           and json_valid(machines.reachable_endpoints)
@@ -660,6 +692,8 @@ async function upsertMachine(
     args.nowMs,
     args.nowMs,
     input.hardwareId,
+    input.channel,
+    input.adeHome,
     input.retainRelayEndpoints ? 1 : 0,
   ).run();
 }

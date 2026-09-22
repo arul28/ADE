@@ -372,7 +372,22 @@ Renderer — onboarding:
   open project and this bar has to reach welcome and projectless windows too.
   It hides itself on `/account`, where its own action would lead. All four
   states' copy lives in one record in `renderer/lib/account.ts`, so a new
-  state is a type error rather than a missing case.
+  state is a type error rather than a missing case. The same bar carries the
+  one account problem a signed-in person can have: the directory refuses THIS
+  computer (`machine_revoked` or `pairing_authentication_required`, read from
+  the local sync snapshot by `hooks/useThisComputerRefusal.ts`). It names the
+  removal date from the brain's `revokedAt` ("This computer was removed from
+  your account on 14 August"), says "ADE stopped trying to reconnect it on its
+  own." once the brain's automatic repair gave up, and offers **Reconnect this
+  computer** — or **Confirm it's you** for `pairing_authentication_required`.
+  The button runs `hooks/useReconnectThisComputer.ts`, the same flow as the
+  Account page card, and the browser step shows its code in the bar. It is not
+  dismissable either: the automatic repair used to give up with only a
+  diagnostic toast, and one install stayed removed for a month. The copy lives
+  in `renderer/lib/thisComputerRefusal.ts`, which the Account card and the
+  Connections pane also read. The desktop raises no OS notification for a give-up:
+  the only notification code in main is inline in `main.ts`, with no helper that
+  brain events reach.
 - `apps/desktop/src/renderer/components/account/AccountPage.tsx` — account
   status/sign-in/out shell. The signed-out page receives an explicit
   in-app return route from the sidebar or Connections and falls back safely to
@@ -398,10 +413,19 @@ Renderer — onboarding:
   desktop pairing, ADE Code, hosted web, and iOS. Absence from the directory is
   not proof of removal: a publish gap, a split sync listener, or an expired
   sign-in all produce the same empty row. `describeThisComputerMissing`
-  therefore branches on `sessionState` — expired asks for Sign in then
-  Reconnect; unreadable asks to Repair the stored sign-in then Reconnect;
-  active/signed_out names both causes and offers both actions — and never
-  claims the computer was removed as fact. **Reconnect this computer** and
+  therefore claims removal only when the directory's own refusal says so (then
+  it uses the shared refusal copy with the date); otherwise it branches on
+  `sessionState` — expired points at Reconnect this computer; unreadable asks
+  to Repair the stored sign-in then Reconnect; active/signed_out names both
+  causes and offers both actions. No machine-repair copy says "Sign in again":
+  the person is signed in, and the browser step is called "Confirm it's you".
+  Rows show the install beside the name (`accountMachineRowLabel`, "MacBook Pro
+  · ADE Alpha", with the ADE home on hover), so two installs on one Mac do not
+  look like a duplicate. The Remove sheet starts with a warning for a machine
+  seen in the last five minutes ("It was active 2 minutes ago. Removing it
+  disconnects it from your account until someone confirms it on that
+  computer.") from `accountMachineRemovalConfirmBody`, the same body the web
+  client's confirm uses. **Reconnect this computer** and
   **Repair** sit side by side: Reconnect calls `repairMachinePairing` on the
   brain (and runs the *device* login flow when the directory demands proof of a
   fresh interactive sign-in — the only flow that ends with the single-use
@@ -410,9 +434,11 @@ Renderer — onboarding:
   Removing a machine is terminal — heartbeats never re-register it — so
   Reconnect is the only way back onto the roster. Outcome copy stays honest
   about the in-between case where the machine rejoined but push delivery has
-  not resumed. `ConfirmSheet`, `describeThisComputerMissing`, and
-  `reconnectNeedsFreshSignIn` live here; `AccountPage` re-exports the pure
-  helpers for existing tests.
+  not resumed. `ConfirmSheet` and `describeThisComputerMissing` live here; the
+  reconnect flow, `describeReconnectOutcome` and `reconnectNeedsFreshSignIn`
+  live in `hooks/useReconnectThisComputer.ts`, shared with the shell bar and the
+  Connections pane. `AccountPage` re-exports the pure helpers for existing
+  tests.
 - `apps/desktop/src/renderer/components/onboarding/WelcomeVideoGate.tsx`
   — one-time app-level welcome card backed by global app state. It
   uses the website's canonical hero assets and the privacy-enhanced YouTube

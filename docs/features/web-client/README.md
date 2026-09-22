@@ -1087,7 +1087,9 @@ it disappear on sign-out.
 
 Machine management has two explicit scopes. **Remove from account** deletes the
 owner-scoped directory registration, so the machine disappears for that ADE
-account across clients. **Forget on this browser** deletes only the local
+account across clients. Its confirm names the install ("MacBook Pro · ADE
+Alpha") and, for a machine seen in the last five minutes, warns that removing
+it disconnects it until someone confirms it on that computer. **Forget on this browser** deletes only the local
 IndexedDB environment and its paired secret/key material; it does not remove
 the account machine. Renaming is account-scoped and updates the directory's
 custom display name.

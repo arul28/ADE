@@ -66,6 +66,7 @@ import { effectiveCursorModeId } from "../../desktop/src/shared/cursorModes";
 import {
   accountMachineDisplayName,
   accountMachineConnectionState,
+  accountMachineRowLabel,
   parseAccountMachine,
 } from "../../desktop/src/shared/accountDirectory";
 import {
@@ -2163,8 +2164,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
   \`remove\` takes a machine off the account, revokes it, and clears the Activity
   it published — one request, so a failure to clear Activity is reported as a
   failed removal you can retry rather than as a clean one. It is destructive and
-  requires \`--confirm REMOVE\`. The removed machine can only rejoin by signing in
-  again on it (see \`reconnect\`); nothing this machine runs can bring it back.
+  requires \`--confirm REMOVE\`. The removed machine can only rejoin when someone
+  confirms it on that computer (see \`reconnect\`); nothing this machine runs can
+  bring it back.
 
   \`reconnect\` re-pairs THIS machine after it was removed from the account
   (takes no selector). Removal is terminal by design — heartbeats never
@@ -18636,7 +18638,7 @@ function buildMachinesPlan(args: string[]): CliPlan {
     }
     if (confirmation !== "REMOVE") {
       throw new CliUsageError(
-        `machines ${sub} requires --confirm REMOVE. Run "ade machines list" first, and note the machine can only rejoin by signing in again on it.`,
+        `machines ${sub} requires --confirm REMOVE. Run "ade machines list" first, and note the machine can only rejoin when someone confirms it on that computer.`,
       );
     }
     if (firstStandalonePositional(args)) {
@@ -18651,6 +18653,9 @@ function buildMachinesPlan(args: string[]): CliPlan {
       connectRole: "cto",
       steps: [accountActionStep("result", "deleteMachine", {
         machine: machine.trim(),
+        // The action checks the same token again: an RPC caller that skips
+        // this command must still say it.
+        confirmation,
       })],
     };
   }
@@ -22390,6 +22395,10 @@ async function runServe(
       logger: headlessProjectLogger,
       // The loop has stopped arguing and this computer is still disconnected.
       onGaveUp: ({ code }) => {
+        // The report alone was invisible when its upload failed. The publisher
+        // health carries the give-up to the desktop, which shows a lasting
+        // banner with a Reconnect button.
+        accountMachinePublisher?.recordPairingRecoveryGaveUp();
         void brainAutoDiagnostics
           .report({
             failureCode: code,
@@ -26172,7 +26181,9 @@ function formatAccountMachines(value: unknown): string {
       : "never";
     return [
       asString(machine.machineKey) ?? "—",
-      accountMachineDisplayName(machine) ?? asString(machine.deviceId) ?? "Unnamed machine",
+      // With the install ("MacBook Pro · ADE Alpha"), so two installs on one
+      // Mac do not look like a duplicate to remove.
+      accountMachineRowLabel(machine) ?? asString(machine.deviceId) ?? "Unnamed machine",
       connectionState,
       machineStatusLine(machine) ?? "—",
       lastSeenAt,
@@ -26517,7 +26528,7 @@ function formatTextOutput(
       // request, so a plain success here means both landed; a partial removal
       // arrives as an error, not as this line.
       return `Removed ${removed ?? "the machine"} from your ADE account and cleared its Activity. ` +
-        "It can only rejoin by signing in again on that computer (`ade machines reconnect`).";
+        "It rejoins only when someone runs `ade machines reconnect` (or Reconnect this computer) on that computer.";
     }
     case "projects-list":
       return formatProjectsList(value);

@@ -23,6 +23,8 @@ export type StoredMachine = {
   power: string | null;
   sleep_state: string | null;
   sleep_state_at: number | null;
+  channel?: string | null;
+  ade_home?: string | null;
   last_seen_at: number | null;
   created_at: number | null;
 };
@@ -368,7 +370,7 @@ export class FakeD1Database {
       return before - this.revocations.length;
     }
     if (normalized.includes("insert into machines")) {
-      const retainRelayEndpoints = values[14] === 1;
+      const retainRelayEndpoints = values[16] === 1;
       const row: StoredMachine = {
         user_id: String(values[0]),
         machine_key: String(values[1]),
@@ -385,6 +387,8 @@ export class FakeD1Database {
         sleep_state_at: values[10] == null ? null : Number(values[10]),
         last_seen_at: values[11] == null ? null : Number(values[11]),
         created_at: values[12] == null ? null : Number(values[12]),
+        channel: values[14] == null ? null : String(values[14]),
+        ade_home: values[15] == null ? null : String(values[15]),
       };
       const existing = this.rows.find((entry) =>
         entry.user_id === row.user_id && entry.machine_key === row.machine_key
@@ -412,6 +416,8 @@ export class FakeD1Database {
           // heartbeat that could not read an anchor must not erase the one this
           // row already has, or a single bad sample undoes the dedup.
           hardware_id: row.hardware_id ?? existing.hardware_id,
+          channel: row.channel ?? existing.channel ?? null,
+          ade_home: row.ade_home ?? existing.ade_home ?? null,
           // Mirror the source's `coalesce(excluded.x, machines.x)` exactly, so
           // a revert to a bare overwrite fails the old-host test here rather
           // than being absorbed by the fake.

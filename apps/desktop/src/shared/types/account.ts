@@ -103,12 +103,23 @@ export type AdeAccountMachineEndpoint = {
 };
 
 /** One machine in the account directory (#814 Worker `GET /account/machines`). */
+/** Which ADE build an install runs. A custom ADE home has no channel. */
+export type AdeInstallChannel = "stable" | "beta" | "alpha";
+
 export type AdeAccountMachine = {
   machineKey: string;
   deviceId: string | null;
   name: string | null;
   /** User-authored account-wide display name. Wins over the reported hostname. */
   customName?: string | null;
+  /**
+   * The ADE install this row belongs to. Two installs on one Mac share a
+   * hostname, so rows show this beside the name. Absent from a directory that
+   * does not store it yet.
+   */
+  channel?: AdeInstallChannel | null;
+  /** The install's ADE home as `~/.ade-alpha`, when the directory returns it. */
+  adeHome?: string | null;
   platform: string | null;
   deviceType: string | null;
   /** Long-lived machine identity key used to verify sealed account adoption. */
@@ -184,6 +195,13 @@ export type AdeAccountMachineRemovalResult = {
 type AdeAccountMachinePairingRefusalCode =
   | "machine_revoked"
   | "pairing_authentication_required";
+
+/**
+ * The token `account.deleteMachine` requires in `confirmation`, and the value
+ * `ade machines remove --confirm` takes. Removal cannot be undone from here,
+ * so the action refuses without it.
+ */
+export const ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION = "REMOVE";
 
 export const ADE_ACCOUNT_PAIRING_AUTHENTICATION_REQUIRED_CODE:
   AdeAccountMachinePairingRefusalCode = "pairing_authentication_required";
