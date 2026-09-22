@@ -637,6 +637,9 @@ struct WorkSessionListRow: View {
   let isArchived: Bool
   let transitionNamespace: Namespace.ID?
   var compact: Bool = false
+  /// Compact nested-subagent drawer row: identicon/lineage on the leading edge,
+  /// provider mark on the trailing edge — same right-side seat as a full card.
+  var nestedSubagent: Bool = false
   /// True when no lane header sits above this row — the singleton form, where
   /// the row carries the lane identity itself.
   var showsLaneIdentity: Bool = true
@@ -845,6 +848,7 @@ struct WorkSessionListRow: View {
           transitionNamespace: transitionNamespace,
           isSelectedTransitionSource: selectedSessionId == session.id,
           compact: compact,
+          nestedSubagent: nestedSubagent,
           showsLaneIdentity: showsLaneIdentity
         )
         .equatable()
@@ -1211,7 +1215,7 @@ struct WorkSessionListRow: View {
   }
 }
 
-struct WorkChildShellSection<Content: View>: View {
+struct WorkNestedSessionSection<Content: View>: View {
   let group: WorkSessionChildGroup
   let collapsed: Bool
   let onToggle: () -> Void
@@ -1237,7 +1241,7 @@ struct WorkChildShellSection<Content: View>: View {
             .font(.system(size: 8, weight: .bold))
             .foregroundStyle(ADEColor.textMuted)
             .frame(width: 9, alignment: .center)
-          Image(systemName: "terminal")
+          Image(systemName: group.systemImage)
             .font(.system(size: 9, weight: .medium))
             .foregroundStyle(ADEColor.textMuted)
           Text(group.label)
@@ -1246,13 +1250,27 @@ struct WorkChildShellSection<Content: View>: View {
             .textCase(.uppercase)
             .tracking(0.4)
           Spacer(minLength: 0)
+          if group.attention == .failed {
+            Text("Failed")
+              .font(.caption2.weight(.semibold))
+              .foregroundStyle(ADEColor.danger)
+              .accessibilityHidden(true)
+          } else if group.attention == .needsYou {
+            Circle()
+              .fill(ADEColor.warning)
+              .frame(width: 6, height: 6)
+              .accessibilityHidden(true)
+          }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
-      .accessibilityLabel("\(group.label). Tap to \(collapsed ? "expand" : "collapse").")
+      .accessibilityLabel(drawerAccessibilityLabel)
+      .accessibilityHint(collapsed ? "Expands nested sessions" : "Collapses nested sessions")
+      .accessibilityValue(collapsed ? "Collapsed" : "Expanded")
 
       if !collapsed {
         VStack(spacing: 3) {
@@ -1266,6 +1284,17 @@ struct WorkChildShellSection<Content: View>: View {
         .fill(ADEColor.glassBorder.opacity(0.75))
         .frame(width: 1)
         .padding(.leading, 3)
+    }
+  }
+
+  /// Desktop's drawer button speaks the count plus Failed / Needs you
+  /// (`aria-expanded` + visible Failed / sr-only Needs you). The custom
+  /// label used to replace those children, so VoiceOver lost the shout.
+  private var drawerAccessibilityLabel: String {
+    switch group.attention {
+    case .failed: return "\(group.label), Failed"
+    case .needsYou: return "\(group.label), Needs you"
+    case .none: return group.label
     }
   }
 }

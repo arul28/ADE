@@ -2,6 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 import type { CtoMemorySearchRow, CtoMemorySnapshot } from "../../../shared/types";
 import { clipText, nowIso, redactSecrets, writeTextAtomic } from "../shared/utils";
+import {
+  createProjectContextStore,
+  PROJECT_CONTEXT_TAG_KEYS,
+  type ProjectContextAccountPort,
+  type ProjectContextItem,
+} from "./projectContextStore";
 
 type Logger = {
   warn: (message: string, meta?: Record<string, unknown>) => void;
@@ -10,6 +16,12 @@ type Logger = {
 type CtoMemoryServiceArgs = {
   /** The project's `.ade` directory (same value ctoStateService receives). */
   adeDir: string;
+  /**
+   * Account mirror for `ctx.*` rows. Null when this checkout has no git remote.
+   * The desktop process can omit it: the brain owns the upload, and both
+   * processes read the same atomic file.
+   */
+  account?: ProjectContextAccountPort | null;
   logger?: Logger | null;
 };
 
@@ -121,7 +133,7 @@ function truncateKeepHead(body: string, maxChars: number): string {
  * without a database. Untagged facts predate this and stay valid everywhere —
  * nothing filters them out, they simply never satisfy a tag-scoped query.
  */
-export const CTO_MEMORY_TAG_KEYS = ["lane", "pr", "path", "topic"] as const;
+export const CTO_MEMORY_TAG_KEYS = PROJECT_CONTEXT_TAG_KEYS;
 
 export type CtoMemoryTagKey = (typeof CTO_MEMORY_TAG_KEYS)[number];
 
@@ -171,6 +183,19 @@ export function parseMemoryTags(line: string): Record<CtoMemoryTagKey, string | 
   return parsed as Record<CtoMemoryTagKey, string | undefined>;
 }
 
+function contextItemMatches(item: ProjectContextItem, filter: CtoMemoryTags): boolean {
+  for (const key of CTO_MEMORY_TAG_KEYS) {
+    const wanted = normalizeTagValue(filter[key]);
+    if (!wanted) continue;
+    if ((item.tags[key] ?? "").toLowerCase() !== wanted.toLowerCase()) return false;
+  }
+  return true;
+}
+
+function snippetIdentity(snippet: string): string {
+  return snippet.trim().replace(/^-+\s*/, "").toLowerCase();
+}
+
 /** True when every requested tag is present on the line with the same value. */
 function lineMatchesTags(line: string, filter: CtoMemoryTags): boolean {
   const parsed = parseMemoryTags(line);
@@ -201,6 +226,14 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
   const discoveriesCursorPath = path.join(ctoDir, "discoveries.cursor");
 
   fs.mkdirSync(ctoDir, { recursive: true });
+
+  // Durable project context. Independent of the CTO chat id: a restart, a
+  // crash, and a cleared session all leave this file where it is.
+  const context = createProjectContextStore({
+    adeDir: args.adeDir,
+    account: args.account,
+    logger,
+  });
 
   const warn = (message: string, error: unknown, meta?: Record<string, unknown>): void => {
     logger?.warn(message, {
@@ -241,6 +274,19 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
       }
     }
     writeTextAtomic(memoryPath, `${next}\n`);
+    if (next === MEMORY_HEADER) return;
+    try {
+      // The notes file is still the notes file. Only its bullets become facts,
+      // and exact text is ignored, so a second save does not store the document.
+      for (const line of next.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("- ")) continue;
+        context.remember({ text: trimmed.slice(2), trust: "human", kind: "pointer" });
+      }
+      void context.reconcile();
+    } catch (error) {
+      warn("cto_context.remember_failed", error);
+    }
   };
 
   /**
@@ -313,6 +359,18 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     }
 
     writeTextAtomic(memoryPath, `${rendered}\n`);
+    try {
+      const parsed = parseMemoryTags(tagged);
+      const tags: ProjectContextItem["tags"] = {};
+      for (const key of CTO_MEMORY_TAG_KEYS) {
+        const value = parsed[key];
+        if (value) tags[key] = value;
+      }
+      context.remember({ text: tagged, trust: "cto", tags });
+      void context.reconcile();
+    } catch (error) {
+      warn("cto_context.remember_failed", error);
+    }
     return { saved: true, fact: tagged, ...(evicted.length ? { evictedCount: evicted.length } : {}) };
   };
 
@@ -325,10 +383,22 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
   const listFactsForLane = (laneId: string, maxChars = LANE_FACTS_INJECT_MAX_CHARS): string => {
     const lane = laneId.trim();
     if (!lane.length) return "";
-    const matched = readMemory()
+    const fromFile = readMemory()
       .split(/\r?\n/)
       .filter((line) => line.trim().length && lineMatchesTags(line, { lane }))
       .map((line) => line.trimEnd());
+    const seen = new Set(fromFile.map((line) => snippetIdentity(line)));
+    const fromStore = context.read().items
+      .filter((item) => item.status !== "archived" && (item.tags.lane ?? "").toLowerCase() === lane.toLowerCase())
+      .map((item) => item.text.trim())
+      .filter((text) => {
+        const key = snippetIdentity(text);
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .map((text) => (text.startsWith("-") ? text : `- ${text}`));
+    const matched = [...fromFile, ...fromStore];
     if (!matched.length) return "";
     return truncateKeepTail(matched.join("\n"), maxChars);
   };
@@ -418,6 +488,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     // a better answer than one that merely mentions the word somewhere.
     const tagHits: CtoMemorySearchRow[] = [];
     const textHits: CtoMemorySearchRow[] = [];
+    const seen = new Set<string>();
     const scan = (
       file: CtoMemorySearchRow["file"],
       date: string | null,
@@ -425,19 +496,21 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     ): void => {
       const lines = content.split(/\r?\n/);
       for (let i = 0; i < lines.length; i += 1) {
-        if (tagHits.length >= limit) return;
         const raw = lines[i];
         if (!raw.trim().length) continue;
         if (hasTagFilter && !lineMatchesTags(raw, tagFilter as CtoMemoryTags)) continue;
+        const matchesTag = Boolean(needle.length && lineTagsMatchNeedle(raw, needle));
+        const matchesText = !needle.length || raw.toLowerCase().includes(needle);
+        if (!matchesTag && !matchesText) continue;
+        const identity = snippetIdentity(raw.trim().slice(0, 240));
+        if (identity) seen.add(identity);
+        if (tagHits.length >= limit) continue;
         const row: CtoMemorySearchRow = { file, date, line: i + 1, snippet: raw.trim().slice(0, 240) };
-        if (needle.length && lineTagsMatchNeedle(raw, needle)) {
+        if (matchesTag) {
           tagHits.push(row);
           continue;
         }
-        // Untagged facts still match here exactly as they always did.
-        if (!needle.length || raw.toLowerCase().includes(needle)) {
-          if (textHits.length < limit) textHits.push(row);
-        }
+        if (textHits.length < limit) textHits.push(row);
       }
     };
 
@@ -454,7 +527,28 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
         scan("daily", stamp, readFileOrEmpty(dailyPathFor(stamp)));
       }
     }
-    return [...tagHits, ...textHits].slice(0, limit);
+    const fileRows = [...tagHits, ...textHits];
+    const storeSlots = Math.max(1, Math.ceil(limit / 4));
+    const contextRows: CtoMemorySearchRow[] = [];
+    const candidates = needle.length
+      // The store holds at most 120 live facts and 40 archived ones. Scan
+      // that whole set so a store-only hit is not hidden behind file copies.
+      ? context.search(needle, 160)
+      : context.read().items.filter((item) => item.status !== "archived");
+    for (const item of candidates) {
+      if (contextRows.length >= storeSlots) break;
+      if (hasTagFilter && !contextItemMatches(item, tagFilter as CtoMemoryTags)) continue;
+      const snippet = item.text.slice(0, 240);
+      const key = snippetIdentity(snippet);
+      if (!key || seen.has(key)) continue;
+      const tagValues = Object.values(item.tags).join(" ");
+      if (needle.length && !snippet.toLowerCase().includes(needle) && !tagValues.toLowerCase().includes(needle)) continue;
+      seen.add(key);
+      contextRows.push({ file: "context", date: null, line: 1, snippet });
+    }
+    const novel = contextRows.slice(0, storeSlots);
+    const fileKeep = Math.max(0, limit - novel.length);
+    return [...fileRows.slice(0, fileKeep), ...novel].slice(0, limit);
   };
 
   /* ── discoveries ── */
@@ -671,6 +765,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
   /* ── snapshot + injection ── */
 
   const getSnapshot = (): CtoMemorySnapshot => {
+    pullContext();
     const dailyLogDate = todayStamp();
     const dailyLog = readFileOrEmpty(dailyPathFor(dailyLogDate));
     const updatedCandidates = [memoryPath, threadStatePath, dailyPathFor(dailyLogDate)]
@@ -683,6 +778,9 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
       dailyLog,
       dailyLogDate,
       updatedAt: updatedCandidates.length ? updatedCandidates[updatedCandidates.length - 1] : null,
+      projectBrief: context.briefText(),
+      projectThreads: context.threadsText(),
+      projectItems: context.itemsText(readThreadState()),
     };
   };
 
@@ -691,7 +789,9 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
    * Only the injected copies are truncated; the on-disk files are untouched.
    */
   const buildMemoryContextSections = (): Array<{ title: string; body: string }> => {
-    const sections: Array<{ title: string; body: string }> = [];
+    pullContext();
+    const query = [context.briefText() ?? "", readThreadState()].filter((part) => part.trim().length).join("\n");
+    const sections: Array<{ title: string; body: string }> = [...context.injectionSections(query)];
     const memory = readMemory().trim();
     if (memory.length) {
       sections.push({
@@ -752,11 +852,42 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     writeTextAtomic(path.join(callsDir, `${safeId}.md`), `${redactSecrets(body)}\n`);
   };
 
+  let lastContextPullMs = Date.now();
+  const pullContext = (): void => {
+    const nowMs = Date.now();
+    if (nowMs - lastContextPullMs < 30_000) return;
+    lastContextPullMs = nowMs;
+    void context.reconcile();
+  };
+
+  context.migrateFromMemory(readMemory());
+  void context.reconcile();
+
   return {
     readMemory,
     writeCallTranscript,
     writeMemory,
     appendMemoryFact,
+    setProjectBrief: (
+      input: { goal?: string; success?: string; constraints?: string; conventions?: string; openLoops?: string },
+    ) => {
+      const current = context.read().brief;
+      const keep = (next: string | undefined, previous: string | undefined): string => next ?? previous ?? "";
+      const brief = context.setBrief({
+        goal: keep(input.goal, current?.goal),
+        success: keep(input.success, current?.success),
+        constraints: keep(input.constraints, current?.constraints),
+        conventions: keep(input.conventions, current?.conventions),
+        openLoops: keep(input.openLoops, current?.openLoops),
+      });
+      void context.reconcile();
+      return brief;
+    },
+    recordThread: (input: { title: string; sessionId: string; laneId: string; objective: string }) => {
+      const thread = context.recordThread(input);
+      void context.reconcile();
+      return thread;
+    },
     listFactsForLane,
     writeThreadState,
     appendDailyEntry,

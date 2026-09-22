@@ -4,21 +4,10 @@ import type { AgentChatProvider, AgentChatSession, TerminalSessionSummary, Termi
 import { isProviderSlashCommandInput } from "../../shared/chatSlashCommands";
 import { stripElectronErrorWrapper } from "../../shared/codedError";
 import { cursorOwnsSessionName as cursorOwnsCloudAgentId } from "../../shared/cursorCloudNaming";
+import { isChatToolType } from "../../shared/sessionSpawnNesting";
 
 export { CURSOR_CLOUD_RENAME_BLOCKED_MESSAGE } from "../../shared/cursorCloudNaming";
-
-/** Returns true if the tool type represents an AI chat session. */
-export function isChatToolType(toolType: string | null | undefined): boolean {
-  if (!toolType) return false;
-  const t = toolType.trim().toLowerCase();
-  return (
-    t === "codex-chat"
-    || t === "claude-chat"
-    || t === "opencode-chat"
-    || t === "cursor"
-    || t.endsWith("-chat")
-  );
-}
+export { isChatToolType };
 
 /**
  * True when Cursor owns this chat's name, so ADE must not rename it.

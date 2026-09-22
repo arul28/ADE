@@ -63,7 +63,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   })),
 }));
 
-vi.mock("@factory/droid-sdk", () => ({
+vi.mock("@factory/droid-sdk/node", () => ({
   createSdkMcpServer: vi.fn(() => ({ start: vi.fn(), close: vi.fn() })),
   tool: vi.fn((name: string, description: string, inputSchema: unknown, handler: unknown) => ({
     name,

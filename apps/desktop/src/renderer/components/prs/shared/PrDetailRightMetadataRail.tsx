@@ -6,14 +6,12 @@ import {
   LinkSimple,
   PencilSimple,
   Prohibit,
-  Sparkle,
   Tag,
   UserCircle,
   Users,
   UsersThree,
 } from "@phosphor-icons/react";
 
-import type { LaneSummary } from "../../../../shared/types";
 import type {
   PrActionRun,
   PrCheck,
@@ -25,7 +23,6 @@ import type {
   PrUser,
   PrWithConflicts,
 } from "../../../../shared/types/prs";
-import { PrRequestAiReviewDialog } from "./PrRequestAiReviewDialog";
 import { PrReviewSubmitModal, type PrReviewEvent } from "./PrReviewSubmitModal";
 import { COLORS, MONO_FONT, SANS_FONT } from "../../lanes/laneDesignTokens";
 import { PrSection, PR_SECTION_GAP_COMPACT, prFlatButton, prSectionAction } from "./prSection";
@@ -35,7 +32,6 @@ import { isBotLogin, reviewStateForLogin } from "./prMergeRailUtils";
 
 export type PrDetailRightMetadataRailProps = {
   pr: PrWithConflicts;
-  lane: LaneSummary | null;
   detail: PrDetail | null;
   status: PrStatus | null;
   reviews: PrReview[];
@@ -53,12 +49,6 @@ export type PrDetailRightMetadataRailProps = {
   onSetLabels: (labels: string[]) => void;
   actionBusy: boolean;
   onSubmitReview: (event: PrReviewEvent, body: string) => void;
-  /**
-   * Check this PR's branch out into a lane. ADE review needs a working tree to
-   * diff, so with no lane the button offers the missing step instead of sitting
-   * greyed out with a tooltip nobody hovers.
-   */
-  onOpenAsLane?: () => void;
   onSelectCheck?: (check: PrCheck) => void;
   onOpenChecksTab?: () => void;
   onRerunChecks?: (target?: PrRerunChecksTarget) => void;
@@ -173,7 +163,6 @@ function parseReviewerRequestInput(input: string): ReviewerRequest {
 
 export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail({
   pr,
-  lane,
   detail,
   reviews,
   checks,
@@ -190,25 +179,15 @@ export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail
   onSetLabels,
   actionBusy,
   onSubmitReview,
-  onOpenAsLane,
   onSelectCheck,
   onOpenChecksTab,
   onRerunChecks,
 }: PrDetailRightMetadataRailProps) {
-  const [reviewDialogOpen, setReviewDialogOpen] = useState(false);
   const [submitReviewOpen, setSubmitReviewOpen] = useState(false);
   const [reviewBody, setReviewBody] = useState("");
   const [reviewEvent, setReviewEvent] = useState<PrReviewEvent>("APPROVE");
 
   const isOpenOrDraft = pr.state === "open" || pr.state === "draft";
-  // ADE review starts an agent inside the lane's worktree, so this one really
-  // does need a local checkout. A disabled button that explains itself beats a
-  // button that silently does nothing when clicked.
-  const requestReviewEnabled = Boolean(pr.laneId && lane && isOpenOrDraft);
-  const canOfferOpenAsLane = Boolean(!requestReviewEnabled && isOpenOrDraft && onOpenAsLane);
-  const requestReviewBlockedReason = isOpenOrDraft && !requestReviewEnabled
-    ? "ADE review runs an agent on a local checkout of this branch. Open it as a lane first."
-    : undefined;
   const requestedReviewers = detail?.requestedReviewers ?? [];
   const requestedTeams = detail?.requestedTeams ?? [];
   const reviewerCount = requestedReviewers.length + requestedTeams.length;
@@ -281,34 +260,11 @@ export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail
             </div>
           ) : null}
 
-          {/* Review actions fold in here as a compact two-up row. Both are flat
-              outlines: the merge button on the neighbouring rail is the one
+          {/* Review actions fold in here as a compact row. It is a flat
+              outline: the merge button on the neighbouring rail is the one
               filled control on this surface. */}
           {isOpenOrDraft ? (
             <div className="mt-2 flex gap-1.5" data-testid="pr-detail-metadata-actions">
-              {/* With no lane the button does not go dead — it offers the step
-                  that unblocks it. ADE review diffs a working tree, so checking
-                  the branch out IS the prerequisite; making the user find that
-                  themselves is what turned this into a button that "does
-                  nothing". */}
-              <button
-                type="button"
-                onClick={() => (requestReviewEnabled ? setReviewDialogOpen(true) : onOpenAsLane?.())}
-                disabled={!requestReviewEnabled && !canOfferOpenAsLane}
-                title={
-                  requestReviewEnabled
-                    ? undefined
-                    : canOfferOpenAsLane
-                      ? "ADE review diffs a local checkout. This opens the branch as a lane first."
-                      : requestReviewBlockedReason
-                }
-                className="min-w-0 flex-1 transition-colors disabled:cursor-not-allowed disabled:opacity-60"
-                style={prFlatButton({ tone: COLORS.accent, height: 26, fontSize: 10.5 })}
-                data-tour="prs.requestAiReview"
-              >
-                <Sparkle size={11} weight="fill" />
-                {canOfferOpenAsLane ? "Open as lane to review" : "ADE review"}
-              </button>
               <button
                 type="button"
                 onClick={() => setSubmitReviewOpen(true)}
@@ -448,13 +404,6 @@ export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail
           setSubmitReviewOpen(false);
           setReviewBody("");
         }}
-      />
-
-      <PrRequestAiReviewDialog
-        open={reviewDialogOpen}
-        onOpenChange={setReviewDialogOpen}
-        pr={pr}
-        lane={lane}
       />
     </div>
   );

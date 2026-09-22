@@ -585,7 +585,7 @@
       },
       "requiredEvidenceKinds": ["gui", "network", "ipc", "db"],
       "passConditions": [
-        "A clean published source lane transfers only the bounded capsule at the reviewed route.",
+        "A clean published source lane transfers only the bounded capsule on the route bound at send time.",
         "The destination validates the exact commit, creates or reuses the correct lane, and dispatches idempotently.",
         "Secrets, transcripts, artifact bytes, PTYs, and dirty worktree content do not cross machines."
       ],

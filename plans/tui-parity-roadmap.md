@@ -139,7 +139,6 @@ Legend: ✓ full · ◐ partial · ✗ missing · ⚠ glitchy. All file paths ar
 | PRs | Merge / land | ✓ | ✗ | No `pr.land` call anywhere |
 | PRs | Submit review / comment | ✓ | ✗ | No `submitReview`/`addComment` |
 | PRs | Update title/labels/reviewers/close/rerun | ✓ | ✗ | Zero mutation beyond create |
-| PRs | AI code review | ✓ | ✗ | No `/review`, no review bridge |
 | PRs | Open in browser / deeplink | ✓ | ✓ | — |
 | **Terminals** | Discover / list | ✓ | ◐ | Claude-only filter (`adeApi.ts:85`) |
 | Terminals | Live output | ✓ | ◐ | 500ms poll; 500-chunk desync bug (`app.tsx:5174`) |
@@ -165,9 +164,9 @@ Legend: ✓ full · ◐ partial · ✗ missing · ⚠ glitchy. All file paths ar
 | Orchestration | Plan/phase/task panel | ✓ | ✗ | `orchestrationRunId` pass-through only (`app.tsx:358`) |
 | Orchestration | Lead task actions / CTO console | ✓ | ✗ | No driving a run |
 | Orchestration | Linear work-board / timeline | ✓ | ◐ | One-shot commands, raw JSON (`linearCommands.ts`) |
-| **Review/conflict** | Lane diff view | ✓ | ◐ | No color/scroll/staged split |
-| Review/conflict | Live conflict state (continue/abort) | ✓ | ✗ | `/pull` swallows conflicts (`app.tsx:6429`) |
-| Review/conflict | Merge simulation / AI resolve | ✓ | ✗ | Needs runtime registration + wiring |
+| **Diff/conflict** | Lane diff view | ✓ | ◐ | No color/scroll/staged split |
+| Diff/conflict | Live conflict state (continue/abort) | ✓ | ✗ | `/pull` swallows conflicts (`app.tsx:6429`) |
+| Diff/conflict | Merge simulation / AI resolve | ✓ | ✗ | Needs runtime registration + wiring |
 | **Remote/sync** | Remote/SSH target + selection | ✓ | ✗ | `RuntimeMode='attached'\|'embedded'` (`types.ts:25`) |
 | Remote/sync | Connection status surface | ✓ | ◐ | Only connecting spinner; no health chip |
 | Remote/sync | Reconnection robustness | ✓ | ⚠ | Drop undetected, UI freezes (`jsonRpcClient.ts:30`) |
@@ -296,7 +295,7 @@ User-prioritized; depends on the scrollable/colorized diff infra from Phase 7-pr
 
 Ships: review, merge, and inspect PRs (incl. real diffs) from the terminal.
 
-#### Phase 7 — Visual & motion delight + conflict/review intelligence (M–L)
+#### Phase 7 — Visual & motion delight + conflict intelligence (M–L)
 Layered on the now-shared aggregation and colorized diffs.
 - Shimmer working label (non-Claude), fade-in completion glyph, animated TokenBar, connect spinner, boot-hero reveal (`ChatView.tsx`, `FooterControls.tsx`, `AdeWordmark.tsx`, `spinTick.tsx`) — M.
 - Textual conflict-risk surface (`/conflicts`/`/risk` via `conflicts.getBatchAssessment/listOverlaps`, already viewerAllowed) + risk-tinted stack tree — M.
@@ -1509,7 +1508,7 @@ Land the three P0 performance fixes first (coalescer → shared aggregation → 
 ```json
 {
   "dimension": "Navigation & switching",
-  "summary": "Verified against source. The desktop has three navigation layers: a left TabNav rail for ~12 top-level destinations (Work/Lanes/Files/Run/PRs/Review/Automations/CTO/Graph/History/VM + Settings pinned, confirmed in TabNav.tsx lines 26-39), a Cmd+K CommandPalette that fuzzy-searches ~30 grouped commands AND doubles as a full project browse/open/create/clone/remote-connect surface, and a TopBar with draggable multi-project tabs plus G-prefix chords and ]/[ lane cycling. The TUI is architecturally a single-project/single-lane-tree client: navigation is concentrated in one left Drawer (lanes section + nested chats section) plus an inline slash palette and an @-mention palette. Lane/chat switching itself is solid and fast (arrow keys, Enter, mouse click, drag-to-grid, last-chat-per-lane memory via lastChatByLaneRef, /switch command), and the Header gives a breadcrumb (ADE | project | lane | branch | chat). Confirmed real gaps: NO TUI global fuzzy command palette (SlashPalette only renders when prompt literally startsWith('/'), SlashPalette.tsx:119 and app.tsx:3217/9339; no app:openCommandPalette action in the keybindings enum), NO project switching/opening at all (grep for switchProject/openProject/recentProjects/browseDirectories in app.tsx is empty — one project per process), NO top-level go-to-view navigation (no G-chord, no setActiveView — Files/Graph/History/PRs are right-pane command outputs, not views), NO global lane-cycle shortcut (]/[ ARE bound in the TUI but only inside the model-picker context for provider-tab cycling at app.tsx:8840, NOT for lanes; the keybindings enum has no lane:* namespace), and switching has no center-pane transition/loading affordance (no laneTransition/switching-to state anywhere; only the Drawer shows 'Loading lanes…' at initial connect). The drawer is well built; the gaps are discoverability (no command-K), breadth (no project tabs / no view rail), and a few missing keyboard shortcuts that exist on desktop. Two corrections to the draft: the down-arrow 'off-by-one' is not a real bug (there is now an explicit atChatBottom clamp at app.tsx:9112-9114, and the undefined-index at 9116 is the intentional new-chat-row mapping), and the drawer hover-highlight polish is smaller than stated because the hover plumbing already exists end-to-end.",
+  "summary": "Verified against source. The desktop has three navigation layers: a left TabNav rail for ~11 top-level destinations (Work/Lanes/Files/Run/PRs/Automations/CTO/Graph/History/VM + Settings pinned, confirmed in TabNav.tsx lines 26-39), a Cmd+K CommandPalette that fuzzy-searches ~30 grouped commands AND doubles as a full project browse/open/create/clone/remote-connect surface, and a TopBar with draggable multi-project tabs plus G-prefix chords and ]/[ lane cycling. The TUI is architecturally a single-project/single-lane-tree client: navigation is concentrated in one left Drawer (lanes section + nested chats section) plus an inline slash palette and an @-mention palette. Lane/chat switching itself is solid and fast (arrow keys, Enter, mouse click, drag-to-grid, last-chat-per-lane memory via lastChatByLaneRef, /switch command), and the Header gives a breadcrumb (ADE | project | lane | branch | chat). Confirmed real gaps: NO TUI global fuzzy command palette (SlashPalette only renders when prompt literally startsWith('/'), SlashPalette.tsx:119 and app.tsx:3217/9339; no app:openCommandPalette action in the keybindings enum), NO project switching/opening at all (grep for switchProject/openProject/recentProjects/browseDirectories in app.tsx is empty — one project per process), NO top-level go-to-view navigation (no G-chord, no setActiveView — Files/Graph/History/PRs are right-pane command outputs, not views), NO global lane-cycle shortcut (]/[ ARE bound in the TUI but only inside the model-picker context for provider-tab cycling at app.tsx:8840, NOT for lanes; the keybindings enum has no lane:* namespace), and switching has no center-pane transition/loading affordance (no laneTransition/switching-to state anywhere; only the Drawer shows 'Loading lanes…' at initial connect). The drawer is well built; the gaps are discoverability (no command-K), breadth (no project tabs / no view rail), and a few missing keyboard shortcuts that exist on desktop. Two corrections to the draft: the down-arrow 'off-by-one' is not a real bug (there is now an explicit atChatBottom clamp at app.tsx:9112-9114, and the undefined-index at 9116 is the intentional new-chat-row mapping), and the drawer hover-highlight polish is smaller than stated because the hover plumbing already exists end-to-end.",
   "tuiStatus": [
     {
       "feature": "Lane switching",
@@ -1560,7 +1559,7 @@ Land the three P0 performance fixes first (coalescer → shared aggregation → 
     {
       "feature": "Top-level view navigation (TabNav equivalent)",
       "status": "missing",
-      "details": "Confirmed no equivalent to switching among Files/Graph/History/PRs/Review/Automations/CTO/VM views — grep for gotoView/setActiveView/activeView and any G-prefix chord in app.tsx is empty. Those desktop destinations surface in the TUI only as right-pane command outputs (/diff, /log, /pr, /linear, /status). No persistent navigable rail, no active-view indicator, no 'Go to X'. Partly by design (chat-centric TUI) but whole desktop surfaces have no first-class navigation home.",
+      "details": "Confirmed no equivalent to switching among Files/Graph/History/PRs/Automations/CTO/VM views — grep for gotoView/setActiveView/activeView and any G-prefix chord in app.tsx is empty. Those desktop destinations surface in the TUI only as right-pane command outputs (/diff, /log, /pr, /linear, /status). No persistent navigable rail, no active-view indicator, no 'Go to X'. Partly by design (chat-centric TUI) but whole desktop surfaces have no first-class navigation home.",
       "tuiFiles": [
         "apps/ade-cli/src/tuiClient/app.tsx"
       ]
@@ -1717,7 +1716,7 @@ Land the three P0 performance fixes first (coalescer → shared aggregation → 
 ```json
 {
   "dimension": "Pull requests",
-  "summary": "The desktop ships a full GitHub PR management surface (PRsPage -> GitHubTab list of all repo PRs with filters/search/CI dots/review indicators/labels/avatars; a 3-sub-tab PrDetailPane with overview/files/checks, a real diff viewer, review threads with resolve, timeline rails; plus merge/land with method + bypass, submitReview approve/request-changes/comment, addComment, updateTitle, setLabels, requestReviewers, close/reopen, rerunChecks, cleanupBranch, AI draft-description, an issue resolver, and a dedicated AI ReviewPage). The TUI exposes only five read-mostly slash commands (/pr, /pr open, /pr checks, /pr review, /pr comments) that all dump flat plaintext into the generic DetailsPane, plus a 3-line PR snippet in the lane-details RightPane and a [#N ·passed/total] pill in the Drawer (shown for OPEN PRs only). The TUI can show summary/checks/reviews/comments text for the active lane's FIRST PR only and can create a draft PR or open the PR in a real browser; it cannot merge, submit a review, comment, view a diff/files/commits, list all repo PRs, filter/search, edit labels/reviewers/title, close/reopen/rerun checks, or run the AI reviewer at all. VERIFIED in app.tsx: no land/submitReview/rerunChecks/setLabels/requestReviewers/updateTitle/close/reopen/getFiles/getCommits/getFileDiff calls and no /review or /prs command exist anywhere. The runtime pr action namespace already exposes most of these over JSON-RPC (per preload.ts), so the write capabilities are reachable from conn.action(\\\"pr\\\", ...) but are simply not wired up. PR rendering in the TUI is heuristic markdown-ish text reflow via formatPrSummary/formatPrChecks/formatPrReview/formatPrComments, not structured, so it is visually flat and lossy compared to the desktop's card/timeline/diff UI.",
+  "summary": "The desktop ships a full GitHub PR management surface (PRsPage -> GitHubTab list of all repo PRs with filters/search/CI dots/review indicators/labels/avatars; a 3-sub-tab PrDetailPane with overview/files/checks, a real diff viewer, review threads with resolve, timeline rails; plus merge/land with method + bypass, submitReview approve/request-changes/comment, addComment, updateTitle, setLabels, requestReviewers, close/reopen, rerunChecks, cleanupBranch, AI draft-description, and an issue resolver). The TUI exposes only five read-mostly slash commands (/pr, /pr open, /pr checks, /pr review, /pr comments) that all dump flat plaintext into the generic DetailsPane, plus a 3-line PR snippet in the lane-details RightPane and a [#N ·passed/total] pill in the Drawer (shown for OPEN PRs only). The TUI can show summary/checks/reviews/comments text for the active lane's FIRST PR only and can create a draft PR or open the PR in a real browser; it cannot merge, submit a review, comment, view a diff/files/commits, list all repo PRs, filter/search, edit labels/reviewers/title, close/reopen/rerun checks. VERIFIED in app.tsx: no land/submitReview/rerunChecks/setLabels/requestReviewers/updateTitle/close/reopen/getFiles/getCommits/getFileDiff calls and no /prs command exists anywhere. The runtime pr action namespace already exposes most of these over JSON-RPC (per preload.ts), so the write capabilities are reachable from conn.action(\\\"pr\\\", ...) but are simply not wired up. PR rendering in the TUI is heuristic markdown-ish text reflow via formatPrSummary/formatPrChecks/formatPrReview/formatPrComments, not structured, so it is visually flat and lossy compared to the desktop's card/timeline/diff UI.",
   "tuiStatus": [
     {
       "feature": "List PRs per lane / per repo",
@@ -1809,15 +1808,6 @@ Land the three P0 performance fixes first (coalescer → shared aggregation → 
       ]
     },
     {
-      "feature": "AI code review runs",
-      "status": "missing",
-      "details": "VERIFIED: no /review command and no use of the review bridge (listRuns/startRun/getRunDetail/findings/suppressions) in app.tsx. The entire desktop ReviewPage AI-review system is absent from the TUI.",
-      "gap": "No AI review run, findings, severity summary, suppressions, feedback, or learnings in the TUI.",
-      "tuiFiles": [
-        "apps/ade-cli/src/tuiClient/app.tsx"
-      ]
-    },
-    {
       "feature": "Queue / rebase / integration workflows",
       "status": "missing",
       "details": "No TUI surface for QueueTab/RebaseTab/IntegrationTab. Rebase needs, conflict badges, queue landing, and integration branches have no TUI representation.",
@@ -1900,11 +1890,6 @@ Land the three P0 performance fixes first (coalescer → shared aggregation → 
       "title": "Color-graded check/review status in the Drawer pill, shown for all states",
       "description": "The Drawer PrPill (Drawer.tsx line 505-517) shows [#N ·passed/total] with a two-color split and only renders for open PRs. Add a tiny review glyph (✓ approved / ✱ changes-requested / · none) plus a failing/pending tint, and stop hiding the pill for merged/closed PRs, so the lane list communicates PR health at a glance like the desktop's ciDot + reviewIndicator.",
       "impact": "medium"
-    },
-    {
-      "title": "AI review trigger from the TUI",
-      "description": "Surface a /review command that starts a review run (review startRun) and streams findings into a pane with severity-colored rows; even a read-only findings list would bring a flagship desktop capability to the terminal.",
-      "impact": "medium"
     }
   ],
   "recommendations": [
@@ -1972,12 +1957,6 @@ Land the three P0 performance fixes first (coalescer → shared aggregation → 
       "title": "Add updateTitle/setLabels/requestReviewers/close/reopen/rerunChecks commands",
       "description": "Expose the remaining pr mutations (already on the runtime namespace) as /pr commands so the TUI reaches edit/close/rerun parity with PrDetailPane.",
       "effort": "M",
-      "priority": "P2"
-    },
-    {
-      "title": "Surface AI code review (/review)",
-      "description": "Add a /review command using the review bridge (startRun/listRuns/getRunDetail) to start runs and list severity-colored findings, bringing a flagship desktop surface to the terminal. Genuinely large scope; keep last.",
-      "effort": "XL",
       "priority": "P2"
     }
   ],
@@ -2932,12 +2911,12 @@ Land the three P0 performance fixes first (coalescer → shared aggregation → 
 
 </details>
 
-<details><summary><b>Review & conflict resolution</b> (parity)</summary>
+<details><summary><b>Conflict resolution</b> (parity)</summary>
 
 ```json
 {
-  "dimension": "Review & conflict resolution",
-  "summary": "Verified against the cited TUI files. The desktop has two substantial feature areas here: (1) a conflict-prediction/simulation/AI-resolution stack surfaced in Graph (RiskMatrix + ConflictPanel), Lanes (rebase banners), and PRs (RebaseTab, PrAiResolverPanel, ConflictFilePreview) backed by conflictService.ts and the ade.conflicts.* / ade.git.* IPC surface; and (2) an AI code-review feature (ReviewPage + ReviewFindingCard) with review runs, severity-classified findings, adjudication, and inline-comment publication via ade.review.*. The TUI has essentially none of this. Confirmed facts: the substring 'conflict' appears 0 times in the 10,327-line app.tsx (case-insensitive grep is empty); `/diff` (app.tsx:5985) calls diff.getChanges then renders a static file list (path + '+N -N', plus at most the first 8 lines of each file's diff body, capped at 20 files) with NO diff/syntax coloring, NO scrolling, NO mouse/keyboard interaction, NO per-file expand, and NO staged/unstaged split; `/pr review` and `/pr comments` (app.tsx:6122-6132) dump GitHub reviews/threads/comments into a read-only details pane; `/pull --rebase|--merge` (app.tsx:6429) fires git.pull and reports 'Pull complete' regardless of conflict outcome; `/reparent` (app.tsx:6042) runs lane.reparent (git rebase) with no conflict handling. None of conflicts.simulateMerge/getBatchAssessment/getRiskMatrix, conflicts.*Proposal, conflicts.scanRebaseNeeds/rebaseLane, git.getConflictState/rebaseContinue/rebaseAbort/mergeContinue/mergeAbort, the external-resolver actions, or any ade.review.* action is wired. They are reachable only via the generic `/ade <domain.action> [json]` escape hatch (app.tsx:6315, run_ade_action -> renderObject), which dumps raw JSON into a details pane with zero purpose-built or interactive UI. Net: read-only diff inspection plus PR-comment viewing; the TUI cannot review AI findings or resolve merge conflicts in any meaningful sense. One correction to the draft: the codebase DOES have a highlightCache.ts / highlightCode() that is used (format.ts:327) — but only for chat markdown fenced code blocks, never for the diff pane, so the diff truly has no coloring.",
+  "dimension": "Conflict resolution",
+  "summary": "Verified against the cited TUI files. The desktop has a conflict-prediction/simulation/AI-resolution stack surfaced in Graph (RiskMatrix + ConflictPanel), Lanes (rebase banners), and PRs (RebaseTab, PrAiResolverPanel, ConflictFilePreview) backed by conflictService.ts and the ade.conflicts.* / ade.git.* IPC surface. The TUI has essentially none of this. Confirmed facts: the substring 'conflict' appears 0 times in the 10,327-line app.tsx (case-insensitive grep is empty); `/diff` (app.tsx:5985) calls diff.getChanges then renders a static file list (path + '+N -N', plus at most the first 8 lines of each file's diff body, capped at 20 files) with NO diff/syntax coloring, NO scrolling, NO mouse/keyboard interaction, NO per-file expand, and NO staged/unstaged split; `/pr review` and `/pr comments` (app.tsx:6122-6132) dump GitHub reviews/threads/comments into a read-only details pane; `/pull --rebase|--merge` (app.tsx:6429) fires git.pull and reports 'Pull complete' regardless of conflict outcome; `/reparent` (app.tsx:6042) runs lane.reparent (git rebase) with no conflict handling. None of conflicts.simulateMerge/getBatchAssessment/getRiskMatrix, conflicts.*Proposal, conflicts.scanRebaseNeeds/rebaseLane, git.getConflictState/rebaseContinue/rebaseAbort/mergeContinue/mergeAbort, or the external-resolver actions is wired. They are reachable only via the generic `/ade <domain.action> [json]` escape hatch (app.tsx:6315, run_ade_action -> renderObject), which dumps raw JSON into a details pane with zero purpose-built or interactive UI. Net: read-only diff inspection plus PR-comment viewing; the TUI cannot resolve merge conflicts in any meaningful sense. One correction to the draft: the codebase DOES have a highlightCache.ts / highlightCode() that is used (format.ts:327) — but only for chat markdown fenced code blocks, never for the diff pane, so the diff truly has no coloring.",
   "desktopCapabilities": [
     {
       "feature": "One-shot merge simulation with conflict markers",
@@ -2988,16 +2967,6 @@ Land the three P0 performance fixes first (coalescer → shared aggregation → 
         "apps/desktop/src/renderer/components/prs/shared/PrAiResolverPanel.tsx",
         "apps/desktop/src/renderer/components/prs/shared/PrResolverLaunchControls.tsx",
         "docs/features/conflicts/simulation.md"
-      ]
-    },
-    {
-      "feature": "AI code-review runs with severity-classified findings, adjudication, and publication",
-      "description": "ReviewPage + ReviewFindingCard start review runs (startRun), stream events (onReviewEvent), classify findings by severity (critical/high/medium/low/info) with summary chips, support filtering, copy-to-clipboard, open-in-files/editor, feedback, suppressions, quality report, and publish findings as inline PR comments (local_only vs auto_publish).",
-      "keyFiles": [
-        "apps/desktop/src/renderer/components/review/ReviewPage.tsx",
-        "apps/desktop/src/renderer/components/review/ReviewFindingCard.tsx",
-        "apps/desktop/src/renderer/components/review/reviewApi.ts",
-        "apps/desktop/src/renderer/components/review/reviewTypes.ts"
       ]
     }
   ],
@@ -3081,16 +3050,6 @@ Land the three P0 performance fixes first (coalescer → shared aggregation → 
       "tuiFiles": [
         "apps/ade-cli/src/tuiClient/app.tsx"
       ]
-    },
-    {
-      "feature": "AI code-review runs + findings",
-      "status": "missing",
-      "details": "The entire ade.review.* surface (startRun, listRuns, getRunDetail, recordFeedback, suppressions, publish) is absent. `/pr review` shows GitHub review comments, not ADE's own AI review findings. No severity classification, no finding cards, no adjudication, no publish-as-inline-comments.",
-      "gap": "The TUI cannot run or view ADE's AI code review or its findings.",
-      "tuiFiles": [
-        "apps/ade-cli/src/tuiClient/app.tsx",
-        "apps/ade-cli/src/tuiClient/commands.ts"
-      ]
     }
   ],
   "bugs": [
@@ -3133,11 +3092,6 @@ Land the three P0 performance fixes first (coalescer → shared aggregation → 
       "title": "Animated merge-simulation spinner and outcome reveal",
       "description": "When a (future) /merge-check runs, show a brief spinner ('Running merge simulation…') then reveal the outcome line (clean=green check, conflict=amber warning with count) the way desktop ConflictPanel does, giving the TUI the same sense of liveness.",
       "impact": "medium"
-    },
-    {
-      "title": "Severity-colored review finding list",
-      "description": "If AI review findings are surfaced, render them as a navigable list with severity-tinted left borders (critical/high/medium/low/info) and a summary chip row, matching ReviewFindingCard, with keyboard navigation to jump between findings.",
-      "impact": "medium"
     }
   ],
   "recommendations": [
@@ -3164,12 +3118,6 @@ Land the three P0 performance fixes first (coalescer → shared aggregation → 
       "description": "Implement prepare -> request -> apply/undo against conflicts.prepareProposal/requestProposal/applyProposal/undoProposal: show preview stats, proposal explanation + confidence, an apply-mode selector (unstaged/staged/commit), and an undo command. Reuse existing form/right-pane primitives.",
       "effort": "L",
       "priority": "P1"
-    },
-    {
-      "title": "Wire the AI code-review surface",
-      "description": "Add /review and /review runs commands against ade.review.* (startRun/listRuns/getRunDetail/onEvent) with a severity-colored, navigable findings list (mirroring ReviewFindingCard), feedback, and open-in-files. Currently entirely absent from the TUI.",
-      "effort": "L",
-      "priority": "P2"
     },
     {
       "title": "Offer an external-resolver session launcher",

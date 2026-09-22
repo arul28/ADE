@@ -39,6 +39,7 @@ vi.mock("../ai/codexExecutable", () => ({
 
 import {
   attachSharedUsageTrackingScope,
+  claudePollAllowsKeychain,
   createUsageTrackingService,
   isAccountRollupFetchResult,
   _testing,
@@ -185,6 +186,15 @@ beforeEach(() => {
   mockState.spawnSync.mockReturnValue({ status: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) });
   mockState.resolveCodexExecutable.mockReset();
   resetDynamicTokenPricingForTest({ disableDiskCache: true });
+});
+
+describe("claudePollAllowsKeychain", () => {
+  it("opens the Keychain for a scoped account on any poll, and for the default account only on an explicit refresh", () => {
+    expect(claudePollAllowsKeychain("automatic", undefined)).toBe(false);
+    expect(claudePollAllowsKeychain("user", undefined)).toBe(true);
+    expect(claudePollAllowsKeychain("automatic", "/tmp/claude-1028")).toBe(true);
+    expect(claudePollAllowsKeychain("automatic", "  ")).toBe(false);
+  });
 });
 
 // ── calculatePacing ──────────────────────────────────────────────
@@ -1945,6 +1955,46 @@ describe("createUsageTrackingService", () => {
     const roundTripped = JSON.parse(JSON.stringify(snapshot));
     expect(isUsageSnapshot(roundTripped)).toBe(true);
     expect(roundTripped.spendControlReached).toBe(true);
+    service.dispose();
+  });
+
+  it("publishes a Cursor plan window and drops it when the session is gone", async () => {
+    const logger = createLogger();
+    const dependencies = createFastDependencies();
+    const pollCursorUsage = vi.fn()
+      .mockResolvedValueOnce({
+        windows: [{
+          provider: "cursor" as const,
+          windowType: "monthly" as const,
+          accountId: "cursor:ada@example.com",
+          percentUsed: 40,
+          resetsAt: new Date(Date.now() + 86_400_000).toISOString(),
+          resetsInMs: 86_400_000,
+        }],
+        errors: [] as string[],
+        source: "http" as const,
+        accountEmail: "ada@example.com",
+        accountPlan: "pro",
+      })
+      .mockResolvedValueOnce({ disposition: "not_signed_in" as const, windows: [] as [], errors: [] as [] });
+    const service = createUsageTrackingService({
+      logger,
+      dependencies: { ...dependencies, pollCursorUsage },
+    });
+
+    const first = await service.poll({ reason: "user" });
+    expect(first.windows.some((window) => window.provider === "cursor" && window.percentUsed === 40)).toBe(true);
+    expect(first.providerStatus?.cursor).toMatchObject({
+      state: "ok",
+      accountEmail: "ada@example.com",
+      accountPlan: "pro",
+    });
+    expect(first.accounts?.some((account) => account.id === "cursor:ada@example.com" && account.email === "ada@example.com")).toBe(true);
+
+    const second = await service.poll({ reason: "user" });
+    expect(second.windows.some((window) => window.provider === "cursor")).toBe(false);
+    expect(second.providerStatus?.cursor).toBeUndefined();
+    expect(pollCursorUsage).toHaveBeenCalledTimes(2);
     service.dispose();
   });
 
@@ -6242,6 +6292,7 @@ describe("per-account quota attribution", () => {
     accentColor?: string;
     configHome: string;
     isDefault: boolean;
+    signedIn?: boolean;
   };
 
   function writeJson(file: string, body: unknown): void {
@@ -6398,6 +6449,26 @@ describe("per-account quota attribution", () => {
       .toBe("work@example.com");
   });
 
+  it("lists a signed-in account that has no email and no windows, and skips one that was never signed in", async () => {
+    writeClaudeAccount(path.join(tempHome, ".claude"), "machine@example.com");
+    const emptyHome = path.join(tempHome, "provider-homes", "claude", "empty");
+
+    const { accounts } = await _testing.stampProviderAccounts(
+      { claude: { state: "ok", updatedAt: "2099-03-14T01:00:00.000Z" } } as never,
+      "Mac",
+      new Set<string>(),
+      () => [
+        defaultInstance(),
+        { ...workInstance(), signedIn: true },
+        { id: "empty", label: "Empty", configHome: emptyHome, isDefault: false, signedIn: false },
+      ],
+    );
+
+    const ids = accounts.map((account) => account.id);
+    expect(ids).toContain("claude:work");
+    expect(ids).not.toContain("claude:empty");
+  });
+
   it("lets an account with no login contribute nothing rather than an error", async () => {
     writeClaudeCredentials(path.join(tempHome, ".claude"), "default-token");
     vi.stubGlobal("fetch", vi.fn(async () => ({
@@ -6415,6 +6486,77 @@ describe("per-account quota attribution", () => {
 
     expect(result.errors).toEqual([]);
     expect(result.windows.every((window) => window.accountId === "claude:claude")).toBe(true);
+  });
+
+  it("keeps a signed-in account's last windows when a background pass cannot read its login", async () => {
+    // The work account is signed in (`.claude.json`), but on macOS its login
+    // lives only in a Keychain item a background poll must not open. Erasing
+    // the windows here is what made a second account's quota disappear every
+    // time the app restarted.
+    writeClaudeCredentials(path.join(tempHome, ".claude"), "default-token");
+    writeClaudeAccount(workHome, "work@example.com");
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      json: async () => claudeUsageBody(20),
+    })));
+    const previous = {
+      windows: [{
+        provider: "claude",
+        accountId: "claude:work",
+        windowType: "five_hour",
+        percentUsed: 61,
+        resetsAt: "2099-03-14T02:00:00.000Z",
+        resetsInMs: 1_000,
+      }],
+      providerStatus: {
+        claude: { state: "ok", lastSuccessAt: "2099-03-14T01:00:00.000Z", source: "oauth" },
+      },
+      extraUsage: [],
+      pacing: {} as UsageSnapshot["pacing"],
+      costs: [],
+      lastPolledAt: "2099-03-14T01:00:00.000Z",
+      errors: [],
+    } as UsageSnapshot;
+
+    const result = await _testing.pollClaudeUsage(
+      logger as never,
+      { reason: "automatic", previousSnapshot: previous },
+      [defaultInstance(), workInstance()],
+    );
+
+    const byAccount = new Map(result.windows
+      .filter((window) => window.windowType === "five_hour")
+      .map((window) => [window.accountId, window.percentUsed]));
+    expect(byAccount.get("claude:claude")).toBe(20);
+    expect(byAccount.get("claude:work")).toBe(61);
+  });
+
+  it("leaves whole-provider carry to reconciliation when nothing could be read", () => {
+    // Default errors and the secondary is unreadable: the merge must report no
+    // windows so `buildProviderWindows` carries every previous window and marks
+    // the provider stale, instead of a partial carry presenting as fresh.
+    const previous = {
+      windows: [{
+        provider: "codex",
+        accountId: "codex:work",
+        windowType: "five_hour",
+        percentUsed: 42,
+        resetsAt: "2099-03-14T02:00:00.000Z",
+        resetsInMs: 1_000,
+      }],
+    } as UsageSnapshot;
+
+    const result = _testing.mergeInstancePollResults("codex", [
+      {
+        instance: { ...defaultInstance(), id: "codex" },
+        result: { windows: [], errors: ["codex: API returned 500"], errorKind: "network" },
+      },
+      { instance: { ...workInstance() }, result: null },
+    ], previous);
+
+    expect(result.windows).toEqual([]);
   });
 
   it("preserves the previous reading when the only account cannot be checked", async () => {

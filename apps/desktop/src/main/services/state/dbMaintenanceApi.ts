@@ -24,8 +24,6 @@ export const INGRESS_EVENT_MAX_ROWS_PER_PROJECT = 2_000;
  * wedge the cr-sqlite table rebuild.
  */
 export const INGRESS_EVENT_HARD_MAX_ROWS_PER_PROJECT = 10_000;
-/** Review artifacts older than this (in days) are deleted. */
-export const REVIEW_ARTIFACT_RETENTION_DAYS = 30;
 /** PR snapshots not updated within this many days are deleted. */
 export const PR_SNAPSHOT_RETENTION_DAYS = 60;
 
@@ -156,8 +154,6 @@ export interface DbMaintenanceApi {
    * then hard-cap TOTAL rows (any status) at 10,000 per project.
    */
   pruneIngressEvents(): DbMaintenanceResult;
-  /** Delete review_run_artifacts rows older than 30 days. */
-  pruneReviewArtifacts(): DbMaintenanceResult;
   /** Delete pull_request_snapshots rows not updated in 60 days. */
   prunePrSnapshots(): DbMaintenanceResult;
   /**

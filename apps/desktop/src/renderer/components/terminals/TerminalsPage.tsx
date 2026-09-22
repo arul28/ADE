@@ -46,6 +46,7 @@ import {
   isPtyContextInsertableToolType,
 } from "../../lib/sessions";
 import { addSessionBesideTarget, removeSessionFromGrids } from "../../lib/workGrid";
+import { openChatHandoff, type ChatHandoffIntent } from "../../lib/chatHandoffIntent";
 import { buildWorkSessionTilingTree } from "./workSessionTiling";
 import {
   getSessionMetadataGenerating,
@@ -364,6 +365,31 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       // drag Lanes/PRs/Files onto a click that was only meant to focus the chat.
       machineRouter.rememberSessionPin(session, binding);
       handleSelectSession(session.id, event, visibleSessionIds, binding);
+    },
+    [handleSelectSession, machineRouter],
+  );
+
+  /**
+   * Opens the selected chat's Handoff surface from the session context menu.
+   * The intent is queued before the selection so `AgentChatPane` can pick it up
+   * whether it was already showing this chat or mounts a render later; selecting
+   * the row also dives out of the board, which is where a handoff has room to
+   * render.
+   */
+  const handleOpenChatHandoff = useCallback(
+    (
+      session: TerminalSessionSummary,
+      intent: ChatHandoffIntent,
+      binding?: OpenProjectBinding | null,
+    ) => {
+      // The menu carries the row's complete binding. Re-remember it before the
+      // selection so a cross-machine slice reload between menu-open and select
+      // cannot drop the entry and fall back to the tab's bound machine.
+      if (binding) machineRouter.rememberSessionPin(session, binding);
+      openChatHandoff(session.id, intent);
+      // Pass the row's binding through: selecting a foreign-machine chat must
+      // clear its woke marker on that machine, exactly like a plain row click.
+      handleSelectSession(session.id, undefined, undefined, binding);
     },
     [handleSelectSession, machineRouter],
   );
@@ -1753,6 +1779,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         onGoToLane={handleGoToLane}
         onCopySessionId={(id) => navigator.clipboard.writeText(id).catch(() => {})}
         onSettle={handleSettleSession}
+        onOpenChatHandoff={handleOpenChatHandoff}
         onCopySessionDeepLink={(session) => {
           void (async () => {
             const lane = work.lanes.find((candidate) => candidate.id === session.laneId) ?? null;

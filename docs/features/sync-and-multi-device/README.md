@@ -24,8 +24,8 @@ does and does not travel, and the layers that implement it. Deep-dives:
 - `remote-commands.md` — the `syncRemoteCommandService` registry that
   turns client actions into runtime-executed mutations.
 - `cross-machine-session-handoff.md` — the clean/published Git contract,
-  bounded context capsule, destination setup, route confirmation, and
-  idempotent recovery used by **Send to machine**.
+  bounded context capsule, destination setup, route binding, and
+  idempotent recovery used by **Continue on another machine**.
 - `push-notifications.md` — Activity's account-wide source of truth and
   its APNs + Live Activity pipeline: machine publishers, the Cloudflare
   consolidation relay, desktop/web/ADE Code/iOS reads, native Mac presentation,
@@ -2132,7 +2132,7 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   branch such as `main` is not an automatic dead end. Final
   acceptance is not queueable; destination idempotency is keyed by the
   capsule's handoff id and fingerprint instead of relying on command replay.
-  Desktop **Send to machine** reaches the destination through multi-project
+  Desktop **Continue on another machine** reaches the destination through multi-project
   runtime JSON-RPC: paired routes carry that stream in `rpc_data` envelopes,
   while SSH uses `ade rpc --stdio`. The sync host's remote-command responder
   timeout therefore does not bound the paired desktop acceptance action.

@@ -202,6 +202,8 @@ import type {
   AgentChatCancelScheduledWorkArgs,
   AgentChatResumeUsageLimitNowArgs,
   AgentChatResumeUsageLimitNowResult,
+  AgentChatContinueUsageLimitOnAlternateArgs,
+  AgentChatContinueUsageLimitOnAlternateResult,
   AgentChatCancelScheduledWorkResult,
   AgentChatClaudePlugin,
   AgentChatClaudePluginsArgs,
@@ -263,12 +265,6 @@ import type {
   AutomationSaveDraftResult,
   AutomationSimulateRequest,
   AutomationSimulateResult,
-  ReviewEventPayload,
-  ReviewLaunchContext,
-  ReviewListRunsArgs,
-  ReviewRun,
-  ReviewRunDetail,
-  ReviewStartRunArgs,
   AdeActionRegistryEntry,
   AdeUsageStats,
   GetAdeUsageStatsArgs,
@@ -1485,13 +1481,14 @@ declare global {
         complete: () => Promise<OnboardingStatus>;
       };
       automations: {
-        list: () => Promise<AutomationRuleSummary[]>;
+        list: (pin?: OpenProjectBinding | null) => Promise<AutomationRuleSummary[]>;
         toggle: (args: {
           id: string;
           enabled: boolean;
         }) => Promise<AutomationRuleSummary[]>;
         deleteRule: (
           args: AutomationDeleteRuleRequest,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AutomationRuleSummary[]>;
         triggerManually: (
           args: AutomationManualTriggerRequest,
@@ -1518,6 +1515,7 @@ declare global {
         ) => Promise<AutomationValidateDraftResult>;
         saveDraft: (
           req: AutomationSaveDraftRequest,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AutomationSaveDraftResult>;
         simulate: (
           req: AutomationSimulateRequest,
@@ -1531,25 +1529,6 @@ declare global {
           pollNow: () => Promise<AutomationLinearIngressStatus>;
         };
         onEvent: (cb: (ev: AutomationsEventPayload) => void) => () => void;
-      };
-      review: {
-        listLaunchContext: () => Promise<ReviewLaunchContext>;
-        listRuns: (args?: ReviewListRunsArgs) => Promise<ReviewRun[]>;
-        getRunDetail: (runId: string) => Promise<ReviewRunDetail | null>;
-        startRun: (args: ReviewStartRunArgs) => Promise<ReviewRun>;
-        rerun: (runId: string) => Promise<ReviewRun>;
-        cancelRun: (runId: string) => Promise<ReviewRun | null>;
-        recordFeedback: (
-          args: import("../shared/types").ReviewRecordFeedbackArgs,
-        ) => Promise<import("../shared/types").ReviewFeedbackRecord>;
-        listSuppressions: (
-          args?: import("../shared/types").ReviewListSuppressionsArgs,
-        ) => Promise<import("../shared/types").ReviewSuppression[]>;
-        deleteSuppression: (suppressionId: string) => Promise<boolean>;
-        qualityReport: () => Promise<
-          import("../shared/types").ReviewQualityReport
-        >;
-        onEvent: (cb: (ev: ReviewEventPayload) => void) => () => void;
       };
       actions: {
         listRegistry: () => Promise<AdeActionRegistryEntry[]>;
@@ -2096,6 +2075,10 @@ declare global {
           args: AgentChatResumeUsageLimitNowArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatResumeUsageLimitNowResult>;
+        continueUsageLimitOnAlternate: (
+          args: AgentChatContinueUsageLimitOnAlternateArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatContinueUsageLimitOnAlternateResult>;
         setScheduledWorkPaused: (
           args: AgentChatSetScheduledWorkPausedArgs,
           pin?: OpenProjectBinding | null,

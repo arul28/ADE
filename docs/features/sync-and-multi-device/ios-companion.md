@@ -433,7 +433,10 @@ apps/ios/
 │   │   ├── ActivityRowPresentation.swift # pure item → label/tone/glyph/elapsed
 │   │   │                            # mapper; the iOS mirror of desktop
 │   │   │                            #   sessionStatusPresentation.ts +
-│   │   │                            #   activityPresentation.ts. No SwiftUI —
+│   │   │                            #   activityPresentation.ts. Owns
+│   │   │                            #   activityStatusShoutsLabel (Needs you /
+│   │   │                            #   Failed only — same as desktop
+│   │   │                            #   sessionStatusShoutsLabel). No SwiftUI —
 │   │   │                            #   tones are tokens. Compiles into the
 │   │   │                            #   widget extension, so iOS 17 only.
 │   │   ├── ActivityWidgetPresentation.swift # tone → colour binding and the
@@ -531,13 +534,21 @@ apps/ios/
 │   │   │                            # WorkSessionRowCard (the row card itself:
 │   │   │                            #   WorkSessionRow, its leaf views, the
 │   │   │                            #   render signature, and the preview-line
-│   │   │                            #   helpers),
+│   │   │                            #   helpers; nested-subagent compact puts
+│   │   │                            #   identicon + title leading and the
+│   │   │                            #   provider mark on the trailing edge),
 │   │   │                            # WorkSessionCanonicalState (Swift mirror of
 │   │   │                            #   the shared derivation +
 │   │   │                            #   workSessionRowPresentation),
+│   │   │                            # WorkSpawnNesting (Swift mirror of
+│   │   │                            #   sessionSpawnNesting.ts: same-lane
+│   │   │                            #   subagent drawers, quiet-parent pull-up,
+│   │   │                            #   grandchild flatten,
+│   │   │                            #   chat-subagents:<parentId>),
 │   │   │                            # WorkSessionGrouping (by-lane/status/time
 │   │   │                            #   groups, quiet-zone shelves,
-│   │   │                            #   WorkViewStateStore),
+│   │   │                            #   WorkViewStateStore; nested drawers
+│   │   │                            #   come from WorkSpawnNesting),
 │   │   │                            # Work*Helpers, WorkNewChatScreen (chat/CLI
 │   │   │                            #   launcher + per-project interface
 │   │   │                            #   preference shared with Hub; pinned
@@ -1321,6 +1332,11 @@ Bootstrap flow on first launch:
    `Application Support/ADE/secrets/sync-site-id`.
 6. Replace the legacy disposable iOS cache DB if it is detected at
    the old path.
+
+Tables ADE has retired — the execution-process tables and the removed
+AI review schema — are dropped before CRR discovery, and incoming
+changesets that still name them are ignored, so a peer on an older
+build cannot recreate them.
 
 **Every column desktop can write must exist here.** Replicated tables are
 column-additive on the desktop side (`safeAddColumn` in `kvDb.ts`), and a
@@ -2229,7 +2245,9 @@ every surface while it is still waiting.
 Row vocabulary is derived once, in `Shared/ActivityRowPresentation.swift` — a
 pure item-to-label/tone/glyph/elapsed mapper with no SwiftUI in it — and the
 tone-to-colour binding plus the lock-screen ranking live beside it in
-`Shared/ActivityWidgetPresentation.swift`. Both compile into the widget
+`Shared/ActivityWidgetPresentation.swift`. `activityStatusShoutsLabel` is the
+nested-compact filter (Needs you or a red Failed tone), matching desktop
+`sessionStatusShoutsLabel`. Those two presentation files compile into the widget
 extension as well as the app, which is what keeps the lock screen from
 describing a session in words and colours the app does not use; it also means
 both files are pinned to the extension's iOS 17 deployment target.
@@ -2803,7 +2821,11 @@ The iOS pieces:
   / by-status / by-time groups, and `WorkRootScreen.swift`,
   `WorkRootScreen+Actions.swift`, `WorkRootComponents.swift`, and
   `WorkSessionRowCard.swift` render the chips and menus and dispatch snooze /
-  wake / settle / keep-active. By-lane
+  wake / settle / keep-active. Nested same-lane `spawnKind == .subagent`
+  drawers (then the existing shells drawer) come from
+  `WorkSpawnNesting.swift`, the Swift mirror of
+  `apps/desktop/src/shared/sessionSpawnNesting.ts`. Collapse ids are
+  `chat-subagents:<parentId>` vs `chat:<parentId>`. By-lane
   groups whose full unfiltered roster is quiet use a thin collapsed header and
   an inverted `lane-open:<laneId>` expansion marker; expanding renders compact
   rows, and active work removes the marker so the next quiet spell collapses.
@@ -2825,15 +2847,18 @@ The iOS pieces:
   making notification routing a permanent preference change.
 - `apps/ios/ADETests/WorkSessionCanonicalStateTests.swift` covers the derivation,
   the row status vocabulary, and scoped view-state parity;
-  `WorkSessionGroupingTests.swift` covers the grouping, quiet lanes, and the
+  `WorkSessionGroupingTests.swift` covers the grouping, quiet lanes, nested
+  subagent drawers (same-lane nest, peers stay top-level, quiet-parent pull-up,
+  usage-limit resume is not a Failed drawer), and the
   quiet-zone shelves; `PendingSessionSettleStatesTests.swift` covers the settle
   overlay — what each intent paints, which host row satisfies it, token-scoped
   failure, and the staleness backstop.
 
 Two invariants govern changes here. The Swift derivation must stay
-behaviourally identical to `apps/desktop/src/shared/sessionCanonicalState.ts` —
-it is a mirror, not a variant, and the canonical-state tests exist to catch
-drift. And any new `terminal_sessions` column must be added to **both** iOS
+behaviourally identical to `apps/desktop/src/shared/sessionCanonicalState.ts`
+and `sessionSpawnNesting.ts` — they are mirrors, not variants, and the
+canonical-state plus grouping tests exist to catch drift. And any new
+`terminal_sessions` column must be added to **both** iOS
 schema halves, `DatabaseBootstrap.sql` and `Database.swift`'s `ensureColumn`
 migrations: bootstrapping only the SQL leaves upgraded phones failing changeset
 apply, which surfaces as a phone-side error rather than anything visible on
@@ -2850,13 +2875,23 @@ Background, border and shadow mean selection and press, nothing else
 the body by provider made every Claude row amber, which is the hue that is
 supposed to mean *your move*, so the "Needs you" badge stopped registering.
 
-`WorkSessionRowCard.swift` renders three lines:
+`WorkSessionRowCard.swift` renders three lines on a full card:
 
 1. The "where" cluster — pin, mute, the lane chip, lane git state (dirty /
    ahead / behind), and a floor of model-or-timestamp — with a single
    right-anchored **status slot**. One slot, one status.
 2. Title plus the lane's PR badge (`WorkLanePrIndicator` / `LanePrTag`).
 3. An italic preview line plus the provider mark.
+
+A nested same-lane subagent is a compact one-line card: identicon, title, then
+the provider mark on the trailing edge (same seat as a full card), and
+shout-only status words (Needs you / Failed). The **N subagents** drawer
+starts expanded; collapse is `chat-subagents:<parentId>`. A Failed child
+paints the drawer header as the red word **Failed** (Failed wins over a
+needs-you pip). Peers stay top-level. Grandchildren flatten into the root
+parent's one drawer. A quiet parent (snoozed or settled) pulls not-done
+children up; done children stay nested. Cross-lane children stay top-level
+with the lineage chip. Demote un-nests.
 
 Non-prominent rows recede to 70% opacity, which is how the few rows that want a
 human stand out with no banner anywhere on screen. Settled resolves to a nil
@@ -2910,12 +2945,15 @@ Known limits, all deliberate:
   gesture of every Work row. The routing already exists if it is ever converted
   (`SyncService.requestedPrNavigation` /
   `requestedLinearIssueNavigation`).
-- iOS `TerminalSessionSummary` carries no `orchestrationParentSessionId`,
-  `spawnKind`, `parentIdentityKey`, `branchRef`, `currentTurnStartedAt`, `nextWakeAt`, or
-  `lastActivityAt`, so desktop's lineage chip, branch chip, machine tower glyph,
-  grid indicator, and `nextWakeAt`-driven "Waiting" status have no iOS
-  equivalent, and the elapsed ticker anchors on activity time rather than turn
-  start.
+- iOS `TerminalSessionSummary` now decodes `orchestrationParentSessionId` and
+  `spawnKind`, so the by-lane Work list nests same-lane subagent chats under
+  the parent the way desktop does (`WorkSpawnNesting.swift`). Nested compact
+  rows put the identicon and title on the leading edge and the provider mark
+  on the trailing edge. It still omits `branchRef`,
+  `currentTurnStartedAt`, `nextWakeAt`, and `lastActivityAt`, so desktop's
+  branch chip, machine tower glyph, grid indicator, and `nextWakeAt`-driven
+  "Waiting" status have no iOS equivalent, and the elapsed ticker anchors on
+  activity time rather than turn start. `parentIdentityKey` is present.
 - Against a host that predates `dismissPendingInput` on the bulk action, the
   flag is ignored: the settle reports success and the row stays "Needs you".
 

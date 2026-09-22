@@ -14,6 +14,7 @@ struct WorkUsageLimitResumePill: View {
   /// Disables the sheet's actions (offline host, or another action in flight).
   var enabled: Bool = true
   var onResumeNow: (@MainActor () async -> Void)? = nil
+  var onContinueOnAccount: (@MainActor () async -> Void)? = nil
   var onFork: (@MainActor () async -> Void)? = nil
   /// `chat.updateSession { autoContinueAtUsageLimit: }` — false for Don't
   /// continue, true for Try again / Turn on.
@@ -68,6 +69,7 @@ struct WorkUsageLimitResumePill: View {
         model: model,
         enabled: enabled,
         onResumeNow: onResumeNow,
+        onContinueOnAccount: onContinueOnAccount,
         onFork: onFork,
         onSetAutoContinue: onSetAutoContinue
       )
@@ -101,6 +103,7 @@ struct WorkUsageLimitResumeSheet: View {
   let model: WorkUsageLimitResumeModel
   var enabled: Bool = true
   var onResumeNow: (@MainActor () async -> Void)? = nil
+  var onContinueOnAccount: (@MainActor () async -> Void)? = nil
   var onFork: (@MainActor () async -> Void)? = nil
   var onSetAutoContinue: (@MainActor (Bool) async -> Void)? = nil
 
@@ -139,6 +142,9 @@ struct WorkUsageLimitResumeSheet: View {
           if showsPrimaryButton {
             primaryButton
           }
+          if let label = model.alternateAccountLabel, onContinueOnAccount != nil {
+            continueOnAccountButton(label)
+          }
           forkButton
           if workUsageLimitShowsOptOut(model.state), onSetAutoContinue != nil {
             optOutButton
@@ -176,6 +182,7 @@ struct WorkUsageLimitResumeSheet: View {
     if model.providerDetail != nil { height += 44 }
     if !workUsageLimitShowsOptOut(model.state) || onSetAutoContinue == nil { height -= 52 }
     if !showsPrimaryButton { height -= 52 }
+    if model.alternateAccountLabel != nil && onContinueOnAccount != nil { height += 52 }
     return height
   }
 
@@ -201,6 +208,18 @@ struct WorkUsageLimitResumeSheet: View {
   // never the primary action without its handler, so only the other two dim.
   private var primaryActionUnavailable: Bool {
     primaryAction != .resumeNow && onSetAutoContinue == nil
+  }
+
+  private func continueOnAccountButton(_ label: String) -> some View {
+    Button {
+      run { await onContinueOnAccount?() }
+    } label: {
+      buttonLabel("Continue on \(label)", filled: false)
+    }
+    .buttonStyle(.plain)
+    .disabled(!controlsEnabled)
+    .accessibilityLabel("Continue on \(label)")
+    .accessibilityHint("Starts a new chat on \(label) and continues the interrupted task there.")
   }
 
   private var forkButton: some View {

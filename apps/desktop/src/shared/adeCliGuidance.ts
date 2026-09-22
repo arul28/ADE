@@ -1,8 +1,21 @@
 import { MAX_STATUS_NOTE_CHARACTERS, STATUS_NOTE_GUIDELINE_WORDS } from "./sessionStatusNote";
 import { formatAdeAgentSkillRootsForPrompt, getAdeAgentSkillRootsForPrompt } from "./agentSkillRoots";
 
+/**
+ * The bundled skill index every provider's prompt advertises.
+ *
+ * Order is prompt copy, not data: it runs most-reached-for first, so keep new
+ * entries where they belong rather than sorting the array.
+ *
+ * This must name every directory under apps/desktop/resources/agent-skills — a
+ * skill missing here is invisible to every agent, which is exactly what
+ * happened to `ade-scene`. bundledAgentSkills.test.ts binds this list, the
+ * packaging roster in scripts/bundled-agent-skills.mjs, and the real directory
+ * together; adding a skill to only one of the three fails that test.
+ */
 export const adeBundledAgentSkills = [
   "ade-cli-control-plane",
+  "ade-harnesses",
   "ade-ios-simulator",
   "ade-app-control",
   "ade-browser",
@@ -13,6 +26,7 @@ export const adeBundledAgentSkills = [
   "ade-deeplinks",
   "ade-search",
   "ade-mosaic",
+  "ade-scene",
 ] as const;
 
 /**

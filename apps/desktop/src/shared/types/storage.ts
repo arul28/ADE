@@ -171,7 +171,6 @@ export type MaintenanceRunReport = {
 export type DbBreakdownCategory =
   | "webhooks"
   | "sync_bookkeeping"
-  | "review_artifacts"
   | "pr_cache"
   | "core";
 

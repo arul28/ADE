@@ -50,3 +50,12 @@ export {
   KIMI_WINDOWS_DEGRADATION_NOTE,
 } from "./kimi";
 export { QWEN_CONFIG_OPTION_IDS } from "./qwen";
+export {
+  buildQwenAdeSkillDefaults,
+  ensureQwenAdeSkillDefaultsFile,
+  qwenAdeSkillDefaultsPath,
+  qwenNativeSystemDefaultsPath,
+  QWEN_SYSTEM_DEFAULTS_PATH_ENV,
+  QWEN_SYSTEM_SETTINGS_PATH_ENV,
+  type QwenSkillDefaultsResult,
+} from "./qwenSkillDefaults";

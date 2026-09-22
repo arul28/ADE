@@ -355,7 +355,7 @@ describe("useWorkToolStatuses shell re-reads", () => {
     );
 
     await waitFor(() => expect(list).toHaveBeenCalledTimes(1));
-    expect(result.current.statuses.terminal?.line).toBe("No shells");
+    await waitFor(() => expect(result.current.statuses.terminal?.line).toBe("No shells"));
 
     // A panel mounts and reports a live shell; the daemon's list now has it too.
     shells = [{ title: "zsh", status: "running", active: true }];

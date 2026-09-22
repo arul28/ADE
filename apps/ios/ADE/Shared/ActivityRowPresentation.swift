@@ -32,6 +32,12 @@ public enum ActivityTone: String, Codable, Hashable, Sendable {
     case neutral
 }
 
+/// Same rule as desktop `sessionStatusShoutsLabel`: the word is painted only
+/// for Needs you (amber pip) or a red Failed tone.
+public func activityStatusShoutsLabel(glyph: ActivityGlyph?, tone: ActivityTone) -> Bool {
+    glyph == .needsYou || tone == .red
+}
+
 /// Glyph identity, not an icon import — the same split the desktop makes so the
 /// table stays renderer-free. `systemImage` is the SF Symbols binding both
 /// Apple-platform consumers happen to share.

@@ -151,7 +151,28 @@ the same amber machine glyph the omitted header would have shown. The marker is
 present exactly when the lane is not on the physical Mac, not when it differs
 from the project tab's binding; a grouped header owns the glyph so its child
 cards do not repeat it. The singleton/header transition participates in the
-same layout animation as lane reordering.
+same layout animation as lane reordering. Headerless counting is top-level
+units only: attached shells and same-lane `spawnKind: "subagent"` chats (plus
+tracked CLI `--type subagent` sessions) nest under their parent and do not
+summon a lane header of their own.
+
+In by-lane list mode, those subagent chats render in a second drawer under the
+parent, above the existing "N shells" drawer, labeled **N subagents**. The
+drawer starts expanded; collapse is stored under `chat-subagents:<parentId>`,
+separate from the shell key `chat:<parentId>`. Compact nested rows show the
+subagent identicon, title, then the provider glyph on the right of the card
+(same seat as every other session card), status glyph, and elapsed — they
+spell **Needs you** or **Failed** and otherwise omit the status word. The
+drawer header shows nothing, a needs-you pip, or the red word **Failed**
+(Failed wins if both). Peers stay top-level. Grandchildren flatten into the
+root parent's one drawer. A quiet parent (snoozed or settled) pulls not-done
+children (working, needs you, failed, stale, starting) up to full top-level
+cards; done children stay nested and follow the parent into the quiet tails.
+Status, time, and Kanban stay flat. Foreign by-lane rows nest the same way.
+Demote-to-peer un-nests; promote nests again. Cross-lane children stay
+top-level in their own lane with the existing lineage chip. ADE Code cannot
+paint provider logos, so nested helpers are one-line indented rows rather
+than a collapsible drawer. `ade chat list` stays a flat table.
 
 Filing comes from `effectiveSessionFilingBuckets` (wrapping the base
 `sessionFilingBucket` rule), which combines canonical lifecycle
@@ -320,6 +341,11 @@ The full card is one full-bleed row with three lines:
    the previous logo peeking as a sliver to the right (offset ~28% of the mark,
    current logo at full opacity). Delta
    moved to line one so preview text owns the width it needs.
+
+A nested same-lane subagent (`nestedSubagent`) is a compact one-line card:
+identicon, title, then the provider glyph on the right (same seat as every
+other session card), plus shout-only status words (Needs you / Failed). Nested
+rows omit the Subagent/Peer lineage pill — they already sit under the parent.
 
 `SessionStatusSlot` is the card's only permanent status vocabulary. It resolves
 words, glyphs, tone, prominence, and elapsed-time behavior through
@@ -1478,15 +1504,19 @@ carries a 13px duotone Phosphor glyph so the list is scannable:
   through the backend settlement transaction; it interrupts the provider and
   clears live/restored pending input before writing settle instead of sending a
   synthetic decline.
-- Chat rows also carry **Auto handoff…** (or **Edit auto handoff…** once rules
-  exist for the chat) and **Remove auto handoff**, which open `AutoHandoffModal`
-  — the chat menu's way of arming "when this chat hits its limit / fails / ends
-  with no PR, continue it on another model". The modal is hosted at the
-  `SessionContextMenu` level rather than inside the panel, because opening it
-  closes the menu and a modal mounted in the panel would unmount in the same
-  tick. The existing-rule list is fetched asynchronously and `null` means "not
-  answered yet": a context menu that waits on IPC before it appears is a broken
-  context menu.
+- Chat rows also carry a **Hand off…** submenu with **Local handoff** and
+  **Another machine** — both select the row and route the intent to the chat
+  pane's Handoff surface through `lib/chatHandoffIntent.ts` — plus **Auto
+  handoff…** (or **Edit auto handoff…** once rules exist for the chat) and
+  **Remove auto handoff**, which open `AutoHandoffModal` — the chat menu's way
+  of arming "when this chat hits its limit / fails / ends with no PR, continue
+  it on another model". The modal is hosted at the `SessionContextMenu` level
+  rather than inside the panel, because opening it closes the menu and a modal
+  mounted in the panel would unmount in the same tick. The existing-rule list is
+  fetched asynchronously; `null` (a failed or unavailable read) keeps the item
+  disabled rather than opening the editor on defaults that would delete rules
+  the read never saw, because a context menu that waits on IPC before it appears
+  is a broken context menu.
 - Chat metadata generation makes one structured request for all three visible
   fields and applies only the selected fields. A status-only refresh sends the
   lane name, chat title, worktree folder, and last assistant paragraphs — not
@@ -1693,7 +1723,8 @@ nothing when no delta is available.
 ## Shared helpers
 
 - `apps/desktop/src/renderer/lib/sessions.ts` — `primarySessionLabel`,
-  `preferredSessionLabel`, `shortToolTypeLabel`, `isChatToolType`,
+  `preferredSessionLabel`, `shortToolTypeLabel`, a re-export of
+  `isChatToolType` from `sessionSpawnNesting.ts`,
   `isPtyContextInsertableToolType`, `buildOptimisticChatSessionSummary`.
 - `apps/desktop/src/renderer/lib/terminalAttention.ts` —
   `canonicalInputFromSummary`, `sessionCanonicalUiState`,
@@ -1758,6 +1789,11 @@ nothing when no delta is available.
 - The Work tab and the Lanes tab share the hook; changes to
   `useWorkSessions` ripple. Keep lane-scoped persistence keyed by
   `projectRoot::laneId` or the Lanes tab state leaks across projects.
+- **Spawn nesting is one shared rule.** Same-lane `spawnKind: "subagent"`
+  filing lives in `sessionSpawnNesting.ts`. Desktop, ADE Code, and iOS consult
+  that index (`WorkSpawnNesting.swift` on the phone). Do not re-derive nest /
+  quiet-parent pull-up / grandchild flatten in a list renderer. Status, time,
+  and Kanban stay flat; `ade chat list` stays a flat table.
 - The Work grid is `PaneTilingLayout` — every visible session has a
   leaf and stays mounted. Grid tiles pass `terminalVisible={true}`;
   `isActive` controls input but not mount state, so multiple PTYs can

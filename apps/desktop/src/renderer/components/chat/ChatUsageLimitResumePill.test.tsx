@@ -36,6 +36,7 @@ function resume(patch: Partial<AgentChatUsageLimitResume> = {}): AgentChatUsageL
 type Bridge = {
   updateSession: ReturnType<typeof vi.fn>;
   resumeUsageLimitNow?: ReturnType<typeof vi.fn>;
+  continueUsageLimitOnAlternate?: ReturnType<typeof vi.fn>;
 };
 
 function installBridge(options: { withResumeNow?: boolean } = {}): Bridge {
@@ -191,6 +192,39 @@ describe("ChatUsageLimitResumePill", () => {
     openPopover();
     expect(screen.queryByTestId("usage-limit-resume-opt-out")).toBeNull();
     expect(screen.getByTestId("usage-limit-resume-primary").textContent).toBe("Turn on");
+  });
+
+  it("continues on the account the host published, and shows the refusal in the popover", async () => {
+    const bridge = installBridge();
+    bridge.continueUsageLimitOnAlternate = vi.fn(async () => ({
+      ok: false,
+      reason: "handoff_failed",
+      message: "ADE couldn't continue on 1028.",
+    }));
+    render(
+      <ChatUsageLimitResumePill
+        sessionId="session-1"
+        resume={resume({
+          alternateAccount: { instanceId: "1028", label: "1028" },
+        })}
+      />,
+    );
+    openPopover();
+    expect(screen.queryByTestId("usage-limit-continue-on-account")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("usage-limit-continue-on-account"));
+    await vi.waitFor(() => expect(bridge.continueUsageLimitOnAlternate).toHaveBeenCalledWith(
+      { sessionId: "session-1" },
+      null,
+    ));
+    await vi.waitFor(() => expect(screen.getByTestId("usage-limit-resume-popover").textContent)
+      .toContain("ADE couldn't continue on 1028."));
+  });
+
+  it("hides Continue on another account when the host published none", () => {
+    installBridge();
+    render(<ChatUsageLimitResumePill sessionId="session-1" resume={resume()} />);
+    openPopover();
+    expect(screen.queryByTestId("usage-limit-continue-on-account")).toBeNull();
   });
 
   it("forks through the same card-action event the quota card dispatches", () => {

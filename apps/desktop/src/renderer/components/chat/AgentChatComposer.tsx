@@ -45,6 +45,7 @@ import {
   makeLinearIssueContextAttachment,
 } from "../../../shared/chatContextAttachments";
 import { getModelById, modelSupportsFastMode, type ProviderFamily } from "../../../shared/modelRegistry";
+import { claudeApprovalOptionsOfferSession } from "../../../shared/claudePermissionDialog";
 import {
   composerTriggerForSelection,
   composerTriggerHasConfirmedPrefix,
@@ -5382,6 +5383,15 @@ export function AgentChatComposer({
   )?.issue ?? null;
   const isMcpElicitation = pendingInput?.providerMetadata?.mcpElicitation === true;
   const mcpElicitationSupportsPersistence = pendingInput?.providerMetadata?.persistenceSupported === true;
+  // Claude builds its approval options per ask: an elevated ask
+  // (`defaultToNo`/`suppressAlwaysAllowRule`) arrives without the
+  // session-wide choice, and the card must not offer what the ask refuses.
+  // The option list is the contract every client reads; other providers keep
+  // their existing controls.
+  const approvalOffersSessionChoice = isMcpElicitation
+    ? mcpElicitationSupportsPersistence
+    : pendingInput?.source !== "claude"
+      || claudeApprovalOptionsOfferSession(pendingInput?.questions?.[0]?.options);
   const mcpElicitationUrl = typeof pendingInput?.providerMetadata?.url === "string"
     && isHttpAuthorizationUrl(pendingInput.providerMetadata.url)
     && canOpenInAdeBrowser(pendingInput.providerMetadata.url)
@@ -5519,7 +5529,7 @@ export function AgentChatComposer({
                     <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-sky-300/25 bg-sky-400/[0.08] px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-sky-100/80 transition-colors hover:bg-sky-400/[0.14] disabled:pointer-events-none disabled:opacity-40" onClick={() => openUrlInAdeBrowser(mcpElicitationUrl)}>Open authorization</button>
                   ) : null}
                   <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-accent/30 bg-accent/12 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-fg/80 transition-colors hover:bg-accent/20 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("accept")}>{approvalResponding ? "Processing..." : isMcpElicitation ? "Allow once" : "Accept"}</button>
-                  {!isMcpElicitation || mcpElicitationSupportsPersistence ? (
+                  {approvalOffersSessionChoice ? (
                     <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("accept_for_session")}>{isMcpElicitation ? "Always allow" : "Accept all"}</button>
                   ) : null}
                   <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("decline")}>{isMcpElicitation ? "Deny" : "Decline"}</button>

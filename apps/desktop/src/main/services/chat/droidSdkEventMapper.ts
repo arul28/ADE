@@ -44,10 +44,19 @@ function readNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+/**
+ * The single item-id scheme shared by streamed text/thinking deltas and the
+ * completed `assistant` message. It must stay identical in both paths or the
+ * completed message re-emits text the deltas already streamed.
+ */
+function droidTextItemId(messageId: string, kind: "text" | "thinking", blockIndex: number): string {
+  return `${messageId}:${kind}:${blockIndex}`;
+}
+
 function itemIdFor(record: SdkRecord, kind: "text" | "thinking"): string {
   const messageId = readString(record.messageId) ?? `droid-${kind}`;
   const blockIndex = readNumber(record.blockIndex) ?? 0;
-  return `${messageId}:${kind}:${blockIndex}`;
+  return droidTextItemId(messageId, kind, blockIndex);
 }
 
 function summarize(value: unknown): string {
@@ -77,10 +86,10 @@ function toolResultStatus(event: SdkRecord): "completed" | "failed" {
   return event.isError === true ? "failed" : "completed";
 }
 
-function extractTextBlocks(content: unknown): Array<{ text: string; kind: "text" | "thinking"; id?: string }> {
+function extractTextBlocks(content: unknown): Array<{ text: string; kind: "text" | "thinking"; index: number }> {
   if (!Array.isArray(content)) return [];
-  const out: Array<{ text: string; kind: "text" | "thinking"; id?: string }> = [];
-  for (const block of content) {
+  const out: Array<{ text: string; kind: "text" | "thinking"; index: number }> = [];
+  for (const [index, block] of content.entries()) {
     const record = asRecord(block);
     if (!record) continue;
     const type = readString(record.type);
@@ -89,7 +98,7 @@ function extractTextBlocks(content: unknown): Array<{ text: string; kind: "text"
     out.push({
       text,
       kind: type === "thinking" ? "thinking" : "text",
-      ...(readString(record.id) ? { id: readString(record.id)! } : {}),
+      index,
     });
   }
   return out;
@@ -214,13 +223,22 @@ export function mapDroidSdkMessageToChatEvents(
       meta.state.thinkingDeltaItemIds.add(itemId);
       return [{ type: "reasoning", text, itemId, turnId }];
     }
-    case "create_message": {
-      const role = readString(record.role);
-      if (role !== "assistant") return [];
-      const messageId = readString(record.messageId) ?? "droid-message";
-      const textEvents = extractTextBlocks(record.content).flatMap((block, index): AgentChatEvent[] => {
-        const messageId = readString(record.messageId) ?? `droid-${block.kind === "thinking" ? "thinking" : "text"}`;
-        const itemId = block.id ?? `${messageId}:${block.kind}:${index}`;
+    case "assistant": {
+      // 0.9.x emits a complete `assistant` message (with `message.content`
+      // blocks) where 0.2 emitted `create_message`; `includePartialMessages`
+      // yields the text/thinking deltas that this dedupes against.
+      const message = asRecord(record.message);
+      const role = readString(message?.role) ?? readString(record.role);
+      if (role && role !== "assistant") return [];
+      const messageId = readString(message?.id) ?? readString(record.messageId) ?? "droid-message";
+      const content = message?.content ?? record.content;
+      // Key text/thinking by the same `<messageId>:<kind>:<blockIndex>` scheme the
+      // deltas use (via the content-block index), so a completed message never
+      // re-emits text the deltas already streamed. The block's own `id` is
+      // deliberately ignored here — it does not match the delta key, and using it
+      // duplicated every streamed assistant message.
+      const textEvents = extractTextBlocks(content).flatMap((block): AgentChatEvent[] => {
+        const itemId = droidTextItemId(messageId, block.kind, block.index);
         if (block.kind === "thinking") {
           if (meta.state.thinkingDeltaItemIds.has(itemId)) return [];
           return [{ type: "reasoning", text: block.text, itemId, turnId }];
@@ -228,7 +246,7 @@ export function mapDroidSdkMessageToChatEvents(
         if (meta.state.assistantDeltaItemIds.has(itemId)) return [];
         return [{ type: "text", text: block.text, itemId, turnId }];
       });
-      const imageEvents = extractImageBlocks(record.content).flatMap((block): AgentChatEvent[] => {
+      const imageEvents = extractImageBlocks(content).flatMap((block): AgentChatEvent[] => {
         const itemId = block.id ?? `${messageId}:image:${block.index}`;
         if (meta.state.imageItemIds.has(itemId)) return [];
         meta.state.imageItemIds.add(itemId);
@@ -243,23 +261,26 @@ export function mapDroidSdkMessageToChatEvents(
       });
       return [...textEvents, ...imageEvents];
     }
-    case "tool_use": {
+    case "tool_call": {
+      // 0.9.x renamed the complete tool-use event from `tool_use` to
+      // `tool_call` and carries `name`/`input` instead of `toolName`/`toolInput`.
       const toolUseId = readString(record.toolUseId) ?? `droid-tool-${Date.now()}`;
-      const tool = readString(record.toolName) ?? "tool";
+      const tool = readString(record.name) ?? readString(record.toolName) ?? "tool";
+      const input = record.input ?? record.toolInput;
       meta.state.toolNamesByUseId.set(toolUseId, tool);
-      const command = extractCommand(record.toolInput);
+      const command = extractCommand(input);
       if (command) {
         return [{
           type: "command",
           command,
-          cwd: extractCwd(record.toolInput, meta.cwd),
+          cwd: extractCwd(input, meta.cwd),
           output: "",
           itemId: toolUseId,
           turnId,
           status: "running",
         }];
       }
-      return [{ type: "tool_call", tool, args: record.toolInput ?? {}, itemId: toolUseId, turnId }];
+      return [{ type: "tool_call", tool, args: input ?? {}, itemId: toolUseId, turnId }];
     }
     case "tool_progress": {
       const toolUseId = readString(record.toolUseId) ?? `droid-tool-${Date.now()}`;
@@ -389,11 +410,20 @@ export function mapDroidSdkMessageToChatEvents(
     case "mission_progress_entry": {
       return [{ type: "mission_progress", entries: readMissionProgress(record.progressLog), turnId }];
     }
+    // Message-level/partial events that carry no transcript mapping. `result`
+    // is 0.9.x's terminal event (0.2's `turn_complete`); the turn's done event
+    // is built from the send result, not from this stream event.
     case "mission_heartbeat":
     case "session_title_updated":
     case "settings_updated":
     case "permission_resolved":
-    case "turn_complete":
+    case "assistant_text_complete":
+    case "thinking_text_complete":
+    case "assistant_message_retracted":
+    case "tool_call_delta":
+    case "session_working_directory_changed":
+    case "hook":
+    case "result":
     case "mcp_status_changed":
     case "mcp_auth_required":
     case "mcp_auth_completed":

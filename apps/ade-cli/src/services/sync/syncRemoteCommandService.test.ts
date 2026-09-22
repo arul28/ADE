@@ -1438,6 +1438,28 @@ describe("createSyncRemoteCommandService", () => {
     expect(resumeUsageLimitNow).toHaveBeenCalledTimes(1);
   });
 
+  it("registers chat.continueUsageLimitOnAlternate as an owner-only session-bound command", async () => {
+    const continueUsageLimitOnAlternate = vi.fn(async ({ sessionId }: { sessionId: string }) => ({
+      ok: true,
+      sessionId: `next-${sessionId}`,
+    }));
+    const { service } = createService({ agentChatService: { continueUsageLimitOnAlternate } });
+
+    expect(service.getDescriptor("chat.continueUsageLimitOnAlternate")).toEqual({
+      action: "chat.continueUsageLimitOnAlternate",
+      scope: "project",
+      policy: { viewerAllowed: false, queueable: false },
+    });
+    await expect(service.execute(makePayload("chat.continueUsageLimitOnAlternate", {
+      sessionId: "chat-1",
+    }))).resolves.toMatchObject({ ok: true, sessionId: "next-chat-1" });
+    expect(continueUsageLimitOnAlternate).toHaveBeenCalledWith({ sessionId: "chat-1" });
+
+    await expect(service.execute(makePayload("chat.continueUsageLimitOnAlternate", {})))
+      .rejects.toThrow("chat.continueUsageLimitOnAlternate requires sessionId.");
+    expect(continueUsageLimitOnAlternate).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps scheduled-work creation owner-only while allowing mobile pause control", async () => {
     const createScheduledWork = vi.fn(async (args: Record<string, unknown>) => ({ item: args }));
     const listScheduledWork = vi.fn(async (args: Record<string, unknown>) => [{ id: "cron-1", ...args }]);

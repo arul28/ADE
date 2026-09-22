@@ -116,3 +116,64 @@ export function pickInstanceForNewChat({
     reason: best.complete ? "weighted headroom" : "partial usage data",
   };
 }
+
+/**
+ * A full window blocks a new turn even when the other window still has room.
+ * Missing windows are not a guess that the account is free.
+ */
+function hasImmediateRoom(windows: readonly UsageWindow[]): boolean {
+  const fiveHourHeadroom = headroom(windowForType(windows, "five_hour"));
+  const weeklyHeadroom = headroom(windowForType(windows, "weekly"));
+  if (fiveHourHeadroom === undefined || weeklyHeadroom === undefined) return false;
+  if (fiveHourHeadroom === 0 || weeklyHeadroom === 0) return false;
+  return true;
+}
+
+export type UsageLimitAlternatePick = {
+  instanceId: string;
+  label: string;
+  reason: string;
+};
+
+/**
+ * Another signed-in account that can take a turn the current one just lost
+ * to a usage limit.
+ *
+ * The current account is excluded even when its snapshot still shows room:
+ * the provider already rejected the turn, and the snapshot can lag that.
+ * An account with no windows, or with a window already at 100%, is not a
+ * candidate — ADE does not guess that an unread login is free.
+ */
+export function pickAlternateInstanceForLimitedChat({
+  provider,
+  currentInstanceId,
+  instances,
+  accounts = [],
+  windowsByAccountId,
+  nowMs,
+}: PickInstanceForNewChatArgs & { currentInstanceId: string }): UsageLimitAlternatePick | null {
+  const blockedId = currentInstanceId.trim() || defaultInstanceId(provider, instances);
+  const candidates = instances.filter((instance) => (
+    instance.provider === provider && instance.signedIn && instance.id !== blockedId
+  ));
+  const withRoom = candidates.filter((instance) => {
+    const account = accounts.find((candidate) => (
+      candidate.provider === provider && candidate.instanceId === instance.id
+    ));
+    const accountId = account?.id ?? `${provider}:${instance.id}`;
+    return hasImmediateRoom(windowsForAccount(windowsByAccountId, accountId));
+  });
+  if (withRoom.length === 0) return null;
+  const pick = pickInstanceForNewChat({
+    provider,
+    instances: withRoom,
+    accounts,
+    windowsByAccountId,
+    nowMs,
+  });
+  if (pick.reason === "no usage data" || pick.reason === "no signed-in instances") return null;
+  const chosen = withRoom.find((instance) => instance.id === pick.instanceId);
+  if (!chosen) return null;
+  const label = chosen.label.trim() || chosen.id;
+  return { instanceId: chosen.id, label, reason: pick.reason };
+}

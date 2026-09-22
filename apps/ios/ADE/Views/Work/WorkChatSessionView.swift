@@ -371,6 +371,8 @@ struct WorkChatSessionView: View {
   var onSetUsageLimitAutoContinue: (@MainActor (Bool) async -> Void)? = nil
   /// `chat.resumeUsageLimitNow` — sends the continue prompt immediately.
   var onResumeUsageLimitNow: (@MainActor () async -> Void)? = nil
+  /// `chat.continueUsageLimitOnAlternate` — starts the task on another account.
+  var onContinueUsageLimitOnAlternate: (@MainActor () async -> Void)? = nil
   var onStopSubagentTask: (@MainActor (String) async -> Void)? = nil
   let onApproveRequest: @MainActor (String, AgentChatApprovalDecision, String?) async -> Void
   let onRespondToQuestion: @MainActor (String, String, AgentChatInputAnswerValue?, String?) async -> Void
@@ -1346,6 +1348,9 @@ struct WorkChatSessionView: View {
           enabled: !hostUnreachable && !actionInFlight,
           onResumeNow: onResumeUsageLimitNow.map { resume in
             { await runSessionAction { await resume() } }
+          },
+          onContinueOnAccount: onContinueUsageLimitOnAlternate.map { continueOnAccount in
+            { await runSessionAction { await continueOnAccount() } }
           },
           onFork: onForkChatInLane.map { fork in
             { await runSessionAction { await fork() } }

@@ -300,4 +300,86 @@ final class UsageQuotaAccountDecodingTests: XCTestCase {
     XCTAssertEqual(pooled.count, 1)
     XCTAssertEqual(pooled.first?.machines.map(\.label), ["MacBook", "Mac mini", "Studio"])
   }
+
+  func testLocalLoginsStaySeparateWhenTheyShareAnEmail() {
+    let pooled = adeUsagePoolAccounts([
+      MobileUsageAccount(
+        id: "claude:claude",
+        provider: "claude",
+        email: "same@example.com",
+        plan: nil,
+        instanceId: "claude",
+        label: "Default",
+        machines: [],
+        url: nil
+      ),
+      MobileUsageAccount(
+        id: "claude:1028",
+        provider: "claude",
+        email: "same@example.com",
+        plan: nil,
+        instanceId: "1028",
+        label: "1028",
+        machines: [],
+        url: nil
+      ),
+    ])
+    XCTAssertEqual(pooled.map(\.id), ["claude:claude", "claude:1028"])
+  }
+
+  func testAccountsWithoutWindowsStayListed() {
+    let withWindow = ADEUsageAccountView(
+      id: "claude:claude",
+      provider: "claude",
+      email: "a@example.com",
+      plan: nil,
+      machines: [],
+      url: nil,
+      initials: "A",
+      instanceId: "claude",
+      label: "Default"
+    )
+    let quiet = ADEUsageAccountView(
+      id: "claude:1028",
+      provider: "claude",
+      email: "b@example.com",
+      plan: nil,
+      machines: [],
+      url: nil,
+      initials: "B",
+      instanceId: "1028",
+      label: "1028"
+    )
+    let window = MobileUsageQuotaWindow(
+      provider: "claude",
+      windowType: "five_hour",
+      percentUsed: 20,
+      resetsAt: "2026-09-10T17:00:00.000Z",
+      resetsInMs: 3_600_000,
+      windowDurationMs: nil,
+      accountId: "claude:claude"
+    )
+    let missing = adeUsageAccountsMissingWindows(
+      provider: "claude",
+      windows: [window],
+      accounts: [withWindow, quiet]
+    )
+    XCTAssertEqual(missing.map(\.id), ["claude:1028"])
+    XCTAssertEqual(adeUsageAccountTitle(quiet), "1028")
+
+    let lone = adeUsageAccountsMissingWindows(
+      provider: "claude",
+      windows: [MobileUsageQuotaWindow(
+        provider: "claude",
+        windowType: "weekly",
+        percentUsed: 10,
+        resetsAt: "2026-09-16T12:00:00.000Z",
+        resetsInMs: 3_600_000,
+        windowDurationMs: nil,
+        accountId: nil
+      )],
+      accounts: [withWindow]
+    )
+    XCTAssertEqual(lone, [])
+  }
 }

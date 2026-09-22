@@ -6,7 +6,6 @@ import {
   Terminal,
   Graph,
   GitPullRequest,
-  MagnifyingGlass,
   Clock,
   HourglassSimple,
   Robot,
@@ -72,13 +71,6 @@ const mainItems: TabNavItem[] = [
     label: "PRs",
     icon: GitPullRequest,
     description: "Review ADE and GitHub pull requests, queues, integration proposals, checks, and merge readiness.",
-    docUrl: docs.prsOverview,
-  },
-  {
-    to: "/review",
-    label: "Review",
-    icon: MagnifyingGlass,
-    description: "Run and inspect AI review passes for the current project and PR workflow.",
     docUrl: docs.prsOverview,
   },
   {
@@ -337,9 +329,9 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
   };
 
   // The hosted web client surfaces the tabs listed in `WEB_CLIENT_TAB_PATHS` —
-  // one authoritative list rather than an index into `mainItems`. Review and
-  // Automations stay hidden there: neither has host-side actions, so both would
-  // be dead nav entries.
+  // one authoritative list rather than an index into `mainItems`. Automations
+  // stays hidden there: it has no host-side actions, so it would be a dead nav
+  // entry.
   const webMode = isWebClientMode();
   const toolItems = webMode
     ? mainItems.slice(4).filter((it) => WEB_CLIENT_TAB_PATHS.has(it.to))

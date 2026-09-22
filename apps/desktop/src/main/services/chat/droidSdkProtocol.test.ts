@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  droidEditedSpecContentForRequest,
   droidInteractionModeValue,
   droidMcpToolsToDisable,
 } from "./droidSdkProtocol";
@@ -44,5 +45,27 @@ describe("droidInteractionModeValue", () => {
     expect(droidInteractionModeValue(table, "auto")).toBe("AUTO");
     expect(droidInteractionModeValue(table, "spec")).toBe("SPEC");
     expect(droidInteractionModeValue(table, "agi")).toBe("AGI");
+  });
+});
+
+describe("droidEditedSpecContentForRequest", () => {
+  it("returns the ExitSpecMode plan so proceed_edit can carry required content", () => {
+    expect(droidEditedSpecContentForRequest([
+      { details: { type: "exit_spec_mode", plan: "## Plan\n1. Do the thing" } },
+    ])).toBe("## Plan\n1. Do the thing");
+  });
+
+  it("returns null when no exit_spec_mode plan is present, so the worker fails closed", () => {
+    expect(droidEditedSpecContentForRequest([
+      { details: { type: "execute", fullCommand: "rm -rf /" } },
+      { details: { type: "exit_spec_mode", plan: 42 } },
+    ])).toBeNull();
+    expect(droidEditedSpecContentForRequest([])).toBeNull();
+    expect(droidEditedSpecContentForRequest(undefined)).toBeNull();
+    expect(droidEditedSpecContentForRequest([
+      { details: null },
+      { details: "not-an-object" },
+      {},
+    ])).toBeNull();
   });
 });

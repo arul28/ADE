@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
-import type { UsageAccount, UsageWindow } from "../../../shared/types";
+import type { AiProviderConnectionStatus, AiProviderConnections, UsageAccount, UsageWindow } from "../../../shared/types";
+import { providerColor } from "./providerColors";
 import {
   emailInitials,
+  buildAccountRows,
   buildLimitCards,
+  headerUsageProviders,
   percentLeft,
   poolAccounts,
+  quotaPopoverProviders,
 } from "./usageLimitModel";
 import { paceOutlook, paceVisual, shortWindowLabel } from "./usageWindowFormat";
 
@@ -63,6 +67,26 @@ describe("poolAccounts", () => {
       { id: "codex:local", provider: "codex", machines: [{ label: "studio" }] },
     ]);
     expect(pooled.map((account) => account.id)).toEqual(["claude:local", "codex:local"]);
+  });
+
+  it("keeps two local logins apart even when they share an email", () => {
+    const pooled = poolAccounts([
+      {
+        id: "claude:claude",
+        provider: "claude",
+        email: "same@example.com",
+        instanceId: "claude",
+        machines: [],
+      },
+      {
+        id: "claude:1028",
+        provider: "claude",
+        email: "same@example.com",
+        instanceId: "1028",
+        machines: [],
+      },
+    ]);
+    expect(pooled.map((account) => account.id)).toEqual(["claude:claude", "claude:1028"]);
   });
 });
 
@@ -170,6 +194,54 @@ describe("buildLimitCards", () => {
  * rendered as "apps", a three-letter riddle for the OAuth-apps allowance, and
  * the pace pill said "12% ahead" with nothing to say ahead of what.
  */
+describe("buildAccountRows", () => {
+  it("lists every account, including one that has not reported a window", () => {
+    const accounts = poolAccounts([
+      {
+        id: "claude:claude",
+        provider: "claude",
+        email: "a@example.com",
+        instanceId: "claude",
+        label: "Default",
+        machines: [],
+      },
+      {
+        id: "claude:1028",
+        provider: "claude",
+        email: "b@example.com",
+        instanceId: "1028",
+        label: "1028",
+        machines: [],
+      },
+      {
+        id: "claude:third",
+        provider: "claude",
+        email: "c@example.com",
+        instanceId: "third",
+        label: "Third",
+        machines: [],
+      },
+    ]);
+    const rows = buildAccountRows(
+      "claude",
+      [
+        window({
+          provider: "claude",
+          windowType: "five_hour",
+          accountId: "claude:claude",
+          percentUsed: 20,
+        }),
+      ],
+      accounts,
+      NOW,
+    );
+    expect(rows.map((row) => row.key)).toEqual(["claude:claude", "claude:1028", "claude:third"]);
+    expect(rows[0]!.cells).toHaveLength(1);
+    expect(rows[1]!.cells).toEqual([]);
+    expect(rows[2]!.cells).toEqual([]);
+  });
+});
+
 describe("usage window vocabulary", () => {
   it("names the OAuth-apps allowance in full", () => {
     expect(shortWindowLabel({ windowType: "weekly_oauth_apps" })).toBe("OAuth apps");
@@ -239,5 +311,91 @@ describe("usage window vocabulary", () => {
       willLastToReset: true,
       resetsInHours: 100,
     }, now)).toEqual({ projected: "51% by reset", outcome: "lasts to reset" });
+  });
+});
+
+function connection(
+  provider: AiProviderConnectionStatus["provider"],
+  flags: { auth?: boolean; runtime?: boolean } = {},
+): AiProviderConnectionStatus {
+  return {
+    provider,
+    authAvailable: flags.auth ?? false,
+    runtimeDetected: flags.runtime ?? false,
+    runtimeAvailable: false,
+    usageAvailable: false,
+    path: null,
+    blocker: null,
+    lastCheckedAt: "2026-09-21T00:00:00.000Z",
+    sources: [],
+  };
+}
+
+function connections(overrides: Partial<AiProviderConnections> = {}): AiProviderConnections {
+  return {
+    claude: connection("claude", { auth: true, runtime: true }),
+    codex: connection("codex", { auth: true, runtime: true }),
+    cursor: connection("cursor"),
+    droid: connection("droid"),
+    ...overrides,
+  };
+}
+
+describe("live quota visibility", () => {
+  const cursorWindow = window({
+    provider: "cursor",
+    windowType: "monthly",
+    percentUsed: 40,
+  });
+
+  it("keeps Claude and Codex on the connection signal and adds an authed extra provider", () => {
+    const popover = quotaPopoverProviders({
+      connections: connections({
+        claude: connection("claude"),
+        copilot: connection("copilot", { auth: true }),
+      }),
+    });
+    expect(popover).toEqual(["codex", "copilot"]);
+
+    const chips = headerUsageProviders({
+      connections: connections({
+        claude: connection("claude"),
+        grok: connection("grok", { auth: true }),
+      }),
+      windows: [cursorWindow],
+    });
+    expect(chips).toEqual(["codex", "cursor", "grok"]);
+  });
+
+  it("does not treat a Cursor API-key connection or an installed CLI as a plan sign-in", () => {
+    const input = {
+      connections: connections({
+        cursor: connection("cursor", { auth: true, runtime: true }),
+      }),
+    };
+    expect(quotaPopoverProviders(input)).toEqual(["claude", "codex"]);
+    expect(headerUsageProviders(input)).toEqual(["claude", "codex"]);
+  });
+
+  it("shows Cursor, Copilot, Grok, and OpenCode once each has a reading, in brand colours", () => {
+    expect(headerUsageProviders({
+      connections: connections(),
+      windows: [
+        cursorWindow,
+        window({ provider: "copilot", windowType: "monthly" }),
+        window({ provider: "grok", windowType: "weekly" }),
+        window({ provider: "opencode", windowType: "five_hour" }),
+      ],
+    })).toEqual(["claude", "codex", "cursor", "copilot", "grok", "opencode"]);
+    const colors = ["cursor", "copilot", "grok", "opencode"].map((provider) => providerColor(provider));
+    expect(new Set(colors).size).toBe(4);
+  });
+
+  it("drops an extra provider that signs out", () => {
+    expect(headerUsageProviders({
+      connections: connections(),
+      windows: [],
+      statuses: {},
+    })).toEqual(["claude", "codex"]);
   });
 });

@@ -269,7 +269,6 @@ function renderRails(
       onMerge={() => {}}
       onRequestReviewers={() => {}}
       onSetLabels={() => {}}
-      lane={null}
       onSubmitReview={() => {}}
     />,
   );

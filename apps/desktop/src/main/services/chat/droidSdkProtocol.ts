@@ -76,6 +76,34 @@ export function droidMcpToolsToDisable(
   return disabled;
 }
 
+/**
+ * 0.9.x requires `editedSpecContent` alongside the `proceed_edit` permission
+ * outcome and rejects the result outright when it is missing (verified against
+ * the SDK's `RequestPermissionResultSchema`). ADE has no plan editor, so it
+ * passes the ExitSpecMode plan through unchanged — the same plan the user is
+ * approving — and returns `null` for any other editable confirmation type so
+ * the worker can fail closed.
+ *
+ * Takes the raw `toolUses` array rather than an SDK type so this stays a pure,
+ * SDK-free mapping like the rest of this module.
+ */
+export function droidEditedSpecContentForRequest(
+  toolUses: ReadonlyArray<{ details?: unknown }> | null | undefined,
+): string | null {
+  if (!Array.isArray(toolUses)) return null;
+  for (const entry of toolUses) {
+    const details = entry && typeof entry === "object"
+      ? (entry as { details?: unknown }).details
+      : null;
+    if (!details || typeof details !== "object") continue;
+    const record = details as Record<string, unknown>;
+    if (record.type === "exit_spec_mode" && typeof record.plan === "string") {
+      return record.plan;
+    }
+  }
+  return null;
+}
+
 export type DroidSdkWorkerInit = {
   sessionId: string;
   laneRoot: string;

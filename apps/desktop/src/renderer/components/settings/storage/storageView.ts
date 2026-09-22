@@ -231,7 +231,6 @@ export function categoryPolicyChip(
 export const DB_CATEGORY_HINT: Record<DbBreakdownCategory, string> = {
   webhooks: "History of incoming events from your automations.",
   sync_bookkeeping: "Records ADE keeps to sync your work across devices.",
-  review_artifacts: "Saved output from past code reviews.",
   pr_cache: "A local copy of pull request details, refetched when needed.",
   core: "Your project's live data — chats, lanes, and settings.",
 };
@@ -298,7 +297,6 @@ export const DB_COMPACTION_PENDING_HINT =
 const LEDGER_LABELS: Record<string, string> = {
   "db.automation_ingress_events": "Webhook history",
   "db.operations_crsql": "Sync bookkeeping",
-  "db.review_run_artifacts": "Review artifacts",
   "db.pull_request_snapshots": "Pull request cache",
   "db.event_logs": "Event history",
   "db.core": "Core data",

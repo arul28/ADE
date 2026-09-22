@@ -214,6 +214,8 @@ export function toWorkSessionSummary(
     backgroundWorkSince: session.backgroundWorkSince ?? summary?.backgroundWorkSince ?? null,
     claudeTag: session.claudeTag ?? summary?.claudeTag ?? null,
     chatSessionId: summary?.chatSessionId ?? session.sessionId,
+    orchestrationParentSessionId: session.orchestrationParentSessionId
+      ?? summary?.orchestrationParentSessionId,
     spawnKind: session.spawnKind ?? summary?.spawnKind,
   };
 }

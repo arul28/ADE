@@ -681,7 +681,6 @@ describe("storageInsightsService", () => {
   it("isolates a failing maintenance step without aborting the run", async () => {
     (db as unknown as { maintenance?: unknown }).maintenance = {
       pruneIngressEvents: () => { throw new Error("prune boom"); },
-      pruneReviewArtifacts: () => ({ itemsAffected: 2, bytesReclaimed: 128 }),
       prunePrSnapshots: () => ({ itemsAffected: 0, bytesReclaimed: 0 }),
       compactCrsqlTombstones: () => ({ itemsAffected: 0, bytesReclaimed: 0, skippedReason: "has_peers" }),
       vacuumIfFragmented: () => ({ itemsAffected: 0, bytesReclaimed: 512 }),
@@ -693,9 +692,8 @@ describe("storageInsightsService", () => {
     const report = await service.runMaintenanceNow();
     const byLedger = Object.fromEntries(report.actions.map((action) => [action.ledgerId, action]));
     expect(byLedger["db.automation_ingress_events"]!.error).toBe("prune boom");
-    expect(byLedger["db.review_run_artifacts"]).toMatchObject({ itemsAffected: 2, bytesReclaimed: 128, error: null });
     expect(byLedger["db.operations_crsql"]!.skippedReason).toBe("has_peers");
-    expect(report.reclaimedBytes).toBeGreaterThanOrEqual(128 + 512);
+    expect(report.reclaimedBytes).toBeGreaterThanOrEqual(512);
     expect(fs.existsSync(path.join(projectRoot, ".ade", "cache", "storage-doctor-journal.json"))).toBe(true);
     delete (db as unknown as { maintenance?: unknown }).maintenance;
     service.dispose();
@@ -826,7 +824,6 @@ describe("storageInsightsService", () => {
     expect(classifyDbTable("automation_ingress_events")).toBe("webhooks");
     expect(classifyDbTable("idx_automation_ingress_events_project_received")).toBe("webhooks");
     expect(classifyDbTable("operations__crsql_clock")).toBe("sync_bookkeeping");
-    expect(classifyDbTable("review_run_artifacts")).toBe("review_artifacts");
     expect(classifyDbTable("pull_request_snapshots")).toBe("pr_cache");
     expect(classifyDbTable("chats")).toBe("core");
 
@@ -1256,7 +1253,6 @@ describe("storageLedger", () => {
     for (const id of [
       "db.automation_ingress_events",
       "db.operations_crsql",
-      "db.review_run_artifacts",
       "db.pull_request_snapshots",
       "fs.transcripts",
       "fs.tmp",

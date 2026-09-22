@@ -681,6 +681,35 @@ describe("CtoMemoryPanel", () => {
     await waitFor(() => expect(updateMemory).toHaveBeenCalledTimes(1));
     expect(updateMemory).toHaveBeenCalledWith({ memory: "# Facts\n- ships on Fridays\n- prefers pnpm" });
   });
+
+  it("lays the brief, facts, and directed threads out as fields and rows", async () => {
+    globalThis.window.ade = {
+      ...globalThis.window.ade,
+      cto: {
+        getMemory: vi.fn().mockResolvedValue({
+          memory: "",
+          threadState: "",
+          dailyLog: "",
+          dailyLogDate: "2026-07-04",
+          updatedAt: null,
+          projectBrief: "Goal: Ship the coordinator\nDone when: One CTO directs every thread",
+          projectItems: "- (pinned) The installer needs a GUI prompt.\n- (active) Prefer sentence case.",
+          projectThreads: "- Installer · lane lane-installer · chat chat-child · Fix the prompt",
+        }),
+        updateMemory,
+      },
+    } as never;
+
+    render(<CtoMemoryPanel />);
+
+    expect(await screen.findByText("Ship the coordinator")).toBeTruthy();
+    expect(screen.getByText("One CTO directs every thread")).toBeTruthy();
+    expect(screen.getByText("Pinned")).toBeTruthy();
+    expect(screen.getByText("The installer needs a GUI prompt.")).toBeTruthy();
+    expect(screen.getByText("Installer")).toBeTruthy();
+    expect(screen.getByText(/Lane lane-installer/)).toBeTruthy();
+    expect(screen.getByText("2 facts")).toBeTruthy();
+  });
 });
 
 describe("CtoHistoryList", () => {

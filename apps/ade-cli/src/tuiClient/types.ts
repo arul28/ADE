@@ -408,6 +408,8 @@ export type RightPaneContent =
         /** Account email for a window whose provider has more than one account. */
         account?: string | null;
       }>;
+      /** Signed-in accounts that have not reported a window yet. */
+      quietAccounts?: Array<{ id: string; label: string }>;
       session?: { input: number | null; output: number | null; cost: number | null } | null;
       /** Codex account-level spend control tripped — surfaces a terse cap marker. */
       spendControlReached?: boolean;

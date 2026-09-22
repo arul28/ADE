@@ -121,6 +121,15 @@ export type AcpSpawnContext = {
   permissionMode?: string | null;
   /** Config home directory to export, when the provider honors one. */
   configHome?: string | null;
+  /**
+   * An ADE-OWNED settings file to point the provider at, so it discovers ADE's
+   * bundled agent skills natively.
+   *
+   * Never the provider's own config home — ADE does not write those (see
+   * `docs/features/agents/README.md`). The caller writes the file and hands its
+   * path here; a dialect whose agent has no such hook ignores it.
+   */
+  adeSkillDefaultsPath?: string | null;
 };
 
 export type AcpResumeBehavior = (args: {

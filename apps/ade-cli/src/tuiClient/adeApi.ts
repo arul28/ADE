@@ -21,6 +21,7 @@ import type {
   AgentChatResolveUnprocessedMessageArgs,
   AgentChatResolveUnprocessedMessageResult,
   AgentChatResumeUsageLimitNowResult,
+  AgentChatContinueUsageLimitOnAlternateResult,
   AgentChatCodexSandbox,
   AgentChatContextUsage,
   AgentChatCursorConfigValue,
@@ -1224,6 +1225,21 @@ export async function resumeUsageLimitNow(
   return await connection.action<AgentChatResumeUsageLimitNowResult>("chat", "resumeUsageLimitNow", {
     sessionId,
   });
+}
+
+/**
+ * Continue a usage-limited chat on another signed-in account that still has
+ * room. The host starts a new chat; this one stays parked.
+ */
+export async function continueUsageLimitOnAlternate(
+  connection: AdeCodeConnection,
+  sessionId: string,
+): Promise<AgentChatContinueUsageLimitOnAlternateResult> {
+  return await connection.action<AgentChatContinueUsageLimitOnAlternateResult>(
+    "chat",
+    "continueUsageLimitOnAlternate",
+    { sessionId },
+  );
 }
 
 /**
