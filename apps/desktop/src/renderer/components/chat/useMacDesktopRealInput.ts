@@ -517,16 +517,27 @@ export function useMacDesktopRealInput(args: {
    * system cursor onto the virtual display, and a 60 Hz warp+post flood stalls
    * ScreenCaptureKit — the desktop draws a local glyph instead. A remote
    * controller is a different trade: the pointer in the picture has to track
-   * something, so the web opts in and the pump below (one call per frame,
-   * latest position only) is what keeps it from becoming a flood.
+   * something, so the web and a second ADE window opt in and the pump below
+   * (one call per frame, latest position only) is what keeps it from becoming
+   * a flood.
    */
   forwardPointerMoves?: boolean;
+  /**
+   * Whether Escape may name where the host's cursor goes.
+   *
+   * True only when the person and the display share a Mac: `home` is that
+   * Mac's own pointer, read from the pane. A web tab, a phone, or another
+   * computer's ADE window would be naming a screen the host has never seen,
+   * so they pass false and the driver keeps the hold it recorded itself.
+   */
+  reportCursorHome?: boolean;
 }): UseMacDesktopRealInput {
   const {
     controllerId,
     enabled,
     forwardPointerMoves = false,
     laneId,
+    reportCursorHome = true,
     runtimePin,
     sender,
     sessionId,
@@ -583,6 +594,8 @@ export function useMacDesktopRealInput(args: {
   sendRef.current = send;
   const contextRef = useRef({ laneId, sessionId, controllerId });
   contextRef.current = { laneId, sessionId, controllerId };
+  const reportCursorHomeRef = useRef(reportCursorHome);
+  reportCursorHomeRef.current = reportCursorHome;
   const movePumpRef = useRef<MacDesktopMovePump | null>(null);
   if (!movePumpRef.current) {
     movePumpRef.current = createMacDesktopMovePump({
@@ -717,7 +730,7 @@ export function useMacDesktopRealInput(args: {
     try {
       sendRef.current(macDesktopReleaseInputCall(
         { laneId: context.laneId, chatSessionId: context.sessionId, controllerId: context.controllerId },
-        { button: hadPress ? "left" : null, home: homeRef.current },
+        { button: hadPress ? "left" : null, home: reportCursorHomeRef.current ? homeRef.current : null },
       ));
     } catch {
       // The local half above already happened, and that is the half the

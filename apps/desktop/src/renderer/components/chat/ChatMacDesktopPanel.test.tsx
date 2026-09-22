@@ -106,6 +106,7 @@ const macDesktop = {
   claimWindow: vi.fn(async () => undefined),
   // Present so a test can prove Escape is NOT forwarded as a keystroke.
   press: vi.fn(async () => undefined),
+  move: vi.fn(async () => undefined),
   releaseWindow: vi.fn(async () => undefined),
 };
 
@@ -384,6 +385,54 @@ describe("ChatMacDesktopPanel actions on a pinned machine", () => {
       // would close nothing and break every dialog in the app.
       expect(event.defaultPrevented).toBe(false);
       expect(macDesktop.returnControl).not.toHaveBeenCalled();
+    });
+
+    it("warns on this Mac and tracks the pointer from another computer", async () => {
+      // jsdom has no PointerEvent, so testing-library would drop clientX.
+      (window as unknown as { PointerEvent?: unknown }).PointerEvent = class PointerEvent extends MouseEvent {};
+      const held = {
+        laneId: "lane-1",
+        holder: "user" as const,
+        holderId: CONTROLLER_ID,
+        holderLabel: "You",
+        grantedAt: "2026-09-18T19:00:00.000Z",
+        expiresAt: "2026-09-18T19:10:00.000Z",
+      };
+      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+        left: 0,
+        top: 0,
+        width: 1000,
+        height: 1000,
+        right: 1000,
+        bottom: 1000,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      } as DOMRect);
+
+      macDesktop.getStatus.mockResolvedValue(makeStatus({ lease: held, hostIsLocal: true }));
+      renderLocalPanel();
+      expect(await screen.findByTestId("mac-desktop-same-machine-note")).toBeTruthy();
+      fireEvent.pointerMove(screen.getByTestId("mac-desktop-surface"), { clientX: 500, clientY: 500 });
+      expect(macDesktop.move).not.toHaveBeenCalled();
+
+      cleanup();
+      macDesktop.move.mockClear();
+      macDesktop.getStatus.mockResolvedValue(makeStatus({ lease: held, hostIsLocal: true }));
+      renderPanel();
+      await screen.findByText("Return to agent");
+      expect(screen.queryByTestId("mac-desktop-same-machine-note")).toBeNull();
+      // One hover is one event: the pane drops it when the surface has not
+      // been measured yet, and nothing replays it. Move inside the wait so
+      // the assertion tests the forwarding, not the order two effects ran in.
+      await waitFor(() => {
+        fireEvent.pointerMove(screen.getByTestId("mac-desktop-surface"), { clientX: 500, clientY: 500 });
+        expect(macDesktop.move).toHaveBeenCalledWith(
+          expect.objectContaining({ laneId: "lane-1", x: 1280, y: 720, silent: true }),
+          STUDIO_PIN,
+        );
+      });
+      delete (window as unknown as { PointerEvent?: unknown }).PointerEvent;
     });
 
     it("ignores a modified Escape, which belongs to macOS", async () => {
