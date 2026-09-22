@@ -1127,6 +1127,23 @@ export function createComputerUseArtifactBrokerService(args: {
    * Every record whose bytes cannot be served, with enough detail for the UI
    * to say what happened and offer recovery when the original file survives.
    */
+  /**
+   * Fill `ownerCount` for a whole page in ONE query.
+   *
+   * Asking per artifact would be an N+1 read on a path that already walks
+   * every file-backed row, and there is a test guarding the read count.
+   */
+  const withOwnerCounts = (
+    broken: ComputerUseArtifactBrokenRecord[],
+  ): ComputerUseArtifactBrokenRecord[] => {
+    if (!broken.length) return broken;
+    const counts = new Map<string, number>();
+    for (const link of readLinkRows(broken.map((entry) => entry.artifactId))) {
+      counts.set(link.artifactId, (counts.get(link.artifactId) ?? 0) + 1);
+    }
+    return broken.map((entry) => ({ ...entry, ownerCount: counts.get(entry.artifactId) ?? 0 }));
+  };
+
   const collectBrokenArtifacts = (limit: number | null): ComputerUseArtifactBrokenRecord[] => {
     const pageSize = 500;
     const broken: ComputerUseArtifactBrokenRecord[] = [];
@@ -1156,10 +1173,12 @@ export function createComputerUseArtifactBrokerService(args: {
           reason: availability === "unimported" ? "outside_artifact_store" : "missing_file",
           laneId: record.laneId ?? null,
           recoverablePath: findRecoverableSourcePath(record),
+          // Filled in one batch below; the per-record value is a placeholder.
+          ownerCount: 0,
         });
-        if (limit != null && broken.length >= limit) return broken;
+        if (limit != null && broken.length >= limit) return withOwnerCounts(broken);
       }
-      if (records.length < pageSize) return broken;
+      if (records.length < pageSize) return withOwnerCounts(broken);
       offset += records.length;
     }
   };

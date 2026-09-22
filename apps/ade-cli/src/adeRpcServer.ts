@@ -5377,8 +5377,22 @@ async function runTool(args: {
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "Broken-proof pruning requires an authenticated owner scope.");
     }
     const authorizedArtifactIds = listAuthorizedProofArtifactIds(runtime, authorizedOwners);
+    /*
+     * Broken AND ownerless is garbage no scoped caller could otherwise reach.
+     *
+     * The filter below asks "is this artifact in one of MY owners' sets". An
+     * artifact with no owner links is in nobody's set, so every scoped caller
+     * skipped it and only a project-wide one could ever clean it up. Twenty
+     * such rows sat in the owner's database for two months — records whose
+     * files were deleted long ago, invisible in every drawer, and immune to
+     * the tool whose whole job is removing exactly that.
+     *
+     * Letting a scoped caller take them is safe because both halves must hold:
+     * ownerless means it is in no lane's and no chat's drawer, and broken
+     * means its file is already gone. Neither alone qualifies.
+     */
     const artifactIds = runtime.computerUseArtifactBrokerService.listBrokenArtifacts({ limit: 2000 })
-      .filter((entry) => authorizedArtifactIds.has(entry.artifactId))
+      .filter((entry) => authorizedArtifactIds.has(entry.artifactId) || entry.ownerCount === 0)
       .map((entry) => entry.artifactId);
     return artifactIds.length
       ? runtime.computerUseArtifactBrokerService.deleteArtifacts({ artifactIds })

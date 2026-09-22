@@ -1466,6 +1466,27 @@ describe("adeRpcServer", () => {
       artifactIds: [owned.id],
     });
 
+    /*
+     * regression: a broken artifact that belongs to NOBODY must be prunable.
+     *
+     * The filter above asks "is this in one of MY owners' sets", and an
+     * ownerless row is in nobody's — so every scoped caller skipped it and
+     * only a project-wide one could clean it up. Twenty such rows sat in the
+     * owner's database for two months: files deleted long ago, invisible in
+     * every drawer, and immune to the tool whose job is removing exactly that.
+     * Both halves must hold — ownerless AND broken — so this can never reach
+     * another lane's proof.
+     */
+    fixture.runtime.computerUseArtifactBrokerService.deleteArtifacts.mockClear();
+    fixture.runtime.computerUseArtifactBrokerService.listBrokenArtifacts.mockReturnValueOnce([
+      { artifactId: "orphan-1", ownerCount: 0 },
+      { artifactId: "someone-elses", ownerCount: 1 },
+    ] as never);
+    await callTool(handler, "prune_broken_computer_use_artifacts", {});
+    expect(fixture.runtime.computerUseArtifactBrokerService.deleteArtifacts).toHaveBeenCalledWith({
+      artifactIds: ["orphan-1"],
+    });
+
     const foreignRecover = await callTool(handler, "recover_computer_use_artifact", {
       artifactId: foreign.id,
     });
