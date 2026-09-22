@@ -207,7 +207,29 @@ Settings. An unpackaged app always starts its brain with `--no-sync`
 host lease from the installed ADE. On 2026-09-21 one did, before that guard
 existed, and the agents running under the installed brain died with the lease.
 Set `ADE_DEV_RUNTIME_SYNC=1` only when a dev brain must host sync on purpose,
-and never on a machine whose installed ADE is doing real work. Because the dev
+and never on a machine whose installed ADE is doing real work.
+
+`--no-sync` guards the sync lease and **nothing else**. A dev brain started
+this way still attaches to the same `~/.ade` database as the installed app,
+and two brains on one database can only have one owner for a given chat, so
+the other's agents can stop with no explanation. Starting a brain on a home
+that already has one now prints who else is there and logs
+`brain.home_shared`; if you see that, decide which brain you meant to have.
+List them, with their homes, before assuming:
+
+```bash
+pgrep -alf "cli.cjs serve|/bin/ade serve"
+ps eww -p <pid> | tr ' ' '\n' | grep ADE_HOME   # no output = the shared ~/.ade
+```
+
+A dev brain is spawned detached so it survives the Electron restarts a dev
+loop is made of, which also means it survives the app going away for good. One
+ran orphaned on the shared home for five hours. Launcher-spawned brains now
+exit after 20 idle minutes (`ADE_RUNTIME_IDLE_EXIT_MS`, set in
+`scripts/dev-shared.mjs`); raise or clear it when debugging a deliberately
+quiet brain. For work that only needs to read or drive a lane, give the brain
+its own home — `ADE_HOME=$HOME/.ade-<name>` on its own socket — instead of
+sharing `~/.ade`. Because the dev
 brain does not host sync it never publishes to the account, which is why the
 Connections card is not testable this way; everything on the Mac Desktop pane
 is. Use `--project-root` to point the dev app at a throwaway project so the

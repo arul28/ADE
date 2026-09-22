@@ -50,6 +50,42 @@ resolve docs + the matching `ade-perf-*` skill via `references/doc-map.md`.
 
 ---
 
+## Step 2b — Before you start any brain (always check)
+
+ADE's brain is a singleton per `ADE_HOME` **by convention only**. Nothing
+refuses a second one, and two brains on one home share one database: a chat can
+be owned by only one of them, so the other's agents can be stopped without
+explanation.
+
+Before starting a dev brain, and before blaming anything for dead agents, list
+every brain **and its home**:
+
+```bash
+pgrep -alf "cli.cjs serve|/bin/ade serve"
+# then, for each pid:
+ps eww -p <pid> | tr ' ' '\n' | grep ADE_HOME    # no output = the shared ~/.ade
+```
+
+Three rules that cost hours when ignored:
+
+- **`--no-sync` is not isolation.** It stops a dev brain taking the machine-wide
+  sync lease. It does nothing about a second writer on the same database.
+  Isolation is a different `ADE_HOME`.
+- **A dev brain outlives its app.** The launcher spawns it detached so it
+  survives Electron restarts. After stopping a dev desktop, confirm its brain
+  actually exited — one ran orphaned on the shared home for five hours.
+  Launcher-spawned brains now exit after 20 idle minutes
+  (`ADE_RUNTIME_IDLE_EXIT_MS`), but do not rely on it instead of checking.
+- **Starting a brain on a shared home now warns.** It names the other brains by
+  pid and endpoint on stderr and logs `brain.home_shared`. If you see that line,
+  you have two brains on one database — decide which one you meant to have.
+
+When you only need to read or drive a lane, prefer an isolated home
+(`ADE_HOME=$HOME/.ade-<name>` plus `--no-sync` on its own socket) over sharing
+`~/.ade` with the installed app.
+
+---
+
 ## Step 3 — Feature docs + perf skill
 
 Match changed paths / keywords against `references/doc-map.md` and load that doc

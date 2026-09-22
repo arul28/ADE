@@ -192,6 +192,8 @@ import {
 } from "./services/projects/projectRoots";
 import { createHeadlessGitHubService } from "./headlessLinearServices";
 import type { SyncProjectCatalogProvider } from "./services/sync/syncHostService";
+import { createBrainHomeRegistry, describeOtherBrains } from "./services/runtime/brainHomeRegistry";
+import { readProcessStartTimeMs } from "../../desktop/src/main/services/processes/processStartTime";
 import {
   JsonRpcError,
   JsonRpcErrorCode,
@@ -22726,6 +22728,49 @@ async function runServe(
     socketPath,
     tcpUrl: tcpUrl ?? null,
   });
+  /*
+   * Who else is on this ADE home.
+   *
+   * Sharing a home is supported — `npm run dev:desktop` from a lane worktree
+   * is the documented dev loop and deliberately shares `~/.ade` with the
+   * installed app — so this never refuses. It only says so out loud, because
+   * the alternative is what happened on 2026-09-22: three brains on one
+   * database, one of them an orphan five hours past its window, and the only
+   * way to learn that was reading `ps` by hand.
+   */
+  try {
+    const brainRegistry = createBrainHomeRegistry({
+      home: layout.adeDir,
+      readProcessStartTimeMs,
+      isPidAlive: (pid) => {
+        try { process.kill(pid, 0); return true; } catch { return false; }
+      },
+    });
+    const otherBrains = brainRegistry.join({
+      pid: process.pid,
+      endpoint: socketPath,
+      startedAtMs: readProcessStartTimeMs(process.pid),
+      label: process.env.ADE_PACKAGE_CHANNEL?.trim() || "dev",
+    });
+    const sharedHomeSentence = describeOtherBrains(otherBrains);
+    if (sharedHomeSentence) {
+      process.stderr.write(`ADE: ${sharedHomeSentence}\n`);
+      headlessProjectLogger.warn("brain.home_shared", {
+        home: layout.adeDir,
+        others: otherBrains.map((other) => ({
+          pid: other.pid,
+          endpoint: other.endpoint,
+          label: other.label,
+        })),
+      });
+    }
+    const leaveBrainRegistry = () => brainRegistry.leave(process.pid);
+    process.once("exit", leaveBrainRegistry);
+    process.once("SIGINT", leaveBrainRegistry);
+    process.once("SIGTERM", leaveBrainRegistry);
+  } catch {
+    // Diagnostics must never stop a brain from serving.
+  }
   serveStarted = true;
   // The RPC socket is up: any recorded startup failure that was NOT about the
   // sync host is over. Sync-host failures stay recorded until the sync host
