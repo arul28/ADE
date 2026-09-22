@@ -90,7 +90,9 @@ describe("device authorization bridge", () => {
       { now: () => now, fetchImpl: tokenExchange as typeof fetch },
     );
     expect(callback.status).toBe(200);
-    expect(await callback.text()).toContain("Signed in to ADE");
+    const callbackBody = await callback.text();
+    expect(callbackBody).toContain("You're signed in");
+    expect(callbackBody).toContain("Go back to ADE.");
 
     const wrongSecret = await handleRequest(
       request("POST", "/device/token", undefined, {
@@ -211,6 +213,81 @@ describe("device authorization bridge", () => {
     });
   });
 
+  /**
+   * The bug a person actually hit: ADE Alpha on a MacBook could never finish
+   * signing in. "Open sign-in page" led to a page headed "Confirmation
+   * required" telling them to open the ADE sign-in page — the page they were
+   * already on, with nothing to click.
+   *
+   * The confirmation was refused because the browser sent no `Origin` on a
+   * same-origin form POST, and the check compared it to the origin directly.
+   */
+  it("confirms a same-origin submission whose browser sent no Origin", async () => {
+    const env = makeEnv();
+    const now = Date.parse("2026-07-14T12:00:00.000Z");
+    const created = await handleRequest(
+      request("POST", "/device/code", undefined, {
+        device_secret: "daemon-device-secret-with-at-least-32-bytes",
+      }),
+      env,
+      { now: () => now },
+    );
+    const device = await created.json() as Record<string, unknown>;
+
+    const confirmed = await handleRequest(
+      deviceConfirmationRequest(String(device.user_code), { origin: "", "sec-fetch-site": "same-origin" }),
+      env,
+      { now: () => now },
+    );
+
+    expect(confirmed.status).toBe(302);
+    expect(env.DB.deviceRows[0]).toMatchObject({ code_verifier: expect.any(String) });
+  });
+
+  /**
+   * The same bug after the absent-Origin fix: the page was served with
+   * `referrer-policy: no-referrer`, so the browser sent the text `null` as the
+   * `Origin` of its own form POST. `"null"` is not empty, so the direct
+   * comparison still ran and still refused every confirmation.
+   */
+  it("confirms a same-origin submission whose browser sent Origin: null", async () => {
+    const env = makeEnv();
+    const now = Date.parse("2026-07-14T12:00:00.000Z");
+    const created = await handleRequest(
+      request("POST", "/device/code", undefined, {
+        device_secret: "daemon-device-secret-with-at-least-32-bytes",
+      }),
+      env,
+      { now: () => now },
+    );
+    const device = await created.json() as Record<string, unknown>;
+
+    const preview = await handleRequest(new Request(String(device.verification_uri_complete)), env, { now: () => now });
+    expect(preview.headers.get("referrer-policy")).toBe("same-origin");
+
+    const crossSiteNull = await handleRequest(
+      deviceConfirmationRequest(String(device.user_code), { origin: "null", "sec-fetch-site": "cross-site" }),
+      env,
+      { now: () => now },
+    );
+    expect(crossSiteNull.status).toBe(403);
+    const nullNoHint = await handleRequest(
+      deviceConfirmationRequest(String(device.user_code), { origin: "null" }),
+      env,
+      { now: () => now },
+    );
+    expect(nullNoHint.status).toBe(403);
+
+    const confirmed = await handleRequest(
+      deviceConfirmationRequest(String(device.user_code), { origin: "null", "sec-fetch-site": "same-origin" }),
+      env,
+      { now: () => now },
+    );
+
+    expect(confirmed.status).toBe(302);
+    expect(env.DB.deviceRows[0]).toMatchObject({ code_verifier: expect.any(String) });
+  });
+
   it("keeps verification-link GET previews read-only until explicit confirmation", async () => {
     const env = makeEnv();
     const now = Date.parse("2026-07-14T12:00:00.000Z");
@@ -253,6 +330,24 @@ describe("device authorization bridge", () => {
     expect(env.DB.deviceRows[0]).toEqual(rowBeforePreview);
     expect(Array.from(env.DB.approvalRateLimits)).toEqual(limitsBeforePreview);
 
+    // A browser may omit `Origin` on a same-origin form POST. That refused a
+    // real confirmation and left the person on a page telling them to open the
+    // page they were already on. `Sec-Fetch-Site` decides it instead, and a
+    // submission carrying neither header is still refused.
+    const noOriginCrossSite = await handleRequest(
+      deviceConfirmationRequest(String(device.user_code), { origin: "", "sec-fetch-site": "cross-site" }),
+      env,
+      { now: () => now },
+    );
+    expect(noOriginCrossSite.status).toBe(403);
+    const noOriginNoHint = await handleRequest(
+      deviceConfirmationRequest(String(device.user_code), { origin: "" }),
+      env,
+      { now: () => now },
+    );
+    expect(noOriginNoHint.status).toBe(403);
+    expect(env.DB.deviceRows[0]).toEqual(rowBeforePreview);
+
     const confirmed = await handleRequest(
       deviceConfirmationRequest(String(device.user_code)),
       env,
@@ -265,6 +360,52 @@ describe("device authorization bridge", () => {
       oauth_state_hash: expect.any(String),
     });
     expect(env.DB.approvalRateLimits.size).toBe(2);
+  });
+
+  it("renders the confirm variant with a readonly code when the link carries one", async () => {
+    const env = makeEnv();
+    const now = Date.parse("2026-07-14T12:00:00.000Z");
+    const created = await handleRequest(
+      request("POST", "/device/code", undefined, {
+        device_secret: "daemon-device-secret-with-at-least-32-bytes",
+      }),
+      env,
+      { now: () => now },
+    );
+    const device = await created.json() as Record<string, unknown>;
+
+    const preview = await handleRequest(
+      new Request(String(device.verification_uri_complete)),
+      env,
+      { now: () => now },
+    );
+
+    expect(preview.status).toBe(200);
+    const body = await preview.text();
+    expect(body).toContain("Confirm this sign-in");
+    expect(body).toContain(String(device.user_code));
+    // The code is shown, never typed: it rides a hidden field, so there is no
+    // visible code input for the reader to have to fill in.
+    expect(body).toContain('type="hidden" name="user_code"');
+    expect(body).not.toContain('id="user_code"');
+    expect(body).not.toContain("ade login");
+  });
+
+  it("renders the code input form when the link carries no code", async () => {
+    const env = makeEnv();
+
+    const preview = await handleRequest(
+      new Request("https://directory.test/device"),
+      env,
+      {},
+    );
+
+    expect(preview.status).toBe(200);
+    const body = await preview.text();
+    expect(body).toContain("Sign in to ADE");
+    expect(body).toContain('id="user_code"');
+    expect(body).toContain("Enter the code shown by <code>ade login</code> in your terminal.");
+    expect(body).not.toContain("Confirm this sign-in");
   });
 
   it("returns expired for a device code after its short TTL", async () => {

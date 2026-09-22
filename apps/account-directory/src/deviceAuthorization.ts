@@ -43,6 +43,11 @@ type DeviceAuthorizationRow = {
   device_secret_hash: string;
   /** Machine this login was started from, or null for a non-machine login. */
   machine_key: string | null;
+  /**
+   * Optional display name for `machine_key`. Not populated by every writer, so
+   * the confirmation page treats an absent value as "your computer".
+   */
+  machine_name?: string | null;
   status: "pending" | "approved" | "consumed" | "expired" | "error";
   code_verifier: string | null;
   oauth_state_hash: string | null;
@@ -77,7 +82,11 @@ function html(value: string, status = 200): Response {
       "cache-control": "no-store",
       "content-security-policy": "default-src 'none'; form-action 'self'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
       "content-type": "text/html; charset=utf-8",
-      "referrer-policy": "no-referrer",
+      // Not `no-referrer`: under that policy a browser sends the text `null`
+      // as the `Origin` of this page's own form POST, and the confirmation
+      // check needs the real origin. `same-origin` still sends nothing to
+      // another site.
+      "referrer-policy": "same-origin",
       "x-content-type-options": "nosniff",
     },
   });
@@ -181,17 +190,63 @@ function page(args: { title: string; body: string; status?: number }): Response 
 </html>`, args.status ?? 200);
 }
 
+/**
+ * The typed-code form, for a sign-in started from the CLI. The reader is
+ * looking at a terminal, so the copy tells them where the code is.
+ */
 function approvalForm(userCode = ""): Response {
   return page({
     title: "Sign in to ADE",
     body: `<h1>Sign in to ADE</h1>
-      <p>Enter the code shown by <code>ade login</code> on your other machine.</p>
+      <p>Enter the code shown by <code>ade login</code> in your terminal.</p>
       <form method="post" action="/device">
         <label for="user_code">Device code</label>
         <input id="user_code" name="user_code" value="${userCode}" autocomplete="one-time-code" maxlength="9" required autofocus>
         <button type="submit">Continue</button>
       </form>`,
   });
+}
+
+/**
+ * The pre-filled confirmation page, for a sign-in the desktop app started. The
+ * code already rode the link, so it is shown read-only and carried in a hidden
+ * field; the only action is Continue.
+ */
+function confirmationPage(userCode: string, machineName: string | null): Response {
+  const who = machineName?.trim() || "your computer";
+  return page({
+    title: "Confirm this sign-in",
+    body: `<h1>Confirm this sign-in</h1>
+      <p>ADE on ${escapeHtml(who)} asked to sign in.</p>
+      <div style="margin:1.5rem 0 .5rem;font-weight:600">Device code</div>
+      <p style="margin:0 0 1rem;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:1.4rem;letter-spacing:.18em;color:#f5f5f5">${escapeHtml(userCode)}</p>
+      <form method="post" action="/device">
+        <input type="hidden" name="user_code" value="${escapeHtml(userCode)}">
+        <button type="submit">Continue</button>
+      </form>`,
+  });
+}
+
+/**
+ * The page a browser link carries the code with it. `user_code` present means
+ * `verification_uri_complete`; absent means the CLI path, where the reader has
+ * to type the code.
+ */
+function approvalFormForQuery(rawUserCode: string | null, machineName: string | null): Response {
+  if (rawUserCode) {
+    const userCode = normalizeUserCode(rawUserCode);
+    if (userCode) return confirmationPage(userCode, machineName);
+  }
+  return approvalForm();
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function approvalMessage(title: string, message: string, status = 200): Response {
@@ -346,6 +401,31 @@ async function handleDeviceCode(
   });
 }
 
+/**
+ * Is this confirmation a same-origin submission of our own form?
+ *
+ * `Origin` alone answered this, and it refused real people. A browser sends
+ * the text `null` as the `Origin` of a form POST from a page whose referrer
+ * policy is `no-referrer`, which this page used to have. Some browsers also
+ * omit `Origin` on a same-origin form POST. Either way the person saw
+ * "Confirmation required" on the page they were already on, and the sign-in
+ * could never complete.
+ *
+ * When `Origin` is absent or `null`, `Sec-Fetch-Site` answers the same
+ * question. The browser attaches it and a page cannot set it, which is why
+ * this worker already trusts it in `diagnostics.ts`. A sandboxed frame or
+ * another site also sends `Origin: null`, but its `Sec-Fetch-Site` is never
+ * `same-origin`.
+ *
+ * A request with neither signal is still refused, and an `Origin` that is
+ * present and wrong still fails.
+ */
+function isSameOriginConfirmation(request: Request, url: URL): boolean {
+  const origin = request.headers.get("origin")?.trim();
+  if (origin && origin !== "null") return origin === url.origin;
+  return request.headers.get("sec-fetch-site")?.trim().toLowerCase() === "same-origin";
+}
+
 async function handleDeviceApproval(
   request: Request,
   env: DeviceAuthorizationEnv,
@@ -355,10 +435,18 @@ async function handleDeviceApproval(
   if (request.method === "GET") {
     const rawUserCode = url.searchParams.get("user_code");
     if (!rawUserCode) return approvalForm();
-    return approvalForm(normalizeUserCode(rawUserCode) ?? "");
+    // A read-only preview may look up the name the machine bound to this code.
+    // The record does not carry one today, so the page falls back to "your
+    // computer"; naming it works the moment the field is populated.
+    const previewCode = normalizeUserCode(rawUserCode);
+    const row = previewCode ? await findByUserCode(env, previewCode) : null;
+    const machineName = typeof row?.machine_name === "string" && row.machine_name.trim()
+      ? row.machine_name
+      : null;
+    return approvalFormForQuery(rawUserCode, machineName);
   }
   if (request.method !== "POST") return new Response("method not allowed", { status: 405 });
-  if (request.headers.get("origin") !== url.origin) {
+  if (!isSameOriginConfirmation(request, url)) {
     return approvalMessage("Confirmation required", "Open the ADE sign-in page and confirm this device code.", 403);
   }
 
@@ -543,7 +631,7 @@ async function handleDeviceCallback(
     now,
   ).run();
   if (changes(approved) < 1) return approvalMessage("Code unavailable", "Return to ADE and start sign-in again.", 409);
-  return approvalMessage("Signed in to ADE", "You can close this tab and return to ADE.");
+  return approvalMessage("You're signed in", "Go back to ADE.");
 }
 
 async function handleDeviceToken(
