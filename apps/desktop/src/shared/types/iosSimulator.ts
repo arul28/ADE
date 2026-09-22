@@ -1749,11 +1749,21 @@ export type AppleRotateResult = {
 export type AppleRecordStartArgs = {
   laneId?: string | null;
   chatSessionId?: string | null;
+  /**
+   * The caller's workspace, so a caller with no lane id is placed by the
+   * worktree it stands in — the same field the screenshot verbs send.
+   *
+   * Recordings were the one capture path that did not carry it, so an unbound
+   * caller's recording filed against whichever lane owned the DEVICE.
+   */
+  projectRoot?: string | null;
   overlays?: boolean | null;
   label?: string | null;
 };
 
 export type AppleRecordStopArgs = {
+  /** The caller's workspace, so a lane-less caller is placed by where it stands. */
+  projectRoot?: string | null;
   laneId?: string | null;
   chatSessionId?: string | null;
   keep?: boolean | null;
@@ -1761,11 +1771,15 @@ export type AppleRecordStopArgs = {
 };
 
 export type AppleRecordListArgs = {
+  /** The caller's workspace, so a lane-less caller is placed by where it stands. */
+  projectRoot?: string | null;
   laneId?: string | null;
   chatSessionId?: string | null;
 };
 
 export type AppleRecordDeleteArgs = {
+  /** The caller's workspace, so a lane-less caller is placed by where it stands. */
+  projectRoot?: string | null;
   laneId?: string | null;
   chatSessionId?: string | null;
   id: string;

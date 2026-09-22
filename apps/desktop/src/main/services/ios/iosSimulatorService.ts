@@ -5523,7 +5523,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * against `""` belongs to no lane, so nothing would ever delete it on
    * archive. Saying so is better than leaking a simulator per chat.
    */
-  const requireLaneScope = (scope: { laneId?: string | null; chatSessionId?: string | null }): LaneRuntime => {
+  const requireLaneScope = (
+    scope: { laneId?: string | null; chatSessionId?: string | null; projectRoot?: string | null },
+  ): LaneRuntime => {
     const runtime = resolveRuntime(scope);
     if (!runtime.key) {
       throw new Error("Apple devices belong to a lane. Pass --lane, or run this from a chat that is on one.");

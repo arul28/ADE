@@ -13339,6 +13339,30 @@ describe("ADE CLI", () => {
       args: { discard: true },
     });
 
+    /*
+     * regression: every record verb must give the runtime SOMETHING to place
+     * the caller by — a lane id, or the caller's root when there is no lane id.
+     *
+     * Recordings were the one capture path that sent neither, so a caller with
+     * no `ADE_LANE_ID` (every OpenCode agent, whose shared `opencode serve`
+     * cannot carry a per-chat environment) left `resolveRuntime` with nothing
+     * but its last-resort guess. Reproduced live before the fix: `record-start`
+     * run from lane 67f0a55d's worktree filed its recording under lane
+     * ab829725, the lane that owned the DEVICE.
+     *
+     * Asserted as "one or the other" rather than "always projectRoot", because
+     * a caller that named its lane does not need a path and
+     * `iosSimulatorRootArgs` deliberately omits it.
+     */
+    const placeable = (argv: string[]) => {
+      const keys = Object.keys(iosSimActionArgs(argv).args as Record<string, unknown>);
+      return keys.includes("laneId") || keys.includes("projectRoot");
+    };
+    for (const verb of ["record-start", "record-stop", "record-list"]) {
+      expect(placeable(["apple", verb]), verb).toBe(true);
+    }
+    expect(placeable(["apple", "record-delete", "--id", "r1"])).toBe(true);
+
     const recordList = iosSimActionArgs(["apple", "record-list"]);
     expect(recordList.action).toBe("recordList");
 

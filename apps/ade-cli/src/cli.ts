@@ -12256,6 +12256,11 @@ function buildIosSimulatorPlan(
     }
     const label = readValue(args, ["--label"]);
     return iosAction("Apple device record start", "recordStart", {
+      // Same root the screenshot verbs send. Without it a caller with no
+      // ADE_LANE_ID — every OpenCode agent — gives the runtime nothing to
+      // place it by, and the recording lands on whichever lane owns the
+      // DEVICE instead of the lane the caller is standing in.
+      ...rootArgs(),
       ...(laneId ? { laneId } : {}),
       ...(claimArgs.chatSessionId
         ? { chatSessionId: claimArgs.chatSessionId }
@@ -12271,6 +12276,7 @@ function buildIosSimulatorPlan(
       throw new CliUsageError("Use --keep or --discard, not both.");
     }
     return iosAction("Apple device record stop", "recordStop", {
+      ...rootArgs(),
       ...(laneId ? { laneId } : {}),
       ...(claimArgs.chatSessionId
         ? { chatSessionId: claimArgs.chatSessionId }
@@ -12281,6 +12287,7 @@ function buildIosSimulatorPlan(
   }
   if (sub === "record-list") {
     return iosAction("Apple device record list", "recordList", {
+      ...rootArgs(),
       ...(laneId ? { laneId } : {}),
     });
   }
@@ -12292,6 +12299,7 @@ function buildIosSimulatorPlan(
     const force = readFlag(args, ["--force", "-f"]);
     return iosAction("Apple device record delete", "recordDelete", {
       id,
+      ...rootArgs(),
       ...(laneId ? { laneId } : {}),
       ...(claimArgs.chatSessionId
         ? { chatSessionId: claimArgs.chatSessionId }
