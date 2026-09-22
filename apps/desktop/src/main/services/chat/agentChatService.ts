@@ -50,6 +50,7 @@ import { z, type ZodType } from "zod";
 import { buildClaudeV2MessageAsync, inferAttachmentMediaType } from "./buildClaudeV2Message";
 import { listPromptStashAttachmentPaths } from "./promptStashService";
 import { ClaudeInputPump } from "./claudeInputPump";
+import { clampTurnTimerMs, SessionTurnAbandonedError, trackTurnInFlight } from "./sessionTurnLimits";
 import {
   claudePluginDeliveryForSource,
   normalizeClaudeInterruptReceipt,
@@ -4145,6 +4146,17 @@ type SessionTurnCollector = {
   };
   lastError: string | null;
   timeout: NodeJS.Timeout | null;
+  /**
+   * Optional stop-when-idle watch. The timer restarts on every event of the
+   * turn and stays disarmed while anything in `inFlight` (a tool call, a
+   * command, a subagent, a pending approval) is still open, so a long build
+   * the agent is waiting on never reads as idle.
+   */
+  idle: {
+    timeoutMs: number;
+    timer: NodeJS.Timeout | null;
+    inFlight: Set<string>;
+  } | null;
 };
 
 type PreparedSendMessage = {
@@ -15381,14 +15393,67 @@ export function createAgentChatService(args: {
     }
   };
 
+  const clearSessionTurnCollectorTimers = (collector: SessionTurnCollector): void => {
+    if (collector.timeout) {
+      clearTimeout(collector.timeout);
+      collector.timeout = null;
+    }
+    if (collector.idle?.timer) {
+      clearTimeout(collector.idle.timer);
+      collector.idle.timer = null;
+    }
+  };
+
   const rejectActiveSessionTurnCollector = (sessionId: string, message: string): void => {
     const activeCollector = sessionTurnCollectors.get(sessionId);
     if (!activeCollector) return;
-    if (activeCollector.timeout) {
-      clearTimeout(activeCollector.timeout);
-    }
+    clearSessionTurnCollectorTimers(activeCollector);
     sessionTurnCollectors.delete(sessionId);
-    activeCollector.reject(new Error(message));
+    activeCollector.reject(new SessionTurnAbandonedError(message));
+  };
+
+  /** A limit the caller asked for ran out: interrupt the turn but keep the chat. */
+  const stopSessionTurnOnLimit = (
+    sessionId: string,
+    collector: SessionTurnCollector,
+    limit: { kind: "time" | "idle"; ms: number },
+  ): void => {
+    if (sessionTurnCollectors.get(sessionId) !== collector) return;
+    clearSessionTurnCollectorTimers(collector);
+    sessionTurnCollectors.delete(sessionId);
+    // The one record of why a headless turn (an automation's, usually) ended early.
+    logger.info("agent_chat.run_session_turn_limit_reached", { sessionId, limit: limit.kind, limitMs: limit.ms });
+    void interrupt({ sessionId }).catch((interruptError) => {
+      logger.warn("agent_chat.run_session_turn_timeout_interrupt_failed", {
+        sessionId,
+        error: interruptError instanceof Error ? interruptError.message : String(interruptError),
+      });
+    });
+    const minutes = Math.round(limit.ms / 60_000);
+    const idleFor = minutes > 0 ? `${minutes} min` : `${Math.round(limit.ms / 1000)}s`;
+    collector.reject(new Error(limit.kind === "idle"
+      ? `Stopped after ${idleFor} with no activity. The turn was interrupted, but the chat stayed open.`
+      : `Timed out waiting for session '${sessionId}' to finish the current turn. The turn was interrupted, but the chat stayed open.`));
+  };
+
+  const armSessionTurnIdleTimer = (sessionId: string, collector: SessionTurnCollector): void => {
+    const idle = collector.idle;
+    if (!idle) return;
+    if (idle.timer) {
+      clearTimeout(idle.timer);
+      idle.timer = null;
+    }
+    if (idle.inFlight.size > 0) return;
+    idle.timer = setTimeout(() => {
+      stopSessionTurnOnLimit(sessionId, collector, { kind: "idle", ms: idle.timeoutMs });
+    }, idle.timeoutMs);
+  };
+
+  /** Track open work from one turn event, then restart the idle watch. */
+  const noteSessionTurnActivity = (sessionId: string, collector: SessionTurnCollector, event: AgentChatEvent): void => {
+    if (!collector.idle) return;
+    trackTurnInFlight(collector.idle.inFlight, event);
+    armSessionTurnIdleTimer(sessionId, collector);
   };
 
   const getClaudeSessionPointerForChat = (sessionId: string) => {
@@ -17669,6 +17734,7 @@ export function createAgentChatService(args: {
     if (liveEvent.type === "status" && liveEvent.turnStatus === "started") {
       collector.turnStarted = true;
       if (liveEvent.turnId) collector.turnId = liveEvent.turnId;
+      noteSessionTurnActivity(managed.session.id, collector, liveEvent);
       return;
     }
 
@@ -17681,6 +17747,8 @@ export function createAgentChatService(args: {
       collector.turnId = liveEvent.turnId;
     }
     if (collector.turnId && liveEvent.type === "done" && liveEvent.turnId !== collector.turnId) return;
+
+    if (liveEvent.type !== "done") noteSessionTurnActivity(managed.session.id, collector, liveEvent);
 
     if (liveEvent.type === "text") {
       collector.outputText += liveEvent.text;
@@ -17700,9 +17768,7 @@ export function createAgentChatService(args: {
     if (liveEvent.type !== "done") return;
 
     collector.usage = liveEvent.usage;
-    if (collector.timeout) {
-      clearTimeout(collector.timeout);
-    }
+    clearSessionTurnCollectorTimers(collector);
     sessionTurnCollectors.delete(managed.session.id);
     collector.resolve({
       sessionId: managed.session.id,
@@ -21514,6 +21580,9 @@ export function createAgentChatService(args: {
     managed.ctoSessionStartedAt = null;
     persistChatState(managed);
 
+    // An ended session cannot finish its turn, and teardown does not always
+    // emit a closing `done`; without this a headless caller waits forever.
+    rejectActiveSessionTurnCollector(managed.session.id, "The chat session ended before the turn finished.");
     teardownRuntime(managed, "ended_session");
 
     try {
@@ -55942,9 +56011,12 @@ export function createAgentChatService(args: {
     reasoningEffort,
     executionMode,
     timeoutMs,
+    idleTimeoutMs,
     voiceCallId,
   }: AgentChatSendArgs & {
     timeoutMs?: number | null;
+    /** Interrupt the turn after this long with no activity. Absent, null or 0 means no idle watch. */
+    idleTimeoutMs?: number | null;
     /**
      * The CTO voice call this turn belongs to, when one is driving it.
      *
@@ -56000,8 +56072,11 @@ export function createAgentChatService(args: {
       : timeoutMs == null || Number(timeoutMs) === 0
         ? null
         : Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
-          ? Math.max(15_000, Math.floor(Number(timeoutMs)))
+          ? clampTurnTimerMs(Number(timeoutMs))
           : DEFAULT_RUN_SESSION_TURN_TIMEOUT_MS;
+    const normalizedIdleTimeoutMs = idleTimeoutMs != null && Number.isFinite(Number(idleTimeoutMs)) && Number(idleTimeoutMs) > 0
+      ? clampTurnTimerMs(Number(idleTimeoutMs))
+      : null;
     // Held for the life of the turn, and given back however it ends: an
     // abandoned id would stamp the user's NEXT typed message with a call that
     // is already over.
@@ -56019,25 +56094,20 @@ export function createAgentChatService(args: {
         turnStarted: false,
         lastError: null,
         timeout: null,
+        idle: normalizedIdleTimeoutMs != null
+          ? { timeoutMs: normalizedIdleTimeoutMs, timer: null, inFlight: new Set<string>() }
+          : null,
       };
 
       if (normalizedTimeoutMs != null) {
         collector.timeout = setTimeout(() => {
-          if (sessionTurnCollectors.get(sessionId) !== collector) return;
-          sessionTurnCollectors.delete(sessionId);
-          void interrupt({ sessionId }).catch((interruptError) => {
-            logger.warn("agent_chat.run_session_turn_timeout_interrupt_failed", {
-              sessionId,
-              error: interruptError instanceof Error ? interruptError.message : String(interruptError),
-            });
-          });
-          reject(new Error(
-            `Timed out waiting for session '${sessionId}' to finish the current turn. The turn was interrupted, but the chat stayed open.`,
-          ));
+          stopSessionTurnOnLimit(sessionId, collector, { kind: "time", ms: normalizedTimeoutMs });
         }, normalizedTimeoutMs);
       }
 
       sessionTurnCollectors.set(sessionId, collector);
+      // Armed before the provider starts, so a turn that never begins counts as idle too.
+      armSessionTurnIdleTimer(sessionId, collector);
 
       // The headless path is a real CTO turn, not a side channel: the voice's
       // `ask_cto` reaches the thread through here, and without this refresh it
@@ -56061,9 +56131,7 @@ export function createAgentChatService(args: {
       void refreshCtoLiveStateForTurn(sessionId)
         .then(() => executePreparedSendMessage(prepared))
         .catch((error) => {
-          if (collector.timeout) {
-            clearTimeout(collector.timeout);
-          }
+          clearSessionTurnCollectorTimers(collector);
           if (sessionTurnCollectors.get(sessionId) === collector) {
             sessionTurnCollectors.delete(sessionId);
           }
