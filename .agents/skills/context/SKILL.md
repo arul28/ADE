@@ -80,6 +80,11 @@ Three rules that cost hours when ignored:
   pid and endpoint on stderr and logs `brain.home_shared`. If you see that line,
   you have two brains on one database — decide which one you meant to have.
 
+- **A hand-started brain needs `--role cto`.** `ade serve` defaults to role
+  `agent`, which refuses desktop, phone and web clients. Start it as
+  `ade --role cto serve`. A brain started from an agent's shell drops that
+  agent's chat identity itself and says so on stderr.
+
 When you only need to read or drive a lane, prefer an isolated home
 (`ADE_HOME=$HOME/.ade-<name>` plus `--no-sync` on its own socket) over sharing
 `~/.ade` with the installed app.

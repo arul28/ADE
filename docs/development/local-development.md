@@ -132,6 +132,18 @@ arguments. `ADE_RUNTIME_PARENT_PID` / `ADE_RUNTIME_IDLE_EXIT_MS` are removed for
 the separate reason that a shared daemon must outlive the process that launched
 it.
 
+A brain started any other way — `ade serve` or `~/.ade-<channel>/bin/ade serve`
+typed into an agent's shell — now drops the caller identity itself at startup
+(`brainInheritedIdentity.ts`: the chat, spawn, browser-token and run keys above)
+and prints `ADE: This brain was started from an agent's shell. It ignores that
+agent's identity …`. Before that, such a brain clamped EVERY client to the
+launching agent, desktop included, and the Mac Desktop panel answered "Action
+'mac_desktop.startStream' requires elevated role." (2026-09-22). The role
+ceiling is not changed for you: a plain `ade serve` still defaults to `agent`,
+and it now says so — `ADE: This brain serves at role agent, so ADE desktop,
+phone and web clients (role cto) will be refused.` Start a hand-run brain that a
+desktop will connect to as `ade --role cto serve`.
+
 Override it when needed:
 
 ```bash

@@ -71,7 +71,7 @@ export class RuntimeRpcClient {
       const details = [
         info?.exitCode != null ? `exit code ${info.exitCode}` : null,
         info?.signal ? `signal ${info.signal}` : null,
-        info?.stderr?.trim() ? `stderr: ${info.stderr.trim()}` : null,
+        info?.stderr?.trim() ? `stderr: ${summarizeRemoteRuntimeStderr(info.stderr)}` : null,
       ].filter((value): value is string => value != null);
       this.failConnection(new Error(
         details.length > 0
@@ -321,4 +321,28 @@ export class RuntimeRpcClient {
       pending.reject(error);
     }
   }
+}
+
+/**
+ * The remote CLI's stderr, reduced to what a person can act on.
+ *
+ * On a failed connect the remote `ade` prints its error line, then a stack
+ * trace into a bundled `.sea` file, and Node adds an ExperimentalWarning and
+ * a "--trace-warnings" hint. All of it landed in the Machines dialog verbatim
+ * (2026-09-22), three times over. Keep the error lines; drop stack frames and
+ * runtime warnings. The CLI's own "ade: Error: " prefix goes too — the dialog
+ * already says the remote ADE failed.
+ */
+export function summarizeRemoteRuntimeStderr(stderr: string): string {
+  const kept = stderr
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) =>
+      line.length > 0
+      && !/^at\s/.test(line)
+      && !/\b(?:Experimental|Deprecation)Warning\b/.test(line)
+      && !/--trace-(?:warnings|deprecation)\b/.test(line)
+    )
+    .map((line) => line.replace(/^ade:\s+(?:Error:\s+)?/, ""));
+  return kept.length > 0 ? kept.join(" ") : stderr.trim();
 }

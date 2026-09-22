@@ -301,6 +301,13 @@ type RemoteRuntimeLayout = {
   agentSkillsSha256Expr: string;
   ptyHostWorkerExpr: string;
   ptyHostWorkerSha256Expr: string;
+  /**
+   * Where the remote brain finds the Mac Desktop driver: it walks up from its
+   * own binary to `resources/native`, so beside `bin/ade` is the one place a
+   * brain at `bin/ade` looks without any environment variable.
+   */
+  macDesktopDriverExpr: string;
+  macDesktopDriverSha256Expr: string;
 };
 
 function normalizeRemoteRuntimeChannel(value: unknown): RemoteRuntimeChannel {
@@ -336,6 +343,8 @@ export function resolveRemoteRuntimeLayout(env: NodeJS.ProcessEnv = process.env)
     agentSkillsSha256Expr: `${homeDirExpr}/agent-skills.sha256`,
     ptyHostWorkerExpr: `${runtimeDirExpr}/ptyHostWorker.cjs`,
     ptyHostWorkerSha256Expr: `${runtimeDirExpr}/ptyHostWorker.cjs.sha256`,
+    macDesktopDriverExpr: `${binDirExpr}/resources/native/ade-desktop-driver`,
+    macDesktopDriverSha256Expr: `${binDirExpr}/resources/native/ade-desktop-driver.sha256`,
   };
 }
 
@@ -494,6 +503,26 @@ function bundledPtyHostWorkerPath(resourcesPath: string, localBinaryPath: string
     if (localBinaryDir === repoRuntimeDir) {
       candidates.push(path.resolve(process.cwd(), "apps/ade-cli/dist/ptyHostWorker.cjs"));
     }
+  }
+  return candidates.find((candidate) => {
+    try {
+      return fs.statSync(candidate).isFile();
+    } catch {
+      return false;
+    }
+  }) ?? null;
+}
+
+/**
+ * The Mac Desktop driver this app ships, from the same resources directory as
+ * the runtime binary it uploads (`<resources>/runtime/<binary>` beside
+ * `<resources>/native/ade-desktop-driver`). The driver is a universal macOS
+ * binary, so one file serves an arm64 or x64 Mac.
+ */
+function bundledMacDesktopDriverPath(resourcesPath: string, localBinaryPath: string | null): string | null {
+  const candidates = [path.join(resourcesPath, "native", "ade-desktop-driver")];
+  if (localBinaryPath) {
+    candidates.push(path.join(path.dirname(path.dirname(localBinaryPath)), "native", "ade-desktop-driver"));
   }
   return candidates.find((candidate) => {
     try {
@@ -809,10 +838,13 @@ async function readRemoteRuntimeSupportStatus(args: {
   checkNativeDeps: boolean;
   checkPtyHostWorker: boolean;
   localPtyHostWorkerSha256: string | null;
+  /** Only for a macOS remote; null skips the check. */
+  localMacDesktopDriverSha256?: string | null;
 }): Promise<{
   nativeDepsReady: boolean;
   nodePath: string | null;
   ptyHostWorkerReady: boolean;
+  macDesktopDriverReady: boolean;
 }> {
   const sections = [
     remotePreflightSection("node_path", "command -v node || true"),
@@ -831,6 +863,13 @@ async function readRemoteRuntimeSupportStatus(args: {
       "echo ok",
     ].join(" && ") + " || true"));
   }
+  if (args.localMacDesktopDriverSha256) {
+    sections.push(remotePreflightSection("mac_desktop_driver_ready", [
+      `test -x ${args.layout.macDesktopDriverExpr}`,
+      `test "$(cat ${args.layout.macDesktopDriverSha256Expr} 2>/dev/null)" = ${shellQuote(args.localMacDesktopDriverSha256)}`,
+      "echo ok",
+    ].join(" && ") + " || true"));
+  }
   const result = await execSsh(args.client, sections.join("; "));
   const parsed = parseRemotePreflightSections(result.stdout);
   const nodePath = parsed.node_path?.split(/\r?\n/u)[0]?.trim() || null;
@@ -838,6 +877,7 @@ async function readRemoteRuntimeSupportStatus(args: {
     nativeDepsReady: parsed.native_deps_ready === "ok",
     nodePath,
     ptyHostWorkerReady: parsed.pty_host_worker_ready === "ok",
+    macDesktopDriverReady: parsed.mac_desktop_driver_ready === "ok",
   };
 }
 
@@ -1546,6 +1586,45 @@ async function uploadPtyHostWorker(
       `chmod 600 ${layout.ptyHostWorkerExpr}`,
       `chmod 600 ${layout.ptyHostWorkerSha256Expr}`,
     ].join(" && "), "Uploaded ADE PTY host worker did not pass size and checksum verification.");
+  } catch (error) {
+    await execSsh(client, `rm -f ${tempExpr}`).catch(() => undefined);
+    throw error;
+  }
+}
+
+/**
+ * Installs the Mac Desktop driver beside the remote brain.
+ *
+ * Uploaded only when its checksum differs from what is there. That is not an
+ * optimisation: macOS ties Screen Recording and Accessibility grants to the
+ * binary's code hash, so every needless re-upload of an ad-hoc signed driver
+ * would silently take the remote Mac's grants away. It is not re-signed for
+ * the same reason — the shipped signature is what the grants were given to.
+ */
+async function uploadMacDesktopDriver(
+  client: Client,
+  target: RemoteRuntimeTarget,
+  route: ConnectedSshRoute,
+  connectedConfig: OpenSshUploadConfig | null | undefined,
+  layout: RemoteRuntimeLayout,
+  localPath: string,
+  localSha256: string,
+): Promise<void> {
+  const tempExpr = `${layout.macDesktopDriverExpr}.${remoteUploadTempSuffix()}`;
+  await execSshOrThrow(
+    client,
+    `mkdir -p ${layout.binDirExpr}/resources/native`,
+    "Unable to create the remote Mac Desktop driver directory.",
+  );
+  try {
+    await uploadSshFile(client, target, route, connectedConfig, localPath, tempExpr);
+    await execSshOrThrow(client, [
+      remoteFileMatchesCommand(tempExpr, fileSizeBytes(localPath), localSha256),
+      `chmod 755 ${tempExpr}`,
+      `mv -f ${tempExpr} ${layout.macDesktopDriverExpr}`,
+      `printf '%s\\n' ${shellQuote(localSha256)} > ${layout.macDesktopDriverSha256Expr}`,
+      `chmod 600 ${layout.macDesktopDriverSha256Expr}`,
+    ].join(" && "), "Uploaded Mac Desktop driver did not pass size and checksum verification.");
   } catch (error) {
     await execSsh(client, `rm -f ${tempExpr}`).catch(() => undefined);
     throw error;
@@ -2346,6 +2425,10 @@ export async function bootstrapRemoteRuntime(args: {
     const bundledBinary = bundledRuntimePath(args.resourcesPath, arch.label);
     const localPtyHostWorker = bundledPtyHostWorkerPath(args.resourcesPath, bundledBinary);
     const localPtyHostWorkerSha256 = localPtyHostWorker ? hashRuntimeBinary(localPtyHostWorker) : null;
+    const localMacDesktopDriver = arch.platform === "darwin"
+      ? bundledMacDesktopDriverPath(args.resourcesPath, bundledBinary)
+      : null;
+    const localMacDesktopDriverSha256 = localMacDesktopDriver ? hashLocalFile(localMacDesktopDriver) : null;
     const localAgentSkillsRoot = bundledAgentSkillsPath(args.resourcesPath, bundledBinary);
     let remoteBinaryMatchesLocal: boolean | null = null;
 
@@ -2418,6 +2501,7 @@ export async function bootstrapRemoteRuntime(args: {
       checkNativeDeps: Boolean(nativeDepsBundle),
       checkPtyHostWorker: Boolean(localPtyHostWorkerSha256),
       localPtyHostWorkerSha256,
+      localMacDesktopDriverSha256,
     });
     const shouldUploadNativeDeps = Boolean(
       nativeDepsBundle &&
@@ -2487,6 +2571,25 @@ export async function bootstrapRemoteRuntime(args: {
     };
 
     const ptyHostWorkerReady = await ensurePtyHostWorkerReady(runtimeUploaded);
+
+    // A missing driver costs this machine Mac Desktop, not the connection: say
+    // so as a warning and carry on.
+    let macDesktopDriverWarning: string | null = null;
+    if (localMacDesktopDriver && localMacDesktopDriverSha256 && !supportStatus.macDesktopDriverReady) {
+      try {
+        await uploadMacDesktopDriver(
+          ssh,
+          args.target,
+          connectedRoute,
+          uploadConnectionConfig,
+          layout,
+          localMacDesktopDriver,
+          localMacDesktopDriverSha256,
+        );
+      } catch (error) {
+        macDesktopDriverWarning = `Mac Desktop is not available on this machine: ADE could not install its driver (${runtimeErrorMessage(error)}).`;
+      }
+    }
 
     let runtimeEnvPrefix = buildRemoteRuntimeEnvironmentPrefix({
       archLabel: arch.label,
@@ -2599,13 +2702,19 @@ export async function bootstrapRemoteRuntime(args: {
         }
       }
       if (!openedRuntime) {
-        const detail = attempted.map((attempt) => runtimeAttemptDetail({
-          layout: resolveRemoteRuntimeLayoutCandidates().find(
-            (candidate) => candidate.homeDirName === attempt.layout,
-          ) ?? layout,
-          phase: attempt.phase,
-          error: attempt.error,
-        })).join("\n");
+        // The first attempt is the install this app targets; the rest are other
+        // channels' installs tried as a fallback. Say which is which, so the
+        // reader does not mistake a missing beta install for the real failure.
+        const detail = attempted.map((attempt, index) => {
+          const line = runtimeAttemptDetail({
+            layout: resolveRemoteRuntimeLayoutCandidates().find(
+              (candidate) => candidate.homeDirName === attempt.layout,
+            ) ?? layout,
+            phase: attempt.phase,
+            error: attempt.error,
+          });
+          return index === 0 ? line : `Also tried ${line}`;
+        }).join("\n");
         throw new RemoteRuntimeConnectError({
           kind: "generic",
           message: "ADE couldn't connect to this machine. Check that ADE is open there, then press Try again.",
@@ -2620,6 +2729,7 @@ export async function bootstrapRemoteRuntime(args: {
     const projects = coerceProjects(await client.call("projects.list", {}));
     const connectedAt = Date.now();
     const compatibilityWarnings = [...initializeInfo.compatibilityWarnings];
+    if (macDesktopDriverWarning) compatibilityWarnings.push(macDesktopDriverWarning);
     if (runtimeLayoutFallbackReason) {
       compatibilityWarnings.push(runtimeLayoutFallbackReason);
     } else if (layout.homeDirName !== preferredLayout.homeDirName) {

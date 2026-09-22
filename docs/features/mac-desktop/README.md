@@ -125,7 +125,11 @@ client.
   forward opened on the authenticated sync channel (`syncPortForwardClient.ts`)
   whichever route carried it — direct LAN, tailnet, or the ADE account relay.
   The loopback URL and its token never leave the two machines. "Bring to my
-  screen" is hidden, because the user's screen is not on that Mac. When the
+  screen" is hidden, because the user's screen is not on that Mac. Over an SSH
+  target, the remote setup installs this desktop's driver beside the remote
+  brain (`~/.ade-<channel>/bin/resources/native/ade-desktop-driver`), only when
+  its hash changed: the remote Mac's Screen Recording and Accessibility grants
+  belong to that exact binary, so a needless re-upload would take them away. When the
   remote brain predates this feature and has no `mac_desktop` domain at all, the
   pane says so in the machine's own terms — "<Machine name> runs ADE
   <version>, which has no Mac Desktop. Update ADE there." — instead of printing

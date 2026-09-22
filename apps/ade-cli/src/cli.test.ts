@@ -1748,11 +1748,35 @@ describe("ADE CLI", () => {
 
     expect(
       machineRuntimeMismatchReason(runtimeInfo, "expected-build", "agent"),
-    ).toBe("build hash changed");
+    ).toMatch(/^build hash changed \((version, )?role ok\)$/);
     expect(
       machineRuntimeMismatchReason(runtimeInfo, "expected-build", "agent", {
         enforceBuildCompatibility: false,
       }),
+    ).toBeNull();
+  });
+
+  it("names every failed runtime check at once, not only the first", () => {
+    const runtimeInfo = {
+      version: process.env.ADE_CLI_VERSION?.trim() || "0.0.0",
+      buildHash: "other-build",
+      defaultRole: "agent" as const,
+      packageChannel: null,
+      projectRoot: null,
+      pid: 123,
+      uptimeMs: null,
+    };
+
+    const reason = machineRuntimeMismatchReason(runtimeInfo, "expected-build", "cto");
+
+    expect(reason).toContain("build hash changed");
+    expect(reason).toContain("default role agent cannot serve CLI role cto");
+    expect(
+      machineRuntimeMismatchReason(
+        { ...runtimeInfo, buildHash: "expected-build", defaultRole: "cto" },
+        "expected-build",
+        "cto",
+      ),
     ).toBeNull();
   });
 

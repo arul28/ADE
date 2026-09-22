@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { RuntimeRpcClient, type RuntimeRpcTransport, type RuntimeRpcTransportCloseInfo } from "./runtimeRpcClient";
+import {
+  RuntimeRpcClient,
+  summarizeRemoteRuntimeStderr,
+  type RuntimeRpcTransport,
+  type RuntimeRpcTransportCloseInfo,
+} from "./runtimeRpcClient";
 
 class MockTransport implements RuntimeRpcTransport {
   readonly writes: string[] = [];
@@ -357,5 +362,29 @@ describe("RuntimeRpcClient", () => {
     unsubscribe();
     transport.emitData({ jsonrpc: "2.0", method: "runtime/event", params: { projectId: "project-2" } });
     expect(onRuntimeEvent).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("summarizeRemoteRuntimeStderr", () => {
+  it("keeps the remote error and drops the stack trace and Node warnings", () => {
+    // The stderr a MacBook showed in the Machines dialog on 2026-09-22.
+    const stderr = [
+      "(node:67211) ExperimentalWarning: SQLite is an experimental feature and might change at any time",
+      "(Use `ade --trace-warnings ...` to show where the warning was created)",
+      "ade: Error: ADE runtime default role agent cannot serve CLI role cto.",
+      "    at connectMachineRuntimeDaemon (/Users/arul/ADE/apps/desktop/resources/runtime/.sea/darwin-arm64/cli-sea.cjs:318244:15)",
+      "    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)",
+      "    at async runNativeRpcStdio (/Users/arul/ADE/apps/desktop/resources/runtime/.sea/darwin-arm64/cli-sea.cjs:319051:15)",
+    ].join("\n");
+
+    expect(summarizeRemoteRuntimeStderr(stderr)).toBe(
+      "ADE runtime default role agent cannot serve CLI role cto.",
+    );
+  });
+
+  it("leaves a plain message alone", () => {
+    expect(summarizeRemoteRuntimeStderr("ADE beta brain socket was not available\n")).toBe(
+      "ADE beta brain socket was not available",
+    );
   });
 });

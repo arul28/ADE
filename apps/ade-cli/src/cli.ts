@@ -193,6 +193,11 @@ import {
 import { createHeadlessGitHubService } from "./headlessLinearServices";
 import type { SyncProjectCatalogProvider } from "./services/sync/syncHostService";
 import { createBrainHomeRegistry, describeOtherBrains } from "./services/runtime/brainHomeRegistry";
+import {
+  describeBrainRoleCeiling,
+  describeDroppedCallerIdentity,
+  dropInheritedCallerIdentity,
+} from "./services/runtime/brainInheritedIdentity";
 import { readProcessStartTimeMs } from "../../desktop/src/main/services/processes/processStartTime";
 import {
   JsonRpcError,
@@ -19656,6 +19661,13 @@ function machineRuntimeMismatchReason(
   expectedDefaultRole: GlobalOptions["role"],
   options: { enforceBuildCompatibility?: boolean } = {},
 ): string | null {
+  // Every check runs and every failure is named. Stopping at the first one
+  // turned a connection with three problems into three round trips, each
+  // looking like a new, unrelated error (2026-09-22: version, then build,
+  // then role). The passed checks are named too, so the reader can see how
+  // close the connection came.
+  const failed: string[] = [];
+  const passed: string[] = [];
   const enforceBuildCompatibility =
     options.enforceBuildCompatibility ?? true;
   if (enforceBuildCompatibility) {
@@ -19671,22 +19683,29 @@ function machineRuntimeMismatchReason(
         expectedBuildHash != null &&
         runtimeInfo.buildHash === expectedBuildHash;
       if (!versionMatches && !placeholderBuildMatches) {
-        return `version ${runtimeVersion ?? "missing"} does not match CLI version ${VERSION}`;
+        failed.push(`version ${runtimeVersion ?? "missing"} does not match CLI version ${VERSION}`);
+      } else {
+        passed.push("version");
       }
     }
 
-    if (
-      !sourceCliTalkingToReleasedRuntime &&
-      expectedBuildHash &&
-      runtimeInfo.buildHash !== expectedBuildHash
-    ) {
-      return runtimeInfo.buildHash ? "build hash changed" : "build hash missing";
+    if (!sourceCliTalkingToReleasedRuntime && expectedBuildHash) {
+      if (runtimeInfo.buildHash !== expectedBuildHash) {
+        failed.push(runtimeInfo.buildHash ? "build hash changed" : "build hash missing");
+      } else {
+        passed.push("build");
+      }
     }
   }
   if (!canRuntimeDefaultRoleServe(runtimeInfo.defaultRole, expectedDefaultRole)) {
-    return `default role ${runtimeInfo.defaultRole ?? "missing"} cannot serve CLI role ${expectedDefaultRole}`;
+    failed.push(`default role ${runtimeInfo.defaultRole ?? "missing"} cannot serve CLI role ${expectedDefaultRole}`);
+  } else {
+    passed.push("role");
   }
-  return null;
+  if (failed.length === 0) return null;
+  return passed.length > 0
+    ? `${failed.join("; ")} (${passed.join(", ")} ok)`
+    : failed.join("; ");
 }
 
 export function shouldEnforceMachineRuntimeBuildCompatibility(
@@ -21254,6 +21273,14 @@ async function runServe(
     const { getRuntimeServiceStatus } = await import("./serviceManager");
     return getRuntimeServiceStatus();
   }
+  // Before anything reads the env: a brain started from an agent's shell must
+  // not lend that agent's identity to every client it serves.
+  const droppedCallerIdentity = dropInheritedCallerIdentity(process.env);
+  const brainIdentityNotes = [
+    describeDroppedCallerIdentity(droppedCallerIdentity),
+    describeBrainRoleCeiling(options.role),
+  ].filter((note): note is string => note !== null);
+  for (const note of brainIdentityNotes) process.stderr.write(`ADE: ${note}\n`);
   if (process.platform === "darwin") {
     boundLaunchdLogs(path.dirname(lastFailurePathForMachine()));
   }
@@ -22728,6 +22755,12 @@ async function runServe(
     socketPath,
     tcpUrl: tcpUrl ?? null,
   });
+  if (droppedCallerIdentity.length > 0) {
+    headlessProjectLogger.warn("brain.inherited_caller_identity_dropped", { keys: droppedCallerIdentity });
+  }
+  if (options.role !== "cto") {
+    headlessProjectLogger.warn("brain.role_ceiling_below_cto", { role: options.role });
+  }
   /*
    * Who else is on this ADE home.
    *
