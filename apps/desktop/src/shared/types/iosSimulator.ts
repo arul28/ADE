@@ -1343,6 +1343,11 @@ export const APPLE_DEVICE_EXISTS_CODE = "APPLE_DEVICE_EXISTS" as const;
  * through `deviceDelete`, which stops its stream first.
  */
 export const APPLE_DEVICE_OWNED_BY_LANE_CODE = "APPLE_DEVICE_OWNED_BY_LANE" as const;
+/**
+ * The chosen clone template is running, and `simctl` cannot clone a booted
+ * device (error 405, "Unable to clone device in current state: Booted").
+ */
+export const APPLE_TEMPLATE_BOOTED_CODE = "APPLE_TEMPLATE_BOOTED" as const;
 /** No simulator runtime is installed, and ADE never downloads one. */
 export const APPLE_NO_INSTALLED_SIMULATORS_CODE = "APPLE_NO_INSTALLED_SIMULATORS" as const;
 /** The vendored Swift helper is missing, not running, or not answering. */

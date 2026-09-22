@@ -14,6 +14,7 @@ import {
   APPLE_DEVICE_ATTACHED_NOT_DELETABLE_CODE,
   APPLE_DEVICE_EXISTS_CODE,
   APPLE_DEVICE_OWNED_BY_LANE_CODE,
+  APPLE_TEMPLATE_BOOTED_CODE,
   APPLE_NO_INSTALLED_SIMULATORS_CODE,
   type AppleInstalledSimulator,
 } from "../../../shared/types/iosSimulator";
@@ -195,6 +196,41 @@ describe("laneDeviceRegistry device lifecycle", () => {
       ["simctl", "shutdown"],
       ["simctl", "delete"],
     ]);
+  });
+
+  it("regression: never picks a booted device as the clone template", async () => {
+    // `simctl clone` fails on a booted device with error 405, "Unable to clone
+    // device in current state: Booted". Nothing looked at state, so on a Mac
+    // whose newest iPhone was running, the automatic pick chose the one device
+    // that could not be cloned. An agent hit it as a raw simctl error from
+    // `open-device`.
+    const booted = simulator({ udid: "hot", name: "iPhone 17 Pro", state: "Booted" });
+    const stopped = simulator({ udid: "cold", name: "iPhone 17", state: "Shutdown" });
+
+    expect(pickAppleTemplate({ installed: [booted, stopped] })?.udid).toBe("cold");
+    // Even when the booted one is the project's last used template.
+    expect(pickAppleTemplate({ installed: [booted, stopped], lastUsedUdid: "hot" })?.udid).toBe("cold");
+    // A template named outright is still the caller's choice.
+    expect(pickAppleTemplate({ installed: [booted, stopped], from: "hot" })?.udid).toBe("hot");
+  });
+
+  it("names the booted template instead of letting simctl error 405 escape", async () => {
+    const run = vi.fn(async (..._call: unknown[]) => ({ stdout: "clone-udid\n", stderr: "" }));
+    // Every installed simulator is booted, so there is no cloneable template.
+    const registry = createLaneDeviceRegistry({
+      run: run as never,
+      listInstalledSimulators: async () => [
+        simulator({ udid: "only", name: "iPhone 17 Pro", state: "Booted" }),
+      ],
+      store: memoryStore(),
+      logger: noopLogger,
+    });
+
+    await expect(registry.deviceCreate({ laneId: "lane-1" })).rejects.toMatchObject({
+      code: APPLE_TEMPLATE_BOOTED_CODE,
+    });
+    // Nothing was cloned, so nothing has to be cleaned up.
+    expect(run.mock.calls.some((call) => (call[1] as string[])?.[1] === "clone")).toBe(false);
   });
 
   it("regression: a takeover ends EVERY stale binding, not just the first", async () => {

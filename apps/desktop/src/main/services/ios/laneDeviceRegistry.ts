@@ -13,6 +13,7 @@ import {
   APPLE_DEVICE_ATTACHED_NOT_DELETABLE_CODE,
   APPLE_DEVICE_EXISTS_CODE,
   APPLE_DEVICE_OWNED_BY_LANE_CODE,
+  APPLE_TEMPLATE_BOOTED_CODE,
   APPLE_NO_INSTALLED_SIMULATORS_CODE,
 } from "../../../shared/types/iosSimulator";
 
@@ -66,6 +67,15 @@ export class AppleDeviceOwnedByLaneError extends Error {
   constructor(readonly device: AppleLaneDevice) {
     super(`${APPLE_DEVICE_OWNED_BY_LANE_CODE}: ${device.name} (${device.udid}) is held by lane ${device.laneId}. That lane gives it up itself; deleting it here would take its live view away with no warning on its screen.`);
     this.name = "AppleDeviceOwnedByLaneError";
+  }
+}
+
+export class AppleTemplateBootedError extends Error {
+  readonly code = APPLE_TEMPLATE_BOOTED_CODE;
+
+  constructor(readonly template: AppleInstalledSimulator) {
+    super(`${APPLE_TEMPLATE_BOOTED_CODE}: ${template.name} (${template.udid}) is running, and simctl cannot clone a booted device. Power it off, or name a stopped simulator to copy from.`);
+    this.name = "AppleTemplateBootedError";
   }
 }
 
@@ -237,18 +247,34 @@ export function pickAppleTemplate(input: {
   if (!installed.length) return null;
   const from = input.from?.trim();
   if (from) {
+    // An explicitly named template is the caller's choice, booted or not. The
+    // clone will fail if it is booted, and `create` says so by name.
     return installed.find((device) => device.udid === from)
       ?? installed.find((device) => device.name === from)
       ?? installed.find((device) => device.name.toLowerCase() === from.toLowerCase())
       ?? null;
   }
+  /*
+   * `simctl clone` cannot copy a BOOTED device — it fails with "Unable to
+   * clone device in current state: Booted" (error 405). Nothing here looked at
+   * state, so on a Mac whose newest iPhone happened to be running, every
+   * automatic pick chose the one device that could not be cloned, and
+   * `open-device` failed with a raw simctl error. Found by an agent testing
+   * the flow.
+   *
+   * Booted devices stay in the pool as a last resort so the caller gets the
+   * named error below rather than "no simulators installed", which would be
+   * false.
+   */
+  const cloneable = installed.filter((device) => device.state !== "Booted");
+  const candidates = cloneable.length ? cloneable : installed;
   const lastUsed = input.lastUsedUdid?.trim();
   if (lastUsed) {
-    const match = installed.find((device) => device.udid === lastUsed);
+    const match = candidates.find((device) => device.udid === lastUsed);
     if (match) return match;
   }
-  const phones = installed.filter((device) => device.family === "iphone");
-  const pool = phones.length ? phones : installed;
+  const phones = candidates.filter((device) => device.family === "iphone");
+  const pool = phones.length ? phones : candidates;
   return [...pool].sort((a, b) => {
     const byRuntime = appleRuntimeScore(b.runtime) - appleRuntimeScore(a.runtime);
     if (byRuntime !== 0) return byRuntime;
@@ -547,6 +573,13 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
       }
       throw new AppleNoInstalledSimulatorsError();
     }
+    /*
+     * Reached when every installed simulator is booted, or when the caller
+     * named a booted one. `simctl clone` fails on a booted device with a bare
+     * "Unable to clone device in current state: Booted", which tells the reader
+     * nothing about what to do next.
+     */
+    if (template.state === "Booted") throw new AppleTemplateBootedError(template);
     const name = appleLaneDeviceName({
       laneId,
       laneName: laneNameFor(laneId),
