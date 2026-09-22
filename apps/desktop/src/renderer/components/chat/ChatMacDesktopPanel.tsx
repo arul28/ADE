@@ -183,8 +183,13 @@ const MacDesktopWindowCard = memo(function MacDesktopWindowCard({
         event.preventDefault();
         onSelect(entry.id);
       }}
+      title={title}
       className={cn(
-        MAC_DESKTOP_LIST_ROW,
+        // A card, not a row: the list wraps left to right, so each one is a
+        // fixed rectangle and the wrap point is the pane's width rather than
+        // one window per line down the whole panel.
+        "group flex h-8 w-[196px] shrink-0 items-center gap-1.5 rounded-[var(--radius-sm)] px-1.5 text-left",
+        "border border-border/50 bg-surface transition-colors duration-[120ms] ease-out",
         "cursor-default",
         selected
           ? "bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-accent)_55%,transparent)]"
@@ -192,19 +197,14 @@ const MacDesktopWindowCard = memo(function MacDesktopWindowCard({
       )}
     >
       <MacDesktopAppIcon iconPng={iconPng ?? entry.iconPng} appName={entry.appName} />
-      <span className={cn(MAC_DESKTOP_LIST_TITLE, "flex-none max-w-[55%]")} title={entry.appName}>
-        {entry.appName}
-      </span>
+      {/* The window's own title is the card's tooltip: it is what tells two
+          windows of one app apart, and it does not fit on the face. */}
+      <span className={cn(MAC_DESKTOP_LIST_TITLE, "text-[11.5px]")}>{entry.appName}</span>
       {entry.minimized ? <MacDesktopMinimizedBadge /> : null}
-      {title !== entry.appName ? (
-        <span className="min-w-0 flex-1 truncate text-[11.5px] text-muted-fg/80" title={title}>{title}</span>
-      ) : (
-        <span className="min-w-0 flex-1" />
-      )}
       <MacDesktopRowAction
         label="Release"
         testId="mac-desktop-window-release"
-        title={`Release “${title}” back to your screen`}
+        title={`Send “${title}” back to your main screen`}
         onClick={() => onRelease(entry.id)}
       />
     </div>
@@ -839,6 +839,33 @@ export function ChatMacDesktopPanel({
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, []);
 
+  /**
+   * The same Escape, for the case the listener above cannot see.
+   *
+   * A takeover on the Mac that owns the display posts its clicks through the
+   * HID tap, which macOS cannot tell from a real one — so the first click
+   * activates whatever window is under it on the lane's display, and from then
+   * on the lane's app owns the keyboard. The renderer gets no `keydown` at
+   * all, and the panic key is dead exactly when it is needed. Main registers a
+   * machine-wide accelerator for the takeover's lifetime and calls back here.
+   *
+   * Armed only while the lane's Mac is this one. A remote lane keeps focus in
+   * this window, so the listener above is enough and taking the key
+   * system-wide would be an intrusion that buys nothing.
+   */
+  const wantsEscapeHotkey = iHaveControl && laneHostIsLocal;
+  useEffect(() => {
+    const api = window.ade.macDesktop;
+    if (!api?.setEscapeHotkey || !api.onEscapeHotkey) return;
+    if (!wantsEscapeHotkey) return;
+    const off = api.onEscapeHotkey(() => { escapeRef.current(); });
+    void api.setEscapeHotkey({ laneId, armed: true }).catch(() => {});
+    return () => {
+      off();
+      void api.setEscapeHotkey({ laneId, armed: false }).catch(() => {});
+    };
+  }, [laneId, wantsEscapeHotkey]);
+
   useEffect(() => {
     if (!expanded || typeof document === "undefined") return;
     const root = document.documentElement;
@@ -1330,7 +1357,37 @@ export function ChatMacDesktopPanel({
   );
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-2" data-testid="mac-desktop-panel">
+    <div className="relative flex h-full min-h-0 flex-col gap-2" data-testid="mac-desktop-panel">
+      {/* ── Add app, over the whole pane ─────────────────────────────────
+
+          The picker used to be drawn INLINE where the list goes, so it opened
+          in a short box under the preview and the thing it was adding to was
+          the thing it replaced. It covers the pane instead: opaque, its own
+          scroll box, and the preview keeps streaming behind it.
+
+          Inside this panel rather than a window-level modal on purpose — it
+          belongs to this lane's desktop, and a second pane in another window
+          must not have its picker taken over by this one. */}
+      {pickerOpen ? (
+        <div
+          className="absolute inset-0 z-20 flex min-h-0 flex-col overflow-hidden rounded-[var(--radius-sm)] border border-border bg-surface"
+          data-testid="mac-desktop-picker-overlay"
+        >
+          <MacDesktopClaimPicker
+            inline
+            laneId={laneId}
+            displayId={display?.displayId}
+            laneNames={laneNames}
+            windows={claimable}
+            loading={claimableLoading}
+            error={claimError}
+            onRefresh={() => void refreshClaimable()}
+            onClaim={claimWindow}
+            onClose={() => setPickerOpen(false)}
+          />
+        </div>
+      ) : null}
+
       {/* The decoder, mounted once and never moved in the React tree. Its host
           node is what travels between the pane and the overlay. */}
       {videoHost && live.url
@@ -1356,15 +1413,6 @@ export function ChatMacDesktopPanel({
       <div className={cn(WORK_TOOL_CHROME_ROW, "relative flex-nowrap gap-1")}>
         {renderChromeRow("pane")}
       </div>
-      {iHaveControl && laneHostIsLocal ? (
-        <p
-          data-testid="mac-desktop-same-machine-note"
-          className="px-1 text-[11px] leading-snug text-amber-200/90"
-        >
-          You're on this Mac, so each click moves its pointer. Escape puts it back.
-        </p>
-      ) : null}
-
       {/* ── Permission banner over a live picture ──────────────────────
           The picture streams without Accessibility; the mouse does not work.
           The banner names the grant and carries the same two buttons as the
@@ -1423,69 +1471,48 @@ export function ChatMacDesktopPanel({
 
         {/* ── Apps ────────────────────────────────────────────────────────
 
-            The lane's desktop, named in the user's vocabulary: one row per
-            window parked here, and the Add app picker drawn INLINE in place of
-            the list. No lease/claim words — a window is on this desktop or it
-            is not. The empty state still offers the Add app button the heading
-            carries, so there is always a way to put something here. */}
+            The lane's desktop, named in the user's vocabulary: one card per
+            window parked here, wrapping left to right, and a trailing button
+            that opens the picker over the whole pane. No lease/claim words —
+            a window is on this desktop or it is not. */}
         <div
           data-testid="mac-desktop-apps"
-          className={cn(
-            "flex min-h-0 shrink-0 flex-col gap-0.5",
-            // The picker needs a bounded box to scroll inside; the list itself
-            // is content-sized.
-            pickerOpen && "min-h-[240px] max-h-[70vh]",
-          )}
+          className="flex min-h-0 shrink-0 flex-col gap-0.5"
         >
-          {pickerOpen ? (
-            <MacDesktopClaimPicker
-              inline
-              laneId={laneId}
-              displayId={display?.displayId}
-              laneNames={laneNames}
-              windows={claimable}
-              loading={claimableLoading}
-              error={claimError}
-              onRefresh={() => void refreshClaimable()}
-              onClaim={claimWindow}
-              onClose={() => setPickerOpen(false)}
-            />
-          ) : (
-            <>
-              <div className="flex h-7 items-center gap-1 px-1" data-testid="mac-desktop-apps-header">
-                <span className={WORK_TOOL_SECTION_LABEL_TEXT}>Apps</span>
-                <button
-                  type="button"
-                  data-testid="mac-desktop-add-app"
-                  onClick={() => setPickerOpen(true)}
-                  className={cn(
-                    MAC_DESKTOP_LIST_ROW,
-                    "ml-auto h-6 w-auto shrink-0 gap-1 px-1.5 text-[11.5px] text-muted-fg hover:bg-white/[0.06] hover:text-fg",
-                  )}
-                >
-                  <Plus size={12} />
-                  Add app
-                </button>
-              </div>
+          <div className="flex h-7 items-center gap-1 px-1" data-testid="mac-desktop-apps-header">
+            <span className={WORK_TOOL_SECTION_LABEL_TEXT}>Apps</span>
+          </div>
 
-              {parkedWindows.length ? (
-                parkedWindows.map((entry) => (
-                  <MacDesktopWindowCard
-                    key={entry.id}
-                    window={entry}
-                    selected={entry.id === selectedWindowId}
-                    iconPng={claimAppIcons[entry.bundleId ?? entry.appName] ?? entry.iconPng ?? null}
-                    onSelect={selectWindow}
-                    onRelease={releaseWindowById}
-                  />
-                ))
-              ) : (
-                <p className="px-1 py-1 text-[11.5px] text-muted-fg" data-testid="mac-desktop-apps-empty">
-                  No apps on this desktop yet.
-                </p>
+          {/* The cards wrap left to right, and the way to add one is the last
+              thing in the same run rather than a button in the heading. With
+              nothing here yet it is the only thing in the run, so the empty
+              state needs no button of its own. */}
+          <div className="flex flex-wrap items-center gap-1.5 px-1" data-testid="mac-desktop-apps-list">
+            {parkedWindows.map((entry) => (
+              <MacDesktopWindowCard
+                key={entry.id}
+                window={entry}
+                selected={entry.id === selectedWindowId}
+                iconPng={claimAppIcons[entry.bundleId ?? entry.appName] ?? entry.iconPng ?? null}
+                onSelect={selectWindow}
+                onRelease={releaseWindowById}
+              />
+            ))}
+            <button
+              type="button"
+              data-testid="mac-desktop-add-app"
+              onClick={() => setPickerOpen(true)}
+              title="Add an app to this desktop"
+              className={cn(
+                "flex h-8 shrink-0 items-center gap-1 rounded-[var(--radius-sm)] px-2",
+                "border border-dashed border-border/70 text-[11.5px] text-muted-fg",
+                "transition-colors duration-[120ms] ease-out hover:bg-white/[0.06] hover:text-fg",
               )}
-            </>
-          )}
+            >
+              <Plus size={12} />
+              {parkedWindows.length ? <span className="sr-only">Add app</span> : "Add app"}
+            </button>
+          </div>
 
           {/* ── The agent's last look ─────────────────────────────────
               One row: what the AGENT last did to this screen, when, how much

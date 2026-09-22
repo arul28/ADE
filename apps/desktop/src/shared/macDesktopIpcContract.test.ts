@@ -67,6 +67,8 @@ function harness() {
   const invoked: Array<{ channel: string; args: unknown }> = [];
   const resolveStreamUrl = vi.fn(async () => ({ url: null, forwarded: false, error: null }));
   const onEvent = vi.fn(() => () => {});
+  const setEscapeHotkey = vi.fn(async () => ({ armed: true }));
+  const onEscapeHotkey = vi.fn(() => () => {});
   const bridge = createMacDesktopBridge({
     callAction: async <T,>(
       pin: unknown,
@@ -82,9 +84,11 @@ function harness() {
       return null;
     },
     resolveStreamUrl,
+    setEscapeHotkey,
+    onEscapeHotkey,
     onEvent,
   });
-  return { bridge, routed, invoked, resolveStreamUrl, onEvent };
+  return { bridge, routed, invoked, resolveStreamUrl, onEvent, setEscapeHotkey };
 }
 
 describe("Mac Desktop IPC contract", () => {
@@ -119,7 +123,9 @@ describe("Mac Desktop IPC contract", () => {
       "macDesktopReturnControl",
       "macDesktopRenewLease",
       "macDesktopPresent",
+      "macDesktopSetEscapeHotkey",
       "macDesktopEvent",
+      "macDesktopEscapeHotkeyPressed",
     ];
     expect(macDesktopChannelKeys.sort()).toEqual([...required].sort());
   });
@@ -128,7 +134,7 @@ describe("Mac Desktop IPC contract", () => {
     const missing = macDesktopChannelKeys
       // The event channel is pushed to the renderer, not invoked, so it has a
       // sender rather than a handler.
-      .filter((key) => key !== "macDesktopEvent")
+      .filter((key) => key !== "macDesktopEvent" && key !== "macDesktopEscapeHotkeyPressed")
       .filter((key) => !registerIpc.includes(`ipcMain.handle(IPC.${key},`));
     expect(missing).toEqual([]);
   });
@@ -136,7 +142,15 @@ describe("Mac Desktop IPC contract", () => {
   it("exposes exactly the bridge methods the renderer declares", () => {
     const { bridge } = harness();
     expect(Object.keys(bridge).sort()).toEqual(
-      [...ROUTED_CALLS.map(([method]) => method), "resolveStreamUrl", "onEvent"].sort(),
+      [
+        ...ROUTED_CALLS.map(([method]) => method),
+        "resolveStreamUrl",
+        // Never routed: the accelerator belongs to this Electron app, not the
+        // runtime that owns the display.
+        "setEscapeHotkey",
+        "onEscapeHotkey",
+        "onEvent",
+      ].sort(),
     );
   });
 
@@ -169,7 +183,11 @@ describe("Mac Desktop IPC contract", () => {
     for (const [method, args] of ROUTED_CALLS) await methods[method](args);
     const reached = new Set(invoked.map((entry) => entry.channel));
     const missing = macDesktopChannelKeys
-      .filter((key) => key !== "macDesktopEvent")
+      // Neither pushed channel is invoked, and `setEscapeHotkey` is not a
+      // routed call: it is this app's own keyboard, never the lane host's.
+      .filter((key) => key !== "macDesktopEvent"
+        && key !== "macDesktopEscapeHotkeyPressed"
+        && key !== "macDesktopSetEscapeHotkey")
       .filter((key) => !reached.has(IPC[key as keyof typeof IPC]));
     expect(missing).toEqual([]);
   });

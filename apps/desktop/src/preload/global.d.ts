@@ -2710,6 +2710,13 @@ declare global {
           streamUrl: string | null,
           pin?: OpenProjectBinding | null,
         ) => Promise<{ url: string | null; forwarded: boolean; error: string | null }>;
+        /**
+         * Escape while a takeover holds THIS Mac, caught before the app that
+         * has the keyboard. No pin: the accelerator belongs to the Electron
+         * app the person is sitting at, never to the lane's host.
+         */
+        setEscapeHotkey: (args: { laneId: string; armed: boolean }) => Promise<{ armed: boolean }>;
+        onEscapeHotkey: (cb: () => void) => () => void;
         onEvent: (
           cb: (ev: MacDesktopEventPayload) => void,
           pin?: OpenProjectBinding | null,

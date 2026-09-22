@@ -63,6 +63,13 @@ export type MacDesktopBridgeDeps = {
   ) => Promise<T>;
   /** `ipcRenderer.invoke`, for the local arm only. */
   invoke: (channel: string, args: unknown) => Promise<unknown>;
+  /**
+   * Arms the machine-wide Escape while a takeover runs on THIS Mac, and hears
+   * it fire. Never routed: the key belongs to the Electron app the person is
+   * sitting at, not to the runtime that owns the display.
+   */
+  setEscapeHotkey: (args: { laneId: string; armed: boolean }) => Promise<{ armed: boolean }>;
+  onEscapeHotkey: (cb: () => void) => () => void;
   /** Rewrites the host's loopback URL for this desktop, forwarding if remote. */
   resolveStreamUrl: (
     streamUrl: string | null,
@@ -134,6 +141,8 @@ export function createMacDesktopBridge(deps: MacDesktopBridgeDeps) {
      * is built by this process.
      */
     resolveStreamUrl: deps.resolveStreamUrl,
+    setEscapeHotkey: deps.setEscapeHotkey,
+    onEscapeHotkey: deps.onEscapeHotkey,
     onEvent: deps.onEvent,
   };
 }

@@ -520,7 +520,11 @@ export const IPC = {
   macDesktopReturnControl: "ade.macDesktop.returnControl",
   macDesktopRenewLease: "ade.macDesktop.renewLease",
   macDesktopPresent: "ade.macDesktop.present",
+  /** Arms/disarms the machine-wide Escape while a takeover runs on this Mac. */
+  macDesktopSetEscapeHotkey: "ade.macDesktop.setEscapeHotkey",
   macDesktopEvent: "ade.macDesktop.event",
+  /** Pushed to the renderer when that Escape fires. */
+  macDesktopEscapeHotkeyPressed: "ade.macDesktop.escapeHotkeyPressed",
   appControlGetStatus: "ade.appControl.getStatus",
   appControlLaunch: "ade.appControl.launch",
   appControlLaunchInTerminal: "ade.appControl.launchInTerminal",

@@ -8527,6 +8527,13 @@ const adeBridge = {
     callAction: callMacDesktopActionOr,
     invoke: (channel, args) => ipcRenderer.invoke(channel, args),
     resolveStreamUrl: resolveMacDesktopStreamUrl,
+    setEscapeHotkey: (args) =>
+      ipcRenderer.invoke(IPC.macDesktopSetEscapeHotkey, args) as Promise<{ armed: boolean }>,
+    onEscapeHotkey: (cb) => {
+      const listener = () => cb();
+      ipcRenderer.on(IPC.macDesktopEscapeHotkeyPressed, listener);
+      return () => ipcRenderer.removeListener(IPC.macDesktopEscapeHotkeyPressed, listener);
+    },
     onEvent: subscribeMacDesktopEvents,
   }),
   appControl: {

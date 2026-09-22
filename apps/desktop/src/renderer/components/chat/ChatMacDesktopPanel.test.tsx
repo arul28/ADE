@@ -412,7 +412,7 @@ describe("ChatMacDesktopPanel actions on a pinned machine", () => {
 
       macDesktop.getStatus.mockResolvedValue(makeStatus({ lease: held, hostIsLocal: true }));
       renderLocalPanel();
-      expect(await screen.findByTestId("mac-desktop-same-machine-note")).toBeTruthy();
+      await screen.findByText("Return to agent");
       fireEvent.pointerMove(screen.getByTestId("mac-desktop-surface"), { clientX: 500, clientY: 500 });
       expect(macDesktop.move).not.toHaveBeenCalled();
 
@@ -421,7 +421,6 @@ describe("ChatMacDesktopPanel actions on a pinned machine", () => {
       macDesktop.getStatus.mockResolvedValue(makeStatus({ lease: held, hostIsLocal: true }));
       renderPanel();
       await screen.findByText("Return to agent");
-      expect(screen.queryByTestId("mac-desktop-same-machine-note")).toBeNull();
       // One hover is one event: the pane drops it when the surface has not
       // been measured yet, and nothing replays it. Move inside the wait so
       // the assertion tests the forwarding, not the order two effects ran in.
@@ -472,9 +471,25 @@ describe("ChatMacDesktopPanel Apps section", () => {
 
     const apps = await screen.findByTestId("mac-desktop-apps");
     expect(apps.textContent).toContain("Xcode");
-    expect(apps.textContent).toContain("ADE.xcodeproj");
     expect(screen.getByTestId("mac-desktop-app-icon")).toBeTruthy();
     expect(screen.getByTestId("mac-desktop-window-release").textContent).toContain("Release");
+    // The window's own title is the card's tooltip, not text on its face: the
+    // cards are fixed rectangles that wrap, so a long document name would
+    // either blow the card out or be truncated to nothing readable.
+    const card = screen.getByTestId("mac-desktop-window-card");
+    expect(card.getAttribute("title")).toContain("ADE.xcodeproj");
+  });
+
+  it("wraps the cards left to right and puts Add app after the last one", async () => {
+    renderPanel();
+
+    const list = await screen.findByTestId("mac-desktop-apps-list");
+    expect(list.className).toContain("flex-wrap");
+    // The button is the last thing in the same run, not a control in the
+    // heading: the heading carries the label and nothing else.
+    expect(list.lastElementChild?.getAttribute("data-testid")).toBe("mac-desktop-add-app");
+    const header = screen.getByTestId("mac-desktop-apps-header");
+    expect(header.querySelector("button")).toBeNull();
   });
 
   it("Add app opens the picker inside the pane, not in a portal", async () => {
@@ -486,6 +501,12 @@ describe("ChatMacDesktopPanel Apps section", () => {
     expect(screen.getByText("Add an app to this desktop")).toBeTruthy();
     expect(document.body.querySelector(':scope > [data-testid="mac-desktop-claim-picker"]')).toBeNull();
     expect(screen.getByTestId("mac-desktop-panel").contains(picker)).toBe(true);
+    // Over the whole pane and opaque, with the Apps list still mounted behind
+    // it: the picker used to replace the very list it adds to.
+    const overlay = screen.getByTestId("mac-desktop-picker-overlay");
+    expect(overlay.className).toContain("absolute inset-0");
+    expect(overlay.className).toContain("bg-surface");
+    expect(screen.getByTestId("mac-desktop-apps-list")).toBeTruthy();
   });
 
   it("strip shows no lane name or Windows dropdown", async () => {

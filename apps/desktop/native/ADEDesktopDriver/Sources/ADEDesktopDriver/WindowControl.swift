@@ -583,9 +583,42 @@ final class WindowControl {
         lock.unlock()
 
         guard var window = window(withId: windowId) else { return nil }
-        if let original, let element = axWindow(for: window) {
-            _ = Self.setFrame(element, original)
-            window.frame = Self.frame(of: element) ?? original
+        if let element = axWindow(for: window) {
+            // Release means "put it back on my screen", so a frame that is
+            // still on the lane's display is no destination at all.
+            //
+            // `originalFrames` records where a window was when it was PARKED,
+            // and an app that ADE opened for the lane was already on the
+            // lane's display at that moment. Restoring that frame moved the
+            // window from where it was to exactly where it was, which is why
+            // the button looked dead. A window genuinely claimed from a real
+            // screen still has that screen's frame, and still goes home to it.
+            let laneDisplay = displayIds[ownershipRecord.laneId]
+            let cameFromARealScreen = original.map { frame in
+                let host = displayId(containing: frame)
+                return host != nil && host != laneDisplay
+            } ?? false
+            let target: CGRect
+            if cameFromARealScreen, let original {
+                target = original
+            } else {
+                let mainBounds = CGDisplayBounds(CGMainDisplayID())
+                target = Geometry.cascadeFrame(
+                    index: 0,
+                    size: CGSize(
+                        width: min(window.frame.width, mainBounds.width),
+                        height: min(window.frame.height, mainBounds.height)
+                    ),
+                    display: DisplayPlacement(
+                        origin: mainBounds.origin,
+                        width: mainBounds.width,
+                        height: mainBounds.height,
+                        scale: 1
+                    )
+                )
+            }
+            _ = Self.setFrame(element, target)
+            window.frame = Self.frame(of: element) ?? target
         }
         window.laneId = nil
         window.onDisplayId = displayId(containing: window.frame)

@@ -145,20 +145,25 @@ export function createMacDesktopWindows(deps: MacDesktopWindowsDeps) {
       ? [args.windowId]
       : ownership.listWindowRecords(laneId).map((record) => record.windowId);
     let released = 0;
+    let lastError: string | null = null;
     for (const windowId of targets) {
       try {
         await seat.unpark({ windowId });
         ownership.releaseWindow(windowId);
         released += 1;
       } catch (error) {
-        deps.logger.debug("mac_desktop.release_window_failed", {
-          laneId,
-          windowId,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        lastError = error instanceof Error ? error.message : String(error);
+        deps.logger.debug("mac_desktop.release_window_failed", { laneId, windowId, error: lastError });
       }
     }
     if (released) deps.emit({ type: "windows-changed", laneId, windows: await listInternal(laneId) });
+    // A Release that released nothing is reported, not swallowed. Every
+    // failure used to go to a debug line and the caller got `{released: 0}`,
+    // so the button was indistinguishable from a button wired to nothing —
+    // which is exactly how it looked to the person pressing it.
+    if (!released && targets.length) {
+      throw new Error(lastError ?? "Could not move that window back to your screen.");
+    }
     return { released };
   };
 

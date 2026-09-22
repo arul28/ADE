@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, shell, systemPreferences } from "electron";
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, nativeImage, shell, systemPreferences, webContents } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
 import {
   createEmptyAutoUpdateSnapshot,
@@ -870,6 +870,7 @@ import type { createComputerUseArtifactBrokerService } from "../computerUse/comp
 import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
 import type { createIosSimulatorService } from "../ios/iosSimulatorService";
 import type { MacDesktopServiceApi } from "../../../shared/types/macDesktop";
+import { createMacDesktopEscapeHotkey } from "../macDesktop/macDesktopEscapeHotkey";
 import type { createAppControlService } from "../appControl/appControlService";
 import type { createBuiltInBrowserService } from "../builtInBrowser/builtInBrowserService";
 import {
@@ -2696,6 +2697,25 @@ export function registerIpc({
    * `callMacDesktopActionOr`. Rejecting with a sentence is what lets the panel
    * render "no display on this machine" instead of an opaque IPC crash.
    */
+  /**
+   * Escape while a takeover holds this Mac. Built here rather than in the
+   * service context because it is about this Electron app's keyboard, and a
+   * runtime-backed build has no `macDesktopService` to hang it off.
+   */
+  const macDesktopEscapeHotkey = createMacDesktopEscapeHotkey({
+    register: (accelerator, handler) => globalShortcut.register(accelerator, handler),
+    unregister: (accelerator) => globalShortcut.unregister(accelerator),
+    notify: (webContentsId) => {
+      const contents = webContents.fromId(webContentsId);
+      if (!contents || contents.isDestroyed()) return false;
+      contents.send(IPC.macDesktopEscapeHotkeyPressed, {});
+      return true;
+    },
+    log: (line) => getCtx().logger.warn(line),
+  });
+  // Never leave the machine's Escape key taken after ADE goes away.
+  app.once("will-quit", () => macDesktopEscapeHotkey.dispose());
+
   const ensureMacDesktop = (): MacDesktopServiceApi => {
     const service = getCtx().macDesktopService;
     if (!service) {
@@ -9750,6 +9770,22 @@ export function registerIpc({
   ipcMain.handle(IPC.macDesktopReturnControl, async (_event, arg) => ensureMacDesktop().returnControl(arg));
   ipcMain.handle(IPC.macDesktopRenewLease, async (_event, arg) => ensureMacDesktop().renewLease(arg));
   ipcMain.handle(IPC.macDesktopPresent, async (_event, arg) => ensureMacDesktop().present(arg));
+
+  /**
+   * The machine-wide Escape behind a takeover on THIS Mac.
+   *
+   * Not routed through the action domain, and it never can be: the key belongs
+   * to the Electron app the person is sitting at, not to the runtime that owns
+   * the display. A remote lane leaves it disarmed on purpose — focus stays in
+   * the ADE window there, so the pane's own listener already works.
+   */
+  ipcMain.handle(IPC.macDesktopSetEscapeHotkey, async (event, arg) => {
+    const request = (arg ?? {}) as { laneId?: unknown; armed?: unknown };
+    const laneId = typeof request.laneId === "string" ? request.laneId.trim() : "";
+    if (request.armed === true && laneId) macDesktopEscapeHotkey.arm(event.sender.id, laneId);
+    else macDesktopEscapeHotkey.disarm(event.sender.id);
+    return { armed: macDesktopEscapeHotkey.isArmed() };
+  });
 
   ipcMain.handle(IPC.appControlGetStatus, async (event) => {
     guardAppControlIpc(event, IPC.appControlGetStatus, { windowMs: 10_000, max: 80 });
