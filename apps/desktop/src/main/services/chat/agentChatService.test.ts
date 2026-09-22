@@ -46871,6 +46871,145 @@ describe("createAgentChatService", () => {
       }, { throwOnError: true });
     });
 
+    /**
+     * Reported twice on 2026-09-22 against an OpenCode chat: an "OPENCODE
+     * ASKS" card with four options sat open for 19 minutes, the owner answered
+     * it, and the card redrew itself as "the request closed before it was
+     * answered / unanswered / That request is no longer active." The answer
+     * never reached the agent — the turn only moved when he retyped the same
+     * words as an ordinary message.
+     *
+     * The brain log for that session names the branch:
+     * `agent_chat.approval_without_live_runtime` with `decision: "accept"`.
+     * The card is a transcript event and therefore durable; its waiter is a
+     * closure in one process. When the runtime (or the process) goes away
+     * while the card is open, the card is redrawn with nothing behind it, and
+     * the old settle read neither `answers` nor `responseText` before
+     * recording the answer as `cancelled` and returning SUCCESS — which made
+     * the composer drop the typed text too.
+     *
+     * The restarted service below is that state exactly: same session row,
+     * same transcript, no runtime, no waiter.
+     */
+    it("regression: re-routes an answer whose waiter died instead of losing it", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          yield { type: "finish", usage: {} };
+        })(),
+      } as any));
+      mockState.openCodeQuestionForNextPrompt = {
+        id: "opencode-question-orphaned",
+        questions: [
+          {
+            header: "Simulator build for proof",
+            question: "How should I proceed?",
+            options: [
+              { label: "Build now, clean up after", description: "One focused build." },
+              { label: "Free space first", description: "Stop and wait." },
+            ],
+            custom: true,
+          },
+        ],
+      };
+
+      const first = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await first.service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+      const turn = first.service.runSessionTurn({
+        sessionId: session.id,
+        text: "Ask a clarifying question.",
+      });
+      const questionEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope => {
+          if (event.event.type !== "approval_request") return false;
+          const detail = event.event.detail as { request?: PendingInputRequest } | undefined;
+          return detail?.request?.providerMetadata?.openCodeQuestion === true;
+        },
+      );
+      const request = ((questionEvent.event as any).detail as { request: PendingInputRequest }).request;
+      const itemId = request.itemId ?? request.requestId;
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "done" && event.event.status === "completed",
+      );
+      await turn;
+
+      // The durable half has to be on disk before the restart: that transcript
+      // is the only place the restarted brain can learn the card's shape.
+      const transcriptPath = first.sessionService.get(session.id)!.transcriptPath;
+      await waitForCondition(
+        () => fs.existsSync(transcriptPath) && fs.readFileSync(transcriptPath, "utf8").includes(itemId),
+        "the question card to reach the transcript",
+      );
+
+      // The suite stubs the transcript parser to `[]` by default; a restarted
+      // brain has nothing BUT the transcript, so this test needs the real one.
+      installRealTranscriptParser();
+
+      const restartedEvents: AgentChatEventEnvelope[] = [];
+      const restarted = createService({
+        onEvent: (event: AgentChatEventEnvelope) => restartedEvents.push(event),
+      }).service;
+
+      await restarted.respondToInput({
+        sessionId: session.id,
+        itemId,
+        decision: "accept",
+        answers: { [request.questions[0]!.id]: "Build now, clean up after" },
+      });
+
+      // 1. The answer reached the agent. Not "a call was made" — the session
+      //    carries a user message holding what the owner picked, which is the
+      //    thing that was missing when he had to retype it.
+      const delivered = await waitForEvent(
+        restartedEvents,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "user_message"
+          && event.event.text.includes("Build now, clean up after"),
+      );
+      expect(delivered.event.type).toBe("user_message");
+
+      // 2. The receipt tells the truth. An answered question must never be
+      //    recorded as unanswered.
+      const receipt = restartedEvents.find((entry) =>
+        entry.event.type === "pending_input_resolved" && entry.event.itemId === itemId);
+      expect(receipt, "answering the card must write a receipt").toBeTruthy();
+      expect((receipt!.event as { resolution: string }).resolution).toBe("accepted");
+      expect((receipt!.event as { answers?: Record<string, unknown> }).answers)
+        .toMatchObject({ [request.questions[0]!.id]: "Build now, clean up after" });
+
+      // 3. No dead end.
+      expect(restartedEvents.some((entry) =>
+        entry.event.type === "system_notice"
+        && entry.event.message === "That request is no longer active.")).toBe(false);
+
+      // 4. Answering twice must not undo the first answer. The second response
+      //    finds an `accepted` receipt and changes nothing.
+      const receiptsBefore = restartedEvents.filter((entry) =>
+        entry.event.type === "pending_input_resolved" && entry.event.itemId === itemId).length;
+      await restarted.respondToInput({
+        sessionId: session.id,
+        itemId,
+        decision: "accept",
+        answers: { [request.questions[0]!.id]: "Build now, clean up after" },
+      });
+      expect(restartedEvents.filter((entry) =>
+        entry.event.type === "pending_input_resolved" && entry.event.itemId === itemId).length)
+        .toBe(receiptsBefore);
+      expect(restartedEvents.some((entry) =>
+        entry.event.type === "system_notice"
+        && entry.event.message === "That request is no longer active.")).toBe(false);
+    });
+
     it("sends Claude image follow-ups as SDK user messages after an earlier text turn", async () => {
       const send = vi.fn().mockResolvedValue(undefined);
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);

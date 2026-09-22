@@ -50984,7 +50984,7 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * Settle a card the user answered but whose asker is already gone.
+   * Close a card nothing can consume, with a receipt and a notice.
    *
    * Returning silently is not enough, and "the UI will clear the stale entry"
    * is no longer true: the renderer defers to the summary for a card swept
@@ -50996,9 +50996,11 @@ export function createAgentChatService(args: {
    *
    * An accept is recorded as `cancel` because nothing consumed the acceptance;
    * saying "accepted" of an approval no runtime received would be a lie in the
-   * durable, synced transcript.
+   * durable, synced transcript. Reaching here with an ANSWER in hand is the
+   * one case this must not decide on its own — see
+   * `settleUnclaimedPendingInput`, which re-routes that answer first.
    */
-  const settleUnclaimedPendingInput = (
+  const settleDeadPendingInput = (
     managed: ManagedChatSession,
     itemId: string,
     decision: AgentChatApprovalDecision,
@@ -51015,6 +51017,156 @@ export function createAgentChatService(args: {
       message: "That request is no longer active.",
     });
     persistChatState(managed);
+  };
+
+  /**
+   * The durable record of one card, read back from the transcript.
+   *
+   * A card is durable (it is an `approval_request` event, and the renderer
+   * rebuilds it from that event after a restart) while its waiter is
+   * process-local. So "the card is on screen" and "something is waiting for
+   * the answer" are two different facts, and this reads the first one when the
+   * second is already false.
+   *
+   * `resolvedAs` is the other half. An `accepted` receipt means this card was
+   * already answered and delivered, so a second response for it must change
+   * nothing — overwriting it with a `cancelled` receipt is how an answered
+   * question came to read "unanswered". A `cancelled` one carries no such
+   * claim: nothing was delivered, so a late answer is still worth saving.
+   */
+  const recoverPendingInputRecordFromTranscript = async (
+    sessionId: string,
+    itemId: string,
+  ): Promise<{
+    request: PendingInputRequest | null;
+    resolvedAs: "accepted" | "declined" | "cancelled" | null;
+  }> => {
+    let request: PendingInputRequest | null = null;
+    let resolvedAs: "accepted" | "declined" | "cancelled" | null = null;
+    for (const envelope of (await getChatEventHistory(sessionId, { maxEvents: 512 })).events) {
+      const event = envelope.event;
+      if (event.type === "approval_request") {
+        const detail = asRecord(event.detail);
+        const recovered = asRecord(detail?.request);
+        const recoveredItemId = typeof recovered?.itemId === "string" && recovered.itemId.trim().length
+          ? recovered.itemId.trim()
+          : event.itemId;
+        if (recoveredItemId !== itemId) continue;
+        // A re-raised card supersedes its own earlier receipt.
+        request = (recovered as unknown as PendingInputRequest | null) ?? request;
+        resolvedAs = null;
+        continue;
+      }
+      if (event.type === "pending_input_resolved" && event.itemId === itemId) {
+        resolvedAs = event.resolution;
+      }
+    }
+    return { request, resolvedAs };
+  };
+
+  /**
+   * Question shapes whose answer is prose a model can simply read.
+   *
+   * A secret question is excluded even though it is a question: its answer
+   * reaches the provider over the request it was asked on and is deliberately
+   * kept out of the durable transcript (`sanitizeAnswersForTranscript` drops
+   * it). Re-routing one as a `user_message` would write the credential into
+   * the transcript and sync it to every paired device, so a secret whose
+   * asker is gone is a dead card rather than a message.
+   */
+  const isQuestionShapedPendingInput = (request: PendingInputRequest | null): boolean => {
+    if (request?.kind !== "question" && request?.kind !== "structured_question") return false;
+    return !(request.questions ?? []).some((question) => question.isSecret === true);
+  };
+
+  const PENDING_INPUT_ANSWER_REROUTED_MESSAGE =
+    "That request had already closed, so ADE sent your answer as a message instead.";
+
+  /**
+   * Deliver an answer whose waiter is gone, or refuse to lose it.
+   *
+   * The reported bug: an OpenCode question card sat open for 19 minutes while
+   * its runtime went away (a pooled server eviction, an idle teardown, or a
+   * brain restart — the card survives all three because it is a transcript
+   * event). The answer then arrived at a session with no waiter and no
+   * runtime, and the old settle recorded it as `cancelled` / "unanswered",
+   * painted "That request is no longer active.", and returned SUCCESS — so the
+   * composer cleared the draft too. The answer was lost twice: never delivered,
+   * and not even left on screen to retype. `answers` and `responseText` were
+   * not so much as read.
+   *
+   * So: a question answered with actual content is re-routed as an ordinary
+   * user message — the exact move that unblocked the reporter by hand, and the
+   * same mechanism `responseMode: "message"` already uses for Codex async
+   * questions. The receipt then says `accepted`, because the answer really did
+   * reach the agent.
+   *
+   * If even that fails, this THROWS rather than settling: a throw leaves the
+   * card open and makes the composer put the typed answer back, which is a
+   * re-offered question instead of a dead end. Approvals, plans and
+   * elicitations are not re-routed — "Approve and implement" is not prose, and
+   * the tool call behind it is long gone — so they keep the old settle.
+   */
+  const settleUnclaimedPendingInput = async (
+    managed: ManagedChatSession,
+    itemId: string,
+    decision: AgentChatApprovalDecision,
+    answer?: {
+      answers?: Record<string, string | string[]> | undefined;
+      responseText?: string | null | undefined;
+    },
+  ): Promise<void> => {
+    const sessionId = managed.session.id;
+    const { request, resolvedAs } = await recoverPendingInputRecordFromTranscript(sessionId, itemId)
+      .catch(() => ({ request: null, resolvedAs: null }));
+    if (resolvedAs === "accepted") {
+      // One gesture can still send two responses for one card (a click racing
+      // a keypress). The first one delivered; this one must not overwrite its
+      // receipt with a cancellation that reads as "unanswered", and must not
+      // re-send the same answer as a message either.
+      logger.info("agent_chat.pending_input_already_answered", { sessionId, itemId, decision });
+      return;
+    }
+    const accepted = decision === "accept" || decision === "accept_for_session";
+    if (accepted && isQuestionShapedPendingInput(request) && request) {
+      const normalizedAnswers = normalizePendingInputAnswers(request, answer?.answers, answer?.responseText);
+      const messageText = formatPendingInputAnswersAsMessage(request, normalizedAnswers);
+      if (messageText.trim().length) {
+        try {
+          // `kind: "auto"` steers into a live turn and starts one when there is
+          // none, so this works whether the runtime died or merely moved on.
+          await messageSession({ sessionId, text: messageText, kind: "auto" });
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          logger.warn("agent_chat.pending_input_answer_reroute_failed", { sessionId, itemId, error: reason });
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "warning",
+            severity: "warning",
+            message: "That request closed before your answer reached it, and ADE could not send the answer as a message either. It is back in the composer — send it again.",
+          });
+          persistChatState(managed);
+          throw new Error(`That request is no longer active, and your answer could not be sent as a message: ${reason}`);
+        }
+        logger.info("agent_chat.pending_input_answer_rerouted", { sessionId, itemId, provider: managed.session.provider });
+        emitPendingInputResolved(managed, {
+          itemId,
+          decision,
+          turnId: request.turnId ?? null,
+          ...(answer?.answers ? { answers: answer.answers } : {}),
+          ...(answer?.responseText !== undefined ? { responseText: answer.responseText } : {}),
+          questions: request.questions ?? [],
+        });
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "info",
+          message: PENDING_INPUT_ANSWER_REROUTED_MESSAGE,
+        });
+        persistChatState(managed);
+        return;
+      }
+    }
+    settleDeadPendingInput(managed, itemId, decision);
   };
 
   /**
@@ -51131,7 +51283,7 @@ export function createAgentChatService(args: {
           itemId,
           decision: resolvedDecision,
         });
-        settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
+        await settleUnclaimedPendingInput(managed, itemId, resolvedDecision, { answers, responseText });
         return;
       }
       const ensureWritable = (): void => {
@@ -51246,7 +51398,7 @@ export function createAgentChatService(args: {
           itemId,
           decision: resolvedDecision,
         });
-        settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
+        await settleUnclaimedPendingInput(managed, itemId, resolvedDecision, { answers, responseText });
         return;
       }
       managed.runtime.approvals.delete(itemId);
@@ -51274,7 +51426,7 @@ export function createAgentChatService(args: {
           itemId,
           decision: resolvedDecision,
         });
-        settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
+        await settleUnclaimedPendingInput(managed, itemId, resolvedDecision, { answers, responseText });
         return;
       }
       managed.runtime.pendingApprovals.delete(itemId);
@@ -51309,7 +51461,7 @@ export function createAgentChatService(args: {
           itemId,
           decision: resolvedDecision,
         });
-        settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
+        await settleUnclaimedPendingInput(managed, itemId, resolvedDecision, { answers, responseText });
         return;
       }
       cursorRuntime.permissionWaiters.delete(itemId);
@@ -51334,7 +51486,7 @@ export function createAgentChatService(args: {
           itemId,
           decision: resolvedDecision,
         });
-        settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
+        await settleUnclaimedPendingInput(managed, itemId, resolvedDecision, { answers, responseText });
         return;
       }
       managed.runtime.permissionWaiters.delete(itemId);
@@ -51357,7 +51509,7 @@ export function createAgentChatService(args: {
       itemId,
       decision: resolvedDecision,
     });
-    settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
+    await settleUnclaimedPendingInput(managed, itemId, resolvedDecision, { answers, responseText });
   };
 
   /**
@@ -51420,7 +51572,7 @@ export function createAgentChatService(args: {
       // No card by that id: settle it anyway rather than throwing. A click that
       // lands after the card is gone must still write a receipt, or the
       // transcript fallback keeps naming it.
-      settleUnclaimedPendingInput(managed, trimmedItemId, "cancel");
+      await settleUnclaimedPendingInput(managed, trimmedItemId, "cancel");
       onPendingInputDismissed?.({ provider: managed.session.provider });
       return;
     }
