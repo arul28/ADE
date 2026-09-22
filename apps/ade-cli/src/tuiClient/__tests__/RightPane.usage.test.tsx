@@ -2,6 +2,7 @@ import React from "react";
 import { describe, expect, it } from "vitest";
 import { render } from "ink-testing-library";
 import { RightPane } from "../components/RightPane";
+import { usageAccountsMissingWindows } from "../components/UsagePane";
 import type { RightPaneContent } from "../types";
 import { SpinTickProvider } from "../spinTick";
 
@@ -222,5 +223,37 @@ describe("RightPane usage", () => {
     expect(text).toContain("two@example.com · 2");
     expect(text).toContain("↑↓ choose · r to use");
     expect(text).toContain("▎ two@example.com · 2");
+  });
+
+  it("names a signed-in account that has not reported a window", () => {
+    const { lastFrame } = renderPane({
+      kind: "usage",
+      title: "Usage",
+      quotaWindows: [{ id: "claude:five_hour:claude:claude", label: "Claude 5-hour", percent: 21, resetAt: null }],
+      quietAccounts: [{ id: "claude:1028", label: "Claude · 1028" }],
+      session: null,
+    });
+    const text = lastFrame() ?? "";
+    expect(text).toContain("Claude 5-hour");
+    expect(text).toContain("Claude · 1028 · No usage yet");
+    expect(text).not.toContain("Quota windows unavailable.");
+  });
+
+  it("keeps a lone unattributed window from also listing that account as quiet", () => {
+    const accounts = [{
+      id: "claude:claude",
+      provider: "claude" as const,
+      email: "a@example.com",
+      machines: [],
+    }];
+    expect(usageAccountsMissingWindows(accounts, [
+      { provider: "claude", accountId: undefined },
+    ])).toEqual([]);
+    expect(usageAccountsMissingWindows([
+      ...accounts,
+      { id: "claude:1028", provider: "claude", label: "1028", machines: [] },
+    ], [
+      { provider: "claude", accountId: "claude:claude" },
+    ]).map((account) => account.id)).toEqual(["claude:1028"]);
   });
 });

@@ -13,12 +13,16 @@
  * Everything here is pure and clock-injected (`nowMs`), which is what lets the
  * same numbers be asserted in tests and rendered on three clients.
  */
-import type {
-  UsageAccount,
-  UsageAccountMachine,
-  UsageProvider,
-  UsageWindow,
+import {
+  LIVE_QUOTA_PROVIDERS,
+  type AiProviderConnections,
+  type UsageAccount,
+  type UsageAccountMachine,
+  type UsageProvider,
+  type UsageProviderStatus,
+  type UsageWindow,
 } from "../../../shared/types";
+import { hasLocalProviderConnectionSignal } from "../../lib/aiProviderStatus";
 import { displayPercent, windowLabel } from "./usageWindowFormat";
 
 export type UsageAccountView = {
@@ -63,15 +67,20 @@ export function emailInitials(email: string | undefined, fallback = ""): string 
  *
  * Two machines polling the same login are one account with two `machines`
  * entries — the freshest reading first, because that is the one the numbers on
- * screen came from. Accounts without an email cannot be pooled across machines
- * (there is nothing to match on), so they stay distinct by id.
+ * screen came from. A local provider account (`instanceId`) is its own login
+ * even when it shares an email with another, so it stays keyed by id. Accounts
+ * without an email and without an instance cannot be pooled across machines,
+ * so they stay distinct by id too.
  */
 export function poolAccounts(accounts: UsageAccount[] | undefined): UsageAccountView[] {
   const byKey = new Map<string, UsageAccountView>();
   for (const account of accounts ?? []) {
-    const key = account.email
-      ? `${account.provider}:${account.email.toLowerCase()}`
-      : account.id;
+    const instanceId = account.instanceId?.trim();
+    const key = instanceId
+      ? account.id
+      : account.email
+        ? `${account.provider}:${account.email.toLowerCase()}`
+        : account.id;
     const existing = byKey.get(key);
     if (!existing) {
       byKey.set(key, {
@@ -270,6 +279,13 @@ export function buildAccountRows(
       rows.set(key, row);
     }
   }
+  // A signed-in account with no windows yet is still a row. Omitting it is
+  // what made a second login look missing from the usage box until its first
+  // reading landed.
+  for (const account of accounts) {
+    if (account.provider !== provider || rows.has(account.id)) continue;
+    rows.set(account.id, { key: account.id, provider, account, cells: [] });
+  }
   // Rows follow the account directory, not whichever window the provider
   // happened to list first — otherwise two logins swap places between polls.
   const rank = new Map<string, number>();
@@ -279,4 +295,62 @@ export function buildAccountRows(
   return [...rows.values()].sort(
     (a, b) => (rank.get(a.key) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.key) ?? Number.MAX_SAFE_INTEGER),
   );
+}
+
+const CLAUDE_AND_CODEX = ["claude", "codex"] as const;
+const EXTRA_QUOTA_PROVIDERS = ["cursor", "copilot", "grok", "opencode"] as const;
+
+export type LiveQuotaVisibility = {
+  connections: AiProviderConnections | null | undefined;
+  windows?: readonly UsageWindow[];
+  statuses?: Partial<Record<UsageProvider, UsageProviderStatus>> | null;
+};
+
+function extraQuotaVisible(provider: UsageProvider, input: LiveQuotaVisibility): boolean {
+  if (input.windows?.some((window) => window.provider === provider)) return true;
+  if (input.statuses?.[provider]) return true;
+  // Copilot and Grok sign-in is the settings connection. Cursor's connection
+  // flag is an API key, not the IDE plan session, and OpenCode is not on that
+  // map — those two appear once a quota reading exists.
+  if (provider === "copilot" || provider === "grok") {
+    return Boolean(input.connections?.[provider]?.authAvailable);
+  }
+  return false;
+}
+
+/**
+ * Limits popover order. Claude and Codex keep the connection-signal rule they
+ * already had. The other four join once they are signed in or have a reading.
+ * Before connections load, only Claude and Codex are reserved so the popover
+ * does not flash empty cards for providers this machine has never authed.
+ */
+export function quotaPopoverProviders(input: LiveQuotaVisibility): UsageProvider[] {
+  if (!input.connections) return [...CLAUDE_AND_CODEX];
+  return LIVE_QUOTA_PROVIDERS.filter((provider) => {
+    if (provider === "claude" || provider === "codex") {
+      return hasLocalProviderConnectionSignal(input.connections?.[provider]);
+    }
+    return extraQuotaVisible(provider, input);
+  });
+}
+
+/**
+ * Top-bar chips. Claude and Codex stay on the existing connection signal,
+ * falling back to windows only when neither connection is present. Each extra
+ * provider is its own chip, in the same order as the popover, once authed.
+ */
+export function headerUsageProviders(input: LiveQuotaVisibility): UsageProvider[] {
+  const withWindows = (provider: UsageProvider) =>
+    input.windows?.some((window) => window.provider === provider) ?? false;
+  let primary: UsageProvider[];
+  if (!input.connections) {
+    primary = CLAUDE_AND_CODEX.filter(withWindows);
+  } else {
+    const configured = CLAUDE_AND_CODEX.filter((provider) =>
+      hasLocalProviderConnectionSignal(input.connections?.[provider]),
+    );
+    primary = configured.length > 0 ? configured : CLAUDE_AND_CODEX.filter(withWindows);
+  }
+  const extras = EXTRA_QUOTA_PROVIDERS.filter((provider) => extraQuotaVisible(provider, input));
+  return [...primary, ...extras];
 }

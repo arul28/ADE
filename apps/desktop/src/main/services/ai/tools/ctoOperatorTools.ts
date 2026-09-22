@@ -121,7 +121,7 @@ export interface CtoOperatorToolDeps {
   ctoStateService?: Pick<ReturnType<typeof createCtoStateService>, "getSessionLogs"> | null;
   ctoMemoryService?: Pick<
     CtoMemoryService,
-    "appendMemoryFact" | "searchMemory" | "getSnapshot" | "readNewDiscoveries"
+    "appendMemoryFact" | "searchMemory" | "getSnapshot" | "readNewDiscoveries" | "setProjectBrief" | "recordThread"
   > | null;
   listChats: (laneId?: string, options?: { includeIdentity?: boolean; includeAutomation?: boolean }) => Promise<AgentChatSessionSummary[]>;
   getChatStatus: (sessionId: string) => Promise<AgentChatSessionSummary | null>;
@@ -212,15 +212,6 @@ export interface CtoOperatorToolDeps {
   /** Proof capture. `ingest` is the only write; there is no delete tool on purpose. */
   proofIngestService?: {
     ingest: (args: any) => Promise<any> | any;
-  } | null;
-  reviewService?: {
-    listLaunchContext: () => Promise<any>;
-    startRun: (args: any) => Promise<any>;
-    rerun: (args: any) => Promise<any>;
-    cancelRun: (args: { runId: string }) => Promise<any>;
-    listRuns: (args?: any) => Promise<any[]>;
-    getRunDetail: (args: { runId: string }) => Promise<any>;
-    qualityReport: () => Promise<any>;
   } | null;
   searchService?: {
     query: (args: { query: string; laneId?: string; limit?: number }) => Promise<{ results: unknown[]; totalByKind: unknown; nextCursor?: unknown }>;
@@ -614,7 +605,6 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   const conflicts = inPack("conflicts");
   const scheduling = inPack("scheduling");
   const proof = inPack("proof");
-  const review = inPack("review");
   const search = inPack("search");
   const insights = inPack("insights");
   const config = inPack("config");
@@ -799,6 +789,19 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
             sessionId: session.id,
             text: initialPrompt.trim(),
           });
+        }
+        const memory = deps.ctoMemoryService;
+        if (memory) {
+          try {
+            memory.recordThread({
+              title: title?.trim() || initialPrompt?.trim() || "Thread",
+              sessionId: session.id,
+              laneId: session.laneId,
+              objective: initialPrompt?.trim() || title?.trim() || "",
+            });
+          } catch {
+            // The chat already exists. A missed thread row is recovered on the next spawn, not by failing this one.
+          }
         }
         return {
           success: true,
@@ -1561,7 +1564,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   // ---------------------------------------------------------------------------
 
   tools.createTerminal = core({
-    description: "Open a shell terminal (PTY) in a lane. Use for raw CLI commands only — for AI-powered work, use spawnChat instead. This does NOT create an AI chat session.",
+    description: "Open a shell whose command only directs agents (a cron, a status check, a script that launches work). Do not use it to edit the repository. For AI-powered work, use spawnChat. This does NOT create an AI chat session.",
     inputSchema: z.object({
       laneId: z.string().trim().min(1),
       title: z.string().optional(),
@@ -1755,6 +1758,19 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
     );
   };
 
+  const CTO_REPOSITORY_WRITE_REFUSED =
+    "The CTO does not write repository code. Direct an agent with spawnChat and omit laneId so the work gets its own lane. "
+    + "Scheduling, automations, and a short script that only directs agents are yours; commits, pushes, rebases, and file edits are the agent's.";
+
+  const CTO_REPOSITORY_WRITE_TOOL_DESCRIPTION =
+    "Refused. The CTO does not write repository code. Direct an agent with spawnChat and omit laneId.";
+
+  /** Missing lane keeps the old error. A named lane is still refused: the CTO directs, it does not commit. */
+  const assertCtoMayNotWriteRepository = (laneId: string | undefined, operation: string): never => {
+    requireMutationLaneId(laneId, operation);
+    throw new Error(CTO_REPOSITORY_WRITE_REFUSED);
+  };
+
   // The service is handed to the callback rather than re-read inside it: a
   // `deps.gitService` narrowing cannot survive the arrow boundary, and every
   // call site paid for that with a non-null assertion.
@@ -1770,6 +1786,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
     }
   };
 
+  const refuseGitWrite = (laneId: string | undefined, operation: string) =>
+    gitGuard(async () => assertCtoMayNotWriteRepository(laneId, operation));
+
   tools.gitStatus = core({
     description: "Get the git sync status for a lane (branch, ahead/behind, dirty state).",
     inputSchema: z.object({ laneId: z.string().optional() }),
@@ -1777,36 +1796,36 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   });
 
   tools.gitCommit = core({
-    description: "Create a git commit in a named lane. By default stages all changes (stageAll: true). Use gitStatus first to see what will be committed. Never commits to the CTO's own lane by default — laneId is required.",
+    description: CTO_REPOSITORY_WRITE_TOOL_DESCRIPTION,
     inputSchema: z.object({ laneId: z.string().min(1).describe("Lane to commit in. Required — there is no default."), message: z.string().min(1).describe("Commit message."), stageAll: z.boolean().optional().default(true).describe("Stage all changes before committing.") }),
-    execute: ({ laneId, message, stageAll }) => gitGuard((git) => git.commit({ laneId: requireMutationLaneId(laneId, "gitCommit"), message, stageAll })),
+    execute: ({ laneId }) => refuseGitWrite(laneId, "gitCommit"),
   });
 
   tools.gitPush = core({
-    description: "Push commits to the remote for a named lane. laneId is required — there is no default.",
+    description: CTO_REPOSITORY_WRITE_TOOL_DESCRIPTION,
     inputSchema: z.object({ laneId: z.string().min(1).describe("Lane to push. Required — there is no default."), force: z.boolean().optional().default(false) }),
-    execute: ({ laneId, force }) => gitGuard((git) => git.push({ laneId: requireMutationLaneId(laneId, "gitPush"), force })),
+    execute: ({ laneId }) => refuseGitWrite(laneId, "gitPush"),
   });
 
   tools.gitPull = core({
-    description: "Pull from the remote for a lane. Defaults to fast-forward only; use rebase or merge when that is the intended history shape.",
+    description: CTO_REPOSITORY_WRITE_TOOL_DESCRIPTION,
     inputSchema: z.object({
       laneId: z.string().min(1).describe("Lane to pull into. Required — there is no default."),
       mode: z.enum(["ff-only", "rebase", "merge"]).optional().default("ff-only"),
     }),
-    execute: ({ laneId, mode }) => gitGuard((git) => git.pull({ laneId: requireMutationLaneId(laneId, "gitPull"), mode })),
+    execute: ({ laneId }) => refuseGitWrite(laneId, "gitPull"),
   });
 
   tools.gitUndoLastHeadChange = core({
-    description: "Undo the latest successful head-changing git operation recorded by ADE for a named lane. This resets the lane with git reset --hard, so laneId is required — there is no default.",
+    description: CTO_REPOSITORY_WRITE_TOOL_DESCRIPTION,
     inputSchema: z.object({ laneId: z.string().min(1).describe("Lane to undo in. Required — there is no default.") }),
-    execute: ({ laneId }) => gitGuard((git) => git.undoLastHeadChange({ laneId: requireMutationLaneId(laneId, "gitUndoLastHeadChange") })),
+    execute: ({ laneId }) => refuseGitWrite(laneId, "gitUndoLastHeadChange"),
   });
 
   tools.gitRedoLastHeadChange = core({
-    description: "Redo the latest successful ADE git undo for a named lane. This resets the lane with git reset --hard, so laneId is required — there is no default.",
+    description: CTO_REPOSITORY_WRITE_TOOL_DESCRIPTION,
     inputSchema: z.object({ laneId: z.string().min(1).describe("Lane to redo in. Required — there is no default.") }),
-    execute: ({ laneId }) => gitGuard((git) => git.redoLastHeadChange({ laneId: requireMutationLaneId(laneId, "gitRedoLastHeadChange") })),
+    execute: ({ laneId }) => refuseGitWrite(laneId, "gitRedoLastHeadChange"),
   });
 
   tools.gitFetch = core({
@@ -1834,7 +1853,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   });
 
   tools.gitCheckoutBranch = core({
-    description: "Switch to or create a git branch in a lane.",
+    description: CTO_REPOSITORY_WRITE_TOOL_DESCRIPTION,
     inputSchema: z.object({
       laneId: z.string().min(1).describe("Lane to switch branches in. Required — there is no default."),
       branch: z.string().min(1),
@@ -1843,43 +1862,19 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       baseRef: z.string().optional(),
       acknowledgeActiveWork: z.boolean().optional().default(false),
     }),
-    execute: ({ laneId, branch, create, startPoint, baseRef, acknowledgeActiveWork }) => gitGuard((git) => git.checkoutBranch({
-      laneId: requireMutationLaneId(laneId, "gitCheckoutBranch"),
-      branchName: branch,
-      mode: create ? "create" : "existing",
-      startPoint,
-      baseRef,
-      acknowledgeActiveWork,
-    })),
+    execute: ({ laneId }) => refuseGitWrite(laneId, "gitCheckoutBranch"),
   });
 
   tools.gitStashPush = core({
-    description: "Stash working changes for a lane branch.",
+    description: CTO_REPOSITORY_WRITE_TOOL_DESCRIPTION,
     inputSchema: z.object({ laneId: z.string().min(1).describe("Lane to stash in. Required — there is no default."), message: z.string().optional() }),
-    execute: ({ laneId, message }) => gitGuard((git) => git.stashPush({ laneId: requireMutationLaneId(laneId, "gitStashPush"), ...(message?.trim() ? { message: message.trim() } : {}) })),
+    execute: ({ laneId }) => refuseGitWrite(laneId, "gitStashPush"),
   });
 
   tools.gitStashPop = core({
-    description: "Pop a stash saved for a lane branch. Defaults to the latest branch-matching stash; call gitStashList to inspect refs.",
+    description: CTO_REPOSITORY_WRITE_TOOL_DESCRIPTION,
     inputSchema: z.object({ laneId: z.string().min(1).describe("Lane to pop the stash in. Required — there is no default."), stashRef: z.string().optional() }),
-    execute: ({ laneId, stashRef }) => gitGuard(async (git) => {
-      const resolvedLaneId = requireMutationLaneId(laneId, "gitStashPop");
-      const trimmedRef = stashRef?.trim();
-      const stashes = await git.listStashes({ laneId: resolvedLaneId });
-      const selectedStash = trimmedRef
-        ? stashes.find((stash) => stash.ref === trimmedRef)
-        : stashes[0];
-      if (trimmedRef && !selectedStash) {
-        throw new Error(`Stash ${trimmedRef} is not saved for this lane branch.`);
-      }
-      const resolvedRef = trimmedRef || selectedStash?.ref;
-      if (!resolvedRef) throw new Error("No stashes are saved for this lane branch.");
-      return git.stashPop({
-        laneId: resolvedLaneId,
-        stashRef: resolvedRef,
-        ...(selectedStash?.oid ? { stashOid: selectedStash.oid } : {}),
-      });
-    }),
+    execute: ({ laneId }) => refuseGitWrite(laneId, "gitStashPop"),
   });
 
   tools.gitStashList = core({
@@ -1898,21 +1893,21 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   });
 
   tools.gitRebaseContinue = core({
-    description: "Continue a rebase after resolving conflicts in a named lane. laneId is required — there is no default.",
+    description: CTO_REPOSITORY_WRITE_TOOL_DESCRIPTION,
     inputSchema: z.object({ laneId: z.string().min(1).describe("Lane to continue the rebase in. Required — there is no default.") }),
-    execute: ({ laneId }) => gitGuard((git) => git.rebaseContinue({ laneId: requireMutationLaneId(laneId, "gitRebaseContinue") })),
+    execute: ({ laneId }) => refuseGitWrite(laneId, "gitRebaseContinue"),
   });
 
   tools.gitRebaseAbort = core({
-    description: "Abort an in-progress rebase in a named lane. laneId is required — there is no default.",
+    description: CTO_REPOSITORY_WRITE_TOOL_DESCRIPTION,
     inputSchema: z.object({ laneId: z.string().min(1).describe("Lane to abort the rebase in. Required — there is no default.") }),
-    execute: ({ laneId }) => gitGuard((git) => git.rebaseAbort({ laneId: requireMutationLaneId(laneId, "gitRebaseAbort") })),
+    execute: ({ laneId }) => refuseGitWrite(laneId, "gitRebaseAbort"),
   });
 
   tools.gitMergeAbort = core({
-    description: "Abort an in-progress merge in a named lane. laneId is required — there is no default.",
+    description: CTO_REPOSITORY_WRITE_TOOL_DESCRIPTION,
     inputSchema: z.object({ laneId: z.string().min(1).describe("Lane to abort the merge in. Required — there is no default.") }),
-    execute: ({ laneId }) => gitGuard((git) => git.mergeAbort({ laneId: requireMutationLaneId(laneId, "gitMergeAbort") })),
+    execute: ({ laneId }) => refuseGitWrite(laneId, "gitMergeAbort"),
   });
 
   // ---------------------------------------------------------------------------
@@ -1931,6 +1926,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       return { success: false, error: getErrorMessage(error) };
     }
   };
+
+  const refuseConflictWrite = (laneId: string | undefined, operation: string) =>
+    conflictGuard(async () => assertCtoMayNotWriteRepository(laneId, operation));
 
   tools.getConflictStatus = conflicts({
     description: "Check merge conflict status for a lane.",
@@ -1969,15 +1967,15 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   });
 
   tools.applyConflictProposal = conflicts({
-    description: "Apply an AI-generated conflict resolution proposal.",
+    description: CTO_REPOSITORY_WRITE_TOOL_DESCRIPTION,
     inputSchema: z.object({ laneId: z.string().min(1), proposalId: z.string().min(1) }),
-    execute: ({ laneId, proposalId }) => conflictGuard((conflicts) => conflicts.applyProposal({ laneId, proposalId })),
+    execute: ({ laneId }) => refuseConflictWrite(laneId, "applyConflictProposal"),
   });
 
   tools.undoConflictProposal = conflicts({
-    description: "Undo an applied conflict resolution proposal.",
+    description: CTO_REPOSITORY_WRITE_TOOL_DESCRIPTION,
     inputSchema: z.object({ laneId: z.string().min(1), proposalId: z.string().min(1) }),
-    execute: ({ laneId, proposalId }) => conflictGuard((conflicts) => conflicts.undoProposal({ laneId, proposalId })),
+    execute: ({ laneId }) => refuseConflictWrite(laneId, "undoConflictProposal"),
   });
 
   // ---------------------------------------------------------------------------
@@ -2467,9 +2465,10 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
 
   tools.saveMemory = core({
     description:
-      "Save a durable fact to your persistent memory (MEMORY.md). Use for decisions, user preferences, " +
-      "conventions, and standing project context you should remember across sessions and model switches. " +
-      "Keep each fact to one crisp sentence. Exact duplicates are ignored.",
+      "Save a durable fact to the project context store (and MEMORY.md, which remains the local notes file). "
+      + "Use for decisions, conventions, traps, and standing project context. The store survives a restart, a crash, "
+      + "and a cleared CTO session, and it follows the ADE account when this repo has a git remote. "
+      + "Keep each fact to one crisp sentence. Exact duplicates are ignored.",
     inputSchema: z.object({
       fact: z.string().trim().min(1).describe("A single durable fact to remember."),
       tags: memoryTagsSchema.optional().describe(
@@ -2498,9 +2497,33 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
     },
   });
 
+  tools.setProjectBrief = core({
+    description:
+      "Write the one project brief: goal, what done looks like, constraints, conventions, and open loops. "
+      + "There is one brief for the repository. It is injected ahead of other memory and survives a restart, a crash, and a cleared session. "
+      + "Omitted fields stay as they are. Pass an empty string to clear a field.",
+    inputSchema: z.object({
+      goal: z.string().optional(),
+      success: z.string().optional().describe("What done looks like."),
+      constraints: z.string().optional(),
+      conventions: z.string().optional(),
+      openLoops: z.string().optional(),
+    }),
+    execute: async (input) => {
+      const memory = deps.ctoMemoryService;
+      if (!memory) return { success: false, error: "Memory service is not available." };
+      try {
+        const brief = memory.setProjectBrief(input);
+        return { success: true, brief };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
   tools.searchMemory = core({
     description:
-      "Search your persistent memory (MEMORY.md, thread state, and recent daily logs) for prior context. " +
+      "Search your persistent memory (MEMORY.md, the project context store, thread state, and recent daily logs) for prior context. " +
       "Use this before asking the user to restate something you may already know.",
     inputSchema: z.object({
       query: z.string().trim().min(1),
@@ -2556,6 +2579,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
           dailyLog: snapshot.dailyLog,
           dailyLogDate: snapshot.dailyLogDate,
           updatedAt: snapshot.updatedAt,
+          projectBrief: snapshot.projectBrief,
+          projectThreads: snapshot.projectThreads,
+          projectItems: snapshot.projectItems,
         };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
@@ -3001,109 +3027,6 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         }],
         owners: [{ kind: ownerKind, id: ownerId, relation: "attached_to" }],
       }));
-    },
-  });
-
-  // ── Review ─────────────────────────────────────────────────────────────────
-
-  tools.listReviewLaunchContext = review({
-    description: "Read what a review run can target right now: lanes, their recent commits, and open PRs.",
-    inputSchema: z.object({}),
-    execute: async () => {
-      const review = deps.reviewService;
-      if (!review) return unavailable("The review service");
-      return attempt(() => review.listLaunchContext());
-    },
-  });
-
-  tools.startReviewRun = review({
-    description:
-      "Start an ADE code review over a lane's diff, its working tree, a commit range, or a PR. "
-      + "laneId is required — reviews read a specific worktree and there is no safe default.",
-    inputSchema: z.object({
-      laneId: z.string().min(1).describe("Lane to review. Required — there is no default."),
-      mode: z.enum(["lane_diff", "working_tree", "commit_range", "pr"]).optional().default("lane_diff"),
-      baseCommit: z.string().optional().describe("Required for commit_range."),
-      headCommit: z.string().optional().describe("Required for commit_range."),
-      prId: z.string().optional().describe("Required for pr."),
-    }),
-    execute: async ({ laneId, mode, baseCommit, headCommit, prId }) => {
-      const review = deps.reviewService;
-      if (!review) return unavailable("The review service");
-      return attempt(() => {
-        const resolvedLaneId = requireMutationLaneId(laneId, "startReviewRun");
-        if (mode === "commit_range") {
-          if (!baseCommit?.trim() || !headCommit?.trim()) {
-            throw new Error("commit_range needs both baseCommit and headCommit.");
-          }
-          return review.startRun({
-            target: { mode, laneId: resolvedLaneId, baseCommit: baseCommit.trim(), headCommit: headCommit.trim() },
-          });
-        }
-        if (mode === "pr") {
-          if (!prId?.trim()) throw new Error("pr mode needs a prId.");
-          return review.startRun({ target: { mode, laneId: resolvedLaneId, prId: prId.trim() } });
-        }
-        return review.startRun({ target: { mode, laneId: resolvedLaneId } });
-      });
-    },
-  });
-
-  tools.rerunReview = review({
-    description: "Re-run a finished review with the same target and config.",
-    inputSchema: z.object({ runId: z.string().min(1) }),
-    execute: async ({ runId }) => {
-      const review = deps.reviewService;
-      if (!review) return unavailable("The review service");
-      return attempt(() => review.rerun({ runId }));
-    },
-  });
-
-  tools.cancelReviewRun = review({
-    description: "Cancel an in-flight review run. Reversible with rerunReview.",
-    inputSchema: z.object({ runId: z.string().min(1) }),
-    execute: async ({ runId }) => {
-      const review = deps.reviewService;
-      if (!review) return unavailable("The review service");
-      return attempt(() => review.cancelRun({ runId }));
-    },
-  });
-
-  tools.listReviewRuns = review({
-    description: "List review runs, newest first, optionally filtered by lane or status.",
-    inputSchema: z.object({
-      laneId: z.string().optional(),
-      status: z.enum(["queued", "running", "completed", "failed", "cancelled", "all"]).optional(),
-      limit: z.number().int().min(1).max(200).optional().default(25),
-    }),
-    execute: async ({ laneId, status, limit }) => {
-      const review = deps.reviewService;
-      if (!review) return unavailable("The review service");
-      return attempt(() => review.listRuns({
-        ...(laneId?.trim() ? { laneId: laneId.trim() } : {}),
-        ...(status ? { status } : {}),
-        limit,
-      }));
-    },
-  });
-
-  tools.getReviewRunDetail = review({
-    description: "Read one review run in full: findings, severities, anchors, and evidence.",
-    inputSchema: z.object({ runId: z.string().min(1) }),
-    execute: async ({ runId }) => {
-      const review = deps.reviewService;
-      if (!review) return unavailable("The review service");
-      return attempt(() => review.getRunDetail({ runId }));
-    },
-  });
-
-  tools.getReviewQualityReport = review({
-    description: "Read aggregate review quality: run counts, finding counts, and accepted/rejected feedback rates.",
-    inputSchema: z.object({}),
-    execute: async () => {
-      const review = deps.reviewService;
-      if (!review) return unavailable("The review service");
-      return attempt(() => review.qualityReport());
     },
   });
 

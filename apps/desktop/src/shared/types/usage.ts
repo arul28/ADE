@@ -471,7 +471,17 @@ export type AdeUsageRollup = {
 // Live quota tracking types (Claude/Codex API windows plus local runtime cost scans)
 // ---------------------------------------------------------------------------
 
-export type UsageProvider = "claude" | "codex" | "cursor";
+export type UsageProvider = "claude" | "codex" | "cursor" | "copilot" | "grok" | "opencode";
+
+/** Providers the live-quota poller can publish. History-only providers stay off this list. */
+export const LIVE_QUOTA_PROVIDERS = [
+  "claude",
+  "codex",
+  "cursor",
+  "copilot",
+  "grok",
+  "opencode",
+] as const satisfies readonly UsageProvider[];
 
 export type UsageWindowType = "five_hour" | "weekly" | "monthly" | "weekly_oauth_apps" | "weekly_cowork";
 
@@ -832,11 +842,15 @@ export type BudgetCapConfig = {
  *
  * Desktop reads it directly; iOS and the web client receive it on
  * `UsageProviderStatus.accountUrl` rather than keeping a second copy, so a URL
- * change lands everywhere at once. Cursor has no per-account limits page.
+ * change lands everywhere at once.
  */
 export const USAGE_PROVIDER_ACCOUNT_URLS: Partial<Record<UsageProvider, string>> = {
   claude: "https://claude.ai/new#settings/usage",
   codex: "https://chatgpt.com/codex/cloud/settings/analytics#usage",
+  cursor: "https://cursor.com/dashboard?tab=usage",
+  copilot: "https://github.com/settings/copilot",
+  grok: "https://grok.com",
+  opencode: "https://opencode.ai",
 };
 
 export function usageProviderAccountUrl(provider: UsageProvider): string | undefined {

@@ -1,4 +1,5 @@
 import { CheckCircle, CircleNotch, Warning } from "@phosphor-icons/react";
+import type { ReactNode } from "react";
 import type {
   AgentChatPermissionMode,
   AgentChatProvider,
@@ -193,10 +194,13 @@ export function CheckRow({
   label,
   detail,
   state,
+  icon,
 }: {
   label: string;
   detail: string;
   state: "ok" | "warn" | "error" | "pending";
+  /** Optional leading glyph (repo / branch / provider mark) for the row's subject. */
+  icon?: ReactNode;
 }) {
   const Icon = state === "ok" ? CheckCircle : state === "pending" ? CircleNotch : Warning;
   return (
@@ -213,7 +217,10 @@ export function CheckRow({
         )}
       />
       <div className="min-w-0">
-        <div className="font-sans text-[11px] font-semibold text-fg/80">{label}</div>
+        <div className="flex items-center gap-1.5 font-sans text-[11px] font-semibold text-fg/80">
+          {icon ? <span aria-hidden className="inline-flex shrink-0 text-fg/55">{icon}</span> : null}
+          {label}
+        </div>
         <div className="mt-0.5 text-[10px] leading-4 text-fg/46">{detail}</div>
       </div>
     </div>

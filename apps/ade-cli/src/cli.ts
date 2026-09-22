@@ -400,6 +400,7 @@ type FormatterId =
   | "chat-status"
   | "chat-models"
   | "chat-resume-now"
+  | "chat-continue-on-account"
   | "session-lifecycle"
   | "lane-drift"
   | "scheduled-work-create"
@@ -2855,6 +2856,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
                                                     Adds a 'resume' line while a usage limit is live.
     $ ade chat resume-now <session>                 Send the usage-limit continue prompt now (alias: resume)
                                                     Exit 1 when the host reports no live usage limit.
+    $ ade chat continue-on-account <session>        Continue a usage-limited chat on another account that still has room
+                                                    Exit 1 when no other account can take it.
     $ ade chat note "testing desktop auth fallback" # Update the Work status line (aim for ${STATUS_NOTE_GUIDELINE_WORDS} words or fewer; truncated past ${MAX_STATUS_NOTE_CHARACTERS} characters)
     $ ade chat ask "Which account should I use?"    Escalate a blocking question to the user
                                                     'note' and 'ask' default to the caller and accept --session <id>.
@@ -9092,6 +9095,24 @@ function buildChatPlan(args: string[]): CliPlan {
       formatter: "chat-resume-now",
       steps: [
         actionStep("result", "chat", "resumeUsageLimitNow", {
+          sessionId: requireValue(sessionId, "sessionId"),
+        }),
+      ],
+      exitCodeFromResult: (result) => {
+        const record = firstRecord(result, ["result"])
+          ?? (isRecord(result) ? result : {});
+        return record.ok === true ? 0 : 1;
+      },
+    };
+  // Start the interrupted task on another signed-in account. The original
+  // thread cannot move, so the host opens a new chat. Exit 1 when it refuses.
+  if (sub === "continue-on-account")
+    return {
+      kind: "execute",
+      label: "chat continue-on-account",
+      formatter: "chat-continue-on-account",
+      steps: [
+        actionStep("result", "chat", "continueUsageLimitOnAlternate", {
           sessionId: requireValue(sessionId, "sessionId"),
         }),
       ],
@@ -23238,6 +23259,7 @@ type UsageAccountTextLine = {
   provider: string;
   id: string | null;
   email: string | null;
+  label: string | null;
   plan: string | null;
   url: string | null;
   machines: string;
@@ -23280,6 +23302,7 @@ export function formatUsageSnapshot(value: unknown): string {
       provider: asString(account.provider) ?? "",
       id: asString(account.id),
       email: asString(account.email),
+      label: asString(account.label),
       plan: asString(account.plan),
       url: asString(account.url),
       machines: machines
@@ -23308,12 +23331,12 @@ export function formatUsageSnapshot(value: unknown): string {
       continue;
     }
     if (!email && !plan && !url) continue;
-    accountLines.push({ provider, id: null, email, plan, url, machines: "" });
+    accountLines.push({ provider, id: null, email, label: null, plan, url, machines: "" });
   }
 
   const accountLabelById = new Map<string, string>();
   for (const line of accountLines) {
-    if (line.id) accountLabelById.set(line.id, line.email ?? line.id);
+    if (line.id) accountLabelById.set(line.id, line.email ?? line.label ?? line.id);
   }
   // One account per provider is the normal case and naming it on every row is
   // noise; more than one and the row has to say which. Same rule the TUI's
@@ -23353,6 +23376,27 @@ export function formatUsageSnapshot(value: unknown): string {
         : "",
     ];
   });
+  const representedAccountIds = new Set(
+    windows
+      .map((window) => asString(window.accountId)?.trim())
+      .filter((id): id is string => Boolean(id)),
+  );
+  for (const line of accountLines) {
+    if (!line.id || representedAccountIds.has(line.id)) continue;
+    const providerWindows = windows.filter((window) => asString(window.provider) === line.provider);
+    const providerAccountCount = accountLines.filter((candidate) => candidate.provider === line.provider).length;
+    if (providerAccountCount === 1 && providerWindows.some((window) => !asString(window.accountId)?.trim())) {
+      continue;
+    }
+    windowRows.push([
+      usageProviderTextLabel(line.provider),
+      "no windows yet",
+      "",
+      "",
+      "",
+      line.email ?? line.label ?? line.id,
+    ]);
+  }
 
   const unhealthy = Object.entries(providerStatus)
     .filter(([, status]) => isRecord(status) && status.state !== "ok")
@@ -23391,7 +23435,7 @@ export function formatUsageSnapshot(value: unknown): string {
         ["provider", "account", "plan", "machines", "limits"],
         accountLines.map((line) => [
           usageProviderTextLabel(line.provider),
-          line.email ?? "",
+          line.email ?? line.label ?? "",
           line.plan ?? "",
           line.machines,
           line.url ?? "",
@@ -24543,6 +24587,23 @@ export function formatChatStatus(value: unknown, nowMs = Date.now()): string {
   return formatChatTurnStatus(record as ChatTurnStatusSnapshot, {
     ...(resumeRow ? { extraRows: [resumeRow] } : {}),
   });
+}
+
+export function formatChatContinueOnAccount(value: unknown): string {
+  const record = firstRecord(value, ["result"])
+    ?? (isRecord(value) ? value : null);
+  if (record?.ok === true) {
+    const sessionId = asString(record.sessionId);
+    return sessionId
+      ? `Continuing on the other account · chat ${sessionId}`
+      : "Continuing on the other account.";
+  }
+  const error = isRecord(record?.error) ? asString(record.error.message) : null;
+  const reason = asString(record?.message)
+    ?? asString(record?.reason)
+    ?? error
+    ?? "No other account can take this chat.";
+  return reason.replace(/\s+/g, " ").trim();
 }
 
 export function formatChatResumeNow(value: unknown): string {
@@ -26486,6 +26547,8 @@ function formatTextOutput(
       return formatChatStatus(value);
     case "chat-resume-now":
       return formatChatResumeNow(value);
+    case "chat-continue-on-account":
+      return formatChatContinueOnAccount(value);
     case "chat-read":
       return formatChatRead(value);
     case "session-lifecycle":
@@ -26652,6 +26715,7 @@ function inferFormatter(
   if (label === "chat models" || label === "personal chat models") return "chat-models";
   if (label === "chat status") return "chat-status";
   if (label === "chat resume-now") return "chat-resume-now";
+  if (label === "chat continue-on-account") return "chat-continue-on-account";
   if (label === "test runs") return "tests-runs";
   if (label === "proof list") return "proof-list";
   if (label === "apple device rotate") return "ios-sim-rotate";

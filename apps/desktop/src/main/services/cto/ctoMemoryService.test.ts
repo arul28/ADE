@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { createCtoMemoryService, formatMemoryTagSuffix, parseMemoryTags } from "./ctoMemoryService";
+import { createProjectContextStore } from "./projectContextStore";
 
 function createFixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cto-memory-"));
@@ -208,6 +209,9 @@ describe("ctoMemoryService", () => {
       dailyLog: "",
       dailyLogDate: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
       updatedAt: null,
+      projectBrief: null,
+      projectThreads: null,
+      projectItems: null,
     });
 
     service.appendMemoryFact("A durable fact.");
@@ -220,8 +224,76 @@ describe("ctoMemoryService", () => {
     expect(snapshot.dailyLog).toContain("a turn");
     expect(typeof snapshot.updatedAt).toBe("string");
     expect(Object.keys(snapshot).sort()).toEqual(
-      ["dailyLog", "dailyLogDate", "memory", "threadState", "updatedAt"],
+      ["dailyLog", "dailyLogDate", "memory", "projectBrief", "projectItems", "projectThreads", "threadState", "updatedAt"],
     );
+  });
+
+  it("keeps the brief and a saved fact after a new memory service is created", () => {
+    const { adeDir, service } = createFixture();
+    service.setProjectBrief({ goal: "One coordinator for the repository." });
+    service.appendMemoryFact("The installer needs a GUI prompt.");
+    service.recordThread({
+      title: "Installer",
+      sessionId: "chat-child",
+      laneId: "lane-installer",
+      objective: "Fix the prompt",
+    });
+
+    const reloaded = createCtoMemoryService({ adeDir });
+    const sections = reloaded.buildMemoryContextSections();
+    expect(sections.some((section) => section.body.includes("One coordinator for the repository."))).toBe(true);
+    expect(sections.some((section) => section.body.includes("The installer needs a GUI prompt."))).toBe(true);
+    expect(reloaded.getSnapshot().projectThreads).toContain("chat-child");
+    expect(fs.existsSync(path.join(adeDir, "cto", "context-store.json"))).toBe(true);
+  });
+
+  it("keeps brief fields the caller did not send", () => {
+    const { service } = createFixture();
+    service.setProjectBrief({
+      goal: "Ship",
+      success: "Green CI",
+      constraints: "No repository writes",
+      conventions: "",
+      openLoops: "",
+    });
+    const patched = service.setProjectBrief({ goal: "Ship the coordinator" });
+    expect(patched.goal).toBe("Ship the coordinator");
+    expect(patched.success).toBe("Green CI");
+    expect(patched.constraints).toBe("No repository writes");
+    const cleared = service.setProjectBrief({ success: "" });
+    expect(cleared.success).toBe("");
+    expect(cleared.goal).toBe("Ship the coordinator");
+  });
+
+  it("copies notes-file bullets into the store and ignores the rest of the file", () => {
+    const { adeDir, service } = createFixture();
+    service.writeMemory("# CTO Durable Memory\n\n## Facts\n\n- One bullet\n\nA paragraph that is not a bullet.");
+    service.writeMemory("# CTO Durable Memory\n\n## Facts\n\n- One bullet\n- Two bullet\n");
+    const texts = createProjectContextStore({ adeDir }).read().items.map((item) => item.text);
+    expect(texts).toEqual(["One bullet", "Two bullet"]);
+  });
+
+  it("includes a lane-tagged store fact that is not in MEMORY.md", () => {
+    const { adeDir, service } = createFixture();
+    service.appendMemoryFact("Installer signing needs a GUI Always-Allow.", { lane: "lane-7" });
+    createProjectContextStore({ adeDir }).remember({
+      text: "The account mirror already knew the signing prompt.",
+      tags: { lane: "lane-7" },
+    });
+    const section = service.buildLaneMemoryContextSection("lane-7");
+    expect(section?.body).toContain("Installer signing needs a GUI Always-Allow.");
+    expect(section?.body).toContain("The account mirror already knew the signing prompt.");
+    expect(section?.body.match(/Installer signing needs a GUI Always-Allow/g)).toHaveLength(1);
+  });
+
+  it("keeps a store-only hit when file hits would fill the page", () => {
+    const { adeDir, service } = createFixture();
+    const lines = Array.from({ length: 8 }, (_, index) => `- alpha file fact ${index}`);
+    service.writeMemory(`# CTO Durable Memory\n\n## Facts\n\n${lines.join("\n")}\n`);
+    createProjectContextStore({ adeDir }).remember({ text: "alpha only in the context store" });
+    const rows = service.searchMemory("alpha", { limit: 5 });
+    expect(rows.some((row) => row.file === "context" && row.snippet.includes("only in the context store"))).toBe(true);
+    expect(rows).toHaveLength(5);
   });
 
   it("truncates injected copies without touching the on-disk files", () => {

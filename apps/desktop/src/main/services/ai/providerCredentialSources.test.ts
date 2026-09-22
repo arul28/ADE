@@ -14,6 +14,7 @@ vi.mock("node:child_process", () => ({
 
 import {
   cacheClaudeCredentials,
+  claudeKeychainServiceName,
   clearClaudeCredentialCache,
   invalidateCachedClaudeCredentials,
   readClaudeCredentials,
@@ -163,6 +164,17 @@ describe("readClaudeCredentials", () => {
   });
 });
 
+describe("claudeKeychainServiceName", () => {
+  it("uses the bare service for the machine default and the CLI's suffix for a scoped home", () => {
+    expect(claudeKeychainServiceName()).toBe("Claude Code-credentials");
+    // Claude Code appends the first 8 hex characters of the SHA-256 of the
+    // resolved config directory. Fixed vector so a hash/format change here is a
+    // failing test rather than a silently invisible account.
+    expect(claudeKeychainServiceName("/tmp/ade-claude-account"))
+      .toBe("Claude Code-credentials-9a35bdb5");
+  });
+});
+
 describe("readClaudeCredentialsWithRefresh", () => {
   it("returns null instead of expired credentials when refresh fails", async () => {
     setPlatform("darwin");
@@ -259,21 +271,53 @@ describe("per-account credential reads", () => {
     };
   }
 
-  it("reads a scoped account from its own config home and never the Keychain", async () => {
+  it("reads a scoped account's own Keychain item, never the default account's", async () => {
     setPlatform("darwin");
     const configHome = path.join(os.tmpdir(), "ade-instance-claude-work");
-    const { asked } = fileReader({
-      [path.join(configHome, ".credentials.json")]: liveClaudeCreds("work-access"),
-      [path.join(os.homedir(), ".claude", ".credentials.json")]: liveClaudeCreds("default-access"),
-    });
+    const scopedService = claudeKeychainServiceName(configHome);
+    mockState.spawn.mockImplementation(() => fakeShellChild(JSON.stringify(liveClaudeCreds("work-access"))));
+    fileReader({});
 
     const creds = await readClaudeCredentials({ configHome });
 
     expect(creds?.accessToken).toBe("work-access");
-    expect(asked).toEqual([path.join(configHome, ".credentials.json")]);
-    // The Keychain item is the machine's default login; a scoped account has no
-    // per-account equivalent and must never be handed the default's token.
+    expect(creds?.source).toBe("macos-keychain");
+    const command = String(mockState.spawn.mock.calls[0]?.[1]?.[1] ?? "");
+    expect(command).toContain(`-s '${scopedService}'`);
+    expect(command).not.toContain("Claude Code-credentials'");
+  });
+
+  it("never touches the Keychain for a scoped background read", async () => {
+    setPlatform("darwin");
+    const configHome = path.join(os.tmpdir(), "ade-instance-claude-work");
+    fileReader({
+      [path.join(configHome, ".credentials.json")]: liveClaudeCreds("work-access"),
+    });
+
+    const creds = await readClaudeCredentials({ allowKeychain: false, configHome });
+
+    expect(creds?.accessToken).toBe("work-access");
     expect(mockState.spawn).not.toHaveBeenCalled();
+  });
+
+  it("caches a scoped Keychain read under that account, so background polls reuse it", async () => {
+    setPlatform("darwin");
+    const configHome = path.join(os.tmpdir(), "ade-instance-claude-work");
+    mockState.spawn.mockImplementation(() => fakeShellChild(JSON.stringify(liveClaudeCreds("work-access"))));
+    const readFileSpy = vi.spyOn(fs.promises, "readFile").mockRejectedValue(
+      Object.assign(new Error("ENOENT"), { code: "ENOENT" }),
+    );
+
+    await expect(readClaudeCredentials({ configHome })).resolves.toEqual(
+      expect.objectContaining({ accessToken: "work-access" }),
+    );
+    const background = await readClaudeCredentialsWithRefresh(createLogger(), {
+      allowKeychain: false,
+      configHome,
+    });
+
+    expect(background?.accessToken).toBe("work-access");
+    expect(readFileSpy).not.toHaveBeenCalled();
   });
 
   it("caches each account's token under its own config home", async () => {

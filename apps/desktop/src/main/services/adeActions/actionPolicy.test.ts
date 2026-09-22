@@ -307,6 +307,7 @@ describe("isAllowedAdeAction", () => {
       "listClaudeOutputStyles", "listClaudePlugins", "listCodexPlugins", "listClaudeSessions",
       "listMentionSuggestions", "listPromptStashes", "listScheduledWork", "listSessions",
       "listSubagents", "markCrossMachineHandoff", "modelCatalog", "resumeUsageLimitNow",
+      "continueUsageLimitOnAlternate",
       "prepareCrossMachineHandoff", "recoverCodexTurn", "recoverContinuity", "recoverTurn",
       "regenerateSessionMetadata", "reloadClaudePlugins", "resetCodexMemory",
       "resolveSmartLinkPreview", "resolveUnprocessedMessage", "respondToInput",
@@ -610,7 +611,6 @@ const CTO_DOMAIN_COVERAGE: ReadonlyArray<{
   // other writer is the `ingest_computer_use_artifacts` RPC tool, which owns
   // the owner-claim and caller-root validation. See `registry.test.ts`.
   { domain: "computer_use_artifacts", why: "proof list and review", actions: ["listArtifacts", "readArtifactPreview", "updateArtifactReview"] },
-  { domain: "review", why: "launch and read code-review runs", actions: ["listLaunchContext", "startRun", "rerun", "cancelRun", "listRuns", "getRunDetail", "qualityReport"] },
   { domain: "search", why: "project-wide universal search", actions: ["query", "indexStatus"] },
   { domain: "usage", why: "token, cost, and rate-limit reads", actions: ["getAdeUsageStats", "getUsageSnapshot"] },
   { domain: "budget", why: "spend caps and cumulative usage reads", actions: ["getConfig", "getCumulativeUsage", "checkBudget"] },
@@ -652,7 +652,6 @@ describe("CTO domain coverage over the ADE action bus", () => {
     // reason has to beat "automations.saveRule already carries the same power".
     for (const [domain, action] of [
       ["automation_planner", "saveDraft"],
-      ["review", "startRun"],
       ["search", "query"],
       ["ios_simulator", "listDevices"],
       ["app_control", "listTargets"],

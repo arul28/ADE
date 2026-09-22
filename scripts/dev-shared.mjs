@@ -582,6 +582,31 @@ export function devRuntimeLogPath() {
 const DEV_RUNTIME_LOG_MAX_BYTES = 20 * 1024 * 1024;
 
 /**
+ * One glance at what this dev launch touches and what it leaves alone. Printed
+ * before the window opens so a reader (or an agent) never has to guess whether
+ * the installed brain is at risk.
+ */
+export function printDevIsolationReport(socketPath, projectRoot, { ownsRuntime = false } = {}) {
+  const adeHome = process.env.ADE_HOME?.trim() || path.join(os.homedir(), ".ade");
+  const requested = process.env.ADE_DEV_RUNTIME_SYNC === "1" ? "ON (ADE_DEV_RUNTIME_SYNC=1)" : "off (--no-sync)";
+  // Reusing or attaching to a brain does not change the flags it was started
+  // with. Saying "sync off" in that case is how a still-syncing process gets
+  // reported as isolated.
+  const sync = ownsRuntime
+    ? requested
+    : `${requested} requested; this launch left the process already on the socket alone`;
+  process.stdout.write([
+    "[ade] dev isolation report",
+    `[ade]   state root : ${adeHome} (shared with the installed brain)`,
+    `[ade]   dev socket : ${socketPath}`,
+    `[ade]   sync       : ${sync}`,
+    `[ade]   project    : ${projectRoot ?? "(launcher default)"}`,
+    "[ade]   installed brain: untouched (its own socket, its own sync lease, service never repaired by a dev app)",
+    "",
+  ].join("\n"));
+}
+
+/**
  * Open the dev runtime log for appending, truncating it first when it has
  * grown past the size guard. Returns null when the log cannot be opened — a
  * missing log must never stop the runtime from starting.
@@ -603,25 +628,6 @@ function openDevRuntimeLogFd(logPath) {
   } catch {
     return null;
   }
-}
-
-/**
- * One glance at what this dev launch touches and what it leaves alone. Printed
- * before the window opens so a reader (or an agent) never has to guess whether
- * the installed brain is at risk.
- */
-export function printDevIsolationReport(socketPath, projectRoot) {
-  const adeHome = process.env.ADE_HOME?.trim() || path.join(os.homedir(), ".ade");
-  const sync = process.env.ADE_DEV_RUNTIME_SYNC === "1" ? "ON (ADE_DEV_RUNTIME_SYNC=1)" : "off (--no-sync)";
-  process.stdout.write([
-    "[ade] dev isolation report",
-    `[ade]   state root : ${adeHome} (shared with the installed brain)`,
-    `[ade]   dev socket : ${socketPath}`,
-    `[ade]   sync       : ${sync}`,
-    `[ade]   project    : ${projectRoot ?? "(launcher default)"}`,
-    "[ade]   installed brain: untouched (its own socket, its own sync lease, service never repaired by a dev app)",
-    "",
-  ].join("\n"));
 }
 
 export async function ensureRuntime(socketPath, projectRoot = null) {

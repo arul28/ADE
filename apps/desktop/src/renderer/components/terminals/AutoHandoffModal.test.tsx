@@ -3,12 +3,13 @@
 import React from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AutomationRuleSummary, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
+import type { AutomationRuleSummary, LaneSummary, OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import {
   AUTO_HANDOFF_DEFAULT_RETRIES,
   AutoHandoffModal,
   autoHandoffFormIsValid,
   buildAutoHandoffDrafts,
+  loadAutoHandoffRulesForSession,
   selectAutoHandoffRulesForSession,
 } from "./AutoHandoffModal";
 
@@ -29,7 +30,10 @@ vi.mock("../shared/ModelPicker/ModelPicker", () => ({
     />
   ),
 }));
-const { catalogTiers } = vi.hoisted(() => ({ catalogTiers: { value: [] as string[] } }));
+const { catalogTiers, pinLanes } = vi.hoisted(() => ({
+  catalogTiers: { value: [] as string[] },
+  pinLanes: { value: null as LaneSummary[] | null },
+}));
 vi.mock("../shared/ModelPicker/modelCatalog", () => ({
   resolveModelDescriptorWithRuntimeCatalog: () => ({ reasoningTiers: catalogTiers.value }),
 }));
@@ -82,6 +86,10 @@ vi.mock("../../state/appStore", () => ({
   useAppStore: (selector: (state: Record<string, unknown>) => unknown) => selector({ lanes }),
 }));
 
+vi.mock("../../state/crossMachineLanes", () => ({
+  useLanesForPin: () => pinLanes.value,
+}));
+
 vi.mock("../../lib/modelOptions", () => ({
   deriveConfiguredModelIds: () => ["anthropic/claude-opus-5", "openai/gpt-5.6-luna"],
 }));
@@ -118,6 +126,7 @@ let deleteRule: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   catalogTiers.value = [];
+  pinLanes.value = null;
   saveDraft = vi.fn().mockResolvedValue({ rule: {}, rules: [] });
   deleteRule = vi.fn().mockResolvedValue([]);
   Object.defineProperty(window, "ade", {
@@ -322,6 +331,21 @@ describe("AutoHandoffModal", () => {
     });
   });
 
+  it("still excludes the chat's own model when the summary carries only a legacy short token", async () => {
+    // Legacy summaries can omit `modelId` while keeping a provider-facing short
+    // token, so an exact match against canonical catalog ids is not enough.
+    render(
+      <AutoHandoffModal
+        session={makeSession({ modelId: "claude-opus-5" })}
+        existingRules={[]}
+        onClose={vi.fn()}
+      />,
+    );
+    await waitFor(() => {
+      expect((screen.getByLabelText("Handoff model") as HTMLSelectElement).value).toBe("openai/gpt-5.6-luna");
+    });
+  });
+
   it("saves a scoped rule and deletes the conditions the user left off", async () => {
     const { onClose } = renderModal();
     await waitFor(() => {
@@ -345,6 +369,64 @@ describe("AutoHandoffModal", () => {
       "auto-handoff-chat-42-failure",
     ]);
     await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
+  it("pins rule writes and deletes to the chat's own machine", async () => {
+    const binding = {
+      kind: "remote",
+      targetId: "studio",
+      projectId: "proj-1",
+      rootPath: "/srv/app",
+    } as unknown as OpenProjectBinding;
+    render(
+      <AutoHandoffModal session={makeSession()} binding={binding} existingRules={[]} onClose={vi.fn()} />,
+    );
+    await waitFor(() => {
+      expect((screen.getByLabelText("Handoff model") as HTMLInputElement).value).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(saveDraft).toHaveBeenCalledTimes(1));
+    // Every write targets the chat's machine, not this tab's bound project.
+    expect(saveDraft.mock.calls[0]![1]).toBe(binding);
+    await waitFor(() => expect(deleteRule).toHaveBeenCalled());
+    expect(deleteRule.mock.calls.every((call) => call[1] === binding)).toBe(true);
+  });
+
+  it("discovers models and lanes on the chat's own machine when a binding is given", async () => {
+    const binding = {
+      kind: "remote",
+      key: "remote:studio:proj-1",
+      targetId: "studio",
+      projectId: "proj-1",
+      rootPath: "/srv/app",
+      runtimeName: "Studio",
+      displayName: "app",
+    } as unknown as OpenProjectBinding;
+    pinLanes.value = [{ ...lanes[1], id: "lane-remote", name: "Remote Lane" }];
+    const getStatus = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    render(
+      <AutoHandoffModal session={makeSession()} binding={binding} existingRules={[]} onClose={vi.fn()} />,
+    );
+
+    // Model discovery probes the chat's machine, not this tab's project.
+    await waitFor(() => expect(getStatus).toHaveBeenCalledWith({}, binding));
+    // The explicit-lane picker offers that machine's lane.
+    fireEvent.click(screen.getByRole("button", { name: "Details" }));
+    fireEvent.click(screen.getByRole("radio", { name: "choose a lane…" }));
+    fireEvent.click(screen.getByRole("button", { name: "Handoff lane" }));
+    expect(await screen.findByRole("option", { name: /Remote Lane/ })).toBeTruthy();
+  });
+
+  it("returns null from a failed rules read so the editor is never opened on defaults", async () => {
+    (window.ade.automations.list as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("offline"));
+    await expect(loadAutoHandoffRulesForSession("chat-42", null)).resolves.toBeNull();
+  });
+
+  it("returns null when the automations surface is unavailable", async () => {
+    delete (window.ade as { automations?: unknown }).automations;
+    await expect(loadAutoHandoffRulesForSession("chat-42")).resolves.toBeNull();
   });
 
   it("saves an unscoped rule from the rule-for-all link", async () => {

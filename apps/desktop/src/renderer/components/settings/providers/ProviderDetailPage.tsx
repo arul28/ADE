@@ -238,11 +238,21 @@ export function ProviderDetailPage({
             ))}
           </section>
 
-          {/* Sign in stays reachable while disabled: switching a provider off is
-              about what ADE offers, not about locking you out of its account. */}
-          {AuthActions ? (
+          {/* Claude and Codex sign in from the Accounts panel on the right.
+              A second Sign in section here only repeats that, and stays as an
+              empty box once the account is already signed in. A missing CLI
+              still needs the install command, which the account rows do not
+              show. Every other provider has no Accounts panel, so Sign in
+              stays here, including while the provider is switched off. */}
+          {AuthActions && !multiAccountProvider ? (
             <section style={panel({ padding: 14, display: "flex", flexDirection: "column", gap: 10 })}>
               <SubsectionTitle>Sign in</SubsectionTitle>
+              <AuthActions ctx={ctx} />
+            </section>
+          ) : null}
+          {AuthActions && multiAccountProvider && status.state === "not-installed" ? (
+            <section style={panel({ padding: 14, display: "flex", flexDirection: "column", gap: 10 })}>
+              <SubsectionTitle>Install</SubsectionTitle>
               <AuthActions ctx={ctx} />
             </section>
           ) : null}

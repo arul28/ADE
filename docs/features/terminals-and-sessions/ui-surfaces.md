@@ -1506,15 +1506,19 @@ carries a 13px duotone Phosphor glyph so the list is scannable:
   through the backend settlement transaction; it interrupts the provider and
   clears live/restored pending input before writing settle instead of sending a
   synthetic decline.
-- Chat rows also carry **Auto handoff…** (or **Edit auto handoff…** once rules
-  exist for the chat) and **Remove auto handoff**, which open `AutoHandoffModal`
-  — the chat menu's way of arming "when this chat hits its limit / fails / ends
-  with no PR, continue it on another model". The modal is hosted at the
-  `SessionContextMenu` level rather than inside the panel, because opening it
-  closes the menu and a modal mounted in the panel would unmount in the same
-  tick. The existing-rule list is fetched asynchronously and `null` means "not
-  answered yet": a context menu that waits on IPC before it appears is a broken
-  context menu.
+- Chat rows also carry a **Hand off…** submenu with **Local handoff** and
+  **Another machine** — both select the row and route the intent to the chat
+  pane's Handoff surface through `lib/chatHandoffIntent.ts` — plus **Auto
+  handoff…** (or **Edit auto handoff…** once rules exist for the chat) and
+  **Remove auto handoff**, which open `AutoHandoffModal` — the chat menu's way
+  of arming "when this chat hits its limit / fails / ends with no PR, continue
+  it on another model". The modal is hosted at the `SessionContextMenu` level
+  rather than inside the panel, because opening it closes the menu and a modal
+  mounted in the panel would unmount in the same tick. The existing-rule list is
+  fetched asynchronously; `null` (a failed or unavailable read) keeps the item
+  disabled rather than opening the editor on defaults that would delete rules
+  the read never saw, because a context menu that waits on IPC before it appears
+  is a broken context menu.
 - Chat metadata generation makes one structured request for all three visible
   fields and applies only the selected fields. A status-only refresh sends the
   lane name, chat title, worktree folder, and last assistant paragraphs — not

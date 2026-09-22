@@ -1007,6 +1007,24 @@ resume with `interactionMode: "plan"` and a stale access mode; it logs
 `agent_chat.plan_auto_approved_stale_session` when it fires. Do not widen it —
 entering plan mode is a request for review.
 
+The fence is enforced from both ends. `applyClaudePlanModeTransition` moves the
+access mode, and the `canUseTool` gate refuses any tool not on
+`CLAUDE_PLAN_MODE_ALLOWED_TOOLS` (`services/chat/claudeToolGate.ts`) while
+`isSessionInPlanMode` holds — so when the CLI defers a call to the host, a
+`bypassPermissions` session that entered plan mode mid-run cannot have it
+silently allowed. (The SDK's `canUseTool` firing is not re-measured against
+0.3.278 — see [the SDK surface](../sdk/README.md) — but the fence holds on every
+call that does reach it.) The allowlist is checked against the bundled CLI
+2.1.278's own plan-mode allowlist — read-only built-ins including
+`NotebookRead`, `Agent`/`Task` subagent exploration, `Skill`, task bookkeeping,
+`AskUserQuestion` — plus ADE's plan-flow and question tools. It is an allowlist
+rather than a mutating denylist on purpose:
+an unrecognized name (a mutating MCP tool, a Windows `PowerShell`) is refused,
+and the SDK reports no read-only signal for MCP tools, so read-only MCP tools
+are refused in plan mode too. The list is literal; membership is never inferred
+from a name substring. A refused call logs `agent_chat.plan_mode_tool_denied`
+with the session, turn, and tool.
+
 When the user approves an `ExitPlanMode` call, the canUseTool handler
 returns `{ behavior: "allow", updatedInput: input }` so the SDK's native
 `ExitPlanMode` handler runs, restores the pre-plan permission mode from
@@ -1188,16 +1206,11 @@ Commit messages come from the last turned ADE chat on that lane
 and iOS PR create is a title (from the lane name) plus optional
 markdown; ADE does not draft or summarize the PR. Graph edge clicks
 run merge simulation only — there is no AI conflict-proposal flyout.
-Review start requires an explicit run `modelId`.
 
 - Commit messages and conflict proposals throw `Choose a … model in Settings`.
 - PR drafts and PR AI summaries use the deterministic template when the
   picker is empty; `requireAi` callers throw the Settings prompt instead
   of a stub.
-- Review start requires an explicit `modelId` on the run. Empty throws
-  `Choose a review model before starting a review.` Launch context may
-  advertise a Codex catalog `recommendedModelId` as a picker hint; the
-  service never fills a model if the caller omits one.
 - Live chat compaction is unchanged — it always uses the chat's own
   provider.
 

@@ -524,7 +524,7 @@ describe("PrTimeline", () => {
       commentId: "c-bot-long",
       isBot: true,
       author: "ade[bot]",
-      body: "## ADE review\n" + "detail line\n".repeat(30),
+      body: "## Bot review\n" + "detail line\n".repeat(30),
     });
     const shortHumanComment: PrTimelineEvent = makeEvent({
       id: "c-human",

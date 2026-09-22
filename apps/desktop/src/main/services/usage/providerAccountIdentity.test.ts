@@ -315,6 +315,9 @@ describe("usageProviderAccountUrl", () => {
     expect(usageProviderAccountUrl("codex")).toBe(
       "https://chatgpt.com/codex/cloud/settings/analytics#usage",
     );
-    expect(usageProviderAccountUrl("cursor")).toBeUndefined();
+    expect(usageProviderAccountUrl("cursor")).toBe("https://cursor.com/dashboard?tab=usage");
+    expect(usageProviderAccountUrl("copilot")).toBe("https://github.com/settings/copilot");
+    expect(usageProviderAccountUrl("grok")).toBe("https://grok.com");
+    expect(usageProviderAccountUrl("opencode")).toBe("https://opencode.ai");
   });
 });

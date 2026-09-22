@@ -14875,6 +14875,24 @@ final class SyncService: ObservableObject {
     )
   }
 
+  /// `chat.continueUsageLimitOnAlternate` — start the interrupted task on
+  /// another signed-in account that still has room. The result reuses the
+  /// resume-now decoder: success is `ok == true`, and a refusal carries the
+  /// host's sentence. The new chat id is not needed to dismiss the sheet.
+  @discardableResult
+  func continueUsageLimitOnAlternate(sessionId: String) async throws -> AgentChatResumeUsageLimitNowResult {
+    let action = chatActionName("chat.continueUsageLimitOnAlternate", sessionId: sessionId)
+    try requireInvokableRemoteAction(action)
+    let scope = chatCommandScope(for: sessionId)
+    return try await sendDecodableChatCommand(
+      action: action,
+      payload: AgentChatSessionIdRequest(sessionId: sessionId),
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath,
+      as: AgentChatResumeUsageLimitNowResult.self
+    )
+  }
+
   func archiveChatSession(sessionId: String) async throws {
     let scope = chatCommandScope(for: sessionId)
     _ = try await sendChatCommand(

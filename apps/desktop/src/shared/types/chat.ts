@@ -2369,6 +2369,16 @@ export type AgentChatUsageLimitResumeState =
   | "opted_out"
   | "no_reset";
 
+/**
+ * Another signed-in account that still has room while this chat is limited.
+ * Present only when the host has a real quota reading for it. The client
+ * does not choose the account — Continue uses the one the host published.
+ */
+export type AgentChatUsageLimitAlternateAccount = {
+  instanceId: string;
+  label: string;
+};
+
 export type AgentChatUsageLimitResume = {
   state: AgentChatUsageLimitResumeState;
   provider: AgentChatProvider;
@@ -2386,6 +2396,11 @@ export type AgentChatUsageLimitResume = {
   turnId: string | null;
   /** ISO instant this state was computed. Clients use it for the countdown. */
   updatedAt: string;
+  /**
+   * Another account that can take the interrupted task. Absent when this
+   * provider has no second login, or that login has no readable room.
+   */
+  alternateAccount?: AgentChatUsageLimitAlternateAccount | null;
 };
 
 export type AgentChatSessionSummary = {
@@ -4058,6 +4073,25 @@ export type AgentChatResumeUsageLimitNowResult =
   | {
       ok: false;
       reason: AgentChatResumeUsageLimitNowRefusal;
+      /** Ready-to-render sentence; clients show it as-is. */
+      message: string;
+    };
+
+export type AgentChatContinueUsageLimitOnAlternateArgs = {
+  sessionId: string;
+};
+
+export type AgentChatContinueUsageLimitOnAlternateRefusal =
+  | "no_live_usage_limit"
+  | "no_alternate_account"
+  | "handoff_in_flight"
+  | "handoff_failed";
+
+export type AgentChatContinueUsageLimitOnAlternateResult =
+  | { ok: true; sessionId: string }
+  | {
+      ok: false;
+      reason: AgentChatContinueUsageLimitOnAlternateRefusal;
       /** Ready-to-render sentence; clients show it as-is. */
       message: string;
     };

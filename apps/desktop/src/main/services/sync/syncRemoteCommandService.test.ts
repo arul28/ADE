@@ -343,6 +343,9 @@ const CTO_MEMORY_SNAPSHOT = {
   dailyLog: "# 2026-07-04\n\n09:00 — do a thing → done",
   dailyLogDate: "2026-07-04",
   updatedAt: "2026-07-04T09:00:00.000Z",
+  projectBrief: null,
+  projectThreads: null,
+  projectItems: null,
 };
 
 describe("createSyncRemoteCommandService", () => {

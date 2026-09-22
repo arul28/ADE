@@ -315,6 +315,27 @@ need read-only context, but edits and mutating shell commands are only
 allowed inside the lane worktree unless ADE relaunches the session in a
 different lane.
 
+### Per-turn directive cadence
+
+`composeLaunchDirectives` prepends ADE-authored blocks to the user's message.
+Each block states its own cadence, and none of them repeats without a reason:
+
+- **Lane worktree directive** — once per lane epoch.
+- **ADE guidance** (`buildAdeGuidanceForLane`) — every turn, and only for a
+  provider with no trusted instruction channel. Claude, Codex, and OpenCode
+  carry it in a persistent system prompt instead. Droid is the exception in
+  the other direction: its SDK takes no system prompt, so ADE re-sends the
+  whole harness prompt every turn, and that harness already ends with the
+  shared `## ADE` block — so Droid receives only the session lineage lines
+  here, never a second copy of the block.
+- **Computer Use directive** — once per lane epoch, and again whenever the
+  available capture backends change. The gate is a fingerprint of the rendered
+  directive, so a changed capability set is re-announced and an unchanged one
+  never costs a second delivery. Two honest limits: a transition to no available
+  backend emits no directive at all (there is nothing to announce), so a
+  capability lost entirely is not explicitly revoked; and a session with no
+  artifact broker gets no directive rather than a claim it cannot honor.
+
 ## Fragile and tricky wiring
 
 - **Identity must come from env or trusted CLI flags.** A rogue client

@@ -28,6 +28,7 @@ export const PROVIDER_COLOR_TABLE = {
     openrouter: { light: "#0284C7", dark: "#38BDF8" },
     openclaw: { light: "#B45309", dark: "#E0A82E" },
     xai: { light: "#3F3F46", dark: "#B4B4BD" },
+    grok: { light: "#3F3F46", dark: "#B4B4BD" },
   },
   usageFallback: [
     { light: "#2563EB", dark: "#60A5FA" },

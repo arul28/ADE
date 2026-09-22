@@ -13,10 +13,7 @@ import {
   recoverInterruptedTableRebuilds,
   type TableRebuildPlan,
 } from "./kvDb";
-import {
-  PR_SNAPSHOT_RETENTION_DAYS,
-  REVIEW_ARTIFACT_RETENTION_DAYS,
-} from "./dbMaintenanceApi";
+import { PR_SNAPSHOT_RETENTION_DAYS } from "./dbMaintenanceApi";
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite") as {
@@ -495,30 +492,20 @@ describe("kvDb storage maintenance", () => {
     )?.count).toBe(1);
   });
 
-  it("applies the shared review-artifact and PR-snapshot retention windows", async () => {
+  it("applies the shared PR-snapshot retention window", async () => {
     const db = await openKvDb(makeDbPath(), createLogger());
     closeLater(db);
     db.run("pragma foreign_keys = off");
     const now = Date.now();
-    const reviewOld = new Date(now - (REVIEW_ARTIFACT_RETENTION_DAYS + 1) * 24 * 60 * 60 * 1_000).toISOString();
-    const reviewRecent = new Date(now - (REVIEW_ARTIFACT_RETENTION_DAYS - 1) * 24 * 60 * 60 * 1_000).toISOString();
     const prOld = new Date(now - (PR_SNAPSHOT_RETENTION_DAYS + 1) * 24 * 60 * 60 * 1_000).toISOString();
     const prRecent = new Date(now - (PR_SNAPSHOT_RETENTION_DAYS - 1) * 24 * 60 * 60 * 1_000).toISOString();
-    db.run(
-      `insert into review_run_artifacts(id, run_id, artifact_type, title, mime_type, created_at)
-       values ('review-old', 'missing-run', 'summary', 'Old', 'text/plain', ?),
-              ('review-recent', 'missing-run', 'summary', 'Recent', 'text/plain', ?)`,
-      [reviewOld, reviewRecent],
-    );
     db.run(
       `insert into pull_request_snapshots(pr_id, updated_at)
        values ('pr-old', ?), ('pr-recent', ?)`,
       [prOld, prRecent],
     );
 
-    expect(db.maintenance?.pruneReviewArtifacts().itemsAffected).toBe(1);
     expect(db.maintenance?.prunePrSnapshots().itemsAffected).toBe(1);
-    expect(db.all<{ id: string }>("select id from review_run_artifacts order by id")).toEqual([{ id: "review-recent" }]);
     expect(db.all<{ pr_id: string }>("select pr_id from pull_request_snapshots order by pr_id")).toEqual([{ pr_id: "pr-recent" }]);
   });
 

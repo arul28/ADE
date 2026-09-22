@@ -2,7 +2,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { ADE_AGENT_SKILLS_DIRS_ENV } from "../../../shared/agentSkillRoots";
 import {
+  adePromptAgentSkillRoots,
   agentSkillSlashCommands,
   claudeAgentSkillPluginRoots,
   codexSkillsForCwd,
@@ -112,5 +114,56 @@ describe("agentSkillRuntimeService", () => {
     expect(codexSkillsForCwd({
       data: [{ skills: [{ name: "legacy-single-cwd" }] }],
     }, "/lane-c")).toEqual([{ name: "legacy-single-cwd" }]);
+  });
+});
+
+describe("prompt-facing skill roots", () => {
+  it("drops advertised roots that are not on disk", () => {
+    const real = fs.mkdtempSync(path.join(os.tmpdir(), "ade-skill-root-"));
+    try {
+      const roots = adePromptAgentSkillRoots({
+        cwd: "/nonexistent-lane-worktree",
+        processCwd: null,
+        env: { [ADE_AGENT_SKILLS_DIRS_ENV]: real },
+        dirname: null,
+      } as never);
+
+      expect(roots).toEqual([real]);
+    } finally {
+      fs.rmSync(real, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps every Node-side prompt caller on the disk-filtered helper", () => {
+    // The shared helper cannot stat, so a main-process or CLI file that imports
+    // it directly advertises roots that may not exist. Three callers did; this
+    // is the guard that stops a fourth.
+    // `src/main` and the ADE CLI only. `src/shared` is bundled into the
+    // renderer, which has no filesystem, so its default-argument fallbacks to
+    // the unfiltered helper are correct and deliberate.
+    const repoRoot = path.resolve(__dirname, "..", "..", "..", "..", "..", "..");
+    const searchRoots = [
+      path.join(repoRoot, "apps", "desktop", "src", "main"),
+      path.join(repoRoot, "apps", "ade-cli", "src"),
+    ].filter((root) => fs.existsSync(root));
+    const offenders: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name === "node_modules" || entry.name === "dist") continue;
+          walk(full);
+          continue;
+        }
+        if (!entry.name.endsWith(".ts") || entry.name.endsWith(".test.ts")) continue;
+        if (full.endsWith(path.join("skills", "agentSkillRuntimeService.ts"))) continue;
+        if (fs.readFileSync(full, "utf8").includes("getAdeAgentSkillRootsForPrompt")) {
+          offenders.push(path.relative(repoRoot, full));
+        }
+      }
+    };
+    for (const root of searchRoots) walk(root);
+
+    expect(offenders).toEqual([]);
   });
 });

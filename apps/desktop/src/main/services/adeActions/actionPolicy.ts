@@ -177,7 +177,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // or mutate this private composer state through `ade actions`.
   chat: { only: ["listPromptStashes", "createPromptStash", "deletePromptStash"] },
   // ── Domain-coverage decisions (deliberately NOT added here) ──
-  // The CTO gained curated tools over automation planning, review runs, search,
+  // The CTO gained curated tools over automation planning, search,
   // usage/budget reads, project config reads, iOS-simulator / app-control /
   // browser reads. None of those became CTO-only, and
   // each omission is a decision, not an oversight:
@@ -186,8 +186,6 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   //     Gating the planner while the rule writer stays open protects nothing and
   //     would break `ade-action` automation steps, which are filtered through
   //     `isAutomationAllowedAdeAction` and therefore cannot call CTO-only actions.
-  //   • review.* — running a review on your own lane is ordinary agent work, and
-  //     a review run mutates nothing outside its own tables.
   //   • ios_simulator / app_control / built_in_browser — device control IS how
   //     agents verify UI work; these are already their normal surface.
   //   • search.query / indexStatus — reads over an index agents already build.
@@ -612,6 +610,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "setParallelLaunchState",
     "cancelScheduledWork",
     "resumeUsageLimitNow",
+    "continueUsageLimitOnAlternate",
     "setScheduledWorkPaused",
     "steer",
     "suggestLaneNameFromPrompt",
@@ -895,18 +894,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "linearIngressSetup",
     "linearIngressTeardown",
     "linearIngressPollNow",
-  ],
-  review: [
-    "cancelRun",
-    "deleteSuppression",
-    "getRunDetail",
-    "listLaunchContext",
-    "listRuns",
-    "listSuppressions",
-    "qualityReport",
-    "recordFeedback",
-    "rerun",
-    "startRun",
   ],
   issue: [
     "addComment",

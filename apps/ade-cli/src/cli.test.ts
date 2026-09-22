@@ -20,6 +20,7 @@ import {
   detectUnmergedLaneCreateNudge,
   findProjectRoots,
   formatChatResumeNow,
+  formatChatContinueOnAccount,
   formatChatResumeRelativeDelta,
   formatChatStatus,
   formatDiagnosticError,
@@ -6297,6 +6298,36 @@ describe("ADE CLI", () => {
       expect(plan.exitCodeFromResult?.({ ok: false, reason: "No usage limit is live." })).toBe(1);
       expect(plan.exitCodeFromResult?.({})).toBe(1);
     }
+  });
+
+  it("builds chat continue-on-account as chat.continueUsageLimitOnAlternate", () => {
+    const plan = buildCliPlan(["chat", "continue-on-account", "chat-9"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.label).toBe("chat continue-on-account");
+    expect(plan.formatter).toBe("chat-continue-on-account");
+    expect(inferFormatter(plan)).toBe("chat-continue-on-account");
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "chat",
+        action: "continueUsageLimitOnAlternate",
+        args: { sessionId: "chat-9" },
+      },
+    });
+    expect(plan.exitCodeFromResult?.({ ok: true, sessionId: "chat-10" })).toBe(0);
+    expect(plan.exitCodeFromResult?.({ ok: false, reason: "no_alternate_account" })).toBe(1);
+  });
+
+  it("formats chat continue-on-account as the new chat, or the host's refusal", () => {
+    expect(formatChatContinueOnAccount({ ok: true, sessionId: "chat-10" }))
+      .toBe("Continuing on the other account · chat chat-10");
+    expect(formatChatContinueOnAccount({
+      ok: false,
+      reason: "no_alternate_account",
+      message: "No other account has room for this chat.",
+    })).toBe("No other account has room for this chat.");
+    expect(formatChatContinueOnAccount({ ok: false })).toBe("No other account can take this chat.");
   });
 
   it("formats chat resume-now as a sent turn, or a one-line reason when it was refused", () => {

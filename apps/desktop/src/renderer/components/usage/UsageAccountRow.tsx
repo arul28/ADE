@@ -33,7 +33,7 @@ import {
   resetCreditOutcomeText,
 } from "../../../shared/usageResetCredit";
 import { cn } from "../ui/cn";
-import { ClaudeLogo, CodexLogo } from "../terminals/ToolLogos";
+import { usageProviderLogo } from "../terminals/ToolLogos";
 import { providerColor } from "./providerColors";
 import { PacePill } from "./UsagePaceBar";
 import type { AccountLimitRow, AccountWindowCell } from "./usageLimitModel";
@@ -66,6 +66,14 @@ const POPOVER_WIDTH = 300;
 const POPOVER_MARGIN = 8;
 /** Gap between the meter and the panel. */
 const POPOVER_OFFSET = 6;
+/**
+ * How long the panel stays open while the pointer crosses that gap.
+ *
+ * The panel is portalled to `document.body`, so leaving the meter fires
+ * `mouseleave` before the pointer arrives. Closing in that instant is why the
+ * link could not be hovered.
+ */
+const POPOVER_POINTER_GRACE_MS = 180;
 
 /**
  * Where the panel goes, in viewport coordinates.
@@ -127,16 +135,7 @@ export function ProviderMark({
   size?: number;
   dim?: boolean;
 }) {
-  const Logo = provider === "claude" ? ClaudeLogo : provider === "codex" ? CodexLogo : null;
-  if (!Logo) {
-    return (
-      <span
-        className="h-2 w-2 shrink-0 rounded-full"
-        style={{ background: providerColor(provider), opacity: dim ? 0.5 : 1 }}
-        aria-hidden
-      />
-    );
-  }
+  const Logo = usageProviderLogo(provider);
   return <Logo size={size} className={cn("shrink-0 text-fg", dim && "opacity-55")} />;
 }
 
@@ -204,7 +203,7 @@ export function UsageAccountRow({
   }, [accountId]);
 
   const email = account?.email ?? fallbackEmail ?? undefined;
-  const identity = email ?? "This machine";
+  const identity = email ?? account?.label ?? "This machine";
   const hasCredit = (account?.resetCredits?.availableCount ?? 0) > 0
     && typeof window.ade?.usage?.consumeResetCredit === "function";
 
@@ -276,6 +275,8 @@ export function UsageAccountRow({
             />
           ))}
         </div>
+      ) : account ? (
+        <span className={cn(USAGE_TEXT.micro, "text-muted-fg")}>No usage yet</span>
       ) : null}
 
       {outcome ? (
@@ -317,6 +318,21 @@ function WindowMeter({
   const fill = usagePressureColor(100 - segment.percentLeft, providerColor(provider, theme));
 
   const close = useCallback(() => onOpenChange(false), [onOpenChange]);
+  const closeTimerRef = useRef<number | null>(null);
+  const clearCloseTimer = useCallback(() => {
+    if (closeTimerRef.current == null) return;
+    window.clearTimeout(closeTimerRef.current);
+    closeTimerRef.current = null;
+  }, []);
+  useEffect(() => clearCloseTimer, [clearCloseTimer]);
+  const holdOpen = useCallback(() => {
+    clearCloseTimer();
+    onOpenChange(true);
+  }, [clearCloseTimer, onOpenChange]);
+  const releaseOpen = useCallback(() => {
+    clearCloseTimer();
+    closeTimerRef.current = window.setTimeout(() => onOpenChange(false), POPOVER_POINTER_GRACE_MS);
+  }, [clearCloseTimer, onOpenChange]);
   /**
    * Focus leaves the METER, not the button.
    *
@@ -330,15 +346,22 @@ function WindowMeter({
   const onFocusOut = useCallback(
     (event: React.FocusEvent<HTMLDivElement>) => {
       const next = event.relatedTarget as Node | null;
-      if (next && event.currentTarget.contains(next)) return;
+      if (next && event.currentTarget.contains(next)) {
+        clearCloseTimer();
+        return;
+      }
       // The panel is portalled to `document.body` so the header popup's scroll
       // container cannot clip it, which puts it outside this element in the
       // DOM even though it is inside it in the React tree. Tabbing into it is
       // still "staying in the meter", so it is checked by id.
-      if (next && document.getElementById(panelId)?.contains(next)) return;
+      if (next && document.getElementById(panelId)?.contains(next)) {
+        clearCloseTimer();
+        return;
+      }
+      clearCloseTimer();
       close();
     },
-    [close, panelId],
+    [clearCloseTimer, close, panelId],
   );
   useEffect(() => {
     if (!open) return;
@@ -353,9 +376,13 @@ function WindowMeter({
     <div
       ref={anchorRef}
       className="relative w-full"
-      onMouseEnter={() => onOpenChange(true)}
-      onMouseLeave={close}
-      onFocus={() => onOpenChange(true)}
+      onMouseEnter={holdOpen}
+      onMouseLeave={(event) => {
+        const next = event.relatedTarget;
+        if (next instanceof Node && document.getElementById(panelId)?.contains(next)) return;
+        releaseOpen();
+      }}
+      onFocus={holdOpen}
       onBlur={onFocusOut}
     >
       <button
@@ -405,15 +432,17 @@ function WindowMeter({
         <span className={cn(USAGE_TEXT.micro, "relative z-[1] shrink-0 text-muted-fg")} aria-hidden>
           left
         </span>
-        <span
-          className="relative z-[1] ml-auto flex shrink-0 items-center gap-0.5 text-muted-fg"
-          aria-hidden
-        >
-          <ArrowClockwise size={9} />
-          <span className={cn(USAGE_TEXT.micro, USAGE_NUMERIC_CLASS)}>
-            {formatCountdown(segment.resetsInMs)}
+        {segment.window.resetsAt ? (
+          <span
+            className="relative z-[1] ml-auto flex shrink-0 items-center gap-0.5 text-muted-fg"
+            aria-hidden
+          >
+            <ArrowClockwise size={9} />
+            <span className={cn(USAGE_TEXT.micro, USAGE_NUMERIC_CLASS)}>
+              {formatCountdown(segment.resetsInMs)}
+            </span>
           </span>
-        </span>
+        ) : null}
       </button>
 
       {open ? (
@@ -424,6 +453,8 @@ function WindowMeter({
           accountUrl={accountUrl}
           nowMs={nowMs}
           anchorRef={anchorRef}
+          onPointerEnter={holdOpen}
+          onPointerLeave={close}
         />
       ) : null}
     </div>
@@ -437,6 +468,8 @@ function WindowPopover({
   accountUrl,
   nowMs,
   anchorRef,
+  onPointerEnter,
+  onPointerLeave,
 }: {
   id: string;
   cell: AccountWindowCell;
@@ -445,6 +478,8 @@ function WindowPopover({
   accountUrl?: string;
   nowMs: number;
   anchorRef: React.RefObject<HTMLDivElement | null>;
+  onPointerEnter: () => void;
+  onPointerLeave: () => void;
 }) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
@@ -514,9 +549,14 @@ function WindowPopover({
         // `bg-surface-raised` is translucent on the light theme, and this panel
         // floats over the rows beneath it — they read straight through. The
         // overlay token is the one every other floating usage readout uses.
-        "z-[60] p-3",
+        // Above the header usage scrim (`z-[80]`). At `z-[60]` the panel was
+        // painted under that scrim, so the pointer never entered it and the
+        // meter’s mouseleave closed it on the way to the link.
+        "z-[90] p-3",
         USAGE_OVERLAY_CLASS,
       )}
+      onMouseEnter={onPointerEnter}
+      onMouseLeave={onPointerLeave}
     >
       {/* The window's own colour runs down the header, so a panel that has
           floated away from its bar still says which bar it came from. */}
@@ -540,15 +580,17 @@ function WindowPopover({
         <PopoverRow label="Account" value={account?.email ?? "This machine"} />
         {account?.plan ? <PopoverRow label="Plan" value={account.plan} /> : null}
         {via ? <PopoverRow label="Via" value={via} /> : null}
-        <PopoverRow
-          label="Resets"
-          value={
-            resetClock
-              ? `${resetClock} · in ${formatCountdown(segment.resetsInMs)}`
-              : `in ${formatCountdown(segment.resetsInMs)}`
-          }
-          numeric
-        />
+        {resetClock || segment.resetsInMs > 0 ? (
+          <PopoverRow
+            label="Resets"
+            value={
+              resetClock
+                ? `${resetClock} · in ${formatCountdown(segment.resetsInMs)}`
+                : `in ${formatCountdown(segment.resetsInMs)}`
+            }
+            numeric
+          />
+        ) : null}
         {pace ? (
           <div className="flex min-w-0 items-center justify-between gap-3">
             <dt className={cn(USAGE_TEXT.micro, "shrink-0 text-muted-fg")}>Pace</dt>

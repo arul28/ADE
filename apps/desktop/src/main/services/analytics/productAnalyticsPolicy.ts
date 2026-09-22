@@ -131,6 +131,7 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "machine_reconnect",
   "mention_expanded",
   "hooks_ignored",
+  "plugins_ignored",
   "metadata_regenerated",
   "transaction_failed",
   "scope_selected",
@@ -292,7 +293,7 @@ const ERROR_CODE_VALUE = /^[a-z][a-z0-9_-]{0,47}$/;
 
 const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
   screen: new Set([
-    "project", "hub", "lanes", "files", "work", "graph", "prs", "review", "history", "automations",
+    "project", "hub", "lanes", "files", "work", "graph", "prs", "history", "automations",
     "cto", "settings", "chats", "onboarding", "other", "terminal_control", "drawer_lanes", "drawer_chats",
     "details", "details_model_picker", "details_help", "details_status", "details_list", "details_details",
     "details_context_usage", "details_diff", "details_chat_info", "details_external_session_browser",

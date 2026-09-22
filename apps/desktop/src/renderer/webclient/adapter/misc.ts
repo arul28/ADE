@@ -64,7 +64,6 @@ export type MiscNamespaces = {
   appControl: AdeNamespace<"appControl">;
   builtInBrowser: AdeNamespace<"builtInBrowser">;
   usage: Partial<Window["ade"]["usage"]>;
-  review: Partial<Window["ade"]["review"]>;
   automations: AdeNamespace<"automations">;
 };
 
@@ -795,7 +794,6 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
       // caller that needs it feature-detects instead of getting a fake.
     } as unknown as AdeNamespace<"builtInBrowser">,
     usage: createUsageStubs(call),
-    review: createReviewStubs(),
     automations: createAutomationStubs() as AdeNamespace<"automations">,
   };
 }
@@ -1053,13 +1051,6 @@ function createUsageStubs(call: MiscCall): Partial<Window["ade"]["usage"]> {
     // its own descriptor. onUpdate/noteDemand have no streaming descriptor at
     // all; all three stay with the fallback proxy rather than faking liveness.
   } as Partial<Window["ade"]["usage"]>;
-}
-
-function createReviewStubs(): Partial<Window["ade"]["review"]> {
-  return {
-    listRuns: async () => [],
-    onEvent: () => () => {},
-  } as Partial<Window["ade"]["review"]>;
 }
 
 function createAutomationStubs(): Record<string, unknown> {

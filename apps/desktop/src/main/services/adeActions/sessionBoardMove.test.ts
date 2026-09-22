@@ -121,6 +121,30 @@ describe("deriveWorkBoardColumn", () => {
     expect(deriveWorkBoardColumn(row({ settledAt: "2026-09-11T10:00:00.000Z" }))).toBe("done");
   });
 
+  it("files a chat that is merely resting under Done, never under Needs you", () => {
+    // `row()` is a chat whose runtime is idle between turns — the `ready`/`idle`
+    // phases. Both sides of the board used to call the whole `awaiting-input`
+    // bucket "needs_you", so this row derived as a raised hand and a drag off it
+    // produced a host-authored "you moved this chat from Needs you" naming a
+    // column the user never saw. Only a real pending input earns that column.
+    // Fresh activity on purpose: the shared fixture's `lastActivityAt` is days
+    // old, which is `stale` (still Working), and stale is a different claim.
+    const justNow = new Date().toISOString();
+    expect(deriveWorkBoardColumn(row({ runtimeState: "idle", lastActivityAt: justNow })))
+      .toBe("done");
+    expect(deriveWorkBoardColumn(row({
+      runtimeState: "idle",
+      lastActivityAt: justNow,
+      lastOutputPreview: "finished the pass",
+    }))).toBe("done");
+    // And the raised hand still outranks it.
+    expect(deriveWorkBoardColumn(row({
+      runtimeState: "idle",
+      lastActivityAt: justNow,
+      pendingInputItemId: "item-1",
+    }))).toBe("needs_you");
+  });
+
   it("files a snoozed row as Waiting, which is why Waiting cannot be a target", () => {
     const snoozed = row({ snoozedUntil: new Date(Date.now() + 60_000).toISOString() });
     expect(deriveWorkBoardColumn(snoozed)).toBe("waiting");

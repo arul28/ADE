@@ -200,7 +200,6 @@ import type {
   AutomationSaveDraftResult,
   AutomationSimulateRequest,
   AutomationSimulateResult,
-  ReviewLaunchContext,
   BuiltInBrowserClaimArgs,
   AppControlClickArgs,
   AppControlConnectArgs,
@@ -235,10 +234,6 @@ import type {
   BuiltInBrowserStopFindInPageResult,
   BuiltInBrowserTabArgs,
   BuiltInBrowserTabTargetArgs,
-  ReviewListRunsArgs,
-  ReviewRun,
-  ReviewRunDetail,
-  ReviewStartRunArgs,
   AdeActionRegistryEntry,
   ConflictProposal,
   ConflictExternalResolverRunSummary,
@@ -510,6 +505,8 @@ import type {
   AgentChatCancelScheduledWorkResult,
   AgentChatResumeUsageLimitNowArgs,
   AgentChatResumeUsageLimitNowResult,
+  AgentChatContinueUsageLimitOnAlternateArgs,
+  AgentChatContinueUsageLimitOnAlternateResult,
   AgentChatSetClaudeOutputStyleArgs,
   AgentChatSlashCommand,
   AgentChatSlashCommandsArgs,
@@ -837,7 +834,6 @@ import type {
 import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
 import type { createPrSummaryService } from "../prs/prSummaryService";
-import type { createReviewService } from "../review/reviewService";
 import type { createSearchService } from "../search/searchService";
 import type { createExternalSessionsService } from "../externalSessions/externalSessionsService";
 import {
@@ -1183,7 +1179,6 @@ export type AppContext = {
   prService: ReturnType<typeof createPrService> | null;
   prPollingService: ReturnType<typeof createPrPollingService> | null;
   prSummaryService: ReturnType<typeof createPrSummaryService> | null;
-  reviewService: ReturnType<typeof createReviewService> | null;
   searchService?: ReturnType<typeof createSearchService> | null;
   externalSessionsService?: ReturnType<typeof createExternalSessionsService> | null;
   jobEngine: ReturnType<typeof createJobEngine> | null;
@@ -6103,12 +6098,6 @@ export function registerIpc({
     return ctx;
   };
 
-  const ensureReviewContext = (): AppContextWith<"reviewService"> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["reviewService"] as const);
-    return ctx;
-  };
-
   ipcMain.handle(IPC.automationsList, async (): Promise<AutomationRuleSummary[]> => {
     const ctx = ensureAutomationContext();
     return ctx.automationService.list();
@@ -6225,56 +6214,6 @@ export function registerIpc({
     const ctx = ensureLinearIngressContext();
     await ctx.linearIngressService.pollNow();
     return ctx.linearIngressService.getStatus();
-  });
-
-  ipcMain.handle(IPC.reviewListLaunchContext, async (): Promise<ReviewLaunchContext> => {
-    const ctx = ensureReviewContext();
-    return ctx.reviewService.listLaunchContext();
-  });
-
-  ipcMain.handle(IPC.reviewListRuns, async (_event, arg: ReviewListRunsArgs = {}): Promise<ReviewRun[]> => {
-    const ctx = ensureReviewContext();
-    return ctx.reviewService.listRuns(arg);
-  });
-
-  ipcMain.handle(IPC.reviewGetRunDetail, async (_event, arg: { runId: string }): Promise<ReviewRunDetail | null> => {
-    const ctx = ensureReviewContext();
-    return ctx.reviewService.getRunDetail({ runId: arg?.runId ?? "" });
-  });
-
-  ipcMain.handle(IPC.reviewStartRun, async (_event, arg: ReviewStartRunArgs): Promise<ReviewRun> => {
-    const ctx = ensureReviewContext();
-    return ctx.reviewService.startRun(arg);
-  });
-
-  ipcMain.handle(IPC.reviewRerun, async (_event, arg: { runId: string }): Promise<ReviewRun> => {
-    const ctx = ensureReviewContext();
-    return ctx.reviewService.rerun(arg?.runId ?? "");
-  });
-
-  ipcMain.handle(IPC.reviewCancelRun, async (_event, arg: { runId: string }) => {
-    const ctx = ensureReviewContext();
-    return ctx.reviewService.cancelRun({ runId: arg?.runId ?? "" });
-  });
-
-  ipcMain.handle(IPC.reviewRecordFeedback, async (_event, arg: import("../../../shared/types").ReviewRecordFeedbackArgs) => {
-    const ctx = ensureReviewContext();
-    return ctx.reviewService.recordFeedback(arg);
-  });
-
-  ipcMain.handle(IPC.reviewListSuppressions, async (_event, arg: import("../../../shared/types").ReviewListSuppressionsArgs | undefined) => {
-    const ctx = ensureReviewContext();
-    return ctx.reviewService.listSuppressions(arg ?? {});
-  });
-
-  ipcMain.handle(IPC.reviewDeleteSuppression, async (_event, arg: { suppressionId: string }) => {
-    const ctx = ensureReviewContext();
-    return ctx.reviewService.deleteSuppression({ suppressionId: arg?.suppressionId ?? "" });
-  });
-
-  ipcMain.handle(IPC.reviewQualityReport, async () => {
-    const ctx = ensureReviewContext();
-    return ctx.reviewService.qualityReport();
   });
 
   ipcMain.handle(IPC.adeActionsListRegistry, async (): Promise<AdeActionRegistryEntry[]> => {
@@ -8562,6 +8501,17 @@ export function registerIpc({
     ): Promise<AgentChatResumeUsageLimitNowResult> => {
       const ctx = ensureAgentChatContext();
       return ctx.agentChatService.resumeUsageLimitNow(arg);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.agentChatContinueUsageLimitOnAlternate,
+    async (
+      _event,
+      arg: AgentChatContinueUsageLimitOnAlternateArgs,
+    ): Promise<AgentChatContinueUsageLimitOnAlternateResult> => {
+      const ctx = ensureAgentChatContext();
+      return ctx.agentChatService.continueUsageLimitOnAlternate(arg);
     },
   );
 
