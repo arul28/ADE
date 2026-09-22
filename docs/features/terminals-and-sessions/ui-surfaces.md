@@ -761,16 +761,20 @@ catalogue owns the hint string so the card and its tooltip can never
 disagree about how much it says.
 
 A tool that cannot run in this context renders as a **disabled card with
-the reason as its status line** rather than disappearing: "Desktop
-app only" (Simulator in the hosted web client) and "macOS only"
-(Simulator off a Mac). Simulator and App Control follow the session's
-machine, including a remote Mac; they are not hidden just because the
-pin is remote. The browser is hosted by this desktop's main process
-and a remote lane drives that same window, so it stays available on
+the reason as its status line** rather than disappearing. There is exactly
+one such reason left — "The runtime for this project is not a Mac" (Apple
+when `iosSimulator.getStatus().supported` is false). Every tool follows the **session's** machine, including a remote
+Mac; nothing is hidden just because the pin is remote. Apple additionally
+follows the **bound runtime's** own `supported` flag rather than the
+viewer's OS, so a Windows or Linux desktop pinned to a remote Mac runtime
+can watch and drive it. The browser is hosted by this desktop's main
+process and a remote lane drives that same window, so it stays available on
 remote lanes. In the hosted web
 client the browser and App Control render **read-only** — the tab list,
 attached app, and latest screenshot, with no way to drive them
-(`isReadOnlyWorkTool`). Availability is decided by
+(`isReadOnlyWorkTool`); Apple is full-interact — it is absent from
+`WEB_READ_ONLY_TOOL_IDS` because the helper runs on the bound runtime, not
+in the browser tab. Availability is decided by
 capability flags in `workToolAvailability`, never by `process.platform` —
 the web client renders this same component. An active tool that becomes
 unavailable falls back to the **picker**, not to another tool.
@@ -1183,10 +1187,8 @@ dismissal undone by the event it caused would never stick.
   in place instead of stranding it off an edge.
 - **It costs nothing when nobody watches.** It subscribes to feeds that
   already exist — App Control's screencast, the browser's refcounted
-  preview stream, the simulator's shared window capture via
-  `iosSimulatorPreviewStream.ts`, which takes its own refcounted parking
-  hold and never stops a stream the iOS panel started — paints frames
-  straight onto an `<img>`/`<video>` ref inside one rAF (so a 12 fps feed
+  preview stream, the Apple-device H.264 stream keyed by device udid —
+  paints frames straight onto an `<img>`/`<canvas>` inside one rAF (so a 12 fps feed
   causes zero React renders), and tears every feed down the moment the
   Work route is not active.
 - **Parked, not hidden.** A `WebContentsView` that is detached or
@@ -1504,15 +1506,19 @@ carries a 13px duotone Phosphor glyph so the list is scannable:
   through the backend settlement transaction; it interrupts the provider and
   clears live/restored pending input before writing settle instead of sending a
   synthetic decline.
-- Chat rows also carry **Auto handoff…** (or **Edit auto handoff…** once rules
-  exist for the chat) and **Remove auto handoff**, which open `AutoHandoffModal`
-  — the chat menu's way of arming "when this chat hits its limit / fails / ends
-  with no PR, continue it on another model". The modal is hosted at the
-  `SessionContextMenu` level rather than inside the panel, because opening it
-  closes the menu and a modal mounted in the panel would unmount in the same
-  tick. The existing-rule list is fetched asynchronously and `null` means "not
-  answered yet": a context menu that waits on IPC before it appears is a broken
-  context menu.
+- Chat rows also carry a **Hand off…** submenu with **Local handoff** and
+  **Another machine** — both select the row and route the intent to the chat
+  pane's Handoff surface through `lib/chatHandoffIntent.ts` — plus **Auto
+  handoff…** (or **Edit auto handoff…** once rules exist for the chat) and
+  **Remove auto handoff**, which open `AutoHandoffModal` — the chat menu's way
+  of arming "when this chat hits its limit / fails / ends with no PR, continue
+  it on another model". The modal is hosted at the `SessionContextMenu` level
+  rather than inside the panel, because opening it closes the menu and a modal
+  mounted in the panel would unmount in the same tick. The existing-rule list is
+  fetched asynchronously; `null` (a failed or unavailable read) keeps the item
+  disabled rather than opening the editor on defaults that would delete rules
+  the read never saw, because a context menu that waits on IPC before it appears
+  is a broken context menu.
 - Chat metadata generation makes one structured request for all three visible
   fields and applies only the selected fields. A status-only refresh sends the
   lane name, chat title, worktree folder, and last assistant paragraphs — not

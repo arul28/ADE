@@ -9,9 +9,15 @@
  * the user at the point of the choice (`harnessPresetAgentOverrideNote` in
  * `harnessPresets.ts`); this file is the fork itself.
  *
- * SOURCE: extracted from the Claude Code binary shipped with
+ * SOURCE: originally extracted from the Claude Code binary shipped with
  * `@anthropic-ai/claude-agent-sdk@0.3.258` — CLI version 2.1.258, build
- * 2026-09-01T21:54:40Z, git sha b3cd543a1f6fcdf4d8fabc0f5e5538d2ee7f38e1.
+ * 2026-09-01T21:54:40Z, git sha b3cd543a1f6fcdf4d8fabc0f5e5538d2ee7f38e1 —
+ * and re-checked against CLI 2.1.280 (SDK 0.3.280) when the pin moved: Explore
+ * and Plan are still the same templates (tool-name holes where Glob, Grep,
+ * Read, and Bash are filled) and general-purpose's shared lines are unchanged,
+ * so this copy still tracks the pinned binary. The prompts below are therefore
+ * the 2.1.280 copies; only the 2.1.258 extraction has recorded build metadata,
+ * because the CLI does not expose it.
  *
  * FIDELITY: the built-ins build their prompts from a template whose holes are
  * tool NAMES resolved at runtime (sandboxed vs. not, POSIX vs. PowerShell).
@@ -26,8 +32,8 @@
 
 import { HARNESS_PRESET_AGENT_KEYS, type HarnessPresetAgentKey } from "./harnessPresets";
 
-/** The CLI build these prompts were taken from. Shown in docs and logs. */
-export const CLAUDE_BUILTIN_AGENT_PROMPT_SOURCE_VERSION = "2.1.258";
+/** The CLI build these prompts are taken from. */
+export const CLAUDE_BUILTIN_AGENT_PROMPT_SOURCE_VERSION = "2.1.280";
 
 /**
  * Tools each read-only built-in declares as denied.
@@ -35,8 +41,14 @@ export const CLAUDE_BUILTIN_AGENT_PROMPT_SOURCE_VERSION = "2.1.258";
  * Kept because the pin replaces the whole definition: without it, a pinned
  * Explore would gain Write/Edit and stop being a read-only agent — a
  * capability change the user never asked for by choosing a model.
+ *
+ * `Task` and `Agent` are both listed because the spawn tool was renamed
+ * upstream (2.1.280's Explore denies `Agent`) and the CLI still aliases the
+ * two names in places. Denying both keeps the read-only agents unable to
+ * delegate their way around the restriction under either spelling.
  */
 const READ_ONLY_BUILTIN_DISALLOWED_TOOLS: readonly string[] = [
+  "Agent",
   "Task",
   "Write",
   "Edit",

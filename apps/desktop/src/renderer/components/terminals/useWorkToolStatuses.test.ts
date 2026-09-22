@@ -220,8 +220,22 @@ describe("work tool status lines", () => {
   });
 
   it("keeps the other tools to a fact each", () => {
-    expect(iosStatusLine(null).line).toBe("Not booted");
-    expect(iosStatusLine({ deviceName: "iPhone 17 Pro" } as never).line).toBe("iPhone 17 Pro");
+    // §9's card subtitle: the LANE's device and what it is doing, not the app
+    // session — a lane can own a booted simulator with nothing installed on it.
+    expect(iosStatusLine(null).line).toBe("No device");
+    expect(iosStatusLine({ name: "iPhone 17 Pro", state: "running" })).toMatchObject({
+      line: "iPhone 17 Pro · Running",
+      live: true,
+    });
+    expect(iosStatusLine({ name: "iPhone 17 Pro", state: "starting" })).toMatchObject({
+      line: "iPhone 17 Pro · Starting",
+      live: false,
+      attention: true,
+    });
+    expect(iosStatusLine({ name: "iPhone 17 Pro", state: "off" })).toMatchObject({
+      line: "iPhone 17 Pro · Off",
+      live: false,
+    });
     expect(appControlStatusLine(null).line).toBe("No app");
     expect(appControlStatusLine({ label: "Zen", status: "running" } as never).line).toBe("Zen");
     expect(appControlStatusLine({

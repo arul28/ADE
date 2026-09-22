@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, type ReactNode } from "react";
 import {
   Alarm,
+  ArrowBendUpRight,
   ArrowCounterClockwise,
   ArrowDown,
   ArrowsLeftRight,
@@ -52,7 +53,6 @@ import { OpenInSubmenu } from "../ui/OpenInSubmenu";
 import type { OpenInTarget } from "../../../shared/editorTargets";
 import {
   automationRulesReadable,
-  listAutomationRules,
   removeAutomationRules,
   setSessionSettleOverride,
   setChatSpawnKind,
@@ -62,9 +62,9 @@ import {
 } from "./sessionLifecycleActions";
 import {
   AutoHandoffModal,
-  selectAutoHandoffRulesForSession,
+  loadAutoHandoffRulesForSession,
 } from "./AutoHandoffModal";
-import { requestChatHandoff } from "../chat/chatHandoffLaunch";
+import type { ChatHandoffIntent } from "../../lib/chatHandoffIntent";
 
 /* `hover:bg-muted/40` used to be the hover here and read as nothing at all:
    `--color-muted` is #1E1B28, a near-black purple, so 40% of it over an already
@@ -200,6 +200,17 @@ type SessionContextMenuProps = {
     session: TerminalSessionSummary,
     binding?: OpenProjectBinding | null,
   ) => void;
+  /**
+   * Opens this chat's Handoff surface in the chat pane — the same two
+   * destinations the Chat actions → Handoff tab offers. The menu cannot open
+   * those views itself: they are stateful inside `AgentChatPane`, so it records
+   * the intent and the pane acts on it (see `chatHandoffIntent`).
+   */
+  onOpenChatHandoff: (
+    session: TerminalSessionSummary,
+    intent: ChatHandoffIntent,
+    binding?: OpenProjectBinding | null,
+  ) => void;
   pinnedSessionIds?: string[];
   /** Session ids currently in any work grid (drives the "Remove from grid" item). */
   gridSessionIds?: string[];
@@ -277,6 +288,7 @@ function SessionContextMenuPanel({
   onOpenSessionInWeb,
   onTogglePinned,
   onSettle,
+  onOpenChatHandoff,
   pinnedSessionIds,
   gridSessionIds,
   onRemoveFromGrid,
@@ -356,12 +368,15 @@ function SessionContextMenuPanel({
     }
     let cancelled = false;
     setScopedHandoffRules(null);
-    void listAutomationRules().then((rules) => {
+    void loadAutoHandoffRulesForSession(session.id, binding).then((rules) => {
       if (cancelled) return;
-      setScopedHandoffRules(selectAutoHandoffRulesForSession(rules, session.id));
+      // `null` is a failed/unavailable read and stays null, which keeps the
+      // Auto handoff item disabled rather than opening the editor on defaults
+      // that would delete rules this read never saw.
+      setScopedHandoffRules(rules);
     });
     return () => { cancelled = true; };
-  }, [isChat, session.id]);
+  }, [binding, isChat, session.id]);
   const canonicalPhase = sessionCanonicalUiState(session).phase;
   const isActivelyRunning = sessionIsMidFlight(session);
   const canDismissNeedsYou =
@@ -688,47 +703,51 @@ function SessionContextMenuPanel({
 
         {settleRow}
 
-        {/* Handoff lives on the card, not in the chat pane. A running turn does
-            not disable these: the modal says so, and the person can still pick. */}
+        {/* Handoff. One submenu, the same three destinations the Chat actions →
+            Handoff tab offers: a fresh chat here, one of your other machines, or
+            a rule that fires on limit/failure/end. Auto handoff used to be a
+            bare row here; folding it in keeps "where should this chat go" in a
+            single place instead of split across the menu. */}
         {isChat ? (
           <MenuSubmenu
-            label="Handoff"
-            icon={<MenuRowIcon icon={ArrowsLeftRight} />}
+            label="Hand off…"
+            icon={<MenuRowIcon icon={ArrowBendUpRight} />}
             className={MENU_ITEM_CLASS}
             data-testid="session-menu-handoff"
           >
             <button
               type="button"
-              data-testid="session-menu-handoff-remote"
-              className={MENU_ITEM_CLASS}
-              onClick={() => {
-                onPrepareChatHandoff?.(session);
-                requestChatHandoff({ sessionId: session.id, kind: "remote" });
-                onClose();
-              }}
-            >
-              <MenuRowIcon icon={Desktop} />
-              Handoff to remote machine
-            </button>
-            <button
-              type="button"
               data-testid="session-menu-handoff-local"
               className={MENU_ITEM_CLASS}
               onClick={() => {
-                onPrepareChatHandoff?.(session);
-                requestChatHandoff({ sessionId: session.id, kind: "local" });
+                onOpenChatHandoff(session, "local", binding);
                 onClose();
               }}
             >
               <MenuRowIcon icon={GitFork} />
-              Handoff locally
+              Local handoff
             </button>
+            <button
+              type="button"
+              data-testid="session-menu-handoff-remote"
+              className={MENU_ITEM_CLASS}
+              onClick={() => {
+                onOpenChatHandoff(session, "remote", binding);
+                onClose();
+              }}
+            >
+              <MenuRowIcon icon={Desktop} />
+              Another machine
+            </button>
+            <MenuSeparator />
             <button
               type="button"
               data-testid="session-menu-auto-handoff"
               className={MENU_ITEM_CLASS}
+              disabled={scopedHandoffRules === null}
               onClick={() => {
-                onOpenAutoHandoff({ session, binding, existingRules: scopedHandoffRules ?? [] });
+                if (scopedHandoffRules === null) return;
+                onOpenAutoHandoff({ session, binding, existingRules: scopedHandoffRules });
                 onClose();
               }}
             >
@@ -741,7 +760,7 @@ function SessionContextMenuPanel({
                 data-testid="session-menu-remove-auto-handoff"
                 className={MENU_ITEM_CLASS}
                 onClick={() => {
-                  void removeAutomationRules(scopedHandoffRules.map((rule) => rule.id));
+                  void removeAutomationRules(scopedHandoffRules.map((rule) => rule.id), binding);
                   onClose();
                 }}
               >

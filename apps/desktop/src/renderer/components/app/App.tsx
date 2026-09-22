@@ -77,9 +77,6 @@ const prsRoute = createPreloadableRoute<{ active?: boolean }>(() =>
 );
 const PRsPage = prsRoute.Component;
 const preloadPrsPage = prsRoute.preload;
-const ReviewPage = React.lazy(() =>
-  import("../review/ReviewPage").then((m) => ({ default: m.ReviewPage }))
-);
 const HistoryPage = React.lazy(() =>
   import("../history/HistoryPage").then((m) => ({ default: m.HistoryPage }))
 );
@@ -249,7 +246,6 @@ function serializeProjectRoute(location: ReturnType<typeof useLocation>): string
     "/files",
     "/work",
     "/prs",
-    "/review",
     "/history",
     "/automations",
     "/cto",
@@ -483,11 +479,6 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
           <Route path="/prs" element={
             <PageErrorBoundary>
               <React.Suspense fallback={LazyFallback}>{React.createElement(PRsPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
-            </PageErrorBoundary>
-          } />
-          <Route path="/review" element={
-            <PageErrorBoundary>
-              <React.Suspense fallback={LazyFallback}>{React.createElement(ReviewPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
             </PageErrorBoundary>
           } />
           <Route path="/history" element={

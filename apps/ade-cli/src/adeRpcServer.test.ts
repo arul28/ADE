@@ -2772,8 +2772,8 @@ describe("adeRpcServer", () => {
       }),
     );
     const createCall = fixture.runtime.ptyService.create.mock.calls[0]?.[0] as { args?: string[]; startupCommand?: string };
-    expect(createCall.args).toEqual(expect.arrayContaining(["--model", "claude-opus-4-8"]));
-    expect(createCall.startupCommand).toContain("claude-opus-4-8");
+    expect(createCall.args).toEqual(expect.arrayContaining(["--model", "claude-opus-5"]));
+    expect(createCall.startupCommand).toContain("claude-opus-5");
     expect(response.structuredContent.model).toBe("anthropic/claude-opus-4-8");
   });
 
@@ -5893,53 +5893,6 @@ describe("adeRpcServer", () => {
     });
   });
 
-  it("invokes review.startRun through ADE actions without dropping unlimited budgets", async () => {
-    const fixture = createRuntime();
-    const startArgs = {
-      target: { mode: "lane_diff", laneId: "lane-1" },
-      config: {
-        compareAgainst: { kind: "default_branch" },
-        selectionMode: "full_diff",
-        dirtyOnly: false,
-        modelId: "openai/gpt-5.4",
-        reasoningEffort: "medium",
-        budgets: {
-          unlimited: true,
-          maxFiles: Number.MAX_SAFE_INTEGER,
-          maxDiffChars: Number.MAX_SAFE_INTEGER,
-          maxPromptChars: Number.MAX_SAFE_INTEGER,
-          maxFindings: Number.MAX_SAFE_INTEGER,
-          maxFindingsPerPass: Number.MAX_SAFE_INTEGER,
-          maxPublishedFindings: Number.MAX_SAFE_INTEGER,
-        },
-        publishBehavior: "local_only",
-      },
-    };
-    const startRun = vi.fn(async (args: typeof startArgs) => ({
-      id: "review-run-1",
-      laneId: args.target.laneId,
-      config: args.config,
-      status: "queued",
-    }));
-    (fixture.runtime as any).reviewService = { startRun };
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-    await initialize(handler, { callerId: "agent-1", role: "agent" });
-
-    const response = await callTool(handler, "run_ade_action", {
-      domain: "review",
-      action: "startRun",
-      args: startArgs,
-    });
-
-    expect(response?.isError).toBeUndefined();
-    expect(startRun).toHaveBeenCalledWith(startArgs);
-    expect(startRun.mock.calls[0][0].config.budgets).toEqual(startArgs.config.budgets);
-    expect(response.structuredContent.result.config.budgets).toEqual(startArgs.config.budgets);
-    expect(response.structuredContent.result.config.budgets.unlimited).toBe(true);
-  });
-
-
-
   it("rejects run_ade_action when the action is not a callable on the domain service", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
@@ -5954,6 +5907,23 @@ describe("adeRpcServer", () => {
     expect(response.isError).toBe(true);
     expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain(
       "Action 'git.nonexistent_action' is not callable.",
+    );
+  });
+
+  it("rejects run_ade_action for the removed review domain without crashing", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-1", role: "agent" });
+
+    const response = await callTool(handler, "run_ade_action", {
+      domain: "review",
+      action: "startRun",
+      args: { target: { mode: "lane_diff", laneId: "lane-1" } },
+    });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain(
+      "Domain 'review' is unavailable in this runtime.",
     );
   });
 

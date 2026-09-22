@@ -144,7 +144,7 @@ describe("createCtoOperatorTools", () => {
     expect(toolKeys).toContain("listAutomationRuns");
   });
 
-  it("resolves the latest branch stash before popping when no stash ref is provided", async () => {
+  it("refuses to pop a stash, named lane or not", async () => {
     const gitService = {
       listStashes: vi.fn().mockResolvedValue([
         { oid: "oid-3", ref: "stash@{3}", subject: "feature/lane: latest branch stash", createdAt: "2026-03-16T00:00:00.000Z" },
@@ -156,12 +156,13 @@ describe("createCtoOperatorTools", () => {
 
     const result = await (tools.gitStashPop as any).execute({ laneId: "lane-1" });
 
-    expect(gitService.listStashes).toHaveBeenCalledWith({ laneId: "lane-1" });
-    expect(gitService.stashPop).toHaveBeenCalledWith({ laneId: "lane-1", stashRef: "stash@{3}", stashOid: "oid-3" });
-    expect(result).toMatchObject({ success: true, operationId: "stash-pop" });
+    expect(gitService.listStashes).not.toHaveBeenCalled();
+    expect(gitService.stashPop).not.toHaveBeenCalled();
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("does not write repository code");
   });
 
-  it("throws a lane-specific error when a requested branch stash is missing", async () => {
+  it("refuses a named stash ref before looking it up", async () => {
     const gitService = {
       listStashes: vi.fn().mockResolvedValue([
         { oid: "oid-3", ref: "stash@{3}", subject: "feature/lane: latest branch stash", createdAt: "2026-03-16T00:00:00.000Z" },
@@ -172,11 +173,9 @@ describe("createCtoOperatorTools", () => {
     const tools = createCtoOperatorTools(deps);
 
     await expect((tools.gitStashPop as any).execute({ laneId: "lane-1", stashRef: "stash@{0}" }))
-      .resolves.toMatchObject({
-        success: false,
-        error: "Stash stash@{0} is not saved for this lane branch.",
-      });
+      .resolves.toMatchObject({ success: false });
 
+    expect(gitService.listStashes).not.toHaveBeenCalled();
     expect(gitService.stashPop).not.toHaveBeenCalled();
   });
 
@@ -212,24 +211,21 @@ describe("createCtoOperatorTools", () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toContain("needs an explicit laneId");
-      // Nothing may have touched git — especially not on the default lane.
       for (const [name, call] of Object.entries(gitService)) {
-        if (name === "listStashes") continue; // read-only lookup inside gitStashPop
         expect(call, `${name} must not run without an explicit lane`).not.toHaveBeenCalled();
       }
     });
 
-    it("still runs the mutation when the lane is named", async () => {
+    it("refuses the mutation even when the lane is named", async () => {
       const gitService = { commit: vi.fn().mockResolvedValue({ operationId: "commit-1" }) };
       const deps = buildDeps({ gitService: gitService as any });
       const tools = createCtoOperatorTools(deps);
 
       const result = await (tools.gitCommit as any).execute({ laneId: "lane-9", message: "real work" });
 
-      expect(gitService.commit).toHaveBeenCalledWith(
-        expect.objectContaining({ laneId: "lane-9", message: "real work" }),
-      );
-      expect(result).toMatchObject({ success: true });
+      expect(gitService.commit).not.toHaveBeenCalled();
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("does not write repository code");
     });
 
     it("keeps defaulting the lane for read-only git inspection", async () => {

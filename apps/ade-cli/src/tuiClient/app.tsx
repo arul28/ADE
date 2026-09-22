@@ -79,11 +79,12 @@ import type {
 import type { FeedbackPreparedDraft, FeedbackSubmission } from "../../../desktop/src/shared/types/feedback";
 import type { ProjectSecretsListResult, ProjectSecretValueResult } from "../../../desktop/src/shared/types/projectSecrets";
 import type { SearchQueryResult, SearchResultItem } from "../../../desktop/src/shared/types/search";
-import type {
-  ChatTerminalPreviewResult,
-  ChatTerminalSession,
-  UsageResetCreditResult,
-  UsageSnapshot,
+import {
+  LIVE_QUOTA_PROVIDERS,
+  type ChatTerminalPreviewResult,
+  type ChatTerminalSession,
+  type UsageResetCreditResult,
+  type UsageSnapshot,
 } from "../../../desktop/src/shared/types";
 import {
   resetCreditApplied,
@@ -163,6 +164,7 @@ import {
   dismissPendingInput,
   respondToInput,
   resumeUsageLimitNow,
+  continueUsageLimitOnAlternate,
   runDefaultLaneSetup,
   saveRuntimeTempAttachment,
   sendChatMessage,
@@ -345,7 +347,7 @@ import { CommandPalette, COMMAND_PALETTE_ROWS, type CommandPaletteItem } from ".
 import { ApprovalPrompt } from "./components/ApprovalPrompt";
 import { ModelStatus } from "./components/ModelStatus";
 import { ExternalSessionPreview } from "./components/ExternalSessionPreview";
-import { usageWindowAccountLabel } from "./components/UsagePane";
+import { usageAccountDisplayName, usageAccountsMissingWindows, usageWindowAccountLabel } from "./components/UsagePane";
 import { FooterControls } from "./components/FooterControls";
 import { MultiChatGrid } from "./components/MultiChatGrid";
 import { AddChatModeBanner } from "./components/AddChatMode";
@@ -11122,7 +11124,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       setRightPane({ kind: "usage", title: "Usage", loading: true, session: sessionBlock });
       try {
         const snapshot = await conn.action<UsageSnapshot>("usage", "getUsageSnapshot", {});
-        const providerStatuses = (["claude", "codex", "cursor"] as const).flatMap((provider) => {
+        const providerStatuses = LIVE_QUOTA_PROVIDERS.flatMap((provider) => {
           const status = snapshot.providerStatus?.[provider];
           if (!status) return [];
           return [{
@@ -11151,6 +11153,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             ...(account ? { account } : {}),
           };
         });
+        const quietAccounts = usageAccountsMissingWindows(snapshot.accounts, snapshot.windows).map((account) => ({
+          id: account.id,
+          label: `${providerLabel(account.provider)} · ${usageAccountDisplayName(account)}`,
+        }));
         // Codex-only today: Claude grants no reset credits, so the field is
         // simply absent there rather than reported as zero.
         const resetCredits = (snapshot.accounts ?? []).flatMap((account) => {
@@ -11167,6 +11173,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           title: "Usage",
           providerStatuses,
           quotaWindows,
+          ...(quietAccounts.length ? { quietAccounts } : {}),
           session: sessionBlock,
           spendControlReached: snapshot.spendControlReached === true,
           ...(resetCredits.length ? { resetCredits } : {}),
@@ -12212,6 +12219,32 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     // "Resume now" / "Don't continue" / "Turn on", over the same two host
     // actions (`chat.resumeUsageLimitNow`, `chat.updateSession
     // autoContinueAtUsageLimit`) that `ade chat resume-now` and iOS use.
+    if (name === "/continue-on-account" || name === "/chat continue-on-account") {
+      const targetSessionId = activeSessionIdRef.current;
+      if (!targetSessionId) {
+        setRightPane({
+          kind: "details",
+          title: "Usage limit",
+          body: "No active chat is selected. Open the chat that hit the limit first.",
+        });
+        return;
+      }
+      try {
+        const result = await continueUsageLimitOnAlternate(conn, targetSessionId);
+        if (!result.ok) {
+          setUsageLimitResumeNotice({ sessionId: targetSessionId, message: result.message });
+          addNotice(result.message, "info");
+          openSubagentsPane();
+          return;
+        }
+        setUsageLimitResumeNotice(null);
+        addNotice("Continuing on the other account.", "success");
+        await refreshState();
+      } catch (err) {
+        addNotice(err instanceof Error ? err.message : String(err), "error");
+      }
+      return;
+    }
     if (name === "/resume-now" || name === "/chat resume-now" || name === "/chat auto-resume") {
       const targetSessionId = activeSessionIdRef.current;
       if (!targetSessionId) {

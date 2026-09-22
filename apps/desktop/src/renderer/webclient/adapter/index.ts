@@ -142,7 +142,6 @@ export function createAdeWebAdapter(
     appControl: misc.appControl,
     builtInBrowser: misc.builtInBrowser,
     usage: misc.usage,
-    review: misc.review,
     automations: misc.automations,
     feedback: misc.feedback,
     updateCheckForUpdates: async () => undefined,

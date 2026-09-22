@@ -1916,7 +1916,10 @@ Settings → Agents & Models → Claude Code (or Codex CLI) opens the provider p
 and the first panel of its right column is **Accounts**, above Models. It is the
 only surface that shows the whole set of local logins for that provider. No
 other provider page has the panel, because no other provider can hold more than
-one identity per machine.
+one identity per machine. Sign-in for Claude and Codex lives on each account
+row and on **Add account**. The left column does not repeat a Sign in section.
+A missing CLI still shows an Install block there, because the account rows do
+not carry the install command.
 
 - **One row per account**: an accent dot (the account's own `accentColor`, or
   the provider's brand colour from `usage/providerColors.ts`), the label, and
@@ -1924,7 +1927,8 @@ one identity per machine.
   login sheet for that account. Under it, the mini usage line `5h NN% · wk NN%`,
   read from the usage snapshot by matching `UsageAccount.instanceId`, never by
   email: two logins can share an email, and a login whose email cannot be read
-  still has quota. The default account is marked `Default`.
+  still has quota. A signed-in account with no windows yet reads `No usage yet`.
+  The default account is marked `Default`. There is no cap at two accounts.
 - **The row menu (⋯)** carries Rename, Set as default, Change accent (eight
   fixed swatches plus a `#rrggbb` field), and Remove. Remove asks for
   confirmation first, and when the store refuses — it will not remove the
@@ -1932,8 +1936,10 @@ one identity per machine.
 - **Two header switches**, each gated on the fact that makes it meaningful.
   *Smart balance* appears only with two or more accounts and picks the account
   with the most room when a chat starts, weighting the weekly window more as the
-  week goes on; chats stay on the account they started on, and with it off new
-  chats use the Default account. *Auto-start 5-hour windows* appears only while
+  week goes on. A running chat stays on the account it started on. If that chat
+  hits a usage limit and another account still has room, smart balance continues
+  the work in a new chat on that account; with the switch off, the limit offers
+  that move instead of taking it, and new chats use the Default account. *Auto-start 5-hour windows* appears only while
   the provider reports a five-hour window, and sends one tiny request on the
   cheapest model when a window ends so the next one starts right away, each
   request logged with its cost. Both read and write `provider_instances`

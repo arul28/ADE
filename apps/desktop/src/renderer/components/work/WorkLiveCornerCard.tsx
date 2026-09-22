@@ -31,10 +31,6 @@ import {
   useNativeToolFeeds,
 } from "../terminals/NativeToolFeedsContext";
 import {
-  acquireIosSimulatorPreviewStream,
-  type IosSimulatorPreviewLease,
-} from "./iosSimulatorPreviewStream";
-import {
   clampWorkLiveCardRect,
   commitWorkLiveCardDismissal,
   commitWorkLiveScrubFrame,
@@ -73,11 +69,11 @@ import {
  * the pane back.
  *
  * Three things keep it from being a battery tax. It subscribes to feeds that
- * already exist (App Control's screencast, the browser's new refcounted preview
- * stream, the simulator's shared window capture) rather than opening its own;
- * it paints frames straight onto an `<img>`/`<video>` ref inside one rAF, so a
- * 12fps feed causes zero React renders; and it stops every feed the instant it
- * stops being shown.
+ * already exist (App Control's screencast, the browser's refcounted preview
+ * stream, the helper's H.264 live view) rather than opening its own; browser
+ * and App Control paint frames onto an `<img>` inside one rAF so a 12fps feed
+ * causes zero React renders; each Apple device is its own card and stops its
+ * stream the instant it is off screen.
  *
  * The chrome follows t3's mini-player: nothing but an 8px status dot at rest,
  * and a 32px blurred pill — icon, name, last action, ✕ — that takes its place
@@ -136,6 +132,12 @@ export function WorkLiveCornerCard({
   laneId: string | null;
   /** The tool currently filling the tools pane, or null when it is closed/on the picker. */
   activeTool: WorkSidebarTab | null;
+  /**
+   * The Apple device column is a pane of its own now, beside the chat rather
+   * than inside the tools pane. Its device is therefore on screen even when the
+   * tools pane shows Git — so device cards are suppressed by THIS flag, not by
+   * `activeTool`, which still governs the browser and App Control cards.
+   */
   runtimePin: OpenProjectBinding | null;
   onPick: (tool: WorkSidebarTab) => void;
 }) {
@@ -187,7 +189,6 @@ export function WorkLiveCornerCard({
   const hostRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const scrubImageRef = useRef<HTMLImageElement | null>(null);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
   /**
    * Callback refs, not object refs.
    *
@@ -205,10 +206,6 @@ export function WorkLiveCornerCard({
   const setScrubImageRef = useCallback((node: HTMLImageElement | null) => {
     if (node) scrubImageRef.current = node;
     else if (scrubImageRef.current && !scrubImageRef.current.isConnected) scrubImageRef.current = null;
-  }, []);
-  const setVideoRef = useCallback((node: HTMLVideoElement | null) => {
-    if (node) videoRef.current = node;
-    else if (videoRef.current && !videoRef.current.isConnected) videoRef.current = null;
   }, []);
   /** Latest frame not yet painted; drained by one rAF so 12fps costs one paint. */
   const pendingFrameRef = useRef<string | null>(null);
@@ -368,7 +365,6 @@ export function WorkLiveCornerCard({
     appControlSession,
     browserViewRoot,
     canBrowser,
-    canIos,
     canAppControl,
   } = useNativeToolFeeds();
   useNativeToolFeedHandlers(useMemo(() => ({
@@ -407,8 +403,13 @@ export function WorkLiveCornerCard({
       available: canAppControl,
       live: sources["app-control"].live,
     },
-    { tool: "ios", lastActivityAt: activityAt.ios, available: canIos, live: sources.ios.live },
-  ], [activityAt, canAppControl, canBrowser, canIos, sources]);
+    /*
+      The Apple device is deliberately absent. §7 replaced the auto-appearing
+      simulator card with a floating player the rail OPENS — a device only
+      floats because somebody asked it to, so there is nothing for this card
+      to surface on its own.
+    */
+  ], [activityAt, canAppControl, canBrowser, sources]);
 
   const dismissals = useMemo(
     () => normalizeWorkLiveCardDismissals(projectStateKey && laneId ? storedDismissals : localDismissals),
@@ -418,13 +419,14 @@ export function WorkLiveCornerCard({
     () => selectWorkLiveCardTool({ activeTool, activities, dismissals }),
     [activeTool, activities, dismissals],
   );
+  const paintTool: Exclude<WorkLiveScreenTool, "ios"> | null = tool === "ios" ? null : tool;
   dismissalsRef.current = dismissals;
 
-  const cardSize = workLiveCardSize(tool);
-  const objectFit = workLiveCardObjectFit(tool);
+  const cardSize = workLiveCardSize(paintTool);
+  const objectFit = workLiveCardObjectFit(paintTool);
 
-  const fits = workLiveCardFits(hostSize, bottomReserve, cardSize);
-  const visible = active && tool != null && fits;
+  const toolFits = workLiveCardFits(hostSize, bottomReserve, cardSize);
+  const visible = active && paintTool != null && toolFits;
 
   /* ── Host geometry ─────────────────────────────────────────────────────── */
 
@@ -572,7 +574,7 @@ export function WorkLiveCornerCard({
 
   /* ── Feed start/stop for the SELECTED tool ─────────────────────────────── */
 
-  const previewTabId = tool === "browser" ? activeBrowserTab?.id ?? null : null;
+  const previewTabId = paintTool === "browser" ? activeBrowserTab?.id ?? null : null;
   useEffect(() => {
     if (!visible || !previewTabId) return undefined;
     const browser = window.ade?.builtInBrowser;
@@ -596,41 +598,10 @@ export function WorkLiveCornerCard({
     };
   }, [browserViewRoot, previewTabId, visible]);
 
-  const iosDeviceUdid = tool === "ios" ? iosSession?.deviceUdid ?? null : null;
-  const iosDeviceName = iosSession?.deviceName ?? null;
-  useEffect(() => {
-    if (!visible || !iosDeviceUdid) return undefined;
-    let lease: IosSimulatorPreviewLease | null = null;
-    let cancelled = false;
-    // Captured here rather than read in the cleanup: by teardown time the ref
-    // may already point at the next tool's element (or nothing), and detaching
-    // a stream from the wrong node leaves this one playing into a black card.
-    const video = videoRef.current;
-    void acquireIosSimulatorPreviewStream({ udid: iosDeviceUdid, name: iosDeviceName })
-      .then((next) => {
-        if (!next) return;
-        if (cancelled) {
-          next.release();
-          return;
-        }
-        lease = next;
-        const target = videoRef.current ?? video;
-        if (target) {
-          target.srcObject = next.stream;
-          void target.play().catch(() => {});
-        }
-      });
-    return () => {
-      cancelled = true;
-      if (video) video.srcObject = null;
-      lease?.release();
-    };
-  }, [iosDeviceName, iosDeviceUdid, visible]);
-
   // Switching source tools must not leave the previous tool's last frame on
   // screen under the new tool's name.
   useEffect(() => {
-    paintToolRef.current = visible ? tool : null;
+    paintToolRef.current = visible ? paintTool : null;
     liveFrameRef.current = null;
     pendingFrameRef.current = null;
     appControlTraceIdRef.current = null;
@@ -638,7 +609,7 @@ export function WorkLiveCornerCard({
     setScrubFrameId(null);
     if (imageRef.current) imageRef.current.src = BLANK_FRAME;
     if (scrubImageRef.current) scrubImageRef.current.src = BLANK_FRAME;
-  }, [tool, visible]);
+  }, [paintTool, visible]);
 
   // One low-frequency tick so "· 2s" ages while you look at it. Only while the
   // card is actually on screen.
@@ -676,8 +647,8 @@ export function WorkLiveCornerCard({
 
   /* ── Copy ──────────────────────────────────────────────────────────────── */
 
-  const definition = tool ? workToolDefinition(tool) : null;
-  const source = tool ? sources[tool] : null;
+  const definition = paintTool ? workToolDefinition(paintTool) : null;
+  const source = paintTool ? sources[paintTool] : null;
   // Resolved by ID on every render: the ring buffer shifts left when a new
   // action lands, so the frame the pointer is parked on must be re-found rather
   // than re-indexed — otherwise the caption starts describing a different
@@ -709,45 +680,45 @@ export function WorkLiveCornerCard({
     }
     // The most recent ACTION, in the slot after the page: "click 'Sign in' · 2s"
     // is the news, and the page it happened to is now the line before it.
-    if (tool === "browser" && lastTrace) {
+    if (paintTool === "browser" && lastTrace) {
       const label = formatWorkLiveActionCaption(lastTrace.action, lastTrace.target);
       return `${label} · ${formatWorkLiveAge(nowTick - (Date.parse(lastTrace.endedAt) || nowTick))}`;
     }
-    if (tool === "app-control" && appControlAction) {
+    if (paintTool === "app-control" && appControlAction) {
       return `${appControlAction.caption} · ${formatWorkLiveAge(nowTick - appControlAction.at)}`;
     }
     // Nothing has happened yet, and the page is already named to the left of
     // this slot — repeating it here was the old fallback and said nothing twice.
     return null;
-  }, [appControlAction, lastTrace, nowTick, scrubbedFrame, tool]);
+  }, [appControlAction, lastTrace, nowTick, paintTool, scrubbedFrame]);
 
   const handoff = source?.handoff ?? null;
   const recording = source?.recording ?? null;
 
   const handleDismiss = useCallback(() => {
-    if (!tool) return;
+    if (!paintTool) return;
     // Stamped with `now`, not with the activity clock the card was showing:
     // the clock is committed on a 500ms coalesce, so a bump already in flight
     // would otherwise re-open the card the instant it closed.
-    const stamp = Math.max(Date.now(), activityRef.current[tool] ?? 0);
+    const stamp = Math.max(Date.now(), activityRef.current[paintTool] ?? 0);
     if (projectStateKey && laneId) {
       setLaneWorkViewState(projectStateKey, laneId, (prev) => ({
         ...prev,
         workLiveCardDismissed: commitWorkLiveCardDismissal(
           normalizeWorkLiveCardDismissals(prev.workLiveCardDismissed),
-          tool,
+          paintTool,
           stamp,
         ),
       }));
       return;
     }
-    setLocalDismissals((current) => commitWorkLiveCardDismissal(current, tool, stamp));
-  }, [laneId, projectStateKey, setLaneWorkViewState, tool]);
+    setLocalDismissals((current) => commitWorkLiveCardDismissal(current, paintTool, stamp));
+  }, [laneId, paintTool, projectStateKey, setLaneWorkViewState]);
 
   const activate = useCallback(() => {
-    if (suppressClickRef.current || draggingRef.current || !tool) return;
-    onPick(tool);
-  }, [onPick, tool]);
+    if (suppressClickRef.current || draggingRef.current || !paintTool) return;
+    onPick(paintTool);
+  }, [onPick, paintTool]);
 
   const handleCardClick = useCallback((event: ReactMouseEvent<HTMLElement>) => {
     // The whole card is the affordance except the two things that mean
@@ -790,9 +761,9 @@ export function WorkLiveCornerCard({
       className="pointer-events-none absolute inset-0 z-20 overflow-hidden"
     >
       <AnimatePresence initial={false}>
-        {visible && tool && definition ? (
+        {visible && paintTool && definition ? (
           <motion.section
-            key={tool}
+            key={paintTool}
             aria-label={`${definition.label} live preview`}
             drag
             // The pill is the handle, so the card itself listens for nothing:
@@ -836,7 +807,7 @@ export function WorkLiveCornerCard({
             transition={reduceMotion
               ? { duration: 0 }
               : ENTER}
-            data-work-live-card={tool}
+            data-work-live-card={paintTool}
             className={cn(
               "group pointer-events-auto absolute cursor-pointer overflow-hidden",
               // The pill is a drag handle sitting on its own text, so a drag
@@ -865,22 +836,13 @@ export function WorkLiveCornerCard({
             >
               {/* Browser and App Control use the full fixed card and crop every
                   frame from the top, keeping a portrait page's header visible. */}
-              {tool === "ios" ? (
-                <video
-                  ref={setVideoRef}
-                  muted
-                  playsInline
-                  className="h-full w-full object-contain"
-                />
-              ) : (
-                <img
-                  ref={setImageRef}
-                  alt=""
-                  src={BLANK_FRAME}
-                  className="h-full w-full"
-                  style={{ objectFit, objectPosition: "top" }}
-                />
-              )}
+              <img
+                ref={setImageRef}
+                alt=""
+                src={BLANK_FRAME}
+                className="h-full w-full"
+                style={{ objectFit, objectPosition: "top" }}
+              />
               <img
                 ref={setScrubImageRef}
                 alt=""

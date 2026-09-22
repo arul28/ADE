@@ -400,6 +400,7 @@ type FormatterId =
   | "chat-status"
   | "chat-models"
   | "chat-resume-now"
+  | "chat-continue-on-account"
   | "session-lifecycle"
   | "lane-drift"
   | "scheduled-work-create"
@@ -411,6 +412,7 @@ type FormatterId =
   | "ios-sim-apps"
   | "ios-sim-launch"
   | "ios-sim-stream"
+  | "ios-sim-rotate"
   | "ios-sim-snapshot"
   | "ios-sim-selection"
   | "ios-sim-preview"
@@ -891,7 +893,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade coordinator <tool>                        Call coordinator runtime tools
     $ ade tests list | run | stop | runs | logs     Run configured test suites
     $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
-    $ ade ios-sim devices | apps | launch | tap    Control iOS Simulator apps, capture, and input
+    $ ade apple devices | apps | launch | tap      Control Apple simulators, capture, and input
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
@@ -931,8 +933,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade prs create --lane <lane> --base main --draft
     $ ade prs checks <pr-id-or-number-or-url> --text
     $ ade proof record --seconds 20
-    $ ade ios-sim apps --text
-    $ ade ios-sim launch --target <id> --text
+    $ ade apple apps --text
+    $ ade apple launch --target <id> --text
     $ ade app-control launch --command "pnpm dev" --text
     $ ade --socket browser open http://localhost:5173 --new-tab --text
     $ ade terminal read --chat-session <owner-session-id> --text
@@ -995,7 +997,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   and the drawer's active simulator session. Start here when a simulator action
   fails or when an agent needs to know whether ADE owns a running session.
 
-    $ ade --socket ios-sim status --text
+    $ ade --socket apple status --text
 
   Flags:
     --text                 Compact human-readable readiness summary.
@@ -1006,7 +1008,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Lists available iOS simulator devices. Aliases: list, ls.
 
-    $ ade --socket ios-sim devices --text
+    $ ade --socket apple devices --text
 
   Flags:
     --text                 Compact table.
@@ -1019,7 +1021,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   apps/*/*.xcodeproj projects, DerivedData, and apps already installed on the
   selected simulator. Aliases: targets, launchable, launchables.
 
-    $ ade --socket ios-sim apps --device <udid> --text
+    $ ade --socket apple apps --device <udid> --text
 
   Flags:
     --device, --udid <id>  Simulator device to inspect.
@@ -1034,12 +1036,12 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   claims the ADE drawer session. Use --socket when the drawer and agents should
   share one long-lived simulator service. Alias: open.
 
-    $ ade --socket ios-sim launch --target <id> --text
-    $ ade --socket ios-sim launch --bundle-id com.example.app --no-build --text
+    $ ade --socket apple launch --target <id> --text
+    $ ade --socket apple launch --bundle-id com.example.app --no-build --text
 
   Flags:
     --device, --udid <id>       Simulator device.
-    --target, --target-id <id>  Target id from "ios-sim apps".
+    --target, --target-id <id>  Target id from "apple apps".
     --bundle-id, --bundle <id>  Launch an installed app by bundle id.
     --app-bundle, --app <path>  Install/launch a built .app bundle.
     --project, --xcodeproj <p>  Xcode project path.
@@ -1064,7 +1066,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Captures a simulator screenshot and files it in the chat's proof drawer.
   Alias: promote.
 
-    $ ade --socket ios-sim proof --caption "Settings screen after the fix" --text
+    $ ade --socket apple proof --caption "Settings screen after the fix" --text
 
   Flags:
     --caption <text>       Artifact description; also the default title.
@@ -1083,14 +1085,14 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   another chat owns is refused with IOS_SIMULATOR_OWNED_BY_OTHER_SESSION unless
   you say you mean it. Re-attributing only the lane never trips the guard.
 
-    $ ade --socket ios-sim claim --lane <lane-id> --text
-    $ ade --socket ios-sim claim --lane <lane-id> --ignore-ownership --text
+    $ ade --socket apple claim --lane <lane-id> --text
+    $ ade --socket apple claim --lane <lane-id> --ignore-ownership --text
 
   Flags:
     --lane, --lane-id <id>   Required; defaults to $ADE_LANE_ID.
     --chat-session <id>      Owner chat session; defaults to $ADE_CHAT_SESSION_ID.
     --ignore-ownership       Take a session another chat owns, deliberately. No
-                             teardown: the session, its idb companions and the
+                             teardown: the session, its helper capture and the
                              launch lock all stay up, only the owner changes.
     --force, -f              Same bypass, spelled the way launch/shutdown spell
                              it. Unlike "shutdown --force" it resets nothing.
@@ -1110,15 +1112,15 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   hard reset), and so does naming the owner's own chat session id, which
   "ios-sim status" reports to anyone who asks. Ask before evicting another chat.
 
-    $ ade --socket ios-sim shutdown --text
-    $ ade --socket ios-sim shutdown --force --text
-    $ ade --socket ios-sim shutdown --ignore-ownership --text
+    $ ade --socket apple shutdown --text
+    $ ade --socket apple shutdown --force --text
+    $ ade --socket apple shutdown --ignore-ownership --text
 
   Flags:
     --force, -f            Release a session owned by another chat, and hard-reset
-                           the launch lock and tracked idb companions with it.
+                           the launch lock and the helper's capture with it.
     --ignore-ownership     Release a session owned by another chat without the
-                           hard reset: no companion sweep, no launch-lock reset.
+                           hard reset: no capture teardown, no launch-lock reset.
     --chat-session <id>    Caller chat session; defaults to $ADE_CHAT_SESSION_ID.
 `,
   actions: `${ADE_BANNER}
@@ -1127,7 +1129,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Lists every callable ios_simulator action exposed through ADE's generic action
   bridge. Use this when a typed subcommand is missing a niche argument.
 
-    $ ade --socket ios-sim actions --text
+    $ ade --socket apple actions --text
     $ ade actions run ios_simulator.getStatus --text
 `,
   screenshot: `${ADE_BANNER}
@@ -1136,7 +1138,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Captures a one-shot PNG from the simulator via simctl. Alias: capture.
   Prints the written file path; read that file instead of the data URL.
 
-    $ ade --socket ios-sim screenshot --out shot.png --text
+    $ ade --socket apple screenshot --out shot.png --text
 
   Flags:
     --out <path>           Where to write the PNG; relative to the build root.
@@ -1150,7 +1152,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   simulator screen. Use this before asking an agent to find the current screen
   in SwiftUI code. Aliases: screen, elements.
 
-    $ ade --socket ios-sim snapshot --text
+    $ ade --socket apple snapshot --text
 
   Flags:
     --device, --udid <id>  Simulator device.
@@ -1163,7 +1165,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Reads the DEBUG ADEInspector snapshot published by the launched app. This is
   lower-level than "snapshot" and does not include screenshot/accessibility fallback.
 
-    $ ade --socket ios-sim inspector --text
+    $ ade --socket apple inspector --text
 
   Flags:
     --device, --udid <id>  Simulator device.
@@ -1174,7 +1176,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Hit-tests a point and returns the best matching context item without committing
   it to the drawer composer. Aliases: hit-test, hover.
 
-    $ ade --socket ios-sim inspect --x 120 --y 420 --screenshot --text
+    $ ade --socket apple inspect --x 120 --y 420 --screenshot --text
 
   Flags:
     --x <n> --y <n>        Required screenshot-pixel coordinates.
@@ -1189,7 +1191,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Xcode running state, selected project window, setup warnings, and docs URL.
   Alias: preview-doctor.
 
-    $ ade --socket ios-sim preview-status --source apps/ios/ADE/Views/Home.swift --line 42 --text
+    $ ade --socket apple preview-status --source apps/ios/ADE/Views/Home.swift --line 42 --text
 
   Flags:
     --project-root <path>  ADE project root.
@@ -1202,7 +1204,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Lists discoverable #Preview and PreviewProvider definitions, ranked around a
   selected Swift file when supplied. Aliases: preview-list, list-previews.
 
-    $ ade --socket ios-sim previews --source apps/ios/ADE/Views/Home.swift --text
+    $ ade --socket apple previews --source apps/ios/ADE/Views/Home.swift --text
 
   Flags:
     --project-root <path>  ADE project root.
@@ -1215,7 +1217,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Resolves the best Preview Lab target for the current simulator/source context.
   Aliases: match-preview, resolve-preview.
 
-    $ ade --socket ios-sim preview-match --source apps/ios/ADE/Views/Home.swift --line 42 --text
+    $ ade --socket apple preview-match --source apps/ios/ADE/Views/Home.swift --line 42 --text
 
   Flags:
     --project-root <path>  ADE project root.
@@ -1230,7 +1232,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Opens this lane's iOS project in Xcode when needed and waits briefly for
   Xcode MCP Preview Lab readiness. Aliases: ensure-preview, preview-workspace.
 
-    $ ade --socket ios-sim preview-ensure --text
+    $ ade --socket apple preview-ensure --text
 
   Flags:
     --project-root <path>  ADE project root.
@@ -1246,7 +1248,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   This is the final command agents should run after finding or adding a preview.
   Aliases: render-preview, preview.
 
-    $ ade --socket ios-sim preview-render --source apps/ios/ADE/Views/Home.swift --index 0 --text
+    $ ade --socket apple preview-render --source apps/ios/ADE/Views/Home.swift --index 0 --text
 
   Flags:
     --source, --file <p>   Required Swift source file. Absolute, project-relative,
@@ -1263,9 +1265,9 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   selection. Run "select" first, or pass --source/--line explicitly.
   Aliases: current-preview, preview-open-current, open-current-preview.
 
-    $ ade --socket ios-sim select --x 120 --y 420 --text
-    $ ade --socket ios-sim preview-current --text
-    $ ade --socket ios-sim preview-current --source apps/ios/ADE/Views/Home.swift --line 42 --text
+    $ ade --socket apple select --x 120 --y 420 --text
+    $ ade --socket apple preview-current --text
+    $ ade --socket apple preview-current --source apps/ios/ADE/Views/Home.swift --line 42 --text
 
   Flags:
     --source, --file <p>   Optional Swift source file; defaults to last selected element.
@@ -1282,7 +1284,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Opens apps/ios/ADE.xcodeproj in Xcode so Xcode MCP Preview Lab can connect.
   Aliases: open-preview-workspace, open-xcode.
 
-    $ ade ios-sim preview-open --project-root <path> --text
+    $ ade apple preview-open --project-root <path> --text
 
   Flags:
     --project-root <path>  ADE project root.
@@ -1290,36 +1292,21 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   "stream-start": `${ADE_BANNER}
   iOS Simulator: stream-start
 
-  Starts ADE's live view for the running simulator. Simulator control tools
-  enable tap, drag, type, and inspect actions when available.
-  Aliases:
-  start-stream, stream, window-start,
-  start-window, mirror-start, live-start, start-live.
+  Starts ADE's live H.264 view of the device framebuffer via the vendored
+  helper. No Screen Recording grant and no Simulator.app window. There is one
+  encoder now, so there is no backend to choose and no second start verb.
+  Aliases: start-stream, stream, window-start, start-window, mirror-start,
+  start-mirror, preview-start, start-preview.
 
-  Two backends exist.
-    simulator-window-capture  The renderer captures the real Simulator.app
-                              window on this Mac. It is the cheapest path and
-                              stays the default when the simulator is local. It
-                              needs the Screen Recording grant and a visible
-                              window.
-    idb-h264                  The machine that owns the simulator encodes with
-                              "idb video-stream" and serves H.264 over a
-                              token-guarded loopback endpoint. It needs idb and
-                              idb_companion. It needs no Screen Recording grant
-                              and no visible window. It is the only backend that
-                              works when the simulator runs on another machine.
-
-    $ ade --socket ios-sim window-start --fps 60 --text
-    $ ade --socket ios-sim live-start --fps 60 --text
-    $ ade --socket ios-sim stream-start --backend idb-h264 --scale-factor 0.5 --text
+    $ ade --socket apple stream-start --fps 60 --text
+    $ ade --socket apple stream-start --scale-factor 0.5 --bitrate-kbps 2500 --text
 
   Flags:
     --device, --udid <id>       Simulator device.
     --fps <n>                   Target fps.
-    --backend <name>            auto, simulator-window-capture, or idb-h264;
-                                default simulator-window-capture.
-    --scale-factor <n>          idb-h264 only. 0.1 to 1. Lower sends fewer pixels.
-    --compression-quality <n>   idb-h264 only. 0.1 to 1. Lower spends fewer bits.
+    --scale-factor, --scale <n> Downscale 0.1 to 1. Lower sends fewer pixels.
+    --bitrate-kbps <n>          Encoder bitrate cap in kilobits per second.
+    --compression-quality <n>   0.1 to 1. Lower spends fewer bits.
 `,
   "stream-status": `${ADE_BANNER}
   iOS Simulator: stream-status
@@ -1327,7 +1314,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Shows whether the live view is active, the refresh rate, simulator control
   status, and last error.
 
-    $ ade --socket ios-sim stream-status --text
+    $ ade --socket apple stream-status --text
 `,
   "stream-stop": `${ADE_BANNER}
   iOS Simulator: stream-stop
@@ -1335,7 +1322,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Stops the live view without necessarily releasing the simulator session.
   Aliases: stop-stream, live-stop, stop-live.
 
-    $ ade --socket ios-sim stream-stop --text
+    $ ade --socket apple stream-stop --text
 `,
   select: `${ADE_BANNER}
   iOS Simulator: select
@@ -1343,7 +1330,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Hit-tests a point, emits a drawer selection event, and attaches the resulting
   iOS context to the active chat composer. Use --socket so the drawer receives it.
 
-    $ ade --socket ios-sim select --x 120 --y 420 --text
+    $ ade --socket apple select --x 120 --y 420 --text
 
   Flags:
     --x <n> --y <n>        Required screenshot-pixel coordinates.
@@ -1355,8 +1342,8 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Sends a tap when simulator controls are available.
 
-    $ ade --socket ios-sim tap --x 120 --y 420 --text
-    $ ade --socket ios-sim tap 120 420 --text
+    $ ade --socket apple tap --x 120 --y 420 --text
+    $ ade --socket apple tap 120 420 --text
 
   Flags:
     --x <n> --y <n>        Required point coordinates.
@@ -1367,8 +1354,8 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Sends a swipe to the active launched app. "swipe" is an alias of drag.
 
-    $ ade --socket ios-sim drag --start-x 120 --start-y 700 --end-x 120 --end-y 250 --text
-    $ ade --socket ios-sim swipe 120 700 120 250 --duration-ms 250 --text
+    $ ade --socket apple drag --start-x 120 --start-y 700 --end-x 120 --end-y 250 --text
+    $ ade --socket apple swipe 120 700 120 250 --duration-ms 250 --text
 
   Flags:
     --start-x <n> --start-y <n> Required start coordinates.
@@ -1381,8 +1368,8 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Types text into the active launched app. Alias: text.
 
-    $ ade --socket ios-sim type "hello" --text
-    $ ade --socket ios-sim type --value "hello" --text
+    $ ade --socket apple type "hello" --text
+    $ ade --socket apple type --value "hello" --text
 
   Flags:
     --value, --message <v> Text to type. --text <value> is also accepted for
@@ -1401,8 +1388,8 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   ADE shuts the device down again only when ADE booted it.
 
-    $ ade --socket ios-sim open-device --text
-    $ ade --socket ios-sim open-device --device <udid> --no-window --text
+    $ ade --socket apple open-device --text
+    $ ade --socket apple open-device --device <udid> --no-window --text
 
   Flags:
     --device, --udid <id>  Simulator device; defaults to a booted device.
@@ -1423,8 +1410,8 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   with --shutdown. Only --force goes through. --ignore-ownership does not:
   it steps around the device-session guard in your own name and nothing else.
 
-    $ ade --socket ios-sim close-device --text
-    $ ade --socket ios-sim close-device --shutdown --text
+    $ ade --socket apple close-device --text
+    $ ade --socket apple close-device --shutdown --text
 
   Flags:
     --device, --udid <id>  Simulator device.
@@ -1445,7 +1432,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Answers null when no device session is open. "status" reports the same record
   alongside the app session and the live view; this reads it on its own.
 
-    $ ade --socket ios-sim device-session --text
+    $ ade --socket apple device-session --text
 
   Flags:
     --text                 Compact human-readable record.
@@ -1460,7 +1447,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   simctl cannot read a location or a status bar back. Those two fields report
   what ADE last set in this process, and reset when the runtime restarts.
 
-    $ ade --socket ios-sim settings --text
+    $ ade --socket apple settings --text
 
   Flags:
     --device, --udid <id>  Simulator device.
@@ -1470,8 +1457,8 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Switches the device between light and dark mode. Runs "simctl ui appearance".
 
-    $ ade --socket ios-sim appearance dark --text
-    $ ade --socket ios-sim appearance --appearance light --text
+    $ ade --socket apple appearance dark --text
+    $ ade --socket apple appearance --appearance light --text
 
   Flags:
     --appearance light|dark  Appearance to set; a positional value works too.
@@ -1482,7 +1469,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Sets the Dynamic Type size. Runs "simctl ui content_size". Alias: text-size.
 
-    $ ade --socket ios-sim content-size accessibility-extra-large --text
+    $ ade --socket apple content-size accessibility-extra-large --text
 
   Flags:
     --content-size, --size <name>  Size to set; a positional value works too.
@@ -1504,13 +1491,14 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   preference written without the notification is read by nothing until the app
   relaunches.
 
-    $ ade --socket ios-sim accessibility reduce-motion on --text
-    $ ade --socket ios-sim a11y --option bold-text --off --text
+    $ ade --socket apple accessibility reduce-motion on --text
+    $ ade --socket apple a11y --option bold-text --off --text
 
   Flags:
     --option <name>        Option to set; a positional value works too. Values:
                            increase-contrast, reduce-motion, reduce-transparency,
-                           bold-text, invert-colors, grayscale, voice-over.
+                           button-shapes (Show Borders), bold-text, invert-colors,
+                           grayscale, voice-over.
     --on, --off            State to set; positional on/off works too.
     --device, --udid <id>  Simulator device.
 `,
@@ -1519,9 +1507,9 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Sets or clears the simulated GPS location. Runs "simctl location".
 
-    $ ade --socket ios-sim location 37.7749 -122.4194 --text
-    $ ade --socket ios-sim location --latitude 37.7749 --longitude -122.4194 --text
-    $ ade --socket ios-sim location --clear --text
+    $ ade --socket apple location 37.7749 -122.4194 --text
+    $ ade --socket apple location --latitude 37.7749 --longitude -122.4194 --text
+    $ ade --socket apple location --clear --text
 
   Flags:
     --latitude, --lat <n>  Latitude, -90 to 90; a positional value works too.
@@ -1538,8 +1526,8 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   A reset takes the whole service back to its default and needs no bundle id.
   A grant or a revoke acts on one app and needs one.
 
-    $ ade --socket ios-sim permission grant photos --bundle-id com.example.app --text
-    $ ade --socket ios-sim privacy reset location --text
+    $ ade --socket apple permission grant photos --bundle-id com.example.app --text
+    $ ade --socket apple privacy reset location --text
 
   Flags:
     --action <name>        grant, revoke, or reset; a positional works too.
@@ -1559,8 +1547,8 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   body. ADE fills aps.alert in from --title and --body when the payload omits
   it. The payload file is deleted after the send.
 
-    $ ade --socket ios-sim push --bundle-id com.example.app --title Hi --body "You have mail" --text
-    $ ade --socket ios-sim push --bundle-id com.example.app --payload '{"aps":{"badge":3}}' --text
+    $ ade --socket apple push --bundle-id com.example.app --title Hi --body "You have mail" --text
+    $ ade --socket apple push --bundle-id com.example.app --payload '{"aps":{"badge":3}}' --text
 
   Flags:
     --bundle-id <id>       Required target app.
@@ -1574,7 +1562,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Opens a URL or a deeplink on the device. Runs "simctl openurl".
 
-    $ ade --socket ios-sim open-url myapp://settings --text
+    $ ade --socket apple open-url myapp://settings --text
 
   Flags:
     --url <url>            URL to open; a positional value works too.
@@ -1585,7 +1573,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Stops a running app on the device. Runs "simctl terminate". Alias: kill-app.
 
-    $ ade --socket ios-sim terminate --bundle-id com.example.app --text
+    $ ade --socket apple terminate --bundle-id com.example.app --text
 
   Flags:
     --bundle-id <id>       Required app to stop.
@@ -1598,7 +1586,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   "simctl launch". It does not build. Use "launch" to see a code change; use
   this to see the app from its first screen again.
 
-    $ ade --socket ios-sim relaunch --bundle-id com.example.app --text
+    $ ade --socket apple relaunch --bundle-id com.example.app --text
 
   Flags:
     --bundle-id <id>       Required app to restart.
@@ -1614,7 +1602,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   holding the device session. Name your chat with --chat-session, or take it
   anyway with --force.
 
-    $ ade --socket ios-sim uninstall --bundle-id com.example.app --text
+    $ ade --socket apple uninstall --bundle-id com.example.app --text
 
   Flags:
     --bundle-id <id>       Required app to remove.
@@ -1628,8 +1616,8 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Overrides or clears the status bar. Runs "simctl status_bar". Set 9:41 and
   full bars before a screenshot so the shot stays stable.
 
-    $ ade --socket ios-sim status-bar --time 9:41 --wifi-bars 3 --battery-level 100 --text
-    $ ade --socket ios-sim status-bar --clear --text
+    $ ade --socket apple status-bar --time 9:41 --wifi-bars 3 --battery-level 100 --text
+    $ ade --socket apple status-bar --clear --text
 
   Flags:
     --time <text>          Displayed time, such as 9:41.
@@ -1647,7 +1635,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Reports whether an app runs right now, and its pid. Reads "launchctl list"
   on the device. A shut down device answers "not running" rather than failing.
 
-    $ ade --socket ios-sim app-state --bundle-id com.example.app --text
+    $ ade --socket apple app-state --bundle-id com.example.app --text
 
   Flags:
     --bundle-id <id>       Required app to check.
@@ -1661,7 +1649,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   ADE streams "log stream" from the device and interleaves its own actions in
   the same order, so the log shows what ADE did between two app log lines.
 
-    $ ade --socket ios-sim log-start --bundle-id com.example.app --text
+    $ ade --socket apple log-start --bundle-id com.example.app --text
 
   The log follows one app. "log stream" reads the whole device, so a run with
   no bundle id returns every other app's rows and the system's besides.
@@ -1687,7 +1675,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   is the only one that can stop it. Owning the device session or the app
   session is not enough on its own.
 
-    $ ade --socket ios-sim log-stop --text
+    $ ade --socket apple log-stop --text
 
   Flags:
     --chat-session <id>    Caller chat session; defaults to $ADE_CHAT_SESSION_ID.
@@ -1701,8 +1689,8 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Each page returns a cursor. Pass it back as --since to read only new rows.
   The page also reports how many rows the ring dropped since the last read.
 
-    $ ade --socket ios-sim log --limit 100 --text
-    $ ade --socket ios-sim log --since 412 --text
+    $ ade --socket apple log --limit 100 --text
+    $ ade --socket apple log --since 412 --text
 
   Flags:
     --device, --udid <id>  Simulator device.
@@ -1718,8 +1706,8 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   A query is a claim about the app, such as "the button labelled Continue".
   A coordinate tap is a guess that the layout did not move.
 
-    $ ade --socket ios-sim find-element --label Continue --text
-    $ ade --socket ios-sim find --role Button --index 1 --text
+    $ ade --socket apple find-element --label Continue --text
+    $ ade --socket apple find --role Button --index 1 --text
 
   Flags:
     --ref <id>             Element ref from the last snapshot.
@@ -1740,8 +1728,8 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   fails loudly when the element is gone, where a coordinate tap hits whatever
   moved into that spot.
 
-    $ ade --socket ios-sim tap-element --label Continue --text
-    $ ade --socket ios-sim tap-element --identifier signup-submit --text
+    $ ade --socket apple tap-element --label Continue --text
+    $ ade --socket apple tap-element --identifier signup-submit --text
 
   Flags:
     Same element query as "find-element": --ref, --identifier, --label, --text,
@@ -1752,8 +1740,8 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Taps a text field and types into it. Alias: fill.
 
-    $ ade --socket ios-sim fill-element --identifier email-field --value ada@example.com --text
-    $ ade --socket ios-sim fill --label Email "ada@example.com" --text
+    $ ade --socket apple fill-element --identifier email-field --value ada@example.com --text
+    $ ade --socket apple fill --label Email "ada@example.com" --text
 
   Flags:
     --value <text>         Text to type; a positional value works too.
@@ -1767,8 +1755,8 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Waits until an element appears, or disappears with --gone. Alias: wait-for.
   Use it after a tap instead of a fixed sleep.
 
-    $ ade --socket ios-sim wait-for-element --label Welcome --timeout-ms 8000 --text
-    $ ade --socket ios-sim wait-for --label Spinner --gone --text
+    $ ade --socket apple wait-for-element --label Welcome --timeout-ms 8000 --text
+    $ ade --socket apple wait-for --label Spinner --gone --text
 
   Flags:
     --timeout-ms <n>       Wait budget; defaults to 5000 and caps at 60000.
@@ -1782,7 +1770,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Checks that an element is on screen right now. Alias: assert. Use it as the
   last step of a flow so the result states what was proven.
 
-    $ ade --socket ios-sim assert-visible --label "Order confirmed" --text
+    $ ade --socket apple assert-visible --label "Order confirmed" --text
 
   Flags:
     Same element query as "find-element": --ref, --identifier, --label, --text,
@@ -1799,8 +1787,8 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   device from the one captured, and records the reason in the metadata rather
   than pairing one device's shot with another device's rows.
 
-    $ ade --socket ios-sim proof-bundle --caption "Signup succeeds" --text
-    $ ade --socket ios-sim proof-bundle --out .ade/tmp/proof --log-rows 200 --text
+    $ ade --socket apple proof-bundle --caption "Signup succeeds" --text
+    $ ade --socket apple proof-bundle --out .ade/tmp/proof --log-rows 200 --text
 
   Flags:
     --out <path>           Directory to write into; relative to the build root.
@@ -1811,6 +1799,186 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     --lane, --lane-id <id> Lane whose worktree to resolve.
     --project <path>       Project root for source matching.
 `,
+  "device-create": `${ADE_BANNER}
+  Apple device: device-create
+
+  Clones an installed simulator for this lane. With no --from, uses the
+  project's last-used installed simulator, else the newest installed iPhone.
+  Never downloads a runtime. Fails with APPLE_NO_INSTALLED_SIMULATORS when
+  none are installed (open Xcode ▸ Settings ▸ Components).
+
+    $ ade --socket apple device-create --text
+    $ ade --socket apple device-create --from "iPhone 17" --name "iPhone 17 — lane-ab3" --text
+
+  Flags:
+    --from, --simulator <id>  Installed simulator to clone (udid or name).
+    --name <name>             Clone name; defaults to "<source> — <lane>".
+    --lane, --lane-id <id>    Lane that will own the clone.
+`,
+  "device-attach": `${ADE_BANNER}
+  Apple device: device-attach
+
+  Binds an existing installed simulator to this lane without cloning. ADE
+  never deletes an attached simulator.
+
+    $ ade --socket apple device-attach --simulator <udid|name> --text
+
+  Flags:
+    --simulator, --device, --udid <id>  Required installed simulator.
+    --lane, --lane-id <id>              Lane to bind.
+`,
+  "start": `${ADE_BANNER}
+  Apple device: start
+
+  Brings the lane's device up in one step: attaches (or clones, with
+  --create) when the lane owns no device yet, boots it if it is shut down,
+  waits for simctl bootstatus, then starts the live view. Progress arrives
+  as apple.device.state events (starting → booted → streaming). Unlike
+  device-attach and device-create, this boots.
+
+    $ ade --socket apple start --text
+    $ ade --socket apple start --udid <udid> --text
+    $ ade --socket apple start --create <sourceUdid> --text
+
+  Flags:
+    --udid, --simulator, --device <id>  Installed simulator to attach when the lane has none.
+    --create <sourceUdid>               Clone this installed simulator for the lane instead.
+    --lane, --lane-id <id>              Lane that owns (or will own) the device.
+`,
+  "device-list": `${ADE_BANNER}
+  Apple device: device-list
+
+  Lists installed simulators and/or the one device this lane owns.
+
+    $ ade --socket apple device-list --installed --text
+    $ ade --socket apple device-list --lane --text
+
+  Flags:
+    --installed            Installed simulators for a picker. ADE never downloads one.
+    --lane, --lane-id <id> The lane whose device to report; defaults to $ADE_LANE_ID.
+`,
+  "device-delete": `${ADE_BANNER}
+  Apple device: device-delete
+
+  Deletes this lane's cloned simulator. Attached devices refuse unless --force,
+  and --force only detaches them — ADE never deletes a simulator it did not create.
+
+    $ ade --socket apple device-delete --text
+    $ ade --socket apple device-delete --force --text
+
+  Flags:
+    --force, -f            Detach an attached device instead of refusing.
+    --lane, --lane-id <id> Lane whose device to delete.
+`,
+  "record-start": `${ADE_BANNER}
+  Apple device: record-start
+
+  Starts a manual recording of the device framebuffer. Overlays (tap rings and
+  typed-text badges) follow Settings unless --overlays is passed. Starting
+  while an auto recording is running converts it to manual (no restart, no gap).
+
+    $ ade --socket apple record-start --text
+    $ ade --socket apple record-start --overlays off --label "signup" --text
+
+  Flags:
+    --overlays on|off      Overlay compositor; default is Settings.
+    --label <text>         Human label for the recording.
+    --lane, --lane-id <id> Lane whose device to record.
+`,
+  "record-stop": `${ADE_BANNER}
+  Apple device: record-stop
+
+  Stops the running recording. --discard is only allowed for a recording this
+  chat owns that is not marked proof.
+
+    $ ade --socket apple record-stop --text
+    $ ade --socket apple record-stop --keep --text
+    $ ade --socket apple record-stop --discard --text
+
+  Flags:
+    --keep                 Keep the file (default).
+    --discard              Delete the file; refused for proof-pinned recordings.
+    --lane, --lane-id <id> Lane whose recording to stop.
+`,
+  "record-list": `${ADE_BANNER}
+  Apple device: record-list
+
+  Lists recordings for this lane. There is no auto-delete.
+
+    $ ade --socket apple record-list --text
+
+  Flags:
+    --lane, --lane-id <id> Lane whose recordings to list.
+`,
+  "record-delete": `${ADE_BANNER}
+  Apple device: record-delete
+
+  Deletes a recording this chat owns that is not marked proof. Anything else
+  is refused with APPLE_RECORDING_PINNED.
+
+    $ ade --socket apple record-delete --id <id> --text
+
+  Flags:
+    --id <id>              Recording id from record-list.
+    --force, -f            Take a recording another chat owns, if the service allows.
+    --lane, --lane-id <id> Lane that owns the recording.
+`,
+  frame: `${ADE_BANNER}
+  Apple device: frame
+
+  Grabs one decoded frame from the running stream. Cheaper than screenshot,
+  which round-trips simctl. Fails with APPLE_STREAM_NOT_RUNNING when no stream
+  is active; screenshot does not need one.
+
+    $ ade --socket apple frame --text
+    $ ade --socket apple frame --out shot.png --text
+
+  Flags:
+    --out, --out-path <p>  File path; relative to the build root.
+    --lane, --lane-id <id> Lane whose stream to read.
+`,
+  button: `${ADE_BANNER}
+  Apple device: button
+
+  Presses a hardware button through the vendored helper. Shake is named so
+  the column can call it, but this Xcode's simctl has no shake verb and the
+  helper does not implement it — the service refuses with
+  APPLE_BUTTON_UNSUPPORTED.
+
+    $ ade --socket apple button home --text
+    $ ade --socket apple button volume-up --text
+
+  Names: home, lock, volume-up, volume-down, siri, shake.
+
+  Flags:
+    --name, --button <n>   Button name; also accepted as the next positional.
+    --device, --udid <id>  Simulator device.
+    --lane, --lane-id <id> Lane whose device to press.
+`,
+  rotate: `${ADE_BANNER}
+  Apple device: rotate
+
+  Turns the device, then reads the screen to see whether it moved.
+
+    $ ade --socket apple rotate landscape-left --text
+    $ ade --socket apple rotate --orientation portrait --text
+
+  Orientations: portrait, portrait-upside-down, landscape-left, landscape-right.
+
+  applied means the framebuffer was SEEN on the requested axis, not that an
+  event was sent. iOS always takes the device orientation; the app on screen
+  decides whether to follow it. The Home Screen and Settings are portrait-only
+  on an iPhone, and no iPhone supports portrait upside down, so a rotate with
+  one of those in front answers applied false with reason
+  APPLE_ROTATE_NOT_ADOPTED. Turning within one axis (the two portraits, or the
+  two landscapes) leaves the pixel size unchanged and reports
+  verification already-on-axis, which does not confirm the exact side.
+
+  Flags:
+    --orientation <o>      Orientation; also accepted as the next positional.
+    --device, --udid <id>  Simulator device.
+    --lane, --lane-id <id> Lane whose device to rotate.
+`,
 };
 
 const IOS_SIMULATOR_HELP_ALIASES: Record<string, string> = {
@@ -1820,7 +1988,6 @@ const IOS_SIMULATOR_HELP_ALIASES: Record<string, string> = {
   launchable: "apps",
   launchables: "apps",
   open: "launch",
-  stop: "shutdown",
   teardown: "shutdown",
   end: "shutdown",
   "end-session": "shutdown",
@@ -1833,6 +2000,9 @@ const IOS_SIMULATOR_HELP_ALIASES: Record<string, string> = {
   "preview-doctor": "preview-status",
   "preview-list": "previews",
   "list-previews": "previews",
+  press: "button",
+  "press-button": "button",
+  orientation: "rotate",
   "match-preview": "preview-match",
   "resolve-preview": "preview-match",
   "ensure-preview": "preview-ensure",
@@ -1851,8 +2021,6 @@ const IOS_SIMULATOR_HELP_ALIASES: Record<string, string> = {
   "start-window": "stream-start",
   "mirror-start": "stream-start",
   "start-mirror": "stream-start",
-  "live-start": "stream-start",
-  "start-live": "stream-start",
   "preview-start": "stream-start",
   "start-preview": "stream-start",
   "stop-stream": "stream-stop",
@@ -2687,6 +2855,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
                                                     Adds a 'resume' line while a usage limit is live.
     $ ade chat resume-now <session>                 Send the usage-limit continue prompt now (alias: resume)
                                                     Exit 1 when the host reports no live usage limit.
+    $ ade chat continue-on-account <session>        Continue a usage-limited chat on another account that still has room
+                                                    Exit 1 when no other account can take it.
     $ ade chat note "testing desktop auth fallback" # Update the Work status line (aim for ${STATUS_NOTE_GUIDELINE_WORDS} words or fewer; truncated past ${MAX_STATUS_NOTE_CHARACTERS} characters)
     $ ade chat ask "Which account should I use?"    Escalate a blocking question to the user
                                                     'note' and 'ask' default to the caller and accept --session <id>.
@@ -3003,118 +3173,134 @@ const HELP_BY_COMMAND: Record<string, string> = {
   failure: they exit non-zero and print \`ade: proof attach failed — <reason>\`.
   Pass --no-verify to skip the re-read.
 `,
-  "ios-sim": `${ADE_BANNER}
-  iOS Simulator
+  "apple": `${ADE_BANNER}
+  Apple Development
 
-  iOS simulator commands build, launch, mirror, inspect, and control the ADE
-  drawer simulator. Aliases: \`ade ios\` and \`ade simulator\` route to the same
-  surface. For drawer/shared session state, prefer attached runtime mode
-  (--socket) so launch/select/tap operate on the same long-lived ADE service.
-  Launch keeps Simulator.app in the background; pass --foreground to raise it,
-  or --open-drawer when the user should see the iOS drawer. Optional simulator
-  control tools enable tap, drag, type, and inspect actions.
+  Apple device commands build, launch, stream, inspect, and control a per-lane
+  iOS simulator through ADE's vendored helper. \`ade ios-sim\` is a deprecated
+  alias for one minor release (\`ade ios\` and \`ade simulator\` still route here).
+  For shared session state, prefer attached runtime mode (--socket) so
+  launch/select/tap operate on the same long-lived ADE service. Launch keeps
+  the device in the background; pass --open-drawer when the user should see the
+  Apple column. Tap, drag, type, and inspect go through the helper — no idb,
+  no Screen Recording grant, and no Simulator.app window.
 
   Every rooted subcommand builds and captures in the lane worktree: an explicit
   --project-root wins, else --lane/ADE_LANE_ID, else the worktree the shell is
   in. Pass --project-root to target the primary checkout from inside a lane.
 
   A launched simulator session belongs to one chat at a time. Run
-  "ios-sim shutdown" from the owning chat before launching it from a different
+  "apple shutdown" from the owning chat before launching it from a different
   one; shutting down a session another chat owns is refused, and
   "shutdown --force" or "launch --force" takes it over deliberately. The refusal
-  is a guard rail against accidents, not a lock — see "ios-sim shutdown --help".
-  Use "ios-sim claim --lane <lane-id>" to attach the drawer session to a lane.
+  is a guard rail against accidents, not a lock — see "apple shutdown --help".
+  Use "apple claim --lane <lane-id>" to attach the drawer session to a lane.
 
   Discovery and lifecycle:
-    $ ade ios-sim status --text                    Show simulator readiness
-    $ ade ios-sim devices --text                   List available simulators
-    $ ade ios-sim apps --device <udid> --text      List launchable apps
-    $ ade --socket ios-sim launch --target <id>    Build, install, and launch an app
-    $ ade --socket ios-sim launch --follow         Same, announcing the wait before the summary
-    $ ade --socket ios-sim claim --lane <lane-id>  Attribute the drawer session to a lane
-    $ ade --socket ios-sim launch --bundle-id com.example Launch installed app
-    $ ade --socket ios-sim shutdown                Tear down the active simulator session (alias: stop)
-    $ ade --socket ios-sim shutdown --force        Force-release a session owned by another chat
-    $ ade --socket ios-sim launch --force          Take the simulator over in one step
-    $ ade ios-sim actions --text                   List every callable ios_simulator action
+    $ ade apple status --text                    Show simulator readiness
+    $ ade apple devices --text                   List available simulators
+    $ ade apple apps --device <udid> --text      List launchable apps
+    $ ade --socket apple launch --target <id>    Build, install, and launch an app
+    $ ade --socket apple launch --follow         Same, announcing the wait before the summary
+    $ ade --socket apple claim --lane <lane-id>  Attribute the drawer session to a lane
+    $ ade --socket apple launch --bundle-id com.example Launch installed app
+    $ ade --socket apple shutdown                Tear down the active simulator session (alias: stop)
+    $ ade --socket apple shutdown --force        Force-release a session owned by another chat
+    $ ade --socket apple launch --force          Take the simulator over in one step
+    $ ade apple actions --text                   List every callable ios_simulator action
 
   ADE discovers Xcode projects from the project root and apps/* folders.
 
   Capture and inspection:
-    $ ade ios-sim screenshot --out shot.png --text Capture a screenshot to a file
-    $ ade ios-sim proof --caption "<what>" --text  Screenshot into the proof drawer
-    $ ade ios-sim snapshot --text                  Capture selectable UI context
-    $ ade ios-sim inspector --text                 Show current inspector data
-    $ ade ios-sim inspect --x 120 --y 420 --text   Inspect a point in the simulator
-    $ ade ios-sim preview-status --text           Xcode MCP readiness for Preview Lab
-    $ ade ios-sim previews --source <file> --text  List nearby #Preview definitions
-    $ ade ios-sim preview-match --source <file>    Resolve best Preview Lab match
-    $ ade ios-sim preview-ensure --text            Open/wait for Xcode Preview Lab
-    $ ade ios-sim preview-current --text           Render preview for the selected simulator UI
-    $ ade ios-sim preview-render --source <file>   Render a SwiftUI preview through Xcode MCP
+    $ ade apple screenshot --out shot.png --text Capture a screenshot to a file
+    $ ade apple proof --caption "<what>" --text  Screenshot into the proof drawer
+    $ ade apple snapshot --text                  Capture selectable UI context
+    $ ade apple inspector --text                 Show current inspector data
+    $ ade apple inspect --x 120 --y 420 --text   Inspect a point in the simulator
+    $ ade apple preview-status --text           Xcode MCP readiness for Preview Lab
+    $ ade apple previews --source <file> --text  List nearby #Preview definitions
+    $ ade apple preview-match --source <file>    Resolve best Preview Lab match
+    $ ade apple preview-ensure --text            Open/wait for Xcode Preview Lab
+    $ ade apple preview-current --text           Render preview for the selected simulator UI
+    $ ade apple preview-render --source <file>   Render a SwiftUI preview through Xcode MCP
 
   Device sessions:
-    $ ade --socket ios-sim open-device --text      Boot a simulator with no app
-    $ ade --socket ios-sim open-device --no-window Keep the device headless
-    $ ade --socket ios-sim device-session --text   Report the tracked device session
-    $ ade --socket ios-sim settings --text         Read appearance, text size, a11y
-    $ ade --socket ios-sim close-device --text     Release the device session
+    $ ade --socket apple open-device --text      Boot a simulator with no app
+    $ ade --socket apple open-device --no-window Keep the device headless
+    $ ade --socket apple device-session --text   Report the tracked device session
+    $ ade --socket apple settings --text         Read appearance, text size, a11y
+    $ ade --socket apple close-device --text     Release the device session
 
   An app session names a bundle id, a build root, and a lane. A device session
   is a booted simulator with no app. ADE never shuts down a device it did not
   boot unless you pass "close-device --shutdown".
 
-  Live view:
-    $ ade ios-sim live-start --fps 60              Show the running simulator in ADE
-    $ ade ios-sim window-start --fps 60            Same live view, explicit alias
-    $ ade ios-sim stream-start --backend idb-h264  Encode on the simulator's own machine
-    $ ade ios-sim stream-status --text             Show live view and input state
-    $ ade ios-sim stream-stop                      Stop the live view
+  Live view (helper H.264; no Screen Recording grant, no Simulator window):
+    $ ade apple stream-start --fps 60            Stream the device framebuffer
+    $ ade apple stream-status --text             Show live view and input state
+    $ ade apple stream-stop                      Stop the live view
 
-  Use simulator-window-capture for a local simulator. Use idb-h264 when the
-  simulator runs on another machine, or when Screen Recording is not granted.
+  Per-lane devices:
+    $ ade apple device-create --text             Clone the project's last-used simulator
+    $ ade apple device-attach --simulator <id>   Bind an existing simulator to this lane
+    $ ade apple start [--udid <id>|--create <id>] Attach or clone, boot, wait, and stream
+    $ ade apple stop --text                     Power the lane's device OFF (session-only: shutdown)
+    $ ade apple device-list --installed --text   Installed simulators for a picker
+    $ ade apple device-list --lane --text        The one device this lane owns
+    $ ade apple device-delete --text             Delete a clone (attached devices refuse)
+
+  Recording:
+    $ ade apple record-start --text              Start a manual recording
+    $ ade apple record-stop --keep --text        Stop and keep (or --discard)
+    $ ade apple record-list --text               List recordings for this lane
+    $ ade apple record-delete --id <id> --text   Delete a recording this chat owns
+    $ ade apple frame --out shot.png --text      Grab one decoded stream frame
 
   Device tools:
-    $ ade ios-sim appearance dark --text           Switch to dark mode
-    $ ade ios-sim content-size accessibility-large Set Dynamic Type size
-    $ ade ios-sim accessibility reduce-motion on   Set one accessibility option
-    $ ade ios-sim location 37.7749 -122.4194       Set the simulated location
-    $ ade ios-sim location --clear                 Clear the simulated location
-    $ ade ios-sim permission grant photos --bundle-id <id>
-    $ ade ios-sim push --bundle-id <id> --title Hi --body "You have mail"
-    $ ade ios-sim open-url myapp://settings        Open a deeplink
-    $ ade ios-sim relaunch --bundle-id <id>        Restart without rebuilding
-    $ ade ios-sim terminate --bundle-id <id>       Stop a running app
-    $ ade ios-sim uninstall --bundle-id <id>       Remove an app and its container
-    $ ade ios-sim status-bar --time 9:41 --wifi-bars 3
-    $ ade ios-sim status-bar --clear               Drop the status bar override
-    $ ade ios-sim app-state --bundle-id <id>       Report running state and pid
+    $ ade apple button home --text               Press Home (also lock, volume-up, volume-down, siri)
+    $ ade apple rotate landscape-left --text     Set orientation
+    $ ade apple appearance dark --text           Switch to dark mode
+    $ ade apple content-size accessibility-large Set Dynamic Type size
+    $ ade apple accessibility reduce-motion on   Set one accessibility option
+    $ ade apple location 37.7749 -122.4194       Set the simulated location
+    $ ade apple location --clear                 Clear the simulated location
+    $ ade apple permission grant photos --bundle-id <id>
+    $ ade apple push --bundle-id <id> --title Hi --body "You have mail"
+    $ ade apple open-url myapp://settings        Open a deeplink
+    $ ade apple relaunch --bundle-id <id>        Restart without rebuilding
+    $ ade apple terminate --bundle-id <id>       Stop a running app
+    $ ade apple uninstall --bundle-id <id>       Remove an app and its container
+    $ ade apple status-bar --time 9:41 --wifi-bars 3
+    $ ade apple status-bar --clear               Drop the status bar override
+    $ ade apple app-state --bundle-id <id>       Report running state and pid
+    $ ade apple foreground --text                Which app the device has in front
 
   Event log:
-    $ ade ios-sim log-start --bundle-id <id>       Start the device event log
-    $ ade ios-sim log --since <cursor> --text      Read new rows
-    $ ade ios-sim log-stop --text                  Stop the log
+    $ ade apple log-start --bundle-id <id>       Start the device event log
+    $ ade apple log --since <cursor> --text      Read new rows
+    $ ade apple log-stop --text                  Stop the log
 
   --bundle-id is required: "log stream" reads the whole device. There is one
   log process per host, so the chat that started the running log is the only
   one that can stop it; --force takes it.
 
   Semantic actions:
-    $ ade ios-sim snapshot --text                  Read the refs on screen first
-    $ ade ios-sim find-element --label Continue    Find one element by query
-    $ ade ios-sim tap-element --label Continue     Tap the element, not a pixel
-    $ ade ios-sim fill-element --identifier email --value ada@example.com
-    $ ade ios-sim wait-for-element --label Welcome --timeout-ms 8000
-    $ ade ios-sim wait-for-element --label Spinner --gone
-    $ ade ios-sim assert-visible --label "Order confirmed"
-    $ ade ios-sim proof-bundle --caption "<what>"  Screenshot plus proof metadata
+    $ ade apple snapshot --text                  Read the refs on screen first
+    $ ade apple find-element --label Continue    Find one element by query
+    $ ade apple tap-element --label Continue     Tap the element, not a pixel
+    $ ade apple fill-element --identifier email --value ada@example.com
+    $ ade apple wait-for-element --label Welcome --timeout-ms 8000
+    $ ade apple wait-for-element --label Spinner --gone
+    $ ade apple assert-visible --label "Order confirmed"
+    $ ade apple proof-bundle --caption "<what>"  Screenshot plus proof metadata
 
   Input and selection:
-    $ ade --socket ios-sim select --x 120 --y 420  Add simulator UI context to chat
-    $ ade ios-sim tap 120 420                      Tap in the simulator
-    $ ade ios-sim drag 120 700 120 250             Drag in the simulator
-    $ ade ios-sim swipe 120 700 120 250            Swipe in the simulator
-    $ ade ios-sim type "hello" --text              Type into the launched app
+    $ ade --socket apple select --x 120 --y 420  Add simulator UI context to chat
+    $ ade apple tap 120 420                      Tap in the simulator
+    $ ade apple drag 120 700 120 250             Drag in the simulator
+    $ ade apple swipe 120 700 120 250            Swipe in the simulator
+    $ ade apple scroll --x 200 --y 500 --dy -400 Scroll at a point
+    $ ade apple type "hello" --text              Type into the launched app
 
   A coordinate tap is a guess that the layout did not move. Prefer
   tap-element and fill-element; fall back to tap when no query matches.
@@ -4124,9 +4310,9 @@ function buildIosSimulatorHelp(args: string[]): string {
     return IOS_SIMULATOR_SUBCOMMAND_HELP[canonical];
   }
   if (rawSubcommand && !IOS_SIMULATOR_SUBCOMMAND_HELP[canonical]) {
-    return `${HELP_BY_COMMAND["ios-sim"]}\n  Unknown iOS simulator subcommand '${rawSubcommand}'. Run 'ade ios-sim actions --text' to list raw service actions.\n`;
+    return `${HELP_BY_COMMAND["apple"]}\n  Unknown Apple device subcommand '${rawSubcommand}'. Run 'ade apple actions --text' to list raw service actions.\n`;
   }
-  return HELP_BY_COMMAND["ios-sim"];
+  return HELP_BY_COMMAND["apple"];
 }
 
 function buildAppControlHelp(args: string[]): string {
@@ -8917,6 +9103,24 @@ function buildChatPlan(args: string[]): CliPlan {
         return record.ok === true ? 0 : 1;
       },
     };
+  // Start the interrupted task on another signed-in account. The original
+  // thread cannot move, so the host opens a new chat. Exit 1 when it refuses.
+  if (sub === "continue-on-account")
+    return {
+      kind: "execute",
+      label: "chat continue-on-account",
+      formatter: "chat-continue-on-account",
+      steps: [
+        actionStep("result", "chat", "continueUsageLimitOnAlternate", {
+          sessionId: requireValue(sessionId, "sessionId"),
+        }),
+      ],
+      exitCodeFromResult: (result) => {
+        const record = firstRecord(result, ["result"])
+          ?? (isRecord(result) ? result : {});
+        return record.ok === true ? 0 : 1;
+      },
+    };
   if (sub === "read" || sub === "messages" || sub === "transcript") {
     const targetSession = requireValue(sessionId, "sessionId");
     const limit = readIntOption(args, ["--limit"], 50);
@@ -10927,6 +11131,21 @@ function callerWorkspaceRoot(): string {
   return findProjectRoots(process.cwd()).workspaceRoot;
 }
 
+const IOS_SIM_ALIAS_DEPRECATION =
+  "ade ios-sim is now ade apple; the alias goes away next minor release";
+const IOS_SIM_DEPRECATED_PRIMARIES = new Set(["ios-sim", "ios", "simulator"]);
+let iosSimAliasDeprecationPrinted = false;
+
+function warnDeprecatedIosSimAlias(): void {
+  if (iosSimAliasDeprecationPrinted) return;
+  iosSimAliasDeprecationPrinted = true;
+  process.stderr.write(`${IOS_SIM_ALIAS_DEPRECATION}\n`);
+}
+
+function resetIosSimAliasDeprecationForTests(): void {
+  iosSimAliasDeprecationPrinted = false;
+}
+
 /**
  * Root/lane defaults every rooted `ios-sim` subcommand shares.
  *
@@ -10968,8 +11187,8 @@ function iosSimulatorRootArgs(
  * command). `IOS_SIMULATOR_OWNED_BY_OTHER_SESSION` is the case: from `launch`
  * or `shutdown` the escape hatch really is a forced teardown, but a refused
  * `claim` only wanted to re-attribute a session, and pointing that caller at
- * `shutdown --force` would tear down the owner's session, stop its idb
- * companions, and clear the launch lock to do a job `--ignore-ownership` does
+ * `shutdown --force` would tear down the owner's session, stop its helper
+ * capture, and clear the launch lock to do a job `--ignore-ownership` does
  * with none of that.
  */
 function iosSimulatorErrorHint(
@@ -10977,10 +11196,10 @@ function iosSimulatorErrorHint(
   subcommand: string | null = null,
 ): string | null {
   if (message.includes(IOS_SIMULATOR_TARGET_ROOT_MISMATCH_CODE)) {
-    return "This target belongs to a different checkout — re-run: ade ios-sim apps";
+    return "This target belongs to a different checkout — re-run: ade apple apps";
   }
   if (message.includes(IOS_SIMULATOR_LAUNCH_IN_PROGRESS_CODE)) {
-    return "A launch is already running — wait for it, or run: ade ios-sim shutdown --force";
+    return "A launch is already running — wait for it, or run: ade apple shutdown --force";
   }
   if (message.includes(IOS_SIMULATOR_NO_BUILDABLE_TARGET_CODE)) {
     return "No buildable app under that root. The message above names the root and any targets found — check --project-root/--lane, or pass --target-id/--bundle-id to run an installed app.";
@@ -10990,17 +11209,17 @@ function iosSimulatorErrorHint(
     // at `shutdown --force` sends a caller to tear down an app session it was
     // not asking about.
     if (subcommand === "open-device" || subcommand === "open-sim" || subcommand === "boot") {
-      return "Another chat owns this simulator — wait for it to finish, or take the device with: ade ios-sim open-device --force";
+      return "Another chat owns this simulator — wait for it to finish, or take the device with: ade apple open-device --force";
     }
     if (subcommand === "close-device" || subcommand === "close-sim") {
-      return "Another chat owns this simulator — wait for it to finish, or close it anyway with: ade ios-sim close-device --force";
+      return "Another chat owns this simulator — wait for it to finish, or close it anyway with: ade apple close-device --force";
     }
     if (subcommand === "uninstall") {
-      return "Another chat owns this simulator — name your chat with --chat-session, or remove the app anyway with: ade ios-sim uninstall --force";
+      return "Another chat owns this simulator — name your chat with --chat-session, or remove the app anyway with: ade apple uninstall --force";
     }
     return subcommand === "claim"
       ? "Another chat owns the simulator — wait for it to finish, or re-run this claim with --ignore-ownership to take it over without tearing the session down"
-      : "Another chat owns the simulator — wait for it to finish, or take it over with: ade ios-sim shutdown --force";
+      : "Another chat owns the simulator — wait for it to finish, or take it over with: ade apple shutdown --force";
   }
   if (message.includes(IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE)) {
     return "That lane has no worktree on this machine — pass --project-root with the checkout you want built.";
@@ -11029,7 +11248,12 @@ function iosSimulatorSubcommandFromArgv(argv: string[]): string | null {
     return null;
   }
   const primary = command[0]?.toLowerCase();
-  if (primary !== "ios-sim" && primary !== "ios" && primary !== "simulator") {
+  if (
+    primary !== "apple"
+    && primary !== "ios-sim"
+    && primary !== "ios"
+    && primary !== "simulator"
+  ) {
     return null;
   }
   const sub = peekFirstPositional(command.slice(1))?.toLowerCase() ?? "status";
@@ -11450,12 +11674,15 @@ function buildIosSimulatorPlan(
       ]),
     });
   }
+  if (sub === "live-start" || sub === "start-live") {
+    throw new CliUsageError(
+      "live-start is gone; use stream-start. There is only one live backend now.",
+    );
+  }
   if (
     sub === "stream-start" ||
     sub === "start-stream" ||
     sub === "stream" ||
-    sub === "live-start" ||
-    sub === "start-live" ||
     sub === "preview-start" ||
     sub === "start-preview" ||
     sub === "window-start" ||
@@ -11464,33 +11691,23 @@ function buildIosSimulatorPlan(
     sub === "start-mirror"
   ) {
     const backendFlag = readValue(args, ["--backend"]);
-    if (
-      backendFlag &&
-      backendFlag !== "auto" &&
-      backendFlag !== "simulator-window-capture" &&
-      backendFlag !== "idb-h264"
-    ) {
-      // A typo in a flag is a usage error, not a crash: CliUsageError exits 2
-      // with the message alone, where a bare Error prints a stack trace.
+    if (backendFlag) {
       throw new CliUsageError(
-        `ios-sim ${sub}: unknown --backend '${backendFlag}'. Valid values: auto, simulator-window-capture, idb-h264.`,
+        "stream-start --backend is gone; the helper encoder is the only live path. Pass --fps, --scale-factor, or --bitrate-kbps.",
       );
     }
-    const requestedBackend = backendFlag ?? "simulator-window-capture";
-    // Both tune the `idb-h264` encoder only. They are read for every backend so
-    // a non-numeric value reports "must be a number" instead of reaching the
-    // service as a string.
     const scaleFactor = readNumberOption(args, ["--scale-factor", "--scale"]);
     const compressionQuality = readNumberOption(args, [
       "--compression-quality",
       "--quality",
     ]);
+    const bitrateKbps = readNumberOption(args, ["--bitrate-kbps", "--bitrate"]);
     return iosAction("iOS simulator live view start", "startStream", {
       deviceUdid: readIosSimulatorDevice(args),
       fps: readNumberOption(args, ["--fps"], 60),
-      backend: requestedBackend,
       ...(scaleFactor == null ? {} : { scaleFactor }),
       ...(compressionQuality == null ? {} : { compressionQuality }),
+      ...(bitrateKbps == null ? {} : { bitrateKbps }),
     });
   }
   if (
@@ -11514,6 +11731,29 @@ function buildIosSimulatorPlan(
       deviceUdid: readIosSimulatorDevice(args),
       x: readCoordinate("--x", 0),
       y: readCoordinate("--y", 1),
+    });
+  }
+  if (sub === "scroll") {
+    // The helper's own scroll gesture, which re-anchors past the bezel, so a
+    // scroll longer than the screen keeps going. `drag` is one bounded stroke.
+    const direction = readIosSimulatorEnum(args, {
+      sub,
+      names: ["--direction"],
+      label: "direction",
+      noun: "direction",
+      valid: ["up", "down", "left", "right"] as const,
+    });
+    const anchorX = readNumberOption(args, ["--anchor-x"]);
+    const anchorY = readNumberOption(args, ["--anchor-y"]);
+    // Read once: `readNumberOption` splices the flag out of `args`, so a second
+    // read returns undefined and silently dropped the caller's distance.
+    const amount = readNumberOption(args, ["--amount", "--distance"]);
+    return iosAction("Apple device scroll", "scroll", {
+      deviceUdid: readIosSimulatorDevice(args),
+      direction,
+      ...(amount != null ? { amount } : {}),
+      ...(anchorX != null ? { anchorX } : {}),
+      ...(anchorY != null ? { anchorY } : {}),
     });
   }
   if (sub === "drag" || sub === "swipe") {
@@ -11545,9 +11785,37 @@ function buildIosSimulatorPlan(
       ),
     });
   }
+  /*
+   * `stop` is the opposite of `start`, and until round 5 it was not.
+   *
+   * `start` (`deviceStart`) boots the lane's simulator and opens the live
+   * view. `stop` was an alias of `shutdown`, which ends the CHAT'S SESSION and
+   * leaves the simulator running — so `ade apple start` followed by
+   * `ade apple stop` left a booted device behind and nothing said so. It now
+   * powers the device off, which is what every caller of a verb named `stop`
+   * meant; `shutdown` and its other aliases still end the session alone.
+   */
+  if (
+    sub === "stop" ||
+    sub === "device-stop" ||
+    sub === "power-off" ||
+    sub === "poweroff"
+  ) {
+    // Read once: the reader splices `--udid`/`--device` out of `args`, so a
+    // second call in the value position returned null and dropped the target.
+    const stopUdid = readIosSimulatorDevice(args);
+    return iosAction("Apple device stop", "deviceStop", {
+      chatSessionId: claimArgs.chatSessionId,
+      ...(stopUdid ? { udid: stopUdid } : {}),
+      ...(readFlag(args, ["--force", "-f"]) ? { force: true } : {}),
+      ...(readFlag(args, ["--ignore-ownership", "--ignore-owner"])
+        ? { ignoreOwnership: true }
+        : {}),
+      ...rootArgs(),
+    });
+  }
   if (
     sub === "shutdown" ||
-    sub === "stop" ||
     sub === "teardown" ||
     sub === "end" ||
     sub === "end-session"
@@ -11838,6 +12106,14 @@ function buildIosSimulatorPlan(
       ...(batteryState ? { batteryState } : {}),
     });
   }
+  if (sub === "foreground" || sub === "foreground-app" || sub === "front") {
+    // `getAppState` answers about a bundle id the caller already knows.
+    // This one answers "what is on screen", from the helper's accessibility
+    // bridge — the question an agent that has just arrived actually has.
+    return iosAction("Apple device foreground app", "getForegroundApp", {
+      deviceUdid: readIosSimulatorDevice(args),
+    });
+  }
   if (sub === "app-state") {
     const device = readIosSimulatorDevice(args);
     const bundleId = requireValue(
@@ -11927,6 +12203,156 @@ function buildIosSimulatorPlan(
       ...(caption ? { caption } : {}),
       ...(noElements ? { includeElements: false } : {}),
       ...(logRowLimit == null ? {} : { logRowLimit }),
+    });
+  }
+  if (sub === "device-create") {
+    const from =
+      readValue(args, ["--from", "--simulator"]) ?? readIosSimulatorDevice(args);
+    const name = readValue(args, ["--name"]);
+    return iosAction("Apple device create", "deviceCreate", {
+      ...(laneId ? { laneId } : {}),
+      ...(from ? { from } : {}),
+      ...(name ? { name } : {}),
+    });
+  }
+  if (sub === "device-attach") {
+    const simulator = requireValue(
+      readValue(args, ["--simulator", "--device", "--udid"]) ??
+        firstPositional(args),
+      "--simulator",
+    );
+    return iosAction("Apple device attach", "deviceAttach", {
+      simulator,
+      ...(laneId ? { laneId } : {}),
+    });
+  }
+  if (sub === "start") {
+    // `--create` first: `firstPositional` would otherwise eat its value.
+    const sourceUdid = readValue(args, ["--create", "--from"]);
+    const udid = readValue(args, ["--udid", "--simulator", "--device"]) ?? firstPositional(args);
+    if (udid && sourceUdid) {
+      throw new CliUsageError("apple start takes --udid (attach) or --create <sourceUdid> (clone), not both.");
+    }
+    return iosAction("Apple device start", "deviceStart", {
+      ...(laneId ? { laneId } : {}),
+      ...(udid ? { udid } : {}),
+      ...(sourceUdid ? { create: { sourceUdid } } : {}),
+    });
+  }
+  if (sub === "device-list") {
+    const installed = readFlag(args, ["--installed"]);
+    return iosAction("Apple device list", "deviceList", {
+      ...(installed ? { installed: true } : {}),
+      ...(laneId ? { laneId } : {}),
+    });
+  }
+  if (sub === "device-delete") {
+    const force = readFlag(args, ["--force", "-f"]);
+    return iosAction("Apple device delete", "deviceDelete", {
+      ...(laneId ? { laneId } : {}),
+      ...(force ? { force: true } : {}),
+    });
+  }
+  if (sub === "record-start") {
+    const overlaysRaw = readValue(args, ["--overlays"]);
+    let overlays: boolean | undefined;
+    if (overlaysRaw != null) {
+      if (overlaysRaw === "on" || overlaysRaw === "true" || overlaysRaw === "1") {
+        overlays = true;
+      } else if (
+        overlaysRaw === "off" ||
+        overlaysRaw === "false" ||
+        overlaysRaw === "0"
+      ) {
+        overlays = false;
+      } else {
+        throw new CliUsageError(
+          "record-start --overlays must be on or off.",
+        );
+      }
+    }
+    const label = readValue(args, ["--label"]);
+    return iosAction("Apple device record start", "recordStart", {
+      ...(laneId ? { laneId } : {}),
+      ...(claimArgs.chatSessionId
+        ? { chatSessionId: claimArgs.chatSessionId }
+        : {}),
+      ...(overlays == null ? {} : { overlays }),
+      ...(label ? { label } : {}),
+    });
+  }
+  if (sub === "record-stop") {
+    const keep = readFlag(args, ["--keep"]);
+    const discard = readFlag(args, ["--discard"]);
+    if (keep && discard) {
+      throw new CliUsageError("Use --keep or --discard, not both.");
+    }
+    return iosAction("Apple device record stop", "recordStop", {
+      ...(laneId ? { laneId } : {}),
+      ...(claimArgs.chatSessionId
+        ? { chatSessionId: claimArgs.chatSessionId }
+        : {}),
+      ...(keep ? { keep: true } : {}),
+      ...(discard ? { discard: true } : {}),
+    });
+  }
+  if (sub === "record-list") {
+    return iosAction("Apple device record list", "recordList", {
+      ...(laneId ? { laneId } : {}),
+    });
+  }
+  if (sub === "record-delete") {
+    const id = requireValue(
+      readValue(args, ["--id"]) ?? firstPositional(args),
+      "--id",
+    );
+    const force = readFlag(args, ["--force", "-f"]);
+    return iosAction("Apple device record delete", "recordDelete", {
+      id,
+      ...(laneId ? { laneId } : {}),
+      ...(claimArgs.chatSessionId
+        ? { chatSessionId: claimArgs.chatSessionId }
+        : {}),
+      ...(force ? { force: true } : {}),
+    });
+  }
+  if (sub === "frame") {
+    return iosAction("Apple device frame", "frame", {
+      ...(laneId ? { laneId } : {}),
+      ...readIosSimulatorOutPath(args),
+    });
+  }
+  if (sub === "button" || sub === "press-button" || sub === "press") {
+    const name = readIosSimulatorEnum(args, {
+      sub,
+      names: ["--name", "--button"],
+      label: "button name",
+      noun: "button",
+      valid: ["home", "lock", "volume-up", "volume-down", "siri", "shake"] as const,
+    });
+    return iosAction("Apple device button", "pressButton", {
+      name,
+      deviceUdid: readIosSimulatorDevice(args),
+      ...(laneId ? { laneId } : {}),
+    });
+  }
+  if (sub === "rotate" || sub === "orientation") {
+    const orientation = readIosSimulatorEnum(args, {
+      sub,
+      names: ["--orientation"],
+      label: "orientation",
+      noun: "orientation",
+      valid: [
+        "portrait",
+        "portrait-upside-down",
+        "landscape-left",
+        "landscape-right",
+      ] as const,
+    });
+    return iosAction("Apple device rotate", "rotate", {
+      orientation,
+      deviceUdid: readIosSimulatorDevice(args),
+      ...(laneId ? { laneId } : {}),
     });
   }
   return iosAction(`ios-sim ${sub}`, sub);
@@ -15822,6 +16248,12 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "--file",
   "--for",
   "--fps",
+  "--bitrate",
+  "--bitrate-kbps",
+  "--overlays",
+  "--simulator",
+  "--scale-factor",
+  "--compression-quality",
   "--from",
   "--from-file",
   "--group",
@@ -16040,8 +16472,10 @@ function buildCliPlan(
     "computer-use": "proof",
     artifact: "proof",
     artifacts: "proof",
-    ios: "ios-sim",
-    simulator: "ios-sim",
+    apple: "apple",
+    "ios-sim": "apple",
+    ios: "apple",
+    simulator: "apple",
     app: "app-control",
     apps: "app-control",
     electron: "app-control",
@@ -16087,7 +16521,7 @@ function buildCliPlan(
   }
   if (hasHelpFlag(args, helpCarriers)) {
     const helpKey = helpKeyWithSubcommand(primaryHelpKey, args);
-    if (primaryHelpKey === "ios-sim") {
+    if (primaryHelpKey === "apple") {
       return { kind: "help", text: buildIosSimulatorHelp(args) };
     }
     if (primaryHelpKey === "cursor") {
@@ -16110,7 +16544,7 @@ function buildCliPlan(
     const subtopic = topics[1];
     const helpKey = subtopic ? helpKeyWithSubcommand(key, [subtopic]) : key;
     const nestedHelpArgs = subtopic ? topics.slice(1) : [];
-    if (key === "ios-sim") {
+    if (key === "apple") {
       return { kind: "help", text: buildIosSimulatorHelp(nestedHelpArgs) };
     }
     if (key === "cursor") {
@@ -16372,7 +16806,12 @@ function buildCliPlan(
   ) {
     return buildProofPlan(args);
   }
-  if (primary === "ios-sim" || primary === "ios" || primary === "simulator")
+  if (
+    primary === "apple"
+    || primary === "ios-sim"
+    || primary === "ios"
+    || primary === "simulator"
+  )
     return buildIosSimulatorPlan(args, options.projectRoot ?? null);
   if (
     primary === "app-control" ||
@@ -22823,6 +23262,7 @@ type UsageAccountTextLine = {
   provider: string;
   id: string | null;
   email: string | null;
+  label: string | null;
   plan: string | null;
   url: string | null;
   machines: string;
@@ -22865,6 +23305,7 @@ export function formatUsageSnapshot(value: unknown): string {
       provider: asString(account.provider) ?? "",
       id: asString(account.id),
       email: asString(account.email),
+      label: asString(account.label),
       plan: asString(account.plan),
       url: asString(account.url),
       machines: machines
@@ -22893,12 +23334,12 @@ export function formatUsageSnapshot(value: unknown): string {
       continue;
     }
     if (!email && !plan && !url) continue;
-    accountLines.push({ provider, id: null, email, plan, url, machines: "" });
+    accountLines.push({ provider, id: null, email, label: null, plan, url, machines: "" });
   }
 
   const accountLabelById = new Map<string, string>();
   for (const line of accountLines) {
-    if (line.id) accountLabelById.set(line.id, line.email ?? line.id);
+    if (line.id) accountLabelById.set(line.id, line.email ?? line.label ?? line.id);
   }
   // One account per provider is the normal case and naming it on every row is
   // noise; more than one and the row has to say which. Same rule the TUI's
@@ -22938,6 +23379,27 @@ export function formatUsageSnapshot(value: unknown): string {
         : "",
     ];
   });
+  const representedAccountIds = new Set(
+    windows
+      .map((window) => asString(window.accountId)?.trim())
+      .filter((id): id is string => Boolean(id)),
+  );
+  for (const line of accountLines) {
+    if (!line.id || representedAccountIds.has(line.id)) continue;
+    const providerWindows = windows.filter((window) => asString(window.provider) === line.provider);
+    const providerAccountCount = accountLines.filter((candidate) => candidate.provider === line.provider).length;
+    if (providerAccountCount === 1 && providerWindows.some((window) => !asString(window.accountId)?.trim())) {
+      continue;
+    }
+    windowRows.push([
+      usageProviderTextLabel(line.provider),
+      "no windows yet",
+      "",
+      "",
+      "",
+      line.email ?? line.label ?? line.id,
+    ]);
+  }
 
   const unhealthy = Object.entries(providerStatus)
     .filter(([, status]) => isRecord(status) && status.state !== "ok")
@@ -22976,7 +23438,7 @@ export function formatUsageSnapshot(value: unknown): string {
         ["provider", "account", "plan", "machines", "limits"],
         accountLines.map((line) => [
           usageProviderTextLabel(line.provider),
-          line.email ?? "",
+          line.email ?? line.label ?? "",
           line.plan ?? "",
           line.machines,
           line.url ?? "",
@@ -24130,6 +24592,23 @@ export function formatChatStatus(value: unknown, nowMs = Date.now()): string {
   });
 }
 
+export function formatChatContinueOnAccount(value: unknown): string {
+  const record = firstRecord(value, ["result"])
+    ?? (isRecord(value) ? value : null);
+  if (record?.ok === true) {
+    const sessionId = asString(record.sessionId);
+    return sessionId
+      ? `Continuing on the other account · chat ${sessionId}`
+      : "Continuing on the other account.";
+  }
+  const error = isRecord(record?.error) ? asString(record.error.message) : null;
+  const reason = asString(record?.message)
+    ?? asString(record?.reason)
+    ?? error
+    ?? "No other account can take this chat.";
+  return reason.replace(/\s+/g, " ").trim();
+}
+
 export function formatChatResumeNow(value: unknown): string {
   const record = firstRecord(value, ["result"])
     ?? (isRecord(value) ? value : null);
@@ -24654,6 +25133,34 @@ function formatIosSimStream(value: unknown): string {
     ["error code", isRecord(status.error) ? status.error.code : null],
     ["started", status.startedAt],
     ["error", status.lastError],
+  ]);
+}
+
+/**
+ * `rotate`, which reports what the SCREEN did rather than what was sent.
+ *
+ * `applied` used to be the only field and it meant "a mach message left the
+ * host". It now means "the framebuffer was seen on the requested axis", so the
+ * verification and the reason are the two lines a reader actually needs, and
+ * the pixel sizes are printed because they are the evidence.
+ */
+function formatIosSimRotate(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const frame = (entry: unknown): string | null => {
+    if (!isRecord(entry)) return null;
+    const width = entry.width;
+    const height = entry.height;
+    if (typeof width !== "number" || typeof height !== "number") return null;
+    return `${String(width)}x${String(height)}`;
+  };
+  return renderKeyValues("ADE Apple device rotate", [
+    ["applied", result.applied],
+    ["orientation", result.orientation],
+    ["verification", result.verification],
+    ["reason", result.reason],
+    ["screen before", frame(result.frameBefore)],
+    ["screen after", frame(result.frameAfter)],
+    ["detail", result.detail],
   ]);
 }
 
@@ -26043,6 +26550,8 @@ function formatTextOutput(
       return formatChatStatus(value);
     case "chat-resume-now":
       return formatChatResumeNow(value);
+    case "chat-continue-on-account":
+      return formatChatContinueOnAccount(value);
     case "chat-read":
       return formatChatRead(value);
     case "session-lifecycle":
@@ -26089,6 +26598,8 @@ function formatTextOutput(
       return formatIosSimLaunch(value);
     case "ios-sim-stream":
       return formatIosSimStream(value);
+    case "ios-sim-rotate":
+      return formatIosSimRotate(value);
     case "ios-sim-snapshot":
       return formatIosSimSnapshot(value);
     case "ios-sim-selection":
@@ -26207,8 +26718,10 @@ function inferFormatter(
   if (label === "chat models" || label === "personal chat models") return "chat-models";
   if (label === "chat status") return "chat-status";
   if (label === "chat resume-now") return "chat-resume-now";
+  if (label === "chat continue-on-account") return "chat-continue-on-account";
   if (label === "test runs") return "tests-runs";
   if (label === "proof list") return "proof-list";
+  if (label === "apple device rotate") return "ios-sim-rotate";
   if (label === "ios simulator status") return "ios-sim-status";
   if (label === "ios simulator devices") return "ios-sim-devices";
   if (label === "ios simulator launchable apps") return "ios-sim-apps";
@@ -27536,6 +28049,10 @@ async function runCli(
   argv: string[],
 ): Promise<{ output: string; exitCode: number }> {
   const parsed = parseCliArgs(argv);
+  const primary = parsed.command[0]?.toLowerCase();
+  if (primary && IOS_SIM_DEPRECATED_PRIMARIES.has(primary)) {
+    warnDeprecatedIosSimAlias();
+  }
   const plan = buildCliPlan(parsed.command, parsed.options);
   if (plan.kind === "help")
     return {
@@ -28004,6 +28521,8 @@ export {
   inferFormatter,
   iosSimulatorErrorHint,
   iosSimulatorSubcommandFromArgv,
+  IOS_SIM_ALIAS_DEPRECATION,
+  resetIosSimAliasDeprecationForTests,
   applySyncWebPairingFlags,
   isEphemeralRuntimeSocketPath,
   isFailedServiceManagerResult,

@@ -253,6 +253,14 @@ function buildLocalAgentOptions(init: CursorSdkWorkerInit): AgentOptionsWithAdeM
     ...(local.disallowedTools !== undefined ? { disallowedTools: local.disallowedTools as AgentOptions["disallowedTools"] } : {}),
     local: {
       cwd: init.laneRoot,
+      // Cursor merges `dirs` with `cwd` (cwd first, duplicates dropped) and
+      // scans `<dir>/.agents/skills/<name>/SKILL.md` in each one. This is how
+      // ADE's bundled skills reach a Cursor chat through Cursor's own
+      // discovery instead of a prompt pointer. The main process only sets it
+      // when the session is allowed to have them and the shim materialized:
+      // `settingSources` without `project` (orchestration leads) turns
+      // `includeProjectExtensibility` off and these roots would load nothing.
+      ...(init.agentSkillDirs?.length ? { dirs: [...init.agentSkillDirs] } : {}),
       settingSources: cursorSdkSettingSources(init.policy),
       // ADE never requests Cursor-native sandbox, including agent inherit of
       // ~/.cursor/sandbox.json. ADE hook denials remain the permission guard.
@@ -395,6 +403,9 @@ async function handleHookSocketLine(init: CursorSdkWorkerInit, socket: net.Socke
     laneRoot: init.laneRoot,
     projectRoot: init.projectRoot,
     userHomeDir: init.userHomeDir,
+    // The shim root sits outside the lane, so without this the model would be
+    // shown ADE's skill paths and then denied when it read one.
+    ...(init.agentSkillDirs?.length ? { agentSkillDirs: init.agentSkillDirs } : {}),
   });
   if (localDecision === "allow") {
     socket.end(`${JSON.stringify(allowCursorHook())}\n`);

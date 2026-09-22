@@ -702,6 +702,10 @@ struct ADEUsageAccountView: Identifiable, Equatable {
   var machines: [MobileUsageAccountMachine]
   var url: String?
   var initials: String
+  /// Set when this row is one local provider account, not a login pooled by email.
+  var instanceId: String? = nil
+  /// The account's user-facing name, e.g. "Default" or "Work".
+  var label: String? = nil
 }
 
 /// `first.last@host` → FL, `dev@host` → DE, machine label → its first two.
@@ -722,12 +726,18 @@ func adeUsagePoolAccounts(_ accounts: [MobileUsageAccount]?) -> [ADEUsageAccount
   var order: [String] = []
   var pooled: [String: ADEUsageAccountView] = [:]
   for account in accounts ?? [] {
-    let key = account.email.map { "\(account.provider):\($0.lowercased())" } ?? account.id
+    let instanceId = account.instanceId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let emailKey = account.email?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+    // A local provider account is its own login even when it shares an email.
+    let key = !instanceId.isEmpty
+      ? account.id
+      : (!emailKey.isEmpty ? "\(account.provider):\(emailKey)" : account.id)
     if var existing = pooled[key] {
       for machine in account.machines where !existing.machines.contains(where: { $0.label == machine.label }) {
         existing.machines.append(machine)
       }
       if existing.plan == nil { existing.plan = account.plan }
+      if existing.label == nil { existing.label = account.label }
       pooled[key] = existing
       continue
     }
@@ -739,7 +749,9 @@ func adeUsagePoolAccounts(_ accounts: [MobileUsageAccount]?) -> [ADEUsageAccount
       plan: account.plan,
       machines: account.machines,
       url: account.url,
-      initials: adeUsageAccountInitials(email: account.email, fallback: account.machines.first?.label ?? "")
+      initials: adeUsageAccountInitials(email: account.email, fallback: account.label ?? account.machines.first?.label ?? ""),
+      instanceId: account.instanceId,
+      label: account.label
     )
   }
   let freshness: (MobileUsageAccountMachine) -> Double = { machine in
@@ -831,7 +843,10 @@ func adeUsageLimitCards(
     let left = segments.reduce(0) { $0 + $1.percentLeft } / count
     // A window already at full headroom restores nothing, so "+0% in 5m" is
     // noise: skip to the first reset that moves the pooled number.
-    let restoring = segments.filter { $0.restoresPercentOfPool >= 0.5 }
+    let restoring = segments.filter { segment in
+      segment.restoresPercentOfPool >= 0.5
+        && (adeUsageParseISODate(segment.window.resetsAt) != nil || segment.resetsInMs > 0)
+    }
     var forecast: (percent: Double, resetsInMs: Double)?
     if let soonest = restoring.map(\.resetsInMs).min() {
       let together = restoring.filter { abs($0.resetsInMs - soonest) < 60_000 }
@@ -848,6 +863,40 @@ func adeUsageLimitCards(
     )
   }
   .sorted { rank($0.label) < rank($1.label) }
+}
+
+/// Signed-in accounts this provider has not put on any window yet.
+///
+/// A lone account that owns unattributed windows is already on those cards, so
+/// it is not listed again. Everyone else with no `accountId` match is still a
+/// login, and the limits UI says so instead of dropping the row.
+func adeUsageAccountsMissingWindows(
+  provider: String,
+  windows: [MobileUsageQuotaWindow],
+  accounts: [ADEUsageAccountView]
+) -> [ADEUsageAccountView] {
+  let providerAccounts = accounts.filter { $0.provider == provider }
+  let providerWindows = windows.filter { $0.provider == provider }
+  if providerAccounts.count == 1,
+     providerWindows.contains(where: { window in
+       let id = window.accountId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+       return id.isEmpty || id == providerAccounts[0].id
+     }) {
+    return []
+  }
+  let represented = Set(providerWindows.compactMap { window -> String? in
+    let id = window.accountId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return id.isEmpty ? nil : id
+  })
+  return providerAccounts.filter { !represented.contains($0.id) }
+}
+
+func adeUsageAccountTitle(_ account: ADEUsageAccountView) -> String {
+  let label = account.label?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  if !label.isEmpty { return label }
+  let email = account.email?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  if !email.isEmpty { return email }
+  return "This account"
 }
 
 /// The colour a usage bar is drawn in: the PROVIDER's brand, always.

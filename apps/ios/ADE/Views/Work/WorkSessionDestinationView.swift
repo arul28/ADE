@@ -1919,6 +1919,15 @@ struct WorkSessionDestinationView: View {
     } else {
       resumeUsageLimitNowAction = nil
     }
+    let continueUsageLimitOnAlternateAction: (@MainActor () async -> Void)?
+    if syncService.supportsChatRemoteAction(
+      "chat.continueUsageLimitOnAlternate",
+      sessionId: session.id
+    ) {
+      continueUsageLimitOnAlternateAction = { await continueUsageLimitOnAlternate() }
+    } else {
+      continueUsageLimitOnAlternateAction = nil
+    }
     let canWriteSpawnKind = syncService.supportsSpawnKindUpdate
     let restoreCancelledQueueAction: (@MainActor (String) async -> Void)?
     if syncService.supportsChatRemoteAction(
@@ -1985,6 +1994,7 @@ struct WorkSessionDestinationView: View {
       onRestoreCancelledQueue: restoreCancelledQueueAction,
       onSetUsageLimitAutoContinue: setUsageLimitAutoContinue,
       onResumeUsageLimitNow: resumeUsageLimitNowAction,
+      onContinueUsageLimitOnAlternate: continueUsageLimitOnAlternateAction,
       onStopSubagentTask: stopTaskAction,
       onApproveRequest: approveRequest,
       onRespondToQuestion: respondToQuestion,

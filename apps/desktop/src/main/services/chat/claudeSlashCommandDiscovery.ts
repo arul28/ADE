@@ -2,7 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentSkillRootCandidates } from "../../../shared/agentSkillRoots";
-import { pathKey } from "../shared/pathCompare";
+import { isPathInside, pathKey } from "../shared/pathCompare";
 import {
   ancestorConfigRoots,
   discoverMarkdownCommandFiles,
@@ -126,6 +126,132 @@ function discoverClaudeSlashCommandsUncached(cwd: string): DiscoveredClaudeSlash
     if (a.source !== b.source) return a.source === "command" ? -1 : 1;
     return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
   });
+}
+
+/**
+ * The command and skill roots Claude Code finds without ADE's help.
+ *
+ * Verified against the shipped `claude` binary: its discovery loop walks up
+ * from the project directory joining `(dir, ".claude", "skills")`, and also
+ * reads `~/.claude/skills`. It does NOT read `.agents/skills`, `.codex/skills`,
+ * `.cursor/skills`, or `.ade/skills` — those are the roots ADE must inject.
+ *
+ * Skills that ADE registers as a local plugin are native too, under a
+ * `plugin:skill` name, so listing them again presents one skill under two
+ * names and invites the model to believe there are two.
+ */
+export function claudeNativeSlashCommandRoots(
+  cwd: string,
+  pluginRoots: readonly string[] = [],
+  home: string = os.homedir(),
+): { commandRoots: string[]; skillRoots: string[] } {
+  // Deliberately only the session directory and the home directory, not ADE's
+  // full ancestor walk. Claude Code stops walking at ITS project root, and
+  // reproducing that boundary here would mean reproducing its git logic. Under-
+  // filtering leaves a duplicate; over-filtering hides a skill the model then
+  // never learns exists, so the conservative direction is the correct one.
+  const configRoots = [path.resolve(cwd, ".claude"), path.resolve(home, ".claude")];
+  return {
+    commandRoots: configRoots.map((root) => path.join(root, "commands")),
+    skillRoots: [
+      ...configRoots.map((root) => path.join(root, "skills")),
+      ...pluginRoots.map((root) => path.resolve(root)),
+    ],
+  };
+}
+
+export type ClaudeSlashCommandInjectionPlan = {
+  commands: DiscoveredClaudeSlashCommand[];
+  skills: DiscoveredClaudeSlashCommand[];
+  nativeCount: number;
+};
+
+/**
+ * Drops everything Claude Code already lists for itself.
+ *
+ * Before this filter, 52 of the 83 entries ADE injected on a developer machine
+ * were verbatim repeats of Claude's own listing, including all 12 bundled ADE
+ * skills, which appeared once as `ade:<name>` from the plugin and again by
+ * path. The listing is the largest single block ADE adds to the system prompt,
+ * so the repeat was also the largest avoidable cost in it.
+ */
+export function planClaudeSlashCommandInjection(
+  commands: readonly DiscoveredClaudeSlashCommand[],
+  options: { cwd: string; pluginRoots?: readonly string[]; home?: string },
+): ClaudeSlashCommandInjectionPlan {
+  const native = claudeNativeSlashCommandRoots(
+    options.cwd,
+    options.pluginRoots ?? [],
+    options.home ?? os.homedir(),
+  );
+  const isNative = (entry: DiscoveredClaudeSlashCommand): boolean => {
+    const roots = entry.source === "command" ? native.commandRoots : native.skillRoots;
+    return roots.some((root) => isPathInside(entry.filePath, root));
+  };
+
+  const plan: ClaudeSlashCommandInjectionPlan = { commands: [], skills: [], nativeCount: 0 };
+  for (const entry of commands) {
+    if (isNative(entry)) {
+      plan.nativeCount += 1;
+      continue;
+    }
+    (entry.source === "command" ? plan.commands : plan.skills).push(entry);
+  }
+  return plan;
+}
+
+/**
+ * Per-entry description cap for the injected listing.
+ *
+ * Matches the Claude Agent SDK's own `skillListingMaxDescChars` default, so an
+ * ADE-injected entry cannot be more verbose than the same entry in Claude's
+ * native listing.
+ */
+export const CLAUDE_SKILL_LISTING_MAX_DESC_CHARS = 1536;
+
+/**
+ * Total byte budget for the injected listing.
+ *
+ * ADE's listing had no budget at all, so one user's skill collection decided
+ * how much of every session's system prompt it consumed. Both Claude Code (1%
+ * of the context window) and Codex (2%, hard-capped) enforce one and degrade in
+ * stages. ADE's listing is supplementary — Claude still has its own — so the
+ * budget is deliberately modest, and what does not fit is reported rather than
+ * dropped in silence.
+ */
+export const CLAUDE_SKILL_LISTING_BUDGET_BYTES = 16 * 1024;
+
+export function formatClaudeSlashCommandEntry(entry: DiscoveredClaudeSlashCommand): string {
+  const description = entry.description.trim();
+  const clipped = description.length > CLAUDE_SKILL_LISTING_MAX_DESC_CHARS
+    ? `${description.slice(0, CLAUDE_SKILL_LISTING_MAX_DESC_CHARS - 1).trimEnd()}…`
+    : description;
+  const head = clipped.length ? `- ${entry.name} — ${clipped}` : `- ${entry.name}`;
+  return `${head}\n  file: ${entry.filePath}`;
+}
+
+/**
+ * Renders entries newest-budget-first, returning what did not fit so the caller
+ * can say so in the prompt instead of hiding it.
+ */
+export function renderClaudeSlashCommandEntries(
+  entries: readonly DiscoveredClaudeSlashCommand[],
+  budgetBytes: number = CLAUDE_SKILL_LISTING_BUDGET_BYTES,
+): { lines: string[]; omitted: number } {
+  const lines: string[] = [];
+  let used = 0;
+  let omitted = 0;
+  for (const entry of entries) {
+    const rendered = formatClaudeSlashCommandEntry(entry);
+    const cost = Buffer.byteLength(rendered, "utf8") + 1;
+    if (lines.length && used + cost > budgetBytes) {
+      omitted += 1;
+      continue;
+    }
+    lines.push(rendered);
+    used += cost;
+  }
+  return { lines, omitted };
 }
 
 export function resolveClaudeSlashCommandInvocation(

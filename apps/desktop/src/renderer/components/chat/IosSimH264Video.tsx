@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { APPLE_STREAM_NOT_RUNNING_CODE } from "../../../shared/types/iosSimulator";
 import { cn } from "../ui/cn";
 import {
   IosSimVideoProtocolError,
@@ -20,6 +21,10 @@ import {
  */
 
 export type IosSimH264Status = "connecting" | "playing" | "error" | "stopped";
+
+/** Consecutive decoder failures inside the window that mean the stream is gone. */
+export const DECODE_FAILURE_LIMIT = 3;
+export const DECODE_FAILURE_WINDOW_MS = 5_000;
 
 type VideoDecoderLike = {
   configure: (config: { codec: string; optimizeForLatency?: boolean }) => void;
@@ -52,21 +57,164 @@ export function isWebCodecsAvailable(): boolean {
 export type IosSimH264VideoProps = {
   /** The URL `startStream` handed back, already localised for this machine. */
   url: string;
+  /**
+   * The stream token `startStream` handed back ALONGSIDE the url.
+   *
+   * The helper's frame server authorises on `Authorization: bearer <token>`
+   * and strips the query string before it matches the path, so a token carried
+   * in the URL is not merely redundant — it is never read, and the request is
+   * answered 403. The reader therefore has to send the header, which is also
+   * why this is a `fetch` with a streaming body rather than an `<img>` or a
+   * `<video src>`: neither can set one.
+   */
+  token?: string | null;
   className?: string;
   /** Bumping this reconnects. Use it after a port forward is rebuilt. */
   reconnectNonce?: number;
   onStatus?: (status: IosSimH264Status, error: string | null) => void;
   onDimensions?: (size: { width: number; height: number }) => void;
   onCanvas?: (canvas: HTMLCanvasElement | null) => void;
+  /**
+   * Fired once per frame actually drawn to the canvas.
+   *
+   * The frame-time watchdog and the 3D presenter's texture upload both key off
+   * "a frame landed", and neither can learn it from `onStatus`: `playing` is
+   * reported once and then deduplicated for the life of the stream.
+   */
+  onFrame?: () => void;
 };
+
+/**
+ * True for the brain-relayed stream.
+ *
+ * On this Mac the reader dials the helper's loopback body directly. Off it —
+ * the hosted web client, or a desktop bound to another Mac — the only route is
+ * the brain's forwarder at `/apple/stream/<ticket>`, which is a WebSocket
+ * because a browser cannot set an Authorization header on a `fetch` to a
+ * machine it reaches through a relay, and because the viewer has to be able to
+ * say `{t:"hidden"}` back up the same channel.
+ */
+export function isAppleStreamSocketUrl(url: string): boolean {
+  return url.startsWith("ws://") || url.startsWith("wss://");
+}
+
+async function* readAppleStreamBody(
+  url: string,
+  token: string | null,
+  signal: AbortSignal,
+): AsyncGenerator<Uint8Array> {
+  const response = await fetch(url, {
+    signal,
+    cache: "no-store",
+    // Lower-case header name on purpose: the helper lower-cases both sides
+    // before its constant-time compare, and `bearer` is the scheme it expects
+    // verbatim.
+    headers: token ? { authorization: `bearer ${token}` } : undefined,
+  });
+  if (!response.ok) {
+    throw new Error(response.status === 403
+      ? "The simulator video stream refused this token."
+      : `The simulator video stream answered ${response.status}.`);
+  }
+  const body = response.body;
+  if (!body) throw new Error("The simulator video stream sent no body.");
+  const reader = body.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return;
+    if (value) yield value;
+  }
+}
+
+/**
+ * The relayed stream, as an async chunk source.
+ *
+ * The brain sends one binary frame per record, so no re-framing happens here —
+ * the same byte-stream parser reads both transports. `{t:"visible"}` on open
+ * and `{t:"hidden"}` on teardown are what let the brain stop encoding for a
+ * viewer that went away, which is the whole point of the control direction.
+ */
+async function* readAppleStreamSocket(
+  url: string,
+  signal: AbortSignal,
+): AsyncGenerator<Uint8Array> {
+  const socket = new WebSocket(url);
+  socket.binaryType = "arraybuffer";
+  const queue: Uint8Array[] = [];
+  let notify: (() => void) | null = null;
+  let ended: Error | null | undefined;
+  const wake = (): void => {
+    const resume = notify;
+    notify = null;
+    resume?.();
+  };
+  socket.onmessage = (event: MessageEvent) => {
+    if (typeof event.data === "string") return;
+    queue.push(new Uint8Array(event.data as ArrayBuffer));
+    wake();
+  };
+  socket.onopen = () => {
+    try {
+      socket.send(JSON.stringify({ t: "visible" }));
+    } catch {
+      // The close handler below reports the failure.
+    }
+  };
+  socket.onerror = () => {
+    if (ended === undefined) ended = new Error("The simulator video stream could not be reached.");
+    wake();
+  };
+  socket.onclose = (event: CloseEvent) => {
+    if (ended === undefined) {
+      ended = event.code === 4401
+        ? new Error("The simulator video stream refused this ticket.")
+        : null;
+    }
+    wake();
+  };
+  const onAbort = (): void => {
+    if (ended === undefined) ended = null;
+    wake();
+  };
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    for (;;) {
+      while (queue.length > 0) {
+        yield queue.shift()!;
+      }
+      if (ended !== undefined) {
+        if (ended) throw ended;
+        return;
+      }
+      if (signal.aborted) return;
+      await new Promise<void>((resolve) => {
+        notify = resolve;
+      });
+    }
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+    try {
+      if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ t: "hidden" }));
+    } catch {
+      // Closing anyway.
+    }
+    try {
+      socket.close();
+    } catch {
+      // already closing
+    }
+  }
+}
 
 export function IosSimH264Video({
   url,
+  token = null,
   className,
   reconnectNonce = 0,
   onStatus,
   onDimensions,
   onCanvas,
+  onFrame,
 }: IosSimH264VideoProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const contextRef = useRef<CanvasRenderingContext2D | null>(null);
@@ -81,11 +229,27 @@ export function IosSimH264Video({
    * object on every call — a full drawer re-render per frame.
    */
   const reportedRef = useRef<{ status: IosSimH264Status; error: string | null } | null>(null);
+  /**
+   * When the decoder last failed, and how many times in a row.
+   *
+   * One rejected access unit is not a dead stream. It happens when the
+   * decoder is fed a delta frame whose reference it never saw — after a
+   * reattach, or when a second reader joins between an IDR and the frames
+   * that depend on it — and the fix is to build a new decoder and ask the
+   * helper for a fresh keyframe, which it emits whenever a reader attaches.
+   * Round 2 reported the first failure as an error instead, which closed the
+   * decoder, froze the picture on its last frame and put "Something went
+   * wrong with the simulator · Decoding error." over a device that was fine.
+   */
+  const decodeFailuresRef = useRef<number[]>([]);
+  const [recoveryNonce, setRecoveryNonce] = useState(0);
 
   const statusRef = useRef(onStatus);
   statusRef.current = onStatus;
   const dimensionsRef = useRef(onDimensions);
   dimensionsRef.current = onDimensions;
+  const frameRef = useRef(onFrame);
+  frameRef.current = onFrame;
 
   const report = useCallback((next: IosSimH264Status, nextError: string | null) => {
     const previous = reportedRef.current;
@@ -118,6 +282,9 @@ export function IosSimH264Video({
     const abort = new AbortController();
     let decoder: VideoDecoderLike | null = null;
     let cancelled = false;
+    // One redial per failed decoder. The error callback can fire several
+    // times for one bad access unit.
+    let recovering = false;
     let timestampUs = 0;
     let lastWidth = 0;
     let lastHeight = 0;
@@ -144,6 +311,7 @@ export function IosSimH264Video({
       }
       try {
         context.drawImage(frame as unknown as CanvasImageSource, 0, 0);
+        frameRef.current?.();
       } finally {
         // A VideoFrame holds a GPU buffer. Not closing it stalls the decoder
         // within a few frames.
@@ -153,21 +321,14 @@ export function IosSimH264Video({
 
     const run = async () => {
       try {
-        const response = await fetch(url, { signal: abort.signal, cache: "no-store" });
-        if (!response.ok) {
-          throw new Error(response.status === 403
-            ? "The simulator video stream refused this token."
-            : `The simulator video stream answered ${response.status}.`);
-        }
-        const body = response.body;
-        if (!body) throw new Error("The simulator video stream sent no body.");
-        const reader = body.getReader();
+        const chunks = isAppleStreamSocketUrl(url)
+          ? readAppleStreamSocket(url, abort.signal)
+          : readAppleStreamBody(url, token, abort.signal);
         const parser = createIosSimVideoRecordParser();
         let configured = false;
 
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done || cancelled) break;
+        for await (const value of chunks) {
+          if (cancelled) break;
           if (!value) continue;
           for (const record of parser.push(value)) {
             if (record.kind === "config") {
@@ -175,8 +336,23 @@ export function IosSimH264Video({
               decoder = new VideoDecoderCtor({
                 output: drawFrame,
                 error: (decodeError) => {
-                  if (cancelled) return;
-                  report("error", decodeError.message);
+                  if (cancelled || recovering) return;
+                  const now = Date.now();
+                  const recent = decodeFailuresRef.current
+                    .filter((at) => now - at < DECODE_FAILURE_WINDOW_MS);
+                  recent.push(now);
+                  decodeFailuresRef.current = recent;
+                  if (recent.length >= DECODE_FAILURE_LIMIT) {
+                    // Not one bad frame: something is actually wrong. Say the
+                    // sentence the viewer maps to "Video stopped." with a
+                    // Reconnect, never the generic "something went wrong".
+                    report("error", `${APPLE_STREAM_NOT_RUNNING_CODE}: ${decodeError.message}`);
+                    return;
+                  }
+                  // Keep the last good frame on the canvas and redial, which
+                  // makes the helper emit a keyframe for the new reader.
+                  recovering = true;
+                  setRecoveryNonce((nonce) => nonce + 1);
                 },
               });
               // No `description`: the stream is Annex-B, and a decoder
@@ -196,6 +372,9 @@ export function IosSimH264Video({
               data: record.bytes,
             }));
             report("playing", null);
+            // A stream that draws again has recovered; a later single failure
+            // must not inherit this one's count.
+            if (decodeFailuresRef.current.length > 0) decodeFailuresRef.current = [];
           }
         }
         if (!cancelled) report("stopped", null);
@@ -222,7 +401,7 @@ export function IosSimH264Video({
       }
       decoder = null;
     };
-  }, [url, reconnectNonce, report]);
+  }, [url, token, reconnectNonce, recoveryNonce, report]);
 
   return (
     <canvas

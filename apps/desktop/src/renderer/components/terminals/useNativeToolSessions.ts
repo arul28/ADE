@@ -25,7 +25,10 @@ import { workToolAvailability, type WorkToolContext } from "./workTools";
  * this hook directly.
  *
  * Each feed is one `getStatus` plus one `onEvent` subscription. Nothing here
- * polls, and a tool the capability gate says cannot run here is never asked.
+ * polls. App Control and the browser skip a tool the capability gate says
+ * cannot run here. The iOS feed is the exception: `getStatus().supported` IS
+ * the capability gate, so that read always runs and the session is ignored
+ * when the runtime is not a Mac.
  */
 
 /**
@@ -76,7 +79,7 @@ export function asBuiltInBrowserStatus(value: unknown): BuiltInBrowserStatus | n
 export function useNativeToolSessions(args: {
   /** The surface is on screen. Every feed is torn down when it is not. */
   enabled: boolean;
-  /** Capability gate — an unavailable tool is never read from. */
+  /** Capability flags. Apple's `supported` is learned from `getStatus`, not this. */
   context: WorkToolContext;
   /** Project root the browser view is collection-scoped to. */
   browserViewRoot: string | null;
@@ -90,6 +93,8 @@ export function useNativeToolSessions(args: {
   onBrowserEvent?: (event: BuiltInBrowserEventPayload, scope: NativeToolFeedScope) => void;
   onAppControlEvent?: (event: AppControlEventPayload, scope: NativeToolFeedScope) => void;
   onIosEvent?: (event: IosSimulatorEventPayload, scope: NativeToolFeedScope) => void;
+  /** The bound runtime's `getStatus().supported`. Apple's picker gate. */
+  onIosSupported?: (supported: boolean) => void;
 }): {
   browserStatus: BuiltInBrowserStatus | null;
   iosSession: IosSimulatorSession | null;
@@ -108,6 +113,7 @@ export function useNativeToolSessions(args: {
     onBrowserEvent,
     onAppControlEvent,
     onIosEvent,
+    onIosSupported,
   } = args;
 
   const [browserStatus, setBrowserStatus] = useState<BuiltInBrowserStatus | null>(null);
@@ -132,6 +138,8 @@ export function useNativeToolSessions(args: {
   appControlEventRef.current = onAppControlEvent;
   const iosEventRef = useRef(onIosEvent);
   iosEventRef.current = onIosEvent;
+  const iosSupportedRef = useRef(onIosSupported);
+  iosSupportedRef.current = onIosSupported;
 
   useEffect(() => {
     if (!enabled || offline || !canBrowser) {
@@ -165,7 +173,7 @@ export function useNativeToolSessions(args: {
   }, [browserViewRoot, canBrowser, enabled, offline, runtimePinKey]);
 
   useEffect(() => {
-    if (!enabled || offline || !canIos) {
+    if (!enabled || offline) {
       setIosSession(null);
       return undefined;
     }
@@ -175,7 +183,11 @@ export function useNativeToolSessions(args: {
     const scope: NativeToolFeedScope = { isActive: () => !cancelled };
     void iosSimulator.getStatus(runtimePinRef.current)
       .then((status) => {
-        if (!cancelled) setIosSession(status?.activeSession ?? null);
+        if (cancelled) return;
+        setIosSession(status?.activeSession ?? null);
+        if (typeof status?.supported === "boolean") {
+          iosSupportedRef.current?.(status.supported);
+        }
       })
       .catch(() => {
         if (!cancelled) setIosSession(null);
@@ -192,7 +204,7 @@ export function useNativeToolSessions(args: {
       cancelled = true;
       unsubscribe();
     };
-  }, [canIos, enabled, offline, runtimePinKey]);
+  }, [enabled, offline, runtimePinKey]);
 
   useEffect(() => {
     if (!enabled || offline || !canAppControl) {

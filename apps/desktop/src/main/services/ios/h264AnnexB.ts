@@ -1,8 +1,8 @@
 /**
  * Annex-B H.264 stream tools for the iOS simulator live view.
  *
- * ADE streams a simulator by running `idb video-stream --format h264` on the
- * Mac that owns the simulator. That command writes Annex-B H.264: a flat byte
+ * ADE streams a simulator by running the vendored Swift helper on the Mac that
+ * owns the simulator. The helper writes Annex-B H.264: a flat byte
  * stream where each NAL unit starts with `00 00 01` or `00 00 00 01`. The
  * browser decodes it with `VideoDecoder` in Annex-B mode, so the renderer needs
  * whole access units, not arbitrary pipe chunks. A chunk boundary falls in the

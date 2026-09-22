@@ -84,7 +84,7 @@ const SECTIONS: Array<{
     label: "Memory",
     icon: Notebook,
     title: "Memory",
-    description: "The CTO keeps these notes between turns and after you switch models.",
+    description: "The brief, the facts, and the threads the CTO keeps for this project.",
   },
   {
     id: "prompt",

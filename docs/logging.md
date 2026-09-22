@@ -446,6 +446,22 @@ before budgets. The event-level `ade_feature_used` 140-per-day /
 remains 200. Approval responses, pending input reads, and provider runtime
 polling do not emit this fact.
 
+The two Claude session-capability facts are siblings on the same
+`ade_feature_used` event with `feature: "chat"`, `outcome: "failed"`,
+`provider: "claude"`, and `source: "runtime"`: `action: "hooks_ignored"` when
+another client already configured the joined session, and
+`action: "plugins_ignored"` when the CLI reports it did not apply every plugin
+the query carried — the plugins are ADE's agent-skill roots, so the session
+silently lacks them. Both are captured at the initialization-result owner
+boundary, once per session per hour via a `chat_<action>:<session>`
+deduplication key that the service salts and hashes locally. Neither carries
+hook or plugin names, paths, counts, or any command or turn detail. Worst case
+is two accepted events per session per hour, inside the existing
+`ade_feature_used` limits and the shared 200-event ceiling; no ceiling was
+raised. The local `agent_chat.claude_hooks_ignored` and
+`agent_chat.claude_plugins_ignored` warn lines are the operational half. The
+dashboard spec is deliberately untouched: no card asks this question yet.
+
 These facts intentionally remain out of `scripts/posthog/dashboard-spec.mjs`:
 there is no concrete dashboard question or card for them yet. The existing
 surface/feature volume views continue to include the shared event without a

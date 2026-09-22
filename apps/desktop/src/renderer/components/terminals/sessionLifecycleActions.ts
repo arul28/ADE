@@ -190,14 +190,24 @@ export function automationRulesReadable(): boolean {
   return typeof window.ade?.automations?.list === "function";
 }
 
-export async function listAutomationRules(): Promise<AutomationRuleSummary[]> {
+/**
+ * Reads the automations rules. `null` means the read itself failed (or the
+ * surface is absent) and is deliberately distinct from `[]` ("authoritatively
+ * no rules"): the auto-handoff editor deletes conditions the user turned off by
+ * their deterministic ids, so a failed read treated as "no rules" would delete
+ * rules it never saw. `pin` targets the chat's own machine when it is not this
+ * tab's bound project.
+ */
+export async function listAutomationRules(
+  pin?: OpenProjectBinding | null,
+): Promise<AutomationRuleSummary[] | null> {
   const list = window.ade?.automations?.list;
-  if (!list) return [];
+  if (!list) return null;
   try {
-    return await list();
+    return await list(pin);
   } catch (error) {
     console.error("[sessionLifecycle] automations.list failed", error);
-    return [];
+    return null;
   }
 }
 
@@ -214,6 +224,7 @@ export async function saveAutoHandoffRules(args: {
   drafts: readonly AutomationRuleDraft[];
   staleRuleIds: readonly string[];
   sessionId: string;
+  pin?: OpenProjectBinding | null;
 }): Promise<boolean> {
   const automations = window.ade?.automations;
   if (!automations?.saveDraft) {
@@ -222,12 +233,12 @@ export async function saveAutoHandoffRules(args: {
   }
   try {
     for (const draft of args.drafts) {
-      await automations.saveDraft({ draft });
+      await automations.saveDraft({ draft }, args.pin);
     }
     // A delete that failed for anything other than "already gone" leaves the
     // rule the user just turned off still ARMED, so its result decides the
     // outcome instead of being discarded under a "saved" toast.
-    const { failure } = await deleteAutomationRules(args.staleRuleIds);
+    const { failure } = await deleteAutomationRules(args.staleRuleIds, args.pin);
     if (failure) {
       reportFailure(
         "Auto handoff",
@@ -262,13 +273,14 @@ export async function saveAutoHandoffRules(args: {
  */
 export async function deleteAutomationRules(
   ruleIds: readonly string[],
+  pin?: OpenProjectBinding | null,
 ): Promise<{ attempted: boolean; failure: unknown }> {
   const deleteRule = window.ade?.automations?.deleteRule;
   if (!deleteRule || ruleIds.length === 0) return { attempted: false, failure: null };
   let failure: unknown = null;
   for (const id of ruleIds) {
     try {
-      await deleteRule({ id });
+      await deleteRule({ id }, pin);
     } catch (error) {
       // `deleteRule` throws for an id that is not in the local config. A rule
       // this menu armed can retire itself (one-shot, or `maxRuns` reached), so
@@ -291,8 +303,11 @@ export async function deleteAutomationRules(
  * the one behaviour it wanted, and one call site's needs were spelled as a
  * negation of the other's.
  */
-export async function removeAutomationRules(ruleIds: readonly string[]): Promise<boolean> {
-  const { attempted, failure } = await deleteAutomationRules(ruleIds);
+export async function removeAutomationRules(
+  ruleIds: readonly string[],
+  pin?: OpenProjectBinding | null,
+): Promise<boolean> {
+  const { attempted, failure } = await deleteAutomationRules(ruleIds, pin);
   if (failure) {
     reportFailure("Remove auto handoff", ruleIds[0] ?? "", failure);
     return false;

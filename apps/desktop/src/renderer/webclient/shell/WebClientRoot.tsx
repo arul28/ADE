@@ -79,7 +79,6 @@ const APP_ROUTE_ROOTS = [
   "/lanes",
   "/files",
   "/prs",
-  "/review",
   "/history",
   "/automations",
   "/cto",

@@ -30,6 +30,7 @@ import { KEYBINDING_DEFINITIONS } from "../../../shared/keybindings";
 import { getStoredZoomLevel, zoomFactorForDisplay, zoomFactorForLevel } from "../../lib/zoom";
 import { applyHostedWebZoom } from "../../lib/webZoom";
 import { chatSessionFromRemoteSummary } from "./infra/chatSessionShape";
+import { appleEndpointReader, createAppleDeviceNamespace } from "./appleDevice";
 import { createGithubNamespace, githubDisconnectedStatus } from "./githubStub";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
@@ -62,7 +63,6 @@ export type MiscNamespaces = {
   appControl: AdeNamespace<"appControl">;
   builtInBrowser: AdeNamespace<"builtInBrowser">;
   usage: Partial<Window["ade"]["usage"]>;
-  review: Partial<Window["ade"]["review"]>;
   automations: AdeNamespace<"automations">;
 };
 
@@ -771,7 +771,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     tests: createTestStubs() as AdeNamespace<"tests">,
     feedback: createFeedbackStubs() as AdeNamespace<"feedback">,
     computerUse: createNativeUnavailableNamespace() as AdeNamespace<"computerUse">,
-    iosSimulator: createNativeUnavailableNamespace() as AdeNamespace<"iosSimulator">,
+    iosSimulator: createAppleDeviceNamespace(call, appleEndpointReader(client)),
     appControl: createNativeUnavailableNamespace() as AdeNamespace<"appControl">,
     builtInBrowser: {
       ...createNativeUnavailableNamespace(),
@@ -792,7 +792,6 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
       // caller that needs it feature-detects instead of getting a fake.
     } as unknown as AdeNamespace<"builtInBrowser">,
     usage: createUsageStubs(call),
-    review: createReviewStubs(),
     automations: createAutomationStubs() as AdeNamespace<"automations">,
   };
 }
@@ -1044,13 +1043,6 @@ function createUsageStubs(call: MiscCall): Partial<Window["ade"]["usage"]> {
     // its own descriptor. onUpdate/noteDemand have no streaming descriptor at
     // all; all three stay with the fallback proxy rather than faking liveness.
   } as Partial<Window["ade"]["usage"]>;
-}
-
-function createReviewStubs(): Partial<Window["ade"]["review"]> {
-  return {
-    listRuns: async () => [],
-    onEvent: () => () => {},
-  } as Partial<Window["ade"]["review"]>;
 }
 
 function createAutomationStubs(): Record<string, unknown> {

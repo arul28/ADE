@@ -45,6 +45,9 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // phone does not go limited against a newer host, and an older host simply
   // omits the action.
   "chat.resumeUsageLimitNow",
+  // Usage-limit "Continue on <account>". Optional for the same reason as
+  // Resume now: older phones keep their connection and simply omit the button.
+  "chat.continueUsageLimitOnAlternate",
   // GitHub Stacked PRs are in public preview. Mobile clients can expose these
   // actions as they adopt stack management without limiting older builds.
   "prs.listGithubStacks",
@@ -92,6 +95,19 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // aggregator at all.
   "workTools.getLaneState",
   "workTools.readObservationPreview",
+  // Apple device environment. Optional in both directions: an older brain
+  // simply omits them and the phone's Simulator card says the Mac needs an
+  // update, rather than a version mismatch flipping the phone to "limited".
+  "apple.status",
+  "apple.streamTicket",
+  "apple.input",
+  "apple.invoke",
+  "apple.deviceList",
+  "apple.deviceCreate",
+  "apple.deviceAttach",
+  "apple.recordList",
+  "apple.recordStart",
+  "apple.recordStop",
 ] as const satisfies readonly SyncRemoteCommandAction[];
 
 export const MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS = [

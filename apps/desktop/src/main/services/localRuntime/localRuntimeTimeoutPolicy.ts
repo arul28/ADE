@@ -37,6 +37,15 @@ export const IOS_SIMULATOR_LAUNCH_TIMEOUT_MS = 17 * 60_000;
 export const IOS_SIMULATOR_PREVIEW_TIMEOUT_MS = 10 * 60_000;
 
 /**
+ * Device lifecycle: create clones a template (`simctl clone`, 120s), delete
+ * shuts the device down (60s) then deletes it (120s), start waits on
+ * `simctl bootstatus` (90s), stop shuts down (60s). Without a budget of its own
+ * each ran on the 30s default, so the renderer rejected while the device was
+ * still provisioning/booting.
+ */
+export const IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS = 4 * 60_000;
+
+/**
  * The innermost budgets on the remote path: the JSON-RPC transport carrying
  * these actions to a paired/SSH runtime, whose daemon runs the very same
  * xcodebuild and Xcode preview toolchain a local one does. Without entries
@@ -140,6 +149,11 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   ["ios_simulator.renderPreview", IOS_SIMULATOR_PREVIEW_TIMEOUT_MS],
   ["ios_simulator.renderCurrentPreview", IOS_SIMULATOR_PREVIEW_TIMEOUT_MS],
   ["ios_simulator.ensurePreviewWorkspace", IOS_SIMULATOR_PREVIEW_TIMEOUT_MS],
+  // See IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS.
+  ["ios_simulator.deviceStart", IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS],
+  ["ios_simulator.deviceStop", IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS],
+  ["ios_simulator.deviceCreate", IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS],
+  ["ios_simulator.deviceDelete", IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS],
 ]);
 
 export function longRunningLocalRuntimeActionTimeoutMs(

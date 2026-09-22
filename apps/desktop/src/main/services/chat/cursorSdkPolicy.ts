@@ -550,6 +550,33 @@ function isAllowedProjectAttachmentRead(args: {
   return isWithinPath(attachmentsReal, candidateReal);
 }
 
+/**
+ * Reads of the ADE-owned Cursor skill shim.
+ *
+ * ADE hands Cursor the shim as an extra workspace root so Cursor's own skill
+ * discovery finds `<root>/.agents/skills/<name>/SKILL.md`. Cursor loads those
+ * bodies itself, but the skill listing puts the paths in front of the model,
+ * and a model that reaches for one would otherwise hit the lane path guard and
+ * see a denial for a file ADE deliberately gave it. Read-only, and only for the
+ * exact roots this session was launched with.
+ */
+function isAllowedAgentSkillRead(args: {
+  candidatePath: string;
+  agentSkillDirs?: readonly string[] | null;
+  risk: CursorSdkHookRequest["risk"];
+}): boolean {
+  if (args.risk !== "read") return false;
+  const roots = args.agentSkillDirs ?? [];
+  if (!roots.length) return false;
+  const candidateReal = realPathWithNearestExistingAncestor(args.candidatePath);
+  for (const root of roots) {
+    const trimmed = typeof root === "string" ? root.trim() : "";
+    if (!trimmed) continue;
+    if (isWithinPath(realPathWithNearestExistingAncestor(trimmed), candidateReal)) return true;
+  }
+  return false;
+}
+
 function pathGuardReason(args: {
   laneRoot: string;
   cwd: string;
@@ -557,6 +584,7 @@ function pathGuardReason(args: {
   risk: CursorSdkHookRequest["risk"];
   userHomeDir?: string | null;
   projectRoot?: string | null;
+  agentSkillDirs?: readonly string[] | null;
 }): string | null {
   const laneRoot = path.resolve(args.laneRoot);
   const laneRootReal = realPathWithNearestExistingAncestor(laneRoot);
@@ -597,6 +625,10 @@ function pathGuardReason(args: {
         candidatePath: resolved,
         projectRoot: args.projectRoot,
         risk: args.risk,
+      }) || isAllowedAgentSkillRead({
+        candidatePath: resolved,
+        agentSkillDirs: args.agentSkillDirs,
+        risk: args.risk,
       })) {
         continue;
       }
@@ -623,6 +655,8 @@ export function evaluateCursorSdkHook(args: {
   projectRoot?: string | null;
   sessionAllowedTools?: Set<string>;
   userHomeDir?: string | null;
+  /** ADE-owned Cursor workspace roots carrying the bundled skills, if any. */
+  agentSkillDirs?: readonly string[] | null;
 }): "allow" | "deny" | "ask" {
   const guardReason = args.policy.hardGuards
     ? pathGuardReason({
@@ -632,6 +666,7 @@ export function evaluateCursorSdkHook(args: {
       risk: args.request.risk,
       userHomeDir: args.userHomeDir,
       projectRoot: args.projectRoot,
+      agentSkillDirs: args.agentSkillDirs,
     })
     : null;
   if (guardReason) {

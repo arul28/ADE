@@ -6343,6 +6343,7 @@ describe("CTO-gated Linear sync commands", () => {
         "chat.dismissSubagentTakeoverPrompt",
         "chat.regenerateSessionMetadata",
         "chat.resumeUsageLimitNow",
+        "chat.continueUsageLimitOnAlternate",
         "prs.listGithubStacks",
         "prs.syncGithubStacks",
         "prs.createGithubStack",
@@ -6375,9 +6376,21 @@ describe("CTO-gated Linear sync commands", () => {
         "chat.deletePromptStash",
         "workTools.getLaneState",
         "workTools.readObservationPreview",
+        "apple.status",
+        "apple.streamTicket",
+        "apple.input",
+        "apple.invoke",
+        "apple.deviceList",
+        "apple.deviceCreate",
+        "apple.deviceAttach",
+        "apple.recordList",
+        "apple.recordStart",
+        "apple.recordStop",
       ]);
       expect(MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS).not.toEqual(
-        expect.arrayContaining([...MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS]),
+        expect.arrayContaining(
+          MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS.filter((action) => !action.startsWith("apple.")),
+        ),
       );
       // The two direct credential-store writers stay advertised — a phone still
       // feature-detects them — but are host-local, so the gate rejects them
@@ -6393,6 +6406,7 @@ describe("CTO-gated Linear sync commands", () => {
         // Resuming spends a provider turn, so it is a host mutation a
         // read-only viewer never gets to make.
         "chat.resumeUsageLimitNow",
+        "chat.continueUsageLimitOnAlternate",
         // Cursor Cloud writes are controller-only: phone/browser controllers
         // may invoke them, but a desktop viewer must not.
         "ai.createCursorCloudRun",
@@ -6418,6 +6432,11 @@ describe("CTO-gated Linear sync commands", () => {
       ]);
 
       for (const action of MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS) {
+        // `apple.*` is registered only by a runtime that built a simulator
+        // service — which this fixture does not, and a Windows brain never
+        // will. Its absence is exactly what feature detection is for, so
+        // asserting it here would be asserting the fixture.
+        if (action.startsWith("apple.")) continue;
         const viewerBlocked = viewerBlockedActions.has(action);
         const controllerAllowed = controllerAllowedActions.has(action);
         // Policy shape varies (lifecycle mutations are additionally queueable);

@@ -54,6 +54,16 @@ When the weekly duration is unknown, `w` is `0.5`. The default instance wins a
 tie, and a snapshot with no usable quota data falls back to the default without
 guessing. An explicit account selection always wins over balancing.
 
+A chat that is already running stays on the account it started on: the provider
+thread lives in that account's config directory and cannot be handed to another
+login. When that chat hits a usage limit and another signed-in account still
+has immediate room, smart balance starts a new chat on that account and sends
+the interrupted task there. The original chat does not also auto-resume. With
+smart balance off, the same move is only an offer on the usage-limit pill
+(Continue on that account). A chat created by that handoff does not hop
+again on its own, and a subagent never does. An account with no readable
+windows, or with a window already at 100%, is not a candidate.
+
 Auto-start windows are off by default. When enabled, the usage service arms one
 unref'd timer per Claude or Codex instance that has a future five-hour reset.
 Five seconds after that reset, ADE sends one small provider request through the
@@ -342,14 +352,23 @@ the page).
 ## Claude credential hygiene (refresh storms)
 
 `~/.claude/.credentials.json` can be a stale leftover while the live login sits
-in the macOS Keychain (the Claude CLI's default store). Because background
-polls must not touch the Keychain, three rules prevent a dead file token from
-turning into an OAuth storm that gets the whole client rate-limited (429) by
-Anthropic:
+in the macOS Keychain (the Claude CLI's default store). The default account's
+background polls must not touch the Keychain, so these rules prevent a dead
+file token from turning into an OAuth storm that gets the whole client
+rate-limited (429) by Anthropic. A scoped account (`CLAUDE_CONFIG_DIR`) often
+has no credentials file at all, so its background polls may open that
+account's namespaced Keychain item; the successful read is cached for the
+process and later polls reuse it:
 
+- Claude Code namespaces the Keychain item per config directory: the machine's
+  default login is the bare `Claude Code-credentials`, and a
+  `CLAUDE_CONFIG_DIR` login (`~/.ade/provider-homes/claude/<id>`) appends the
+  first 8 hex characters of the SHA-256 of that directory. ADE reads the item
+  matching the account it is asking about, so a scoped login is never mistaken
+  for signed out — and never handed the default account's token.
 - Any successful Keychain read (explicit refresh, provider-status checks)
-  populates the shared in-memory credential cache, so background polls reuse
-  the live login instead of the file.
+  populates the in-memory credential cache *under that account's own key*, so
+  background polls reuse the live login instead of the file.
 - A refresh token the token endpoint *definitively* rejects — a non-transient
   4xx such as `invalid_grant`, or a 200 with no `access_token` — is
   negative-cached for 24 h and never re-tried per poll. Transient conditions
@@ -412,18 +431,45 @@ Only provider-authoritative quota or billing data may create a live limit. Local
 token estimates remain Activity/history data and must not be presented as a
 personal subscription quota.
 
-## Additional provider ranking
+## Live limits beyond Claude and Codex
 
-| Rank | Provider | What is actually available | ADE position |
+The top-bar usage control and the Limits popover list every live-quota provider
+that is signed in on this machine. Claude and Codex stay on their existing
+connection signal. Cursor, Copilot, Grok, and OpenCode join in that order as
+soon as a local credential exists, and a provider with no credential is absent
+— it is not an error row and it does not take a mark. Each top-bar mark is the
+provider logo inside a thin ring of that provider's colour, drawn tight
+around the mark. The pale arc is usage: it starts at 12 o'clock and grows
+clockwise. What is left stays the saturated brand colour. The pale tint is
+opaque and much lighter than the brand. The ring is the week when the
+provider reports one, otherwise the month. The control's accessible name still says `wk`
+or `mo`, the percent left, and a five-hour window when that provider reports
+one. The popover rows keep their text meters. iOS and the TUI have no top-bar
+ring; they keep the text meters. Bars use the provider colour from
+`providerColors.ts` (Cursor slate, Copilot green, Grok gray, OpenCode purple).
+
+The poller checks for a credential before any network call. The four extra
+providers run in the same parallel batch as Claude and Codex, each HTTP call
+bounded to 4 seconds. A missing credential returns immediately and clears any
+previous windows for that provider. A failed refresh of a provider that was
+signed in keeps the last unexpired windows and marks them stale, the same way
+Claude and Codex already do. These providers are one login per machine: there
+is no second account and no "continue on another account".
+
+| Provider | Credential ADE reads | Quota request | What the bar shows |
 |---|---|---|---|
-| 1 | GitHub Copilot | GitHub's supported billing APIs expose personal AI-credit/premium-request usage for self-billed accounts with `Plan: read`; organization-managed plans require organization administration access. | Best official next candidate, but label it billing usage rather than live remaining quota and gate it on the correct GitHub permission/account ownership. |
-| 2 | Gemini | Official Gemini documentation exposes project rate-limit dimensions and directs users to AI Studio for active limits. CodexBar additionally uses Gemini CLI OAuth and its quota RPC, but that is not a documented personal subscription quota contract. | Keep existing local history. Prototype only behind an experimental strategy until Google documents a stable usage/remaining endpoint and auth scope. |
-| 3 | Cursor | Cursor's supported Admin API provides team member usage/spend; it is not a general personal-plan API. | Offer only for explicitly configured team admins; do not silently reuse personal credentials or call token estimates quota. |
-| 4 | Factory Droid, OpenCode, local/open providers | ADE can scan local histories, but no supported personal remaining-quota API was verified for the normal user credentials ADE already holds. | Activity/history only. Reassess when a provider publishes a stable authenticated quota API. |
+| Cursor | `cursorAuth/accessToken` in the local Cursor `state.vscdb` (macOS `~/Library/Application Support/Cursor/User/globalStorage`, Linux `$XDG_CONFIG_HOME/Cursor/...` or `~/.config/Cursor/...`, Windows `%APPDATA%\Cursor\...`). A token whose JWT expiry is inside 60 seconds is skipped. ADE does not refresh it. | `GET https://cursor.com/api/usage-summary`. The `WorkosCursorSessionToken` cookie is `userId::accessToken`, with the user id taken from the JWT `sub` after the last `\|`. A bare access token is rejected as signed out. No browser-cookie import, and not the team Admin API. | Plan percent for the billing cycle, labeled monthly. |
+| Copilot | `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN`, else `oauth_token` in `github-copilot/hosts.json`. If those are empty and a Copilot config or `gh` hosts file exists, `gh auth token` runs at most once every 15 minutes (immediately on a user refresh). | `GET https://api.github.com/copilot_internal/user`. Premium interactions remaining becomes used percent. | Monthly premium quota. Copilot does not publish a reset, so the row omits the countdown. |
+| Grok | Non-expired bearer in `~/.grok/auth.json` (`GROK_HOME` overrides the directory), else `GROK_OAUTH_TOKEN`. Management keys (`xai-…`) and cookie-shaped values are ignored. | `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits`. No grok.com cookie import. | `creditUsagePercent` for the current period, labeled weekly or monthly from the period length. |
+| OpenCode | `OPENCODE_API_KEY`, else an OpenCode or Zen key in the local OpenCode `auth.json`. Other providers' keys in that file are not sent. | `GET https://opencode.ai/zen/go/v1/usage`. | Rolling 5-hour, weekly, and monthly percents as the API reports them. A value of 1 is 1%, not 100%. |
 
-Primary provider references: [GitHub billing usage](https://docs.github.com/en/rest/billing/usage),
-[Gemini rate limits](https://ai.google.dev/gemini-api/docs/rate-limits), and
-[Cursor Admin API](https://docs.cursor.com/en/account/teams/admin-api).
+Gemini, Droid, Pi, Qwen, and Kimi stay on local history. Their logs are not
+remaining-quota meters, and ADE does not add a limits card for them.
+
+Primary references: [CodexBar Cursor](https://github.com/steipete/CodexBar/blob/main/docs/cursor.md),
+[CodexBar Copilot](https://github.com/steipete/CodexBar/blob/main/docs/copilot.md),
+[CodexBar Grok](https://github.com/steipete/CodexBar/blob/main/docs/grok.md), and
+[CodexBar OpenCode Go](https://github.com/steipete/CodexBar/blob/main/docs/opencodego.md).
 
 ## Desktop, CLI, remote, and mobile parity
 
@@ -463,7 +509,11 @@ Primary provider references: [GitHub billing usage](https://docs.github.com/en/r
   optional: an unknown account shows no line, and a host that predates them
   shows no external link.
 - Live limits reads as headroom, not consumption, and **the account is the
-  row**. Each row names itself — provider mark, provider, `email · plan` — and
+  row**. Every signed-in Claude or Codex account is a row, including one that
+  has not reported a window yet: that row names the account and says `No usage
+  yet` instead of omitting it. Two local logins stay two rows even when they
+  share an email, because the row is keyed by the provider account id. Each row
+  names itself — provider mark, provider, `email · plan` — and
   carries that account's windows side by side underneath as meters: a short
   label (`5h` / `wk` / `mo`), a bar filled to the HEADROOM with the spent
   remainder hatched, that same headroom in words ("82% left"), and the reset
@@ -472,10 +522,16 @@ Primary provider references: [GitHub billing usage](https://docs.github.com/en/r
   clicking a meter on desktop — tapping a row on iOS — opens that window's
   details: plan, the machines reporting it, headroom, absolute reset time,
   pace, the model split, what the reset restores to the pool, and the link out.
+  The desktop details panel is portalled above the usage popover and stays open
+  while the pointer crosses onto it, so the link can be clicked. The popover
+  lists each provider as a logo, a hairline, and the accounts under it, with no
+  rounded box around the provider.
   The arithmetic is `usageLimitModel.ts` on desktop (`buildAccountRows`
   transposes `buildLimitCards`, so one set of numbers feeds both shapes) and the
   `adeUsageLimitCards` family in `ADEUsageDesign.swift` on iOS; both are pure
-  and clock-injected, and both are asserted against the same numbers. The row
+  and clock-injected, and both are asserted against the same numbers. iOS, the
+  TUI `/usage` pane, and `ade usage snapshot` name an account that has no
+  window yet as `No usage yet` (the snapshot text says `no windows yet`). The row
   itself is `UsageAccountRow.tsx`, rendered by `UsageLimitsBand` in the header
   popup. It replaced a per-window card stack that cost roughly 360px per
   provider and hid the email; the popover ran about 720px tall for two

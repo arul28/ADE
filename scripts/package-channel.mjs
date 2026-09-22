@@ -425,6 +425,11 @@ function buildChannel(repoRoot, channel, options) {
   }
 
   ensureHostRuntimeResources(repoRoot, options, env);
+  // The native helpers (attention notch, capture helper, sim helper) are
+  // gitignored build outputs. `dist:mac` builds them; a channel package must
+  // too, or the app ships without the sim helper and every Apple device action
+  // fails with APPLE_HELPER_UNAVAILABLE on a Mac that can run it.
+  run("npm", ["--prefix", "apps/desktop", "run", "build:mac-native"], { cwd: repoRoot, env, dryRun: options.dryRun });
   run("npm", ["--prefix", "apps/desktop", "run", "build"], { cwd: repoRoot, env, dryRun: options.dryRun });
   run("npx", [
     "electron-builder",

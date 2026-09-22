@@ -113,9 +113,6 @@ struct WorkRootSessionPresentationTaskKey: Equatable {
 struct WorkRootScreen: View {
   @Environment(\.accessibilityReduceMotion) var reduceMotion
   @EnvironmentObject var syncService: SyncService
-  /// Machine presence for the offline banner. Injected on the root content in
-  /// `ContentView`, the same place the bell above this list reads it from.
-  @EnvironmentObject private var activityDrawer: ActivityDrawerModel
   /// App-level dictation singleton. Re-injected into pushed composer
   /// destinations below since `navigationDestination` builds outside the view
   /// tree and does not inherit environment objects.
@@ -477,17 +474,6 @@ struct WorkRootScreen: View {
     scheduleSessionPresentationRebuild()
   }
 
-  /// Machines that own work in this project and are no longer reachable. The
-  /// connected host is online by definition, so anything here is a second Mac
-  /// whose lanes reached this list through the account feed.
-  var offlineMachineBanners: [WorkOfflineMachineBanner] {
-    workOfflineMachineBanners(
-      scopes: activityDrawer.offlineScopes,
-      activeProjectId: syncService.activeProjectId,
-      laneIds: Set(lanes.map(\.id))
-    )
-  }
-
   var isWorkRootActive: Bool {
     isTabActive && path.isEmpty
   }
@@ -592,19 +578,6 @@ struct WorkRootScreen: View {
               action: { Task { await reload(refreshRemote: true) } }
             )
             .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
-          }
-
-          // Above the list, not per row: every row below belongs to the same
-          // project, so one banner explains the whole outage instead of
-          // repeating itself down the column.
-          ForEach(offlineMachineBanners) { banner in
-            ActivityOfflineMachineBanner(
-              machineName: banner.machineName,
-              lastSeenLabel: banner.lastSeenLabel
-            )
-            .listRowInsets(EdgeInsets(top: 2, leading: 16, bottom: 6, trailing: 16))
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
           }

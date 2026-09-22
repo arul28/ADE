@@ -349,6 +349,11 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { sessionId: string }",
       example: "ade actions run chat.resumeUsageLimitNow --input-json '{\"sessionId\":\"chat-123\"}' --text",
     },
+    continueUsageLimitOnAlternate: {
+      description: "Continue a usage-limited chat on another signed-in account that still has room. Starts a new chat; the original thread stays parked.",
+      input: "object { sessionId: string }",
+      example: "ade actions run chat.continueUsageLimitOnAlternate --input-json '{\"sessionId\":\"chat-123\"}' --text",
+    },
     readTranscript: {
       description: "Read a bounded recent window of user/assistant messages for any project-backed chat on this machine.",
       input: "object { sessionId: string, limit?: number, maxChars?: number, since?: ISO timestamp }",
@@ -510,45 +515,6 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
         + "rule is created.",
       input: "object { draft: AutomationRuleDraft, confirmations?: string[] }",
       example: "ade actions run automation_planner.saveDraft --input-json '{\"draft\":{\"name\":\"Nightly review\",\"enabled\":true,\"mode\":\"monitor\",\"triggers\":[],\"execution\":{\"kind\":\"built-in\"}}}' --json",
-    },
-  },
-  review: {
-    listLaunchContext: {
-      description: "Read what a review run can target right now: lanes, their recent commits, and open PRs.",
-      input: "no input",
-      example: "ade actions run review.listLaunchContext --json",
-    },
-    startRun: {
-      description:
-        "Start a code-review run over a lane diff, working tree, commit range, or PR. Reads the named lane's worktree, "
-        + "so laneId is always required.",
-      input: "object { target: { mode: \"lane_diff\" | \"working_tree\", laneId } | { mode: \"commit_range\", laneId, baseCommit, headCommit } | { mode: \"pr\", laneId, prId }, config?: Partial<ReviewRunConfig> }",
-      example: "ade actions run review.startRun --input-json '{\"target\":{\"mode\":\"lane_diff\",\"laneId\":\"lane-1\"}}' --json",
-    },
-    rerun: {
-      description: "Re-run a finished review with the same target and config.",
-      input: "object { runId: string }",
-      example: "ade actions run review.rerun --input-json '{\"runId\":\"review-1\"}' --json",
-    },
-    cancelRun: {
-      description: "Cancel an in-flight review run. Reversible with review.rerun.",
-      input: "object { runId: string }",
-      example: "ade actions run review.cancelRun --input-json '{\"runId\":\"review-1\"}' --json",
-    },
-    listRuns: {
-      description: "List review runs, newest first, optionally filtered by lane or status.",
-      input: "object { laneId?: string, status?: \"queued\" | \"running\" | \"completed\" | \"failed\" | \"cancelled\" | \"all\", limit?: number }",
-      example: "ade actions run review.listRuns --input-json '{\"limit\":10}' --json",
-    },
-    getRunDetail: {
-      description: "Read one review run in full: findings, severities, anchors, and evidence.",
-      input: "object { runId: string }",
-      example: "ade actions run review.getRunDetail --input-json '{\"runId\":\"review-1\"}' --json",
-    },
-    qualityReport: {
-      description: "Read aggregate review quality: run counts, finding counts, and accepted/rejected feedback rates.",
-      input: "no input",
-      example: "ade actions run review.qualityReport --json",
     },
   },
   search: {

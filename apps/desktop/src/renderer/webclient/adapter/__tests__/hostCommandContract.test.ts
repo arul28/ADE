@@ -28,6 +28,13 @@ const HOST_SERVICE = join(
   __dirname,
   "../../../../../../ade-cli/src/services/sync/syncHostService.ts",
 );
+// `apple.*` is registered from a table rather than by literal `register()`
+// calls, so the registry file alone under-reports it the same way lane
+// presence does.
+const HOST_APPLE_COMMANDS = join(
+  __dirname,
+  "../../../../../../ade-cli/src/services/sync/appleRemoteCommands.ts",
+);
 
 /**
  * Actions the adapter calls that the host deliberately does not serve. Adding
@@ -94,6 +101,8 @@ function actionsRegisteredByHost(): Set<string> {
     hostService.indexOf("readBrainMetadata"),
   );
   for (const match of synthetic.matchAll(/action:\s*"([\w.]+)"/g)) registered.add(match[1]!);
+  const appleCommands = readFileSync(HOST_APPLE_COMMANDS, "utf8");
+  for (const match of appleCommands.matchAll(/action:\s*"([\w.]+)"/g)) registered.add(match[1]!);
   return registered;
 }
 

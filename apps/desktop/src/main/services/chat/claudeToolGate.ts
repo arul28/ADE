@@ -1,10 +1,11 @@
 /**
  * What ADE knows about one Claude tool call before it decides anything.
  *
- * Four questions, all pure, all answerable from the tool's name and input
+ * Five questions, all pure, all answerable from the tool's name and input
  * alone: what is this tool called in a comparable form, is it one of Claude's
- * own read-only built-ins, which paths does the call name, and — with no host
- * policy in play — does ADE's own heuristic want to prompt for it.
+ * own read-only built-ins, which paths does the call name, with no host policy
+ * in play does ADE's own heuristic want to prompt for it, and may it run while
+ * the session is in plan mode.
  *
  * `claudeBuiltInIsReadOnly` is the exemption that decides whether an embedder
  * on `fallback: "ask"` gets an approval card for every single file read — the
@@ -51,6 +52,56 @@ export function normalizeToolNameForApproval(toolName: string): string {
  */
 export function claudeBuiltInIsReadOnly(toolName: string): boolean {
   return CLAUDE_READ_ONLY_TOOLS.has(normalizeToolNameForApproval(toolName));
+}
+
+/**
+ * Tools plan mode keeps. A literal allowlist, mirroring the CLI's own
+ * plan-mode allowlist — read-only built-ins including `NotebookRead`,
+ * `Agent`/`Task` subagent exploration, `Skill`, task bookkeeping,
+ * `AskUserQuestion` — plus ADE's plan-flow and question tools. Verified against
+ * the bundled CLI 2.1.280 that ships with Agent SDK 0.3.280; re-check it when
+ * the SDK pin moves, the way the built-in agent prompts are re-extracted on a
+ * pin move.
+ *
+ * Plan mode is inspect-only, and the fence in `canUseTool` is the only barrier
+ * left when a `bypassPermissions` session entered plan mode mid-run and the CLI
+ * defers a call to the host. So this is an allowlist, not a mutating denylist:
+ * an unrecognized name — a mutating MCP tool whose name carries no write-ish
+ * substring, a shell spelled something other than `Bash` — is refused instead
+ * of allowed. Membership is exact, never inferred from a substring.
+ *
+ * The cost is that read-only MCP tools are also refused in plan mode: the SDK
+ * reports an MCP server's provenance but nothing about whether its tools
+ * mutate, so there is no safe way to admit one. Built-in reads stay available.
+ * `notebookread` is admitted here without joining `CLAUDE_READ_ONLY_TOOLS`: the
+ * CLI treats it as plan-safe, but the read-only set is also the `fallback:
+ * "ask"` prompt exemption, and that surface stays as narrow as it was.
+ */
+export const CLAUDE_PLAN_MODE_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
+  ...CLAUDE_READ_ONLY_TOOLS,
+  "enterplanmode",
+  "exitplanmode",
+  "ask_user",
+  "askuserquestion",
+  "agent",
+  "task",
+  "skill",
+  "todowrite",
+  "taskcreate",
+  "taskupdate",
+  "taskstop",
+  "taskoutput",
+  "notebookread",
+]);
+
+/**
+ * Whether a tool may run while the session is in plan mode.
+ *
+ * The one predicate the plan-mode fence reads, kept next to the read-only set
+ * it extends so the two cannot drift apart.
+ */
+export function claudeToolAllowedInPlanMode(toolName: string): boolean {
+  return CLAUDE_PLAN_MODE_ALLOWED_TOOLS.has(normalizeToolNameForApproval(toolName));
 }
 
 /**
@@ -113,7 +164,7 @@ export function claudeToolNeedsApproval(
   const normalized = normalizeToolNameForApproval(toolName);
   // bypassPermissions → never prompt
   if (permissionMode === "bypassPermissions") return false;
-  // plan mode → handled elsewhere (deny writes entirely)
+  // plan mode → the canUseTool fence enforces claudeToolAllowedInPlanMode
   if (permissionMode === "plan") return false;
   // Read-only tools never need approval
   if (CLAUDE_READ_ONLY_TOOLS.has(normalized)) return false;

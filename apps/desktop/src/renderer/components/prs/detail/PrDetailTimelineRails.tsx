@@ -4,7 +4,6 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { ArrowSquareOut, Stack } from "@phosphor-icons/react";
 import { buildPrsRouteSearch, parsePrsRouteState, prRouteCoordinatesMatch, type ParsedPrsRouteState } from "../prsRouteState";
 import type {
-  LaneSummary,
   MergeMethod,
   PrActionRun,
   PrActivityEvent,
@@ -220,7 +219,6 @@ type Props = {
   onSetLabels: (labels: string[]) => void;
   onDeleteBranch?: () => void;
   deleteBranchBusy?: boolean;
-  lane: LaneSummary | null;
   onOpenManageLane?: () => void;
   onClose?: () => void;
   onReopen?: () => void;
@@ -774,7 +772,6 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
       onSetLabels,
       onDeleteBranch,
       deleteBranchBusy,
-      lane,
       onOpenManageLane,
       onClose,
       onReopen,
@@ -1179,7 +1176,6 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             <PrDetailRightMetadataRail
               pr={pr}
-              lane={lane}
               detail={detail}
               status={status}
               reviews={reviews}
@@ -1197,7 +1193,6 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
               onSetLabels={onSetLabels}
               actionBusy={actionBusy}
               onSubmitReview={onSubmitReview}
-              onOpenAsLane={onOpenAsLane}
               onSelectCheck={onSelectCheck}
               onOpenChecksTab={onOpenChecksTab}
               onRerunChecks={onRerunChecks}

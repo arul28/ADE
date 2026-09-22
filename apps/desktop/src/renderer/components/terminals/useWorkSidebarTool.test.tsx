@@ -13,6 +13,11 @@ import {
   workToolScopeKey,
 } from "./useWorkSidebarTool";
 import {
+  askAppleShutdownConfirm,
+  getAppleShutdownConfirmRequest,
+  resetAppleShutdownConfirmForTests,
+} from "../apple/AppleShutdownConfirm";
+import {
   clearPendingWorkToolRequest,
   requestWorkTool,
   resetWorkToolRequestsForTests,
@@ -194,6 +199,115 @@ describe("useWorkSidebarTool", () => {
     const { result } = renderHook(() => useWorkSidebarTool("lane-old"));
     expect(result.current.tool).toBe("files");
     expect(result.current.openTools).toEqual(["files"]);
+  });
+
+  /*
+   * Round 4 §B3. Closing the Apple tab powers the simulator off, so the strip
+   * write waits for an answer — and Cancel has to keep the TAB, not just the
+   * device, which is why the gate is here and not in `closeWorkToolForReal`.
+   */
+  describe("closing the Apple tab", () => {
+    const BOOTED = {
+      lane: { udid: "UDID-1", name: "ADE Repro", runtime: "iOS 26.2", family: "iphone" },
+      installed: [{ udid: "UDID-1", state: "Booted" }],
+    };
+
+    function installSimulator(listed: unknown) {
+      // `deviceStop` is the verb that runs `simctl shutdown`; `shutdown` only
+      // ends this chat's session and leaves the simulator running, which would
+      // make the dialog's "powers off the simulator" a lie.
+      const deviceStop = vi.fn(async () => undefined);
+      const stopStream = vi.fn(async () => undefined);
+      (window as unknown as { ade: unknown }).ade = {
+        iosSimulator: {
+          deviceList: vi.fn(async () => listed),
+          deviceStop,
+          stopStream,
+        },
+      };
+      return { deviceStop, stopStream };
+    }
+
+    afterEach(() => {
+      resetAppleShutdownConfirmForTests();
+      (window as unknown as { ade?: unknown }).ade = undefined;
+    });
+
+    async function openIosTab() {
+      const view = renderHook(() => useWorkSidebarTool("lane-1", null, "chat-1"));
+      await act(async () => { view.result.current.setTool("ios"); });
+      view.rerender();
+      expect(view.result.current.openTools).toEqual(["ios"]);
+      return view;
+    }
+
+    it("asks before it closes, and keeps the tab when the answer is Cancel", async () => {
+      const { deviceStop } = installSimulator(BOOTED);
+      const view = await openIosTab();
+
+      await act(async () => { view.result.current.closeTool("ios"); });
+      view.rerender();
+      // Still open: the question is on screen and has not been answered.
+      expect(view.result.current.openTools).toEqual(["ios"]);
+      expect(getAppleShutdownConfirmRequest()?.deviceName).toBe("ADE Repro");
+      expect(deviceStop).not.toHaveBeenCalled();
+
+      await act(async () => { getAppleShutdownConfirmRequest()?.resolve(false); });
+      view.rerender();
+      expect(view.result.current.openTools).toEqual(["ios"]);
+      expect(view.result.current.tool).toBe("ios");
+      expect(deviceStop).not.toHaveBeenCalled();
+    });
+
+    it("drops the tab and powers the device off when the answer is Close and shut down", async () => {
+      const { deviceStop, stopStream } = installSimulator(BOOTED);
+      const view = await openIosTab();
+
+      await act(async () => { view.result.current.closeTool("ios"); });
+      await act(async () => { getAppleShutdownConfirmRequest()?.resolve(true); });
+      view.rerender();
+      expect(view.result.current.openTools).toEqual([]);
+      expect(view.result.current.tool).toBe(null);
+      // The lease goes back before the power does.
+      await vi.waitFor(() => expect(stopStream).toHaveBeenCalled());
+      await vi.waitFor(() => expect(deviceStop).toHaveBeenCalledWith(
+        { laneId: "lane-1", chatSessionId: "chat-1", ignoreOwnership: true },
+        undefined,
+      ));
+    });
+
+    it("asks nothing at all when the lane's device is not booted", async () => {
+      const { deviceStop } = installSimulator({ ...BOOTED, installed: [{ udid: "UDID-1", state: "Shutdown" }] });
+      const view = await openIosTab();
+      await act(async () => { view.result.current.closeTool("ios"); });
+      view.rerender();
+      expect(getAppleShutdownConfirmRequest()).toBeNull();
+      expect(view.result.current.openTools).toEqual([]);
+      await vi.waitFor(() => expect(deviceStop).toHaveBeenCalled());
+    });
+
+    it("never asks for any other tool", async () => {
+      installSimulator(BOOTED);
+      const view = renderHook(() => useWorkSidebarTool("lane-1", null, "chat-1"));
+      await act(async () => { view.result.current.setTool("browser"); });
+      view.rerender();
+      act(() => { view.result.current.closeTool("browser"); });
+      view.rerender();
+      // Closed on the spot, with no question in flight.
+      expect(view.result.current.openTools).toEqual([]);
+      expect(getAppleShutdownConfirmRequest()).toBeNull();
+    });
+
+    it("does not stack a second question while one is unanswered", async () => {
+      installSimulator(BOOTED);
+      const view = await openIosTab();
+      void askAppleShutdownConfirm("Someone else");
+      await act(async () => { view.result.current.closeTool("ios"); });
+      view.rerender();
+      // Refused rather than queued, and the tab stays.
+      expect(getAppleShutdownConfirmRequest()?.deviceName).toBe("Someone else");
+      expect(view.result.current.openTools).toEqual(["ios"]);
+    });
   });
 
   it("builds a lane scope key only when both halves are present", () => {

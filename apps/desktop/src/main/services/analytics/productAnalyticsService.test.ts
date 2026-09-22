@@ -14,6 +14,7 @@ import {
 import {
   captureAgentTurnSettledAnalytics,
   captureClaudeHooksIgnoredAnalytics,
+  captureClaudePluginsIgnoredAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "./agentTurnProductAnalytics";
 import {
@@ -332,11 +333,24 @@ describe("productAnalyticsService", () => {
     fs.rmSync(harness.root, { recursive: true, force: true });
   });
 
-  it("accepts the chat hooks_ignored fact and bounds repeats by session dedupe", () => {
+  it.each([
+    {
+      action: "hooks_ignored",
+      capture: captureClaudeHooksIgnoredAnalytics,
+      extraKey: "hook_name",
+      extraValue: "PreToolUse",
+    },
+    {
+      action: "plugins_ignored",
+      capture: captureClaudePluginsIgnoredAnalytics,
+      extraKey: "plugin_name",
+      extraValue: "ade-skills",
+    },
+  ])("accepts the chat $action fact and bounds repeats by session dedupe", ({ action, capture, extraKey, extraValue }) => {
     const captures: ProductAnalyticsCapture[] = [];
     const analytics = settledAnalytics(captures);
 
-    captureClaudeHooksIgnoredAnalytics({
+    capture({
       analytics,
       projectId: "project-1",
       event: { sessionId: "session-1" },
@@ -347,11 +361,11 @@ describe("productAnalyticsService", () => {
       surface: "api",
       projectId: "project-1",
       sessionId: "session-1",
-      dedupeKey: "chat_hooks_ignored:session-1",
+      dedupeKey: `chat_${action}:session-1`,
       minimumIntervalMs: 60 * 60_000,
       properties: {
         feature: "chat",
-        action: "hooks_ignored",
+        action,
         outcome: "failed",
         provider: "claude",
         source: "runtime",
@@ -360,14 +374,14 @@ describe("productAnalyticsService", () => {
 
     expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
       feature: "chat",
-      action: "hooks_ignored",
+      action,
       outcome: "failed",
       provider: "claude",
       source: "runtime",
-      hook_name: "PreToolUse",
+      [extraKey]: extraValue,
     })).toEqual({
       feature: "chat",
-      action: "hooks_ignored",
+      action,
       outcome: "failed",
       provider: "claude",
       source: "runtime",
@@ -381,12 +395,12 @@ describe("productAnalyticsService", () => {
       sessionId: "session-1",
       properties: {
         feature: "chat",
-        action: "hooks_ignored",
+        action,
         outcome: "failed",
         provider: "claude",
         source: "runtime",
       },
-      dedupeKey: "chat_hooks_ignored:session-1",
+      dedupeKey: `chat_${action}:session-1`,
       minimumIntervalMs: 60 * 60_000,
     })).toEqual({ accepted: true, reason: "accepted" });
     expect(harness.service.captureInternal({
@@ -396,12 +410,12 @@ describe("productAnalyticsService", () => {
       sessionId: "session-1",
       properties: {
         feature: "chat",
-        action: "hooks_ignored",
+        action,
         outcome: "failed",
         provider: "claude",
         source: "runtime",
       },
-      dedupeKey: "chat_hooks_ignored:session-1",
+      dedupeKey: `chat_${action}:session-1`,
       minimumIntervalMs: 60 * 60_000,
     })).toEqual({ accepted: false, reason: "duplicate" });
     fs.rmSync(harness.root, { recursive: true, force: true });

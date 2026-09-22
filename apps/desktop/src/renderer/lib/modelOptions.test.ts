@@ -458,8 +458,8 @@ describe("includeSelectedModelOption", () => {
   it("prepends the selected model when it is missing from options but exists in registry", () => {
     const result = includeSelectedModelOption(baseOptions, "anthropic/claude-opus-4-8");
     expect(result.length).toBe(baseOptions.length + 1);
-    expect(result[0].id).toBe("anthropic/claude-opus-4-8");
-    expect(result[0].label).toBe("Claude Opus 4.8");
+    expect(result[0].id).toBe("anthropic/claude-opus-5");
+    expect(result[0].label).toBe("Claude Opus 5");
     // Original options follow
     expect(result.slice(1)).toEqual(baseOptions);
   });
@@ -472,7 +472,7 @@ describe("includeSelectedModelOption", () => {
   it("trims the selectedModelId before lookup", () => {
     const result = includeSelectedModelOption(baseOptions, "  anthropic/claude-opus-4-8  ");
     expect(result.length).toBe(baseOptions.length + 1);
-    expect(result[0].id).toBe("anthropic/claude-opus-4-8");
+    expect(result[0].id).toBe("anthropic/claude-opus-5");
   });
 
   it("works with an empty options array", () => {

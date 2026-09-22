@@ -105,7 +105,6 @@ describe("ledgerLabel", () => {
   it("maps known ledger ids (exact keys) to plain names", () => {
     expect(ledgerLabel("db.automation_ingress_events")).toBe("Webhook history");
     expect(ledgerLabel("db.operations_crsql")).toBe("Sync bookkeeping");
-    expect(ledgerLabel("db.review_run_artifacts")).toBe("Review artifacts");
     expect(ledgerLabel("db.pull_request_snapshots")).toBe("Pull request cache");
     expect(ledgerLabel("fs.transcripts")).toBe("Chat & terminal history");
     expect(ledgerLabel("fs.ios_derived_data")).toBe("iOS build cache");
@@ -122,14 +121,14 @@ describe("maintenanceActionLines", () => {
       actions: [
         { ledgerId: "db.automation_ingress_events", kind: "prune", itemsAffected: 100, bytesReclaimed: 128 * MB, durationMs: 12 },
         { ledgerId: "db.operations_crsql", kind: "compact", itemsAffected: 0, bytesReclaimed: 0, durationMs: 30 },
-        { ledgerId: "db.review_run_artifacts", kind: "delete", itemsAffected: 3, bytesReclaimed: 0, durationMs: 5, error: "nope" },
+        { ledgerId: "db.pull_request_snapshots", kind: "prune", itemsAffected: 3, bytesReclaimed: 0, durationMs: 5, error: "nope" },
       ],
     });
     const lines = maintenanceActionLines(report);
     expect(lines[0].label).toBe("Webhook history");
     expect(lines[0].detail).toBe("reclaimed 128 MB");
     expect(lines.find((l) => l.label === "Sync bookkeeping")!.detail).toBe("compacted");
-    const failed = lines.find((l) => l.label === "Review artifacts")!;
+    const failed = lines.find((l) => l.label === "Pull request cache")!;
     expect(failed.failed).toBe(true);
     expect(failed.detail).toBe("couldn't finish");
   });

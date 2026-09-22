@@ -260,7 +260,7 @@ describe("openCodeInventory", () => {
     });
 
     expect(result.descriptors.map((descriptor) => descriptor.id)).toContain("opencode/anthropic/claude-sonnet-5");
-    expect(result.descriptors.map((descriptor) => descriptor.id)).toContain("opencode/anthropic/claude-opus-4-8");
+    expect(result.descriptors.map((descriptor) => descriptor.id)).toContain("opencode/anthropic/claude-opus-5");
     expect(result.descriptors.map((descriptor) => descriptor.id)).toContain("opencode/anthropic/claude-fable-5-1");
     expect(result.descriptors.map((descriptor) => descriptor.id)).not.toContain("opencode/anthropic/claude-sonnet-4-6");
     expect(result.descriptors.map((descriptor) => descriptor.id)).not.toContain("opencode/anthropic/claude-opus-4-7");
@@ -584,10 +584,10 @@ describe("openCodeInventory", () => {
 
     const descriptor = result.descriptors.find((entry) => entry.id === "opencode/anthropic/claude-sonnet-5");
     const opus5Descriptor = result.descriptors.find((entry) => entry.id === "opencode/anthropic/claude-opus-5");
-    const opusDescriptor = result.descriptors.find((entry) => entry.id === "opencode/anthropic/claude-opus-4-8");
+    const opus55Descriptor = result.descriptors.find((entry) => entry.id === "opencode/anthropic/claude-opus-5-5");
     expect(result.descriptors.filter((entry) => entry.id === "opencode/anthropic/claude-sonnet-5")).toHaveLength(1);
     expect(result.descriptors.filter((entry) => entry.id === "opencode/anthropic/claude-opus-5")).toHaveLength(1);
-    expect(result.descriptors.filter((entry) => entry.id === "opencode/anthropic/claude-opus-4-8")).toHaveLength(1);
+    expect(result.descriptors.filter((entry) => entry.id === "opencode/anthropic/claude-opus-4-8")).toHaveLength(0);
     expect(result.descriptors.map((entry) => entry.id)).not.toContain("opencode/anthropic/claude-opus-4-8-1m");
     expect(result.descriptors.map((entry) => entry.id)).not.toContain("opencode/anthropic/opus-4.8-1m");
     expect(result.descriptors.filter((entry) => entry.id === "opencode/anthropic/claude-fable-5-1")).toHaveLength(1);
@@ -611,13 +611,10 @@ describe("openCodeInventory", () => {
       defaultReasoningEffort: "high",
       serviceTiers: ["fast"],
     });
-    expect(opusDescriptor?.capabilities).toMatchObject({
-      tools: true,
-      vision: true,
-      reasoning: true,
+    expect(opus55Descriptor).toMatchObject({
+      displayName: "Claude Opus 5.5",
+      openCodeModelId: "opus",
     });
-    expect(opusDescriptor?.reasoningTiers).toEqual(["max"]);
-    expect(opusDescriptor?.serviceTiers).toEqual(["fast"]);
   });
 
   it("normalizes retired-only Anthropic display ids while routing through advertised aliases", async () => {
@@ -660,7 +657,7 @@ describe("openCodeInventory", () => {
     });
 
     expect(result.modelIds).toContain("opencode/anthropic/claude-sonnet-5");
-    expect(result.modelIds).toContain("opencode/anthropic/claude-opus-5");
+    expect(result.modelIds).toContain("opencode/anthropic/claude-opus-5-5");
     expect(result.modelIds).not.toContain("opencode/anthropic/claude-sonnet-4-6");
     expect(result.modelIds).not.toContain("opencode/anthropic/opus");
     expect(result.descriptors.find((entry) => entry.id === "opencode/anthropic/claude-sonnet-5")).toMatchObject({
@@ -676,8 +673,8 @@ describe("openCodeInventory", () => {
       }),
       reasoningTiers: ["low", "medium", "high", "max"],
     });
-    expect(result.descriptors.find((entry) => entry.id === "opencode/anthropic/claude-opus-5")).toMatchObject({
-      displayName: "Claude Opus 5",
+    expect(result.descriptors.find((entry) => entry.id === "opencode/anthropic/claude-opus-5-5")).toMatchObject({
+      displayName: "Claude Opus 5.5",
       openCodeModelId: "opus",
       providerModelId: "anthropic/opus",
       contextWindow: 1_000_000,
@@ -688,7 +685,7 @@ describe("openCodeInventory", () => {
         reasoning: true,
       }),
       reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
-      defaultReasoningEffort: "high",
+      defaultReasoningEffort: "medium",
       serviceTiers: ["fast"],
     });
   });

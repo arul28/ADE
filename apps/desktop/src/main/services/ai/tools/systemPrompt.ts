@@ -1,5 +1,5 @@
 import { buildAdeCliAgentGuidance } from "../../../../shared/adeCliGuidance";
-import { getAdeAgentSkillRootsForPrompt } from "../../../../shared/agentSkillRoots";
+import { adePromptAgentSkillRoots } from "../../skills/agentSkillRuntimeService";
 
 type HarnessMode = "chat" | "coding" | "planning";
 type HarnessPermissionMode = "plan" | "edit" | "full-auto";
@@ -155,7 +155,7 @@ export function buildCodingAgentSystemPrompt(args: {
   // just earned the model a tool-not-found error.
   const hasWorkflowTools = hasCreateLane || hasCreatePr;
   const guardedLocalReadOnly = permissionMode === "plan";
-  const adeSkillRoots = args.adeSkillRoots ?? getAdeAgentSkillRootsForPrompt({ cwd: args.cwd });
+  const adeSkillRoots = args.adeSkillRoots ?? adePromptAgentSkillRoots({ cwd: args.cwd });
   // Both spellings on purpose. The camelCase names are historical chat-tool
   // spellings; most have a LIVE snake_case twin on the RPC tool surface
   // (`apps/ade-cli/src/adeRpcServer.ts`). Never conclude "unbuilt" from the

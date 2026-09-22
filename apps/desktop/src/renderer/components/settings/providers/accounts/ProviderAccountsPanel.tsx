@@ -50,7 +50,7 @@ import { useProviderInstances } from "./useProviderInstances";
 import { providerActionMessage } from "../providerErrorMessage";
 
 const SMART_BALANCE_HINT =
-  "Smart balance picks the account with the most room when a chat starts, weighting the weekly window more as the week goes on. Chats stay on the account they started on. Off: new chats use the Default account.";
+  "Smart balance picks the account with the most room when a chat starts, weighting the weekly window more as the week goes on. If that chat hits a usage limit and another account still has room, ADE continues the work there in a new chat. Off: new chats use the Default account, and a limit offers that move instead of taking it.";
 const AUTO_START_HINT =
   "When a 5-hour window ends, ADE sends one tiny request on the cheapest model so the next window starts right away. Each request is logged with its cost.";
 
@@ -324,7 +324,7 @@ function AccountRow({
 
       <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
         <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim, minWidth: 0 }}>
-          {usageLine ?? ""}
+          {usageLine ?? (instance.signedIn ? "No usage yet" : "")}
         </span>
         <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6 }}>
           {instance.isDefault ? (

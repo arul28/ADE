@@ -1,0 +1,11 @@
+ADE
+Copyright (c) ADE contributors
+
+This product includes software developed by Expo (https://expo.dev) as part of
+the `serve-sim` project (https://github.com/expo/serve-sim), licensed under the
+Apache License, Version 2.0.
+
+The files in this directory other than this NOTICE and VENDORED.md are
+unmodified copies of `packages/serve-sim/Sources/SimNative` at commit
+c8206925f3e6747236714d781ef2b6244c7a36f5. A copy of the Apache License,
+Version 2.0 is included beside them as LICENSE.
