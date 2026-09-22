@@ -2157,6 +2157,56 @@ describe("adeRpcServer", () => {
     );
   });
 
+  it("accepts the lane an unbound caller names while standing inside its worktree", async () => {
+    // An OpenCode agent's shell carries no chat session: one `opencode serve`
+    // is shared across chats, so it cannot hold a per-chat environment. Naming
+    // its lane used to be refused for not matching a session lane it could not
+    // have. Containment is the stronger claim — it is where the caller IS.
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    const laneRoot = fixture.runtime.laneService.getLaneWorktreePath("lane-1");
+    fs.mkdirSync(laneRoot, { recursive: true });
+
+    await initialize(handler, { callerId: "ade-cli:4242", role: "agent" });
+    const response = await callTool(handler, "ingest_computer_use_artifacts", {
+      backendStyle: "manual",
+      backendName: "ade-cli",
+      toolName: "proof attach",
+      callerRoot: laneRoot,
+      laneId: "lane-1",
+      inputs: [{ kind: "screenshot", title: "Named lane proof", path: path.join(laneRoot, "proof.png") }],
+    });
+
+    expect(response.isError).toBeUndefined();
+    expect(fixture.runtime.computerUseArtifactBrokerService.ingest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owners: expect.arrayContaining([expect.objectContaining({ kind: "lane", id: "lane-1" })]),
+      }),
+    );
+  });
+
+  it("still refuses a lane an unbound caller names from outside its worktree", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    fs.mkdirSync(fixture.runtime.laneService.getLaneWorktreePath("lane-1"), { recursive: true });
+    const strayRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stray-named-lane-"));
+
+    await initialize(handler, { callerId: "ade-cli:4242", role: "agent" });
+    try {
+      const response = await callTool(handler, "ingest_computer_use_artifacts", {
+        backendStyle: "manual",
+        backendName: "ade-cli",
+        callerRoot: strayRoot,
+        laneId: "lane-1",
+        inputs: [{ kind: "screenshot", title: "Stray proof", path: path.join(strayRoot, "proof.png") }],
+      });
+      expect(response.isError).toBe(true);
+      expect(fixture.runtime.computerUseArtifactBrokerService.ingest).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(strayRoot, { recursive: true, force: true });
+    }
+  });
+
   it("rejects a relative caller root, which would resolve differently on each side", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
@@ -6986,6 +7036,35 @@ describe("adeRpcServer", () => {
       }
       expect(caught).toBeInstanceOf(JsonRpcError);
       expect((caught as JsonRpcError).code).toBe(JsonRpcErrorCode.invalidParams);
+    });
+
+    it("regression: never owns proof by a synthetic <client>:<pid> caller id", () => {
+      // The shape of a real incident. An agent whose shell carried no chat
+      // session filed two screenshots; the only owner written was
+      // `chat_session: ade-cli:56056`, so no lane resolved and no drawer could
+      // scope to it. The images were on disk and reachable by nobody.
+      const session = makeSession();
+      session.identity.callerId = "ade-cli:56056";
+      session.identity.role = "agent";
+
+      const owners = resolveComputerUseOwners(session, { laneId: "lane-1" });
+
+      expect(owners).toEqual([
+        expect.objectContaining({ kind: "lane", id: "lane-1" }),
+      ]);
+      expect(owners.some((owner) => owner.id.includes(":"))).toBe(false);
+    });
+
+    it("still owns proof by a real chat session id that merely arrived as the caller id", () => {
+      const session = makeSession();
+      session.identity.callerId = "824b0410-b015-4aa5-82c9-125d5d7e6f15";
+      session.identity.role = "agent";
+
+      const owners = resolveComputerUseOwners(session, {});
+
+      expect(owners).toEqual([
+        expect.objectContaining({ kind: "chat_session", id: "824b0410-b015-4aa5-82c9-125d5d7e6f15" }),
+      ]);
     });
   });
 });

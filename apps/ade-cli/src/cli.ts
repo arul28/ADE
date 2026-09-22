@@ -26774,6 +26774,17 @@ function shortProofOwnerId(id: string): string {
 }
 
 /**
+ * `ade-cli:56056` — a client name and a pid, which identifies a PROCESS.
+ *
+ * The runtime no longer writes one as an owner, but this CLI is used against
+ * whatever brain is installed, including versions that still do. So the check
+ * lives on both sides: an owner that names a process is not an owner.
+ */
+function isSyntheticProofOwnerId(id: string | null): boolean {
+  return Boolean(id && /^[a-z][a-z0-9-]*:\d+$/.test(id));
+}
+
+/**
  * Turns a filing command's raw ingest payload into the one thing its caller
  * actually has to read: did a record land, and where.
  *
@@ -26813,7 +26824,8 @@ function summarizeProofFiling(
   const laneId = ownerId("lane")
     ?? artifacts.map((artifact) => asString(artifact.laneId)).find(Boolean)
     ?? null;
-  const chatSessionId = ownerId("chat_session");
+  const rawChatSessionId = ownerId("chat_session");
+  const chatSessionId = isSyntheticProofOwnerId(rawChatSessionId) ? null : rawChatSessionId;
   const artifactIds = artifacts
     .map((artifact) => asString(artifact.id))
     .filter((id): id is string => Boolean(id));
@@ -26841,6 +26853,26 @@ function summarizeProofFiling(
       );
     }
     verified = true;
+  }
+
+  /*
+   * An owner is part of filing, not decoration.
+   *
+   * This function already computed `laneId` and `chatSessionId` in order to
+   * PRINT them, and passed a record that had neither. The drawer scopes by
+   * owner, so such a record is stored, listed by its own unscoped author, and
+   * visible to nobody — and both checks above passed on it. An agent read
+   * "verified: re-read through ade proof list" and told the owner the proof was
+   * attached. It was not attachED to anything.
+   *
+   * Checked after the re-read so the message can distinguish "nothing landed"
+   * from "it landed with no owner", which are different faults to report.
+   */
+  if (!laneId && !chatSessionId) {
+    fail(
+      `filed ${artifactIds.join(", ")} with no lane and no chat session, so no proof drawer can show it`
+      + " — run ade from inside the lane worktree, or pass --owner lane --owner-id <lane>",
+    );
   }
 
   const title = asString(artifacts[0]?.title) ?? "untitled";

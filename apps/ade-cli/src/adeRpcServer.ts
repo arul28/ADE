@@ -1783,6 +1783,18 @@ function isCliProvider(provider: LaunchProfile): provider is CliProvider {
   return provider !== "shell";
 }
 
+/**
+ * `ade-cli:5504`, `ade-code:912` — an id `buildInitializeParams` invents from
+ * the client name and its own pid when the caller's environment names no chat
+ * session and no attempt.
+ *
+ * It identifies a PROCESS. It is a usable caller id and a valid `ade-cli`
+ * signature, and it must never become an owner of anything durable.
+ */
+function isSyntheticCliCallerId(callerId: string): boolean {
+  return /^[a-z][a-z0-9-]*:\d+$/.test(callerId);
+}
+
 export function resolveComputerUseOwners(session: SessionState, toolArgs: Record<string, unknown>): ComputerUseArtifactOwner[] {
   const owners: ComputerUseArtifactOwner[] = [];
   const add = (
@@ -1840,7 +1852,18 @@ export function resolveComputerUseOwners(session: SessionState, toolArgs: Record
     if (looksLikeStandaloneChat) {
       const implicitChatSessionId =
         asOptionalTrimmedString(session.identity.callerId) ?? asOptionalTrimmedString(session.identity.attemptId);
-      if (implicitChatSessionId && implicitChatSessionId !== "unknown") {
+      // A synthetic id is NOT a chat. `buildInitializeParams` mints
+      // `<client>:<pid>` when the caller has no session in its environment, and
+      // filing proof under it produced a record owned by a process id: no lane
+      // resolved from it, no drawer could ever scope to it, and the artifact
+      // belonged to nobody. That is how an agent's before/after screenshots
+      // became unreachable while every command reported success. A caller with
+      // no chat is served by the lane owner instead, which `laneId` carries.
+      if (
+        implicitChatSessionId
+        && implicitChatSessionId !== "unknown"
+        && !isSyntheticCliCallerId(implicitChatSessionId)
+      ) {
         add("chat_session", implicitChatSessionId);
       }
     }
@@ -2168,28 +2191,69 @@ async function resolveAuthorizedComputerUseIngestRoot(
   if (callerRoot && !path.isAbsolute(callerRoot)) {
     throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "callerRoot must be an absolute path");
   }
-  if (!projectWideAuthorized && requestedLaneId && requestedLaneId !== sessionLaneId) {
+  /*
+   * Place the caller by the worktree it is standing in, BEFORE judging any lane
+   * it named.
+   *
+   * This used to run only when no lane was requested, and the guard below
+   * compared a requested lane against the caller's chat-session lane. An agent
+   * whose shell carries no chat session — every OpenCode agent, because one
+   * `opencode serve` is shared across chats and so cannot carry a per-chat
+   * environment — therefore had two ways to fail and no way to succeed: name
+   * its lane and be told the lane does not match a session it has not got, or
+   * name nothing and depend entirely on this inference.
+   *
+   * Containment is the stronger check anyway. An environment variable is a
+   * claim; standing inside the lane's worktree is a fact.
+   */
+  const inferredLane = !sessionLaneId && callerRoot && isUnboundAdeCliCaller(session)
+    ? await (async () => {
+        const lanes = await runtime.laneService
+          .list({ includeArchived: false, includeStatus: false })
+          .catch((error: unknown) => {
+            runtime.logger.warn("computer_use.ingest_lane_list_failed", {
+              callerRoot,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            return [];
+          });
+        const match = lanes
+          .flatMap((lane) => {
+            const roots = [lane.worktreePath, lane.attachedRootPath]
+              .map((root) => asOptionalTrimmedString(root))
+              .filter((root): root is string => Boolean(root))
+              .map((root) => canonicalAuthorizationPath(root));
+            return roots
+              .filter((root) => isPathWithinAuthorizedRoot(root, callerRoot))
+              .map((root) => ({ laneId: lane.id, root }));
+          })
+          .sort((left, right) => right.root.length - left.root.length)[0] ?? null;
+        if (!match) {
+          // The one line that was missing while an agent's proof went nowhere:
+          // the ingest refused, nothing was logged, and the CLI reported a
+          // generic "requires an authorized lane worktree".
+          runtime.logger.warn("computer_use.ingest_lane_not_inferred", {
+            callerRoot,
+            lanesConsidered: lanes.length,
+            requestedLaneId: requestedLaneId ?? null,
+          });
+        }
+        return match;
+      })()
+    : null;
+  if (
+    !projectWideAuthorized
+    && requestedLaneId
+    && requestedLaneId !== sessionLaneId
+    && requestedLaneId !== inferredLane?.laneId
+  ) {
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
-      "laneId must match the caller's authorized chat-session lane",
+      "laneId must be the caller's chat-session lane, or the lane whose worktree contains its callerRoot: "
+      + `asked for ${requestedLaneId}, session lane is ${sessionLaneId ?? "none"}`
+      + `, callerRoot resolves to ${inferredLane?.laneId ?? "no lane"}`,
     );
   }
-  const inferredLane = !requestedLaneId
-    && !sessionLaneId
-    && callerRoot
-    && isUnboundAdeCliCaller(session)
-    ? (await runtime.laneService.list({ includeArchived: false, includeStatus: false }).catch(() => []))
-        .flatMap((lane) => {
-          const roots = [lane.worktreePath, lane.attachedRootPath]
-            .map((root) => asOptionalTrimmedString(root))
-            .filter((root): root is string => Boolean(root))
-            .map((root) => canonicalAuthorizationPath(root));
-          return roots
-            .filter((root) => isPathWithinAuthorizedRoot(root, callerRoot))
-            .map((root) => ({ laneId: lane.id, root }));
-        })
-        .sort((left, right) => right.root.length - left.root.length)[0] ?? null
-    : null;
   const authorizedLaneId = requestedLaneId ?? sessionLaneId ?? inferredLane?.laneId ?? null;
   const authorizedRoot = authorizedLaneId
     ? inferredLane?.root ?? resolveLaneWorktreePath(runtime, authorizedLaneId)

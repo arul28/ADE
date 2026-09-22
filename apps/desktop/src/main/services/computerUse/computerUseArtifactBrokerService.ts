@@ -1174,6 +1174,18 @@ export function createComputerUseArtifactBrokerService(args: {
       const owners = dedupeOwners(request.owners ?? []);
       const callerRoot = toOptionalString(request.callerRoot);
       const laneId = resolveLaneIdForOwners(owners);
+      if (!laneId && !owners.some((owner) => owner.kind === "chat_session")) {
+        // Not refused: a CTO scene still legitimately files with no owner when
+        // no call is on a chat. But it IS worth a line, because a record with
+        // no lane and no chat is invisible in every drawer, and a run whose
+        // proof went nowhere left no trace of that anywhere until now.
+        args.logger?.warn("computer_use.artifact_ingest_without_owner", {
+          backend: request.backend?.name ?? null,
+          toolName: request.backend?.toolName ?? null,
+          callerRoot,
+          ownerKinds: owners.map((owner) => owner.kind),
+        });
+      }
       // The broker accepts extra roots only from its own lane table. The RPC
       // supplies `callerRoot` after authenticating it, but callers cannot turn
       // an arbitrary path into an import root merely by placing it in metadata.

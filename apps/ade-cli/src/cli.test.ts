@@ -8862,6 +8862,27 @@ describe("ADE CLI", () => {
       ).toThrow(/proof attach failed — the runtime reported artifact-1/);
     });
 
+    it("regression: fails when the record lands with no lane and no chat session", () => {
+      // The incident this guard exists for. The runtime filed the row, the
+      // re-read found it — because the unscoped caller lists project-wide —
+      // and the only owner was a process id, so no drawer could show it. The
+      // agent read "verified" and told its owner the proof was attached.
+      const plan = expectExecutePlan(buildCliPlan(["proof", "attach", "/tmp/shot.png"]));
+      const orphaned = {
+        artifacts: [{ id: "artifact-1", kind: "screenshot", title: "orphan", laneId: null }],
+        links: [
+          { artifactId: "artifact-1", ownerKind: "chat_session", ownerId: "ade-cli:56056" },
+        ],
+      };
+      expect(() =>
+        summarizeExecution({
+          plan,
+          connection,
+          values: { result: orphaned, verify: { artifacts: [{ id: "artifact-1" }] } },
+        }),
+      ).toThrow(/proof attach failed — filed artifact-1 with no lane and no chat session/);
+    });
+
     it("fails when the runtime files nothing at all", () => {
       const plan = expectExecutePlan(buildCliPlan(["proof", "capture", "--caption", "x"]));
       expect(plan.proofFiling).toEqual({ command: "proof capture", verify: true });
