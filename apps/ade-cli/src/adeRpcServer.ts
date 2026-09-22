@@ -2179,6 +2179,54 @@ function describeCallerRootSource(raw: unknown): string {
   return value.replace(/[\r\n]+/g, " ").slice(0, 80);
 }
 
+/**
+ * The lane whose worktree CONTAINS the caller's root, for a caller that has no
+ * chat session to be placed by.
+ *
+ * Shared by the two proof-filing doors — `ingest_computer_use_artifacts` and
+ * the `screenshot_environment` / `record_environment` proof path — because
+ * they were not sharing it, and the second one therefore filed every capture
+ * from an unbound caller with no owner at all. 36 `proof attach` records and
+ * seven captures on the owner's machine ended up reachable by nobody.
+ */
+async function inferUnboundCallerLaneId(
+  runtime: AdeRuntime,
+  session: SessionState,
+  callerRoot: string | null,
+): Promise<{ laneId: string; root: string } | null> {
+  if (!callerRoot || !isUnboundAdeCliCaller(session)) return null;
+  const lanes = await runtime.laneService
+    .list({ includeArchived: false, includeStatus: false })
+    .catch((error: unknown) => {
+      runtime.logger.warn("computer_use.ingest_lane_list_failed", {
+        callerRoot,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return [];
+    });
+  const match = lanes
+    .flatMap((lane) => {
+      const roots = [lane.worktreePath, lane.attachedRootPath]
+        .map((root) => asOptionalTrimmedString(root))
+        .filter((root): root is string => Boolean(root))
+        .map((root) => canonicalAuthorizationPath(root));
+      return roots
+        .filter((root) => isPathWithinAuthorizedRoot(root, callerRoot))
+        .map((root) => ({ laneId: lane.id, root }));
+    })
+    .sort((left, right) => right.root.length - left.root.length)[0] ?? null;
+  if (!match) {
+    // The one line that was missing while an agent's proof went nowhere: the
+    // ingest refused, nothing was logged, and the CLI reported a generic
+    // "requires an authorized lane worktree".
+    runtime.logger.warn("computer_use.ingest_lane_not_inferred", {
+      callerRoot,
+      lanesConsidered: lanes.length,
+    });
+  }
+  return match;
+}
+
 async function resolveAuthorizedComputerUseIngestRoot(
   runtime: AdeRuntime,
   session: SessionState,
@@ -2206,41 +2254,9 @@ async function resolveAuthorizedComputerUseIngestRoot(
    * Containment is the stronger check anyway. An environment variable is a
    * claim; standing inside the lane's worktree is a fact.
    */
-  const inferredLane = !sessionLaneId && callerRoot && isUnboundAdeCliCaller(session)
-    ? await (async () => {
-        const lanes = await runtime.laneService
-          .list({ includeArchived: false, includeStatus: false })
-          .catch((error: unknown) => {
-            runtime.logger.warn("computer_use.ingest_lane_list_failed", {
-              callerRoot,
-              error: error instanceof Error ? error.message : String(error),
-            });
-            return [];
-          });
-        const match = lanes
-          .flatMap((lane) => {
-            const roots = [lane.worktreePath, lane.attachedRootPath]
-              .map((root) => asOptionalTrimmedString(root))
-              .filter((root): root is string => Boolean(root))
-              .map((root) => canonicalAuthorizationPath(root));
-            return roots
-              .filter((root) => isPathWithinAuthorizedRoot(root, callerRoot))
-              .map((root) => ({ laneId: lane.id, root }));
-          })
-          .sort((left, right) => right.root.length - left.root.length)[0] ?? null;
-        if (!match) {
-          // The one line that was missing while an agent's proof went nowhere:
-          // the ingest refused, nothing was logged, and the CLI reported a
-          // generic "requires an authorized lane worktree".
-          runtime.logger.warn("computer_use.ingest_lane_not_inferred", {
-            callerRoot,
-            lanesConsidered: lanes.length,
-            requestedLaneId: requestedLaneId ?? null,
-          });
-        }
-        return match;
-      })()
-    : null;
+  const inferredLane = sessionLaneId
+    ? null
+    : await inferUnboundCallerLaneId(runtime, session, callerRoot ?? null);
   if (
     !projectWideAuthorized
     && requestedLaneId
@@ -3482,15 +3498,31 @@ function resolveEnvCallerContext(): CallerContext {
 function resolveCallerContext(session?: SessionState): CallerContext {
   const envContext = resolveEnvCallerContext();
   if (!session) return envContext;
+  const callerId = asOptionalTrimmedString(session.identity.callerId);
+  /*
+   * Second door on the same rule as `parseInitializeIdentity`.
+   *
+   * A session whose caller id is a synthetic `<client>:<pid>` has told us it
+   * has no identity of its own, so the BRAIN's environment must not fill the
+   * gap — a dev brain started from an agent shell carries that shell's
+   * `ADE_CHAT_SESSION_ID`, and merging it here made `isUnboundAdeCliCaller`
+   * answer false for a caller that is plainly unbound. That silently disabled
+   * every lane inference downstream, so the capture was filed with no owner
+   * instead of being placed by the worktree the caller was standing in.
+   */
+  const inheritEnvIdentity = !(callerId && isSyntheticCliCallerId(callerId));
+  const envIdentity: CallerContext = inheritEnvIdentity
+    ? envContext
+    : { ...envContext, chatSessionId: null, runId: null, stepId: null, attemptId: null, ownerId: null };
   return {
-    callerId: asOptionalTrimmedString(session.identity.callerId),
+    callerId,
     role: session.identity.role ?? envContext.role,
-    chatSessionId: session.identity.chatSessionId ?? envContext.chatSessionId,
+    chatSessionId: session.identity.chatSessionId ?? envIdentity.chatSessionId,
     standaloneChatSession: session.identity.standaloneChatSession,
-    runId: session.identity.runId ?? envContext.runId,
-    stepId: session.identity.stepId ?? envContext.stepId,
-    attemptId: session.identity.attemptId ?? envContext.attemptId,
-    ownerId: session.identity.ownerId ?? envContext.ownerId,
+    runId: session.identity.runId ?? envIdentity.runId,
+    stepId: session.identity.stepId ?? envIdentity.stepId,
+    attemptId: session.identity.attemptId ?? envIdentity.attemptId,
+    ownerId: session.identity.ownerId ?? envIdentity.ownerId,
   };
 }
 
@@ -3551,15 +3583,35 @@ function parseInitializeIdentity(_runtime: AdeRuntime, params: unknown): Session
   const envContext = resolveEnvCallerContext();
   const requestedRole = normalizeAdeRuntimeRole(identity.role);
   const requestedChatSessionId = asOptionalTrimmedString(identity.chatSessionId);
-  const resolvedChatSessionId = envContext.chatSessionId ?? requestedChatSessionId;
+  /*
+   * A client that says "I am a process" is NOT the brain's own chat.
+   *
+   * The environment identity exists for the in-process and `--stdio` runtimes,
+   * where the caller and the env are the same program. A long-lived socket
+   * daemon serving other processes must not lend its own identity out — the
+   * browser-actor rule below is the same rule, already written down.
+   *
+   * It was reachable and it leaked: a dev brain started from an agent shell
+   * inherits that shell's `ADE_CHAT_SESSION_ID`, so every unbound caller —
+   * every OpenCode agent, whose shell has no ADE identity of its own — was
+   * stamped as THAT chat and its proof filed into that chat's drawer. A
+   * synthetic `<client>:<pid>` caller id is the client stating it has no
+   * identity, which is exactly when the brain's own must not be substituted.
+   */
+  const callerIdClaim = asOptionalTrimmedString(identity.callerId);
+  const clientDisclaimsIdentity = Boolean(callerIdClaim && isSyntheticCliCallerId(callerIdClaim));
+  const inheritableEnvContext: CallerContext = clientDisclaimsIdentity
+    ? { ...envContext, chatSessionId: null, runId: null, stepId: null, attemptId: null, ownerId: null }
+    : envContext;
+  const resolvedChatSessionId = inheritableEnvContext.chatSessionId ?? requestedChatSessionId;
   const validRole = resolveSessionBoundRole({
     defaultRole: normalizeAdeRuntimeRole(process.env.ADE_DEFAULT_ROLE),
     requestedRole,
     chatSessionId: resolvedChatSessionId,
   });
-  const resolvedRunId = envContext.runId ?? asOptionalTrimmedString(identity.runId);
-  const resolvedStepId = envContext.stepId ?? asOptionalTrimmedString(identity.stepId);
-  const resolvedAttemptId = envContext.attemptId ?? asOptionalTrimmedString(identity.attemptId);
+  const resolvedRunId = inheritableEnvContext.runId ?? asOptionalTrimmedString(identity.runId);
+  const resolvedStepId = inheritableEnvContext.stepId ?? asOptionalTrimmedString(identity.stepId);
+  const resolvedAttemptId = inheritableEnvContext.attemptId ?? asOptionalTrimmedString(identity.attemptId);
   // Browser actor capabilities belong to the connecting CLI process. The
   // long-lived runtime daemon must never lend an inherited token to another
   // client, even if it was accidentally launched from an agent-owned shell.
@@ -3571,14 +3623,14 @@ function parseInitializeIdentity(_runtime: AdeRuntime, params: unknown): Session
     && !resolvedAttemptId;
 
   return {
-    callerId: asOptionalTrimmedString(identity.callerId) ?? resolvedChatSessionId ?? envContext.attemptId ?? "unknown",
+    callerId: callerIdClaim ?? resolvedChatSessionId ?? inheritableEnvContext.attemptId ?? "unknown",
     role: validRole,
     chatSessionId: resolvedChatSessionId,
     standaloneChatSession,
     runId: resolvedRunId,
     stepId: resolvedStepId,
     attemptId: resolvedAttemptId,
-    ownerId: asOptionalTrimmedString(identity.ownerId) ?? envContext.ownerId,
+    ownerId: asOptionalTrimmedString(identity.ownerId) ?? inheritableEnvContext.ownerId,
     browserActorToken,
   };
 }
@@ -3824,7 +3876,7 @@ async function runTool(args: {
     }
     return capabilities;
   };
-  const ingestLocalComputerUseArtifact = (args: {
+  const ingestLocalComputerUseArtifact = async (args: {
     sessionState: SessionState;
     toolName: string;
     title: string;
@@ -3858,6 +3910,24 @@ async function runTool(args: {
       };
     }
     validateComputerUseOwnerClaims(runtime, args.sessionState, args.toolArgs);
+    /*
+     * `ade proof capture` and `ade proof record` file through HERE, and this
+     * door had no lane inference of its own — so a caller with no chat session
+     * produced an artifact with an EMPTY owner list. Stored, listed by its own
+     * unscoped author, reachable by no drawer. Seven such records exist on the
+     * owner's machine.
+     *
+     * Same rule as the ingest door: the lane whose worktree contains the
+     * caller's root. A lane the caller NAMES is not trusted here, because this
+     * path has no `resolveAuthorizedComputerUseIngestRoot` to validate it
+     * against — `validateComputerUseOwnerClaims` above is what governs a named
+     * owner, and it already refuses one the session cannot claim.
+     */
+    const inferredLaneId = (await inferUnboundCallerLaneId(
+      runtime,
+      args.sessionState,
+      asOptionalTrimmedString(args.toolArgs.callerRoot),
+    ))?.laneId ?? null;
     const result = runtime.computerUseArtifactBrokerService.ingest({
       backend: {
         name: "screencapture",
@@ -3873,7 +3943,10 @@ async function runTool(args: {
           metadata: args.metadata,
         },
       ],
-      owners: resolveComputerUseOwners(args.sessionState, args.toolArgs),
+      owners: resolveComputerUseOwners(args.sessionState, {
+        ...args.toolArgs,
+        ...(inferredLaneId ? { laneId: inferredLaneId } : {}),
+      }),
     });
     return {
       proof: true,
@@ -5081,7 +5154,7 @@ async function runTool(args: {
     if (displayId) commandArgs.push(`-D${displayId}`);
     commandArgs.push(artifactPath);
     runLocalCommand("screencapture", commandArgs);
-    return ingestLocalComputerUseArtifact({
+    return await ingestLocalComputerUseArtifact({
       sessionState: session,
       toolName: name,
       title,
@@ -5111,7 +5184,7 @@ async function runTool(args: {
     if (displayId) commandArgs.push(`-D${displayId}`);
     commandArgs.push(artifactPath);
     runLocalCommand("screencapture", commandArgs);
-    return ingestLocalComputerUseArtifact({
+    return await ingestLocalComputerUseArtifact({
       sessionState: session,
       toolName: name,
       title,

@@ -11018,6 +11018,12 @@ function buildProofPlan(args: string[]): CliPlan {
             // `ade proof capture` is the explicit proof interface; the bare
             // tool is scratch agent vision and files nothing.
             proof: true,
+            // The runtime places a caller with no chat session by the worktree
+            // it is standing in, and it cannot do that without being told
+            // where that is. `attach` and `ingest` always sent this; capture
+            // and record did not, so every capture from an OpenCode agent was
+            // filed with no owner at all.
+            ...proofCallerRootArgs(),
             name: readValue(args, ["--name", "--title"]) ?? caption,
           }),
         ),
@@ -11043,6 +11049,7 @@ function buildProofPlan(args: string[]): CliPlan {
             // Same rule as `capture`: the proof command files, the tool alone
             // does not.
             proof: true,
+            ...proofCallerRootArgs(),
             name:
               readValue(args, ["--name", "--title"]) ??
               readValue(args, ["--caption", "--description", "--desc"]),
