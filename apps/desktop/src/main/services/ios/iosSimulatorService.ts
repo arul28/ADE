@@ -5761,8 +5761,18 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   const deviceDeleteInstalled = async (deviceArgs: AppleDeviceDeleteInstalledArgs): Promise<void> => {
     assertDarwin();
     if (deviceArgs?.confirmedByUser !== true) {
+      /*
+       * Name the way through, like every other refusal here does.
+       *
+       * This used to say only "needs confirmedByUser: true", an internal
+       * argument name with no next step — a test agent read it, could not act
+       * on it, and filed it as a tooling gap. Deleting a simulator is not
+       * recoverable, so the confirmation stays; what changes is that the
+       * message says where a human gives it and what to pass if you are not
+       * one.
+       */
       throw new Error(
-        "Deleting a simulator needs confirmedByUser: true — the owner has to have said yes to this device by name.",
+        "Deleting a simulator needs the owner's confirmation. Use the Apple Development picker's ⋯ menu on the device, which asks twice and names its size. From the CLI or an action, pass confirmedByUser: true only when a human has said yes to this device by name.",
       );
     }
     const runtime = resolveRuntime(deviceArgs);
