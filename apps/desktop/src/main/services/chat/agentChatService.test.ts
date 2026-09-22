@@ -24870,6 +24870,43 @@ describe("createAgentChatService", () => {
         }
       });
 
+      it("counts provider retries as activity, so a retrying turn is not stopped as idle", async () => {
+        const { service } = createService();
+        const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        try {
+          const startsBefore = codexTurnStarts();
+          let outcome: string | null = null;
+          service.runSessionTurn({ sessionId: session.id, text: "Ship it.", timeoutMs: null, idleTimeoutMs: 60_000 })
+            .then(() => { outcome = "resolved"; }, (error: Error) => { outcome = error.message; });
+          await vi.waitFor(() => expect(codexTurnStarts()).toBeGreaterThan(startsBefore));
+          const turnId = `turn-${mockState.codexTurnCounter}`;
+          mockState.emitCodexPayload({
+            jsonrpc: "2.0",
+            method: "turn/started",
+            params: { turn: { id: turnId, status: "inProgress" } },
+          });
+
+          // Retry activity is live-only; every 40 s it must restart the 60 s watch.
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            await vi.advanceTimersByTimeAsync(40_000);
+            mockState.emitCodexPayload({
+              jsonrpc: "2.0",
+              method: "error",
+              params: { turnId, willRetry: true, error: { message: "Temporary upstream failure.", codexErrorInfo: "serverOverloaded" } },
+            });
+          }
+          await vi.advanceTimersByTimeAsync(40_000);
+          expect(outcome).toBeNull();
+
+          await vi.advanceTimersByTimeAsync(21_000);
+          expect(outcome).toMatch(/with no activity/);
+        } finally {
+          vi.useRealTimers();
+          service.forceDisposeAll();
+        }
+      });
+
       it("applies no clock at all when the caller asks for none", async () => {
         const { service } = createService();
         const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });

@@ -17867,6 +17867,10 @@ export function createAgentChatService(args: {
       flushBufferedText(managed, "interleave");
     }
     emitTransientChatEnvelope(managed.session.id, event);
+    // Retries and reconnects are live-only, but they are the provider working:
+    // they must restart a headless turn's idle watch like any committed event.
+    const collector = sessionTurnCollectors.get(managed.session.id);
+    if (collector?.turnStarted) noteSessionTurnActivity(managed.session.id, collector, event);
   };
 
   const flushBufferedText = (
@@ -56129,7 +56133,11 @@ export function createAgentChatService(args: {
       // early enough. Failures are already swallowed inside the refresh — a
       // slow PR round-trip must not be able to fail the turn.
       void refreshCtoLiveStateForTurn(sessionId)
-        .then(() => executePreparedSendMessage(prepared))
+        .then(() => {
+          // A limit can run out during the refresh; that turn is already over.
+          if (sessionTurnCollectors.get(sessionId) !== collector) return;
+          return executePreparedSendMessage(prepared);
+        })
         .catch((error) => {
           clearSessionTurnCollectorTimers(collector);
           if (sessionTurnCollectors.get(sessionId) === collector) {

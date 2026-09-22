@@ -167,6 +167,26 @@ describe("automationPlannerService.validateDraft", () => {
     expect(withConfirm.ok).toBe(true);
   });
 
+  it("keeps a run-command timeout inside [1 s, 12 h] and uses the 5 min default for invalid values", () => {
+    const { planner } = getPlanner({ suites: [] });
+    const timeoutFor = (timeoutMs: unknown) => {
+      const result = planner.validateDraft({
+        draft: createDraft({ name: "Echo", actions: [{ type: "run-command", command: "echo hello", timeoutMs } as any] }),
+        confirmations: ["confirm.run-command"],
+      });
+      expect(result.ok).toBe(true);
+      return result.normalized?.actions[0]?.timeoutMs;
+    };
+    // An invalid value must not become a one-second kill.
+    expect(timeoutFor(Number.NaN)).toBe(5 * 60_000);
+    expect(timeoutFor(0)).toBe(5 * 60_000);
+    expect(timeoutFor(-10)).toBe(5 * 60_000);
+    // Past ~24.8 days a Node timer fires at once, so the ceiling holds.
+    expect(timeoutFor(30 * 24 * 60 * 60_000)).toBe(12 * 60 * 60_000);
+    expect(timeoutFor(200)).toBe(1000);
+    expect(timeoutFor(20 * 60_000)).toBe(20 * 60_000);
+  });
+
   it("rejects run-command cwd values that resolve through symlinks outside the project root", () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-planner-root-"));
     const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-planner-outside-"));

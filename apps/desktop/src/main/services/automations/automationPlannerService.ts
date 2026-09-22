@@ -36,8 +36,8 @@ import { codexReasoningEffortFlags, resolveCodexCliModelForLaunch } from "../../
 import { getModelById } from "../../../shared/modelRegistry";
 import {
   normalizeAutomationAgentLimits,
+  normalizeRunCommandTimeoutMs,
   RUN_COMMAND_DEFAULT_TIMEOUT_MS,
-  RUN_COMMAND_MAX_TIMEOUT_MS,
 } from "../../../shared/automationLimits";
 import type { Logger } from "../logging/logger";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
@@ -787,13 +787,14 @@ function normalizeDraft(args: {
             : {}),
         }
       : null;
+    const timeoutMs = normalizeRunCommandTimeoutMs(action?.timeoutMs);
     const base = {
       type,
       ...(targetLaneId ? { targetLaneId } : {}),
       ...(condition ? { condition } : {}),
       ...(typeof action?.continueOnFailure === "boolean" ? { continueOnFailure: action.continueOnFailure } : {}),
       ...(typeof action?.alwaysRun === "boolean" ? { alwaysRun: action.alwaysRun } : {}),
-      ...(action?.timeoutMs != null ? { timeoutMs: clampNumber(Number(action.timeoutMs), 1000, RUN_COMMAND_MAX_TIMEOUT_MS) } : {}),
+      ...(timeoutMs != null ? { timeoutMs } : {}),
       ...(action?.retry != null ? { retry: clampNumber(Number(action.retry), 0, 5) } : {})
     } satisfies Partial<AutomationAction>;
 
@@ -945,8 +946,11 @@ function normalizeDraft(args: {
         continue;
       }
 
-      const timeoutMs = base.timeoutMs ?? RUN_COMMAND_DEFAULT_TIMEOUT_MS;
-      const next: AutomationAction = { ...(base as AutomationAction), command, timeoutMs };
+      const next: AutomationAction = {
+        ...(base as AutomationAction),
+        command,
+        timeoutMs: timeoutMs ?? RUN_COMMAND_DEFAULT_TIMEOUT_MS,
+      };
 
       const cwdRaw = safeTrim(action?.cwd);
       if (cwdRaw) {

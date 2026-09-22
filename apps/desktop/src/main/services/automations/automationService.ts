@@ -64,7 +64,11 @@ import { isRecord, matchesGlob, normalizeSet, nowIso, resolvePathWithinRoot, saf
 import { terminateProcessTree } from "../shared/processExecution";
 import { getDefaultModelDescriptor, getModelById, modelSupportsFastMode, resolveChatProviderForDescriptor, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
 import { resolveTailscaleCliPath } from "../sync/resolveTailscaleCliPath";
-import { normalizeAutomationAgentLimits, RUN_COMMAND_DEFAULT_TIMEOUT_MS } from "../../../shared/automationLimits";
+import {
+  normalizeAutomationAgentLimits,
+  normalizeRunCommandTimeoutMs,
+  RUN_COMMAND_DEFAULT_TIMEOUT_MS,
+} from "../../../shared/automationLimits";
 import { SessionTurnAbandonedError } from "../chat/sessionTurnLimits";
 
 const execFileAsync = promisify(execFile);
@@ -3378,7 +3382,8 @@ export function createAutomationService({
       } catch {
         throw new Error(`Configured cwd does not exist: ${configuredCwd || cwd}`);
       }
-      const { output, exitCode } = await runCommand({ command, cwd, timeoutMs: action.timeoutMs ?? RUN_COMMAND_DEFAULT_TIMEOUT_MS });
+      const timeoutMs = normalizeRunCommandTimeoutMs(action.timeoutMs) ?? RUN_COMMAND_DEFAULT_TIMEOUT_MS;
+      const { output, exitCode } = await runCommand({ command, cwd, timeoutMs });
       if (exitCode !== 0) {
         return {
           status: "failed",
