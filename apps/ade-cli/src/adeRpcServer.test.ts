@@ -2772,8 +2772,8 @@ describe("adeRpcServer", () => {
       }),
     );
     const createCall = fixture.runtime.ptyService.create.mock.calls[0]?.[0] as { args?: string[]; startupCommand?: string };
-    expect(createCall.args).toEqual(expect.arrayContaining(["--model", "claude-opus-4-8"]));
-    expect(createCall.startupCommand).toContain("claude-opus-4-8");
+    expect(createCall.args).toEqual(expect.arrayContaining(["--model", "claude-opus-5"]));
+    expect(createCall.startupCommand).toContain("claude-opus-5");
     expect(response.structuredContent.model).toBe("anthropic/claude-opus-4-8");
   });
 

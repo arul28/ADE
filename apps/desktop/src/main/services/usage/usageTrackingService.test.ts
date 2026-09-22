@@ -1061,6 +1061,14 @@ describe("resolveTokenPrice", () => {
     expect(price.output).toBe(75 / 1_000_000);
   });
 
+  it("uses Opus 5.5 pricing for the static fallback", () => {
+    const price = resolveTokenPrice("claude-opus-5-5");
+    expect(price.input).toBe(4 / 1_000_000);
+    expect(price.output).toBe(20 / 1_000_000);
+    expect(price.cacheRead).toBe(0.2 / 1_000_000);
+    expect(price.cacheWrite).toBe(5 / 1_000_000);
+  });
+
   it("uses Opus 5 pricing for the static fallback", () => {
     const price = resolveTokenPrice("claude-opus-5");
     expect(price.input).toBe(5 / 1_000_000);
@@ -1148,6 +1156,26 @@ describe("resolveTokenPrice", () => {
     expect(resolveTokenPrice("claude-sonnet-5").input).toBe(2 / 1_000_000);
     expect(resolveTokenPrice("claude-opus-5").input).toBe(5 / 1_000_000);
     expect(tokenPriceSource("claude-sonnet-5")).toBe("fallback");
+  });
+
+  it("keeps Opus 5.5 on its own static rate when the list only prices Opus 5", () => {
+    setDynamicTokenPricingForTest({
+      "claude-opus-5": {
+        input: 5 / 1_000_000,
+        output: 25 / 1_000_000,
+        cacheWrite: 6.25 / 1_000_000,
+        cacheRead: 0.5 / 1_000_000,
+      },
+    });
+    const price = resolveTokenPrice("claude-opus-5-5");
+    expect(price.input).toBe(4 / 1_000_000);
+    expect(price.output).toBe(20 / 1_000_000);
+    expect(price.cacheRead).toBe(0.2 / 1_000_000);
+    expect(price.cacheWrite).toBe(5 / 1_000_000);
+    expect(tokenPriceSource("claude-opus-5-5")).toBe("fallback");
+    expect(resolveTokenPrice("claude-opus-5").input).toBe(5 / 1_000_000);
+    expect(tokenPriceSource("claude-opus-5")).toBe("list");
+    resetDynamicTokenPricingForTest({ disableDiskCache: true });
   });
 
   /**
