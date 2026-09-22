@@ -185,6 +185,13 @@ describe("automationPlannerService.validateDraft", () => {
     expect(timeoutFor(30 * 24 * 60 * 60_000)).toBe(12 * 60 * 60_000);
     expect(timeoutFor(200)).toBe(1000);
     expect(timeoutFor(20 * 60_000)).toBe(20 * 60_000);
+
+    // Nothing else has a process to kill, so no other step keeps the field.
+    const cleanup = planner.validateDraft({
+      draft: createDraft({ name: "Cleanup", actions: [{ type: "delete-lane", timeoutMs: 60_000 } as any] }),
+      confirmations: [],
+    });
+    expect(cleanup.normalized?.actions[0]).not.toHaveProperty("timeoutMs");
   });
 
   it("rejects run-command cwd values that resolve through symlinks outside the project root", () => {

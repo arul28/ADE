@@ -787,14 +787,12 @@ function normalizeDraft(args: {
             : {}),
         }
       : null;
-    const timeoutMs = normalizeRunCommandTimeoutMs(action?.timeoutMs);
     const base = {
       type,
       ...(targetLaneId ? { targetLaneId } : {}),
       ...(condition ? { condition } : {}),
       ...(typeof action?.continueOnFailure === "boolean" ? { continueOnFailure: action.continueOnFailure } : {}),
       ...(typeof action?.alwaysRun === "boolean" ? { alwaysRun: action.alwaysRun } : {}),
-      ...(timeoutMs != null ? { timeoutMs } : {}),
       ...(action?.retry != null ? { retry: clampNumber(Number(action.retry), 0, 5) } : {})
     } satisfies Partial<AutomationAction>;
 
@@ -898,11 +896,8 @@ function normalizeDraft(args: {
 
     if (type === "agent-session") {
       const prompt = safeTrim(action?.prompt);
-      // A step time limit only kills shell processes; agent steps use their own
-      // optional limits, so a legacy timeoutMs is dropped here.
-      const { timeoutMs: _agentTimeoutMs, ...agentBase } = base;
       normalizedActions.push({
-        ...(agentBase as AutomationAction),
+        ...(base as AutomationAction),
         ...normalizeAutomationAgentLimits(action),
         ...(prompt ? { prompt } : {}),
         ...(safeTrim(action?.sessionTitle) ? { sessionTitle: safeTrim(action?.sessionTitle) } : {}),
@@ -946,10 +941,11 @@ function normalizeDraft(args: {
         continue;
       }
 
+      // Only a shell command has a process to kill; every other step drops a stored timeoutMs.
       const next: AutomationAction = {
         ...(base as AutomationAction),
         command,
-        timeoutMs: timeoutMs ?? RUN_COMMAND_DEFAULT_TIMEOUT_MS,
+        timeoutMs: normalizeRunCommandTimeoutMs(action?.timeoutMs) ?? RUN_COMMAND_DEFAULT_TIMEOUT_MS,
       };
 
       const cwdRaw = safeTrim(action?.cwd);
