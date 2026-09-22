@@ -150,6 +150,10 @@ struct AccountSignInView: View {
             .font(.system(size: 14, weight: .semibold))
             .foregroundStyle(ADEColor.textSecondary)
           TextField("you@example.com", text: $email)
+            // Agents drive this screen first, and an element with no identity
+            // leaves them tapping coordinates — the one query tier that
+            // survives nothing. See `ade-apple`.
+            .accessibilityIdentifier("account-sign-in-email")
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
             .keyboardType(.emailAddress)
@@ -162,6 +166,7 @@ struct AccountSignInView: View {
 
         primaryButton(
           title: "Continue with email",
+          identifier: "account-sign-in-continue-email",
           isBusy: busy == .email,
           disabled: !emailLooksValid
         ) {
@@ -174,6 +179,7 @@ struct AccountSignInView: View {
       VStack(spacing: 10) {
         AccountProviderButton(
           label: "Continue with Apple",
+          identifier: "account-sign-in-apple",
           system: "apple.logo",
           foreground: ADEColor.textPrimary,
           isBusy: busy == .apple
@@ -183,6 +189,7 @@ struct AccountSignInView: View {
 
         AccountProviderButton(
           label: "Continue with Google",
+          identifier: "account-sign-in-google",
           glyph: .google,
           foreground: ADEColor.textPrimary,
           isBusy: busy == .google
@@ -192,6 +199,7 @@ struct AccountSignInView: View {
 
         AccountProviderButton(
           label: "Continue with GitHub",
+          identifier: "account-sign-in-github",
           asset: "ProviderGitHub",
           foreground: ADEColor.textPrimary,
           isBusy: busy == .github
@@ -214,6 +222,7 @@ struct AccountSignInView: View {
           .font(.system(size: 14, weight: .semibold))
           .foregroundStyle(ADEColor.textSecondary)
         TextField("123456", text: $code)
+          .accessibilityIdentifier("account-sign-in-code")
           .keyboardType(.numberPad)
           .textContentType(.oneTimeCode)
           .font(.system(.title3, design: .monospaced).weight(.semibold))
@@ -223,6 +232,7 @@ struct AccountSignInView: View {
 
       primaryButton(
         title: "Verify code",
+        identifier: "account-sign-in-verify-code",
         isBusy: busy == .verify,
         disabled: code.trimmingCharacters(in: .whitespaces).count < 4
       ) {
@@ -238,6 +248,7 @@ struct AccountSignInView: View {
       }
       .font(.caption.weight(.medium))
       .foregroundStyle(ADEColor.textSecondary)
+      .accessibilityIdentifier("account-sign-in-change-email")
       .frame(minHeight: 44)
 
       errorView
@@ -309,6 +320,7 @@ struct AccountSignInView: View {
 
   private func primaryButton(
     title: String,
+    identifier: String,
     isBusy: Bool,
     disabled: Bool,
     action: @escaping () async -> Void
@@ -328,6 +340,7 @@ struct AccountSignInView: View {
     }
     .buttonStyle(.glassProminent)
     .tint(ADEColor.accent)
+    .accessibilityIdentifier(identifier)
     .disabled(disabled || busy != nil)
     .opacity(disabled ? 0.55 : 1)
   }
@@ -395,6 +408,14 @@ struct AccountProviderButton: View {
   enum Glyph { case none, google }
 
   let label: String
+  /**
+   * The query an agent uses to press this button.
+   *
+   * Explicit rather than derived from `label`: a display string is copy, and
+   * copy changes. `pos:` coordinates survive nothing, so a control an agent
+   * must press needs a name that outlives a wording tweak.
+   */
+  let identifier: String
   var system: String?
   var asset: String?
   var glyph: Glyph = .none
@@ -404,6 +425,7 @@ struct AccountProviderButton: View {
 
   init(
     label: String,
+    identifier: String,
     system: String? = nil,
     asset: String? = nil,
     glyph: Glyph = .none,
@@ -412,6 +434,7 @@ struct AccountProviderButton: View {
     action: @escaping () async -> Void
   ) {
     self.label = label
+    self.identifier = identifier
     self.system = system
     self.asset = asset
     self.glyph = glyph
@@ -447,6 +470,7 @@ struct AccountProviderButton: View {
     }
     .buttonStyle(ADEScaleButtonStyle())
     .accessibilityLabel(label)
+    .accessibilityIdentifier(identifier)
   }
 
   @ViewBuilder
