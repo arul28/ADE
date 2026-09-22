@@ -1,7 +1,7 @@
 import SwiftUI
 
 
-/// The Simulator card in the Work tools sheet.
+/// The Apple device card in the Work tools sheet.
 ///
 /// A summary, not a player: device, app, who owns it, and whether it is
 /// recording. Tapping it opens `AppleDeviceViewer`, which is where the live
@@ -23,17 +23,12 @@ struct AppleDeviceCard: View {
   @State private var loaded = false
   @State private var viewerPresented = false
 
-  #if DEBUG
-  /// Fixture seam for previews and screenshots, matching `WorkToolsSheet`.
-  var previewStatus: AppleDeviceStatus?
-  #endif
-
   /// Poll cadence. Matches the sheet's own 3s so the card and the tab strip
   /// above it never disagree about which tool is open.
   private static let refreshInterval: Duration = .seconds(3)
 
   var body: some View {
-    ADEGlassSection(title: "Simulator", subtitle: subtitle) {
+    ADEGlassSection(title: "Apple", subtitle: subtitle) {
       content
     }
     .task(id: laneId) { await refresh() }
@@ -252,20 +247,18 @@ struct AppleDeviceCard: View {
   }
 
   private func refresh() async {
-    #if DEBUG
-    if let previewStatus {
-      status = previewStatus
-      loaded = true
-      return
-    }
-    #endif
     guard syncService.supportsAppleDeviceStatus else {
       loaded = true
       return
     }
-    let next = try? await syncService.fetchAppleDeviceStatus(laneId: laneId)
+    // A transient failure (timeout, momentary offline) must keep the last known
+    // state rather than clear `status` and blank the card to "No simulator is
+    // open in this lane." — the same last-known-good rule the viewer uses.
+    if let next = try? await syncService.fetchAppleDeviceStatus(laneId: laneId) {
+      guard !Task.isCancelled else { return }
+      status = next
+    }
     guard !Task.isCancelled else { return }
-    status = next
     loaded = true
   }
 

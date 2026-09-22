@@ -11,6 +11,7 @@ import {
   USAGE_REFRESH_HISTORY_TIMEOUT_MS,
   IOS_SIMULATOR_LAUNCH_TIMEOUT_MS,
   IOS_SIMULATOR_PREVIEW_TIMEOUT_MS,
+  IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -60,6 +61,12 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
     // the renderer→main IPC timer; the transport budget underneath it lives in
     // remoteConnectionPool's LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS.
     launch: IPC.iosSimulatorLaunch,
+    // Device lifecycle (boot/clone/shutdown/delete) also runs the same simctl
+    // work whether local or remote; see IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS.
+    deviceStart: IPC.iosSimulatorDeviceStart,
+    deviceStop: IPC.iosSimulatorDeviceStop,
+    deviceCreate: IPC.iosSimulatorDeviceCreate,
+    deviceDelete: IPC.iosSimulatorDeviceDelete,
     resolvePreviewMatch: IPC.iosSimulatorResolvePreviewMatch,
     ensurePreviewWorkspace: IPC.iosSimulatorEnsurePreviewWorkspace,
     renderCurrentPreview: IPC.iosSimulatorRenderCurrentPreview,
@@ -181,6 +188,14 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // it wraps carries its own, shorter budget from remoteConnectionPool.
     case IPC.iosSimulatorLaunch:
       return IOS_SIMULATOR_LAUNCH_TIMEOUT_MS;
+    // Boot, clone, shutdown and delete each run simctl work that can outlast
+    // the 30s default; on it the renderer rejected while the device was still
+    // provisioning. See IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS.
+    case IPC.iosSimulatorDeviceStart:
+    case IPC.iosSimulatorDeviceStop:
+    case IPC.iosSimulatorDeviceCreate:
+    case IPC.iosSimulatorDeviceDelete:
+      return IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS;
     case IPC.transcriptionTranscribe:
       return 6 * 60_000;
     // Streams up to 50 MB to a paired host over HTTP. The upload client's own

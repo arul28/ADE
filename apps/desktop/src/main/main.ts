@@ -4654,8 +4654,11 @@ app.whenReady().then(async () => {
       service: iosSimulatorService,
       remoteBitrateKbpsCap: () => DEFAULT_APPLE_REMOTE_BITRATE_KBPS,
       // This host has a renderer, so the last phone or web viewer leaving must
-      // not stop a capture the Apple column is still showing.
-      hasLocalViewer: hasAppleLocalViewer,
+      // not stop a capture the Apple column is still showing. Ask both the
+      // main-process registry (direct IPC starts) and the service's own tracker
+      // (runtime-action starts, which never reach the IPC handler).
+      hasLocalViewer: (laneId) =>
+        hasAppleLocalViewer(laneId) || (iosSimulatorService.hasLocalViewer?.(laneId) ?? false),
       logger,
     });
     const detachAppleStreamRoute = setActiveAppleStreamRouter(appleStreamRelay);

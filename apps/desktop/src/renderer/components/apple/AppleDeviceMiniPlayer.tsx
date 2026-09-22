@@ -82,6 +82,12 @@ function AppleMiniPlayerFrameView({
   const canvasHostRef = useRef<HTMLDivElement | null>(null);
   const pipRef = useRef<WorkLivePipSession | null>(null);
   const pinRef = useRef(target.runtimePin);
+  /**
+   * The teardown for an in-flight drag/resize. A gesture that outlives the
+   * player (device stops, handover, close) would otherwise keep calling
+   * `setPosition`/`setWidth` on an unmounted component against a stale box.
+   */
+  const gestureCleanupRef = useRef<(() => void) | null>(null);
   pinRef.current = target.runtimePin;
 
   const [container, setContainer] = useState({ width: 0, height: 0 });
@@ -146,6 +152,12 @@ function AppleMiniPlayerFrameView({
     return () => observer.disconnect();
   }, []);
 
+  // A drag or resize still held when the player unmounts must not outlive it.
+  useEffect(() => () => {
+    gestureCleanupRef.current?.();
+    gestureCleanupRef.current = null;
+  }, []);
+
   const source = appleMiniPlayerSourceSize(screen);
   const frame = resolveAppleMiniPlayerFrame({
     width,
@@ -171,7 +183,9 @@ function AppleMiniPlayerFrameView({
     const up = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      if (gestureCleanupRef.current === up) gestureCleanupRef.current = null;
     };
+    gestureCleanupRef.current = up;
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
   }, [container, frame.height, frame.width, frame.x, frame.y]);
@@ -200,7 +214,9 @@ function AppleMiniPlayerFrameView({
     const up = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      if (gestureCleanupRef.current === up) gestureCleanupRef.current = null;
     };
+    gestureCleanupRef.current = up;
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
   }, [container, frame, source]);

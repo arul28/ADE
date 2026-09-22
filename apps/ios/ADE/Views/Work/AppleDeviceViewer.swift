@@ -346,6 +346,7 @@ final class AppleDeviceViewerModel: ObservableObject {
   }
 
   private func connect() async {
+    guard started else { return }
     guard let syncService else { return }
     guard syncService.supportsAppleDeviceStream else {
       health.markUnsupported()
@@ -359,6 +360,10 @@ final class AppleDeviceViewerModel: ObservableObject {
       health.fail((error as NSError).localizedDescription)
       return
     }
+    // The view may have been dismissed while the ticket round-trip was in
+    // flight. Connecting now would reopen the socket `stop()` just closed and
+    // leave a live WebSocket (and the Mac's capture) with no teardown.
+    guard started, !Task.isCancelled else { return }
     self.ticket = ticket
     guard
       let url = appleStreamSocketURL(

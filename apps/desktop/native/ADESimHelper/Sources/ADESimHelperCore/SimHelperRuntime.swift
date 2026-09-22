@@ -85,9 +85,9 @@ public actor SimHelperRuntime {
             case .listDevices:
                 emit(.ok(id: id, payload: ["devices": SimDeviceLookup.list().map(\.payload)]))
 
-            case let .captureStart(_, udid, fps, scale):
+            case let .captureStart(_, udid, fps, scale, bitrateKbps):
                 let session = try session(for: udid)
-                let started = try await session.startCapture(fps: fps, scale: scale)
+                let started = try await session.startCapture(fps: fps, scale: scale, bitrateKbps: bitrateKbps)
                 emit(.captureStarted(
                     id: id,
                     udid: udid,

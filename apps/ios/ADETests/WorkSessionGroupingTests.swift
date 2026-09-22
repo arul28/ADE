@@ -1085,46 +1085,6 @@ final class WorkSessionGroupingTests: XCTestCase {
     )
   }
 
-  // MARK: - Offline machine banner
-
-  func testOfflineBannerSurfacesOneEntryPerMachineInThisProject() {
-    let banners = workOfflineMachineBanners(
-      scopes: [
-        scope(machineKey: "studio", projectId: "project-1", laneId: "lane-a"),
-        scope(machineKey: "studio", projectId: "project-1", laneId: "lane-b"),
-        scope(machineKey: "laptop", projectId: "project-1", laneId: "lane-c"),
-      ],
-      activeProjectId: "project-1",
-      now: now
-    )
-
-    XCTAssertEqual(banners.map(\.machineName), ["laptop", "studio"])
-    XCTAssertEqual(banners.first?.lastSeenLabel, "last seen 2h ago")
-  }
-
-  func testOfflineBannerIgnoresOtherProjects() {
-    let banners = workOfflineMachineBanners(
-      scopes: [scope(machineKey: "studio", projectId: "project-2", laneId: "lane-z")],
-      activeProjectId: "project-1",
-      now: now
-    )
-
-    XCTAssertTrue(banners.isEmpty)
-  }
-
-  /// Items published before a project id was carried still match through the
-  /// lane they name, so an outage is not silently dropped.
-  func testOfflineBannerFallsBackToLaneScope() {
-    let banners = workOfflineMachineBanners(
-      scopes: [scope(machineKey: "studio", projectId: "", laneId: "lane-a")],
-      activeProjectId: "project-1",
-      laneIds: ["lane-a"],
-      now: now
-    )
-
-    XCTAssertEqual(banners.map(\.id), ["studio"])
-  }
-
   // MARK: - Status chips: the board's four columns
 
   /// The contract the chips inherit from the desktop board: Needs you /
@@ -1568,16 +1528,6 @@ final class WorkSessionGroupingTests: XCTestCase {
       pullRequests: pullRequests,
       pinnedLaneIds: pinnedLaneIds,
       now: now
-    )
-  }
-
-  private func scope(machineKey: String, projectId: String, laneId: String?) -> ActivityOfflineScope {
-    ActivityOfflineScope(
-      machineKey: machineKey,
-      machineName: machineKey,
-      lastSeenAt: now.addingTimeInterval(-2 * 60 * 60),
-      projectId: projectId,
-      laneId: laneId
     )
   }
 

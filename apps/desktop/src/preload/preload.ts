@@ -3798,6 +3798,11 @@ function clearProjectScopedReadCaches(): void {
   computerUseOwnerSnapshotCache.clear();
   imageDataUrlCache.clear();
   projectIconCache.clear();
+  // A binding change is a fresh chance for the in-process simulator service to
+  // exist (a project opened where before none was bound). Without this the
+  // latch stayed true for the life of the preload and every local Apple call
+  // kept reporting "needs an open project" even after one opened.
+  iosSimulatorLocalServiceMissing = false;
 }
 
 function clearIosSimulatorStatusCaches(): void {
@@ -8126,7 +8131,9 @@ const adeBridge = {
       args: IosSimulatorStartStreamArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorStreamStatus> =>
-      callIosSimulatorMutation(pin, "startStream", args, IPC.iosSimulatorStartStream),
+      // `localViewer` marks a stream a renderer on this machine is watching, so
+      // the relay does not stop it when the last remote viewer leaves.
+      callIosSimulatorMutation(pin, "startStream", { ...args, localViewer: true }, IPC.iosSimulatorStartStream),
     // `pin` stays FIRST on these two. Every renderer call site passes only a
     // pin, and reordering to put the new lane scope first would have silently
     // turned a binding into a scope object at ~10 call sites this unit does not
@@ -8135,7 +8142,7 @@ const adeBridge = {
       pin?: OpenProjectBinding | null,
       args: { laneId?: string | null; chatSessionId?: string | null } = {},
     ): Promise<IosSimulatorStreamStatus> =>
-      callIosSimulatorMutation(pin, "stopStream", args, IPC.iosSimulatorStopStream),
+      callIosSimulatorMutation(pin, "stopStream", { ...args, localViewer: true }, IPC.iosSimulatorStopStream),
     getStreamStatus: async (
       pin?: OpenProjectBinding | null,
       args: { laneId?: string | null; chatSessionId?: string | null } = {},

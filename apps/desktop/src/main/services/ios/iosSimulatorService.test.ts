@@ -7,6 +7,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   __testSetIosSimulatorHelperFactory,
   __testSetIosSimulatorProcessHooks,
+  clampStreamBitrateKbps,
   clampStreamFps,
   createIosSimulatorService,
   IOS_SIMULATOR_STREAM_BACKEND,
@@ -900,6 +901,50 @@ describe("iosSimulatorService Simulator.app launch visibility", () => {
     }
   });
 
+  it("forwards a caller's bitrate cap to the encoder, and clamps it", async () => {
+    // The account's `apple.remoteBitrateKbpsCap` reaches the encoder only if the
+    // service passes it through; it was dropped before, which left the setting
+    // with no effect on the stream.
+    expect(clampStreamBitrateKbps(2500)).toBe(2500);
+    expect(clampStreamBitrateKbps(10)).toBe(100);
+    expect(clampStreamBitrateKbps(50_000)).toBe(20_000);
+    expect(clampStreamBitrateKbps(Number.NaN)).toBeNull();
+    expect(clampStreamBitrateKbps(null)).toBeNull();
+
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const runMock = vi.fn(async (command: string, commandArgs: string[]) => {
+      if (command === "xcrun" && commandArgs.join(" ") === "simctl list devices available --json") {
+        return { stdout: simulatorDevicesJson, stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    });
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run: runMock, commandExists: () => true });
+    const helper = fakeSimHelper();
+    const restoreHelper = __testSetIosSimulatorHelperFactory(() => helper.client);
+    const service = createIosSimulatorService({ projectRoot: os.tmpdir(), logger: noopLogger });
+
+    try {
+      await service.startStream({ deviceUdid: "device-1", bitrateKbps: 2500 });
+      expect(helper.sent.at(-1)).toMatchObject({
+        type: "capture-start",
+        udid: "device-1",
+        bitrateKbps: 2500,
+      });
+
+      // No cap: the helper keeps its own default, so the field is absent.
+      await service.stopStream({});
+      await service.startStream({ deviceUdid: "device-1", bitrateKbps: null });
+      const payload = helper.sent.at(-1) as Record<string, unknown>;
+      expect(payload).toMatchObject({ type: "capture-start", udid: "device-1" });
+      expect(payload).not.toHaveProperty("bitrateKbps");
+    } finally {
+      service.dispose();
+      restoreHelper();
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
   it("keeps one lane's stream out of another lane's", async () => {
     // Sessions and streams are per-lane now. A project-wide stream meant
     // `stream-stop` on one lane killed the other lane's picture.
@@ -1278,6 +1323,13 @@ describe("iosSimulatorService lane-correct build root", () => {
     writeMinimalXcodeProject(laneWorktree, "Prox");
     const { run, builds } = simulatorRunMock();
     const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    // Capabilities now come from the vendored helper binary, not `idb`, so
+    // point the resolver at a real file: the assertion must not depend on a
+    // gitignored build output (and has to hold where no Mac build exists).
+    const helperBinary = path.join(projectRoot, "ade-sim-helper");
+    fs.writeFileSync(helperBinary, "");
+    const previousHelperPath = process.env.ADE_SIM_HELPER_PATH;
+    process.env.ADE_SIM_HELPER_PATH = helperBinary;
     const service = createIosSimulatorService({
       projectRoot,
       logger: noopLogger,
@@ -1297,6 +1349,8 @@ describe("iosSimulatorService lane-correct build root", () => {
       expect(result.capabilities).toEqual({ canTap: true, canType: true, canDrag: true, canInspect: true });
     } finally {
       service.dispose();
+      if (previousHelperPath === undefined) delete process.env.ADE_SIM_HELPER_PATH;
+      else process.env.ADE_SIM_HELPER_PATH = previousHelperPath;
       fs.rmSync(projectRoot, { recursive: true, force: true });
       restoreHooks();
       platformSpy.mockRestore();

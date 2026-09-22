@@ -2956,22 +2956,22 @@ Known limits, all deliberate:
 
 The desktop's Work tools pane cannot run on a phone — the browser is a
 `WebContentsView`, App Control is a CDP socket to a local process, and the
-iOS panel is a capture stream — so the phone gets a **read-only mirror**
-and no controls at all. A button that could not do anything would be a
-lie.
+iOS panel is a capture stream — so the phone gets a **read-only mirror**;
+the one button it offers opens a view-only stream, never remote control.
 
 `WorkToolsRow.swift` sits above a chat transcript as a one-line
 disclosure: "Tools · Browser active · 3 tabs ›". It hides itself entirely
 when the brain does not advertise `workTools.getLaneState`
 (`SyncService.supportsWorkToolsState`) or when there is nothing to say —
 an empty "Tools ›" that opens onto "nothing here" is worse than no row.
-Tapping it opens `WorkToolsSheet.swift`: three cards in the order people
+Tapping it opens `WorkToolsSheet.swift`: four cards in the order people
 ask about them — what the desktop has open now, with the last frame it
-captured; the browser's tabs; App Control's session — plus pull to
-refresh. Tool display names track the desktop catalogue, so `ios` reads
-**Simulator** (the icon is a phone and the availability rule already says
-macOS; the platform word was carrying nothing), and there is no `pr` tool
-name because the Work tools pane no longer has one.
+captured; the lane's Apple device, a view-only live stream when the host
+advertises `apple.status`; the browser's tabs; App Control's session —
+plus pull to refresh. Tool display names track the desktop catalogue, so
+`ios` reads **Apple** (the icon is a phone and the availability rule
+already says macOS; the platform word was carrying nothing), and there is
+no `pr` tool name because the Work tools pane no longer has one.
 
 Refresh is a poll, not a subscription: the brain has no generic
 named-event channel to the phone (its push surface is cr-sqlite

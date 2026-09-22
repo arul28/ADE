@@ -7665,7 +7665,12 @@ export function createLaneService({
             projectRoot,
             store: db,
             run: async (command, commandArgs, options) => {
-              const result = await execFileAsync(command, commandArgs, { timeout: options?.timeoutMs ?? 30_000 });
+              const result = await execFileAsync(command, commandArgs, {
+                timeout: options?.timeoutMs ?? 30_000,
+                // No console window on Windows, and no argv shell parsing on any
+                // platform — the simctl arguments are literal.
+                windowsHide: true,
+              });
               return { stdout: result.stdout?.toString() ?? "", stderr: result.stderr?.toString() ?? "" };
             },
             removeDirectory: (directory) => fs.promises.rm(directory, { recursive: true, force: true }),

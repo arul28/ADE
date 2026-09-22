@@ -298,20 +298,27 @@ export type SimRecordingServiceDeps = {
 };
 
 /**
- * The instance the chat turn lifecycle talks to.
+ * The instances the chat turn lifecycle talks to.
  *
  * A module-level handle rather than another constructor argument threaded
  * through `main.ts` → `agentChatService` → the provider layer, because the
  * turn-end hook is *one* fire-and-forget call and the alternative is five files
- * of wiring for it. Only a service with a real helper transport claims the
- * handle, so unit 2A's inert fallback (`createSimRecordingService()` with no
- * deps) cannot shadow the wired one.
+ * of wiring for it. Only a service with a real helper transport claims a slot,
+ * so unit 2A's inert fallback (`createSimRecordingService()` with no deps)
+ * cannot shadow a wired one.
+ *
+ * A set, not a single slot: one service is built per open project, and a chat
+ * session id resolves to at most one of them. Overwriting the handle meant only
+ * the newest project's recorder ever heard a turn end, so auto-recordings in
+ * every other project ran to the ten-minute cap. Notifying all is safe — each
+ * `onTurnEnded` no-ops for a session it does not own.
  */
-let turnEndTarget: SimRecordingService | null = null;
+const turnEndTargets = new Set<SimRecordingService>();
 
 /** Called by `createSimRecordingService`; exported for tests. */
 export function setActiveSimRecordingService(service: SimRecordingService | null): void {
-  turnEndTarget = service;
+  if (service) turnEndTargets.add(service);
+  else turnEndTargets.clear();
 }
 
 /**
@@ -322,12 +329,14 @@ export function setActiveSimRecordingService(service: SimRecordingService | null
  * everything. This is the only function the chat lifecycle imports.
  */
 export function notifySimRecordingTurnEnded(chatSessionId: string | null | undefined): void {
-  if (!chatSessionId || !turnEndTarget) return;
-  try {
-    void turnEndTarget.onTurnEnded(chatSessionId).catch(() => {});
-  } catch {
-    // Unreachable in practice; kept so a future synchronous throw cannot
-    // escape into the turn-settle path.
+  if (!chatSessionId) return;
+  for (const target of turnEndTargets) {
+    try {
+      void target.onTurnEnded(chatSessionId).catch(() => {});
+    } catch {
+      // Unreachable in practice; kept so a future synchronous throw cannot
+      // escape into the turn-settle path.
+    }
   }
 }
 
@@ -628,7 +637,12 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
   const removeFiles = (record: SimRecording): void => {
     if (record.proofArtifactId) {
       try {
-        deps.artifactFiler?.deleteArtifacts?.({ artifactIds: [record.proofArtifactId] });
+        // The broker's delete may be async; the video bytes come off disk first,
+        // and a rejected drawer delete must not surface as a recorder failure.
+        void Promise.resolve(deps.artifactFiler?.deleteArtifacts?.({ artifactIds: [record.proofArtifactId] }))
+          .catch((error: unknown) => {
+            warn("apple.recording.proof_delete_failed", { id: record.id, error: String(error) });
+          });
       } catch (error) {
         // The bytes are what the user asked to be rid of. A drawer row left
         // pointing at a deleted file is the broken-artifact sweeper's problem.
@@ -872,7 +886,7 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
 
     dispose() {
       disposed = true;
-      if (turnEndTarget === service) turnEndTarget = null;
+      turnEndTargets.delete(service);
       for (const entry of active.values()) {
         if (entry.capTimer) clearTimeout(entry.capTimer);
         entry.capTimer = null;

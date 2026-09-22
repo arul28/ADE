@@ -32,6 +32,12 @@ export function useAppleLaneDeviceCard(args: {
   const pinRef = useRef(runtimePin);
   pinRef.current = runtimePin;
 
+  // A lane switch during a boot must not leave the next lane showing
+  // "starting" until an unrelated event arrives.
+  useEffect(() => {
+    setStarting(false);
+  }, [enabled, laneId]);
+
   useEffect(() => {
     if (!enabled || !laneId) {
       setCard(null);

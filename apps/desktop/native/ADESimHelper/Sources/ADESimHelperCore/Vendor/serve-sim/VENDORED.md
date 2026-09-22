@@ -15,13 +15,14 @@ written to satisfy Apache-2.0 §4 attribution for a derivative distribution.
 
 ## Files taken verbatim
 
-Every file below is byte-for-byte upstream. Do not hand-edit them; re-vendor
-from a newer commit and update the table instead.
+Every file below is byte-for-byte upstream except `CaptureEngine.swift`, which
+carries one documented ADE patch (see "ADE patches" below). Do not hand-edit the
+verbatim files; re-vendor from a newer commit and update the table instead.
 
 | File | SHA-256 |
 |---|---|
 | `AccessibilityBridge.swift` | `d3163df97c1efef3ea7aa0e45a939cfa77fa374a968e5fb7964f7f4c4630044d` |
-| `CaptureEngine.swift` | `5a796d364cf2f1e74e81fa4e3817c43c95f32bda3a3e4086f7a38ea6cf7919ba` |
+| `CaptureEngine.swift` | `5a796d364cf2f1e74e81fa4e3817c43c95f32bda3a3e4086f7a38ea6cf7919ba` (ADE-patched — see below) |
 | `FrameCapture.swift` | `1923bf752f82a1023395b556f428861b2f5c26d1c78dfe49e6a51f8a9559399a` |
 | `H264Encoder.swift` | `11dfb325ab7764009ff04e01e84b9f0fa1c9c2975fca872044c84237ac6e836b` |
 | `HIDInjector.swift` | `1c62b64d37f6702964c0eb3f7824a77f69e6ba9ebb6a2a5a573f068f26482483` |
@@ -30,6 +31,21 @@ from a newer commit and update the table instead.
 | `StreamFormat.swift` | `a43ca072045ddf63ae3f8cccb61a202c538730747e6e242c0509ae067501aca9` |
 | `VideoEncoder.swift` | `f51cea194e9784af43f400621632c5b33ef5c8bb99bf55af005300ed689335a4` |
 | `Xcode.swift` | `a7a800e888378d4d6a4385748613c02a45c558d7328a21a2a19fc0ba38073464` |
+
+## ADE patches to vendored files
+
+`CaptureEngine.swift` is patched in two places, both to let a caller cap the
+H.264 encoder's bitrate (upstream fixes `AVCCEncoder` at 60 fps / 6 Mbps, which
+made ADE's "Remote viewer bitrate cap" setting inert):
+
+- `addAVCCConsumer(onFrame:bitrateKbps:)` gains an optional `bitrateKbps` and
+  passes it to the encoder.
+- `AVCCEncoder.init(bitrateKbps:)` builds `H264Encoder(fps: 60, bitrate:)` from
+  the cap (clamped 100–20 000 kbps), defaulting to upstream's 6 000 when nil.
+
+Everything else in the file is unchanged. The correct long-term fix is to
+upstream a wider `addAVCCConsumer` API and drop this patch; until then, when
+re-vendoring from a newer commit, re-apply this patch and update the note.
 
 ## Deliberately NOT vendored
 
