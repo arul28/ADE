@@ -3511,6 +3511,7 @@ app.whenReady().then(async () => {
       logger,
       projectConfigService,
       projectRoot,
+      modelManifest: { adeVersion: app.getVersion(), fetchRemote: true },
     });
 
     const onboardingService = createOnboardingService({

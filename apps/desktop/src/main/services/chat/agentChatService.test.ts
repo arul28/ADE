@@ -16227,7 +16227,8 @@ describe("createAgentChatService", () => {
       expect((row!.event as any).description).toBe("Fix flaky tests");
       expect((row!.event as any).spawnKind).toBe("subagent");
       expect((row!.event as any).model).toBe(child.model);
-      expect(child.model).toBe("claude-opus-5");
+      // `opus` resolves to the newest Opus (model-manifest.json).
+      expect(child.model).toBe("claude-opus-5-5");
 
       expect(child.orchestrationParentSessionId).toBe(parent.id);
       expect(child.spawnKind).toBe("subagent");

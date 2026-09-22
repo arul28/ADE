@@ -621,6 +621,7 @@ import {
   type RuntimeBudgetParticipant,
 } from "./chatRuntimeBudget";
 import { createChatMentionService, markChatMentionsExpanded } from "./chatMentionService";
+import { refreshModelManifestIfStale } from "../ai/modelManifestService";
 import {
   claudeJsonlToChatEvents,
   codexTurnsToChatEvents,
@@ -629,6 +630,8 @@ import {
   readTailLines,
 } from "./externalChatHistoryImport";
 import {
+  getActiveModelManifest,
+  onModelManifestApplied,
   getDefaultModelDescriptor,
   getDynamicOpenCodeModelDescriptors,
   getDynamicPiModelDescriptors,
@@ -4265,13 +4268,18 @@ const CLAUDE_WARMUP_WAIT_TIMEOUT_MS = 20_000;
 const CLAUDE_STOP_TASK_TIMEOUT_MS = 2_000;
 const CLAUDE_INTERRUPT_REQUEST_TIMEOUT_MS = 2_500;
 
-const DEFAULT_CODEX_DESCRIPTOR = getDefaultModelDescriptor("codex");
-const DEFAULT_CLAUDE_DESCRIPTOR = getDefaultModelDescriptor("claude");
+// Codex and Claude defaults can move at runtime (model-manifest.json), so they
+// are read on use rather than frozen at module load.
+const defaultCodexDescriptor = () => getDefaultModelDescriptor("codex");
+const defaultClaudeDescriptor = () => getDefaultModelDescriptor("claude");
 const DEFAULT_OPENCODE_DESCRIPTOR = getDefaultModelDescriptor("opencode");
 const DEFAULT_CURSOR_DESCRIPTOR = getDefaultModelDescriptor("cursor");
 const DEFAULT_DROID_DESCRIPTOR = getDefaultModelDescriptor("droid");
-const DEFAULT_CODEX_MODEL = DEFAULT_CODEX_DESCRIPTOR?.providerModelId ?? "gpt-6-astra";
-const DEFAULT_CLAUDE_MODEL = DEFAULT_CLAUDE_DESCRIPTOR?.providerModelId ?? DEFAULT_CLAUDE_DESCRIPTOR?.shortId ?? "sonnet";
+const defaultCodexModel = (): string => defaultCodexDescriptor()?.providerModelId ?? "gpt-6-astra";
+const defaultClaudeModel = (): string => {
+  const descriptor = defaultClaudeDescriptor();
+  return descriptor?.providerModelId ?? descriptor?.shortId ?? "sonnet";
+};
 const DEFAULT_OPENCODE_MODEL_ID = DEFAULT_OPENCODE_DESCRIPTOR?.id ?? "anthropic/claude-sonnet-5";
 const DEFAULT_CURSOR_MODEL = DEFAULT_CURSOR_DESCRIPTOR?.providerModelId ?? "auto";
 const DEFAULT_DROID_MODEL = DEFAULT_DROID_DESCRIPTOR?.providerModelId ?? "claude-sonnet-4-5-20250929";
@@ -4502,7 +4510,7 @@ function codexModelInfoFromDescriptor(
     id: descriptor.providerModelId,
     displayName: descriptor.displayName,
     description: overrides?.description ?? describeCodexModel(descriptor.displayName),
-    isDefault: overrides?.isDefault ?? descriptor.id === DEFAULT_CODEX_DESCRIPTOR?.id,
+    isDefault: overrides?.isDefault ?? descriptor.id === defaultCodexDescriptor()?.id,
     reasoningEfforts: advertisedReasoningEfforts,
     defaultReasoningEffort: overrides?.defaultReasoningEffort
       ?? descriptor.defaultReasoningEffort
@@ -4547,15 +4555,15 @@ function acpModelInfoFromDescriptor(
   };
 }
 
-const CODEX_FALLBACK_MODELS: AgentChatModelInfo[] = listModelDescriptorsForProvider("codex").map((descriptor) =>
+const codexFallbackModels = (): AgentChatModelInfo[] => listModelDescriptorsForProvider("codex").map((descriptor) =>
   codexModelInfoFromDescriptor(descriptor)
 );
 
-const CLAUDE_FALLBACK_MODELS: AgentChatModelInfo[] = listModelDescriptorsForProvider("claude").map((descriptor) => ({
+const claudeFallbackModels = (): AgentChatModelInfo[] => listModelDescriptorsForProvider("claude").map((descriptor) => ({
   id: descriptor.providerModelId,
   displayName: descriptor.displayName,
   description: describeClaudeModel(descriptor.displayName),
-  isDefault: descriptor.id === DEFAULT_CLAUDE_DESCRIPTOR?.id,
+  isDefault: descriptor.id === defaultClaudeDescriptor()?.id,
   reasoningEfforts: descriptor.capabilities.reasoning && descriptor.reasoningTiers?.length
     ? CLAUDE_REASONING_EFFORTS.filter((effort) => descriptor.reasoningTiers?.includes(effort.effort))
     : [],
@@ -6881,8 +6889,8 @@ function resolveClaudeTurnModelPayload(
 
 function fallbackModelForProvider(provider: AgentChatProvider): string {
   if (provider === "pi") return getDynamicPiModelDescriptors()[0]?.id ?? "pi/default";
-  if (provider === "codex") return DEFAULT_CODEX_MODEL;
-  if (provider === "claude") return DEFAULT_CLAUDE_MODEL;
+  if (provider === "codex") return defaultCodexModel();
+  if (provider === "claude") return defaultClaudeModel();
   if (provider === "cursor") return DEFAULT_CURSOR_MODEL;
   if (provider === "droid") return DEFAULT_DROID_MODEL;
   return DEFAULT_OPENCODE_MODEL_ID;
@@ -35386,7 +35394,7 @@ export function createAgentChatService(args: {
       // unrewritten. `resolveClaudeCliModel` is ADE's substring alias table,
       // which is right for ADE's catalog and would silently repoint a preset.
       model: claudePresetPlan?.model?.trim()
-        || resolveClaudeCliModel(claudeDescriptor?.providerModelId ?? managed.session.model ?? DEFAULT_CLAUDE_MODEL),
+        || resolveClaudeCliModel(claudeDescriptor?.providerModelId ?? managed.session.model ?? defaultClaudeModel()),
       spawnClaudeCodeProcess: (spawnOptions) => claudeSubprocessReaper.spawnClaudeCodeProcess(spawnOptions, {
         sessionId: managed.session.id,
         sdkSessionId: runtime.sdkSessionId,
@@ -35642,7 +35650,7 @@ export function createAgentChatService(args: {
         } as any;
       }
     }
-    const model = opts.model ?? resolveClaudeCliModel(managed.session.model) ?? DEFAULT_CLAUDE_MODEL;
+    const model = opts.model ?? resolveClaudeCliModel(managed.session.model) ?? defaultClaudeModel();
     return { ...opts, model };
   };
 
@@ -36817,7 +36825,7 @@ export function createAgentChatService(args: {
         id: randomUUID(),
         laneId: "temporary",
         provider: "codex",
-        model: DEFAULT_CODEX_MODEL,
+        model: defaultCodexModel(),
         capabilityMode: "full_tooling",
         status: "idle",
         idleSinceAt: null,
@@ -36970,7 +36978,7 @@ export function createAgentChatService(args: {
             const appServerEntry = byRegistryId.get(descriptor.id);
             return codexModelInfoFromDescriptor(descriptor, {
               description: appServerEntry?.description ?? describeCodexModel(descriptor.displayName),
-              isDefault: descriptor.id === DEFAULT_CODEX_DESCRIPTOR?.id,
+              isDefault: descriptor.id === defaultCodexDescriptor()?.id,
               reasoningEfforts: appServerEntry?.reasoningEfforts?.length
                 ? appServerEntry.reasoningEfforts
                 : undefined,
@@ -36983,16 +36991,16 @@ export function createAgentChatService(args: {
         const dedupedExtras = extras.filter((entry) => !preferredIds.has(entry.id));
         const result = [...ordered, ...dedupedExtras];
         if (result.length) {
-          const hasRegistryDefault = result.some((entry) => entry.modelId === DEFAULT_CODEX_DESCRIPTOR?.id);
+          const hasRegistryDefault = result.some((entry) => entry.modelId === defaultCodexDescriptor()?.id);
           return result.map((entry, index) => ({
             ...entry,
-            isDefault: entry.modelId === DEFAULT_CODEX_DESCRIPTOR?.id || (!hasRegistryDefault && (entry.isDefault || index === 0)),
+            isDefault: entry.modelId === defaultCodexDescriptor()?.id || (!hasRegistryDefault && (entry.isDefault || index === 0)),
           }));
         }
       }
-      return CODEX_FALLBACK_MODELS;
+      return codexFallbackModels();
     } catch {
-      return CODEX_FALLBACK_MODELS;
+      return codexFallbackModels();
     } finally {
       // This throwaway runtime is not a tracked session; suppress exit-side lifecycle hooks.
       tempSession.closed = true;
@@ -37027,7 +37035,7 @@ export function createAgentChatService(args: {
           id,
           displayName,
           ...(description ? { description } : {}),
-          isDefault: descriptor.id === DEFAULT_CLAUDE_DESCRIPTOR?.id,
+          isDefault: descriptor.id === defaultClaudeDescriptor()?.id,
           reasoningEfforts: descriptor.capabilities.reasoning && descriptor.reasoningTiers?.length
             ? CLAUDE_REASONING_EFFORTS.filter((effort) => descriptor.reasoningTiers?.includes(effort.effort))
             : [],
@@ -37040,7 +37048,7 @@ export function createAgentChatService(args: {
         };
       });
 
-    if (!mapped.length) return CLAUDE_FALLBACK_MODELS;
+    if (!mapped.length) return claudeFallbackModels();
     if (!mapped.some((entry) => entry.isDefault)) {
       const preferredIdx = mapped.findIndex((entry) => /sonnet/i.test(entry.id) || /sonnet/i.test(entry.displayName));
       if (preferredIdx >= 0) {
@@ -37587,9 +37595,9 @@ export function createAgentChatService(args: {
     const normalizedInputModel = rawModel.trim()
       || modelFromModelId
       || (provider === "codex"
-        ? DEFAULT_CODEX_MODEL
+        ? defaultCodexModel()
         : provider === "claude"
-          ? DEFAULT_CLAUDE_MODEL
+          ? defaultClaudeModel()
           : provider === "cursor"
             ? DEFAULT_CURSOR_MODEL
             : provider === "droid"
@@ -40524,7 +40532,7 @@ export function createAgentChatService(args: {
         provider: "claude",
         model: targetDescriptor
           ? (targetDescriptor.isCliWrapped ? targetDescriptor.providerModelId : targetDescriptor.id)
-          : DEFAULT_CLAUDE_MODEL,
+          : defaultClaudeModel(),
         ...(targetDescriptor ? { modelId: targetDescriptor.id } : {}),
         ...(args.title?.trim() ? { title: args.title.trim() } : {}),
       });
@@ -40652,7 +40660,7 @@ export function createAgentChatService(args: {
         provider: "codex",
         model: targetDescriptor
           ? (targetDescriptor.isCliWrapped ? targetDescriptor.providerModelId : targetDescriptor.id)
-          : DEFAULT_CODEX_MODEL,
+          : defaultCodexModel(),
         ...(targetDescriptor ? { modelId: targetDescriptor.id } : {}),
         ...(args.title?.trim() ? { title: args.title.trim() } : {}),
       });
@@ -40780,7 +40788,7 @@ export function createAgentChatService(args: {
         const reader = await createSession({
           laneId: args.laneId,
           provider: "codex",
-          model: DEFAULT_CODEX_MODEL,
+          model: defaultCodexModel(),
         });
         readerSessionId = reader.id;
         const readerManaged = ensureManagedSession(reader.id);
@@ -52120,6 +52128,13 @@ export function createAgentChatService(args: {
     "copilot",
   ];
   let modelCatalogCache: AgentChatModelCatalog | null = null;
+  // A newly applied model manifest can add, hide, or re-default models, so the
+  // cached catalog is stale until the next rebuild — served once more while a
+  // background refresh picks up the change, never rebuilt on the caller.
+  let modelCatalogManifestStale = false;
+  const disposeModelManifestListener = onModelManifestApplied(() => {
+    modelCatalogManifestStale = true;
+  });
 
   const managedSessionSupportsFastMode = (managed: ManagedChatSession): boolean =>
     sessionSupportsFastMode(managed.session, modelCatalogCache);
@@ -52185,7 +52200,7 @@ export function createAgentChatService(args: {
     refreshProvider?: AgentChatModelCatalogRefreshProvider,
     cursorSource?: AgentChatCursorModelSource,
   ): boolean => {
-    if (!modelCatalogCache) return true;
+    if (!modelCatalogCache || modelCatalogManifestStale) return true;
     if (refreshProvider === "cursor") {
       if (!modelCatalogContainsRefreshProvider(modelCatalogCache, refreshProvider, cursorSource)) return true;
       // Stale unless every source the request covers was itself refreshed
@@ -52840,8 +52855,14 @@ export function createAgentChatService(args: {
     const blocks = buildProviderGroupBlocks(descriptors, createModelOrderMap(), opencodeInventory.providers)
       .filter((group) => !providerIsDisabled(group.key));
 
+    const activeManifest = getActiveModelManifest();
     const catalog: AgentChatModelCatalog = {
       fetchedAt: nowIso(),
+      // Clients overlay the same model directory onto their own registry copy
+      // (renderer pickers read MODEL_REGISTRY directly), gated for this host.
+      ...(activeManifest
+        ? { modelManifest: { manifest: activeManifest.manifest, adeVersion: activeManifest.adeVersion } }
+        : {}),
       groups: blocks.map((group) => ({
         key: group.key as AgentChatProvider,
         displayName: group.label,
@@ -52924,6 +52945,7 @@ export function createAgentChatService(args: {
       })),
     };
     modelCatalogCache = catalog;
+    modelCatalogManifestStale = false;
     if (mode !== "cached" && shouldMarkModelCatalogProviderFresh(catalog, refreshProvider, catalogArgs?.cursorSource)) {
       markModelCatalogProviderFresh(refreshProvider, Date.now(), catalogArgs?.cursorSource);
     }
@@ -52953,6 +52975,9 @@ export function createAgentChatService(args: {
   };
 
   const getModelCatalog = async (catalogArgs?: AgentChatModelCatalogArgs): Promise<AgentChatModelCatalog> => {
+    // Someone is about to look at models: check for a newer model directory.
+    // Rate-limited and non-blocking; a hit marks this catalog stale.
+    refreshModelManifestIfStale();
     const mode = catalogArgs?.mode ?? "refresh-stale";
     if (mode === "refresh-stale" && modelCatalogCache) {
       const stale = isModelCatalogRefreshStale(catalogArgs?.refreshProvider, catalogArgs?.cursorSource);
@@ -53258,6 +53283,7 @@ export function createAgentChatService(args: {
 
   const disposeAll = async (): Promise<void> => {
     beginDispose();
+    disposeModelManifestListener();
     for (const sessionId of [...managedSessions.keys()]) {
       try {
         await disposeManagedSession({ sessionId }, "detached");
@@ -53271,6 +53297,7 @@ export function createAgentChatService(args: {
 
   const forceDisposeAll = (): void => {
     beginDispose();
+    disposeModelManifestListener();
     for (const sessionId of [...sessionTurnCollectors.keys()]) {
       rejectActiveSessionTurnCollector(sessionId, `Chat session '${sessionId}' was closed during shutdown.`);
     }

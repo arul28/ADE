@@ -1,5 +1,6 @@
 import { launchIdentityFields, resolveLaunchIdentity } from "./launchIdentity";
 import {
+  adoptHostModelManifest,
   getDefaultModelDescriptor,
   getModelById,
   getRuntimeModelRefForDescriptor,
@@ -813,7 +814,10 @@ export async function getModelCatalog(
   connection: AdeCodeConnection,
   args: AgentChatModelCatalogArgs = {},
 ): Promise<AgentChatModelCatalog> {
-  return await connection.action<AgentChatModelCatalog>("chat", "modelCatalog", args);
+  const catalog = await connection.action<AgentChatModelCatalog>("chat", "modelCatalog", args);
+  // Overlay the host's model directory so TUI lookups see the same models.
+  adoptHostModelManifest(catalog?.modelManifest);
+  return catalog;
 }
 
 export async function getAiSettingsStatus(

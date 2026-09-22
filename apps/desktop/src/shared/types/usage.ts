@@ -118,10 +118,9 @@ export type GetAdeUsageStatsArgs = {
 /**
  * Where the rates behind a cost figure came from.
  *
- * `list` = the maintained public rate list (BerriAI/litellm's published JSON,
- * fetched or from its cache), which is authoritative; `fallback` = ADE's
- * built-in table, used when the list is unavailable or does not price the
- * model; `mixed` = both, across different models.
+ * `list` = models.dev (fetched or from its cache), which is authoritative;
+ * `fallback` = the registry / model-manifest price for a model models.dev does
+ * not list yet, or zero; `mixed` = both, across different models.
  */
 export type AdeUsagePricingSource = "list" | "fallback" | "mixed";
 

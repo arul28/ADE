@@ -101,6 +101,51 @@ Helpers (also re-exported through `shared/modelRegistry.ts`):
   flags.
 - `getDynamicOpenCodeModelDescriptors()` / `listModelDescriptorsForProvider` -- discovery-aware lists.
 
+### Model manifest (models without a release)
+
+`shared/model-manifest.json` is the model directory ADE can change without
+shipping a build. It is bundled into every build and applied to
+`MODEL_REGISTRY` when the registry module loads, then
+`main/services/ai/modelManifestService.ts` re-fetches it from
+`raw.githubusercontent.com/arul28/ADE/main/apps/desktop/src/shared/model-manifest.json`.
+Merging a manifest edit to `main` reaches running installs within minutes.
+
+- **What it can do** (`shared/modelManifest.ts`): add a model the registry
+  does not have (every required descriptor field present, optional `after`
+  anchor for picker order), patch an existing row (price, context window,
+  aliases, efforts, `deprecated: true` to hide it), and set the app-wide
+  default (`defaults.app`) and per-provider defaults (`defaults.providers`).
+  Only whitelisted descriptor fields are patchable; one invalid field rejects
+  the whole file, and a file that would collide on an id or alias is rolled
+  back to the previous manifest.
+- **Version gating**: every model and default entry takes `minAdeVersion` /
+  `maxAdeVersionExclusive`. Use it when a model needs code a release has to
+  ship (a new effort level, a runtime contract). Dev, prerelease, and unknown
+  versions see every entry.
+- **Freshness**: sources are, best first, the GitHub copy, the last good copy
+  in `~/.ade/model-manifest.json`, and the bundled copy. A copy older than the
+  bundled one is ignored, so always bump `updatedAt` on edits. The service
+  polls every 10 minutes with `If-None-Match` (unchanged = empty 304) and
+  re-checks when a model catalog is requested and the last check is over
+  3 minutes old; failures back off 5 minutes. Nothing waits on the network.
+- **Who runs it**: desktop main and the long-lived agent brain
+  (`createAdeRuntime` with `chatRuntime: "agent"`). One-shot CLI commands and
+  embedded runtimes use the bundled/disk copy only.
+- **Propagation**: an applied manifest marks the chat model catalog stale
+  (served once more while a background rebuild runs). Every catalog response
+  carries `modelManifest`, and renderer pickers adopt it when it is newer than
+  their own copy (`adoptHostModelManifest`), so desktop, web, and the TUI
+  agree with the host. iOS reads the host catalog.
+- **Defaults**: `getAppDefaultModelDescriptor()` is what ADE uses when nothing
+  names a provider (new automations, batch launch, a chat whose model
+  vanished). `getDefaultModelDescriptor(provider)` checks the manifest's
+  provider default before the built-in heuristics. Both are read on use, never
+  frozen at module load.
+- **Adding a model**: add it to the manifest first (it ships to current
+  installs), then fold it into `MODEL_REGISTRY` in a later release if code
+  depends on it. Verify the wire id against the real runtime before merging
+  (`codex exec -m <id>` / `claude -p --model <id>`).
+
 Dynamic local-model discovery (`localModelDiscovery.ts`) mutates the
 registry at runtime when LM Studio or Ollama report available models.
 These descriptors carry `discoverySource` and a `harnessProfile` that
@@ -115,7 +160,12 @@ pickers. Opus 5 exposes `low|medium|high|xhigh|max`; Fable 5.1
 and Opus 4.8 add `ultracode`; Sonnet 5 exposes
 `low|medium|high|max`; Haiku 4.5 has no reasoning control. The Claude
 registry is ordered as
-Fable 5.1, Opus 5, Sonnet 5, Haiku 4.5, then Opus 4.8.
+Fable 5.1, Opus 5.5, Opus 5, Sonnet 5, Haiku 4.5, then Opus 4.8; pickers list
+the default (Opus 5.5) first.
+Opus 5.5 (added by the model manifest) selects provider model
+`claude-opus-5-5`, 1M context, `$4/$20`, defaults to `high` effort, and
+exposes `low|medium|high|xhigh|max` plus Fast Mode. It is the Claude default
+and the app-wide default.
 Opus 5 selects provider model `claude-opus-5`, defaults to `high`
 effort, and exposes `low|medium|high|xhigh|max` plus Fast Mode.
 Fable 5.1 selects provider model `claude-fable-5-1`, defaults to `high`
@@ -124,24 +174,26 @@ Sonnet 5 selects provider model `claude-sonnet-5`; retired Sonnet 4.6
 ids resolve forward for compatibility and no longer appear as picker
 rows. The basic Opus 4.7 row and the Opus 4.7 1M row are both removed;
 their old aliases, including `opus[1m]` / `opus-1m`, resolve to Opus 4.8.
-The generic `opus` alias selects Opus 5. Retired Fable 5 ids resolve to
+The generic `opus` alias selects Opus 5.5; `opus-5` selects Opus 5. Retired Fable 5 ids resolve to
 Fable 5.1. Opus 4.8 is labelled without a 1M suffix.
 Passthrough to the provider config is unchanged (the tier string is
 forwarded directly to the CLI / SDK, with no synthesized token budgets).
 
-### GPT-6 Astra and GPT-5.6 Codex models
+### GPT-6 and GPT-5.6 Codex models
 
 The OpenAI section is pinned in this order on every ADE model surface:
 
 1. `openai/gpt-6-astra` (`gpt-6-astra`) — default Codex model; 1,050,000 context; default effort `low`. No `none` and no `ultra` on the API ladder.
-2. `openai/gpt-5.6-sol` (`gpt-5.6-sol`) — 372k context; default effort `low`.
-3. `openai/gpt-5.6-terra` (`gpt-5.6-terra`) — 372k context; default effort `medium`.
-4. `openai/gpt-5.6-luna` (`gpt-5.6-luna`) — 372k context; default effort `medium`.
+2. `openai/gpt-6-sol` (`gpt-6-sol`) — added by the model manifest; 1,050,000 context; default effort `medium`; `$2/$10`. Alias `sol`.
+3. `openai/gpt-6-luna` (`gpt-6-luna`) — added by the model manifest; 1,050,000 context; default effort `medium`; `$0.10/$0.50`. Alias `luna`.
+4. `openai/gpt-5.6-sol` (`gpt-5.6-sol`) — 372k context; default effort `low`. Codex advertises `gpt-6-sol` as its upgrade.
+5. `openai/gpt-5.6-terra` (`gpt-5.6-terra`) — 372k context; default effort `medium`.
+6. `openai/gpt-5.6-luna` (`gpt-5.6-luna`) — 372k context; default effort `medium`.
 
-GPT-5.5 remains selectable below them. Astra and Luna expose `low | medium |
-high | xhigh | max`; Sol and Terra expose `low | medium | high | xhigh | max |
-ultra`. Desktop, ADE Code, and iOS label those values Light, Medium, High,
-Extra High, Max, and (for Sol/Terra) Ultra. Runtime app-server ladders retain
+GPT-5.5 remains selectable below them. Astra and both Lunas expose `low |
+medium | high | xhigh | max`; both Sols and Terra expose `low | medium | high |
+xhigh | max | ultra`. Desktop, ADE Code, and iOS label those values Light,
+Medium, High, Extra High, Max, and (for the Sols/Terra) Ultra. Runtime app-server ladders retain
 their advertised order. `ultra` is the multi-agent tier and carries a usage
 warning. Codex 0.155.1 is the pinned app-server that advertises Astra; older
 PATH installs without Astra metadata cannot start it.

@@ -2,6 +2,16 @@
 // Model Registry — single source of truth for all AI models
 // ---------------------------------------------------------------------------
 
+import bundledModelManifestJson from "./model-manifest.json";
+import {
+  missingFieldsForNewModel,
+  modelManifestGateAllows,
+  modelManifestUpdatedAtMs,
+  parseModelManifest,
+  type ModelManifest,
+  type ModelManifestDefault,
+  type ModelManifestPatchableField,
+} from "./modelManifest";
 import {
   ACP_PROVIDER_MODEL_COLORS,
   DYNAMIC_MODEL_COLORS,
@@ -186,10 +196,10 @@ export function modelSupportsFastMode(descriptor: ModelDescriptor | null | undef
   return modelSupportsServiceTier(descriptor, "fast");
 }
 
-/** GPT-6 Astra and GPT-5.6 Sol/Terra/Luna label `low` as Light. */
+/** The named GPT-6 and GPT-5.6 models (Astra, Sol, Terra, Luna) label `low` as Light. */
 export function usesCodexNamedEffortLabels(providerModelId: string | null | undefined): boolean {
   const normalized = (providerModelId?.trim() ?? "").replace(/^openai\//i, "");
-  return /^(?:gpt-6-astra|gpt-5\.6-(?:sol|terra|luna))$/i.test(normalized);
+  return /^(?:gpt-6-[a-z]+|gpt-5\.6-(?:sol|terra|luna))$/i.test(normalized);
 }
 
 function normalizeCursorControlValue(value: string | null | undefined): string | null {
@@ -990,6 +1000,203 @@ export function validateModelRegistry(models: ModelDescriptor[] = MODEL_REGISTRY
 
 validateModelRegistry();
 rebuildIndexes();
+
+// ---------------------------------------------------------------------------
+// Model manifest overlay (see modelManifest.ts)
+//
+// The manifest adds and patches rows in MODEL_REGISTRY in place, so every
+// lookup, picker, and default sees one registry. Each apply first reverts the
+// previous overlay, which keeps re-applying idempotent and lets a later
+// manifest drop a model an earlier one added.
+// ---------------------------------------------------------------------------
+
+type ManifestFieldUndo = { had: boolean; value: unknown };
+type ManifestPatchUndo = {
+  descriptor: ModelDescriptor;
+  previous: Partial<Record<ModelManifestPatchableField, ManifestFieldUndo>>;
+};
+
+export type ModelManifestApplyResult = {
+  applied: boolean;
+  added: string[];
+  patched: string[];
+  skipped: string[];
+  errors: string[];
+};
+
+let manifestPatchUndo: ManifestPatchUndo[] = [];
+let manifestAddedIds = new Set<string>();
+let activeManifest: ModelManifest | null = null;
+let activeManifestAdeVersion: string | null = null;
+let activeAppDefaults: string[] = [];
+let activeProviderDefaults = new Map<ModelProviderGroup, string[]>();
+const manifestListeners = new Set<() => void>();
+
+function cloneManifestValue<T>(value: T): T {
+  return value !== null && typeof value === "object" ? JSON.parse(JSON.stringify(value)) as T : value;
+}
+
+function revertModelManifestOverlay(): void {
+  for (const undo of [...manifestPatchUndo].reverse()) {
+    const target = undo.descriptor as Record<string, unknown>;
+    for (const [key, prior] of Object.entries(undo.previous) as Array<[string, ManifestFieldUndo]>) {
+      if (prior.had) target[key] = prior.value;
+      else delete target[key];
+    }
+  }
+  manifestPatchUndo = [];
+  if (manifestAddedIds.size) {
+    for (let index = MODEL_REGISTRY.length - 1; index >= 0; index -= 1) {
+      if (manifestAddedIds.has(MODEL_REGISTRY[index]!.id)) MODEL_REGISTRY.splice(index, 1);
+    }
+  }
+  manifestAddedIds = new Set();
+}
+
+function insertManifestModel(descriptor: ModelDescriptor, after: string | undefined): void {
+  const anchor = after ? MODEL_REGISTRY.findIndex((entry) => entry.id === after) : -1;
+  if (anchor >= 0) {
+    MODEL_REGISTRY.splice(anchor + 1, 0, descriptor);
+    return;
+  }
+  // No anchor: keep the provider's rows together by landing after its last row.
+  let lastOfFamily = -1;
+  MODEL_REGISTRY.forEach((entry, index) => {
+    if (entry.family === descriptor.family && entry.isCliWrapped === descriptor.isCliWrapped) lastOfFamily = index;
+  });
+  if (lastOfFamily >= 0) MODEL_REGISTRY.splice(lastOfFamily + 1, 0, descriptor);
+  else MODEL_REGISTRY.push(descriptor);
+}
+
+function gatedDefaultIds(list: ModelManifestDefault[] | undefined, adeVersion: string | null): string[] {
+  return (list ?? []).filter((entry) => modelManifestGateAllows(entry, adeVersion)).map((entry) => entry.model);
+}
+
+function applyManifestOverlay(manifest: ModelManifest, adeVersion: string | null): ModelManifestApplyResult {
+  const result: ModelManifestApplyResult = { applied: false, added: [], patched: [], skipped: [], errors: [] };
+  for (const entry of manifest.models) {
+    if (!modelManifestGateAllows(entry, adeVersion)) {
+      result.skipped.push(entry.id);
+      continue;
+    }
+    const existing = MODEL_REGISTRY.find((descriptor) => descriptor.id === entry.id);
+    if (existing) {
+      const target = existing as Record<string, unknown>;
+      const previous: ManifestPatchUndo["previous"] = {};
+      for (const [key, value] of Object.entries(entry.fields) as Array<[ModelManifestPatchableField, unknown]>) {
+        previous[key] = { had: Object.prototype.hasOwnProperty.call(target, key), value: target[key] };
+        target[key] = cloneManifestValue(value);
+      }
+      manifestPatchUndo.push({ descriptor: existing, previous });
+      result.patched.push(entry.id);
+      continue;
+    }
+    const missing = missingFieldsForNewModel(entry.fields);
+    if (missing.length) {
+      result.errors.push(`${entry.id}: a new model needs ${missing.join(", ")}`);
+      continue;
+    }
+    insertManifestModel({ id: entry.id, ...cloneManifestValue(entry.fields) } as ModelDescriptor, entry.after);
+    manifestAddedIds.add(entry.id);
+    result.added.push(entry.id);
+  }
+  validateModelRegistry();
+  result.applied = true;
+  return result;
+}
+
+/**
+ * Overlay a model manifest onto the registry. Replaces any previously applied
+ * manifest. If the overlay would corrupt the registry (a duplicate id or
+ * alias), nothing from the new manifest sticks and the previous one is
+ * restored.
+ */
+export function applyModelManifest(
+  manifest: ModelManifest,
+  options?: { adeVersion?: string | null },
+): ModelManifestApplyResult {
+  const adeVersion = options?.adeVersion?.trim() || null;
+  const previous = activeManifest;
+  const previousVersion = activeManifestAdeVersion;
+  revertModelManifestOverlay();
+  let result: ModelManifestApplyResult;
+  try {
+    result = applyManifestOverlay(manifest, adeVersion);
+  } catch (error) {
+    revertModelManifestOverlay();
+    const message = error instanceof Error ? error.message : String(error);
+    if (previous && previous !== manifest) {
+      try {
+        applyManifestOverlay(previous, previousVersion);
+      } catch {
+        revertModelManifestOverlay();
+      }
+    }
+    rebuildIndexes();
+    return { applied: false, added: [], patched: [], skipped: [], errors: [message] };
+  }
+  activeManifest = manifest;
+  activeManifestAdeVersion = adeVersion;
+  activeAppDefaults = gatedDefaultIds(manifest.defaults?.app, adeVersion);
+  activeProviderDefaults = new Map();
+  for (const [provider, list] of Object.entries(manifest.defaults?.providers ?? {})) {
+    if (!isModelProviderGroup(provider)) continue;
+    const ids = gatedDefaultIds(list, adeVersion);
+    if (ids.length) activeProviderDefaults.set(provider, ids);
+  }
+  rebuildIndexes();
+  for (const listener of manifestListeners) {
+    try {
+      listener();
+    } catch {
+      // A listener failing must not undo a good manifest.
+    }
+  }
+  return result;
+}
+
+/** The manifest currently overlaid on the registry, with the version it was gated for. */
+export function getActiveModelManifest(): { manifest: ModelManifest; adeVersion: string | null } | null {
+  return activeManifest ? { manifest: activeManifest, adeVersion: activeManifestAdeVersion } : null;
+}
+
+/**
+ * Adopt the manifest a host sent with its model catalog, if it is newer than
+ * the one already applied. Clients (renderer, TUI) talk to hosts that may be a
+ * few minutes apart on the same GitHub file; newest wins so a picker never
+ * steps backwards.
+ */
+export function adoptHostModelManifest(
+  snapshot: { manifest: unknown; adeVersion: string | null } | null | undefined,
+): boolean {
+  if (!snapshot) return false;
+  const parsed = parseModelManifest(snapshot.manifest);
+  if (!parsed.ok) return false;
+  const active = activeManifest;
+  if (active && modelManifestUpdatedAtMs(active) >= modelManifestUpdatedAtMs(parsed.manifest)) return false;
+  return applyModelManifest(parsed.manifest, { adeVersion: snapshot.adeVersion }).applied;
+}
+
+/** Subscribe to manifest applies (catalog caches use this to invalidate). */
+export function onModelManifestApplied(listener: () => void): () => void {
+  manifestListeners.add(listener);
+  return () => {
+    manifestListeners.delete(listener);
+  };
+}
+
+const parsedBundledModelManifest = parseModelManifest(bundledModelManifestJson);
+if (!parsedBundledModelManifest.ok) {
+  throw new Error(`Bundled model-manifest.json is invalid: ${parsedBundledModelManifest.errors.join("; ")}`);
+}
+/** The manifest this build shipped with. Always the floor under a fetched one. */
+export const BUNDLED_MODEL_MANIFEST: ModelManifest = parsedBundledModelManifest.manifest;
+{
+  const bundledResult = applyModelManifest(BUNDLED_MODEL_MANIFEST);
+  if (!bundledResult.applied || bundledResult.errors.length) {
+    throw new Error(`Bundled model-manifest.json failed to apply: ${bundledResult.errors.join("; ")}`);
+  }
+}
 
 export function isLocalProviderFamily(value: string): value is LocalProviderFamily {
   return value === "ollama" || value === "lmstudio";
@@ -2470,6 +2677,10 @@ function pickDefaultModelForProvider(
   provider: ModelProviderGroup,
   models: ModelDescriptor[],
 ): ModelDescriptor | undefined {
+  for (const id of activeProviderDefaults.get(provider) ?? []) {
+    const match = models.find((model) => model.id === id);
+    if (match) return match;
+  }
   if (provider === "claude") return pickDefaultClaudeModel(models);
   if (provider === "codex") return pickDefaultCodexModel(models);
   if (provider === "cursor") return pickDefaultCursorDescriptorFromCliList(models);
@@ -2505,6 +2716,19 @@ export function getDefaultModelDescriptor(
     ]);
   }
   return pickDefaultModelForProvider(provider, models);
+}
+
+/**
+ * The app-wide default model: what ADE picks when nothing names a provider
+ * (a new automation, a batch launch, a chat whose model vanished). The
+ * manifest owns it so it can move without a release.
+ */
+export function getAppDefaultModelDescriptor(): ModelDescriptor | undefined {
+  for (const id of activeAppDefaults) {
+    const descriptor = byId.get(id);
+    if (descriptor && !descriptor.deprecated) return descriptor;
+  }
+  return getDefaultModelDescriptor("claude") ?? getDefaultModelDescriptor("codex");
 }
 
 /**

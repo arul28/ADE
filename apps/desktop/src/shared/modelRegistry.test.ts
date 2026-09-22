@@ -245,7 +245,8 @@ describe("modelRegistry", () => {
     expect(byId).toBe("anthropic/claude-opus-4-8");
     expect(resolveModelSlug("gpt-5.4")).toBe("openai/gpt-5.4");
     expect(resolveModelSlug("gpt-5.5")).toBe("openai/gpt-5.5");
-    expect(resolveModelSlug("sol", "codex")).toBe("openai/gpt-5.6-sol");
+    expect(resolveModelSlug("sol", "codex")).toBe("openai/gpt-6-sol");
+    expect(resolveModelSlug("gpt-5.6-sol", "codex")).toBe("openai/gpt-5.6-sol");
     expect(resolveModelSlug("astra", "codex")).toBe("openai/gpt-6-astra");
     expect(resolveModelSlug("gpt-5.4", "codex")).toBe("openai/gpt-5.4");
     expect(resolveModelSlug("gpt-5.5", "codex")).toBe("openai/gpt-5.5");
@@ -276,6 +277,8 @@ describe("modelRegistry", () => {
   it("keeps only the allowed OpenAI chat models in the registry defaults", () => {
     expect(listModelDescriptorsForProvider("codex").map((model) => model.id)).toEqual([
       "openai/gpt-6-astra",
+      "openai/gpt-6-sol",
+      "openai/gpt-6-luna",
       "openai/gpt-5.6-sol",
       "openai/gpt-5.6-terra",
       "openai/gpt-5.6-luna",
@@ -335,9 +338,12 @@ describe("modelRegistry", () => {
       defaultReasoningEffort: "medium",
       serviceTiers: ["fast"],
     });
-    expect(resolveModelAlias("sol")?.id).toBe("openai/gpt-5.6-sol");
+    // The bare family names follow the newest generation (model-manifest.json).
+    expect(resolveModelAlias("sol")?.id).toBe("openai/gpt-6-sol");
+    expect(resolveModelAlias("gpt-5.6-sol")?.id).toBe("openai/gpt-5.6-sol");
     expect(resolveModelAlias("terra")?.id).toBe("openai/gpt-5.6-terra");
-    expect(resolveModelAlias("luna")?.id).toBe("openai/gpt-5.6-luna");
+    expect(resolveModelAlias("luna")?.id).toBe("openai/gpt-6-luna");
+    expect(resolveModelAlias("gpt-5.6-luna")?.id).toBe("openai/gpt-5.6-luna");
   });
 
   it("exposes GPT-5.5 with the real OpenAI model id and expected reasoning tiers", () => {
@@ -489,8 +495,9 @@ describe("modelRegistry", () => {
 
   describe("Claude descriptors", () => {
     it("orders the Claude model registry for picker display", () => {
-      expect(MODEL_REGISTRY.filter((model) => model.family === "anthropic").slice(0, 5).map((model) => model.id)).toEqual([
+      expect(MODEL_REGISTRY.filter((model) => model.family === "anthropic").slice(0, 6).map((model) => model.id)).toEqual([
         "anthropic/claude-fable-5-1",
+        "anthropic/claude-opus-5-5",
         "anthropic/claude-opus-5",
         "anthropic/claude-sonnet-5",
         "anthropic/claude-haiku-4-5",
@@ -518,7 +525,7 @@ describe("modelRegistry", () => {
       expect(opus5).toBeTruthy();
       expect(opus5).toMatchObject({
         displayName: "Claude Opus 5",
-        shortId: "opus",
+        shortId: "opus-5",
         family: "anthropic",
         providerRoute: "claude-cli",
         providerModelId: "claude-opus-5",
@@ -530,7 +537,8 @@ describe("modelRegistry", () => {
       });
       expect(opus5?.reasoningTiers).toEqual(["low", "medium", "high", "xhigh", "max"]);
       expect(opus5?.serviceTiers).toEqual(["fast"]);
-      expect(resolveModelAlias("opus")?.id).toBe("anthropic/claude-opus-5");
+      expect(resolveModelAlias("opus")?.id).toBe("anthropic/claude-opus-5-5");
+      expect(resolveModelAlias("opus-5")?.id).toBe("anthropic/claude-opus-5");
       expect(getRuntimeModelRefForDescriptor(opus5!, "claude")).toBe("claude-opus-5");
 
       const opus48 = getModelById("anthropic/claude-opus-4-8");
@@ -548,7 +556,8 @@ describe("modelRegistry", () => {
       });
       expect(opus48?.reasoningTiers).toEqual(["low", "medium", "high", "xhigh", "max", "ultracode"]);
       expect(opus48?.serviceTiers).toEqual(["fast"]);
-      expect(getDefaultModelDescriptor("claude")?.id).toBe("anthropic/claude-fable-5-1");
+      // model-manifest.json makes Opus 5.5 the Claude default.
+      expect(getDefaultModelDescriptor("claude")?.id).toBe("anthropic/claude-opus-5-5");
     });
 
     it("uses the exact Claude Sonnet 5 runtime model id", () => {

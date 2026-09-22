@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { getModelPricing, resolveModelDescriptor } from "../../../shared/modelRegistry";
+import { forEachModelsDevEntry, MODELS_DEV_API_URL, pickModelsDevEntries, type ModelsDevCost } from "../ai/modelsDevCatalog";
 import { isRecord } from "../shared/utils";
 
 export type TokenPrice = {
@@ -15,22 +17,17 @@ type PricingLogger = {
   warn?: (event: string, data?: Record<string, unknown>) => void;
 };
 
-const LITELLM_PRICING_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
 const PRICING_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 /**
- * How old a cached copy of the rate list may be and still be preferred to the
- * static table.
+ * How old a cached copy of the models.dev rates may be and still be used.
  *
- * The list wins over the table by policy — but only as *the current list*. The
- * refresh re-fetches after a day and keeps whatever it has when that fails, so
- * without a bound a machine that went offline in March would still be pricing
- * from March's rates a year later, and beating a table that had been corrected
- * since. Thirty days is far longer than any offline stretch that matters and
- * far shorter than the interval over which published rates move.
+ * The refresh re-fetches after a day and keeps whatever it has when that
+ * fails, so without a bound a machine that went offline in March would still
+ * price this year's usage at March's rates. Past this age the cache is dropped
+ * and prices fall back to the registry (and model manifest) rates.
  */
 const PRICING_CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
-const ADE_PRICING_CACHE_PATH = path.join(os.homedir(), ".ade", "litellm-pricing.json");
-const CODEBURN_PRICING_CACHE_PATH = path.join(os.homedir(), ".cache", "codeburn", "litellm-pricing.json");
+const ADE_PRICING_CACHE_PATH = path.join(os.homedir(), ".ade", "models-dev-pricing.json");
 
 export const WEB_SEARCH_COST_USD = 0.01;
 export const ONE_HOUR_CACHE_WRITE_MULTIPLIER = 1.6;
@@ -45,95 +42,6 @@ export function tokenPrice(inputPer1M: number, outputPer1M: number, cacheReadPer
     cacheRead: cacheReadPer1M / 1_000_000,
   };
 }
-
-/**
- * The fallback rate card, used only when the maintained public rate list
- * (BerriAI/litellm's `model_prices_and_context_window.json`) cannot be fetched
- * or cached — never in preference to it. See `resolveTokenPrice`.
- *
- * It is expected to drift: it is a hand-maintained snapshot and the list is
- * updated continuously. It exists so a machine that has never been online still
- * prices tokens at something sane, and so models the list has never heard of
- * (bare `qwen3.5-9b`, ADE's own coarse `claude-opus`/`codex` buckets) resolve at
- * all.
- *
- * Values here were last reconciled against the list on 2026-08-10; where the
- * two disagreed the list's number was taken, so that a machine with the cache
- * and a machine without it report the same cost for the same usage.
- */
-const STATIC_TOKEN_PRICES: Record<string, TokenPrice> = {
-  "claude-3-opus": tokenPrice(15, 75, 1.5, 18.75),
-  "claude-3-5-haiku": tokenPrice(1, 5, 0.1, 1.25),
-  "claude-3-5-sonnet": tokenPrice(3, 15, 0.3, 3.75),
-  "claude-3-7-sonnet": tokenPrice(3, 15, 0.3, 3.75),
-  "claude-3-haiku": tokenPrice(0.25, 1.25, 0.03, 0.3),
-  "claude-fable-5-1": tokenPrice(10, 50, 0.25, 12.5),
-  "claude-fable-5": tokenPrice(10, 50, 1, 12.5),
-  "claude-opus-5": tokenPrice(5, 25, 0.5, 6.25),
-  "claude-opus-4-1": tokenPrice(15, 75, 1.5, 18.75),
-  "claude-opus-4": tokenPrice(15, 75, 1.5, 18.75),
-  "claude-opus-4-8": tokenPrice(5, 25, 0.5, 6.25),
-  "claude-opus-4-7": tokenPrice(5, 25, 0.5, 6.25),
-  "claude-opus-4-6": tokenPrice(5, 25, 0.5, 6.25),
-  "claude-opus-4-5": tokenPrice(5, 25, 0.5, 6.25),
-  "claude-sonnet-5": tokenPrice(2, 10, 0.2, 2.5),
-  "claude-sonnet-4-6": tokenPrice(3, 15, 0.3, 3.75),
-  "claude-sonnet-4-5": tokenPrice(3, 15, 0.3, 3.75),
-  "claude-sonnet-4": tokenPrice(3, 15, 0.3, 3.75),
-  "claude-haiku-4-5": tokenPrice(1, 5, 0.1, 1.25),
-  "claude-opus": tokenPrice(5, 25),
-  "claude-sonnet": tokenPrice(3, 15),
-  "claude-haiku": tokenPrice(1, 5),
-  "gpt-6-astra": tokenPrice(10, 50, 1),
-  "gpt-5.6-sol": tokenPrice(5, 30, 0.5),
-  "gpt-5.6-terra": tokenPrice(2, 12, 0.2),
-  "gpt-5.6-luna": tokenPrice(0.2, 1.2, 0.02),
-  "gpt-5.5-pro": tokenPrice(30, 180, 3),
-  "gpt-5.5": tokenPrice(5, 30, 0.5),
-  "gpt-5.4-pro": tokenPrice(30, 180, 3),
-  "gpt-5.4-mini": tokenPrice(0.75, 4.5, 0.075),
-  "gpt-5.4-nano": tokenPrice(0.2, 1.25, 0.02),
-  "gpt-5.4": tokenPrice(2.5, 15, 0.25),
-  "gpt-5.3-codex": tokenPrice(1.75, 14, 0.175),
-  "gpt-5.2-pro": tokenPrice(21, 168),
-  "gpt-5.1-codex-mini": tokenPrice(0.25, 2, 0.025),
-  "gpt-5.1-codex": tokenPrice(1.25, 10, 0.125),
-  "gpt-5.1": tokenPrice(1.25, 10, 0.125),
-  "gpt-5.2": tokenPrice(1.75, 14, 0.175),
-  "gpt-5-pro": tokenPrice(15, 120),
-  "gpt-5-mini": tokenPrice(0.25, 2, 0.025),
-  "gpt-5-nano": tokenPrice(0.05, 0.4, 0.005),
-  "gpt-5": tokenPrice(1.25, 10, 0.125),
-  "gpt-4.1-nano": tokenPrice(0.1, 0.4, 0.025),
-  "gpt-4.1-mini": tokenPrice(0.4, 1.6, 0.1),
-  "gpt-4.1": tokenPrice(2, 8, 0.5),
-  "gpt-4o-mini": tokenPrice(0.165, 0.66, 0.075),
-  "gpt-4o": tokenPrice(2.5, 10, 1.25),
-  "o4-mini": tokenPrice(1.1, 4.4, 0.275),
-  "o3": tokenPrice(2, 8, 0.5),
-  "codex-mini-latest": tokenPrice(1.5, 6, 0.375),
-  "gemini-2.5-pro": tokenPrice(1.25, 10, 0.125),
-  "gemini-2.5-flash": tokenPrice(0.3, 2.5, 0.03),
-  "gemini-3-pro-preview": tokenPrice(2, 12, 0.2),
-  "gemini-3.1-pro-preview": tokenPrice(2, 12, 0.2),
-  "gemini-3-flash-preview": tokenPrice(0.5, 3, 0.05),
-  "gemini-3.5-flash": tokenPrice(1.5, 9, 0.15),
-  "gemini-3.1-flash-image-preview": tokenPrice(0.5, 3, 0.05),
-  "gemini-3.1-flash-lite-preview": tokenPrice(0.25, 1.5, 0.025),
-  "grok-code-fast-1": tokenPrice(0.2, 1.5, 0.02),
-  "grok-code-fast": tokenPrice(0.2, 1.5, 0.02),
-  "kimi-k2.5": tokenPrice(0.6, 3, 0.06),
-  // Reached through OpenCode and OpenClaw as bare names (`qwen3.5-9b`) as well
-  // as vendor-prefixed ones. litellm only carries the prefixed
-  // `qwen/qwen3.5-35b-a3b`, so without these the bare names resolved to no
-  // entry at all and their tokens were priced at exactly $0 with no signal —
-  // 1,177 assistant messages on this machine alone.
-  "qwen3.5-35b-a3b": tokenPrice(0.25, 2, 0.025),
-  "qwen3.5-35b": tokenPrice(0.1, 0.3, 0.01),
-  "qwen3.5-9b": tokenPrice(0.05, 0.15, 0.005),
-  "kimi-k2-thinking": tokenPrice(0.6, 2.5, 0.15),
-  "codex": tokenPrice(1.25, 10, 0.125),
-};
 
 /**
  * Names one runtime reports mapped onto the rate-card key that prices them.
@@ -152,9 +60,9 @@ const BUILTIN_PRICING_ALIASES: Record<string, string> = {
   "fable-5": "claude-fable-5-1",
   "fable-5.0": "claude-fable-5-1",
   astra: "gpt-6-astra",
-  sol: "gpt-5.6-sol",
+  sol: "gpt-6-sol",
   terra: "gpt-5.6-terra",
-  luna: "gpt-5.6-luna",
+  luna: "gpt-6-luna",
   "anthropic--claude-4.6-opus": "claude-opus-4-6",
   "anthropic--claude-4.6-sonnet": "claude-sonnet-4-6",
   "anthropic--claude-4.5-opus": "claude-opus-4-5",
@@ -246,12 +154,16 @@ let dynamicTokenPricingLoaded = false;
 let dynamicTokenPricingTimestamp = 0;
 let dynamicTokenPricing = new Map<string, TokenPrice>();
 let sortedDynamicPricingKeys: string[] | null = null;
-let sortedStaticPricingKeys: string[] | null = null;
 let refreshInFlight: Promise<number> | null = null;
 let disableDiskCacheForTest = false;
 
+/**
+ * Drop what is not part of the priced model id: a `@version` pin, a `-YYYYMMDD`
+ * snapshot date, and Claude Code's `[1m]` context-window tag (left on, a prefix
+ * match would price `claude-opus-4-8[1m]` as `claude-opus-4`).
+ */
 function normalizeModelVersion(model: string): string {
-  return model.trim().replace(/@.*$/, "").replace(/-\d{8}$/, "");
+  return model.trim().replace(/@.*$/, "").replace(/\[1m\]$/i, "").replace(/-\d{8}$/, "");
 }
 
 function canonicalPricingName(model: string): string {
@@ -289,50 +201,59 @@ function safePerTokenRate(value: unknown): number | null {
   return value;
 }
 
-/**
- * Fill the fields the list left out, one field at a time.
- *
- * Most list entries carry input and output and nothing else — the OpenAI rows
- * have no `cache_creation_input_token_cost` at all. Dropping such an entry back
- * to the whole static row would put the list's authority behind a model the
- * list *does* price, so the missing field is filled on its own: from the static
- * table if it knows this model, otherwise from the conventional ratios.
- */
+/** models.dev omits cache rates for some rows; use the conventional ratios. */
 function fillMissingPriceFields(
-  modelName: string,
   parts: { input: number; output: number; cacheWrite: number | null; cacheRead: number | null },
 ): TokenPrice {
-  if (parts.cacheWrite != null && parts.cacheRead != null) {
-    return { input: parts.input, output: parts.output, cacheWrite: parts.cacheWrite, cacheRead: parts.cacheRead };
-  }
-  const fallback = findPriceInMap(getStaticPricingMap(), modelName, "static");
   return {
     input: parts.input,
     output: parts.output,
-    cacheWrite: parts.cacheWrite ?? fallback?.cacheWrite ?? parts.input * 1.25,
-    cacheRead: parts.cacheRead ?? fallback?.cacheRead ?? parts.input * 0.1,
+    cacheWrite: parts.cacheWrite ?? parts.input * 1.25,
+    cacheRead: parts.cacheRead ?? parts.input * 0.1,
   };
 }
 
-function parseLiteLlmEntry(entry: unknown, modelName = ""): TokenPrice | null {
-  if (!isRecord(entry)) return null;
-  const input = safePerTokenRate(entry.input_cost_per_token);
-  const output = safePerTokenRate(entry.output_cost_per_token);
+/** A models.dev `cost` block (USD per million tokens) as per-token rates. */
+function parseModelsDevCost(cost: ModelsDevCost | undefined): TokenPrice | null {
+  if (!cost) return null;
+  const perToken = (value: unknown): number | null =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0 ? safePerTokenRate(value / 1_000_000) : null;
+  const input = perToken(cost.input);
+  const output = perToken(cost.output);
   if (input == null || output == null) return null;
-  return fillMissingPriceFields(modelName, {
+  return fillMissingPriceFields({
     input,
     output,
-    cacheWrite: safePerTokenRate(entry.cache_creation_input_token_cost),
-    cacheRead: safePerTokenRate(entry.cache_read_input_token_cost),
+    cacheWrite: perToken(cost.cache_write),
+    cacheRead: perToken(cost.cache_read),
   });
 }
 
-function parseCachedTokenPrice(entry: unknown, modelName = ""): TokenPrice | null {
+/**
+ * Rates keyed two ways: the bare model id priced at its vendor's own row
+ * (`claude-sonnet-4-5`), and `provider/model` for every provider that lists it
+ * (`openrouter/anthropic/claude-sonnet-4-5`), so a runtime that reports the
+ * route it used is billed at that route's price.
+ */
+function parseModelsDevPricing(data: unknown): Map<string, TokenPrice> | null {
+  const pricing = new Map<string, TokenPrice>();
+  forEachModelsDevEntry(data, (providerId, modelKey, entry) => {
+    const price = parseModelsDevCost(entry.cost);
+    if (price) pricing.set(`${providerId}/${modelKey}`.toLowerCase(), price);
+  });
+  for (const [bareId, { entry }] of pickModelsDevEntries(data)) {
+    const price = parseModelsDevCost(entry.cost);
+    if (price) pricing.set(bareId, price);
+  }
+  return pricing.size > 0 ? pricing : null;
+}
+
+function parseCachedTokenPrice(entry: unknown): TokenPrice | null {
   if (!isRecord(entry)) return null;
   const input = safePerTokenRate(entry.inputCostPerToken ?? entry.input);
   const output = safePerTokenRate(entry.outputCostPerToken ?? entry.output);
   if (input == null || output == null) return null;
-  return fillMissingPriceFields(modelName, {
+  return fillMissingPriceFields({
     input,
     output,
     cacheWrite: safePerTokenRate(entry.cacheWriteCostPerToken ?? entry.cacheWrite),
@@ -340,19 +261,12 @@ function parseCachedTokenPrice(entry: unknown, modelName = ""): TokenPrice | nul
   });
 }
 
-function parsePricingMap(data: unknown): Map<string, TokenPrice> | null {
+function parseCachedPricingMap(data: unknown): Map<string, TokenPrice> | null {
   if (!isRecord(data)) return null;
   const pricing = new Map<string, TokenPrice>();
   for (const [modelName, rawEntry] of Object.entries(data)) {
-    const price = parseCachedTokenPrice(rawEntry, modelName) ?? parseLiteLlmEntry(rawEntry, modelName);
-    if (!price) continue;
-    const withPrefix = withProviderPricingName(modelName);
-    pricing.set(withPrefix, price);
-
-    const canonical = canonicalPricingName(modelName);
-    if (canonical !== withPrefix && !pricing.has(canonical)) {
-      pricing.set(canonical, price);
-    }
+    const price = parseCachedTokenPrice(rawEntry);
+    if (price) pricing.set(modelName, price);
   }
   return pricing.size > 0 ? pricing : null;
 }
@@ -363,7 +277,7 @@ function readPricingCacheFile(cachePath: string): { timestamp: number; pricing: 
     const parsed = JSON.parse(raw) as unknown;
     if (!isRecord(parsed)) return null;
     const timestamp = typeof parsed.timestamp === "number" && Number.isFinite(parsed.timestamp) ? parsed.timestamp : 0;
-    const pricing = parsePricingMap(parsed.data);
+    const pricing = parseCachedPricingMap(parsed.data);
     if (!pricing) return null;
     return { timestamp, pricing };
   } catch {
@@ -386,12 +300,11 @@ function loadDynamicTokenPricingFromDisk(): number {
   }
 
   const oldestUsableTimestamp = Date.now() - PRICING_CACHE_MAX_AGE_MS;
-  const caches = [readPricingCacheFile(ADE_PRICING_CACHE_PATH), readPricingCacheFile(CODEBURN_PRICING_CACHE_PATH)]
+  const caches = [readPricingCacheFile(ADE_PRICING_CACHE_PATH)]
     .filter((cache): cache is { timestamp: number; pricing: Map<string, TokenPrice> } => !!cache)
-    // See PRICING_CACHE_MAX_AGE_MS: a long-abandoned cache stops outranking the
-    // static table rather than pricing this year's usage at last year's rates.
-    .filter((cache) => cache.timestamp >= oldestUsableTimestamp)
-    .sort((a, b) => b.timestamp - a.timestamp);
+    // See PRICING_CACHE_MAX_AGE_MS: a long-abandoned cache is dropped rather
+    // than pricing this year's usage at last year's rates.
+    .filter((cache) => cache.timestamp >= oldestUsableTimestamp);
 
   if (caches.length === 0) {
     dynamicTokenPricingLoaded = true;
@@ -407,14 +320,14 @@ function ensureDynamicTokenPricingLoaded(): void {
   }
 }
 
-async function fetchLiteLlmPricing(): Promise<Map<string, TokenPrice>> {
+async function fetchModelsDevPricing(): Promise<Map<string, TokenPrice>> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 10_000);
   try {
-    const response = await fetch(LITELLM_PRICING_URL, { signal: controller.signal });
+    const response = await fetch(MODELS_DEV_API_URL, { signal: controller.signal });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = (await response.json()) as unknown;
-    const pricing = parsePricingMap(payload);
+    const pricing = parseModelsDevPricing(payload);
     if (!pricing) throw new Error("empty pricing payload");
     return pricing;
   } finally {
@@ -436,7 +349,7 @@ export async function refreshDynamicTokenPricing(logger?: PricingLogger): Promis
 
   refreshInFlight = (async () => {
     try {
-      const pricing = await fetchLiteLlmPricing();
+      const pricing = await fetchModelsDevPricing();
       const timestamp = Date.now();
       await writeAdePricingCache(pricing, timestamp).catch((error: unknown) => {
         logger?.debug?.("usage.pricing.cache_write_failed", { error: error instanceof Error ? error.message : String(error) });
@@ -453,29 +366,35 @@ export async function refreshDynamicTokenPricing(logger?: PricingLogger): Promis
   return await refreshInFlight;
 }
 
-function sortedKeysFor(pricing: Map<string, TokenPrice>, kind: "dynamic" | "static"): string[] {
-  if (kind === "dynamic") {
-    sortedDynamicPricingKeys ??= Array.from(pricing.keys()).sort((a, b) => b.length - a.length);
-    return sortedDynamicPricingKeys;
-  }
-  sortedStaticPricingKeys ??= Array.from(pricing.keys()).sort((a, b) => b.length - a.length);
-  return sortedStaticPricingKeys;
+function sortedDynamicKeys(): string[] {
+  sortedDynamicPricingKeys ??= Array.from(dynamicTokenPricing.keys()).sort((a, b) => b.length - a.length);
+  return sortedDynamicPricingKeys;
 }
 
-function findPriceInMap(pricing: Map<string, TokenPrice>, model: string, kind: "dynamic" | "static"): TokenPrice | null {
+function findDynamicPrice(model: string, options?: { exactOnly?: boolean }): TokenPrice | null {
+  const pricing = dynamicTokenPricing;
+  const rawCanonical = canonicalPricingName(model);
+  const canonical = resolveAlias(rawCanonical);
+  // ADE's own aliases name the model a runtime actually ran, so they outrank a
+  // reseller row that happens to share the raw name (models.dev lists a model
+  // literally called `auto`, and a reseller's `gemini-3-flash`).
+  if (canonical !== rawCanonical) {
+    const aliased = pricing.get(canonical);
+    if (aliased) return aliased;
+  }
+
   const withPrefix = withProviderPricingName(model);
   const exactWithPrefix = pricing.get(withPrefix);
   if (exactWithPrefix) return exactWithPrefix;
 
-  const rawCanonical = canonicalPricingName(model);
   const exactRawCanonical = pricing.get(rawCanonical);
   if (exactRawCanonical) return exactRawCanonical;
 
-  const canonical = resolveAlias(rawCanonical);
   const exactCanonical = pricing.get(canonical);
   if (exactCanonical) return exactCanonical;
+  if (options?.exactOnly) return null;
 
-  for (const key of sortedKeysFor(pricing, kind)) {
+  for (const key of sortedDynamicKeys()) {
     if (canonical === key || canonical.startsWith(`${key}-`)) {
       return pricing.get(key) ?? null;
     }
@@ -483,23 +402,17 @@ function findPriceInMap(pricing: Map<string, TokenPrice>, model: string, kind: "
   return null;
 }
 
-function getStaticPricingMap(): Map<string, TokenPrice> {
-  return new Map(Object.entries(STATIC_TOKEN_PRICES));
-}
-
 /**
  * Where a model's rate came from.
  *
- * `list` is the maintained public rate list (fetched, or read from its cache);
- * `fallback` is ADE's static table, including the coarse family buckets at the
- * end of `resolveTokenPrice`. Reported so a cost figure can say which — the
+ * `list` is models.dev (fetched, or read from its cache); `fallback` is the
+ * registry / model-manifest price, or zero when nothing prices the model. Reported so a cost figure can say which — the
  * number is the page's headline and an unexplained one has burned users before.
  */
 export type TokenPriceSource = "list" | "fallback";
 
 export function tokenPriceSource(model: string): TokenPriceSource {
-  ensureDynamicTokenPricingLoaded();
-  return findPriceInMap(dynamicTokenPricing, model ?? "", "dynamic") ? "list" : "fallback";
+  return resolveTokenPriceWithSource(model).source;
 }
 
 /** When the loaded copy of the rate list was fetched. Null = none loaded. */
@@ -511,31 +424,45 @@ export function dynamicTokenPricingUpdatedAt(): number | null {
 }
 
 /**
- * The rate for one model.
+ * The rate for one model. models.dev is the single source of prices:
  *
- * Order is settled policy, not preference: the maintained public rate list wins
- * whenever it prices the model, and the static table is what answers when it
- * cannot be fetched or has never heard of the model. Two machines that disagree
- * about a cost for identical usage — one with the cached list, one without —
- * is the failure this ordering exists to prevent.
+ * 1. an exact models.dev match (fetched, or its on-disk cache);
+ * 2. the registry's price for that exact model — which the model manifest can
+ *    set for a model models.dev has not listed yet (a launch-day model);
+ * 3. the closest models.dev prefix (`claude-sonnet-4-5-thinking` → `claude-sonnet-4-5`);
+ * 4. for an ADE registry alias (`opus`, `haiku`), steps 1–2 for the provider
+ *    model the registry resolves it to;
+ * 5. zero, reported as `fallback` so the UI can say the cost is unknown.
  */
 export function resolveTokenPrice(model: string): TokenPrice {
+  return resolveTokenPriceWithSource(model).price;
+}
+
+function resolveTokenPriceWithSource(model: string): { price: TokenPrice; source: TokenPriceSource } {
   ensureDynamicTokenPricingLoaded();
-  const dynamicPrice = findPriceInMap(dynamicTokenPricing, model ?? "", "dynamic");
-  if (dynamicPrice) return dynamicPrice;
+  const name = model ?? "";
+  const priced = exactOrRegistryPrice(name);
+  if (priced) return priced;
 
-  const staticPrice = findPriceInMap(getStaticPricingMap(), model ?? "", "static");
-  if (staticPrice) return staticPrice;
+  const prefix = findDynamicPrice(name);
+  if (prefix) return { price: prefix, source: "list" };
 
-  const canonical = canonicalPricingName(model ?? "");
-  if (canonical.includes("opus")) return STATIC_TOKEN_PRICES["claude-opus"] ?? ZERO_PRICE;
-  if (canonical.includes("sonnet")) return STATIC_TOKEN_PRICES["claude-sonnet"] ?? ZERO_PRICE;
-  if (canonical.includes("haiku")) return STATIC_TOKEN_PRICES["claude-haiku"] ?? ZERO_PRICE;
-  if (canonical.includes("codex") || canonical.includes("gpt") || canonical.includes("o3") || canonical.includes("o4")) {
-    return STATIC_TOKEN_PRICES.codex ?? ZERO_PRICE;
+  // An ADE registry alias no rate list knows (`opus`, `haiku`, `sonnet-5`) is
+  // priced as the provider model the registry launches for it. Last, so a name
+  // the rate list does price is never re-pointed at a different model.
+  const registryModelId = resolveModelDescriptor(name)?.providerModelId;
+  if (registryModelId && registryModelId !== name) {
+    const aliased = exactOrRegistryPrice(registryModelId);
+    if (aliased) return aliased;
   }
+  return { price: ZERO_PRICE, source: "fallback" };
+}
 
-  return ZERO_PRICE;
+function exactOrRegistryPrice(model: string): { price: TokenPrice; source: TokenPriceSource } | null {
+  const exact = findDynamicPrice(model, { exactOnly: true });
+  if (exact) return { price: exact, source: "list" };
+  const registryPrice = getModelPricing(resolveAlias(canonicalPricingName(model)));
+  return registryPrice ? { price: tokenPrice(registryPrice.input, registryPrice.output), source: "fallback" } : null;
 }
 
 export function isZeroTokenPrice(price: TokenPrice): boolean {
@@ -561,10 +488,16 @@ export function setDynamicTokenPricingForTest(entries: Record<string, TokenPrice
   installDynamicTokenPricing(pricing, Date.now());
 }
 
+/** Install a models.dev payload exactly as a successful fetch would. */
+export function installModelsDevPricingForTest(payload: unknown): number {
+  disableDiskCacheForTest = true;
+  return installDynamicTokenPricing(parseModelsDevPricing(payload) ?? new Map(), Date.now());
+}
+
 export const _testing = {
   canonicalPricingName,
-  parseLiteLlmEntry,
-  parsePricingMap,
+  installModelsDevPricingForTest,
+  parseModelsDevPricing,
   resetDynamicTokenPricingForTest,
   setDynamicTokenPricingForTest,
 };

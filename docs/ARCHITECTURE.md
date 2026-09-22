@@ -704,6 +704,7 @@ Service entry points live under `apps/desktop/src/main/services/ai/`. The subsys
   - `providerRuntimeHealth.ts` — per-provider health (`ready`, `auth-failed`, `runtime-failed`).
   - `claudeRuntimeProbe.ts` — lightweight SDK probe on force-refresh to distinguish bundled Claude binary readiness from authentication readiness.
   - `modelsDevService.ts` — non-blocking 6-hour refresh that enriches pricing and context-window metadata in the registry from `models.dev`.
+  - `modelManifestService.ts` — keeps `shared/model-manifest.json` (models, aliases, prices, app-wide and per-provider defaults, ADE-version gates) current from GitHub `main` with a 10-minute conditional poll plus a picker-open re-check; bundled and disk copies are the floor. See `docs/features/chat/agent-routing.md` → Model manifest.
 - **ADE action status surface**: `ai.getStatus`, `ai.listApiKeys`, and
   `ai.getOpenCodeRuntimeDiagnostics` expose the same provider readiness,
   stored-key, and OpenCode runtime health data to renderer settings and

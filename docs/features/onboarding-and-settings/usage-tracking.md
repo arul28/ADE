@@ -207,37 +207,35 @@ Cost is an estimate, but it must be the *same* estimate everywhere: two machines
 reporting different dollars for identical usage is the failure the ordering in
 `usagePricing.ts` exists to prevent.
 
-The maintained public rate list — BerriAI/litellm's
-`model_prices_and_context_window.json` — wins whenever it prices the model.
-ADE's static table is the fallback: what answers when the list cannot be fetched
-and has never been cached, and what answers for models the list has never heard
-of (a bare `qwen3.5-9b`, ADE's own coarse `claude-opus` / `codex` buckets at the
-end of `resolveTokenPrice`). `tokenPriceSource(model)` reports which of the two
-answered, as `list` or `fallback`, so a headline cost figure can say where its
-rates came from.
+models.dev (`https://models.dev/api.json`) is the single source of token prices.
+The same model is listed there by its vendor and by dozens of resellers at
+different prices, so a bare model id (`claude-sonnet-4-5`) always takes the
+vendor's own row (`pickModelsDevEntries` in `services/ai/modelsDevCatalog.ts`,
+shared with registry enrichment); a `provider/model` name
+(`openrouter/anthropic/claude-sonnet-4-5`) takes that provider's row.
+
+`resolveTokenPrice` answers, in order: an exact models.dev match; the
+registry's price for that exact model — which `model-manifest.json` can set for a
+launch-day model models.dev has not listed yet; the longest models.dev key the
+name extends (`claude-sonnet-4-5-thinking` → `claude-sonnet-4-5`); then zero.
+`tokenPriceSource(model)` reports `list` (models.dev) or `fallback`, so a
+headline cost figure can say where its rates came from. There is no
+hand-maintained rate table.
 
 Mechanics:
 
-- the list is fetched with a 10 s timeout, cached to `~/.ade/litellm-pricing.json`,
-  and refreshed once a day; a failed refresh keeps whatever is loaded. A
-  codeburn-written cache at `~/.cache/codeburn/litellm-pricing.json` is read too,
-  and the newer of the two wins.
-- a cached copy stops outranking the static table after 30 days. Without that
-  bound a machine that went offline in March would still be pricing this year's
-  usage at March's rates, beating a table that had been corrected since.
-- entries fill field by field. A list entry gives `input_cost_per_token` and
-  `output_cost_per_token`; when it omits cache-write or cache-read rates,
-  `fillMissingPriceFields` takes them from the static entry for that model and
-  only then falls back to the `input × 1.25` / `input × 0.1` ratios. An entry
-  with no usable input or output rate is skipped entirely rather than stored as
-  a partial price.
+- models.dev is fetched with a 10 s timeout, cached to
+  `~/.ade/models-dev-pricing.json`, and refreshed once a day; a failed refresh
+  keeps whatever is loaded.
+- a cached copy is dropped after 30 days, so a machine that went offline in
+  March does not price this year's usage at March's rates.
+- a models.dev `cost` gives USD per million tokens for `input`, `output`,
+  `cache_read`, and `cache_write`; missing cache rates fall back to the
+  `input × 0.1` / `input × 1.25` ratios. An entry with no usable input or output
+  rate is skipped.
 - lookup tries the provider-prefixed name, then the canonical name, then an
   alias, then the longest key the canonical name extends — so a dated model id
   resolves to its family without a per-release table edit.
-- the static table is a hand-maintained snapshot and is expected to drift. It
-  was last reconciled against the list on 2026-08-10, taking the list's number
-  wherever the two disagreed, so a machine with the cache and a machine without
-  it report the same cost.
 
 The answer reaches the page rather than staying an implementation detail. Each
 provider's stats carry `pricingSource` (`list`, `fallback`, or `mixed` when its

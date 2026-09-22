@@ -303,12 +303,16 @@ private func workModelRefsLookFastCapable(_ rawRefs: [String?]) -> Bool {
     .filter { !$0.isEmpty }
   let fastRefs: Set<String> = [
     "astra", "gpt-6-astra", "openai/gpt-6-astra",
-    "sol", "gpt-5.6-sol", "openai/gpt-5.6-sol",
+    "sol", "gpt-6-sol", "openai/gpt-6-sol",
+    "luna", "gpt-6-luna", "openai/gpt-6-luna",
+    "gpt-5.6-sol", "openai/gpt-5.6-sol",
     "terra", "gpt-5.6-terra", "openai/gpt-5.6-terra",
-    "luna", "gpt-5.6-luna", "openai/gpt-5.6-luna",
+    "gpt-5.6-luna", "openai/gpt-5.6-luna",
     "gpt-5.5", "gpt-5.5-codex", "openai/gpt-5.5", "openai/gpt-5.5-codex",
     "gpt-5.4", "gpt-5.4-codex", "openai/gpt-5.4", "openai/gpt-5.4-codex",
     "opencode/openai/gpt-5.4",
+    "opus-5.5", "opus-5-5", "claude-opus-5-5", "anthropic/claude-opus-5-5",
+    "anthropic/claude-opus-5-5-api", "opencode/anthropic/claude-opus-5-5",
     "fable", "fable-5.1", "fable-5-1", "claude-fable-5-1", "anthropic/claude-fable-5-1",
     "opencode/anthropic/claude-fable-5-1",
     "claude-fable-5", "anthropic/claude-fable-5", "opencode/anthropic/claude-fable-5",

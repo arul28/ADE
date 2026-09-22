@@ -61,7 +61,7 @@ import type { BudgetCapProvider } from "../../../shared/types/usage";
 import { buildClaudeReadOnlyWorkerAllowedTools } from "../ai/tools/workerSandboxDefaults";
 import { isRecord, matchesGlob, normalizeSet, nowIso, resolvePathWithinRoot, safeJsonParse } from "../shared/utils";
 import { terminateProcessTree } from "../shared/processExecution";
-import { getDefaultModelDescriptor, getModelById, modelSupportsFastMode, resolveChatProviderForDescriptor, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
+import { getAppDefaultModelDescriptor, getDefaultModelDescriptor, getModelById, modelSupportsFastMode, resolveChatProviderForDescriptor, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
 import { resolveTailscaleCliPath } from "../sync/resolveTailscaleCliPath";
 
 const execFileAsync = promisify(execFile);
@@ -396,9 +396,10 @@ type WatchedFileRoot = {
   branchRef?: string;
 };
 
-const DEFAULT_AUTOMATION_CHAT_MODEL_ID =
-  getDefaultModelDescriptor("opencode")?.id
-  ?? getDefaultModelDescriptor("claude")?.id
+/** Read on use: the app-wide default can move with model-manifest.json. */
+const defaultAutomationChatModelId = (): string =>
+  getAppDefaultModelDescriptor()?.id
+  ?? getDefaultModelDescriptor("opencode")?.id
   ?? "anthropic/claude-sonnet-5";
 
 type AutomationRunRow = {
@@ -3598,7 +3599,7 @@ export function createAutomationService({
     if (requestedModelId && !getModelById(requestedModelId)) {
       throw new Error(`Unknown model '${requestedModelId}'.`);
     }
-    const modelId = requestedModelId ?? DEFAULT_AUTOMATION_CHAT_MODEL_ID;
+    const modelId = requestedModelId ?? defaultAutomationChatModelId();
     const modelDescriptor = getModelById(modelId) ?? getDefaultModelDescriptor("opencode");
     if (!modelDescriptor) {
       throw new Error(`Unknown model '${modelId}'.`);

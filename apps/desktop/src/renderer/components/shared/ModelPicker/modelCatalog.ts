@@ -1,4 +1,5 @@
 import {
+  adoptHostModelManifest,
   createDynamicDroidCliModelDescriptor,
   createDynamicOpenCodeModelDescriptor,
   LOCAL_PROVIDER_LABELS,
@@ -72,14 +73,20 @@ export async function requestModelCatalog(
       throw new Error("Personal chats are not available in this ADE runtime.");
     }
     const response = await bridge({ action: "modelCatalog", args: args ?? {} });
-    return unwrapPersonalChatResult<AgentChatModelCatalog>(response);
+    return adoptCatalogModelManifest(unwrapPersonalChatResult<AgentChatModelCatalog>(response));
   }
   const bridge = window.ade?.agentChat?.modelCatalog;
   if (typeof bridge !== "function") {
     throw new Error("Agent chat model catalog is not available in this ADE runtime.");
   }
   const pin = options.pin ?? null;
-  return pin ? await bridge(args ?? {}, pin) : await bridge(args ?? {});
+  return adoptCatalogModelManifest(pin ? await bridge(args ?? {}, pin) : await bridge(args ?? {}));
+}
+
+/** Overlay the host's model directory before any picker reads the registry. */
+function adoptCatalogModelManifest(catalog: AgentChatModelCatalog): AgentChatModelCatalog {
+  adoptHostModelManifest(catalog?.modelManifest);
+  return catalog;
 }
 
 export function resetRuntimeCatalogDescriptorCacheForTests(): void {
