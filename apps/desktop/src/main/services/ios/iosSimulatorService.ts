@@ -2189,6 +2189,32 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * anything does the un-laned bucket answer — which is also what a fresh
    * process with no sessions at all returns.
    */
+  /**
+   * Any OTHER lane's live session holding this simulator.
+   *
+   * `resolveRuntime` gives a caller its own lane's bucket, which is the right
+   * scope for almost everything — and exactly the wrong scope for an ownership
+   * question, because the simulator is one device shared by the machine. A
+   * caller naming a different lane used to slip past the guard entirely.
+   */
+  const findActiveSessionForDevice = (
+    deviceUdid: string,
+    except: LaneRuntime,
+  ): IosSimulatorSession | null => {
+    for (const candidate of runtimes.values()) {
+      if (candidate === except) continue;
+      const session = candidate.activeSession;
+      if (session?.deviceUdid === deviceUdid) return session;
+    }
+    // An app session only. A hub DEVICE session (`open-device` with no launch)
+    // is a weaker claim and a different type, and the hole that was actually
+    // demonstrated was a `launch` naming another lane — which always sets an
+    // app session. Widening this to device sessions needs the error to accept
+    // both shapes, which is a change to its public `currentSession`, so it is
+    // deliberately not bundled in with a security fix.
+    return null;
+  };
+
   const resolveLaneIdForPath = args.resolveLaneIdForPath ?? null;
 
   const resolveRuntime = (
@@ -4136,6 +4162,26 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       }
       emitLaunchProgress(launchId, "resolve-device", "running", "Finding installed simulator device...");
       const device = preflightDevice ?? await resolveDevice(launchArgs.deviceUdid);
+      /*
+       * Ownership belongs to the DEVICE, not to a lane's bucket.
+       *
+       * The guard at the top of this function reads `runtime.activeSession`,
+       * and a runtime is per lane. So a launch that merely NAMED a different
+       * lane landed in an empty bucket, found no owner, and went on to drive
+       * the very simulator another chat was holding — the app's pid changed
+       * under it. A test agent found this by trying it; the refusal it got for
+       * `shutdown` and `claim` never fired for `launch`.
+       *
+       * Checked here rather than at the top because this is the first point
+       * where the target device is known, and still before anything boots,
+       * builds or installs.
+       */
+      if (!launchArgs.force) {
+        const deviceOwner = findActiveSessionForDevice(device.udid, runtime);
+        if (deviceOwner && deviceOwner.chatSessionId && deviceOwner.chatSessionId !== incomingChatSessionId) {
+          throw new IosSimulatorOwnedBySessionError(deviceOwner);
+        }
+      }
       emitLaunchProgress(launchId, "resolve-device", "complete", `${device.name} selected.`, device.runtime, { deviceUdid: device.udid });
 
       currentStep = "boot-simulator";

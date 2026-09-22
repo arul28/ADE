@@ -440,9 +440,11 @@ describe("iosSimulatorService single-owner lock contract", () => {
         chatSessionId: "chat-owner",
       });
 
-      // Sessions are keyed by lane now, so a thief has to name the lane it is
-      // reaching into — which is exactly what the guard refuses. (Naming a
-      // DIFFERENT lane is no longer a theft at all: that lane has no session.)
+      // Sessions are keyed by lane, so a thief naming the owner's lane hits the
+      // guard. Naming a DIFFERENT lane used to be described here as "no longer
+      // a theft at all: that lane has no session" — that was wrong, and the
+      // test below is the one that proves it. The lane bucket is empty; the
+      // SIMULATOR is not.
       await expect(service.claim({ laneId: "lane-owner", chatSessionId: "chat-thief" }))
         .rejects.toMatchObject({ code: IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE });
       expect((await service.getStatus({ laneId: "lane-owner" })).activeSession).toMatchObject({
@@ -462,6 +464,87 @@ describe("iosSimulatorService single-owner lock contract", () => {
       // Stated intent gets through, the same way it does for `shutdown`.
       const taken = await service.claim({ laneId: "lane-other", chatSessionId: "chat-thief", ignoreOwnership: true });
       expect(taken.activeSession).toMatchObject({ chatSessionId: "chat-thief" });
+    } finally {
+      service.dispose();
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
+  it("regression: a launch naming ANOTHER lane cannot drive a device this chat owns", async () => {
+    /*
+     * Found by a test agent that was asked to try it.
+     *
+     * `shutdown` and `claim` refused it correctly. `launch` did not: the guard
+     * reads `runtime.activeSession`, a runtime is per lane, so naming a lane
+     * with no session found no owner and went on to drive the same physical
+     * simulator — the running app's pid changed underneath its owner.
+     *
+     * Ownership belongs to the device. One Mac, one simulator, one holder.
+     */
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const runMock = vi.fn(async (command: string, commandArgs: string[]) => {
+      if (command === "xcrun" && commandArgs.join(" ") === "simctl list devices available --json") {
+        return { stdout: simulatorDevicesJson, stderr: "" };
+      }
+      if (command === "xcrun" && commandArgs[1] === "bootstatus") return { stdout: "", stderr: "" };
+      if (command === "xcrun" && commandArgs[1] === "listapps") {
+        return {
+          stdout: `"com.example.app" = {\n  CFBundleDisplayName = "Example";\n};\n`,
+          stderr: "",
+        };
+      }
+      if (command === "xcrun" && commandArgs[1] === "launch") return { stdout: "com.example.app: 123\n", stderr: "" };
+      return { stdout: "", stderr: "" };
+    });
+    const restoreHooks = __testSetIosSimulatorProcessHooks({
+      run: runMock,
+      commandExists: () => true,
+    });
+    const service = createIosSimulatorService({
+      projectRoot: os.tmpdir(),
+      logger: noopLogger,
+      resolveLaneWorktreePath: () => os.tmpdir(),
+      onEvent: () => {},
+    });
+
+    try {
+      const owned = await service.launch({
+        bundleId: "com.example.app",
+        build: false,
+        laneId: "lane-owner",
+        chatSessionId: "chat-owner",
+      });
+      const ownedUdid = (await service.getStatus({ laneId: "lane-owner" })).activeSession?.deviceUdid ?? null;
+      expect(ownedUdid).toBeTruthy();
+      void owned;
+
+      await expect(service.launch({
+        bundleId: "com.example.app",
+        build: false,
+        laneId: "lane-thief",
+        chatSessionId: "chat-thief",
+        deviceUdid: ownedUdid,
+      })).rejects.toMatchObject({ code: IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE });
+
+      // The owner still holds it, and nothing was half-taken.
+      expect((await service.getStatus({ laneId: "lane-owner" })).activeSession).toMatchObject({
+        chatSessionId: "chat-owner",
+      });
+
+      // Stated intent still gets through, as everywhere else.
+      const forced = await service.launch({
+        bundleId: "com.example.app",
+        build: false,
+        laneId: "lane-thief",
+        chatSessionId: "chat-thief",
+        deviceUdid: ownedUdid,
+        force: true,
+      });
+      void forced;
+      expect((await service.getStatus({ laneId: "lane-thief" })).activeSession).toMatchObject({
+        chatSessionId: "chat-thief",
+      });
     } finally {
       service.dispose();
       restoreHooks();
@@ -2629,9 +2712,14 @@ describe("iosSimulatorService boot contract", () => {
   it("deviceStart clones the source when asked to create", async () => {
     const { service, calls, phases, dispose } = setup();
     try {
-      const status = await service.deviceStart({ laneId: "lane-b", create: { sourceUdid: "device-1" } });
+      // `device-2`, the STOPPED one. This named `device-1` and passed only
+      // because the mock does not enforce what simctl does: cloning a booted
+      // device fails with error 405, "Unable to clone device in current state:
+      // Booted" — verified against the real `simctl` (exit 149, nothing
+      // created). So the old expectation could not happen on a Mac.
+      const status = await service.deviceStart({ laneId: "lane-b", create: { sourceUdid: "device-2" } });
       expect(status.deviceUdid).toBe("device-clone");
-      expect(calls.some((call) => call.startsWith("xcrun simctl clone device-1 "))).toBe(true);
+      expect(calls.some((call) => call.startsWith("xcrun simctl clone device-2 "))).toBe(true);
       expect(calls).toContain("xcrun simctl boot device-clone");
       expect(phases()).toEqual(["starting", "booted", "streaming"]);
       const owned = await service.deviceList({ laneId: "lane-b", installed: false });
