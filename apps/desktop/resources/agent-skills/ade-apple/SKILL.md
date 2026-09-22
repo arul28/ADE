@@ -30,11 +30,35 @@ ade --socket apple status --text
 - `tools.helper` (`present`, `path`, `version`) is the check when every device
   call fails at once.
 
+## "Start the app on a simulator" is one command
+
+```bash
+ade --socket apple launch --follow --open-drawer --text
+```
+
+`launch` does the whole chain: find or clone the lane's device, boot it,
+resolve the target, **build it with xcodebuild**, install it, start it, and
+claim the drawer session. Add `--open-drawer` when a human asked to watch.
+`--follow` announces the wait up front for a cold build.
+
+So you do **not** run `xcodebuild` by hand to put an app on a screen, and you
+do not need to know the scheme. Run `ade --socket apple apps --text` first only
+when you must choose between several targets, then pass `--target <id>`.
+
+Use `--no-build` when the app is already installed and you only want it in
+front. Use `relaunch` or `terminate` for an app that is already there.
+
 ## A busy device is not a blocker
 
-**If the device you find is owned by another chat or lane, do not ask a human
-for it. Make your own.** One simulator runtime serves an unlimited number of
-devices, so creating one for your lane is cheap and takes seconds — it is a new
+**Reuse before you create.** `start` with no arguments already does this: it
+binds a free installed device, boots it if it is off, and streams it. A device
+listed as `Shutdown` is installed and ready — it needs a boot, measured in
+seconds, not an install. Reach for a new one only when every installed device
+is owned by another lane.
+
+**And when the device you find is owned by another chat or lane, do not ask a
+human for it. Make your own.** One simulator runtime serves an unlimited number
+of devices, so creating one for your lane is cheap and takes seconds — it is a new
 folder of app data, not another copy of iOS. `start --create <sourceUdid>` does
 it in a single call.
 
@@ -125,7 +149,7 @@ ade --socket apple assert-visible --label Welcome --text
 Agent launches stay in the background. Add `--open-drawer` when the user asked
 to watch. `launch --follow` waits out a cold build and prints the summary.
 
-## Proof is automatic
+## Proof is automatic, and only on this path
 
 You do not pin anything. Both of these file themselves in the proof drawer and
 return a `proofArtifactId`:
@@ -138,6 +162,21 @@ ade --socket apple screenshot --out shot.png --text
 ade --socket apple frame --out shot.png --text
 ade --socket apple proof-bundle --caption "Settings row renders" --text
 ```
+
+**Capture through these commands, not through `xcrun simctl io screenshot`.**
+The difference is not the picture, it is the owner. An `ade apple` capture is
+filed against the lane and the asking chat, so it appears in the drawer the
+human is looking at. A picture you take with `simctl` and then hand to
+`ade proof attach` is filed against whatever ADE can work out about your shell,
+and a shell with no chat session — every OpenCode agent has one, because a
+single `opencode serve` is shared across chats — used to produce a record owned
+by nothing, invisible to everyone, while every command reported success. That
+now fails loudly instead of lying, which is better and still not proof.
+
+If you must attach a file from elsewhere, run `ade proof attach` from **inside
+the lane worktree** so ADE can place it, and read the last line: it names the
+lane and the chat the artifact landed on. `lane none / chat none` is a failure,
+not a detail.
 
 - `screenshot` round-trips `simctl` and works with no stream running.
 - `frame` grabs one decoded frame from the live stream and fails with
