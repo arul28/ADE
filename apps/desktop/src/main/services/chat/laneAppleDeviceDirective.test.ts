@@ -18,19 +18,21 @@ const ROW = {
 };
 
 describe("buildLaneAppleDeviceDirective", () => {
-  it("names the device and the ade apple path in five short lines", () => {
+  it("names the device and the $ADE_CLI_PATH apple commands in six short lines", () => {
     const text = buildLaneAppleDeviceDirective({ udid: "5B1C-UDID", name: "iPhone 17 Pro" }) ?? "";
     const lines = text.split("\n");
     expect(lines[0]).toBe("<ade-lane-tools>");
     expect(lines.at(-1)).toBe("</ade-lane-tools>");
     expect(lines.length).toBeLessThanOrEqual(6);
     expect(text).toContain("iPhone 17 Pro (5B1C-UDID)");
-    expect(text).toContain("ade --socket apple record-start --text");
-    expect(text).toContain("ade --socket apple record-stop --text");
-    expect(text).toContain("ade --socket apple screenshot --out shot.png --text");
+    expect(text).toContain("`\"$ADE_CLI_PATH\" apple record-start --text`");
+    expect(text).toContain("`\"$ADE_CLI_PATH\" apple record-stop --text`");
+    expect(text).toContain("`\"$ADE_CLI_PATH\" apple screenshot --out shot.png --text`");
+    // "--socket apple" read as a socket named apple; the shim already names the brain.
+    expect(text).not.toContain("--socket");
     expect(text).toContain("open -a Simulator");
     expect(text).toContain("recordVideo");
-    expect(text).toContain("\"$ADE_CLI_PATH\" --socket apple");
+    expect(text).toContain("If recording fails, say so. Never attach an older recording or a file you did not just record.");
   });
 
   it("keeps a user-edited device name to one line with no markup", () => {

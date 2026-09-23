@@ -9,6 +9,7 @@ import {
   runDelegatedCli,
   type CliDelegationFs,
 } from "./cliDelegation";
+import { renderAdeCliShim } from "../services/runtime/adeCliShim";
 
 const STABLE_ENTRY = "/Applications/ADE.app/Contents/Resources/ade-cli/cli.cjs";
 const ALPHA_ENTRY = "/Applications/ADE Alpha.app/Contents/Resources/ade-cli/cli.cjs";
@@ -23,7 +24,12 @@ function fakeFs(files: Record<string, string>, links: Record<string, string> = {
 }
 
 const shimFs = fakeFs({
-  [ALPHA_SHIM]: `#!/bin/sh\nexec "/Applications/ADE Alpha.app/Contents/MacOS/ADE Alpha" "${ALPHA_ENTRY}" "$@"\n`,
+  [ALPHA_SHIM]: renderAdeCliShim({
+    entryPath: ALPHA_ENTRY,
+    execPath: "/Applications/ADE Alpha.app/Contents/MacOS/ADE Alpha",
+    brain: { socketPath: "/Users/a/.ade-alpha/sock/ade.sock", adeHome: "/Users/a/.ade-alpha" },
+    platform: "darwin",
+  }),
   [ALPHA_ENTRY]: "",
   [STABLE_ENTRY]: "",
 });

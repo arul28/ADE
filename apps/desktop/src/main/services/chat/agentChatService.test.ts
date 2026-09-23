@@ -3299,7 +3299,7 @@ describe("createAgentChatService", () => {
       const third = prompts.find((text) => text.includes("third")) ?? "";
       expect(first).toContain(HINT_OPEN);
       expect(first).toContain("iPhone 17 Pro (UDID-AAA)");
-      expect(first).toContain("ade --socket apple record-start");
+      expect(first).toContain("\"$ADE_CLI_PATH\" apple record-start");
       expect(second).not.toContain(HINT_OPEN);
       expect(third).toContain(HINT_OPEN);
       expect(third).toContain("iPad Air (UDID-BBB)");

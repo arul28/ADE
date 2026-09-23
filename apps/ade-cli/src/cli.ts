@@ -21204,6 +21204,10 @@ async function runServe(
   const socketPath = isAdeRuntimeNamedPipePath(rawSocketPath)
     ? rawSocketPath
     : path.resolve(rawSocketPath);
+  // A launchd brain gets no --socket and no socket env, only ADE_HOME. Record
+  // the socket it serves so the `ade` shim it hands its agents names it.
+  const { publishServedRuntimeSocket } = await import("./services/runtime/adeCliShim");
+  publishServedRuntimeSocket(socketPath);
   /*
    * Only the MACHINE brain publishes the machine heartbeat.
    *

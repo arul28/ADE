@@ -292,6 +292,19 @@ gives it an ordered fallback chain when `command -v ade` fails:
 3. and as a last resort, in an ADE source checkout, `node
    apps/ade-cli/dist/cli.cjs ...` after confirming the file exists.
 
+For agents a brain launches, `ADE_CLI_PATH` is a shim written by
+`createHeadlessAdeCliAgentEnv` (`apps/ade-cli/src/bootstrap.ts`, body from
+`apps/ade-cli/src/services/runtime/adeCliShim.ts`) under
+`<tmpdir>/ade-cli-shims/<hash>/`. It names the brain that wrote it: when
+the caller's env sets neither `ADE_HOME` nor `ADE_RUNTIME_SOCKET_PATH`, it
+defaults both to that brain's (`ade serve` records the socket it serves in
+`ADE_RUNTIME_SOCKET_PATH`, including a launchd brain started with only
+`ADE_HOME`). This matters for the Cursor SDK worker, which strips both from
+its env: without the defaults its `ade` fell back to `~/.ade` and reached the
+stable brain from an Alpha chat. The hash covers the entry, runtime, socket
+and home, so two brains sharing one CLI entry never share a shim. An explicit
+`--socket <path>` still wins.
+
 The wording explicitly tells agents to use the relevant ADE skill
 instead of long prompt guidance, to try `ade doctor`, typed
 `ade ... --text` commands, and `ade actions list --text` /
