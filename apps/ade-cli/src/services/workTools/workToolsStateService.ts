@@ -21,6 +21,8 @@ import {
   type WorkToolsObservation,
   type WorkToolsObservationPreview,
 } from "../../../../desktop/src/shared/types/workTools";
+import type { WorkToolShowResult } from "../../../../desktop/src/shared/types/workToolShow";
+import type { WorkToolShowRequests } from "./workToolShowRequests";
 
 /**
  * Aggregates the Work tools pane's state for one lane so read-only clients
@@ -106,6 +108,11 @@ export type WorkToolsStateServiceArgs = {
   onStateChanged?: (laneId: string) => void;
   debounceMs?: number;
   logger?: Logger | null;
+  /**
+   * `ade ui show`: asks the desktop renderers to put a surface of a chat on
+   * screen. Absent on a runtime that publishes no runtime events.
+   */
+  showRequests?: WorkToolShowRequests | null;
 };
 
 /**
@@ -159,6 +166,15 @@ export type WorkToolsStateService = {
   readObservationPreview(
     args: WorkToolsReadObservationPreviewArgs,
   ): Promise<WorkToolsObservationPreview | null>;
+  /**
+   * Ask the desktop showing this chat to open a surface, and report what it
+   * did: shown, held until the user opens the chat, or no desktop at all.
+   */
+  show(args: unknown): Promise<WorkToolShowResult>;
+  /** A desktop renderer answering {@link show}. User clients only. */
+  acknowledgeShow(args: unknown): { ok: boolean };
+  /** An agent drove this chat's Apple device; see `WorkToolShowRequests`. */
+  noteAgentAppleActivity(args: { laneId: string | null; chatSessionId: string | null }): void;
   /** Test/diagnostic hook: flushes a pending debounced event immediately. */
   flushPendingEvents(): void;
   dispose(): void;
@@ -605,6 +621,21 @@ export function createWorkToolsStateService(
       }
     },
 
+    async show(input) {
+      if (!args.showRequests) {
+        throw new Error("work_tools.show is not available on this runtime.");
+      }
+      return await args.showRequests.show(input);
+    },
+
+    acknowledgeShow(input) {
+      return args.showRequests?.acknowledgeShow(input) ?? { ok: false };
+    },
+
+    noteAgentAppleActivity(input) {
+      args.showRequests?.noteAgentAppleActivity(input);
+    },
+
     flushPendingEvents() {
       for (const [laneId, timer] of [...pendingEventTimers]) {
         clearTimeout(timer);
@@ -615,6 +646,7 @@ export function createWorkToolsStateService(
 
     dispose() {
       disposed = true;
+      args.showRequests?.dispose();
       for (const timer of pendingEventTimers.values()) clearTimeout(timer);
       pendingEventTimers.clear();
       for (const entry of presenceWindowTimers.values()) clearTimeout(entry.timer);

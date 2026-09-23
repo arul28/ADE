@@ -3065,6 +3065,32 @@ function scopeWorkToolsAdeActionArgs(
   workToolsArgs: Record<string, unknown>,
 ): Record<string, unknown> {
   const method = `run_ade_action:work_tools.${action}`;
+  if (action === "acknowledgeShow") {
+    // The desktop answering `show`. An agent must not be able to forge the
+    // outcome its own CLI is about to print, same as `setActiveTool`.
+    if (!isUserClient) {
+      scopeAccessDenied("work_tools.acknowledgeShow is limited to user clients", method);
+    }
+    return workToolsArgs;
+  }
+  if (action === "show") {
+    // An agent shows surfaces of its OWN chat. A human at a terminal is a user
+    // client and names the chat with --session.
+    if (isUserClient) return workToolsArgs;
+    const ownChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+    if (!ownChatSessionId) {
+      scopeAccessDenied("work_tools.show needs the chat it runs in", method);
+    }
+    const askedFor = asOptionalTrimmedString(workToolsArgs.chatSessionId);
+    if (askedFor && askedFor !== ownChatSessionId) {
+      scopeAccessDenied("work_tools.show can only show this agent's own chat", method);
+    }
+    return {
+      ...workToolsArgs,
+      chatSessionId: ownChatSessionId,
+      laneId: resolveChatSessionLaneId(runtime, session) ?? null,
+    };
+  }
   if (action === "setActiveTool") {
     // Writing the pane's active tool is the human's move on their own desktop.
     // Same gate shape as `built_in_browser.acknowledgeRemoteRequest`.
@@ -3098,6 +3124,33 @@ function scopeWorkToolsAdeActionArgs(
   }
   return workToolsArgs;
 }
+
+/** `work_tools` actions scoped for every role, the CTO's included. */
+const WORK_TOOLS_ALWAYS_SCOPED_ACTIONS = new Set(["setActiveTool", "show", "acknowledgeShow"]);
+
+/**
+ * `ios_simulator` actions that mean an agent is driving the device, so the
+ * desktop may float the device over that agent's chat (see
+ * `work_tools.noteAgentAppleActivity`). Reads are not driving.
+ */
+const APPLE_AGENT_DRIVING_ACTIONS = new Set([
+  "deviceStart",
+  "openDevice",
+  "startStream",
+  "launch",
+  "relaunchApp",
+  "openUrl",
+  "tap",
+  "typeText",
+  "drag",
+  "swipe",
+  "scroll",
+  "pressButton",
+  "rotate",
+  "tapElement",
+  "fillElement",
+  "recordStart",
+]);
 
 const EXTERNAL_SESSION_AUTH_FIND_LIMIT = 500;
 const EXTERNAL_SESSION_PROVIDER_NAMES = new Set<string>(["claude", "codex", "cursor", "droid", "opencode", "pi"]);
@@ -4349,11 +4402,15 @@ async function runTool(args: {
         hasScalarArg,
         rawObjectArgs,
       );
-    } else if (domain === "work_tools" && (!callerIsCto || action === "setActiveTool")) {
+    } else if (
+      domain === "work_tools"
+      && (!callerIsCto || WORK_TOOLS_ALWAYS_SCOPED_ACTIONS.has(action))
+    ) {
       // The CTO carve-out is a READ carve-out. `setActiveTool` is this domain's
       // one write, so it goes through the scoping function whatever the role and
       // is gated there on user clients — see that function's doc comment for
-      // which elevated caller this actually catches.
+      // which elevated caller this actually catches. `show` and
+      // `acknowledgeShow` are scoped for every role for the same reason.
       scopedObjectArgs = scopeWorkToolsAdeActionArgs(
         runtime,
         session,
@@ -4488,6 +4545,17 @@ async function runTool(args: {
       throw error;
     }
     noteBrowserActivityOnSuccess?.();
+    if (domain === "ios_simulator" && !isUserClient && APPLE_AGENT_DRIVING_ACTIONS.has(action)) {
+      // An agent just drove its chat's device. The desktop showing that chat
+      // may float the device if the user has not turned that off.
+      const chatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+      if (chatSessionId) {
+        runtime.workToolsStateService?.noteAgentAppleActivity?.({
+          chatSessionId,
+          laneId: resolveChatSessionLaneId(runtime, session) ?? null,
+        });
+      }
+    }
     if (domain === "account" && action === "status") {
       result = scopeAccountStatusForRole(result, callerCtx.role);
     }

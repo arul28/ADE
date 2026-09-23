@@ -864,6 +864,26 @@ extension WorkSessionDestinationView {
       return
     }
 
+    let isVideo = artifact.artifactKind == "video_recording" || (artifact.mimeType?.contains("video") == true)
+    if isVideo {
+      // Pulled in slices: a long recording is larger than the whole-file read
+      // allows. A host on an older build does not know the slice read, so that
+      // one case falls through to the whole-file read below.
+      let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("ade-work-artifact-\(artifact.id)")
+        .appendingPathExtension(fileExtension(for: artifact.mimeType, fallback: "mp4"))
+      do {
+        try await syncService.downloadArtifact(artifactId: artifact.id, uri: artifact.uri, to: url)
+        setArtifactContent(.video(url), for: artifact.id)
+        return
+      } catch let error where error.localizedDescription.contains("Unsupported file action") {
+        // Older host: use the whole-file read.
+      } catch {
+        setArtifactContent(.error(artifactLoadErrorMessage(error)), for: artifact.id)
+        return
+      }
+    }
+
     do {
       let blob = try await syncService.readArtifact(artifactId: artifact.id, uri: artifact.uri)
       let data: Data?
@@ -878,7 +898,7 @@ extension WorkSessionDestinationView {
         return
       }
 
-      if artifact.artifactKind == "video_recording" || (artifact.mimeType?.contains("video") == true) {
+      if isVideo {
         let url = FileManager.default.temporaryDirectory
           .appendingPathComponent("ade-work-artifact-\(artifact.id)")
           .appendingPathExtension(fileExtension(for: artifact.mimeType, fallback: "mp4"))
@@ -891,17 +911,24 @@ extension WorkSessionDestinationView {
         setArtifactContent(.text(blob.content), for: artifact.id)
       }
     } catch {
-      let raw = error.localizedDescription
-      let friendly: String
-      if raw.contains("must resolve within")
-        || raw.contains("Remote artifact URLs are not supported")
-        || raw.contains("file URL is invalid") {
-        friendly = "Preview isn't available on this device."
-      } else {
-        friendly = "Preview unavailable."
-      }
-      setArtifactContent(.error(friendly), for: artifact.id)
+      setArtifactContent(.error(artifactLoadErrorMessage(error)), for: artifact.id)
     }
+  }
+
+  private func artifactLoadErrorMessage(_ error: Error) -> String {
+    let raw = error.localizedDescription
+    if raw.contains("must resolve within")
+      || raw.contains("Remote artifact URLs are not supported")
+      || raw.contains("file URL is invalid") {
+      return "Preview isn't available on this device."
+    }
+    if raw.contains("too large to sync") {
+      return "This recording is too large for the machine's ADE version. Update ADE there to play it."
+    }
+    if raw.contains("Can’t reach this computer") {
+      return "The machine that holds this proof is offline."
+    }
+    return "Preview unavailable."
   }
 
   @MainActor

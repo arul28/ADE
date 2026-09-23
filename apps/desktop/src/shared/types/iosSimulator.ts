@@ -636,6 +636,15 @@ export type IosSimulatorStartStreamArgs = {
    * without this the tab closing would black out the column.
    */
   localViewer?: boolean;
+  /**
+   * Boot the device first if it is off.
+   *
+   * Only explicit start paths set this: `deviceStart` and the CLI's
+   * `stream-start`. A viewer attaching leaves it unset and gets
+   * `APPLE_DEVICE_OFF` for a device that is off, so opening a pane never
+   * powers a simulator on behind the user's back.
+   */
+  boot?: boolean;
 };
 
 export type IosSimulatorFrame = {
@@ -1363,6 +1372,15 @@ export const APPLE_NO_INSTALLED_SIMULATORS_CODE = "APPLE_NO_INSTALLED_SIMULATORS
 export const APPLE_HELPER_UNAVAILABLE_CODE = "APPLE_HELPER_UNAVAILABLE" as const;
 /** `frame` needs a running stream; `screenshot` does not. */
 export const APPLE_STREAM_NOT_RUNNING_CODE = "APPLE_STREAM_NOT_RUNNING" as const;
+/**
+ * The device is powered off, and the caller only asked to WATCH it.
+ *
+ * Watching never boots. A pane mounting, the floating player, a phone or web
+ * viewer and a desktop reconnect all get this instead, and show "{name} is
+ * off." with a Start button. Only an explicit start (`deviceStart`, `launch`,
+ * `openDevice`, or `startStream` with `boot: true`) powers a device on.
+ */
+export const APPLE_DEVICE_OFF_CODE = "APPLE_DEVICE_OFF" as const;
 /** A recording marked `proof` cannot be deleted by an agent. */
 export const APPLE_RECORDING_PINNED_CODE = "APPLE_RECORDING_PINNED" as const;
 /** Another lane's recording holds this device; the message names the lane. */
@@ -1653,7 +1671,12 @@ export type AppleFrameResult = {
   height: number;
 };
 
-/** Hardware buttons `pressButton` accepts. `shake` is named here so the column can call it; the service refuses it with `APPLE_BUTTON_UNSUPPORTED`. */
+/**
+ * Hardware buttons `pressButton` accepts. `shake` is named here so the column
+ * can call it; the service refuses it with `APPLE_BUTTON_UNSUPPORTED`.
+ * `app-switcher` is Simulator's own App Switcher command: two home presses
+ * 150 ms apart, sent by the helper.
+ */
 export const APPLE_HARDWARE_BUTTONS = [
   "home",
   "lock",
@@ -1661,6 +1684,7 @@ export const APPLE_HARDWARE_BUTTONS = [
   "volume-down",
   "siri",
   "shake",
+  "app-switcher",
 ] as const;
 export type AppleHardwareButtonName = (typeof APPLE_HARDWARE_BUTTONS)[number];
 
@@ -1776,6 +1800,16 @@ export type AppleRecordStartArgs = {
   projectRoot?: string | null;
   overlays?: boolean | null;
   label?: string | null;
+  /**
+   * Keep still stretches at wall-clock length. By default the helper cuts a
+   * still screen longer than 2 s down to 0.75 s (`record-start --keep-idle`).
+   */
+  keepIdle?: boolean | null;
+  /**
+   * Wall-clock seconds after which the recording stops and files itself.
+   * Defaults to ten minutes for a recording a chat owns.
+   */
+  maxSeconds?: number | null;
 };
 
 export type AppleRecordStopArgs = {

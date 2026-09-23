@@ -20,8 +20,13 @@ import ImageIO
 ///    renders nothing emits nothing beyond the capture layer's 5 fps idle
 ///    floor, and a stalled one emits nothing at all. A pacer that re-writes the
 ///    last decoded frame at the target rate keeps the timeline honest in both
-///    cases: the MP4's duration always matches wall-clock, and an overlay
-///    animates smoothly over a static screen.
+///    cases, and an overlay animates smoothly over a static screen.
+///
+///    Dead time is cut by default (`IdleGapCompressor`): a still screen with
+///    no overlay for more than two seconds keeps 0.75 s in the file and the
+///    rest is removed, so the MP4 can be shorter than wall-clock. `stop`
+///    reports both lengths. With `idleCompression: false` the file runs at
+///    wall-clock, as it always did.
 /// 3. **Overlays never touch the live stream.** They are drawn here, into the
 ///    pixel buffer handed to `AVAssetWriter`, and the bytes the renderer is
 ///    decoding never pass through this file. (t3code #12779 calls this a
@@ -47,7 +52,12 @@ actor RecordingSession {
 
     struct Finished: Sendable {
         let path: String
+        /// Length of the video, after idle cutting.
         let durationMs: Int
+        /// Real time from the first frame to the stop.
+        let wallDurationMs: Int
+        /// Real time the video leaves out: `wallDurationMs - durationMs`.
+        let idleCutMs: Int
         let bytes: Int
     }
 
@@ -85,9 +95,24 @@ actor RecordingSession {
     private var input: AVAssetWriterInput?
     private var adaptor: AVAssetWriterInputPixelBufferAdaptor?
     private var sessionStartedAt: TimeInterval?
-    private var lastPresentationSeconds: Double = -1
     private var writtenFrames = 0
     private var stopped = false
+
+    /// Maps capture time to output time, cutting still stretches.
+    private var idle: IdleGapCompressor
+    /// The payload `ScreenChange` last looked at, so an unchanged frame costs a
+    /// byte comparison and nothing more.
+    private var classifiedPayload: Data?
+    private var classifiedAt: TimeInterval = -.infinity
+    /// A thumbnail costs a few milliseconds, so a screen that animates is
+    /// looked at eight times a second, not at the pacer's rate. Activity is
+    /// then noticed at most this late, well inside the kept hold.
+    private static let classifyInterval: TimeInterval = 0.125
+    /// The picture at the last significant change.
+    private var referenceThumbnail: ScreenChange.Thumbnail?
+    /// The payload of the last frame appended, so `stop` can tell whether the
+    /// screen changed during a final hold.
+    private var writtenPayload: Data?
 
     /// Monotonic seconds. Wall clock would let an NTP step rewrite the
     /// timeline mid-recording, which `AVAssetWriter` answers by refusing every
@@ -99,13 +124,15 @@ actor RecordingSession {
         fps: Int,
         overlays: Bool,
         accent: RecordingOverlay.Colour,
-        metrics: DeviceMetrics
+        metrics: DeviceMetrics,
+        idleCompression: Bool = true
     ) {
         self.path = path
         self.fps = min(max(fps, 1), 60)
         self.overlaysEnabled = overlays
         self.accent = accent
         self.metrics = metrics
+        self.idle = IdleGapCompressor(enabled: idleCompression)
     }
 
     // MARK: - Lifecycle
@@ -150,7 +177,9 @@ actor RecordingSession {
             throw RecordingError.noFrames
         }
 
-        let durationSeconds = max(Self.now() - startedAt, lastPresentationSeconds)
+        let wallSeconds = max(Self.now() - startedAt, 0)
+        writeFinalPicture(at: wallSeconds)
+        let durationSeconds = idle.endTime(at: wallSeconds)
         input.markAsFinished()
         writer.endSession(atSourceTime: CMTime(seconds: durationSeconds, preferredTimescale: 600))
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
@@ -164,9 +193,13 @@ actor RecordingSession {
         }
 
         let bytes = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? NSNumber)??.intValue ?? 0
+        let durationMs = Int((durationSeconds * 1000).rounded())
+        let wallDurationMs = Int((wallSeconds * 1000).rounded())
         return Finished(
             path: path,
-            durationMs: Int((durationSeconds * 1000).rounded()),
+            durationMs: durationMs,
+            wallDurationMs: wallDurationMs,
+            idleCutMs: max(wallDurationMs - durationMs, 0),
             bytes: bytes
         )
     }
@@ -178,14 +211,23 @@ actor RecordingSession {
     // MARK: - Overlay input
 
     func noteTap(point: DevicePoint) {
+        // Input is activity even with overlays off: the moment around a tap is
+        // what a reviewer wants to see.
+        noteActivity()
         guard overlaysEnabled else { return }
         let normalized = metrics.normalize(point)
         timeline.addTap(x: Double(normalized.x), y: Double(normalized.y), at: Self.now())
     }
 
     func noteText(_ text: String) {
+        noteActivity()
         guard overlaysEnabled else { return }
         timeline.setText(RecordingOverlay.badgeText(for: text), at: Self.now())
+    }
+
+    private func noteActivity() {
+        guard let startedAt = sessionStartedAt else { return }
+        idle.noteActivity(at: Self.now() - startedAt)
     }
 
     // MARK: - Frame pipeline
@@ -197,21 +239,23 @@ actor RecordingSession {
     private func tick() async {
         guard !stopped, let jpeg = latestJPEG else { return }
 
-        let image: CGImage
-        if let decoded, decoded.payload == jpeg {
-            // The simulator is idle, or is producing frames faster than the
-            // pacer writes them. Either way the decode is already paid for.
-            image = decoded.image
-        } else {
-            guard
-                let source = CGImageSourceCreateWithData(jpeg as CFData, nil),
-                let fresh = CGImageSourceCreateImageAtIndex(source, 0, nil)
-            else { return }
-            decoded = (jpeg, fresh)
-            image = fresh
+        let now = Self.now()
+        if let startedAt = sessionStartedAt {
+            let elapsed = now - startedAt
+            // A decoration on screen is activity, so a still is never cut
+            // under a ring or a badge that is still animating.
+            timeline.prune(at: now)
+            if !timeline.isEmpty { idle.noteActivity(at: elapsed) }
+            if idle.enabled, elapsed - classifiedAt >= Self.classifyInterval, jpeg != classifiedPayload {
+                classify(jpeg, at: elapsed)
+            }
+            // Holding a still: the last frame written already shows it, so
+            // there is nothing to decode, composite or encode.
+            if idle.isHolding(at: elapsed) { return }
         }
 
-        let now = Self.now()
+        guard let image = decode(jpeg) else { return }
+
         if writer == nil {
             guard prepareWriter(width: image.width, height: image.height) else { return }
             sessionStartedAt = now
@@ -224,18 +268,111 @@ actor RecordingSession {
         else { return }
 
         timeline.prune(at: now)
+        // Strictly increasing, with idle stretches cut.
+        guard let seconds = idle.presentationTime(at: now - startedAt) else { return }
+        append(image: image, payload: jpeg, adaptor: adaptor, compositedAt: now, presentedAt: seconds)
+    }
+
+    /// The decoded picture for a payload. Cached by payload identity: the
+    /// simulator is idle, or is producing frames faster than the pacer writes
+    /// them, and either way the decode is already paid for.
+    private func decode(_ jpeg: Data) -> CGImage? {
+        if let decoded, decoded.payload == jpeg { return decoded.image }
+        guard
+            let source = CGImageSourceCreateWithData(jpeg as CFData, nil),
+            let fresh = CGImageSourceCreateImageAtIndex(source, 0, nil)
+        else { return nil }
+        decoded = (jpeg, fresh)
+        return fresh
+    }
+
+    private func append(
+        image: CGImage,
+        payload: Data,
+        adaptor: AVAssetWriterInputPixelBufferAdaptor,
+        compositedAt now: TimeInterval,
+        presentedAt seconds: TimeInterval
+    ) {
         guard let buffer = composite(image: image, adaptor: adaptor, at: now) else { return }
-
-        // Strictly increasing, even if two ticks land inside one timescale unit.
-        var seconds = now - startedAt
-        if seconds <= lastPresentationSeconds {
-            seconds = lastPresentationSeconds + (1.0 / Double(fps))
-        }
-        lastPresentationSeconds = seconds
-
         if adaptor.append(buffer, withPresentationTime: CMTime(seconds: seconds, preferredTimescale: 600)) {
             writtenFrames += 1
+            writtenPayload = payload
         }
+    }
+
+    /// Decide whether a new payload is a new picture or only a caret blink.
+    private func classify(_ jpeg: Data, at elapsed: TimeInterval) {
+        classifiedPayload = jpeg
+        classifiedAt = elapsed
+        // A thumbnail that cannot be made is treated as a change: cutting
+        // real activity is worse than keeping a still.
+        guard let thumbnail = Self.thumbnail(of: jpeg) else {
+            idle.noteActivity(at: elapsed)
+            return
+        }
+        if let reference = referenceThumbnail,
+           !ScreenChange.isSignificant(reference: reference, current: thumbnail) {
+            return
+        }
+        referenceThumbnail = thumbnail
+        idle.noteActivity(at: elapsed)
+    }
+
+    /// A small greyscale copy of a JPEG. ImageIO decodes it at reduced scale
+    /// straight from the DCT data, so this costs far less than a full decode.
+    private static func thumbnail(of jpeg: Data) -> ScreenChange.Thumbnail? {
+        guard let source = CGImageSourceCreateWithData(jpeg as CFData, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: ScreenChange.thumbnailSide,
+            kCGImageSourceShouldCache: false,
+        ]
+        guard let small = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return nil
+        }
+        let width = small.width
+        let height = small.height
+        guard width > 0, height > 0 else { return nil }
+        var luma = [UInt8](repeating: 0, count: width * height)
+        let drawn = luma.withUnsafeMutableBytes { bytes -> Bool in
+            guard let context = CGContext(
+                data: bytes.baseAddress,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width,
+                space: CGColorSpaceCreateDeviceGray(),
+                bitmapInfo: CGImageAlphaInfo.none.rawValue
+            ) else { return false }
+            context.interpolationQuality = .low
+            context.draw(small, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        return drawn ? ScreenChange.Thumbnail(width: width, height: height, luma: luma) : nil
+    }
+
+    /// At stop, during a final hold, write the latest picture if it never made
+    /// it into the file. A small change that did not count as activity (a
+    /// result label, a clock) must still be what the video ends on.
+    private func writeFinalPicture(at elapsed: TimeInterval) {
+        guard
+            idle.isHolding(at: elapsed),
+            let jpeg = latestJPEG,
+            jpeg != writtenPayload,
+            let input,
+            let adaptor,
+            input.isReadyForMoreMediaData,
+            let image = decode(jpeg)
+        else { return }
+        let now = Self.now()
+        timeline.prune(at: now)
+        append(
+            image: image,
+            payload: jpeg,
+            adaptor: adaptor,
+            compositedAt: now,
+            presentedAt: idle.finalFrameTime(at: elapsed)
+        )
     }
 
     private func prepareWriter(width: Int, height: Int) -> Bool {
@@ -258,8 +395,11 @@ actor RecordingSession {
                 AVVideoAverageBitRateKey: bitrate,
                 AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
                 // A keyframe every two seconds keeps scrubbing usable without
-                // paying for an all-intra file.
+                // paying for an all-intra file. Both limits, because frames
+                // are sparse around a cut still: counting frames alone would
+                // let a keyframe drift past two seconds of output.
                 AVVideoMaxKeyFrameIntervalKey: fps * 2,
+                AVVideoMaxKeyFrameIntervalDurationKey: 2.0,
                 AVVideoAllowFrameReorderingKey: false,
             ],
         ]

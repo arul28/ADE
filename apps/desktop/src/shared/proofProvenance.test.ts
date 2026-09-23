@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   formatProofClockRange,
+  formatProofDuration,
   proofRecordedBeforeRequestLine,
   proofSourceLine,
   readProofProvenance,
@@ -16,7 +17,7 @@ describe("proof provenance", () => {
     expect(readProofProvenance({ proofSource: "ade-recorder", recordedFrom: at(10, 24), recordedBeforeRequest: true }))
       .toMatchObject({ source: "ade-recorder", recordedFrom: at(10, 24), recordedTo: null, recordedBeforeRequest: true });
     expect(readProofProvenance({ proofSource: "someone", recordedFrom: "not a date", recordedBeforeRequest: "yes" }))
-      .toEqual({ source: null, recordedFrom: null, recordedTo: null, mediaCreatedAt: null, recordedBeforeRequest: false });
+      .toEqual({ source: null, recordedFrom: null, recordedTo: null, mediaCreatedAt: null, recordedBeforeRequest: false, idleCutMs: null });
     expect(readProofProvenance(null).source).toBeNull();
   });
 
@@ -27,6 +28,14 @@ describe("proof provenance", () => {
     expect(proofSourceLine(readProofProvenance({ proofSource: "ade-capture" }))).toBe("Captured by ADE");
     expect(proofSourceLine(readProofProvenance({ proofSource: "attached" }))).toBe("Attached by the agent");
     expect(proofSourceLine(readProofProvenance({}))).toBeNull();
+  });
+
+  it("says how much still time the recorder cut, and only when it cut a second or more", () => {
+    const cut = readProofProvenance({ proofSource: "ade-recorder", recordedFrom: at(10, 24), recordedTo: at(10, 27), idleCutMs: 127_000 });
+    expect(plain(proofSourceLine(cut, "en-US"))).toBe("Recorded by ADE · 10:24–10:27 AM · idle cut 2:07");
+    expect(proofSourceLine(readProofProvenance({ proofSource: "ade-recorder", idleCutMs: 400 }))).toBe("Recorded by ADE");
+    expect(readProofProvenance({ idleCutMs: "lots" }).idleCutMs).toBeNull();
+    expect(formatProofDuration(3_842_000)).toBe("1:04:02");
   });
 
   it("says a day period once, keeps two different ones, and has none in 24-hour time", () => {

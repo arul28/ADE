@@ -24,7 +24,7 @@ See [`../proof.md`](../proof.md) for the user-facing CLI surface (`ade proof cap
 The artifact broker is owned by the ADE runtime that owns the project. Ingest, link, list, delete, broken-record audit/prune/recovery, review compatibility updates, backend status, and event emission all happen inside `ade serve` for that project. Artifacts live under that runtime's `.ade/artifacts/computer-use/` directory:
 
 - **Local runtime:** artifacts on the user's machine, under the local project root.
-- **Remote runtime:** artifacts on the remote host, under the remote project root. The desktop renderer reads previews through `ade.proof.readArtifactPreview` over the same SSH-tunneled JSON-RPC that backs the rest of the remote project surface; raw artifact bytes are not synced back to the desktop machine.
+- **Remote runtime:** artifacts on the remote host, under the remote project root. The desktop renderer reads image previews through `ade.proof.readArtifactPreview` over the same SSH-tunneled JSON-RPC that backs the rest of the remote project surface. Videos stream instead: the renderer plays `ade-artifact://remote/<targetId>/<projectId>/<path>`, and main answers each Range request with bounded `computer_use_artifacts.readArtifactRange` reads (at most 2 MiB each, CTO role only) from that machine's broker, which resolves the path inside its own `.ade/artifacts`. A host too old to answer falls back to the 10 MiB data URL. Raw artifact bytes are not synced back to the desktop machine.
 
 The desktop renderer is a viewer: it lists collected proof and displays
 runtime-fetched previews inline in the chat and in the drawer. It does not own
@@ -126,9 +126,12 @@ any of them later.
 
 - `apps/desktop/src/renderer/components/chat/ChatComputerUsePanel.tsx` — shared
   proof card, in-app lightbox, full drawer, availability/error states, and
-  irreversible delete action for the active chat session. Local files use ADE's
-  range-capable artifact protocol; remote files use
-  `ade.proof.readArtifactPreview`. Neither path falls back to Finder.
+  irreversible delete action for the active chat session. Local files, including
+  project-relative and in-project absolute uris, use ADE's range-capable
+  `ade-artifact://project/` protocol. Remote videos stream through
+  `ade-artifact://remote/`; remote images use `ade.proof.readArtifactPreview`.
+  A failed preview names its cause when known (the machine is offline, it sent
+  nothing, or the bytes did not play). Neither path falls back to Finder.
 - `apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx`,
   `chatCardPrimitives.tsx` — bucket artifacts by capture time into the completed
   turn that produced them and render the collapsed inline filmstrip.

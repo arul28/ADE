@@ -51,6 +51,7 @@ import { inspectContextFor, type IosSimulatorSnapshotElement } from "./appleInsp
 import { formatRecordingElapsed, recordingElapsedMs, useAppleRecordings } from "./appleRecording";
 import { useAppleDeviceInput } from "./useAppleDeviceInput";
 import { AppleRecordingSavedRow } from "./AppleRecordingSavedRow";
+import { isAppleDeviceOffError } from "./appleErrors";
 import { useAppleDeviceStream } from "./useAppleDeviceStream";
 import { openAppleMiniPlayer } from "./appleMiniPlayerStore";
 import type { AppleRenderedPreview } from "./drawer/sections/PreviewLabSection";
@@ -66,6 +67,22 @@ import type { AppleRenderedPreview } from "./drawer/sections/PreviewLabSection";
  */
 
 const STATUS_POLL_MS = 6_000;
+
+/**
+ * How often a loading card that has not moved re-reads the truth.
+ *
+ * The card used to wait on exactly one thing — the `deviceStart` promise, or
+ * the stream hook — and when that answer never came it sat on "Booting
+ * device" until the pane was remounted, over a device that was already
+ * streaming. A re-read every few seconds is what makes that impossible.
+ */
+export const APPLE_LOADING_RECHECK_MS = 8_000;
+/**
+ * Past this a start has failed whatever its promise says: `bootstatus` gives
+ * up at 90s and the helper's capture at 30s. The card turns into the "taking
+ * too long" sentence with Start, instead of spinning.
+ */
+export const APPLE_START_GIVE_UP_MS = 150_000;
 
 /**
  * The drawer is lazy on purpose: it pulls nine sections, the event log and
@@ -134,6 +151,18 @@ export function AppleDevicePane({
   const [refreshing, setRefreshing] = useState(false);
 
   const [pendingStart, setPendingStart] = useState<string | null>(null);
+  const pendingStartRef = useRef<string | null>(null);
+  pendingStartRef.current = pendingStart;
+  /** Which `start` call is current, so an older one settling late changes nothing. */
+  const startTokenRef = useRef(0);
+  /**
+   * A device the service just told us is off (`APPLE_DEVICE_OFF`).
+   *
+   * Wins over every "booted" reading until something says it is on again: a
+   * start, a boot event, or a fresh `simctl` read. Without it a status read
+   * that still said Booted would ask for the stream again and again.
+   */
+  const [offUdid, setOffUdid] = useState<string | null>(null);
   const [loadingStage, setLoadingStage] = useState<AppleLoadingStage>("starting");
   const [startError, setStartError] = useState<unknown>(null);
   const [error, setError] = useState<unknown>(null);
@@ -171,6 +200,15 @@ export function AppleDevicePane({
   const [nowTick, setNowTick] = useState(() => Date.now());
 
   const refreshList = useCallback(() => setListNonce((nonce) => nonce + 1), []);
+
+  /** Patch one device's power in the listed state, ahead of the re-read that confirms it. */
+  const markInstalledState = useCallback((udid: string, next: "Booted" | "Shutdown") => {
+    setInstalled((current) => (
+      current.some((entry) => entry.udid === udid && entry.state !== next)
+        ? current.map((entry) => (entry.udid === udid ? { ...entry, state: next } : entry))
+        : current
+    ));
+  }, []);
 
   /* ── size + visibility ─────────────────────────────────────────────────── */
 
@@ -249,6 +287,10 @@ export function AppleDevicePane({
         if (cancelled) return;
         setInstalled(next.installed);
         setLaneDevice(next.lane);
+        const laneUdid = next.lane?.udid ?? null;
+        if (laneUdid && next.installed.find((entry) => entry.udid === laneUdid)?.state === "Booted") {
+          setOffUdid((current) => (current === laneUdid ? null : current));
+        }
         setOwners(next.owners ?? []);
         /*
          * Disk is the picker's line and nothing else's, and the picker is on
@@ -286,6 +328,8 @@ export function AppleDevicePane({
   }, [laneId, listNonce, sessionId]);
 
   const deviceUdid = laneDevice?.udid ?? null;
+  const deviceUdidRef = useRef(deviceUdid);
+  deviceUdidRef.current = deviceUdid;
   const installedForLane = useMemo(
     () => installed.find((entry) => entry.udid === deviceUdid) ?? null,
     [deviceUdid, installed],
@@ -294,14 +338,37 @@ export function AppleDevicePane({
   /* ── stream ────────────────────────────────────────────────────────────── */
 
   const onStreamError = useCallback((message: string | null) => {
-    if (message) setError(new Error(message));
-  }, []);
+    if (!message) return;
+    // Not an error to show: the device is off, and watching never boots it.
+    // The pane says "{name} is off." with Start, and re-reads the list.
+    if (isAppleDeviceOffError(message)) {
+      const udid = deviceUdidRef.current;
+      if (udid) setOffUdid(udid);
+      refreshList();
+      return;
+    }
+    setError(new Error(message));
+  }, [refreshList]);
 
-  const booted = Boolean(
-    installedForLane?.state === "Booted"
-    || (status?.activeDevice?.udid === deviceUdid && status?.activeDevice?.state === "Booted")
-    || (deviceUdid && status?.deviceSession?.deviceUdid === deviceUdid),
-  );
+  const statusSaysBooted = status?.activeDevice?.udid === deviceUdid && status?.activeDevice?.state === "Booted";
+  // A status read of this device as Booted is fresh `simctl` truth too.
+  useEffect(() => {
+    if (offUdid && statusSaysBooted && deviceUdid === offUdid) setOffUdid(null);
+  }, [deviceUdid, offUdid, statusSaysBooted]);
+
+  /*
+   * `simctl` is the truth about power. An open device session is not: it
+   * outlives a power-off, and reading it as "booted" is what asked for a
+   * stream on a device that was off. It still counts before the installed
+   * list has loaded.
+   */
+  const booted = deviceUdid !== null && deviceUdid === offUdid
+    ? false
+    : Boolean(
+      installedForLane
+        ? installedForLane.state === "Booted" || statusSaysBooted
+        : statusSaysBooted || (deviceUdid && status?.deviceSession?.deviceUdid === deviceUdid),
+    );
 
   const stream = useAppleDeviceStream({
     deviceUdid: booted ? deviceUdid : null,
@@ -326,6 +393,46 @@ export function AppleDevicePane({
     streamState: stream.state,
   });
 
+  /* ── a loading card that cannot hang ───────────────────────────────────── */
+
+  /*
+   * While the card is up, re-read the truth every few seconds: the device
+   * list and status (which land an off device on the Off card and a running
+   * one on the stream), and for a start in flight, whether the lane is
+   * already streaming — in which case the start is done, whatever its promise
+   * is doing. A start still going past `APPLE_START_GIVE_UP_MS` is given up
+   * with the "taking too long" sentence and Start.
+   */
+  const loading = state === "starting";
+  useEffect(() => {
+    if (!loading) return undefined;
+    const since = Date.now();
+    const timer = window.setInterval(() => {
+      const pending = pendingStartRef.current;
+      refreshList();
+      if (!pending) return;
+      const token = startTokenRef.current;
+      const settle = () => {
+        if (startTokenRef.current !== token) return;
+        startTokenRef.current += 1;
+        setPendingStart(null);
+      };
+      if (Date.now() - since >= APPLE_START_GIVE_UP_MS) {
+        settle();
+        setError(new Error(
+          `Simulator did not become ready within ${Math.round(APPLE_START_GIVE_UP_MS / 1000)}s. CoreSimulator may be stuck.`,
+        ));
+        return;
+      }
+      void window.ade.iosSimulator.getStreamStatus?.(runtimePinRef.current, { laneId, chatSessionId: sessionId })
+        .then((next) => {
+          if (next?.running) settle();
+        })
+        .catch(() => undefined);
+    }, APPLE_LOADING_RECHECK_MS);
+    return () => window.clearInterval(timer);
+  }, [laneId, loading, refreshList, sessionId]);
+
   /* ── service events ────────────────────────────────────────────────────── */
 
   const applyStreamEventRef = useRef(stream.applyStreamEvent);
@@ -348,11 +455,40 @@ export function AppleDevicePane({
             refreshList();
             return;
           }
+          if (event.phase === "stopped") {
+            // Powered off (the tab close, the CLI, another window): show the
+            // Off card now rather than after the next read.
+            markInstalledState(event.udid, "Shutdown");
+            refreshList();
+            return;
+          }
+          if (event.phase === "booted" || event.phase === "streaming") {
+            markInstalledState(event.udid, "Booted");
+            setOffUdid((current) => (current === event.udid ? null : current));
+          }
           setLoadingStage(event.phase === "streaming" ? "streaming" : "starting");
-          if (event.phase === "streaming") refreshList();
+          if (event.phase === "streaming") {
+            /*
+             * The start is done: the service emits this once the capture is
+             * open. The card used to wait for the `deviceStart` promise alone,
+             * so a reply that came late or never (a runtime reconnect, a start
+             * queued behind another lifecycle step) left it on "Booting
+             * device" over a device that was already streaming, until the
+             * pane was remounted. The event settles it too.
+             */
+            startTokenRef.current += 1;
+            setPendingStart(null);
+            refreshList();
+          }
           return;
         }
         case "stream-started":
+          if (event.status.deviceUdid) {
+            const udid = event.status.deviceUdid;
+            setOffUdid((current) => (current === udid ? null : current));
+          }
+          applyStreamEventRef.current(event.status);
+          return;
         case "stream-status":
         case "stream-stopped":
         case "stream-error":
@@ -369,7 +505,7 @@ export function AppleDevicePane({
       }
     }, runtimePinRef.current);
     return unsubscribe;
-  }, [laneId, refreshList]);
+  }, [laneId, markInstalledState, refreshList]);
 
   /* ── recordings ────────────────────────────────────────────────────────── */
 
@@ -526,19 +662,26 @@ export function AppleDevicePane({
   /* ── actions ───────────────────────────────────────────────────────────── */
 
   const start = useCallback((args: AppleDeviceStartArgs, key: string) => {
+    const token = startTokenRef.current + 1;
+    startTokenRef.current = token;
     setStartError(null);
     setError(null);
+    setOffUdid(null);
     setLoadingStage("starting");
     setPendingStart(key);
+    // Only the current start may settle the card. One that the `streaming`
+    // event, the give-up timer or a newer start already replaced changes
+    // nothing when its promise finally lands.
+    const current = () => startTokenRef.current === token;
     void window.ade.iosSimulator.deviceStart(args, runtimePinRef.current)
       .then(() => {
         refreshList();
       })
       .catch((cause: unknown) => {
-        setStartError(cause);
+        if (current()) setStartError(cause);
       })
       .finally(() => {
-        setPendingStart(null);
+        if (current()) setPendingStart(null);
       });
   }, [refreshList]);
 
@@ -573,21 +716,28 @@ export function AppleDevicePane({
     if (deviceUdid) start({ laneId, chatSessionId: sessionId, udid: deviceUdid }, deviceUdid);
   }, [deviceUdid, laneId, sessionId, start]);
 
+  /*
+   * `deviceStop`, the verb that runs `simctl shutdown`. This used to be
+   * `closeDevice`, which only powers off a device the hub opened a session
+   * for — and the pane's own starts never open one, so Power off did nothing
+   * to a device the pane had started. `deviceStop` also announces `stopped`,
+   * which is what moves this pane and the tools card to "Off" at once.
+   */
   const powerOff = useCallback(() => {
     if (!deviceUdid) return;
     void window.ade.iosSimulator
-      .closeDevice(
+      .deviceStop(
         {
-          deviceUdid,
+          laneId,
+          udid: deviceUdid,
           chatSessionId: sessionId,
           ignoreOwnership: ignoreChatOwnership,
-          shutdownDevice: true,
         },
         runtimePinRef.current,
       )
       .then(() => refreshList())
       .catch((cause: unknown) => setError(cause));
-  }, [deviceUdid, ignoreChatOwnership, refreshList, sessionId]);
+  }, [deviceUdid, ignoreChatOwnership, laneId, refreshList, sessionId]);
 
   /**
    * "Switch device…" deletes or detaches this lane's device and returns to the
@@ -765,9 +915,14 @@ export function AppleDevicePane({
             runtime={startingRuntime()}
             model={startingIdentity().model}
             family={startingIdentity().family}
-            stage={loadingStage}
+            /* Without a start in flight the device is already up and only the
+               video is connecting; "Booting device" there read as ADE powering
+               the simulator on by itself. */
+            stage={pendingStart ? loadingStage : "streaming"}
             error={startError}
-            onRetry={() => (pendingStart ? undefined : restart())}
+            /* A failure the service announced can be retried at once, even
+               while its promise has not come back yet. */
+            onRetry={() => (pendingStart && !startError ? undefined : restart())}
           />
         );
       case "preview":

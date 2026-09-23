@@ -1442,14 +1442,33 @@ export type SyncFileRequest =
   | { action: "stopWatching"; args: { workspaceId: string; includeIgnored?: boolean } }
   | { action: "quickOpen"; args: { workspaceId: string; query: string; limit?: number; includeIgnored?: boolean; allowComposerPrefixFallback?: boolean; includeDirectories?: boolean } }
   | { action: "searchText"; args: { workspaceId: string; query: string; limit?: number; includeIgnored?: boolean } }
-  | { action: "readArtifact"; args: { artifactId?: string; uri?: string; path?: string } };
+  | { action: "readArtifact"; args: { artifactId?: string; uri?: string; path?: string } }
+  | {
+      action: "readArtifactRange";
+      args: { artifactId?: string; uri?: string; path?: string; offset?: number; length?: number };
+    };
+
+/**
+ * One bounded slice of a stored proof. A phone pulls a recording too large for
+ * `readArtifact` this way, chunk by chunk.
+ */
+export type SyncArtifactRange = {
+  path: string;
+  totalSize: number;
+  rangeStart: number;
+  rangeEnd: number;
+  encoding: "base64";
+  content: string;
+  eof: boolean;
+};
 
 export type SyncFileResponsePayload = {
   ok: boolean;
   action: SyncFileRequest["action"];
   result?:
     | unknown
-    | SyncFileBlob;
+    | SyncFileBlob
+    | SyncArtifactRange;
   error?: {
     code: string;
     message: string;

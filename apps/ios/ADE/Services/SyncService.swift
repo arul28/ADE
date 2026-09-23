@@ -14937,6 +14937,57 @@ final class SyncService: ObservableObject {
     return try decode(try await performFileRequest(action: "readArtifact", args: args), as: SyncFileBlob.self)
   }
 
+  /// What one slice read asks for. The host caps a slice at 2 MiB.
+  static let artifactRangeChunkBytes = 2 * 1024 * 1024
+
+  /// Writes a stored proof to `destination` one bounded slice at a time, so a
+  /// recording larger than `readArtifact`'s whole-file cap still plays. A host
+  /// that predates the slice read answers "Unsupported file action"; callers
+  /// fall back to `readArtifact` on that.
+  func downloadArtifact(artifactId: String? = nil, uri: String? = nil, to destination: URL) async throws {
+    var args: [String: Any] = [:]
+    if let artifactId, !artifactId.isEmpty {
+      args["artifactId"] = artifactId
+    }
+    if let uri, !uri.isEmpty {
+      args["uri"] = uri
+    }
+    let fileManager = FileManager.default
+    try? fileManager.removeItem(at: destination)
+    guard fileManager.createFile(atPath: destination.path, contents: nil) else {
+      throw NSError(domain: "ADE", code: 8, userInfo: [NSLocalizedDescriptionKey: "Could not save the artifact on this phone."])
+    }
+    let handle = try FileHandle(forWritingTo: destination)
+    var completed = false
+    defer {
+      try? handle.close()
+      if !completed { try? fileManager.removeItem(at: destination) }
+    }
+    var offset = 0
+    while true {
+      try Task.checkCancellation()
+      var request = args
+      request["offset"] = offset
+      request["length"] = Self.artifactRangeChunkBytes
+      let range = try decode(
+        try await performFileRequest(action: "readArtifactRange", args: request),
+        as: SyncArtifactRange.self
+      )
+      guard let data = Data(base64Encoded: range.content) else {
+        throw NSError(domain: "ADE", code: 8, userInfo: [NSLocalizedDescriptionKey: "The machine returned an artifact payload that could not be decoded."])
+      }
+      if !data.isEmpty {
+        try handle.write(contentsOf: data)
+      }
+      if range.eof || range.rangeEnd >= range.totalSize { break }
+      guard !data.isEmpty, range.rangeEnd > offset else {
+        throw NSError(domain: "ADE", code: 8, userInfo: [NSLocalizedDescriptionKey: "The artifact ended early on the machine."])
+      }
+      offset = range.rangeEnd
+    }
+    completed = true
+  }
+
   // MARK: - Work tools (read-only)
 
   /// Whether this brain can describe the desktop's Work tools pane at all.

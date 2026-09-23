@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
+import { formatProofDuration, proofIdleCutLabel } from "../../../../shared/proofProvenance";
 import { ADE_ACCENT_COLOR } from "../../../../shared/themeTokens";
 import { APPLE_DEVICE_ALREADY_RECORDING_CODE, type AppleInputSource } from "../../../../shared/types/iosSimulator";
 import type { SimHelperTransport } from "../simHelperClient";
@@ -21,7 +22,15 @@ import type { SimHelperTransport } from "../simHelperClient";
  * 2. It stops at the end of that chat's turn, or after ten minutes, whichever
  *    comes first.
  * 3. `record-start` while an auto recording runs **converts** it — no restart,
- *    no gap, no cap — so "let me record that" never costs the first minute.
+ *    no gap — so "let me record that" never costs the first minute. The auto
+ *    cap goes; the manual cap (below) starts from the conversion.
+ * 3a. A manual recording a chat owns stops itself after ten minutes of wall
+ *    clock (`maxSeconds` changes it), so an agent that forgets `record-stop`
+ *    cannot leave the device recording for hours. A person's own recording
+ *    from the pane has no cap unless it asks for one.
+ * 3b. Still time is cut by default: the helper keeps 0.75 s of any still
+ *    stretch over 2 s. `durationMs` is the video; `wallDurationMs` the real
+ *    time it covers; `idleCutMs` the difference. `keepIdle` turns it off.
  * 4. Every recording that stops is filed into the proof drawer at once (round
  *    3, A3), attributed to the chat that owns it, captioned
  *    "Simulator recording · {device} · {duration}". There is no pin step.
@@ -53,6 +62,19 @@ export type SimRecording = {
   label: string | null;
   overlays: boolean;
   /**
+   * The helper confirmed it cuts still time from this recording. False for
+   * `keepIdle`, and for an older helper that ignores the request.
+   */
+  idleCompression?: boolean;
+  /** Real time the video covers. `durationMs` is the video's own length. */
+  wallDurationMs?: number | null;
+  /** Still time left out of the video: `wallDurationMs - durationMs`. */
+  idleCutMs?: number | null;
+  /** Wall-clock cap, or null for none. The recording stops itself at it. */
+  maxDurationMs?: number | null;
+  /** Why it stopped. `cap` means the cap above ran out. */
+  stopReason?: SimRecordingStopReason | null;
+  /**
    * The proof-drawer artifact this recording was filed as, once it stopped.
    *
    * Round 3 made every finished recording proof (see `stopActive`), so this is
@@ -64,6 +86,8 @@ export type SimRecording = {
 };
 
 export type { AppleInputSource };
+
+export type SimRecordingStopReason = "requested" | "turn-end" | "cap" | "device-off" | "released";
 
 export interface SimRecordingService {
   /** Auto-record start + overlay events. Called from every injected-input path. */
@@ -94,6 +118,10 @@ export interface SimRecordingService {
     chatSessionId: string | null;
     overlays?: boolean;
     label?: string;
+    /** Keep still stretches at wall-clock length (`record-start --keep-idle`). */
+    keepIdle?: boolean;
+    /** Wall-clock cap in seconds. Default: ten minutes for a chat's recording. */
+    maxSeconds?: number;
   }): Promise<SimRecording>;
   stop(args: {
     laneId: string;
@@ -172,6 +200,29 @@ export const APPLE_HELPER_UNAVAILABLE_CODE = "APPLE_HELPER_UNAVAILABLE" as const
 
 /** How long an auto recording may run before it stops itself. */
 export const AUTO_RECORDING_MAX_MS = 10 * 60 * 1000;
+
+/**
+ * How long a manual recording a chat owns may run. Counted from the start, or
+ * from the conversion when it began as an auto recording.
+ */
+export const MANUAL_RECORDING_MAX_MS = 10 * 60 * 1000;
+
+/** The longest cap `maxSeconds` may ask for. */
+export const RECORDING_MAX_SECONDS_LIMIT = 4 * 60 * 60;
+
+/** A caller's `maxSeconds`, in ms, clamped to 1 s .. four hours. Null when absent or not a number. */
+function capFromSeconds(maxSeconds: number | undefined): number | null {
+  if (typeof maxSeconds !== "number" || !Number.isFinite(maxSeconds) || maxSeconds <= 0) return null;
+  return Math.round(Math.min(Math.max(maxSeconds, 1), RECORDING_MAX_SECONDS_LIMIT) * 1000);
+}
+
+/**
+ * The cap for a manual recording: the caller's, or the default when a chat
+ * owns it. A person recording from the pane gets none unless they ask.
+ */
+function manualCapMs(args: { maxSeconds?: number; chatSessionId: string | null }): number | null {
+  return capFromSeconds(args.maxSeconds) ?? (args.chatSessionId ? MANUAL_RECORDING_MAX_MS : null);
+}
 
 /**
  * The accent used for tap rings.
@@ -400,9 +451,26 @@ export function notifySimRecordingTurnEnded(chatSessionId: string | null | undef
   }
 }
 
+type RecordingLengths = Pick<SimRecording, "durationMs" | "wallDurationMs" | "idleCutMs">;
+
+/**
+ * The three lengths from a `record-stop` reply.
+ *
+ * An older helper sends only `durationMs`. It never cuts idle time, so its
+ * video length is the wall-clock length and nothing was cut.
+ */
+function readLengths(reply: Record<string, unknown>): RecordingLengths {
+  const number = (value: unknown): number | null =>
+    typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : null;
+  const durationMs = number(reply.durationMs);
+  const wallDurationMs = number(reply.wallDurationMs) ?? durationMs;
+  const idleCutMs = number(reply.idleCutMs) ?? (durationMs === null ? null : 0);
+  return { durationMs, wallDurationMs, idleCutMs };
+}
+
 type ActiveRecording = {
   record: SimRecording;
-  /** Fires the ten-minute cap. Null once converted to manual. */
+  /** Fires the auto or manual cap. Null when the recording has none. */
   capTimer: ReturnType<typeof setTimeout> | null;
   /** Serialises stop against a concurrent turn-end and cap expiry. */
   stopping: Promise<SimRecording | null> | null;
@@ -505,12 +573,17 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
     });
   };
 
-  const armCap = (laneId: string): ReturnType<typeof setTimeout> => {
+  const armCap = (laneId: string, ms: number): ReturnType<typeof setTimeout> => {
     const timer = setTimeout(() => {
+      try {
+        deps.logger?.info?.("apple.recording.cap_reached", { laneId, maxDurationMs: ms });
+      } catch {
+        // A logger that throws must not keep the recording running.
+      }
       void stopActive(laneId, { reason: "cap" }).catch((error: unknown) => {
         warn("apple.recording.cap_stop_failed", { laneId, error: String(error) });
       });
-    }, AUTO_RECORDING_MAX_MS);
+    }, ms);
     // A ten-minute timer must not be the reason Electron refuses to quit.
     (timer as unknown as { unref?: () => void }).unref?.();
     return timer;
@@ -523,6 +596,8 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
     mode: "auto" | "manual";
     overlays?: boolean;
     label?: string | null;
+    keepIdle?: boolean;
+    maxSeconds?: number;
   }): Promise<SimRecording> => {
     const transport = requireTransport();
     const id = randomUUID();
@@ -537,9 +612,12 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
       overlays,
       fps: deps.fps ?? 30,
       accentColor: accent(),
+      // An older helper ignores the field and records at wall-clock time.
+      idleCompression: args.keepIdle !== true,
     });
+    let reply: Record<string, unknown>;
     try {
-      await sendStart();
+      reply = await sendStart();
     } catch (error) {
       if (helperErrorCode(error) !== "already-recording") throw error;
       // The helper holds a recording on this device. If one of this service's
@@ -554,8 +632,11 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
         }
       }
       await reclaimHelperRecording(args.udid, "orphan-on-start");
-      await sendStart();
+      reply = await sendStart();
     }
+    const maxDurationMs = args.mode === "auto"
+      ? AUTO_RECORDING_MAX_MS
+      : manualCapMs({ maxSeconds: args.maxSeconds, chatSessionId: args.chatSessionId });
 
     const record: SimRecording = {
       id,
@@ -571,11 +652,14 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
       proof: false,
       label: args.label ?? null,
       overlays,
+      // Only a helper that echoes the field cuts idle time.
+      idleCompression: reply?.idleCompression === true,
+      maxDurationMs,
     };
     writeSidecar(record);
     active.set(args.laneId, {
       record,
-      capTimer: args.mode === "auto" ? armCap(args.laneId) : null,
+      capTimer: maxDurationMs === null ? null : armCap(args.laneId, maxDurationMs),
       stopping: null,
     });
     return record;
@@ -590,7 +674,7 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
    */
   const stopActive = async (
     laneId: string,
-    options: { reason: "requested" | "turn-end" | "cap" | "device-off" | "released"; discard?: boolean },
+    options: { reason: SimRecordingStopReason; discard?: boolean },
   ): Promise<SimRecording | null> => {
     const entry = active.get(laneId);
     if (!entry) return null;
@@ -601,11 +685,11 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
       entry.capTimer = null;
       active.delete(laneId);
 
-      let durationMs: number | null = null;
+      let lengths: RecordingLengths = { durationMs: null, wallDurationMs: null, idleCutMs: null };
       let bytes: number | null = null;
       try {
         const reply = await requireTransport().send({ type: "record-stop", udid: entry.record.udid });
-        durationMs = typeof reply.durationMs === "number" ? reply.durationMs : null;
+        lengths = readLengths(reply);
         bytes = typeof reply.bytes === "number" ? reply.bytes : null;
       } catch (error) {
         // The helper may have died with the file half-written. The sidecar
@@ -625,8 +709,9 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
       const finished: SimRecording = {
         ...entry.record,
         endedAt: new Date().toISOString(),
-        durationMs,
+        ...lengths,
         bytes,
+        stopReason: options.reason,
       };
 
       if (options.discard) {
@@ -647,15 +732,15 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
     return run;
   };
 
-  /** "0:23" / "1:04:02" — the caption's duration part. */
+  /**
+   * "0:23" / "1:10 · idle cut 2:07" — the caption's duration part. The first
+   * number is the video's length, which is what the player shows; the cut
+   * says why the wall-clock times span more.
+   */
   const captionDuration = (record: SimRecording): string => {
-    const total = Math.max(0, Math.round((record.durationMs ?? 0) / 1000));
-    const seconds = String(total % 60).padStart(2, "0");
-    const minutes = Math.floor(total / 60) % 60;
-    const hours = Math.floor(total / 3600);
-    return hours > 0
-      ? `${hours}:${String(minutes).padStart(2, "0")}:${seconds}`
-      : `${minutes}:${seconds}`;
+    const video = formatProofDuration(record.durationMs ?? 0);
+    const idleCut = proofIdleCutLabel(record.idleCutMs);
+    return idleCut ? `${video} · ${idleCut}` : video;
   };
 
   const deviceLabel = (udid: string): string => {
@@ -677,6 +762,16 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
    */
   const fileAsProof = (record: SimRecording): SimRecording => {
     const caption = `Simulator recording · ${deviceLabel(record.udid)} · ${captionDuration(record)}`;
+    const idleCut = proofIdleCutLabel(record.idleCutMs);
+    const description = [
+      "Screen recording of the lane's Apple device, with input overlays.",
+      idleCut && typeof record.wallDurationMs === "number"
+        ? `Still stretches were shortened: ${idleCut.replace(/^idle cut /, "")} cut from ${formatProofDuration(record.wallDurationMs)} of real time.`
+        : null,
+      record.stopReason === "cap" && typeof record.maxDurationMs === "number"
+        ? `Stopped at its ${formatProofDuration(record.maxDurationMs)} cap.`
+        : null,
+    ].filter(Boolean).join(" ");
     let artifactId: string | null = null;
     try {
       const result = deps.artifactFiler?.ingest({
@@ -692,13 +787,16 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
           {
             kind: "video_recording",
             title: record.label ?? caption,
-            description: "Screen recording of the lane's Apple device, with input overlays.",
+            description,
             path: record.path,
             mimeType: "video/mp4",
             metadata: {
               laneId: record.laneId,
               udid: record.udid,
               durationMs: record.durationMs,
+              ...(typeof record.wallDurationMs === "number" ? { wallDurationMs: record.wallDurationMs } : {}),
+              ...(typeof record.idleCutMs === "number" ? { idleCutMs: record.idleCutMs } : {}),
+              ...(record.stopReason ? { stopReason: record.stopReason } : {}),
               overlays: record.overlays,
               mode: record.mode,
               recordingId: record.id,
@@ -749,7 +847,7 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
   const orphanRecord = (
     moviePathFromHelper: string,
     udid: string,
-    durationMs: number | null,
+    lengths: RecordingLengths,
     bytes: number | null,
   ): SimRecording | null => {
     const root = path.join(requireRoot(), ".ade", "artifacts", "apple-recordings");
@@ -771,16 +869,16 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
     }
     const endedAt = new Date().toISOString();
     const known = readSidecar(laneId, id);
-    if (known) return { ...known, endedAt, durationMs, bytes: size };
+    if (known) return { ...known, endedAt, ...lengths, bytes: size };
     return {
       id,
       laneId,
       udid,
       chatSessionId: null,
       path: moviePathFromHelper,
-      startedAt: new Date(Date.now() - (durationMs ?? 0)).toISOString(),
+      startedAt: new Date(Date.now() - (lengths.wallDurationMs ?? 0)).toISOString(),
       endedAt,
-      durationMs,
+      ...lengths,
       bytes: size,
       mode: "auto",
       proof: false,
@@ -816,11 +914,11 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
       throw error;
     }
     const moviePathFromHelper = typeof reply.path === "string" ? reply.path : null;
-    const durationMs = typeof reply.durationMs === "number" ? reply.durationMs : null;
+    const lengths = readLengths(reply);
     const bytes = typeof reply.bytes === "number" ? reply.bytes : null;
-    warn("apple.recording.orphan_reclaimed", { udid, reason, path: moviePathFromHelper, durationMs });
+    warn("apple.recording.orphan_reclaimed", { udid, reason, path: moviePathFromHelper, durationMs: lengths.durationMs });
     if (!moviePathFromHelper) return null;
-    const record = orphanRecord(moviePathFromHelper, udid, durationMs, bytes);
+    const record = orphanRecord(moviePathFromHelper, udid, lengths, bytes);
     if (!record) return null;
     const filed = fileAsProof(record);
     writeSidecar(filed);
@@ -907,15 +1005,21 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
       const existing = active.get(args.laneId);
       if (existing) {
         assertOwner(existing, args.chatSessionId);
-        // Conversion, not restart: the file keeps going, the cap goes away,
-        // and the seconds before the user pressed Record are still in it.
+        // Conversion, not restart: the file keeps going, the auto cap goes
+        // away, and the seconds before the user pressed Record are still in
+        // it. The manual cap counts from now. Idle cutting cannot change
+        // mid-file, so `keepIdle` does not apply to a conversion.
         if (existing.capTimer) clearTimeout(existing.capTimer);
         existing.capTimer = null;
+        const owner = existing.record.chatSessionId ?? args.chatSessionId;
+        const maxDurationMs = manualCapMs({ maxSeconds: args.maxSeconds, chatSessionId: owner });
+        if (maxDurationMs !== null) existing.capTimer = armCap(args.laneId, maxDurationMs);
         existing.record = {
           ...existing.record,
           mode: "manual",
           label: args.label ?? existing.record.label,
-          chatSessionId: existing.record.chatSessionId ?? args.chatSessionId,
+          chatSessionId: owner,
+          maxDurationMs,
         };
         writeSidecar(existing.record);
         return existing.record;
@@ -927,6 +1031,8 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
         mode: "manual",
         overlays: args.overlays,
         label: args.label ?? null,
+        keepIdle: args.keepIdle,
+        maxSeconds: args.maxSeconds,
       });
     },
 

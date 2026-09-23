@@ -222,7 +222,12 @@ public actor DeviceSession {
 
     public struct FinishedRecording: Sendable {
         public let path: String
+        /// Length of the video, after idle cutting.
         public let durationMs: Int
+        /// Real time from the first frame to the stop.
+        public let wallDurationMs: Int
+        /// Real time the video leaves out.
+        public let idleCutMs: Int
         public let bytes: Int
     }
 
@@ -236,7 +241,8 @@ public actor DeviceSession {
         path: String,
         overlays: Bool,
         fps: Int,
-        accentColor: String?
+        accentColor: String?,
+        idleCompression: Bool = true
     ) async throws {
         guard recording == nil else { throw SessionError.alreadyRecording }
 
@@ -251,7 +257,8 @@ public actor DeviceSession {
             fps: fps,
             overlays: overlays,
             accent: RecordingOverlay.parseColour(accentColor) ?? RecordingOverlay.defaultAccent,
-            metrics: metrics
+            metrics: metrics,
+            idleCompression: idleCompression
         )
         do {
             try await session.start(engine: engine)
@@ -274,6 +281,8 @@ public actor DeviceSession {
             return FinishedRecording(
                 path: finished.path,
                 durationMs: finished.durationMs,
+                wallDurationMs: finished.wallDurationMs,
+                idleCutMs: finished.idleCutMs,
                 bytes: finished.bytes
             )
         } catch {

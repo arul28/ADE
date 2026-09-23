@@ -67,6 +67,7 @@ import type {
   SyncChatSubscribePayload,
   SyncChatSubscribeSnapshotPayload,
   SyncChatUnsubscribePayload,
+  SyncArtifactRange,
   SyncFileBlob,
   SyncFileRequest,
   SyncFileResponsePayload,
@@ -301,6 +302,7 @@ import {
 import { tryRouteAppleStreamSocket } from "./appleStreamListenerRoute";
 import { MAX_CHAT_ATTACHMENT_BYTES } from "../../../../desktop/src/shared/chatAttachmentLimits";
 import { CURSOR_CLOUD_ARTIFACT_MAX_BYTES } from "../../../../desktop/src/shared/cursorCloudArtifactLimits";
+import { ARTIFACT_RANGE_READ_MAX_BYTES } from "../../../../desktop/src/shared/artifactStreamUrl";
 export { selectChangesetBatchChunk } from "./changesetPump";
 export { SYNC_HOST_MOBILE_REPLICA_RESEED_GAP } from "./mobileReplicaReseed";
 const execFileAsync = promisify(execFile);
@@ -701,6 +703,7 @@ export function syncFileRequestWorkspaceId(payload: SyncFileRequest): string | n
       return toOptionalString(payload.args.workspaceId);
     case "listWorkspaces":
     case "readArtifact":
+    case "readArtifactRange":
       return null;
     default:
       return null;
@@ -750,6 +753,7 @@ const CONCURRENT_READ_FILE_ACTIONS: ReadonlySet<string> = new Set<SyncFileReques
   "quickOpen",
   "searchText",
   "readArtifact",
+  "readArtifactRange",
 ]);
 
 const CONCURRENT_READ_COMMAND_PREFIXES = ["get", "list", "read", "search"] as const;
@@ -6351,7 +6355,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     broadcastBrainStatus();
   }
 
-  function resolveArtifactPath(request: Extract<SyncFileRequest, { action: "readArtifact" }>["args"]): string {
+  function resolveArtifactPath(
+    request: Extract<SyncFileRequest, { action: "readArtifact" | "readArtifactRange" }>["args"],
+  ): string {
     const artifactId = toOptionalString(request.artifactId);
     const explicitUri = toOptionalString(request.uri) ?? toOptionalString(request.path);
     let candidate = explicitUri;
@@ -6417,6 +6423,56 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     return createBlobFromBuffer(normalizeRelative(path.relative(args.projectRoot, artifactPath)), buffer);
   }
 
+  /**
+   * The same jail as `readArtifact`, one bounded slice at a time, so a phone
+   * can play a recording larger than the whole-file cap.
+   */
+  async function readArtifactRange(
+    request: Extract<SyncFileRequest, { action: "readArtifactRange" }>["args"],
+  ): Promise<SyncArtifactRange> {
+    const artifactPath = resolveArtifactPath(request);
+    const handle = await fs.promises.open(artifactPath, "r").catch(() => {
+      throw new Error("Artifact file does not exist.");
+    });
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile()) throw new Error("Artifact file does not exist.");
+      const totalSize = stat.size;
+      const relativePath = normalizeRelative(path.relative(args.projectRoot, artifactPath));
+      const requestedOffset = Number(request.offset ?? 0);
+      const offset = Number.isFinite(requestedOffset) ? Math.max(0, Math.floor(requestedOffset)) : 0;
+      const requestedLength = Number(request.length ?? ARTIFACT_RANGE_READ_MAX_BYTES);
+      const length = Number.isFinite(requestedLength)
+        ? Math.max(1, Math.min(ARTIFACT_RANGE_READ_MAX_BYTES, Math.floor(requestedLength)))
+        : ARTIFACT_RANGE_READ_MAX_BYTES;
+      if (offset >= totalSize) {
+        return {
+          path: relativePath,
+          totalSize,
+          rangeStart: totalSize,
+          rangeEnd: totalSize,
+          encoding: "base64",
+          content: "",
+          eof: true,
+        };
+      }
+      const buffer = Buffer.alloc(Math.min(length, totalSize - offset));
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
+      const rangeEnd = offset + bytesRead;
+      return {
+        path: relativePath,
+        totalSize,
+        rangeStart: offset,
+        rangeEnd,
+        encoding: "base64",
+        content: buffer.subarray(0, bytesRead).toString("base64"),
+        eof: rangeEnd >= totalSize,
+      };
+    } finally {
+      await handle.close();
+    }
+  }
+
   function isMobilePeer(peer: PeerState): boolean {
     if (isRecordBackedSyncAuthKind(peer.authKind)) {
       return isMobilePairingRecord(peer.pairingRecord);
@@ -6460,6 +6516,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         | FilesQuickOpenItem[]
         | FilesSearchTextMatch[]
         | SyncFileBlob
+        | SyncArtifactRange
         | { ok: true } = { ok: true };
 
       switch (payload.action) {
@@ -6519,6 +6576,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           result = await readArtifactBlob(payload.args);
           break;
         }
+        case "readArtifactRange":
+          result = await readArtifactRange(payload.args);
+          break;
         default:
           throw new Error(`Unsupported file action: ${(payload as { action?: string }).action ?? "unknown"}`);
       }

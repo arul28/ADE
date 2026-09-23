@@ -11139,6 +11139,9 @@ describe("ADE CLI", () => {
     ).toThrow(/--backend is gone/);
     const plan = buildCliPlan(["apple", "stream-start", "--fps", "30"]);
     expect(plan.kind).toBe("execute");
+    // stream-start is an explicit start, so it may boot an off device. A
+    // viewer (the pane, a phone) never sends this and gets APPLE_DEVICE_OFF.
+    expect(JSON.stringify(plan)).toContain('"boot":true');
   });
 
   it("shell-escapes argv tokens after -- when building shell start commands", () => {
@@ -13470,6 +13473,22 @@ describe("ADE CLI", () => {
       action: "recordStart",
       args: { overlays: false, label: "signup" },
     });
+    expect((recordStart as { args: Record<string, unknown> }).args).not.toHaveProperty("keepIdle");
+    expect((recordStart as { args: Record<string, unknown> }).args).not.toHaveProperty("maxSeconds");
+
+    const recordStartKeepIdle = iosSimActionArgs([
+      "apple",
+      "record-start",
+      "--keep-idle",
+      "--max-seconds",
+      "1200",
+    ]);
+    expect(recordStartKeepIdle).toMatchObject({
+      action: "recordStart",
+      args: { keepIdle: true, maxSeconds: 1200 },
+    });
+    expect(() => buildCliPlan(["apple", "record-start", "--max-seconds", "0"])).toThrow(/greater than 0/);
+    expect(() => buildCliPlan(["apple", "record-start", "--max-seconds", "soon"])).toThrow(/must be a number/);
 
     const recordStop = iosSimActionArgs(["apple", "record-stop", "--discard"]);
     expect(recordStop).toMatchObject({
@@ -14323,6 +14342,75 @@ describe("ADE CLI", () => {
     expect(() => buildCliPlan(["work-tools", "browser"])).toThrow(/read-only/i);
     expect(() => buildCliPlan(["work-tools", "set-active", "--lane", "lane-1"])).toThrow(/read-only/i);
     expect(() => buildCliPlan(["work-tools", "wat"])).toThrow(/Unknown work-tools command/);
+  }));
+
+  it("parses ade ui show and ade apple show into one work_tools.show call", () => withEnv({
+    ADE_LANE_ID: undefined,
+    ADE_CHAT_SESSION_ID: "chat-env",
+  }, () => {
+    const showArgs = (argv: string[]) => {
+      const plan = expectExecutePlan(buildCliPlan(argv));
+      expect(plan.label).toBe("ui show");
+      expect(plan.formatter).toBe("work-tool-show");
+      const params = plan.steps[0]?.params as
+        | { arguments?: { domain?: string; action?: string; args?: Record<string, unknown> } }
+        | undefined;
+      expect(params?.arguments).toMatchObject({ domain: "work_tools", action: "show" });
+      return { plan, args: params?.arguments?.args ?? {} };
+    };
+
+    // The chat defaults to the agent's own; --session is for a human.
+    expect(showArgs(["ui", "show", "apple"]).args).toEqual({ surface: "apple", chatSessionId: "chat-env" });
+    expect(showArgs(["ui", "show", "proof", "--session", "chat-2"]).args)
+      .toEqual({ surface: "proof", chatSessionId: "chat-2" });
+    // Flags before the surface are not read as it.
+    expect(showArgs(["ui", "show", "--session", "chat-3", "floating-apple"]).args)
+      .toEqual({ surface: "floating-apple", chatSessionId: "chat-3" });
+    expect(showArgs(["ui", "show", "--surface", "browser", "--lane", "lane-1"]).args)
+      .toEqual({ surface: "browser", chatSessionId: "chat-env", laneId: "lane-1" });
+    expect(showArgs(["ui", "show", "floating"]).args.surface).toBe("floating-apple");
+
+    // `apple show` is the same call.
+    expect(showArgs(["apple", "show"]).args).toEqual({ surface: "apple", chatSessionId: "chat-env" });
+    expect(showArgs(["apple", "show", "--floating"]).args)
+      .toEqual({ surface: "floating-apple", chatSessionId: "chat-env" });
+
+    // Exit 1 when nothing was shown, so a script cannot read it as success.
+    const { plan } = showArgs(["ui", "show", "apple"]);
+    expect(plan.exitCodeFromResult?.({ status: "shown" })).toBe(0);
+    expect(plan.exitCodeFromResult?.({ result: { status: "held" } })).toBe(0);
+    expect(plan.exitCodeFromResult?.({ status: "no_desktop" })).toBe(1);
+
+    expect(() => buildCliPlan(["ui", "show", "terminal"])).toThrow(/needs a surface: apple, floating-apple, browser, proof/);
+    expect(() => buildCliPlan(["ui", "show", "constructor"])).toThrow(/needs a surface/);
+    expect(() => buildCliPlan(["ui", "wat"])).toThrow(/Unknown ui command/);
+    expect(buildCliPlan(["ui"])).toMatchObject({ kind: "help" });
+    const help = buildCliPlan(["ui", "--help"]);
+    expect(help.kind).toBe("help");
+    if (help.kind === "help") {
+      expect(help.text).toContain("ade ui show floating-apple");
+      expect(help.text).toContain("no_desktop");
+    }
+    const appleHelp = buildCliPlan(["apple", "show", "--help"]);
+    expect(appleHelp.kind).toBe("help");
+    if (appleHelp.kind === "help") expect(appleHelp.text).toContain("Apple device: show");
+
+    withEnv({ ADE_CHAT_SESSION_ID: undefined }, () => {
+      expect(() => buildCliPlan(["ui", "show", "apple"])).toThrow(/pass --session/);
+    });
+  }));
+
+  it("presses the app switcher as one helper button", () => withEnv({
+    ADE_LANE_ID: undefined,
+    ADE_CHAT_SESSION_ID: undefined,
+  }, () => {
+    const plan = expectExecutePlan(buildCliPlan(["apple", "button", "app-switcher"]));
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: { domain: "ios_simulator", action: "pressButton", args: { name: "app-switcher" } },
+    });
+    const help = buildCliPlan(["apple", "button", "--help"]);
+    expect(help.kind).toBe("help");
+    if (help.kind === "help") expect(help.text).toContain("app-switcher");
   }));
 
   it("reads browser positionals fenced behind a `--` terminator", () => withEnv({

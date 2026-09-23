@@ -175,6 +175,18 @@ describe("apple.* remote command handlers", () => {
     expect(ticket).toMatchObject({ path: "/apple/stream/abc", token: "tok" });
   });
 
+  it("regression: a viewer's ticket on a device that is off is refused with APPLE_DEVICE_OFF, and no ticket is issued", async () => {
+    const off = Object.assign(new Error("APPLE_DEVICE_OFF: iPhone 17 Pro is off. Watching a device never boots it."), {
+      code: "APPLE_DEVICE_OFF",
+    });
+    const { byAction, issue, target } = handlersFor(service({ startStream: vi.fn(async () => { throw off; }) }));
+    await expect(byAction.get("apple.streamTicket")!.handler({ laneId: "lane-a" }))
+      .rejects.toThrow(/^APPLE_DEVICE_OFF: iPhone 17 Pro is off\./);
+    // Watching never asks for a boot.
+    expect(target.startStream).toHaveBeenCalledWith(expect.not.objectContaining({ boot: true }));
+    expect(issue).not.toHaveBeenCalled();
+  });
+
   it("drives the device for the owning chat", async () => {
     const { byAction, target } = handlersFor();
     await byAction.get("apple.input")!.handler({

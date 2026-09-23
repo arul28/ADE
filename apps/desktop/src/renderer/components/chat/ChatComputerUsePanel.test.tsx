@@ -8,6 +8,48 @@ import {
   ChatProofTimeline,
 } from "./ChatComputerUsePanel";
 
+// The chat's machine, overridable per test. Null keeps the real fallback scope.
+const scopeOverride = vi.hoisted(() => ({ current: null as null | Record<string, unknown> }));
+vi.mock("./ChatRuntimeScope", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./ChatRuntimeScope")>();
+  return {
+    ...actual,
+    useChatRuntimeScope: () => ({ ...actual.useChatRuntimeScope(), ...scopeOverride.current }),
+  };
+});
+
+const REMOTE_BINDING = {
+  kind: "remote" as const,
+  key: "remote:target-1:project-1",
+  targetId: "target-1",
+  runtimeName: "MacBook Pro",
+  projectId: "project-1",
+  rootPath: "/Users/other/repo",
+  displayName: "repo",
+};
+
+function remoteScope(online: boolean) {
+  return {
+    pin: REMOTE_BINDING,
+    binding: REMOTE_BINDING,
+    rootPath: REMOTE_BINDING.rootPath,
+    isRemote: true,
+    machineName: "MacBook Pro",
+    online,
+  };
+}
+
+function recording(index: number, overrides: Partial<ComputerUseArtifactView> = {}): ComputerUseArtifactView {
+  return artifact(index, {
+    title: `Recording ${index}`,
+    kind: "video_recording",
+    originalType: "video",
+    mimeType: "video/quicktime",
+    uri: ".ade/artifacts/apple-recordings/lane-1/rec.mov",
+    ...overrides,
+  });
+}
+
 function artifact(index: number, overrides: Partial<ComputerUseArtifactView> = {}): ComputerUseArtifactView {
   return {
     id: `artifact-${index}`,
@@ -60,6 +102,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  scopeOverride.current = null;
   delete (window as unknown as { ade?: unknown }).ade;
 });
 
@@ -127,6 +170,101 @@ describe("proof rendering", () => {
     await waitFor(() => {
       expect(view.container.querySelector("video")?.getAttribute("src")).toBe(uri);
     });
+  });
+
+  it("streams a large local recording filed with a project-relative uri", async () => {
+    // The owner's 2026-09-23 report: a 41 MB recording showed "A preview is
+    // unavailable" because only `ade-artifact://project/` uris streamed.
+    const view = render(
+      <ChatComputerUsePanel
+        allowLocalArtifactProtocol
+        snapshot={snapshotOf([recording(20)])}
+        onRefresh={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(view.container.querySelector("video")?.getAttribute("src"))
+        .toBe("ade-artifact://project/.ade/artifacts/apple-recordings/lane-1/rec.mov");
+    });
+    expect(view.container.querySelector("video")?.getAttribute("preload")).toBe("metadata");
+    expect(window.ade.computerUse.readArtifactPreview).not.toHaveBeenCalled();
+  });
+
+  it("streams an absolute path inside the project and reads one outside it the old way", async () => {
+    scopeOverride.current = { rootPath: "/Users/me/repo" };
+    const view = render(
+      <ChatComputerUsePanel
+        allowLocalArtifactProtocol
+        snapshot={snapshotOf([
+          recording(21, { uri: "/Users/me/repo/.ade/artifacts/inside.mp4" }),
+          recording(22, { uri: "/Users/me/elsewhere/outside.mp4" }),
+        ])}
+        onRefresh={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(view.container.querySelector('[data-chat-proof-artifact="artifact-21"] video')?.getAttribute("src"))
+        .toBe("ade-artifact://project/.ade/artifacts/inside.mp4");
+    });
+    expect(window.ade.computerUse.readArtifactPreview).toHaveBeenCalledTimes(1);
+    expect(window.ade.computerUse.readArtifactPreview)
+      .toHaveBeenCalledWith({ uri: "/Users/me/elsewhere/outside.mp4" }, null);
+  });
+
+  it("streams a video on a paired computer through main instead of a capped data URL", async () => {
+    scopeOverride.current = remoteScope(true);
+    const view = render(
+      <ChatComputerUsePanel snapshot={snapshotOf([recording(23), artifact(24)])} onRefresh={vi.fn()} />,
+    );
+
+    await waitFor(() => {
+      expect(view.container.querySelector("video")?.getAttribute("src"))
+        .toBe("ade-artifact://remote/target-1/project-1/.ade/artifacts/apple-recordings/lane-1/rec.mov");
+    });
+    expect(view.container.querySelector("video")?.getAttribute("preload")).toBe("metadata");
+    // Only the image took the data URL read.
+    expect(window.ade.computerUse.readArtifactPreview).toHaveBeenCalledTimes(1);
+    expect(window.ade.computerUse.readArtifactPreview)
+      .toHaveBeenCalledWith({ uri: ".ade/artifacts/proof-24.png" }, REMOTE_BINDING);
+  });
+
+  it("falls back to the data URL when a paired computer cannot stream, and says so if that fails too", async () => {
+    scopeOverride.current = remoteScope(true);
+    vi.mocked(window.ade.computerUse.readArtifactPreview)
+      .mockResolvedValueOnce("data:video/quicktime;base64,DDDD");
+    const view = render(<ChatProofTimeline artifacts={[recording(25)]} />);
+
+    const streamed = await waitFor(() => {
+      const video = view.container.querySelector("video");
+      expect(video?.getAttribute("src")).toMatch(/^ade-artifact:\/\/remote\//);
+      return video!;
+    });
+    fireEvent.error(streamed);
+    await waitFor(() => {
+      expect(view.container.querySelector("video")?.getAttribute("src")).toBe("data:video/mp4;base64,DDDD");
+    });
+
+    cleanup();
+    vi.mocked(window.ade.computerUse.readArtifactPreview).mockResolvedValueOnce(null);
+    const second = render(<ChatProofTimeline artifacts={[recording(26)]} />);
+    const again = await waitFor(() => {
+      const video = second.container.querySelector("video");
+      expect(video).toBeTruthy();
+      return video!;
+    });
+    fireEvent.error(again);
+    expect(await screen.findByText("MacBook Pro could not send this video.")).toBeTruthy();
+  });
+
+  it("says which computer is offline instead of the generic line", async () => {
+    scopeOverride.current = remoteScope(false);
+    render(<ChatComputerUsePanel snapshot={snapshotOf([recording(27)])} onRefresh={vi.fn()} />);
+
+    expect(await screen.findByText("This video is on MacBook Pro, which is offline.")).toBeTruthy();
+    expect(screen.queryByText(/preview is unavailable/i)).toBeNull();
+    expect(window.ade.computerUse.readArtifactPreview).not.toHaveBeenCalled();
   });
 
   it("plays a QuickTime proof from another machine as MP4", async () => {
@@ -230,7 +368,7 @@ describe("proof rendering", () => {
     fireEvent.error(dialog.querySelector("video")!);
 
     await waitFor(() => expect(dialog.querySelector("video")).toBeNull());
-    expect(dialog.textContent).toMatch(/preview is unavailable, but the stored proof is still attached/i);
+    expect(dialog.textContent).toMatch(/ADE could not play this video\./);
   });
 
   it("distinguishes an unavailable preview from a deleted stored file", async () => {

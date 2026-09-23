@@ -154,6 +154,50 @@ describe("computerUseArtifactBrokerService", () => {
     await expect(broker.readArtifactPreview({ uri: outsidePath })).resolves.toBeNull();
   });
 
+  it("streams a large recording in bounded slices and only from its own artifact store", async () => {
+    // The owner's 2026-09-23 report: a 41 MB recording on another machine had
+    // no preview, because the only read was a data URL capped at 10 MB.
+    const broker = createComputerUseArtifactBrokerService({
+      db,
+      projectId: "project-1",
+      projectRoot,
+      logger: createLogger(),
+    });
+    const recordingDir = path.join(projectRoot, ".ade", "artifacts", "apple-recordings", "lane-1");
+    fs.mkdirSync(recordingDir, { recursive: true });
+    const bytes = Buffer.alloc(11 * 1024 * 1024 + 7);
+    for (let index = 0; index < bytes.length; index += 4096) bytes[index] = index % 251;
+    fs.writeFileSync(path.join(recordingDir, "rec.mov"), bytes);
+    const uri = ".ade/artifacts/apple-recordings/lane-1/rec.mov";
+
+    const first = await broker.readArtifactRange({ uri, offset: 0, length: 64 * 1024 * 1024 });
+    expect(first.totalSize).toBe(bytes.length);
+    expect(first.mimeType).toBe("video/quicktime");
+    // A caller cannot ask past the 2 MiB slice cap.
+    expect(Buffer.from(first.data, "base64")).toEqual(bytes.subarray(0, 2 * 1024 * 1024));
+
+    const tail = await broker.readArtifactRange({ uri: `ade-artifact://project/${uri}`, offset: bytes.length - 5, length: 100 });
+    expect(Buffer.from(tail.data, "base64")).toEqual(bytes.subarray(bytes.length - 5));
+    const past = await broker.readArtifactRange({ uri, offset: bytes.length + 10 });
+    expect(past).toMatchObject({ totalSize: bytes.length, data: "" });
+
+    const outside = path.join(projectRoot, "outside.mp4");
+    fs.writeFileSync(outside, bytes.subarray(0, 16));
+    await expect(broker.readArtifactRange({ uri: outside })).rejects.toThrow(/within \.ade\/artifacts/);
+    await expect(broker.readArtifactRange({ uri: ".ade/artifacts/../outside.mp4" }))
+      .rejects.toThrow(/within \.ade\/artifacts/);
+    // A symlink inside the store that points out of it is still outside.
+    fs.symlinkSync(outside, path.join(recordingDir, "escape.mp4"));
+    await expect(broker.readArtifactRange({ uri: ".ade/artifacts/apple-recordings/lane-1/escape.mp4" }))
+      .rejects.toThrow(/within \.ade\/artifacts/);
+    // Only preview media types stream, not anything else kept in the store.
+    fs.writeFileSync(path.join(recordingDir, "notes.json"), "{}");
+    await expect(broker.readArtifactRange({ uri: ".ade/artifacts/apple-recordings/lane-1/notes.json" }))
+      .rejects.toThrow(/cannot be streamed/);
+    await expect(broker.readArtifactRange({ uri: ".ade/artifacts/apple-recordings/lane-1/gone.mp4" }))
+      .rejects.toThrow(/does not exist|within/);
+  });
+
   it("rejects local file imports outside allowed artifact roots", () => {
     const broker = createComputerUseArtifactBrokerService({
       db,

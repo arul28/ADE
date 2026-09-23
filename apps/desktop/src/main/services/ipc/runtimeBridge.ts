@@ -58,6 +58,10 @@ import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeCon
 import { matchRemoteProjectByRootPath } from "../attention/remoteProjectIdentity";
 import { RemoteConnectionPool } from "../remoteRuntime/remoteConnectionPool";
 import {
+  setRemoteArtifactRangeReader,
+  type RemoteArtifactRangeChunk,
+} from "../computerUse/artifactStreamProtocol";
+import {
   RemoteConnectionService,
   type AccountMachineReconciliationResult,
 } from "../remoteRuntime/remoteConnectionService";
@@ -445,6 +449,17 @@ export function registerRuntimeBridge({
     { appVersion, getAccountRelayProof, getAuthorizedAccountOwnerId },
     pairedMachineStore,
   );
+  // `ade-artifact://remote/...` reads a proof from a paired computer through
+  // this connection, one bounded chunk per call. The broker on that machine
+  // resolves the path inside its own `.ade/artifacts` and refuses the rest.
+  setRemoteArtifactRangeReader(async ({ targetId, projectId, relativePath, offset, length }) => {
+    const response = await remoteConnectionService.callAction(targetId, projectId, {
+      domain: "computer_use_artifacts",
+      action: "readArtifactRange",
+      args: { uri: relativePath, offset, length },
+    });
+    return response.result as RemoteArtifactRangeChunk;
+  });
   const {
     addRuntimeEventSubscription,
     attachRuntimeEventSubscriptionCleanup,

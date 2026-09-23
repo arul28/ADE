@@ -31,6 +31,12 @@ export type ProofProvenance = {
   recordedTo: string | null;
   mediaCreatedAt: string | null;
   recordedBeforeRequest: boolean;
+  /**
+   * Still time the recorder left out of the video. The recorder writes it
+   * into the input's own metadata; it only shortens the file, so a caller
+   * claiming it gains nothing.
+   */
+  idleCutMs: number | null;
 };
 
 function isoOrNull(value: unknown): string | null {
@@ -53,7 +59,27 @@ export function readProofProvenance(metadata: unknown): ProofProvenance {
     recordedTo: isoOrNull(record.recordedTo),
     mediaCreatedAt: isoOrNull(record.mediaCreatedAt),
     recordedBeforeRequest: record.recordedBeforeRequest === true,
+    idleCutMs: typeof record.idleCutMs === "number" && Number.isFinite(record.idleCutMs) && record.idleCutMs > 0
+      ? record.idleCutMs
+      : null,
   };
+}
+
+/** "0:23" / "1:04:02". */
+export function formatProofDuration(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const seconds = String(total % 60).padStart(2, "0");
+  const minutes = Math.floor(total / 60) % 60;
+  const hours = Math.floor(total / 3600);
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${seconds}`
+    : `${minutes}:${seconds}`;
+}
+
+/** "idle cut 1:52", or null when less than a second was cut. */
+export function proofIdleCutLabel(idleCutMs: number | null | undefined): string | null {
+  if (typeof idleCutMs !== "number" || !Number.isFinite(idleCutMs) || idleCutMs < 1000) return null;
+  return `idle cut ${formatProofDuration(idleCutMs)}`;
 }
 
 /** "10:24 AM" in the viewer's locale and time zone. */
@@ -75,18 +101,21 @@ export function formatProofClockRange(fromIso: string, toIso: string, locale?: s
 }
 
 /**
- * "Recorded by ADE · 10:24–10:25 AM" / "Captured by ADE" / "Attached by the
- * agent". Null for a row that predates the field.
+ * "Recorded by ADE · 10:24–10:27 AM · idle cut 1:52" / "Captured by ADE" /
+ * "Attached by the agent". Null for a row that predates the field. The times
+ * are wall-clock; the idle cut says why the video is shorter than they span.
  */
 export function proofSourceLine(provenance: ProofProvenance, locale?: string): string | null {
   switch (provenance.source) {
     case "ade-recorder": {
       const { recordedFrom, recordedTo } = provenance;
+      const idleCut = proofIdleCutLabel(provenance.idleCutMs);
+      const suffix = idleCut ? ` · ${idleCut}` : "";
       if (recordedFrom && recordedTo) {
-        return `Recorded by ADE · ${formatProofClockRange(recordedFrom, recordedTo, locale)}`;
+        return `Recorded by ADE · ${formatProofClockRange(recordedFrom, recordedTo, locale)}${suffix}`;
       }
       const single = recordedFrom ?? recordedTo;
-      return single ? `Recorded by ADE · ${formatProofClock(single, locale)}` : "Recorded by ADE";
+      return single ? `Recorded by ADE · ${formatProofClock(single, locale)}${suffix}` : `Recorded by ADE${suffix}`;
     }
     case "ade-capture":
       return "Captured by ADE";

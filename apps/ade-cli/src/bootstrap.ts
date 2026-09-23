@@ -178,6 +178,7 @@ import {
   createWorkToolsStateService,
   type WorkToolsStateService,
 } from "./services/workTools/workToolsStateService";
+import { createWorkToolShowRequests } from "./services/workTools/workToolShowRequests";
 import { WORK_TOOLS_STATE_CHANGED_EVENT } from "../../desktop/src/shared/types/workTools";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { createPushRegistrationStore } from "./services/push/pushRegistrationStore";
@@ -1583,6 +1584,12 @@ export async function createAdeRuntime(args: {
         : null,
       onStateChanged: (laneId) =>
         pushEvent("runtime", { type: WORK_TOOLS_STATE_CHANGED_EVENT, laneId }),
+      // `ade ui show`: the desktops on this project read the same runtime
+      // stream, so the request reaches a paired desktop on another machine too.
+      showRequests: createWorkToolShowRequests({
+        emitEvent: (payload) => pushEvent("runtime", payload),
+        logger,
+      }),
       logger,
     });
     teardown.push(() => workToolsStateService.dispose());

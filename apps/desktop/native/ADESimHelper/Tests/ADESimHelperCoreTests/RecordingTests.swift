@@ -29,17 +29,30 @@ final class RecordingProtocolTests: XCTestCase {
             ##"{"type":"record-start","id":"r1","udid":"U","path":"/tmp/a.mp4","overlays":false,"fps":24,"accentColor":"#ff8800"}"##
         )
         XCTAssertEqual(parsed, .recordStart(
-            id: "r1", udid: "U", path: "/tmp/a.mp4", overlays: false, fps: 24, accentColor: "#ff8800"
+            id: "r1", udid: "U", path: "/tmp/a.mp4", overlays: false, fps: 24, accentColor: "#ff8800",
+            idleCompression: true
         ))
         XCTAssertEqual(parsed.udid, "U")
         XCTAssertEqual(parsed.id, "r1")
     }
 
-    func testRecordStartDefaultsOverlaysOnAndFpsTo30() throws {
+    func testRecordStartDefaultsOverlaysOnFpsTo30AndIdleCuttingOn() throws {
         let parsed = try command(#"{"type":"record-start","id":"r","udid":"U","path":"/tmp/a.mp4"}"#)
         XCTAssertEqual(parsed, .recordStart(
-            id: "r", udid: "U", path: "/tmp/a.mp4", overlays: true, fps: 30, accentColor: nil
+            id: "r", udid: "U", path: "/tmp/a.mp4", overlays: true, fps: 30, accentColor: nil,
+            idleCompression: true
         ))
+    }
+
+    /// `record-start --keep-idle` in ADE arrives as `idleCompression: false`.
+    func testRecordStartCanKeepIdleTime() throws {
+        let parsed = try command(
+            #"{"type":"record-start","id":"r","udid":"U","path":"/tmp/a.mp4","idleCompression":false}"#
+        )
+        guard case let .recordStart(_, _, _, _, _, _, idleCompression) = parsed else {
+            return XCTFail("Expected record-start, got \(parsed)")
+        }
+        XCTAssertFalse(idleCompression)
     }
 
     func testRecordStartRejectsMissingPathAndSillyFps() {
@@ -99,11 +112,13 @@ final class RecordingProtocolTests: XCTestCase {
         XCTAssertEqual(started.payload["path"] as? String, "/tmp/a.mp4")
 
         let stopped = SimHelperEvent.recordStopped(
-            udid: "U", path: "/tmp/a.mp4", durationMs: 1234, bytes: 99
+            udid: "U", path: "/tmp/a.mp4", durationMs: 1234, wallDurationMs: 5000, idleCutMs: 3766, bytes: 99
         )
         XCTAssertEqual(stopped.payload["type"] as? String, "record-stopped")
         XCTAssertEqual(stopped.payload["udid"] as? String, "U")
         XCTAssertEqual(stopped.payload["durationMs"] as? Int, 1234)
+        XCTAssertEqual(stopped.payload["wallDurationMs"] as? Int, 5000)
+        XCTAssertEqual(stopped.payload["idleCutMs"] as? Int, 3766)
         XCTAssertEqual(stopped.payload["bytes"] as? Int, 99)
         XCTAssertNotNil(stopped.encoded())
     }

@@ -29,8 +29,13 @@ import {
   proofSourceLine,
   readProofProvenance,
 } from "../../../shared/proofProvenance";
+import {
+  localArtifactStreamUrl,
+  remoteArtifactStreamUrl,
+} from "../../../shared/artifactStreamUrl";
 import { cn } from "../ui/cn";
 import { playableMediaDataUrl } from "../../lib/playableMedia";
+import { isWebClientMode } from "../../lib/webClientMode";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 
 function isImageArtifact(artifact: ComputerUseArtifactView): boolean {
@@ -94,11 +99,34 @@ function shortSourcePath(artifact: ComputerUseArtifactView): string | null {
 }
 
 /**
+ * Why a preview that should exist did not load, when we know.
+ *
+ * `offline`: the proof is on a paired computer that is not reachable.
+ * `unsent`: that computer answered but did not send the bytes.
+ * `unplayable`: the bytes arrived and the browser refused them.
+ */
+type ArtifactPreviewFailure = "offline" | "unsent" | "unplayable";
+
+type ArtifactPreviewProblem = {
+  reason: ArtifactPreviewFailure | null;
+  machineName: string;
+};
+
+function artifactMediaNoun(artifact: ComputerUseArtifactView): string {
+  if (isVideoArtifact(artifact)) return "video";
+  if (isImageArtifact(artifact)) return "image";
+  return "file";
+}
+
+/**
  * Keep canonical storage availability separate from preview generation.
  * A missing preview can mean unsupported media or a size cap even when the
- * stored proof is intact.
+ * stored proof is intact. The generic line is only for a cause we do not know.
  */
-function artifactPreviewExplanation(artifact: ComputerUseArtifactView): string {
+function artifactPreviewExplanation(
+  artifact: ComputerUseArtifactView,
+  problem?: ArtifactPreviewProblem,
+): string {
   const where = shortSourcePath(artifact);
   if (artifactAvailability(artifact) === "unimported") {
     return where
@@ -108,16 +136,22 @@ function artifactPreviewExplanation(artifact: ComputerUseArtifactView): string {
   if (artifactAvailability(artifact) === "missing_file") {
     return "The stored file has since been deleted.";
   }
-  return "A preview is unavailable, but the stored proof is still attached.";
+  const noun = artifactMediaNoun(artifact);
+  switch (problem?.reason) {
+    case "offline":
+      return `This ${noun} is on ${problem.machineName}, which is offline.`;
+    case "unsent":
+      return `${problem.machineName} could not send this ${noun}.`;
+    case "unplayable":
+      return noun === "video" ? "ADE could not play this video." : `ADE could not show this ${noun}.`;
+    default:
+      return "A preview is unavailable, but the stored proof is still attached.";
+  }
 }
 
 function assertArtifactDeletionSucceeded(result: ComputerUseArtifactDeleteResult): void {
   if (result.failed.length === 0) return;
   throw new Error(result.failed.map((failure) => failure.reason).join("; "));
-}
-
-function localArtifactUrl(uri: string): string | null {
-  return /^ade-artifact:\/\/project(?:\/|$)/i.test(uri) ? uri : null;
 }
 
 /**
@@ -158,6 +192,18 @@ function ArtifactKindIcon({ artifact, size = 14 }: {
   return <FileText size={size} weight="duotone" />;
 }
 
+/**
+ * Where a tile's picture comes from.
+ *
+ * A proof on this computer streams through `ade-artifact://project/`, which
+ * answers Range requests, so a long recording costs only what the player
+ * reads. A video on a paired computer streams through
+ * `ade-artifact://remote/`, which main answers with bounded chunk reads from
+ * that machine. Everything else, and a paired machine too old to stream, takes
+ * the capped data URL read.
+ */
+type ArtifactPreviewSource = "local-stream" | "remote-stream" | "data-url";
+
 function useVisibleArtifactPreview(
   artifact: ComputerUseArtifactView,
   allowLocalArtifactProtocol: boolean,
@@ -166,13 +212,26 @@ function useVisibleArtifactPreview(
   preview: string | null;
   loading: boolean;
   loaded: boolean;
+  mediaFailed: boolean;
+  problem: ArtifactPreviewProblem;
+  onMediaError: () => void;
 } {
   const scope = useChatRuntimeScope();
   const containerRef = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
+  const [source, setSource] = useState<ArtifactPreviewSource | null>(null);
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [failure, setFailure] = useState<ArtifactPreviewFailure | null>(null);
+  const [mediaFailed, setMediaFailed] = useState(false);
+  // Set once the remote stream failed, so the retry takes the data URL read.
+  const [remoteStreamRefused, setRemoteStreamRefused] = useState(false);
+  const binding = scope.binding;
+  const remoteTarget = binding?.kind === "remote"
+    ? { targetId: binding.targetId, projectId: binding.projectId, rootPath: binding.rootPath }
+    : null;
+  const remoteOffline = scope.isRemote && !scope.online;
 
   useEffect(() => {
     const node = containerRef.current;
@@ -192,9 +251,20 @@ function useVisibleArtifactPreview(
 
   useEffect(() => {
     setPreview(null);
+    setSource(null);
     setLoaded(false);
     setLoading(false);
+    setFailure(null);
+    setRemoteStreamRefused(false);
   }, [artifact.id, artifact.uri]);
+
+  useEffect(() => {
+    setMediaFailed(false);
+  }, [artifact.id, artifact.uri, preview]);
+
+  const targetId = remoteTarget?.targetId ?? null;
+  const projectId = remoteTarget?.projectId ?? null;
+  const remoteRoot = remoteTarget?.rootPath ?? null;
 
   useEffect(() => {
     if (
@@ -206,11 +276,33 @@ function useVisibleArtifactPreview(
       || isBrokenArtifact(artifact)
       || (!isImageArtifact(artifact) && !isVideoArtifact(artifact))
     ) return;
-    const directPreview = allowLocalArtifactProtocol
-      ? localArtifactUrl(artifact.uri)
+    const localStream = allowLocalArtifactProtocol
+      ? localArtifactStreamUrl(artifact.uri, scope.rootPath)
       : null;
-    if (directPreview) {
-      setPreview(directPreview);
+    if (localStream) {
+      setPreview(localStream);
+      setSource("local-stream");
+      setLoaded(true);
+      return;
+    }
+    if (!allowLocalArtifactProtocol && remoteOffline) {
+      setPreview(null);
+      setFailure("offline");
+      setLoaded(true);
+      return;
+    }
+    // Images stay on the data URL read; a video has no size cap this way.
+    const remoteStream = !allowLocalArtifactProtocol
+      && !remoteStreamRefused
+      && isVideoArtifact(artifact)
+      && targetId
+      && projectId
+      && !isWebClientMode()
+      ? remoteArtifactStreamUrl({ uri: artifact.uri, targetId, projectId, remoteProjectRoot: remoteRoot })
+      : null;
+    if (remoteStream) {
+      setPreview(remoteStream);
+      setSource("remote-stream");
       setLoaded(true);
       return;
     }
@@ -220,21 +312,60 @@ function useVisibleArtifactPreview(
       .then((dataUrl) => {
         if (cancelled) return;
         setPreview(playableMediaDataUrl(dataUrl));
+        setSource(dataUrl ? "data-url" : null);
+        // A machine that refused to stream and then sent nothing is the cause.
+        if (!dataUrl && remoteStreamRefused) setFailure("unsent");
         setLoading(false);
         setLoaded(true);
       })
       .catch(() => {
         if (cancelled) return;
         setPreview(null);
+        setSource(null);
+        if (scope.isRemote) setFailure("unsent");
         setLoading(false);
         setLoaded(true);
       });
     return () => {
       cancelled = true;
     };
-  }, [allowLocalArtifactProtocol, artifact, loaded, scope.pin, visible]);
+  }, [
+    allowLocalArtifactProtocol,
+    artifact,
+    loaded,
+    projectId,
+    remoteOffline,
+    remoteRoot,
+    remoteStreamRefused,
+    scope.isRemote,
+    scope.pin,
+    scope.rootPath,
+    targetId,
+    visible,
+  ]);
 
-  return { containerRef, preview, loading, loaded };
+  const onMediaError = useCallback(() => {
+    if (source === "remote-stream") {
+      // A paired machine on an older ADE has no range read. Try the capped
+      // data URL once before calling the preview broken.
+      setRemoteStreamRefused(true);
+      setPreview(null);
+      setSource(null);
+      setLoaded(false);
+      return;
+    }
+    setFailure("unplayable");
+    setMediaFailed(true);
+  }, [source]);
+
+  const failed = mediaFailed || (loaded && !preview);
+  const problem = useMemo<ArtifactPreviewProblem>(() => ({
+    // Offline explains any failure on a paired machine, whatever broke first.
+    reason: failed && !allowLocalArtifactProtocol && remoteOffline ? "offline" : failure,
+    machineName: scope.machineName,
+  }), [allowLocalArtifactProtocol, failed, failure, remoteOffline, scope.machineName]);
+
+  return { containerRef, preview, loading, loaded, mediaFailed, problem, onMediaError };
 }
 
 /**
@@ -394,19 +525,19 @@ export function ChatProofArtifactCard({
   variant?: "timeline" | "drawer";
   allowLocalArtifactProtocol?: boolean;
 }) {
-  const { containerRef, preview, loading, loaded } = useVisibleArtifactPreview(
-    artifact,
-    allowLocalArtifactProtocol,
-  );
+  const {
+    containerRef,
+    preview,
+    loading,
+    loaded,
+    mediaFailed,
+    problem,
+    onMediaError,
+  } = useVisibleArtifactPreview(artifact, allowLocalArtifactProtocol);
   const [lightboxOpen, setLightboxOpen] = useState(false);
-  const [mediaFailed, setMediaFailed] = useState(false);
   const externalUrl = externalArtifactUrl(artifact.uri);
   const image = isImageArtifact(artifact);
   const video = isVideoArtifact(artifact);
-
-  useEffect(() => {
-    setMediaFailed(false);
-  }, [artifact.id, artifact.uri, preview]);
 
   const openExternal = useCallback(() => {
     if (!externalUrl) return;
@@ -467,7 +598,7 @@ export function ChatProofArtifactCard({
             <div className="min-w-0 font-sans text-[10px] leading-[15px] text-muted-fg/48">
               {externalUrl
                 ? "This proof lives at its source. Open it to view."
-                : artifactPreviewExplanation(artifact)}
+                : artifactPreviewExplanation(artifact, problem)}
             </div>
           </div>
         ) : preview && image ? (
@@ -480,7 +611,7 @@ export function ChatProofArtifactCard({
             <img
               src={preview}
               alt={artifact.title}
-              onError={() => setMediaFailed(true)}
+              onError={onMediaError}
               className={cn(
                 "block w-full object-contain transition-transform duration-300 group-hover:scale-[1.006]",
                 variant === "timeline" ? "max-h-[320px]" : "max-h-[240px]",
@@ -495,7 +626,7 @@ export function ChatProofArtifactCard({
               badgeSize="md"
               className={variant === "timeline" ? "h-[320px]" : "h-[240px]"}
               onOpen={() => setLightboxOpen(true)}
-              onError={() => setMediaFailed(true)}
+              onError={onMediaError}
             />
           </div>
         ) : !image && !video ? (
@@ -522,8 +653,8 @@ export function ChatProofArtifactCard({
           failed={mediaFailed}
           failureText={externalUrl
             ? "This proof lives at its source. Open it to view."
-            : artifactPreviewExplanation(artifact)}
-          onMediaError={() => setMediaFailed(true)}
+            : artifactPreviewExplanation(artifact, problem)}
+          onMediaError={onMediaError}
           onClose={() => setLightboxOpen(false)}
         />
       ) : null}
@@ -604,12 +735,16 @@ function DrawerProofTile({
   onDelete: (artifact: ComputerUseArtifactView) => void;
   onRecover: (artifact: ComputerUseArtifactView) => void;
 }) {
-  const { containerRef, preview, loading, loaded } = useVisibleArtifactPreview(
-    artifact,
-    allowLocalArtifactProtocol,
-  );
+  const {
+    containerRef,
+    preview,
+    loading,
+    loaded,
+    mediaFailed,
+    problem,
+    onMediaError,
+  } = useVisibleArtifactPreview(artifact, allowLocalArtifactProtocol);
   const [lightboxOpen, setLightboxOpen] = useState(false);
-  const [mediaFailed, setMediaFailed] = useState(false);
   const image = isImageArtifact(artifact);
   const video = isVideoArtifact(artifact);
   const externalUrl = externalArtifactUrl(artifact.uri);
@@ -618,10 +753,6 @@ function DrawerProofTile({
     && (mediaFailed || (loaded && !preview && (image || video)));
   const hasPreviewProblem = storedFileMissing || previewUnavailable;
   const recoverable = recoverableArtifactSource(artifact) !== null;
-
-  useEffect(() => {
-    setMediaFailed(false);
-  }, [artifact.id, artifact.uri, preview]);
 
   return (
     <div
@@ -660,7 +791,7 @@ function DrawerProofTile({
             <img
               src={preview}
               alt={artifact.title}
-              onError={() => setMediaFailed(true)}
+              onError={onMediaError}
               className="block h-[74px] w-full object-cover"
             />
           </button>
@@ -671,7 +802,7 @@ function DrawerProofTile({
             badgeSize="sm"
             className="h-[74px]"
             onOpen={() => setLightboxOpen(true)}
-            onError={() => setMediaFailed(true)}
+            onError={onMediaError}
           />
         ) : (
           <div className="flex h-[74px] items-center justify-center text-muted-fg/28">
@@ -725,7 +856,7 @@ function DrawerProofTile({
         />
         {hasPreviewProblem ? (
           <div className="mt-1 font-sans text-[9px] leading-[13px] text-amber-200/40">
-            {externalUrl ? "Stored at its source." : artifactPreviewExplanation(artifact)}
+            {externalUrl ? "Stored at its source." : artifactPreviewExplanation(artifact, problem)}
           </div>
         ) : null}
       </div>
@@ -736,8 +867,8 @@ function DrawerProofTile({
           preview={preview}
           media={image ? "image" : "video"}
           failed={mediaFailed}
-          failureText={externalUrl ? "Stored at its source." : artifactPreviewExplanation(artifact)}
-          onMediaError={() => setMediaFailed(true)}
+          failureText={externalUrl ? "Stored at its source." : artifactPreviewExplanation(artifact, problem)}
+          onMediaError={onMediaError}
           onClose={() => setLightboxOpen(false)}
         />
       ) : null}

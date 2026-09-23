@@ -28,6 +28,7 @@ import type {
   ComputerUseEventPayload,
 } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { ARTIFACT_RANGE_READ_MAX_BYTES } from "../../../shared/artifactStreamUrl";
 import { encodeCodedErrorMessage } from "../../../shared/codedError";
 import { normalizeComputerUseArtifactKind } from "../../../shared/proofArtifacts";
 import {
@@ -329,6 +330,57 @@ async function readArtifactPreviewDataUrl(args: {
     return `data:${mime};base64,${buf.toString("base64")}`;
   } catch {
     return null;
+  }
+}
+
+/**
+ * One bounded slice of a stored proof, for a paired desktop that streams it
+ * into a `<video>` instead of taking the whole file as a data URL.
+ *
+ * The jail is the preview read's: the uri must resolve inside this project's
+ * `.ade/artifacts` after symlinks, and only preview media types are served.
+ * Nothing about the caller widens it; a length above the cap is cut down.
+ */
+async function readArtifactRangeChunk(args: {
+  uri?: string;
+  offset?: number;
+  length?: number;
+  projectRoot: string;
+  artifactsDir: string;
+}): Promise<{ totalSize: number; offset: number; data: string; mimeType: string }> {
+  const uri = typeof args.uri === "string" ? args.uri.trim() : "";
+  if (!uri) throw new Error("Artifact uri is required.");
+  let resolved: string;
+  try {
+    resolved = resolvePathWithinRoot(
+      args.artifactsDir,
+      path.normalize(resolveRendererArtifactPath(uri, args.projectRoot)),
+    );
+  } catch {
+    throw new Error("Artifact path must resolve within .ade/artifacts.");
+  }
+  const ext = path.extname(resolved).replace(/^\./, "").toLowerCase();
+  const mimeType = ARTIFACT_PREVIEW_MIME_BY_EXTENSION[ext];
+  if (!mimeType) throw new Error("This artifact type cannot be streamed.");
+  const handle = await fs.promises.open(resolved, "r").catch(() => {
+    throw new Error("Artifact file does not exist.");
+  });
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile()) throw new Error("Artifact file does not exist.");
+    const totalSize = stat.size;
+    const requestedOffset = Number(args.offset ?? 0);
+    const offset = Number.isFinite(requestedOffset) ? Math.max(0, Math.floor(requestedOffset)) : 0;
+    const requestedLength = Number(args.length ?? ARTIFACT_RANGE_READ_MAX_BYTES);
+    const length = Number.isFinite(requestedLength)
+      ? Math.max(1, Math.min(ARTIFACT_RANGE_READ_MAX_BYTES, Math.floor(requestedLength)))
+      : ARTIFACT_RANGE_READ_MAX_BYTES;
+    if (offset >= totalSize) return { totalSize, offset, data: "", mimeType };
+    const buffer = Buffer.alloc(Math.min(length, totalSize - offset));
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
+    return { totalSize, offset, data: buffer.subarray(0, bytesRead).toString("base64"), mimeType };
+  } finally {
+    await handle.close();
   }
 }
 
@@ -1852,6 +1904,16 @@ export function createComputerUseArtifactBrokerService(args: {
     readArtifactPreview(args: { uri?: string }): Promise<string | null> {
       return readArtifactPreviewDataUrl({
         uri: args?.uri,
+        projectRoot,
+        artifactsDir: layout.artifactsDir,
+      });
+    },
+
+    readArtifactRange(args: { uri?: string; offset?: number; length?: number }) {
+      return readArtifactRangeChunk({
+        uri: args?.uri,
+        offset: args?.offset,
+        length: args?.length,
         projectRoot,
         artifactsDir: layout.artifactsDir,
       });

@@ -147,8 +147,10 @@ Name elements, not pixels.
 - `foreground` reports which app the device has in front, read from the device
   rather than from what ADE last launched.
 - Hardware buttons: `button home` (also `lock`, `volume-up`, `volume-down`,
-  `siri`). `shake` is refused with `APPLE_BUTTON_UNSUPPORTED`, because neither
-  the helper nor `simctl` has it.
+  `siri`, `app-switcher`). `shake` is refused with `APPLE_BUTTON_UNSUPPORTED`,
+  because neither the helper nor `simctl` has it. `app-switcher` is
+  Simulator's own App Switcher command, two home presses 150 ms apart; do not
+  press `home` twice yourself, the gap between two calls is too long.
 - Orientation: `rotate landscape-left` (also `portrait`,
   `portrait-upside-down`, `landscape-right`). **Read the answer.** `rotate`
   turns the device and then reads the screen, so `applied: true` means the
@@ -163,7 +165,56 @@ Name elements, not pixels.
   the pixel size unchanged, so the exact side is not confirmed.
 
 Agent launches stay in the background. Add `--open-drawer` when the user asked
-to watch. `launch --follow` waits out a cold build and prints the summary.
+to watch, or run `apple show` at any time. `launch --follow` waits out a cold
+build and prints the summary.
+
+### Close an app the way a person does
+
+Bottom-edge swipes do not work: the helper sends them as ordinary touches, so
+iOS never sees the home-indicator gesture, and a swipe from the bottom edge
+opens nothing. Use the App Switcher instead.
+
+```bash
+"$ADE_CLI_PATH" apple button app-switcher --text
+"$ADE_CLI_PATH" apple screenshot --out switcher.png --text   # check it opened
+"$ADE_CLI_PATH" apple swipe 201 480 201 80 --duration-ms 150 --text
+"$ADE_CLI_PATH" apple button home --text
+```
+
+- Coordinates are points. Read the screen size from `apple stream-status`
+  (`pointWidth` × `pointHeight`); the example is an iPhone 16 Pro (402 × 874).
+- The front app's card sits in the middle of the switcher. Swipe it up from
+  about (W/2, 0.55 H) to (W/2, 0.09 H), fast: 150 ms. A slow drag only lifts
+  the card.
+- Take a screenshot after `app-switcher`. If the switcher is not showing, do
+  not keep swiping: say so, and use `apple terminate --bundle-id <id>` to stop
+  the app without showing it (Safari is `com.apple.mobilesafari`).
+- While a recording runs, every failed try is in the video. Check the screen
+  after each step instead of repeating a gesture.
+
+## Show the device to the user
+
+When the user asks to see the device ("open the sim drawer", "show me"):
+
+```bash
+"$ADE_CLI_PATH" apple show --text              # the Apple tool in the tools pane
+"$ADE_CLI_PATH" apple show --floating --text   # the floating player over the chat
+"$ADE_CLI_PATH" ui show proof --text           # this chat's proof drawer
+```
+
+It targets your own chat and reports what really happened:
+
+- `shown` — it is on screen now.
+- `held` — a desktop window has this project open but your chat is not in
+  front. It opens when the user goes to your chat. Say so.
+- `no_desktop` (exit 1) — no desktop window is open for this chat, so nothing
+  was shown. Tell the user; do not claim you opened it.
+
+A desktop on another machine that has your chat open answers too. You do not
+need `show` just to be seen working: while you drive the device and the Apple
+tool is not open, the desktop floats the device over your chat by itself,
+unless the user closed that player (then only `apple show` or the user brings
+it back).
 
 ## Proof is automatic, and only on this path
 
@@ -216,8 +267,14 @@ not a detail.
    one automatically, tagged `auto`. Input from the desktop pane is stamped as
    the user's and starts nothing.
 2. It stops at the end of your turn, or after ten minutes, whichever is first.
-   `record-start` during an auto recording converts it to manual with no gap
-   and clears the cap.
+   `record-start` during an auto recording converts it to manual with no gap.
+   A manual recording you own stops itself after ten minutes of real time
+   (`stopReason: "cap"`) and files as proof; `--max-seconds <n>` changes it.
+   Still call `record-stop` when you are done.
+
+   Still screens are cut: a still longer than 2 s keeps 0.75 s in the video.
+   `record-stop` reports `durationMs` (video), `wallDurationMs` (real time)
+   and `idleCutMs`. Pass `--keep-idle` when the waiting itself is the point.
 3. It files itself as proof on stop. There is **no auto-delete**; recordings
    accumulate until the user clears them.
 4. You may delete a recording you own. Anything else is
@@ -287,6 +344,8 @@ One chat owns a simulator session at a time. A second launch fails with
 - `APPLE_HELPER_UNAVAILABLE` — the helper binary is missing from this install.
   `status` → `tools.helper.present` is the check.
 - `APPLE_STREAM_NOT_RUNNING` — `frame` needs a live stream; use `screenshot`.
+- `APPLE_DEVICE_OFF` — the lane's device is powered off, and watching never
+  boots it. `apple start` (or `stream-start`) powers it on.
 - `APPLE_ROTATE_NOT_ADOPTED` — the device turned and the app on screen did
   not. Launch a landscape-capable app first; it is not a fault to report.
 - `APPLE_ROTATE_UNMEASURABLE` — the screen could not be read, so the rotation

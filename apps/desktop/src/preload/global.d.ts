@@ -897,6 +897,7 @@ import type {
   WorkToolsLaneState,
   WorkToolsObservationPreview,
 } from "../shared/types/workTools";
+import type { WorkToolShowAck, WorkToolShowRequest } from "../shared/types/workToolShow";
 import type {
   DiagnosticReportPayload,
   DiagnosticReportRequestPayload,
@@ -3761,6 +3762,16 @@ declare global {
         readObservationPreview: (
           observationPath: string,
         ) => Promise<WorkToolsObservationPreview | null>;
+        /** `ade ui show`: an agent asking this desktop to show a surface of its chat. */
+        onShowRequest: (
+          cb: (request: WorkToolShowRequest) => void,
+          pin?: OpenProjectBinding | null,
+        ) => () => void;
+        /** Answer a show request on the runtime it came from. */
+        acknowledgeShow: (
+          ack: WorkToolShowAck,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: boolean }>;
       };
       tests: {
         listSuites: () => Promise<TestSuiteDefinition[]>;

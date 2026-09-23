@@ -86,6 +86,10 @@ is no separate column.
 - Closing the tool's **tab** powers the device off, behind a confirmation when
   the device is booted. Minimising the tools pane leaves it running and shows
   a floating preview, which the user can turn off per chat.
+- Watching never boots. Opening the pane, the floating preview, a phone or
+  web viewer, or a desktop reconnect on a device that is off shows
+  "{name} is off." with Start. Only Start, the picker, `apple start`,
+  `stream-start`, `open-device` and `launch` power a device on.
 
 ## Agent discovery
 
@@ -147,7 +151,7 @@ ade --socket apple device-attach --simulator <udid|name> --text
 ade --socket apple device-list [--installed] [--lane] --text
 ade --socket apple device-delete [--force] --text
 
-ade --socket apple record-start [--overlays on|off] [--label <text>] --text
+ade --socket apple record-start [--overlays on|off] [--label <text>] [--keep-idle] [--max-seconds <n>] --text
 ade --socket apple record-stop [--keep|--discard] --text
 ade --socket apple record-list --text
 ade --socket apple record-delete --id <id> --text
@@ -203,7 +207,22 @@ identical and is deliberately not claimed.
    chat, overlays per Settings.
 2. It stops at the end of the chat's turn, or after 10 minutes, whichever
    comes first. `record-start` while an auto recording is running converts it
-   to manual (no restart, no gap) and clears the 10-minute cap.
+   to manual (no restart, no gap) and swaps the auto cap for the manual one.
+   A manual recording a chat owns stops itself after 10 minutes of real time,
+   counted from its start or conversion (`--max-seconds` changes it, up to 4
+   hours), and files as proof with `stopReason: "cap"`. A person's recording
+   from the pane has no cap unless it asks for one.
+
+   Still time is cut by default. When no new picture and no overlay arrives
+   for more than 2 s, the helper keeps 0.75 s of the still and shifts later
+   frames back (`IdleGapCompressor` in the helper). A blinking caret or a
+   status-bar clock does not count as a new picture (`ScreenChange` compares
+   small grey thumbnails). The sidecar and `record-stop` carry `durationMs`
+   (the video), `wallDurationMs` (real time) and `idleCutMs`; the proof keeps
+   wall-clock `recordedFrom`/`recordedTo`, and its caption and drawer line say
+   "idle cut 2:07". `--keep-idle` sends `idleCompression: false` and records
+   at wall-clock length. An older helper ignores the field and does not echo
+   it, so the record says `idleCompression: false` and `idleCutMs: 0`.
 3. An agent may `record-delete` a recording it owns that is not marked
    `proof`. Anything else is `APPLE_RECORDING_PINNED`.
 4. **Every recording files itself in the proof drawer the moment it stops**,
@@ -241,7 +260,7 @@ forwarded.
 | `device-delete` | `deviceDelete` | `--force`, `--lane` |
 | `open-device` (`open-sim`, `boot`) | `openDevice` | `--device/--udid`, `--lane`, `--chat-session`, `--no-window`, `--force` |
 | `close-device` (`close-sim`) | `closeDevice` | `--device`, `--chat-session`, `--force`, `--ignore-ownership`, `--shutdown` |
-| `record-start` | `recordStart` | `--overlays on\|off`, `--label`, `--lane` |
+| `record-start` | `recordStart` | `--overlays on\|off`, `--label`, `--keep-idle`, `--max-seconds`, `--lane` |
 | `record-stop` | `recordStop` | `--keep`, `--discard`, `--lane` |
 | `record-list` | `recordList` | `--lane` |
 | `record-delete` | `recordDelete` | `--id` (required), `--force`, `--lane` |
@@ -333,6 +352,7 @@ recording. With no `outDir` the bundle lands in
 | No installed simulator | Open Xcode ▸ Settings ▸ Components. ADE never downloads one. |
 | `APPLE_HELPER_UNAVAILABLE` | The vendored helper binary is missing from `resources/native/ade-sim-helper`. |
 | `APPLE_STREAM_NOT_RUNNING` | `frame` needs a live stream. Use `screenshot`, or `stream-start` first. |
+| `APPLE_DEVICE_OFF` | A viewer asked to watch a device that is off. Watching never boots; `apple start` does. |
 | `APPLE_BUTTON_UNSUPPORTED` | That button is not a helper `button` name, and this Xcode's `simctl` has no equivalent (today: `shake`). |
 | `APPLE_DEVICE_ATTACHED_NOT_DELETABLE` | `device-delete --force` detaches; it does not delete the user's simulator. |
 | `APPLE_RECORDING_PINNED` | Proof-marked recordings cannot be deleted by an agent. |

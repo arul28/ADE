@@ -362,6 +362,10 @@ import { createLinearIssueTracker, type LinearIssueTracker } from "./services/ct
 import { createLinearLiveStatusService, type LinearLiveStatusService } from "./services/cto/linearLiveStatusService";
 import { createLinearChatLinkPublisher, publishLinearLaneCard } from "./services/cto/linearLaneCardService";
 import { createComputerUseArtifactBrokerService } from "./services/computerUse/computerUseArtifactBrokerService";
+import {
+  artifactStreamMimeType,
+  respondToRemoteArtifactRequest,
+} from "./services/computerUse/artifactStreamProtocol";
 import { sceneDocumentStore } from "./services/scenes/sceneDocumentStore";
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
 import { createAppleStreamRelayForService } from "./services/ios/appleStreamRelay";
@@ -1380,8 +1384,11 @@ app.whenReady().then(async () => {
 
   // Handle ade-artifact:// requests — serves local files for proof drawer previews.
   // Path is encoded in the URL: ade-artifact:///absolute/path/to/file.png
+  // `ade-artifact://remote/...` streams a proof from a paired computer instead;
+  // that machine's broker enforces the same artifacts-dir jail on its side.
   protocol.handle("ade-artifact", (request) => {
     const url = new URL(request.url);
+    if (url.hostname === "remote") return respondToRemoteArtifactRequest(request);
     let filePath = decodeURIComponent(url.pathname);
     if (url.hostname === "project") {
       if (!activeProjectRoot) return new Response("Not found", { status: 404 });
@@ -1418,23 +1425,8 @@ app.whenReady().then(async () => {
       const stat = fs.statSync(resolvedFile);
       if (!stat.isFile()) return new Response("Not found", { status: 404 });
       const fileSize = stat.size;
-      const ext = path.extname(resolvedFile).replace(/^\./, "").toLowerCase();
-      const mimeMap: Record<string, string> = {
-        png: "image/png",
-        jpg: "image/jpeg",
-        jpeg: "image/jpeg",
-        webp: "image/webp",
-        gif: "image/gif",
-        bmp: "image/bmp",
-        svg: "image/svg+xml",
-        mp4: "video/mp4",
-        webm: "video/webm",
-        // Chromium refuses `video/quicktime` in a <video>; the same bytes play as MP4.
-        mov: "video/mp4",
-        avi: "video/x-msvideo",
-        mkv: "video/x-matroska",
-      };
-      const mime = mimeMap[ext] ?? "application/octet-stream";
+      // Serves `.mov` as `video/mp4`; Chromium refuses `video/quicktime`.
+      const mime = artifactStreamMimeType(resolvedFile);
 
       // Support Range requests — required for <video> playback and seeking
       const rangeHeader = request.headers.get("Range");

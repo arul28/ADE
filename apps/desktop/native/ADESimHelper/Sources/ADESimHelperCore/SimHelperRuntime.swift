@@ -94,6 +94,8 @@ public actor SimHelperRuntime {
                     udid: session.udid,
                     path: finished.path,
                     durationMs: finished.durationMs,
+                    wallDurationMs: finished.wallDurationMs,
+                    idleCutMs: finished.idleCutMs,
                     bytes: finished.bytes
                 ))
             }
@@ -214,15 +216,18 @@ public actor SimHelperRuntime {
                     "height": size.height,
                 ]))
 
-            case let .recordStart(_, udid, path, overlays, fps, accentColor):
+            case let .recordStart(_, udid, path, overlays, fps, accentColor, idleCompression):
                 let session = try session(for: udid)
                 try await session.startRecording(
                     path: path,
                     overlays: overlays,
                     fps: fps,
-                    accentColor: accentColor
+                    accentColor: accentColor,
+                    idleCompression: idleCompression
                 )
-                emit(.ok(id: id, payload: ["path": path]))
+                // Echoed so ADE can tell this helper from an older one, which
+                // ignores the field and records at wall-clock time.
+                emit(.ok(id: id, payload: ["path": path, "idleCompression": idleCompression]))
                 emit(.recordStarted(id: id, udid: udid, path: path))
 
             case let .recordStop(_, udid):
@@ -233,12 +238,16 @@ public actor SimHelperRuntime {
                 emit(.ok(id: id, payload: [
                     "path": finished.path,
                     "durationMs": finished.durationMs,
+                    "wallDurationMs": finished.wallDurationMs,
+                    "idleCutMs": finished.idleCutMs,
                     "bytes": finished.bytes,
                 ]))
                 emit(.recordStopped(
                     udid: udid,
                     path: finished.path,
                     durationMs: finished.durationMs,
+                    wallDurationMs: finished.wallDurationMs,
+                    idleCutMs: finished.idleCutMs,
                     bytes: finished.bytes
                 ))
 

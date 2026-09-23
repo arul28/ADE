@@ -30,6 +30,7 @@ import {
   type WorkLivePipSession,
 } from "../work/workLiveIosPictureInPicture";
 import { useAppleDeviceInput } from "./useAppleDeviceInput";
+import { describeAppleError, isAppleDeviceOffError } from "./appleErrors";
 import { PaneTooltip } from "../ui/PaneTooltip";
 
 const RESIZE_ZONES: { direction: AppleMiniPlayerResizeDirection; className: string }[] = [
@@ -356,6 +357,30 @@ function AppleMiniPlayerFrameView({
     runtimePinRef: pinRef,
   });
 
+  /*
+   * The device is off. Watching never boots a device (the service answers
+   * `APPLE_DEVICE_OFF`), so without this the player sat on a generic error.
+   * It says so and offers the pane's own Start; "Open in pane" stays on the
+   * hover bar.
+   */
+  const deviceOff = stream.state === "error" && isAppleDeviceOffError(stream.error);
+  const [starting, setStarting] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
+  const reconnect = stream.reconnect;
+  const startDevice = useCallback(() => {
+    const api = window.ade?.iosSimulator;
+    if (!api?.deviceStart || !target.laneId) return;
+    setStarting(true);
+    setStartError(null);
+    void api.deviceStart(
+      { laneId: target.laneId, chatSessionId: target.chatSessionId, udid: target.deviceUdid },
+      pinRef.current,
+    )
+      .then(() => reconnect())
+      .catch((cause: unknown) => setStartError(describeAppleError(cause).sentence))
+      .finally(() => setStarting(false));
+  }, [reconnect, target.chatSessionId, target.deviceUdid, target.laneId]);
+
   const pipSupported = isWorkLivePictureInPictureSupported();
   /*
    * Picture-in-picture needs a canvas that has actually drawn something.
@@ -453,6 +478,26 @@ function AppleMiniPlayerFrameView({
           frameVersion={stream.frameVersion}
         />
       </div>
+
+      {deviceOff ? (
+        <div
+          data-apple-mini-off=""
+          className="absolute inset-0 z-[1] flex flex-col items-center justify-center gap-2 bg-surface px-4 text-center"
+        >
+          <p className="font-sans text-[12px] text-fg/85">{target.deviceName} is off</p>
+          {target.laneId ? (
+            <button
+              type="button"
+              disabled={starting}
+              className="rounded-full border border-border px-3 py-0.5 font-sans text-[11px] text-fg/85 hover:bg-white/[0.07] hover:text-fg disabled:opacity-50"
+              onClick={startDevice}
+            >
+              {starting ? "Starting…" : "Start"}
+            </button>
+          ) : null}
+          {startError ? <p className="font-sans text-[11px] text-muted-fg">{startError}</p> : null}
+        </div>
+      ) : null}
 
       <div
         data-apple-mini-drag=""

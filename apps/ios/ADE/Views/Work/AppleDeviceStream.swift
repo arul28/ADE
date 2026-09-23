@@ -143,6 +143,22 @@ func appleDeviceFamilySymbol(_ family: String?) -> String {
 /// and exactly what fixes it.
 let appleDeviceHostUnsupportedMessage = "Update ADE on your Mac to watch its simulator from here."
 
+/// Why the Mac refused a stream ticket, in words.
+///
+/// The one refusal worth rewording is `APPLE_DEVICE_OFF`: the simulator is
+/// powered off, and watching from the phone never boots it. The host's
+/// message is "APPLE_DEVICE_OFF: {name} is off. …", so the name is kept.
+/// Anything else is shown as the host wrote it.
+func appleStreamTicketFailureMessage(_ raw: String) -> String {
+  guard let code = raw.range(of: "APPLE_DEVICE_OFF") else { return raw }
+  let tail = raw[code.upperBound...].drop { $0 == ":" || $0 == " " }
+  if let off = tail.range(of: " is off") {
+    let name = tail[..<off.lowerBound].trimmingCharacters(in: .whitespaces)
+    if !name.isEmpty { return "\(name) is off on your Mac. Start it in ADE on the Mac to watch it here." }
+  }
+  return "The simulator is off on your Mac. Start it in ADE on the Mac to watch it here."
+}
+
 /// Why there is no device to watch. Mirrors the host's `unavailable` reasons.
 func appleDeviceUnavailableMessage(_ reason: String?) -> String {
   switch reason {

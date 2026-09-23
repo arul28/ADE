@@ -73,6 +73,10 @@ import {
   type AgentChatSessionCreatedOptions,
 } from "./AgentChatPane";
 import {
+  receiveWorkToolShowRequest,
+  resetWorkToolShowRequestsForTests,
+} from "../../lib/workToolShowRequests";
+import {
   DEFAULT_CHAT_COMPANION_UI_STATE,
   chatCompanionUiStorageKey,
   patchChatCompanionUiState,
@@ -2074,6 +2078,40 @@ describe("AgentChatPane companion drawers", () => {
     await waitFor(() => {
       expect(screen.queryByTestId("app-control-panel")).toBeNull();
     });
+  });
+
+  it("opens the proof drawer and the Apple drawer when an agent asks with ade ui show", async () => {
+    renderDrawerPane();
+    await screen.findByRole("button", { name: "Open chat actions drawer" });
+
+    let status: string | null = null;
+    await act(async () => {
+      status = await receiveWorkToolShowRequest({
+        requestId: "wts-proof",
+        surface: "proof",
+        chatSessionId: "session-1",
+        laneId: "lane-1",
+        auto: false,
+        requestedAt: new Date(0).toISOString(),
+      });
+    });
+    expect(status).toBe("shown");
+    expect(await screen.findByText("No proof collected yet")).toBeTruthy();
+
+    // Outside Work this pane owns the chat's Apple drawer too.
+    await act(async () => {
+      status = await receiveWorkToolShowRequest({
+        requestId: "wts-apple",
+        surface: "apple",
+        chatSessionId: "session-1",
+        laneId: "lane-1",
+        auto: false,
+        requestedAt: new Date(0).toISOString(),
+      });
+    });
+    expect(status).toBe("shown");
+    expect(screen.getByTestId("ios-panel").textContent).toBe("iOS panel mounted");
+    resetWorkToolShowRequestsForTests();
   });
 
   it("opens the proof drawer as a floating info pane (no split divider)", async () => {

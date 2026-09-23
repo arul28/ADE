@@ -78,6 +78,11 @@ import type {
   WorkToolsReadObservationPreviewArgs,
   WorkToolsSetActiveToolArgs,
 } from "../shared/types/workTools";
+import {
+  WORK_TOOL_SHOW_REQUEST_EVENT,
+  type WorkToolShowAck,
+  type WorkToolShowRequest,
+} from "../shared/types/workToolShow";
 import type { ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
 import type {
   DiagnosticReportPayload,
@@ -2651,6 +2656,11 @@ const remoteBuiltInBrowserRemoteRequestFanout =
     label: "built-in browser request",
     onSubscribe: () => ensureRemoteRuntimeEventPump(),
   });
+const remoteWorkToolShowRequestFanout = createRemoteRuntimeFanout<WorkToolShowRequest>({
+  eventType: WORK_TOOL_SHOW_REQUEST_EVENT,
+  label: "work tool show request",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+});
 
 /**
  * The wiring itself. Exported so a test can assert every listed domain reaches
@@ -2689,6 +2699,7 @@ export const REMOTE_RUNTIME_FANOUTS: readonly RemoteRuntimeFanoutEntry[] = [
   remoteIosSimulatorEventFanout,
   remoteAppControlEventFanout,
   remoteBuiltInBrowserRemoteRequestFanout,
+  remoteWorkToolShowRequestFanout,
 ];
 
 function createLocalIpcEventSubscription<T>(
@@ -3399,6 +3410,26 @@ function subscribeRemoteBuiltInBrowserRemoteRequests(
   cb: (payload: BuiltInBrowserRemoteRequest) => void,
 ): () => void {
   return remoteBuiltInBrowserRemoteRequestFanout.subscribe(cb);
+}
+
+/**
+ * `ade ui show` requests. Without a pin: the runtime this window is bound to,
+ * local or paired. With a pin: that session's machine, which is only a second
+ * stream when it is not the window's own binding — the unpinned subscription
+ * already hears that one, so a pin naming it adds nothing.
+ */
+function subscribeWorkToolShowRequests(
+  cb: (payload: WorkToolShowRequest) => void,
+  pin?: OpenProjectBinding | null,
+): () => void {
+  if (!pin) return remoteWorkToolShowRequestFanout.subscribe(cb);
+  const removePinned = subscribePinnedProjectRuntimeEvents(
+    pin,
+    (payload) => toWrappedEvent<WorkToolShowRequest>(payload, WORK_TOOL_SHOW_REQUEST_EVENT),
+    cb,
+    "work tool show request",
+  );
+  return removePinned ?? (() => {});
 }
 
 function subscribeAgentChatEvents(
@@ -11620,6 +11651,31 @@ const adeBridge = {
         { args: { path: observationPath } satisfies WorkToolsReadObservationPreviewArgs },
       );
       return runtime.handled ? runtime.result : null;
+    },
+    /** An agent asking this desktop to show a surface of its chat. */
+    onShowRequest: (
+      cb: (request: WorkToolShowRequest) => void,
+      pin?: OpenProjectBinding | null,
+    ): (() => void) => subscribeWorkToolShowRequests(cb, pin),
+    /**
+     * Tell the brain that asked what this desktop did. Routed to the runtime
+     * the request came from: the pin it was heard on, else the bound one.
+     */
+    acknowledgeShow: async (
+      ack: WorkToolShowAck,
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ ok: boolean }> => {
+      try {
+        return await callPinnedOrBoundRuntimeActionOr<{ ok: boolean }>(
+          pin,
+          "work_tools",
+          "acknowledgeShow",
+          { args: ack },
+          async () => ({ ok: false }),
+        );
+      } catch {
+        return { ok: false };
+      }
     },
   },
   tests: {

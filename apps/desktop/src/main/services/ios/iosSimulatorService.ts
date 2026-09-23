@@ -111,6 +111,7 @@ import type {
 import {
   APPLE_AGENT_ACTIONS,
   APPLE_BUTTON_UNSUPPORTED_CODE,
+  APPLE_DEVICE_OFF_CODE,
   APPLE_DEVICE_ORIENTATIONS,
   APPLE_ROTATE_NOT_ADOPTED_CODE,
   APPLE_ROTATE_SEND_FAILED_CODE,
@@ -326,6 +327,24 @@ export class IosSimulatorOwnedBySessionError extends Error {
     this.name = "IosSimulatorOwnedBySessionError";
     this.currentChatSessionId = owner;
     this.currentSession = currentSession;
+  }
+}
+
+/**
+ * A viewer asked to watch a device that is powered off.
+ *
+ * The message names the device and the one way on, because it reaches agents
+ * as text: an agent that called `stream-start` without meaning to boot reads
+ * it and runs `ade apple start`.
+ */
+export class AppleDeviceOffError extends Error {
+  readonly code: typeof APPLE_DEVICE_OFF_CODE = APPLE_DEVICE_OFF_CODE;
+  readonly udid: string;
+
+  constructor(device: { udid: string; name: string }) {
+    super(`${APPLE_DEVICE_OFF_CODE}: ${device.name} is off. Watching a device never boots it; start it with \`ade apple start\` or the pane's Start button.`);
+    this.name = "AppleDeviceOffError";
+    this.udid = device.udid;
   }
 }
 
@@ -2779,9 +2798,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * Idempotent: a device that is already booted skips `simctl boot` (and the
    * "current state: Booted" refusal `simctl` answers with when two callers
    * race) and only waits on `bootstatus`, which returns at once for a booted
-   * device. `startStream` and `deviceStart` both go through here so the
-   * helper's `capture-start` never meets a device that is off — that was the
-   * "Device not booted" the phone and the web tab used to see.
+   * device. Only explicit starts come here: `deviceStart`, and `startStream`
+   * when its caller passed `boot: true`. A viewer that only wants to watch
+   * gets `APPLE_DEVICE_OFF` instead (see `startStream`).
    */
   const ensureDeviceBooted = async (device: IosSimulatorDevice): Promise<void> => {
     let booted = false;
@@ -2789,9 +2808,23 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       booted = await bootSimulator(device);
     }
     await waitForSimulatorBootStatus(device);
+    // The cached `simctl list` still says Shutdown. The next read must not.
+    if (booted) invalidateDeviceList();
     // Only after a boot THIS call did: a device that was already up keeps the
     // helper session it has, and dropping it would cost a stream for nothing.
     if (booted) await resetHelperDevice(device.udid, "boot");
+  };
+
+  /**
+   * Powered off, as `simctl list` says it. "Booting" is not off: a viewer
+   * that arrives mid-boot waits for it rather than being told to press Start.
+   */
+  const isDeviceOff = (device: IosSimulatorDevice): boolean =>
+    device.state === "Shutdown" || device.state === "Shutting Down";
+
+  /** Drop the cached `simctl list` after ADE changed a device's power. */
+  const invalidateDeviceList = (): void => {
+    cachedDevices = { ...cachedDevices, computedAt: 0 };
   };
 
   /**
@@ -4315,6 +4348,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         bootedForLaunch = await bootSimulator(device);
       }
       await waitForSimulatorBootStatus(device);
+      if (bootedForLaunch) invalidateDeviceList();
       // Same rule as `ensureDeviceBooted`: a fresh boot gets a fresh helper session.
       if (bootedForLaunch) await resetHelperDevice(device.udid, "boot");
       emitLaunchProgress(launchId, "boot-simulator", "complete", "Simulator services are ready.", device.name, { deviceUdid: device.udid });
@@ -5192,6 +5226,20 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const requestedFps = clampStreamFps(streamArgs.fps);
     const scale = clampStreamRatio(streamArgs.scaleFactor) ?? 1;
     const bitrateKbps = clampStreamBitrateKbps(streamArgs.bitrateKbps);
+    const wantsBoot = streamArgs.boot === true;
+    if (isDeviceOff(device)) {
+      // A capture "running" on a device that is off is left over from before
+      // the power went (an app restart, Xcode, a reboot). Publish it stopped
+      // so neither branch below hands out its dead address.
+      if (runtime.streamStatus.running && runtime.streamStatus.deviceUdid === device.udid) {
+        markStreamGone(runtime);
+      }
+      // Watching never boots. The owner's 2026-09-23 report: reopening the
+      // tools pane after a restart booted the simulator instead of showing
+      // "{name} is off." Checked before any other lane stream is stopped, so
+      // a refused viewer changes nothing.
+      if (!wantsBoot) throw new AppleDeviceOffError(device);
+    }
     if (
       runtime.streamStatus.running
       && runtime.streamStatus.deviceUdid === device.udid
@@ -5249,10 +5297,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     // streaming to a reader nobody is holding.
     if (runtime.streamStatus.running) await stopStream({ laneId: runtime.laneId });
     // The helper reads the framebuffer of a BOOTED device and refuses one that
-    // is off. Booting here, rather than leaving it to the caller, is what keeps
-    // a remote viewer's `apple.streamTicket` from failing on a lane whose device
-    // was shut down from Xcode or by a reboot.
-    await ensureDeviceBooted(device);
+    // is off. An explicit start boots it here; a viewer never gets this far
+    // with a device that is off (see the check above). A device that is still
+    // booting is waited for, not booted again.
+    if (wantsBoot) await ensureDeviceBooted(device);
+    else if (device.state === "Booting") await waitForSimulatorBootStatus(device);
     if (streamArgs.localViewer) markLocalViewer(runtime.laneId);
     const payload = await helper().send({
       type: "capture-start",
@@ -5480,6 +5529,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
             }
             throw error;
           }
+          runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
+          return { ok: true };
+        case "app-switcher":
+          // The helper's `app_switcher` is Simulator's own App Switcher: two
+          // home presses 150 ms apart. Two separate `home` calls would not do
+          // it, because the helper's `home` relaunches SpringBoard instead of
+          // pressing a button, and the gap between two calls is too long.
+          await helper().send({ type: "button", udid: deviceUdid, name: "app_switcher" });
           runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
           return { ok: true };
         case "shake":
@@ -5817,7 +5874,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       await ensureDeviceBooted(device);
       invalidateStatus(runtime);
       phase("booted");
-      const status = await startStream({ laneId, chatSessionId: deviceArgs.chatSessionId ?? null, deviceUdid: udid });
+      // `boot: true`: this IS the explicit start, and a device list cached
+      // from before the boot must not read as "off" here.
+      const status = await startStream({ laneId, chatSessionId: deviceArgs.chatSessionId ?? null, deviceUdid: udid, boot: true });
       phase("streaming");
       return status;
     } catch (error) {
@@ -5927,6 +5986,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
           throw error;
         }
       });
+    invalidateDeviceList();
     invalidateStatus(runtime);
     if (runtime.key) {
       emit({ type: "apple.device.state", laneId: runtime.key, udid, phase: "stopped" });
@@ -6003,6 +6063,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     }
     await laneDevices.deviceDelete({ laneId: runtime.key, force: deviceArgs.force });
     invalidateStatus(runtime);
+    // The lane's binding changed ("Choose another device"): every surface that
+    // shows the lane's device re-reads now rather than on its next poll.
+    if (deletedUdid && runtime.key) {
+      emit({ type: "apple.device.state", laneId: runtime.key, udid: deletedUdid, phase: "released" });
+    }
   };
 
   /**
@@ -6052,6 +6117,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       chatSessionId: recordArgs.chatSessionId ?? runtime.activeSession?.chatSessionId ?? null,
       overlays: recordArgs.overlays ?? undefined,
       label: recordArgs.label ?? undefined,
+      keepIdle: recordArgs.keepIdle ?? undefined,
+      maxSeconds: recordArgs.maxSeconds ?? undefined,
     });
   };
 

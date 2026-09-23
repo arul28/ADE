@@ -1,6 +1,7 @@
 import {
   APPLE_BUTTON_UNSUPPORTED_CODE,
   APPLE_DEVICE_ALREADY_RECORDING_CODE,
+  APPLE_DEVICE_OFF_CODE,
   APPLE_DEVICE_ATTACHED_NOT_DELETABLE_CODE,
   APPLE_DEVICE_EXISTS_CODE,
   APPLE_HELPER_UNAVAILABLE_CODE,
@@ -88,6 +89,8 @@ const RULES: readonly Rule[] = [
     sentence: "Could not connect to the video stream.",
     action: "reconnect",
   },
+  // A viewer asked to watch a device that is off. Watching never boots it.
+  { test: includes(APPLE_DEVICE_OFF_CODE), sentence: "The device is off.", action: "start" },
   // The device is off (helper `DeviceSession` refusal, or `simctl` on a shut-down device).
   { test: matches(/Device not booted|current state: Shutdown|is not booted|Unable to boot device/i), sentence: "The device is off.", action: "start" },
   // The helper.
@@ -150,6 +153,11 @@ const RULES: readonly Rule[] = [
   { test: matches(/Choose a #Preview|no nearby #Preview|No #Preview/i), sentence: "No SwiftUI preview was found for this file." },
   { test: matches(/timed out|timeout/i), sentence: "The simulator did not answer in time.", action: "reconnect" },
 ];
+
+/** True for the service's "this device is off, and watching never boots it". */
+export function isAppleDeviceOffError(error: unknown): boolean {
+  return `${codeOf(error)} ${rawMessage(error)}`.includes(APPLE_DEVICE_OFF_CODE);
+}
 
 /**
  * One sentence for the strip, the raw text for `Details`, and the button that

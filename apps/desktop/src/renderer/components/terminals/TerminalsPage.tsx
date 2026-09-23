@@ -10,7 +10,13 @@ import { WorkLiveCornerCard } from "../work/WorkLiveCornerCard";
 import { WorkSidebar } from "./WorkSidebar";
 import type { WorkSidebarContextTarget } from "./workToolContextInsertion";
 import { AppleDeviceMiniPlayer } from "../apple/AppleDeviceMiniPlayer";
-import type { AppleMiniPlayerSurface } from "../apple/appleMiniPlayerStore";
+import { floatAppleMiniPlayerForChat, type AppleMiniPlayerSurface } from "../apple/appleMiniPlayerStore";
+import { setWorkLivePreviewEnabledForChat } from "../chat/chatCompanionUiState";
+import {
+  useWorkToolShowHandler,
+  useWorkToolShowRequestListener,
+} from "../../lib/workToolShowRequests";
+import type { WorkToolShowRequest, WorkToolShowSurface } from "../../../shared/types/workToolShow";
 import { AppleShutdownConfirmHost } from "../apple/AppleShutdownConfirm";
 import { NativeToolFeedsProvider } from "./NativeToolFeedsContext";
 import { useWorkSidebarTool } from "./useWorkSidebarTool";
@@ -182,6 +188,9 @@ async function allSettledWithConcurrency<T>(
 
   return results;
 }
+
+/** What the Work page itself can show for the chat in front. */
+const WORK_PAGE_SHOW_SURFACES: readonly WorkToolShowSurface[] = ["apple", "floating-apple", "browser"];
 
 export function TerminalsPage({ active = true }: { active?: boolean }) {
   const work = useWorkSessions({ active });
@@ -1143,6 +1152,76 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         }
       : null
   ), [activeWorkSession, activeWorkSessionRuntimePin, projectBinding]);
+
+  /*
+   * `ade ui show` for the chat in front, and the floating device an agent's
+   * work on it brings up.
+   *
+   * Registered only while Work is on screen and only for the session in front,
+   * which is the whole surface rule: another lane's chat and the new-chat
+   * screen register nothing, so an agent elsewhere cannot put anything here.
+   * A request for a chat that is not in front is held and lands when the user
+   * opens that chat.
+   *
+   * The floating rule (`auto` requests, sent by the brain when an agent drives
+   * the device): float only when the Apple tool is not already on screen and
+   * the chat's "Show preview when minimized" is on. That is the default; × on
+   * the player turns it off for the chat, and it stays off until the user turns
+   * it back on or the agent asks with `ade apple show`.
+   */
+  const appleToolOnScreen = workSidebarVisible && workSidebarTool === "ios";
+  const showWorkSurface = useCallback((request: WorkToolShowRequest): boolean | Promise<boolean> => {
+    if (!activeWorkSession || request.chatSessionId !== activeWorkSession.id) return false;
+    if (request.surface === "browser") {
+      setWorkSidebarTool("browser");
+      return true;
+    }
+    if (request.surface === "apple") {
+      // An explicit ask undoes an earlier × for this chat's floating device.
+      setWorkLivePreviewEnabledForChat(request.chatSessionId, "ios", true);
+      setWorkSidebarTool("ios");
+      return true;
+    }
+    if (request.surface !== "floating-apple") return false;
+    // The device is already on screen in the pane.
+    if (appleToolOnScreen) return true;
+    return floatAppleMiniPlayerForChat({
+      laneId: activeWorkSession.laneId || null,
+      chatSessionId: request.chatSessionId,
+      runtimePin: activeWorkSessionRuntimePin,
+      auto: request.auto,
+    });
+  }, [activeWorkSession, activeWorkSessionRuntimePin, appleToolOnScreen, setWorkSidebarTool]);
+  useWorkToolShowHandler(
+    active && activeWorkSession ? activeWorkSession.id : null,
+    WORK_PAGE_SHOW_SURFACES,
+    showWorkSurface,
+  );
+  // The window's own runtime is heard app-wide; a chat on another machine is
+  // heard on its own pin.
+  useWorkToolShowRequestListener(
+    Boolean(active && activeWorkSessionRuntimePin),
+    activeWorkSessionRuntimePin,
+  );
+
+  /*
+   * `ade apple launch --open-drawer` and an agent's inspect/select reveal. The
+   * chat pane ignores these in Work (its lane drawers are hidden here), so
+   * without this the request reached nothing on the surface agents use most.
+   */
+  useEffect(() => {
+    const api = window.ade?.iosSimulator;
+    const sessionId = activeWorkSession?.id ?? null;
+    const sessionLaneId = activeWorkSession?.laneId || null;
+    if (!active || !sessionId || !api?.onEvent) return undefined;
+    return api.onEvent((event) => {
+      if (event.type !== "drawer-open-requested") return;
+      const chatId = event.chatSessionId?.trim() || null;
+      const laneId = event.laneId?.trim() || null;
+      if (chatId ? chatId !== sessionId : (!laneId || laneId !== sessionLaneId)) return;
+      setWorkSidebarTool("ios");
+    }, activeWorkSessionRuntimePin);
+  }, [active, activeWorkSession?.id, activeWorkSession?.laneId, activeWorkSessionRuntimePin, setWorkSidebarTool]);
 
   useEffect(() => {
     if (!active) return;

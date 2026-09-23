@@ -50,6 +50,7 @@ export function buildLaneAppleDeviceDirective(device: LaneAppleDeviceRef): strin
     "Video proof: `\"$ADE_CLI_PATH\" apple record-start --text`, then `\"$ADE_CLI_PATH\" apple record-stop --text` (files to this chat's proof drawer automatically). Screenshot: `\"$ADE_CLI_PATH\" apple screenshot --out shot.png --text`.",
     "Never run `open -a Simulator`, AppleScript/System Events, or `xcrun simctl io … recordVideo`/`screenshot` for this device.",
     "If recording fails, say so. Never attach an older recording or a file you did not just record.",
+    "To show the device to the user, run `\"$ADE_CLI_PATH\" apple show`.",
     "</ade-lane-tools>",
   ].join("\n");
 }
