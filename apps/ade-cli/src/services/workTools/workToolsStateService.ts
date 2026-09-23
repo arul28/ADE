@@ -522,10 +522,12 @@ export function createWorkToolsStateService(
 
     setActiveTool(input) {
       const laneId = requireLaneId(input?.laneId, "work_tools.setActiveTool");
-      const tool = input?.tool ?? null;
-      if (tool !== null && !isWorkToolId(tool)) {
-        throw new Error(`work_tools.setActiveTool got an unknown tool "${String(tool)}".`);
-      }
+      // A newer desktop can publish a tool this runtime does not know yet.
+      // Do not throw: that drops the whole publish, the strip included. Read
+      // the unknown tool as "no known tool on screen" and keep the strip.
+      // Phones and web clients then see only tools they can render.
+      const requested: unknown = input?.tool;
+      const tool = isWorkToolId(requested) ? requested : null;
       const openTools = normalizeOpenTools(
         Array.isArray(input?.openTools) ? input.openTools : null,
         tool,

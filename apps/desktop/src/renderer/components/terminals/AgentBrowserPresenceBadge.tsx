@@ -1,5 +1,6 @@
 import { Globe } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
+import { WORK_HEADER_ICON_BUTTON_CLASS } from "../work/WorkHeaderPaneToggles";
 import { useAgentBrowserPresenceSince } from "./agentBrowserPresence";
 
 /** One sentence, everywhere this badge appears. */
@@ -45,5 +46,32 @@ export function AgentBrowserPresenceBadge({
     >
       <Globe size={size} weight="bold" />
     </span>
+  );
+}
+
+/**
+ * The same live-browser signal as a header control: icon only, no ring, and a
+ * click that opens the Browser tool. Absent unless this chat is browsing.
+ */
+export function AgentBrowserPresenceHeaderButton({
+  chatSessionId,
+  onClick,
+}: {
+  chatSessionId: string | null | undefined;
+  onClick: () => void;
+}) {
+  const since = useAgentBrowserPresenceSince(chatSessionId);
+  if (!since) return null;
+  return (
+    <button
+      type="button"
+      data-testid="agent-browser-presence"
+      className={WORK_HEADER_ICON_BUTTON_CLASS}
+      title={AGENT_BROWSER_PRESENCE_LABEL}
+      aria-label="Open browser"
+      onClick={onClick}
+    >
+      <Globe size={16} weight="bold" />
+    </button>
   );
 }

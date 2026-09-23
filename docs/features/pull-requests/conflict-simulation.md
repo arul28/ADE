@@ -197,11 +197,9 @@ Shared conflict IPC consumed by PR flows:
 
 | Channel | Description |
 |---------|-------------|
-| `ade.conflicts.simulateMerge` | Run a merge simulation between two lanes (or lane-to-base) |
 | `ade.conflicts.getLaneStatus` | Lane conflict status badge |
 | `ade.conflicts.listOverlaps` | Per-peer overlap lists |
 | `ade.conflicts.runPrediction` | Trigger prediction for a lane or pair |
-| `ade.conflicts.getBatchAssessment` | Batch view (used by Graph risk matrix) |
 
 ## Renderer wiring
 

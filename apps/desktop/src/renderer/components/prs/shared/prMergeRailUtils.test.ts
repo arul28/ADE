@@ -1,13 +1,16 @@
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
 
-import type { PrCheck, PrCommit, PrReview, PrStatus, PrWithConflicts } from "../../../../shared/types/prs";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import type { PrCommit, PrStatus, PrWithConflicts } from "../../../../shared/types/prs";
 import {
   buildDefaultCommitMessage,
-  buildMergeChecklist,
   buildMergeCommandLineInstructions,
   canAttemptMerge,
-  deriveMergeBlockers,
+  LAST_MERGE_METHOD_KEY,
   mergeMethodLabel,
+  readLastMergeMethod,
+  writeLastMergeMethod,
 } from "./prMergeRailUtils";
 
 function makePr(overrides: Partial<PrWithConflicts> = {}): PrWithConflicts {
@@ -53,34 +56,6 @@ describe("prMergeRailUtils", () => {
     expect(mergeMethodLabel("squash")).toBe("Squash and merge");
     expect(mergeMethodLabel("merge")).toBe("Create merge commit");
     expect(mergeMethodLabel("rebase")).toBe("Rebase and merge");
-  });
-
-  it("derives merge blockers from status, checks, and reviews", () => {
-    const checks: PrCheck[] = [{
-      name: "ci",
-      status: "completed",
-      conclusion: "failure",
-      detailsUrl: null,
-      startedAt: null,
-      completedAt: null,
-    }];
-    const reviews: PrReview[] = [{
-      reviewer: "alice",
-      reviewerAvatarUrl: null,
-      state: "changes_requested",
-      body: null,
-      submittedAt: null,
-    }];
-
-    const blockers = deriveMergeBlockers({
-      pr: makePr(),
-      status: makeStatus({ isMergeable: false, reviewStatus: "changes_requested" }),
-      checks,
-      reviews,
-    });
-
-    expect(blockers.some((blocker) => blocker.id === "failing-checks")).toBe(true);
-    expect(blockers.some((blocker) => blocker.id === "changes-requested")).toBe(true);
   });
 
   it("allows bypass merge attempts when requested", () => {
@@ -154,64 +129,6 @@ describe("prMergeRailUtils", () => {
   });
 });
 
-describe("buildMergeChecklist", () => {
-  it("derives review / checks / conflict / behind rows from merge-box state", () => {
-    const checks: PrCheck[] = [{
-      name: "ci",
-      status: "completed",
-      conclusion: "success",
-      detailsUrl: null,
-      startedAt: null,
-      completedAt: null,
-    }];
-    const items = buildMergeChecklist({
-      pr: makePr(),
-      status: makeStatus({
-        mergeStateStatus: "blocked",
-        reviewDecision: "review_required",
-        approvalsCount: 0,
-        requiredApprovals: 1,
-        behindBaseBy: 2,
-        canBypass: true,
-      }),
-      checks,
-      reviews: [],
-    });
-
-    const review = items.find((i) => i.id === "review");
-    expect(review?.state).toBe("fail");
-    expect(review?.detail).toContain("0 of 1");
-
-    expect(items.find((i) => i.id === "checks")?.state).toBe("pass");
-    expect(items.find((i) => i.id === "conflicts")?.state).toBe("pass");
-
-    const behind = items.find((i) => i.id === "behind");
-    expect(behind?.state).toBe("neutral");
-    expect(behind?.label).toContain("2 commits behind");
-
-    expect(items.find((i) => i.id === "protected")?.state).toBe("neutral");
-  });
-
-  it("marks conflicts and approval as pass/fail correctly", () => {
-    const cleanItems = buildMergeChecklist({
-      pr: makePr(),
-      status: makeStatus({ mergeStateStatus: "clean", reviewDecision: "approved", approvalsCount: 1, requiredApprovals: 1 }),
-      checks: [],
-      reviews: [],
-    });
-    expect(cleanItems.find((i) => i.id === "review")?.state).toBe("pass");
-    expect(cleanItems.find((i) => i.id === "conflicts")?.label).toContain("No conflicts");
-
-    const dirtyItems = buildMergeChecklist({
-      pr: makePr(),
-      status: makeStatus({ mergeStateStatus: "dirty", mergeConflicts: true }),
-      checks: [],
-      reviews: [],
-    });
-    expect(dirtyItems.find((i) => i.id === "conflicts")?.state).toBe("fail");
-  });
-});
-
 describe("buildDefaultCommitMessage", () => {
   const commits: PrCommit[] = [
     { sha: "a1", shortSha: "a1", message: "First commit", author: { login: "a", name: "A", email: null }, committedDate: "" },
@@ -260,48 +177,29 @@ describe("buildDefaultCommitMessage", () => {
     expect(result.title).toBe("");
     expect(result.body).toBe("");
   });
+});
 
-  it("reports no-CI rather than a producer-blind pending or failing count", () => {
-    // A not_run rollup coexists with third-party rows in any state. Reporting
-    // "1 pending check" there is the same blind claim in a different tense.
-    for (const conclusion of ["failure", null] as const) {
-      const items = buildMergeChecklist({
-        pr: makePr({ checksStatus: "not_run" }),
-        status: null,
-        checks: [
-          {
-            name: "Vercel",
-            status: conclusion === null ? "in_progress" : "completed",
-            conclusion,
-            detailsUrl: null,
-            startedAt: null,
-            completedAt: null,
-            appSlug: "vercel",
-          },
-        ],
-        reviews: [],
-      });
-      const row = items.find((item) => item.id === "checks");
-      expect(row?.label, String(conclusion)).toBe("No CI has run on this commit");
-      expect(row?.state, String(conclusion)).toBe("neutral");
-    }
+describe("last merge method", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    window.localStorage.removeItem(LAST_MERGE_METHOD_KEY);
   });
 
-  it("does not claim all checks passed when nothing verified the commit", () => {
-    // ADE-135: summarizeChecks is producer-blind, so three third-party
-    // successes reported passing: 3 and this row said "All 3 checks passed" —
-    // on the surface a reader trusts most.
-    const items = buildMergeChecklist({
-      pr: makePr({ checksStatus: "not_run" }),
-      status: null,
-      checks: [
-        { name: "CodeRabbit", status: "completed", conclusion: "success", detailsUrl: null, startedAt: null, completedAt: null, appSlug: "coderabbitai" },
-        { name: "Vercel", status: "completed", conclusion: "success", detailsUrl: null, startedAt: null, completedAt: null, appSlug: "vercel" },
-      ],
-      reviews: [],
-    });
-    const checksRow = items.find((item) => item.id === "checks");
-    expect(checksRow?.label).toBe("No CI has run on this commit");
-    expect(checksRow?.state).not.toBe("pass");
+  it("returns the fallback until a method is written", () => {
+    expect(readLastMergeMethod("squash")).toBe("squash");
+    writeLastMergeMethod("rebase");
+    expect(window.localStorage.getItem(LAST_MERGE_METHOD_KEY)).toBe("rebase");
+    expect(readLastMergeMethod("squash")).toBe("rebase");
+  });
+
+  it("ignores an unknown stored value", () => {
+    window.localStorage.setItem(LAST_MERGE_METHOD_KEY, "fast-forward");
+    expect(readLastMergeMethod("merge")).toBe("merge");
+  });
+
+  it("does not throw when storage is unavailable", () => {
+    vi.spyOn(window, "localStorage", "get").mockImplementation(() => { throw new Error("blocked"); });
+    expect(() => writeLastMergeMethod("merge")).not.toThrow();
+    expect(readLastMergeMethod("squash")).toBe("squash");
   });
 });

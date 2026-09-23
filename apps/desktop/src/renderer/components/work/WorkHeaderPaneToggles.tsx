@@ -1,5 +1,9 @@
 import { SidebarSimple } from "@phosphor-icons/react";
 
+/** White header glyph shared by the tools toggle and the marks beside it. */
+export const WORK_HEADER_ICON_BUTTON_CLASS =
+  "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.85)] transition-opacity hover:opacity-80";
+
 /** Far-left session-list expander — lives next to the session-list search. */
 export function WorkHeaderSidebarToggle({
   collapsed,
@@ -35,7 +39,7 @@ export function WorkHeaderToolsToggle({
   return (
     <button
       type="button"
-      className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.85)] transition-opacity hover:opacity-80"
+      className={WORK_HEADER_ICON_BUTTON_CLASS}
       onClick={onToggle}
       title={open ? "Close Tools pane" : "Open Tools pane"}
       aria-label={open ? "Close Tools pane" : "Open Tools pane"}

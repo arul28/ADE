@@ -2,7 +2,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { WorkSurfaceHeader } from "./WorkSurfaceHeader";
+import { CenteredWorkSurfaceHeader, WorkSurfaceHeader } from "./WorkSurfaceHeader";
 import { WorkHeaderToolsToggle } from "./WorkHeaderPaneToggles";
 import { setSessionMetadataGenerating } from "../../state/sessionMetadataGeneratingStore";
 
@@ -10,6 +10,10 @@ vi.mock("../chat/ChatGitToolbar", () => ({
   ChatGitToolbar: ({ laneId }: { laneId: string }) => (
     <div data-testid="chat-git-toolbar" data-lane-id={laneId} />
   ),
+}));
+
+vi.mock("../terminals/WorkToolPickerBackdrop", () => ({
+  WorkToolPickerBackdrop: () => <div data-testid="header-backdrop" />,
 }));
 
 vi.mock("../terminals/LaneChip", () => ({
@@ -242,5 +246,23 @@ describe("WorkSurfaceHeader", () => {
     render(<WorkHeaderToolsToggle open onToggle={() => {}} />);
     const button = screen.getByRole("button", { name: "Close Tools pane" });
     expect(button.querySelector("svg")?.getAttribute("class") ?? "").toContain("-scale-x-100");
+  });
+
+  it("centered header puts the git toolbar in the right cluster, next to the tools toggle", () => {
+    render(
+      <CenteredWorkSurfaceHeader
+        title="Centered chat"
+        laneId="lane-2"
+        showGitToolbar
+        onToggleToolsPane={() => {}}
+        testId="centered-header"
+      />,
+    );
+    expect(screen.getByText("Centered chat")).toBeTruthy();
+    expect(screen.getByTestId("header-backdrop")).toBeTruthy();
+    expect(screen.queryByTestId("lane-chip")).toBeNull();
+    const toolbar = screen.getByTestId("chat-git-toolbar");
+    const toggle = screen.getByRole("button", { name: "Open Tools pane" });
+    expect(toolbar.parentElement).toBe(toggle.parentElement);
   });
 });

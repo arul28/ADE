@@ -6386,6 +6386,8 @@ describe("CTO-gated Linear sync commands", () => {
         "apple.recordList",
         "apple.recordStart",
         "apple.recordStop",
+        "prs.setDraft",
+        "prs.setAutoMerge",
       ]);
       expect(MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS).not.toEqual(
         expect.arrayContaining(

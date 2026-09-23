@@ -5796,6 +5796,12 @@ describe("ADE database usage aggregation", () => {
     expect(isMeaningfulUsageAction("chat.cancelScheduledWork")).toBe(true);
     expect(usageActionFromIpcChannel("ade.agentChat.promptStashes.create")).toBe("chat.createPromptStash");
     expect(isMeaningfulUsageAction("chat.createPromptStash")).toBe(true);
+    // The PR draft and auto-merge toggles are mutations on every transport.
+    for (const action of ["setDraft", "setAutoMerge"]) {
+      expect(usageActionFromIpcChannel(`ade.prs.${action}`)).toBe(`prs.${action}`);
+      expect(usageActionFromRpcDomain("pr", action)).toBe(`prs.${action}`);
+      expect(isMeaningfulUsageAction(`prs.${action}`)).toBe(true);
+    }
     // Cursor Cloud uses the existing coarse taxonomy on every transport. This
     // prevents provider-specific action names from becoming analytics values
     // while still counting launches and successful user mutations.

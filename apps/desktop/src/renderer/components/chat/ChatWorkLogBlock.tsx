@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { ArrowDown, ArrowSquareOut, ArrowUp, CaretDown, CaretRight, Check, Clock, GitDiff, Globe, Terminal, Warning, Wrench, XCircle } from "@phosphor-icons/react";
+import { ArrowDown, ArrowSquareOut, ArrowUp, CaretDown, CaretRight, Check, GitDiff, Globe, Terminal, Warning, Wrench, XCircle } from "@phosphor-icons/react";
 import type { OperatorNavigationSuggestion } from "../../../shared/types";
 import {
   deriveWebSearchResultDisplay,
@@ -810,13 +810,6 @@ function FilesChangedPanel({
  * row's tooltip) and open in the Files tab, both via the chat's workspace-path
  * context.
  */
-export function formatTurnWorkSummaryLabel(toolCount: number, fileCount: number): string {
-  const parts: string[] = [];
-  if (toolCount > 0) parts.push(`${toolCount} tool${toolCount === 1 ? "" : "s"}`);
-  if (fileCount > 0) parts.push(`${fileCount} file${fileCount === 1 ? "" : "s"}`);
-  return parts.join(" · ");
-}
-
 export const ChatTurnFilesChangedSummary = React.memo(function ChatTurnFilesChangedSummary({
   entries,
   onReviewInFiles,

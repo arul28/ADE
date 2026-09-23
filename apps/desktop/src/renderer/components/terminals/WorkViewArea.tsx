@@ -553,7 +553,7 @@ function WorkCliContinuationComposer({
               onClick={() => void submit()}
               aria-label="Send"
               className={cn(
-                "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-all active:scale-[0.97]",
+                "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-all",
                 sending || !draft.trim()
                   ? "bg-white/[0.06] text-muted-fg/20"
                   : "bg-white/90 text-zinc-900 hover:bg-white",

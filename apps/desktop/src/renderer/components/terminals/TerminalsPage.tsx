@@ -1850,9 +1850,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         pinnedSessionIds={work.pinnedSessionIds}
         gridSessionIds={gridSessionIds}
         onRemoveFromGrid={(session) => handleRemoveSessionFromGrid(session.id)}
-        onPrepareChatHandoff={(session) => {
-          handleSelectSession(session.id);
-        }}
         onSetChatTag={(session, tag, runtimePin) => {
           const update = runtimePin
             ? window.ade.agentChat.updateSession({ sessionId: session.id, tag }, runtimePin)

@@ -2808,6 +2808,9 @@ func buildWorkEventCards(
 ) -> [WorkEventCardModel] {
   var byId: [String: WorkEventCardModel] = [:]
   var order: [String] = []
+  // Todo cards by session + turn, so a later plan naming every item can drop
+  // them (desktop `dropTodoRowsCoveredByPlan`).
+  var todoCardIdsByTurn: [String: [String]] = [:]
   let terminalDoneTurnIds = workTerminalDoneTurnIds(from: transcript)
   let recoveredCodexTurnIds = Set(transcript.compactMap { envelope -> String? in
     guard case .codexTurnRecovery(_, let receipt, let turnId) = envelope.event,
@@ -2872,8 +2875,53 @@ func buildWorkEventCards(
       if byId[card.id] == nil { order.append(card.id) }
       byId[card.id] = card
     }
+    switch envelope.event {
+    case .todoUpdate(_, let turnId) where card.kind == "todo":
+      let key = workTodoTurnKey(sessionId: envelope.sessionId, turnId: turnId)
+      if todoCardIdsByTurn[key]?.contains(card.id) != true {
+        todoCardIdsByTurn[key, default: []].append(card.id)
+      }
+    case .plan(_, _, let turnId):
+      // The plan card is the one that stays; a todo row for the same turn that
+      // it fully names would only repeat it.
+      let key = workTodoTurnKey(sessionId: envelope.sessionId, turnId: turnId)
+      guard let plan = byId[card.id], plan.kind == "plan", let todoIds = todoCardIdsByTurn[key] else { break }
+      let covered = todoIds.filter { id in
+        guard let todo = byId[id], todo.kind == "todo" else { return false }
+        return workTodoLinesCoveredByPlanSteps(todo.bullets, plan.planSteps)
+      }
+      guard !covered.isEmpty else { break }
+      let dropped = Set(covered)
+      for id in covered { byId[id] = nil }
+      order.removeAll { dropped.contains($0) }
+      todoCardIdsByTurn[key] = todoIds.filter { !dropped.contains($0) }
+    default:
+      break
+    }
   }
   return order.compactMap { byId[$0] }
+}
+
+private func workTodoTurnKey(sessionId: String, turnId: String?) -> String {
+  "\(sessionId)|\(normalizedWorkTurnId(turnId) ?? "")"
+}
+
+/// Parser stores a todo as `"In Progress: description"`; this is the description.
+private func workTodoLineText(_ line: String) -> String {
+  let lowered = line.lowercased()
+  for prefix in ["in progress: ", "completed: ", "pending: "] where lowered.hasPrefix(prefix) {
+    return String(line.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+  return line.trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+/// True when a plan names every todo item, so the todo row would only repeat
+/// the plan card. An empty todo or an empty plan is never covered. Desktop
+/// `todoItemsCoveredByPlanSteps`.
+func workTodoLinesCoveredByPlanSteps(_ lines: [String], _ steps: [WorkPlanStep]) -> Bool {
+  let texts = Set(steps.map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
+  guard !texts.isEmpty, !lines.isEmpty else { return false }
+  return lines.allSatisfy { texts.contains(workTodoLineText($0)) }
 }
 
 func workAvailableQueueRecovery(from transcript: [WorkChatEnvelope]) -> WorkQueueRecoveryModel? {

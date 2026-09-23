@@ -1,6 +1,7 @@
 import path from "node:path";
 import { Lexer, type Token, type Tokens } from "marked";
-import type { AgentChatEvent, AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../desktop/src/shared/types/chat";
+import type { AgentChatEvent, AgentChatEventEnvelope, AgentChatPlanStep, AgentChatSessionSummary } from "../../../desktop/src/shared/types/chat";
+import { foldTodoItemsIntoPlanSteps, todoItemsCoveredByPlanSteps } from "../../../desktop/src/shared/todoPlanFold";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
 import { adeCardIsHiddenAfterDismiss, adeCardProgressTotal, type AdeCardPayload } from "../../../desktop/src/shared/adeCard";
 import {
@@ -636,58 +637,45 @@ export function latestExpandableFailureId(events: AgentChatEventEnvelope[]): str
   return null;
 }
 
-type FoldedPlanStep = { text: string; status: string };
-
-function planStatusFromTodo(status: string): FoldedPlanStep["status"] {
-  switch (status) {
-    case "completed":
-    case "in_progress":
-    case "pending":
-      return status;
-    default:
-      return "pending";
-  }
-}
-
-function foldTodoItemsIntoPlanSteps(
-  steps: readonly FoldedPlanStep[],
-  items: readonly { description?: string; status?: string }[],
-): FoldedPlanStep[] {
-  const next = steps.map((step) => ({ text: step.text, status: step.status }));
-  for (const item of items) {
-    const text = item.description?.trim() ?? "";
-    if (!text) continue;
-    const status = planStatusFromTodo(item.status ?? "pending");
-    const existing = next.find((step) => step.text.trim() === text);
-    if (existing) existing.status = status;
-    else next.push({ text, status });
-  }
-  return next;
-}
-
 /**
- * A later todo_update writes onto the plan already emitted for that turn.
- * The todo row is dropped only after that write. A todo that arrives before
- * any plan still renders on its own.
+ * The same fold the desktop transcript does (`shared/todoPlanFold`). A later
+ * todo_update writes onto the plan already emitted for that turn, and its row is
+ * dropped. A plan that arrives later drops the earlier todo rows of its turn
+ * that it fully names. Any other todo still renders on its own.
  */
 function foldTodoUpdatesIntoPlans(events: AgentChatEventEnvelope[]): {
-  stepsByPlanIndex: Map<number, FoldedPlanStep[]>;
+  stepsByPlanIndex: Map<number, AgentChatPlanStep[]>;
   foldedTodoIndexes: Set<number>;
 } {
-  const stepsByPlanIndex = new Map<number, FoldedPlanStep[]>();
+  const stepsByPlanIndex = new Map<number, AgentChatPlanStep[]>();
   const latestPlanIndexByTurn = new Map<string, number>();
+  const openTodoIndexesByTurn = new Map<string, number[]>();
   const foldedTodoIndexes = new Set<number>();
   events.forEach((envelope, index) => {
     const event = envelope.event;
     if (event.type === "plan" && event.turnId) {
+      const previousIndex = latestPlanIndexByTurn.get(event.turnId);
+      const previousSteps = previousIndex == null ? [] : (stepsByPlanIndex.get(previousIndex) ?? []);
+      const steps = event.steps.length > 0 ? event.steps : previousSteps;
       latestPlanIndexByTurn.set(event.turnId, index);
-      stepsByPlanIndex.set(index, event.steps.map((step) => ({ text: step.text, status: step.status })));
+      stepsByPlanIndex.set(index, steps.map((step) => ({ ...step })));
+      for (const todoIndex of openTodoIndexesByTurn.get(event.turnId) ?? []) {
+        const todo = events[todoIndex]?.event;
+        if (todo?.type === "todo_update" && todoItemsCoveredByPlanSteps(todo.items, steps)) {
+          foldedTodoIndexes.add(todoIndex);
+        }
+      }
+      return;
     }
     if (event.type !== "todo_update" || !event.turnId) return;
     const planIndex = latestPlanIndexByTurn.get(event.turnId);
-    if (planIndex == null) return;
-    const current = stepsByPlanIndex.get(planIndex);
-    if (!current) return;
+    const current = planIndex == null ? undefined : stepsByPlanIndex.get(planIndex);
+    if (planIndex == null || !current) {
+      const open = openTodoIndexesByTurn.get(event.turnId) ?? [];
+      open.push(index);
+      openTodoIndexesByTurn.set(event.turnId, open);
+      return;
+    }
     stepsByPlanIndex.set(planIndex, foldTodoItemsIntoPlanSteps(current, event.items));
     foldedTodoIndexes.add(index);
   });

@@ -2,8 +2,8 @@
 
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import type { PrActivityEvent, PrCommit, PrReview, PrWithConflicts } from "../../../../shared/types/prs";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import type { PrActivityEvent, PrCommit, PrReview, PrReviewThread, PrStatus, PrWithConflicts } from "../../../../shared/types/prs";
 import { parsePrsRouteState } from "../prsRouteState";
 import {
   PrDetailTimelineRails,
@@ -55,28 +55,30 @@ vi.mock("react-router-dom", () => ({
 }));
 
 vi.mock("../shared/PrTimeline", () => ({
-  PrTimeline: React.forwardRef(function PrTimeline(_props: unknown, _ref: unknown) {
-    return <div data-testid="pr-timeline" />;
+  PrTimeline: React.forwardRef(function PrTimeline(
+    props: { digest?: { items: Array<{ kind: string }> } | null; onFixInChat?: unknown },
+    _ref: unknown,
+  ) {
+    // The digest model is the contract between the rails and the thread, so
+    // surface its shape rather than rendering the virtualized list.
+    return (
+      <div
+        data-testid="pr-timeline"
+        data-digest-kinds={(props.digest?.items ?? []).map((item) => item.kind).join(",")}
+        data-fix-in-chat={props.onFixInChat ? "yes" : "no"}
+      />
+    );
   }),
 }));
-vi.mock("../shared/PrCommitTickPill", () => ({
-  PrCommitTickPill: (props: { commits: readonly { sha: string }[] }) => (
-    <div
-      data-testid="pr-commit-tick-pill"
-      data-commit-count={props.commits.length}
-      // Surfaced so a test can pin the ORDER the rails hand down, not just the count.
-      data-first-sha={props.commits[0]?.sha ?? ""}
-    />
-  ),
+vi.mock("../shared/PrMergeDialog", () => ({
+  PrMergeDialog: (props: { open: boolean; skips?: string[]; preferBypass?: boolean }) =>
+    props.open ? (
+      <div data-testid="pr-merge-dialog" data-skips={(props.skips ?? []).join("|")} data-prefer-bypass={props.preferBypass ? "yes" : "no"} />
+    ) : null,
 }));
-vi.mock("../shared/PrDetailMergeRail", () => ({
-  PrDetailMergeRail: () => <div data-testid="pr-detail-merge-rail" />,
-}));
-vi.mock("../shared/PrDetailRightMetadataRail", () => ({
-  PrDetailRightMetadataRail: () => <div data-testid="pr-detail-right-metadata-rail" />,
-}));
-vi.mock("../shared/PrCommentComposer", () => ({
-  PrCommentComposer: () => null,
+vi.mock("../state/PrsContext", () => ({
+  usePrs: () => ({ prs: [] }),
+  useOptionalPrs: () => null,
 }));
 vi.mock("../shared/PrCommandPalettes", () => ({
   PrCommandPalettes: () => null,
@@ -162,7 +164,7 @@ describe("buildTimelineEvents fold", () => {
 
     // The rail entry must derive the SAME sha, else selecting it can't resolve
     // the timeline event (the force-push "nothing highlights" bug).
-    const rail = buildCommitRailCommits([forcePush], [], []);
+    const rail = buildCommitRailCommits([forcePush], []);
     const railFp = rail.find((c) => c.forcePushed);
     expect(railFp?.sha).toBe(fp && fp.type === "commit_push" ? fp.sha : "MISMATCH");
   });
@@ -224,33 +226,46 @@ const layoutPr = {
   laneId: "lane-1",
   repoOwner: "acme",
   repoName: "ade",
+  githubPrNumber: 42,
+  githubUrl: "https://github.com/acme/ade/pull/42",
+  title: "Add the thing",
   state: "open",
   baseBranch: "main",
   headBranch: "feature",
   createdAt: "2026-01-01T00:00:00Z",
 } as unknown as PrWithConflicts;
 
-function renderRails(
-  files: Array<{ filename: string; additions: number; deletions: number }> = [],
-  pr: PrWithConflicts = layoutPr,
-  activity: PrActivityEvent[] = [],
-) {
+function statusFor(overrides: Partial<PrStatus> = {}): PrStatus {
+  return {
+    prId: "pr-1",
+    state: "open",
+    checksStatus: "passing",
+    reviewStatus: "none",
+    isMergeable: true,
+    mergeConflicts: false,
+    behindBaseBy: 0,
+    mergeStateStatus: "clean",
+    ...overrides,
+  };
+}
+
+type RailsOverrides = Partial<ComponentProps<typeof PrDetailTimelineRails>>;
+
+function renderRails(overrides: RailsOverrides = {}) {
   return render(
     <PrDetailTimelineRails
-      pr={pr}
+      pr={layoutPr}
       detail={null}
       status={null}
       checks={[]}
       reviews={[]}
       comments={[]}
-      activity={activity}
+      activity={[]}
       commits={[]}
-      files={files}
+      files={[]}
       reviewThreads={[]}
       deployments={[]}
       viewerLogin="alice"
-      filters={{} as never}
-      onFiltersChange={() => {}}
       commentDraft=""
       setCommentDraft={() => {}}
       actionBusy={false}
@@ -258,185 +273,161 @@ function renderRails(
       deepLink={{ eventId: null, threadId: null, commitSha: null }}
       actionRuns={[]}
       mergeMethod="squash"
-      showReviewerEditor={false}
-      setShowReviewerEditor={() => {}}
-      reviewerInput=""
-      setReviewerInput={() => {}}
-      showLabelEditor={false}
-      setShowLabelEditor={() => {}}
-      labelInput=""
-      setLabelInput={() => {}}
       onMerge={() => {}}
       onRequestReviewers={() => {}}
       onSetLabels={() => {}}
       onSubmitReview={() => {}}
+      {...overrides}
     />,
   );
 }
 
+const commit = (id: string, sha: string, timestamp: string): PrActivityEvent => ({
+  id,
+  type: "commit",
+  author: "dev",
+  avatarUrl: null,
+  body: null,
+  timestamp,
+  metadata: { sha, subject: `commit ${sha}` },
+});
+
+function openThread(id: string, author: string, createdAt: string): PrReviewThread {
+  return {
+    id,
+    isResolved: false,
+    isOutdated: false,
+    path: "src/usage.ts",
+    line: 307,
+    originalLine: 307,
+    startLine: null,
+    originalStartLine: null,
+    diffSide: "RIGHT",
+    url: `https://github.com/acme/ade/pull/42#discussion_${id}`,
+    createdAt,
+    updatedAt: createdAt,
+    comments: [{ id: `${id}-c`, author, authorAvatarUrl: null, authorIsBot: true, body: "Stale rates kept. More detail.", url: null, createdAt, updatedAt: createdAt }],
+  };
+}
+
 describe("PrDetailTimelineRails — Overview layout", () => {
-  it("groups the view as thread + tick pill | can-this-land", () => {
-    renderRails([{ filename: "src/cli.ts", additions: 100, deletions: 5 }]);
-
-    const thread = screen.getByTestId("pr-detail-thread-panel");
-    const right = screen.getByTestId("pr-detail-right-rail");
-
-    // Commits ride over the thread as a floating tick pill; everything that
-    // answers "can this land" — including files changed — sits in the right rail.
-    expect(thread.contains(screen.getByTestId("pr-commit-tick-pill"))).toBe(true);
-    expect(right.contains(screen.getByTestId("pr-files-changed-card"))).toBe(true);
-    expect(right.contains(screen.getByTestId("pr-detail-right-metadata-rail"))).toBe(true);
-    expect(right.contains(screen.getByTestId("pr-detail-merge-rail"))).toBe(true);
-    expect(thread.contains(screen.getByTestId("pr-detail-merge-rail"))).toBe(false);
-
-    const mergePane = screen.getByTestId("pr-detail-merge-pane");
-    expect(right.lastElementChild).toBe(mergePane);
-  });
-
-  // Regression: the pill floats, so the thread must NOT reserve the 22px left
-  // gutter the old full-height rail needed. That gutter shifted every timeline
-  // row (and its spine) right for a control that no longer occupies the column.
-  it("reclaims the thread width the old rail gutter reserved", () => {
+  it("is one thread with the tick rail and the dock laid over it, Merge open by default", () => {
     renderRails();
-    const body = screen.getByTestId("pr-detail-thread-panel").firstElementChild as HTMLElement;
-    expect(body).toBeTruthy();
-    expect(body.style.paddingLeft).toBe("");
+    const overview = screen.getByTestId("pr-detail-timeline-rails");
+    expect(overview.contains(screen.getByTestId("pr-timeline"))).toBe(true);
+    // No resizable rail and no separator any more.
+    expect(screen.queryByRole("separator")).toBeNull();
+    expect(screen.queryByTestId("pr-detail-right-rail")).toBeNull();
+    for (const id of ["merge", "comment", "reviewers", "labels", "assignees"]) {
+      expect(screen.getByTestId(`pr-dock-bubble-${id}`)).toBeTruthy();
+    }
+    expect(screen.getByTestId("pr-dock-card-merge")).toBeTruthy();
   });
 
-  // Force-pushes are branch actions, not commits. A month-old dependabot PR can
-  // carry a dozen of them, which is how a 1-commit PR ended up with 15 ticks.
-  it("keeps force-pushes out of the tick pill while the timeline still shows them", () => {
-    const activity: PrActivityEvent[] = [
-      {
-        id: "c1",
-        type: "commit",
-        author: "dev",
-        avatarUrl: null,
-        body: null,
-        timestamp: "2026-01-02T00:00:00Z",
-        metadata: { sha: "aaaaaaa", subject: "first" },
-      },
-      {
-        id: "fp1",
-        type: "force_push",
-        author: "dev",
-        avatarUrl: null,
-        body: null,
-        timestamp: "2026-01-03T00:00:00Z",
-        metadata: { beforeSha: "aaaaaaa", afterSha: "bbbbbbb" },
-      },
-      {
-        id: "c2",
-        type: "commit",
-        author: "dev",
-        avatarUrl: null,
-        body: null,
-        timestamp: "2026-01-04T00:00:00Z",
-        metadata: { sha: "ccccccc", subject: "second" },
-      },
-    ];
-    renderRails([], layoutPr, activity);
-
-    expect(screen.getByTestId("pr-commit-tick-pill").getAttribute("data-commit-count")).toBe("2");
-    expect(buildCommitRailCommits(activity, [], []).filter((c) => c.forcePushed)).toHaveLength(1);
-  });
-
-  // The pill is a glance-index in a corner, so the newest commit belongs nearest
-  // its anchor. `buildCommitRailCommits` emits oldest-first for the timeline, so
-  // the rails reverse it on the way in. This pins the direction: without it a
-  // future refactor could flip the order back and nothing would fail.
-  it("hands the tick pill its commits newest first", () => {
-    const activity: PrActivityEvent[] = [
-      {
-        id: "c1",
-        type: "commit",
-        author: "dev",
-        avatarUrl: null,
-        body: null,
-        timestamp: "2026-01-01T00:00:00Z",
-        metadata: { sha: "aaaaaaa", subject: "oldest" },
-      },
-      {
-        id: "c2",
-        type: "commit",
-        author: "dev",
-        avatarUrl: null,
-        body: null,
-        timestamp: "2026-01-05T00:00:00Z",
-        metadata: { sha: "zzzzzzz", subject: "newest" },
-      },
-    ];
-    // The builder itself stays chronological — the reversal is the rails' doing.
-    const built = buildCommitRailCommits(activity, [], []);
-    expect(built.map((c) => c.subject)).toEqual(["oldest", "newest"]);
-
-    renderRails([], layoutPr, activity);
-    const pill = screen.getByTestId("pr-commit-tick-pill");
-    expect(pill.getAttribute("data-first-sha")).toBe("zzzzzzz");
-  });
-
-  // The thread gives back a little width so the right rail — which now carries
-  // files-changed on top of reviewers/checks/merge — can breathe. A nudge, not a
-  // rebalance: the thread still floors above the rail's default.
-  // The rail's floor IS its default: it can be widened but never narrowed. A
-  // smaller floor let the separator — or the PR-list separator squeezing from
-  // the other side — shrink it until reviewers, checks, files and the merge box
-  // all truncated, i.e. until the pane hid its own content.
-  it("never lets the right rail shrink below the width that shows everything", () => {
+  it("opens one card at a time and closes it on Escape", () => {
     renderRails();
-    const right = screen.getByTestId("pr-detail-right-rail");
-    const thread = screen.getByTestId("pr-detail-thread-panel");
-
-    expect(right.getAttribute("data-default-size")).toBe("390");
-    expect(right.getAttribute("data-min-size")).toBe("390");
-    expect(right.getAttribute("data-max-size")).toBe("560");
-    expect(thread.getAttribute("data-min-size")).toBe("360");
+    fireEvent.click(screen.getByTestId("pr-dock-bubble-comment"));
+    expect(screen.getByTestId("pr-dock-card-comment")).toBeTruthy();
+    expect(screen.queryByTestId("pr-dock-card-merge")).toBeNull();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByTestId("pr-dock-card-comment")).toBeNull();
   });
 
-  // A stored width always beats a new default, so shipping a wider rail under
-  // the old key would be invisible to anyone who had ever dragged the separator.
-  // The key is versioned; v1 values are dead.
-  it("ignores a width saved under the retired key and honours the current one", () => {
-    localStorage.setItem("ade.prs.overviewRightRailWidth:proj-1", "300");
+  it("hands the thread a digest with one section per push and a tick for each", () => {
+    renderRails({
+      activity: [commit("c1", "aaaaaaa", "2026-01-02T00:00:00Z"), commit("c2", "bbbbbbb", "2026-01-04T00:00:00Z")],
+      reviewThreads: [openThread("t1", "devin-ai-integration", "2026-01-03T00:00:00Z")],
+    });
+    const kinds = screen.getByTestId("pr-timeline").getAttribute("data-digest-kinds") ?? "";
+    // The open thread lands between the two commits, so they are two pushes.
+    expect(kinds.split(",")).toEqual(["attention", "push", "bot-group", "push"]);
+    expect(screen.getAllByTestId("pr-push-tick")).toHaveLength(2);
+  });
+
+  it("offers Fix in chat on Needs attention only when the PR has a lane chat to hand to", () => {
     renderRails();
-    expect(screen.getByTestId("pr-detail-right-rail").getAttribute("data-default-size")).toBe("390");
+    expect(screen.getByTestId("pr-timeline").getAttribute("data-fix-in-chat")).toBe("no");
     cleanup();
-
-    localStorage.setItem("ade.prs.overviewRightRailWidth.v2:proj-1", "440");
-    renderRails();
-    expect(screen.getByTestId("pr-detail-right-rail").getAttribute("data-default-size")).toBe("440");
-    localStorage.clear();
+    renderRails({ onHandPrompt: () => {} });
+    expect(screen.getByTestId("pr-timeline").getAttribute("data-fix-in-chat")).toBe("yes");
   });
 
-  it("mounts one drag separator, between the thread and the right rail", () => {
-    renderRails();
-    expect(screen.getByTestId("pr-detail-timeline-rails")).toBeTruthy();
-    expect(screen.queryByTestId("pr-detail-rail-separator-pr-overview-left-separator")).toBeNull();
-    expect(screen.getByTestId("pr-detail-rail-separator-pr-overview-right-separator")).toBeTruthy();
+  it("leads a conflicting PR with Resolve in chat and keeps Merge anyway blocked", () => {
+    const onHandPrompt = vi.fn();
+    renderRails({
+      status: statusFor({ mergeStateStatus: "dirty", mergeConflicts: true, canBypass: true }),
+      onHandPrompt,
+    });
+    expect(screen.getByTestId("pr-merge-card-headline").textContent).toBe("Conflicts with main");
+    expect((screen.getByTestId("pr-merge-anyway") as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByTestId("pr-merge-blocked-reason").textContent).toContain("conflicts");
+    fireEvent.click(screen.getByTestId("pr-merge-card-primary"));
+    expect(onHandPrompt).toHaveBeenCalledWith(expect.stringContaining("Resolve the merge conflicts between feature and main"));
+  });
+
+  it("lets an admin bypass protection and tells the dialog what the merge skips", () => {
+    renderRails({
+      status: statusFor({ mergeStateStatus: "blocked", reviewDecision: "review_required", requiredApprovals: 1, approvalsCount: 0, canBypass: true }),
+    });
+    const anyway = screen.getByTestId("pr-merge-anyway");
+    expect(anyway.getAttribute("data-bypass")).toBe("true");
+    expect(anyway.textContent).toContain("Bypass & merge");
+    fireEvent.click(anyway);
+    const dialog = screen.getByTestId("pr-merge-dialog");
+    expect(dialog.getAttribute("data-prefer-bypass")).toBe("yes");
+    expect(dialog.getAttribute("data-skips")).toBe("1 required approval");
+  });
+
+  it("merges straight from the primary button when the PR is ready", () => {
+    renderRails({ status: statusFor() });
+    expect(screen.getByTestId("pr-merge-card-headline").textContent).toBe("Ready to merge");
+    expect(screen.queryByTestId("pr-merge-anyway")).toBeNull();
+    fireEvent.click(screen.getByTestId("pr-merge-card-primary"));
+    expect(screen.getByTestId("pr-merge-dialog").getAttribute("data-skips")).toBe("");
+  });
+
+  it("passes the next-step action to the host for Ready for review, and hides it with no host", async () => {
+    const onPrStateAction = vi.fn().mockResolvedValue(undefined);
+    renderRails({ status: statusFor({ mergeStateStatus: "draft" }), onPrStateAction });
+    const primary = screen.getByTestId("pr-merge-card-primary");
+    expect(primary.textContent).toBe("Ready for review");
+    fireEvent.click(primary);
+    expect(onPrStateAction).toHaveBeenCalledWith("ready_for_review");
+    await act(async () => {});
+    cleanup();
+    renderRails({ status: statusFor({ mergeStateStatus: "draft" }) });
+    expect(screen.queryByTestId("pr-merge-card-primary")).toBeNull();
+  });
+
+  it("lists agent reviewers who were never requested — the old rail said None", () => {
+    const reviews: PrReview[] = [
+      { reviewer: "coderabbitai", reviewerAvatarUrl: null, reviewerIsBot: true, state: "commented", body: "Summary", submittedAt: "2026-01-02T00:00:00Z" },
+      { reviewer: "octocat", reviewerAvatarUrl: null, state: "approved", body: null, submittedAt: "2026-01-03T00:00:00Z" },
+    ];
+    renderRails({ reviews });
+    fireEvent.click(screen.getByTestId("pr-dock-bubble-reviewers"));
+    const rows = screen.getAllByTestId("pr-reviewer-row");
+    // People first, then agents; an agent shows its product name, not its login.
+    expect(rows[0]!.textContent).toContain("octocat");
+    expect(rows[1]!.textContent).toContain("CodeRabbit");
+    expect(rows[1]!.textContent).not.toContain("coderabbitai");
+    expect(rows[1]!.getAttribute("data-bot")).toBe("true");
   });
 
   it("replaces ADE merge controls with GitHub guidance for a stacked PR", () => {
-    renderRails([], {
-      ...layoutPr,
-      githubUrl: "https://github.com/acme/ade/pull/42",
-      stack: {
-        id: "stack-18",
-        number: 18,
-        size: 3,
-        position: 2,
-        baseBranch: "main",
-      },
+    renderRails({
+      pr: {
+        ...layoutPr,
+        stack: { id: "stack-18", number: 18, size: 3, position: 2, baseBranch: "main" },
+      } as PrWithConflicts,
     });
-
-    expect(screen.queryByTestId("pr-detail-merge-rail")).toBeNull();
     expect(screen.getByText("GitHub Stack 2 of 3")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Review and merge on GitHub" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Review and merge on GitHub/ })).toBeTruthy();
+    expect(screen.queryByTestId("pr-merge-anyway")).toBeNull();
   });
 });
 
-
-/* -- Folded in from `PrDetailHeader.test.tsx` --
-   The header above the same overview; one surface, one suite. */
+/* -- The header card above the same Overview; one surface, one suite. */
 
 afterEach(() => {
   cleanup();
@@ -454,7 +445,7 @@ function makePr(overrides: Partial<PrWithConflicts> = {}): PrWithConflicts {
     githubUrl: "https://github.com/arul28/ADE/pull/1180",
     githubNodeId: null,
     title: "ADE UI clutter reduction",
-    state: "merged",
+    state: "open",
     baseBranch: "main",
     headBranch: "ade/ade-ui-clutter-reduction",
     checksStatus: "passing",
@@ -469,72 +460,81 @@ function makePr(overrides: Partial<PrWithConflicts> = {}): PrWithConflicts {
 }
 
 function renderHeader(overrides: Partial<ComponentProps<typeof PrDetailHeader>> = {}) {
+  const pr = overrides.pr ?? makePr();
   const props: ComponentProps<typeof PrDetailHeader> = {
-    pr: makePr(),
+    pr,
     provisional: false,
     activeTab: "overview",
     onSelectTab: vi.fn(),
     filesCount: 30,
-    checksCount: 37,
+    checksNote: { state: "running", passed: 3, total: 5 },
+    author: { login: "arul28", avatarUrl: null },
+    lane: { id: "lane-1", name: "Scope cuts", color: "#F97316" } as ComponentProps<typeof PrDetailHeader>["lane"],
+    linkedChats: [],
+    onOpenChat: vi.fn(),
     editingTitle: false,
     titleDraft: "",
     onTitleDraftChange: vi.fn(),
     onStartTitleEdit: vi.fn(),
     onCancelTitleEdit: vi.fn(),
     onSubmitTitle: vi.fn(),
+    onReadyForReview: vi.fn(),
+    readyForReviewBusy: false,
+    actions: { pr, onRefresh: vi.fn(), refreshing: false },
     ...overrides,
   };
   return { props, ...render(<PrDetailHeader {...props} />) };
 }
 
 describe("PrDetailHeader", () => {
-  it("carries number, title, state, branch pair and tabs on one row and nothing that was dropped", () => {
-    const { container } = renderHeader();
-
+  it("is a card: number and author, the title, base ← head with the lane, then the tabs", () => {
+    renderHeader();
     expect(screen.getByText("#1180")).toBeTruthy();
-    expect(screen.getByText("ADE UI clutter reduction")).toBeTruthy();
-    expect(screen.getByText("MERGED")).toBeTruthy();
-    // The head branch is split so its last 12 characters sit outside the
-    // ellipsis: the tail is the part that distinguishes one branch from another.
-    expect(screen.getByText("ade/ade-ui-clutt")).toBeTruthy();
-    expect(screen.getByText("er-reduction")).toBeTruthy();
+    expect(screen.getByText("arul28")).toBeTruthy();
+    expect(screen.getByText(/opened/)).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "ADE UI clutter reduction" })).toBeTruthy();
     expect(screen.getByText("main")).toBeTruthy();
-    expect(screen.getByText("Overview")).toBeTruthy();
-    expect(screen.getByText("Files")).toBeTruthy();
-    expect(screen.getByText("CI / Checks")).toBeTruthy();
-
-    // Dropped: repository name, the CI rollup badge, and the per-PR refresh.
-    expect(container.textContent).not.toContain("arul28/ADE");
-    expect(container.querySelector('[data-testid="pr-header-ci-badge"]')).toBeNull();
-    expect(screen.queryByLabelText("Refresh")).toBeNull();
-
-    // The GitHub control is icon-only.
-    const github = screen.getByLabelText("Open on GitHub");
-    expect(github.textContent).toBe("");
+    expect(screen.getByText("ade/ade-ui-clutter-reduction")).toBeTruthy();
+    expect(screen.getByTestId("pr-header-lane-chip").textContent).toContain("Scope cuts");
+    expect(screen.getByRole("tab", { name: "Overview" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Files" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Checks" })).toBeTruthy();
+    expect(screen.getByTestId("pr-actions-trigger")).toBeTruthy();
+    expect(screen.getByLabelText("Refresh pull request")).toBeTruthy();
   });
 
-  it("keeps the edit pencil out of sight until the title row is hovered or focused", () => {
-    const onStartTitleEdit = vi.fn();
-    renderHeader({ onStartTitleEdit });
+  it("counts running checks live beside the Checks tab, then settles to a result", () => {
+    renderHeader();
+    expect(screen.getByTestId("pr-header-checks-note").textContent).toBe("3/5");
+    cleanup();
+    renderHeader({ checksNote: { state: "failing", passed: 3, total: 5 } });
+    expect(screen.getByTestId("pr-header-checks-note").textContent).toBe("2 failing");
+  });
 
+  it("shows Ready for review only on a draft", () => {
+    renderHeader();
+    expect(screen.queryByTestId("pr-header-ready-for-review")).toBeNull();
+    cleanup();
+    const onReadyForReview = vi.fn();
+    renderHeader({ pr: makePr({ state: "draft" }), onReadyForReview });
+    fireEvent.click(screen.getByTestId("pr-header-ready-for-review"));
+    expect(onReadyForReview).toHaveBeenCalledTimes(1);
+  });
+
+  it("links the chats working on this PR", () => {
+    const onOpenChat = vi.fn();
+    const session = { sessionId: "chat-1", laneId: "lane-1", title: "Fix the manifest" } as ComponentProps<typeof PrDetailHeader>["linkedChats"][number];
+    renderHeader({ linkedChats: [session], onOpenChat });
+    fireEvent.click(screen.getByTestId("pr-header-chat-chip"));
+    expect(onOpenChat).toHaveBeenCalledWith(session);
+  });
+
+  it("keeps the edit pencil available for a PR with no lane", () => {
+    const onStartTitleEdit = vi.fn();
+    renderHeader({ pr: makePr({ laneId: null as unknown as string }), lane: null, onStartTitleEdit });
     const pencil = screen.getByLabelText("Edit title");
-    // Hidden by default, but still in the tab order, so keyboard focus reveals it
-    // through the identity row's :focus-within rule.
-    expect(pencil.className).toContain("ade-pr-detail-header-edit");
     expect(pencil.closest(".ade-pr-detail-header-identity")).not.toBeNull();
-    expect(pencil.getAttribute("disabled")).toBeNull();
-
     fireEvent.click(pencil);
-    expect(onStartTitleEdit).toHaveBeenCalledTimes(1);
-  });
-
-  // Renaming is a GitHub mutation, and `updateTitle` resolves a synthetic `gh:`
-  // id, so a PR with no lane can be renamed like any other. The pencil used to
-  // be hidden for it — the last remnant of "no lane means no actions".
-  it("still offers the edit pencil for a PR with no lane", () => {
-    const onStartTitleEdit = vi.fn();
-    renderHeader({ pr: makePr({ laneId: null as unknown as string }), onStartTitleEdit });
-    fireEvent.click(screen.getByLabelText("Edit title"));
     expect(onStartTitleEdit).toHaveBeenCalledTimes(1);
   });
 
@@ -542,7 +542,6 @@ describe("PrDetailHeader", () => {
     const onSubmitTitle = vi.fn();
     const onCancelTitleEdit = vi.fn();
     renderHeader({ editingTitle: true, titleDraft: "New title", onSubmitTitle, onCancelTitleEdit });
-
     const input = screen.getByLabelText("Pull request title");
     fireEvent.keyDown(input, { key: "Enter" });
     expect(onSubmitTitle).toHaveBeenCalledTimes(1);
@@ -550,19 +549,14 @@ describe("PrDetailHeader", () => {
     expect(onCancelTitleEdit).toHaveBeenCalledTimes(1);
   });
 
-  it("switches tabs and opens the PR's own GitHub URL", () => {
+  it("switches tabs and opens the PR's own GitHub URL from the number", () => {
     const openExternal = vi.fn();
-    const openInGitHub = vi.fn();
-    (window as unknown as { ade: unknown }).ade = { app: { openExternal }, prs: { openInGitHub } };
-
+    (window as unknown as { ade: unknown }).ade = { app: { openExternal }, prs: { openInGitHub: vi.fn() } };
     const onSelectTab = vi.fn();
     renderHeader({ onSelectTab });
-
-    fireEvent.click(screen.getByText("CI / Checks"));
+    fireEvent.click(screen.getByRole("tab", { name: "Checks" }));
     expect(onSelectTab).toHaveBeenCalledWith("checks");
-
-    fireEvent.click(screen.getByLabelText("Open on GitHub"));
+    fireEvent.click(screen.getByText("#1180"));
     expect(openExternal).toHaveBeenCalledWith("https://github.com/arul28/ADE/pull/1180");
-    expect(openInGitHub).not.toHaveBeenCalled();
   });
 });

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   AppControlSession,
   BuiltInBrowserEventPayload,
@@ -22,10 +22,7 @@ import {
   type WorkToolErrorsByTab,
 } from "./workToolErrors";
 import { asBuiltInBrowserStatus, isAppControlSessionAttached } from "./useNativeToolSessions";
-import {
-  getWorkTerminalShellCount,
-  subscribeWorkTerminalShells,
-} from "./workTerminalShells";
+import { attachedShellCount, useAttachedTerminalShells } from "./useAttachedTerminalShells";
 import { appleToolCardSubtitle } from "../apple/appleDeviceState";
 import {
   useAppleLaneDeviceCard,
@@ -73,13 +70,7 @@ export type WorkToolStatusMap = Partial<Record<WorkSidebarTab, WorkToolStatus>>;
 
 const IDLE: WorkToolStatus = { line: null, live: false, errorCount: 0, errored: false };
 
-/**
- * A status line, on top of `IDLE`'s defaults.
- *
- * Every builder below used to restate `errorCount: 0, errored: false` by hand,
- * so a new optional field meant thirteen edits. Spreading the idle shape states
- * the defaults once and leaves each builder saying only what is different.
- */
+/** The PR card line: how many pull requests the PR tool shows as open. */
 function prToolStatusLine(count: number | null): WorkToolStatus {
   if (count == null) return IDLE;
   if (count <= 0) return statusLine("No pull request open", false);
@@ -120,6 +111,13 @@ export function openPullRequestCount(
   return visible.filter((pr) => isOpenPullRequest(pr.state)).length;
 }
 
+/**
+ * A status line, on top of `IDLE`'s defaults.
+ *
+ * Every builder below used to restate `errorCount: 0, errored: false` by hand,
+ * so a new optional field meant thirteen edits. Spreading the idle shape states
+ * the defaults once and leaves each builder saying only what is different.
+ */
 function statusLine(line: string | null, live: boolean, extra?: Partial<WorkToolStatus>): WorkToolStatus {
   return { ...IDLE, line, live, ...extra };
 }
@@ -374,19 +372,15 @@ function looksLikeLaunchCommand(text: string): boolean {
 }
 
 /**
- * The shell count, from whichever source can actually see the shells.
- *
- * `panelCount` is what the terminal panel is rendering right now, split pane
- * included; it is authoritative whenever the panel is mounted, because it is
- * literally the list on screen. `titles` is the pane's own `terminal.list`
- * read, used only when no panel is mounted — the header still has to describe
- * a tool you are not looking at. `null` from both means nothing measured.
+ * The Terminal tool's status line from the shell count. `attachedShellCount`
+ * picks the source: the mounted panel, else the `terminal.list` titles, so the
+ * header can still describe a tool you are not looking at.
  */
 export function terminalStatusLine(
   titles: readonly string[] | null,
   panelCount: number | null = null,
 ): WorkToolStatus {
-  const count = panelCount ?? titles?.length ?? null;
+  const count = attachedShellCount(titles, panelCount);
   if (count == null) return IDLE;
   if (count === 0) return statusLine("No shells", false);
   // Shell titles are unbounded ("npm run dev -w apps/desktop"), and appending
@@ -470,7 +464,6 @@ export function useWorkToolStatuses(args: {
   const { enabled, laneId, lane, runtimePin, terminalOwnerSessionId, prSessionId = null, activeTool = null } = args;
 
   const [browserErrors, setBrowserErrors] = useState<WorkToolErrorsByTab>(EMPTY_WORK_TOOL_ERRORS);
-  const [terminalTitles, setTerminalTitles] = useState<string[] | null>(null);
   const [prCount, setPrCount] = useState<number | null>(null);
   const [settled, setSettled] = useState(false);
 
@@ -529,64 +522,15 @@ export function useWorkToolStatuses(args: {
     return () => window.clearTimeout(timer);
   }, [enabled, laneId, runtimePinKey, terminalOwnerSessionId]);
 
-  // Attached shells have no dedicated status event, so the list is re-read
-  // whenever one could have changed: a session is created/deleted, or a PTY
-  // exits. Still not a poll — every re-read is caused by something that
-  // happened. Before this the header could say "No shells" for the lifetime of
-  // the pane while a shell you had just started scrolled past underneath it.
-  // The count the terminal PANEL is showing, when one is mounted. Subscribed
-  // rather than polled: the panel publishes on every tab change, so opening a
-  // shell or splitting one moves this line in the same commit that draws it.
-  const panelShellCount = useSyncExternalStore(
-    subscribeWorkTerminalShells,
-    () => getWorkTerminalShellCount(terminalOwnerSessionId),
-    () => null,
+  // The shells attached to the owning chat or CLI session. The shared hook
+  // re-reads the list on every change that could move it; switching tools is
+  // one more trigger, because the picker shows every card at once and that is
+  // the moment the list has to be current.
+  const { panelCount: panelShellCount, titles: terminalTitles } = useAttachedTerminalShells(
+    terminalOwnerSessionId,
+    runtimePin,
+    { enabled: enabled && !offline, refreshKey: activeTool },
   );
-
-  const [terminalEpoch, setTerminalEpoch] = useState(0);
-  useEffect(() => {
-    if (!enabled || offline || !terminalOwnerSessionId) return undefined;
-    const bump = () => setTerminalEpoch((epoch) => epoch + 1);
-    const disposers: Array<(() => void) | undefined> = [
-      window.ade?.sessions?.onChanged?.(bump),
-      window.ade?.pty?.onExit?.(bump, runtimePinRef.current),
-    ];
-    return () => {
-      for (const dispose of disposers) dispose?.();
-    };
-  }, [enabled, offline, runtimePinKey, terminalOwnerSessionId]);
-
-  useEffect(() => {
-    if (!enabled || offline || !terminalOwnerSessionId) {
-      setTerminalTitles(null);
-      return undefined;
-    }
-    const terminal = window.ade?.terminal;
-    if (!terminal?.list) return undefined;
-    let cancelled = false;
-    void terminal.list({ chatSessionId: terminalOwnerSessionId, limit: 20 }, runtimePinRef.current)
-      .then((sessions) => {
-        if (cancelled) return;
-        setTerminalTitles(
-          sessions
-            .filter((session) => session.status === "running" || session.active)
-            .map((session) => session.title),
-        );
-      })
-      .catch(() => {
-        if (!cancelled) setTerminalTitles(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-    // `panelShellCount` and `activeTool` are TRIGGERS, not inputs: the panel's
-    // own count wins while a panel is mounted, but the moment it unmounts the
-    // count goes back to null and this read becomes the only answer there is —
-    // and it was last taken before the shell existed, which is how the header
-    // and the picker card kept saying "No shells" over a shell you had started.
-    // Switching tools re-reads for the same reason: the picker shows every
-    // card at once, so that is the moment the list has to be current.
-  }, [activeTool, enabled, offline, panelShellCount, runtimePinKey, terminalEpoch, terminalOwnerSessionId]);
 
   useEffect(() => {
     if (!enabled || !laneId) {

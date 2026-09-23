@@ -401,8 +401,6 @@ import type {
   GitStashPushArgs,
   GitStashRefArgs,
   GitStashSummary,
-  GitSyncStatuses,
-  GitSyncStatusesArgs,
   GitUpstreamSyncStatus,
   GitSyncArgs,
   GitHubAppDeviceAuthPollResult,
@@ -527,6 +525,8 @@ import type {
   SubmitPrReviewArgs,
   ClosePrArgs,
   ReopenPrArgs,
+  SetPrAutoMergeArgs,
+  SetPrDraftArgs,
   RerunPrChecksArgs,
   AiReviewSummaryArgs,
   AiReviewSummary,
@@ -538,8 +538,6 @@ import type {
   LaneLinearIssue,
   LaneSummary,
   ImportBranchLaneArgs,
-  MergeSimulationArgs,
-  MergeSimulationResult,
   ListLanesArgs,
   ListOperationsArgs,
   ListSessionsArgs,
@@ -3272,10 +3270,6 @@ declare global {
           args: { laneId: string },
           pin?: OpenProjectBinding | null,
         ) => Promise<GitUpstreamSyncStatus>;
-        getSyncStatuses: (
-          args: GitSyncStatusesArgs,
-          pin?: OpenProjectBinding | null,
-        ) => Promise<GitSyncStatuses>;
         getOriginRemote: (
           args: { laneId: string },
           pin?: OpenProjectBinding | null,
@@ -3336,13 +3330,9 @@ declare global {
         ) => Promise<ConflictStatus>;
         listOverlaps: (args: ListOverlapsArgs) => Promise<ConflictOverlap[]>;
         getRiskMatrix: () => Promise<RiskMatrixEntry[]>;
-        simulateMerge: (
-          args: MergeSimulationArgs,
-        ) => Promise<MergeSimulationResult>;
         runPrediction: (
           args?: RunConflictPredictionArgs,
         ) => Promise<BatchAssessmentResult>;
-        getBatchAssessment: () => Promise<BatchAssessmentResult>;
         listProposals: (laneId: string) => Promise<ConflictProposal[]>;
         prepareProposal: (
           args: PrepareConflictProposalArgs,
@@ -3687,6 +3677,8 @@ declare global {
         ) => Promise<SubmitPrReviewResult>;
         close: (args: ClosePrArgs) => Promise<void>;
         reopen: (args: ReopenPrArgs) => Promise<void>;
+        setDraft: (args: SetPrDraftArgs) => Promise<void>;
+        setAutoMerge: (args: SetPrAutoMergeArgs) => Promise<void>;
         rerunChecks: (args: RerunPrChecksArgs) => Promise<void>;
         aiReviewSummary: (
           args: AiReviewSummaryArgs,

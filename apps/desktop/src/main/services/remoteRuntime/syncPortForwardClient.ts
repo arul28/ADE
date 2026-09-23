@@ -41,6 +41,8 @@ type ActiveSocket = {
   inboundPaused: boolean;
   inboundTimer: ReturnType<typeof setInterval> | null;
   inboundStallTimer: ReturnType<typeof setTimeout> | null;
+  /** One `drain` listener at a time. The poll must not stack a new one per blocked write. */
+  drainArmed: boolean;
 };
 
 type ForwardEntry = PairedRuntimePortForward & {
@@ -217,6 +219,7 @@ export class SyncPortForwardClient {
         inboundPaused: false,
         inboundTimer: null,
         inboundStallTimer: null,
+        drainArmed: false,
       };
       sockets.set(forwardId, active);
       this.sockets.set(forwardId, active);
@@ -325,14 +328,23 @@ export class SyncPortForwardClient {
       active.inboundTimer.unref?.();
     }
     this.armInboundStall(active);
-    active.socket.once("drain", () => this.flushInbound(active, true));
+    this.armInboundDrain(active);
+  }
+
+  private armInboundDrain(active: ActiveSocket): void {
+    if (active.drainArmed) return;
+    active.drainArmed = true;
+    active.socket.once("drain", () => {
+      active.drainArmed = false;
+      this.flushInbound(active, true);
+    });
   }
 
   private armInboundStall(active: ActiveSocket): void {
     if (active.inboundStallTimer) clearTimeout(active.inboundStallTimer);
     active.inboundStallTimer = setTimeout(() => {
       if (!this.sockets.has(active.forwardId) || !active.inboundPaused) return;
-      this.closeActiveSocket(active, true, "Forwarded data exceeded the local pending buffer limit.");
+      this.closeActiveSocket(active, true, "Local forward socket did not drain in time.");
     }, this.inboundStallMs);
     active.inboundStallTimer.unref?.();
   }
@@ -349,7 +361,7 @@ export class SyncPortForwardClient {
       active.inboundQueueBytes -= chunk.byteLength;
       if (!accepted || active.socket.writableLength > this.inboundPauseBytes) {
         this.armInboundStall(active);
-        active.socket.once("drain", () => this.flushInbound(active, true));
+        this.armInboundDrain(active);
         return;
       }
     }
@@ -366,19 +378,19 @@ export class SyncPortForwardClient {
   private resumeInbound(active: ActiveSocket): void {
     if (!active.inboundPaused || !this.sockets.has(active.forwardId)) return;
     active.inboundPaused = false;
-    if (active.inboundTimer) {
-      clearInterval(active.inboundTimer);
-      active.inboundTimer = null;
-    }
-    if (active.inboundStallTimer) {
-      clearTimeout(active.inboundStallTimer);
-      active.inboundStallTimer = null;
-    }
+    this.clearInboundTimers(active);
     try {
       this.connection.send("fwd_resume", { forwardId: active.forwardId });
     } catch {
       this.closeActiveSocket(active, false);
     }
+  }
+
+  private clearInboundTimers(active: ActiveSocket): void {
+    if (active.inboundTimer) clearInterval(active.inboundTimer);
+    active.inboundTimer = null;
+    if (active.inboundStallTimer) clearTimeout(active.inboundStallTimer);
+    active.inboundStallTimer = null;
   }
 
   private sendLocalData(active: ActiveSocket, data: Buffer): void {
@@ -456,10 +468,8 @@ export class SyncPortForwardClient {
     active.outboundTimer = null;
     active.outboundPending = [];
     active.outboundPendingBytes = 0;
-    if (active.inboundTimer) clearInterval(active.inboundTimer);
-    active.inboundTimer = null;
-    if (active.inboundStallTimer) clearTimeout(active.inboundStallTimer);
-    active.inboundStallTimer = null;
+    this.clearInboundTimers(active);
+    active.drainArmed = false;
     active.inboundQueue = [];
     active.inboundQueueBytes = 0;
     active.inboundPaused = false;

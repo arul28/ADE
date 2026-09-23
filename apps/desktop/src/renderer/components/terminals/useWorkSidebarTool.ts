@@ -262,6 +262,9 @@ export const WORK_TOOL_PUBLISH_DEBOUNCE_MS = 250;
  *
  * Failures are swallowed on purpose. This is a mirror for other devices; a
  * runtime that cannot take the publish must not disturb the pane it describes.
+ * One retry comes first: an older runtime rejects a tool it does not know
+ * (for example "pr"), and that drops the strip too. The retry sends no active
+ * tool, so the other devices still see which tabs are open.
  */
 function usePublishActiveWorkTool(
   laneId: string | null,
@@ -304,8 +307,20 @@ function usePublishActiveWorkTool(
     const timer = window.setTimeout(() => {
       const current = latest.current;
       if (!current.laneId) return;
-      void publish(current.laneId, current.tool, [...current.openTools], current.pin).catch(() => {});
+      const openToolsSnapshot = [...current.openTools];
+      void publish(current.laneId, current.tool, openToolsSnapshot, current.pin).catch((error: unknown) => {
+        // An older runtime rejects a tool id it does not know. Only that case
+        // retries without the active tool; any other failure keeps the last
+        // published state rather than telling other devices "no tool".
+        if (current.tool === null || !current.laneId || !isUnknownToolError(error)) return;
+        return publish(current.laneId, null, openToolsSnapshot, current.pin);
+      }).catch(() => {});
     }, WORK_TOOL_PUBLISH_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
   }, [laneId, tool, stripKey, republishToken, pinKey]);
+}
+
+function isUnknownToolError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /unknown tool/i.test(message);
 }

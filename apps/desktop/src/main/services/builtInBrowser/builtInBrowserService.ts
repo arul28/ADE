@@ -6195,6 +6195,29 @@ function withTimeout<T>(
   });
 }
 
+/**
+ * Page-side helpers shared by the inspect overlay and the node metadata probe.
+ * The preview sets a CSS zoom on <body>. Under that zoom, elementFromPoint can
+ * answer in layout pixels while the pointer is in viewport pixels. So each hit
+ * test also probes the point divided and multiplied by the zoom.
+ */
+const ZOOM_HIT_PROBES_SNIPPET = String.raw`
+  const bodyZoom = () => {
+    const raw = document.body ? window.getComputedStyle(document.body).zoom : "1";
+    const parsed = parseFloat(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+  };
+  const zoomHitProbes = (point) => {
+    const zoom = bodyZoom();
+    const probes = [{ x: point.x, y: point.y }];
+    if (zoom !== 1) {
+      probes.push({ x: point.x / zoom, y: point.y / zoom });
+      probes.push({ x: point.x * zoom, y: point.y * zoom });
+    }
+    return probes;
+  };
+`;
+
 function inspectOverlayCleanupScript(): string {
   return `
 (() => {
@@ -6379,24 +6402,13 @@ function inspectOverlayInstallScript(bindingName: string): string {
     y: Math.round(event.clientY)
   });
 
-  const bodyZoom = () => {
-    const raw = document.body ? window.getComputedStyle(document.body).zoom : "1";
-    const parsed = parseFloat(raw);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
-  };
-
+${ZOOM_HIT_PROBES_SNIPPET}
   // elementFromPoint under CSS zoom can answer in layout pixels while the
   // pointer and getBoundingClientRect are viewport pixels. Keep the candidate
   // whose box actually contains the pointer.
   const elementAtViewportPoint = (point) => {
-    const zoom = bodyZoom();
-    const probes = [{ x: point.x, y: point.y }];
-    if (zoom !== 1) {
-      probes.push({ x: point.x / zoom, y: point.y / zoom });
-      probes.push({ x: point.x * zoom, y: point.y * zoom });
-    }
     let fallback = null;
-    for (const probe of probes) {
+    for (const probe of zoomHitProbes(point)) {
       const hit = document.elementFromPoint(probe.x, probe.y);
       if (!hit || hit === overlay) continue;
       if (!fallback) fallback = hit;
@@ -6491,7 +6503,7 @@ function(pointArg) {
     ? { x: finiteNumber(pointArg.x), y: finiteNumber(pointArg.y) }
     : null;
   const hasInspectPoint = inspectPoint && inspectPoint.x !== null && inspectPoint.y !== null;
-  const rectContainsPoint = (rect, point) => (
+${ZOOM_HIT_PROBES_SNIPPET}  const rectContainsPoint = (rect, point) => (
     rect
     && rect.width > 0
     && rect.height > 0
@@ -6580,17 +6592,9 @@ function(pointArg) {
       }
     };
     visitRoot(fallback);
-    const zoomRaw = document.body ? window.getComputedStyle(document.body).zoom : "1";
-    const zoom = parseFloat(zoomRaw);
-    const zoomFactor = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
-    const hitProbes = [{ x: point.x, y: point.y }];
-    if (zoomFactor !== 1) {
-      hitProbes.push({ x: point.x / zoomFactor, y: point.y / zoomFactor });
-      hitProbes.push({ x: point.x * zoomFactor, y: point.y * zoomFactor });
-    }
     const hits = [];
     const seenHits = new Set();
-    for (const probe of hitProbes) {
+    for (const probe of zoomHitProbes(point)) {
       const probeHits = typeof document.elementsFromPoint === "function"
         ? document.elementsFromPoint(probe.x, probe.y)
         : [];

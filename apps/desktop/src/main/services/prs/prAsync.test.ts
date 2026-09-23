@@ -1842,6 +1842,31 @@ describe("buildPrSummaryPrompt", () => {
     expect(prompt).toContain("Unresolved review threads: 3");
     expect(prompt).toContain("@greptile-bot");
   });
+
+  it("classifies bots by the GitHub account flag, not by a substring of the login", () => {
+    const comment = (id: string, author: string, authorIsBot?: boolean) => ({
+      id, author, authorIsBot, authorAvatarUrl: null, body: `from ${author}`, source: "issue" as const,
+      url: null, path: null, line: null, createdAt: null, updatedAt: null,
+    });
+    const prompt = buildPrSummaryPrompt({
+      title: "t",
+      body: null,
+      changedFiles: [],
+      issueComments: [comment("c1", "abbott"), comment("c2", "cursor", true), comment("c3", "cursor")],
+      reviews: [
+        { reviewer: "devin-ai-integration", reviewerIsBot: true, reviewerAvatarUrl: null, state: "commented", body: "agent review", submittedAt: null },
+        { reviewer: "robotics-fan", reviewerAvatarUrl: null, state: "commented", body: "human review", submittedAt: null },
+      ],
+      unresolvedThreadCount: 0,
+    });
+    // A person whose login contains "bot" stays out of the bot summary.
+    expect(prompt).not.toContain("@abbott");
+    expect(prompt).not.toContain("@robotics-fan");
+    // A GraphQL bot login has no `[bot]` suffix; the account flag names it.
+    expect(prompt).toContain("@cursor: from cursor");
+    expect(prompt.match(/@cursor:/g)).toHaveLength(1);
+    expect(prompt).toContain("@devin-ai-integration [commented]: agent review");
+  });
 });
 
 describe("parsePrSummaryJson", () => {

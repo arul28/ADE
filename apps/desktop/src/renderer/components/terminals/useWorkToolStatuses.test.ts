@@ -58,7 +58,7 @@ describe("open pull request count", () => {
     laneType: "feature",
     branchRef: "feature/pr",
     baseRef: "main",
-  } as LaneSummary;
+  } as unknown as LaneSummary;
 
   function pr(partial: Record<string, unknown>) {
     return {

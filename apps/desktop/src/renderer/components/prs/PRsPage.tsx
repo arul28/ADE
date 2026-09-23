@@ -370,7 +370,7 @@ function PRsPageInner() {
         <button
           type="button"
           onClick={() => void handleRefresh()}
-          className="mt-4 flex items-center gap-2 active:scale-[0.97]"
+          className="mt-4 flex items-center gap-2"
           style={{
             height: 30,
             padding: "0 14px",
@@ -541,7 +541,7 @@ function PRsPageInner() {
             type="button"
             data-tour="prs.createBtn"
             onClick={() => openCreatePr()}
-            className="flex items-center gap-2 active:scale-[0.97]"
+            className="flex items-center gap-2"
             style={{
               height: 30,
               padding: "0 14px",

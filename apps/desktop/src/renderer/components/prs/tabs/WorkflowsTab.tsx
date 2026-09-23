@@ -165,7 +165,7 @@ function RebaseHistoryPanel({
                   {actor ? <> · actor <span style={{ fontFamily: MONO_FONT, fontSize: 11 }}>{actor}</span></> : null}
                 </div>
               </div>
-              <span style={inlineBadge(badgeColor, { background: `${badgeColor}18`, fontWeight: 600, borderRadius: 8 })}>{operation.status}</span>
+              <span style={inlineBadge(badgeColor, { background: `color-mix(in srgb, ${badgeColor} 9%, transparent)`, fontWeight: 600, borderRadius: 8 })}>{operation.status}</span>
             </div>
             <div style={{ marginTop: 10, fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textSecondary }}>
               Started <span style={{ fontFamily: MONO_FONT, fontSize: 11 }}>{formatTimestampShort(operation.startedAt)}</span>
@@ -328,10 +328,10 @@ function IntegrationWorkflowsTab({
                   <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.textPrimary, fontFamily: SANS_FONT, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {workflow.title || workflow.integrationLaneName || `Integration ${workflow.proposalId.slice(0, 8)}`}
                   </div>
-                  <span style={inlineBadge(workflow.status === "proposed" ? COLORS.info : theme.color, { background: `${workflow.status === "proposed" ? COLORS.info : theme.color}18`, fontWeight: 600, flexShrink: 0 })}>{workflow.status}</span>
+                  <span style={inlineBadge(workflow.status === "proposed" ? COLORS.info : theme.color, { background: `color-mix(in srgb, ${workflow.status === "proposed" ? COLORS.info : theme.color} 9%, transparent)`, fontWeight: 600, flexShrink: 0 })}>{workflow.status}</span>
                 </div>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                  <span style={inlineBadge(oc, { background: `${oc}18`, fontWeight: 600 })}>
+                  <span style={inlineBadge(oc, { background: `color-mix(in srgb, ${oc} 9%, transparent)`, fontWeight: 600 })}>
                     {workflow.overallOutcome}
                   </span>
                   {cleanupBadge ? <span style={cleanupBadge}>{workflow.cleanupState}</span> : null}
@@ -390,7 +390,7 @@ function IntegrationWorkflowsTab({
                         borderRadius: "50%",
                         background: isComplete ? dotColor : "transparent",
                         border: isComplete ? "none" : `2px solid ${COLORS.textDim}`,
-                        boxShadow: isCurrent ? `0 0 0 4px ${theme.color}30` : "none",
+                        boxShadow: isCurrent ? `0 0 0 4px color-mix(in srgb, ${theme.color} 19%, transparent)` : "none",
                         transition: "all 200ms",
                       }} />
                       <span style={{ fontSize: 10, fontFamily: SANS_FONT, fontWeight: isCurrent ? 700 : 500, color: isComplete ? theme.color : COLORS.textMuted }}>
@@ -429,7 +429,7 @@ function IntegrationWorkflowsTab({
                     {selectedWorkflow.integrationLaneId ? <>lane <span style={{ fontFamily: MONO_FONT, fontSize: 11 }}>{selectedWorkflow.integrationLaneId}</span></> : "No integration lane has been created yet."}
                   </div>
                 </div>
-                <span style={inlineBadge(outcomeColor(selectedWorkflow.overallOutcome), { background: `${outcomeColor(selectedWorkflow.overallOutcome)}18`, fontWeight: 600 })}>
+                <span style={inlineBadge(outcomeColor(selectedWorkflow.overallOutcome), { background: `color-mix(in srgb, ${outcomeColor(selectedWorkflow.overallOutcome)} 9%, transparent)`, fontWeight: 600 })}>
                   {selectedWorkflow.overallOutcome}
                 </span>
               </div>
@@ -451,7 +451,7 @@ function IntegrationWorkflowsTab({
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end", flexShrink: 0 }}>
                     {(() => {
                       const stateCol = linkedPr.state === "merged" ? COLORS.success : linkedPr.state === "closed" ? COLORS.textMuted : theme.color;
-                      return <span style={inlineBadge(stateCol, { background: `${stateCol}18`, fontWeight: 600 })}>{linkedPr.state}</span>;
+                      return <span style={inlineBadge(stateCol, { background: `color-mix(in srgb, ${stateCol} 9%, transparent)`, fontWeight: 600 })}>{linkedPr.state}</span>;
                     })()}
                     <button type="button" onClick={() => void window.ade.app.openExternal(linkedPr.githubUrl)} style={outlineButton({ height: 30, borderColor: theme.border, color: theme.color, background: theme.bgSubtle })}>
                       <GithubLogo size={14} /> Open on GitHub
@@ -505,7 +505,7 @@ function IntegrationWorkflowsTab({
                 const cleanupCol = selectedWorkflow.cleanupState === "completed" ? COLORS.success : COLORS.info;
                 return (
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <span style={inlineBadge(cleanupCol, { background: `${cleanupCol}18`, fontWeight: 600 })}>
+                  <span style={inlineBadge(cleanupCol, { background: `color-mix(in srgb, ${cleanupCol} 9%, transparent)`, fontWeight: 600 })}>
                     {selectedWorkflow.cleanupState}
                   </span>
                   <div style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textSecondary }}>

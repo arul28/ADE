@@ -34,6 +34,7 @@ import {
   type HostSleepNoticeShape,
 } from "../../../shared/hostSleepNotice";
 import { isLegacyProviderRetryNotice } from "../../../shared/providerRetryPresentation";
+import { foldTodoItemsIntoPlanSteps, todoItemsCoveredByPlanSteps } from "../../../shared/todoPlanFold";
 
 export type ChatWorkLogStatus = "running" | "completed" | "failed" | "interrupted";
 export type ChatWorkLogEntryKind = "tool" | "command" | "file_change" | "web_search" | "hook";
@@ -602,23 +603,6 @@ function changedTodoItems(
   });
 }
 
-function planStatusFromTodo(
-  status: TodoUpdateTranscriptEvent["items"][number]["status"],
-): PlanTranscriptEvent["steps"][number]["status"] {
-  switch (status) {
-    case "completed":
-      return "completed";
-    case "in_progress":
-      return "in_progress";
-    case "pending":
-      return "pending";
-    default: {
-      const unreachable: never = status;
-      return unreachable;
-    }
-  }
-}
-
 /** A later todo write updates the plan already on screen instead of adding a second card. */
 function foldTodoUpdateIntoExistingPlan(
   rows: ChatTranscriptRenderEnvelope[],
@@ -632,15 +616,7 @@ function foldTodoUpdateIntoExistingPlan(
   const actualIndex = rows.length - 1 - matchIndex;
   const current = rows[actualIndex];
   if (!current || current.event.type !== "plan") return false;
-  const steps = current.event.steps.map((step) => ({ ...step }));
-  for (const item of items) {
-    const text = item.description.trim();
-    if (!text) continue;
-    const existing = steps.find((step) => step.text.trim() === text);
-    const status = planStatusFromTodo(item.status);
-    if (existing) existing.status = status;
-    else steps.push({ text, status });
-  }
+  const steps = foldTodoItemsIntoPlanSteps(current.event.steps, items);
   rows[actualIndex] = {
     ...current,
     event: { ...current.event, steps },
@@ -658,14 +634,11 @@ function dropTodoRowsCoveredByPlan(
   steps: readonly { text: string }[],
   context?: CollapseTranscriptContext,
 ): void {
-  const texts = new Set(steps.map((step) => step.text.trim()).filter((text) => text.length > 0));
-  if (!texts.size) return;
   for (let index = rows.length - 1; index >= 0; index -= 1) {
     const event = rows[index]?.event;
     if (!event || event.type !== "todo_update") continue;
     if ((event.turnId ?? null) !== turnId) continue;
-    const covered = event.items.length > 0 && event.items.every((item) => texts.has(item.description.trim()));
-    if (!covered) continue;
+    if (!todoItemsCoveredByPlanSteps(event.items, steps)) continue;
     rows.splice(index, 1);
     if (context) repairIndexedTranscriptRowsAfterSplice(context, index);
   }

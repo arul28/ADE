@@ -194,6 +194,10 @@ against a newer host. `chat.continueUsageLimitOnAlternate` is optional for the
 same reason: the phone shows **Continue on** that account only when the host
 advertises it and the resume carries `alternateAccount`.
 
+`prs.setDraft` and `prs.setAutoMerge` are optional for the same reason. The
+phone shows the draft and auto-merge controls in the PR actions sheet only
+when the host advertises each action, so an older host stays `full`.
+
 ## Registry
 
 Commands are registered by calling `register(action, policy, handler,
@@ -550,7 +554,7 @@ without an active project.
   `stashClear`
 - `fetch`, `pull`, `sync`, `push`, `getSyncStatus`, `getSyncStatuses`
   — `getSyncStatuses` returns the existing sync-status shape keyed by
-  requested lane id for the Graph's batched refresh path
+  requested lane id, so a controller reads many lanes in one call
 - `undoLastHeadChange`, `redoLastHeadChange` — paired recovery
   actions that re-read HEAD before acting and refuse when the lane
   has moved since the operation they target
@@ -608,7 +612,7 @@ a boolean.
 
 **PRs** (`prs.*`)
 - `list`, `listOpenForRepo`, `refresh`, `getDetail`, `getDetailBundle`, `getStatus`
-  — `getDetailBundle` groups the Graph's status, checks, reviews, and
+  — `getDetailBundle` groups a PR's status, checks, reviews, and
   comments reads while preserving successful sidecars on partial failure
 - `getChecks`, `getReviews`, `getComments`, `getFiles`
 - `postReviewComment`, `getAiSummary`, `regenerateAiSummary`, `delete`,
@@ -619,6 +623,11 @@ a boolean.
   `listWithConflicts`, `listSnapshots`
 - `createFromLane`, `land`,
   `close`, `reopen`, `requestReviewers`, `rerunChecks`, `addComment`
+- `setDraft` (`{ prId, draft: boolean }`) and `setAutoMerge`
+  (`{ prId, enabled: boolean, method?: "merge" | "squash" | "rebase" }`) —
+  convert a PR to draft or mark it ready, and arm or disarm GitHub
+  auto-merge. Both are `viewerAllowed` and queueable. They are
+  **optional** mobile capabilities (see the compatibility note above)
 - `simulateIntegration`, `commitIntegration`,
   `listIntegrationWorkflows`, `updateIntegrationProposal`,
   `deleteIntegrationProposal`, `startIntegrationResolution`,

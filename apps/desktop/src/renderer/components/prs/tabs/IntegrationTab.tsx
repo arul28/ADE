@@ -41,7 +41,7 @@ function OutcomeDot({ outcome }: { outcome: "clean" | "conflict" | "blocked" | "
   return (
     <span
       className="inline-flex items-center justify-center"
-      style={{ width: 20, height: 20, background: `${config.color}18` }}
+      style={{ width: 20, height: 20, background: `color-mix(in srgb, ${config.color} 9%, transparent)` }}
     >
       <Icon size={12} weight="fill" style={{ color: config.color }} />
     </span>
@@ -1556,7 +1556,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                       style={{
                         fontSize: 9,
                         padding: "1px 6px",
-                        background: `${outcomeColor}18`,
+                        background: `color-mix(in srgb, ${outcomeColor} 9%, transparent)`,
                         color: outcomeColor,
                       }}
                     >
@@ -1792,8 +1792,8 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                     <div
                       key={step.laneId}
                       style={{
-                        background: `${outcomeColor}08`,
-                        border: `1px solid ${outcomeColor}15`,
+                        background: `color-mix(in srgb, ${outcomeColor} 3%, transparent)`,
+                        border: `1px solid color-mix(in srgb, ${outcomeColor} 8%, transparent)`,
                         padding: "10px 12px",
                       }}
                     >
@@ -2268,7 +2268,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                   key={`source-lane-${lane.laneId}-${lane.position}`}
                   style={{
                     background: "#0C0A10",
-                    border: `1px solid ${borderColor}40`,
+                    border: `1px solid color-mix(in srgb, ${borderColor} 25%, transparent)`,
                     borderTop: `2px solid ${borderColor}`,
                     padding: 12,
                     minWidth: 0,

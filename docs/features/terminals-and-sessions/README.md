@@ -841,7 +841,10 @@ Renderer surfaces:
   plus one in `WORK_TOOL_DEFINITIONS`.
 - `apps/desktop/src/renderer/components/terminals/workToolPickerBackdropShader.ts`,
   `workToolPickerBackdropRenderer.ts` — the backdrop's two halves, split out so
-  `WorkToolPickerBackdrop.tsx` is only the React shell. The shader module is
+  `WorkToolPickerBackdrop.tsx` is only the React shell. The shell takes a
+  `variant`: `pane` (the new-chat surface and the tools picker) or `header`
+  (the chat header bar: a wider slice of the same mesh, with more drift and a
+  stronger pointer bloom, from `HEADER_SLICE` and `headerBackdropScale`). The shader module is
   data: the two GLSL programs, the light and dark palettes (`backdropThemeFor`
   — no colour is named in the fragment shader; dark walks `--color-bg` through
   `--color-accent-deep`, indigo `#6366F1`, `--color-accent`, and
@@ -882,6 +885,18 @@ Renderer surfaces:
   just-opened shell was still absent from the daemon's list, a finished split
   pane was filtered out of it). When no panel is mounted the count is absent
   and the pane falls back to its own read.
+- `apps/desktop/src/renderer/components/terminals/useAttachedTerminalShells.ts`
+  — the shells attached to one chat or CLI session: `panelCount` from
+  `workTerminalShells.ts` (null when no panel is mounted) and `titles` from
+  the terminal list (null before the first read, while disabled, or after a
+  failed read). Attached shells have no status event, so the list is read
+  again only when a shell can have changed: a session is created or deleted, a
+  PTY exits, the panel count changes, or the caller's `refreshKey` changes. It
+  is not a poll. `attachedShellCount` prefers the panel count.
+  `hasAttachedTerminalShell` gates the chat header's **Open terminal** icon,
+  which opens the Terminal Work tool. `useWorkToolStatuses` uses the same hook
+  for the Terminal tool's status line, and passes `enabled: false` while the
+  machine is offline.
 - `apps/desktop/src/renderer/components/terminals/useNativeToolSessions.ts`,
   `NativeToolFeedsContext.tsx` — the one browser/App Control/simulator
   subscription set, mounted once by `TerminalsPage` and shared with both the
@@ -919,14 +934,14 @@ Renderer surfaces:
   own `renderCardCore`, so click, context menu, hover card, PR pill, provider
   glyph, and lineage chip are literally the same component in both views.
 - `apps/desktop/src/renderer/components/terminals/AutoHandoffModal.tsx` —
-  the front door to the automation platform from the chat context menu and the
-  Chat actions → Handoff tab: it arms rules that hand a chat to another model
+  the front door to the automation platform from the chat context menu's
+  **Hand off…** submenu: it arms rules that hand a chat to another model
   when it dies. Pure layer first
   (`AUTO_HANDOFF_CONDITIONS`, `AUTO_HANDOFF_LANE_TARGETS`,
   `autoHandoffRuleId`, `buildAutoHandoffDrafts`, `formFromRules`,
   `selectAutoHandoffRulesForSession`, `staleAutoHandoffRuleIds`,
   `autoHandoffFormIsValid`), then the dialog. `loadAutoHandoffRulesForSession`
-  is the one canonical async read both entry points use to seed the editor with
+  is the one canonical async read the menu uses to seed the editor with
   a chat's existing rules (`null` when the automations surface is unreadable or
   the read fails — deliberately distinct from `[]`, "authoritatively no rules",
   so a failed read can never delete rules it never saw), and
@@ -1188,8 +1203,8 @@ Renderer surfaces:
   `Naming lane…` placeholder while background identity generation is active.
   The title still warm-highlights when background AI naming lands, and
   `disabledReason` blocks selection, dragging, and the context menu during lane
-  deletion. Selection/hover use the row background; non-prominent lifecycle
-  states recede instead of spending lane-tinted card surfaces.
+  deletion. Selection/hover use the row background, and rows do not spend
+  lane-tinted card surfaces. Rows do not fade by state.
 - `apps/desktop/src/renderer/state/laneNamingStore.ts` — ephemeral,
   renderer-only zustand store tracking which lanes have an AI
   auto-naming pass in flight. `setLaneNaming(laneId, on)` is the
@@ -1253,10 +1268,24 @@ Renderer surfaces:
   refreshes with bounded retry; failed/cancelled deletes and cleanup warnings
   are surfaced through shared toasts.
 - `apps/desktop/src/renderer/components/work/WorkSurfaceHeader.tsx` —
-  shared single-row Work surface header chrome used by both embedded
-  chats and tracked agent CLI terminals. It owns the title, lane chip,
-  Claude cache badge, lane git toolbar slot, and trailing-action
-  placement so chat and CLI surfaces share one visual shell.
+  the two single-row Work surface headers. Both use one set of shared parts
+  (`useWorkSurfaceHeaderParts`: grid-tile title drag props, the title shimmer
+  state, the lane git toolbar, and the Tools toggle).
+  - `WorkSurfaceHeader` is the CLI session header: title and lane chip on
+    the left, then the git toolbar, trailing actions, the optional
+    `actionsToggle`, and the Tools toggle on the right.
+  - `CenteredWorkSurfaceHeader` is the ADE chat header. It has no lane chip.
+    A header slice of the new-chat mesh (`WorkToolPickerBackdrop`
+    `variant="header"`) paints behind it. The thread title is centered over
+    that mesh. The snooze chip, Claude cache badge, trailing actions, git
+    toolbar, `actionsToggle` (the chat progress icon), and Tools toggle are
+    in the right cluster.
+  - `prBadgeOnly` hides the create-PR button. The PR badge still shows when
+    the lane has a pull request. Chat and CLI surfaces both pass it, so a
+    pull request opens only from the lane's PR Work tool or the PRs tab.
+  - `WorkHeaderPaneToggles.tsx` exports `WORK_HEADER_ICON_BUTTON_CLASS`, the
+    white bold header glyph that the Tools toggle and the icons beside it
+    (browser presence, open terminal, chat progress) share.
 - `apps/desktop/src/renderer/components/work/ClaudeLoginPromptButton.tsx` —
   dismissible Claude auth recovery CTA. Chat headers render it after a
   Claude SDK auth error; CLI headers render it when a Claude terminal

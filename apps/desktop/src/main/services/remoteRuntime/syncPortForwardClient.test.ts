@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import type net from "node:net";
-import { describe, expect, it } from "vitest";
-import type { ParsedSyncEnvelope } from "../sync/syncProtocol";
+import { describe, expect, it, vi } from "vitest";
+import { BACKPRESSURE_POLL_MS, type ParsedSyncEnvelope } from "../sync/syncProtocol";
 import { SyncPortForwardClient } from "./syncPortForwardClient";
 import type { AuthenticatedSyncConnection } from "./syncRuntimeTransport";
 
@@ -248,7 +248,8 @@ describe("SyncPortForwardClient", () => {
       return server as unknown as net.Server;
     }) as typeof net.createServer;
     const sent: string[] = [];
-    const connection = createPushConnection(sent);
+    const closeReasons: string[] = [];
+    const connection = createPushConnection(sent, closeReasons);
     const client = new SyncPortForwardClient(connection.connection, {
       createServer,
       inboundPauseBytes: 1024,
@@ -268,11 +269,53 @@ describe("SyncPortForwardClient", () => {
     await new Promise((resolve) => setTimeout(resolve, 80));
     expect(socket.destroyed).toBe(true);
     expect(sent).toContain("fwd_close");
+    // A stall is not an overflow. The peer must see why the forward closed.
+    expect(closeReasons).toEqual(["Local forward socket did not drain in time."]);
     client.dispose();
+  });
+
+  it("keeps one drain listener while the poll flushes a paused queue", async () => {
+    let server: FakeServer | null = null;
+    const createServer = ((callback: (socket: net.Socket) => void) => {
+      server = new FakeServer(callback);
+      return server as unknown as net.Server;
+    }) as typeof net.createServer;
+    const sent: string[] = [];
+    const connection = createPushConnection(sent);
+    const client = new SyncPortForwardClient(connection.connection, {
+      createServer,
+      inboundPauseBytes: 1024,
+      inboundHardCapBytes: 1024 * 1024,
+      inboundStallMs: 60_000,
+    });
+    await client.ensureForward("localhost", 5175);
+    const socket = server!.accept();
+    // Every write reports a full socket, so each poll flush blocks again.
+    socket.write = (data: Uint8Array) => {
+      socket.writes.push(Buffer.from(data));
+      socket.writableLength += data.byteLength;
+      return false;
+    };
+    vi.useFakeTimers();
+    try {
+      for (let index = 0; index < 20; index += 1) connection.deliver(Buffer.alloc(512, index));
+      expect(sent).toContain("fwd_pause");
+      for (let poll = 0; poll < 15; poll += 1) {
+        // The reader empties the socket, but `drain` does not fire before the poll.
+        socket.writableLength = 0;
+        vi.advanceTimersByTime(BACKPRESSURE_POLL_MS);
+        expect(socket.listenerCount("drain")).toBe(1);
+      }
+      expect(socket.writes.length).toBeGreaterThan(10);
+      expect(socket.destroyed).toBe(false);
+    } finally {
+      vi.useRealTimers();
+      client.dispose();
+    }
   });
 });
 
-function createPushConnection(sent: string[]): {
+function createPushConnection(sent: string[], closeReasons: string[] = []): {
   connection: AuthenticatedSyncConnection;
   deliver: (bytes: Buffer) => void;
 } {
@@ -284,6 +327,7 @@ function createPushConnection(sent: string[]): {
     credentials: {},
     send(type: string, payload: unknown) {
       sent.push(type);
+      if (type === "fwd_close") closeReasons.push(String((payload as { reason?: unknown }).reason));
       if (type !== "fwd_open") return;
       const id = (payload as { forwardId?: unknown }).forwardId;
       if (typeof id === "string") forwardId = id;

@@ -1,7 +1,5 @@
 import type { ReactNode } from "react";
 
-export type ChatActionsTab = "sources" | "agents" | "proof" | "handoff" | "missions";
-
 /**
  * One scroll for everything that used to be a chat-actions tab.
  *

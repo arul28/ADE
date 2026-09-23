@@ -506,6 +506,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "resolveReviewThread",
     "retargetBase",
     "reopenPr",
+    "setDraft",
+    "setAutoMerge",
     "replyToReviewThread",
     "rerunChecks",
     "regenerateAiSummary",

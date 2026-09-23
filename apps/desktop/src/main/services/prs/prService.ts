@@ -97,6 +97,8 @@ import type {
   SubmitPrReviewResult,
   ClosePrArgs,
   ReopenPrArgs,
+  SetPrAutoMergeArgs,
+  SetPrDraftArgs,
   RerunPrChecksArgs,
   AiReviewSummaryArgs,
   AiReviewSummary,
@@ -154,6 +156,9 @@ import type { LinearLiveStatusService } from "../cto/linearLiveStatusService";
 import { publishLinearPrCard } from "../cto/linearLaneCardService";
 import { parseSyntheticGithubPrId, syntheticGithubPrId } from "../../../shared/types/prs";
 import { COMMIT_STATUS_APP_SLUG, rollupChecks, rollupPrChecks } from "../../../shared/prChecksRollup";
+import { describeAutoMergeFailure } from "../../../shared/prAutoMerge";
+import { classifyPrAuthor } from "../../../shared/prBotIdentity";
+import { resolvePrNextStepFromStatus } from "../../../shared/prNextStep";
 import type { ChecksRollup, ChecksRollupCheckRun, ChecksRollupCommitStatus } from "../../../shared/prChecksRollup";
 import { createRequiredChecksResolver } from "./requiredChecks";
 import { spawn } from "node:child_process";
@@ -1458,7 +1463,7 @@ type GraphqlReviewThreadCommentNode = {
   diffHunk?: unknown;
   createdAt?: unknown;
   updatedAt?: unknown;
-  author?: { login?: unknown; avatarUrl?: unknown } | null;
+  author?: { __typename?: unknown; login?: unknown; avatarUrl?: unknown } | null;
   reactions?: unknown;
 };
 
@@ -1477,10 +1482,24 @@ type GraphqlReviewThreadNode = {
   comments?: { nodes?: GraphqlReviewThreadCommentNode[] | null } | null;
 };
 
+function normalizeGraphqlMergeMethod(raw: unknown): MergeMethod | null {
+  const value = asString(raw).trim().toUpperCase();
+  if (value === "SQUASH") return "squash";
+  if (value === "REBASE") return "rebase";
+  if (value === "MERGE") return "merge";
+  return null;
+}
+
+/** REST says `user.type: "Bot"`; GraphQL says `__typename: "Bot"`. */
+function isGithubBotAccount(raw: any): boolean {
+  return asString(raw?.type).toLowerCase() === "bot" || asString(raw?.__typename) === "Bot";
+}
+
 function toUser(raw: any): PrUser {
   return {
     login: asString(raw?.login) || "",
-    avatarUrl: asString(raw?.avatar_url) || null
+    avatarUrl: asString(raw?.avatar_url) || null,
+    ...(isGithubBotAccount(raw) ? { isBot: true } : {}),
   };
 }
 
@@ -2390,7 +2409,38 @@ export function createPrService({
       [projectId]
     );
 
-  const summaryToLanePrSummary = (pr: PrSummary, checks: PrCheck[] = []): PrLaneSummary => {
+  /**
+   * The next step and the agent reviewers for a lane's PR, from the cached
+   * snapshot only — `listPrsByLane` is a 30s TUI poll and must stay local.
+   * Review threads are not in the snapshot, so thread counts do not appear.
+   */
+  const lanePrInsights = (
+    pr: PrSummary,
+    snapshot: PrSnapshotHydration | null,
+    rollup: ReturnType<typeof rollupPrChecks>,
+  ): Pick<PrLaneSummary, "nextStep" | "agents"> => {
+    if (!snapshot) return {};
+    const agents = new Set<string>();
+    for (const review of snapshot.reviews) {
+      const identity = classifyPrAuthor(review.reviewer, review.reviewerIsBot);
+      if (identity.role === "agent-reviewer") agents.add(identity.displayName);
+    }
+    for (const comment of snapshot.comments) {
+      const identity = classifyPrAuthor(comment.author, comment.authorIsBot);
+      if (identity.role === "agent-reviewer") agents.add(identity.displayName);
+    }
+    const step = resolvePrNextStepFromStatus({
+      state: pr.state,
+      baseBranch: pr.baseBranch,
+      status: snapshot.status,
+      checks: { failing: rollup.counts.failing, pending: rollup.counts.pending, passing: rollup.counts.passing },
+      reviews: snapshot.reviews,
+      unresolvedThreads: 0,
+    });
+    return { nextStep: { kind: step.kind, headline: step.headline, tone: step.tone }, agents: [...agents] };
+  };
+
+  const summaryToLanePrSummary = (pr: PrSummary, checks: PrCheck[] = [], snapshot: PrSnapshotHydration | null = null): PrLaneSummary => {
     const state: PrLaneSummary["state"] = pr.state === "merged" || pr.state === "closed" ? pr.state : "open";
     // ADE-135: `checksPassed` used to count any `success` row, so a lane whose
     // PR had only preview/review bots reported N/N and every consumer of this
@@ -2406,6 +2456,7 @@ export function createPrService({
       checksTotal: rollup.counts.total,
       checksStatus: checks.length > 0 ? rollup.status : pr.checksStatus,
       stack: pr.stack ?? null,
+      ...lanePrInsights(pr, snapshot, rollup),
     };
   };
 
@@ -4915,6 +4966,17 @@ export function createPrService({
     return payload.data;
   };
 
+  /** Draft and auto-merge mutations take the PR's GraphQL node id, not its number. */
+  const fetchPullRequestNodeId = async (target: { repo: GitHubRepoRef; prNumber: number }): Promise<string> => {
+    const data = await graphqlRequest<{ repository?: { pullRequest?: { id?: unknown } | null } | null }>(
+      `query($owner:String!,$name:String!,$number:Int!){ repository(owner:$owner,name:$name){ pullRequest(number:$number){ id } } }`,
+      { owner: target.repo.owner, name: target.repo.name, number: target.prNumber },
+    );
+    const id = asString(data.repository?.pullRequest?.id).trim();
+    if (!id) throw new Error(`GitHub did not return PR #${target.prNumber}.`);
+    return id;
+  };
+
   const hydrateReactableReactions = async (
     nodeIds: Array<string | null | undefined>,
     repo: GitHubRepoRef,
@@ -5263,6 +5325,7 @@ export function createPrService({
       return {
         reviewer: asString(entry?.user?.login) || "unknown",
         reviewerAvatarUrl: asString(entry?.user?.avatar_url) || null,
+        ...(isGithubBotAccount(entry?.user) ? { reviewerIsBot: true } : {}),
         state,
         body: asString(entry?.body) || null,
         submittedAt: asString(entry?.submitted_at) || null
@@ -5331,6 +5394,7 @@ export function createPrService({
                     createdAt
                     updatedAt
                      author {
+                       __typename
                        login
                        avatarUrl
                      }
@@ -5381,6 +5445,7 @@ export function createPrService({
               githubId: Number.isSafeInteger(Number(entry?.databaseId)) ? Number(entry.databaseId) : null,
               author: asString(entry?.author?.login) || "unknown",
               authorAvatarUrl: asString(entry?.author?.avatarUrl) || null,
+              ...(isGithubBotAccount(entry?.author) ? { authorIsBot: true } : {}),
               body: asString(entry?.body) || null,
               url: asString(entry?.url) || null,
               diffHunk: asString(entry?.diffHunk) || null,
@@ -5727,11 +5792,16 @@ export function createPrService({
     approvalsCount: number | null;
     canBypass: boolean;
     headSha: string | null;
+    autoMergeAllowed: boolean;
+    autoMergeEnabled: boolean;
+    autoMergeMethod: MergeMethod | null;
   } | null> => {
     type MergeStateGraphqlData = {
       repository?: {
         viewerPermission?: unknown;
+        autoMergeAllowed?: unknown;
         pullRequest?: {
+          autoMergeRequest?: { mergeMethod?: unknown } | null;
           mergeable?: unknown;
           mergeStateStatus?: unknown;
           reviewDecision?: unknown;
@@ -5746,8 +5816,10 @@ export function createPrService({
     const query = (includeStack: boolean) => `query($owner:String!,$name:String!,$number:Int!){
   repository(owner:$owner,name:$name){
     viewerPermission
+    autoMergeAllowed
     pullRequest(number:$number){
       mergeable mergeStateStatus reviewDecision headRefOid baseRefName
+      autoMergeRequest { mergeMethod }
       baseRef { branchProtectionRule { requiredApprovingReviewCount } }
       ${includeStack ? "stack { baseRefName }" : ""}
       latestOpinionatedReviews(first:100){ nodes { state } }
@@ -5864,6 +5936,9 @@ export function createPrService({
         approvalsCount: reviewNodes.length > 0 || requiredApprovals != null ? approvalsCount : null,
         canBypass: asString(repository?.viewerPermission).trim().toUpperCase() === "ADMIN",
         headSha: asString(pull.headRefOid).trim() || null,
+        autoMergeAllowed: repository?.autoMergeAllowed === true,
+        autoMergeEnabled: pull.autoMergeRequest != null,
+        autoMergeMethod: normalizeGraphqlMergeMethod(pull.autoMergeRequest?.mergeMethod),
       };
     } catch (error) {
       if (isGithubRateLimitFailure(error)) {
@@ -5984,6 +6059,11 @@ export function createPrService({
         mergeabilityComputing,
         canBypass: mergeState?.canBypass ?? undefined,
         headSha,
+        ...(mergeState ? {
+          autoMergeAllowed: mergeState.autoMergeAllowed,
+          autoMergeEnabled: mergeState.autoMergeEnabled,
+          autoMergeMethod: mergeState.autoMergeMethod,
+        } : {}),
       },
     };
   };
@@ -11839,13 +11919,11 @@ export function createPrService({
           projectionRows,
         }))
         .filter((candidate): candidate is LanePrDisplayCandidate => candidate != null);
-      const checksByPrId = new Map(listSnapshotRows().map((snapshot) => [snapshot.prId, snapshot.checks] as const));
+      const snapshotByPrId = new Map(listSnapshotRows().map((snapshot) => [snapshot.prId, snapshot] as const));
       return candidates.map(({ summary, mappedRow }) => {
         const enriched = withGithubStackMembership(summary) ?? summary;
-        return summaryToLanePrSummary(
-          enriched,
-          mappedRow && isActivePrState(summary.state) ? checksByPrId.get(mappedRow.id) ?? [] : [],
-        );
+        const snapshot = mappedRow && isActivePrState(summary.state) ? snapshotByPrId.get(mappedRow.id) ?? null : null;
+        return summaryToLanePrSummary(enriched, snapshot?.checks ?? [], snapshot);
       });
     },
 
@@ -12734,6 +12812,36 @@ export function createPrService({
           `update pull_requests set state = ?, updated_at = ? where id = ? and project_id = ?`,
           ["open", nowIso(), target.row.id, projectId]
         );
+      }
+      await refreshAfterMutation(target);
+    },
+
+    async setDraft(args: SetPrDraftArgs): Promise<void> {
+      const target = resolvePrTarget(args.prId);
+      const pullRequestId = await fetchPullRequestNodeId(target);
+      const mutation = args.draft
+        ? `mutation($id:ID!){ convertPullRequestToDraft(input:{pullRequestId:$id}){ pullRequest { isDraft } } }`
+        : `mutation($id:ID!){ markPullRequestReadyForReview(input:{pullRequestId:$id}){ pullRequest { isDraft } } }`;
+      await graphqlRequest(mutation, { id: pullRequestId }, { repo: target.repo });
+      await refreshAfterMutation(target);
+    },
+
+    async setAutoMerge(args: SetPrAutoMergeArgs): Promise<void> {
+      const target = resolvePrTarget(args.prId);
+      const pullRequestId = await fetchPullRequestNodeId(target);
+      const method = (args.method ?? "squash").toUpperCase();
+      const mutation = args.enabled
+        ? `mutation($id:ID!,$method:PullRequestMergeMethod!){ enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:$method}){ clientMutationId } }`
+        : `mutation($id:ID!){ disablePullRequestAutoMerge(input:{pullRequestId:$id}){ clientMutationId } }`;
+      try {
+        await graphqlRequest(
+          mutation,
+          args.enabled ? { id: pullRequestId, method } : { id: pullRequestId },
+          { repo: target.repo },
+        );
+      } catch (error) {
+        if (!args.enabled) throw error;
+        throw new Error(describeAutoMergeFailure(getErrorMessage(error), `${target.repo.owner}/${target.repo.name}`));
       }
       await refreshAfterMutation(target);
     },

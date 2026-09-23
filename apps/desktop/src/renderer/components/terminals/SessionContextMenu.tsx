@@ -201,8 +201,8 @@ type SessionContextMenuProps = {
     binding?: OpenProjectBinding | null,
   ) => void;
   /**
-   * Opens this chat's Handoff surface in the chat pane — the same two
-   * destinations the Chat actions → Handoff tab offers. The menu cannot open
+   * Opens a handoff destination (local or another machine) in the chat pane.
+   * The menu cannot open
    * those views itself: they are stateful inside `AgentChatPane`, so it records
    * the intent and the pane acts on it (see `chatHandoffIntent`).
    */
@@ -215,11 +215,6 @@ type SessionContextMenuProps = {
   /** Session ids currently in any work grid (drives the "Remove from grid" item). */
   gridSessionIds?: string[];
   onRemoveFromGrid?: (session: TerminalSessionSummary) => void;
-  /**
-   * Select this session before the handoff modal opens, so a right-click on a
-   * card that is not the open chat still hands off that card.
-   */
-  onPrepareChatHandoff?: (session: TerminalSessionSummary) => void;
 };
 
 /**
@@ -294,7 +289,6 @@ function SessionContextMenuPanel({
   onRemoveFromGrid,
   onManageLane,
   onOpenAutoHandoff,
-  onPrepareChatHandoff,
 }: Omit<SessionContextMenuProps, "menu"> & {
   menu: NonNullable<SessionContextMenuState>;
   onManageLane: (

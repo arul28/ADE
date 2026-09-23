@@ -449,7 +449,7 @@ Native SwiftUI app acting as a controller. It pairs with an ADE machine over Web
 - Shipped Activity surfaces: a global account-wide Activity drawer with Sessions and Inbox buckets, project-scoped lenses over the same model, a Lock Screen widget, and one account-wide ActivityKit Live Activity + Dynamic Island prioritized across signed-in machines/projects (`ADEWidgets/ADEAgentActivityWidget.swift`).
 - Push: signed-in clients exchange account Activity snapshots/ACKs/presence/preferences and register APNs/Live-Activity tokens directly with the Cloudflare push relay (§2.7). The wire DTOs retain their `Attention*` names. Account device PUT/DELETE mutations carry a persisted monotonic `ownershipEpoch`; direct account switches commit old → unowned → new epochs, and the relay retains deletion tombstones so delayed requests cannot reclaim an installation. The same non-PII epoch is stamped into account-wide Live Activity attributes/content: the app ends an owner-mismatched activity, while the widget extension renders only a neutral Updating ADE state before cleanup. Legacy paired-machine registration remains for older clients. Alert pushes and every widget/Live-Activity row carry exact destinations with the source `accountMachineKey`; remote account items select/adopt that machine before navigation and never execute current-host-only intents.
 - Connection: ADE account sign-in is the primary PIN-less path; direct pairing uses a user-set 6-digit PIN after scanning the v3 smart-URL QR or choosing a Nearby machine. Both paths produce device-bound DPoP trust and reconnect with a LAN → Tailscale → Relay preference; the phone races every eligible candidate in one happy-eyeballs wave rather than exhausting direct routes before trying Relay. Sign-out disables account discovery and Relay but retains direct machine trust until the user explicitly forgets that machine.
-- Planned: Automations, Graph, History tabs; iPad layout; Spotlight.
+- Planned: Automations and History tabs; iPad layout; Spotlight.
 - Target: iOS 26+, iPhone + iPad.
 
 ### 2.5 Hosted web client (`apps/desktop/src/renderer/webclient/`)
@@ -1702,7 +1702,7 @@ Lane rows are not the authority on which worktrees exist — git is. Every `lane
   ```
 - Pairwise dry-merge simulation across all active lanes; output parsed into structured `ConflictOverlap` entries.
 - Triggered on debounced lane/head changes via the job engine; periodic prediction is off by default in dev stability mode.
-- Result: risk matrix surfaced on Graph + Conflicts pages, confidence-scored proposals (`high`/`medium`/`low`) with apply/discard UI.
+- Result: lane conflict badges plus a risk matrix available through the conflicts tools/actions (`getConflictRiskMatrix`, `conflicts.getBatchAssessment`; no matrix view), confidence-scored proposals (`high`/`medium`/`low`) with apply/discard UI.
 
 ### 9.6 Safety
 

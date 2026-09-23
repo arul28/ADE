@@ -160,6 +160,8 @@ import type {
   RebaseStartArgs,
   RenameLaneArgs,
   ReopenPrArgs,
+  SetPrAutoMergeArgs,
+  SetPrDraftArgs,
   RecheckIntegrationStepArgs,
   ReactToPrCommentArgs,
   ReplyToPrReviewThreadArgs,
@@ -3423,6 +3425,24 @@ function parseReopenPrArgs(value: Record<string, unknown>): ReopenPrArgs {
   };
 }
 
+function parseSetPrDraftArgs(value: Record<string, unknown>): SetPrDraftArgs {
+  if (typeof value.draft !== "boolean") throw new Error("prs.setDraft requires draft: boolean.");
+  return { prId: requirePrId(value, "prs.setDraft"), draft: value.draft };
+}
+
+function parseSetPrAutoMergeArgs(value: Record<string, unknown>): SetPrAutoMergeArgs {
+  if (typeof value.enabled !== "boolean") throw new Error("prs.setAutoMerge requires enabled: boolean.");
+  const method = value.method;
+  if (method != null && method !== "merge" && method !== "squash" && method !== "rebase") {
+    throw new Error("prs.setAutoMerge method must be merge, squash, or rebase.");
+  }
+  return {
+    prId: requirePrId(value, "prs.setAutoMerge"),
+    enabled: value.enabled,
+    ...(method ? { method } : {}),
+  };
+}
+
 function parseRequestReviewersArgs(value: Record<string, unknown>): RequestPrReviewersArgs {
   const prId = requirePrId(value, "prs.requestReviewers");
   const reviewers = asStringArray(value.reviewers);
@@ -6128,6 +6148,14 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
   });
   register("prs.reopen", { viewerAllowed: true, queueable: true }, async (payload) => {
     await args.prService.reopenPr(parseReopenPrArgs(payload));
+    return { ok: true };
+  });
+  register("prs.setDraft", { viewerAllowed: true, queueable: true }, async (payload) => {
+    await args.prService.setDraft(parseSetPrDraftArgs(payload));
+    return { ok: true };
+  });
+  register("prs.setAutoMerge", { viewerAllowed: true, queueable: true }, async (payload) => {
+    await args.prService.setAutoMerge(parseSetPrAutoMergeArgs(payload));
     return { ok: true };
   });
   register("prs.requestReviewers", { viewerAllowed: true, queueable: true }, async (payload) => {

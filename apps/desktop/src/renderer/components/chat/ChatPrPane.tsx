@@ -793,7 +793,6 @@ export const ChatPrPane = React.memo(function ChatPrPane({
                 mergeMethod="squash"
                 onRefresh={async () => { await refresh({ live: true }); }}
                 onNavigate={(path) => navigate(path)}
-                layout="stack"
               />
             </PrsProvider>
           </div>

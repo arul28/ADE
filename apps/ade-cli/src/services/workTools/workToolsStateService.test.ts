@@ -459,9 +459,16 @@ describe("workToolsStateService", () => {
     service.dispose();
   });
 
-  it("rejects an unknown tool rather than storing it", () => {
+  it("reads an unknown tool from a newer desktop as none and keeps the strip", async () => {
     const service = createWorkToolsStateService({ projectRoot });
-    expect(() => service.setActiveTool({ laneId: "lane-1", tool: "nope" as never })).toThrow(/unknown tool/);
+    expect(service.setActiveTool({
+      laneId: "lane-1",
+      tool: "future-tool" as never,
+      openTools: ["git", "future-tool", "browser"] as never,
+    })).toEqual({ ok: true });
+    const state = await service.getLaneState({ laneId: "lane-1" });
+    expect(state.activeTool).toBeNull();
+    expect(state.openTools).toEqual(["git", "browser"]);
     service.dispose();
   });
 

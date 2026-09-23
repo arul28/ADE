@@ -93,6 +93,7 @@ import {
 import { launchIdentityFields, resolveLaunchIdentity, sameLaunchIdentity } from "./launchIdentity";
 import { rollupPrChecks } from "../../../desktop/src/shared/prChecksRollup";
 import type { GitHubPrStackMembership, PrChecksStatus } from "../../../desktop/src/shared/types/prs";
+import type { PrLaneNextStep } from "../../../desktop/src/shared/prNextStep";
 import {
   pickPrimaryPrRecord,
   prRecordNumber,
@@ -578,6 +579,10 @@ export type LanePrSummary = {
   /** ADE-135 canonical rollup; `passed === total` is not proof of a pass. */
   checksStatus?: PrChecksStatus;
   stack?: GitHubPrStackMembership | null;
+  /** The one next step from the cached status (`PrLaneSummary.nextStep`). */
+  nextStep?: PrLaneNextStep | null;
+  /** Agent reviewers on the PR, by product name. */
+  agents?: string[];
 };
 
 // Streaming chat events are coalesced into a single React render per frame
@@ -3564,6 +3569,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const [lanes, setLanes] = useState<LaneSummary[]>([]);
   const lanesRef = useRef<LaneSummary[]>([]);
   const [prByLaneId, setPrByLaneId] = useState<Record<string, LanePrSummary>>({});
+  const prByLaneIdRef = useRef(prByLaneId);
+  prByLaneIdRef.current = prByLaneId;
   const [diffByLaneId, setDiffByLaneId] = useState<Record<string, DiffLineStats>>({});
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
   /**
@@ -6728,6 +6735,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           checksPending: number;
           checksStatus?: PrChecksStatus;
           checksFailed: number;
+          nextStep?: LanePrSummary["nextStep"];
+          agents?: string[];
         } | null = null;
         if (activePr) {
           // The selector reads three aliases; re-parsing only two here made a
@@ -6770,7 +6779,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             }
           }
           if (number != null && url) {
-            pr = { number, state, url, checksPassed, checksTotal, checksPending, checksFailed, checksStatus };
+            // The next step and agents ride the 30s lane-PR poll (cached
+            // snapshot, no extra GitHub read); reuse them here.
+            const lanePr = prByLaneIdRef.current[laneId];
+            pr = {
+              number, state, url, checksPassed, checksTotal, checksPending, checksFailed, checksStatus,
+              nextStep: lanePr?.number === number ? lanePr.nextStep ?? null : null,
+              agents: lanePr?.number === number ? lanePr.agents ?? [] : [],
+            };
           }
         }
 
@@ -9453,6 +9469,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             checksTotal: pr.checksTotal,
             checksStatus: pr.checksStatus,
             stack: pr.stack ?? null,
+            nextStep: pr.nextStep ?? null,
+            agents: pr.agents ?? [],
           };
         }
         setPrByLaneId(next);
@@ -11635,7 +11653,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           ...(status ? ["", formatPrMergeState(status)] : []),
           ...(checks ? ["", formatPrChecks(checks)] : []),
           "",
-          "More: /pr checks · /pr review · /pr comments · /pr land · /pr close",
+          "More: /pr checks · /pr review · /pr comments · /pr land · /pr auto-merge · /pr draft · /pr close",
         ];
         setRightPane({ kind: "details", title: "PR", body: sections.join("\n") });
         return;
@@ -11805,6 +11823,46 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         try {
           await conn.action("pr", closing ? "closePr" : "reopenPr", { prId });
           addNotice(closing ? `Closed ${prRef}.` : `Reopened ${prRef}.`, "success");
+          await refreshState();
+        } catch (err) {
+          addNotice(err instanceof Error ? err.message : String(err), "error");
+        }
+        return;
+      }
+      if (name === "/pr draft" || name === "/pr ready") {
+        // Both directions are one click back (`/pr ready` / `/pr draft`), so
+        // neither takes the confirm step `/pr close` does.
+        const draft = name === "/pr draft";
+        try {
+          await conn.action("pr", "setDraft", { prId, draft });
+          addNotice(draft ? `${prRef} is a draft now.` : `${prRef} is ready for review.`, "success");
+          await refreshState();
+        } catch (err) {
+          addNotice(err instanceof Error ? err.message : String(err), "error");
+        }
+        return;
+      }
+      if (name === "/pr auto-merge") {
+        // `/pr auto-merge [on|off] [merge|squash|rebase]`, order-independent.
+        // Mirrors the desktop Merge card's auto-merge toggle; the method
+        // defaults to squash exactly as `pr.setAutoMerge` does.
+        const tokens = args.trim().toLowerCase().split(/\s+/).filter(Boolean);
+        const enabled = !tokens.includes("off");
+        const method = tokens.find((token): token is "merge" | "squash" | "rebase" =>
+          token === "merge" || token === "squash" || token === "rebase");
+        const unknown = tokens.filter((token) => token !== "on" && token !== "off" && token !== method);
+        if (unknown.length > 0) {
+          addNotice("Usage: /pr auto-merge [on|off] [merge|squash|rebase]", "error");
+          return;
+        }
+        try {
+          await conn.action("pr", "setAutoMerge", { prId, enabled, ...(enabled && method ? { method } : {}) });
+          addNotice(
+            enabled
+              ? `Auto-merge is on for ${prRef} (${method ?? "squash"}); it merges once the requirements pass.`
+              : `Auto-merge is off for ${prRef}.`,
+            "success",
+          );
           await refreshState();
         } catch (err) {
           addNotice(err instanceof Error ? err.message : String(err), "error");

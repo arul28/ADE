@@ -577,6 +577,8 @@ ade prs comments pr-id --text
 ade prs land pr-id --method squash                          # merges and KEEPS the head branch on the remote
 ade prs land pr-id --method squash --delete-remote-branch   # opt in to deleting the head branch after the merge
 ade prs close pr-id                                         # close on GitHub; the branch is kept and `ade prs reopen pr-id` undoes it
+ade prs draft pr-id                                         # convert an open PR back to a draft; `ade prs ready pr-id` marks it ready for review
+ade prs auto-merge pr-id on --method squash                 # arm GitHub auto-merge (squash by default); `ade prs auto-merge pr-id off` disarms it
 ade prs cleanup-branch pr-id --delete-remote-branch         # delete a merged/closed PR's branch (local too, unless --keep-local)
 ade prs land 'gh:owner/repo#42' --method squash             # id form for a PR ADE has no row for; quote it, '#' starts a shell comment
                                                             # works for land/close/reopen/cleanup-branch/checks/comments/review; threads, deployments and ai-review-summary still need an ADE row

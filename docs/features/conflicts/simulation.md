@@ -45,8 +45,8 @@ Steps inside `simulateMerge`:
 
 Consumers:
 
-- Graph edge click → inline conflict panel → `simulateMerge`.
-- Lane detail → merge simulation panel.
+- The `conflicts.simulateMerge` runtime action and the CTO `simulateMerge`
+  tool. The desktop renderer has no bridge for it.
 - Integration tab → per-pair simulation (via `prService.simulateIntegration`,
   not `conflictService.simulateMerge`).
 

@@ -6,7 +6,6 @@ import {
 } from "../shared/types/systemSettings";
 import { IPC } from "../shared/ipc";
 import { isUnsupportedAdeActionError } from "../shared/codedError";
-import { normalizeSyncStatusLaneIds, settleLaneSyncStatuses } from "../shared/gitSyncStatuses";
 import { settlePrDetailBundle } from "../shared/prDetailBundle";
 import type {
   CtoVoiceBridge,
@@ -350,8 +349,6 @@ import type {
   GitStashPushArgs,
   GitStashRefArgs,
   GitStashSummary,
-  GitSyncStatuses,
-  GitSyncStatusesArgs,
   GitUpstreamSyncStatus,
   GitSyncArgs,
   GitHubAppDeviceAuthPollResult,
@@ -426,6 +423,8 @@ import type {
   SubmitPrReviewResult,
   ClosePrArgs,
   ReopenPrArgs,
+  SetPrAutoMergeArgs,
+  SetPrDraftArgs,
   RerunPrChecksArgs,
   AiReviewSummaryArgs,
   AiReviewSummary,
@@ -574,8 +573,6 @@ import type {
   ListSessionsArgs,
   DeleteSessionArgs,
   ListTestRunsArgs,
-  MergeSimulationArgs,
-  MergeSimulationResult,
   OperationRecord,
   ProjectConfigCandidate,
   ProjectConfigDiff,
@@ -2006,21 +2003,6 @@ function callPinnedOrBoundRuntimeActionOr<T>(
 ): Promise<T> {
   if (pin) return callPinnedRuntimeAction<T>(pin, domain, action, request);
   return callProjectRuntimeActionOr<T>(domain, action, request, local);
-}
-
-async function readLegacySyncStatuses(
-  laneIds: string[],
-  pin?: OpenProjectBinding | null,
-): Promise<GitSyncStatuses> {
-  return settleLaneSyncStatuses(laneIds, (laneId) =>
-    callPinnedOrBoundRuntimeActionOr<GitUpstreamSyncStatus>(
-      pin,
-      "git",
-      "getSyncStatus",
-      { args: { laneId } },
-      () => ipcRenderer.invoke(IPC.gitGetSyncStatus, { laneId }),
-    ),
-  );
 }
 
 function readLegacyPrDetailBundle(prId: string): Promise<PrDetailBundle> {
@@ -10170,25 +10152,6 @@ const adeBridge = {
         { args },
         () => ipcRenderer.invoke(IPC.gitGetSyncStatus, args),
       ),
-    getSyncStatuses: async (
-      args: GitSyncStatusesArgs,
-      pin?: OpenProjectBinding | null,
-    ): Promise<GitSyncStatuses> => {
-      const laneIds = normalizeSyncStatusLaneIds(args);
-      if (laneIds.length === 0) return {};
-      try {
-        return await callPinnedOrBoundRuntimeActionOr<GitSyncStatuses>(
-          pin,
-          "git",
-          "getSyncStatuses",
-          { args: { laneIds } },
-          () => ipcRenderer.invoke(IPC.gitGetSyncStatuses, { laneIds }),
-        );
-      } catch (error) {
-        if (!isUnsupportedAdeActionError(error)) throw error;
-        return await readLegacySyncStatuses(laneIds, pin);
-      }
-    },
     getOriginRemote: async (
       args: { laneId: string },
       pin?: OpenProjectBinding | null,
@@ -10366,21 +10329,11 @@ const adeBridge = {
       callProjectRuntimeActionOr("conflicts", "getRiskMatrix", {}, () =>
         ipcRenderer.invoke(IPC.conflictsGetRiskMatrix),
       ),
-    simulateMerge: async (
-      args: MergeSimulationArgs,
-    ): Promise<MergeSimulationResult> =>
-      callProjectRuntimeActionOr("conflicts", "simulateMerge", { args }, () =>
-        ipcRenderer.invoke(IPC.conflictsSimulateMerge, args),
-      ),
     runPrediction: async (
       args: RunConflictPredictionArgs = {},
     ): Promise<BatchAssessmentResult> =>
       callProjectRuntimeActionOr("conflicts", "runPrediction", { args }, () =>
         ipcRenderer.invoke(IPC.conflictsRunPrediction, args),
-      ),
-    getBatchAssessment: async (): Promise<BatchAssessmentResult> =>
-      callProjectRuntimeActionOr("conflicts", "getBatchAssessment", {}, () =>
-        ipcRenderer.invoke(IPC.conflictsGetBatchAssessment),
       ),
     listProposals: async (laneId: string): Promise<ConflictProposal[]> =>
       callProjectRuntimeActionOr(
@@ -11304,6 +11257,14 @@ const adeBridge = {
     reopen: async (args: ReopenPrArgs): Promise<void> =>
       callProjectRuntimeActionOr("pr", "reopenPr", { args }, () =>
         ipcRenderer.invoke(IPC.prsReopen, args),
+      ),
+    setDraft: async (args: SetPrDraftArgs): Promise<void> =>
+      callProjectRuntimeActionOr("pr", "setDraft", { args }, () =>
+        ipcRenderer.invoke(IPC.prsSetDraft, args),
+      ),
+    setAutoMerge: async (args: SetPrAutoMergeArgs): Promise<void> =>
+      callProjectRuntimeActionOr("pr", "setAutoMerge", { args }, () =>
+        ipcRenderer.invoke(IPC.prsSetAutoMerge, args),
       ),
     rerunChecks: async (args: RerunPrChecksArgs): Promise<void> =>
       callProjectRuntimeActionOr("pr", "rerunChecks", { args }, () =>

@@ -21,15 +21,6 @@ import {
 import { LaneIcon } from "../ui/vcsIcons";
 import { WORK_TOOL_DEFINITIONS } from "../terminals/workTools";
 
-/** Palette subtitles stay one short line. */
-export function paletteCaption(text: string, maxWords = 7): string {
-  const trimmed = text.replace(/\s+/g, " ").trim();
-  if (!trimmed) return "";
-  const words = trimmed.split(" ");
-  if (words.length <= maxWords) return trimmed;
-  return words.slice(0, maxWords).join(" ");
-}
-
 /**
  * Cut a caption to `maxWords` and report the end index in the original string
  * so match ranges that start past the cut can be dropped.
@@ -40,8 +31,7 @@ export function clipCaption(
 ): { text: string; end: number } {
   const matches = text.match(/\S+/g);
   if (!matches || matches.length <= maxWords) {
-    const trimmed = text.trim();
-    return { text: trimmed, end: text.length };
+    return { text: text.trim(), end: text.length };
   }
   const re = /\S+/g;
   let count = 0;
@@ -54,6 +44,17 @@ export function clipCaption(
   return { text: text.slice(0, last).trimEnd(), end: last };
 }
 
+/** Palette subtitles stay one short line, with whitespace collapsed. */
+export function paletteCaption(text: string, maxWords = 7): string {
+  return clipCaption(text.replace(/\s+/g, " ").trim(), maxWords).text;
+}
+
+/**
+ * Shorter captions for the "Go to <tab>" commands. These override
+ * `tab.description` from the settings manifest on purpose: the Settings page
+ * shows that description in full as the tab's subtitle, so it cannot be cut to
+ * a palette-sized line there.
+ */
 const SETTINGS_PALETTE_CAPTIONS: Record<string, string> = {
   secrets: "Keys and tokens for agents",
   stats: "Spend, limits, and pacing",

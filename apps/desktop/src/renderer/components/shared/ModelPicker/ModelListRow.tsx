@@ -254,7 +254,7 @@ export const ModelListRow = memo(function ModelListRow({
               "mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded transition-all duration-150",
               "opacity-40 group-hover:opacity-100",
               isFavorite && "opacity-100",
-              "hover:scale-110 active:scale-95",
+              "hover:scale-110",
             )}
           >
             <Star
@@ -346,7 +346,7 @@ export const ModelListRow = memo(function ModelListRow({
                 "text-[9px] font-semibold uppercase leading-none tracking-wide",
                 // Rest reads as plainly off; hover only darkens; the press itself
                 // is the depress; "on" is the only violet state.
-                reducedMotion ? "transition-none" : "transition-[color,background-color,border-color,transform] duration-100 active:scale-[0.97]",
+                reducedMotion ? "transition-none" : "transition-[color,background-color,border-color,transform] duration-100",
                 activeTier
                   ? "border-violet-400/50 bg-violet-500/85 text-white shadow-[0_0_0_1px_rgba(139,92,246,0.20)] hover:bg-violet-500 active:bg-violet-500/70"
                   : "border-white/[0.08] bg-white/[0.02] text-muted-fg/55 hover:border-white/[0.18] hover:bg-white/[0.08] hover:text-fg/80 active:bg-white/[0.12]",

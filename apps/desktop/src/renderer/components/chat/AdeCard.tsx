@@ -127,17 +127,64 @@ function liveElapsedText(startedAt: string | null | undefined, nowMs: number): s
   return formatSubagentDurationMs(Math.max(0, nowMs - start));
 }
 
-/**
- * The span between the card's first and last emit. NOT a run duration — a CI
- * card that is re-polled for three hours has a three-hour span and a three-
- * minute run. Labelled `tracked` wherever it appears so the two never read as
- * the same number.
- */
+/** The pull request number from the card's PR nav target. */
 function prNumberOf(card: AdeCardPayload): number | null {
   const target = card.navTarget;
-  if (target?.kind === "pr" && typeof target.prNumber === "number") return target.prNumber;
-  const match = card.subtitle?.match(/PR #(\d+)/);
-  return match ? Number(match[1]) : null;
+  return target?.kind === "pr" && typeof target.prNumber === "number" ? target.prNumber : null;
+}
+
+/** "· pr N": a link to the pull request, after a rail card's title. */
+function CardPrLink({
+  prNumber,
+  target,
+  onOpen,
+}: {
+  prNumber: number;
+  target: AdeCardPayload["navTarget"];
+  onOpen: () => void;
+}) {
+  return (
+    <>
+      <span className="shrink-0 text-fg/30" aria-hidden>·</span>
+      <button
+        type="button"
+        aria-label="Open pull request"
+        title={adeCardDeeplink(target) ?? "Open pull request"}
+        onClick={(event) => {
+          event.stopPropagation();
+          onOpen();
+        }}
+        className={cn(
+          "inline-flex min-w-0 items-center gap-1 text-fg/70 transition-colors hover:text-fg/95",
+          CHAT_CARD_BODY_TEXT,
+        )}
+      >
+        <GitPullRequest size={12} weight="bold" aria-hidden />
+        <span className="truncate">pr {prNumber}</span>
+      </button>
+    </>
+  );
+}
+
+/** The "open ›" text arrow at the right end of a rail card's line. */
+function CardOpenArrow({ label, onOpen }: { label: string; onOpen: () => void }) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      onClick={(event) => {
+        event.stopPropagation();
+        onOpen();
+      }}
+      className={cn(
+        "ml-auto inline-flex shrink-0 items-center gap-0.5 text-fg/55 transition-colors hover:text-fg/85",
+        CHAT_CARD_MICRO_TEXT,
+      )}
+    >
+      open
+      <CaretRight size={10} weight="bold" aria-hidden />
+    </button>
+  );
 }
 
 function withPrDetailTab(
@@ -186,25 +233,7 @@ function CiFailureCard({ card }: { card: AdeCardPayload }) {
         <div className="flex min-w-0 flex-1 items-center gap-1.5">
           <ChatCardTitle className="shrink-0">CI Failure</ChatCardTitle>
           {prNumber != null ? (
-            <>
-              <span className="shrink-0 text-fg/30" aria-hidden>·</span>
-              <button
-                type="button"
-                aria-label="Open pull request"
-                title={adeCardDeeplink(prTarget) ?? "Open pull request"}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  openTarget(prTarget);
-                }}
-                className={cn(
-                  "inline-flex min-w-0 items-center gap-1 text-fg/70 transition-colors hover:text-fg/95",
-                  CHAT_CARD_BODY_TEXT,
-                )}
-              >
-                <GitPullRequest size={12} weight="bold" aria-hidden />
-                <span className="truncate">pr {prNumber}</span>
-              </button>
-            </>
+            <CardPrLink prNumber={prNumber} target={prTarget} onOpen={() => openTarget(prTarget)} />
           ) : null}
           {prNumber != null ? (
             <span className="shrink-0 text-fg/30" aria-hidden>·</span>
@@ -219,21 +248,7 @@ function CiFailureCard({ card }: { card: AdeCardPayload }) {
           ) : null}
         </div>
         {checksTarget ? (
-          <button
-            type="button"
-            aria-label="Open checks"
-            onClick={(event) => {
-              event.stopPropagation();
-              openTarget(checksTarget);
-            }}
-            className={cn(
-              "ml-auto inline-flex shrink-0 items-center gap-0.5 text-fg/55 transition-colors hover:text-fg/85",
-              CHAT_CARD_MICRO_TEXT,
-            )}
-          >
-            open
-            <CaretRight size={10} weight="bold" aria-hidden />
-          </button>
+          <CardOpenArrow label="Open checks" onOpen={() => openTarget(checksTarget)} />
         ) : null}
       </div>
       {failedRows.length || truncated > 0 ? (
@@ -306,25 +321,7 @@ function BranchBehindCard({ card }: { card: AdeCardPayload }) {
         <div className="flex min-w-0 flex-1 items-center gap-1.5">
           <ChatCardTitle className="shrink-0">{card.title}</ChatCardTitle>
           {prNumber != null ? (
-            <>
-              <span className="shrink-0 text-fg/30" aria-hidden>·</span>
-              <button
-                type="button"
-                aria-label="Open pull request"
-                title={adeCardDeeplink(target) ?? "Open pull request"}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  open();
-                }}
-                className={cn(
-                  "inline-flex min-w-0 items-center gap-1 text-fg/70 transition-colors hover:text-fg/95",
-                  CHAT_CARD_BODY_TEXT,
-                )}
-              >
-                <GitPullRequest size={12} weight="bold" aria-hidden />
-                <span className="truncate">pr {prNumber}</span>
-              </button>
-            </>
+            <CardPrLink prNumber={prNumber} target={target} onOpen={open} />
           ) : null}
           {branch ? (
             <>
@@ -341,28 +338,18 @@ function BranchBehindCard({ card }: { card: AdeCardPayload }) {
             </ChatCardChip>
           ) : null}
         </div>
-        {target ? (
-          <button
-            type="button"
-            aria-label="Open pull request overview"
-            onClick={(event) => {
-              event.stopPropagation();
-              open();
-            }}
-            className={cn(
-              "ml-auto inline-flex shrink-0 items-center gap-0.5 text-fg/55 transition-colors hover:text-fg/85",
-              CHAT_CARD_MICRO_TEXT,
-            )}
-          >
-            open
-            <CaretRight size={10} weight="bold" aria-hidden />
-          </button>
-        ) : null}
+        {target ? <CardOpenArrow label="Open pull request overview" onOpen={open} /> : null}
       </div>
     </ChatCard>
   );
 }
 
+/**
+ * The span between the card's first and last emit. NOT a run duration — a CI
+ * card that is re-polled for three hours has a three-hour span and a three-
+ * minute run. Labelled `tracked` wherever it appears so the two never read as
+ * the same number.
+ */
 function trackedSpanText(card: AdeCardPayload): string | null {
   if (!card.createdAt || !card.updatedAt) return null;
   const span = Date.parse(card.updatedAt) - Date.parse(card.createdAt);

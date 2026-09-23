@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import React from "react";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -22,7 +22,7 @@ vi.mock("react-resizable-panels", async () => {
 
 vi.mock("../state/PrsContext", async () => {
   const { mockUsePrs } = await import("./GitHubTab.testHarness");
-  return { usePrs: () => mockUsePrs() };
+  return { usePrs: () => mockUsePrs(), useOptionalPrs: () => mockUsePrs() };
 });
 
 vi.mock("../detail/PrDetailPane", async () => {
@@ -94,7 +94,7 @@ describe("GitHubTab rows", () => {
     return renderGitHubTab(GitHubTab, overrides);
   }
 
-  it("keeps the GitHub action outside the row button and does not expose a lane id as its label", async () => {
+  it("does not expose a lane id as its label, and keeps the card to its content lines", async () => {
     const user = userEvent.setup();
     const onSelect = vi.fn();
     const item = makeGitHubPr({
@@ -107,17 +107,28 @@ describe("GitHubTab rows", () => {
 
     expect(screen.queryByText("lane-internal-uuid")).toBeNull();
     expect(screen.queryByText("unmapped")).toBeNull();
+    // Open on GitHub lives in the right-click menu, not on the card.
+    expect(screen.queryByRole("button", { name: "View on GitHub" })).toBeNull();
 
     const rowButton = container.querySelector<HTMLButtonElement>('[data-tour="prs.listRow"]');
-    const githubButton = screen.getByRole("button", { name: "View on GitHub" });
     expect(rowButton).not.toBeNull();
-    expect(rowButton?.contains(githubButton)).toBe(false);
-
     await user.click(rowButton!);
     expect(onSelect).toHaveBeenCalledWith(item);
-    await user.click(githubButton);
-    expect(window.ade.app.openExternal).toHaveBeenCalledWith(item.githubUrl);
-    expect(onSelect).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a failed right-click menu action on the tab's error banner", async () => {
+    const ade = (window as unknown as { ade: { prs: Record<string, unknown>; agentChat?: unknown } }).ade;
+    ade.prs.setDraft = vi.fn().mockRejectedValue(new Error("GitHub refused the draft change."));
+    ade.agentChat = { list: vi.fn().mockResolvedValue([]) };
+    renderTab();
+
+    const title = await screen.findByText("Open PR");
+    const rowButton = title.closest<HTMLButtonElement>('[data-tour="prs.listRow"]');
+    expect(rowButton).not.toBeNull();
+    fireEvent.contextMenu(rowButton!);
+    fireEvent.click(await screen.findByTestId("pr-action-draft"));
+
+    expect(await screen.findByText("GitHub refused the draft change.")).toBeTruthy();
   });
 
   // ADE-135: `not_run` means nothing verified the commit. The row must show the

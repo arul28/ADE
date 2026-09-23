@@ -2698,6 +2698,10 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade prs land <pr> --delete-remote-branch      Merge and delete the head branch on the remote
     $ ade prs close <pr>                            Close on GitHub; the branch is kept and you can reopen it
     $ ade prs reopen <pr>                           Reopen a closed PR
+    $ ade prs draft <pr>                            Convert an open PR back to a draft
+    $ ade prs ready <pr>                            Mark a draft PR ready for review
+    $ ade prs auto-merge <pr> on --method squash    Arm GitHub auto-merge (method defaults to squash)
+    $ ade prs auto-merge <pr> off                   Disarm auto-merge
     $ ade prs cleanup-branch <pr> --delete-remote-branch
                                                     Delete a merged/closed PR's branch (local too, unless --keep-local)
     $ ade prs link --lane <lane> --url <pr-url>     Point a lane at an existing GitHub PR
@@ -7861,6 +7865,49 @@ function buildPrPlan(args: string[]): CliPlan {
       label: `PR ${sub}`,
       steps: [
         actionStep("result", "pr", actionBySub[sub]!, collectGenericObjectArgs(args, input)),
+      ],
+    };
+  }
+  if (sub === "draft" || sub === "ready") {
+    // `draft` converts an open PR back to a draft; `ready` marks a draft ready
+    // for review. One service action (`pr.setDraft`) behind both spellings.
+    const id = requireValue(prId ?? firstPositional(args), "prId");
+    return {
+      kind: "execute",
+      label: `PR ${sub}`,
+      steps: [
+        actionStep(
+          "result",
+          "pr",
+          "setDraft",
+          collectGenericObjectArgs(args, { prId: id, draft: sub === "draft" }),
+        ),
+      ],
+    };
+  }
+  if (sub === "auto-merge" || sub === "automerge") {
+    // Flag values first, so `--method squash` never reads as the on/off positional.
+    const method = readValue(args, ["--method"]);
+    const off = readFlag(args, ["--off", "--disable"]);
+    const id = requireValue(prId ?? firstPositional(args), "prId");
+    const modeArg = (firstPositional(args) ?? "on").toLowerCase();
+    if (!off && modeArg !== "on" && modeArg !== "off") {
+      throw new CliUsageError("prs auto-merge takes on or off, e.g. 'ade prs auto-merge <pr> on --method squash'.");
+    }
+    const enabled = !off && modeArg === "on";
+    const input: JsonObject = { prId: id, enabled };
+    if (method != null) {
+      if (!enabled) throw new CliUsageError("--method only applies when turning auto-merge on.");
+      if (method !== "merge" && method !== "squash" && method !== "rebase") {
+        throw new CliUsageError("--method must be merge, squash, or rebase.");
+      }
+      input.method = method;
+    }
+    return {
+      kind: "execute",
+      label: `PR auto-merge ${enabled ? "on" : "off"}`,
+      steps: [
+        actionStep("result", "pr", "setAutoMerge", collectGenericObjectArgs(args, input)),
       ],
     };
   }

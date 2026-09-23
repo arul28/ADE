@@ -2188,6 +2188,8 @@ export type SyncRemoteCommandAction =
   | "prs.updateBranch"
   | "prs.close"
   | "prs.reopen"
+  | "prs.setDraft"
+  | "prs.setAutoMerge"
   | "prs.requestReviewers"
   | "prs.rerunChecks"
   | "prs.addComment"

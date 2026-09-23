@@ -217,6 +217,21 @@ advertises `features.rpcChannel`/`features.portForward` as `false`. The host als
 caps concurrent channels per peer (32 RPC channels, 64 forwards) so an
 authenticated peer cannot exhaust file descriptors or memory.
 
+**Forward flow control.** A large remote-to-local transfer (for example a
+49 MB dev-server bundle) can fill the local browser socket faster than the
+browser reads it. `SyncPortForwardClient`
+(`apps/desktop/src/main/services/remoteRuntime/syncPortForwardClient.ts`) does
+not close the forward in that case. When the local socket holds more than
+4 MiB, or `write()` returns `false`, the client sends `fwd_pause` for that
+`forwardId`. The host (`syncPairedChannelService.ts`) then pauses its TCP
+socket and holds new outbound chunks. The client keeps the bytes that are
+already in flight in a queue. When the local socket drains, the client writes
+the queue and then sends `fwd_resume`. The host resumes its socket and flushes
+the chunks it held. Two limits stop a transfer that never drains: the client
+closes the forward if its paused queue passes 64 MiB, or if the socket stays
+paused for 60 seconds. A host that does not know `fwd_pause` ignores it, and
+the 64 MiB limit still applies.
+
 **Relay trust boundary.** The sync WebSocket can reach the host over a direct
 LAN/tailnet route or through the cloud tunnel-relay. The relay is a plaintext
 byte pipe: TLS terminates *at* the relay and there is no end-to-end encryption

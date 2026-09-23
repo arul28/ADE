@@ -1,5 +1,4 @@
 import { useCallback, useSyncExternalStore } from "react";
-import type { ChatActionsTab } from "./ChatActionsDrawerPanel";
 import {
   isWorkLiveCardClosed,
   isWorkLivePreviewDisabled,
@@ -24,12 +23,9 @@ import {
  */
 export type ChatCompanionUiState = {
   chatActionsOpen: boolean;
-  chatActionsTab: ChatActionsTab;
   iosSimulatorOpen: boolean;
   appControlOpen: boolean;
   terminalDrawerOpen: boolean;
-  /** Floating PR pane (left side). Persisted per chat; explicit open/close only. */
-  prPaneOpen: boolean;
   /**
    * Which card the Apple Development tools drawer has open (round 4 §B1).
    *
@@ -54,11 +50,9 @@ export type ChatCompanionUiState = {
 
 export const DEFAULT_CHAT_COMPANION_UI_STATE: ChatCompanionUiState = {
   chatActionsOpen: false,
-  chatActionsTab: "agents",
   iosSimulatorOpen: false,
   appControlOpen: false,
   terminalDrawerOpen: false,
-  prPaneOpen: false,
   appleToolsGroup: "device",
   workLiveCardClosedByTool: {},
 };
@@ -79,21 +73,10 @@ const MAX_CHAT_COMPANION_UI_ENTRIES = 200;
  * `ChatCompanionUiState` so callers never have to carry it forward.
  */
 type StoredChatCompanionUiState = Partial<ChatCompanionUiState> & {
-  /** Pre-consolidation field name for `chatActionsOpen` + the "proof" tab. */
+  /** Pre-consolidation field name for `chatActionsOpen`. */
   proofDrawerOpen?: boolean;
   savedAtMs?: number;
 };
-
-function parseChatActionsTab(value: unknown): ChatActionsTab {
-  if (
-    value === "sources"
-    || value === "agents"
-    || value === "proof"
-    || value === "handoff"
-    || value === "missions"
-  ) return value;
-  return "agents";
-}
 
 const chatCompanionUiStateByKey = new Map<string, ChatCompanionUiState>();
 
@@ -116,13 +99,9 @@ export function readChatCompanionUiState(key: string): ChatCompanionUiState {
       const legacyProofOpen = parsed.proofDrawerOpen === true;
       const state: ChatCompanionUiState = {
         chatActionsOpen: parsed.chatActionsOpen === true || legacyProofOpen,
-        chatActionsTab: legacyProofOpen && parsed.chatActionsTab == null
-          ? "proof"
-          : parseChatActionsTab(parsed.chatActionsTab),
         iosSimulatorOpen: parsed.iosSimulatorOpen === true,
         appControlOpen: parsed.appControlOpen === true,
         terminalDrawerOpen: parsed.terminalDrawerOpen === true,
-        prPaneOpen: parsed.prPaneOpen === true,
         // `undefined` is "never written", which is the default card; an explicit
         // null is a drawer the user collapsed and must stay collapsed.
         appleToolsGroup: parsed.appleToolsGroup === undefined
@@ -159,7 +138,7 @@ export function writeChatCompanionUiState(key: string, state: ChatCompanionUiSta
  * Merge `patch` into the stored record for `key`.
  *
  * A whole-record write clobbers fields this caller does not own — older blobs
- * still carry `prPaneOpen` from the retired floating pane — so the write reads
+ * also carry fields that no reader uses now — so the write reads
  * forward first. Doing the read-merge-write here makes that structural.
  */
 export function patchChatCompanionUiState(
