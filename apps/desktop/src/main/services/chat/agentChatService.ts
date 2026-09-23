@@ -46484,6 +46484,10 @@ export function createAgentChatService(args: {
     const turnId = args.turnId ?? randomUUID();
     const displayText = args.displayText.trim().length ? args.displayText.trim() : args.promptText;
     const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
+    // Take the in-flight slot before any await — uploads are async, and
+    // checking earlier without holding the slot let two sends overlap and
+    // dispatch concurrently.
+    devinCloudSendInFlight.add(managed.session.id);
     // Deliver attachments for real: the cloud session cannot see local paths,
     // so each file is uploaded to Devin's attachment store and referenced by
     // URL in the message (`attachment_urls` on v3, `ATTACHMENT:` lines on v1).
@@ -46491,29 +46495,35 @@ export function createAgentChatService(args: {
     // fails the turn instead of showing in the transcript as sent.
     const attachmentUrls: string[] = [];
     const remoteImageHints: string[] = [];
-    for (const attachment of args.resolvedAttachments) {
-      if (attachment.type === "image-url") {
-        const url = attachment.url?.trim();
-        if (url) remoteImageHints.push(`Image URL: ${url}`);
-        continue;
+    let messageText = args.promptText;
+    try {
+      for (const attachment of args.resolvedAttachments) {
+        if (attachment.type === "image-url") {
+          const url = attachment.url?.trim();
+          if (url) remoteImageHints.push(`Image URL: ${url}`);
+          continue;
+        }
+        const filePath = attachment._resolvedPath;
+        if (!filePath || !fs.existsSync(filePath)) {
+          throw new Error(`Attachment '${attachment.path}' is no longer on disk — re-attach it and send again.`);
+        }
+        const bytes = fs.readFileSync(filePath);
+        if (bytes.length > DEVIN_ATTACHMENT_MAX_BYTES) {
+          throw new Error(`Attachment '${path.basename(filePath)}' is too large to upload to Devin (>50 MB).`);
+        }
+        attachmentUrls.push(await aiIntegrationService.uploadDevinCloudAttachment({
+          name: path.basename(filePath),
+          bytes,
+          contentType: inferAttachmentMediaType(attachment) ?? undefined,
+        }));
       }
-      const filePath = attachment._resolvedPath;
-      if (!filePath || !fs.existsSync(filePath)) {
-        throw new Error(`Attachment '${attachment.path}' is no longer on disk — re-attach it and send again.`);
+      if (remoteImageHints.length) {
+        messageText = [args.promptText, ...remoteImageHints].join("\n\n");
       }
-      const bytes = fs.readFileSync(filePath);
-      if (bytes.length > DEVIN_ATTACHMENT_MAX_BYTES) {
-        throw new Error(`Attachment '${path.basename(filePath)}' is too large to upload to Devin (>50 MB).`);
-      }
-      attachmentUrls.push(await aiIntegrationService.uploadDevinCloudAttachment({
-        name: path.basename(filePath),
-        bytes,
-        contentType: inferAttachmentMediaType(attachment) ?? undefined,
-      }));
+    } catch (error) {
+      devinCloudSendInFlight.delete(managed.session.id);
+      throw error;
     }
-    const messageText = remoteImageHints.length
-      ? [args.promptText, ...remoteImageHints].join("\n\n")
-      : args.promptText;
     setSessionActive(managed);
     emitPreparedUserMessage(managed, {
       text: userText,
@@ -46530,7 +46540,6 @@ export function createAgentChatService(args: {
       turnStatus: "started",
       turnId,
     });
-    devinCloudSendInFlight.add(managed.session.id);
     // A fresh send means the remote turn is live again — reset completion so
     // the mirror can emit `done` for this turn, not just the first one.
     devinCloudDoneAnnounced.delete(managed.session.id);
