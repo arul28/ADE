@@ -16066,11 +16066,13 @@ export function createAgentChatService(args: {
         : prevPersisted?.devinCloudConsumedEchoFingerprints?.length
           ? { devinCloudConsumedEchoFingerprints: prevPersisted.devinCloudConsumedEchoFingerprints }
           : {})),
-      ...((devinCloudPendingEchoPairs.get(managed.session.id)?.length
+      // A loaded list is authoritative even empty — carrying prevPersisted
+      // forward here would resurrect pairs whose echoes already arrived.
+      ...(devinCloudPendingEchoPairs.has(managed.session.id)
         ? { devinCloudPendingEchoPairs: devinCloudPendingEchoPairs.get(managed.session.id) }
         : prevPersisted?.devinCloudPendingEchoPairs?.length
           ? { devinCloudPendingEchoPairs: prevPersisted.devinCloudPendingEchoPairs }
-          : {})),
+          : {}),
       // Boolean, not a latch — the mirror clears this when Devin stops waiting,
       // so a stale true must be rewritten false rather than carried forward.
       // Seed the live set first: a persist that runs before the mirror's first
