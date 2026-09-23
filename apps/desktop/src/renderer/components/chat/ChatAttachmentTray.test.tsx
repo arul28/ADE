@@ -147,6 +147,35 @@ describe("ChatAttachmentTray", () => {
     expect(screen.getByAltText("local-outside-project.png").getAttribute("src")).toBe("data:image/png;base64,abc123");
   });
 
+  it("reads a remote chat's thumbnail on that machine and never retries it on this computer", async () => {
+    const machinePin = {
+      kind: "remote" as const,
+      key: "remote:studio:project-1",
+      targetId: "studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-1",
+      rootPath: "/Users/admin/Projects/ADE",
+      displayName: "ADE",
+    };
+    getRuntimeImageDataUrl.mockRejectedValueOnce(new Error("Remote ADE service connection closed."));
+
+    render(
+      <ChatAttachmentTray
+        attachments={[{ path: "/Users/admin/Projects/ADE/.ade/attachments/remote.png", type: "image" }]}
+        mode="standard"
+        machinePin={machinePin}
+      />,
+    );
+
+    await waitFor(() => expect(getRuntimeImageDataUrl).toHaveBeenCalledWith(
+      "/Users/admin/Projects/ADE/.ade/attachments/remote.png",
+      machinePin,
+    ));
+    // The read failed and settled as "No preview", with no local retry.
+    expect(await screen.findByText("No preview")).toBeTruthy();
+    expect(getImageDataUrl).not.toHaveBeenCalled();
+  });
+
   it("renders pending image attachments with cancellable previews", () => {
     const onRemovePendingImageAttachment = vi.fn();
 

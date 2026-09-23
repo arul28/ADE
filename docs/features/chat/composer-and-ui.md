@@ -1119,6 +1119,19 @@ allowing a cross-provider fork.
   all fall back to `chat.saveTempAttachment` with the legacy 10 MB
   image-only contract. The capability is purely additive; **iOS stays on
   the legacy path for images** and is not offered the upload route.
+  Pasted bytes take the same route. Preload `agentChat.saveTempAttachment`
+  checks the machine first: for a paired machine (an explicit remote pin,
+  or no pin in a window bound to one) that takes uploads, it sends the
+  base64 to `IPC.remoteRuntimeUploadChatAttachment` as `data`. Main writes
+  the bytes to a private temp file (`withTempAttachmentFile`), runs the same
+  two-leg upload, and removes the file. A failed upload logs an
+  `[ade-attachments]` warning and falls back to the runtime command. The
+  composer's clipboard paste and the terminal's image paste both go through
+  this call, so neither sends a screenshot inside one runtime command when
+  the machine can take a stream.
+- **Thumbnails.** An attachment's thumbnail is read on the chat's machine
+  (`agentChat.getImageDataUrl(path, machinePin)`). For a remote chat the tray
+  never retries the path on this computer, where it does not exist.
 - **File-shaped attachments over sync (iOS).** Documents and videos cannot
   use either of the routes above: `chat.saveTempAttachment` sniffs for an
   image MIME and rejects them, and the HTTP upload route needs a direct TCP

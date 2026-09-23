@@ -50,7 +50,12 @@ import type {
 } from "../../../shared/types";
 import { isRemoteRuntimeEventCategory } from "../../../shared/types/remoteRuntime";
 import type { ChatAttachmentStagingMode } from "../../../shared/types/chat";
-import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../../../shared/chatAttachmentLimits";
+import {
+  LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
+  MAX_CHAT_ATTACHMENT_BYTES,
+  attachmentTooLargeMessage,
+} from "../../../shared/chatAttachmentLimits";
+import { withTempAttachmentFile } from "../remoteRuntime/attachmentUploadClient";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
 import { matchRemoteProjectByRootPath } from "../attention/remoteProjectIdentity";
 import { RemoteConnectionPool } from "../remoteRuntime/remoteConnectionPool";
@@ -1194,23 +1199,34 @@ export function registerRuntimeBridge({
       arg: {
         id: string;
         projectId: string;
-        sourcePath: string;
+        /** A file on this machine. */
+        sourcePath?: string;
+        /** Or base64 bytes with no file behind them, such as a pasted image. */
+        data?: string;
         filename: string;
       },
     ): Promise<{ path: string }> => {
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
       const projectId = typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
       const sourcePath = typeof arg?.sourcePath === "string" ? arg.sourcePath.trim() : "";
+      const data = typeof arg?.data === "string" ? arg.data : "";
       const filename = typeof arg?.filename === "string" ? arg.filename.trim() : "";
       if (!id) throw new Error("Remote target id is required.");
       if (!projectId) throw new Error("Remote project is required.");
-      if (!sourcePath) throw new Error("Attachment source path is required.");
-      return await remoteConnectionService.uploadChatAttachment({
+      if (!sourcePath && !data) throw new Error("Attachment source path is required.");
+      const upload = (source: string) => remoteConnectionService.uploadChatAttachment({
         targetId: id,
         projectId,
-        sourcePath,
+        sourcePath: source,
         filename,
       });
+      if (sourcePath) return await upload(sourcePath);
+      // Check the encoded length first, so an oversized paste is refused
+      // before it is decoded into a second copy.
+      if (data.length > Math.ceil(MAX_CHAT_ATTACHMENT_BYTES / 3) * 4) {
+        throw new Error(attachmentTooLargeMessage(filename, Math.floor(data.length * 0.75), MAX_CHAT_ATTACHMENT_BYTES));
+      }
+      return await withTempAttachmentFile(Buffer.from(data, "base64"), upload);
     },
   );
 

@@ -16,6 +16,7 @@ import { WORK_SURFACE_REVEALED_EVENT } from "./workSurfaceVisibility";
 import { installMacShiftSelectionBridge } from "./terminalMacShiftSelection";
 import { openLinkFromUi } from "../../lib/openExternal";
 import { isWebClientMode } from "../../lib/webClientMode";
+import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import type { TerminalToolType } from "../../../shared/types";
 import { peekPendingSessionAnchor, takePendingSessionAnchor } from "./pendingSessionAnchors";
 import {
@@ -56,6 +57,7 @@ type RuntimeSnapshot = {
   exitCode: number | null;
   renderer: TerminalRendererMode;
   health: TerminalHealthCounters;
+  imagePasteNotice: string | null;
 };
 
 type TerminalRenderPreferences = Pick<TerminalPreferences, "fontFamily" | "fontSize" | "lineHeight" | "scrollback">;
@@ -158,6 +160,9 @@ type CachedRuntime = {
   active: boolean;
   visible: boolean;
   imagePasteMode: TerminalImagePasteMode;
+  /** The last failed image paste, shown in the pane until it times out. */
+  imagePasteNotice: string | null;
+  imagePasteNoticeTimer: ReturnType<typeof setTimeout> | null;
   bracketedPasteMode: boolean;
   mouseTrackingModes: Set<number>;
   macShiftSelectionCleanup: (() => void) | null;
@@ -926,7 +931,8 @@ function notifyRuntime(runtime: CachedRuntime) {
   const snapshot: RuntimeSnapshot = {
     exitCode: runtime.exitCode,
     renderer: runtime.renderer,
-    health: cloneHealth(runtime.health)
+    health: cloneHealth(runtime.health),
+    imagePasteNotice: runtime.imagePasteNotice,
   };
   for (const listener of runtime.listeners) {
     try {
@@ -1430,27 +1436,67 @@ function base64FromImageData(value: string): string {
   return comma >= 0 ? value.slice(comma + 1) : "";
 }
 
+/** How long a failed image paste stays visible in the pane. */
+const IMAGE_PASTE_NOTICE_MS = 8_000;
+
+/**
+ * Say why an image paste did nothing, in the console and in the pane.
+ *
+ * A failed save used to return `false`, and every caller dropped that, so the
+ * user saw a paste that did nothing. The console line reaches the main log as
+ * `window.console`, so a report from a user carries the reason.
+ */
+function reportImagePasteFailure(runtime: CachedRuntime, error: unknown): void {
+  const reason = stripElectronErrorWrapper(error instanceof Error ? error.message : String(error ?? ""))
+    || "the save failed with no reason.";
+  console.warn(
+    `[ade-term] image paste failed session=${runtime.sessionId} machine=${runtime.runtimePin?.kind ?? "bound"} reason=${reason}`,
+  );
+  if (runtime.disposed) return;
+  runtime.imagePasteNotice = `Couldn't attach the image: ${reason}`;
+  if (runtime.imagePasteNoticeTimer) clearTimeout(runtime.imagePasteNoticeTimer);
+  runtime.imagePasteNoticeTimer = setTimeout(() => clearImagePasteNotice(runtime), IMAGE_PASTE_NOTICE_MS);
+  notifyRuntime(runtime);
+}
+
+function clearImagePasteNotice(runtime: CachedRuntime): void {
+  if (runtime.imagePasteNoticeTimer) clearTimeout(runtime.imagePasteNoticeTimer);
+  runtime.imagePasteNoticeTimer = null;
+  if (runtime.imagePasteNotice == null) return;
+  runtime.imagePasteNotice = null;
+  notifyRuntime(runtime);
+}
+
+/**
+ * Save the image on the session's machine and paste its path.
+ *
+ * Returns false only when there was nothing to attach. A failed save is
+ * reported and counts as handled, so the paste is not tried a second time.
+ */
 async function attachClipboardImageToRuntime(
   runtime: CachedRuntime,
   image: TerminalClipboardImage,
 ): Promise<boolean> {
   if (runtime.disposed) return false;
+  const data = base64FromImageData(image.data);
+  if (!data) return false;
+  const attachmentArgs = {
+    data,
+    filename: image.filename || "clipboard.png",
+  };
+  let saved: { path: string };
   try {
-    const data = base64FromImageData(image.data);
-    if (!data) return false;
-    const attachmentArgs = {
-      data,
-      filename: image.filename || "clipboard.png",
-    };
-    const saved = runtime.runtimePin
+    saved = runtime.runtimePin
       ? await window.ade.agentChat.saveTempAttachment(attachmentArgs, runtime.runtimePin)
       : await window.ade.agentChat.saveTempAttachment(attachmentArgs);
-    if (runtime.disposed) return false;
-    writePtyInput(runtime, bracketedPaste(formatClipboardImageForPty(saved.path, image.mimeType)));
+  } catch (error) {
+    reportImagePasteFailure(runtime, error);
     return true;
-  } catch {
-    return false;
   }
+  if (runtime.disposed) return false;
+  clearImagePasteNotice(runtime);
+  writePtyInput(runtime, bracketedPaste(formatClipboardImageForPty(saved.path, image.mimeType)));
+  return true;
 }
 
 async function pasteRuntimeClipboardImageAttachment(runtime: CachedRuntime): Promise<boolean> {
@@ -1458,8 +1504,10 @@ async function pasteRuntimeClipboardImageAttachment(runtime: CachedRuntime): Pro
   let image: TerminalClipboardImage | null = null;
   try {
     image = await window.ade.app.readClipboardImage();
-  } catch {
-    return false;
+  } catch (error) {
+    // The read refuses an image over the size cap; that reason is worth showing.
+    reportImagePasteFailure(runtime, error);
+    return true;
   }
   if (!image || runtime.disposed) return false;
   return await attachClipboardImageToRuntime(runtime, image);
@@ -1572,6 +1620,7 @@ function teardownRuntime(runtime: CachedRuntime) {
   // here kept missing: replaceFitRetryTimer and rehydrateDimsTimer.
   clearRuntimeHydrationTimers(runtime);
   if (runtime.invalidFitRetryTimer) clearTimeout(runtime.invalidFitRetryTimer);
+  if (runtime.imagePasteNoticeTimer) clearTimeout(runtime.imagePasteNoticeTimer);
   runtime.macShiftSelectionCleanup?.();
 
   try {
@@ -3056,6 +3105,8 @@ function createRuntime(args: {
     active: true,
     visible: true,
     imagePasteMode: args.imagePasteMode,
+    imagePasteNotice: null,
+    imagePasteNoticeTimer: null,
     bracketedPasteMode: false,
     mouseTrackingModes: new Set(),
     macShiftSelectionCleanup: null,
@@ -3296,7 +3347,8 @@ export function getTerminalRuntimeSnapshot(sessionId: string): RuntimeSnapshot |
   return {
     exitCode: runtime.exitCode,
     renderer: runtime.renderer,
-    health: cloneHealth(runtime.health)
+    health: cloneHealth(runtime.health),
+    imagePasteNotice: runtime.imagePasteNotice,
   };
 }
 
@@ -3400,6 +3452,7 @@ export function TerminalView({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const runtimeRef = useRef<CachedRuntime | null>(null);
   const [exited, setExited] = useState<number | null>(null);
+  const [imagePasteNotice, setImagePasteNotice] = useState<string | null>(null);
 
   const termTheme = useMemo(() => terminalThemes[isDarkTheme(appTheme) ? "dark" : "light"], [appTheme]);
   const resolvedPreferences = useMemo<TerminalRenderPreferences>(() => ({
@@ -3444,9 +3497,11 @@ export function TerminalView({
 
     const onRuntimeSnapshot: RuntimeListener = (snapshot) => {
       setExited(snapshot.exitCode);
+      setImagePasteNotice(snapshot.imagePasteNotice);
     };
     runtime.listeners.add(onRuntimeSnapshot);
     setExited(runtime.exitCode);
+    setImagePasteNotice(runtime.imagePasteNotice);
 
     if (runtime.host.parentElement !== el) {
       el.replaceChildren(runtime.host);
@@ -3878,6 +3933,27 @@ export function TerminalView({
       {exited != null ? (
         <div className="pointer-events-none absolute bottom-2 right-2 rounded-lg border border-border/15 bg-card backdrop-blur-sm shadow-card px-2 py-1 text-[11px] text-muted-fg">
           exited {exited}
+        </div>
+      ) : null}
+      {imagePasteNotice != null ? (
+        <div
+          role="status"
+          data-ade-terminal-image-paste-notice
+          className="absolute bottom-2 left-2 flex max-w-[calc(100%-1rem)] items-center gap-2 rounded-lg border border-border/15 bg-card/95 backdrop-blur-sm shadow-card px-2 py-1 text-[11px] text-fg"
+        >
+          <span className="min-w-0 break-words">{imagePasteNotice}</span>
+          <button
+            type="button"
+            onClick={() => {
+              const runtime = runtimeRef.current;
+              if (runtime) clearImagePasteNotice(runtime);
+              else setImagePasteNotice(null);
+            }}
+            aria-label="Dismiss image paste message"
+            className="rounded px-1 text-muted-fg transition-colors hover:text-fg"
+          >
+            ×
+          </button>
         </div>
       ) : null}
       {scrollHint != null && exited == null ? (

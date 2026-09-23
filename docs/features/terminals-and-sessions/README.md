@@ -1282,9 +1282,17 @@ Renderer surfaces:
   counters, and transcript replay mode for disposed chat-CLI sessions so an
   ended tracked CLI tab can repaint the full retained transcript before falling
   back to `terminal.preview`. Work-tracked agent CLI terminals paste clipboard
-  images by saving the bytes as chat temp attachments through the active runtime
-  and bracketed-pasting a short path/type stub into the PTY, while standalone
-  terminals keep the native clipboard-image shortcut behavior. Selected terminal
+  images by saving the bytes as chat temp attachments on the session's machine
+  (`agentChat.saveTempAttachment` with the session's `runtimePin`) and
+  bracketed-pasting a short path/type stub into the PTY, while standalone
+  terminals keep the native clipboard-image shortcut behavior. On a paired
+  machine that takes the streamed upload, preload sends the bytes through that
+  upload, not the runtime command (see
+  [Composer and UI](../chat/composer-and-ui.md), "Remote hosts"). A failed save
+  is never silent: the terminal logs an `[ade-term] image paste failed` warning
+  (it reaches the main log as `window.console`) and shows "Couldn't attach the
+  image: <reason>" in the pane for 8 seconds. A failed save counts as handled, so
+  the paste is not tried a second time. Selected terminal
   text copies through the local desktop clipboard bridge (with browser clipboard
   fallback for previews). Shift+drag remains available for local text
   selection when a full-screen CLI enables terminal mouse tracking; on macOS,

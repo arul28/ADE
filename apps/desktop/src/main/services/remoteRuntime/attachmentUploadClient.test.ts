@@ -1,6 +1,9 @@
-import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 
-import { parseRemoteAttachmentUploadTicket } from "./attachmentUploadClient";
+import { parseRemoteAttachmentUploadTicket, withTempAttachmentFile } from "./attachmentUploadClient";
 
 /**
  * The ticket arrives over the sync socket as untyped JSON from another machine,
@@ -71,5 +74,41 @@ describe("parseRemoteAttachmentUploadTicket", () => {
     expect(parseRemoteAttachmentUploadTicket(undefined)).toBeNull();
     expect(parseRemoteAttachmentUploadTicket("tkt-abc")).toBeNull();
     expect(parseRemoteAttachmentUploadTicket(7)).toBeNull();
+  });
+});
+
+describe("withTempAttachmentFile", () => {
+  const roots: string[] = [];
+  afterEach(async () => {
+    await Promise.all(roots.splice(0).map((root) => fs.promises.rm(root, { recursive: true, force: true })));
+  });
+
+  async function tempRoot(): Promise<string> {
+    const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ade-temp-attachment-test-"));
+    roots.push(root);
+    return root;
+  }
+
+  it("hands the upload a file with the exact bytes, then removes it", async () => {
+    const root = await tempRoot();
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff]);
+    let seenPath = "";
+    const result = await withTempAttachmentFile(bytes, async (sourcePath) => {
+      seenPath = sourcePath;
+      expect(await fs.promises.readFile(sourcePath)).toEqual(bytes);
+      return { path: "/remote/landed.png" };
+    }, root);
+
+    expect(result).toEqual({ path: "/remote/landed.png" });
+    expect(seenPath.startsWith(root)).toBe(true);
+    await expect(fs.promises.readdir(root)).resolves.toEqual([]);
+  });
+
+  it("removes the file when the upload fails, and passes the failure on", async () => {
+    const root = await tempRoot();
+    await expect(withTempAttachmentFile(Buffer.from("x"), async () => {
+      throw new Error("Attachment upload failed (HTTP 502).");
+    }, root)).rejects.toThrow("Attachment upload failed (HTTP 502).");
+    await expect(fs.promises.readdir(root)).resolves.toEqual([]);
   });
 });

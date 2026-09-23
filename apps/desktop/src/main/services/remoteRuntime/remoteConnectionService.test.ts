@@ -20,6 +20,7 @@ import {
   encodePairingQrUrl,
 } from "../../../shared/pairingQr";
 import type { RemoteConnectionPool } from "./remoteConnectionPool";
+import { withTempAttachmentFile } from "./attachmentUploadClient";
 import {
   automaticReconnectBackoffMs,
   RemoteConnectionService,
@@ -1648,6 +1649,67 @@ describe("uploadChatAttachment", () => {
     expect(uploads.pendingCount()).toBe(0);
     await expect(fs.promises.readdir(projectAttachmentsDir(projectRoot)))
       .resolves.toHaveLength(1);
+  });
+
+  it("streams pasted bytes, which have no file, through a temp file on the same route", async () => {
+    // A terminal or composer paste holds bytes in memory. The IPC handler
+    // writes them to a temp file and hands that to the same two-leg upload a
+    // picked file takes, so a paste to a paired machine never rides one
+    // runtime command.
+    const projectRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ade-upload-paste-project-"));
+    const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ade-upload-paste-temp-"));
+    tempDirs.push(projectRoot, tempRoot);
+
+    const uploads = createAttachmentUploadRegistry();
+    const server = http.createServer((request, response) => {
+      if (uploads.handleRequest(request, response)) return;
+      response.writeHead(426);
+      response.end();
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    const runtime = {
+      projectRoot,
+      agentChatService: {},
+      syncHostService: {
+        issueAttachmentUploadTicket: (args: { projectRoot: string; filename: string; deviceId?: string | null }) =>
+          uploads.issue(args),
+      },
+    };
+    const remote = target("paired-host", Date.now());
+    const service = new RemoteConnectionService({
+      list: vi.fn(() => [remote]),
+      get: vi.fn((id: string) => (id === remote.id ? remote : null)),
+      update: vi.fn(),
+    } as unknown as RemoteTargetRegistry, {
+      onEntryEvicted: vi.fn(() => () => {}),
+      getAttachmentUploadRoute: vi.fn(async () => ({
+        url: `http://127.0.0.1:${port}/ade-attachments/upload`,
+        maxBytes: MAX_CHAT_ATTACHMENT_BYTES,
+      })),
+      callActionForTarget: vi.fn(
+        async (
+          _target: RemoteRuntimeTarget,
+          _projectId: string,
+          request: { domain: string; action: string; args?: Record<string, unknown> },
+        ) => dispatchRunAdeAction(runtime, request),
+      ),
+    } as unknown as RemoteConnectionPool);
+
+    const png = Buffer.from("89504e470d0a1a0a0000000d4948445200000001000000010806000000", "hex");
+    const staged = await withTempAttachmentFile(png, (sourcePath) => service.uploadChatAttachment({
+      targetId: remote.id,
+      projectId: "project-1",
+      sourcePath,
+      filename: "clipboard-image.png",
+    }), tempRoot);
+
+    expect(path.dirname(staged.path)).toBe(projectAttachmentsDir(projectRoot));
+    expect(path.extname(staged.path)).toBe(".png");
+    await expect(fs.promises.readFile(staged.path)).resolves.toEqual(png);
+    await expect(fs.promises.readdir(tempRoot)).resolves.toEqual([]);
   });
 
   it("reports the machine cannot accept uploads when it is not hosting sync", async () => {

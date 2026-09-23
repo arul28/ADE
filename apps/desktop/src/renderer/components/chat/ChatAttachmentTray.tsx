@@ -1,4 +1,4 @@
-import { Suspense, forwardRef, lazy, useEffect, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { Suspense, forwardRef, lazy, useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { Copy, GithubLogo, Globe, Image, X } from "@phosphor-icons/react";
 import type { AgentChatContextAttachment, AgentChatFileRef, ChatSurfaceMode } from "../../../shared/types";
 import type { OpenProjectBinding } from "../../../shared/types/core";
@@ -298,6 +298,10 @@ function ImageAttachmentPreview({
     fallbackImageDataUrl: dataUrl,
   });
 
+  // The read is keyed on the pin's identity, not the object, so a re-created
+  // pin for the same machine does not read the image again.
+  const machinePinRef = useRef(machinePin);
+  machinePinRef.current = machinePin;
   useEffect(() => {
     let cancelled = false;
     setDataUrl(initialPreviewUrl ?? null);
@@ -313,14 +317,21 @@ function ImageAttachmentPreview({
       setPreviewFailed(true);
       return;
     }
+    // A remote chat's attachment path names a file on that machine. Read it
+    // there, and never retry it on this computer, where the path does not exist.
+    const pin = machinePinRef.current;
+    const remoteOwner = pin?.kind === "remote";
     const readPreview = async (): Promise<{ dataUrl: string }> => {
       if (!runtimeImageDataUrl) {
+        if (remoteOwner) throw new Error("This build cannot read images from another machine.");
         return localImageDataUrl!(attachment.path);
       }
       try {
-        return await runtimeImageDataUrl(attachment.path);
+        return pin
+          ? await runtimeImageDataUrl(attachment.path, pin)
+          : await runtimeImageDataUrl(attachment.path);
       } catch (error) {
-        if (!localImageDataUrl) throw error;
+        if (remoteOwner || !localImageDataUrl) throw error;
         return localImageDataUrl(attachment.path);
       }
     };
@@ -334,7 +345,7 @@ function ImageAttachmentPreview({
     return () => {
       cancelled = true;
     };
-  }, [attachment.path, initialPreviewUrl]);
+  }, [attachment.path, initialPreviewUrl, machinePin?.key]);
 
   useEffect(() => {
     if (copyState === "idle") return;

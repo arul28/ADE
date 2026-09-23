@@ -1935,6 +1935,55 @@ describe("TerminalView", () => {
     }, runtimePin);
   });
 
+  it("says why a remote image paste failed instead of dropping it", async () => {
+    const runtimePin = remoteRuntimePin("image-fail", "/remote/fail/project");
+    (window.ade.app.readClipboardImage as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: "failing-image-data",
+      filename: "clipboard.png",
+      mimeType: "image/png",
+    });
+    const saveTempAttachment = window.ade.agentChat.saveTempAttachment as unknown as ReturnType<typeof vi.fn>;
+    saveTempAttachment.mockRejectedValueOnce(new Error(
+      "Error invoking remote method 'ade.remoteRuntime.callAction': Error: Remote ADE service connection closed.",
+    ));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const { container } = render(
+        <TerminalView
+          ptyId="pty-failing-image-paste"
+          sessionId="session-failing-image-paste"
+          runtimePin={runtimePin}
+          isActive
+          imagePasteMode="runtime-attachment"
+        />,
+      );
+      await flushInitialHydration();
+      const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+      ptyWrite.mockClear();
+
+      const terminal = mockState.terminalInstances.at(-1) as { element: HTMLElement | null } | undefined;
+      terminal?.element?.dispatchEvent(createPasteEvent(""));
+      await flushPromises();
+
+      // One attempt, no image text sent to the CLI, and the reason is visible.
+      expect(saveTempAttachment).toHaveBeenCalledTimes(1);
+      expect(ptyWrite).not.toHaveBeenCalled();
+      const notice = container.querySelector("[data-ade-terminal-image-paste-notice]");
+      expect(notice?.textContent).toContain("Couldn't attach the image: Remote ADE service connection closed.");
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(
+        "[ade-term] image paste failed session=session-failing-image-paste machine=remote reason=Remote ADE service connection closed.",
+      ));
+
+      act(() => {
+        (notice?.querySelector("button") as HTMLButtonElement | null)?.click();
+      });
+      expect(container.querySelector("[data-ade-terminal-image-paste-notice]")).toBeNull();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("sends Shift+Enter as a bracketed-paste newline only while the terminal requests bracketed paste mode", async () => {
     render(<TerminalView ptyId="pty-shift-enter" sessionId="session-shift-enter" isActive />);
     await flushAllTimers();
