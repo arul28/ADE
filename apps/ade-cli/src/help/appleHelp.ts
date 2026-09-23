@@ -892,12 +892,14 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Deletes this lane's cloned simulator. Attached devices refuse unless --force,
   and --force only detaches them — ADE never deletes a simulator it did not create.
+  Refused while another chat is driving the device, like stop.
 
     $ ade --socket apple device-delete --text
     $ ade --socket apple device-delete --force --text
 
   Flags:
     --force, -f            Detach an attached device instead of refusing.
+    --ignore-ownership     Delete even while another chat is driving it. Ask first.
     --lane, --lane-id <id> Lane whose device to delete.
 `,
   "record-start": `${ADE_BANNER}

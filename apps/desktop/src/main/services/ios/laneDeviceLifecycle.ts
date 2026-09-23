@@ -142,9 +142,16 @@ export function createLaneDeviceLifecycle<R extends LifecycleLaneRuntime>(deps: 
    * Give up the lane's device for good. A clone is deleted (the registry
    * powers it off first); an attached device is only detached, and only with
    * `force`, because ADE never deletes a simulator it did not create.
+   *
+   * Same single-owner rule as `deviceDetach`, checked first. `force` does not
+   * step around it: it only says "detach an attached device".
    */
   const deviceDelete = async (deleteArgs: AppleDeviceDeleteArgs = {}): Promise<void> => {
     const runtime = deps.requireLaneScope(deleteArgs);
+    deps.assertSessionOwner(runtime, {
+      chatSessionId: deleteArgs.chatSessionId,
+      ignoreOwnership: deleteArgs.ignoreOwnership,
+    });
     const laneDevice = deps.laneDevices.get(runtime.key);
     if (laneDevice?.origin === "attached" && deleteArgs.force) {
       await deviceDetach({ laneId: runtime.key, chatSessionId: deleteArgs.chatSessionId, ignoreOwnership: true });
@@ -154,7 +161,7 @@ export function createLaneDeviceLifecycle<R extends LifecycleLaneRuntime>(deps: 
     // a running stream leaves the reader waiting on bytes that never come.
     await deps.shutdown({ laneId: runtime.laneId, chatSessionId: deleteArgs.chatSessionId, ignoreOwnership: true })
       .catch(() => undefined);
-    await deps.laneDevices.deviceDelete({ laneId: runtime.key, force: deleteArgs.force });
+    await deps.laneDevices.deviceDelete({ laneId: runtime.key });
     deps.invalidateStatus(runtime);
     // The lane's binding changed ("Choose another device"): every surface that
     // shows the lane's device re-reads now rather than on its next poll.

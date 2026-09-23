@@ -2576,7 +2576,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
      * simulator owned by two lanes.
      */
     releaseLaneDevice: async (device) => {
-      await releaseLaneHold(device);
+      await lifecycle.releaseLaneHold(device);
       args.logger.info("apple.lane_device_released_for_takeover", {
         laneId: device.laneId,
         udid: device.udid,
@@ -2602,7 +2602,6 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     emit: (payload) => emit(payload),
     logger: args.logger,
   });
-  const releaseLaneHold = lifecycle.releaseLaneHold;
 
   /**
    * The recording half. Unit 2C owns the implementation; this service only
@@ -5293,7 +5292,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       // viewer set, so it never gets here; `liftStreamBitrateCap` does that.
       if (streamArgs.localViewer) markLocalViewer(runtime.laneId);
       if (bitrateKbps != null && (runtime.streamStatus.bitrateKbps ?? null) !== bitrateKbps) {
-        return applyLiveBitrateCap(runtime, { udid: device.udid, fps: requestedFps, scale, bitrateKbps });
+        return applyLiveBitrateCap(
+          runtime,
+          { udid: device.udid, fps: requestedFps, scale, bitrateKbps },
+          nextCapGeneration(runtime),
+        );
       }
       return runtime.streamStatus;
     }
@@ -5378,19 +5381,26 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   /** Counts caps sent to each lane's live encoder, so only the newest answer writes the status. */
   const capGenerations = new WeakMap<LaneRuntime, number>();
 
+  /** Take the lane's next cap generation. The caller holds it and passes it to `applyLiveBitrateCap`. */
+  const nextCapGeneration = (runtime: LaneRuntime): number => {
+    const generation = (capGenerations.get(runtime) ?? 0) + 1;
+    capGenerations.set(runtime, generation);
+    return generation;
+  };
+
   /**
    * Send a new cap to a running capture's encoder. `bitrateKbps: 0` removes
    * the cap and the helper goes back to its own default.
    *
    * `capture-start` on a running device keeps its server, its address and
-   * its readers; the helper rebuilds only the encoder.
+   * its readers; the helper rebuilds only the encoder. `generation` comes from
+   * `nextCapGeneration`.
    */
   const applyLiveBitrateCap = async (
     runtime: LaneRuntime,
     cap: { udid: string; fps: number; scale: number; bitrateKbps: number },
+    generation: number,
   ): Promise<IosSimulatorStreamStatus> => {
-    const generation = (capGenerations.get(runtime) ?? 0) + 1;
-    capGenerations.set(runtime, generation);
     const payload = await helper().send({
       type: "capture-start",
       udid: cap.udid,
@@ -5443,20 +5453,20 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     // Cleared before the helper call: a remote viewer that rejoins meanwhile
     // then sees no cap and sends its own, which the helper applies after this.
     runtime.streamStatus = { ...status, bitrateKbps: null };
-    const lastGeneration = capGenerations.get(runtime) ?? 0;
+    const generation = nextCapGeneration(runtime);
     try {
       const lifted = await applyLiveBitrateCap(runtime, {
         udid: status.deviceUdid,
         fps: clampStreamFps(status.targetFps),
         scale: 1,
         bitrateKbps: 0,
-      });
+      }, generation);
       args.logger.info("apple.stream_cap_lifted", { laneId: lane, deviceUdid: status.deviceUdid });
       return lifted;
     } catch (error) {
       // Refused (a helper too old to know 0): the cap stays, unless a newer
       // cap was sent meanwhile.
-      if (capGenerations.get(runtime) === lastGeneration + 1) {
+      if (capGenerations.get(runtime) === generation) {
         runtime.streamStatus = { ...runtime.streamStatus, bitrateKbps: status.bitrateKbps };
       }
       throw error;

@@ -21,9 +21,9 @@ import { pathKey } from "../shared/pathCompare";
  * callers that can be ambiguous try the exact key first.
  */
 function remoteRootPathKey(value: string, fold: boolean): string {
-  // `linux` keeps `pathKey` case-sensitive for POSIX spellings; folding is
-  // applied here instead, so the caller — not the host platform — decides.
-  const key = pathKey(value, pathFlavorOf(value) === "win32" ? "win32" : "linux");
+  // The `posix` flavor keeps `pathKey` case-sensitive for POSIX spellings;
+  // folding is applied here instead, so the caller, not the host, decides.
+  const key = pathKey(value, pathFlavorOf(value));
   return fold ? key.toLowerCase() : key;
 }
 

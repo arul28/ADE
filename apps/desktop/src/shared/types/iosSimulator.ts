@@ -1561,10 +1561,17 @@ export type AppleDeviceListResult = {
   disk?: AppleDeviceDiskUsage | null;
 };
 
+/**
+ * `deviceDelete`: the lane gives up its device for good. Same single-owner
+ * rule as `deviceDetach`; `force` does not step around it.
+ */
 export type AppleDeviceDeleteArgs = {
   laneId?: string | null;
   chatSessionId?: string | null;
+  /** Detach an attached device instead of refusing it. */
   force?: boolean | null;
+  /** Delete for whoever is running, without claiming to be them (the Work pane). */
+  ignoreOwnership?: boolean | null;
 };
 
 /**

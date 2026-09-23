@@ -371,6 +371,37 @@ describe("explicit proof capture", () => {
     expect(requests.map(([request]) => request?.provenance?.source)).toEqual(["ade-capture", "attached"]);
   });
 
+  it("regression: a failed ingest leaves the capture ADE's for the retry, once", async () => {
+    const fixture = createRuntime();
+    const { handler, laneRoot } = await laneAgentHandler(fixture);
+    const shotPath = path.join(laneRoot, "screen.png");
+    fixture.runtime.iosSimulatorService = {
+      screenshot: vi.fn(async () => {
+        fs.writeFileSync(shotPath, "device pixels");
+        return { filePath: shotPath, deviceUdid: "SIM-1" };
+      }),
+    };
+    fixture.ingest.mockImplementationOnce(() => {
+      throw new Error("disk full");
+    });
+    await callTool(handler, "run_ade_action", { domain: "ios_simulator", action: "screenshot", args: {} });
+    const outcomes: boolean[] = [];
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const result = await callTool(handler, "ingest_computer_use_artifacts", {
+        backendStyle: "manual",
+        backendName: "ade-cli",
+        toolName: "proof attach",
+        callerRoot: laneRoot,
+        inputs: [{ kind: "screenshot", title: "Screen", path: shotPath }],
+      });
+      outcomes.push(result.isError === true);
+    }
+
+    expect(outcomes).toEqual([true, false, false]);
+    const requests = fixture.ingest.mock.calls as unknown as Array<[{ provenance?: Record<string, unknown> }]>;
+    expect(requests.map(([request]) => request?.provenance?.source)).toEqual(["ade-capture", "ade-capture", "attached"]);
+  });
+
   it("regression: refuses an ownerless ingest before storing it, so a retry with an owner is not a duplicate", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
@@ -433,7 +464,7 @@ describe("resolveIngestProvenance", () => {
   it("files a file no capture action wrote as an attach, whatever it is called", async () => {
     const registry = createAdeCaptureRegistry();
     fs.writeFileSync(path.join(dir, "old.png"), "old");
-    expect(await resolveIngestProvenance(registry, [{ kind: "screenshot", path: "old.png" }], dir))
+    expect((await resolveIngestProvenance(registry, [{ kind: "screenshot", path: "old.png" }], dir)).provenance)
       .toEqual({ source: "attached" });
   });
 
@@ -449,25 +480,25 @@ describe("resolveIngestProvenance", () => {
     await registry.remember(trace, "ade-capture");
     await registry.remember(video, "ade-recorder");
 
-    expect(await resolveIngestProvenance(registry, [
+    expect((await resolveIngestProvenance(registry, [
       { kind: "screenshot", path: still },
       { kind: "browser_trace", path: "net.har" },
-    ], dir)).toEqual({
+    ], dir)).provenance).toEqual({
       source: "ade-capture",
       refuseDuplicates: false,
       flagOlderMedia: true,
       capturedSha256: [sha256Of(still), sha256Of(trace)],
     });
-    expect(await resolveIngestProvenance(registry, [{ kind: "video_recording", path: video }], dir))
+    expect((await resolveIngestProvenance(registry, [{ kind: "video_recording", path: video }], dir)).provenance)
       .toEqual({ source: "ade-recorder", refuseDuplicates: true, flagOlderMedia: true, capturedSha256: [sha256Of(video)] });
     // One input ADE did not write makes the whole call an attach.
     const other = path.join(dir, "other.png");
     fs.writeFileSync(other, "other");
     await registry.remember(still, "ade-capture");
-    expect(await resolveIngestProvenance(registry, [
+    expect((await resolveIngestProvenance(registry, [
       { kind: "screenshot", path: still },
       { kind: "screenshot", path: other },
-    ], dir)).toEqual({ source: "attached" });
+    ], dir)).provenance).toEqual({ source: "attached" });
   });
 
   it("regression: bytes swapped in after the capture are an attach", async () => {
@@ -476,7 +507,7 @@ describe("resolveIngestProvenance", () => {
     fs.writeFileSync(still, "fresh");
     await registry.remember(still, "ade-capture");
     fs.writeFileSync(still, "stale proof from last week");
-    expect(await resolveIngestProvenance(registry, [{ kind: "screenshot", path: still }], dir))
+    expect((await resolveIngestProvenance(registry, [{ kind: "screenshot", path: still }], dir)).provenance)
       .toEqual({ source: "attached" });
   });
 
@@ -497,5 +528,32 @@ describe("resolveIngestProvenance", () => {
     await registry.remember(still, "ade-capture");
     expect(await registry.match(still)).toEqual({ source: "ade-capture", sha256: sha256Of(still) });
     expect(await registry.match(still)).toBeNull();
+  });
+
+  it("regression: a failed or mixed filing leaves the capture matchable once", async () => {
+    const registry = createAdeCaptureRegistry();
+    const still = path.join(dir, "shot.png");
+    const other = path.join(dir, "other.png");
+    fs.writeFileSync(still, "png");
+    fs.writeFileSync(other, "other");
+    await registry.remember(still, "ade-capture");
+
+    // The ingest threw: its claim goes back.
+    const failed = await resolveIngestProvenance(registry, [{ kind: "screenshot", path: still }], dir);
+    expect(failed.provenance.source).toBe("ade-capture");
+    failed.release();
+
+    // Filed next to a file ADE did not write: an attach, and the claim goes back.
+    const mixed = await resolveIngestProvenance(registry, [
+      { kind: "screenshot", path: still },
+      { kind: "screenshot", path: other },
+    ], dir);
+    expect(mixed.provenance).toEqual({ source: "attached" });
+
+    // Still ADE's own capture, once.
+    const kept = await resolveIngestProvenance(registry, [{ kind: "screenshot", path: still }], dir);
+    expect(kept.provenance).toMatchObject({ source: "ade-capture", capturedSha256: [sha256Of(still)] });
+    expect((await resolveIngestProvenance(registry, [{ kind: "screenshot", path: still }], dir)).provenance)
+      .toEqual({ source: "attached" });
   });
 });

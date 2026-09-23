@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { APPLE_START_GIVE_UP_CODE } from "./appleErrors";
+import type { AppleLaneDeviceBootedRead } from "./useAppleLaneDeviceList";
 
 /**
  * How often a loading card that has not moved re-reads the truth.
@@ -43,10 +44,13 @@ export type AppleDeviceStartTracker = {
 export function useAppleDeviceStartTracker({
   deviceUdid,
   statusSaysBooted,
+  bootedRead,
 }: {
   deviceUdid: string | null;
   /** A status read says this lane's device is Booted. */
   statusSaysBooted: boolean;
+  /** The list's last read that found the lane's device booted. */
+  bootedRead: AppleLaneDeviceBootedRead | null;
 }): AppleDeviceStartTracker {
   const [pending, setPending] = useState<string | null>(null);
   const pendingRef = useRef<string | null>(null);
@@ -86,6 +90,11 @@ export function useAppleDeviceStartTracker({
   const clearOff = useCallback((udid: string) => {
     setOffUdid((current) => (current === udid ? null : current));
   }, []);
+
+  // A list read that found the device booted is fresh `simctl` truth.
+  useEffect(() => {
+    if (bootedRead) clearOff(bootedRead.udid);
+  }, [bootedRead, clearOff]);
 
   // A status read of this device as Booted is fresh `simctl` truth too.
   useEffect(() => {

@@ -146,9 +146,6 @@ export function AppleDevicePane({
   const [hidden, setHidden] = useState(false);
   const [nowTick, setNowTick] = useState(() => Date.now());
 
-  // The tracker comes after the list (it needs the list's device), so the
-  // list reaches its `clearOff` through a ref.
-  const clearOffRef = useRef<(udid: string) => void>(() => {});
   const {
     status,
     installed,
@@ -157,6 +154,7 @@ export function AppleDevicePane({
     disk,
     measuringDisk,
     refreshing,
+    bootedRead,
     refreshList,
     dropLaneDevice,
     markInstalledState,
@@ -165,13 +163,12 @@ export function AppleDevicePane({
     sessionId,
     hidden,
     runtimePinRef,
-    onLaneDeviceBooted: (udid) => clearOffRef.current(udid),
     onError: setError,
   });
 
   const deviceUdid = laneDevice?.udid ?? null;
   const statusSaysBooted = appleStatusSaysBooted(status, deviceUdid);
-  const startTracker = useAppleDeviceStartTracker({ deviceUdid, statusSaysBooted });
+  const startTracker = useAppleDeviceStartTracker({ deviceUdid, statusSaysBooted, bootedRead });
   const {
     pending: pendingStart,
     offUdid,
@@ -180,7 +177,6 @@ export function AppleDevicePane({
     begin: beginStart,
     settle: settleStart,
   } = startTracker;
-  clearOffRef.current = clearOff;
 
   /* ── size + visibility ─────────────────────────────────────────────────── */
 
@@ -525,10 +521,13 @@ export function AppleDevicePane({
   const switchDevice = useCallback(() => {
     setConfirmSwitch(false);
     void window.ade.iosSimulator
-      .deviceDelete({ laneId, chatSessionId: sessionId, force: true }, runtimePinRef.current)
+      .deviceDelete(
+        { laneId, chatSessionId: sessionId, force: true, ignoreOwnership: ignoreChatOwnership },
+        runtimePinRef.current,
+      )
       .then(dropLaneDevice)
       .catch((cause: unknown) => setError(cause));
-  }, [dropLaneDevice, laneId, sessionId]);
+  }, [dropLaneDevice, ignoreChatOwnership, laneId, sessionId]);
 
   /**
    * "Choose another device" on the Off card: one click, and it never deletes.
@@ -541,7 +540,7 @@ export function AppleDevicePane({
       .deviceDetach({ laneId, chatSessionId: sessionId, ignoreOwnership: ignoreChatOwnership }, runtimePinRef.current)
       .then(dropLaneDevice)
       .catch((cause: unknown) => setError(cause));
-  }, [dropLaneDevice, laneId, sessionId]);
+  }, [dropLaneDevice, ignoreChatOwnership, laneId, sessionId]);
 
   const screenshot = useCallback(() => {
     setScreenshotPending(true);

@@ -5500,7 +5500,7 @@ describe("adeRpcServer", () => {
 
     // The desktop's device picker is a user client and keeps its delete.
     const desktop = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-    await initialize(desktop, { callerId: "desktop-1", role: "cto" });
+    await initialize(desktop, { callerId: "desktop-1", role: "cto" }, { clientInfo: { name: "ade-desktop-local" } });
     const deleted = await callTool(desktop, "run_ade_action", {
       domain: "ios_simulator",
       action: "deviceDeleteInstalled",
@@ -5533,7 +5533,11 @@ describe("adeRpcServer", () => {
 
     // The desktop's runtime connection is also a process id, and is the device picker.
     const desktop = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-    await initialize(desktop, { callerId: "ade-desktop-local:77", role: "cto" });
+    await initialize(
+      desktop,
+      { callerId: "ade-desktop-local:77", role: "cto" },
+      { clientInfo: { name: "ade-desktop-local" } },
+    );
     const deleted = await callTool(desktop, "run_ade_action", {
       domain: "ios_simulator",
       action: "deviceDeleteInstalled",
@@ -5541,6 +5545,41 @@ describe("adeRpcServer", () => {
     });
     expect(deleted?.isError).toBeUndefined();
     expect(deviceDeleteInstalled).toHaveBeenCalledTimes(1);
+  });
+
+  it("regression: user-only verbs go to the desktop's own client names and to no other caller", async () => {
+    const fixture = createRuntime();
+    const deviceDeleteInstalled = vi.fn(async () => ({ ok: true }));
+    fixture.runtime.iosSimulatorService = { deviceDeleteInstalled };
+    const tryDelete = async (identity: Record<string, unknown> | undefined, params: Record<string, unknown>) => {
+      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(handler, identity, params);
+      deviceDeleteInstalled.mockClear();
+      const result = await callTool(handler, "run_ade_action", {
+        domain: "ios_simulator",
+        action: "deviceDeleteInstalled",
+        args: { udid: "SIM-1" },
+      });
+      return result?.isError !== true && deviceDeleteInstalled.mock.calls.length === 1;
+    };
+
+    // The local picker and a paired or SSH remote runtime's picker.
+    for (const name of ["ade-desktop-local", "ade-desktop-remote"]) {
+      expect(await tryDelete({ callerId: `${name}:77`, role: "cto" }, { clientInfo: { name } })).toBe(true);
+    }
+    // A client that never names itself is "unknown".
+    expect(await tryDelete({ callerId: "raw-socket", role: "cto" }, {})).toBe(false);
+    expect(await tryDelete({ callerId: "raw-socket", role: "cto" }, { clientInfo: { name: "unknown" } })).toBe(false);
+    // The `ade` CLI, even one that borrows a desktop-shaped caller id.
+    expect(await tryDelete({ callerId: "ade-cli:4242", role: "cto" }, { clientInfo: { name: "ade-cli" } })).toBe(false);
+    expect(await tryDelete({ callerId: "ade-desktop-local:1", role: "cto" }, { clientInfo: { name: "ade-cli" } })).toBe(false);
+    // No identity at all.
+    expect(await tryDelete(undefined, {})).toBe(false);
+    // A desktop name is not enough for an agent.
+    expect(await tryDelete(
+      { callerId: "agent-a", role: "agent", chatSessionId: "chat-a" },
+      { clientInfo: { name: "ade-desktop-local" } },
+    )).toBe(false);
   });
 
   it("denies work_tools reads to an agent-shaped caller with no resolvable lane", async () => {

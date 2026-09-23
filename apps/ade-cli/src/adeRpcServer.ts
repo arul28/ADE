@@ -95,7 +95,7 @@ import {
   BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM,
 } from "./services/builtInBrowser/desktopBridgeMethods";
 import { FORWARDABLE_BUILT_IN_BROWSER_METHODS } from "./services/builtInBrowser/remoteBrowserForwarder";
-import { isSyntheticCallerId, syntheticCallerClient } from "../../desktop/src/shared/syntheticCallerId";
+import { DESKTOP_CLIENT_NAMES, isDesktopClientName, isSyntheticCallerId } from "../../desktop/src/shared/syntheticCallerId";
 import { hasDrawerOwner } from "../../desktop/src/shared/proofProvenance";
 import {
   ADE_CAPTURE_ACTIONS,
@@ -223,16 +223,13 @@ function isUserClientSession(session: SessionState): boolean {
 /**
  * Whether a caller may use a user-only action (`isUserOnlyAdeAction`).
  *
- * A user client, and not a process id minted by the `ade` CLI or TUI: an
- * agent's shell with no chat identity (an OpenCode shell, say) also runs
- * `ade`, and would otherwise pass as the user. The desktop's own runtime
- * connection is a process id too (`ade-desktop-local:<pid>`), and it is the
- * device picker, so it stays a user client.
+ * Only the desktop, by the names it connects with. An agent's shell with no
+ * chat identity (an OpenCode shell, say) runs `ade` as `ade-cli:<pid>` and
+ * would otherwise pass as the user; so would a client that never names itself.
+ * The web and phone clients reach these verbs through `apple.invoke` instead.
  */
 function mayUseUserOnlyActions(session: SessionState): boolean {
-  if (!isUserClientSession(session)) return false;
-  const client = syntheticCallerClient(session.identity.callerId);
-  return client === null || client.startsWith("ade-desktop");
+  return isUserClientSession(session) && isDesktopClientName(session.clientName);
 }
 
 const DEFAULT_PROTOCOL_VERSION = "2025-06-18";
@@ -2390,33 +2387,41 @@ function captureRegistryFor(runtime: AdeRuntime): AdeCaptureRegistry {
  * arguments are never trusted. A still is exempt from the duplicate check
  * because a real capture of an unchanged screen can repeat bytes, and
  * `ade apple proof` files the still twice (once from `screenshot`). A video is
- * never exempt. The age flag stays on for every call. A capture matches once,
- * so filing it again is an attach, and the broker re-checks each captured hash
- * against the bytes it files.
+ * never exempt. The age flag stays on for every call. A capture is filed as
+ * ADE's once: the call claims it, and `release` hands it back when the ingest
+ * fails. A call filed as an attach hands its claims back at once. The broker
+ * re-checks each captured hash against the bytes it files.
  */
 export async function resolveIngestProvenance(
   registry: AdeCaptureRegistry,
   inputs: Array<Record<string, unknown>>,
   callerRoot: string,
-): Promise<ComputerUseProofProvenanceInput> {
+): Promise<{ provenance: ComputerUseProofProvenanceInput; release: () => void }> {
   const matches = await Promise.all(inputs.map((input) => {
     const inputPath = asOptionalTrimmedString(input.path);
     return inputPath ? registry.match(path.resolve(callerRoot, inputPath)) : Promise.resolve(null);
   }));
   const captured = matches.filter((entry) => entry !== null);
+  const release = () => {
+    for (const entry of captured) registry.release(entry);
+  };
   const source = captured[0]?.source;
   if (!source || captured.length !== matches.length || captured.some((entry) => entry.source !== source)) {
-    return { source: "attached" };
+    release();
+    return { provenance: { source: "attached" }, release: () => {} };
   }
   const allStills = inputs.every((input) => {
     const kind = asOptionalTrimmedString(input.kind);
     return kind === "screenshot" || kind === "browser_trace";
   });
   return {
-    source,
-    refuseDuplicates: !allStills,
-    flagOlderMedia: true,
-    capturedSha256: captured.map((entry) => entry.sha256),
+    provenance: {
+      source,
+      refuseDuplicates: !allStills,
+      flagOlderMedia: true,
+      capturedSha256: captured.map((entry) => entry.sha256),
+    },
+    release,
   };
 }
 
@@ -5396,33 +5401,42 @@ async function runTool(args: {
           + " Run ade from inside the lane worktree, or pass --owner lane --owner-id <lane>.",
       );
     }
-    const provenance = await resolveIngestProvenance(captureRegistryFor(runtime), inputs, authorized.callerRoot);
+    const { provenance, release } = await resolveIngestProvenance(
+      captureRegistryFor(runtime),
+      inputs,
+      authorized.callerRoot,
+    );
     // Async: an attached file's hash is streamed off the event loop.
-    const result = await runtime.computerUseArtifactBrokerService.ingestAsync({
-      backend: {
-        name: backendName,
-        style: backendStyle,
-        toolName: asOptionalTrimmedString(toolArgs.toolName),
-        command: asOptionalTrimmedString(toolArgs.command),
-      },
-      // Decided here from the files, never read from the caller's arguments.
-      provenance,
-      callerRoot: authorized.callerRoot,
-      inputs: inputs.map((entry) => ({
-        kind: asOptionalTrimmedString(entry.kind),
-        title: asOptionalTrimmedString(entry.title),
-        description: asOptionalTrimmedString(entry.description),
-        path: asOptionalTrimmedString(entry.path),
-        uri: asOptionalTrimmedString(entry.uri),
-        text: typeof entry.text === "string" ? entry.text : null,
-        ...(entry.json !== undefined ? { json: entry.json } : {}),
-        mimeType: asOptionalTrimmedString(entry.mimeType),
-        rawType: asOptionalTrimmedString(entry.rawType),
-        ...(isRecord(entry.metadata) ? { metadata: entry.metadata } : {}),
-      })),
-      owners,
-    });
-    return result;
+    try {
+      return await runtime.computerUseArtifactBrokerService.ingestAsync({
+        backend: {
+          name: backendName,
+          style: backendStyle,
+          toolName: asOptionalTrimmedString(toolArgs.toolName),
+          command: asOptionalTrimmedString(toolArgs.command),
+        },
+        // Decided here from the files, never read from the caller's arguments.
+        provenance,
+        callerRoot: authorized.callerRoot,
+        inputs: inputs.map((entry) => ({
+          kind: asOptionalTrimmedString(entry.kind),
+          title: asOptionalTrimmedString(entry.title),
+          description: asOptionalTrimmedString(entry.description),
+          path: asOptionalTrimmedString(entry.path),
+          uri: asOptionalTrimmedString(entry.uri),
+          text: typeof entry.text === "string" ? entry.text : null,
+          ...(entry.json !== undefined ? { json: entry.json } : {}),
+          mimeType: asOptionalTrimmedString(entry.mimeType),
+          rawType: asOptionalTrimmedString(entry.rawType),
+          ...(isRecord(entry.metadata) ? { metadata: entry.metadata } : {}),
+        })),
+        owners,
+      });
+    } catch (error) {
+      // Nothing was filed, so a retry is still ADE's own capture.
+      release();
+      throw error;
+    }
   }
 
   if (name === "list_computer_use_artifacts") {
@@ -6396,7 +6410,7 @@ export function createAdeRpcRequestHandler(args: {
       session.identity = parseInitializeIdentity(runtime, params);
       const desktopBridgeAuthToken = asOptionalTrimmedString(params.desktopBridgeAuthToken);
       if (
-        session.clientName === "ade-desktop-local"
+        session.clientName === DESKTOP_CLIENT_NAMES.local
         && desktopBridgeAuthToken
         && runtime.configureBuiltInBrowserDesktopBridgeAuth
       ) {

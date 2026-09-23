@@ -1346,46 +1346,15 @@ export function createComputerUseArtifactBrokerService(args: {
       callerRoot,
       laneId,
       proofSource,
-      policy: attachPolicy(request, owners, { refuseDuplicates, flagOlderMedia }),
+      policy: proofJudge.policyFor(owners, {
+        refuseDuplicates,
+        flagOlderMedia,
+        toolName: request.backend?.toolName ?? null,
+      }),
       hashAtFiling: refuseDuplicates || proofSource === "attached" || capturedSha256 !== null,
       capturedSha256,
       entries,
       discard,
-    };
-  };
-
-  const attachPolicy = (
-    request: ComputerUseArtifactIngestionRequest,
-    owners: ComputerUseArtifactOwner[],
-    checks: { refuseDuplicates: boolean; flagOlderMedia: boolean },
-  ): AttachPolicy => ({
-    ...checks,
-    turnStartedAtMs: checks.flagOlderMedia ? proofJudge.readOwnerTurnStartedAt(owners) : null,
-    toolName: request.backend?.toolName ?? null,
-  });
-
-  /**
-   * An ADE capture whose bytes no longer hash to what ADE captured is filed as
-   * an attach, with every attach check on. The bytes can change between the
-   * RPC's registry check and this read.
-   */
-  const downgradeChangedCapture = (
-    prepared: PreparedIngest,
-    fingerprints: Array<ContentFingerprint | null>,
-  ): PreparedIngest => {
-    const expected = prepared.capturedSha256;
-    if (!expected) return prepared;
-    const unchanged = expected.length === prepared.entries.length
-      && expected.every((sha256, index) => fingerprints[index]?.sha256 === sha256);
-    if (unchanged) return prepared;
-    args.logger?.warn("computer_use.artifact_capture_changed", {
-      toolName: prepared.request.backend?.toolName ?? null,
-      proofSource: prepared.proofSource,
-    });
-    return {
-      ...prepared,
-      proofSource: "attached",
-      policy: attachPolicy(prepared.request, prepared.owners, { refuseDuplicates: true, flagOlderMedia: true }),
     };
   };
 
@@ -1502,7 +1471,7 @@ export function createComputerUseArtifactBrokerService(args: {
         throw new Error("This proof needs its bytes hashed while filing. File it with ingestAsync.");
       }
       const fingerprints = prepared.entries.map((entry) => entry.stored.fingerprint);
-      return commitIngest(downgradeChangedCapture(prepared, fingerprints), fingerprints);
+      return commitIngest(proofJudge.downgradeIfChanged(prepared, fingerprints), fingerprints);
     },
 
     /** Files any proof, streaming the hash an attach or a re-checked capture needs. */
@@ -1512,7 +1481,7 @@ export function createComputerUseArtifactBrokerService(args: {
         const target = pathToHash(prepared, entry);
         return entry.stored.fingerprint ?? (target ? await hashFile(target) : null);
       }));
-      return commitIngest(downgradeChangedCapture(prepared, fingerprints), fingerprints);
+      return commitIngest(proofJudge.downgradeIfChanged(prepared, fingerprints), fingerprints);
     },
 
     /** Late wiring for the chat service, which is built after the broker. */

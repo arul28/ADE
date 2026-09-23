@@ -209,7 +209,6 @@ import {
   type AdeActionDomain,
   getAdeActionDomainServices,
   isAutomationAllowedAdeAction,
-  isCtoOnlyAdeAction,
 } from "../../desktop/src/main/services/adeActions/registry";
 import { createLaneWorktreeLockService, type LaneWorktreeLockService } from "../../desktop/src/main/services/lanes/laneWorktreeLockService";
 import { createHeadlessLinearServices } from "./headlessLinearServices";
@@ -2620,7 +2619,8 @@ export async function createAdeRuntime(args: {
       },
       listActions(domain: string): string[] {
         return [...(ADE_ACTION_ALLOWLIST[domain as AdeActionDomain] ?? [])]
-          .filter((action) => !isCtoOnlyAdeAction(domain as AdeActionDomain, action));
+          // Same rule as `isAllowed`, so nothing listed is refused when run.
+          .filter((action) => isAutomationAllowedAdeAction(domain as AdeActionDomain, action));
       },
     };
     automationService?.bindAdeActionRegistry(adeActionLookup);

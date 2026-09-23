@@ -89,9 +89,31 @@ describe("laneDeviceLifecycle", () => {
     (laneDevices as unknown as { get: () => AppleLaneDevice }).get = () => attached;
     (laneDevices.deviceDetach as ReturnType<typeof vi.fn>).mockResolvedValueOnce(attached);
 
-    await lifecycle.deviceDelete({ laneId: "lane-b", force: true });
+    await lifecycle.deviceDelete({ laneId: "lane-b", chatSessionId: "chat-owner", force: true });
 
     expect(laneDevices.deviceDetach).toHaveBeenCalledWith({ laneId: "lane-b" });
     expect(laneDevices.deviceDelete).not.toHaveBeenCalled();
+  });
+
+  it("regression: a forced deviceDelete from another chat cannot detach or delete the owner's device", async () => {
+    const attachedCase = setup("chat-a");
+    const attached = { ...device, origin: "attached" as const };
+    (attachedCase.laneDevices as unknown as { get: () => AppleLaneDevice }).get = () => attached;
+
+    await expect(attachedCase.lifecycle.deviceDelete({ laneId: "lane-b", chatSessionId: "chat-b", force: true }))
+      .rejects.toThrow(/IOS_SIMULATOR_OWNED_BY_OTHER_SESSION/);
+    expect(attachedCase.laneDevices.deviceDetach).not.toHaveBeenCalled();
+    expect(attachedCase.shutdown).not.toHaveBeenCalled();
+
+    const cloneCase = setup("chat-a");
+    await expect(cloneCase.lifecycle.deviceDelete({ laneId: "lane-b", chatSessionId: "chat-b", force: true }))
+      .rejects.toThrow(/IOS_SIMULATOR_OWNED_BY_OTHER_SESSION/);
+    expect(cloneCase.laneDevices.deviceDelete).not.toHaveBeenCalled();
+    expect(cloneCase.shutdown).not.toHaveBeenCalled();
+    expect(cloneCase.bound()).toBe(device);
+
+    // The Work pane deletes for whoever is running.
+    await cloneCase.lifecycle.deviceDelete({ laneId: "lane-b", ignoreOwnership: true });
+    expect(cloneCase.laneDevices.deviceDelete).toHaveBeenCalledWith({ laneId: "lane-b" });
   });
 });

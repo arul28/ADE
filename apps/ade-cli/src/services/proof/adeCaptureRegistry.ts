@@ -24,10 +24,15 @@ export type AdeCaptureRegistry = {
   remember(filePath: string, source: AdeCaptureSource): Promise<void>;
   /**
    * The capture behind a remembered file whose bytes are unchanged, else null.
-   * One-shot: the entry is forgotten once looked up, so a second filing of the
-   * same capture is an attach.
+   * Claims the entry: a second filing of the same capture, even a concurrent
+   * one, is an attach. `release` hands it back when the filing did not keep it.
    */
   match(filePath: string): Promise<AdeCaptureMatch | null>;
+  /**
+   * Put a claimed capture back, for a filing that failed or was filed as an
+   * attach. Does nothing once the entry expired or the path was re-captured.
+   */
+  release(match: AdeCaptureMatch): void;
 };
 
 export function createAdeCaptureRegistry(options: {
@@ -39,6 +44,7 @@ export function createAdeCaptureRegistry(options: {
   const maxEntries = options.maxEntries ?? DEFAULT_MAX_ENTRIES;
   const now = options.now ?? Date.now;
   const entries = new Map<string, Entry>();
+  const claimed = new WeakMap<AdeCaptureMatch, { key: string; entry: Entry }>();
 
   const prune = () => {
     const at = now();
@@ -74,7 +80,17 @@ export function createAdeCaptureRegistry(options: {
       if (!fingerprint || fingerprint.sha256 !== entry.sha256 || fingerprint.bytes !== entry.bytes) {
         return null;
       }
-      return { source: entry.source, sha256: entry.sha256 };
+      const match: AdeCaptureMatch = { source: entry.source, sha256: entry.sha256 };
+      claimed.set(match, { key, entry });
+      return match;
+    },
+    release(match) {
+      const claim = claimed.get(match);
+      if (!claim) return;
+      claimed.delete(match);
+      if (claim.entry.expiresAt <= now() || entries.has(claim.key)) return;
+      entries.set(claim.key, claim.entry);
+      prune();
     },
   };
 }

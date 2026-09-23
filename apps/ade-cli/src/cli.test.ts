@@ -13508,6 +13508,12 @@ describe("ADE CLI", () => {
       action: "deviceDelete",
       args: { force: true },
     });
+    expect(
+      iosSimActionArgs(["apple", "device-delete", "--chat-session", "chat-a", "--ignore-ownership"]),
+    ).toMatchObject({
+      action: "deviceDelete",
+      args: { chatSessionId: "chat-a", ignoreOwnership: true },
+    });
 
     const recordStart = iosSimActionArgs([
       "apple",

@@ -3,7 +3,7 @@
 // extension). Extensionless specifiers fail that load with empty stdout and
 // exit 1, which is the CI failure this comment exists to prevent.
 // @ts-expect-error TS5097: the strip-types child loader requires the source extension.
-import { foldsCase } from "../../../shared/pathCase.ts";
+import { foldsCase, type ContainmentPlatform } from "../../../shared/pathCase.ts";
 // @ts-expect-error TS5097: the strip-types child loader requires the source extension.
 import { pathApiFor, stripExtendedLengthPrefix } from "../../../shared/pathContainment.ts";
 
@@ -38,7 +38,7 @@ export { stripExtendedLengthPrefix };
  * defeats the injectable `platform` parameter. Callers comparing possibly
  * relative paths should `path.resolve` them first.
  */
-export function pathKey(input: string, platform: NodeJS.Platform = process.platform): string {
+export function pathKey(input: string, platform: ContainmentPlatform = process.platform): string {
   if (!input) return "";
   const api = pathApiFor(platform);
   // Windows accepts both separators; normalize before resolving so a path that

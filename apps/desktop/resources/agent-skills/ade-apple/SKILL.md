@@ -150,6 +150,7 @@ devices, and a new one is a folder of app data, not another copy of iOS.
   `stop` that left a booted device behind was a real bug.
 - `device-create` and `device-attach` never boot. `device-delete` removes a
   clone and refuses an attached device unless `--force`, which only detaches.
+  Like `stop`, it is refused while another chat is driving the device.
 - A clone is deleted when the lane is archived. ADE never deletes a simulator
   it did not create.
 - Deleting an installed simulator from the list is the user's call, made in

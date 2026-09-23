@@ -179,9 +179,10 @@ describe("laneDeviceRegistry device lifecycle", () => {
     await expect(registry.deviceDelete({ laneId: "lane-1" })).rejects.toMatchObject({
       code: APPLE_DEVICE_ATTACHED_NOT_DELETABLE_CODE,
     });
-    // force DETACHES. It never runs `simctl delete` on a device ADE did not
-    // create — that is not a recoverable mistake.
-    await registry.deviceDelete({ laneId: "lane-1", force: true });
+    // Detaching is `deviceDetach`. Nothing here runs `simctl delete` on a
+    // device ADE did not create.
+    expect(store.rows["lane-1"]).toBeDefined();
+    await registry.deviceDetach({ laneId: "lane-1" });
     expect(store.rows["lane-1"]).toBeUndefined();
     expect(run).not.toHaveBeenCalled();
   });

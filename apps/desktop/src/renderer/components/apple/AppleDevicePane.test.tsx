@@ -465,7 +465,7 @@ describe("AppleDevicePane states", () => {
     expect(document.querySelector("[role='dialog']")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Switch device" }));
     expect(iosSimulator.deviceDelete).toHaveBeenCalledWith(
-      { laneId: "lane-1", chatSessionId: "chat-1", force: true },
+      { laneId: "lane-1", chatSessionId: "chat-1", force: true, ignoreOwnership: true },
       null,
     );
   });

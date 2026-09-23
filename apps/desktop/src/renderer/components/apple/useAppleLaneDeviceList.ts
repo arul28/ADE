@@ -11,6 +11,8 @@ import { laneDeviceBooted } from "./appleDeviceState";
 
 const STATUS_POLL_MS = 6_000;
 
+export type AppleLaneDeviceBootedRead = { udid: string };
+
 export type AppleLaneDeviceList = {
   status: IosSimulatorStatus | null;
   installed: AppleInstalledSimulator[];
@@ -28,6 +30,11 @@ export type AppleLaneDeviceList = {
   disk: AppleDeviceDiskUsage | null;
   measuringDisk: boolean;
   refreshing: boolean;
+  /**
+   * The last list read that found the lane's device booted, else null. A new
+   * object per read, so the same device read as booted twice is two readings.
+   */
+  bootedRead: AppleLaneDeviceBootedRead | null;
   /** Read the status and the list again. */
   refreshList: () => void;
   /** The lane gave its device up: forget it now and re-read. */
@@ -47,15 +54,12 @@ export function useAppleLaneDeviceList({
   sessionId,
   hidden,
   runtimePinRef,
-  onLaneDeviceBooted,
   onError,
 }: {
   laneId: string | null;
   sessionId: string | null;
   hidden: boolean;
   runtimePinRef: MutableRefObject<OpenProjectBinding | null>;
-  /** A list read found the lane's device booted. */
-  onLaneDeviceBooted: (udid: string) => void;
   onError: (cause: unknown) => void;
 }): AppleLaneDeviceList {
   const [status, setStatus] = useState<IosSimulatorStatus | null>(null);
@@ -66,9 +70,8 @@ export function useAppleLaneDeviceList({
   const [measuringDisk, setMeasuringDisk] = useState(false);
   const [listNonce, setListNonce] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
-  // Read through refs so a new closure from the pane never re-reads the list.
-  const onBootedRef = useRef(onLaneDeviceBooted);
-  onBootedRef.current = onLaneDeviceBooted;
+  const [bootedRead, setBootedRead] = useState<AppleLaneDeviceBootedRead | null>(null);
+  // Read through a ref so a new closure from the pane never re-reads the list.
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
 
@@ -116,7 +119,7 @@ export function useAppleLaneDeviceList({
         if (cancelled) return;
         setInstalled(next.installed);
         setLaneDevice(next.lane);
-        if (next.lane && laneDeviceBooted(next)) onBootedRef.current(next.lane.udid);
+        setBootedRead(next.lane && laneDeviceBooted(next) ? { udid: next.lane.udid } : null);
         setOwners(next.owners ?? []);
         /*
          * Disk is the picker's line and nothing else's, and the picker is on
@@ -161,6 +164,7 @@ export function useAppleLaneDeviceList({
     disk,
     measuringDisk,
     refreshing,
+    bootedRead,
     refreshList,
     dropLaneDevice,
     markInstalledState,

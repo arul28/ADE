@@ -320,7 +320,6 @@ import {
   flushStagedBoardMoves,
   getAdeActionDomainServices,
   isAutomationAllowedAdeAction,
-  isCtoOnlyAdeAction,
 } from "./services/adeActions/registry";
 import {
   createUsageTrackingService,
@@ -5304,7 +5303,8 @@ app.whenReady().then(async () => {
         },
         listActions(domain: string): string[] {
           return [...(ADE_ACTION_ALLOWLIST[domain as AdeActionDomain] ?? [])]
-            .filter((action) => !isCtoOnlyAdeAction(domain as AdeActionDomain, action));
+            // Same rule as `isAllowed`, so nothing listed is refused when run.
+            .filter((action) => isAutomationAllowedAdeAction(domain as AdeActionDomain, action));
         },
       };
       automationService?.bindAdeActionRegistry(adeActionLookup);

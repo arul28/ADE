@@ -7,6 +7,7 @@ import type {
   RemoteRuntimeConnectionAttemptFailure,
   RemoteRuntimeTarget,
 } from "../../../shared/types/remoteRuntime";
+import { DESKTOP_CLIENT_NAMES } from "../../../shared/syntheticCallerId";
 import {
   coerceProjects,
   validateRemoteRuntimeInitializeResult,
@@ -271,7 +272,7 @@ export async function bootstrapPairedRuntime(args: {
     const latencyStartedAt = Date.now();
     try {
       initializeResult = await client.initialize(
-        "ade-desktop-remote",
+        DESKTOP_CLIENT_NAMES.remote,
         args.appVersion,
       );
     } catch (error) {

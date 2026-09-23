@@ -74,25 +74,24 @@ export function useWorkShowRequests({
   ): WorkToolShowOutcome | Promise<WorkToolShowOutcome> => {
     if (!activeWorkSession || request.chatSessionId !== activeWorkSession.id) return "declined";
     /*
-     * One lane for every surface: the one the pane mounts its tools under.
-     * Writing the tool into the store is a request, not a result: "shown" is
-     * answered only once the tool is on screen there.
+     * One lane for every surface: `activeLaneId`, the one the pane mounts its
+     * tools under. Writing the tool into the store is a request, not a result:
+     * "shown" is answered only once the tool is on screen there.
      */
-    const toolLaneId = activeLaneId;
     if (request.surface === "browser") {
       setWorkSidebarTool("browser");
-      return showOutcomeWhenOnScreen(workSurfaceKey("browser", scopeKey, toolLaneId));
+      return showOutcomeWhenOnScreen(workSurfaceKey("browser", scopeKey, activeLaneId));
     }
     if (request.surface === "apple") {
       // An explicit ask undoes an earlier × for this chat's floating device.
       setWorkLivePreviewEnabledForChat(request.chatSessionId, "ios", true);
       // Mounting the Apple tool takes the device back from a floating player.
       setWorkSidebarTool("ios");
-      return showOutcomeWhenOnScreen(workSurfaceKey("ios", scopeKey, toolLaneId));
+      return showOutcomeWhenOnScreen(workSurfaceKey("ios", scopeKey, activeLaneId));
     }
     if (request.surface !== "floating-apple") return "declined";
     // The Apple tool is already on screen in the pane.
-    if (isWorkSurfaceOnScreen(workSurfaceKey("ios", scopeKey, toolLaneId))) return "shown";
+    if (isWorkSurfaceOnScreen(workSurfaceKey("ios", scopeKey, activeLaneId))) return "shown";
     // The player only floats over a chat of its own lane, so a lane-less chat
     // (whose tools borrow the pane's fallback lane) gets none.
     if (!activeWorkSession.laneId) return "declined";
@@ -100,7 +99,7 @@ export function useWorkShowRequests({
     // by the pane a moment later.
     if (request.auto && appleToolOpening) return "declined";
     return floatAppleMiniPlayerForChat({
-      laneId: toolLaneId,
+      laneId: activeLaneId,
       chatSessionId: request.chatSessionId,
       runtimePin,
       auto: request.auto,

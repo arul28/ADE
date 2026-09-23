@@ -6,6 +6,8 @@
  * unknown, and unknown prints nothing.
  */
 
+import type { ComputerUseArtifactOwner } from "./types/computerUseArtifacts";
+
 export type ComputerUseProofSource = "ade-recorder" | "ade-capture" | "attached";
 
 /**
@@ -136,7 +138,7 @@ export function proofRecordedBeforeRequestLine(provenance: ProofProvenance, loca
 }
 
 /** Owner kinds some proof drawer lists by: lane, chat, automation run, PR and issue. */
-const DRAWER_OWNER_KINDS: ReadonlySet<string> = new Set([
+const DRAWER_OWNER_KINDS: ReadonlySet<string> = new Set<ComputerUseArtifactOwner["kind"]>([
   "lane",
   "chat_session",
   "automation_run",

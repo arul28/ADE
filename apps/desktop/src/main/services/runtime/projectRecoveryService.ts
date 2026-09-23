@@ -29,6 +29,7 @@ import {
 } from "../state/kvDb";
 import { readVolumeSpace } from "../storage/volume";
 import { isLocalReleaseBuildOutputError } from "../../../shared/runtimeErrors";
+import { DESKTOP_CLIENT_NAMES } from "../../../shared/syntheticCallerId";
 import { clearLastFailure, readLastFailure } from "./lastFailureStore";
 
 const MIB = 1024 * 1024;
@@ -288,7 +289,7 @@ async function defaultPingEndpoint(socketPath: string, timeoutMs: number): Promi
       close: () => connectedSocket.end(),
     };
     client = new RuntimeRpcClient(transport, timeoutMs);
-    await client.initialize("ade-desktop-recovery", "0.0.0");
+    await client.initialize(DESKTOP_CLIENT_NAMES.recovery, "0.0.0");
     const result = await client.call("ping", {}, { timeoutMs });
     return Boolean(result && typeof result === "object" && (result as { pong?: unknown }).pong === true);
   } catch {

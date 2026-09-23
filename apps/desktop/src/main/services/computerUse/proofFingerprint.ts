@@ -4,7 +4,7 @@ import path from "node:path";
 
 import type { ComputerUseArtifactOwner } from "../../../shared/types";
 import { encodeCodedErrorMessage } from "../../../shared/codedError";
-import { PROOF_DUPLICATE_CODE } from "../../../shared/proofProvenance";
+import { PROOF_DUPLICATE_CODE, type ComputerUseProofSource } from "../../../shared/proofProvenance";
 import { listAppleRecordingFiles, readAppleRecordingSidecar } from "../ios/recording/appleRecordingsStore";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -67,7 +67,7 @@ function formatLocalWhen(iso: string, now: Date = new Date()): string {
 }
 
 /** SHA-256 of a file, read in chunks. Null when it cannot be read or is too big. */
-export function hashFileSync(filePath: string): ContentFingerprint | null {
+function hashFileSync(filePath: string): ContentFingerprint | null {
   let fd: number | null = null;
   try {
     fd = fs.openSync(filePath, "r");
@@ -131,6 +131,16 @@ export type AttachPolicy = {
   /** When the owning chat's turn started, or null for no age check. */
   turnStartedAtMs: number | null;
   toolName: string | null;
+};
+
+/** The slice of a prepared ingest `downgradeIfChanged` reads and rewrites. */
+export type JudgedIngest = {
+  owners: ComputerUseArtifactOwner[];
+  proofSource: ComputerUseProofSource;
+  policy: AttachPolicy;
+  /** The hash each input had when ADE captured it, or null when there is nothing to re-check. */
+  capturedSha256: string[] | null;
+  entries: ReadonlyArray<unknown>;
 };
 
 type AttachJudgement = {
@@ -255,27 +265,64 @@ export function createProofFingerprintJudge(deps: {
     return null;
   };
 
+  /** When the chat that owns this attach started its current or latest turn. */
+  const readOwnerTurnStartedAt = (owners: ComputerUseArtifactOwner[]): number | null => {
+    const resolver = resolveChatTurnStartedAt;
+    if (!resolver) return null;
+    for (const owner of owners) {
+      if (owner.kind !== "chat_session") continue;
+      try {
+        const value = resolver(owner.id);
+        const ms = value ? Date.parse(value) : Number.NaN;
+        if (Number.isFinite(ms)) return ms;
+      } catch {
+        // No turn time means no age flag, never a failed attach.
+      }
+    }
+    return null;
+  };
+
+  const policyFor = (
+    owners: ComputerUseArtifactOwner[],
+    checks: { refuseDuplicates: boolean; flagOlderMedia: boolean; toolName: string | null },
+  ): AttachPolicy => ({
+    ...checks,
+    turnStartedAtMs: checks.flagOlderMedia ? readOwnerTurnStartedAt(owners) : null,
+  });
+
   return {
     /** Late wiring for the chat service, which is built after the broker. */
     setChatTurnStartResolver(resolver: ((sessionId: string) => string | null | undefined) | null): void {
       resolveChatTurnStartedAt = resolver;
     },
 
-    /** When the chat that owns this attach started its current or latest turn. */
-    readOwnerTurnStartedAt(owners: ComputerUseArtifactOwner[]): number | null {
-      const resolver = resolveChatTurnStartedAt;
-      if (!resolver) return null;
-      for (const owner of owners) {
-        if (owner.kind !== "chat_session") continue;
-        try {
-          const value = resolver(owner.id);
-          const ms = value ? Date.parse(value) : Number.NaN;
-          if (Number.isFinite(ms)) return ms;
-        } catch {
-          // No turn time means no age flag, never a failed attach.
-        }
-      }
-      return null;
+    /** The checks an ingest gets, with the owning chat's turn start when media age is checked. */
+    policyFor,
+
+    /**
+     * An ADE capture whose bytes no longer hash to what ADE captured is filed
+     * as an attach, with every attach check on. The bytes can change between
+     * the RPC's registry check and the broker's read.
+     */
+    downgradeIfChanged<P extends JudgedIngest>(prepared: P, fingerprints: ReadonlyArray<ContentFingerprint | null>): P {
+      const expected = prepared.capturedSha256;
+      if (!expected) return prepared;
+      const unchanged = expected.length === prepared.entries.length
+        && expected.every((sha256, index) => fingerprints[index]?.sha256 === sha256);
+      if (unchanged) return prepared;
+      deps.logger?.warn("computer_use.artifact_capture_changed", {
+        toolName: prepared.policy.toolName,
+        proofSource: prepared.proofSource,
+      });
+      return {
+        ...prepared,
+        proofSource: "attached",
+        policy: policyFor(prepared.owners, {
+          refuseDuplicates: true,
+          flagOlderMedia: true,
+          toolName: prepared.policy.toolName,
+        }),
+      };
     },
 
     /**

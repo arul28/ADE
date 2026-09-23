@@ -24,9 +24,8 @@ import { laneOnMachineKey } from "../../lib/chatMachineRouting";
 
 type AppleStreamLeaseEntry = {
   count: number;
-  /** The machine and lane this stream is on, copied from its key. */
-  laneScope: string;
-  laneId: string;
+  /** The key the first holder took it under. */
+  key: AppleStreamLeaseKey;
   /**
    * Which RUN of this stream the holders belong to.
    *
@@ -111,12 +110,7 @@ export function acquireAppleStreamLease(
   const entry = leases.get(key.id);
   if (!entry || entry.count <= 0) {
     epochCounter += 1;
-    const fresh: AppleStreamLeaseEntry = {
-      count: 1,
-      epoch: epochCounter,
-      laneScope: key.laneScope,
-      laneId: key.laneId,
-    };
+    const fresh: AppleStreamLeaseEntry = { count: 1, epoch: epochCounter, key };
     if (viewer) fresh.viewer = viewer;
     leases.set(key.id, fresh);
     return { first: true, epoch: fresh.epoch };
@@ -175,12 +169,10 @@ export function appleStreamViewerForLane(
 ): (AppleStreamViewer & { key: AppleStreamLeaseKey }) | null {
   const wanted = laneId?.trim() || null;
   if (!wanted) return null;
-  for (const [id, entry] of leases) {
+  for (const entry of leases.values()) {
     if (entry.count <= 0 || !entry.viewer) continue;
     if (entry.viewer.pinKey !== pinKey) continue;
-    if (entry.viewer.laneId === wanted) {
-      return { ...entry.viewer, key: { id, laneScope: entry.laneScope, laneId: entry.laneId } };
-    }
+    if (entry.viewer.laneId === wanted) return { ...entry.viewer, key: entry.key };
   }
   return null;
 }
@@ -200,7 +192,7 @@ export function forgetAppleStreamLeasesForLane(laneId: string | null | undefined
   if (!wanted) return;
   for (const [id, entry] of [...leases]) {
     // The entry's own lane also catches a parked hold, which has no viewer.
-    if (entry.laneId === wanted || entry.viewer?.laneId === wanted) leases.delete(id);
+    if (entry.key.laneId === wanted || entry.viewer?.laneId === wanted) leases.delete(id);
   }
 }
 
@@ -214,7 +206,7 @@ export function forgetAppleStreamLeasesForLane(laneId: string | null | undefined
 export function appleStreamLaneLeaseCount(key: AppleStreamLeaseKey): number {
   let count = 0;
   for (const entry of leases.values()) {
-    if (entry.laneScope === key.laneScope) count += Math.max(0, entry.count);
+    if (entry.key.laneScope === key.laneScope) count += Math.max(0, entry.count);
   }
   return count;
 }

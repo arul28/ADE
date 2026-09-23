@@ -336,7 +336,7 @@ import {
 import type { BrainMemoryRestartGuard } from "./services/runtime/brainMemoryRestart";
 import { servesMachineRuntimeEndpoint, startBrainHeartbeat } from "./services/runtime/brainHeartbeat";
 import { publishServedRuntimeSocket } from "./services/runtime/adeCliShim";
-import { CLI_GLOBAL_VALUE_FLAGS, looksLikeSocketPathOverride } from "./lib/cliGlobalArgs";
+import { type CliGlobalValueFlag, isCliGlobalValueFlag, looksLikeSocketPathOverride } from "./lib/cliGlobalArgs";
 import { ADE_BANNER } from "./help/banner";
 import { IOS_SIMULATOR_HELP_ALIASES, IOS_SIMULATOR_SUBCOMMAND_HELP } from "./help/appleHelp";
 import { isSyntheticCallerId, syntheticCallerId } from "../../desktop/src/shared/syntheticCallerId";
@@ -4254,7 +4254,7 @@ function parseCliArgs(argv: string[]): ParsedCli {
     }
     const valueFlag = inGlobalPrefix ? readGlobalValueFlag(argv, index) : null;
     if (valueFlag) {
-      applyGlobalValueFlag(options, valueFlag.flag, requireValue(valueFlag.value, valueFlag.flag));
+      GLOBAL_VALUE_FLAG_HANDLERS[valueFlag.flag](options, requireValue(valueFlag.value, valueFlag.flag));
       index += valueFlag.consumed;
       continue;
     }
@@ -4306,47 +4306,42 @@ function parseCliArgs(argv: string[]): ParsedCli {
 
 /**
  * A global value flag at `argv[index]`, spelled `--flag value` or `--flag=value`.
- * The flags are {@link CLI_GLOBAL_VALUE_FLAGS}, the same set the delegation
- * check skips. `consumed` is how many extra tokens the value took.
+ * The flags are `CLI_GLOBAL_VALUE_FLAGS`, the same set the delegation check
+ * skips. `consumed` is how many extra tokens the value took.
  */
 function readGlobalValueFlag(
   argv: string[],
   index: number,
-): { flag: string; value: string | null; consumed: number } | null {
+): { flag: CliGlobalValueFlag; value: string | null; consumed: number } | null {
   const token = argv[index]!;
-  if (CLI_GLOBAL_VALUE_FLAGS.has(token)) {
+  if (isCliGlobalValueFlag(token)) {
     return { flag: token, value: argv[index + 1] ?? null, consumed: 1 };
   }
   const equals = token.indexOf("=");
   const flag = equals > 0 ? token.slice(0, equals) : null;
-  return flag && CLI_GLOBAL_VALUE_FLAGS.has(flag)
+  return isCliGlobalValueFlag(flag)
     ? { flag, value: token.slice(equals + 1), consumed: 0 }
     : null;
 }
 
-function applyGlobalValueFlag(options: GlobalOptions, flag: string, value: string): void {
-  switch (flag) {
-    case "--project-root":
-      options.projectRoot = path.resolve(value);
-      return;
-    case "--workspace-root":
-      options.workspaceRoot = path.resolve(value);
-      return;
-    case "--role":
-      options.role = parseRole(value);
-      return;
-    case "--timeout-ms": {
-      const parsed = Number.parseInt(value, 10);
-      if (!Number.isFinite(parsed) || parsed <= 0) {
-        throw new CliUsageError("--timeout-ms must be a positive integer.");
-      }
-      options.timeoutMs = parsed;
-      return;
+const GLOBAL_VALUE_FLAG_HANDLERS: Record<CliGlobalValueFlag, (options: GlobalOptions, value: string) => void> = {
+  "--project-root": (options, value) => {
+    options.projectRoot = path.resolve(value);
+  },
+  "--workspace-root": (options, value) => {
+    options.workspaceRoot = path.resolve(value);
+  },
+  "--role": (options, value) => {
+    options.role = parseRole(value);
+  },
+  "--timeout-ms": (options, value) => {
+    const parsed = Number.parseInt(value, 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      throw new CliUsageError("--timeout-ms must be a positive integer.");
     }
-    default:
-      throw new Error(`No handler for the global flag ${flag}.`);
-  }
-}
+    options.timeoutMs = parsed;
+  },
+};
 
 function parseRole(value: string): GlobalOptions["role"] {
   const role = normalizeAdeRuntimeRole(value);
@@ -11259,9 +11254,15 @@ function buildIosSimulatorPlan(
   }
   if (sub === "device-delete") {
     const force = readFlag(args, ["--force", "-f"]);
+    // Same single-owner rule as `stop`: the chat id is what lets a chat delete
+    // its own device and not another chat's.
     return iosAction("Apple device delete", "deviceDelete", {
       ...(laneId ? { laneId } : {}),
+      ...(claimArgs.chatSessionId ? { chatSessionId: claimArgs.chatSessionId } : {}),
       ...(force ? { force: true } : {}),
+      ...(readFlag(args, ["--ignore-ownership", "--ignore-owner"])
+        ? { ignoreOwnership: true }
+        : {}),
     });
   }
   if (sub === "record-start") {
