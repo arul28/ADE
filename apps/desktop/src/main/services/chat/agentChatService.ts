@@ -963,6 +963,7 @@ import {
   consumeDevinEchoFingerprint,
   devinCloudMessageFingerprint,
   isDevinCloudSessionLive,
+  stripDevinAppendedLines,
 } from "./devinCloudConversation";
 import { DEVIN_ATTACHMENT_MAX_BYTES, normalizeDevinSessionId } from "../ai/devinCloudClient";
 import {
@@ -1623,6 +1624,14 @@ type PersistedChatState = {
    * echo — repeats of the same text need repeats of the fingerprint.
    */
   devinCloudConsumedEchoFingerprints?: string[];
+  /**
+   * Sends whose remote echo has not arrived yet: the fingerprint of the exact
+   * text delivered to Devin (`remote`, which can carry launch directives and
+   * delivery lines the transcript never shows) paired with the fingerprint of
+   * the visible user message (`local`). Persisted so an echo arriving after a
+   * restart still dedupes instead of printing the user turn twice.
+   */
+  devinCloudPendingEchoPairs?: Array<{ remote: string; local: string }>;
   /**
    * Devin attachment ids already filed into the proof drawer. Persisted so a
    * restarted host does not download and ingest the same files again.
@@ -16057,6 +16066,11 @@ export function createAgentChatService(args: {
         : prevPersisted?.devinCloudConsumedEchoFingerprints?.length
           ? { devinCloudConsumedEchoFingerprints: prevPersisted.devinCloudConsumedEchoFingerprints }
           : {})),
+      ...((devinCloudPendingEchoPairs.get(managed.session.id)?.length
+        ? { devinCloudPendingEchoPairs: devinCloudPendingEchoPairs.get(managed.session.id) }
+        : prevPersisted?.devinCloudPendingEchoPairs?.length
+          ? { devinCloudPendingEchoPairs: prevPersisted.devinCloudPendingEchoPairs }
+          : {})),
       // Boolean, not a latch — the mirror clears this when Devin stops waiting,
       // so a stale true must be rewritten false rather than carried forward.
       // Seed the live set first: a persist that runs before the mirror's first
@@ -16493,6 +16507,17 @@ export function createAgentChatService(args: {
       const devinCloudConsumedEchoFingerprints = Array.isArray(record.devinCloudConsumedEchoFingerprints)
         ? record.devinCloudConsumedEchoFingerprints.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
         : [];
+      const devinCloudPendingEchoPairs = Array.isArray(record.devinCloudPendingEchoPairs)
+        ? record.devinCloudPendingEchoPairs.filter(
+            (entry): entry is { remote: string; local: string } =>
+              Boolean(entry)
+              && typeof entry === "object"
+              && typeof (entry as { remote?: unknown }).remote === "string"
+              && typeof (entry as { local?: unknown }).local === "string"
+              && (entry as { remote: string }).remote.length > 0
+              && (entry as { local: string }).local.length > 0,
+          )
+        : [];
       const devinCloudSyncedAttachmentIds = Array.isArray(record.devinCloudSyncedAttachmentIds)
         ? record.devinCloudSyncedAttachmentIds.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
         : [];
@@ -16734,6 +16759,7 @@ export function createAgentChatService(args: {
         ...(acpConfigSnapshot ? { acpConfigSnapshot } : {}),
         ...(acpDegradationNotesShown.length ? { acpDegradationNotesShown } : {}),
         ...(devinCloudConsumedEchoFingerprints.length ? { devinCloudConsumedEchoFingerprints } : {}),
+        ...(devinCloudPendingEchoPairs.length ? { devinCloudPendingEchoPairs } : {}),
         ...(devinCloudSyncedAttachmentIds.length ? { devinCloudSyncedAttachmentIds } : {}),
         ...(devinCloudAttentionRaised ? { devinCloudAttentionRaised } : {}),
         ...(acpSupervisionNoticeShown ? { acpSupervisionNoticeShown } : {}),
@@ -46610,6 +46636,24 @@ export function createAgentChatService(args: {
     return list;
   };
 
+  /**
+   * Sends awaiting their remote echo: `remote` fingerprints the exact text
+   * POSTed to Devin, `local` the visible user message. Launch directives make
+   * the two differ, which is why the visible fingerprint alone cannot dedupe
+   * these rows.
+   */
+  const devinCloudPendingEchoPairs = new Map<string, Array<{ remote: string; local: string }>>();
+  const DEVIN_CLOUD_PENDING_ECHO_LIMIT = 50;
+
+  const devinPendingEchoesFor = (sessionId: string): Array<{ remote: string; local: string }> => {
+    let list = devinCloudPendingEchoPairs.get(sessionId);
+    if (!list) {
+      list = readPersistedState(sessionId)?.devinCloudPendingEchoPairs ?? [];
+      devinCloudPendingEchoPairs.set(sessionId, list);
+    }
+    return list;
+  };
+
   const devinSyncedAttachmentIdsFor = (sessionId: string): Set<string> => {
     let set = devinCloudSyncedAttachmentIds.get(sessionId);
     if (!set) {
@@ -46643,6 +46687,7 @@ export function createAgentChatService(args: {
     devinCloudAttentionRaised.delete(sessionId);
     devinCloudAttentionSeeded.delete(sessionId);
     devinCloudConsumedEchoFingerprints.delete(sessionId);
+    devinCloudPendingEchoPairs.delete(sessionId);
   };
 
   const clearAllDevinCloudHydrationState = (): void => {
@@ -46658,6 +46703,7 @@ export function createAgentChatService(args: {
     devinCloudAttentionRaised.clear();
     devinCloudAttentionSeeded.clear();
     devinCloudConsumedEchoFingerprints.clear();
+    devinCloudPendingEchoPairs.clear();
   };
 
   /** File types the proof drawer can actually render; everything else is skipped, not errored. */
@@ -46790,6 +46836,27 @@ export function createAgentChatService(args: {
       hydratedIds.add(message.eventId);
       if (message.source === "user") {
         const fingerprint = devinCloudMessageFingerprint(message);
+        if (fingerprint) {
+          // The delivered fingerprint is authoritative: it matches the remote
+          // row even when launch directives or delivery lines made the sent
+          // text differ from the visible user message.
+          const pending = devinPendingEchoesFor(managed.session.id);
+          const candidateText = stripDevinAppendedLines(fingerprint.slice("user:".length));
+          const pendingIdx = pending.findIndex(
+            (entry) => stripDevinAppendedLines(entry.remote.slice("user:".length)) === candidateText,
+          );
+          if (pendingIdx >= 0) {
+            const [matched] = pending.splice(pendingIdx, 1);
+            const localCount = localEchoes.get(matched.local) ?? 0;
+            if (localCount > 0) {
+              if (localCount === 1) localEchoes.delete(matched.local);
+              else localEchoes.set(matched.local, localCount - 1);
+              devinConsumedEchoesFor(managed.session.id).push(matched.local);
+            }
+            persistChatState(managed);
+            continue;
+          }
+        }
         const consumedLocal = fingerprint
           ? consumeDevinEchoFingerprint(localEchoes, fingerprint)
           : null;
@@ -47272,6 +47339,13 @@ export function createAgentChatService(args: {
       // the pre-send session — a new turn revives it, so the mirror must
       // poll again.
       devinCloudEmptyReads.delete(managed.session.id);
+      // Record the exact delivered text next to the visible one — launch
+      // directives and delivery lines make the remote echo differ from the
+      // user_message the transcript shows, so dedupe needs both fingerprints.
+      const pendingEchoes = devinPendingEchoesFor(managed.session.id);
+      const pendingEcho = { remote: `user:${messageText}`, local: `user:${userText}` };
+      pendingEchoes.push(pendingEcho);
+      if (pendingEchoes.length > DEVIN_CLOUD_PENDING_ECHO_LIMIT) pendingEchoes.shift();
       try {
         await aiIntegrationService.sendDevinCloudMessage({
           devinSessionId,
@@ -47280,6 +47354,8 @@ export function createAgentChatService(args: {
         });
         args.onBackendDispatched?.();
       } catch (error) {
+        const pendingIdx = pendingEchoes.indexOf(pendingEcho);
+        if (pendingIdx >= 0) pendingEchoes.splice(pendingIdx, 1);
         emitChatEvent(managed, {
           type: "status",
           turnStatus: "failed",

@@ -126,25 +126,23 @@ export function openCodeDataDirs(args: HomeArg & { platform?: NodeJS.Platform } 
 /**
  * Devin's stored login: `credentials.toml` under the XDG data dir. `devin
  * auth status` reports it as `$XDG_DATA_HOME/devin/credentials.toml`
- * (`~/.local/share/devin` by default); Windows honours `%LOCALAPPDATA%`,
- * with `%APPDATA%` tolerated as a fallback spelling. The auth detector and
- * the per-turn account reader share this list so they never disagree about
- * where the login lives.
+ * (`~/.local/share/devin` by default); Windows honours `%LOCALAPPDATA%`.
+ * XDG selects THE data directory — it is not a search path — so when the
+ * override is set only that location counts; returning the default alongside
+ * it would let a stale, logged-out credential mark the provider active.
+ * The auth detector and the per-turn account reader share this list so they
+ * never disagree about where the login lives.
  */
 export function devinCredentialFiles(args: HomeArg & { platform?: NodeJS.Platform } = {}): string[] {
   const env = args.env ?? process.env;
   const home = baseHome(args);
   const platform = args.platform ?? process.platform;
-  const dirs: string[] = [];
   const xdgData = trimmed(env.XDG_DATA_HOME);
-  if (xdgData) dirs.push(path.join(path.resolve(xdgData), "devin"));
-  dirs.push(path.join(home, ".local", "share", "devin"));
-  if (platform === "darwin") dirs.push(path.join(home, "Library", "Application Support", "devin"));
   if (platform === "win32") {
-    dirs.push(path.join(trimmed(env.LOCALAPPDATA) ?? path.join(home, "AppData", "Local"), "devin"));
-    dirs.push(path.join(trimmed(env.APPDATA) ?? path.join(home, "AppData", "Roaming"), "devin"));
+    return [path.join(trimmed(env.LOCALAPPDATA) ?? path.join(home, "AppData", "Local"), "devin", "credentials.toml")];
   }
-  return dirs.map((dir) => path.join(dir, "credentials.toml"));
+  const dataHome = xdgData ? path.resolve(xdgData) : path.join(home, ".local", "share");
+  return [path.join(dataHome, "devin", "credentials.toml")];
 }
 
 /**

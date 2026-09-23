@@ -47,6 +47,20 @@ export function devinCloudMessageFingerprint(
  */
 export const DEVIN_CLOUD_REMOTE_MESSAGE_ID_PREFIX = "devin:";
 
+const DEVIN_APPENDED_LINE_PATTERN = /^(?:Image URL: |ATTACHMENT:)/;
+
+/**
+ * Lines ADE appends to a Devin-bound prompt that never appear in the local
+ * transcript: `Image URL:` hints and v1 `ATTACHMENT:` delivery lines.
+ */
+export function stripDevinAppendedLines(text: string): string {
+  return text
+    .split("\n")
+    .filter((line) => !DEVIN_APPENDED_LINE_PATTERN.test(line.trimStart()))
+    .join("\n")
+    .trim();
+}
+
 /**
  * Consumes one local-send echo: returns the matched local fingerprint (one
  * occurrence removed) when `candidate` matches a fingerprint the transcript
@@ -75,11 +89,7 @@ export function consumeDevinEchoFingerprint(
   const [kind, ...rest] = candidate.split(":");
   const value = rest.join(":");
   if (!value) return null;
-  const stripped = value
-    .split("\n")
-    .filter((line) => !/^(?:Image URL: |ATTACHMENT:)/.test(line.trimStart()))
-    .join("\n")
-    .trim();
+  const stripped = stripDevinAppendedLines(value);
   if (stripped !== value.trim() && echoes.has(`${kind}:${stripped}`)) {
     return claim(`${kind}:${stripped}`);
   }
