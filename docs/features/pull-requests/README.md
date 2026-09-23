@@ -1383,7 +1383,10 @@ recovery is automatic.
   defence for a pause armed between ticks. The provider's own 60 s detail poll
   is the exception and simply skips its ticks — 60 s is already at the safe end,
   so there is no request volume to win by stretching it, and the base cadence
-  should resume the moment GitHub does. One success clears the ladder, and the
+  should resume the moment GitHub does. That same poll also skips its ticks
+  while the window is hidden and runs a single catch-up refresh on re-show, so
+  a minimized ADE does not keep spending GitHub reads on a detail nobody is
+  watching. One success clears the ladder, and the
   stand-down survives PR selection — a GitHub outage is account-wide, not
   per-PR.
 

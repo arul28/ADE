@@ -1236,13 +1236,34 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     // lengthening its period — 60s is already at the safe end, so there is no
     // request volume to win, and the base cadence is what should resume the
     // moment GitHub does.
+    //
+    // Ticks are also skipped while the window is hidden; a tick missed that way
+    // runs once when the window is shown again so the detail catches up.
     const startDetailPolling = () => {
+      let missedWhileHidden = false;
+      const isWindowHidden = () =>
+        typeof document !== "undefined" && document.visibilityState === "hidden";
       const intervalId = window.setInterval(() => {
+        if (isWindowHidden()) {
+          missedWhileHidden = true;
+          return;
+        }
         refreshDetailSilently(prId);
       }, 60_000);
+      const onVisibilityChange = () => {
+        if (isWindowHidden() || !missedWhileHidden) return;
+        missedWhileHidden = false;
+        refreshDetailSilently(prId);
+      };
+      if (typeof document !== "undefined") {
+        document.addEventListener("visibilitychange", onVisibilityChange);
+      }
       return () => {
         cancelled = true;
         window.clearInterval(intervalId);
+        if (typeof document !== "undefined") {
+          document.removeEventListener("visibilitychange", onVisibilityChange);
+        }
       };
     };
     if (hasFreshDetailCache) {
