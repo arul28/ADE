@@ -153,9 +153,11 @@ export function createLaneDeviceLifecycle<R extends LifecycleLaneRuntime>(deps: 
    *
    * Same single-owner rule as `deviceDetach`. `force` does not step around
    * it: it only says "detach an attached device". Everything is decided in
-   * the lane's queue, from one read of the binding, so a start already in
-   * flight cannot claim the session or change the device between the check
-   * and the teardown.
+   * the lane's queue, from one read of the binding, so a `deviceStart` already
+   * in flight cannot claim the session or change the device between the check
+   * and the teardown. The standalone attach and create verbs are not queued,
+   * so the registry delete names the udid read here and does nothing when the
+   * lane holds another device by then.
    */
   const deviceDelete = async (deleteArgs: AppleDeviceDeleteArgs = {}): Promise<void> => {
     const runtime = deps.requireLaneScope(deleteArgs);
@@ -173,7 +175,7 @@ export function createLaneDeviceLifecycle<R extends LifecycleLaneRuntime>(deps: 
       // under a running stream leaves the reader waiting on bytes that never come.
       await deps.shutdown({ laneId: runtime.laneId, chatSessionId: deleteArgs.chatSessionId, ignoreOwnership: true })
         .catch(() => undefined);
-      await deps.laneDevices.deviceDelete({ laneId: runtime.key });
+      await deps.laneDevices.deviceDelete({ laneId: runtime.key, udid: laneDevice.udid });
       deps.invalidateStatus(runtime);
       // The lane's binding changed ("Choose another device"): every surface
       // that shows the lane's device re-reads now rather than on its next poll.

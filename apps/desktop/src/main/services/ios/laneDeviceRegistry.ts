@@ -157,8 +157,11 @@ export type LaneDeviceRegistry = {
   /**
    * Delete the lane's clone. An attached device is always refused: ADE never
    * deletes a simulator it did not create. Detaching one is `deviceDetach`.
+   *
+   * With `udid`, only that device: when the lane holds another one by now,
+   * nothing happens, so a caller never deletes a device it did not read.
    */
-  deviceDelete(args: { laneId: string }): Promise<void>;
+  deviceDelete(args: { laneId: string; udid?: string | null }): Promise<void>;
   /**
    * Forget the lane's device and touch no simulator: a clone is not deleted
    * and nothing is powered off. Returns what was detached, or null when the
@@ -749,10 +752,14 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
     return device;
   };
 
-  const remove = async (args: { laneId: string }): Promise<void> => {
+  const remove = async (args: { laneId: string; udid?: string | null }): Promise<void> => {
     const laneId = requireLaneId(args.laneId);
     const device = readOne(laneId);
     if (!device) return;
+    if (args.udid && device.udid !== args.udid) {
+      deps.logger.info("apple.lane_device_delete_skipped_changed", { laneId, expected: args.udid, actual: device.udid });
+      return;
+    }
     // ADE does not delete a simulator it did not create: a user's own device
     // being erased because a lane was archived is not a recoverable mistake.
     if (device.origin === "attached") throw new AppleDeviceAttachedNotDeletableError(device);

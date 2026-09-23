@@ -131,7 +131,7 @@ describe("laneDeviceLifecycle", () => {
 
     // The Work pane deletes for whoever is running.
     await cloneCase.lifecycle.deviceDelete({ laneId: "lane-b", ignoreOwnership: true });
-    expect(cloneCase.laneDevices.deviceDelete).toHaveBeenCalledWith({ laneId: "lane-b" });
+    expect(cloneCase.laneDevices.deviceDelete).toHaveBeenCalledWith({ laneId: "lane-b", udid: "device-clone" });
   });
 
   it("regression: a delete queued behind another chat's start is refused once that chat claims the session", async () => {
@@ -181,19 +181,31 @@ describe("laneDeviceLifecycle", () => {
 
     // Unforced: refused, and the stream the start opened keeps running.
     const unforced = setup(null);
+    unforced.setBound(null);
     const unforcedStart = unforced.serializeDeviceLifecycle(null, async () => { unforced.setBound(attached); });
     await expect(unforced.lifecycle.deviceDelete({ laneId: "lane-b" }))
       .rejects.toBeInstanceOf(AppleDeviceAttachedNotDeletableError);
     await unforcedStart;
     expect(unforced.shutdown).not.toHaveBeenCalled();
+    expect(unforced.laneDevices.deviceDetach).not.toHaveBeenCalled();
     expect(unforced.laneDevices.deviceDelete).not.toHaveBeenCalled();
+  });
+
+  it("a delete on a lane with no device does nothing: no shutdown, no registry call", async () => {
+    const { lifecycle, laneDevices, shutdown, emit, setBound } = setup(null);
+    setBound(null);
+    await lifecycle.deviceDelete({ laneId: "lane-b", force: true });
+    expect(shutdown).not.toHaveBeenCalled();
+    expect(laneDevices.deviceDetach).not.toHaveBeenCalled();
+    expect(laneDevices.deviceDelete).not.toHaveBeenCalled();
+    expect(emit).not.toHaveBeenCalled();
   });
 
   it("deletes a clone: the stream stops first, then the registry deletes and the lane hears released", async () => {
     const { lifecycle, laneDevices, shutdown, emit } = setup(null);
     await lifecycle.deviceDelete({ laneId: "lane-b" });
     expect(shutdown).toHaveBeenCalledWith(expect.objectContaining({ laneId: "lane-b", ignoreOwnership: true }));
-    expect(laneDevices.deviceDelete).toHaveBeenCalledWith({ laneId: "lane-b" });
+    expect(laneDevices.deviceDelete).toHaveBeenCalledWith({ laneId: "lane-b", udid: "device-clone" });
     expect(shutdown.mock.invocationCallOrder[0]).toBeLessThan(
       (laneDevices.deviceDelete as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0],
     );
