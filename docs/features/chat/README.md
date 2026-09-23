@@ -20,6 +20,8 @@ for its separate RPC, sync, storage, and UI contracts.
 
 | Path | Role |
 |---|---|
+| `apps/desktop/src/main/services/chat/chatLaunchService.ts`, `apps/desktop/src/shared/types/chatLaunch.ts`, `apps/desktop/src/shared/chatLaunch.ts`, `apps/desktop/src/main/services/lanes/laneEnvironmentSetup.ts` | **New-lane launches.** Brain-owned "start a chat (or CLI session) in a lane that does not exist yet": reserved session and lane ids, the fetch → checkout → environment → start-agent stages, live snapshots on `chat_launch_event`, Cancel / Retry / Start now / queued messages, and the `lane_setup` transcript card. `chatLaunchService` is constructed in `apps/ade-cli/src/bootstrap.ts` only when an agent chat service exists, and exposed as `AdeRuntime.chatLaunchService` to the `chat` action domain and the sync host. `shared/chatLaunch.ts` holds the pure presentation helpers (stage labels, status line, progress, durations, `buildLaneSetupCard`, snapshot merge) every surface uses. See [New-lane launches](#new-lane-launches). |
+| `apps/desktop/src/main/services/chat/chatLaunchArgs.ts`, `chatLaunchRecords.ts`, `chatLaunchDelivery.ts`, `chatLaunchTranscriptCard.ts`, `chatCreateModelResolution.ts`, `apps/desktop/src/shared/uuid.ts` | Launch support modules. `chatLaunchArgs` is the one parser for untrusted launch input (`parseChatLaunchArgs`, `parseChatLaunchIdArgs`, `parseChatLaunchQueueMessageArgs`, `parseChatLaunchCompleteClientArgs`), used by both the action domain and the sync host, and also owns the `chat.create` / `chat.send` field parsers the sync host reuses for its direct chat commands. `chatLaunchRecords` persists launch records under `.ade/cache/chat-launches/` and, on reload, turns a mid-flight launch into an "interrupted" failure and jumps its `sequence` ahead. `chatLaunchDelivery` sends messages queued during setup in order; a failed send keeps the message with `deliveryError` and retries on a 2 s / 10 s / 30 s backoff, and a deleted chat clears the queue with an error. `chatLaunchTranscriptCard` emits and updates the `lane_setup` `ade_card` (first emit waits for the opening `user_message`, with a 4 s fallback). `chatCreateModelResolution.resolveChatCreateModel` fills an empty `model` with the host's first available one (activating OpenCode, Pi, and ACP provider runtimes first), shared by the sync host's `chat.create` / `chat.launch` and every launch. `shared/uuid.ts` normalizes reserved ids (`requireNormalizedUuid`). |
 | `apps/desktop/src/renderer/components/chat/CrossMachineHandoffModal.tsx`, `crossMachineHandoffPresentation.tsx` | **Continue on another machine** workflow in the Handoff tab: source Git readiness, eligible connected-machine selection, brief or full-history fork selection, the destination chat's model / reasoning effort / fast mode / permission mode (the shared `PermissionModePicker` and `ReasoningEffortPicker`, each self-hiding when the chosen model can't honor it), optional continuation note, destination project matching or confirmed clone, storage/auth/model/commit/lane checks, a **Fetch & fast-forward there** offer when the destination lane is clean and a strict ancestor of the source commit, transport disclosure, a send bound to the route kind present at send time, and recoverable source-marker completion. Source blockers are `BlockedActionReason` values rendered next to a `BlockedActionButton`, so no blocker can hide behind a disabled control. The modal takes a `runtimePin` naming the machine the **source** chat runs on (`null` = this tab's bound machine) and pins every source-side call to it — lane list, `git.getSyncStatus`, `git.getOriginRemote`, `git.push`, `git.pull`, `agentChat.prepareCrossMachineHandoff`, `validateCrossMachineSource`, `markCrossMachineHandoff` — while destination dispatch keeps routing by target id. The pin lives in a ref and is frozen once per operation, so every await inside one handoff reaches the same runtime; reading it fresh after an await could cross a lane-index change and split one handoff across two machines. Eligibility follows the same rule: the Handoff menu offers the cross-machine card based on the chat's own binding (`isRemoteChat`), so a local chat viewed from a remote-bound tab can still hand off, and a chat pinned to a remote machine cannot. `crossMachineHandoffPresentation.tsx` holds the pure half — stage/mode types, `SourceCheck`, branch/route/readiness copy, permission tone and icon maps, and `CheckRow` — so the copy and lookups that shipped wrong are directly testable. Cross-machine fork transports provider-native history for Claude, Codex, and OpenCode; Cursor and Droid use brief mode because their histories are not portable between machines (Droid's session index is machine-local, and Cursor's local fork is ADE-side context seeding that produces no provider artifact to send). A fork that can't be completed always degrades to a one-click brief rather than a dead end: an older destination that omits `forkHandoffSupport`, a history over the transport cap, or an unforkable provider file (e.g. a Codex `.zst` rollout) each surface a plain-language reason and a **send as brief** action that re-runs prepare + preflight in brief mode. The insecure-route notice is informational and fork-aware — a fork discloses that the full chat history is sent exactly as recorded, while a brief states only the summary is sent, never secrets — and Send is the confirmation. See [Cross-machine session handoff](../sync-and-multi-device/cross-machine-session-handoff.md). |
 | `apps/desktop/src/shared/crossMachineHandoff.ts` and `apps/desktop/src/shared/types/chat.ts` | Renderer-safe Git-origin normalization, portable remote sanitization, untrusted remote-response decoders, and the versioned capsule/preflight/accept DTOs shared across renderer, preload, Electron main, and the ADE runtime. `chat.ts` also owns the fork-handoff contract: `HANDOFF_FORK_PROVIDERS` (`claude`, `codex`, `opencode`, `droid`, `cursor`) + `providerSupportsHandoffFork()`, the companion `providerForkReplaysTranscript()` (true only for Cursor, whose fork is an ADE-side full-transcript replay onto a brand-new agent rather than a native provider fork, so UI copy must not promise a copied provider thread — it promises the conversation, bounded by the target model's context window), `AgentChatHandoffArgs.targetLaneId` (brief may retarget any lane in the project; fork must stay in the source lane), the cross-machine capsule's optional `mode: "brief" \| "fork"` with `forkTransport` (provider-native session files) and `transcriptEnvelopes` (gzipped ADE JSONL), and the preflight's optional `forkHandoffSupport` (absent = older destination the source must treat as fork-unsupported, so a fork never silently downgrades to a brief). Cross-machine fork has its own narrower list: `CROSS_MACHINE_HANDOFF_FORK_PROVIDERS` + `providerSupportsCrossMachineHandoffFork()`, derived from `HANDOFF_FORK_PROVIDERS` by filtering out Droid (its session index is machine-local) and every replay-forked provider (Cursor produces no transportable artifact at all), so the two lists cannot drift. `validateForkTransport` gates inbound capsules on the cross-machine helper rather than the local one, so a provider whose fork has nothing to package is refused by the provider check instead of by the transport-kind allowlist. The preflight also carries an optional `laneFastForward` (`laneId`, `laneName`, `behindBy`) — the destination's own assertion that its existing lane is clean and a strict ancestor of the source commit. `decodeCrossMachineDestinationPreflightResult` decodes `forkHandoffSupport` and `laneFastForward` only when present, and rejects a `behindBy` that is not a positive integer because the destination refuses a zero-distance fast-forward. `chat.ts` also owns `ACTIVE_TURN_DISPATCH_MODES` — THE per-provider active-turn delivery matrix, in menu order with the first entry as the provider's default; read the table itself for the per-provider lists rather than a second copy here — read through `activeTurnDispatchModes()`, `defaultActiveTurnDispatchMode()` and `supportsActiveTurnDispatchMode()`, with the companion facts `activeTurnInterruptContinues()` (true only for Cursor, whose interrupt cancels and resends on the same thread instead of folding into the live query, so the affordance says "continue") and `unsupportedActiveTurnDispatchModeMessage()` (the one rejection string, templated off the table). The table's one session-shaped exception is `cursorSessionRunsInCloud(session)`: Cursor's `inline` mode is `Run.steer()`, a local-run API that a promoted Cursor Cloud run refuses on every call, and a provider-keyed record cannot express a per-session rule — so the service, the chat pane and the `ade code` TUI all read that helper to withhold inline for a cloud session (it consults `cursorRuntime` **and** `cursorCloudAgentId`, because a session promoted before `cursorRuntime` existed carries only the agent id). Every surface reads it rather than restating the rules — the composer's split send button, the chat pane's dispatch wiring, `agentChatService`'s steer/dispatch guards, and the `ade code` TUI's `/steer` commands; iOS mirrors it by hand in `WorkActiveSendCapability` because it cannot import TS. Beside that table but deliberately *not* derived from it sits `CTO_LIVE_REDIRECT_PROVIDERS` (`claude`, `codex`, `cursor`) + `providerSupportsLiveRedirect()` — the CTO's own eligibility contract, covering the providers that can redirect a turn already in flight (Cursor qualifies through interrupt-and-resend). Reading one off the other would let a change to the composer's promotion menu silently decide who may be the CTO. `chat.ts` also owns the Work-board column vocabulary declared once for four layers (this file, the action registry that writes moves, the renderer that buckets cards, and `ade session move`): `WorkBoardMoveTarget` (`needs_you` \| `working` \| `done`), `WorkBoardColumn` (those plus the derived `waiting`), `WORK_BOARD_MOVE_TARGETS`, `isWorkBoardMoveTarget()`, `WORK_BOARD_COLUMN_LABEL` (the only place a column's screen label is written), and `AgentChatBoardMoveMetadata` (`from`, `to`, `at`, `moveId`) on `AgentChatEventMetadata.boardMove`, which marks the host-authored nudge that accompanies a drag. Values are snake_case everywhere including renderer bucket keys and `data-testid`s. `chat.ts` is also the canonical cross-client contract for context-usage state/sample metadata, Claude result provenance/error/correlation fields, queue-aware interrupt results, the bounded `queue_recovery` lifecycle, and the desktop prompt-stash DTOs plus `MAX_PROMPT_STASHES`. |
 | `apps/desktop/src/main/services/chat/crossMachineForkTransport.ts` | Node-only fork-transport plumbing shared by the source packaging and destination materialization paths. Owns the uncompressed limits (18 MiB provider main session file, 4 MiB total Claude sidecars, 3 MiB ADE transcript envelopes), the independent base64 bounds that reject oversized input before decoding, and `CROSS_MACHINE_FORK_ENCODED_BUDGET_BYTES` (20 MiB) — a whole-capsule encoded budget kept under the 25 MiB sync-envelope/WebSocket payload caps. `gzipToBase64` / `gunzipFromBase64` (the latter enforces a max output length) do the compression; `enforceCrossMachineForkEncodedBudget` drops the sidecar group first and only throws a "too large, send a brief" error when the main file plus transcript alone blow the budget; `crossMachineForkOversizeError` returns the typed `CROSS_MACHINE_FORK_OVERSIZE` failure; `runCliCapture` buffers `opencode export` / `import` stdout/stderr with a timeout; and `validateForkTransport` re-validates a received capsule's transport (cross-machine fork provider support, provider match, kind allowlist, base64 shape, path-traversal-safe side-file paths, per-file and total size caps) before any decode. It gates on `providerSupportsCrossMachineHandoffFork`, not the local-fork predicate, so a provider whose fork produces no transportable artifact (Droid's machine-local index, Cursor's context-only reseed) is refused by the provider check rather than incidentally by the kind allowlist. |
@@ -1792,6 +1794,96 @@ ADE/provider transport wrappers, and derives a fallback title from the first
 imported user/assistant text when the caller did not provide one. The cleanup
 grammar deliberately preserves ordinary user-authored JSX/XML and prompts that
 happen to begin with `User request:`.
+
+## New-lane launches
+
+A chat started with the **Auto-create lane** target is launched by the brain,
+not chained by the client. The client picks the chat's session id (the
+`launchId`) and the lane id, calls `chat.startLaunch`, and opens the chat
+immediately; the call returns as soon as the launch is reserved. The brain's
+`chatLaunchService` then walks the stages and publishes a full
+`ChatLaunchSnapshot` after every change:
+
+1. **Fetch base branch** — the same remote-first base resolution every
+   base-less lane create uses (`resolveLaneCreateRemoteBaseDetailed`, which
+   also reports whether the fetch succeeded and drops a configured upstream
+   whose remote ref is gone). The row reads `origin/main at 807fb2c`, or a
+   warning when the fetch failed and the last-known ref was used. Omitted when
+   the project creates lanes from the local base.
+2. **Check out files** — `laneService.create` with the reserved lane id. Git's
+   `Updating files: NN%` progress is streamed through a pipe
+   (`GIT_PROGRESS_DELAY=0`, `runGit`'s `onStderrLine`) and coalesced to about
+   eight snapshots a second. A retry of a failed checkout first clears what the
+   earlier attempt left at the lane's reserved worktree path
+   (`laneService.cleanupReservedWorktree`: only inside the worktrees folder,
+   only when no lane row owns the id or path). If a lane row already exists
+   for the reserved id — the create inserted it, then ADE restarted before it
+   returned — the retry adopts that lane (`laneService.findLaneIdentity`)
+   instead of failing on the id. Worktree removal retries on EBUSY/EPERM/EACCES
+   for a few seconds (Windows handles), and a checkout cancelled before git
+   started creates nothing and cleans nothing.
+3. **Apply lane template / Set up environment** — only when the project has a
+   default lane template or a lane-environment config. It runs through
+   `runLaneEnvironmentSetup`, the same helper the `lane.initEnv` and
+   `lane.applyTemplate` actions use, and mirrors each env step (Docker,
+   dependencies, setup script…) into the stage. A plan that turns out to have
+   no steps drops the stage.
+4. **Start agent** — `createSession` with `sessionId = launchId`, then the
+   opening message, then any messages the user queued while the lane was being
+   set up (`chat.queueLaunchMessage`). A queued message whose delivery fails
+   stays in `queuedMessages` with `deliveryError` set — never dropped — and is
+   retried on a short backoff and again whenever another message is queued
+   (which then waits behind it, keeping order); the launch can complete with it
+   still listed. `chat.queueLaunchMessage` throws `Launch not found: <id>` for
+   an unknown launch (it never returns null), and refuses a cancelled one. An empty chat `model` is auto-picked by the service for every
+   launch path (desktop action and sync alike). For a CLI launch the brain stops here in
+   phase `awaiting-client`; the launching client starts the PTY and reports it
+   with `chat.completeLaunchClient`.
+
+The lane is named deterministically from the prompt (the client may pass the
+name it already shows) and renamed in the background by
+`generateAutoLaneIdentity` once the lane exists (`laneNaming` is true
+meanwhile).
+
+**Controls.** `chat.cancelLaunch` is for setup only: once the agent has started
+(or the launch completed) it throws "This chat already started — delete its lane
+from the lane menu instead."; cancelling an already-cancelled launch is a no-op
+that returns its snapshot. During setup, or after a failure before the agent
+started, it aborts an in-flight checkout (which removes its half-written
+worktree — even one git still holds locked — and branch), drops any queued
+messages, waits up to 15 s for the pipeline to stop, and fully deletes whatever
+the launch created: the chat, the lane's worktree (including a lane whose row
+landed before a restart), and its local and remote branch. If the pipeline
+outlives that wait, whatever it still creates is deleted when it settles. The desktop's local runtime client gives `chat.cancelLaunch` a
+five-minute budget (`localRuntimeTimeoutPolicy.ts`) and iOS gives it the same
+five minutes, because it waits out a checkout and then deletes a lane including
+its remote branch. `chat.retryLaunch` reruns from the first unfinished stage — every stage
+checks what already happened, so a retry never creates a second lane or chat,
+nor starts a second environment run.
+`chat.startLaunchNow` starts the agent while the environment keeps running, and
+after an environment failure it is "Start anyway" (the failed step stays on the
+card as a warning).
+
+**Where it shows.** Snapshots stream to desktop and hosted-web clients as the
+runtime event `chat_launch_event` (`window.ade.chatLaunch.onEvent`) and to
+phones as the pushed `chat_launch_event` sync envelope, whose payload is the
+event plus the host's `projectId` and `projectRootPath`; `chat.listLaunches`
+hydrates both. Every entry point parses its payload with the same
+`chatLaunchArgs.ts` parser (desktop actions and sync commands alike). Once the chat exists, the brain also writes an `ade_card` with
+variant `lane_setup` and cardId `lane-setup:<launchId>` into its transcript
+(`buildLaneSetupCard` in `shared/chatLaunch.ts`, also used by clients for the
+stand-in; each row's `key` is its stage id and the template name rides in the
+`Template` metric) — first right after the opening `user_message` lands, then
+merged in place as the remaining stages settle — so the setup record stays in the thread after reload
+and on every device, including the `ade code` TUI's generic card rows.
+
+**Durability.** Launch records persist under `.ade/cache/chat-launches/`. A
+brain restart turns a running launch into a `failed` one ("interrupted when ADE
+restarted") with Retry, instead of a spinner that never ends; its `sequence`
+jumps ahead on reload so clients do not discard that snapshot as stale.
+Finished and cancelled launches are dropped (`launch-removed`) ten minutes
+after they end — unless a completed launch still has an undelivered queued
+message, in which case the record is kept and delivery resumes after a restart.
 
 ## Session lifecycle
 

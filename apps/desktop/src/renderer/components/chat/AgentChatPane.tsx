@@ -59,6 +59,8 @@ import {
   type OpenProjectBinding,
   type TerminalSessionDetail,
   type AutomationRuleSummary,
+  type AgentChatSendArgs,
+  type ChatLaunchChatArgs,
 } from "../../../shared/types";
 import type { CursorCloudServiceTier } from "../../../shared/types/config";
 import { mergeReasoningFragment } from "../../../shared/chatActivityPhase";
@@ -328,7 +330,25 @@ import {
   type AiStatusCacheInvalidatedEventDetail,
   type AiStatusCacheUpdatedEventDetail,
 } from "../../lib/aiDiscoveryCache";
-import { getProjectConfigCached } from "../../lib/projectConfigCache";
+import { getProjectConfigCached, peekProjectConfigCached } from "../../lib/projectConfigCache";
+import {
+  buildOptimisticChatLaunchSnapshot,
+  getChatLaunchOriginClientId,
+  insertOptimisticChatLaunch,
+  registerChatLaunchLocalRecord,
+  type ChatLaunchCliParams,
+} from "../../state/chatLaunchStore";
+import { queueChatLaunchMessage, startChatLaunch } from "./launch/chatLaunchActions";
+import { playComposerDock, stashComposerDockOrigin, takeComposerDockOrigin } from "./launch/chatLaunchDock";
+import { buildChatLaunchThreadEvents } from "./launch/chatLaunchSynthetic";
+import { buildNewLaneLaunchArgs } from "./launch/newLaneLaunchArgs";
+import {
+  runRendererOwnedLaunch as runRendererOwnedDraftLaunch,
+  type DraftLaunchLaneTarget,
+  type StartedDraftLaunch,
+} from "./launch/rendererOwnedLaunch";
+import { useChatLaunchPaneLifecycle, useChatLaunchPaneState } from "./launch/useChatLaunchPaneState";
+import { consumeChatLaunchDraftRestore, useChatLaunchDraftRestore } from "./launch/chatLaunchDraftRestore";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import {
   isDraftLaunchJobStale,
@@ -360,18 +380,14 @@ import {
   createAppControlContextInstanceId,
   createBuiltInBrowserContextInstanceId,
   createIosContextInstanceId,
-  formatAppControlContextChipsForDisplay,
-  formatAppControlContextForPrompt,
-  formatBuiltInBrowserContextChipsForDisplay,
-  formatBuiltInBrowserContextForPrompt,
-  formatIosElementContextChipsForDisplay,
-  formatIosElementContextForPrompt,
   getAppControlContextAttachmentPath,
   getBuiltInBrowserContextAttachmentPath,
   getIosContextAttachmentPath,
   iosContextSurface,
   normalizeBuiltInBrowserContextItem,
   stripDataUrlPrefix,
+  applyVisualContext,
+  composeVisualContext,
 } from "../../lib/visualContextFormatting";
 
 import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound";
@@ -917,18 +933,6 @@ const EMPTY_DRAFT_LAUNCH_JOBS: DraftLaunchJob[] = [];
 // the lane picker's machine derivation re-run on every render.
 const EMPTY_PROJECT_TAB_ROOTS: string[] = [];
 const EMPTY_REMOTE_PROJECT_TABS: Extract<OpenProjectBinding, { kind: "remote" }>[] = [];
-type DraftLaunchLaneTarget = {
-  laneId: string;
-  laneName: string;
-  worktreePath: string | null;
-  autoCreated: boolean;
-};
-
-type StartedDraftLaunch = {
-  sessionId: string;
-  draftKind: DraftLaunchKind;
-};
-
 function draftLaunchRequestKey(args: {
   kind: DraftLaunchKind;
   mode: DraftLaunchMode;
@@ -988,6 +992,48 @@ function buildDraftLaunchNamingSeed(snapshot: DraftLaunchSnapshot): string {
     issueCount ? `${issueCount} issue${issueCount === 1 ? "" : "s"}` : null,
   ].filter(Boolean);
   return parts.join(" - ");
+}
+
+/** Final send text/display text/attachments for a captured draft. Pure and synchronous. */
+function prepareDraftLaunch(snapshot: DraftLaunchSnapshot): PreparedDraftLaunch {
+  const composed = applyVisualContext(snapshot.text, {
+    prefix: snapshot.visualContextPrefix,
+    displayChips: snapshot.visualContextDisplayChips,
+  });
+  let finalText = composed.text;
+  if (!finalText.trim().length && snapshot.contextAttachments.length) {
+    finalText = "Use the attached issue context.";
+  }
+  const finalDisplayText = composed.displayText ?? "Attached issue context";
+  return {
+    ...snapshot,
+    finalText,
+    finalDisplayText,
+    selectedAttachments: snapshot.isLiteralSlashCommand ? [] : snapshot.attachments,
+    selectedContextAttachments: snapshot.isLiteralSlashCommand ? [] : snapshot.contextAttachments,
+  };
+}
+
+/**
+ * The opening `agentChat.send` for a drafted chat, minus the session id. Used
+ * by the direct create-then-send path and by the brain-owned new-lane launch,
+ * so both send the same message. `interactionMode` is only sent to Claude.
+ */
+function buildDraftChatMessageArgs(
+  prepared: PreparedDraftLaunch,
+  provider: string,
+  interactionMode: AgentChatInteractionMode | null | undefined,
+): Omit<AgentChatSendArgs, "sessionId"> {
+  return {
+    text: prepared.finalText,
+    displayText: prepared.finalDisplayText || "Selected visual app context",
+    attachments: prepared.selectedAttachments,
+    contextAttachments: prepared.selectedContextAttachments,
+    reasoningEffort: prepared.reasoningEffort,
+    executionMode: prepared.executionMode,
+    interactionMode: provider === "claude" ? interactionMode ?? null : null,
+    ...(provider === "cursor" ? { runtime: "local" as const } : {}),
+  };
 }
 
 function createDraftLaunchJobId(): string {
@@ -2647,6 +2693,47 @@ function writeLastLaunchConfig(storageKey: string, config: LastLaunchConfig): vo
   }
 }
 
+/** The settings a chat was launched with, as `buildChatCreateArgs` resolves them. */
+type ChatLaunchSettings = {
+  launchModelId: string;
+  launchReasoningEffort: LaunchConfigSessionSource["reasoningEffort"];
+  launchFastMode: LaunchConfigSessionSource["fastMode"];
+  launchExecutionMode: LaunchConfigSessionSource["executionMode"];
+  launchControls: NativeControlState;
+  nativeControlPayload: Pick<LaunchConfigSessionSource, "permissionMode">;
+};
+
+/**
+ * "Remember what I launched with": the next draft opens on these settings.
+ * `created` is what the host reports for the new chat when it already exists.
+ */
+function rememberLaunchConfig(
+  storageKey: string,
+  settings: ChatLaunchSettings,
+  created: { model: LaunchConfigSessionSource["model"]; modelId?: string | null },
+  defaults: NativeControlState,
+): void {
+  const controls = settings.launchControls;
+  const launchConfig = buildLastLaunchConfig({
+    model: created.model,
+    modelId: created.modelId ?? settings.launchModelId,
+    reasoningEffort: settings.launchReasoningEffort,
+    fastMode: settings.launchFastMode,
+    executionMode: settings.launchExecutionMode,
+    permissionMode: settings.nativeControlPayload.permissionMode,
+    interactionMode: controls.interactionMode,
+    claudePermissionMode: controls.claudePermissionMode,
+    codexApprovalPolicy: controls.codexApprovalPolicy,
+    codexSandbox: controls.codexSandbox,
+    codexConfigSource: controls.codexConfigSource,
+    opencodePermissionMode: controls.opencodePermissionMode,
+    droidPermissionMode: controls.droidPermissionMode,
+    cursorModeId: controls.cursorModeId,
+    cursorConfigValues: controls.cursorConfigValues,
+  }, defaults);
+  if (launchConfig) writeLastLaunchConfig(storageKey, launchConfig);
+}
+
 function nonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length ? value : null;
 }
@@ -4040,6 +4127,16 @@ export function AgentChatPane({
   const [parallelLaunchBusy, setParallelLaunchBusy] = useState(false);
   const [parallelLaunchStatus, setParallelLaunchStatus] = useState<string | null>(null);
   const shellRef = useRef<HTMLElement | null>(null);
+  const composerDockRef = useRef<HTMLDivElement | null>(null);
+  // Foreground new-lane launch: glide the docked composer down from where the
+  // draft composer sat (see `chatLaunchDock`). Layout effect so the first
+  // painted frame is already at the old position.
+  useLayoutEffect(() => {
+    if (!lockSessionId) return;
+    const origin = takeComposerDockOrigin(lockSessionId);
+    if (!origin) return;
+    playComposerDock(composerDockRef.current, origin);
+  }, [lockSessionId]);
   // Measure the chat surface width to drive the 3-quadrant pane reserve.
   const [chatAreaWidth, setChatAreaWidth] = useState(0);
   useEffect(() => {
@@ -4142,6 +4239,16 @@ export function AgentChatPane({
   const chatSelectionTransitioning = composerSessionId !== renderedSessionId;
   const renderedSessionIdRef = useRef<string | null>(renderedSessionId);
   renderedSessionIdRef.current = renderedSessionId;
+  // A chat opened the instant a new-lane launch was sent: its session id is
+  // reserved, but until the brain reports `sessionCreated` there is no summary
+  // or transcript to read. The pane renders the launch instead (prompt bubble,
+  // setup card, queued messages) and holds every session read until then —
+  // the read-only effects below key off `readableSessionId`, which is null
+  // for exactly that window.
+  const { chatLaunch, launchAwaitingSession, launchQueuesComposer, launchRoutesSends } = useChatLaunchPaneState(lockSessionId, renderedSessionId);
+  const readableSessionId = launchAwaitingSession ? null : selectedSessionId;
+  const launchAwaitingSessionRef = useRef(launchAwaitingSession);
+  launchAwaitingSessionRef.current = launchAwaitingSession;
   const selectedSession = useMemo(
     () => (selectedSessionId ? sessions.find((session) => session.sessionId === selectedSessionId) ?? null : null),
     [sessions, selectedSessionId]
@@ -4429,6 +4536,7 @@ export function AgentChatPane({
    */
   const selectedChatCold = Boolean(
     renderedSessionId
+    && !chatLaunch
     && selectedEvents.length === 0
     && !eventsBySession[renderedSessionId]
     && !peekAgentChatSessionViewCache(renderedSessionId),
@@ -4476,8 +4584,22 @@ export function AgentChatPane({
       }
       return true;
     });
+    // A launching chat shows its prompt, setup card and queued messages until
+    // the real transcript carries them (each stand-in yields to its real row).
+    // Queued messages the host has not delivered yet outlive the launch.
+    if (
+      chatLaunch
+      && (
+        launchQueuesComposer
+        || !chatLaunch.sessionCreated
+        || displayEvents.length === 0
+        || chatLaunch.queuedMessages.length > 0
+      )
+    ) {
+      return buildChatLaunchThreadEvents(chatLaunch, displayEvents);
+    }
     return displayEvents;
-  }, [optimisticOutgoingMessage, renderedSessionId, selectedEvents]);
+  }, [chatLaunch, launchQueuesComposer, optimisticOutgoingMessage, renderedSessionId, selectedEvents]);
   // Fresh snapshot of the visible transcript for the auth-retry/recovery handlers
   // below, which run from window-event listeners (stale-closure-safe).
   const selectedEventsForDisplayRef = useRef(selectedEventsForDisplay);
@@ -5919,9 +6041,16 @@ export function AgentChatPane({
   const hasComputerUseSelectionChanged = false;
   const launchModeEditable = !selectedSessionId || selectedEvents.length === 0;
   const resolvedTitle = presentation?.title?.trim()
-    || (surfaceMode === "resolver" ? "AI Resolver" : selectedSession ? chatSessionTitle(selectedSession) : "New chat");
+    || (surfaceMode === "resolver"
+      ? "AI Resolver"
+      : selectedSession
+        ? chatSessionTitle(selectedSession)
+        // A launching chat has no session yet; its launch knows the title.
+        : chatLaunch?.title?.trim() || "New chat");
   const chatHeaderLane = laneId ? lanes.find((lane) => lane.id === laneId) ?? null : null;
-  const chatHeaderLaneName = chatHeaderLane?.name ?? laneId ?? "lane";
+  // The host-supplied label (the roster row's lane name) covers a lane the lane
+  // list does not have yet — e.g. one a new-lane launch is still creating.
+  const chatHeaderLaneName = chatHeaderLane?.name ?? (laneLabel?.trim() || laneId) ?? "lane";
   const chatHeaderLaneColor = getLaneAccent(chatHeaderLane, 0);
   const assistantLabel = presentation?.assistantLabel?.trim()
     || resolveAssistantLabel(selectedModelDesc, selectedSession?.provider);
@@ -6543,6 +6672,15 @@ export function AgentChatPane({
     if (!lockSessionId) {
       setSessions([]);
       setArchivedSessions([]);
+      return null;
+    }
+
+    if (launchAwaitingSessionRef.current) {
+      // The brain has reserved this id but not created the chat yet; asking
+      // for its summary would only report "not found".
+      setSessions([]);
+      draftSelectionLockedRef.current = false;
+      setSelectedSessionId(lockSessionId);
       return null;
     }
 
@@ -7659,14 +7797,16 @@ export function AgentChatPane({
 
   useEffect(() => {
     if (!isTileVisible) return;
-    if (!selectedSessionId) return;
+    // Null while there is no chat to read (or a launching chat has no
+    // transcript yet); this re-runs, and loads it, the moment it has one.
+    if (!readableSessionId) return;
     // Take the stream back from the retention module (see chatSessionRetention).
     // `adopted` means the cached view already carries everything that arrived
     // while this pane was hidden, so the reconcile below is gap insurance
     // against the remote pump's epoch resets / `replay:false` rebinds rather
     // than the primary catch-up — fire it immediately and only once.
-    const adopted = adoptRetainedSession(selectedSessionId);
-    const restoredFromCache = applyCachedSessionView(selectedSessionId);
+    const adopted = adoptRetainedSession(readableSessionId);
+    const restoredFromCache = applyCachedSessionView(readableSessionId);
     const refreshOptions = { force: !restoredFromCache };
     // `mergeChatHistorySnapshot` dedupes, so this can never blank the view.
     const reconcileDelayMs = adopted ? 0 : 650;
@@ -7674,10 +7814,10 @@ export function AgentChatPane({
       // Re-read the selected transcript on every tab switch so the selected
       // chat can recover from any background event loss instead of relying
       // solely on the in-memory background buffer.
-      void loadHistory(selectedSessionId, refreshOptions);
+      void loadHistory(readableSessionId, refreshOptions);
       if (!restoredFromCache) return;
       const refreshHandle = window.setTimeout(() => {
-        void loadHistory(selectedSessionId, { force: true });
+        void loadHistory(readableSessionId, { force: true });
       }, reconcileDelayMs);
       return () => window.clearTimeout(refreshHandle);
     }
@@ -7688,21 +7828,30 @@ export function AgentChatPane({
     // previous component instance.
     const hydrateDelayMs = isTileActive
       ? 0
-      : 220 + (stableSessionDelayOffset(selectedSessionId) % 260);
+      : 220 + (stableSessionDelayOffset(readableSessionId) % 260);
     const handle = window.setTimeout(() => {
-      void loadHistory(selectedSessionId, refreshOptions);
+      void loadHistory(readableSessionId, refreshOptions);
     }, hydrateDelayMs);
     let refreshHandle: number | null = null;
     if (restoredFromCache) {
       refreshHandle = window.setTimeout(() => {
-        void loadHistory(selectedSessionId, { force: true });
+        void loadHistory(readableSessionId, { force: true });
       }, Math.max(reconcileDelayMs, hydrateDelayMs + reconcileDelayMs));
     }
     return () => {
       window.clearTimeout(handle);
       if (refreshHandle != null) window.clearTimeout(refreshHandle);
     };
-  }, [applyCachedSessionView, isTileActive, isTileVisible, loadHistory, lockedSingleSessionMode, selectedSessionId]);
+  }, [applyCachedSessionView, isTileActive, isTileVisible, loadHistory, lockedSingleSessionMode, readableSessionId]);
+
+  useChatLaunchPaneLifecycle({
+    chatLaunch,
+    launchAwaitingSession,
+    refreshSessions,
+    setModelId,
+    optimisticSessionIdsRef,
+    knownSessionIdsRef,
+  });
 
   // Subscription handoff. While this pane is visible it owns the only
   // `agentChat.onEvent` subscription; when it hides or unmounts the retention
@@ -7732,7 +7881,7 @@ export function AgentChatPane({
   }, [chatRuntimePin, isTileVisible, projectBinding, selectedSessionId]);
 
   useEffect(() => {
-    if (!isTileVisible || !selectedSessionId) return undefined;
+    if (!isTileVisible || !readableSessionId) return undefined;
     const shouldRecoverLiveTranscript =
       turnActive
       || selectedSession?.status === "active"
@@ -7749,7 +7898,7 @@ export function AgentChatPane({
         && lastEventReceivedAtMsRef.current > 0
         && Date.now() - lastEventReceivedAtMsRef.current < ACTIVE_TURN_RECOVERY_INTERVAL_MS
       ) return;
-      void loadHistory(selectedSessionId, { force: true });
+      void loadHistory(readableSessionId, { force: true });
     };
 
     // A newly-created headless chat can become visible before its first
@@ -7764,7 +7913,7 @@ export function AgentChatPane({
       };
     }
 
-    const offset = stableSessionDelayOffset(selectedSessionId);
+    const offset = stableSessionDelayOffset(readableSessionId);
     const initialDelayMs = isTileActive ? 900 : 1200 + (offset % 500);
     // Jittered so a grid of tiles doesn't re-read every transcript on the same
     // frame; the base is the stall-detector interval, not a polling rate.
@@ -7781,10 +7930,10 @@ export function AgentChatPane({
     isTileActive,
     isTileVisible,
     loadHistory,
+    readableSessionId,
     selectedEvents.length,
     selectedSession?.status,
     selectedSessionAwaitingInput,
-    selectedSessionId,
     turnActive,
   ]);
 
@@ -7793,19 +7942,20 @@ export function AgentChatPane({
       setComputerUseSnapshot(null);
       return;
     }
-    if (!lockedSingleSessionMode) {
-      void refreshComputerUseSnapshot(selectedSessionId);
+    // No readable chat: clear now (a launching chat has nothing to snapshot).
+    if (!lockedSingleSessionMode || !readableSessionId) {
+      void refreshComputerUseSnapshot(readableSessionId);
       return;
     }
     const handle = window.setTimeout(() => {
-      void refreshComputerUseSnapshot(selectedSessionId);
+      void refreshComputerUseSnapshot(readableSessionId);
     }, 180);
     return () => window.clearTimeout(handle);
   }, [
     isTileActive,
     lockedSingleSessionMode,
+    readableSessionId,
     refreshComputerUseSnapshot,
-    selectedSessionId,
   ]);
 
   useEffect(() => {
@@ -7874,10 +8024,10 @@ export function AgentChatPane({
   // chats skip the mount-time decoration fetch; the bridge should stay focused
   // on loading the transcript until the user actually runs a turn.
   useEffect(() => {
-    if (!selectedSessionId || !isTileActive) { setSessionDelta(null); return; }
-    const sameSession = sessionDeltaSessionIdRef.current === selectedSessionId;
+    if (!readableSessionId || !isTileActive) { setSessionDelta(null); return; }
+    const sameSession = sessionDeltaSessionIdRef.current === readableSessionId;
     const previousTurnActive = sameSession ? sessionDeltaTurnActiveRef.current : false;
-    sessionDeltaSessionIdRef.current = selectedSessionId;
+    sessionDeltaSessionIdRef.current = readableSessionId;
     sessionDeltaTurnActiveRef.current = turnActive;
     if (isRemoteChat) {
       const completedTurn =
@@ -7888,11 +8038,11 @@ export function AgentChatPane({
         if (!turnActive) setSessionDelta(null);
         return;
       }
-      remoteDeltaArmedSessionsRef.current.delete(selectedSessionId);
+      remoteDeltaArmedSessionsRef.current.delete(readableSessionId);
     }
     let cancelled = false;
     const fetchDelta = () => {
-      window.ade.sessions.getDelta(selectedSessionId, chatRuntimePinRef.current)
+      window.ade.sessions.getDelta(readableSessionId, chatRuntimePinRef.current)
         .then((delta) => {
           if (cancelled) return;
           if (delta && (delta.insertions > 0 || delta.deletions > 0)) {
@@ -7905,7 +8055,7 @@ export function AgentChatPane({
     };
     fetchDelta();
     return () => { cancelled = true; };
-  }, [isRemoteChat, isTileActive, selectedSessionId, turnActive]);
+  }, [isRemoteChat, isTileActive, readableSessionId, turnActive]);
 
   const flushQueuedEvents = useCallback(() => {
     const queued = pendingEventQueueRef.current;
@@ -9321,6 +9471,52 @@ export function AgentChatPane({
     isLivePinnedBinding(pin, openProjectBindingsRef.current)
   ), []);
 
+  // The `agentChat.create` args for a chat launched from this composer, minus
+  // the lane. Shared by the direct create path and the brain-owned new-lane
+  // launch (`chatLaunch.start`), so both start the chat with identical settings.
+  const buildChatCreateArgs = useCallback((launchState?: DraftLaunchSnapshot) => {
+    const launchModelId = launchState?.modelId ?? modelId;
+    // `effectiveReasoningEffort`, not the raw state: the control displays the
+    // remembered family effort when nothing explicit is set, and the launch
+    // must carry the value the user can actually see.
+    const launchReasoningEffort = launchState?.reasoningEffort ?? effectiveReasoningEffort;
+    const launchFastMode = launchState?.fastMode ?? fastMode;
+    const launchExecutionMode = launchState?.executionMode ?? executionMode;
+    const launchControls = launchState?.nativeControls ?? currentNativeControls;
+    const desc = resolveScopedModelDescriptor(launchModelId, modelCatalogScopeKey);
+    const provider = resolveChatRuntimeProvider(desc);
+    const model = provider === "opencode" ? launchModelId : runtimeFacingModelId(desc, launchModelId);
+    const sessionProfile = resolveChatSessionProfile();
+    const nativeControlPayload = {
+      ...summarizeNativeControls(provider, launchControls),
+      ...(provider === "cursor" ? { cursorConfigValues: launchControls.cursorConfigValues } : {}),
+    };
+    const createArgs = {
+      provider,
+      model,
+      modelId: launchModelId,
+      sessionProfile,
+      reasoningEffort: launchReasoningEffort,
+      fastMode: launchFastMode,
+      // The saved preset (or the stored key) the picker named. Sent as an id:
+      // the runtime that owns the lane is the one that can read this
+      // machine's preset list and key store, so nothing resolved travels.
+      ...draftLaunchBrainRef.current,
+      ...nativeControlPayload,
+    };
+    return {
+      createArgs,
+      desc,
+      provider,
+      launchModelId,
+      launchReasoningEffort,
+      launchFastMode,
+      launchExecutionMode,
+      launchControls,
+      nativeControlPayload,
+    };
+  }, [currentNativeControls, effectiveReasoningEffort, executionMode, fastMode, modelCatalogScopeKey, modelId]);
+
   const createSessionForLane = useCallback(async (
     targetLaneId: string,
     options: {
@@ -9338,37 +9534,9 @@ export function AgentChatPane({
       if (constrainedModelSelectionError) {
         throw new Error(constrainedModelSelectionError);
       }
-      const launchModelId = options.launchState?.modelId ?? modelId;
-      // `effectiveReasoningEffort`, not the raw state: the control displays the
-      // remembered family effort when nothing explicit is set, and the launch
-      // must carry the value the user can actually see.
-      const launchReasoningEffort = options.launchState?.reasoningEffort ?? effectiveReasoningEffort;
-      const launchFastMode = options.launchState?.fastMode ?? fastMode;
-      const launchExecutionMode = options.launchState?.executionMode ?? executionMode;
-      const baseNativeControls = options.launchState?.nativeControls ?? currentNativeControls;
-      const desc = resolveScopedModelDescriptor(launchModelId, modelCatalogScopeKey);
-      const provider = resolveChatRuntimeProvider(desc);
-      const model = provider === "opencode" ? launchModelId : runtimeFacingModelId(desc, launchModelId);
-      const sessionProfile = resolveChatSessionProfile();
-      const launchControls = baseNativeControls;
-      const nativeControlPayload = {
-        ...summarizeNativeControls(provider, launchControls),
-        ...(provider === "cursor" ? { cursorConfigValues: launchControls.cursorConfigValues } : {}),
-      };
-      const createArgs = {
-        laneId: targetLaneId,
-        provider,
-        model,
-        modelId: launchModelId,
-        sessionProfile,
-        reasoningEffort: launchReasoningEffort,
-        fastMode: launchFastMode,
-        // The saved preset (or the stored key) the picker named. Sent as an id:
-        // the runtime that owns the lane is the one that can read this
-        // machine's preset list and key store, so nothing resolved travels.
-        ...draftLaunchBrainRef.current,
-        ...nativeControlPayload,
-      };
+      const built = buildChatCreateArgs(options.launchState);
+      const { createArgs: laneFreeCreateArgs, desc, launchModelId } = built;
+      const createArgs = { laneId: targetLaneId, ...laneFreeCreateArgs };
       const created = options.pin
         ? await window.ade.agentChat.create(createArgs, options.pin)
         : await window.ade.agentChat.create(createArgs);
@@ -9380,24 +9548,7 @@ export function AgentChatPane({
         throw new Error("The chat was not created: this ADE runtime returned a session with no id.");
       }
       invalidateAgentChatSessionListCache({ laneId: targetLaneId });
-      const launchConfig = buildLastLaunchConfig({
-        model: created.model,
-        modelId: created.modelId ?? launchModelId,
-        reasoningEffort: launchReasoningEffort,
-        fastMode: launchFastMode,
-        executionMode: launchExecutionMode,
-        permissionMode: nativeControlPayload.permissionMode,
-        interactionMode: launchControls.interactionMode,
-        claudePermissionMode: launchControls.claudePermissionMode,
-        codexApprovalPolicy: launchControls.codexApprovalPolicy,
-        codexSandbox: launchControls.codexSandbox,
-        codexConfigSource: launchControls.codexConfigSource,
-        opencodePermissionMode: launchControls.opencodePermissionMode,
-        droidPermissionMode: launchControls.droidPermissionMode,
-        cursorModeId: launchControls.cursorModeId,
-        cursorConfigValues: launchControls.cursorConfigValues,
-      }, initialNativeControls);
-      if (launchConfig) writeLastLaunchConfig(lastLaunchConfigStorageKey, launchConfig);
+      rememberLaunchConfig(lastLaunchConfigStorageKey, built, created, initialNativeControls);
       loadedHistoryRef.current.delete(created.id);
       optimisticSessionIdsRef.current.add(created.id);
       knownSessionIdsRef.current.add(created.id);
@@ -9418,7 +9569,7 @@ export function AgentChatPane({
       if (options.notify) notifySessionCreated(created, options.notifyOptions);
       if (targetLaneId === laneId && canRefreshPinnedProject(options.pin)) void refreshSessions({ force: true }).catch(() => {});
       return created;
-  }, [canRefreshPinnedProject, fastMode, constrainedModelSelectionError, currentNativeControls, effectiveReasoningEffort, executionMode, initialNativeControls, laneId, lastLaunchConfigStorageKey, modelId, notifySessionCreated, patchSessionSummary, refreshSessions, touchSession, workDraftKind]);
+  }, [buildChatCreateArgs, canRefreshPinnedProject, constrainedModelSelectionError, initialNativeControls, laneId, lastLaunchConfigStorageKey, notifySessionCreated, refreshSessions, touchSession]);
 
   const createSession = useCallback(async (): Promise<string | null> => {
     if (createSessionPromiseRef.current) {
@@ -9447,16 +9598,11 @@ export function AgentChatPane({
     const appControlContextSnapshot = [...appControlContextItems];
     const builtInBrowserContextSnapshot = [...builtInBrowserContextItems];
     const contextAttachmentsSnapshot = [...contextAttachments];
-    const visualContextPrefix = [
-      formatIosElementContextForPrompt(iosContextSnapshot),
-      formatAppControlContextForPrompt(appControlContextSnapshot),
-      formatBuiltInBrowserContextForPrompt(builtInBrowserContextSnapshot),
-    ].filter(Boolean).join("\n");
-    const visualContextDisplayChips = [
-      formatIosElementContextChipsForDisplay(iosContextSnapshot),
-      formatAppControlContextChipsForDisplay(appControlContextSnapshot),
-      formatBuiltInBrowserContextChipsForDisplay(builtInBrowserContextSnapshot),
-    ].filter(Boolean).join(" ");
+    const { prefix: visualContextPrefix, displayChips: visualContextDisplayChips } = composeVisualContext(
+      iosContextSnapshot,
+      appControlContextSnapshot,
+      builtInBrowserContextSnapshot,
+    );
     if (
       !text.length
       && !visualContextPrefix.length
@@ -9507,31 +9653,6 @@ export function AgentChatPane({
     effectiveReasoningEffort,
   ]);
 
-  const prepareDraftLaunchForSend = useCallback(async (
-    snapshot: DraftLaunchSnapshot,
-    _targetLaneId: string,
-  ): Promise<PreparedDraftLaunch> => {
-    const finalTextPrefix = snapshot.visualContextPrefix;
-    let finalText = finalTextPrefix ? `${finalTextPrefix}${snapshot.text}` : snapshot.text;
-    if (!finalText.trim().length && snapshot.contextAttachments.length) {
-      finalText = "Use the attached issue context.";
-    }
-    const finalDisplayText = snapshot.visualContextDisplayChips
-      ? snapshot.text.length
-        ? `${snapshot.visualContextDisplayChips} ${snapshot.text}`
-        : snapshot.visualContextDisplayChips
-      : snapshot.text.length
-        ? snapshot.text
-        : "Attached issue context";
-    return {
-      ...snapshot,
-      finalText,
-      finalDisplayText,
-      selectedAttachments: snapshot.isLiteralSlashCommand ? [] : snapshot.attachments,
-      selectedContextAttachments: snapshot.isLiteralSlashCommand ? [] : snapshot.contextAttachments,
-    };
-  }, []);
-
   const restoreDraftLaunchSnapshot = useCallback((snapshot: DraftLaunchSnapshot) => {
     setDraft((current) => {
       const snapshotDraft = snapshot.draft.trim();
@@ -9567,6 +9688,31 @@ export function AgentChatPane({
       });
     }
   }, [applyLaunchConfigToComposer, companionStateKey, draftLaunchConfigScopeKey]);
+
+  // A cancelled or deleted new-lane launch hands its prompt back here, merged
+  // into whatever is already typed (see `chatLaunchDraftRestore`).
+  const chatLaunchDraftRestore = useChatLaunchDraftRestore(isWorkDraftComposer ? workDraftKind : null);
+  useEffect(() => {
+    if (!chatLaunchDraftRestore) return;
+    consumeChatLaunchDraftRestore(chatLaunchDraftRestore.launchId);
+    if (chatLaunchDraftRestore.draftSnapshot) {
+      restoreDraftLaunchSnapshot(chatLaunchDraftRestore.draftSnapshot);
+      return;
+    }
+    const restoredText = chatLaunchDraftRestore.prompt.text;
+    if (restoredText.trim()) {
+      setDraft((current) => {
+        const next = current.trim().length && !current.includes(restoredText)
+          ? `${current.trimEnd()}\n\n${restoredText}`
+          : current.trim().length ? current : restoredText;
+        draftsPerSessionRef.current.set(companionStateKey, next);
+        return next;
+      });
+    }
+    if (chatLaunchDraftRestore.prompt.attachments.length) {
+      setAttachments((current) => mergeAttachments(current, chatLaunchDraftRestore.prompt.attachments));
+    }
+  }, [chatLaunchDraftRestore, companionStateKey, restoreDraftLaunchSnapshot]);
 
   const patchDraftLaunchJob = useCallback((jobId: string, patch: Partial<DraftLaunchJob>) => {
     setDraftLaunchJobs((current) => pruneDraftLaunchJobs(current.map((job) => (
@@ -9986,19 +10132,13 @@ export function AgentChatPane({
       // than sending into a stale launch.
       assertActive?.();
       touchSession(createdSession.id);
-      const sendInteractionMode = createdSession.provider === "claude"
-        ? createdSession.interactionMode ?? prepared.interactionMode
-        : null;
       const sendArgs = {
         sessionId: createdSession.id,
-        text: prepared.finalText,
-        displayText: prepared.finalDisplayText || "Selected visual app context",
-        attachments: prepared.selectedAttachments,
-        contextAttachments: prepared.selectedContextAttachments,
-        reasoningEffort: prepared.reasoningEffort,
-        executionMode: prepared.executionMode,
-        interactionMode: sendInteractionMode,
-        ...(createdSession.provider === "cursor" ? { runtime: "local" as const } : {}),
+        ...buildDraftChatMessageArgs(
+          prepared,
+          createdSession.provider,
+          createdSession.interactionMode ?? prepared.interactionMode,
+        ),
       };
       if (pin) {
         await window.ade.agentChat.send(sendArgs, pin);
@@ -10033,14 +10173,10 @@ export function AgentChatPane({
     touchSession,
   ]);
 
-  const startDraftCliLaunch = useCallback(async (
-    prepared: PreparedDraftLaunch,
-    targetLane: DraftLaunchLaneTarget,
-    mode: DraftLaunchMode,
-    assertActive?: () => void,
-    pin?: OpenProjectBinding | null,
-  ): Promise<StartedDraftLaunch> => {
-    if (!onLaunchCliSession) throw new Error("CLI sessions are not available from this surface.");
+  // The PTY launch a Work CLI draft starts, minus where it runs (lane, machine,
+  // disposition). Shared by the direct path and the new-lane launch, whose CLI
+  // driver starts it once the brain reports the lane ready.
+  const buildDraftCliLaunchParams = useCallback((prepared: PreparedDraftLaunch): ChatLaunchCliParams => {
     if (!prepared.modelId) throw new Error("Select a model before launching a CLI session.");
     const desc = resolveScopedModelDescriptor(prepared.modelId, modelCatalogScopeKey);
     if (!desc) throw new Error("Select a model before launching a CLI session.");
@@ -10069,11 +10205,7 @@ export function AgentChatPane({
     });
     if (!cliPrompt.trim().length) throw new Error("Enter a prompt or attach context before launching a CLI session.");
     const cliSessionId = provider === "claude" ? createClaudeSessionIdForCliLaunch() : undefined;
-    // Final checkpoint before the PTY/session is spawned: abort if the launch
-    // timed out while building the launch command.
-    assertActive?.();
-    const result = await onLaunchCliSession({
-      laneId: targetLane.laneId,
+    return {
       profile: provider,
       title: workCliTitleFromPrompt(prepared.text || prepared.finalDisplayText || prepared.finalText, LAUNCH_PROFILE_TITLE[provider]),
       startupDelayMs: workCliStartupDelayMs,
@@ -10089,6 +10221,24 @@ export function AgentChatPane({
         initialPrompt: cliPrompt,
       },
       tracked: true,
+    };
+  }, [modelCatalogScopeKey]);
+
+  const startDraftCliLaunch = useCallback(async (
+    prepared: PreparedDraftLaunch,
+    targetLane: DraftLaunchLaneTarget,
+    mode: DraftLaunchMode,
+    assertActive?: () => void,
+    pin?: OpenProjectBinding | null,
+  ): Promise<StartedDraftLaunch> => {
+    if (!onLaunchCliSession) throw new Error("CLI sessions are not available from this surface.");
+    const cliParams = buildDraftCliLaunchParams(prepared);
+    // Final checkpoint before the PTY/session is spawned: abort if the launch
+    // timed out while building the launch command.
+    assertActive?.();
+    const result = await onLaunchCliSession({
+      ...cliParams,
+      laneId: targetLane.laneId,
       disposition: mode,
       pin,
     });
@@ -10110,8 +10260,102 @@ export function AgentChatPane({
       draftKind: "cli",
     };
   }, [
+    buildDraftCliLaunchParams,
     onLaunchCliSession,
+  ]);
+
+  // "Auto-create lane" launches (chat or CLI, foreground or background) are
+  // owned by the brain: this picks the chat's session id and the lane's id,
+  // shows the launch at once, and fires `chatLaunch.start` without waiting.
+  // A foreground chat opens immediately with its prompt bubble and a live
+  // setup card; background chats and CLI launches stay on the draft and report
+  // in the Launches slide-out. Nothing here awaits before the UI moves.
+  const launchDraftIntoNewLane = useCallback((
+    kind: DraftLaunchKind,
+    mode: DraftLaunchMode,
+    snapshot: DraftLaunchSnapshot,
+    launchBinding: OpenProjectBinding,
+    onUnsupported: () => void,
+  ): boolean => {
+    const prepared = prepareDraftLaunch(snapshot);
+    let cli: ChatLaunchCliParams | null = null;
+    let chat: ChatLaunchChatArgs | undefined;
+    let provider: string | null = null;
+    try {
+      if (kind === "cli") {
+        if (!onLaunchCliSession) throw new Error("CLI sessions are not available from this surface.");
+        cli = buildDraftCliLaunchParams(prepared);
+        provider = cli.profile;
+      } else {
+        if (constrainedModelSelectionError) throw new Error(constrainedModelSelectionError);
+        const built = buildChatCreateArgs(prepared);
+        provider = built.provider;
+        // Same "remember what I launched with" write the direct create path makes.
+        rememberLaunchConfig(lastLaunchConfigStorageKey, built, { model: built.createArgs.model }, initialNativeControls);
+        chat = {
+          create: built.createArgs,
+          message: buildDraftChatMessageArgs(prepared, built.provider, prepared.interactionMode),
+        };
+      }
+    } catch (buildError) {
+      setError(errorMessage(buildError));
+      return false;
+    }
+
+    const launchId = crypto.randomUUID();
+    const newLaneId = crypto.randomUUID();
+    const laneName = createDeterministicAutoLaneName(buildDraftLaunchNamingSeed(snapshot), {
+      genericSuffix: autoLaneGenericSuffix(),
+    });
+    const args = buildNewLaneLaunchArgs({
+      kind,
+      mode,
+      launchId,
+      laneId: newLaneId,
+      laneName,
+      prepared,
+      provider,
+      cliTitle: cli?.title ?? null,
+      chat,
+      originClientId: getChatLaunchOriginClientId(),
+    });
+    // Predict the stages the host will report so the card has its shape from
+    // the first frame. Only `fetch` depends on project config; an unread
+    // config assumes the default (fetch from the remote).
+    const knownConfig = peekProjectConfigCached({ projectRoot, pin: launchBinding });
+    const includeFetch = effectiveNewLaneBaseSource(knownConfig) !== "local";
+    registerChatLaunchLocalRecord(launchId, { args, pin: launchBinding, draftSnapshot: snapshot, cli });
+    insertOptimisticChatLaunch(
+      launchBinding,
+      buildOptimisticChatLaunchSnapshot({ launch: { ...args, laneId: newLaneId, laneName }, includeFetch }),
+    );
+    clearPromptSuggestionForSession(selectedSessionId);
+    setError(null);
+    const opensNow = kind === "chat" && mode === "foreground" && canRefreshPinnedProject(launchBinding);
+    if (opensNow) {
+      stashComposerDockOrigin(launchId, shellRef.current?.querySelector("[data-chat-composer-wrapper]"));
+    }
+    clearDraftLaunchComposer(snapshot);
+    if (opensNow) {
+      openLaunchedDraftSession({ laneId: newLaneId, laneName, sessionId: launchId, draftKind: "chat" });
+    }
+    // A runtime that predates brain-owned launches rejects the action; that one
+    // launch then drops its card/row and runs the renderer-owned chain.
+    void startChatLaunch(launchId, { onUnsupported });
+    return true;
+  }, [
+    buildChatCreateArgs,
+    buildDraftCliLaunchParams,
+    canRefreshPinnedProject,
+    clearDraftLaunchComposer,
+    clearPromptSuggestionForSession,
+    constrainedModelSelectionError,
+    initialNativeControls,
+    lastLaunchConfigStorageKey,
+    onLaunchCliSession,
+    openLaunchedDraftSession,
     projectRoot,
+    selectedSessionId,
   ]);
 
   const launchDraftSession = useCallback(async (kind: DraftLaunchKind, mode: DraftLaunchMode) => {
@@ -10165,155 +10409,51 @@ export function AgentChatPane({
     draftLaunchInFlightKeysRef.current.add(requestKey);
     void copyPromptForLaunch(snapshot.text);
 
-    // Pin this launch to the project that started it. The chain runs detached
-    // from the pane's lifecycle, so if the user switches projects mid-launch the
-    // lane/session/send calls keep targeting the originating runtime instead of
-    // the now-active project. `launchBinding` is this pane's project-scoped
-    // binding; the root store's binding tracks whichever project is currently
-    // active.
-    //
-    // `launchTimedOut` is the normal abort source: withDraftLaunchTimeout rejects
-    // the renderer wait but cannot cancel the underlying IPC, so a timed-out
-    // step that keeps running must be stopped before its next mutation.
-    let launchTimedOut = false;
-    const assertLaunchActive = () => {
-      if (launchTimedOut) {
-        throw new Error("Draft launch aborted after timeout.");
-      }
-    };
-    const markLaunchTimedOut = () => {
-      launchTimedOut = true;
-    };
-
-    const jobId = createDraftLaunchJobId();
-    if (mode === "foreground") {
-      latestForegroundDraftLaunchJobIdRef.current = jobId;
-    }
-    const job: DraftLaunchJob = {
-      id: jobId,
+    // The renderer-owned chain: used for launches into an existing lane, and
+    // as the fallback for a new-lane launch on a runtime that predates
+    // `chat.startLaunch`.
+    const runRendererOwnedLaunch = () => runRendererOwnedDraftLaunch({
+      kind,
       mode,
-      draftKind: kind,
-      target: "local",
-      // Auto-create no longer blocks on naming (deterministic name now, AI rename
-      // in the background), so the launch goes straight to lane creation.
-      status: draftLaunchTargetIsAutoCreate ? "creating-lane" : "starting-session",
-      title: buildDraftLaunchJobTitle(kind, snapshot),
-      laneId: null,
-      laneName: null,
-      sessionId: null,
-      namingModelId: null,
-      error: null,
-      warning: null,
-      autoOpen: mode === "foreground",
-      createdAtMs: Date.now(),
       snapshot,
-    };
-    clearPromptSuggestionForSession(selectedSessionId);
-    setError(null);
-    setDraftLaunchJobs((current) => pruneDraftLaunchJobs([
-      job,
-      ...current.map((entry) => (
-        mode === "foreground" && entry.mode === "foreground"
-          ? { ...entry, autoOpen: false }
-          : entry
-      )),
-    ]));
-    clearDraftLaunchComposer(snapshot);
+      launchBinding,
+      requestKey,
+      autoCreate: draftLaunchTargetIsAutoCreate,
+      paneLaneId: laneId,
+      jobId: createDraftLaunchJobId(),
+      jobTitle: buildDraftLaunchJobTitle(kind, snapshot),
+      latestForegroundJobIdRef: latestForegroundDraftLaunchJobIdRef,
+      inFlightKeysRef: draftLaunchInFlightKeysRef,
+      paneMountedRef,
+      prepare: prepareDraftLaunch,
+      resolveLane: resolveDraftLaunchLane,
+      startChat: startDraftChatLaunch,
+      startCli: startDraftCliLaunch,
+      clearPromptSuggestion: () => clearPromptSuggestionForSession(selectedSessionId),
+      setError,
+      setDraftLaunchJobs,
+      clearDraftLaunchComposer,
+      patchDraftLaunchJob,
+      draftLaunchJobExists,
+      canRefreshPinnedProject,
+      refreshSessions,
+      refreshLanes: refreshLanesStore,
+      openLaunchedDraftSession,
+      clearSelectedSession: () => setSelectedSessionId(null),
+    });
 
-    let targetLane: DraftLaunchLaneTarget | null = null;
-
-    try {
-      targetLane = await withDraftLaunchTimeout(resolveDraftLaunchLane(snapshot, {
-        onAutoCreateNameResolved: () => {
-          patchDraftLaunchJob(jobId, { status: "creating-lane" });
-        },
-        onAutoCreateNameModelResolved: (namingModelId) => {
-          patchDraftLaunchJob(jobId, { namingModelId });
-        },
-        assertActive: assertLaunchActive,
-        pin: launchBinding,
-      }), "Lane setup", markLaunchTimedOut);
-      patchDraftLaunchJob(jobId, {
-        status: "starting-session",
-        laneId: targetLane.laneId,
-        laneName: targetLane.laneName,
+    if (draftLaunchTargetIsAutoCreate) {
+      // Brain-owned: returns synchronously. The short hold on the request key
+      // absorbs a double-press that lands before the cleared composer renders.
+      launchDraftIntoNewLane(kind, mode, snapshot, launchBinding, () => {
+        draftLaunchInFlightKeysRef.current.add(requestKey);
+        void runRendererOwnedLaunch();
       });
-      const prepared = await prepareDraftLaunchForSend(snapshot, targetLane.laneId);
-      patchDraftLaunchJob(jobId, {
-        status: "sending-prompt",
-        laneId: targetLane.laneId,
-        laneName: targetLane.laneName,
-      });
-      // Re-check before starting the session. The start functions also re-assert
-      // immediately before each of their own mutating calls.
-      assertLaunchActive();
-      const launched = await withDraftLaunchTimeout(
-        kind === "chat"
-          ? startDraftChatLaunch(prepared, targetLane, launchBinding, assertLaunchActive)
-          : startDraftCliLaunch(prepared, targetLane, mode, assertLaunchActive, launchBinding),
-        "Session start",
-        markLaunchTimedOut,
-      );
-      invalidateSessionListCache();
-      invalidateAgentChatSessionListCache({ laneId: targetLane.laneId });
-      if (launched.draftKind === "chat" && targetLane.laneId === laneId && canRefreshPinnedProject(launchBinding)) {
-        void refreshSessions({ force: true }).catch(() => {});
-      }
-      const launch = {
-        laneId: targetLane.laneId,
-        laneName: targetLane.laneName,
-        sessionId: launched.sessionId,
-        draftKind: launched.draftKind,
-      };
-      const canMutateLaunchUi = canRefreshPinnedProject(launchBinding);
-      const shouldAutoOpen =
-        canMutateLaunchUi && mode === "foreground" && latestForegroundDraftLaunchJobIdRef.current === jobId;
-      const jobStillVisible = draftLaunchJobExists(jobId);
-      patchDraftLaunchJob(jobId, {
-        status: "ready",
-        laneId: launch.laneId,
-        laneName: launch.laneName,
-        sessionId: launch.sessionId,
-        draftKind: launch.draftKind,
-        // Keep autoOpen set for foreground sends so the effect below can open the
-        // chat even if this pane instance remounted during the launch (otherwise
-        // the inline open is skipped and the job sits at "ready").
-        autoOpen: mode === "foreground" && canMutateLaunchUi,
-      });
-      if (!jobStillVisible) {
-        return;
-      }
-      if (shouldAutoOpen && paneMountedRef.current) {
-        openLaunchedDraftSession({ ...launch, jobId });
-      } else if (canMutateLaunchUi && mode === "background" && paneMountedRef.current) {
-        setSelectedSessionId(null);
-      }
-    } catch (launchError) {
-      if (targetLane?.autoCreated) {
-        // Pin the rollback to the originating project so it deletes the lane we
-        // created, even if the active project has since changed.
-        await window.ade.lanes.delete({ laneId: targetLane.laneId, force: true }, launchBinding).catch((cleanupError: unknown) => {
-          console.warn(`draft ${kind} launch lane cleanup failed`, cleanupError);
-        });
-        if (canRefreshPinnedProject(launchBinding)) {
-          await refreshLanesStore().catch(() => undefined);
-        }
-      }
-      const message = launchError instanceof Error ? launchError.message : String(launchError);
-      const jobStillVisible = draftLaunchJobExists(jobId);
-      patchDraftLaunchJob(jobId, {
-        status: "failed",
-        laneId: targetLane?.laneId ?? null,
-        laneName: targetLane?.laneName ?? null,
-        error: message,
-        autoOpen: false,
-      });
-      if (jobStillVisible && paneMountedRef.current) {
-        setError(message);
-      }
-    } finally {
-      draftLaunchInFlightKeysRef.current.delete(requestKey);
+      window.setTimeout(() => draftLaunchInFlightKeysRef.current.delete(requestKey), 400);
+      return;
     }
+
+    await runRendererOwnedLaunch();
   }, [
     buildDraftLaunchSnapshotForCurrentState,
     canRefreshPinnedProject,
@@ -10323,12 +10463,12 @@ export function AgentChatPane({
     draftLaunchTargetIsAutoCreate,
     isWorkCliLaunchDraft,
     laneId,
+    launchDraftIntoNewLane,
     modelId,
     onLaunchCliSession,
     openLaunchedDraftSession,
     patchDraftLaunchJob,
     parallelLaunchBusy,
-    prepareDraftLaunchForSend,
     projectBinding,
     projectTransitionBlocksChat,
     copyPromptForLaunch,
@@ -11027,6 +11167,41 @@ export function AgentChatPane({
     }
     clearPromptSuggestionForSession(selectedSessionId);
 
+    if (launchRoutesSends && chatLaunch && selectedSessionId && selectedSessionId === chatLaunch.sessionId) {
+      // The lane is still being set up (or earlier queued messages still wait
+      // for delivery): the message waits in the launch and is sent, in order,
+      // once the agent runs. It never needs the session's model or summary,
+      // which may not exist yet. Issue context stays in the composer — a
+      // queued launch message carries text and files only.
+      const text = draft.trim();
+      const visualContext = composeVisualContext(iosElementContextItems, appControlContextItems, builtInBrowserContextItems);
+      if (!text.length && !visualContext.prefix.length && !attachments.length) return;
+      const composed = applyVisualContext(text, visualContext);
+      const queuedText = composed.text;
+      const queuedDisplayText = composed.displayText ?? text;
+      const queuedAttachments = [...attachments];
+      const draftBeforeQueue = draft;
+      setError(null);
+      setDraft("");
+      draftsPerSessionRef.current.delete(selectedSessionId);
+      setAttachments([]);
+      setIosElementContextItems([]);
+      setAppControlContextItems([]);
+      setBuiltInBrowserContextItems([]);
+      try {
+        await queueChatLaunchMessage(chatLaunch.launchId, {
+          text: queuedText,
+          displayText: queuedDisplayText,
+          attachments: queuedAttachments,
+        });
+      } catch (queueError) {
+        setDraft((current) => (current.trim().length ? current : draftBeforeQueue));
+        setAttachments((current) => mergeAttachments(current, queuedAttachments));
+        setError(errorMessage(queueError));
+      }
+      return;
+    }
+
     const isParallelLaunch =
       !lockSessionId
       && !initialSessionId
@@ -11323,14 +11498,9 @@ export function AgentChatPane({
     const appControlContextSnapshot = [...appControlContextItems];
     const builtInBrowserContextSnapshot = [...builtInBrowserContextItems];
     const contextAttachmentsSnapshot = [...contextAttachments];
-    const iosContextPrefix = formatIosElementContextForPrompt(iosContextSnapshot);
-    const appControlContextPrefix = formatAppControlContextForPrompt(appControlContextSnapshot);
-    const builtInBrowserContextPrefix = formatBuiltInBrowserContextForPrompt(builtInBrowserContextSnapshot);
-    const iosContextDisplayChips = formatIosElementContextChipsForDisplay(iosContextSnapshot);
-    const appControlContextDisplayChips = formatAppControlContextChipsForDisplay(appControlContextSnapshot);
-    const builtInBrowserContextDisplayChips = formatBuiltInBrowserContextChipsForDisplay(builtInBrowserContextSnapshot);
-    const visualContextPrefix = [iosContextPrefix, appControlContextPrefix, builtInBrowserContextPrefix].filter(Boolean).join("\n");
-    const visualContextDisplayChips = [iosContextDisplayChips, appControlContextDisplayChips, builtInBrowserContextDisplayChips].filter(Boolean).join(" ");
+    const visualContext = composeVisualContext(iosContextSnapshot, appControlContextSnapshot, builtInBrowserContextSnapshot);
+    const visualContextPrefix = visualContext.prefix;
+    const composedWithVisualContext = applyVisualContext(text, visualContext);
     if (
       (!text.length && !visualContextPrefix.length && !contextAttachmentsSnapshot.length && !(isWorkCliLaunchDraft && attachments.length))
       || !laneId
@@ -11458,17 +11628,12 @@ export function AgentChatPane({
     // by hundreds of ms on a typical send.
     const selectedAttachmentsForOptimistic = isLiteralSlashCommand ? [] : attachmentsSnapshot;
     const selectedContextAttachmentsForOptimistic = isLiteralSlashCommand ? [] : contextAttachmentsSnapshot;
-    const optimisticDisplayText = visualContextDisplayChips
-      ? text.length
-        ? `${visualContextDisplayChips} ${text}`
-        : visualContextDisplayChips
-      : text.length
-        ? text
-        : attachmentsSnapshot.length
-          ? DEFAULT_PARALLEL_ATTACHMENT_REQUEST
-          : contextAttachmentsSnapshot.length
-            ? "Attached issue context"
-            : text;
+    const optimisticDisplayText = composedWithVisualContext.displayText
+      ?? (attachmentsSnapshot.length
+        ? DEFAULT_PARALLEL_ATTACHMENT_REQUEST
+        : contextAttachmentsSnapshot.length
+          ? "Attached issue context"
+          : text);
     if (selectedSessionId && !turnActiveBySession[selectedSessionId] && !suppressOptimisticOutgoing) {
       setOptimisticOutgoingMessageSynced({
         sessionId: selectedSessionId,
@@ -11488,22 +11653,14 @@ export function AgentChatPane({
 
     try {
       let justCreatedSession = false;
-      const finalTextPrefix = visualContextPrefix;
-      let finalText = finalTextPrefix ? `${finalTextPrefix}${text}` : text;
+      let finalText = composedWithVisualContext.text;
       if (!finalText.trim().length && attachmentsSnapshot.length) {
         finalText = DEFAULT_PARALLEL_ATTACHMENT_REQUEST;
       } else if (!finalText.trim().length && contextAttachmentsSnapshot.length) {
         finalText = "Use the attached issue context.";
       }
-      const finalDisplayText = visualContextDisplayChips
-        ? text.length
-          ? `${visualContextDisplayChips} ${text}`
-          : visualContextDisplayChips
-        : text.length
-          ? text
-          : attachmentsSnapshot.length
-            ? DEFAULT_PARALLEL_ATTACHMENT_REQUEST
-            : "Attached issue context";
+      const finalDisplayText = composedWithVisualContext.displayText
+        ?? (attachmentsSnapshot.length ? DEFAULT_PARALLEL_ATTACHMENT_REQUEST : "Attached issue context");
 
       let sessionId = selectedSessionId;
       const shouldPromoteLightSession = shouldPromoteSessionForComputerUse(selectedSession);
@@ -11762,6 +11919,8 @@ export function AgentChatPane({
     appControlContextItems,
     builtInBrowserContextItems,
     workDraftKind,
+    chatLaunch,
+    launchRoutesSends,
   ]);
 
   const compactContext = useCallback(async () => {
@@ -14270,6 +14429,7 @@ export function AgentChatPane({
     : null;
   const composerWithTypographyRoot = (
     <div
+      ref={composerDockRef}
       data-chat-appearance-root
       style={{ ...chatAppearanceRootStyle, paddingLeft: "var(--chat-pane-reserve-left, 0px)", paddingRight: "var(--chat-pane-reserve-right, 0px)" }}
       className={cn(compactShell ? "min-w-0 w-full" : undefined, "space-y-2")}

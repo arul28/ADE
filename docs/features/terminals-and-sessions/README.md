@@ -1157,6 +1157,22 @@ Renderer surfaces:
   when the read resolved inside the scope that asked for it, so a response
   landing after a project-tab switch cannot suppress the new scope's first lane
   read.
+- `apps/desktop/src/renderer/components/terminals/useChatLaunchCliDriver.ts` —
+  the hand-off for brain-owned new-lane CLI launches. The brain sets up the
+  lane and parks a CLI launch at phase `awaiting-client`, because the
+  terminal is a renderer concern. `TerminalsPage` mounts this hook next to
+  `useWorkSessions` (not in the draft pane, so a launch still completes after
+  the user leaves the draft); for each launch this window started
+  (`originClientId`) it starts the PTY through the same `launchPtySession`
+  path every Work CLI launch uses, with the launch's mode as the disposition,
+  then reports the session with `chatLaunch.completeClient({ launchId,
+  sessionId })` — or `{ launchId, error }` on failure. A module-level
+  in-flight set keeps a Work remount from starting one launch twice. A window
+  reloaded mid-launch no longer holds the prepared launch and reports that
+  instead of hanging; if the brain does not take the reported session (the
+  launch was cancelled meanwhile, or is gone), the driver disposes the PTY it
+  just started. See
+  [Chat › New-lane launches](../chat/composer-and-ui.md#new-lane-launches).
 - `apps/desktop/src/renderer/components/terminals/SessionCard.tsx` —
   full-bleed three-line Work row. Line one adapts pin, singleton lane, spawn
   lineage, drifted branch, diff, and last-activity identity around
@@ -1433,7 +1449,14 @@ Renderer surfaces:
 - `apps/desktop/src/renderer/components/terminals/useWorkSessions.ts` —
   hook that owns work view state (open items, active tab, draft kind,
   view mode, filters) and persists it to `localStorage` under
-  `ade.workViewState.v1`. It also owns the board's renderer-side derivation:
+  `ade.workViewState.v1`. It keeps the host roster in `hostSessions` and
+  derives `sessions` by merging stand-in rows for new-lane chat launches whose
+  chat the roster (or the cross-machine slice) does not list yet; launch rows
+  are never written to `sessionsCacheByProject` and never count as running for
+  refresh cadence. `SessionListPane` groups a launch's rows under the lane the
+  brain is still creating (named from the launch, not shown as an orphan
+  lane), and `SessionCard` shows the launch's status line in the preview slot and
+  "Setting up" / "Setup failed" in the status slot while it is pending. It also owns the board's renderer-side derivation:
   `buildWorkBoardModel` and the PR half `lanePrWaitingReason`, exposed as
   `workBoardBuckets` and `workBoardWaitingReasons`. Lane/status deeplinks layer a transient
   `deeplinkViewOverride` over the saved project state instead of rewriting

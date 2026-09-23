@@ -58,6 +58,9 @@ struct RemoteRosterChat: Codable, Equatable, Identifiable {
   /// ordinary project roster. The field is optional so older hosts remain
   /// decodable; clients use it to reject stale or legacy leaked rows.
   var identityKey: String? = nil
+  /// Client-only: the setup rail of a chat launch that still owns this row
+  /// (`hubRosterOverlayingChatLaunches`). Hosts never send it.
+  var launchRail: [ChatLaunchRailSegment]? = nil
 }
 
 struct RemoteRosterLane: Codable, Equatable, Identifiable {

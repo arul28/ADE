@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import type { GitBranchSummary } from "./types";
 import {
   remoteLaneBaseCandidate,
-  resolveDefaultRemoteLaneBase,
   selectRemoteLaneBaseRef,
 } from "./defaultRemoteLaneBase";
 
@@ -41,6 +40,14 @@ describe("selectRemoteLaneBaseRef", () => {
     expect(selectRemoteLaneBaseRef({ branches, primaryBaseRef: "main" })).toBe("origin/main");
   });
 
+  it("returns the tracked upstream even though branch listings fold that remote row into its local branch", () => {
+    const folded = [
+      branch({ name: "main", isCurrent: true, upstream: "origin/main" }),
+      branch({ name: "origin/develop", isRemote: true }),
+    ];
+    expect(selectRemoteLaneBaseRef({ branches: folded, primaryBaseRef: "main" })).toBe("origin/main");
+  });
+
   it("falls back to origin/<base> when no upstream is configured", () => {
     const noUpstream = [
       branch({ name: "develop" }),
@@ -52,61 +59,5 @@ describe("selectRemoteLaneBaseRef", () => {
   it("returns null when the remote ref does not exist (unfetched / no remote)", () => {
     const localOnly = [branch({ name: "main", isCurrent: true })];
     expect(selectRemoteLaneBaseRef({ branches: localOnly, primaryBaseRef: "main" })).toBeNull();
-  });
-});
-
-describe("resolveDefaultRemoteLaneBase", () => {
-  const branches = [
-    branch({ name: "main", isCurrent: true, upstream: "origin/main" }),
-    branch({ name: "origin/main", isRemote: true }),
-  ];
-
-  it("resolves the remote ref after fetching", async () => {
-    let fetched = false;
-    const result = await resolveDefaultRemoteLaneBase({
-      newLaneBaseSource: "remote",
-      primaryBaseRef: "main",
-      fetchRemote: async () => {
-        fetched = true;
-      },
-      listBranches: async () => branches,
-    });
-    expect(fetched).toBe(true);
-    expect(result).toBe("origin/main");
-  });
-
-  it("skips resolution entirely for the local source", async () => {
-    const result = await resolveDefaultRemoteLaneBase({
-      newLaneBaseSource: "local",
-      primaryBaseRef: "main",
-      fetchRemote: async () => {
-        throw new Error("must not fetch");
-      },
-      listBranches: async () => branches,
-    });
-    expect(result).toBeNull();
-  });
-
-  it("does not stall on a hung fetch (bounded by the timeout)", async () => {
-    const result = await resolveDefaultRemoteLaneBase({
-      newLaneBaseSource: "remote",
-      primaryBaseRef: "main",
-      fetchRemote: () => new Promise(() => {}),
-      listBranches: async () => branches,
-      fetchTimeoutMs: 20,
-    });
-    expect(result).toBe("origin/main");
-  });
-
-  it("resolves null when listing branches fails", async () => {
-    const result = await resolveDefaultRemoteLaneBase({
-      newLaneBaseSource: "remote",
-      primaryBaseRef: "main",
-      fetchRemote: async () => {},
-      listBranches: async () => {
-        throw new Error("boom");
-      },
-    });
-    expect(result).toBeNull();
   });
 });

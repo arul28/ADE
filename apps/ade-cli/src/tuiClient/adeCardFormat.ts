@@ -73,6 +73,27 @@ function formatCardDuration(durationMs: number | null | undefined): string | nul
   return `${hours}h${remainingMinutes ? ` ${remainingMinutes}m` : ""}`;
 }
 
+function adeCardHeadingGlyph(card: AdeCardPayload, degradedReason: string | null): string {
+  const failing = (card.progress?.failed ?? 0) > 0
+    || (card.rows ?? []).some((row) => normalizeAdeCardTone(row.tone) === "warning")
+    || (card.metrics ?? []).some((metric) => normalizeAdeCardTone(metric.tone) === "warning");
+  return card.state === "live" ? "◐" : failing ? "✕" : degradedReason ? "!" : "✓";
+}
+
+/**
+ * A `lane_setup` card stays `live` after a failed stage (the launch can be
+ * retried) and uses warning tone for stages that finished with a warning, so
+ * the generic state/tone rule would spin on failures and cross out a lane that
+ * did set up. Read the stage rows instead.
+ */
+function laneSetupHeadingGlyph(card: AdeCardPayload): string {
+  const rows = card.rows ?? [];
+  if (rows.some((row) => row.icon === "fail")) return "✕";
+  if (card.state === "live" || rows.some((row) => row.icon === "running" || row.icon === "queued")) return "◐";
+  if (rows.some((row) => normalizeAdeCardTone(row.tone) === "warning")) return "!";
+  return "✓";
+}
+
 /**
  * Box-drawn `ade_card`, the TUI's ambient equivalent of the desktop card:
  * a row in the transcript, not a new pane.
@@ -84,11 +105,10 @@ export function renderAdeCardBody(card: AdeCardPayload): string {
     return deeplink && !fallback.includes(deeplink) ? `${fallback}\n${deeplink}` : fallback;
   }
 
-  const failing = (card.progress?.failed ?? 0) > 0
-    || (card.rows ?? []).some((row) => normalizeAdeCardTone(row.tone) === "warning")
-    || (card.metrics ?? []).some((metric) => normalizeAdeCardTone(metric.tone) === "warning");
   const degradedReason = card.degradedReason?.trim() || null;
-  const glyph = card.state === "live" ? "◐" : failing ? "✕" : degradedReason ? "!" : "✓";
+  const glyph = card.variant === "lane_setup"
+    ? laneSetupHeadingGlyph(card)
+    : adeCardHeadingGlyph(card, degradedReason);
   const heading = singleLine(
     [card.title, card.subtitle?.trim() || null].filter(Boolean).join(" · "),
     ADE_CARD_INNER_WIDTH - 6,
@@ -101,7 +121,10 @@ export function renderAdeCardBody(card: AdeCardPayload): string {
   const bar = adeCardProgressBar(card);
   if (bar) lines.push(adeCardBoxRow(bar));
 
-  const metrics = (card.metrics ?? []).map((metric) => `${metric.value} ${metric.label}`.trim());
+  // Counts read "3 files"; a lane_setup card's only metric is a name ("Template node-api").
+  const metrics = (card.metrics ?? []).map((metric) => (card.variant === "lane_setup"
+    ? `${metric.label} ${metric.value}`
+    : `${metric.value} ${metric.label}`).trim());
   if (metrics.length) lines.push(adeCardBoxRow(metrics.join("  ")));
 
   const duration = formatCardDuration(card.durationMs);

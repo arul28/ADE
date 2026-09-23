@@ -210,6 +210,8 @@ private struct WorkSessionRowRenderSignature: Equatable {
   let isSelectedTransitionSource: Bool
   let compact: Bool
   let nestedSubagent: Bool
+  /// Setup rail of a chat launch that still owns this row; nil otherwise.
+  let launchRail: [ChatLaunchRailSegment]?
 
   init(
     session: TerminalSessionSummary,
@@ -306,6 +308,7 @@ private struct WorkSessionRowRenderSignature: Equatable {
     self.isSelectedTransitionSource = isSelectedTransitionSource
     self.compact = compact
     self.nestedSubagent = nestedSubagent
+    self.launchRail = compact ? nil : session.launchRail
   }
 
   var previewText: String? { previewLine?.text }
@@ -487,6 +490,7 @@ struct WorkSessionRow: View, Equatable {
         lineOne
         lineTwo
         lineThree
+        launchRailLine
       }
     }
   }
@@ -657,6 +661,8 @@ struct WorkSessionRow: View, Equatable {
         if renderSignature.previewText != nil {
           previewView(lineLimit: 2)
         }
+
+        launchRailLine
 
         // The accessible layout stacks what line 1 packs across, so it carries
         // the same lineage mark — at the larger size this layout uses
@@ -880,7 +886,16 @@ struct WorkSessionRow: View, Equatable {
     .adeMatchedGeometry(id: isSelectedTransitionSource ? "work-title-\(session.id)" : nil, in: transitionNamespace)
   }
 
-  /// The italic line-3 preview. Same reason as `titleView`: one place decides
+  /// A launch still setting up this row's lane: the shared segmented rail
+  /// under the status line, the same one the setup card and desktop rows draw.
+  @ViewBuilder
+  private var launchRailLine: some View {
+    if let rail = renderSignature.launchRail, !rail.isEmpty {
+      WorkChatLaunchRowRail(segments: rail)
+    }
+  }
+
+    /// The italic line-3 preview. Same reason as `titleView`: one place decides
   /// whether the preview linkifies, so the two bodies cannot drift on it.
   @ViewBuilder
   private func previewView(lineLimit: Int) -> some View {

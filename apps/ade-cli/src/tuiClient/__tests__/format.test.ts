@@ -1871,6 +1871,68 @@ describe("ade_card (TUI)", () => {
     expect(boxLines.at(-1)!.startsWith("└")).toBe(true);
   });
 
+  it("draws a lane_setup card as stage rows and reads its heading glyph from the stages", () => {
+    const laneSetup = (over: Record<string, unknown>) => card({
+      cardId: "lane-setup:launch-1",
+      variant: "lane_setup",
+      subtitle: "feature-x from main · node-api",
+      metrics: [{ label: "Template", value: "node-api" }],
+      fallbackText: "Setting up lane feature-x from main…",
+      ...over,
+    });
+    const render = (event: unknown) => renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [env("2026-07-27T12:00:00.000Z", 1, event)],
+    }).at(-1)!.body;
+
+    const running = render(laneSetup({
+      state: "live",
+      title: "Setting up lane",
+      rows: [
+        { key: "fetch", icon: "pass", text: "Fetched main", detail: "1.2s" },
+        { key: "checkout", icon: "running", text: "Checking out", detail: null },
+        { key: "environment", icon: "queued", text: "Environment", detail: null },
+        { key: "agent", icon: "queued", text: "Start agent", detail: null },
+      ],
+    }));
+    const runningLines = running.split("\n");
+    expect(runningLines[0]).toContain("◐ Setting up lane");
+    expect(running).toContain("Template node-api");
+    expect(running).toContain("✓ Fetched main");
+    expect(running).toContain("1.2s");
+    expect(running).toContain("◐ Checking out");
+    expect(running).toContain("○ Start agent");
+    const boxLines = runningLines.filter((line) => /^[┌│└]/.test(line));
+    expect(new Set(boxLines.map((line) => [...line].length)).size).toBe(1);
+
+    // A failed launch stays `live` (retryable) but must not show a spinner.
+    const failed = render(laneSetup({
+      state: "live",
+      title: "Lane setup failed",
+      rows: [
+        { key: "checkout", icon: "fail", text: "Checkout", detail: "worktree exists", tone: "warning" },
+        { key: "agent", icon: "queued", text: "Start agent", detail: null },
+      ],
+    }));
+    expect(failed.split("\n")[0]).toContain("✕ Lane setup failed");
+    expect(failed).toContain("✕ Checkout");
+    expect(failed).toContain("worktree exists");
+
+    // A stage that finished with a warning: the lane set up, so no ✕.
+    const warned = render(laneSetup({
+      state: "terminal",
+      title: "Lane set up in 8s",
+      rows: [
+        { key: "checkout", icon: "pass", text: "Checked out", detail: "2s" },
+        { key: "environment", icon: "pass", text: "Environment", detail: "setup script exited 1 · 5s", tone: "warning" },
+        { key: "agent", icon: "skipped", text: "Start agent", detail: null },
+      ],
+    }));
+    expect(warned.split("\n")[0]).toContain("! Lane set up in 8s");
+    expect(warned).toContain("· Start agent");
+  });
+
   it("falls back to fallbackText + deeplink for an unknown variant", () => {
     const lines = renderChatLines({
       activeSession: null,

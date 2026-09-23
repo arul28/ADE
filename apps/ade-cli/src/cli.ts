@@ -4,6 +4,7 @@
 // print on every single `ade` invocation. See ./lib/nodeWarnings.
 import "./lib/nodeWarnings";
 import { Buffer } from "node:buffer";
+import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
@@ -61,6 +62,7 @@ import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/d
 import { buildPairingQrPayload } from "../../desktop/src/shared/pairingQr";
 import { buildWebClientPairUrl } from "../../desktop/src/shared/webClientUrl";
 import { abbreviatePathTail } from "../../desktop/src/shared/pathDisplay";
+import { isUuid } from "../../desktop/src/shared/uuid";
 import { CURSOR_CLI_EXECUTABLES } from "../../desktop/src/shared/providerCliExecutables";
 import { effectiveCursorModeId } from "../../desktop/src/shared/cursorModes";
 import {
@@ -411,6 +413,8 @@ type FormatterId =
   | "chat-models"
   | "chat-resume-now"
   | "chat-continue-on-account"
+  | "chat-launch"
+  | "chat-launches"
   | "session-lifecycle"
   | "lane-drift"
   | "scheduled-work-create"
@@ -579,6 +583,17 @@ type CliPlan =
       kind: "chat-wait";
       sessionId: string;
       waitFor: ChatWaitTarget;
+      timeoutMs: number;
+      pollIntervalMs: number;
+    }
+  | {
+      /**
+       * `ade chat launch`: start a brain-owned new-lane chat (`chat.startLaunch`)
+       * and, with `--wait`, poll `chat.getLaunch` until it completes or fails.
+       */
+      kind: "chat-launch";
+      launchArgs: JsonObject;
+      wait: boolean;
       timeoutMs: number;
       pollIntervalMs: number;
     }
@@ -2859,6 +2874,19 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --no-parent --prompt "fix the tests"
     $ ade chat create --from-linear-issue ENG-431 --parent <session> --type subagent
                                                     Start a child chat with an attached issue + kickoff (alias: --linear-issue-json)
+    $ ade chat launch "fix the flaky test" --provider codex --model openai/gpt-5.6-sol --wait
+                                                    Start a chat in a brand-new lane (the desktop composer's new-lane
+                                                    send). The brain fetches the base, checks out the worktree, applies
+                                                    the default lane template, then creates the chat and sends the prompt.
+                                                    Returns at once with the reserved launch/lane/chat ids; --wait polls
+                                                    until it completes (exit 0) or fails/cancels/times out (exit 1),
+                                                    printing a stage line to stderr with --text. Also: --base <ref>,
+                                                    --lane-name, --title, --effort, --permissions, --fast, --launch-id,
+                                                    --lane-id (UUIDs; generated when omitted). The chat is top-level;
+                                                    use 'ade new chat --lane auto --type ...' for a parented child.
+    $ ade chat launches --text                      List new-lane launches running or recently finished on the brain
+    $ ade chat launch-status <launch>               One launch's stages (exit 1 when unknown or expired)
+    $ ade chat launch-cancel <launch>               Cancel a launch before its agent starts; deletes its chat, lane, and branch
     $ ade chat send <session> --text "next step"    Send a message; steers automatically if the turn is active
     $ ade chat show <session>                       Session summary (title, provider, model)
     $ ade chat status <session>                     Live turn status: RUNNING / BLOCKED / IDLE
@@ -8915,6 +8943,220 @@ function buildSessionPlan(args: string[]): CliPlan {
   );
 }
 
+const CHAT_LAUNCH_TERMINAL_PHASES = new Set(["completed", "failed", "cancelled"]);
+
+/**
+ * `ade chat launch`: the desktop composer's "new lane" send, owned by the brain.
+ * One `chat.startLaunch` reserves the chat and lane ids (generated here), then
+ * the brain fetches the base, checks out the worktree, applies the default lane
+ * template, creates the chat and sends the prompt. `--wait` polls
+ * `chat.getLaunch` until the launch completes, fails, or is cancelled.
+ *
+ * The chat is top-level (no spawn lineage): `chat.startLaunch` carries none. A
+ * parented child chat in a fresh lane stays `ade new chat --lane auto`.
+ */
+function buildChatLaunchPlan(args: string[]): CliPlan {
+  const modelArg = readValue(args, ["--model", "--model-id"]);
+  const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort", "--reasoning"]);
+  const permissionMode = readValue(args, ["--permission-mode", "--permissions"]);
+  const droidPermissionMode = readDroidPermissionMode(args);
+  const fastMode = readFastModeFlag(args);
+  const title = readValue(args, ["--title"]);
+  const laneName = readValue(args, ["--lane-name", "--name"]);
+  const baseBranch = readValue(args, ["--base", "--base-branch"]);
+  const launchIdFlag = readValue(args, ["--launch-id"]);
+  const laneIdFlag = readValue(args, ["--lane-id"]);
+  const foreground = readFlag(args, ["--foreground"]);
+  const wait = readFlag(args, ["--wait"]);
+  const printConfig = readFlag(args, ["--print-config", "--dry-run"]);
+  const timeoutMs = readIntOption(args, ["--timeout-ms", "--timeout"], 10 * 60 * 1000) ?? 10 * 60 * 1000;
+  const pollIntervalMs = readIntOption(args, ["--poll-interval-ms", "--interval-ms"], 1_000) ?? 1_000;
+  if (timeoutMs <= 0) throw new CliUsageError("chat launch --timeout-ms must be greater than zero.");
+  if (pollIntervalMs <= 0) throw new CliUsageError("chat launch --poll-interval-ms must be greater than zero.");
+  const provider = requireLaunchProfile(readValue(args, ["--provider"]), { allowShell: false }) ?? "codex";
+  const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args);
+  const launchId = launchIdFlag == null ? randomUUID() : requireCliUuid(launchIdFlag, "--launch-id");
+  const laneId = laneIdFlag == null ? randomUUID() : requireCliUuid(laneIdFlag, "--lane-id");
+  const explicitPrompt = readValue(args, ["--prompt", "--text", "--message"]);
+  const input = collectGenericObjectArgs(args);
+  const prompt = requireValue(explicitPrompt ?? (args.join(" ").trim() || null), "prompt");
+
+  const create: JsonObject = { provider, model: modelArg ?? "" };
+  maybePut(create, "modelId", modelArg);
+  maybePut(create, "reasoningEffort", reasoningEffort);
+  maybePut(create, "permissionMode", permissionMode);
+  maybePut(create, "droidPermissionMode", droidPermissionMode);
+  maybePut(create, "instanceId", instanceId);
+  maybePut(create, "presetId", presetId);
+  maybePut(create, "credentialId", credentialId);
+  if (fastMode !== undefined) create.fastMode = fastMode;
+  const launchArgs: JsonObject = {
+    kind: "chat",
+    // Nothing on this side opens the chat; "foreground" is for a client that does.
+    mode: foreground ? "foreground" : "background",
+    launchId,
+    laneId,
+    prompt,
+    provider,
+    chat: { create, message: { text: prompt } },
+  };
+  maybePut(launchArgs, "laneName", laneName);
+  maybePut(launchArgs, "baseBranch", baseBranch);
+  maybePut(launchArgs, "modelId", modelArg);
+  maybePut(launchArgs, "title", title);
+  // `--arg` / `--input-json` escape hatch (dotted keys reach chat.create.*).
+  for (const [key, value] of Object.entries(input)) {
+    if (key === "chat" && isRecord(value)) {
+      const chat = launchArgs.chat as JsonObject;
+      if (isRecord(value.create)) Object.assign(chat.create as JsonObject, value.create);
+      if (isRecord(value.message)) Object.assign(chat.message as JsonObject, value.message);
+      continue;
+    }
+    launchArgs[key] = value;
+  }
+
+  if (printConfig) {
+    return {
+      kind: "static",
+      formatter: "action-result",
+      value: { ok: true, dryRun: true, action: "chat.startLaunch", input: launchArgs },
+    };
+  }
+  return { kind: "chat-launch", launchArgs, wait, timeoutMs, pollIntervalMs };
+}
+
+function requireCliUuid(value: string, flag: string): string {
+  const id = value.trim().toLowerCase();
+  if (!isUuid(id)) throw new CliUsageError(`${flag} must be a UUID.`);
+  return id;
+}
+
+async function runChatLaunchCommand(
+  plan: CliPlan & { kind: "chat-launch" },
+  options: GlobalOptions,
+): Promise<{ output: string; exitCode: number }> {
+  let connection: CliConnection;
+  try {
+    connection = await createConnection(options, { autoRegisterProject: true });
+  } catch (error) {
+    throw new CliExecutionError(
+      "Failed to initialize ADE CLI connection for chat launch.",
+      {
+        cause: error instanceof Error ? error.message : String(error),
+        nextAction:
+          "Verify --project-root points at an ADE project and run ade doctor --json.",
+      },
+    );
+  }
+
+  const callChat = async (action: string, args: JsonObject): Promise<unknown> => {
+    const raw = await connection.request("ade/actions/call", {
+      name: "run_ade_action",
+      arguments: { domain: "chat", action, args },
+    });
+    return unwrapActionEnvelope(unwrapToolResult(raw));
+  };
+
+  try {
+    const started = await callChat("startLaunch", plan.launchArgs);
+    if (!isRecord(started) || typeof started.launchId !== "string") {
+      throw new CliExecutionError("chat.startLaunch returned an unexpected result.", { result: started });
+    }
+    if (!plan.wait) {
+      return { output: formatOutput(started, options, "chat-launch"), exitCode: 0 };
+    }
+    const launchId = started.launchId;
+    const startedAt = Date.now();
+    let launch: JsonObject = started;
+    let lastLine = "";
+    const report = (snapshot: JsonObject) => {
+      if (!options.text) return;
+      const line = formatChatLaunchProgressLine(snapshot);
+      if (line !== lastLine) process.stderr.write(`${line}\n`);
+      lastLine = line;
+    };
+    while (true) {
+      report(launch);
+      const phase = asString(launch.phase) ?? "running";
+      const elapsedMs = Date.now() - startedAt;
+      if (CHAT_LAUNCH_TERMINAL_PHASES.has(phase)) {
+        const result = { ok: phase === "completed", launchId, phase, elapsedMs, launch };
+        return { output: formatOutput(result, options, "chat-launch"), exitCode: phase === "completed" ? 0 : 1 };
+      }
+      if (elapsedMs >= plan.timeoutMs) {
+        const result = { ok: false, error: "timed_out", launchId, phase, timeoutMs: plan.timeoutMs, elapsedMs, launch };
+        return { output: formatOutput(result, options, "chat-launch"), exitCode: 1 };
+      }
+      await sleep(Math.min(plan.pollIntervalMs, Math.max(1, plan.timeoutMs - elapsedMs)));
+      const next = await callChat("getLaunch", { launchId });
+      if (!isRecord(next)) {
+        const result = { ok: false, error: "launch_not_found", launchId, elapsedMs: Date.now() - startedAt };
+        return { output: formatOutput(result, options, "chat-launch"), exitCode: 1 };
+      }
+      launch = next;
+    }
+  } finally {
+    await connection.close();
+  }
+}
+
+/** `fetch done · checkout running 42% · environment pending · agent pending` */
+function formatChatLaunchStages(snapshot: JsonObject): string {
+  const stages = Array.isArray(snapshot.stages) ? snapshot.stages.filter(isRecord) : [];
+  return stages
+    .map((stage) => {
+      const status = asString(stage.status) ?? "pending";
+      const percent = typeof stage.percent === "number" && status === "running" ? ` ${Math.round(stage.percent)}%` : "";
+      return `${asString(stage.id) ?? "?"} ${status}${percent}`;
+    })
+    .join(" · ");
+}
+
+function formatChatLaunchProgressLine(snapshot: JsonObject): string {
+  const phase = asString(snapshot.phase) ?? "running";
+  const stages = formatChatLaunchStages(snapshot);
+  const error = asString(snapshot.error);
+  return `[${phase}] ${stages}${error ? ` — ${error}` : ""}`;
+}
+
+export function formatChatLaunch(value: unknown): string {
+  const wrapper = isRecord(value) ? value : null;
+  const snapshot = firstRecord(value, ["launch", "result"])
+    ?? (wrapper && typeof wrapper.launchId === "string" && wrapper.phase !== undefined && Array.isArray(wrapper.stages) ? wrapper : null);
+  if (!snapshot) {
+    const error = asString(wrapper?.error);
+    return error === "launch_not_found" || !error ? "ADE chat launch\n(no launch)" : `ADE chat launch\n${error}`;
+  }
+  const queued = Array.isArray(snapshot.queuedMessages) ? snapshot.queuedMessages.length : 0;
+  return renderKeyValues(`ADE chat launch ${asString(snapshot.launchId) ?? ""} · ${asString(snapshot.phase) ?? "unknown"}`, [
+    ["lane", `${asString(snapshot.laneName) ?? ""} (${asString(snapshot.laneId) ?? ""})`],
+    ["base", snapshot.baseRef],
+    ["branch", snapshot.branchRef],
+    ["chat", snapshot.sessionId],
+    ["model", snapshot.modelId],
+    ["template", snapshot.templateName],
+    ["stages", formatChatLaunchStages(snapshot)],
+    ["queued", queued > 0 ? `${queued} message${queued === 1 ? "" : "s"}` : null],
+    ["error", snapshot.error],
+    ["wait", wrapper?.error === "timed_out" ? `timed out after ${String(wrapper.elapsedMs)}ms` : null],
+  ]);
+}
+
+export function formatChatLaunches(value: unknown): string {
+  const launches = firstArray(value, ["launches", "result", "items"]);
+  return renderTable(
+    ["launch", "phase", "lane", "stages", "title"],
+    launches.map((launch) => [
+      launch.launchId,
+      launch.phase,
+      launch.laneName,
+      formatChatLaunchStages(launch),
+      launch.title,
+    ]),
+    "ADE chat launches\n(no launches)",
+  );
+}
+
 function buildChatPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
   if (readFlag(args, ["--personal"])) {
@@ -8956,10 +9198,14 @@ function buildChatPlan(args: string[]): CliPlan {
   // the caller's own $ADE_CHAT_SESSION_ID and accept --session <id>.
   const selfLifecycleSub = sub === "ask" || sub === "note"
     || sub === "generate-names" || sub === "generate_names" || sub === "names";
+  // New-lane launches take a prompt (`launch`) or a launch id (`launch-status`,
+  // `launch-cancel`), never a session positional; they read their own.
+  const launchSub = sub === "launch" || sub === "launches"
+    || sub === "launch-status" || sub === "launch-cancel";
   const explicitSessionId = readValue(args, ["--session", "--session-id"]);
   const sessionId =
     explicitSessionId ??
-    (sub !== "create" && sub !== "list" && !linearSessionSub && !selfLifecycleSub
+    (sub !== "create" && sub !== "list" && !linearSessionSub && !selfLifecycleSub && !launchSub
       ? firstStandalonePositional(args)
       : null);
   const withSession = (base: JsonObject = {}) =>
@@ -9241,6 +9487,30 @@ function buildChatPlan(args: string[]): CliPlan {
           collectGenericObjectArgs(args, { chatSessionId: targetSession }),
         ),
       ],
+    };
+  }
+  if (sub === "launch") return buildChatLaunchPlan(args);
+  if (sub === "launches")
+    return {
+      kind: "execute",
+      label: "chat launches",
+      formatter: "chat-launches",
+      steps: [actionStep("result", "chat", "listLaunches")],
+    };
+  if (sub === "launch-status" || sub === "launch-cancel") {
+    const launchId = requireValue(
+      readValue(args, ["--launch-id", "--launch"]) ?? firstStandalonePositional(args),
+      "launchId",
+    );
+    const cancel = sub === "launch-cancel";
+    return {
+      kind: "execute",
+      label: `chat ${sub}`,
+      formatter: "chat-launch",
+      steps: [actionStep("result", "chat", cancel ? "cancelLaunch" : "getLaunch", { launchId })],
+      // getLaunch answers null once the record is gone (unknown id, or a
+      // finished launch past its retention window).
+      exitCodeFromResult: (result) => (isRecord(result) && typeof result.launchId === "string" ? 0 : 1),
     };
   }
   if (sub === "create" || sub === "spawn") {
@@ -26619,6 +26889,10 @@ function formatTextOutput(
       return formatChatResumeNow(value);
     case "chat-continue-on-account":
       return formatChatContinueOnAccount(value);
+    case "chat-launch":
+      return formatChatLaunch(value);
+    case "chat-launches":
+      return formatChatLaunches(value);
     case "chat-read":
       return formatChatRead(value);
     case "session-lifecycle":
@@ -28436,6 +28710,9 @@ async function runCli(
     }
     if (plan.kind === "chat-wait") {
       return await runChatWaitCommand(plan, parsed.options);
+    }
+    if (plan.kind === "chat-launch") {
+      return await runChatLaunchCommand(plan, parsed.options);
     }
     if (plan.kind === "chat-recover") {
       return await runChatRecoverCommand(plan, parsed.options);

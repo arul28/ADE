@@ -21,6 +21,8 @@ import {
   findProjectRoots,
   formatChatResumeNow,
   formatChatContinueOnAccount,
+  formatChatLaunch,
+  formatChatLaunches,
   formatChatResumeRelativeDelta,
   formatChatStatus,
   formatDiagnosticError,
@@ -68,6 +70,7 @@ import {
 import { isAdeRuntimeNamedPipePath } from "../../desktop/src/shared/adeRuntimeIpc";
 import { PI_LOGIN_IPC_TIMEOUT_MS } from "../../desktop/src/main/services/localRuntime/localRuntimeTimeoutPolicy";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
+import { parseChatLaunchArgs } from "../../desktop/src/main/services/chat/chatLaunchArgs";
 import { generateRpcAuthToken } from "./rpcAuth";
 import { JsonRpcClient } from "./tuiClient/jsonRpcClient";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
@@ -6382,6 +6385,106 @@ describe("ADE CLI", () => {
       expect(plan.exitCodeFromResult?.({ ok: false, reason: "No usage limit is live." })).toBe(1);
       expect(plan.exitCodeFromResult?.({})).toBe(1);
     }
+  });
+
+  it("builds chat launch as one chat.startLaunch the brain's parser accepts", () => {
+    const launchId = "6F1C2B7A-0000-4000-8000-000000000001";
+    const plan = buildCliPlan([
+      "chat", "launch", "fix", "the", "flaky", "test",
+      "--provider", "claude", "--model", "anthropic/claude-opus-5", "--effort", "high",
+      "--permissions", "full-auto", "--fast", "--base", "origin/main", "--lane-name", "flaky-test",
+      "--launch-id", launchId, "--wait", "--timeout-ms", "5000",
+    ]);
+    expect(plan.kind).toBe("chat-launch");
+    if (plan.kind !== "chat-launch") return;
+    expect(plan.wait).toBe(true);
+    expect(plan.timeoutMs).toBe(5000);
+    expect(plan.launchArgs).toMatchObject({
+      kind: "chat",
+      mode: "background",
+      launchId: launchId.toLowerCase(),
+      prompt: "fix the flaky test",
+      laneName: "flaky-test",
+      baseBranch: "origin/main",
+      chat: {
+        create: {
+          provider: "claude",
+          model: "anthropic/claude-opus-5",
+          reasoningEffort: "high",
+          permissionMode: "full-auto",
+          fastMode: true,
+        },
+        message: { text: "fix the flaky test" },
+      },
+    });
+    expect(typeof plan.launchArgs.laneId).toBe("string");
+    const parsed = parseChatLaunchArgs(plan.launchArgs);
+    expect(parsed.launchId).toBe(launchId.toLowerCase());
+    expect(parsed.laneId).toBe(plan.launchArgs.laneId);
+    expect(parsed.chat?.create).toMatchObject({ provider: "claude", reasoningEffort: "high", fastMode: true });
+    expect(parsed.chat?.message.text).toBe("fix the flaky test");
+  });
+
+  it("chat launch generates fresh ids, defaults to codex, and validates its inputs", () => {
+    const first = buildCliPlan(["chat", "launch", "--prompt", "hello"]);
+    const second = buildCliPlan(["chat", "launch", "--prompt", "hello"]);
+    if (first.kind !== "chat-launch" || second.kind !== "chat-launch") throw new Error("expected chat-launch");
+    expect(first.wait).toBe(false);
+    expect(first.launchArgs.launchId).not.toBe(second.launchArgs.launchId);
+    expect((first.launchArgs.chat as { create: { provider: string } }).create.provider).toBe("codex");
+    expect(() => buildCliPlan(["chat", "launch"])).toThrow(/prompt/);
+    expect(() => buildCliPlan(["chat", "launch", "hi", "--launch-id", "nope"])).toThrow(/--launch-id must be a UUID/);
+    expect(() => buildCliPlan(["chat", "launch", "hi", "--provider", "shell"])).toThrow();
+    const dryRun = buildCliPlan(["chat", "launch", "hi", "--dry-run"]);
+    expect(dryRun.kind).toBe("static");
+  });
+
+  it("builds chat launches / launch-status / launch-cancel over the launch actions", () => {
+    const list = buildCliPlan(["chat", "launches"]);
+    if (list.kind !== "execute") throw new Error("expected execute");
+    expect(list.formatter).toBe("chat-launches");
+    expect(list.steps[0]?.params).toMatchObject({ arguments: { domain: "chat", action: "listLaunches" } });
+    for (const [verb, action] of [["launch-status", "getLaunch"], ["launch-cancel", "cancelLaunch"]] as const) {
+      const plan = buildCliPlan(["chat", verb, "launch-1"]);
+      if (plan.kind !== "execute") throw new Error("expected execute");
+      expect(plan.formatter).toBe("chat-launch");
+      expect(plan.steps[0]?.params).toEqual({
+        name: "run_ade_action",
+        arguments: { domain: "chat", action, args: { launchId: "launch-1" } },
+      });
+      expect(plan.exitCodeFromResult?.({ launchId: "launch-1", phase: "running" })).toBe(0);
+      expect(plan.exitCodeFromResult?.(null)).toBe(1);
+    }
+    const byFlag = buildCliPlan(["chat", "launch-status", "--launch-id", "launch-2"]);
+    if (byFlag.kind !== "execute") throw new Error("expected execute");
+    expect(byFlag.steps[0]?.params).toMatchObject({ arguments: { args: { launchId: "launch-2" } } });
+  });
+
+  it("formats a chat launch snapshot and the launch list compactly", () => {
+    const snapshot = {
+      launchId: "l-1",
+      phase: "running",
+      laneId: "lane-1",
+      laneName: "flaky-test",
+      baseRef: "origin/main",
+      sessionId: "l-1",
+      title: "Fix flaky test",
+      stages: [
+        { id: "fetch", status: "done", percent: null },
+        { id: "checkout", status: "running", percent: 42.4 },
+        { id: "agent", status: "pending", percent: null },
+      ],
+      queuedMessages: [],
+      error: null,
+    };
+    const text = formatChatLaunch(snapshot);
+    expect(text).toContain("ADE chat launch l-1 · running");
+    expect(text).toContain("fetch done · checkout running 42% · agent pending");
+    expect(text).toContain("flaky-test (lane-1)");
+    expect(formatChatLaunch({ ok: false, error: "timed_out", elapsedMs: 5000, launch: snapshot })).toContain("timed out after 5000ms");
+    expect(formatChatLaunch(null)).toContain("(no launch)");
+    expect(formatChatLaunches([snapshot])).toContain("flaky-test");
+    expect(formatChatLaunches([])).toContain("(no launches)");
   });
 
   it("builds chat continue-on-account as chat.continueUsageLimitOnAlternate", () => {

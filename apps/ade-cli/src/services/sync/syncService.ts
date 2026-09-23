@@ -1,3 +1,4 @@
+import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import fs from "node:fs";
 import path from "node:path";
 import { randomInt } from "node:crypto";
@@ -146,6 +147,7 @@ type SyncServiceArgs = {
     typeof createComputerUseArtifactBrokerService
   >;
   agentChatService: ReturnType<typeof createAgentChatService>;
+  chatLaunchService?: ChatLaunchService | null;
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
   personalChatScope?: PersonalChatScopeContract;
   /** Brain→push-relay publisher; threaded to the runtime remote-command service. */
@@ -743,6 +745,7 @@ export function createSyncService(args: SyncServiceArgs) {
     operationService: args.operationService,
     aiIntegrationService: args.aiIntegrationService,
     agentChatService: args.agentChatService,
+    chatLaunchService: args.chatLaunchService,
     cursorCloudFleetService: args.cursorCloudFleetService,
     personalChatScope: args.personalChatScope,
     pushPublisherService: args.pushPublisherService,
@@ -889,6 +892,7 @@ export function createSyncService(args: SyncServiceArgs) {
       sessionDeltaService: args.sessionDeltaService,
       ptyService: args.ptyService,
       agentChatService: args.agentChatService,
+      chatLaunchService: args.chatLaunchService,
       cursorCloudFleetService: args.cursorCloudFleetService,
       aiIntegrationService: args.aiIntegrationService,
       accountSettingsStore: args.accountSettingsStore,

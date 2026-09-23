@@ -3563,7 +3563,7 @@ private struct WorkSessionNavigationChromeWidthPreferenceKey: PreferenceKey {
   }
 }
 
-private extension View {
+extension View {
   func workSessionNavigationChrome<TrailingControls: View>(
     mode: WorkSessionNavigationChrome,
     title: String,

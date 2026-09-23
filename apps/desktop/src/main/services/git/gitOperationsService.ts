@@ -1690,7 +1690,9 @@ export function createGitOperationsService({
           }
 
           if (fullRef.startsWith("refs/remotes/")) {
-            if (shortRef.endsWith("/HEAD")) return;
+            // `refs/remotes/origin/HEAD` shortens to plain `origin`, so the
+            // symbolic HEAD has to be recognised by its full ref.
+            if (fullRef.endsWith("/HEAD") || shortRef.endsWith("/HEAD")) return;
             remoteBranches.push(
               annotate({ name: shortRef, isCurrent: false, isRemote: true, upstream: null, ...commitMeta }),
             );

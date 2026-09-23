@@ -360,3 +360,47 @@ export function formatBuiltInBrowserContextForPrompt(items: BuiltInBrowserContex
     "",
   ].join("\n");
 }
+
+/** The composer's staged visual context (iOS, App Control, browser), in prompt and display form. */
+export type ComposedVisualContext = {
+  /** Prepended to the prompt the agent sees; "" when nothing is staged. */
+  prefix: string;
+  /** Chip tokens prepended to the user's bubble; "" when nothing is staged. */
+  displayChips: string;
+};
+
+export function composeVisualContext(
+  iosItems: IosElementContextItem[],
+  appControlItems: AppControlContextItem[],
+  browserItems: BuiltInBrowserContextItem[],
+): ComposedVisualContext {
+  return {
+    prefix: [
+      formatIosElementContextForPrompt(iosItems),
+      formatAppControlContextForPrompt(appControlItems),
+      formatBuiltInBrowserContextForPrompt(browserItems),
+    ].filter(Boolean).join("\n"),
+    displayChips: [
+      formatIosElementContextChipsForDisplay(iosItems),
+      formatAppControlContextChipsForDisplay(appControlItems),
+      formatBuiltInBrowserContextChipsForDisplay(browserItems),
+    ].filter(Boolean).join(" "),
+  };
+}
+
+/**
+ * The typed text with the visual context applied: `text` is what the agent is
+ * sent, `displayText` what the bubble shows — null when there is neither typed
+ * text nor staged context, so each caller picks its own placeholder.
+ */
+export function applyVisualContext(
+  text: string,
+  context: ComposedVisualContext,
+): { text: string; displayText: string | null } {
+  return {
+    text: context.prefix ? `${context.prefix}${text}` : text,
+    displayText: context.displayChips
+      ? text.length ? `${context.displayChips} ${text}` : context.displayChips
+      : text.length ? text : null,
+  };
+}
