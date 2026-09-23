@@ -60,6 +60,19 @@ export type DevinCloudClientArgs = {
   orgId: string | null;
   logger?: Logger;
   fetchImpl?: FetchLike;
+  /**
+   * Multipart uploads need a fetch whose body is not JSON-string-serialized,
+   * so they use this seam instead of `fetchImpl`.
+   */
+  rawFetchImpl?: (
+    input: string,
+    init?: {
+      method?: string;
+      headers?: Record<string, string>;
+      body?: unknown;
+      signal?: AbortSignal;
+    },
+  ) => Promise<{ ok: boolean; status: number; text: () => Promise<string> }>;
   timeoutMs?: number;
 };
 
@@ -327,6 +340,7 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
   const apiKey = args.apiKey.trim();
   const authMode = detectDevinAuthMode(apiKey);
   const fetchImpl: FetchLike = args.fetchImpl ?? (fetch as unknown as FetchLike);
+  const rawFetch = args.rawFetchImpl ?? (fetch as unknown as NonNullable<DevinCloudClientArgs["rawFetchImpl"]>);
   const timeoutMs = args.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   // The org a v3 key can see, resolved lazily: configured id first, then the
   // single org `GET /v3/enterprise/organizations` reports.
@@ -757,6 +771,63 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
     }
   };
 
+  /**
+   * Upload a file for Devin to work with — v3 `POST .../attachments`, v1
+   * `POST /v1/attachments`. Both answer the URL a session references: v3
+   * passes it in `attachment_urls`, v1 via `ATTACHMENT:"url"` lines.
+   */
+  const uploadAttachment = async (file: {
+    name: string;
+    bytes: Uint8Array;
+    contentType?: string;
+  }): Promise<string> => {
+    const path = authMode === "v1" ? "/v1/attachments" : await orgPath("/attachments");
+    const form = new FormData();
+    form.append(
+      "file",
+      new Blob([new Uint8Array(file.bytes)], { type: file.contentType || "application/octet-stream" }),
+      file.name,
+    );
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await rawFetch(`${API_BASE}${path}`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "User-Agent": USER_AGENT,
+        },
+        body: form,
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        throw new DevinCloudApiError(response.status, text);
+      }
+      const text = (await response.text()).trim();
+      if (!text) throw new DevinCloudResponseError(path);
+      // v1 answers the URL as a bare string; JSON bodies (v3) wrap it in a
+      // record — accept the URL wherever it is actually delivered.
+      try {
+        const parsed = JSON.parse(text) as unknown;
+        if (typeof parsed === "string" && parsed.trim()) return parsed.trim();
+        if (isRecord(parsed)) {
+          const url = readString(parsed.url)
+            ?? readString(parsed.attachment_url)
+            ?? readString(parsed.file_url);
+          if (url) return url;
+        }
+        throw new DevinCloudResponseError(path);
+      } catch (error) {
+        if (error instanceof DevinCloudResponseError) throw error;
+        if (/^https?:\/\//.test(text)) return text;
+        throw new DevinCloudResponseError(path);
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
   const sendMessage = async (
     devinSessionId: string,
     input: { message: string; attachmentUrls?: string[] },
@@ -766,9 +837,13 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
     if (!id) throw new Error("Devin session id is required.");
     if (!message) throw new Error("Message is required.");
     if (authMode === "v1") {
+      // v1's message endpoint has no attachment field — the files ride in the
+      // prompt as `ATTACHMENT:"<url>"` lines, each on its own line.
+      const attachmentLines = (input.attachmentUrls ?? [])
+        .map((url) => `ATTACHMENT:"${url}"`);
       await request<unknown>(`/v1/sessions/${encodeURIComponent(id)}/message`, {
         method: "POST",
-        body: { message },
+        body: { message: attachmentLines.length ? [message, ...attachmentLines].join("\n") : message },
       });
       return;
     }
@@ -877,6 +952,7 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
     listMessages,
     listAttachments,
     downloadAttachment,
+    uploadAttachment,
     sendMessage,
     terminateSession,
     archiveSession,

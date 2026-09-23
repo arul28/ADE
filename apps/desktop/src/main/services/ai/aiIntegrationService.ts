@@ -1752,6 +1752,15 @@ export function createAiIntegrationService(args: {
     return await client.downloadAttachment(attachment);
   };
 
+  const uploadDevinCloudAttachment = async (file: {
+    name: string;
+    bytes: Uint8Array;
+    contentType?: string;
+  }): Promise<string> => {
+    const client = await devinCloudClient();
+    return await client.uploadAttachment(file);
+  };
+
   const sendDevinCloudMessage = async (
     args: DevinCloudSendMessageRequest,
   ): Promise<DevinCloudSendMessageResult> => {
@@ -2595,6 +2604,7 @@ export function createAiIntegrationService(args: {
     listDevinCloudMessages,
     listDevinCloudAttachments,
     downloadDevinCloudAttachment,
+    uploadDevinCloudAttachment,
     sendDevinCloudMessage,
     terminateDevinCloudSession,
     archiveDevinCloudSession,

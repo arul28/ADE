@@ -930,7 +930,7 @@ import {
   devinCloudMessageFingerprint,
   isDevinCloudSessionLive,
 } from "./devinCloudConversation";
-import { normalizeDevinSessionId } from "../ai/devinCloudClient";
+import { DEVIN_ATTACHMENT_MAX_BYTES, normalizeDevinSessionId } from "../ai/devinCloudClient";
 import {
   buildDevinCloudAdeTags,
   devinCloudFleetStatus,
@@ -15866,6 +15866,18 @@ export function createAgentChatService(args: {
           : {})),
       // Boolean, not a latch — the mirror clears this when Devin stops waiting,
       // so a stale true must be rewritten false rather than carried forward.
+      // Seed the live set first: a persist that runs before the mirror's first
+      // pass would otherwise rewrite a persisted raise to false, and the
+      // unseeded set could then never clear the surviving marker.
+      ...(devinCloudAttentionSeeded.has(managed.session.id)
+        ? {}
+        : (() => {
+            devinCloudAttentionSeeded.add(managed.session.id);
+            if (prevPersisted?.devinCloudAttentionRaised === true) {
+              devinCloudAttentionRaised.add(managed.session.id);
+            }
+            return {};
+          })()),
       ...(devinCloudAttentionRaised.has(managed.session.id)
         ? { devinCloudAttentionRaised: true }
         : prevPersisted?.devinCloudAttentionRaised
@@ -46082,6 +46094,7 @@ export function createAgentChatService(args: {
     devinCloudHydrateInFlight.add(managed.session.id);
     const hydrateTurnId = randomUUID();
     let emittedVisible = false;
+    let durableStateChanged = false;
     try {
       // Devin owns the session title; a rename on app.devin.ai is not worth an
       // API call per mirror tick, so the read is TTL'd like Cursor's.
@@ -46175,6 +46188,7 @@ export function createAgentChatService(args: {
         const needsYou = devinCloudFleetStatus(remote) === "needs_you";
         if (needsYou && !devinCloudAttentionIsRaised(managed.session.id)) {
           devinCloudAttentionRaised.add(managed.session.id);
+          durableStateChanged = true;
           sessionService.requestAttention(
             managed.session.id,
             "Devin session is waiting for input",
@@ -46186,10 +46200,12 @@ export function createAgentChatService(args: {
           // conditional clear also protects a newer provider_structured
           // request another source wrote after this mirror's.
           devinCloudAttentionRaised.delete(managed.session.id);
+          durableStateChanged = true;
           sessionService.clearAttentionRequest(managed.session.id, "provider_structured");
         }
       }
 
+      const syncedAttachmentCountBefore = devinSyncedAttachmentIdsFor(managed.session.id).size;
       await syncDevinCloudAttachments(managed, devinSessionId).catch((error) => {
         logger.warn("agent_chat.devin_cloud_proof_sync_failed", {
           sessionId: managed.session.id,
@@ -46197,6 +46213,9 @@ export function createAgentChatService(args: {
           error: error instanceof Error ? error.message : String(error),
         });
       });
+      if (devinSyncedAttachmentIdsFor(managed.session.id).size !== syncedAttachmentCountBefore) {
+        durableStateChanged = true;
+      }
 
       // Bound the empty-terminal retry the same way Cursor's does: a session
       // that finished with no visible transcript never produces one, and an
@@ -46266,7 +46285,10 @@ export function createAgentChatService(args: {
           }
         }
       }
-      if (emittedVisible) {
+      // Attention flips and proof-sync bookkeeping are durable even when no
+      // transcript line arrived this pass — skipping the persist would leave a
+      // restarted host with a stale Needs-you marker or re-downloaded files.
+      if (emittedVisible || durableStateChanged) {
         persistChatState(managed);
       }
       return emittedVisible;
@@ -46436,6 +46458,7 @@ export function createAgentChatService(args: {
       displayText: string;
       attachments: AgentChatFileRef[];
       contextAttachments: AgentChatContextAttachment[];
+      resolvedAttachments: ResolvedAgentChatFileRef[];
       metadata?: AgentChatEventMetadata | null | undefined;
       laneDirectiveKey?: string | null;
       turnId?: string;
@@ -46461,6 +46484,36 @@ export function createAgentChatService(args: {
     const turnId = args.turnId ?? randomUUID();
     const displayText = args.displayText.trim().length ? args.displayText.trim() : args.promptText;
     const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
+    // Deliver attachments for real: the cloud session cannot see local paths,
+    // so each file is uploaded to Devin's attachment store and referenced by
+    // URL in the message (`attachment_urls` on v3, `ATTACHMENT:` lines on v1).
+    // Upload before the user_message emits — a file that cannot be uploaded
+    // fails the turn instead of showing in the transcript as sent.
+    const attachmentUrls: string[] = [];
+    const remoteImageHints: string[] = [];
+    for (const attachment of args.resolvedAttachments) {
+      if (attachment.type === "image-url") {
+        const url = attachment.url?.trim();
+        if (url) remoteImageHints.push(`Image URL: ${url}`);
+        continue;
+      }
+      const filePath = attachment._resolvedPath;
+      if (!filePath || !fs.existsSync(filePath)) {
+        throw new Error(`Attachment '${attachment.path}' is no longer on disk — re-attach it and send again.`);
+      }
+      const bytes = fs.readFileSync(filePath);
+      if (bytes.length > DEVIN_ATTACHMENT_MAX_BYTES) {
+        throw new Error(`Attachment '${path.basename(filePath)}' is too large to upload to Devin (>50 MB).`);
+      }
+      attachmentUrls.push(await aiIntegrationService.uploadDevinCloudAttachment({
+        name: path.basename(filePath),
+        bytes,
+        contentType: inferAttachmentMediaType(attachment) ?? undefined,
+      }));
+    }
+    const messageText = remoteImageHints.length
+      ? [args.promptText, ...remoteImageHints].join("\n\n")
+      : args.promptText;
     setSessionActive(managed);
     emitPreparedUserMessage(managed, {
       text: userText,
@@ -46488,7 +46541,8 @@ export function createAgentChatService(args: {
     try {
       await aiIntegrationService.sendDevinCloudMessage({
         devinSessionId,
-        message: args.promptText,
+        message: messageText,
+        ...(attachmentUrls.length ? { attachmentUrls } : {}),
       });
       args.onBackendDispatched?.();
     } catch (error) {
@@ -46548,6 +46602,7 @@ export function createAgentChatService(args: {
       displayText: message,
       attachments: [],
       contextAttachments: [],
+      resolvedAttachments: [],
     });
   };
 
@@ -47276,6 +47331,7 @@ export function createAgentChatService(args: {
           displayText: visibleText,
           attachments,
           contextAttachments,
+          resolvedAttachments,
           metadata,
           laneDirectiveKey,
           turnId,
