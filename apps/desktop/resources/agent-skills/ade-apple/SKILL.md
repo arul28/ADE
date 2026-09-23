@@ -38,6 +38,30 @@ feature that no longer exists.
   describe the result you meant to get. Before `record-stop`, confirm the
   final state, so the video ends on it.
 
+## Common tasks
+
+Use these directly; you do not need `--help` for them. `A="$ADE_CLI_PATH"`.
+
+| Task | Command |
+|---|---|
+| Open an installed app | `"$A" apple relaunch --bundle-id com.apple.mobilesafari --text` |
+| Open a web page or deep link | `"$A" apple open-url "https://www.google.com" --text` |
+| Tap a control by its label | `"$A" apple tap-element --label "Address" --text` |
+| Type, then press Return | `"$A" apple type "reddit" --submit --text` |
+| Press one key | `"$A" apple key return --text` (also `tab`) |
+| Wait for something to appear | `"$A" apple wait-for-element --label "Cancel" --timeout-ms 8000 --text` |
+| Which app is in front | `"$A" apple foreground --text` |
+| What is on screen | `"$A" apple snapshot --text` |
+| Go home / app switcher | `"$A" apple button home --text` / `"$A" apple button app-switcher --text` |
+| Close an app (no gesture) | `"$A" apple terminate --bundle-id com.apple.mobilesafari --text` |
+| Show the device to the user | `"$A" apple show --text` (tools pane) or `--floating` |
+
+- Right after `relaunch`, `foreground` can still say `null` for a moment.
+  Wait for an element of that app instead of checking at once.
+- A simulator signed in to an Apple Account can show an "Apple Account
+  Verification" alert over every app. Dismiss it with
+  `tap-element --label "Not Now"`, then continue.
+
 ## Start here: ask what you can do
 
 ```bash

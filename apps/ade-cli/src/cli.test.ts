@@ -13288,6 +13288,30 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("apple type --submit presses Return after the text, and apple key presses one key", () => {
+    // The owner's 2026-09-23 run: an agent typed a search and had no way to
+    // press Return, so it tapped the screen and then used a search URL.
+    const submit = buildCliPlan(["apple", "type", "google", "--submit", "--text"]);
+    expect(submit.kind).toBe("execute");
+    if (submit.kind !== "execute") return;
+    expect(submit.steps[0]?.params).toMatchObject({
+      arguments: { domain: "ios_simulator", action: "typeText", args: { text: "google\n" } },
+    });
+
+    const enter = buildCliPlan(["apple", "key", "Return", "--text"]);
+    expect(enter.kind).toBe("execute");
+    if (enter.kind !== "execute") return;
+    expect(enter.steps[0]?.params).toMatchObject({
+      arguments: { domain: "ios_simulator", action: "typeText", args: { text: "\n" } },
+    });
+
+    const tab = buildCliPlan(["apple", "key", "tab"]);
+    if (tab.kind !== "execute") throw new Error("expected an execute plan");
+    expect(tab.steps[0]?.params).toMatchObject({ arguments: { args: { text: "\t" } } });
+
+    expect(() => buildCliPlan(["apple", "key", "escape"])).toThrow(/Valid keys: return, enter, tab/);
+  });
+
   it("attaches shell starts to the active ADE chat session from the environment", () => {
     const previous = process.env.ADE_CHAT_SESSION_ID;
     try {

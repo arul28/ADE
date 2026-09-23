@@ -1392,13 +1392,29 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Types text into the active launched app. Alias: text.
 
-    $ ade --socket apple type "hello" --text
-    $ ade --socket apple type --value "hello" --text
+    $ "$ADE_CLI_PATH" apple type "hello" --text
+    $ "$ADE_CLI_PATH" apple type "reddit" --submit --text
+    $ "$ADE_CLI_PATH" apple type --value "hello" --text
 
   Flags:
     --value, --message <v> Text to type. --text <value> is also accepted for
                            compatibility, but --text by itself controls ADE's
                            human-readable output mode.
+    --submit               Press Return after the text (submits a search or form).
+    --device, --udid <id>  Simulator device.
+`,
+  key: `${ADE_BANNER}
+  iOS Simulator: key
+
+  Presses one named key on the simulator keyboard.
+
+    $ "$ADE_CLI_PATH" apple key return --text
+    $ "$ADE_CLI_PATH" apple key tab --text
+
+  Keys: return (alias enter), tab.
+  To type text and then press Return, use: apple type "<text>" --submit.
+
+  Flags:
     --device, --udid <id>  Simulator device.
 `,
   "open-device": `${ADE_BANNER}
@@ -4166,6 +4182,13 @@ function readRepeatedValues(args: string[], names: readonly string[]): string[] 
   }
   return values;
 }
+
+/** `ade apple key <name>`: each key as the character the helper types for it. */
+const APPLE_NAMED_KEYS: Readonly<Record<string, string>> = {
+  return: "\n",
+  enter: "\n",
+  tab: "\t",
+};
 
 export function readFlag(args: string[], names: readonly string[]): boolean {
   for (let index = 0; index < args.length; index += 1) {
@@ -11887,14 +11910,33 @@ function buildIosSimulatorPlan(
     });
   }
   if (sub === "type" || sub === "text") {
+    // `--submit` presses Return after the text. The helper types "\n" as the
+    // Return key, but an agent cannot write a newline in a shell argument
+    // easily, and without this it tapped the screen to submit a search.
+    const submit = readFlag(args, ["--submit"]);
+    const deviceUdid = readIosSimulatorDevice(args);
+    const typed = readValue(args, ["--value", "--message", "--input-text"]) ??
+      readCommandTextValue(args, ["--text"]) ??
+      args.filter((arg) => arg !== "--text").join(" ");
     return iosAction("iOS simulator type", "typeText", {
+      deviceUdid,
+      // After `requireValue`, which trims: the Return must survive it. With
+      // `--submit` and no text this presses Return alone.
+      text: submit
+        ? `${typed.trim() ? requireValue(typed, "text") : ""}\n`
+        : requireValue(typed, "text"),
+    });
+  }
+  if (sub === "key") {
+    // One named key, sent as the character the helper maps to it.
+    const name = (firstPositional([...args]) ?? "").toLowerCase();
+    const text = APPLE_NAMED_KEYS[name];
+    if (!text) {
+      throw new CliUsageError(`apple key: unknown key '${name || "(none)"}'. Valid keys: ${Object.keys(APPLE_NAMED_KEYS).join(", ")}.`);
+    }
+    return iosAction(`iOS simulator key ${name}`, "typeText", {
       deviceUdid: readIosSimulatorDevice(args),
-      text: requireValue(
-        readValue(args, ["--value", "--message", "--input-text"]) ??
-          readCommandTextValue(args, ["--text"]) ??
-          args.filter((arg) => arg !== "--text").join(" "),
-        "text",
-      ),
+      text,
     });
   }
   /*
