@@ -103,7 +103,12 @@ export async function callActivityRelay(
           "x-ade-directory-auth": directoryAuth,
           "x-ade-correlation-id": args.correlationId,
         },
-        redirect: "error",
+        // "manual", not "error": the Workers runtime rejects "error" outright
+        // ("won't be implemented since it does not make sense at the edge"),
+        // so every restore and purge threw and the directory answered 503.
+        // A 3xx then arrives as a non-ok response below, so a redirect is
+        // still never followed with the caller's token on it.
+        redirect: "manual",
       });
       await response.body?.cancel().catch(() => {});
       if (response.ok) return { ok: true };
