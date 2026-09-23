@@ -21,6 +21,14 @@ struct WorkToolChip: Equatable, Identifiable {
   /// Browser chip only: a chat in this lane is driving the browser right now.
   var agentUsingBrowser: Bool = false
 
+  /// The text on the chip. The simulator chip already shows the device icon,
+  /// so it drops the family word: "iPhone 16 Pro" shows as "16 Pro". VoiceOver
+  /// still reads the full `label`.
+  var displayLabel: String {
+    guard case .simulator = kind else { return label }
+    return appleDeviceChipModelName(label)
+  }
+
   var id: String {
     switch kind {
     case .simulator: return "simulator"
@@ -76,6 +84,22 @@ func workToolsAgentIsUsingBrowser(_ state: WorkToolsLaneState?) -> Bool {
 /// status with no device state at all is not evidence the device is on, so
 /// both read as off. The host fills a missing name with the udid; that is not
 /// a name, so the family ("iPhone") stands in for it.
+/// A device name without its leading family word: "iPhone 16 Pro" -> "16 Pro",
+/// "iPad Air (M2)" -> "Air (M2)". A name that is only the family word, or that
+/// does not start with one, stays as it is.
+func appleDeviceChipModelName(_ name: String) -> String {
+  for family in ["iPhone", "iPad"] {
+    guard name.count > family.count,
+          name.prefix(family.count).caseInsensitiveCompare(family) == .orderedSame
+    else { continue }
+    let rest = name.dropFirst(family.count)
+    guard rest.first == " " else { continue }
+    let model = rest.trimmingCharacters(in: .whitespaces)
+    return model.isEmpty ? name : model
+  }
+  return name
+}
+
 func appleDeviceRunningName(_ status: AppleDeviceStatus?) -> String? {
   guard let device = status?.device else { return nil }
   let booted = device.state?.caseInsensitiveCompare("Booted") == .orderedSame
@@ -180,7 +204,7 @@ struct WorkLaneToolChipView: View {
     ) {
       Image(systemName: symbol)
         .font(.system(size: 13, weight: .semibold))
-      Text(chip.label)
+      Text(chip.displayLabel)
         .font(.caption.weight(.semibold))
         .lineLimit(1)
       if case .simulator = chip.kind {

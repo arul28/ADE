@@ -411,6 +411,19 @@ final class WorkToolsContractTests: XCTestCase {
     XCTAssertNil(appleDeviceRunningName(nil))
   }
 
+  func testSimulatorChipShowsTheModelWithoutTheFamilyWord() {
+    XCTAssertEqual(appleDeviceChipModelName("iPhone 16 Pro"), "16 Pro")
+    XCTAssertEqual(appleDeviceChipModelName("iPhone 17"), "17")
+    XCTAssertEqual(appleDeviceChipModelName("iPad Air (M2)"), "Air (M2)")
+    XCTAssertEqual(appleDeviceChipModelName("iPhone"), "iPhone")
+    XCTAssertEqual(appleDeviceChipModelName("iPhoneX"), "iPhoneX")
+    XCTAssertEqual(appleDeviceChipModelName("Simulator"), "Simulator")
+    let chip = WorkToolChip(kind: .simulator(family: "iphone"), label: "iPhone 16 Pro")
+    XCTAssertEqual(chip.displayLabel, "16 Pro")
+    XCTAssertEqual(chip.label, "iPhone 16 Pro")
+    XCTAssertEqual(WorkToolChip(kind: .appControl, label: "iPhone Mirroring").displayLabel, "iPhone Mirroring")
+  }
+
   // MARK: - Handshake gating
 
   @MainActor
