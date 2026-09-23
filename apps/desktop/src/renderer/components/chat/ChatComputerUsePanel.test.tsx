@@ -127,6 +127,27 @@ describe("proof rendering", () => {
     });
   });
 
+  it("plays a QuickTime proof from another machine as MP4", async () => {
+    // The owner's 2026-09-23 report: a simctl `.mov` played on the phone and
+    // failed on both desktops, because Chromium refuses `video/quicktime`.
+    vi.mocked(window.ade.computerUse.readArtifactPreview)
+      .mockResolvedValueOnce("data:video/quicktime;base64,AAAA");
+    const view = render(
+      <ChatProofTimeline
+        artifacts={[artifact(4, {
+          kind: "video_recording",
+          originalType: "video",
+          mimeType: "video/quicktime",
+          uri: ".ade/artifacts/proof.mov",
+        })]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(view.container.querySelector("video")?.getAttribute("src")).toBe("data:video/mp4;base64,AAAA");
+    });
+  });
+
   it("distinguishes an unavailable preview from a deleted stored file", async () => {
     vi.mocked(window.ade.computerUse.readArtifactPreview).mockResolvedValueOnce(null);
 

@@ -24,6 +24,7 @@ import type {
   ComputerUseOwnerSnapshot,
 } from "../../../shared/types";
 import { cn } from "../ui/cn";
+import { playableMediaDataUrl } from "../../lib/playableMedia";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 
 function isImageArtifact(artifact: ComputerUseArtifactView): boolean {
@@ -183,7 +184,7 @@ function useVisibleArtifactPreview(
     void window.ade.computerUse.readArtifactPreview({ uri: artifact.uri }, scope.pin)
       .then((dataUrl) => {
         if (cancelled) return;
-        setPreview(dataUrl);
+        setPreview(playableMediaDataUrl(dataUrl));
         setLoading(false);
         setLoaded(true);
       })

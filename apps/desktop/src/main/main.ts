@@ -1429,7 +1429,8 @@ app.whenReady().then(async () => {
         svg: "image/svg+xml",
         mp4: "video/mp4",
         webm: "video/webm",
-        mov: "video/quicktime",
+        // Chromium refuses `video/quicktime` in a <video>; the same bytes play as MP4.
+        mov: "video/mp4",
         avi: "video/x-msvideo",
         mkv: "video/x-matroska",
       };
