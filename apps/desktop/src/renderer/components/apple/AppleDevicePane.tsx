@@ -891,10 +891,13 @@ export function AppleDevicePane({
             sentence={`${deviceName} is off.`}
             actionLabel="Start"
             onAction={restart}
-            /* The same inline confirm the rail's "Switch device…" opens:
-               nothing is deleted or detached until the person says so. */
+            /* No second confirm here. The device is already off, the person
+               already confirmed the shut down, and this button says what it
+               does; asking again was the owner's "double confirmation"
+               (2026-09-23). The rail's "Switch device…" on a RUNNING device
+               keeps its confirm. */
             secondaryActionLabel="Choose another device"
-            onSecondaryAction={() => setConfirmSwitch(true)}
+            onSecondaryAction={switchDevice}
           />
         )
         /* §A1: the ONE sentence a fallback to flat is allowed to say. */

@@ -400,20 +400,14 @@ describe("AppleDevicePane states", () => {
       );
     });
 
-    it("Choose another device asks first, and only the confirm gives the device up", async () => {
+    it("Choose another device on an off device goes straight to the picker", async () => {
+      // The owner's 2026-09-23 report: after a shut down, a second "Give up
+      // this device?" bar was a double confirmation.
       const { iosSimulator } = off();
       renderPane();
       await waitFor(() => expect(paneState()).toBe("stopped"));
       fireEvent.click(screen.getByRole("button", { name: "Choose another device" }));
-      expect(screen.getByText("Give up this device and pick another?")).toBeTruthy();
-      expect(iosSimulator.deviceDelete).not.toHaveBeenCalled();
-
-      fireEvent.click(screen.getByRole("button", { name: "Keep it" }));
       expect(screen.queryByText("Give up this device and pick another?")).toBeNull();
-      expect(iosSimulator.deviceDelete).not.toHaveBeenCalled();
-
-      fireEvent.click(screen.getByRole("button", { name: "Choose another device" }));
-      fireEvent.click(screen.getByRole("button", { name: "Switch device" }));
       expect(iosSimulator.deviceDelete).toHaveBeenCalledWith(
         { laneId: "lane-1", chatSessionId: "chat-1", force: true },
         null,
