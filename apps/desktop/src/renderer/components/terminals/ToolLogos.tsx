@@ -65,6 +65,7 @@ const USAGE_PROVIDER_LOGOS = {
   copilot: CopilotLogo,
   grok: GrokLogo,
   opencode: OpenCodeLogo,
+  kimi: KimiLogo,
 } as const;
 
 export function usageProviderLogo(

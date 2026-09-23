@@ -79,6 +79,8 @@ import {
   selectDepartedChatSessionViewCacheSessions,
   shouldCacheAgentChatSessionView,
   shouldPromoteSessionForComputerUse,
+  cursorConfigValuesFromSnapshot,
+  userSetCursorConfigValues,
   type AgentChatSessionCreatedOptions,
 } from "./AgentChatPane";
 import {
@@ -13161,5 +13163,33 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     const usage = empty?.querySelector("[data-chat-empty-usage]");
     expect(usage).toBeTruthy();
     expect(usage?.className).toContain("w-[calc(100%-6rem)]");
+  });
+});
+
+describe("Cursor config values the pane sends", () => {
+  it("keeps only values the user set, dropping null and the empty Default choice", () => {
+    expect(userSetCursorConfigValues({
+      max_context: null,
+      verbosity: "",
+      blank: "  ",
+      thinking: false,
+      budget: 0,
+      style: "terse",
+    } as never)).toEqual({ thinking: false, budget: 0, style: "terse" });
+    expect(userSetCursorConfigValues(null)).toEqual({});
+  });
+
+  it("reads a snapshot's untouched options as unset, so they are never sent", () => {
+    expect(cursorConfigValuesFromSnapshot({
+      modeConfigId: "mode",
+      currentModeId: "agent",
+      availableModeIds: ["agent"],
+      configOptions: [
+        { id: "mode", name: "Mode", type: "select", currentValue: "agent" },
+        { id: "max_context", name: "Max context", category: "model", type: "boolean", currentValue: null },
+        { id: "verbosity", name: "Verbosity", category: "model", type: "select", currentValue: null },
+        { id: "thinking", name: "Thinking", category: "model", type: "boolean", currentValue: false },
+      ],
+    })).toEqual({ thinking: false });
   });
 });

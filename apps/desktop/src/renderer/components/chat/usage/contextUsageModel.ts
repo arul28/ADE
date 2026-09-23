@@ -181,6 +181,11 @@ export function latestContextUsageInput(
   let lastRuntimeWindow = positive(fallbackCodexUsage?.modelContextWindow);
   let compactionProtected = false;
   let protectedCompactionTurnId: string | null = null;
+  // Turns that produced an exact occupancy sample (a live `context_usage` or
+  // Codex's per-request counter). A turn-end total must not overwrite it: the
+  // total sums every request in the turn, the sample is what the next request
+  // starts from.
+  const turnsWithExactOccupancy = new Set<string>();
 
   const acceptGeneric = (
     usage: GenericUsageInput,
@@ -201,6 +206,7 @@ export function latestContextUsageInput(
       protectedCompactionTurnId = null;
     }
     if (event.type === "codex_token_usage") {
+      if (event.turnId) turnsWithExactOccupancy.add(event.turnId);
       if (positive(event.usage.modelContextWindow) != null) {
         lastRuntimeWindow = positive(event.usage.modelContextWindow);
       }
@@ -211,6 +217,7 @@ export function latestContextUsageInput(
       continue;
     }
     if (event.type === "context_usage") {
+      if (event.turnId) turnsWithExactOccupancy.add(event.turnId);
       lastRuntimeWindow = positive(event.usage.maxTokens) ?? lastRuntimeWindow;
       // Surface the same breakdown the old inline card showed, so the composer
       // meter's hover is a complete replacement. `usedTokens` stays the total
@@ -264,7 +271,15 @@ export function latestContextUsageInput(
       continue;
     }
     if (event.type === "done" && event.usage) {
+      const contextTokens = positive(event.usage.contextTokens);
+      // A runtime that knows the occupancy after the turn reports it directly;
+      // prefer it over the turn totals, which sum every request in the turn.
+      if (contextTokens == null && event.turnId && turnsWithExactOccupancy.has(event.turnId)) continue;
+      // The done's own occupancy is exact too: a later `tokens` event for this
+      // turn (Cursor's getUsage lands after done) must not replace it.
+      if (contextTokens != null && event.turnId) turnsWithExactOccupancy.add(event.turnId);
       acceptGeneric({
+        ...(contextTokens != null ? { usedTokens: contextTokens } : {}),
         inputTokens: event.usage.inputTokens,
         outputTokens: event.usage.outputTokens,
         cacheReadTokens: event.usage.cacheReadTokens,
@@ -274,6 +289,7 @@ export function latestContextUsageInput(
       continue;
     }
     if (event.type === "tokens") {
+      if (event.turnId && turnsWithExactOccupancy.has(event.turnId)) continue;
       acceptGeneric({
         inputTokens: event.inputTokens,
         outputTokens: event.outputTokens,

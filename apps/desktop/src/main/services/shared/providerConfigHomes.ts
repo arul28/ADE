@@ -83,7 +83,10 @@ export function copilotConfigHome(args: HomeArg = {}): string {
   return configured ? path.resolve(configured) : path.join(baseHome(args), ".copilot");
 }
 
-/** `KIMI_CODE_HOME` names the config directory itself; it holds `config.toml`. */
+/**
+ * `KIMI_CODE_HOME` names the config directory itself; it holds `config.toml`,
+ * `credentials/`, and the `region` marker. `kimiCodeLogin.ts` finds the login.
+ */
 export function kimiCodeConfigHome(args: HomeArg = {}): string {
   const configured = trimmed((args.env ?? process.env).KIMI_CODE_HOME);
   return configured ? path.resolve(configured) : path.join(baseHome(args), ".kimi-code");
@@ -93,4 +96,44 @@ export function kimiCodeConfigHome(args: HomeArg = {}): string {
 export function grokConfigHome(args: HomeArg = {}): string {
   const configured = trimmed((args.env ?? process.env).GROK_HOME);
   return configured ? path.resolve(configured) : path.join(baseHome(args), ".grok");
+}
+
+/** Grok's per-session `updates.jsonl` files, under its config home. */
+export function grokSessionsDir(args: HomeArg = {}): string {
+  return path.join(grokConfigHome(args), "sessions");
+}
+
+/**
+ * Where OpenCode keeps its data (`auth.json`, `opencode.db`), in lookup order.
+ * OpenCode itself uses `XDG_DATA_HOME` when it is set, else
+ * `~/.local/share/opencode`; the macOS and Windows app-data folders follow as
+ * fallbacks that older builds used. The quota poller and the per-turn account
+ * reader both read this one list, so they never read different files.
+ */
+export function openCodeDataDirs(args: HomeArg & { platform?: NodeJS.Platform } = {}): string[] {
+  const env = args.env ?? process.env;
+  const home = baseHome(args);
+  const platform = args.platform ?? process.platform;
+  const dirs: string[] = [];
+  const xdgData = trimmed(env.XDG_DATA_HOME);
+  if (xdgData) dirs.push(path.join(path.resolve(xdgData), "opencode"));
+  dirs.push(path.join(home, ".local", "share", "opencode"));
+  if (platform === "darwin") dirs.push(path.join(home, "Library", "Application Support", "opencode"));
+  if (platform === "win32") dirs.push(path.join(trimmed(env.APPDATA) ?? path.join(home, "AppData", "Roaming"), "opencode"));
+  return dirs;
+}
+
+/**
+ * Qwen's per-request usage files. `QWEN_RUNTIME_DIR` moves Qwen's runtime
+ * state (usage included) away from the config home, and the Qwen binary
+ * honours it, so ADE must too.
+ */
+export function qwenUsageDir(args: HomeArg = {}): string {
+  const runtimeDir = trimmed((args.env ?? process.env).QWEN_RUNTIME_DIR);
+  return path.join(runtimeDir ? path.resolve(runtimeDir) : qwenConfigHome(args), "usage");
+}
+
+/** Copilot CLI's per-request usage database, next to its `session-state/`. */
+export function copilotSessionStorePath(args: HomeArg = {}): string {
+  return path.join(copilotConfigHome(args), "session-store.db");
 }

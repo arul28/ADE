@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { buildPiWorkerEnvironment } from "./piSdkEnvironment";
+import { PI_PROVIDER_ENV_KEYS, buildPiWorkerEnvironment } from "./piSdkEnvironment";
 
 const roots: string[] = [];
 
@@ -37,6 +37,20 @@ describe("buildPiWorkerEnvironment", () => {
     expect(env).toMatchObject({ PATH: "/bin", CUSTOM_PI_KEY: "key", CUSTOM_PI_HEADER: "header" });
     expect(env).not.toHaveProperty("ADE_BROWSER_ACTOR_TOKEN");
     expect(env).not.toHaveProperty("ADE_CHAT_SESSION_ID");
+  });
+
+  it("classifies accounts only from keys the worker already receives", () => {
+    const keys = [...new Set(Object.values(PI_PROVIDER_ENV_KEYS).flat())];
+    const env = buildPiWorkerEnvironment(Object.fromEntries(keys.map((key) => [key, "set"])));
+    for (const key of keys) expect(env[key], key).toBe("set");
+  });
+
+  it("does not widen the worker env for usage telemetry", () => {
+    // These keys stay out of the Pi worker, as they were before usage
+    // telemetry: telemetry must never change what Pi can authenticate with.
+    const withheld = ["KIMI_API_KEY", "QWEN_API_KEY", "DASHSCOPE_API_KEY", "COPILOT_GITHUB_TOKEN", "OPENCODE_API_KEY", "ANTHROPIC_OAUTH_TOKEN"];
+    const env = buildPiWorkerEnvironment(Object.fromEntries(withheld.map((key) => [key, "set"])));
+    for (const key of withheld) expect(env).not.toHaveProperty(key);
   });
 
   it("does not treat escaped dollar references as environment requirements", () => {

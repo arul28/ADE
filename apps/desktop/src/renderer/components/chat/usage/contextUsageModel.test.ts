@@ -108,6 +108,47 @@ describe("toUsageViewModel", () => {
 });
 
 describe("latestContextUsageInput", () => {
+  it("uses a done event's contextTokens, not its turn totals, for occupancy", () => {
+    const input = latestContextUsageInput([
+      envelope(1, {
+        type: "done",
+        turnId: "t1",
+        status: "completed",
+        usage: { inputTokens: 30_000, cacheReadTokens: 900_000, outputTokens: 4_000, contextTokens: 120_000, contextWindow: 1_000_000 },
+      }),
+    ], "opencode");
+    expect(toUsageViewModel(input)!.usedTokens).toBe(120_000);
+  });
+
+  it("keeps a done's contextTokens when a tokens event for that turn lands after it", () => {
+    const input = latestContextUsageInput([
+      envelope(1, {
+        type: "done",
+        turnId: "t1",
+        status: "completed",
+        usage: { inputTokens: 500, cacheReadTokens: 90_000, outputTokens: 300, contextTokens: 91_000, contextWindow: 200_000 },
+      }),
+      envelope(2, { type: "tokens", turnId: "t1", inputTokens: 500, cacheReadTokens: 1_400_000, outputTokens: 15_000 }),
+    ], "cursor");
+    expect(toUsageViewModel(input)!.usedTokens).toBe(91_000);
+  });
+
+  it("keeps a live context sample over the same turn's summed totals", () => {
+    const input = latestContextUsageInput([
+      envelope(1, {
+        type: "context_usage",
+        origin: "live",
+        state: "measured",
+        turnId: "t1",
+        usage: { categories: [], totalTokens: 64_000, maxTokens: 128_000, percentage: 50 },
+      }),
+      envelope(2, { type: "tokens", turnId: "t1", inputTokens: 300_000 }),
+      envelope(3, { type: "done", turnId: "t1", status: "completed", usage: { inputTokens: 300_000, outputTokens: 2_000 } }),
+    ], "copilot");
+    expect(toUsageViewModel(input)!.usedTokens).toBe(64_000);
+  });
+
+
   it.each(["claude", "opencode", "cursor", "droid"])(
     "invalidates stale same-turn %s usage after compaction",
     (provider) => {

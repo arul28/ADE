@@ -1,9 +1,12 @@
-import type { AgentChatEvent, AgentChatSession } from "../../../shared/types";
 import {
-  contextCompactMergeKey,
-  type ContextCompactEvent,
-  type ContextCompactProvider,
-} from "../../../shared/contextCompaction";
+  isAcpChatProvider,
+  type AcpChatProvider,
+  type AgentChatCompactDetection,
+  type AgentChatCompactProvider,
+  type AgentChatEvent,
+  type AgentChatSession,
+} from "../../../shared/types";
+import { contextCompactMergeKey, type ContextCompactEvent } from "../../../shared/contextCompaction";
 
 export type CompactionEmitterState = {
   startedAtByKey: Map<string, number>;
@@ -17,23 +20,19 @@ export function createCompactionEmitterState(): CompactionEmitterState {
   };
 }
 
-function resolveCompactionProvider(session: AgentChatSession): ContextCompactProvider | undefined {
-  switch (session.provider) {
-    case "claude":
-      return "claude";
-    case "codex":
-      return "codex";
-    case "opencode":
-      return "opencode";
-    case "cursor":
-      return "cursor";
-    case "droid":
-      return "droid";
-    case "pi":
-      return "pi";
-    default:
-      return undefined;
-  }
+/** Keyed by type, so a provider added to `AgentChatCompactProvider` must be added here. */
+const NATIVE_COMPACT_PROVIDERS: Record<Exclude<AgentChatCompactProvider, AcpChatProvider>, true> = {
+  claude: true,
+  codex: true,
+  opencode: true,
+  cursor: true,
+  droid: true,
+  pi: true,
+};
+
+export function isContextCompactProvider(provider: string | null | undefined): provider is AgentChatCompactProvider {
+  if (provider == null) return false;
+  return Object.hasOwn(NATIVE_COMPACT_PROVIDERS, provider) || isAcpChatProvider(provider);
 }
 
 export function buildContextCompactEvent(
@@ -50,12 +49,13 @@ export function buildContextCompactEvent(
     tokensRemoved?: number;
     durationMs?: number;
     completedAtMs?: number;
+    detection?: AgentChatCompactDetection;
   },
 ): ContextCompactEvent {
   const lifecycle = input.state ?? "completed";
   const compactionId = input.compactionId ?? input.turnId;
   const mergeKey = contextCompactMergeKey({ compactionId, turnId: input.turnId });
-  const provider = resolveCompactionProvider(session);
+  const provider = isContextCompactProvider(session.provider) ? session.provider : undefined;
   const now = input.completedAtMs ?? Date.now();
 
   if (lifecycle === "started") {
@@ -66,7 +66,11 @@ export function buildContextCompactEvent(
       state: "started",
       ...(input.turnId ? { turnId: input.turnId } : {}),
       ...(compactionId ? { compactionId } : {}),
+      // A begin signal can already know the size being compacted (Cursor's
+      // PreCompact hook, Droid's context stats); keep it on the started event.
+      ...(input.preTokens != null ? { preTokens: input.preTokens } : {}),
       ...(provider ? { provider } : {}),
+      ...(input.detection ? { detection: input.detection } : {}),
     };
   }
 
@@ -89,6 +93,7 @@ export function buildContextCompactEvent(
     ...(input.tokensRemoved != null ? { tokensRemoved: input.tokensRemoved } : {}),
     ...(durationMs != null ? { durationMs } : {}),
     ...(provider ? { provider } : {}),
+    ...(input.detection ? { detection: input.detection } : {}),
     ...(lifecycle !== "failed" && state.sessionCompactionCount >= 2
       ? { sessionCompactionCount: state.sessionCompactionCount }
       : {}),
@@ -101,7 +106,8 @@ export function mapLegacyCompactionEvent(
   event: AgentChatEvent,
 ): ContextCompactEvent | null {
   if (event.type === "context_compact") {
-    if (event.state !== "started" && event.provider && event.durationMs != null) return event;
+    // Always rebuilt, so every provider's compaction counts toward the session
+    // and closes its started entry; a provider-measured `durationMs` wins.
     return buildContextCompactEvent(state, session, {
       trigger: event.trigger,
       state: event.state,
@@ -112,6 +118,7 @@ export function mapLegacyCompactionEvent(
       postTokens: event.postTokens,
       tokensRemoved: event.tokensRemoved,
       durationMs: event.durationMs,
+      detection: event.detection,
     });
   }
   if (event.type === "codex_context_compaction") {

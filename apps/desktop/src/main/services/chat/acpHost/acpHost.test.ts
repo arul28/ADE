@@ -11,6 +11,8 @@
  * Every test has a deadline. A hang is a failure, not a slow pass.
  */
 
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ACP_METHOD,
@@ -29,7 +31,6 @@ import {
   copilotDialect,
   grokDialect,
   GROK_CLAUDE_MARKER_OVERRIDE_ENV,
-  GROK_SESSION_NOTIFICATION_METHOD,
   GROK_YOLO_MODE_CHANGED_METHOD,
   copilotPermissionModeDegradationNote,
   copilotNativeModeValue,
@@ -43,6 +44,7 @@ import {
 import {
   ACP_PROVIDER_IDS,
   behaviorOf,
+  capability,
   type AcpDialect,
   type AcpProviderId,
   type AcpSlashCommand,
@@ -61,8 +63,9 @@ import {
   pendingPermissionToInputRequest,
   type AcpPendingPermission,
 } from "./acpPermissionBridge";
-import { openAcpSession, resolveAcpSessionEntry, textPromptBlock } from "./acpSession";
+import { openAcpSession, resolveAcpSessionEntry, textPromptBlock, type AcpSession } from "./acpSession";
 import { createMockAcpAgent, respondWithSession, type MockAcpAgent } from "./mockAcpAgent";
+import { GROK_SESSION_NOTIFICATION_METHOD } from "./acpDialects/grokTelemetry";
 import type { AgentChatEvent } from "../../../../shared/types";
 
 const DEADLINE_MS = 3_000;
@@ -94,6 +97,45 @@ type Harness = {
 
 const openHarnesses: Array<() => void> = [];
 
+/**
+ * Config homes that do not exist. The harness must never read the user's own
+ * `~/.copilot/session-store.db`, `~/.qwen/usage`, or login files at turn end.
+ */
+const NO_HOME = path.join(os.tmpdir(), "ade-acp-host-test-no-home");
+const HERMETIC_ENV: NodeJS.ProcessEnv = {
+  COPILOT_HOME: path.join(NO_HOME, "copilot"),
+  QWEN_HOME: path.join(NO_HOME, "qwen"),
+  GROK_HOME: path.join(NO_HOME, "grok"),
+  KIMI_CODE_HOME: path.join(NO_HOME, "kimi"),
+};
+
+/** Grok 1.0.40's advertised config options, in its wire shape. */
+function grokConfigOptions(current: { model: string; effort: string }): unknown[] {
+  return [
+    {
+      id: "model",
+      name: "Model",
+      category: "model",
+      type: "select",
+      currentValue: current.model,
+      options: [
+        { value: "grok-4.7", name: "Grok 4.7" },
+        { value: "grok-4.7-build-fast", name: "Grok 4.7 Fast" },
+        { value: "grok-4.6", name: "Grok 4.6" },
+        { value: "grok-4.5", name: "Grok 4.5" },
+      ],
+    },
+    {
+      id: "reasoning_effort",
+      name: "Reasoning Effort",
+      category: "thought_level",
+      type: "select",
+      currentValue: current.effort,
+      options: ["xhigh", "high", "medium", "low"].map((value) => ({ value, name: value })),
+    },
+  ];
+}
+
 function makeHarness(dialect: AcpDialect, agentOverrides: Parameters<typeof createMockAcpAgent>[0] = {}): Harness {
   const agent = createMockAcpAgent(agentOverrides);
   agent.on(ACP_METHOD.sessionNew, respondWithSession("session-1"));
@@ -119,11 +161,13 @@ function makeHarness(dialect: AcpDialect, agentOverrides: Parameters<typeof crea
         spawnPlan: dialect.buildSpawnPlan({
           binaryPath: `/usr/local/bin/${dialect.binaryNames[0]}`,
           cwd: "/lane/worktree",
-          baseEnv: {},
+          baseEnv: HERMETIC_ENV,
         }),
         sessionToken: "chat-1",
         pool,
         spawnOverride: () => agent.child,
+        // Kimi's post-turn usage wait; short so a turn without one stays fast.
+        settledUsageWaitMs: 20,
         callbacks: {
           onEvents: (batch) => events.push(...batch),
           onPermissionRequested: (pending) => permissions.push(pending),
@@ -171,7 +215,7 @@ describe("dialect capability declarations", () => {
       else expect(entry).not.toHaveProperty("behavior");
     }
     // Style fields and capabilities agree.
-    expect(dialect.usage.declared).toBe(dialect.usageSource !== "none");
+    expect(dialect.usage.declared).toBe(true);
     expect(dialect.closeSession.declared).toBe(dialect.closeStyle === "close_request");
     expect(dialect.resumeSession.declared).toBe(dialect.loadPolicy === "resume_preferred");
     expect(dialect.loadSession.declared).toBe(dialect.loadPolicy !== "never");
@@ -192,8 +236,9 @@ describe("dialect capability declarations", () => {
   it("kimi 0.39.1 baseline implements close and 2.0.0 config controls", () => {
     expect(kimiDialect.closeStyle).toBe("close_request");
     expect(kimiDialect.oneProcessPerSession).toBe(false);
-    expect(kimiDialect.usageSource).toBe("none");
-    expect(kimiDialect.degradationNotes.length).toBeGreaterThan(0);
+    // Usage is read when Kimi reports it; there is no standing banner.
+    expect(kimiDialect.usage.declared).toBe(true);
+    expect(kimiDialect.degradationNotes).toEqual([]);
     expect(kimiDialect.authProbe.methodId).toBe("login");
     expect(kimiDialect.sessionConfig.declared).toBe(true);
     expect([...kimiDialect.configOptionIds]).toEqual([...KIMI_CONFIG_OPTION_IDS]);
@@ -213,6 +258,10 @@ describe("spawn plans", () => {
       modelId: "grok-4",
       reasoningEffort: "high",
     });
+    // `--reasoning-effort` carries the effort for builds before 1.0.40, whose
+    // session advertises no `reasoning_effort` option. On 1.0.40 the config
+    // option moves the effort, and a change to this flag alone does not
+    // restart that session.
     expect(plan.args).toEqual([
       "--no-auto-update",
       "--no-plan",
@@ -226,6 +275,12 @@ describe("spawn plans", () => {
       "high",
       "stdio",
     ]);
+    expect(grokDialect.reasoningEffortOption?.spawnFlag).toBe("--reasoning-effort");
+    // ADE's ladder maps onto Grok's; a value Grok has no tier for adds no flag.
+    expect(grokDialect.buildSpawnPlan({ binaryPath: "/bin/grok", cwd: "/lane", baseEnv: {}, reasoningEffort: "ultracode" }).args)
+      .toContain("xhigh");
+    expect(grokDialect.buildSpawnPlan({ binaryPath: "/bin/grok", cwd: "/lane", baseEnv: {}, reasoningEffort: "default" }).args)
+      .not.toContain("--reasoning-effort");
     expect(plan.args.indexOf("--no-auto-update")).toBeLessThan(plan.args.indexOf("agent"));
     expect(plan.args.indexOf("--permission-mode")).toBeLessThan(plan.args.indexOf("agent"));
     expect(plan.args.indexOf("--no-leader")).toBeGreaterThan(plan.args.indexOf("agent"));
@@ -1067,20 +1122,34 @@ describe("session config", () => {
     expect([...kimiDialect.configOptionIds]).toEqual(["mode", "model", "thinking"]);
   });
 
-  it.each(["grok"] as const)(
-    "%s refuses a config option instead of sending a call it does not support",
-    async (providerId) => {
-      const harness = makeHarness(acpDialectFor(providerId));
-      const session = await withDeadline("open", harness.open());
-      await withDeadline(
-        "refusal",
-        expect(session.setConfigOption({ configId: "mode", value: "plan" })).rejects.toThrow(
-          /does not accept session config options/i,
-        ),
-      );
-      expect(harness.agent.methodsReceived()).not.toContain(ACP_METHOD.sessionSetConfigOption);
-    },
-  );
+  it("grok sets model and effort through session/set_config_option and reports the new option set", async () => {
+    const harness = makeHarness(grokDialect);
+    // Grok 1.0.40 answers with every option as it stands after the change,
+    // in Copilot's `currentValue` / `{ value, name }` shape.
+    harness.agent.on(ACP_METHOD.sessionSetConfigOption, (params) => ({
+      result: {
+        configOptions: grokConfigOptions({
+          model: (params as { configId: string; value: string }).configId === "model"
+            ? (params as { value: string }).value
+            : "grok-4.7",
+          effort: "medium",
+        }),
+      },
+    }));
+    const session = await withDeadline("open", harness.open());
+    const options = await withDeadline(
+      "set model",
+      session.setConfigOption({ configId: "model", value: "grok-4.7-build-fast" }),
+    );
+    expect(harness.agent.received.find((entry) => entry.method === ACP_METHOD.sessionSetConfigOption)?.params)
+      .toEqual({ sessionId: "session-1", configId: "model", value: "grok-4.7-build-fast" });
+    expect(options.find((option) => option.id === "model")).toMatchObject({
+      value: "grok-4.7-build-fast",
+      options: expect.arrayContaining([{ id: "grok-4.7-build-fast", name: "Grok 4.7 Fast" }]),
+    });
+    expect([...grokDialect.configOptionIds]).toEqual(["model", "reasoning_effort"]);
+    expect(grokDialect.configOptionIds).not.toContain("mode");
+  });
 
   it("routes Copilot model selection through session/set_model", () => {
     expect(copilotDialect.modelSelection).toMatchObject({ declared: true });
@@ -1480,14 +1549,34 @@ describe("unsupervised session invariant", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("cancel", () => {
+  const goBlocks = [textPromptBlock("go")] as AcpContentBlock[];
+
+  /** Start a turn the agent holds open until `release()` answers it. */
+  async function startHeldTurn(harness: Harness, session: AcpSession, stopReason = "cancelled") {
+    let release: (() => void) | null = null;
+    harness.agent.on(ACP_METHOD.sessionPrompt, async () => {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return { result: { stopReason } };
+    });
+    const turn = session.prompt({ turnId: "turn-1", blocks: goBlocks });
+    await vi.waitFor(() => expect(release).toBeTruthy());
+    return { turn, release: () => release!() };
+  }
+
   it.each(["grok", "copilot"] as const)(
     "%s sends cancel as a notification, never as a request",
     async (providerId) => {
       const harness = makeHarness(acpDialectFor(providerId));
       const session = await withDeadline("open", harness.open());
+      const held = await startHeldTurn(harness, session);
       await withDeadline("cancel", session.cancel("stopped"));
+      await harness.agent.waitForMethod(ACP_METHOD.sessionCancel);
       const cancel = harness.agent.received.find((entry) => entry.method === ACP_METHOD.sessionCancel);
       expect(cancel?.isNotification).toBe(true);
+      held.release();
+      await withDeadline("turn", held.turn);
     },
   );
 
@@ -1495,37 +1584,150 @@ describe("cancel", () => {
     const harness = makeHarness(acpDialectFor(providerId));
     harness.agent.on(ACP_METHOD.sessionCancel, () => ({ result: {} }));
     const session = await withDeadline("open", harness.open());
+    const held = await startHeldTurn(harness, session);
     await withDeadline("cancel", session.cancel("stopped"));
     const cancel = harness.agent.received.find((entry) => entry.method === ACP_METHOD.sessionCancel);
     expect(cancel?.isNotification).toBe(false);
+    held.release();
+    await withDeadline("turn", held.turn);
   });
 
   it("falls back to the notification form when the request form is unknown", async () => {
     const harness = makeHarness(qwenDialect);
     // No handler registered, so the mock answers -32601, exactly like Grok.
     const session = await withDeadline("open", harness.open());
+    const held = await startHeldTurn(harness, session);
     await withDeadline("cancel", session.cancel("stopped"));
+    await vi.waitFor(() => expect(harness.agent.methodsReceived().filter((method) => method === ACP_METHOD.sessionCancel)).toHaveLength(2));
     const cancels = harness.agent.received.filter((entry) => entry.method === ACP_METHOD.sessionCancel);
-    expect(cancels).toHaveLength(2);
     expect(cancels[1]?.isNotification).toBe(true);
+    held.release();
+    await withDeadline("turn", held.turn);
   });
 
-  it("reports a cancelled turn as interrupted even when the agent says end_turn", async () => {
-    const harness = makeHarness(copilotDialect);
-    let releasePrompt: (() => void) | null = null;
+  it("sends no cancel to an agent that is not running a turn", async () => {
+    const harness = makeHarness(kimiDialect);
+    harness.agent.on(ACP_METHOD.sessionCancel, () => ({ result: {} }));
+    const session = await withDeadline("open", harness.open());
+    await withDeadline("cancel", session.cancel("stopped"));
+    expect(harness.agent.methodsReceived()).not.toContain(ACP_METHOD.sessionCancel);
+  });
+
+  it("keeps a finished turn finished when Stop lands during the turn-end telemetry reads", async () => {
+    // The agent answers `end_turn`; the user presses Stop while the host is
+    // still reading the turn's ledger. The host's own stop flag flips too.
+    let session: AcpSession | null = null;
+    let hostStopped = false;
+    const dialect = {
+      ...kimiDialect,
+      localUsage: capability(() => ({
+        beginTurn: () => undefined,
+        finishTurn: async () => {
+          hostStopped = true;
+          await session!.cancel("user stopped");
+          return null;
+        },
+      })),
+    } as AcpDialect;
+    const harness = makeHarness(dialect);
+    harness.agent.on(ACP_METHOD.sessionCancel, () => ({ result: {} }));
+    harness.agent.on(ACP_METHOD.sessionPrompt, () => ({ result: { stopReason: "end_turn" } }));
+    session = await withDeadline("open", harness.open());
+    const outcome = await withDeadline(
+      "turn",
+      session.prompt({ turnId: "turn-1", blocks: goBlocks, isInterrupted: () => hostStopped }),
+    );
+    expect(hostStopped).toBe(true);
+    expect(outcome.stopReason).toBe("end_turn");
+    expect(outcome.interrupted).toBe(false);
+    // Kimi takes cancel as a request, so one sent would have been seen by now.
+    expect(harness.agent.methodsReceived()).not.toContain(ACP_METHOD.sessionCancel);
+  });
+
+  it("reports turnAnswered from the prompt result until prompt() exits, and never while the agent works", async () => {
+    let session: AcpSession | null = null;
+    const answeredDuring: Record<string, boolean> = {};
+    const dialect = {
+      ...kimiDialect,
+      localUsage: capability(() => ({
+        beginTurn: () => {
+          answeredDuring.beginTurn = session!.turnAnswered;
+        },
+        finishTurn: async () => {
+          answeredDuring.finishTurn = session!.turnAnswered;
+          return null;
+        },
+      })),
+    } as AcpDialect;
+    const harness = makeHarness(dialect);
+    session = await withDeadline("open", harness.open());
+    expect(session.turnAnswered).toBe(false);
+    let release: (() => void) | null = null;
     harness.agent.on(ACP_METHOD.sessionPrompt, async () => {
       await new Promise<void>((resolve) => {
-        releasePrompt = resolve;
+        release = resolve;
       });
-      // github/copilot-cli issue 4561: a cancelled turn reports end_turn.
       return { result: { stopReason: "end_turn" } };
     });
-    const session = await withDeadline("open", harness.open());
-    const turn = session.prompt({ turnId: "turn-1", blocks: [textPromptBlock("go")] as AcpContentBlock[] });
-    await vi.waitFor(() => expect(releasePrompt).toBeTruthy());
-    await withDeadline("cancel", session.cancel("user stopped"));
-    releasePrompt!();
+    const turn = session.prompt({
+      turnId: "turn-1",
+      blocks: goBlocks,
+      // A pure read. The session, not this probe, records that the agent answered.
+      isInterrupted: () => {
+        answeredDuring.isInterrupted = session!.turnAnswered;
+        return false;
+      },
+    });
+    await vi.waitFor(() => expect(release).toBeTruthy());
+    expect(session.turnAnswered).toBe(false);
+    release!();
     const outcome = await withDeadline("turn", turn);
+    expect(outcome.interrupted).toBe(false);
+    expect(answeredDuring).toEqual({ beginTurn: false, isInterrupted: true, finishTurn: true });
+    expect(session.turnAnswered).toBe(false);
+  });
+
+  it("never reports turnAnswered for a prompt the agent failed", async () => {
+    const harness = makeHarness(qwenDialect);
+    harness.agent.on(ACP_METHOD.sessionPrompt, () => ({ error: { code: -32000, message: "model overloaded" } }));
+    const session = await withDeadline("open", harness.open());
+    let probed = false;
+    await expect(withDeadline("turn", session.prompt({
+      turnId: "turn-1",
+      blocks: goBlocks,
+      isInterrupted: () => {
+        probed = true;
+        return false;
+      },
+    }))).rejects.toThrow(/overloaded/);
+    expect(probed).toBe(false);
+    expect(session.turnAnswered).toBe(false);
+    // The failed prompt left the agent idle: a later Stop sends no cancel.
+    harness.agent.on(ACP_METHOD.sessionCancel, () => ({ result: {} }));
+    await withDeadline("cancel", session.cancel("stopped"));
+    expect(harness.agent.methodsReceived()).not.toContain(ACP_METHOD.sessionCancel);
+  });
+
+  it("marks the turn interrupted when the caller's stop flag is up as the result arrives", async () => {
+    const harness = makeHarness(qwenDialect);
+    harness.agent.on(ACP_METHOD.sessionPrompt, () => ({ result: { stopReason: "end_turn" } }));
+    const session = await withDeadline("open", harness.open());
+    const outcome = await withDeadline(
+      "turn",
+      session.prompt({ turnId: "turn-1", blocks: goBlocks, isInterrupted: () => true }),
+    );
+    expect(outcome.stopReason).toBe("end_turn");
+    expect(outcome.interrupted).toBe(true);
+  });
+
+  it("reports a turn stopped before its result as interrupted, even when the agent says end_turn", async () => {
+    const harness = makeHarness(copilotDialect);
+    const session = await withDeadline("open", harness.open());
+    // github/copilot-cli issue 4561: a cancelled turn reports end_turn.
+    const held = await startHeldTurn(harness, session, "end_turn");
+    await withDeadline("cancel", session.cancel("user stopped"));
+    held.release();
+    const outcome = await withDeadline("turn", held.turn);
     expect(outcome.stopReason).toBe("end_turn");
     expect(outcome.interrupted).toBe(true);
   });
@@ -1534,10 +1736,7 @@ describe("cancel", () => {
     const harness = makeHarness(qwenDialect);
     harness.agent.on(ACP_METHOD.sessionPrompt, () => ({ result: { stopReason: "end_turn" } }));
     const session = await withDeadline("open", harness.open());
-    const outcome = await withDeadline(
-      "turn",
-      session.prompt({ turnId: "turn-1", blocks: [textPromptBlock("go")] as AcpContentBlock[] }),
-    );
+    const outcome = await withDeadline("turn", session.prompt({ turnId: "turn-1", blocks: goBlocks }));
     expect(outcome.interrupted).toBe(false);
   });
 });
@@ -1597,15 +1796,32 @@ describe("usage", () => {
       "turn",
       session.prompt({ turnId: "turn-1", blocks: [textPromptBlock("go")] as AcpContentBlock[] }),
     );
+    // The wire's 100 input counts the 40 cached; ADE reports the uncached 60.
     expect(outcome.usage).toMatchObject({
       costUsd: 2.5,
       cacheReadTokens: 40,
-      inputTokens: 100,
+      inputTokens: 60,
       outputTokens: 20,
       reasoningTokens: 5,
       totalTokens: 120,
+      servedModel: "grok-4",
     });
-    expect(outcome.events.some((event) => event.type === "tokens")).toBe(true);
+    // No per-response context sample arrived, so the prompt result's tokens
+    // row is the meter's fallback. It carries the reasoning split too.
+    expect(outcome.events.find((event) => event.type === "tokens")).toEqual({
+      type: "tokens",
+      turnId: "turn-1",
+      inputTokens: 60,
+      outputTokens: 20,
+      cacheReadTokens: 40,
+      reasoningTokens: 5,
+    });
+    expect(outcome.done).toMatchObject({
+      usage: { inputTokens: 60, outputTokens: 20, cacheReadTokens: 40, reasoningTokens: 5 },
+      costUsd: 2.5,
+      costSource: "provider",
+      servedModel: "grok-4",
+    });
   });
 
   it("grok usage reader returns null for meta it cannot read", () => {
@@ -1613,14 +1829,43 @@ describe("usage", () => {
     expect(readGrokPromptUsage({ unrelated: true })).toBeNull();
   });
 
-  it("kimi reports no usage, and emits no usage events at all", async () => {
+  it("kimi reads the usage_update it sends after the prompt result, and the prompt usage", async () => {
     const harness = makeHarness(kimiDialect);
     harness.agent.on(ACP_METHOD.sessionPrompt, (_params, agent) => {
-      // Even if a future build starts sending it, the dialect declares none, so
-      // ADE must stay consistent with the hidden usage meter.
-      agent.emitUpdate("session-1", { sessionUpdate: "usage_update", used: 10, size: 100 });
-      return { result: { stopReason: "end_turn", usage: { totalTokens: 5, inputTokens: 4, outputTokens: 1 } } };
+      // Kimi 0.39.1 resolves the prompt, then pushes `usage_update` from
+      // `emitUsageUpdate()`. Emit it on the next tick, after the result.
+      setImmediate(() => agent.emitUpdate("session-1", { sessionUpdate: "usage_update", used: 42_000, size: 256_000 }));
+      return {
+        result: {
+          stopReason: "end_turn",
+          usage: { totalTokens: 41_010, inputTokens: 41_000, outputTokens: 10, cachedReadTokens: 30_000 },
+        },
+      };
     });
+    const session = await withDeadline("open", harness.open({ settledUsageWaitMs: 2_000 }));
+    const outcome = await withDeadline(
+      "turn",
+      session.prompt({ turnId: "turn-1", blocks: [textPromptBlock("go")] as AcpContentBlock[] }),
+    );
+    expect(harness.events.find((event) => event.type === "context_usage")).toMatchObject({
+      usage: { totalTokens: 42_000, maxTokens: 256_000 },
+      turnId: "turn-1",
+    });
+    expect(outcome.done.usage).toMatchObject({
+      inputTokens: 11_000,
+      cacheReadTokens: 30_000,
+      outputTokens: 10,
+      contextTokens: 42_000,
+      contextWindow: 256_000,
+    });
+    expect(outcome.done.usageConfidence).toBeUndefined();
+    // The exact context sample owns the meter; no tokens fallback row.
+    expect(outcome.events.some((event) => event.type === "tokens")).toBe(false);
+  });
+
+  it("kimi without any usage stays silent: no usage events, no banner, no error", async () => {
+    const harness = makeHarness(kimiDialect);
+    harness.agent.on(ACP_METHOD.sessionPrompt, () => ({ result: { stopReason: "end_turn" } }));
     const session = await withDeadline("open", harness.open());
     const outcome = await withDeadline(
       "turn",
@@ -1628,7 +1873,9 @@ describe("usage", () => {
     );
     expect(outcome.usage).toBeNull();
     expect(outcome.events).toEqual([]);
+    expect(outcome.done.usage).toBeUndefined();
     expect(harness.events.some((event) => event.type === "context_usage")).toBe(false);
+    expect(kimiDialect.degradationNotes).toEqual([]);
   });
 
   it("copilot reads usage from both sources", async () => {
@@ -1714,9 +1961,9 @@ describe("pooling", () => {
   });
 
   it("separates two chats whose model rides a process-global spawn flag", () => {
-    // Grok takes the model as `-m` on the command line, and `session/new`
-    // cannot override it. Sharing would run the second chat on the first
-    // chat's model.
+    // Grok's `-m` is the process default. Each session also gets its model
+    // through `session/set_config_option`, but a process keyed on one `-m`
+    // must not serve another chat's model as its default.
     const forModel = (modelId: string) =>
       hashSpawnInvocation(
         grokDialect.buildSpawnPlan({ binaryPath: "/bin/grok", cwd: "/lane", baseEnv: {}, modelId }),
@@ -1918,8 +2165,8 @@ describe("run | degrade conformance matrix", () => {
     // Copilot's resume is unverified, so ADE uses session/load instead.
     resume: { qwen: "run", kimi: "run", grok: "run", copilot: "degrade" },
     slash_advertise: { qwen: "run", kimi: "run", grok: "run", copilot: "run" },
-    // Kimi reports no usage at all.
-    usage_fold: { qwen: "run", kimi: "degrade", grok: "run", copilot: "run" },
+    // Kimi's post-turn usage_update and prompt usage are read when they arrive.
+    usage_fold: { qwen: "run", kimi: "run", grok: "run", copilot: "run" },
     mcp_injection: { qwen: "run", kimi: "run", grok: "run", copilot: "run" },
   };
 
@@ -1983,6 +2230,8 @@ describe("run | degrade conformance matrix", () => {
         sessionToken: "chat-1",
         pool,
         spawnOverride: () => agent.child,
+        // Kimi's post-turn usage wait; short so a turn without one stays fast.
+        settledUsageWaitMs: 20,
         callbacks: {
           onEvents: () => undefined,
           onPermissionRequested: () => undefined,

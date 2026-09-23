@@ -5,10 +5,12 @@ import { pathToFileURL } from "node:url";
 import {
   PI_SDK_MIN_NODE,
   PI_SDK_PROTOCOL_VERSION,
-  normalizePiSdkModelRef,
+  normalizePiSdkContextUsage,
   parsePiSdkWorkerRequest,
+  piSupportedThinkingLevels,
   toPiSdkJson,
   type JsonValue,
+  type PiSdkContextUsage,
   type PiSdkModelRef,
   type PiSdkReady,
   type PiSdkSessionTarget,
@@ -19,6 +21,14 @@ import {
 } from "./piSdkProtocol";
 import { materializeWorkerImages } from "./workerAttachmentImages";
 import { piSessionHeaderMatchesCwd, readPiSessionHeader } from "./piSessionStore";
+import { createPiAccountReader, withPiTurnAccount } from "./piSdkAuth";
+import {
+  PI_FALLBACK_THINKING_LEVEL,
+  createPiSettingsManager,
+  isPiThinkingLevel,
+  piDefaultThinkingLevel,
+  resolvePiExactModel,
+} from "./piSdkSelection";
 import {
   PI_ASK_USER_TOOL_NAME,
   createPiApprovalGate,
@@ -49,7 +59,13 @@ let sessionManager: PiSessionManager | null = null;
 let session: PiSession | null = null;
 let modelInventory: JsonValue[] = [];
 let lastAssistantError: string | null = null;
-const VALID_THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+/**
+ * The level a session runs on when ADE picked none: the user's Pi default as
+ * it stood when this worker started. Captured before the session exists,
+ * because the session's own level changes move the settings manager's
+ * in-memory default even though nothing is written.
+ */
+let defaultThinkingLevel: string = PI_FALLBACK_THINKING_LEVEL;
 /** Cap on the post-sign-in catalog refresh; the credential is already stored. */
 const PI_LOGIN_REFRESH_TIMEOUT_MS = 15_000;
 /** Root-exported factory per built-in tool, used to rebuild it behind an approval gate. */
@@ -136,6 +152,19 @@ function nonEmpty(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+/**
+ * Per-turn account classification, by the `"turn"` rules, without returning
+ * or logging credential values. Memoized per provider so repeated
+ * message_end events do not reread the profile files.
+ */
+const accountReader = createPiAccountReader({
+  agentDir: () => initState?.agentDir,
+  // Pi's live registry entry for a provider (a built-in's default base URL).
+  getProvider: (providerId) => (modelRuntime && typeof modelRuntime.getProvider === "function"
+    ? record((modelRuntime.getProvider as Callable).call(modelRuntime, providerId))
+    : null),
+});
+
 function parseNodeVersion(value: string): [number, number, number] {
   const match = /^(\d+)\.(\d+)\.(\d+)/.exec(value);
   return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : [0, 0, 0];
@@ -208,6 +237,8 @@ function modelDescriptor(value: unknown): JsonValue | null {
   for (const key of ["name", "reasoning", "input", "contextWindow", "maxTokens", "cost"] as const) {
     if (item[key] !== undefined) out[key] = toPiSdkJson(item[key]);
   }
+  // The levels Pi offers for this model: ADE's effort picker shows exactly these.
+  out.thinkingLevels = piSupportedThinkingLevels(item);
   return out;
 }
 
@@ -276,28 +307,10 @@ async function authInventory(): Promise<JsonValue> {
   return result;
 }
 
-function modelText(ref: PiSdkModelRef): string {
-  const normalized = normalizePiSdkModelRef(ref);
-  return `${normalized.provider}/${normalized.id}`;
-}
-
 async function resolveModel(ref: PiSdkModelRef): Promise<unknown> {
   if (!pi || !modelRuntime) throw new Error("Pi SDK is not initialized.");
-  const normalized = normalizePiSdkModelRef(ref);
-  const resolver = pi.resolveCliModel;
-  if (typeof resolver === "function") {
-    const result = await Promise.resolve((resolver as Callable).call(null, {
-      cliModel: `${normalized.provider}/${normalized.id}`,
-      modelRuntime,
-    }));
-    const resolved = record(result);
-    if (resolved?.error) throw new Error(`Pi model "${modelText(ref)}" is invalid: ${String(resolved.error)}`);
-    if (resolved?.model) return resolved.model;
-  }
-  const getModel = method(modelRuntime, "getModel");
-  const model = await Promise.resolve(getModel.call(modelRuntime, normalized.provider, normalized.id));
-  if (!model) throw new Error(`Pi model "${modelText(ref)}" is unavailable. Check the provider/model id and credentials in the user's Pi profile.`);
-  return model;
+  // Exact provider + id only; never Pi's fuzzy CLI resolver. See piSdkSelection.
+  return await resolvePiExactModel(modelRuntime, ref);
 }
 
 function sessionTarget(init: PiSdkWorkerInit): PiSdkSessionTarget {
@@ -488,6 +501,8 @@ function ready(): PiSdkReady {
     ?? (manager && typeof manager.getSessionFile === "function" ? (manager.getSessionFile as Callable).call(manager) : undefined);
   const sessionIdValue = session?.sessionId
     ?? (manager && typeof manager.getSessionId === "function" ? (manager.getSessionId as Callable).call(manager) : undefined);
+  const currentModel = currentModelDescriptor();
+  const providerId = nonEmpty(record(currentModel)?.provider);
   return {
     protocolVersion: PI_SDK_PROTOCOL_VERSION,
     packageRoot: piRoot,
@@ -495,9 +510,10 @@ function ready(): PiSdkReady {
     version: piVersion ?? (typeof pi?.VERSION === "string" ? pi.VERSION : null),
     sessionFile: typeof sessionFileValue === "string" ? sessionFileValue : null,
     sessionId: typeof sessionIdValue === "string" ? sessionIdValue : null,
-    currentModel: currentModelDescriptor(),
+    currentModel,
     thinkingLevel: typeof session?.thinkingLevel === "string" ? session.thinkingLevel : null,
     availableModels: modelInventory,
+    ...(providerId ? { account: accountReader.accountFor(providerId) } : {}),
     extensions: loadedExtensions,
     extensionsError,
     ungateableTools,
@@ -579,7 +595,7 @@ async function initWorker(init: PiSdkWorkerInit): Promise<PiSdkReady> {
   }
   assertAbsolute("cwd", init.cwd);
   assertAbsolute("agentDir", init.agentDir);
-  if (init.thinkingLevel && !VALID_THINKING_LEVELS.has(init.thinkingLevel.trim())) {
+  if (init.thinkingLevel && !isPiThinkingLevel(init.thinkingLevel.trim())) {
     throw new Error(`Invalid Pi thinking level "${init.thinkingLevel}". Use off, minimal, low, medium, high, xhigh, or max.`);
   }
   const requestedTools = init.tools ?? ["read"];
@@ -594,6 +610,7 @@ async function initWorker(init: PiSdkWorkerInit): Promise<PiSdkReady> {
   piEntry = location.entry;
   piVersion = location.version;
   initState = init;
+  accountReader.clear();
   process.env.PI_CODING_AGENT_DIR = init.agentDir;
   // Pi's embedded SDK never reads PI_CODING_AGENT_SESSION_DIR — only its CLI
   // entry point does — so the storage directory travels as an explicit
@@ -640,12 +657,12 @@ async function initWorker(init: PiSdkWorkerInit): Promise<PiSdkReady> {
   // repositories the user has not vouched for, so only the user's own profile
   // extensions may load here; without this the loader would build its own
   // settings manager that defaults to trusted.
-  const SettingsManagerCtor = typeof pi.SettingsManager === "function"
-    ? pi.SettingsManager as unknown as Record<string, unknown>
-    : null;
-  const settingsManager = SettingsManagerCtor && typeof SettingsManagerCtor.create === "function"
-    ? (SettingsManagerCtor.create as Callable).call(SettingsManagerCtor, init.cwd, init.agentDir, { projectTrusted: false })
-    : null;
+  //
+  // It also never writes: Pi saves a session's model and thinking picks as the
+  // user's global defaults, and an ADE chat must not change what the Pi CLI
+  // starts on.
+  const settingsManager = createPiSettingsManager(pi.SettingsManager, init.cwd, init.agentDir);
+  defaultThinkingLevel = piDefaultThinkingLevel(settingsManager);
   // Without a settings manager ADE cannot pin `projectTrusted`, and Pi's own
   // default would trust the checkout — so extensions stay off rather than
   // loading repository code on a Pi build ADE cannot constrain.
@@ -673,7 +690,9 @@ async function initWorker(init: PiSdkWorkerInit): Promise<PiSdkReady> {
     sessionManager,
     ...(settingsManager ? { settingsManager } : {}),
     ...(selectedModel ? { model: selectedModel } : {}),
-    ...(init.thinkingLevel ? { thinkingLevel: init.thinkingLevel } : {}),
+    // No `thinkingLevel` here: on a resumed session Pi would take it without
+    // recording it, leaving the file on its old level. The level is applied
+    // once the session exists instead.
     ...(resourceLoader ? { resourceLoader } : {}),
     // Pi's `tools` option is one flat allowlist covering built-ins, extension
     // tools, and custom tools, and anything unlisted is dropped. With
@@ -694,10 +713,12 @@ async function initWorker(init: PiSdkWorkerInit): Promise<PiSdkReady> {
   const created = record(await createSession(options));
   session = record(created?.session);
   if (!session) throw new Error("Pi SDK createAgentSession returned no session.");
+  applyThinkingLevel(session, init.thinkingLevel ?? null);
   if (extensionsAllowed) await bindExtensions(session, created?.extensionsResult);
   const subscribe = method(session, "subscribe");
   const listener = (event: unknown): void => {
     const eventRecord = record(event);
+    let eventForHost = event;
     if (eventRecord?.type === "message_end") {
       const message = record(eventRecord.message);
       if (message?.role === "assistant") {
@@ -706,9 +727,10 @@ async function initWorker(init: PiSdkWorkerInit): Promise<PiSdkReady> {
         } else {
           lastAssistantError = null;
         }
+        eventForHost = withPiTurnAccount(eventRecord, message, accountReader.accountFor);
       }
     }
-    post({ protocolVersion: PI_SDK_PROTOCOL_VERSION, type: "sdk_event", event: toPiSdkJson(event) });
+    post({ protocolVersion: PI_SDK_PROTOCOL_VERSION, type: "sdk_event", event: toPiSdkJson(eventForHost) });
   };
   unsubscribe = (subscribe.call(session, listener) as (() => void) | undefined) ?? null;
   const result = ready();
@@ -763,13 +785,23 @@ async function setModel(ref: PiSdkModelRef): Promise<PiSdkReady> {
   return result;
 }
 
-async function setThinking(level: string): Promise<PiSdkReady> {
-  const active = requireSession();
-  const normalized = level.trim();
-  if (!normalized || !VALID_THINKING_LEVELS.has(normalized)) {
+/**
+ * Put the session on `level`, or on Pi's default when ADE picked none.
+ *
+ * Pi records the change in the session file, so a resume keeps it, and clamps
+ * the level to what the model supports. It would also save the level as the
+ * user's global default; the settings manager drops that write.
+ */
+function applyThinkingLevel(active: PiSession, level: string | null): void {
+  const target = level?.trim() || defaultThinkingLevel;
+  if (!isPiThinkingLevel(target)) {
     throw new Error(`Invalid Pi thinking level "${level}". Use off, minimal, low, medium, high, xhigh, or max.`);
   }
-  await method(active, "setThinkingLevel").call(active, normalized);
+  method(active, "setThinkingLevel").call(active, target);
+}
+
+async function setThinking(level: string | null): Promise<PiSdkReady> {
+  applyThinkingLevel(requireSession(), level);
   return ready();
 }
 
@@ -778,6 +810,11 @@ async function compact(customInstructions?: string | null): Promise<JsonValue> {
   const compactMethod = (active as Record<string, unknown>).compact;
   if (typeof compactMethod !== "function") throw new Error("This Pi SDK build does not expose session.compact().");
   return toPiSdkJson(await (compactMethod as Callable).call(active, customInstructions ?? undefined));
+}
+
+async function contextUsage(): Promise<PiSdkContextUsage | null> {
+  const active = requireSession();
+  return normalizePiSdkContextUsage(await method(active, "getContextUsage").call(active));
 }
 
 /**
@@ -849,6 +886,8 @@ async function loginProvider(providerId: string, method?: string | null): Promis
     }
   } finally {
     if (activeLogin?.controller === controller) activeLogin = null;
+    // The sign-in may have changed this provider's credential.
+    accountReader.forget(providerId);
   }
 
   // login() settles once local credential state is consistent, but not once
@@ -950,6 +989,7 @@ async function dispatch(request: PiSdkWorkerRequest): Promise<JsonValue | undefi
     case "set_model": return toPiSdkJson(await setModel(request.payload.modelRef));
     case "set_thinking": return toPiSdkJson(await setThinking(request.payload.thinkingLevel));
     case "compact": return await compact(request.payload?.customInstructions);
+    case "context_usage": return toPiSdkJson(await contextUsage());
     case "models": return toPiSdkJson(await availableModels());
     case "auth": return await authInventory();
     case "dispose": await disposeWorker(); post({ protocolVersion: PI_SDK_PROTOCOL_VERSION, type: "lifecycle", event: "disposed", requestId: request.requestId }); return null;

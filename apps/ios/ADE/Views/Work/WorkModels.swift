@@ -531,6 +531,9 @@ struct WorkUsageSummary: Hashable {
   var contextState: WorkContextUsageState? = nil
   /// Monotonic runtime sample used to reject late pre-compaction snapshots.
   var contextSampleId: Int? = nil
+  /// Context occupancy after a turn (`done.usage.contextTokens`): the input
+  /// side of the turn's last request. The token fields above are turn totals.
+  var contextTokens: Int? = nil
 }
 
 struct WorkContextUsageViewModel: Equatable {

@@ -3,7 +3,14 @@ import type {
   AgentChatMissionFeature,
   AgentChatMissionProgressEntry,
 } from "../../../shared/types";
-import { detectCompactionSignalText } from "../../../shared/contextCompaction";
+import { contextPercentage, liveContextUsageEvent } from "./liveContextUsageEvent";
+import {
+  isDroidCompactingState,
+  normalizeDroidSdkContextStats,
+  normalizeDroidSdkTokenUsage,
+  type DroidSdkContextStats,
+  type DroidSdkTokenUsage,
+} from "./droidSdkProtocol";
 
 type SdkRecord = Record<string, unknown>;
 
@@ -12,13 +19,15 @@ export type DroidSdkEventMapperState = {
   thinkingDeltaItemIds: Set<string>;
   imageItemIds: Set<string>;
   toolNamesByUseId: Map<string, string>;
-  latestUsage: {
-    inputTokens?: number;
-    outputTokens?: number;
-    cacheReadTokens?: number;
-    cacheCreationTokens?: number;
-  } | null;
+  latestUsage: DroidSdkTokenUsage | null;
   compactionActive?: boolean;
+  /** Context size when the open compaction started (the worker's tagged sample). */
+  compactionPreTokens?: number;
+  /**
+   * `message.modelId` of the turn's latest assistant message: the concrete
+   * model that answered, which a router slot (`routerId: "auto"`) picks.
+   */
+  servedModelId?: string;
 };
 
 export function createDroidSdkEventMapperState(): DroidSdkEventMapperState {
@@ -124,19 +133,64 @@ function extractImageBlocks(content: unknown): Array<{ data: string; mediaType: 
   return out;
 }
 
-function usageFrom(record: SdkRecord | null): DroidSdkEventMapperState["latestUsage"] {
-  if (!record) return null;
-  const inputTokens = readNumber(record.inputTokens);
-  const outputTokens = readNumber(record.outputTokens);
-  const cacheReadTokens = readNumber(record.cacheReadTokens);
-  const cacheCreationTokens = readNumber(record.cacheCreationTokens);
-  const usage = {
-    ...(inputTokens != null ? { inputTokens } : {}),
-    ...(outputTokens != null ? { outputTokens } : {}),
-    ...(cacheReadTokens != null ? { cacheReadTokens } : {}),
-    ...(cacheCreationTokens != null ? { cacheCreationTokens } : {}),
+function contextUsageEvent(stats: DroidSdkContextStats, turnId: string): AgentChatEvent {
+  const used = Math.max(0, stats.used);
+  const remaining = Math.max(0, stats.remaining);
+  const maxTokens = Math.max(0, stats.limit);
+  // Droid labels estimated occupancy, but it is still a provider-owned live
+  // sample rather than an ADE heuristic, so the shared event state is measured.
+  return {
+    ...liveContextUsageEvent({
+      used,
+      max: maxTokens,
+      rawMaxTokens: maxTokens,
+      turnId,
+      state: "measured",
+      categories: [
+        { name: "Used", tokens: used, percentage: contextPercentage(used, maxTokens), kind: "used" },
+        { name: "Free", tokens: remaining, percentage: contextPercentage(remaining, maxTokens), kind: "free" },
+      ],
+    }),
+    capturedAt: stats.updatedAt,
   };
-  return Object.keys(usage).length ? usage : null;
+}
+
+type DroidDoneUsage = NonNullable<Extract<AgentChatEvent, { type: "done" }>["usage"]>;
+
+function doneUsageFrom(usage: DroidSdkTokenUsage | null): DroidDoneUsage | null {
+  if (!usage) return null;
+  return {
+    ...(usage.inputTokens != null ? { inputTokens: usage.inputTokens } : {}),
+    ...(usage.outputTokens != null ? { outputTokens: usage.outputTokens } : {}),
+    ...(usage.cacheReadTokens != null ? { cacheReadTokens: usage.cacheReadTokens } : {}),
+    ...(usage.cacheCreationTokens != null ? { cacheCreationTokens: usage.cacheCreationTokens } : {}),
+    ...(usage.thinkingTokens != null ? { reasoningTokens: usage.thinkingTokens } : {}),
+  };
+}
+
+/** Closes the open compaction: the one place a Droid `completed` marker is built. */
+function closeDroidCompaction(state: DroidSdkEventMapperState, turnId: string): AgentChatEvent {
+  const preTokens = state.compactionPreTokens;
+  state.compactionActive = false;
+  delete state.compactionPreTokens;
+  return {
+    type: "context_compact",
+    trigger: "auto",
+    state: "completed",
+    turnId,
+    compactionId: turnId,
+    provider: "droid",
+    detection: "provider",
+    ...(preTokens != null ? { preTokens } : {}),
+  };
+}
+
+const DROID_CUSTOM_MODEL_PREFIX = /^custom:/u;
+
+function comparableDroidModelId(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  return trimmed.replace(DROID_CUSTOM_MODEL_PREFIX, "");
 }
 
 // Map a Droid SDK MissionFeature[] payload to ADE's mission feature snapshots.
@@ -231,6 +285,8 @@ export function mapDroidSdkMessageToChatEvents(
       const role = readString(message?.role) ?? readString(record.role);
       if (role && role !== "assistant") return [];
       const messageId = readString(message?.id) ?? readString(record.messageId) ?? "droid-message";
+      const servedModelId = readString(message?.modelId)?.trim();
+      if (servedModelId) meta.state.servedModelId = servedModelId;
       const content = message?.content ?? record.content;
       // Key text/thinking by the same `<messageId>:<kind>:<blockIndex>` scheme the
       // deltas use (via the content-block index), so a completed message never
@@ -310,22 +366,9 @@ export function mapDroidSdkMessageToChatEvents(
     }
     case "working_state_changed": {
       const state = readString(record.state);
-      if (!state || state.toLowerCase() === "idle") {
-        if (meta.state.compactionActive) {
-          meta.state.compactionActive = false;
-          return [{
-            type: "context_compact",
-            trigger: "auto",
-            state: "completed",
-            turnId,
-            compactionId: turnId,
-            provider: "droid",
-          }];
-        }
-        return [];
-      }
+      const compacting = isDroidCompactingState(state);
       const out: AgentChatEvent[] = [];
-      if (detectCompactionSignalText(state) && !meta.state.compactionActive) {
+      if (compacting && !meta.state.compactionActive) {
         meta.state.compactionActive = true;
         out.push({
           type: "context_compact",
@@ -334,18 +377,12 @@ export function mapDroidSdkMessageToChatEvents(
           turnId,
           compactionId: turnId,
           provider: "droid",
+          detection: "provider",
         });
-      } else if (!detectCompactionSignalText(state) && meta.state.compactionActive) {
-        meta.state.compactionActive = false;
-        out.push({
-          type: "context_compact",
-          trigger: "auto",
-          state: "completed",
-          turnId,
-          compactionId: turnId,
-          provider: "droid",
-        });
+      } else if (!compacting && meta.state.compactionActive) {
+        out.push(closeDroidCompaction(meta.state, turnId));
       }
+      if (!state || state.toLowerCase() === "idle") return out;
       out.push({
         type: "activity",
         activity: "working",
@@ -354,9 +391,28 @@ export function mapDroidSdkMessageToChatEvents(
       });
       return out;
     }
+    case "context_stats": {
+      // The worker's background `droid.get_context_stats` samples. They can
+      // land after `done` (the turn id is already cleared) or after the next
+      // turn started, so each keeps the turn id the worker stamped on it.
+      const stats = normalizeDroidSdkContextStats(record.contextStats);
+      if (!stats) return [];
+      const sampleTurnId = readString(record.turnId);
+      if (record.phase === "compaction_start") {
+        // The size being compacted. It rides on the completed marker; showing
+        // it on the meter would move the meter off "compacting". A stale one
+        // belongs to an earlier turn's compaction, so it never seeds this one.
+        const current = !sampleTurnId || sampleTurnId === turnId;
+        if (current && meta.state.compactionActive && meta.state.compactionPreTokens == null) {
+          meta.state.compactionPreTokens = stats.used;
+        }
+        return [];
+      }
+      return [contextUsageEvent(stats, sampleTurnId ?? turnId)];
+    }
     case "token_usage_update": {
-      const usage = usageFrom(record);
-      meta.state.latestUsage = usage;
+      const usage = normalizeDroidSdkTokenUsage(record);
+      if (usage) meta.state.latestUsage = usage;
       if (!usage) return [];
       return [{
         type: "tokens",
@@ -365,6 +421,7 @@ export function mapDroidSdkMessageToChatEvents(
         ...(usage.outputTokens != null ? { outputTokens: usage.outputTokens } : {}),
         ...(usage.cacheReadTokens != null ? { cacheReadTokens: usage.cacheReadTokens } : {}),
         ...(usage.cacheCreationTokens != null ? { cacheWriteTokens: usage.cacheCreationTokens } : {}),
+        ...(usage.thinkingTokens != null ? { reasoningTokens: usage.thinkingTokens } : {}),
       }];
     }
     case "mission_worker_started": {
@@ -389,6 +446,7 @@ export function mapDroidSdkMessageToChatEvents(
       // Droid exposes no inline worker transcript, so the exit code is the most
       // useful terminal signal — carry it in the summary for the subagent drawer.
       const summary = exitCode == null ? "Worker finished" : `Worker exited (code ${exitCode})`;
+      const workerUsage = normalizeDroidSdkTokenUsage(record.tokenUsage ?? record.usage);
       return [{
         type: "subagent_result",
         taskId: workerSessionId,
@@ -397,6 +455,16 @@ export function mapDroidSdkMessageToChatEvents(
         summary,
         finalSummary: summary,
         turnId,
+        ...(workerUsage ? {
+          usage: {
+            ...(workerUsage.inputTokens != null ? { inputTokens: workerUsage.inputTokens } : {}),
+            ...(workerUsage.outputTokens != null ? { outputTokens: workerUsage.outputTokens } : {}),
+            ...(workerUsage.cacheReadTokens != null ? { cacheReadTokens: workerUsage.cacheReadTokens } : {}),
+            ...(workerUsage.cacheCreationTokens != null ? { cacheWriteTokens: workerUsage.cacheCreationTokens } : {}),
+            ...(workerUsage.thinkingTokens != null ? { reasoningTokens: workerUsage.thinkingTokens } : {}),
+            usageConfidence: "derived" as const,
+          },
+        } : {}),
       }];
     }
     case "mission_state_changed": {
@@ -445,13 +513,26 @@ export function mapDroidSdkRunResultToDoneEvent(
     turnId: string;
     model: string;
     modelId?: string;
+    requestedModel?: string;
     state: DroidSdkEventMapperState;
     interrupted?: boolean;
   },
 ): Extract<AgentChatEvent, { type: "done" }> {
   const record = asRecord(result);
-  const tokenUsage = asRecord(record?.tokenUsage) ?? meta.state.latestUsage;
-  const usage = usageFrom(tokenUsage);
+  const tokenUsage = normalizeDroidSdkTokenUsage(record?.tokenUsage) ?? meta.state.latestUsage;
+  // Context occupancy is not on `done`: the worker posts it as a trailing
+  // `context_stats` event so the run result never waits on the read.
+  const usage = doneUsageFrom(tokenUsage);
+  // The assistant message names the model that answered. The run result's
+  // `modelId` is the session setting read back, so it only says what was asked.
+  const servedModelRaw = meta.state.servedModelId ?? readString(record?.modelId) ?? readString(record?.servedModel);
+  const requestedModelRaw = (meta.requestedModel ?? meta.model).trim();
+  const requestedModel = comparableDroidModelId(requestedModelRaw);
+  const servedModel = servedModelRaw
+    && requestedModel
+    && comparableDroidModelId(servedModelRaw) !== requestedModel
+    ? servedModelRaw
+    : undefined;
   return {
     type: "done",
     turnId: meta.turnId,
@@ -459,5 +540,9 @@ export function mapDroidSdkRunResultToDoneEvent(
     model: meta.model,
     ...(meta.modelId ? { modelId: meta.modelId } : {}),
     ...(usage ? { usage } : {}),
+    ...(servedModel ? { servedModel } : {}),
+    // A `custom:` model is one the user brought their own key for; every other
+    // model bills the Factory plan.
+    account: { provider: "droid", kind: DROID_CUSTOM_MODEL_PREFIX.test(requestedModelRaw) ? "api_key" : "subscription" },
   };
 }

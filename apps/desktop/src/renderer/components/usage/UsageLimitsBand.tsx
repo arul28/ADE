@@ -71,6 +71,7 @@ const PROVIDER_META: Record<UsageProvider, { label: string }> = {
   copilot: { label: "Copilot" },
   grok: { label: "Grok" },
   opencode: { label: "OpenCode" },
+  kimi: { label: "Kimi" },
 };
 
 function providerSourceLabel(status: UsageProviderStatus | null): string {

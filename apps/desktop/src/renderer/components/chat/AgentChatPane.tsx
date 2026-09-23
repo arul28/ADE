@@ -2388,19 +2388,35 @@ function codexControlsFromPermissionMode(
   };
 }
 
-function cursorConfigValuesFromSnapshot(
+/**
+ * The Cursor config values the user actually set: no `null` and no empty
+ * choice, which both mean Cursor's default. A key sent with a value rides the
+ * next run as a model param, so an untouched option must not be sent at all.
+ */
+export function userSetCursorConfigValues(
+  values: Readonly<Record<string, AgentChatCursorConfigValue | null | undefined>> | null | undefined,
+): Record<string, AgentChatCursorConfigValue> {
+  const out: Record<string, AgentChatCursorConfigValue> = {};
+  for (const [key, value] of Object.entries(values ?? {})) {
+    if (value == null || (typeof value === "string" && !value.trim())) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+export function cursorConfigValuesFromSnapshot(
   snapshot: AgentChatSessionSummary["cursorModeSnapshot"] | AgentChatSession["cursorModeSnapshot"] | undefined,
 ): Record<string, AgentChatCursorConfigValue> {
-  return Object.fromEntries(
+  return userSetCursorConfigValues(Object.fromEntries(
     (snapshot?.configOptions ?? [])
       .filter((option) => option.id !== snapshot?.modeConfigId)
-      .flatMap((option) => option.currentValue == null ? [] : [[option.id, option.currentValue]]),
-  );
+      .map((option) => [option.id, option.currentValue]),
+  ));
 }
 
 function normalizeCursorConfigValues(value: unknown): Record<string, AgentChatCursorConfigValue> {
   if (!isRecord(value)) return {};
-  return { ...value } as Record<string, AgentChatCursorConfigValue>;
+  return userSetCursorConfigValues(value as Record<string, AgentChatCursorConfigValue>);
 }
 
 function readStoredFastMode(value: Record<string, unknown>): boolean {
@@ -5617,6 +5633,9 @@ export function AgentChatPane({
         if (Object.prototype.hasOwnProperty.call(cursorConfigValues, option.id)) {
           return { ...option, currentValue: cursorConfigValues[option.id] ?? option.currentValue };
         }
+        // A model option the composer holds no value for is at Cursor's
+        // default, including right after the user chose Default again.
+        if (option.category === "model") return { ...option, currentValue: null };
         return option;
       }),
     };
@@ -5693,7 +5712,7 @@ export function AgentChatPane({
       onDroidPermissionModeChange: (mode) => patchParallelSlot(idx, { droidPermissionMode: mode }),
       onCursorModeChange: (modeId) => patchParallelSlot(idx, { cursorModeId: modeId }),
       onCursorConfigChange: (configId, value) => patchParallelSlot(idx, {
-        cursorConfigValues: { ...row.cursorConfigValues, [configId]: value },
+        cursorConfigValues: userSetCursorConfigValues({ ...row.cursorConfigValues, [configId]: value }),
       }),
     };
   }, [parallelConfiguringIndex, parallelModelSlots, parallelSlotCursorSnapshot, patchParallelSlot]);
@@ -5811,11 +5830,7 @@ export function AgentChatPane({
     setCursorConfigValues(
       cursorModeWasExplicitlyCleared
         ? normalizeCursorConfigValues(session.cursorConfigValues)
-        : Object.fromEntries(
-            (session.cursorModeSnapshot?.configOptions ?? [])
-              .filter((option) => option.id !== session.cursorModeSnapshot?.modeConfigId)
-              .flatMap((option) => option.currentValue == null ? [] : [[option.id, option.currentValue]]),
-          ),
+        : cursorConfigValuesFromSnapshot(session.cursorModeSnapshot),
     );
   }, [
     applyLaunchConfigToComposer,
@@ -8118,15 +8133,9 @@ export function AgentChatPane({
             // the host only recomputes cursorModeSnapshot on mode changes);
             // otherwise fall back to deriving values from the snapshot.
             if (meta.cursorConfigValues !== undefined) {
-              setCursorConfigValues(meta.cursorConfigValues ?? {});
+              setCursorConfigValues(userSetCursorConfigValues(meta.cursorConfigValues));
             } else if (snapshot) {
-              setCursorConfigValues(
-                Object.fromEntries(
-                  (snapshot.configOptions ?? [])
-                    .filter((option) => option.id !== snapshot.modeConfigId)
-                    .flatMap((option) => option.currentValue == null ? [] : [[option.id, option.currentValue]]),
-                ),
-              );
+              setCursorConfigValues(cursorConfigValuesFromSnapshot(snapshot));
             }
           }
         }
@@ -12020,7 +12029,7 @@ export function AgentChatPane({
     const provider = selectedSession?.provider ?? sessionProvider;
     const nextSummary = {
       ...summarizeNativeControls(provider, nextControls),
-      ...(provider === "cursor" ? { cursorConfigValues: nextControls.cursorConfigValues } : {}),
+      ...(provider === "cursor" ? { cursorConfigValues: userSetCursorConfigValues(nextControls.cursorConfigValues) } : {}),
     };
     patchSessionSummary(selectedSessionId, nextSummary);
     if (isPersistentIdentitySurface) {
@@ -13680,6 +13689,7 @@ export function AgentChatPane({
             }}
             allowCliOnlyModels={workDraftKind === "cli" && !cursorCloudSessionActive}
             reasoningEffort={reasoningEffort}
+            effectiveReasoningEffort={effectiveReasoningEffort}
             fastMode={fastMode}
             cursorCloudServiceTier={cursorCloudServiceTier}
             onCursorCloudServiceTierChange={handleCursorCloudServiceTierChange}
@@ -13754,10 +13764,10 @@ export function AgentChatPane({
             onCursorModeChange={(value) => { void updateNativeControls({ cursorModeId: value }); }}
             onCursorConfigChange={(configId, value) => {
               void updateNativeControls({
-                cursorConfigValues: {
+                cursorConfigValues: userSetCursorConfigValues({
                   ...nativeControlsRef.current.cursorConfigValues,
                   [configId]: value,
-                },
+                }),
               });
             }}
             onComputerUsePolicyChange={handleComputerUsePolicyChange}

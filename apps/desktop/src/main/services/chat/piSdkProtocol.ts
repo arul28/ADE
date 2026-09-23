@@ -5,11 +5,29 @@
  * the bridge even when the user has not installed Pi.
  */
 
+import type { AgentChatUsageAccountKind } from "../../../shared/types/chat";
+import { PI_THINKING_LEVELS } from "../../../shared/piThinkingLevels";
+
 export const PI_SDK_PROTOCOL_VERSION = 2 as const;
 export const PI_SDK_MIN_NODE = "22.19.0" as const;
 
+// The one list of Pi thinking levels, shared with `piThinkingLevel`.
+export { PI_THINKING_LEVELS } from "../../../shared/piThinkingLevels";
+
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
+
+export type PiSdkAccount = {
+  kind: AgentChatUsageAccountKind;
+  upstream: string;
+  accountId?: string;
+};
+
+export type PiSdkContextUsage = {
+  tokens: number;
+  contextWindow: number;
+  percent: number;
+};
 
 export type PiSdkModelRef =
   | string
@@ -52,6 +70,11 @@ export type PiSdkWorkerInit = PiSdkPackageLocation & {
    */
   sessionStorageDir?: string | null;
   modelRef?: PiSdkModelRef | null;
+  /**
+   * The level picked in ADE. Null means none was picked, and the session runs
+   * on Pi's default — including a resumed session whose file recorded another
+   * level, since what the chat shows is what it must run.
+   */
   thinkingLevel?: string | null;
   systemPrompt?: string | null;
   /** Environment supplied to Pi skill/resource discovery in the worker. */
@@ -102,7 +125,8 @@ export type PiSdkModelUpdate = {
 };
 
 export type PiSdkThinkingUpdate = {
-  thinkingLevel: string;
+  /** Null resets this session to Pi's default level; Pi's own default is left alone. */
+  thinkingLevel: string | null;
 };
 
 export type PiSdkCompactPayload = {
@@ -191,6 +215,7 @@ export type PiSdkWorkerRequest =
   | { protocolVersion: typeof PI_SDK_PROTOCOL_VERSION; type: "set_model"; requestId: string; payload: PiSdkModelUpdate }
   | { protocolVersion: typeof PI_SDK_PROTOCOL_VERSION; type: "set_thinking"; requestId: string; payload: PiSdkThinkingUpdate }
   | { protocolVersion: typeof PI_SDK_PROTOCOL_VERSION; type: "compact"; requestId: string; payload?: PiSdkCompactPayload }
+  | { protocolVersion: typeof PI_SDK_PROTOCOL_VERSION; type: "context_usage"; requestId: string }
   | { protocolVersion: typeof PI_SDK_PROTOCOL_VERSION; type: "models"; requestId: string }
   | { protocolVersion: typeof PI_SDK_PROTOCOL_VERSION; type: "auth"; requestId: string };
 
@@ -204,6 +229,8 @@ export type PiSdkReady = {
   currentModel: JsonValue | null;
   thinkingLevel: string | null;
   availableModels: JsonValue[];
+  /** Non-secret billing provenance for the currently selected provider. */
+  account?: PiSdkAccount;
   /** Extensions actually loaded into this session; empty when opted out. */
   extensions?: PiSdkExtensionInfo[];
   /** Why extensions could not be loaded, when the caller asked for them. */
@@ -265,6 +292,42 @@ function nonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+/** Keyed by type, so a new `AgentChatUsageAccountKind` must be added here. */
+const PI_SDK_ACCOUNT_KINDS: Record<AgentChatUsageAccountKind, true> = {
+  subscription: true,
+  api_key: true,
+  local: true,
+  unknown: true,
+};
+
+export function isPiSdkAccount(value: unknown): value is PiSdkAccount {
+  if (!isRecord(value) || typeof value.kind !== "string" || !Object.hasOwn(PI_SDK_ACCOUNT_KINDS, value.kind)) return false;
+  if (!nonEmptyString(value.upstream)) return false;
+  return value.accountId === undefined || nonEmptyString(value.accountId);
+}
+
+function isPiSdkContextUsage(value: unknown): value is PiSdkContextUsage {
+  return isRecord(value)
+    && isFiniteNumber(value.tokens)
+    && isFiniteNumber(value.contextWindow)
+    && isFiniteNumber(value.percent);
+}
+
+/**
+ * Pi's `getContextUsage()` answer as a sample, or null for "no sample": Pi
+ * answers `{ tokens: null }` right after a compaction and `undefined` for a
+ * model with no known window, and neither is an error.
+ */
+export function normalizePiSdkContextUsage(value: unknown): PiSdkContextUsage | null {
+  return isPiSdkContextUsage(value)
+    ? { tokens: value.tokens, contextWindow: value.contextWindow, percent: value.percent }
+    : null;
+}
+
 function isModelRef(value: unknown): value is PiSdkModelRef {
   if (nonEmptyString(value)) return true;
   if (!isRecord(value) || !nonEmptyString(value.provider)) return false;
@@ -316,6 +379,7 @@ function validateReadyShape(ready: Record<string, unknown>, label: string): stri
   if (!("currentModel" in ready) || (ready.currentModel !== null && !isJsonValue(ready.currentModel))) return `Pi SDK ${label} currentModel must be JSON-safe.`;
   if (!("thinkingLevel" in ready) || (ready.thinkingLevel !== null && typeof ready.thinkingLevel !== "string")) return `Pi SDK ${label} thinkingLevel must be a string or null.`;
   if (!Array.isArray(ready.availableModels) || !ready.availableModels.every((model) => isJsonValue(model))) return `Pi SDK ${label} availableModels must be JSON-safe.`;
+  if (ready.account !== undefined && !isPiSdkAccount(ready.account)) return `Pi SDK ${label} account is invalid.`;
   if (ready.extensions !== undefined && !isExtensionInfoList(ready.extensions)) return `Pi SDK ${label} extensions must be a list of {id}.`;
   if (ready.extensionsError !== undefined && ready.extensionsError !== null && typeof ready.extensionsError !== "string") {
     return `Pi SDK ${label} extensionsError must be a string or null.`;
@@ -418,7 +482,10 @@ export function validatePiSdkWorkerRequest(raw: unknown): string | null {
   } else if (type === "set_model") {
     if (!isRecord(payload) || !isModelRef(payload.modelRef)) return "Pi SDK set_model requires a valid modelRef.";
   } else if (type === "set_thinking") {
-    if (!isRecord(payload) || !nonEmptyString(payload.thinkingLevel)) return "Pi SDK set_thinking requires a thinkingLevel.";
+    if (!isRecord(payload) || !("thinkingLevel" in payload)
+      || (payload.thinkingLevel !== null && !nonEmptyString(payload.thinkingLevel))) {
+      return "Pi SDK set_thinking requires a thinkingLevel, or null for Pi's default.";
+    }
   } else if (type === "login") {
     if (!isRecord(payload) || !nonEmptyString(payload.providerId)) return "Pi SDK login requires a providerId.";
     if (payload.method != null && !nonEmptyString(payload.method)) return "Pi SDK login method cannot be empty.";
@@ -429,7 +496,7 @@ export function validatePiSdkWorkerRequest(raw: unknown): string | null {
   } else if (type === "compact" && payload != null && (!isRecord(payload)
     || (payload.customInstructions != null && typeof payload.customInstructions !== "string"))) {
     return "Pi SDK compact payload is invalid.";
-  } else if (!["init", "abort", "dispose", "models", "auth", "compact", "login", "login_cancel", "ui_response"].includes(type)) {
+  } else if (!["init", "abort", "dispose", "models", "auth", "compact", "context_usage", "login", "login_cancel", "ui_response"].includes(type)) {
     return `Unsupported Pi SDK worker request: ${String(type)}.`;
   }
   return null;
@@ -548,6 +615,13 @@ export function validatePiSdkWorkerResult(
       ? null
       : "Pi SDK auth result must be a JSON-safe array.";
   }
+  if (type === "context_usage") {
+    // null is "no sample": Pi has no reading right after a compaction, or for
+    // a model with no known window.
+    return result === null || isPiSdkContextUsage(result)
+      ? null
+      : "Pi SDK context_usage result must be null or contain numeric tokens, contextWindow, and percent.";
+  }
   if (result !== undefined && !isJsonValue(result)) return `Pi SDK ${type} result must be JSON-safe.`;
   return null;
 }
@@ -582,6 +656,23 @@ export function toPiSdkJson(value: unknown, depth = 0, seen = new WeakSet<object
     if (item !== undefined) output[key] = toPiSdkJson(item, depth + 1, seen);
   }
   return output;
+}
+
+/**
+ * The thinking levels Pi offers for one model, by Pi's own rule
+ * (`getSupportedThinkingLevels` in @earendil-works/pi-ai): a model without
+ * `reasoning` has only "off"; a reasoning model has "off" through "high" unless
+ * its `thinkingLevelMap` marks a level null, plus "xhigh" and "max" only where
+ * the map names them.
+ */
+export function piSupportedThinkingLevels(model: unknown): string[] {
+  if (!isRecord(model) || !model.reasoning) return ["off"];
+  const map = isRecord(model.thinkingLevelMap) ? model.thinkingLevelMap : {};
+  return PI_THINKING_LEVELS.filter((level) => {
+    const mapped = map[level];
+    if (mapped === null) return false;
+    return level === "xhigh" || level === "max" ? mapped !== undefined : true;
+  });
 }
 
 export function normalizePiSdkModelRef(ref: PiSdkModelRef): { provider: string; id: string } {

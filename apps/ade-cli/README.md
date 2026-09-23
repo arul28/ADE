@@ -760,6 +760,8 @@ ade usage stats --scope account --text             # merged across every machine
 ade usage stats --scope project --preset 30d --text
 ade usage stats --scope account --force --text     # skip the account fan-out rate floor (explicit refresh)
 ade usage stats --since 2026-08-01T00:00:00Z --until 2026-08-08T00:00:00Z --text
+ade usage turns --days 14 --text                   # per-turn ledger (action usage.getTurnUsageSummary): cost and cache by provider, account, model, plus quota burn rates
+ade usage turns --group-by provider --recent 20 --text  # group by provider (default provider_account_model); add this project's 20 newest turns
 ade --role cto usage refresh --text                # live Claude/Codex quota only (same snapshot layout as `usage snapshot`)
 ade --role cto usage refresh --history --text      # local provider history + costs
 ade usage budget get --text

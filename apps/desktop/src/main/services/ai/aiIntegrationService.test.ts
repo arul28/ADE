@@ -55,18 +55,21 @@ vi.mock("./localModelDiscovery", () => ({
   inspectLocalProvider: (...args: unknown[]) => mockState.inspectLocalProvider(...args),
 }));
 
-vi.mock("../chat/cursorModelsDiscovery", async (importOriginal) => ({
-  // The failure-message builder stays real: these tests assert the exact
-  // sentence a rejected cloud launch shows, and that sentence is the contract.
-  describeCursorSdkModelSelectionFailure:
-    (await importOriginal<typeof import("../chat/cursorModelsDiscovery")>())
-      .describeCursorSdkModelSelectionFailure,
+vi.mock("../chat/cursorModelsDiscovery", () => ({
   clearCursorCliModelsCache: (...args: unknown[]) => mockState.clearCursorCliModelsCache(...args),
   markCursorModelCachesStale: (...args: unknown[]) => mockState.markCursorModelCachesStale(...args),
   discoverCursorCliModelDescriptors: (...args: unknown[]) => mockState.discoverCursorCliModelDescriptors(...args),
   discoverCursorSdkModelDescriptors: (...args: unknown[]) => mockState.discoverCursorSdkModelDescriptors(...args),
-  verifyExplicitCursorModelSelection: (...args: unknown[]) => mockState.verifyExplicitCursorModelSelection(...args),
   probeCursorSdkModelDiscovery: (...args: unknown[]) => mockState.probeCursorSdkModelDiscovery(...args),
+}));
+
+vi.mock("../chat/cursorModelSelection", async (importOriginal) => ({
+  // The failure-message builder stays real: these tests assert the exact
+  // sentence a rejected cloud launch shows, and that sentence is the contract.
+  describeCursorSdkModelSelectionFailure:
+    (await importOriginal<typeof import("../chat/cursorModelSelection")>())
+      .describeCursorSdkModelSelectionFailure,
+  verifyExplicitCursorModelSelection: (...args: unknown[]) => mockState.verifyExplicitCursorModelSelection(...args),
 }));
 
 vi.mock("./apiKeyStore", () => ({
@@ -121,7 +124,7 @@ vi.mock("../opencode/openCodeBinaryManager", () => ({
 import { createDynamicCursorCliModelDescriptor, getLocalProviderDefaultEndpoint } from "../../../shared/modelRegistry";
 // The real builder, kept real by the module mock above: these tests assert the
 // exact sentence a rejected cloud launch shows.
-import { describeCursorSdkModelSelectionFailure } from "../chat/cursorModelsDiscovery";
+import { describeCursorSdkModelSelectionFailure } from "../chat/cursorModelSelection";
 import { createAiIntegrationService, missingFeatureModelMessage } from "./aiIntegrationService";
 
 type ServiceFactoryOptions = {

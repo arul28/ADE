@@ -100,6 +100,18 @@ export type ModelDescriptor = {
   openCodeProviderId?: string;
   /** OpenCode server routing: model id as reported by OpenCode (may contain `/`). */
   openCodeModelId?: string;
+  /**
+   * OpenCode's own variant key for each reasoning or service tier ADE shows
+   * (`xhigh` -> `extra-high`). A prompt's `variant` must name OpenCode's key.
+   */
+  openCodeVariantKeys?: Record<string, string>;
+  /**
+   * How OpenCode runs Fast for this row. A prompt takes one `variant` string,
+   * so Fast and an effort combine only through the `<id>-fast` sibling model
+   * OpenCode builds from a models.dev fast mode, or through a combined key
+   * such as `high-fast`. Read it through `resolveOpenCodeFastEffortSelection`.
+   */
+  openCodeFast?: OpenCodeFastRoutes;
   /** True when the model was injected via a local proxy (e.g. vibeproxy in ~/.factory/config.json). */
   customProxy?: boolean;
   /**
@@ -126,6 +138,21 @@ export type ModelDescriptor = {
    * pickers ignore it and render every provider identically.
    */
   previewTier?: boolean;
+};
+
+/** One way OpenCode reaches Fast: another model to send, a variant, or both. */
+export type OpenCodeFastRoute = {
+  /** OpenCode model id to send in place of the row's own (the fast sibling). */
+  modelId?: string;
+  /** OpenCode's own variant key to send. */
+  variant?: string;
+};
+
+export type OpenCodeFastRoutes = {
+  /** Fast when no effort is selected. */
+  withoutEffort?: OpenCodeFastRoute;
+  /** Fast that keeps each effort tier. An effort with no entry cannot run with Fast. */
+  byEffort?: Record<string, OpenCodeFastRoute>;
 };
 
 export type DynamicLocalModelDescriptorOptions = {
@@ -197,6 +224,55 @@ export function modelSupportsServiceTier(
 
 export function modelSupportsFastMode(descriptor: ModelDescriptor | null | undefined): boolean {
   return modelSupportsServiceTier(descriptor, "fast");
+}
+
+export type OpenCodeFastEffortSelection = {
+  /** OpenCode model id to send: the row's own, or its fast sibling. Null when the row names none. */
+  modelId: string | null;
+  /** OpenCode variant key to send, or null for none. */
+  variant: string | null;
+  fastApplied: boolean;
+  /** Set when Fast was asked for and cannot run. */
+  fastUnavailableReason?: string;
+};
+
+function openCodeFastRoutes(descriptor: ModelDescriptor): OpenCodeFastRoutes | null {
+  if (descriptor.openCodeFast) return descriptor.openCodeFast;
+  // A row that lists the `fast` service tier with no routes is a plain `fast`
+  // variant, which OpenCode cannot send together with an effort.
+  if (!modelSupportsFastMode(descriptor)) return null;
+  return { withoutEffort: { variant: descriptor.openCodeVariantKeys?.fast ?? "fast" } };
+}
+
+/**
+ * The model and `variant` an OpenCode prompt sends for the user's Fast and
+ * effort picks. The prompt path sends it, and the composer disables Fast from
+ * it, so the two always agree.
+ *
+ * When no route keeps both picks, the effort wins: the effort changes the
+ * answer, and Fast changes only the speed and the price.
+ */
+export function resolveOpenCodeFastEffortSelection(
+  descriptor: ModelDescriptor,
+  selection: { fastMode?: boolean | null; reasoningEffort?: string | null },
+): OpenCodeFastEffortSelection {
+  const ownModelId = descriptor.openCodeModelId?.trim() || null;
+  const effort = selection.reasoningEffort && descriptor.reasoningTiers?.includes(selection.reasoningEffort)
+    ? selection.reasoningEffort
+    : null;
+  const effortVariant = effort ? descriptor.openCodeVariantKeys?.[effort] ?? effort : null;
+  if (selection.fastMode !== true) return { modelId: ownModelId, variant: effortVariant, fastApplied: false };
+  const routes = openCodeFastRoutes(descriptor);
+  const route = effort ? routes?.byEffort?.[effort] : routes?.withoutEffort;
+  if (route) {
+    return { modelId: route.modelId ?? ownModelId, variant: route.variant ?? null, fastApplied: true };
+  }
+  const fastUnavailableReason = !routes
+    ? `OpenCode has no Fast mode for ${descriptor.displayName}.`
+    : effort
+      ? `OpenCode cannot run ${descriptor.displayName} in Fast mode at ${effort} effort.`
+      : `OpenCode runs ${descriptor.displayName} in Fast mode only with an effort level.`;
+  return { modelId: ownModelId, variant: effortVariant, fastApplied: false, fastUnavailableReason };
 }
 
 /** The named GPT-6 and GPT-5.6 models (Astra, Sol, Terra, Luna) label `low` as Light. */
@@ -946,9 +1022,18 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
 // Index maps (built once, refreshed on enrichment)
 // ---------------------------------------------------------------------------
 
+/**
+ * The curated rows as the registry serves them: `MODEL_REGISTRY` with the live
+ * ACP efforts applied (see `curatedAcpLiveRows`). Every lookup and every scan
+ * of the curated rows reads these, so a picker, a provider-scoped lookup, and
+ * the app default all see the efforts a live session reported.
+ */
 let byId = new Map<string, ModelDescriptor>();
 let byShortId = new Map<string, ModelDescriptor | null>();
 let byAlias = new Map<string, ModelDescriptor>();
+let servedCuratedRows: ModelDescriptor[] = [];
+/** `MODEL_REGISTRY` as curated, with no live overlay. The overlay is built from these. */
+let curatedById = new Map<string, ModelDescriptor>();
 let bySdkModelId = new Map<string, ModelDescriptor>();
 let dynamicOpenCodeById = new Map<string, ModelDescriptor>();
 let dynamicOpenCodeByAlias = new Map<string, ModelDescriptor>();
@@ -957,13 +1042,62 @@ let dynamicPiByAlias = new Map<string, ModelDescriptor>();
 /** Live-discovered ACP models, one map per provider group. Curated rows win. */
 const dynamicAcpByProvider = new Map<AcpModelProviderGroup, Map<string, ModelDescriptor>>();
 let dynamicAcpByAlias = new Map<string, ModelDescriptor>();
+/**
+ * Live ACP reports of models the registry already curates, per provider, keyed
+ * by the curated row's id. A live session names a model by its provider id
+ * (`grok-4.5`, registered as `xai/grok-4.5`) while the curated row for the same
+ * model is `xai/grok-4-5`; the two used to reach the picker as two rows.
+ */
+const liveAcpReportsByProvider = new Map<AcpModelProviderGroup, Map<string, ModelDescriptor>>();
+/**
+ * Curated ACP rows as the picker sees them once a live session reported the
+ * model: the curated row's own metadata with the efforts the live session
+ * advertised. Rebuilt from `liveAcpReportsByProvider` whenever either side
+ * changes (a new report, or a manifest patch to the curated row).
+ */
+let curatedAcpLiveRows = new Map<string, ModelDescriptor>();
 
-function rebuildIndexes() {
+function rebuildCuratedAcpLiveRows(): void {
+  const next = new Map<string, ModelDescriptor>();
+  for (const reports of liveAcpReportsByProvider.values()) {
+    for (const [curatedId, live] of reports) {
+      const curated = curatedById.get(curatedId);
+      const tiers = live.reasoningTiers?.filter((tier) => tier.trim().length > 0) ?? [];
+      // A live report with no effort list says nothing about efforts; the
+      // researched tiers stay.
+      if (!curated || !tiers.length) continue;
+      const defaultEffort = [live.defaultReasoningEffort, curated.defaultReasoningEffort]
+        .find((effort): effort is string => Boolean(effort) && tiers.includes(effort as string));
+      const merged: ModelDescriptor = { ...curated, reasoningTiers: [...tiers] };
+      if (defaultEffort) merged.defaultReasoningEffort = defaultEffort;
+      else delete merged.defaultReasoningEffort;
+      next.set(curatedId, merged);
+    }
+  }
+  curatedAcpLiveRows = next;
+  rebuildServedIndexes();
+}
+
+/** The row the registry serves for a curated descriptor: live efforts applied when an ACP session reported them. */
+function servedRegistryRow(descriptor: ModelDescriptor): ModelDescriptor;
+function servedRegistryRow(descriptor: ModelDescriptor | null | undefined): ModelDescriptor | undefined;
+function servedRegistryRow(descriptor: ModelDescriptor | null | undefined): ModelDescriptor | undefined {
+  if (!descriptor) return undefined;
+  return curatedAcpLiveRows.get(descriptor.id) ?? descriptor;
+}
+
+/** The curated rows as served, in registry order. Scans read this, not `MODEL_REGISTRY`. */
+function curatedRows(): readonly ModelDescriptor[] {
+  return servedCuratedRows;
+}
+
+/** Rebuild the served lookups from `MODEL_REGISTRY` and the live overlay. */
+function rebuildServedIndexes(): void {
+  servedCuratedRows = MODEL_REGISTRY.map((row) => servedRegistryRow(row));
   byId = new Map<string, ModelDescriptor>();
   byShortId = new Map<string, ModelDescriptor | null>();
   byAlias = new Map<string, ModelDescriptor>();
-  bySdkModelId = new Map<string, ModelDescriptor>();
-  for (const m of MODEL_REGISTRY) {
+  for (const m of servedCuratedRows) {
     byId.set(m.id, m);
     const existingShortId = byShortId.get(m.shortId);
     if (existingShortId) {
@@ -971,12 +1105,21 @@ function rebuildIndexes() {
     } else if (!byShortId.has(m.shortId)) {
       byShortId.set(m.shortId, m);
     }
-    bySdkModelId.set(m.providerModelId, m);
     for (const alias of m.aliases ?? []) {
       const normalized = alias.trim().toLowerCase();
       if (normalized.length) byAlias.set(normalized, m);
     }
   }
+}
+
+function rebuildIndexes() {
+  curatedById = new Map<string, ModelDescriptor>();
+  bySdkModelId = new Map<string, ModelDescriptor>();
+  for (const m of MODEL_REGISTRY) {
+    curatedById.set(m.id, m);
+    bySdkModelId.set(m.providerModelId, m);
+  }
+  rebuildCuratedAcpLiveRows();
 }
 
 export function validateModelRegistry(models: ModelDescriptor[] = MODEL_REGISTRY): void {
@@ -1475,6 +1618,11 @@ export type DynamicOpenCodeModelDescriptorOptions = {
   /** When set with openCodeModelId, registry id is derived so model ids may contain `/`. */
   openCodeProviderId?: string;
   openCodeModelId?: string;
+  /**
+   * The tier options are what OpenCode reported for this model, so ADE's
+   * canonical metadata must not add to them. Set by the provider inventory.
+   */
+  reportedTiers?: boolean;
 };
 
 /** Stable ADE id for an OpenCode-backed model: `opencode/<providerId>/<encodeURIComponent(modelId)>`. */
@@ -1482,6 +1630,18 @@ export function encodeOpenCodeRegistryId(openCodeProviderId: string, openCodeMod
   const p = openCodeProviderId.trim();
   const m = openCodeModelId.trim();
   return `opencode/${p}/${encodeURIComponent(m)}`;
+}
+
+/**
+ * The registry id of the picker row for an OpenCode provider and model, after
+ * the Anthropic alias normalization that the row gets. A served model reported
+ * under this id compares equal to the requested row.
+ */
+export function openCodeRegistryIdFor(openCodeProviderId: string, openCodeModelId: string): string {
+  const providerId = openCodeProviderId.trim();
+  const modelId = openCodeModelId.trim();
+  const canonical = providerId.toLowerCase() === "anthropic" ? normalizeAnthropicRuntimeAlias(modelId) : null;
+  return encodeOpenCodeRegistryId(providerId, canonical?.modelId ?? modelId);
 }
 
 export function decodeOpenCodeRegistryId(id: string): { openCodeProviderId: string; openCodeModelId: string } | null {
@@ -1661,7 +1821,7 @@ export function createDynamicOpenCodeModelDescriptor(
   const opMid = anthropicRuntime?.modelId ?? rawOpMid;
   const normalizedModelId = modelId.trim();
   const usesPairedIds = Boolean(opPid && opMid);
-  const id = usesPairedIds ? encodeOpenCodeRegistryId(opPid!, opMid!) : `opencode/${normalizedModelId}`;
+  const id = usesPairedIds ? openCodeRegistryIdFor(opPid!, rawOpMid!) : `opencode/${normalizedModelId}`;
   const shortId = usesPairedIds ? opMid! : normalizedModelId;
   const providerModelId = usesPairedIds ? `${opPid}/${opMid}` : normalizedModelId;
   const displayName =
@@ -1678,12 +1838,18 @@ export function createDynamicOpenCodeModelDescriptor(
     reasoning: canonicalCapabilities?.reasoning ?? options?.capabilities?.reasoning ?? true,
     streaming: canonicalCapabilities?.streaming ?? options?.capabilities?.streaming ?? true,
   };
-  const reasoningTiers = anthropicRuntime && (anthropicRuntime.wasAlias || !options?.reasoningTiers?.length)
-    ? anthropicRuntime.reasoningTiers
+  // A tier OpenCode never listed becomes a `variant` that OpenCode ignores. So
+  // an inventory row advertises only the reported tiers. Without an inventory
+  // (a saved id decoded before the first probe), the canonical effort ladder
+  // is the best guess: OpenCode builds those variants from the same models.dev
+  // effort list. Fast is never guessed, because OpenCode runs it through a
+  // sibling model that only an inventory names.
+  const canonicalTiers = options?.reportedTiers ? null : anthropicRuntime;
+  const reasoningTiers = canonicalTiers && (canonicalTiers.wasAlias || !options?.reasoningTiers?.length)
+    ? canonicalTiers.reasoningTiers
     : options?.reasoningTiers;
-  const serviceTiers = anthropicRuntime && (anthropicRuntime.wasAlias || !options?.serviceTiers?.length)
-    ? anthropicRuntime.serviceTiers
-    : options?.serviceTiers;
+  const serviceTiers = options?.serviceTiers;
+  const defaultReasoningEffort = options?.defaultReasoningEffort ?? anthropicRuntime?.defaultReasoningEffort;
   const aliases = options?.aliases?.map((alias) => alias.trim()).filter(Boolean) ?? [];
   const family: ProviderFamily = (opPid && OPENCODE_PROVIDER_FAMILY_MAP[opPid]) || "opencode";
   const isLocal = opPid ? LOCAL_OPENCODE_PROVIDERS.has(opPid) : false;
@@ -1705,9 +1871,7 @@ export function createDynamicOpenCodeModelDescriptor(
     providerModelId,
     ...(usesPairedIds ? { openCodeProviderId: opPid, openCodeModelId: opMid } : {}),
     ...(reasoningTiers?.length ? { reasoningTiers: [...reasoningTiers] } : {}),
-    ...((options?.defaultReasoningEffort ?? anthropicRuntime?.defaultReasoningEffort)
-      ? { defaultReasoningEffort: options?.defaultReasoningEffort ?? anthropicRuntime?.defaultReasoningEffort }
-      : {}),
+    ...(defaultReasoningEffort && reasoningTiers?.includes(defaultReasoningEffort) ? { defaultReasoningEffort } : {}),
     ...(serviceTiers?.length ? { serviceTiers: [...serviceTiers] } : {}),
     ...(aliases.length ? { aliases } : {}),
     ...(isLocal || options?.harnessProfile ? { harnessProfile: options?.harnessProfile ?? "guarded" } : {}),
@@ -1836,28 +2000,58 @@ export function createDynamicAcpModelDescriptor(
 }
 
 /**
+ * The curated row a live ACP report names, if the registry curates that model.
+ *
+ * Matched on the curated id, or on the provider's own model id within the same
+ * route: a live session reports `grok-4.5`, which `acpRegistryIdFor` turns into
+ * `xai/grok-4.5`, while the curated row is `xai/grok-4-5` with
+ * `providerModelId: "grok-4.5"`. Both name one model.
+ */
+function curatedAcpRowForLiveModel(
+  provider: AcpModelProviderGroup,
+  descriptor: Pick<ModelDescriptor, "id" | "providerModelId">,
+): ModelDescriptor | undefined {
+  const route = ACP_GROUP_METADATA[provider].providerRoute;
+  const exact = curatedById.get(descriptor.id);
+  if (exact) return exact.providerRoute === route ? exact : undefined;
+  const wanted = descriptor.providerModelId.trim().toLowerCase();
+  if (!wanted) return undefined;
+  return MODEL_REGISTRY.find((row) =>
+    row.providerRoute === route && row.providerModelId.trim().toLowerCase() === wanted);
+}
+
+/**
  * Replace the discovered model list for one ACP provider.
  *
  * Whole-map replacement per provider, the same contract the OpenCode and Pi
- * replacers use, plus two rules of its own: a curated id always wins
- * (`byId.has`), and the list is capped so a chatty agent cannot inflate the
- * catalog the phone has to download.
+ * replacers use, plus rules of its own. A live report of a model the registry
+ * curates never becomes a second row: the curated row stays the one the picker
+ * shows, keeps its researched name, context window and color, and takes the
+ * efforts the live session reported (a report with no efforts leaves the
+ * researched tiers). The live id resolves to that curated row, so a chat that
+ * picked the live row keeps working. The list is capped so a chatty agent
+ * cannot inflate the catalog the phone has to download.
  */
 export function replaceDynamicAcpModelDescriptors(
   provider: AcpModelProviderGroup,
   descriptors: ModelDescriptor[],
 ): void {
   const next = new Map<string, ModelDescriptor>();
+  const reports = new Map<string, ModelDescriptor>();
   const expectedRoute = ACP_GROUP_METADATA[provider].providerRoute;
   for (const descriptor of descriptors) {
     if (next.size >= ACP_DYNAMIC_MODEL_LIMIT) break;
     if (descriptor.providerRoute !== expectedRoute) continue;
-    // A curated row is the researched one. Live discovery adds; it never
-    // shadows.
-    if (byId.has(descriptor.id)) continue;
+    const curated = curatedAcpRowForLiveModel(provider, descriptor);
+    if (curated) {
+      if (!reports.has(curated.id)) reports.set(curated.id, descriptor);
+      continue;
+    }
     next.set(descriptor.id, descriptor);
   }
   dynamicAcpByProvider.set(provider, next);
+  liveAcpReportsByProvider.set(provider, reports);
+  rebuildCuratedAcpLiveRows();
 
   dynamicAcpByAlias = new Map<string, ModelDescriptor>();
   for (const map of dynamicAcpByProvider.values()) {
@@ -1868,17 +2062,46 @@ export function replaceDynamicAcpModelDescriptors(
       }
     }
   }
+  for (const liveReports of liveAcpReportsByProvider.values()) {
+    for (const [curatedId, live] of liveReports) {
+      const served = byId.get(curatedId);
+      if (!served) continue;
+      for (const ref of [live.id, ...(live.aliases ?? [])]) {
+        const normalized = ref.trim().toLowerCase();
+        if (normalized.length && normalized !== curatedId.toLowerCase()) dynamicAcpByAlias.set(normalized, served);
+      }
+    }
+  }
 }
 
+/** Live ACP models the registry does not curate. Reports of curated models ride their curated row. */
 export function getDynamicAcpModelDescriptors(provider: AcpModelProviderGroup): ModelDescriptor[] {
   return [...(dynamicAcpByProvider.get(provider)?.values() ?? [])];
+}
+
+/**
+ * The registry row for a model an ACP session names by its provider id: the
+ * curated row (with any live efforts) when the model is curated, else the live
+ * row, else undefined when nothing has reported it.
+ */
+export function resolveAcpModelDescriptor(
+  provider: AcpModelProviderGroup,
+  providerModelId: string,
+): ModelDescriptor | undefined {
+  const id = acpRegistryIdFor(provider, providerModelId);
+  const curated = curatedAcpRowForLiveModel(provider, { id, providerModelId });
+  if (curated) return servedRegistryRow(curated);
+  return dynamicAcpByProvider.get(provider)?.get(id);
 }
 
 export function mergeDynamicAcpModelDescriptors(
   provider: AcpModelProviderGroup,
   descriptors: ModelDescriptor[],
 ): void {
-  const existing = getDynamicAcpModelDescriptors(provider);
+  const existing = [
+    ...getDynamicAcpModelDescriptors(provider),
+    ...(liveAcpReportsByProvider.get(provider)?.values() ?? []),
+  ];
   const incomingIds = new Set(descriptors.map((descriptor) => descriptor.id));
   const rest = existing.filter((descriptor) => !incomingIds.has(descriptor.id));
   replaceDynamicAcpModelDescriptors(provider, [...descriptors, ...rest]);
@@ -1886,6 +2109,8 @@ export function mergeDynamicAcpModelDescriptors(
 
 export function clearDynamicAcpModelDescriptors(): void {
   dynamicAcpByProvider.clear();
+  liveAcpReportsByProvider.clear();
+  rebuildCuratedAcpLiveRows();
   dynamicAcpByAlias = new Map<string, ModelDescriptor>();
 }
 
@@ -2391,7 +2616,7 @@ export function getAvailableModels(
       return false;
     });
 
-  const staticModels = MODEL_REGISTRY.filter((model) => !model.deprecated && hasAuthForModel(model));
+  const staticModels = curatedRows().filter((model) => !model.deprecated && hasAuthForModel(model));
   const dynamicPiModels = getDynamicPiModelDescriptors().filter(hasAuthForModel);
   const dynamicOpenCodeLocals = getDynamicOpenCodeModelDescriptors().filter(
     (model) => model.authTypes.includes("local") && hasAuthForModel(model),
@@ -2468,7 +2693,7 @@ export function resolveModelDescriptorForProvider(
     return exactId;
   }
 
-  const candidates = MODEL_REGISTRY.filter((descriptor) => {
+  const candidates = curatedRows().filter((descriptor) => {
     if (descriptor.deprecated) return false;
     if (!matchesProviderGroup(descriptor, providerHint)) return false;
     return descriptor.id.toLowerCase() === normalized
@@ -2591,7 +2816,7 @@ export function classifyWorkerExecutionPath(
 
 function listProviderModelsInternal(provider: ModelProviderGroup): ModelDescriptor[] {
   if (provider === "pi") return getDynamicPiModelDescriptors();
-  const curated = MODEL_REGISTRY.filter((descriptor) => {
+  const curated = curatedRows().filter((descriptor) => {
     if (descriptor.deprecated) return false;
     if (provider === "claude") return descriptor.isCliWrapped && descriptor.family === "anthropic";
     if (provider === "codex") return descriptor.isCliWrapped && descriptor.family === "openai";
@@ -2603,9 +2828,10 @@ function listProviderModelsInternal(provider: ModelProviderGroup): ModelDescript
     if (provider === "copilot") return descriptor.isCliWrapped && descriptor.family === "github-copilot";
     return !descriptor.isCliWrapped;
   });
-  // Curated rows first, then anything a live ACP session reported. The
-  // replacer already dropped ids the curated table owns, so this cannot
-  // duplicate a row.
+  // Curated rows first (with the efforts a live session reported), then the
+  // live models the registry does not curate. The replacer folds every live
+  // report of a curated model into its curated row, so this cannot duplicate
+  // a model.
   if (isAcpModelProviderGroup(provider)) {
     return [...curated, ...getDynamicAcpModelDescriptors(provider)];
   }
@@ -2847,6 +3073,8 @@ export function enrichModelRegistry(enrichments: Map<string, ModelEnrichment>): 
     }
     updated++;
   }
+  // A served row that carries live efforts is a copy; it takes the new data too.
+  if (updated) rebuildCuratedAcpLiveRows();
   return updated;
 }
 

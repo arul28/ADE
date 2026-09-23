@@ -1,20 +1,12 @@
 import { getErrorMessage, isRecord } from "../shared/utils";
 import { refreshDynamicTokenPricing } from "./usagePricing";
 import {
-  scanClaudeLogs,
-  scanCodexLogs,
-  scanCopilotLogs,
-  scanCursorAgentLogs,
-  scanCursorLogs,
-  scanDroidLogs,
-  scanGeminiLogs,
-  scanOpenClawLogs,
-  scanOpenCodeLogs,
   runLedgerScanWithCompleteness,
   usageLedgerTranscriptRootExists,
   usageLedgerTranscriptRoots,
   type TokenEntry,
 } from "./ledgers/localUsageLedgers";
+import { DAILY_7D_PROVIDERS, usageLedgerScanners } from "./usageLedgerScanners";
 import { buildCostSnapshots, bucketDaily7d } from "./usageTrackingService";
 import {
   LEDGER_STREAM_HEADER_KIND,
@@ -23,36 +15,13 @@ import {
 
 const WORKER_INPUT_MAX_BYTES = 64 * 1024;
 
-type ProviderScanner = {
-  provider: string;
-  scan: () => Promise<TokenEntry[]>;
+type UsageLedgerWorkerInput = {
+  projectRoot: string | null;
+  projectRoots: string[];
 };
 
-/**
- * Exported so a test can hold the slugs here against the keys of
- * `usageLedgerTranscriptRoots()`. A scanner whose slug is not a key there loses
- * its scan-completeness signal, silently.
- */
-export const providerScanners: ProviderScanner[] = [
-  { provider: "claude", scan: scanClaudeLogs },
-  { provider: "codex", scan: scanCodexLogs },
-  { provider: "cursor", scan: scanCursorLogs },
-  { provider: "cursor-agent", scan: scanCursorAgentLogs },
-  { provider: "openclaw", scan: scanOpenClawLogs },
-  { provider: "opencode", scan: scanOpenCodeLogs },
-  { provider: "droid", scan: scanDroidLogs },
-  { provider: "copilot", scan: scanCopilotLogs },
-  { provider: "gemini", scan: scanGeminiLogs },
-];
-
-async function readInput(): Promise<{ projectRoot: string | null; projectRoots: string[] }> {
-  let raw = "";
-  for await (const chunk of process.stdin) {
-    raw += chunk.toString();
-    if (Buffer.byteLength(raw, "utf8") > WORKER_INPUT_MAX_BYTES) {
-      throw new Error("Usage ledger worker input is too large");
-    }
-  }
+/** Reads the caller's JSON input. */
+function parseUsageLedgerWorkerInput(raw: string): UsageLedgerWorkerInput {
   const parsed = JSON.parse(raw) as unknown;
   if (!isRecord(parsed) || (parsed.projectRoot !== null && typeof parsed.projectRoot !== "string")) {
     throw new Error("Usage ledger worker input is invalid");
@@ -64,20 +33,39 @@ async function readInput(): Promise<{ projectRoot: string | null; projectRoots: 
   return { projectRoot: parsed.projectRoot, projectRoots };
 }
 
+/**
+ * Reads the whole input, then decodes it once. Decoding chunk by chunk would
+ * split a multi-byte character (a CJK project path) at a chunk boundary.
+ */
+export async function readUsageLedgerWorkerInput(
+  stdin: AsyncIterable<Buffer | string>,
+  maxBytes = WORKER_INPUT_MAX_BYTES,
+): Promise<UsageLedgerWorkerInput> {
+  const chunks: Buffer[] = [];
+  let byteCount = 0;
+  for await (const chunk of stdin) {
+    const bytes = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
+    byteCount += bytes.length;
+    if (byteCount > maxBytes) throw new Error("Usage ledger worker input is too large");
+    chunks.push(bytes);
+  }
+  return parseUsageLedgerWorkerInput(Buffer.concat(chunks, byteCount).toString("utf8"));
+}
+
 function emit(line: unknown): void {
   process.stdout.write(`${JSON.stringify(line)}\n`);
 }
 
 async function main(): Promise<void> {
-  const { projectRoot, projectRoots } = await readInput();
+  const { projectRoot, projectRoots } = await readUsageLedgerWorkerInput(process.stdin);
   await refreshDynamicTokenPricing().catch(() => 0);
-  // The roster first, then one line per provider as it finishes. Buffering all
-  // nine and writing a single object at the end meant a timeout — or any
+  // The roster first, then one line per provider as it finishes. Buffering every
+  // provider and writing a single object at the end meant a timeout — or any
   // failure — discarded every provider that had already succeeded, which on a
   // machine with a large Codex history left the Usage page permanently at zero.
   emit({
     kind: LEDGER_STREAM_HEADER_KIND,
-    providers: providerScanners.map((scanner) => scanner.provider),
+    providers: usageLedgerScanners.map((scanner) => scanner.provider),
   });
   const nowMs = Date.now();
   const transcriptRoots = usageLedgerTranscriptRoots();
@@ -86,7 +74,7 @@ async function main(): Promise<void> {
   // every provider's per-turn ledger objects alive together and pushed a busy
   // ADE runtime into multi-gigabyte peaks. This worker also keeps that work off
   // the runtime's project/chat/sync event loop.
-  for (const scanner of providerScanners) {
+  for (const scanner of usageLedgerScanners) {
     let entries: TokenEntry[];
     // Completeness is tracked separately from success. A scan that throws is
     // reported through `providerErrors`; a scan that swallowed an unreadable
@@ -113,7 +101,7 @@ async function main(): Promise<void> {
     const incomplete = !complete
       || (entries.length === 0 && usageLedgerTranscriptRootExists(scanner.provider, transcriptRoots));
     const providerEntries = new Map([[scanner.provider, entries]]);
-    const daily7d = (scanner.provider === "claude" || scanner.provider === "codex") && entries.length > 0
+    const daily7d = DAILY_7D_PROVIDERS.has(scanner.provider) && entries.length > 0
       ? bucketDaily7d(entries, nowMs)
       : undefined;
     emit({

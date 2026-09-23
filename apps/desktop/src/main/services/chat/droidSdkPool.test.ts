@@ -21,6 +21,8 @@ class FakeSdkChild extends EventEmitter {
   disposeCount = 0;
   initPayloads: unknown[] = [];
   sent: unknown[] = [];
+  initResultExtra: Record<string, unknown> = {};
+  sendResult: Record<string, unknown> = {};
 
   send(message: { type?: string; requestId?: string; payload?: unknown }): boolean {
     this.sent.push(message);
@@ -35,6 +37,7 @@ class FakeSdkChild extends EventEmitter {
             sessionId: "sdk-session-1",
             currentModelId: "droid-model",
             availableModels: [{ id: "droid-model" }],
+            ...this.initResultExtra,
           },
         });
       });
@@ -45,7 +48,7 @@ class FakeSdkChild extends EventEmitter {
           type: "response",
           requestId: message.requestId,
           ok: true,
-          result: {},
+          result: this.sendResult,
         });
       });
     }
@@ -184,6 +187,83 @@ describe("Droid SDK pool", () => {
     expect(sendReq?.payload?.images?.some((image) => image.data)).toBeFalsy();
 
     releaseDroidSdkConnection(poolKey, acquired.generation);
+  });
+
+  // A model switch replaces the worker but resumes the same Droid session,
+  // which still carries the effort the old worker stated. The next worker is
+  // told, so an effort the chat has since cleared is reset, not inherited.
+  it("tells a resuming worker which effort ADE stated to the session", async () => {
+    const chat = `chat-effort-${Math.random()}`;
+    const acquire = async (child: FakeSdkChild, settings: { modelId: string; reasoningEffort?: "high" }, resume: string | null) => {
+      forkMock.mockReturnValue(child);
+      const poolKey = `test-effort:${Date.now()}:${Math.random()}`;
+      const acquired = await acquireDroidSdkConnection({
+        poolKey,
+        droidPath: "/usr/local/bin/droid",
+        workspacePath: path.join(os.tmpdir(), "ade-workspace"),
+        sessionId: chat,
+        resumeSessionId: resume,
+        settings,
+      });
+      return { poolKey, acquired };
+    };
+
+    const first = new FakeSdkChild();
+    const one = await acquire(first, { modelId: "model-a" }, null);
+    await one.acquired.pooled.sendPrompt({ promptText: "hi", settings: { modelId: "model-a", reasoningEffort: "high" } });
+    releaseDroidSdkConnection(one.poolKey, one.acquired.generation);
+
+    // The chat switched model and has no effort now.
+    const second = new FakeSdkChild();
+    const two = await acquire(second, { modelId: "model-b" }, "sdk-session-1");
+    expect(second.initPayloads[0]).toMatchObject({ resumeSessionId: "sdk-session-1", statedReasoningEffort: "high" });
+    expect((second.initPayloads[0] as { settings: Record<string, unknown> }).settings).not.toHaveProperty("reasoningEffort");
+    releaseDroidSdkConnection(two.poolKey, two.acquired.generation);
+
+    // That worker reset it; a third one inherits nothing.
+    const third = new FakeSdkChild();
+    const three = await acquire(third, { modelId: "model-b" }, "sdk-session-1");
+    expect(third.initPayloads[0]).not.toHaveProperty("statedReasoningEffort");
+    releaseDroidSdkConnection(three.poolKey, three.acquired.generation);
+  });
+
+  // The worker's reset of a cleared effort can fail (Droid's model list did
+  // not load). The effort is then still on the session, so the chat's next
+  // worker must still be told to reset it.
+  it("keeps a cleared effort for the next worker until a worker reports the reset landed", async () => {
+    const chat = `chat-effort-kept-${Math.random()}`;
+    const acquire = async (child: FakeSdkChild, settings: { modelId: string; reasoningEffort?: "high" }, resume: string | null) => {
+      forkMock.mockReturnValue(child);
+      const poolKey = `test-effort-kept:${Date.now()}:${Math.random()}`;
+      const acquired = await acquireDroidSdkConnection({
+        poolKey,
+        droidPath: "/usr/local/bin/droid",
+        workspacePath: path.join(os.tmpdir(), "ade-workspace"),
+        sessionId: chat,
+        resumeSessionId: resume,
+        settings,
+      });
+      return { poolKey, acquired };
+    };
+
+    const first = new FakeSdkChild();
+    const one = await acquire(first, { modelId: "model-a", reasoningEffort: "high" }, null);
+    // The chat cleared the effort, and this worker's reset failed.
+    first.sendResult = { statedReasoningEffort: "high" };
+    await one.acquired.pooled.sendPrompt({ promptText: "hi", settings: { modelId: "model-a" } });
+    releaseDroidSdkConnection(one.poolKey, one.acquired.generation);
+
+    const second = new FakeSdkChild();
+    second.initResultExtra = { statedReasoningEffort: null };
+    const two = await acquire(second, { modelId: "model-b" }, "sdk-session-1");
+    expect(second.initPayloads[0]).toMatchObject({ statedReasoningEffort: "high" });
+    releaseDroidSdkConnection(two.poolKey, two.acquired.generation);
+
+    // The second worker reset it, so a third inherits nothing.
+    const third = new FakeSdkChild();
+    const three = await acquire(third, { modelId: "model-b" }, "sdk-session-1");
+    expect(third.initPayloads[0]).not.toHaveProperty("statedReasoningEffort");
+    releaseDroidSdkConnection(three.poolKey, three.acquired.generation);
   });
 
   it("rejects initialization instead of throwing when the worker IPC channel closes", async () => {
