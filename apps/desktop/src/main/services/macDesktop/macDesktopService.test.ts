@@ -620,6 +620,39 @@ describe("macDesktopService real input and the lease", () => {
     service.dispose();
   });
 
+  it("names the element a text click resolved from the tree the driver searched, not the one after the click", async () => {
+    // 2026-09-23: a click on "New Document" closed TextEdit's Open panel. The
+    // index was looked up in the observation taken AFTER the click, where it
+    // no longer existed, so the agent read "no element; acted on a point".
+    let observes = 0;
+    const driver = createFakeDriver({
+      [MAC_DESKTOP_DRIVER_OPS.observe]: () => {
+        observes += 1;
+        return observes === 1
+          ? {
+              id: "before",
+              elements: [
+                { index: 3, handle: "obs-before:e:3", role: "AXButton", title: "New Document", pid: 42 },
+              ],
+            }
+          : {
+              id: "after",
+              elements: [{ index: 3, handle: "obs-after:e:3", role: "AXTextArea", pid: 42 }],
+            };
+      },
+      [MAC_DESKTOP_DRIVER_OPS.input]: () => ({ ok: true, resolvedIndex: 3 }),
+    });
+    const { service } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+    await service.observe({ laneId: "lane-1" });
+
+    const result = await service.click({ laneId: "lane-1", text: "New Document", chatSessionId: "chat-1" });
+
+    expect(result.resolved).toMatchObject({ handle: "obs-before:e:3", title: "New Document" });
+    expect(result.observation?.id).toContain("after");
+    service.dispose();
+  });
+
   it("presses Return after the words on submit, to the element that took them, and observes once", async () => {
     // 2026-09-23: an Apple agent typed a search and had no way to press
     // Return, so it tapped the screen and then used a search URL.

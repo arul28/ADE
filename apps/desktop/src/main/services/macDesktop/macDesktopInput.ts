@@ -263,6 +263,11 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     }
     const startedAt = new Date(now()).toISOString();
     const startedMs = now();
+    // The driver resolves a text target against its newest observation, which
+    // is this one. The index it answers with belongs to this tree, never to the
+    // observation taken after the action: once a click closes a panel, that
+    // index is gone from the new tree, or names a different element in it.
+    const resolvedAgainst = observations.latest(laneId);
     let resolvedIndex: number | null = null;
     let failure: Error | null = null;
     try {
@@ -306,7 +311,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     const endedAt = new Date(now()).toISOString();
     const resolved = args.resolved
       ?? (resolvedIndex != null
-        ? observation.elements.find((element) => element.index === resolvedIndex) ?? null
+        ? resolvedAgainst?.elements.find((element) => element.index === resolvedIndex) ?? null
         : null);
     return {
       ok: true,

@@ -417,9 +417,15 @@ extension DriverRuntime {
         if let handle = payload["handle"]?.stringValue, !handle.isEmpty {
             return try accessibility.element(forHandle: handle)
         }
-        if let text = payload["text"]?.stringValue, !text.isEmpty,
-           let match = try? accessibility.element(matchingText: text) {
-            return match
+        // A text miss names the text. Swallowed, it read as "needs a handle or
+        // a text match", as if no label had been sent at all. A nested target
+        // still gets its turn first.
+        if let text = payload["text"]?.stringValue, !text.isEmpty {
+            do {
+                return try accessibility.element(matchingText: text)
+            } catch {
+                guard payload["target"]?.objectValue != nil else { throw error }
+            }
         }
         if let target = payload["target"]?.objectValue {
             return try resolve(payload: target)
