@@ -1,4 +1,6 @@
 import { useSyncExternalStore } from "react";
+import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
+import { useAppStore } from "../../state/appStore";
 import type { OpenProjectBinding } from "../../../shared/types";
 import {
   isWorkLivePreviewEnabled,
@@ -88,7 +90,15 @@ export function openAppleMiniPlayer(target: AppleMiniPlayerTarget): void {
   // over chat" is the user changing their mind, not a request to be ignored.
   dismissed.delete(target.deviceUdid);
   setWorkLivePreviewEnabledForChat(target.chatSessionId, "ios", true);
-  current = target;
+  // Freeze the machine that owns the device. A null pin means "the machine
+  // this window is bound to", which is only right until the window switches
+  // machines: after that the player asked the NEW machine for a device it
+  // does not have, and floated a black box (2026-09-23, Studio device shown
+  // while the window was on a MacBook project).
+  current = {
+    ...target,
+    runtimePin: effectiveRuntimeBinding(target.runtimePin, useAppStore.getState().projectBinding),
+  };
   emit();
 }
 

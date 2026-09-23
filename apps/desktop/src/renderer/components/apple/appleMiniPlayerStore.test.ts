@@ -32,6 +32,7 @@ import {
   resetChatCompanionUiStateCacheForTests,
   setWorkLivePreviewEnabledForChat,
 } from "../chat/chatCompanionUiState";
+import { useAppStore } from "../../state/appStore";
 
 const LANE = "lane-1";
 const UDID = "device-1";
@@ -329,3 +330,55 @@ describe("the lane device cache", () => {
     expect(getAppleMiniPlayerTarget()).toMatchObject({ family: "ipad", deviceName: "iPad Pro" });
   });
 });
+
+describe("openAppleMiniPlayer machine binding", () => {
+  it("regression: keeps the device's machine after the window switches machines", () => {
+    // A Studio device floated with runtimePin null, meaning "the bound
+    // machine". The window then switched to a MacBook project, the null pin
+    // started naming the MacBook, and the player floated a black box.
+    const studio = { kind: "local", key: "local:/studio/ADE", rootPath: "/studio/ADE", displayName: "ADE" } as const;
+    const macbook = {
+      kind: "remote",
+      key: "remote:macbook:project",
+      targetId: "macbook",
+      runtimeName: "MacBook Pro",
+      transport: "paired",
+      projectId: "project",
+      rootPath: "/Users/arul/ADE",
+      displayName: "ADE",
+    } as const;
+    const previous = useAppStore.getState().projectBinding;
+    useAppStore.setState({ projectBinding: studio });
+    try {
+      openAppleMiniPlayer({
+        laneId: LANE,
+        chatSessionId: null,
+        deviceUdid: UDID,
+        deviceName: "ADE Repro",
+        deviceRuntime: "iOS 26.3",
+        family: "iphone",
+        runtimePin: null,
+      });
+      useAppStore.setState({ projectBinding: macbook });
+
+      expect(getAppleMiniPlayerTarget()?.runtimePin).toEqual(studio);
+    } finally {
+      useAppStore.setState({ projectBinding: previous });
+    }
+  });
+
+  it("keeps an explicit pin as given", () => {
+    const pin = { kind: "local", key: "local:/x", rootPath: "/x", displayName: "X" } as const;
+    openAppleMiniPlayer({
+      laneId: LANE,
+      chatSessionId: null,
+      deviceUdid: UDID,
+      deviceName: "iPhone",
+      deviceRuntime: null,
+      family: "iphone",
+      runtimePin: pin,
+    });
+    expect(getAppleMiniPlayerTarget()?.runtimePin).toBe(pin);
+  });
+});
+
