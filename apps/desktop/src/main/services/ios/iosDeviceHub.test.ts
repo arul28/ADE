@@ -135,6 +135,7 @@ function createHarness(options: {
   appSessionOwner?: string | null;
   /** The device the app session runs on, when a test sets an app owner. */
   appSessionDeviceUdid?: string | null;
+  resetHelperDevice?: IosDeviceHubDeps["resetHelperDevice"];
 } = {}): Harness {
   const runs: RecordedRun[] = [];
   /** One entry per spawned log stream, so a test can see what it filters on. */
@@ -163,6 +164,7 @@ function createHarness(options: {
   const catalog: IosSimulatorDevice[] = [device, ...(options.otherDevices ?? [])];
 
   const deps: IosDeviceHubDeps = {
+    ...(options.resetHelperDevice ? { resetHelperDevice: options.resetHelperDevice } : {}),
     getAppSessionOwner: () => appSessionOwner,
     getAppSessionDeviceUdid: () => options.appSessionDeviceUdid ?? null,
     run: async (file, args, runOptions) => {
@@ -276,6 +278,32 @@ describe("iosDeviceHub device sessions", () => {
     });
     expect(harness.openSimulatorApp).toHaveBeenCalledTimes(1);
     expect(harness.events[0]).toEqual({ type: "device-session-started", deviceSession: session });
+  });
+
+  it("resets the helper's session for a device it boots and before it shuts one down, never for one it adopts", async () => {
+    // A helper session is bound to the boot it was built against (live bug,
+    // 2026-09-23: taps answered ok and never landed after a power cycle).
+    // Each reset records how many simctl calls had run when it was sent, so
+    // the assertion below pins it between boot/bootstatus and shutdown.
+    const resetsAfterRun: string[] = [];
+    const harness: Harness = createHarness({
+      resetHelperDevice: async (udid) => { resetsAfterRun.push(`${harness.runs.length}:${udid}`); },
+    });
+    await harness.hub.openDevice({ chatSessionId: "chat-a" });
+    await harness.hub.closeDevice({ chatSessionId: "chat-a" });
+
+    expect(harness.runs.map((run) => run.args[1])).toEqual(["boot", "bootstatus", "shutdown"]);
+    // After boot + bootstatus (2 runs), and before shutdown (still 2 runs).
+    expect(resetsAfterRun).toEqual([`2:${UDID}`, `2:${UDID}`]);
+
+    const adoptedResets: string[] = [];
+    const adopted = createHarness({
+      device: { state: "Booted" },
+      resetHelperDevice: async (udid) => { adoptedResets.push(udid); },
+    });
+    await adopted.hub.openDevice({ chatSessionId: "chat-a" });
+    await adopted.hub.closeDevice({ chatSessionId: "chat-a" });
+    expect(adoptedResets).toEqual([]);
   });
 
   it("adopts a device that is already booted", async () => {

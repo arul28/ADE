@@ -112,6 +112,12 @@ export type IosDeviceHubDeps = {
    */
   getAppSessionDeviceUdid: () => string | null;
   emit: (payload: IosSimulatorEventPayload) => void;
+  /**
+   * Drop the simulator helper's session for a device around a power change.
+   * Best effort and never throws. See `resetHelperDevice` in
+   * `iosSimulatorService.ts` for why a session cannot outlive a boot.
+   */
+  resetHelperDevice?: (deviceUdid: string) => Promise<void>;
   logger: {
     info: (event: string, data?: Record<string, unknown>) => void;
     debug: (event: string, data?: Record<string, unknown>) => void;
@@ -341,6 +347,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
       shouldShutdown = false;
     }
     if (shouldShutdown) {
+      await deps.resetHelperDevice?.(previous.deviceUdid);
       await deps.run("xcrun", ["simctl", "shutdown", previous.deviceUdid], { timeoutMs: 60_000 })
         .then(() => {
           shutdown = true;
@@ -385,6 +392,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
           await deps.run("xcrun", ["simctl", "boot", device.udid], { timeoutMs: 120_000 });
           await deps.run("xcrun", ["simctl", "bootstatus", device.udid, "-b"], { timeoutMs: 120_000 })
             .catch(() => undefined);
+          await deps.resetHelperDevice?.(device.udid);
         }
         if (args.openWindow !== false) deps.openSimulatorApp();
         const previous = deviceSession;

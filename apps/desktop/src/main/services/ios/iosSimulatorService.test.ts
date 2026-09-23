@@ -132,6 +132,8 @@ function writeMinimalXcodeProject(
  */
 function fakeSimHelper(overrides: {
   onSend?: (command: Record<string, unknown>) => Record<string, unknown> | Promise<Record<string, unknown>>;
+  /** The live helper's pid, read on every call so a test can "restart" it. */
+  pid?: () => number | null;
 } = {}): { client: SimHelperClient; sent: Array<Record<string, unknown>>; emit: (event: { type: string } & Record<string, unknown>) => void } {
   const sent: Array<Record<string, unknown>> = [];
   const listeners = new Set<(event: { type: string } & Record<string, unknown>) => void>();
@@ -163,7 +165,7 @@ function fakeSimHelper(overrides: {
       return () => { listeners.delete(listener); };
     },
     isReady: () => true,
-    pid: () => 4321,
+    pid: overrides.pid ?? (() => 4321),
     protocolVersion: () => 1,
     exists: () => true,
     dispose: () => { listeners.clear(); },
@@ -2070,6 +2072,7 @@ describe("iosSimulatorService screenshots and platform guards", () => {
         pinActiveOrLatest: async () => null,
         onTurnEnded: async () => {},
         totalBytes: async () => 0,
+        helperExited: () => [],
         dispose: () => {},
       },
     });
@@ -2128,6 +2131,7 @@ describe("iosSimulatorService screenshots and platform guards", () => {
         pinActiveOrLatest: async () => null,
         onTurnEnded: async () => {},
         totalBytes: async () => 0,
+        helperExited: () => [],
         dispose: () => {},
       },
     });
@@ -2224,6 +2228,7 @@ describe("iosSimulatorService screenshots and platform guards", () => {
         pinActiveOrLatest: async () => null,
         onTurnEnded: async () => {},
         totalBytes: async () => 0,
+        helperExited: () => [],
         dispose: () => {},
       },
     });
@@ -2346,6 +2351,7 @@ describe("iosSimulatorService screenshots and platform guards", () => {
         pinActiveOrLatest: async () => null,
         onTurnEnded: async () => {},
         totalBytes: async () => 0,
+        helperExited: () => [],
         dispose: () => {},
       },
     });
@@ -2595,7 +2601,7 @@ describe("iosSimulatorService boot contract", () => {
    * appends the clone as Shutdown, and `simctl boot` flips a device to Booted,
    * so `resolveDevice` after either sees what the real `simctl` would report.
    */
-  function bootAwareRun(options: { bootError?: string | null; onShutdown?: (udid: string) => void } = {}) {
+  function bootAwareRun(options: { bootError?: string | null; onShutdown?: (udid: string) => void; onBoot?: (udid: string) => void } = {}) {
     const devices = [
       { name: "iPhone 17 Pro", udid: "device-1", state: "Booted", isAvailable: true, deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro" },
       { name: "iPhone 17", udid: "device-2", state: "Shutdown", isAvailable: true, deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-17" },
@@ -2613,27 +2619,42 @@ describe("iosSimulatorService boot contract", () => {
       }
       if (command === "xcrun" && commandArgs[0] === "simctl" && commandArgs[1] === "shutdown") {
         options.onShutdown?.(commandArgs[2] ?? "");
+        const target = devices.find((device) => device.udid === commandArgs[2]);
+        if (target) target.state = "Shutdown";
       }
       if (command === "xcrun" && commandArgs[0] === "simctl" && commandArgs[1] === "boot") {
         if (options.bootError) throw new Error(options.bootError);
         const target = devices.find((device) => device.udid === commandArgs[2]);
+        // What the real `simctl` answers for a device that is already up. A
+        // caller holding a stale "Shutdown" read reaches this.
+        if (target?.state === "Booted") throw new Error("Unable to boot device in current state: Booted");
         if (target) target.state = "Booted";
+        options.onBoot?.(commandArgs[2] ?? "");
       }
       return { stdout: "", stderr: "" };
     });
     return { run, calls };
   }
 
-  function setup(options: { bootError?: string | null; captureError?: string | null; onShutdown?: (udid: string) => void } = {}) {
+  function setup(options: {
+    bootError?: string | null;
+    captureError?: string | null;
+    onShutdown?: (udid: string) => void;
+    onBoot?: (udid: string) => void;
+    helperPid?: () => number | null;
+  } = {}) {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     const { run, calls } = bootAwareRun(options);
     const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
-    const helper = fakeSimHelper(options.captureError ? {
-      onSend: (command) => {
-        if (command.type === "capture-start") throw new Error(options.captureError ?? "capture failed");
-        return {};
-      },
-    } : {});
+    const helper = fakeSimHelper({
+      ...(options.captureError ? {
+        onSend: (command: Record<string, unknown>) => {
+          if (command.type === "capture-start") throw new Error(options.captureError ?? "capture failed");
+          return {};
+        },
+      } : {}),
+      ...(options.helperPid ? { pid: options.helperPid } : {}),
+    });
     const restoreHelper = __testSetIosSimulatorHelperFactory(() => helper.client);
     const events: IosSimulatorEventPayload[] = [];
     const service = createIosSimulatorService({
@@ -2789,6 +2810,114 @@ describe("iosSimulatorService boot contract", () => {
 
       expect(calls).toContain("xcrun simctl shutdown device-2");
       expect(sentAtShutdown).toContain("record-stop device-2");
+    } finally {
+      dispose();
+    }
+  });
+
+  it("regression: deviceStop resets the helper's session for the device before it powers it off", async () => {
+    // 2026-09-23, live on a MacBook: a lane simulator was powered off and
+    // booted again under a helper that stayed up, and every tap afterwards
+    // answered ok in ~11 ms while the screen never changed. The helper's HID
+    // client was bound to the old boot.
+    let sentAtShutdown: string[] = [];
+    const { service, calls, helper, dispose } = setup({
+      onShutdown: () => { sentAtShutdown = helper.sent.map((command) => `${String(command.type)} ${String(command.udid ?? "")}`); },
+    });
+    try {
+      await service.deviceStart({ laneId: "lane-a", udid: "device-2" });
+
+      await service.deviceStop({ laneId: "lane-a" });
+
+      expect(calls).toContain("xcrun simctl shutdown device-2");
+      expect(sentAtShutdown).toContain("device-reset device-2");
+    } finally {
+      dispose();
+    }
+  });
+
+  it("regression: booting a device that was off resets its helper session; an already-booted device keeps it", async () => {
+    let sentAtBoot: string[] | null = null;
+    const { service, helper, dispose } = setup({
+      onBoot: (udid) => {
+        if (udid === "device-2") sentAtBoot = helper.sent.map((command) => `${String(command.type)} ${String(command.udid ?? "")}`);
+      },
+    });
+    const resetsFor = (udid: string) => helper.sent.filter((command) => command.type === "device-reset" && command.udid === udid).length;
+    try {
+      // The helper is up and driving device-2 — the state the live bug began in.
+      await service.deviceStart({ laneId: "lane-a", udid: "device-2" });
+      await service.deviceStop({ laneId: "lane-a" });
+      const resetsAfterStop = resetsFor("device-2");
+
+      // The power cycle: device-2 boots again.
+      await service.deviceStart({ laneId: "lane-a" });
+
+      // One more reset, sent AFTER the boot (not before it) and before the
+      // new capture, so the capture and every later tap get a fresh session.
+      expect(resetsFor("device-2")).toBe(resetsAfterStop + 1);
+      expect(sentAtBoot).not.toBeNull();
+      const lastReset = helper.sent.map((command) => `${String(command.type)} ${String(command.udid ?? "")}`).lastIndexOf("device-reset device-2");
+      expect(lastReset).toBeGreaterThanOrEqual(sentAtBoot!.length);
+      const lastCapture = helper.sent.map((command) => `${String(command.type)} ${String(command.udid ?? "")}`).lastIndexOf("capture-start device-2");
+      expect(lastCapture).toBeGreaterThan(lastReset);
+
+      // device-1 was never off: its session is left alone.
+      await service.startStream({ laneId: "lane-b", deviceUdid: "device-1" });
+      expect(resetsFor("device-1")).toBe(0);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("regression: a helper restart stops every lane's stream and the next startStream opens a fresh capture", async () => {
+    // 2026-09-23, live: after the helper restarted, getStreamStatus still said
+    // running with the dead pid and port, and startStream reused it, so every
+    // viewer got a dead port until someone called stopStream.
+    const { service, helper, events, dispose } = setup();
+    const captureStarts = () => helper.sent.filter((command) => command.type === "capture-start").length;
+    try {
+      await service.startStream({ laneId: "lane-a", deviceUdid: "device-1", localViewer: true });
+      expect(service.getStreamStatus({ laneId: "lane-a" })).toMatchObject({ running: true, helperPid: 4321 });
+      expect(service.hasLocalViewer("lane-a")).toBe(true);
+      expect(captureStarts()).toBe(1);
+
+      helper.emit({ type: "helper-exited", pid: 4321, code: null, signal: "SIGKILL" });
+
+      const after = service.getStreamStatus({ laneId: "lane-a" });
+      expect(after.running).toBe(false);
+      expect(after.helperPid).toBeNull();
+      expect(service.hasLocalViewer("lane-a")).toBe(false);
+      expect(events).toContainEqual(expect.objectContaining({
+        type: "stream-stopped",
+        status: expect.objectContaining({ deviceUdid: "device-1", running: false }),
+      }));
+
+      const restarted = await service.startStream({ laneId: "lane-a", deviceUdid: "device-1" });
+      expect(restarted.running).toBe(true);
+      expect(captureStarts()).toBe(2);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("startStream will not reuse a running status stamped by a helper that is no longer the live one", async () => {
+    // The second guard: even if no exit event reached the service, a status
+    // whose helperPid is not the live helper's points at a dead port.
+    let livePid = 4321;
+    const { service, helper, dispose } = setup({ helperPid: () => livePid });
+    const captureStarts = () => helper.sent.filter((command) => command.type === "capture-start").length;
+    try {
+      await service.startStream({ laneId: "lane-a", deviceUdid: "device-1" });
+      // Same helper: the fast path is still taken.
+      await service.startStream({ laneId: "lane-a", deviceUdid: "device-1" });
+      expect(captureStarts()).toBe(1);
+
+      livePid = 9876;
+      const status = await service.startStream({ laneId: "lane-a", deviceUdid: "device-1" });
+
+      expect(captureStarts()).toBe(2);
+      expect(status.helperPid).toBe(9876);
     } finally {
       dispose();
     }

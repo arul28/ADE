@@ -553,6 +553,31 @@ describe("simRecordingService against the helper's per-device state", () => {
     expect(helper.recording.has(udid)).toBe(false);
   });
 
+  it("regression: a helper restart drops the recordings it held, and the next agent input starts a new one", async () => {
+    // 2026-09-23, live: a restarted helper holds none of the old helper's
+    // recordings. Kept in memory, the lane's entry looked active forever and
+    // swallowed the next auto-record start.
+    const started = await service.start({ laneId: "lane-a", udid, chatSessionId: "chat-1" });
+    // The restart: the new helper process has no recording on the device.
+    helper.recording.clear();
+
+    const ended = service.helperExited();
+
+    expect(ended.map((record) => record.id)).toEqual([started.id]);
+    expect(service.active({ laneId: "lane-a" })).toBeNull();
+    const sidecar = JSON.parse(
+      fs.readFileSync(path.join(appleRecordingsDirectory(root, "lane-a"), `${started.id}.json`), "utf8"),
+    ) as { endedAt: string | null; proof: boolean };
+    expect(sidecar.endedAt).not.toBeNull();
+    // Not filed: the dead helper never finished the movie.
+    expect(sidecar.proof).toBe(false);
+    expect(filed).toEqual([]);
+
+    await service.noteInput({ laneId: "lane-a", udid, chatSessionId: "chat-1", kind: "tap", x: 1, y: 2, source: "agent" });
+    expect(helper.typed("record-start")).toHaveLength(2);
+    expect(service.active({ laneId: "lane-a" })?.id).not.toBe(started.id);
+  });
+
   it("marks a recording ended when the service is disposed under it", async () => {
     const started = await service.start({ laneId: "lane-a", udid, chatSessionId: null });
 

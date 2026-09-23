@@ -7,6 +7,7 @@ import {
   createSimHelperClient,
   resolveSimHelperExecutablePath,
   simHelperExecutableCandidates,
+  SIM_HELPER_EXITED_EVENT,
   SimHelperError,
 } from "./simHelperClient";
 
@@ -172,6 +173,46 @@ describe("simHelperClient protocol", () => {
     } finally {
       client.dispose();
     }
+  });
+
+  it("announces an unexpected exit with the dead pid, and stays quiet on dispose", async () => {
+    // The service keys stream state on the helper's pid. Without this event a
+    // restarted helper left the lane saying `running` on a dead port.
+    const child = fakeHelperProcess();
+    const client = createSimHelperClient({
+      binaryPath: __filename,
+      logger: noopLogger,
+      platform: "darwin",
+      restartDelayMs: 10_000,
+      spawnHelper: () => child,
+    });
+    const seen: Array<Record<string, unknown>> = [];
+    client.onEvent((event) => seen.push(event));
+
+    try {
+      void client.send({ type: "list-devices" }).catch(() => {});
+      await vi.waitFor(() => expect(child.lines()).toHaveLength(1));
+      child.emit("exit", null, "SIGKILL");
+
+      expect(seen).toContainEqual({ type: SIM_HELPER_EXITED_EVENT, pid: 5150, code: null, signal: "SIGKILL" });
+    } finally {
+      client.dispose();
+    }
+
+    const disposedChild = fakeHelperProcess();
+    const disposedClient = createSimHelperClient({
+      binaryPath: __filename,
+      logger: noopLogger,
+      platform: "darwin",
+      spawnHelper: () => disposedChild,
+    });
+    const disposedSeen: string[] = [];
+    disposedClient.onEvent((event) => disposedSeen.push(event.type));
+    void disposedClient.send({ type: "list-devices" }).catch(() => {});
+    await vi.waitFor(() => expect(disposedChild.lines()).toHaveLength(1));
+    disposedClient.dispose();
+    disposedChild.emit("exit", 0, null);
+    expect(disposedSeen).not.toContain(SIM_HELPER_EXITED_EVENT);
   });
 
   it("refuses off macOS instead of spawning anything", async () => {

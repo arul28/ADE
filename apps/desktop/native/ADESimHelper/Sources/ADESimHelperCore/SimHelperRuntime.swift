@@ -11,9 +11,16 @@ import Foundation
 public actor SimHelperRuntime {
     private var sessions: [String: DeviceSession] = [:]
     private let emit: @Sendable (SimHelperEvent) -> Void
+    /// How a new session learns its device's geometry. Injected so a test can
+    /// build sessions without CoreSimulator; production always asks it.
+    private let metricsLookup: @Sendable (String) -> DeviceMetrics?
 
-    public init(emit: @escaping @Sendable (SimHelperEvent) -> Void) {
+    public init(
+        emit: @escaping @Sendable (SimHelperEvent) -> Void,
+        metricsLookup: @escaping @Sendable (String) -> DeviceMetrics? = { SimDeviceLookup.metrics(udid: $0) }
+    ) {
         self.emit = emit
+        self.metricsLookup = metricsLookup
     }
 
     /// Handle one line. Returns false when the helper should exit.
@@ -42,23 +49,64 @@ public actor SimHelperRuntime {
     }
 
     public func shutdown() async {
-        for session in sessions.values {
-            // Finish the MP4 before dropping the device: an abandoned
-            // AVAssetWriter leaves an unplayable file, which is worse than no
-            // file because ADE has already told the user a recording exists.
-            if await session.isRecording {
-                if let finished = try? await session.stopRecording() {
-                    emit(.recordStopped(
-                        udid: session.udid,
-                        path: finished.path,
-                        durationMs: finished.durationMs,
-                        bytes: finished.bytes
-                    ))
-                }
-            }
-            await session.stopCapture()
-        }
+        let all = Array(sessions.values)
         sessions.removeAll()
+        for session in all {
+            await tearDown(session, announceCapture: false)
+        }
+    }
+
+    /// Drop everything held for one device, so the next command builds a
+    /// fresh session. Returns false when there was nothing to drop.
+    ///
+    /// Why this exists: a session's HID client (`HIDInjector.setup`, done once
+    /// per session) and its capture engine are bound to the boot they were
+    /// built against. Proven live on 2026-09-23: a lane simulator was powered
+    /// off and booted again under a helper that stayed up, and every tap after
+    /// the reboot answered `ok` in ~11 ms while the screen never changed.
+    /// Killing only the helper made the same taps land at once. ADE sends
+    /// `device-reset` before it powers a device off and after it boots one,
+    /// which is the same cure without taking every other device's stream down.
+    public func resetDevice(_ udid: String) async -> Bool {
+        // Removed before the teardown awaits, so anything that reaches the
+        // actor in between gets a new session rather than the dying one.
+        guard let session = sessions.removeValue(forKey: udid) else { return false }
+        await tearDown(session, announceCapture: true)
+        return true
+    }
+
+    /// Whether a session exists for this device. For tests and diagnostics.
+    public func hasSession(for udid: String) -> Bool {
+        sessions[udid] != nil
+    }
+
+    /// Finish a session's recording and stop its capture.
+    ///
+    /// `announceCapture` is false only on process shutdown, where the pipe is
+    /// closing and ADE's own supervisor is what reports the stream gone.
+    private func tearDown(_ session: DeviceSession, announceCapture: Bool) async {
+        // Finish the MP4 before dropping the device: an abandoned
+        // AVAssetWriter leaves an unplayable file, which is worse than no
+        // file because ADE has already told the user a recording exists.
+        if await session.isRecording {
+            if let finished = try? await session.stopRecording() {
+                emit(.recordStopped(
+                    udid: session.udid,
+                    path: finished.path,
+                    durationMs: finished.durationMs,
+                    bytes: finished.bytes
+                ))
+            }
+        }
+        let wasCapturing = await session.isCapturing
+        await session.stopCapture()
+        // Said out loud so a lane still streaming this device stops showing a
+        // live view whose socket just closed.
+        if announceCapture, wasCapturing {
+            emit(.captureStopped(udid: session.udid, reason: "device-reset"))
+        }
+        // The HID client goes with the session: nothing else holds the
+        // `DeviceSession`, and its `HIDInjector` is only reachable through it.
     }
 
     // MARK: - private
@@ -70,7 +118,7 @@ public actor SimHelperRuntime {
     /// caller that only wants to tap should not have to stream.
     private func session(for udid: String) throws -> DeviceSession {
         if let existing = sessions[udid] { return existing }
-        guard let metrics = SimDeviceLookup.metrics(udid: udid) else {
+        guard let metrics = metricsLookup(udid) else {
             throw RuntimeError.unknownDevice(udid)
         }
         let session = DeviceSession(udid: udid, metrics: metrics)
@@ -206,6 +254,13 @@ public actor SimHelperRuntime {
                     await sessions[udid]?.overlayText(text)
                 }
                 emit(.ok(id: id, payload: ["shown": !secure]))
+
+            case let .deviceReset(_, udid):
+                // An absent device is a success, not an error: ADE sends this
+                // best effort around every power change, usually for a device
+                // this helper has never driven.
+                let reset = await resetDevice(udid)
+                emit(.ok(id: id, payload: ["reset": reset]))
 
             case .quit:
                 // Intercepted in `handle` so the reply lands after teardown.

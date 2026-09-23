@@ -152,6 +152,16 @@ export interface SimRecordingService {
    * deletes a recording the user did not ask it to.
    */
   totalBytes(args?: { laneId?: string }): Promise<number>;
+  /**
+   * The helper process died. Every recording it was writing died with it, so
+   * the in-memory entries are dropped and their sidecars marked ended.
+   *
+   * Without this the lane kept an "active" recording no helper held: the pane
+   * showed it running forever, the next agent input noted overlays against
+   * it instead of starting a new one, and `record-stop` sent a stop to a
+   * helper that had never heard of it. Returns the recordings it ended.
+   */
+  helperExited(): SimRecording[];
   /** Stop everything and drop timers. Called on shutdown. */
   dispose(): void;
 }
@@ -1064,6 +1074,41 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
         }
       }
       return total;
+    },
+
+    helperExited() {
+      const ended: SimRecording[] = [];
+      for (const entry of active.values()) {
+        if (entry.capTimer) clearTimeout(entry.capTimer);
+        entry.capTimer = null;
+        // Not filed as proof: the helper died before it could finish the
+        // MP4, so the file is very likely unplayable. The sidecar still gets
+        // an end time and whatever landed on disk, so the drawer lists what
+        // happened rather than a recording that runs forever.
+        let bytes: number | null = null;
+        try {
+          bytes = fs.statSync(entry.record.path).size;
+        } catch {
+          bytes = null;
+        }
+        const record: SimRecording = {
+          ...entry.record,
+          endedAt: new Date().toISOString(),
+          durationMs: Math.max(0, Date.now() - Date.parse(entry.record.startedAt)) || null,
+          bytes,
+        };
+        try {
+          writeSidecar(record);
+        } catch (error) {
+          warn("apple.recording.helper_exit_mark_failed", { id: entry.record.id, error: String(error) });
+        }
+        ended.push(record);
+      }
+      if (ended.length > 0) {
+        warn("apple.recording.helper_exited", { ended: ended.map((record) => record.id) });
+      }
+      active.clear();
+      return ended;
     },
 
     dispose() {
