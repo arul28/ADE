@@ -16,7 +16,7 @@ keep open, and no backend to choose. If you find advice about `idb`, window
 capture, `live-start` or a `--backend` flag, it is describing a version of this
 feature that no longer exists.
 
-## Three rules before your first command
+## Four rules before your first command
 
 - **Always call `"$ADE_CLI_PATH"`, never a bare `ade`.** A bare `ade` can be
   an older install or another ADE's CLI. That shows up as "Unknown command
@@ -29,6 +29,14 @@ feature that no longer exists.
   `recordVideo`.** `apple screenshot` and `apple record-start` /
   `record-stop` file proof to the lane automatically. See below for why the
   owner matters.
+- **Check each step before you report it.** A tap, swipe, button or type
+  that returns `ok` only means ADE sent the input. It does not mean the app
+  did what you wanted. After each step that matters, confirm it:
+  `apple foreground` (which app is in front), `apple assert-visible` or
+  `apple wait-for-element` (what is on screen), or `apple snapshot`. Report
+  only what you confirmed. If a step failed, say which step, and do not
+  describe the result you meant to get. Before `record-stop`, confirm the
+  final state, so the video ends on it.
 
 ## Start here: ask what you can do
 

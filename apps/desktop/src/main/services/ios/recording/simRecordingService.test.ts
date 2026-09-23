@@ -195,6 +195,31 @@ describe("simRecordingService", () => {
     expect(transport.typed("record-stop")).toHaveLength(1);
   });
 
+  it("tells listeners when a recording starts, turns manual, and stops", async () => {
+    // The owner's 2026-09-23 report: an agent started a recording from the
+    // CLI after the pane opened, and the pane's recording bar never showed.
+    service.dispose();
+    const changes: Array<{ laneId: string; phase: string; mode: string; endedAt: string | null }> = [];
+    service = build({
+      onRecordingChange: ({ laneId, phase, recording }) => {
+        changes.push({ laneId, phase, mode: recording.mode, endedAt: recording.endedAt ?? null });
+      },
+    });
+    await service.noteInput({ laneId: lane, udid, chatSessionId: "chat-1", kind: "tap", x: 1, y: 2 });
+    await service.start({ laneId: lane, udid, chatSessionId: "chat-1" });
+    await service.stop({ laneId: lane, chatSessionId: "chat-1", keep: true });
+    await Promise.resolve();
+
+    expect(changes.map((change) => `${change.phase}:${change.mode}`)).toEqual([
+      "started:auto",
+      "updated:manual",
+      "stopped:manual",
+    ]);
+    expect(changes.every((change) => change.laneId === lane)).toBe(true);
+    // The stop is told with the finished row, not the one still recording.
+    expect(changes[2]!.endedAt).not.toBeNull();
+  });
+
   it("stops a chat's manual recording at the ten-minute cap, files it, and says why", async () => {
     vi.useFakeTimers();
     const started = await service.start({ laneId: lane, udid, chatSessionId: "chat-1" });

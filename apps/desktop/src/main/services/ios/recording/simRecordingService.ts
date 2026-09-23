@@ -402,6 +402,8 @@ export type SimRecordingServiceDeps = {
   /** Device name for the proof caption. Falls back to the udid's first eight. */
   resolveDeviceName?: (udid: string) => string | null | undefined;
   fps?: number;
+  /** Told when a lane's recording starts, changes mode, or stops. */
+  onRecordingChange?: (change: { laneId: string; phase: "started" | "updated" | "stopped"; recording: SimRecording }) => void;
   logger?: {
     warn?: (event: string, data?: Record<string, unknown>) => void;
     info?: (event: string, data?: Record<string, unknown>) => void;
@@ -479,6 +481,14 @@ type ActiveRecording = {
 export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): SimRecordingService {
   const active = new Map<string, ActiveRecording>();
   let disposed = false;
+
+  const notify = (laneId: string, phase: "started" | "updated" | "stopped", recording: SimRecording): void => {
+    try {
+      deps.onRecordingChange?.({ laneId, phase, recording });
+    } catch {
+      // A listener that throws must not take a recording with it.
+    }
+  };
 
   const warn = (event: string, data?: Record<string, unknown>): void => {
     try {
@@ -662,6 +672,7 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
       capTimer: maxDurationMs === null ? null : armCap(args.laneId, maxDurationMs),
       stopping: null,
     });
+    notify(args.laneId, "started", record);
     return record;
   };
 
@@ -727,6 +738,12 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
       writeSidecar(filed);
       return filed;
     })();
+    // Told once the file is final (or discarded), so a pane that re-reads the
+    // list sees the finished row rather than the one still recording.
+    void run.then(
+      (stopped) => notify(laneId, "stopped", stopped ?? entry.record),
+      () => notify(laneId, "stopped", entry.record),
+    );
 
     entry.stopping = run;
     return run;
@@ -1022,6 +1039,7 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
           maxDurationMs,
         };
         writeSidecar(existing.record);
+        notify(args.laneId, "updated", existing.record);
         return existing.record;
       }
       return beginRecording({

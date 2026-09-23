@@ -183,6 +183,18 @@ export function useAppleRecordings({
     };
   }, [chatSessionId, enabled, laneId, refreshNonce, runtimePinRef]);
 
+  // A recording started or stopped by anyone else (an agent's CLI call, the
+  // turn-end hook, the cap) arrives as an event. Re-read then, or the bar
+  // stays off for a recording that is running.
+  useEffect(() => {
+    if (!enabled || !laneId) return undefined;
+    // Optional: a host without the event bridge simply gets no live updates.
+    return window.ade.iosSimulator.onEvent?.((event) => {
+      if (event.type !== "apple.recording.state" || event.laneId !== laneId) return;
+      setRefreshNonce((nonce) => nonce + 1);
+    }, runtimePinRef.current) ?? undefined;
+  }, [enabled, laneId, runtimePinRef]);
+
   const run = useCallback(async (work: () => Promise<unknown>) => {
     setBusy(true);
     try {

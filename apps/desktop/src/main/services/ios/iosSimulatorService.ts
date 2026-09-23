@@ -2623,6 +2623,15 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     transport: helperTransport,
     projectRoot: args.projectRoot,
     logger: args.logger,
+    onRecordingChange: ({ laneId, phase, recording }) => {
+      emit({
+        type: "apple.recording.state",
+        laneId,
+        phase,
+        recordingId: recording.id,
+        chatSessionId: recording.chatSessionId ?? null,
+      });
+    },
     // The proof caption says "Simulator recording · ADE Repro · 0:23", and the
     // recorder only ever knows the udid. The lane registry is already the
     // place that maps one to the other.

@@ -863,7 +863,23 @@ export type IosSimulatorEventPayload =
   | { type: "device-session-started"; deviceSession: IosSimulatorDeviceSession }
   | { type: "device-session-released"; previousDeviceSession: IosSimulatorDeviceSession | null }
   | { type: "device-settings-changed"; settings: IosSimulatorDeviceSettings }
-  | AppleDeviceStateEvent;
+  | AppleDeviceStateEvent
+  | AppleRecordingStateEvent;
+
+/**
+ * A lane's recording started, changed, or stopped, whoever asked for it.
+ *
+ * The pane's recording bar reads the recording list once on mount. Without
+ * this event a recording an agent starts from the CLI after the pane opened
+ * never showed (the owner's 2026-09-23 report).
+ */
+export type AppleRecordingStateEvent = {
+  type: "apple.recording.state";
+  laneId: string;
+  phase: "started" | "updated" | "stopped";
+  recordingId: string;
+  chatSessionId: string | null;
+};
 
 /**
  * Where `deviceStart` is in bringing a lane's device up.
