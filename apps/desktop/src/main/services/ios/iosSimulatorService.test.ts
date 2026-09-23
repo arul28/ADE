@@ -1030,6 +1030,50 @@ describe("iosSimulatorService Simulator.app launch visibility", () => {
     }
   });
 
+  it("lets a second viewer join a running stream without moving it", async () => {
+    // The owner's 2026-09-23 report: the phone joined the MacBook's own view,
+    // the service restarted the capture for the phone's cap and fps, and the
+    // MacBook's reader froze on the old address while taps still landed.
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const runMock = vi.fn(async (command: string, commandArgs: string[]) => {
+      if (command === "xcrun" && commandArgs.join(" ") === "simctl list devices available --json") {
+        return { stdout: simulatorDevicesJson, stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    });
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run: runMock, commandExists: () => true });
+    const helper = fakeSimHelper();
+    const restoreHelper = __testSetIosSimulatorHelperFactory(() => helper.client);
+    const service = createIosSimulatorService({ projectRoot: os.tmpdir(), logger: noopLogger });
+
+    try {
+      // The Mac's own view: 30 fps, no cap.
+      const local = await service.startStream({ deviceUdid: "device-1", fps: 30, bitrateKbps: null, localViewer: true });
+      const sentBefore = helper.sent.length;
+
+      // The phone, through the relay: default fps, a cap.
+      const remote = await service.startStream({ deviceUdid: "device-1", bitrateKbps: 2500 });
+      const sentForRemote = helper.sent.slice(sentBefore);
+      expect(sentForRemote.map((command) => command.type)).toEqual(["capture-start"]);
+      expect(sentForRemote[0]).toMatchObject({ udid: "device-1", bitrateKbps: 2500 });
+      expect(remote.transport?.url).toBe(local.transport?.url);
+      expect(remote.transport?.token).toBe(local.transport?.token);
+      expect(remote.bitrateKbps).toBe(2500);
+
+      // The same cap again, a different fps, or no cap: nothing to send.
+      const sentAfterCap = helper.sent.length;
+      await service.startStream({ deviceUdid: "device-1", bitrateKbps: 2500 });
+      await service.startStream({ deviceUdid: "device-1", fps: 30, bitrateKbps: null, localViewer: true });
+      expect(helper.sent.length).toBe(sentAfterCap);
+      expect(service.getStreamStatus({}).bitrateKbps).toBe(2500);
+    } finally {
+      service.dispose();
+      restoreHelper();
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
   it("keeps one lane's stream out of another lane's", async () => {
     // Sessions and streams are per-lane now. A project-wide stream meant
     // `stream-stop` on one lane killed the other lane's picture.

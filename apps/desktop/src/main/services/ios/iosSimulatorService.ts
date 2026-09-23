@@ -5194,20 +5194,53 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     if (
       runtime.streamStatus.running
       && runtime.streamStatus.deviceUdid === device.udid
-      && runtime.streamStatus.targetFps === requestedFps
-      // A running capture is reusable only if it already honors the requested
-      // cap. `null` means the caller asked for no cap, which must not downgrade
-      // a capped stream a remote viewer already started; a non-null cap that
-      // differs restarts so the encoder actually picks it up.
-      && (bitrateKbps == null || (runtime.streamStatus.bitrateKbps ?? null) === bitrateKbps)
       // Only a capture the LIVE helper owns. A status stamped by a helper that
       // has since died points at a dead port; the exit hook normally clears it
       // first, and this is the guard for any path that did not.
       && runtime.streamStatus.helperPid === (helperClient?.pid() ?? null)
     ) {
-      // Already running for this device: a renderer joining an existing capture
-      // still counts as a local viewer.
+      // Already running for this device: join it. Never restart a shared
+      // capture for a viewer's settings. A restart hands out a new address,
+      // and every reader on the old one (the Mac's own view, another
+      // machine's) freezes on its last frame while taps still land: the
+      // owner's 2026-09-23 report of a phone that froze the MacBook's view.
+      //
+      // fps is not a reason either: the helper takes the framebuffer's own
+      // rate, and the desktop asks for 30 where the relay asks for the default.
+      //
+      // A new cap goes to the live encoder instead. `capture-start` on a
+      // running device keeps its server, its address and its readers; a helper
+      // that knows caps rebuilds only the encoder, and an older one ignores
+      // the cap. `null` asks for no cap, which must not lift a cap a remote
+      // viewer set, so it never gets here.
       if (streamArgs.localViewer) markLocalViewer(runtime.laneId);
+      if (bitrateKbps != null && (runtime.streamStatus.bitrateKbps ?? null) !== bitrateKbps) {
+        const payload = await helper().send({
+          type: "capture-start",
+          udid: device.udid,
+          fps: requestedFps,
+          scale,
+          bitrateKbps,
+        });
+        const url = typeof payload.url === "string" ? payload.url : null;
+        const token = typeof payload.token === "string" ? payload.token : null;
+        const transport = runtime.streamStatus.transport;
+        if (url && token && transport && (url !== transport.url || token !== transport.token)) {
+          // The helper must answer with the address it already had. If it did
+          // not, the old readers are gone anyway: record the new address and
+          // announce it as a new stream so viewers attach to it.
+          args.logger.warn("apple.stream_cap_changed_address", { laneId: runtime.laneId, deviceUdid: device.udid });
+          runtime.streamStatus = {
+            ...runtime.streamStatus,
+            bitrateKbps,
+            streamUrl: url,
+            transport: { ...transport, url, token, port: Number(new URL(url).port) || 0 },
+          };
+          emit({ type: "stream-started", status: runtime.streamStatus });
+          return runtime.streamStatus;
+        }
+        runtime.streamStatus = { ...runtime.streamStatus, bitrateKbps };
+      }
       return runtime.streamStatus;
     }
     // A capture already running on this lane for another device has to go

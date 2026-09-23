@@ -57,7 +57,19 @@ public actor DeviceSession {
     public func startCapture(fps: Int, scale: Double, bitrateKbps: Int? = nil) async throws -> StartedCapture {
         if let server, engine != nil {
             // Idempotent: a second `capture-start` for a live device returns the
-            // endpoint it already has rather than orphaning a listener.
+            // endpoint it already has rather than orphaning a listener. Every
+            // reader stays attached: a phone that joins the Mac's own view must
+            // not end the Mac's stream (the owner's 2026-09-23 report).
+            //
+            // A new cap still applies. A remote viewer joins with a cap and the
+            // Mac's own view has none; rebuilding the encoder (not the server)
+            // applies it, and the rebuild starts with a keyframe every reader
+            // can decode. No cap means "keep what runs", so a local viewer never
+            // lifts a remote viewer's cap.
+            if let bitrateKbps, bitrateKbps != streamBitrateKbps {
+                streamBitrateKbps = bitrateKbps
+                await forceKeyframe()
+            }
             return StartedCapture(url: server.url, token: server.token, metrics: metrics)
         }
         streamBitrateKbps = bitrateKbps
