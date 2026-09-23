@@ -975,8 +975,8 @@ function parseManagedOwnerPid(command: string): number | null {
  * grace period. Windows has no POSIX signals, so it uses a `taskkill /T /F`
  * tree kill on both passes; Unix escalates SIGTERM → SIGKILL.
  */
-function terminateOrphanProcess(pid: number): Promise<boolean> {
-  return terminateProcessOrphan(pid, {
+async function terminateOrphanProcess(pid: number): Promise<boolean> {
+  const outcome = await terminateProcessOrphan(pid, {
     platform: process.platform,
     graceMs: ORPHAN_RECOVERY_TERM_GRACE_MS,
     isAlive: (target) => openCodeProcessController.isProcessAlive(target),
@@ -984,6 +984,7 @@ function terminateOrphanProcess(pid: number): Promise<boolean> {
     kill: (target, signal) => openCodeProcessController.killProcess(target, signal),
     killTree: (target) => openCodeProcessController.killProcessTree(target),
   });
+  return outcome === "exited";
 }
 
 function pruneIdleSharedEntries(

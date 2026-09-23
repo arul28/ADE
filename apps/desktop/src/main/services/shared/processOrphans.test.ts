@@ -47,7 +47,7 @@ describe("terminateOrphanProcess", () => {
       isAlive: (pid) => running.has(pid),
       kill,
       killTree,
-    })).toBe(true);
+    })).toBe("exited");
     expect(kill.mock.calls).toEqual([[5, "SIGTERM"], [5, "SIGKILL"]]);
     expect(killTree).not.toHaveBeenCalled();
   });
@@ -70,7 +70,7 @@ describe("terminateOrphanProcess", () => {
       },
       kill,
       killTree,
-    })).toBe(false);
+    })).toBe("survived");
     expect(killTree).toHaveBeenCalledTimes(2);
     expect(kill).not.toHaveBeenCalled();
     // Each pass waits only after its kill finished.
@@ -89,7 +89,7 @@ describe("terminateOrphanProcess", () => {
       kill,
       killTree: vi.fn(),
       confirm,
-    })).toBe(false);
+    })).toBe("skipped");
     expect(kill.mock.calls).toEqual([[3, "SIGTERM"]]);
     expect(confirm).toHaveBeenCalledTimes(2);
   });

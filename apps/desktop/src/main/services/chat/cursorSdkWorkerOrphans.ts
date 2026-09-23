@@ -21,6 +21,8 @@ export type CursorSdkOrphanSweepDeps = {
 export type CursorSdkOrphanSweepResult = {
   recoveredPids: number[];
   failedPids: number[];
+  /** Listed as orphans, then no longer ours by the recheck, so left alone. */
+  skippedPids: number[];
 };
 
 /** Script name of the worker bundle. Both the desktop and CLI builds use it. */
@@ -178,15 +180,23 @@ export function recoverCursorSdkWorkerOrphans(args: {
     };
     const recoveredPids: number[] = [];
     const failedPids: number[] = [];
+    const skippedPids: number[] = [];
     for (const orphan of orphans) {
-      const exited = await terminateOrphanProcess(orphan.pid, terminationDeps);
+      const outcome = await terminateOrphanProcess(orphan.pid, terminationDeps);
+      // A skipped pid is not ours any more (it exited, or the pid was reused),
+      // so it is neither a recovery nor a failure and is not logged as one.
+      if (outcome === "skipped") {
+        skippedPids.push(orphan.pid);
+        continue;
+      }
+      const exited = outcome === "exited";
       (exited ? recoveredPids : failedPids).push(orphan.pid);
       args.logger?.warn(
         exited ? "agent_chat.cursor_sdk_worker_orphan_recovered" : "agent_chat.cursor_sdk_worker_orphan_recovery_failed",
         { pid: orphan.pid, ppid: orphan.ppid, ownerPid: orphan.ownerPid },
       );
     }
-    return { recoveredPids, failedPids };
+    return { recoveredPids, failedPids, skippedPids };
   })();
   cursorSdkOrphanSweep = sweep;
   return sweep;

@@ -145,7 +145,7 @@ describe("recoverCursorSdkWorkerOrphans", () => {
     expect(killTree).toHaveBeenCalledTimes(1);
     expect(killTree).toHaveBeenCalledWith(31);
     expect(kill).not.toHaveBeenCalled();
-    expect(result).toEqual({ recoveredPids: [31], failedPids: [] });
+    expect(result).toEqual({ recoveredPids: [31], failedPids: [], skippedPids: [] });
   });
 
   it("kills with the async taskkill on Windows, so the startup sweep never blocks", async () => {
@@ -186,7 +186,7 @@ describe("recoverCursorSdkWorkerOrphans", () => {
     });
 
     expect(kill.mock.calls).toEqual([[51, "SIGTERM"], [51, "SIGKILL"]]);
-    expect(result).toEqual({ recoveredPids: [51], failedPids: [] });
+    expect(result).toEqual({ recoveredPids: [51], failedPids: [], skippedPids: [] });
   });
 
   it("does not escalate against a pid that no longer names the orphan", async () => {
@@ -210,7 +210,7 @@ describe("recoverCursorSdkWorkerOrphans", () => {
     });
 
     expect(kill.mock.calls).toEqual([[61, "SIGTERM"]]);
-    expect(result).toEqual({ recoveredPids: [], failedPids: [61] });
+    expect(result).toEqual({ recoveredPids: [], failedPids: [], skippedPids: [61] });
   });
 
   it("re-lists before the first kill of every later orphan", async () => {
@@ -244,7 +244,7 @@ describe("recoverCursorSdkWorkerOrphans", () => {
     expect(killTree.mock.calls).toEqual([[71]]);
     // The initial listing, then one recheck before each orphan's first kill.
     expect(listProcesses).toHaveBeenCalledTimes(3);
-    expect(result).toEqual({ recoveredPids: [71], failedPids: [72] });
+    expect(result).toEqual({ recoveredPids: [71], failedPids: [], skippedPids: [72] });
   });
 
   // A current worker can exit on its own once its owner's channel closes, so
@@ -267,7 +267,7 @@ describe("recoverCursorSdkWorkerOrphans", () => {
 
     expect(kill).not.toHaveBeenCalled();
     expect(listed).toBe(2);
-    expect(result).toEqual({ recoveredPids: [], failedPids: [81] });
+    expect(result).toEqual({ recoveredPids: [], failedPids: [], skippedPids: [81] });
   });
 
   it("runs once per process until a test resets it", async () => {

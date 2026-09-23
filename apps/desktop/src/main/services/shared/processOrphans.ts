@@ -68,20 +68,24 @@ export type OrphanTerminationDeps = {
 };
 
 /**
- * Terminates one orphan, escalating once if it survives the grace.
- *
- * Returns true when the process is gone. When `confirm` stops a kill, the
- * result is whether the pid is gone anyway.
+ * What happened to one orphan: it exited, it survived both passes, or
+ * `confirm` said the pid no longer names it, so it was left alone.
  */
-export async function terminateOrphanProcess(pid: number, deps: OrphanTerminationDeps): Promise<boolean> {
+export type OrphanTerminationOutcome = "exited" | "survived" | "skipped";
+
+/** Terminates one orphan, escalating once if it survives the grace. */
+export async function terminateOrphanProcess(
+  pid: number,
+  deps: OrphanTerminationDeps,
+): Promise<OrphanTerminationOutcome> {
   const passes: Array<NodeJS.Signals | null> = deps.platform === "win32" ? [null, null] : ["SIGTERM", "SIGKILL"];
   for (const signal of passes) {
-    if (deps.confirm && !(await deps.confirm(pid))) return !deps.isAlive(pid);
+    if (deps.confirm && !(await deps.confirm(pid))) return "skipped";
     if (signal) deps.kill(pid, signal);
     else await deps.killTree(pid);
     if (await waitForProcessExit(pid, { timeoutMs: deps.graceMs, isAlive: deps.isAlive, waitMs: deps.waitMs })) {
-      return true;
+      return "exited";
     }
   }
-  return false;
+  return "survived";
 }
