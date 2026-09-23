@@ -102,7 +102,9 @@ describe("proof rendering", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Enlarge Proof 2" }));
 
-    expect(screen.getByRole("dialog", { name: "Preview Proof 2" })).toBeTruthy();
+    const dialog = screen.getByRole("dialog", { name: "Preview Proof 2" });
+    expect(dialog.querySelector("img")?.getAttribute("src")).toBe("data:image/png;base64,AAAA");
+    expect(dialog.querySelector("video")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Close proof preview" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
@@ -146,6 +148,89 @@ describe("proof rendering", () => {
     await waitFor(() => {
       expect(view.container.querySelector("video")?.getAttribute("src")).toBe("data:video/mp4;base64,AAAA");
     });
+  });
+
+  it("shows a video proof as an uncropped still and plays it in the lightbox", async () => {
+    // The owner's 2026-09-23 report: the tile cropped a phone recording into a
+    // zoomed strip and crammed native controls into it.
+    vi.mocked(window.ade.computerUse.readArtifactPreview)
+      .mockResolvedValue("data:video/mp4;base64,AAAA");
+    const recording = artifact(10, {
+      title: "Sim recording",
+      kind: "video_recording",
+      originalType: "video",
+      mimeType: "video/mp4",
+      uri: ".ade/artifacts/recording.mp4",
+    });
+    const view = render(<ChatComputerUsePanel snapshot={snapshotOf([recording])} onRefresh={vi.fn()} />);
+
+    const poster = await screen.findByRole("button", { name: "Play Sim recording" });
+    const still = poster.querySelector("video");
+    expect(still?.getAttribute("src")).toBe("data:video/mp4;base64,AAAA");
+    expect(still?.hasAttribute("controls")).toBe(false);
+    expect(still?.getAttribute("preload")).toBe("metadata");
+    expect(still?.className).toContain("object-contain");
+    expect(still?.className).not.toContain("object-cover");
+    expect(view.container.querySelector("video[controls]")).toBeNull();
+
+    fireEvent.click(poster);
+    const dialog = screen.getByRole("dialog", { name: "Preview Sim recording" });
+    const player = dialog.querySelector("video");
+    expect(player?.hasAttribute("controls")).toBe(true);
+    expect(player?.getAttribute("src")).toBe("data:video/mp4;base64,AAAA");
+    expect(player?.className).toContain("object-contain");
+    expect(player?.className).not.toContain("object-cover");
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    fireEvent.click(screen.getByRole("button", { name: "Play Sim recording" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close proof preview" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("opens the timeline video card in the lightbox from a real button", async () => {
+    vi.mocked(window.ade.computerUse.readArtifactPreview)
+      .mockResolvedValueOnce("data:video/mp4;base64,BBBB");
+    render(
+      <ChatProofTimeline
+        artifacts={[artifact(11, {
+          kind: "video_recording",
+          originalType: "video",
+          mimeType: "video/mp4",
+          uri: ".ade/artifacts/wide.mp4",
+        })]}
+      />,
+    );
+
+    const poster = await screen.findByRole("button", { name: "Play Proof 11" });
+    expect(poster.tagName).toBe("BUTTON");
+    expect(poster.querySelector("video")?.hasAttribute("controls")).toBe(false);
+    fireEvent.click(poster);
+    expect(screen.getByRole("dialog", { name: "Preview Proof 11" }).querySelector("video[controls]")
+      ?.getAttribute("src")).toBe("data:video/mp4;base64,BBBB");
+  });
+
+  it("explains a video that fails to play inside the lightbox", async () => {
+    vi.mocked(window.ade.computerUse.readArtifactPreview)
+      .mockResolvedValueOnce("data:video/mp4;base64,CCCC");
+    render(
+      <ChatProofTimeline
+        artifacts={[artifact(12, {
+          kind: "video_recording",
+          originalType: "video",
+          mimeType: "video/mp4",
+          uri: ".ade/artifacts/broken.mp4",
+        })]}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Play Proof 12" }));
+    const dialog = screen.getByRole("dialog", { name: "Preview Proof 12" });
+    fireEvent.error(dialog.querySelector("video")!);
+
+    await waitFor(() => expect(dialog.querySelector("video")).toBeNull());
+    expect(dialog.textContent).toMatch(/preview is unavailable, but the stored proof is still attached/i);
   });
 
   it("distinguishes an unavailable preview from a deleted stored file", async () => {

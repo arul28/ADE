@@ -4,6 +4,7 @@ import {
   FileText,
   ImageSquare,
   MagnifyingGlass,
+  Play,
   SpinnerGap,
   Trash,
   VideoCamera,
@@ -202,13 +203,73 @@ function useVisibleArtifactPreview(
   return { containerRef, preview, loading, loaded };
 }
 
+/**
+ * A still of the recording's first frame with a play badge. The small tile
+ * never shows native controls or crops the frame. A tall simulator recording
+ * and a wide Mac recording both letterbox on black. Clicking opens the
+ * lightbox, which plays it at its own size.
+ */
+function VideoProofPoster({
+  artifact,
+  preview,
+  className,
+  badgeSize,
+  onOpen,
+  onError,
+}: {
+  artifact: ComputerUseArtifactView;
+  preview: string;
+  className: string;
+  badgeSize: "sm" | "md";
+  onOpen: () => void;
+  onError: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="relative block w-full overflow-hidden bg-black focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-violet-300/45"
+      aria-label={`Play ${artifact.title}`}
+      onClick={onOpen}
+    >
+      <video
+        src={preview}
+        preload="metadata"
+        muted
+        playsInline
+        tabIndex={-1}
+        aria-hidden
+        onError={onError}
+        className={cn("pointer-events-none block w-full bg-black object-contain", className)}
+      />
+      <span className="pointer-events-none absolute inset-0 flex items-center justify-center">
+        <span
+          className={cn(
+            "inline-flex items-center justify-center rounded-full border border-white/[0.16] bg-black/58 text-white/88 shadow-[0_6px_20px_rgba(0,0,0,0.55)] backdrop-blur-sm transition-transform duration-200 group-hover:scale-105 group-hover/tile:scale-105",
+            badgeSize === "sm" ? "h-6 w-6" : "h-10 w-10",
+          )}
+        >
+          <Play size={badgeSize === "sm" ? 10 : 15} weight="fill" className="translate-x-px" />
+        </span>
+      </span>
+    </button>
+  );
+}
+
 function ArtifactLightbox({
   artifact,
   preview,
+  media,
+  failed,
+  failureText,
+  onMediaError,
   onClose,
 }: {
   artifact: ComputerUseArtifactView;
   preview: string;
+  media: "image" | "video";
+  failed: boolean;
+  failureText: string;
+  onMediaError: () => void;
   onClose: () => void;
 }) {
   useEffect(() => {
@@ -231,7 +292,14 @@ function ArtifactLightbox({
         if (event.currentTarget === event.target) onClose();
       }}
     >
-      <div className="flex max-h-full w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-white/[0.1] bg-[#0d0d11] shadow-[0_32px_120px_rgba(0,0,0,0.75)]">
+      <div
+        className={cn(
+          "flex max-h-full flex-col overflow-hidden rounded-2xl border border-white/[0.1] bg-[#0d0d11] shadow-[0_32px_120px_rgba(0,0,0,0.75)]",
+          // A video panel hugs the video, so a tall phone recording is not
+          // lost in a wide empty frame.
+          media === "video" ? "max-w-[90vw]" : "w-full max-w-6xl",
+        )}
+      >
         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/[0.07] px-4 py-3">
           <div className="min-w-0">
             <div className="truncate font-sans text-[12px] font-semibold text-fg/88">{artifact.title}</div>
@@ -250,11 +318,32 @@ function ArtifactLightbox({
           </button>
         </div>
         <div className="min-h-0 flex-1 overflow-auto bg-black/30 p-3">
-          <img
-            src={preview}
-            alt={artifact.title}
-            className="mx-auto block max-h-[calc(100vh-9rem)] max-w-full rounded-xl object-contain"
-          />
+          {failed ? (
+            <div className="flex items-start gap-2.5 rounded-xl border border-amber-200/[0.09] bg-amber-300/[0.035] px-3 py-2.5">
+              <WarningCircle size={14} weight="duotone" className="mt-px shrink-0 text-amber-200/45" />
+              <div className="min-w-0 font-sans text-[10px] leading-[15px] text-muted-fg/48">
+                {failureText}
+              </div>
+            </div>
+          ) : media === "video" ? (
+            // Width and height stay auto so the browser keeps the recording's
+            // own shape. The caps only shrink it to fit the window.
+            <video
+              src={preview}
+              controls
+              autoPlay
+              playsInline
+              onError={onMediaError}
+              className="mx-auto block h-auto max-h-[calc(85vh-4.5rem)] w-auto max-w-[calc(90vw-1.5rem)] rounded-xl bg-black object-contain"
+            />
+          ) : (
+            <img
+              src={preview}
+              alt={artifact.title}
+              onError={onMediaError}
+              className="mx-auto block max-h-[calc(100vh-9rem)] max-w-full rounded-xl object-contain"
+            />
+          )}
         </div>
       </div>
     </div>,
@@ -360,16 +449,16 @@ export function ChatProofArtifactCard({
             />
           </button>
         ) : preview && video ? (
-          <video
-            src={preview}
-            controls
-            preload="metadata"
-            onError={() => setMediaFailed(true)}
-            className={cn(
-              "block w-full rounded-xl border border-white/[0.06] bg-black",
-              variant === "timeline" ? "max-h-[320px]" : "max-h-[240px]",
-            )}
-          />
+          <div className="overflow-hidden rounded-xl border border-white/[0.06] bg-black">
+            <VideoProofPoster
+              artifact={artifact}
+              preview={preview}
+              badgeSize="md"
+              className={variant === "timeline" ? "h-[320px]" : "h-[240px]"}
+              onOpen={() => setLightboxOpen(true)}
+              onError={() => setMediaFailed(true)}
+            />
+          </div>
         ) : !image && !video ? (
           <div className="flex min-h-20 items-center gap-3 rounded-xl border border-white/[0.05] bg-black/14 px-3.5 py-3">
             <FileText size={18} weight="duotone" className="shrink-0 text-muted-fg/30" />
@@ -386,10 +475,16 @@ export function ChatProofArtifactCard({
         ) : null}
       </div>
 
-      {lightboxOpen && preview && image ? (
+      {lightboxOpen && preview && (image || video) ? (
         <ArtifactLightbox
           artifact={artifact}
           preview={preview}
+          media={image ? "image" : "video"}
+          failed={mediaFailed}
+          failureText={externalUrl
+            ? "This proof lives at its source. Open it to view."
+            : artifactPreviewExplanation(artifact)}
+          onMediaError={() => setMediaFailed(true)}
           onClose={() => setLightboxOpen(false)}
         />
       ) : null}
@@ -531,12 +626,13 @@ function DrawerProofTile({
             />
           </button>
         ) : preview && video ? (
-          <video
-            src={preview}
-            controls
-            preload="metadata"
+          <VideoProofPoster
+            artifact={artifact}
+            preview={preview}
+            badgeSize="sm"
+            className="h-[74px]"
+            onOpen={() => setLightboxOpen(true)}
             onError={() => setMediaFailed(true)}
-            className="block h-[74px] w-full bg-black object-cover"
           />
         ) : (
           <div className="flex h-[74px] items-center justify-center text-muted-fg/28">
@@ -590,10 +686,14 @@ function DrawerProofTile({
         ) : null}
       </div>
 
-      {lightboxOpen && preview && image ? (
+      {lightboxOpen && preview && (image || video) ? (
         <ArtifactLightbox
           artifact={artifact}
           preview={preview}
+          media={image ? "image" : "video"}
+          failed={mediaFailed}
+          failureText={externalUrl ? "Stored at its source." : artifactPreviewExplanation(artifact)}
+          onMediaError={() => setMediaFailed(true)}
           onClose={() => setLightboxOpen(false)}
         />
       ) : null}
