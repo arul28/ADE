@@ -1,5 +1,12 @@
 import type { CtoVoiceAction } from "../../../shared/types/ctoVoice";
 import { SESSION_ACTIVITY_VALUES } from "../../../shared/types/sessions";
+import {
+  ADE_TURN_USAGE_DEFAULT_DAYS,
+  ADE_TURN_USAGE_GROUP_BY,
+  ADE_TURN_USAGE_MAX_DAYS,
+  ADE_TURN_USAGE_MAX_RECENT,
+  DEFAULT_ADE_TURN_USAGE_GROUP_BY,
+} from "../../../shared/types/turnUsage";
 import type { AdeActionDomain } from "./domains";
 import { ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION } from "../../../shared/types/account";
 
@@ -289,6 +296,13 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input:
         "object { preset?: \"today\" | \"7d\" | \"30d\" | \"year\" | \"all\", since?: ISO string, until?: ISO string, scope?: \"account\" | \"machine\" | \"project\", force?: boolean }",
       example: "ade usage stats --preset 30d --scope account --text",
+    },
+    getTurnUsageSummary: {
+      description:
+        "Read this machine's per-turn usage ledger: tokens, cache hit ratio, provider cost, and API-list-price cost by provider, account, and model, plus what one percent of each subscription window has cost in ADE turns.",
+      input:
+        `object { days?: number (1-${ADE_TURN_USAGE_MAX_DAYS}, default ${ADE_TURN_USAGE_DEFAULT_DAYS}), groupBy?: ${ADE_TURN_USAGE_GROUP_BY.map((value) => JSON.stringify(value)).join(" | ")} (default ${JSON.stringify(DEFAULT_ADE_TURN_USAGE_GROUP_BY)}), recent?: number (newest rows of the calling project to include, max ${ADE_TURN_USAGE_MAX_RECENT}) }`,
+      example: "ade usage turns --days 14 --text",
     },
     getUsageSnapshot: {
       description:

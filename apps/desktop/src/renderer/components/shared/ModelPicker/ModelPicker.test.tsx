@@ -888,6 +888,44 @@ describe("ModelPicker", () => {
     expect(trigger.getAttribute("aria-expanded")).toBe("true");
   });
 
+  it("shows why Fast cannot run with the selected model's effort and does not turn it on", async () => {
+    // OpenCode sends Fast and the effort in one `variant`, so some pairs have no route.
+    const user = userEvent.setup();
+    const onFastModeChange = vi.fn();
+    const reason = "OpenCode cannot run GPT-5.4 in Fast mode at high effort.";
+    const props = {
+      value: FAST_GPT.id,
+      onChange: vi.fn(),
+      models: [FAST_GPT, FAST_GPT_ALT],
+      onFastModeChange,
+      fastModeUnavailableReason: reason,
+    };
+    const { rerender } = render(<ModelPicker {...props} fastMode={false} />);
+    const trigger = screen.getByRole("button", { name: /Select model/i });
+    await user.click(trigger);
+
+    const chip = await within(await findModelRow(FAST_GPT.id))
+      .findByRole("button", { name: /Fast mode for/i }) as HTMLButtonElement;
+    expect(chip.title).toBe(reason);
+    expect(chip.disabled).toBe(true);
+    await user.click(chip);
+    expect(onFastModeChange).not.toHaveBeenCalled();
+    // The reason is about the selected row's effort; another row's chip still works.
+    const otherChip = await within(await findModelRow(FAST_GPT_ALT.id))
+      .findByRole("button", { name: /Fast mode for/i }) as HTMLButtonElement;
+    expect(otherChip.disabled).toBe(false);
+    expect(otherChip.title).not.toBe(reason);
+
+    // Fast already on: the trigger does not claim it, and the chip can still turn it off.
+    rerender(<ModelPicker {...props} fastMode />);
+    expect(trigger.textContent).not.toContain("Fast");
+    const onChip = await within(await findModelRow(FAST_GPT.id))
+      .findByRole("button", { name: /Fast mode for/i }) as HTMLButtonElement;
+    expect(onChip.disabled).toBe(false);
+    await user.click(onChip);
+    expect(onFastModeChange).toHaveBeenLastCalledWith(false);
+  });
+
   it("preserves fast mode when a different model is picked by a plain row click", async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();

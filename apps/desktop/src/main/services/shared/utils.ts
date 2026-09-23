@@ -1033,3 +1033,80 @@ export function sanitizeStructuredData(
   }
   return sanitized;
 }
+
+/**
+ * Drops the oldest entries of an insertion-ordered map until it holds at most
+ * `maxSize`. A bounded cache that re-inserts on access gets LRU order for free.
+ */
+export function evictOldestEntries<K, V>(map: Map<K, V>, maxSize: number): void {
+  if (map.size <= maxSize) return;
+  const toDelete = map.size - maxSize;
+  const iter = map.keys();
+  for (let i = 0; i < toDelete; i++) {
+    const next = iter.next();
+    if (next.done) break;
+    map.delete(next.value);
+  }
+}
+
+/** The same bound for an insertion-ordered set. */
+export function evictOldestSetEntries<T>(set: Set<T>, maxSize: number): void {
+  if (set.size <= maxSize) return;
+  const toDelete = set.size - maxSize;
+  const iter = set.values();
+  for (let i = 0; i < toDelete; i++) {
+    const next = iter.next();
+    if (next.done) break;
+    set.delete(next.value);
+  }
+}
+
+/**
+ * True when an ADE kill-switch env value turns a feature off. Every ADE flag
+ * reads the same spellings: `0`, `false`, `off`, or `no`, in any case.
+ */
+export function isEnvFlagOff(value: string | null | undefined): boolean {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === "0" || normalized === "false" || normalized === "off" || normalized === "no";
+}
+
+/** The record when `value` is a plain object, else null. */
+export function asRecord(value: unknown): Record<string, unknown> | null {
+  return isRecord(value) ? value : null;
+}
+
+/** A finite number, or null for anything else (NaN, Infinity, strings). */
+export function finiteNumberOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * Resolves to the promise's value, or to `fallback` once `ms` passes. The
+ * promise keeps running; its later result or rejection is ignored.
+ */
+export function settleWithin<T, F>(promise: Promise<T>, ms: number, fallback: F): Promise<T | F> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(fallback), Math.max(0, ms));
+    timer.unref?.();
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      () => { clearTimeout(timer); resolve(fallback); },
+    );
+  });
+}
+
+/** A finite number from a number or a numeric string (`"12"`), else null. */
+export function finiteNumberFromNumeric(value: unknown): number | null {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value.trim());
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+/** A positive count from a number or a numeric string, else 0 (for zero, negative, or non-numeric values). */
+export function positiveCountOrZero(value: unknown): number {
+  const parsed = finiteNumberFromNumeric(value);
+  return parsed != null && parsed > 0 ? parsed : 0;
+}

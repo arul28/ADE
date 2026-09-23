@@ -29,6 +29,7 @@ export { copilotDialect, devinDialect, grokDialect, kimiDialect, qwenDialect };
 export {
   COPILOT_CONFIG_OPTION_IDS,
   COPILOT_NATIVE_MODE_IDS,
+  COPILOT_SERVED_MODEL_NOTE,
   COPILOT_TUI_ONLY_COMMANDS,
   copilotPermissionModeDegradationNote,
   copilotNativeModeValue,
@@ -37,19 +38,18 @@ export {
 } from "./copilot";
 export {
   GROK_CLAUDE_MARKER_OVERRIDE_ENV,
+  GROK_CONFIG_OPTION_IDS,
   GROK_MINIMUM_VERSION,
-  GROK_SESSION_NOTIFICATION_METHOD,
   GROK_YOLO_MODE_CHANGED_METHOD,
   grokPermissionModeFlags,
   grokSupervisionEnv,
-  readGrokPromptUsage,
 } from "./grok";
+export { readGrokPromptUsage } from "./grokTelemetry";
 export {
   KIMI_CONFIG_OPTION_IDS,
-  KIMI_USAGE_DEGRADATION_NOTE,
   KIMI_WINDOWS_DEGRADATION_NOTE,
 } from "./kimi";
-export { QWEN_CONFIG_OPTION_IDS } from "./qwen";
+export { QWEN_CONFIG_OPTION_IDS, QWEN_DEFAULT_REASONING_EFFORT } from "./qwen";
 export {
   buildQwenAdeSkillDefaults,
   ensureQwenAdeSkillDefaultsFile,

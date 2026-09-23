@@ -1,0 +1,4 @@
+{"t":1790149095.178237,"msg":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"74a58a1f-afd3-4310-9e75-888aeda92d62","update":{"sessionUpdate":"session_info_update","title":"Reply with exactly the word OK and nothing else. Do not use any tools.","updatedAt":"2026-09-23T07:38:15.177Z"}}}}
+{"t":1790149095.65814,"msg":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"74a58a1f-afd3-4310-9e75-888aeda92d62","update":{"sessionUpdate":"usage_update","used":15329,"size":128000}}}}
+{"t":1790149097.424673,"msg":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"74a58a1f-afd3-4310-9e75-888aeda92d62","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"OK"}}}}}
+{"t":1790149097.501725,"msg":{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn","usage":{"inputTokens":14160,"outputTokens":5,"totalTokens":14165,"thoughtTokens":0,"cachedReadTokens":1152,"cachedWriteTokens":0}}}}

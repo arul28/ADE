@@ -132,6 +132,11 @@ import {
   type UsageTrackingHost,
 } from "../../desktop/src/main/services/usage/usageTrackingService";
 import { createBudgetCapService } from "../../desktop/src/main/services/usage/budgetCapService";
+import { getSharedTurnUsageLedger } from "../../desktop/src/main/services/usage/turnUsageLedger";
+import {
+  attachSharedUsageResearchUploader,
+  createUsageResearchUploader,
+} from "../../desktop/src/main/services/usage/usageResearchUploader";
 import {
   createProductAnalyticsService,
   defaultProductAnalyticsStateFile,
@@ -1639,6 +1644,21 @@ export async function createAdeRuntime(args: {
     });
 
     let automationServiceRef: ReturnType<typeof createAutomationService> | null = null;
+    // Machine-level, like the quota poller: every project scope in this brain
+    // writes one ledger under `<adeHome>/usage/`.
+    const turnUsageLedger = getSharedTurnUsageLedger(resolveMachineAdeLayout().adeDir, logger);
+    // Machine-level as well: one daily usage research report per finished
+    // local day, read from that ledger. It sends nothing while product
+    // analytics is off, and `ADE_USAGE_RESEARCH=0` turns it off.
+    const detachUsageResearch = attachSharedUsageResearchUploader(resolveMachineAdeLayout().adeDir, () =>
+      createUsageResearchUploader({
+        adeDir: resolveMachineAdeLayout().adeDir,
+        store: turnUsageLedger.store,
+        analytics: productAnalyticsService,
+        appVersion: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || "0.0.0",
+        logger,
+      }));
+    teardown.push(() => detachUsageResearch());
 
     let agentChatService = headlessLinearServices.agentChatService as unknown as ReturnType<typeof createAgentChatService> | null;
     if (resolvedArgs.chatRuntime === "agent") {
@@ -1686,6 +1706,7 @@ export async function createAdeRuntime(args: {
           projectId,
           event,
         }),
+        turnUsageLedger,
         onClaudeHooksIgnored: (event) => captureClaudeHooksIgnoredAnalytics({
           analytics: productAnalyticsService,
           projectId,
@@ -2298,6 +2319,7 @@ export async function createAdeRuntime(args: {
         pollIntervalMs: 120_000,
         dependencies: {
           captureInternalAnalytics: (input) => productAnalyticsService.captureInternal(input),
+          turnUsageLedger,
         },
       }),
       {

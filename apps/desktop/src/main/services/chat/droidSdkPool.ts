@@ -11,6 +11,8 @@ import type {
   DroidSdkPermissionDecision,
   DroidSdkPermissionRequest,
   DroidSdkReady,
+  DroidSdkReasoningEffort,
+  DroidSdkRunResult,
   DroidSdkSendPrompt,
   DroidSdkSessionSettings,
   DroidSdkWorkerInit,
@@ -38,7 +40,7 @@ export type DroidSdkPooled = {
   currentModelId: string | null;
   availableModels: DroidSdkReady["availableModels"];
   request: <T = unknown>(type: DroidSdkWorkerRequest["type"], payload?: unknown) => Promise<T>;
-  sendPrompt: (payload: DroidSdkSendPrompt) => Promise<unknown>;
+  sendPrompt: (payload: DroidSdkSendPrompt) => Promise<DroidSdkRunResult>;
   updateSettings: (settings: DroidSdkSessionSettings) => Promise<DroidSdkReady>;
   cancel: () => Promise<void>;
   killWorker: (workerSessionId: string) => Promise<void>;
@@ -71,6 +73,49 @@ function resolveWorkerPath(): string {
 
 function sanitizeEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return { ...base };
+}
+
+/**
+ * The reasoning effort ADE last stated for each chat's Droid session, across
+ * workers. A model switch replaces the worker but resumes the same Droid
+ * session, which keeps that effort; the next worker needs to know ADE put it
+ * there to reset it once the chat has none. In memory only: after an app
+ * restart a resumed session keeps its effort until the chat states one.
+ */
+const statedReasoningEffortByChat = new Map<string, DroidSdkReasoningEffort>();
+const STATED_REASONING_EFFORT_LIMIT = 512;
+
+function setStatedReasoningEffort(chatSessionId: string, effort: DroidSdkReasoningEffort | null): void {
+  statedReasoningEffortByChat.delete(chatSessionId);
+  if (!effort) return;
+  statedReasoningEffortByChat.set(chatSessionId, effort);
+  if (statedReasoningEffortByChat.size > STATED_REASONING_EFFORT_LIMIT) {
+    const oldest = statedReasoningEffortByChat.keys().next().value;
+    if (oldest !== undefined) statedReasoningEffortByChat.delete(oldest);
+  }
+}
+
+/**
+ * Keep what one settings update states. An effort the update names is stated
+ * from the moment it is sent. A cleared effort stays remembered until the
+ * worker reports that its reset landed: a reset that failed (Droid's model
+ * list could not be read) leaves the effort on the session, and the next
+ * worker must still reset it.
+ */
+async function trackStatedReasoningEffort<T extends { statedReasoningEffort?: DroidSdkReasoningEffort | null }>(
+  chatSessionId: string,
+  settings: DroidSdkSessionSettings | undefined,
+  update: Promise<T>,
+): Promise<T> {
+  const requested = settings?.reasoningEffort?.trim();
+  if (requested) setStatedReasoningEffort(chatSessionId, requested as DroidSdkReasoningEffort);
+  const result = await update;
+  if (settings && !requested) {
+    // A worker that reports nothing is taken at the update's word.
+    const reported = result?.statedReasoningEffort;
+    setStatedReasoningEffort(chatSessionId, reported === undefined ? null : reported);
+  }
+  return result;
 }
 
 export async function acquireDroidSdkConnection(args: {
@@ -205,8 +250,10 @@ async function createDroidSdkConnection(args: Parameters<typeof acquireDroidSdkC
         }
       });
     },
-    sendPrompt: (payload) => pooled.request("send", payload),
-    updateSettings: (settings) => pooled.request<DroidSdkReady>("settings_update", settings),
+    sendPrompt: (payload) =>
+      trackStatedReasoningEffort(args.sessionId, payload.settings, pooled.request<DroidSdkRunResult>("send", payload)),
+    updateSettings: (settings) =>
+      trackStatedReasoningEffort(args.sessionId, settings, pooled.request<DroidSdkReady>("settings_update", settings)),
     cancel: () => pooled.request("cancel"),
     killWorker: (workerSessionId) => pooled.request("kill_worker", { workerSessionId }),
     dispose: () => {
@@ -315,12 +362,14 @@ async function createDroidSdkConnection(args: Parameters<typeof acquireDroidSdkC
     cleanupPoolEntry(pooled);
   });
 
+  const inheritedEffort = args.resumeSessionId ? statedReasoningEffortByChat.get(args.sessionId) : undefined;
   const initPayload: DroidSdkWorkerInit = {
     sessionId: args.sessionId,
     laneRoot: args.workspacePath,
     droidPath: args.droidPath,
     resumeSessionId: args.resumeSessionId ?? null,
     settings: args.settings,
+    ...(inheritedEffort ? { statedReasoningEffort: inheritedEffort } : {}),
     ...(args.mcpServers?.length ? { mcpServers: args.mcpServers } : {}),
     ...(args.allowedMcpServerNames
       ? { allowedMcpServerNames: [...args.allowedMcpServerNames] }
@@ -328,7 +377,11 @@ async function createDroidSdkConnection(args: Parameters<typeof acquireDroidSdkC
   };
   let ready: DroidSdkReady;
   try {
-    ready = await pooled.request<DroidSdkReady>("init", initPayload);
+    ready = await trackStatedReasoningEffort(
+      args.sessionId,
+      args.settings,
+      pooled.request<DroidSdkReady>("init", initPayload),
+    );
   } catch (error) {
     pooled.dispose();
     throw error;

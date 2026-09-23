@@ -80,12 +80,17 @@ describe("captured initialize fixtures", () => {
     expect(usage?.costUsd).toBeCloseTo(0.086649, 5);
     expect(usage?.costUsd).toBeGreaterThan(0.04);
     expect(usage?.costUsd).toBeLessThan(0.12);
+    // `inputTokens` on the wire counts the cache; ADE reports the uncached
+    // share, with the cache in its own field.
     expect(usage).toMatchObject({
       cacheReadTokens: 5888,
-      inputTokens: 29805,
+      cacheWriteTokens: 0,
+      inputTokens: 29805 - 5888,
       outputTokens: 32,
       reasoningTokens: 27,
       totalTokens: 29837,
+      requestCount: 1,
+      servedModel: "grok-4.6-build",
     });
   });
 
@@ -146,7 +151,7 @@ describe("captured initialize fixtures", () => {
     expect(qwenDialect.authProbe.methodId).toBe("openai");
   });
 
-  it("kimi 0.39.1 baseline advertises close, login terminal-auth, and no usage", () => {
+  it("kimi 0.39.1 baseline advertises close, login terminal-auth, and reads usage_update", () => {
     const init = loadFixture<AcpInitializeResponse>("kimi.initialize.json");
     expect(init.protocolVersion).toBe(1);
     expect(init.agentInfo?.version).toBe("0.39.1");
@@ -168,7 +173,7 @@ describe("captured initialize fixtures", () => {
     });
     expect(kimiDialect.closeStyle).toBe("close_request");
     expect(kimiDialect.oneProcessPerSession).toBe(false);
-    expect(kimiDialect.usageSource).toBe("none");
+    expect(kimiDialect.usageUpdateAfterTurn).toBe(true);
     expect(kimiDialect.authProbe.methodId).toBe("login");
     expect(kimiDialect.imagePrompts.declared).toBe(true);
     expect(kimiDialect.sessionConfig.declared).toBe(true);

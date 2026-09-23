@@ -59,8 +59,10 @@ vi.mock("./openCodeServerManager", () => ({
   shutdownOpenCodeServers: mockState.shutdownOpenCodeServers,
 }));
 
+import { getModelById } from "../../../shared/modelRegistry";
 import {
   __setOpenCodeInventoryPersistencePathForTests,
+  classifyOpenCodeVariants,
   clearOpenCodeInventoryCache,
   loadPersistedOpenCodeInventory,
   peekOpenCodeInventoryCache,
@@ -660,7 +662,9 @@ describe("openCodeInventory", () => {
     expect(result.modelIds).toContain("opencode/anthropic/claude-opus-5-5");
     expect(result.modelIds).not.toContain("opencode/anthropic/claude-sonnet-4-6");
     expect(result.modelIds).not.toContain("opencode/anthropic/opus");
-    expect(result.descriptors.find((entry) => entry.id === "opencode/anthropic/claude-sonnet-5")).toMatchObject({
+    const sonnet = result.descriptors.find((entry) => entry.id === "opencode/anthropic/claude-sonnet-5");
+    const opus = result.descriptors.find((entry) => entry.id === "opencode/anthropic/claude-opus-5-5");
+    expect(sonnet).toMatchObject({
       displayName: "Claude Sonnet 5",
       openCodeModelId: "claude-sonnet-4-6",
       providerModelId: "anthropic/claude-sonnet-4-6",
@@ -671,9 +675,8 @@ describe("openCodeInventory", () => {
         vision: true,
         reasoning: true,
       }),
-      reasoningTiers: ["low", "medium", "high", "max"],
     });
-    expect(result.descriptors.find((entry) => entry.id === "opencode/anthropic/claude-opus-5-5")).toMatchObject({
+    expect(opus).toMatchObject({
       displayName: "Claude Opus 5.5",
       openCodeModelId: "opus",
       providerModelId: "anthropic/opus",
@@ -684,10 +687,153 @@ describe("openCodeInventory", () => {
         vision: true,
         reasoning: true,
       }),
-      reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
-      defaultReasoningEffort: "medium",
-      serviceTiers: ["fast"],
     });
+    // OpenCode listed no variants for either alias, so neither row offers an
+    // effort or Fast: each would be a `variant` OpenCode ignores.
+    for (const row of [sonnet, opus]) {
+      expect(row?.reasoningTiers).toBeUndefined();
+      expect(row?.defaultReasoningEffort).toBeUndefined();
+      expect(row?.serviceTiers).toBeUndefined();
+    }
+  });
+
+  it("gives an alias row the variants OpenCode reported, not the canonical ladder", async () => {
+    mockState.providerList.mockResolvedValueOnce({
+      data: {
+        connected: ["anthropic"],
+        all: [{
+          id: "anthropic",
+          name: "Anthropic",
+          models: {
+            opus: { id: "opus", name: "Opus", variants: { low: {}, high: {} } },
+          },
+        }],
+      },
+    } as any);
+
+    const result = await probeOpenCodeProviderInventory({
+      projectRoot: "/repo",
+      projectConfig: { ai: {} },
+      logger: { warn: vi.fn() } as any,
+      force: true,
+    });
+
+    const opus = result.descriptors.find((entry) => entry.id === "opencode/anthropic/claude-opus-5-5");
+    // Canonical Opus 5.5 is low..max with `medium` by default and Fast.
+    expect(opus?.reasoningTiers).toEqual(["low", "high"]);
+    expect(opus?.defaultReasoningEffort).toBeUndefined();
+    expect(opus?.serviceTiers).toBeUndefined();
+    expect(opus?.openCodeFast).toBeUndefined();
+  });
+
+  it("folds OpenCode's fast sibling into its base row", async () => {
+    // OpenCode turns a models.dev fast mode into a sibling model `<id>-fast`
+    // that calls the provider API as `<id>`, with the same effort variants.
+    mockState.providerList.mockResolvedValueOnce({
+      data: {
+        connected: ["openai", "xai"],
+        all: [
+          {
+            id: "openai",
+            name: "OpenAI",
+            models: {
+              "gpt-5.4": {
+                id: "gpt-5.4",
+                name: "GPT-5.4",
+                api: { id: "gpt-5.4" },
+                // `xhigh` only on the base: a user config can add a variant to one model.
+                variants: { low: {}, high: {}, xhigh: {} },
+              },
+              "gpt-5.4-fast": {
+                id: "gpt-5.4-fast",
+                name: "GPT-5.4 Fast",
+                api: { id: "gpt-5.4" },
+                variants: { low: {}, High: {} },
+              },
+            },
+          },
+          {
+            id: "xai",
+            name: "xAI",
+            models: {
+              "grok-4": { id: "grok-4", name: "Grok 4", api: { id: "grok-4" } },
+              // A distinct model that only shares the suffix: its API id is its own.
+              "grok-4-fast": { id: "grok-4-fast", name: "Grok 4 Fast", api: { id: "grok-4-fast" } },
+            },
+          },
+        ],
+      },
+    } as any);
+
+    const result = await probeOpenCodeProviderInventory({
+      projectRoot: "/repo",
+      projectConfig: { ai: {} },
+      logger: { warn: vi.fn() } as any,
+      force: true,
+    });
+
+    expect(result.modelIds).toEqual([
+      "opencode/openai/gpt-5.4",
+      "opencode/xai/grok-4",
+      "opencode/xai/grok-4-fast",
+    ]);
+    expect(result.descriptors.map((entry) => entry.id)).not.toContain("opencode/openai/gpt-5.4-fast");
+    const base = result.descriptors.find((entry) => entry.id === "opencode/openai/gpt-5.4");
+    expect(base?.reasoningTiers).toEqual(["low", "high", "xhigh"]);
+    expect(base?.serviceTiers).toEqual(["fast"]);
+    expect(base?.openCodeFast).toEqual({
+      withoutEffort: { modelId: "gpt-5.4-fast" },
+      byEffort: {
+        low: { modelId: "gpt-5.4-fast", variant: "low" },
+        high: { modelId: "gpt-5.4-fast", variant: "High" },
+      },
+    });
+    expect(result.descriptors.find((entry) => entry.id === "opencode/xai/grok-4")?.openCodeFast).toBeUndefined();
+    expect(result.providers.find((provider) => provider.id === "openai")?.availableModelCount).toBe(1);
+    // A chat saved on the sibling's id still resolves, and still runs the sibling.
+    expect(getModelById("opencode/openai/gpt-5.4-fast")).toMatchObject({
+      openCodeProviderId: "openai",
+      openCodeModelId: "gpt-5.4-fast",
+      reasoningTiers: ["low", "high"],
+    });
+  });
+
+  it("reads a combined effort and Fast variant key as a Fast route, not an effort", async () => {
+    expect(classifyOpenCodeVariants({
+      variants: { low: {}, high: {}, fast: {}, "High-Fast": {}, fast_low: {}, "extra high fast": {} },
+    })).toEqual({
+      reasoningTiers: ["low", "high"],
+      serviceTiers: ["fast"],
+      variantKeys: {},
+      fastVariantKeys: { high: "High-Fast", low: "fast_low", xhigh: "extra high fast" },
+    });
+
+    mockState.providerList.mockResolvedValueOnce({
+      data: {
+        connected: ["deepseek"],
+        all: [{
+          id: "deepseek",
+          name: "DeepSeek",
+          models: {
+            "deepseek-reasoner": {
+              id: "deepseek-reasoner",
+              name: "DeepSeek Reasoner",
+              variants: { low: {}, high: {}, "high-fast": {} },
+            },
+          },
+        }],
+      },
+    } as any);
+    const result = await probeOpenCodeProviderInventory({
+      projectRoot: "/repo",
+      projectConfig: { ai: {} },
+      logger: { warn: vi.fn() } as any,
+      force: true,
+    });
+    const descriptor = result.descriptors.find((entry) => entry.id === "opencode/deepseek/deepseek-reasoner");
+    expect(descriptor?.reasoningTiers).toEqual(["low", "high"]);
+    expect(descriptor?.serviceTiers).toEqual(["fast"]);
+    expect(descriptor?.openCodeFast).toEqual({ byEffort: { high: { variant: "high-fast" } } });
   });
 
   it("classifies OpenCode SDK model variants and v2 capabilities", async () => {
@@ -731,11 +877,53 @@ describe("openCodeInventory", () => {
     const descriptor = result.descriptors.find((entry) => entry.id === "opencode/openai/gpt-5.4");
     expect(descriptor?.reasoningTiers).toEqual(["low", "high"]);
     expect(descriptor?.serviceTiers).toEqual(["fast"]);
+    // Keys that already match their tier need no mapping.
+    expect(descriptor?.openCodeVariantKeys).toBeUndefined();
     expect(descriptor?.capabilities).toMatchObject({
       tools: true,
       vision: true,
       reasoning: true,
     });
+  });
+
+  it("keeps OpenCode's own variant key for each tier it renames", async () => {
+    // A prompt's `variant` must name OpenCode's key: `xhigh` alone matches
+    // nothing on a model whose config calls it `extra-high`.
+    expect(classifyOpenCodeVariants({
+      variants: { High: {}, "extra-high": {}, med: {}, Fast: {}, low: {}, xhigh: {} },
+    })).toEqual({
+      reasoningTiers: ["high", "xhigh", "medium", "low"],
+      serviceTiers: ["fast"],
+      variantKeys: { high: "High", xhigh: "extra-high", medium: "med", fast: "Fast" },
+      fastVariantKeys: {},
+    });
+
+    mockState.providerList.mockResolvedValueOnce({
+      data: {
+        connected: ["deepseek"],
+        all: [{
+          id: "deepseek",
+          name: "DeepSeek",
+          models: {
+            "deepseek-reasoner": {
+              id: "deepseek-reasoner",
+              name: "DeepSeek Reasoner",
+              capabilities: { reasoning: true, toolcall: true },
+              variants: { Low: {}, "extra-high": {} },
+            },
+          },
+        }],
+      },
+    } as any);
+    const result = await probeOpenCodeProviderInventory({
+      projectRoot: "/repo",
+      projectConfig: { ai: {} },
+      logger: { warn: vi.fn() } as any,
+      force: true,
+    });
+    const descriptor = result.descriptors.find((entry) => entry.id === "opencode/deepseek/deepseek-reasoner");
+    expect(descriptor?.reasoningTiers).toEqual(["low", "xhigh"]);
+    expect(descriptor?.openCodeVariantKeys).toEqual({ low: "Low", xhigh: "extra-high" });
   });
 
   it("treats OpenCode attachment-capable models as vision-capable", async () => {

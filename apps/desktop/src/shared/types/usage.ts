@@ -470,7 +470,7 @@ export type AdeUsageRollup = {
 // Live quota tracking types (Claude/Codex API windows plus local runtime cost scans)
 // ---------------------------------------------------------------------------
 
-export type UsageProvider = "claude" | "codex" | "cursor" | "copilot" | "grok" | "opencode";
+export type UsageProvider = "claude" | "codex" | "cursor" | "copilot" | "grok" | "opencode" | "kimi";
 
 /** Providers the live-quota poller can publish. History-only providers stay off this list. */
 export const LIVE_QUOTA_PROVIDERS = [
@@ -480,6 +480,7 @@ export const LIVE_QUOTA_PROVIDERS = [
   "copilot",
   "grok",
   "opencode",
+  "kimi",
 ] as const satisfies readonly UsageProvider[];
 
 export type UsageWindowType = "five_hour" | "weekly" | "monthly" | "weekly_oauth_apps" | "weekly_cowork";

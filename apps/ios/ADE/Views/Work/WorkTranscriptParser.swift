@@ -767,6 +767,7 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           reasoningTokens: optionalWorkInt(usageDict?["reasoningTokens"]),
           totalTokens: optionalWorkInt(usageDict?["totalTokens"]),
           contextWindow: optionalWorkInt(usageDict?["contextWindow"]),
+          contextTokens: optionalWorkInt(usageDict?["contextTokens"]),
           costUsd: cost?.doubleValue
         )
         event = .done(

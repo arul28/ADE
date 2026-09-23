@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   PI_SDK_PROTOCOL_VERSION,
   normalizePiSdkModelRef,
+  piSupportedThinkingLevels,
   validatePiSdkWorkerResponse,
   validatePiSdkWorkerResult,
   toPiSdkJson,
@@ -173,6 +174,28 @@ describe("protocol v2 message validation", () => {
     expect(validatePiSdkWorkerRequest({ ...base, type: "login", payload: { providerId: "a", method: "" } })).toMatch(/method/u);
     expect(validatePiSdkWorkerRequest({ ...base, type: "ui_response", payload: { value: "x" } })).toMatch(/ok/u);
     expect(validatePiSdkWorkerRequest({ ...base, type: "ui_response", payload: { ok: true, value: 5 } })).toMatch(/value/u);
+    expect(validatePiSdkWorkerRequest({ ...base, type: "context_usage" })).toBeNull();
+  });
+
+  it("validates context usage snapshots and non-secret account metadata", () => {
+    expect(validatePiSdkWorkerResult("context_usage", { tokens: 120, contextWindow: 1_000, percent: 12 })).toBeNull();
+    // "No sample": Pi has no reading right after a compaction or for a model with no window.
+    expect(validatePiSdkWorkerResult("context_usage", null)).toBeNull();
+    expect(validatePiSdkWorkerResult("context_usage", { tokens: "120", contextWindow: 1_000, percent: 12 })).toMatch(/context_usage/u);
+    const ready = {
+      protocolVersion: PI_SDK_PROTOCOL_VERSION,
+      packageRoot: "/pkg",
+      packageEntry: "/pkg/dist/index.js",
+      version: "0.84.0",
+      sessionFile: null,
+      sessionId: null,
+      currentModel: null,
+      thinkingLevel: null,
+      availableModels: [],
+      account: { kind: "subscription", upstream: "openai-codex", accountId: "acct-1" },
+    };
+    expect(validatePiSdkWorkerResult("init", ready)).toBeNull();
+    expect(validatePiSdkWorkerResult("init", { ...ready, account: { kind: "subscription", upstream: "openai-codex", accountId: 4 } })).toMatch(/account/u);
   });
 
   it("rejects init options that would widen the tool surface", () => {
@@ -227,5 +250,30 @@ describe("protocol v2 message validation", () => {
     expect(validatePiSdkWorkerResult("init", { ...ready, extensionsError: 3 })).toMatch(/extensionsError/u);
     expect(validatePiSdkWorkerResult("login", { ok: true, providerId: "anthropic" })).toBeNull();
     expect(validatePiSdkWorkerResult("login", { providerId: "anthropic" })).toMatch(/ok/u);
+  });
+});
+
+describe("Pi thinking levels", () => {
+  const base = { protocolVersion: PI_SDK_PROTOCOL_VERSION, requestId: "r1", type: "set_thinking" };
+
+  // Clearing the effort in ADE sends null: the session goes back to Pi's default.
+  it("accepts null on set_thinking as a reset, and still rejects a blank level", () => {
+    expect(validatePiSdkWorkerRequest({ ...base, payload: { thinkingLevel: null } })).toBeNull();
+    expect(validatePiSdkWorkerRequest({ ...base, payload: { thinkingLevel: "high" } })).toBeNull();
+    expect(validatePiSdkWorkerRequest({ ...base, payload: { thinkingLevel: " " } })).toMatch(/thinkingLevel/u);
+    expect(validatePiSdkWorkerRequest({ ...base, payload: {} })).toMatch(/thinkingLevel/u);
+  });
+
+  // Pi's own rule (pi-ai getSupportedThinkingLevels): these are the effort
+  // choices ADE offers for a Pi model.
+  it("offers exactly the levels Pi supports for the model", () => {
+    expect(piSupportedThinkingLevels({ reasoning: false })).toEqual(["off"]);
+    expect(piSupportedThinkingLevels({})).toEqual(["off"]);
+    expect(piSupportedThinkingLevels({ reasoning: true })).toEqual(["off", "minimal", "low", "medium", "high"]);
+    expect(piSupportedThinkingLevels({ reasoning: true, thinkingLevelMap: { xhigh: "xhigh", max: "max" } }))
+      .toEqual(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+    // A null entry hides a level; xhigh and max can be separated by a hole.
+    expect(piSupportedThinkingLevels({ reasoning: true, thinkingLevelMap: { off: null, minimal: null, max: "max" } }))
+      .toEqual(["low", "medium", "high", "max"]);
   });
 });

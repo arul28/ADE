@@ -4413,6 +4413,7 @@ func makeWorkUsageSummary(
   reasoningTokens: Int? = nil,
   totalTokens: Int? = nil,
   contextWindow: Int? = nil,
+  contextTokens: Int? = nil,
   costUsd: Double?,
   isContextSnapshot: Bool = false
 ) -> WorkUsageSummary? {
@@ -4423,6 +4424,7 @@ func makeWorkUsageSummary(
     || reasoningTokens != nil
     || totalTokens != nil
     || contextWindow != nil
+    || contextTokens != nil
     || costUsd != nil
   else {
     return nil
@@ -4438,7 +4440,8 @@ func makeWorkUsageSummary(
     totalTokens: totalTokens ?? 0,
     contextWindow: contextWindow,
     costUsd: costUsd ?? 0,
-    isContextSnapshot: isContextSnapshot
+    isContextSnapshot: isContextSnapshot,
+    contextTokens: contextTokens
   )
 }
 
@@ -4494,6 +4497,9 @@ func workContextUsageViewModel(
   var latestContextSampleId: Int?
   var compactionProtected = false
   var protectedCompactionTurnId: String?
+  // Parity with desktop's contextUsageModel: a turn that produced an exact
+  // context snapshot keeps it; that turn's summed `done` totals must not win.
+  var snapshotTurnIds = Set<String>()
 
   for envelope in sortedWorkChatEnvelopes(transcript) {
     switch envelope.event {
@@ -4522,7 +4528,13 @@ func workContextUsageViewModel(
       } else {
         usageState = .recalculating
       }
-    case .tokens(let usage, _, _):
+    case .tokens(let usage, let tokensTurnId, _):
+      if usage.isContextSnapshot && !tokensTurnId.isEmpty {
+        snapshotTurnIds.insert(tokensTurnId)
+      } else if !tokensTurnId.isEmpty && snapshotTurnIds.contains(tokensTurnId) {
+        // The turn already has an exact occupancy; its summed totals do not replace it.
+        continue
+      }
       if let sampleId = usage.contextSampleId {
         if let latestContextSampleId, sampleId < latestContextSampleId {
           continue
@@ -4532,9 +4544,28 @@ func workContextUsageViewModel(
       if compactionProtected && !usage.isContextSnapshot { continue }
       latestUsage = usage
       usageState = usage.contextState ?? .measured
-    case .done(_, _, let usage, _, _, _, _):
+    case .done(_, _, let usage, let doneTurnId, _, _, _):
       if let usage {
         if compactionProtected && !usage.isContextSnapshot { continue }
+        if let contextTokens = usage.contextTokens, contextTokens > 0 {
+          // The runtime reported the occupancy after the turn; the token
+          // fields sum every request in the turn and would overstate it.
+          if !doneTurnId.isEmpty { snapshotTurnIds.insert(doneTurnId) }
+          latestUsage = WorkUsageSummary(
+            turnCount: 1,
+            inputTokens: contextTokens,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+            totalTokens: contextTokens,
+            contextWindow: usage.contextWindow ?? latestUsage?.contextWindow,
+            costUsd: 0,
+            isContextSnapshot: true
+          )
+          usageState = .measured
+          continue
+        }
+        if !doneTurnId.isEmpty && snapshotTurnIds.contains(doneTurnId) { continue }
         latestUsage = usage
         usageState = .measured
       }

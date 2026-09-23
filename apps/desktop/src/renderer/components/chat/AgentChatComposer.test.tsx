@@ -18,9 +18,15 @@ import {
   CURSOR_CLOUD_MODEL_BLOCKED_MESSAGE,
   CURSOR_CLOUD_MODELS_NOT_LOADED_MESSAGE,
   CURSOR_CLOUD_SEND_EMPTY_CONTENT_MESSAGE,
+  cursorBooleanConfigLabel,
   cursorCloudSendBlock,
   HEIC_CONVERSION_UNAVAILABLE_MESSAGE,
+  nextCursorBooleanConfigValue,
 } from "./AgentChatComposer";
+import {
+  createDynamicOpenCodeModelDescriptor,
+  replaceDynamicOpenCodeModelDescriptors,
+} from "../../../shared/modelRegistry";
 import { useAppStore } from "../../state/appStore";
 import { formatChatOutputContextBlock } from "../../../shared/chatOutputContext";
 
@@ -4149,5 +4155,74 @@ describe("cursorCloudSendBlock", () => {
       modelReady: true,
       hasContent: true,
     })).toBeNull();
+  });
+});
+
+describe("Cursor model options in the composer", () => {
+  it("cycles a boolean option Default, On, Off, and back to Default", () => {
+    expect([null, true, false].map(cursorBooleanConfigLabel)).toEqual(["Default", "On", "Off"]);
+    expect(nextCursorBooleanConfigValue(null)).toBe(true);
+    expect(nextCursorBooleanConfigValue(undefined)).toBe(true);
+    expect(nextCursorBooleanConfigValue(true)).toBe(false);
+    expect(nextCursorBooleanConfigValue(false)).toBeNull();
+  });
+
+  it("shows an option the chat never set as Default, and sets it only on a click", () => {
+    const onCursorConfigChange = vi.fn();
+    renderComposer({
+      sessionProvider: "cursor",
+      modelId: "cursor/composer-2",
+      availableModelIds: ["cursor/composer-2"],
+      turnActive: false,
+      onCursorConfigChange,
+      cursorModeSnapshot: {
+        currentModeId: "agent",
+        availableModeIds: ["agent", "plan"],
+        configOptions: [{ id: "max_context", name: "Max context", category: "model", type: "boolean", currentValue: null }],
+      },
+    });
+
+    const chip = screen.getByRole("button", { name: /Max context/ });
+    expect(chip.textContent).toContain("Default");
+    expect(onCursorConfigChange).not.toHaveBeenCalled();
+    fireEvent.click(chip);
+    expect(onCursorConfigChange).toHaveBeenCalledWith("max_context", true);
+  });
+});
+
+describe("the OpenCode Fast chip reads the effort a launch sends", () => {
+  afterEach(() => {
+    replaceDynamicOpenCodeModelDescriptors([]);
+  });
+
+  it("disables Fast for the remembered effort the control shows, not only an explicit one", async () => {
+    const model = {
+      ...createDynamicOpenCodeModelDescriptor("", { openCodeProviderId: "openai", openCodeModelId: "gpt-5.4" }),
+      reasoningTiers: ["low", "high"],
+      serviceTiers: ["fast"],
+      openCodeFast: { withoutEffort: { variant: "fast" }, byEffort: { low: { variant: "low-fast" } } },
+    };
+    replaceDynamicOpenCodeModelDescriptors([model]);
+    renderComposer({
+      sessionProvider: "opencode",
+      modelId: model.id,
+      availableModelIds: [model.id],
+      // Nothing explicit: the control shows the family's remembered `high`,
+      // and a launch sends `high`. OpenCode has no Fast route at high effort.
+      reasoningEffort: null,
+      effectiveReasoningEffort: "high",
+      fastMode: false,
+      onFastModeChange: vi.fn(),
+    });
+
+    fireEvent.click(document.querySelector("[data-model-picker-trigger]") as HTMLElement);
+    const row = await waitFor(() => {
+      const found = document.querySelector<HTMLElement>(`[data-model-id="${model.id}"]`);
+      if (!found) throw new Error("row not rendered");
+      return found;
+    });
+    const chip = within(row).getByRole("button", { name: /Fast mode for/i }) as HTMLButtonElement;
+    expect(chip.disabled).toBe(true);
+    expect(chip.title).toBe(`OpenCode cannot run ${model.displayName} in Fast mode at high effort.`);
   });
 });

@@ -352,6 +352,16 @@ function pickerFamilyForCatalogGroup(groupKey: string, fallbackFamily?: string):
   return claimed ?? "opencode";
 }
 
+function withoutRegistryTiers(model: ModelDescriptor): ModelDescriptor {
+  const {
+    reasoningTiers: _reasoningTiers,
+    defaultReasoningEffort: _defaultReasoningEffort,
+    serviceTiers: _serviceTiers,
+    ...rest
+  } = model;
+  return rest;
+}
+
 export function descriptorsFromAgentChatModelCatalog(
   catalog: AgentChatModelCatalog | null | undefined,
   filter?: (model: ModelDescriptor) => boolean,
@@ -365,7 +375,13 @@ export function descriptorsFromAgentChatModelCatalog(
     for (const provider of group.providers ?? []) {
       for (const subsection of provider.subsections ?? []) {
         for (const model of subsection.models ?? []) {
-          const base = resolveModelDescriptor(model.id) ?? createUnknownModelPlaceholder(model.id);
+          const registryBase = resolveModelDescriptor(model.id) ?? createUnknownModelPlaceholder(model.id);
+          // An OpenCode row's tiers are what OpenCode reported on its machine.
+          // This registry has no inventory, so its tiers for the same id are a
+          // guess, and a guessed tier is a `variant` OpenCode ignores.
+          const base = registryBase.providerRoute === "opencode"
+            ? withoutRegistryTiers(registryBase)
+            : registryBase;
           const family = pickerFamilyForCatalogGroup(String(model.groupKey || group.key), model.family);
           const runtimeReasoningTiers = model.reasoningEfforts
             ?.map((entry) => entry.effort.trim().toLowerCase())
@@ -412,6 +428,7 @@ export function descriptorsFromAgentChatModelCatalog(
               : base.cursorCliVariants?.length
                 ? { cursorCliVariants: base.cursorCliVariants }
                 : {}),
+            ...(model.openCodeFast ? { openCodeFast: model.openCodeFast } : {}),
             subProvider: useSubsectionAsProvider
               ? subsection.label || model.providerName || provider.displayName || undefined
               : model.providerName || provider.displayName || subsection.label || undefined,

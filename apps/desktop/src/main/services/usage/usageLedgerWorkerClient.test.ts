@@ -11,6 +11,7 @@ import {
   resolveUsageLedgerWorkerPath,
   scanUsageLedgersInWorker,
 } from "./usageLedgerWorkerClient";
+import { readUsageLedgerWorkerInput } from "./usageLedgerWorker";
 
 function resultJson(): string {
   return JSON.stringify({
@@ -95,6 +96,46 @@ describe("usage ledger worker client", () => {
       [__filename],
       expect.objectContaining({ stdio: ["pipe", "pipe", "pipe"] }),
     );
+  });
+
+  it("decodes worker output as a stream, so a project path split across stdout chunks survives", async () => {
+    const child = fakeChild();
+    const root = "/Users/me/项目";
+    const snapshot = { provider: "codex", todayCostUsd: 1, last30dCostUsd: 2, tokenBreakdown: {} };
+    const bytes = Buffer.from(JSON.stringify({
+      ...JSON.parse(resultJson()),
+      projectCostsByRoot: { [root]: [snapshot] },
+    }), "utf8");
+    // Cut inside the 3-byte UTF-8 sequence of the first CJK character.
+    const cut = bytes.indexOf(Buffer.from("项", "utf8")) + 1;
+    const promise = scanUsageLedgersInWorker("/repo", {
+      workerPath: __filename,
+      spawnWorker: vi.fn(() => child) as never,
+    });
+    child.stdout.write(bytes.subarray(0, cut));
+    child.stdout.end(bytes.subarray(cut));
+    child.emit("close", 0, null);
+
+    await expect(promise).resolves.toMatchObject({ projectCostsByRoot: { [root]: [snapshot] } });
+  });
+
+  it("decodes worker input once, so a multi-byte character split across stdin chunks survives", async () => {
+    const projectRoot = "/Users/me/项目/リポジトリ";
+    const bytes = Buffer.from(JSON.stringify({ projectRoot, projectRoots: [projectRoot] }), "utf8");
+    // Cut inside the 3-byte UTF-8 sequence of the first CJK character.
+    const cut = bytes.indexOf(Buffer.from("项", "utf8")) + 1;
+    async function* chunks() {
+      yield bytes.subarray(0, cut);
+      yield bytes.subarray(cut, cut + 1);
+      yield bytes.subarray(cut + 1);
+    }
+    await expect(readUsageLedgerWorkerInput(chunks())).resolves.toMatchObject({ projectRoot, projectRoots: [projectRoot] });
+
+    async function* oversized() {
+      yield Buffer.alloc(8, 0x20);
+      yield Buffer.alloc(8, 0x20);
+    }
+    await expect(readUsageLedgerWorkerInput(oversized(), 12)).rejects.toThrow("Usage ledger worker input is too large");
   });
 
   it("uses the source worker with the active tsx loader in development", async () => {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  centsToUsd,
   mapCursorAgentUsage,
   mapCursorAgentUsageToTokenEntry,
   mapCursorAgentUsageToTokensEvent,
@@ -63,5 +64,22 @@ describe("cursor usage mapping", () => {
       outputTokens: 50,
       cost: { rawCostCents: 12.5, chargedCents: 8 },
     }));
+  });
+
+  it("carries reasoning tokens from getUsage onto the chat tokens event", () => {
+    const snapshot = mapCursorAgentUsage({
+      usage: { inputTokens: 10, outputTokens: 40, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 25 },
+    }, { agentId: "bc-1" });
+    expect(mapCursorAgentUsageToTokensEvent(snapshot, { turnId: "turn-1" })).toMatchObject({
+      outputTokens: 40,
+      reasoningTokens: 25,
+    });
+  });
+
+  it("converts cents to dollars at micro-dollar precision", () => {
+    expect(centsToUsd(12.5)).toBe(0.125);
+    expect(centsToUsd(1 / 3)).toBe(0.003333);
+    expect(centsToUsd(null)).toBeNull();
+    expect(centsToUsd(Number.NaN)).toBeNull();
   });
 });

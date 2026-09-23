@@ -15915,6 +15915,49 @@ describe("ADE CLI", () => {
     );
   });
 
+  it("usage turns forwards days, grouping, and recent rows to usage.getTurnUsageSummary", () => {
+    const plan = buildCliPlan(["usage", "turns", "--days", "14", "--group-by", "provider", "--recent", "20"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.label).toBe("usage turns");
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "usage",
+        action: "getTurnUsageSummary",
+        args: { days: 14, groupBy: "provider", recent: 20 },
+      },
+    });
+
+    // The service owns the defaults, so a bare call sends none.
+    const bare = buildCliPlan(["usage", "turns"]);
+    expect(bare.kind).toBe("execute");
+    if (bare.kind !== "execute") return;
+    expect(bare.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "usage", action: "getTurnUsageSummary", args: {} },
+    });
+
+    // `ledger` and `router` were never documented; only `turns` names the command.
+    for (const alias of ["ledger", "router"]) {
+      expect(JSON.stringify(buildCliPlan(["usage", alias]))).not.toContain("getTurnUsageSummary");
+    }
+
+    // Only `--group-by` names the grouping; `--by` is not an alias for it.
+    const byAlias = buildCliPlan(["usage", "turns", "--by", "provider"]);
+    expect(byAlias.kind).toBe("execute");
+    if (byAlias.kind !== "execute") return;
+    expect(byAlias.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "usage", action: "getTurnUsageSummary", args: {} },
+    });
+
+    expect(() => buildCliPlan(["usage", "turns", "--days", "0"])).toThrow(/--days must be a number from 1 to 90/i);
+    expect(() => buildCliPlan(["usage", "turns", "--group-by", "lane"]))
+      .toThrow("usage turns --group-by must be one of provider, provider_model, provider_account_model.");
+    expect(() => buildCliPlan(["usage", "turns", "--recent", "500"])).toThrow(/--recent must be a number from 0 to 200/i);
+  });
+
   it("usage budget get routes to the budget.getConfig action", () => {
     const plan = buildCliPlan(["usage", "budget", "get"]);
     expect(plan.kind).toBe("execute");

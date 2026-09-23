@@ -47,6 +47,13 @@ type AcpProviderSpec = {
   degradation?: string;
 };
 
+/**
+ * Kimi's usage signals are thinner than other providers'. Shown in its facts
+ * and in its own Usage section.
+ */
+const KIMI_DEGRADATION_NOTE =
+  "Token and context figures appear when Kimi reports them. Kimi sends no compaction events, so ADE detects compaction from a drop in context size.";
+
 export const ACP_PROVIDER_SPECS: readonly AcpProviderSpec[] = [
   {
     ...ACP_PROVIDER_METADATA.qwen,
@@ -65,10 +72,10 @@ export const ACP_PROVIDER_SPECS: readonly AcpProviderSpec[] = [
     installCommand: "curl -LsSf https://code.kimi.com/kimi-code/install.sh | bash",
     credentialSource: "Signed in through `kimi login`; stored in its config.toml. ADE does not write that file.",
     setup: "Install Kimi Code and run `kimi login` in a terminal. Use `--region global` for kimi.ai or `--region mainland-cn` for kimi.com. ADE reuses ~/.kimi-code and does not configure Kimi for you. On Windows the binary needs Git for Windows, because Git Bash is its shell.",
-    // Stated plainly rather than hidden behind a tooltip: the usage meter is
-    // simply absent in Kimi chats, and a user who is not told why will read
-    // that as a bug in ADE.
-    degradation: "Kimi does not report token usage; the usage meter stays hidden.",
+    // Stated plainly rather than hidden behind a tooltip: Kimi's usage signals
+    // are thinner than other providers', and a user who is not told why will
+    // read a gap as a bug in ADE.
+    degradation: KIMI_DEGRADATION_NOTE,
   },
   {
     ...ACP_PROVIDER_METADATA.grok,
@@ -322,7 +329,7 @@ function KimiBody() {
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       <SubsectionTitle>Usage</SubsectionTitle>
       <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-        Kimi does not report token usage; the usage meter stays hidden.
+        {KIMI_DEGRADATION_NOTE}
       </div>
     </div>
   );

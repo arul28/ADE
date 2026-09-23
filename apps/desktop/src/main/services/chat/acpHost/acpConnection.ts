@@ -31,7 +31,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import type { Logger } from "../../logging/logger";
 import { resolveCliSpawnInvocation } from "../../shared/processExecution";
-import { terminateChildProcessTree } from "../../shared/utils";
+import { getErrorMessage, terminateChildProcessTree } from "../../shared/utils";
 import {
   ACP_METHOD,
   ACP_PROTOCOL_VERSION,
@@ -231,7 +231,7 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
       return true;
     } catch (error) {
       logEvent("warn", "agent_chat.acp_write_failed", {
-        error: error instanceof Error ? error.message : String(error),
+        error: getErrorMessage(error),
       });
       return false;
     }
@@ -257,7 +257,7 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
         handler(exit);
       } catch (error) {
         logEvent("warn", "agent_chat.acp_exit_handler_failed", {
-          error: error instanceof Error ? error.message : String(error),
+          error: getErrorMessage(error),
         });
       }
     }
@@ -274,7 +274,7 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
       } catch (error) {
         logEvent("warn", "agent_chat.acp_request_matcher_failed", {
           method,
-          error: error instanceof Error ? error.message : String(error),
+          error: getErrorMessage(error),
         });
         return false;
       }
@@ -300,7 +300,7 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
           id,
           error: {
             code: -32000,
-            message: error instanceof Error ? error.message : String(error),
+            message: getErrorMessage(error),
           },
         });
       }
@@ -325,7 +325,7 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
               handler(notification);
             } catch (error) {
               logEvent("warn", "agent_chat.acp_session_update_handler_failed", {
-                error: error instanceof Error ? error.message : String(error),
+                error: getErrorMessage(error),
               });
             }
           }
@@ -343,7 +343,7 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
         } catch (error) {
           logEvent("warn", "agent_chat.acp_notification_handler_failed", {
             method,
-            error: error instanceof Error ? error.message : String(error),
+            error: getErrorMessage(error),
           });
         }
       }

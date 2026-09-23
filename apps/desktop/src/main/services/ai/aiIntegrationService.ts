@@ -96,11 +96,11 @@ import {
 import { inspectLocalProvider } from "./localModelDiscovery";
 import {
   discoverCursorSdkModelDescriptors,
-  verifyExplicitCursorModelSelection,
   clearCursorCliModelsCache,
   markCursorModelCachesStale,
   probeCursorSdkModelDiscovery,
 } from "../chat/cursorModelsDiscovery";
+import { verifyExplicitCursorModelSelection } from "../chat/cursorModelSelection";
 import { discoverDroidCliModelDescriptors, markDroidModelCachesStale } from "../chat/droidModelsDiscovery";
 import { resolveDroidExecutable } from "./droidExecutable";
 import { buildProviderConnections } from "./providerConnectionStatus";

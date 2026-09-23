@@ -613,7 +613,7 @@ const CTO_DOMAIN_COVERAGE: ReadonlyArray<{
   // the owner-claim and caller-root validation. See `registry.test.ts`.
   { domain: "computer_use_artifacts", why: "proof list and review", actions: ["listArtifacts", "readArtifactPreview", "updateArtifactReview"] },
   { domain: "search", why: "project-wide universal search", actions: ["query", "indexStatus"] },
-  { domain: "usage", why: "token, cost, and rate-limit reads", actions: ["getAdeUsageStats", "getUsageSnapshot"] },
+  { domain: "usage", why: "token, cost, rate-limit, and per-turn ledger reads", actions: ["getAdeUsageStats", "getUsageSnapshot", "getTurnUsageSummary"] },
   { domain: "budget", why: "spend caps and cumulative usage reads", actions: ["getConfig", "getCumulativeUsage", "checkBudget"] },
   { domain: "project_config", why: "read the project's effective ADE config", actions: ["get"] },
   { domain: "project_secret", why: "secret NAMES only", actions: ["list"] },

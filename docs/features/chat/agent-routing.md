@@ -20,6 +20,8 @@ where the machinery lives.
 | `apps/desktop/src/main/services/chat/sessionTurnHealth.ts` | A session's durable turn health, as pure functions over plain records — answered from what is already on disk rather than from a provider, so it outlives a restart. `normalizeLastTurnFailure()` and `normalizeSessionContextHealth()` read the persisted records back, `shouldAdviseSessionRotation()` is the occupancy-streak verdict (`AGENT_CHAT_CONTEXT_ROTATION_PCT` / `_TURNS`), and the `nextSessionTurnHealth()` reducer is what `recordSettledTurnHealth` spends on every `done`. It reports whether the record actually moved, compared field by field rather than by `JSON.stringify`, because a false "changed" costs a disk write on every settled turn of every chat. |
 | `apps/desktop/src/main/services/chat/identityThreadRotation.ts` | The way out of an identity thread that is finished, over an injected deps bag (the same shape `claudeReplayOverflowRecovery.ts` uses): `getSessionTurnHealth()`, `getCtoThreadHealth()`, `distilIdentityHandoff()`, and `startFreshIdentitySession()`, which retires a full thread and opens a clean one carrying the distillation. Identity threads are the CTO's; the product behaviour is in [CTO › One thread, and the way out of one that is finished](../cto/README.md#one-thread-and-the-way-out-of-one-that-is-finished). |
 | `apps/desktop/src/shared/cursorModes.ts` | Canonical Cursor mode vocabulary and compatibility mapping from the legacy ADE permission field; permission-only full-auto/plan launches persist the native mode that the UI and later clients read. |
+| `apps/desktop/src/main/services/chat/cursorModelSelection.ts` | Turns a chat's Cursor effort, Fast/tier, and model options into `ModelSelection.params`, for local sends, cloud creates, and cloud follow-ups. Reads the catalog that `cursorModelsDiscovery.ts` owns. See "Model params: local, cloud, and model options". |
+| `apps/desktop/src/main/services/chat/servedModelMismatch.ts` | Decides whether a served model is another model (`isServedModelMismatch`) or another route (`isServedRouteMismatch`: a different upstream is always a mismatch). |
 | `apps/desktop/src/main/utils/codexComputerUse.ts` | macOS-only signed Codex Computer Use MCP resolver. Requires explicit Codex config opt-in and verifies the standalone OpenAI client before it can be injected into a chat or CLI runtime. |
 | `apps/desktop/src/shared/cliLaunch.ts` | Tracked provider CLI start/resume builders, including model/reasoning/permission flags and the canonical `computer_use` MCP overrides for Codex. Reasoning/fast variants are per-provider: Claude/Codex/Droid/Pi keep their flags, but tracked OpenCode launches always run the root TUI (`opencode [-m model] [--agent plan] [--prompt …]`) — no `run --interactive` branch and no `--variant`, because the root command silently drops unknown args; variants remain a chat-runtime feature. |
 | `apps/desktop/src/main/services/ai/providerRuntimeHealth.ts` | Tracks provider readiness/auth/network failures so the UI can surface degraded states. |
@@ -29,8 +31,9 @@ where the machinery lives.
 | `apps/desktop/src/main/services/ai/authDetector.ts` | Discovers available credentials (CLI, API key, OAuth) and reports auth status. |
 | `apps/desktop/src/main/services/ai/codexExecutable.ts` / `droidExecutable.ts` | CLI resolution for runtimes that still need an external binary (looks on PATH, in the app bundle, then in configured install paths where supported). Claude uses the bundled Claude Agent SDK binary; Cursor and Droid run through embedded SDKs (`@cursor/sdk`, `@factory/droid-sdk`). |
 | `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | Adjusts the system prompt per mode (`chat`, `coding`, `planning`) and permission mode, and injects runtime-specific native-subagent versus ADE-child routing guidance. |
-| `apps/desktop/src/main/services/chat/droidSdkPool.ts`, `droidSdkWorker.ts`, `droidSdkProtocol.ts`, `droidSdkEventMapper.ts` | Droid SDK adapter. `droidSdkPool` forks `droidSdkWorker.cjs` (one per session), brokers prompt sends, permission requests, ask-user prompts, and settings updates via the JSON-line protocol in `droidSdkProtocol`. Send payloads carry screenshot paths (`DroidSdkUserImage`), and the worker materializes bytes locally through `workerAttachmentImages.ts`. `droidSdkEventMapper` translates Droid SDK events into the canonical `AgentChatEventEnvelope` shape; the per-session mapper state (`createDroidSdkEventMapperState`) tracks streaming text/thinking item ids, in-flight tool-use names, and the latest usage breakdown. |
-| `apps/desktop/src/main/services/chat/piSdkPool.ts`, `piSdkWorker.ts`, `piSdkProtocol.ts`, `piSdkEventMapper.ts` | Pi adapter. `piSdkPool` forks the worker (one per session key) and brokers prompts, model/thinking changes, compaction, inventory reads, sign-in, and the reverse-RPC UI channel described below. `piSdkProtocol` is protocol version 2 and carries the `ui_request` / `ui_notice` / `ui_cancel` / `ui_response` frames plus `login` / `login_cancel`, and validates every frame in both directions. `piSdkEventMapper` translates Pi SDK events into `AgentChatEvent`s and owns the card translation helpers (`piUiRequestToPendingInput`, `piUiResponseFromAnswer`, `piUiNoticeToChatEvents`, `piExtensionLoadNotice`). |
+| `apps/desktop/src/main/services/chat/openCodeTurnUsage.ts`, `codexSubagentUsage.ts`, `providerUsageAccount.ts` | Turn telemetry helpers for the inline OpenCode, Codex, and Claude adapters. `openCodeTurnUsage` sums OpenCode `step-finish` parts into the done event, builds the per-step live `context_usage` sample, and maps OpenCode's `auth.json` credential type (read for `type`/`accountId` only, cached) to the turn's account. `codexSubagentUsage` maps a subagent thread's token counter to the subagent usage split and reads a subagent's rollout `token_usage_record` lines back when no live counter arrived. `providerUsageAccount` decides the Claude and Codex account kind and caches the provider-instance lookup behind it. |
+| `apps/desktop/src/main/services/chat/droidSdkPool.ts`, `droidSdkWorker.ts`, `droidSdkProtocol.ts`, `droidSdkEventMapper.ts` | Droid SDK adapter. `droidSdkPool` forks `droidSdkWorker.cjs` (one per session), brokers prompt sends, permission requests, ask-user prompts, and settings updates via the JSON-line protocol in `droidSdkProtocol`. Send payloads carry screenshot paths (`DroidSdkUserImage`), and the worker materializes bytes locally through `workerAttachmentImages.ts`. `droidSdkEventMapper` translates Droid SDK events into the canonical `AgentChatEventEnvelope` shape; the per-session mapper state (`createDroidSdkEventMapperState`) tracks streaming text/thinking item ids, in-flight tool-use names, cumulative token usage, live context samples, provider compaction lifecycle, and derived mission-worker usage. |
+| `apps/desktop/src/main/services/chat/piSdkPool.ts`, `piSdkWorker.ts`, `piSdkProtocol.ts`, `piSdkEventMapper.ts` | Pi adapter. `piSdkPool` forks the worker (one per session key) and brokers prompts, model/thinking changes, compaction, inventory reads, sign-in, and the reverse-RPC UI channel described below. `piSdkProtocol` is protocol version 2 and carries the `ui_request` / `ui_notice` / `ui_cancel` / `ui_response` frames plus `login` / `login_cancel`, and validates every frame in both directions. `piSdkEventMapper` translates Pi SDK events into `AgentChatEvent`s and owns the card translation helpers (`piUiRequestToPendingInput`, `piUiResponseFromAnswer`, `piUiNoticeToChatEvents`, `piExtensionLoadNotice`). `piSdkSelection` applies the picked model and thinking level exactly and keeps Pi's settings read-only. |
 | `apps/desktop/src/main/services/chat/piSdkUiBridge.ts` | Worker-side half of the UI channel, deliberately free of Pi imports. Funnels Pi's three unrelated callback APIs — `AuthInteraction`, custom-tool `execute`, and an extension's `ExtensionUIContext` — into one never-rejecting `request()` that resolves to `null` when a card is dismissed, a turn aborts, or the worker is disposed. Also builds ADE's `ask_user` tool, the per-tool-call approval gate, and the extension UI context. |
 | `apps/desktop/src/main/services/ai/piInstallation.ts` | Resolves the user's Pi installation: CLI path, SDK package root/entry, agent dir, `auth.json` / models / settings paths, provider inventory, and a `blocker` string when the SDK cannot be used (missing package, or a Node older than `PI_SDK_MIN_NODE`). `sdkAvailable` and `cliAvailable` are independent — the CLI can be present while the SDK path is blocked. |
 | `apps/desktop/src/main/services/ai/piAuthService.ts` | In-app Pi sign-in. Enumerates the providers that can actually be signed into (`listPiLoginProviders`), runs one `startPiLogin` per provider on a dedicated inventory-only worker, relays Pi's prompts/notices through `addPiAuthStatusListener`, and answers them with `submitPiLoginPrompt`. Bounded at 10 minutes; `cancelPiLogin` stops a flow and releases its worker. Never reads, stores, or logs a credential. |
@@ -49,7 +52,7 @@ for vendored runtimes without changing the union.
 | `opencode` | OpenCode server runtime: the provider catalog and model list come from OpenCode/Models.dev, with provider-native OAuth, API-key, custom, and local-server paths. | `agentChatService.ts` (OpenCode adapter); inventory in `openCodeInventory.ts`; auth in `openCodeAuthService.ts`. |
 | `cursor` | Official `@cursor/sdk` running in a Node worker pool. ADE owns permissions, hooks, and the system prompt; the SDK owns the model + tool execution. Slash commands are discovered from `.cursor/commands/`, `.cursor/agents/`, built-in subagents, and Agent Skill roots via `cursorSlashCommandDiscovery.ts`. A transport failure can wedge the server-side agent thread while the worker process stays alive, so every local turn carries a 90 s first-event watchdog and one automatic recycle-and-resend — see [Cursor thread recycling and the first-event watchdog](README.md#cursor-thread-recycling-and-the-first-event-watchdog). | `cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`, `cursorSdkErrors.ts`, `cursorSlashCommandDiscovery.ts`. |
 | `devin` | The user's `devin` CLI spawned as `devin acp` over the shared ACP host (JSON-RPC stdio), plus an org-wide cloud fleet over the v3 Sessions API — mirrored transcript chats, lane-bound session creation, terminate/archive, pull-into-lane, attention mapping, and proof sync. The same provider id covers the tracked `devin` CLI for PTY sessions. | `acpHost/acpDialects/devin.ts`; cloud in `services/ai/devinCloudClient.ts`, `services/chat/devinCloudFleetService.ts`, `devinCloudConversation.ts`. |
-| `droid` | Factory Droid models exposed as dynamic `droid/<modelId>` descriptors and driven through the official `@factory/droid-sdk` running in a forked Node worker pool. The legacy ACP bridge (`droidAcpPool.ts`) has been retired. | `droidSdkPool.ts`, `droidSdkWorker.ts`, `droidSdkProtocol.ts`, `droidSdkEventMapper.ts`, `droidModelsDiscovery.ts`; model helpers in `modelRegistry.ts`. |
+| `droid` | Factory Droid models exposed as dynamic `droid/<modelId>` descriptors and driven through the official `@factory/droid-sdk` running in a forked Node worker pool. The adapter reports cumulative turn token usage, live context occupancy, provider-reported compaction, and Factory subscription account identity; mission-worker token usage is derived from the worker's bounded local settings file. The legacy ACP bridge (`droidAcpPool.ts`) has been retired. | `droidSdkPool.ts`, `droidSdkWorker.ts`, `droidSdkProtocol.ts`, `droidSdkEventMapper.ts`, `droidModelsDiscovery.ts`; model helpers in `modelRegistry.ts`. |
 | `pi` | The user's own Pi installation, loaded as a library inside a forked Node worker (never a static import — the worker resolves the installation only after init validation). The worker owns the Pi agent session, its model runtime, its tool registry, and its sign-in; ADE owns the cards the session blocks on. | `piSdkPool.ts`, `piSdkWorker.ts`, `piSdkProtocol.ts`, `piSdkEventMapper.ts`, `piSdkUiBridge.ts`, `piSdkEnvironment.ts`; the shared native session store in `piSessionStore.ts` (resolving the tree, reading headers, authorizing files), `piSessionLease.ts` (the live-writer lock), and `piSessionOwnership.ts` (the durable ownership claim); installation and sign-in in `services/ai/piInstallation.ts` and `services/ai/piAuthService.ts`. |
 
 ## Model registry
@@ -410,7 +413,7 @@ live runtime rather than read off a schema:
 |---|---|---|---|
 | Claude | Agent SDK `settings` — flag tier, above every `settings.json` the SDK reads | the user's settings chain applies | `"Default"` is a real output style, not "no style" |
 | Codex | `thread/start` + `turn/start` JSON-RPC args | `config.toml`'s `service_tier` applies | `null` reports `"default"` — a real downgrade |
-| Droid | `createSession` / `updateSettings` SDK options | `~/.factory/settings.json` applies, resolved **per key** | `null` wedges the Droid RPC for 30 s — never send it |
+| Droid | `createSession` / `updateSettings` SDK options | `~/.factory/settings.json` applies, resolved **per key** | `null` wedges the Droid RPC for 30 s — never send it (`reasoningEffort` is not nullable either; see below for how a cleared effort is reset) |
 | Cursor | `local.sandboxOptions` on the SDK agent options | `~/.cursor/sandbox.json` decides | `false` returns `insecure_none` without ever reading that file — ADE always sends `false`, so the omit column never applies to it |
 | OpenCode | `OPENCODE_CONFIG_CONTENT` | the user's `opencode.json` applies | n/a — this env var deep-merges **last**, so any key ADE names wins |
 
@@ -497,11 +500,46 @@ Spec (`enteredSpecMode` in `droidSdkWorker.ts`) and calls `exitSpecMode()` exact
 once to leave, then goes back to saying nothing. The flag is reset on init and on
 dispose.
 
+Reasoning effort follows the same omit-by-default rule, with one exception.
+Droid merges each `updateSettings` into the live session, and `reasoningEffort`
+is optional but not nullable in `update_session_settings` (only the spec-mode
+fields take `null`), so an update without it keeps the last effort stated. The
+worker therefore tracks the effort ADE has stated (`statedEffort`, one entry for
+`reasoningEffort` and one for `specModeReasoningEffort`). When the chat clears
+it, the next update restates Droid's own default for the model: the
+`defaultReasoningEffort` its catalog (`listModels()`) publishes
+(`resolveDroidReasoningEffortUpdate` in `droidSdkProtocol.ts`). If that default
+cannot be read, the worker logs a warning and retries on the next update. An
+effort ADE never stated is still left to Droid and `settings.json`. A model
+switch replaces the worker but resumes the same Droid session, so the pool keeps
+the last stated effort per chat and hands it to the next worker as
+`statedReasoningEffort`. That memory lives in the app process: after an app
+restart, a resumed session keeps its effort until the chat states one.
+
 `buildReady` reads the resolved model from `session.settings.modelId` and the
 session id from `session.id`. 0.9.x removed the `initResult` surface entirely
 (`initResult.currentModelId` never existed; `initResult.availableModels` is
 gone). The model list is discovered separately by `droidModelsDiscovery`, so the
 worker's `DroidSdkReady.availableModels` stays empty.
+
+The SDK's `token_usage_update` payload is a running cumulative snapshot for the
+turn, so ADE keeps the latest update rather than summing repeated notifications.
+`thinkingTokens` becomes canonical `reasoningTokens` in both the live token event
+and `done.usage`. After each turn, and around the provider's
+`compacting_conversation` state, the worker starts a bounded best-effort
+`getContextStats()` read. It never waits for the read: the turn's result returns
+at once, and each sample posts afterwards as a trailing `context_stats` event,
+which becomes a `context_usage` event with `origin: "live"`. A sample can
+therefore arrive after `done`, so `done` carries no `contextTokens` or
+`contextWindow`. It can even arrive after the next turn started, so the worker
+stamps each sample with the send's `turnId` and the mapper labels it with that
+turn. A `context_stats` event is never taken as the next turn's backend-dispatch
+acknowledgement, and a stale compaction-start sample never seeds the next
+turn's compaction. The sample taken when a compaction starts supplies that
+compaction's `preTokens`. A completed mission worker reads only its bounded local
+`<workerSessionId>.settings.json` `tokenUsage` block, within 500 ms, and marks
+that subagent usage as derived. A slower read posts the event without usage
+instead of holding the stream.
 
 **Cursor.** ADE always passes `sandboxOptions: { enabled: false }` for local
 Cursor workers (`cursorSdkWorker.ts`) and relies on ADE hook denials as the
@@ -579,6 +617,49 @@ provider is what makes the written value and the runtime value the same value.
 Claude permission mode can be changed mid-session via the SDK
 (`query.setPermissionMode(...)`).
 
+#### Claude turn telemetry
+
+`done.usage` is the SDK result's `usage`, which is already the turn total.
+`extractClaudeResultMetadata` adds `usage.cache_creation.ephemeral_1h_input_tokens`
+as `done.usage.cacheWrite1hTokens` (the one-hour-TTL share of
+`cacheCreationTokens`). The result's `modelUsage` map is keyed by the model that
+served each request. `done.servedModel` is set when that map names a different
+model than the session asked for: its only key, or, when subagents or side calls
+ran on other models, the key with the most output tokens (a tie names none).
+Aliases resolve through the same table the done payload's `model` uses, so
+`opus` asking and `claude-opus-5-5[1m]` answering is not a difference.
+
+The result does not say how many requests the turn made or what the context
+held at the end. `claudeTurnUsage.ts` counts each main-thread `message_start`
+stream event as one request. A subagent's events carry a `parent_tool_use_id`
+and are not counted. `done.usage.requestCount` is that count, and
+`done.usage.contextTokens` is the last request's input side (uncached input,
+cache read, and cache write). `done.usage.contextWindow` is the `modelUsage`
+window of the model that carried the turn. `done.costUsd` is `total_cost_usd`
+with `costSource: "list_price"`, because the CLI computes it from list prices.
+The idle (background) reader keeps one state across its turns, so it clears
+these figures after each idle `done`. The next idle turn cannot report them
+again.
+
+`done.account` is `{ provider: "claude", kind, instanceId, email?, plan? }`.
+`kind` comes from `system/init.apiKeySource`, which ADE keeps on the runtime:
+`ANTHROPIC_API_KEY`, `apiKeyHelper`, or `/login managed key` is `api_key`;
+`none` on the first-party route is `subscription`. A cloud route (the
+`modelUsage` provider is not `firstParty`), a preset that launches on a key or an
+endpoint, or `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` in ADE's environment
+is `unknown`, because the login did not pay. Any turn the plan did not pay for
+also carries `routedAway`: `"cloud"` (a non-`firstParty` model provider such as
+Bedrock or Vertex), `"preset"` (a keyed preset), or `"endpoint"` (a redirected
+base URL or auth token). The router's burn-rate learner does not count a
+`routedAway` turn against the Claude plan window. Codex keyed presets carry
+`routedAway: "preset"` too, unless Codex reports the ChatGPT login paid. A
+subscription turn is never marked, and `upstream` is never the marker: it names
+only a multi-vendor harness's model vendor. Before `init` reports a source, a
+signed-in provider instance counts as `subscription`. Email and plan come from
+the provider-instance record (`ProviderInstance.account`) and are attached only
+to a subscription turn. The instance lookup is cached for a minute, so a done
+event does not read the registry file.
+
 ### Codex
 
 Two independent controls:
@@ -634,6 +715,62 @@ resolve), and `normalizeCodexRateLimits` carries `spendControlReached` (the
 account-level spending-cap flag) alongside `remaining` / `limit` / `resetAt` on
 both the initial `account/rateLimits/read` and the streamed
 `account/rateLimits/updated` notification.
+
+#### Codex turn telemetry
+
+Codex counts cached input inside `input_tokens` and reasoning inside
+`output_tokens`. The parent thread's `thread/tokenUsage/updated` feeds
+`session.codexTokenUsage` and the context meter as before.
+
+Collab subagents run on their own threads, and the app-server publishes
+`thread/tokenUsage/updated` for each of them. A notification whose `threadId` is
+not the chat's thread goes to `handleCodexSubagentNotification`, which keeps the
+thread's cumulative `total` on `CodexSubagentThreadState.tokenUsage` and emits a
+`subagent_progress` carrying the usage (`inputTokens` is the uncached part,
+`cacheReadTokens` the cached part, `reasoningTokens` a subset of
+`outputTokens`, plus `totalTokens`). It never touches the parent's
+`codexTokenUsage`, and a counter that arrives after the subagent settled updates
+the state without reopening its card. The subagent's one `subagent_result`
+carries the same usage (`emitCodexSubagentResult`, used by the child
+`turn/completed`, the parent's `wait`, and `close_agent` paths).
+
+When no live counter arrived, the result reads it back from the subagent's own
+rollout, `<CODEX_HOME>/sessions/YYYY/MM/DD/rollout-<local ts>-<threadId>.jsonl`.
+The Codex home is the session's preset home or provider-instance config home.
+Thread ids are UUIDv7, so only the creation day (and its neighbours) is listed.
+The file is streamed once, skipped over 200 MB, and its `token_usage_record`
+lines for that thread are summed into `usage` with
+`usageConfidence: "derived"`. The result waits for that read instead of going
+out bare and being patched, because a subagent ends with exactly one result
+event.
+
+`model/rerouted` (the 0.15x `ModelReroutedNotification`
+`{ threadId, turnId, fromModel, toModel, reason }`; `model/reroute` is accepted
+as a spelling guard) records the served model for that turn on
+`runtime.servedModelByTurnId` and posts an info `system_notice`: "Codex
+rerouted this turn from X to Y." The turn's `done` event carries it as
+`servedModel`.
+
+`done.account` is `{ provider: "codex", kind, instanceId, email?, plan? }`.
+The app-server sends `account/updated` only when the login changes, never at
+startup (checked against 0.153.4). So `startCodexRuntime` sends one
+`account/read { refreshToken: false }` after `initialized`. This is a local
+call with no model request. `codexAuthModeFromAccountRead` maps the answer
+(`apiKey`, `chatgpt` with its `planType`, `amazonBedrock`) to an auth mode.
+A later `account/updated` is newer and wins. `apikey` is `api_key`; `chatgpt`
+and `chatgptAuthTokens` are `subscription`; a Bedrock mode (`amazonBedrock`,
+`bedrock*`) is `unknown` with `routedAway: "cloud"`; any other mode is
+`unknown`. Without an auth mode, a preset launched on a key is `unknown` and a
+signed-in provider instance is `subscription`. Email and plan come from the
+cached provider-instance record and ride only on a subscription turn. When that
+record has no plan, the plan from `account/read` is used.
+
+The turn's own tokens come from the ledger, not from `done`. Codex's
+`turn/completed` carries no usage. Every `thread/tokenUsage/updated` for the
+chat's thread becomes a `codex_token_usage` event with the turn's id and the
+running thread `total` and `last` request. The ledger subtracts the total before
+the turn's first request from the last total, and it takes `contextTokens` from
+the last request's input.
 
 #### Codex rewind and 0.145 readiness
 
@@ -709,12 +846,24 @@ override user/project Claude settings when the chip is on or off. Claude
 Sonnet and Haiku rows do not advertise Fast, and ADE leaves Claude's native
 `/fast` slash command to the runtime instead of intercepting it.
 
-Cursor SDK sessions resolve the flag through `cursorModelsDiscovery`
+Cursor SDK sessions resolve the flag through `cursorModelSelection`
 into the matching model parameter. Work CLI launches use the Cursor
 descriptor's fast alias (`*-fast`) when the same flag is enabled. The
 flag persists with the session, survives reload through
 `PersistedChatState`, and is forwarded to remote devices through the
 sync command service.
+
+Fast is a tier of one model, not a chat-wide preference. A model switch
+through `updateSession` keeps `fastMode` only when the new model has a fast
+tier (`sessionModelSupportsFastMode`); otherwise the flag is cleared and the
+cleared state is persisted. Left on, it sat hidden behind the missing chip and
+came back the moment the chat reached a fast-capable model the user never
+turned it on for. A Cursor model's tier is known only from Cursor's catalog.
+The switch reads the catalog in memory only (`cursorModelFastTierFromCache`).
+It does not wait for a fetch, because a fetch can take up to 5 seconds. A cold
+catalog, or a model that the catalog does not list, is "unknown". Unknown keeps
+the flag. The send-time resolver applies the flag only where Cursor has a tier.
+Session create is unchanged: the raw preference is kept there.
 Parallel-model rows track Fast mode per slot
 (`ParallelModelRowState.fastMode`) so launching multiple
 fast-capable runs side-by-side can mix Fast and Standard turns. Codex
@@ -722,8 +871,20 @@ discovery populates `serviceTiers` from app-server-reported
 `additionalSpeedTiers` / `serviceTiers` rows; the static registry
 pre-marks GPT-5.6 and older fast-capable Codex CLI entries. Cursor discovery
 populates `serviceTiers` from SDK/CLI parameters and folds CLI
-`*-fast` rows into their base descriptors as aliases. OpenCode maps Fast
-to the provider variant `fast` in chat prompt bodies; Work CLI launches
+`*-fast` rows into their base descriptors as aliases. An OpenCode prompt
+takes one `variant` string, so Fast and an effort combine only through a
+separate model or a combined key. OpenCode turns a models.dev fast mode into
+a sibling model `<id>-fast`, which calls the provider API as `<id>` with the
+same effort variants. The inventory folds that sibling into its base row, so
+the picker keeps one row per model. The sibling stays in the registry, so a
+chat saved on its id still runs it. The inventory also reads combined keys
+(`high-fast`, `fast_high`) as Fast routes, not as efforts.
+`resolveOpenCodeFastEffortSelection` (shared by the prompt path and the
+composer) sends the sibling with the effort variant, else the combined key,
+else a plain `fast` variant when no effort is selected. If no route keeps
+both, the effort wins. The prompt path then logs
+`agent_chat.opencode_fast_not_applied` once per chat, model, and effort, and
+the composer disables the Fast chip with the reason. Work CLI launches
 carry no variant at all — the root TUI has no `--variant` flag, so tracked
 launches keep only the permission agent and model.
 Droid preserves Factory's concrete fast model IDs when they are reported,
@@ -795,6 +956,44 @@ an index signature, so a misspelled key compiles and silently fails to apply
   ask would hang it until the caller aborts. The rule binds all four rulesets and
   is pinned by the test "never states external_directory on any ADE ruleset".
 
+#### OpenCode turn telemetry
+
+OpenCode reports usage once per model request, as a `step-finish` part
+(`{ cost, tokens: { input, output, reasoning, cache: { read, write } } }`, where
+`input` is the uncached input). `runTurn` records every parent-session
+`step-finish` by part id (a re-sent part replaces, never double counts), and the
+completed turn's `done` event reports:
+
+- `usage` token fields summed over every step, `reasoningTokens` included;
+- `usage.contextTokens`, the last step's `input + cache.read + cache.write`;
+- `usage.requestCount`, the number of steps;
+- `usage.contextWindow`, the model's context limit from the descriptor
+  (`Model.limit.context` in the OpenCode inventory);
+- `costUsd`, the sum of the steps' `cost`, with `costSource: "provider"` when
+  any step carried one.
+
+A step inside a compaction summary message counts toward the totals and the
+cost but never becomes the context figure, because its input is the
+conversation it replaces. After each other step, a `context_usage` event
+(`origin: "live"`, `state: "measured"`) carries that step's input side over the
+context window, in the shape of Claude's automatic snapshots.
+
+`done.servedModel` names the model of the latest assistant (non-summary)
+`message.updated`, in the registry id form a picker row has
+(`openCodeRegistryIdFor`: `opencode/<providerID>/<encoded modelID>`, after the
+Anthropic alias normalization). It is set only when that id differs from the
+id of the model the prompt asked for, which is the fast sibling on a Fast turn
+that runs through one. `done.account` names the upstream provider (`upstream`):
+`lmstudio` and `ollama` are `local` with the endpoint ADE configures for them;
+`opencode` and `opencode-go` (Zen and Go) are `subscription`, with the email
+from the `account` table in `opencode.db` when a row exists; any other provider
+takes its kind from OpenCode's `auth.json` entry (`type: "api"` is `api_key`,
+`type: "oauth"` is `subscription` with `accountId` when present), and a provider
+with no entry is `unknown`. Only `type` and `accountId` are read from
+`auth.json`, never a token. The data directory is `$XDG_DATA_HOME/opencode`
+when set, else `~/.local/share/opencode`. Both lookups are cached for five
+minutes, so a turn does not read either file.
+
 ### Pi
 
 Pi's built-in tool registry contains only `read`, `bash`, `edit`, and `write`,
@@ -837,11 +1036,67 @@ life of the session. A dismissed card or an aborted turn denies the call, and a
 denial is raised as a thrown error because Pi marks a tool call failed only when
 `execute` throws.
 
+The model and thinking level are the chat's, exactly:
+
+- **Model.** The worker looks the model up by provider and id
+  (`resolvePiExactModel` in `piSdkSelection.ts`). Pi's CLI resolver
+  (`resolveCliModel`) is built for typed input. It takes a partial id to its
+  nearest match, picks another provider's model with the same id, and invents a
+  custom model id when nothing matches, and each of those runs a different paid
+  route. A model missing from Pi's catalog fails the launch, or the switch, with
+  the reason.
+- **Thinking level.** The level is applied once the session exists, so a
+  resumed file records it. A chat with no effort runs on Pi's default: the
+  user's `defaultThinkingLevel`, else Pi's own `medium`. That includes a resumed
+  session whose file recorded another level. Clearing the effort mid-chat sends
+  `set_thinking` with `null`, which does the same for the live session.
+- **Effort choices.** The picker offers the levels Pi supports for each model
+  (`piSupportedThinkingLevels`, Pi's own rule over `reasoning` and
+  `thinkingLevelMap`), mapped through `piThinkingLevel`. The inventory worker
+  reports them per model and `piInstallation.ts` carries them as
+  `modelThinkingLevels`. A model that cannot think gets no picker. A reading of
+  Pi's profile files alone has no levels.
+
+ADE never writes Pi's settings. Pi saves a session's model and thinking picks as
+the user's global defaults (`setDefaultModelAndProvider`,
+`setDefaultThinkingLevel`), which would change what every later Pi CLI launch
+starts on. The worker's settings manager is built on a read-only storage
+(`createPiReadOnlySettingsStorage`), so the user's `settings.json` is read and
+every write is dropped. The picks still land in the session file, which is the
+session's own record.
+
 Pi's tool allowlist and extension binding are fixed when the worker is created,
 so `startPiRuntime` records a `toolPolicyKey` (tools + approval tools +
 extensions on/off) on the runtime and restarts the worker whenever it changes.
 Without that, a session switched from `default` to `plan` would keep its write
 tools until something else happened to restart it.
+
+Pi reports assistant-message usage at the end of each provider request. ADE
+aggregates those messages for the turn, maps input, output, cache, reasoning,
+and list-price cost into the canonical done event, and preserves the latest
+response model when the provider reroutes a request. After each turn and after
+After each turn, the worker makes a bounded best-effort `getContextUsage()`
+call. Successful samples become measured `context_usage` events. Pi has no
+reading right after a compaction (`tokens: null`) or for a model with no known
+window (`undefined`); the worker answers "no sample" (`null`) for both instead
+of an error, and ADE does not ask after `compaction_end`. Completed
+compactions expose the provider's before/after token estimates, and the Pi
+worker includes non-secret account provenance (`subscription`, `api_key`,
+`local`, or `unknown`) without forwarding credential values.
+
+The per-turn account and Settings read the same profile files through
+`piSdkAuth.ts`, each under its own rules. Settings → Providers uses the frozen
+`"settings"` rules, so what it shows never moves with usage telemetry. The
+worker's `createPiAccountReader` uses the `"turn"` rules. A stored `auth.json`
+entry wins. A loopback base URL (`isLoopbackHostname`) is `local`. A key in
+`models.json`, or the provider's API-key variable in the worker's environment,
+is `api_key`. Any other `models.json` base URL is `local`. The variables come
+from `PI_PROVIDER_ENV_KEYS`, which mirrors pi-ai's own provider-to-variable map
+for the keys the worker already receives. For a built-in provider with no
+`models.json` entry, Pi's registry base URL counts only when it is loopback.
+Every built-in cloud provider (Cerebras, Together, Z.AI, MiniMax, Moonshot, ...)
+ships its own cloud URL, and reading that as an endpoint the user runs would
+record paid turns as local.
 
 ### Cursor
 
@@ -951,6 +1206,139 @@ other outcome stages the row exactly as a queued send would have, emits one
 `pendingSteers` only at a turn boundary — runs `drainCursorQueueHeadIfIdle` so a
 row that landed after that boundary already passed is not left waiting for the
 user to send something else.
+
+#### Cursor turn telemetry
+
+Token counts come from two SDK fields. The stream's `usage` message is the
+SDK's `TokenUsage` from one `turnEnded` report. It fires once per agent turn,
+not once per model request (`messages.d.ts` documents it as "emitted once at
+turn end"). `RunResult.usage` is the SDK's sum of those reports for the run.
+The `tokens` event and `done.usage` read input, output, cache read, cache write
+(`cacheWriteTokens`, which becomes `cacheCreationTokens` on `done`), and
+`reasoningTokens`. Because no per-request figure exists, `done.usage` carries no
+`contextTokens` or `requestCount`, and the `usage` message never feeds the
+context meter.
+
+Compaction is reported by the provider through an undocumented hook.
+`ensureCursorSdkUserHook` registers a `preCompact` entry next to the
+`preToolUse` gate in `~/.cursor/hooks.json`. That is the user's global Cursor
+hooks file, shared with the Cursor IDE and CLI and with every ADE build on the
+machine, so ADE only adds or replaces its own entries and keeps every other
+hook as written. The `preCompact` entry runs scripts of its own,
+`~/.cursor/hooks/ade-precompact.{sh,cjs,cmd}`, with `failClosed: false`. It does
+not run the `ade-tool-gate.*` gate scripts, because an older ADE build (an
+installed Stable, for example) rewrites those with its own gate and keeps hooks
+it does not know. A `preCompact` entry on the gate would then send every
+compaction through that build's permission gate. No ADE build rewrites the
+`ade-precompact.*` scripts, and they answer `{}` on every path (no socket, no
+Node runner, ADE unreachable, or any answer from ADE). The hook can never block
+a compaction or attach a message to one, and the gate scripts stay exactly as
+the permission gate needs them. The reporter sends the payload to the worker's
+hook socket with `adeHook: "preCompact"`. It connects only when
+`ADE_CURSOR_SDK_PRECOMPACT=1` is set, and only a worker that reads this report
+sets it for its agent (`buildCursorSdkWorkerEnv`). Thus an older build's socket
+never gets a `preCompact` report. If ADE cannot write the `ade-precompact.*`
+scripts, it registers no `preCompact` entry, logs a warning once, and still
+installs the permission gate. The worker's hook server answers
+first. It then posts an
+`ade_cursor_compaction` event on the SDK message channel, carrying the hook
+payload's `trigger`, `context_tokens`, `context_window_size`,
+`context_usage_percent`, and `model` (the SDK copies them from agent-core's
+`PreCompactRequestQuery`). `cursorSdkEventMapper` turns that event into a
+`context_usage` snapshot (`origin: "live"`, context tokens over window size)
+followed by `context_compact` `started` with `provider: "cursor"`,
+`detection: "provider"`, and `preTokens`. Cursor has no public "done
+compacting" event. The SDK turns the summary it writes into a `task` message,
+and that message closes the compaction. If no summary arrives, the next
+generation message (`assistant`, `thinking`, `tool_call`, `usage`) closes it.
+If neither arrives, the run ending closes it, as `failed`/`interrupted` when the
+run was cancelled or errored. The closing event carries `durationMs`, so the
+shared compaction emitter keeps it as sent. The first compaction in a turn uses
+the turn id as its `compactionId`, and later ones use `<turnId>:compact-<n>`.
+Once the hook fires in a run, the worker marks that run's `status` events, and
+the status-text match (`detectCompactionSignalText`) stays quiet. That text
+match now runs only for runs the hook did not report on, such as cloud runs.
+`ADE_CURSOR_PRECOMPACT_HOOK=0` in the worker environment, or
+`CursorSdkWorkerInit.preCompactHook: false`, removes the entry and turns the
+path off. `cursorSdkPreCompactContract.test.ts` reads the installed SDK's `cjs`
+and `esm` dist. It fails with "The Cursor SDK changed its undocumented
+PreCompact hook" and names the step or field that disappeared.
+
+`done.account` is always `{ provider: "cursor", kind: "subscription" }`, because
+every Cursor run, local or cloud, bills the signed-in Cursor plan. The worker
+adds `email` when it has one. The first source is a hook payload's `user_email`,
+which needs no network call. The second is one `Cursor.me()` per worker, started
+on the first local send and never awaited by a turn. The worker attaches these
+facts to the local run result as `adeTurnTelemetry`. For an `auto` selection,
+the `model` a hook payload names (every `preToolUse` and `preCompact` payload
+carries one) becomes `done.servedModel`. A named model is not refined this way,
+because the hook may spell the same model differently.
+
+A turn with no hook payload — a text-only `auto` turn, or any cloud turn (cloud
+runs fire no local hooks, and the SDK's cloud `Run.model` only echoes the
+requested selection) — has no served model at `done`, and `done` does not guess
+one. The served model reaches the ledger later: `scheduleCursorDashboardReconcile`
+reads Cursor's dashboard usage events for the turn and amends the row's
+`servedModel`, charge, and request count. That read is keyed by the agent the
+turn ran on. `recordTurnUsage` takes the cloud agent when the `done` event says
+`runtime: "cloud"`; it used to read `activeCloudRunId`, which the cloud run's
+`run_result` clears before the turn emits `done`, so every cloud turn was
+reconciled against the local worker's agent and never matched.
+
+#### Model params: local, cloud, and model options
+
+Every Cursor run carries its model as `ModelSelection { id, params }`
+(`@cursor/sdk` has no other per-model channel). `cursorModelSelection.ts` makes
+the params from the chat's effort, Fast/tier, and `cursorConfigValues`.
+`cursorModelsDiscovery.ts` owns the catalog, and the selection module only
+reads it.
+
+- **Local sends are best-effort, but never blind.** A local send sends the
+  params that resolved, on `ok` and on `partial`. Sometimes the catalog in
+  memory cannot answer and the chat names a control, for example a CLI or
+  automation chat that no picker warmed. Then `resolveCursorSdkLocalSelection`
+  loads the catalog first: the rows in memory for this key, else one bounded
+  fetch. A fetch that failed for this key within the freshness window answers
+  at once. If the catalog still cannot load, the turn runs without those params,
+  and the chat shows one `system_notice`.
+- **A cloud create is verified or refused.** `verifyExplicitCursorModelSelection`
+  refuses anything but `ok`. Cursor Cloud substitutes its default variant for
+  params it was not sent, so a new agent must not start on settings that ADE
+  could not express.
+- **A cloud follow-up refuses only an unlisted model.**
+  `resolveCursorSdkFollowUpSelection` refuses a follow-up only when the catalog
+  positively does not list the model. If the catalog cannot load
+  (`catalog-unavailable`), or the model cannot take a control (`partial`), the
+  follow-up sends the params that resolved. The chat then shows one notice that
+  names what was not applied (`describeUnappliedCursorSelection`). The notice
+  shows again only after a run that applies everything.
+- **Cloud runs do not fetch on every run.** Both cloud paths read the catalog
+  in memory when it holds this key's rows (the cache is keyed by a hash of the
+  API key). They fetch only when that cache is cold.
+- **An adopted model keeps only the choices it can take.** A cloud run that
+  started elsewhere (cursor.com) can run on another model. When the chat adopts
+  that model, `syncCursorSessionDescriptor(..., { adopted: true })` checks the
+  effort, Fast, the cloud tier, and the model options against the catalog in
+  memory (`unsupportedCursorSelection`). It drops each choice that would come
+  back unmet, and it drops Fast on a model with no Fast tier. A control that the
+  model does not declare is inapplicable, and it stays. If the catalog cannot
+  answer for the model, nothing is dropped.
+- **Model options (`cursorConfigValues`).** The composer's extra Cursor options
+  are the model's own catalog parameters other than effort and tier
+  (`listCursorSdkModelConfigParameters`). `cursorSdkConfigOptions` publishes
+  them in `cursorModeSnapshot`. An option that the chat never set has
+  `currentValue: null`, which is Cursor's default. A select starts with a
+  "Default" choice that sends nothing. A boolean chip cycles Default, On, Off,
+  and back to Default. The renderer sends only the keys that the user set
+  (`userSetCursorConfigValues` drops `null` and the empty choice). Before this,
+  an untouched boolean was reported as `false`, and every client sent an
+  explicit `false` that the user never chose. A chosen value rides the next run
+  as a `params` entry when the model declares that parameter and the value is
+  one of its values (matched on value or display name). A key that the model
+  does not declare is inapplicable and dropped. Examples are an ACP-era `mode`
+  or `model` key, or an option from another model. A declared parameter with a
+  value that it cannot take is `unmet: ["config"]`. A config value never speaks
+  for a parameter whose own control (effort picker, Fast) the user set.
 
 ### The permission ladder
 
@@ -1120,6 +1508,70 @@ For Claude, `resolveClaudeCliModel()` translates the descriptor into
 the CLI's expected model token. For Codex, `agentChatService.ts` builds the
 app-server startup and thread configuration while `codexExecutable.ts` resolves
 the packaged/PATH binary.
+
+### What each SDK provider receives
+
+The model and effort the chat shows must be the ones the provider runs.
+
+| Provider | Start | Mid-chat switch | Effort |
+|---|---|---|---|
+| Claude | `buildClaudeQueryOptions` sends `model` (`resolveClaudeCliModel`, or a preset's own id) and `effort` | Teardown, then a new query; a live query also gets `setModel` | A change resets the query |
+| Codex | `thread/start` and `thread/resume` send `model` and the effort config | `thread/settings/update` on a live thread; `turn/start` sends `model` and `effort` every turn | Sent every turn |
+| Cursor | `ensureCursorSdkRuntime` sends `{ id, params }`; the pool key holds both. Params carry effort, the tier, and the chat's `cursorConfigValues` | Teardown, or deferred to turn end while busy (`pendingModelSwitchReset`, local and cloud) | Params are recomputed every turn. A local send loads a cold catalog first; every cloud run (create and follow-up) is verified or refused |
+| OpenCode | `promptAsync` sends `model` and `variant` every prompt, from `resolveOpenCodeFastEffortSelection`; Fast can send the `<id>-fast` sibling as `model` | Teardown | `variant` is OpenCode's own key (`openCodeVariantKeys`). A row offers only the variants OpenCode reported for it; the no-inventory fallback keeps the canonical Anthropic effort tiers but never offers Fast |
+| Droid | `createSession` / `updateSettings` send `modelId` and `reasoningEffort` every turn | Teardown | `ultracode` is sent as `xhigh`; a cleared effort ADE had stated is reset to Droid's default for the model |
+| Pi | The worker's `createAgentSession({ model })` with the exact catalog model, then `setThinkingLevel`; an explicit model wins over the session file | Teardown | Pi's own levels per model, through `piThinkingLevel`; none picked means Pi's default |
+
+Four guards keep an old model from coming back:
+
+- A Cursor run echoes the model its runtime sent. `onRunStarted` does not copy
+  that echo to the session while a switch waits for turn end.
+- The Cursor Cloud mirror adopts a run's model once, when the run is new to the
+  chat. Before, every mirror refresh put the last run's model back over a new
+  pick.
+- A Pi switch made while no Pi runtime is live persists the new
+  `piProviderId` / `piModelId`. Before, the old file's ids were written back and
+  the next launch resumed on the old model.
+- A Pi restart on the same session file waits for the released worker to exit
+  (`piWorkerExits.ts`, at most 5 s). The worker holds the file's lease until it
+  exits, so the first send after a switch failed with "already owned".
+
+Live ACP models (Grok's `grok-4.7`, `grok-4.7-build-fast`) take their effort
+tiers from the session's effort option (`reasoning_effort`). The current model
+gets the advertised list. A live model keeps the tiers it had when it was
+current, and a model never current takes the session's list.
+
+A live report of a model the registry already curates is not a second row. The
+session names it by its provider id (`grok-4.5`, which registers as
+`xai/grok-4.5`) while the curated row is `xai/grok-4-5`, and both used to reach
+the picker. `replaceDynamicAcpModelDescriptors` now matches a report to its
+curated row by id or by `providerModelId` within the same route and keeps it in
+`liveAcpReportsByProvider` instead of the listed live rows. The picker shows the
+curated row — its researched name, context window and color — with the efforts
+the live session reported; a report with no efforts leaves the researched tiers,
+and clearing the live lists restores them. The live id resolves to the curated
+row, so a chat that picked the old live row keeps working. For a model that is
+not current, "the tiers it had" is read through `resolveAcpModelDescriptor`, so
+a curated model is never handed the current model's list.
+
+When a provider reports a served model that is not a spelling, a context tier, a
+dated snapshot, or an effort variant of the requested one
+(`servedModelMismatch.ts`), ADE logs `agent_chat.served_model_mismatch` once for
+each chat and model pair. A router pick (`auto`) is never a mismatch. Droid's
+`done.servedModel` comes from the assistant message's `message.modelId`. The
+run result's `modelId` is only the session setting read back. Pi's compares
+provider and model, because the same model id from two providers is two paid
+routes: another provider is reported as `provider/model`, and another model on
+the requested provider as the model id. The mismatch log uses `isServedRouteMismatch`,
+which compares routes. When the requested upstream and the served upstream are
+both known and differ, the turn is always a mismatch. Otherwise the model names
+decide (`isServedModelMismatch`). The name-only comparison sees
+`openrouter/claude-sonnet-5` and `claude-sonnet-5` as one model. Thus a Pi turn
+whose `done.account.upstream` differs from the chat's `piProviderId` is always
+logged. The check runs on every `done` event, ACP turns included: an ACP turn
+whose `done.servedModel` names another model is logged the same way. Claude's
+served model comes from `claudeTurnUsage.ts` (`pickClaudeLeadingModelUsage`,
+`resolveClaudeServedModel`).
 
 ## Model switching mid-session
 

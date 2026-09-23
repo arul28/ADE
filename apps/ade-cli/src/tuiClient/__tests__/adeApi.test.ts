@@ -504,6 +504,50 @@ describe("Cursor Cloud fleet helper", () => {
 });
 
 describe("latestTokenStats", () => {
+  it("uses a done event's contextTokens instead of the turn's summed totals", () => {
+    const stats = latestTokenStats([
+      envelope(1, {
+        type: "done",
+        turnId: "turn-1",
+        status: "completed",
+        usage: { inputTokens: 30_000, cacheReadTokens: 900_000, outputTokens: 4_000, contextTokens: 120_000, contextWindow: 1_000_000 },
+      }),
+    ]);
+    expect(stats.inputTokens).toBe(120_000);
+    expect(stats.outputTokens).toBeNull();
+    expect(stats.cacheReadTokens).toBeNull();
+    expect(stats.percent).toBe(12);
+  });
+
+  it("keeps a done's contextTokens when a tokens event for that turn lands after it", () => {
+    const stats = latestTokenStats([
+      envelope(1, {
+        type: "done",
+        turnId: "turn-1",
+        status: "completed",
+        usage: { inputTokens: 500, cacheReadTokens: 90_000, outputTokens: 300, contextTokens: 91_000, contextWindow: 200_000 },
+      }),
+      envelope(2, { type: "tokens", turnId: "turn-1", inputTokens: 1_400_000, outputTokens: 15_000 } as AgentChatEventEnvelope["event"]),
+    ]);
+    expect(stats.inputTokens).toBe(91_000);
+    expect(stats.outputTokens).toBeNull();
+  });
+
+  it("keeps a live context sample over the same turn's summed totals", () => {
+    const stats = latestTokenStats([
+      envelope(1, {
+        type: "context_usage",
+        turnId: "turn-1",
+        state: "measured",
+        usage: { categories: [], totalTokens: 64_000, maxTokens: 128_000, percentage: 50 },
+      } as AgentChatEventEnvelope["event"]),
+      envelope(2, { type: "tokens", turnId: "turn-1", inputTokens: 300_000 } as AgentChatEventEnvelope["event"]),
+      envelope(3, { type: "done", turnId: "turn-1", status: "completed", usage: { inputTokens: 300_000 }, costUsd: 0.1 }),
+    ]);
+    expect(stats.inputTokens).toBe(64_000);
+    expect(stats.costUsd).toBe(0.1);
+  });
+
   it("tracks streaming state, context percentage, token counts, and cost", () => {
     const events = [
       envelope(1, { type: "status", turnStatus: "started" }),

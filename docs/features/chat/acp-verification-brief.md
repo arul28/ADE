@@ -17,6 +17,7 @@ ACP host. Eight work units build the feature and its verification coverage.
 | Shared ACP host | `apps/desktop/src/main/services/chat/acpHost/` |
 | Dialects | `acpHost/acpDialects/{qwen,kimi,grok,copilot}.ts` |
 | Mock agent + matrix | `acpHost/mockAcpAgent.ts`, `acpHost/acpHost.test.ts` |
+| Telemetry (usage, cost, account, compaction) | `acpHost/acpTurnTelemetry.ts`, `acpDialects/{grokTelemetry,copilotUsageLedger,qwenUsageLedger,acpAccounts}.ts`, `acpHost/acpTelemetry.test.ts` |
 | Chat runtime adapter | `main/services/chat/agentChatService.ts` (`AcpRuntime`, `ensureAcpSessionRuntime`, `runAcpTurn`) |
 | Auth probe | `main/services/ai/acpAuthProbe.ts` |
 | Executables | `main/services/ai/acpExecutables.ts` |
@@ -72,8 +73,18 @@ verified once, on one version. Re-verify what you can and flag what you cannot:
 - Kimi compatibility baseline 0.39.1: `session/close` is advertised and
   implemented. Kimi Code 2.0.0's ACP reference also documents
   `session/set_config_option` for mode/model/thinking, now enabled by ADE.
-  Usage on the wire is still unverified. Interactive TUI still has no argv
-  prompt.
+  Usage is wired from the binary's code: one `usage_update` after each settled
+  turn (skipped for a model outside Kimi's catalog) and the ACP prompt-result
+  `usage` block, both read when present. The fixtures are shaped after the
+  0.39.1 binary; an authenticated turn has not confirmed them yet, and that is
+  the check to run. Interactive TUI still has no argv prompt.
+- Grok 1.0.40 and Copilot 1.0.88 usage: `acpTelemetry.test.ts` replays real
+  one-turn captures (`fixtures/grok.live-turn.jsonl`,
+  `fixtures/copilot.usage-turn.jsonl`) and the ledger row Copilot wrote for
+  that turn (`fixtures/copilot.usage-events.json`). Grok's `auto_compact_*`
+  and a Copilot row with an `agent_id` exist only as binary strings and
+  fixtures; a long Grok session (80% context) and a Copilot subagent turn
+  would confirm them.
 - Qwen 0.24.0: `--session-id` vs `--resume`/`--continue` and `--yolo` vs
   `--approval-mode` are parse errors. `session/close` is **not** implemented;
   the ACP handshake advertises `openai` and `openai-responses`.

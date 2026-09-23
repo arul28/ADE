@@ -25,7 +25,9 @@ import type {
   AdeUsageScope,
   AdeUsageStats,
   AdeUsageTranscriptSource,
+  AdeTurnUsageLedgerSummary,
   GetAdeUsageStatsArgs,
+  GetTurnUsageSummaryArgs,
   UsageProvider,
   UsageWindow,
   UsagePacing,
@@ -48,7 +50,7 @@ import {
   LIVE_QUOTA_PROVIDERS,
   usageProviderAccountUrl,
 } from "../../../shared/types";
-import { isRecord, nowIso, getErrorMessage, safeJsonParse } from "../shared/utils";
+import { finiteNumberOrNull, isRecord, nowIso, getErrorMessage, safeJsonParse } from "../shared/utils";
 import {
   decodeOpenCodeRegistryId,
   getModelById,
@@ -91,9 +93,10 @@ import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/proce
 import { stripAnsi } from "../../utils/ansiStrip";
 import {
   dynamicTokenPricingUpdatedAt,
-  ONE_HOUR_CACHE_WRITE_MULTIPLIER,
+  priceTokenSplit,
   refreshDynamicTokenPricing,
   resetDynamicTokenPricingForTest,
+  ratesForRequest,
   resolveTokenPrice,
   setDynamicTokenPricingForTest,
   tokenPriceSource,
@@ -104,7 +107,6 @@ import {
   discoverClaudeProjectDirs,
   findJsonlFiles,
   findRecentFiles,
-  optionalNumber,
   parseCopilotEvents,
   parseGeminiEntries,
   scanClaudeLogs,
@@ -118,7 +120,13 @@ import {
   scanOpenCodeLogs,
   runLedgerScanWithCompleteness,
   sanitizeClaudeProjectPath,
+  usageLedgerTranscriptRoots,
 } from "./ledgers/localUsageLedgers";
+import {
+  DAILY_7D_PROVIDERS,
+  usageLedgerScanners,
+  type UsageLedgerScannerOverrides,
+} from "./usageLedgerScanners";
 import { listCursorBilledUsage } from "./cursorBilledUsageStore";
 import { isPathInside, pathComparisonKey, pathKey } from "../shared/pathCompare";
 import {
@@ -162,9 +170,12 @@ import {
   pollCopilotQuota,
   pollCursorQuota,
   pollGrokQuota,
+  pollKimiQuota,
   pollOpenCodeQuota,
 } from "./extraProviderQuota";
 import { localDayKey, localDayOffset, localDayStart } from "./localDay";
+import { buildTurnUsageLedgerSummary, type TurnUsageLedger } from "./turnUsageLedger";
+import { usageAccountId } from "./usageAccountId";
 import {
   EMPTY_GITHUB_STATS,
   makeEmptyGithubStats,
@@ -664,17 +675,6 @@ type QuotaInstance = {
 /** Providers that can hold more than one local login. */
 type QuotaInstanceProvider = "claude" | "codex";
 
-/**
- * Account identity for one window or reading.
- *
- * The instance id, not the email: two logins can share an email (a personal and
- * a work seat on one address) and a login can have no readable email at all, so
- * the email cannot key the directory that windows are attributed through.
- */
-function accountIdForInstance(provider: UsageProvider, instanceId: string): string {
-  return `${provider}:${instanceId}`;
-}
-
 /** The one account a machine with no registry (or an unreadable one) has. */
 function fallbackQuotaInstance(provider: QuotaInstanceProvider): QuotaInstance {
   return {
@@ -818,7 +818,7 @@ function mergeInstancePollResults(
     ? previousSnapshot?.providerStatus?.[provider]
     : undefined;
   const previousDefaultAccountId = preservedDefault
-    ? accountIdForInstance(provider, preservedDefault.id)
+    ? usageAccountId({ provider, instanceId: preservedDefault.id })
     : undefined;
   const polledAt = nowIso();
   const windows: UsageWindow[] = previousDefaultAccountId
@@ -832,7 +832,7 @@ function mergeInstancePollResults(
     : [];
   const errors: string[] = [];
   for (const { instance, result } of fresh) {
-    const accountId = accountIdForInstance(provider, instance.id);
+    const accountId = usageAccountId({ provider, instanceId: instance.id });
     if (result.windows.length > 0) {
       for (const window of result.windows) windows.push({ ...window, accountId });
     } else if (!instance.isDefault) {
@@ -860,7 +860,7 @@ function mergeInstancePollResults(
       // Only when something was actually read elsewhere: with zero fresh
       // windows the whole-provider reconciliation in `buildProviderWindows`
       // already carries every previous window and marks the provider stale.
-      const accountId = accountIdForInstance(provider, instance.id);
+      const accountId = usageAccountId({ provider, instanceId: instance.id });
       windows.push(...filterUnexpiredCarriedWindows(
         previousSnapshot?.windows.filter((window) => (
           window.provider === provider && window.accountId === accountId
@@ -1658,24 +1658,21 @@ function addDailyModelTokenEntry(breakdown: DailyModelTokenBreakdown, entry: Tok
 }
 
 function calculateTokenEntryCost(entry: TokenEntry): number {
-  const override = optionalNumber(entry.costOverrideUsd);
+  const override = finiteNumberOrNull(entry.costOverrideUsd);
   if (override != null && override >= 0) return override;
-  const price = resolveTokenPrice(entry.model);
-  const billableInputTokens = toNonNegativeInt(entry.billableInputTokens ?? entry.inputTokens);
-  const cacheWriteTokens = toNonNegativeInt(entry.cacheWriteTokens);
-  const oneHourCacheWriteTokens = Math.min(toNonNegativeInt(entry.oneHourCacheWriteTokens), cacheWriteTokens);
-  const fiveMinuteCacheWriteTokens = Math.max(0, cacheWriteTokens - oneHourCacheWriteTokens);
-  const billableOutputTokens = toNonNegativeInt(entry.billableOutputTokens ?? entry.outputTokens);
-  const billableCachedTokens = toNonNegativeInt(entry.billableCachedTokens ?? entry.cachedTokens);
-  const webSearchRequests = toNonNegativeInt(entry.webSearchRequests);
-  return (
-    billableInputTokens * price.input +
-    billableOutputTokens * price.output +
-    fiveMinuteCacheWriteTokens * price.cacheWrite +
-    oneHourCacheWriteTokens * price.cacheWrite * ONE_HOUR_CACHE_WRITE_MULTIPLIER +
-    billableCachedTokens * price.cacheRead +
-    webSearchRequests * WEB_SEARCH_COST_USD
-  );
+  const rates = ratesForRequest(entry.model, resolveTokenPrice(entry.model), {
+    contextTokens: entry.requestContextTokens,
+    timestampMs: entry.timestamp,
+  });
+  const tokensUsd = priceTokenSplit(rates, {
+    input: toNonNegativeInt(entry.billableInputTokens ?? entry.inputTokens),
+    output: toNonNegativeInt(entry.billableOutputTokens ?? entry.outputTokens),
+    cacheRead: toNonNegativeInt(entry.billableCachedTokens ?? entry.cachedTokens),
+    cacheWrite: toNonNegativeInt(entry.cacheWriteTokens),
+    cacheWrite1h: toNonNegativeInt(entry.oneHourCacheWriteTokens),
+  });
+  // Web search is a per-request fee, not a token rate, so it stays out of the shared split price.
+  return tokensUsd + toNonNegativeInt(entry.webSearchRequests) * WEB_SEARCH_COST_USD;
 }
 
 function aggregateCosts(
@@ -1813,6 +1810,11 @@ const PROVIDER_SCOPE_SUPPORT: Readonly<Record<string, boolean>> = {
   droid: true,
   copilot: true,
   gemini: true,
+  // Pi, Qwen and Grok record the session cwd in their own history files, so
+  // their entries carry a projectPath and can be filtered to one project.
+  pi: true,
+  qwen: true,
+  grok: true,
 };
 
 const PROVIDER_ESTIMATION: Readonly<Partial<Record<string, AdeUsageEstimationKind>>> = {
@@ -2744,6 +2746,7 @@ const PROVIDER_DISPLAY_NAME: Record<UsageProvider, string> = {
   copilot: "Copilot",
   grok: "Grok",
   opencode: "OpenCode",
+  kimi: "Kimi",
 };
 
 /**
@@ -2886,7 +2889,7 @@ async function stampProviderAccounts(
         };
       stampStatus(identity);
       accounts.push({
-        id: accountIdFor(key, identity.email),
+        id: usageAccountId({ provider: key, email: identity.email }),
         provider: key,
         ...(identity.email ? { email: identity.email } : {}),
         ...(identity.plan ? { plan: identity.plan } : {}),
@@ -2899,7 +2902,7 @@ async function stampProviderAccounts(
     // is stamped once the loop below has read whichever account that is.
     let defaultIdentity = baseIdentity;
     for (const instance of listInstances(key)) {
-      const id = accountIdForInstance(key, instance.id);
+      const id = usageAccountId({ provider: key, instanceId: instance.id });
       if (instance.isDefault) defaultAccountIdByProvider.set(key, id);
       // Per ACCOUNT, never per default: the base row is the machine identity
       // (its `.claude.json` sits beside the home directory, so reading it with
@@ -2938,11 +2941,6 @@ async function stampProviderAccounts(
 
 function isQuotaInstanceProvider(provider: UsageProvider): provider is QuotaInstanceProvider {
   return provider === "claude" || provider === "codex";
-}
-
-/** Stable per snapshot: the email when known, else "this machine's <provider>". */
-function accountIdFor(provider: UsageProvider, email: string | undefined): string {
-  return email ? `${provider}:${email.toLowerCase()}` : `${provider}:local`;
 }
 
 function buildProviderWindows(
@@ -3064,22 +3062,24 @@ export type UsageTrackingProjectScopeInput = {
 /** Who this machine is, for the account directory. */
 type LocalMachineIdentity = { machineKey: string; label: string; platform: string | null };
 
-type UsageTrackingDependencies = {
+/**
+ * The injectable ledger scanners (`scanClaudeLogs`, ...) come from
+ * `usageLedgerScanners`. Injecting any one of them isolates the service from
+ * this machine's history.
+ */
+type UsageTrackingDependencies = UsageLedgerScannerOverrides & {
   pollClaudeUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
   pollCodexUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
   pollCursorUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
   pollCopilotUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
   pollGrokUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
   pollOpenCodeUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
-  scanClaudeLogs?: () => Promise<TokenEntry[]>;
-  scanCodexLogs?: () => Promise<TokenEntry[]>;
-  scanCursorLogs?: () => Promise<TokenEntry[]>;
-  scanCursorAgentLogs?: () => Promise<TokenEntry[]>;
-  scanOpenClawLogs?: () => Promise<TokenEntry[]>;
-  scanOpenCodeLogs?: () => Promise<TokenEntry[]>;
-  scanDroidLogs?: () => Promise<TokenEntry[]>;
-  scanCopilotLogs?: () => Promise<TokenEntry[]>;
-  scanGeminiLogs?: () => Promise<TokenEntry[]>;
+  pollKimiUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
+  /**
+   * The machine-local per-turn ledger. When present, every published snapshot
+   * adds its changed quota readings to it, and `getTurnUsageSummary` reads it.
+   */
+  turnUsageLedger?: TurnUsageLedger | null;
   scanGitHubStats?: (range: ResolvedAdeUsageRange, projectRoot?: string | null) => Promise<GitHubActivityStats>;
   collectDatabaseStats?: (range: ResolvedAdeUsageRange, db?: AdeDb | null) => AdeDatabaseUsageStats | null;
   scanUsageLedgers?: (
@@ -3256,6 +3256,10 @@ function defaultTranscriptRoots(
 ): string[] {
   const home = os.homedir();
   const factoryDir = process.env.FACTORY_DIR?.trim();
+  // The scanners' own roots where they name the same directory a fingerprint
+  // wants. The other providers differ on purpose: a fingerprint covers every
+  // account's home, while a scan root is one transcript directory inside it.
+  const ledgerRoots = usageLedgerTranscriptRoots();
   const byProvider: Record<string, string[]> = {
     // The config-home helpers, not a re-derived `~/.claude`: `CLAUDE_CONFIG_DIR`
     // and `CODEX_HOME` move the directory ADE's own CLI launches read, and a
@@ -3272,6 +3276,9 @@ function defaultTranscriptRoots(
     droid: [factoryConfigHome(), ...(factoryDir ? [factoryDir] : [])],
     copilot: [path.join(home, ".copilot")],
     gemini: [path.join(home, ".gemini")],
+    pi: ledgerRoots.pi ?? [],
+    qwen: ledgerRoots.qwen ?? [],
+    grok: ledgerRoots.grok ?? [],
     openclaw: [path.join(home, ".openclaw")],
     opencode: [process.env.XDG_DATA_HOME
       ? path.join(process.env.XDG_DATA_HOME, "opencode")
@@ -3446,6 +3453,7 @@ export function createUsageTrackingService({
   const runCopilotUsagePoll = dependencies?.pollCopilotUsage ?? defaultExtraPoll(pollCopilotQuota);
   const runGrokUsagePoll = dependencies?.pollGrokUsage ?? defaultExtraPoll(pollGrokQuota);
   const runOpenCodeUsagePoll = dependencies?.pollOpenCodeUsage ?? defaultExtraPoll(pollOpenCodeQuota);
+  const runKimiUsagePoll = dependencies?.pollKimiUsage ?? defaultExtraPoll(pollKimiQuota);
   const providerStrategies: UsageProviderStrategy[] = [
     { provider: "claude", poll: (context) => runClaudeUsagePoll(context) },
     { provider: "codex", poll: (context) => runCodexUsagePoll(context) },
@@ -3453,15 +3461,24 @@ export function createUsageTrackingService({
     { provider: "copilot", poll: (context) => runCopilotUsagePoll(context) },
     { provider: "grok", poll: (context) => runGrokUsagePoll(context) },
     { provider: "opencode", poll: (context) => runOpenCodeUsagePoll(context) },
+    { provider: "kimi", poll: (context) => runKimiUsagePoll(context) },
   ];
-  const scanClaudeCostLogs = dependencies?.scanClaudeLogs ?? scanClaudeLogs;
-  const scanCodexCostLogs = dependencies?.scanCodexLogs ?? scanCodexLogs;
-  const scanCursorCostLogs = async (): Promise<TokenEntry[]> => {
-    const scanned = await (dependencies?.scanCursorLogs ?? scanCursorLogs)();
-    // Constructor `db` is only the in-process default scope. The brain builds
-    // the tracker with no database and attaches each project's db afterward,
-    // so billed Cursor rows live on those scopes — not on the closed-over
-    // constructor handle.
+  /**
+   * A caller that injects any ledger scanner is a harness isolating the
+   * service from this machine's history: the scan runs in process instead of
+   * in the worker, and every scanner the harness left out reads nothing.
+   */
+  const hasInjectedLedgerScanners = usageLedgerScanners.some((scanner) => Boolean(dependencies?.[scanner.dependency]));
+  const emptyLedgerScan = async (): Promise<TokenEntry[]> => [];
+  /**
+   * Adds the Cursor rows `getUsage` billed to the Cursor scan, one per message
+   * id. Constructor `db` is only the in-process default scope. The brain
+   * builds the tracker with no database and attaches each project's db
+   * afterward, so the billed rows live on those scopes, not on the
+   * closed-over constructor handle.
+   */
+  const withCursorBilledUsage = (scan: () => Promise<TokenEntry[]>) => async (): Promise<TokenEntry[]> => {
+    const scanned = await scan();
     const billedById = new Map<string, TokenEntry>();
     for (const scope of allScopes()) {
       if (!scope.db) continue;
@@ -3476,28 +3493,15 @@ export function createUsageTrackingService({
       ...[...billedById.values()].filter((entry) => !seen.has(entry.messageId)),
     ];
   };
-  const scanCursorAgentCostLogs = dependencies?.scanCursorAgentLogs ?? scanCursorAgentLogs;
-  const scanOpenClawCostLogs = dependencies?.scanOpenClawLogs ?? scanOpenClawLogs;
-  const scanOpenCodeCostLogs = dependencies?.scanOpenCodeLogs ?? scanOpenCodeLogs;
-  const scanDroidCostLogs = dependencies?.scanDroidLogs ?? scanDroidLogs;
-  const scanCopilotCostLogs = dependencies?.scanCopilotLogs ?? scanCopilotLogs;
-  const scanGeminiCostLogs = dependencies?.scanGeminiLogs ?? scanGeminiLogs;
+  const inProcessLedgerScanners = usageLedgerScanners.map((scanner) => {
+    const scan = dependencies?.[scanner.dependency] ?? emptyLedgerScan;
+    return { provider: scanner.provider, scan: scanner.provider === "cursor" ? withCursorBilledUsage(scan) : scan };
+  });
   const scanGitHubStatsForRange = dependencies?.scanGitHubStats
     ?? ((range: ResolvedAdeUsageRange, root?: string | null) => scanGithubActivityStats(root ?? null, range));
   const collectDatabaseStatsForRange = dependencies?.collectDatabaseStats
     ?? ((range: ResolvedAdeUsageRange, scopeDb?: AdeDb | null) =>
       collectAdeDatabaseUsageStats(scopeDb ?? null, range, logger));
-  const hasInjectedLedgerScanners = Boolean(
-    dependencies?.scanClaudeLogs
-    || dependencies?.scanCodexLogs
-    || dependencies?.scanCursorLogs
-    || dependencies?.scanCursorAgentLogs
-    || dependencies?.scanOpenClawLogs
-    || dependencies?.scanOpenCodeLogs
-    || dependencies?.scanDroidLogs
-    || dependencies?.scanCopilotLogs
-    || dependencies?.scanGeminiLogs,
-  );
   const ledgerAbortController = new AbortController();
   let disposed = false;
 
@@ -3947,7 +3951,23 @@ export function createUsageTrackingService({
     lastSnapshot = published;
     emitUpdate(published);
     autoStartScheduler.onSnapshot(published);
+    dependencies?.turnUsageLedger?.observeQuotaSnapshot(published);
     return published;
+  }
+
+  /**
+   * The router's view of this machine: ledger totals by provider, account,
+   * and model, plus what one percent of each subscription window has cost.
+   * The totals are machine-level like the quota poller, so every scope answers
+   * the same; the `recent` rows are the calling scope's project only.
+   */
+  function getTurnUsageSummary(
+    args: GetTurnUsageSummaryArgs = {},
+    forScope: AttachedScope = defaultScope,
+  ): Promise<AdeTurnUsageLedgerSummary> {
+    return buildTurnUsageLedgerSummary(dependencies?.turnUsageLedger ?? null, args, Date.now(), {
+      projectRoot: forScope.projectRoot,
+    });
   }
 
   function cachedCostResult(): { costs: CostSnapshot[]; adeCosts: CostSnapshot[] } {
@@ -4001,38 +4021,10 @@ export function createUsageTrackingService({
           return [];
         }
       };
-      const [
-        claudeEntries,
-        codexEntries,
-        cursorEntries,
-        cursorAgentEntries,
-        openClawEntries,
-        openCodeEntries,
-        droidEntries,
-        copilotEntries,
-        geminiEntries,
-      ] = await Promise.all([
-        scanInjected("claude", scanClaudeCostLogs),
-        scanInjected("codex", scanCodexCostLogs),
-        scanInjected("cursor", scanCursorCostLogs),
-        scanInjected("cursor-agent", scanCursorAgentCostLogs),
-        scanInjected("openclaw", scanOpenClawCostLogs),
-        scanInjected("opencode", scanOpenCodeCostLogs),
-        scanInjected("droid", scanDroidCostLogs),
-        scanInjected("copilot", scanCopilotCostLogs),
-        scanInjected("gemini", scanGeminiCostLogs),
-      ]);
-      const providerEntries: ProviderTokenEntries = new Map([
-        ["claude", claudeEntries],
-        ["codex", codexEntries],
-        ["cursor", cursorEntries],
-        ["cursor-agent", cursorAgentEntries],
-        ["openclaw", openClawEntries],
-        ["opencode", openCodeEntries],
-        ["droid", droidEntries],
-        ["copilot", copilotEntries],
-        ["gemini", geminiEntries],
-      ]);
+      const scanned = await Promise.all(inProcessLedgerScanners.map(async (scanner) => (
+        [scanner.provider, await scanInjected(scanner.provider, scanner.scan)] as const
+      )));
+      const providerEntries: ProviderTokenEntries = new Map(scanned);
       scanResult = {
         costs: buildCostSnapshots(providerEntries, "machine", projectRoot),
         projectCosts: buildCostSnapshots(providerEntries, "project", projectRoot),
@@ -4040,10 +4032,11 @@ export function createUsageTrackingService({
           root,
           buildCostSnapshots(providerEntries, "project", root),
         ])),
-        daily7d: {
-          ...(claudeEntries.length > 0 ? { claude: bucketDaily7d(claudeEntries, now) } : {}),
-          ...(codexEntries.length > 0 ? { codex: bucketDaily7d(codexEntries, now) } : {}),
-        },
+        daily7d: Object.fromEntries(
+          Array.from(providerEntries)
+            .filter(([provider, entries]) => DAILY_7D_PROVIDERS.has(provider) && entries.length > 0)
+            .map(([provider, entries]) => [provider, bucketDaily7d(entries, now)]),
+        ),
         entryCounts: Object.fromEntries(
           Array.from(providerEntries, ([provider, entries]) => [provider, entries.length]),
         ),
@@ -4632,7 +4625,7 @@ export function createUsageTrackingService({
     // Use the injected account registry too, so reset spending targets the same
     // selected account that polling and credit probing use.
     const instance = readQuotaInstances("codex")
-      .find((entry) => accountIdForInstance("codex", entry.id) === accountId);
+      .find((entry) => usageAccountId({ provider: "codex", instanceId: entry.id }) === accountId);
     if (!instance) {
       // Deliberately specific: the caller named an account this machine does
       // not have, which is different from a spend that failed.
@@ -4985,6 +4978,7 @@ export function createUsageTrackingService({
       consumeResetCredit,
       refreshHistory,
       getAdeUsageStats: (args: GetAdeUsageStatsArgs = {}) => getAdeUsageStats(args, scope),
+      getTurnUsageSummary: (args: GetTurnUsageSummaryArgs = {}) => getTurnUsageSummary(args, scope),
       getUsageRollup,
       resolveBalancedInstance,
       getAutoStartState: autoStartScheduler.getAutoStartState,
@@ -5018,6 +5012,7 @@ export function createUsageTrackingService({
     consumeResetCredit,
     refreshHistory,
     getAdeUsageStats,
+    getTurnUsageSummary: (args: GetTurnUsageSummaryArgs = {}) => getTurnUsageSummary(args),
     getUsageRollup,
     resolveBalancedInstance,
     getAutoStartState: autoStartScheduler.getAutoStartState,
@@ -5070,7 +5065,6 @@ export const _testing = {
   mergeInstancePollResults,
   defaultTranscriptRoots,
   stampProviderAccounts,
-  accountIdForInstance,
   discoverClaudeProjectDirs,
   scanClaudeLogs,
   scanCodexLogs,

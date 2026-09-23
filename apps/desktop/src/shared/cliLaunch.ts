@@ -37,7 +37,10 @@ import { isProviderSlashCommandInput } from "./chatSlashCommands";
 import { resolveClaudeCliModelAlias } from "./claudeCliModels";
 import { grokSupervisionEnv } from "./grokSupervision";
 import { decodeOpenCodeRegistryId, decodePiRegistryId } from "./modelRegistry";
+import { PI_THINKING_LEVELS } from "./piThinkingLevels";
 import { commandArrayToLine, parseCommandLine, quoteShellArg } from "./shell";
+
+export { PI_THINKING_LEVELS } from "./piThinkingLevels";
 
 export type CliProvider =
   | "claude"
@@ -1429,13 +1432,23 @@ export function piToolFlags(permissionMode: AgentChatPermissionMode | null | und
   return ["--tools", tools.join(",")];
 }
 
-export function piThinkingFlags(reasoningEffort: string | null | undefined): string[] {
+/**
+ * The Pi thinking level for an ADE reasoning effort, or null for one Pi has no
+ * level for (Pi then keeps its own default). The Ultra tiers read as xhigh,
+ * as they do for every runtime without them. The chat worker rejects any
+ * other value, so the SDK path uses this too.
+ */
+export function piThinkingLevel(reasoningEffort: string | null | undefined): string | null {
   const normalized = normalizeCliFlagValue(reasoningEffort);
-  if (!normalized) return [];
+  if (!normalized) return null;
   const lower = normalized.toLowerCase();
   const thinking = lower === "ultra" || lower === "ultracode" ? "xhigh" : lower;
-  if (!["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(thinking)) return [];
-  return ["--thinking", thinking];
+  return (PI_THINKING_LEVELS as readonly string[]).includes(thinking) ? thinking : null;
+}
+
+export function piThinkingFlags(reasoningEffort: string | null | undefined): string[] {
+  const thinking = piThinkingLevel(reasoningEffort);
+  return thinking ? ["--thinking", thinking] : [];
 }
 
 export function codexReasoningEffortFlags(reasoningEffort: string | null | undefined): string[] {
@@ -1600,14 +1613,23 @@ function devinModelFlags(model: string | null | undefined): string[] {
 
 const GROK_REASONING_EFFORTS = ["low", "medium", "high", "xhigh"] as const;
 
-export function grokReasoningEffortFlags(reasoningEffort: string | null | undefined): string[] {
+/**
+ * ADE's effort as a Grok effort value, or `null` when Grok has no such tier.
+ * The ACP session's `reasoning_effort` option and the TUI flag take the same
+ * values.
+ */
+export function resolveGrokReasoningEffort(reasoningEffort: string | null | undefined): string | null {
   const effort = normalizeCliFlagValue(reasoningEffort)?.toLowerCase();
-  if (!effort) return [];
+  if (!effort) return null;
   // ADE's ladder runs past Grok's: "max" and "ultracode" have no Grok tier, so
   // they land on its highest rather than being passed through and rejected.
   const mapped = effort === "max" || effort === "ultracode" ? "xhigh" : effort;
-  if (!(GROK_REASONING_EFFORTS as readonly string[]).includes(mapped)) return [];
-  return ["--reasoning-effort", mapped];
+  return (GROK_REASONING_EFFORTS as readonly string[]).includes(mapped) ? mapped : null;
+}
+
+export function grokReasoningEffortFlags(reasoningEffort: string | null | undefined): string[] {
+  const effort = resolveGrokReasoningEffort(reasoningEffort);
+  return effort ? ["--reasoning-effort", effort] : [];
 }
 
 const COPILOT_REASONING_EFFORTS = ["low", "medium", "high", "xhigh"] as const;

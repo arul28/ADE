@@ -8,6 +8,7 @@ import type { Logger } from "../logging/logger";
 import { buildAdeRuntimeSocketEnv } from "../../../shared/adeCliGuidance";
 import { buildPackagedRuntimeNodeModulePaths } from "../runtime/packagedNodePath";
 import { pathKey } from "../shared/pathCompare";
+import { CURSOR_SDK_PRECOMPACT_ENV } from "./cursorSdkHooks";
 import { CURSOR_SDK_KILL_ESCALATION_MS, CURSOR_SDK_ONESHOT_POLICY } from "./cursorSdkPolicy";
 import { terminateChildProcessTree } from "../shared/utils";
 import { cursorSdkOwnerPidArg } from "./cursorSdkWorkerGuards";
@@ -517,6 +518,8 @@ export function buildCursorSdkWorkerEnv(args: {
     ADE_CURSOR_SDK_LANE_ROOT: args.workspacePath,
     ADE_CURSOR_SDK_SESSION_ID: args.sessionId,
     ADE_CURSOR_SDK_STATE_ROOT: args.stateRoot,
+    // This worker reads `adeHook: "preCompact"` reports, so its agent may send them.
+    [CURSOR_SDK_PRECOMPACT_ENV]: "1",
   };
   applyCurrentAdeCliEnv(env, baseEnv);
   // Keep the worker's RPC target out of inherited channel configuration. The

@@ -267,6 +267,33 @@ import {
 } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import type { ProviderInstance, ProviderInstanceProvider } from "../../../shared/types/providerInstances";
 import {
+  buildOpenCodeDoneUsage,
+  buildOpenCodeLiveContextUsage,
+  createOpenCodeTurnUsage,
+  recordOpenCodeStepFinish,
+  resolveOpenCodeServedModel,
+} from "./openCodeTurnUsage";
+import {
+  codexBreakdownToSubagentUsage,
+  createCodexSubagentResultEmitter,
+  findCodexThreadRolloutPath,
+  uuidV7TimestampMs,
+  type CodexSubagentResultTarget,
+} from "./codexSubagentUsage";
+import { codexAuthModeFromAccountRead, createTurnUsageAccountResolvers } from "./providerUsageAccount";
+import {
+  createClaudeTurnRequestTally,
+  pickClaudeLeadingModelUsage,
+  recordClaudeRequestStart,
+  resolveClaudeServedModel,
+  withClaudeTurnRequestUsage,
+  type ClaudeTurnRequestTally,
+} from "./claudeTurnUsage";
+import { liveContextUsageEvent } from "./liveContextUsageEvent";
+import { isServedRouteMismatch } from "./servedModelMismatch";
+import { createPiWorkerExitTracker } from "./piWorkerExits";
+import { resolveOpenCodeIsolatedDataHome } from "../opencode/openCodeServerManager";
+import {
   resolveLaunchBrain,
   type HarnessPresetLaunchPlan,
 } from "./harnessPresetLaunch";
@@ -280,7 +307,9 @@ import { CLAUDE_RUNTIME_AUTH_ERROR, isClaudeRuntimeAuthError } from "../ai/claud
 import { resolveCodexExecutable } from "../ai/codexExecutable";
 import { parseStructuredOutput, withTimeout } from "../ai/utils";
 import {
+  evictOldestEntries,
   fileSizeOrZero,
+  getErrorMessage,
   hasNullByte,
   isEnoentError,
   nowIso,
@@ -436,6 +465,7 @@ import type {
   AgentChatSubagentListArgs,
   AgentChatSubagentMetadata,
   AgentChatSubagentSnapshot,
+  AgentChatUsageAccount,
   AgentChatTranscriptEntry,
   AgentChatSurface,
   AgentChatSteerArgs,
@@ -646,8 +676,10 @@ import {
   getModelById,
   getAvailableModels as getRegistryModels,
   getLocalProviderDefaultEndpoint,
+  isLocalProviderFamily,
   createDynamicAcpModelDescriptor,
   listAcpModelDescriptorsForProvider,
+  resolveAcpModelDescriptor,
   listModelDescriptorsForProvider,
   mergeDynamicAcpModelDescriptors,
   LOCAL_PROVIDER_LABELS,
@@ -657,6 +689,7 @@ import {
   getRuntimeModelRefForDescriptor,
   modelSupportsFastMode,
   resolveModelAlias,
+  resolveOpenCodeFastEffortSelection,
   resolveModelDescriptorForProvider,
   resolveProviderGroupForModel,
   selectSupportedReasoningEffort,
@@ -664,7 +697,7 @@ import {
   type ModelDescriptor,
   type ModelProviderGroup,
 } from "../../../shared/modelRegistry";
-import { piSdkToolPolicyForPermissionMode } from "../../../shared/cliLaunch";
+import { piSdkToolPolicyForPermissionMode, piThinkingLevel } from "../../../shared/cliLaunch";
 import { pathKey, pathsEqual } from "../shared/pathCompare";
 import { isProviderDisabled } from "../../../shared/providerEnablement";
 import {
@@ -886,6 +919,7 @@ import {
 } from "./acpHost";
 import { COPILOT_NPM_PACKAGE_SPEC } from "../../../shared/acpProviderMetadata";
 import {
+  codexConfigHome,
   copilotConfigHome,
   grokConfigHome,
   kimiCodeConfigHome,
@@ -957,17 +991,31 @@ import {
   discoverCursorSdkModelDescriptors,
   mergeCursorModelDescriptorSources,
   resolveCachedCursorModelAvailability,
-  resolveCursorSdkModelSelectionFromCache,
-  resolveCursorSdkModelSelectionParams,
-  verifyExplicitCursorModelSelection,
 } from "./cursorModelsDiscovery";
+import {
+  cursorModelFastTierFromCache,
+  cursorSdkConfigOptions,
+  cursorSdkSelectionInputForSession,
+  cursorSelectionParams,
+  describeUnappliedCursorSelection,
+  hasExplicitCursorSelection,
+  resolveCursorSdkFollowUpSelection,
+  resolveCursorSdkLocalSelection,
+  resolveCursorSdkModelSelectionParams,
+  unsupportedCursorSelection,
+  verifyExplicitCursorModelSelection,
+} from "./cursorModelSelection";
 import { discoverDroidSdkModelDescriptors } from "./droidModelsDiscovery";
 import {
+  createPiSdkEventMapperState,
   mapPiSdkEventToChatEvents,
+  mapPiSdkRunResultToDoneEvent,
   piExtensionLoadNotice,
   piUiNoticeToChatEvents,
   piUiRequestToPendingInput,
   piUiResponseFromAnswer,
+  resetPiSdkEventMapperTurn,
+  type PiSdkEventMapperState,
 } from "./piSdkEventMapper";
 import {
   AUTO_LANE_IDENTITY_JSON_SCHEMA,
@@ -982,8 +1030,10 @@ import {
 } from "./sessionNaming";
 import { createSessionMetadataRegenerator } from "./sessionMetadataService";
 import {
+  createCursorSdkEventMapperState,
   mapCursorSdkMessageToChatEvents,
   mapCursorSdkRunResultToDoneEvent,
+  type CursorSdkEventMapperState,
 } from "./cursorSdkEventMapper";
 import {
   mapCursorAgentUsageToTokenEntry,
@@ -991,6 +1041,9 @@ import {
   selectCursorAgentTurnUsage,
 } from "../usage/cursorUsageMapping";
 import { recordCursorBilledUsage } from "../usage/cursorBilledUsageStore";
+import type { TurnUsageLedger } from "../usage/turnUsageLedger";
+import { scheduleTurnUsageFollowUps } from "../usage/turnUsageReconcilers";
+import { usageAccountId } from "../usage/usageAccountId";
 import {
   codexFiveHourUsedPercent,
   codexPlanLimitNoticeState,
@@ -1220,6 +1273,8 @@ const CLAUDE_AGENT_SDK_API = "v1_query";
 const CLAUDE_POST_RESULT_DRAIN_TIMEOUT_MS = 1_000;
 /** Hung SDK MCP tool calls currently freeze the chat with no error. 120s is generous enough for slow tools. */
 const CLAUDE_SDK_MCP_TOOL_TIMEOUT_MS = 120_000;
+/** Longest a Pi restart waits for the released worker (1.5s grace, then killed). */
+const PI_WORKER_EXIT_WAIT_MS = 5_000;
 const CLAUDE_INTERNAL_EDE_DIAGNOSTIC_PREFIX = "[ede_diagnostic]";
 const CLAUDE_AGENT_SDK_TELEMETRY_TAGS = {
   "claude_sdk.version": CLAUDE_AGENT_SDK_VERSION,
@@ -1963,6 +2018,11 @@ type CodexSubagentThreadState = {
   fileDeltaByItemId: Map<string, string>;
   fileChangesByItemId: Map<string, Array<{ path: string; kind: "create" | "modify" | "delete" }>>;
   transcriptKeys: Set<string>;
+  /**
+   * The thread's cumulative usage from its latest `thread/tokenUsage/updated`.
+   * A subagent's own counter: it never feeds the parent's context meter.
+   */
+  tokenUsage: CodexTokenUsageBreakdown | null;
 };
 
 type PendingClaudeApproval = {
@@ -2086,6 +2146,15 @@ type CodexRuntime = {
    * on a window rollover, like `rateLimitWarningEmitted`.
    */
   resetCreditNoticeEmitted: boolean;
+  /**
+   * `authMode` from the latest `account/updated` (`apikey`, `chatgpt`, ...),
+   * or the one the startup `account/read` implies. Undefined until either says.
+   */
+  authMode?: string | null;
+  /** ChatGPT plan (`plus`, `pro`, ...) from the startup `account/read`. */
+  accountPlanType?: string | null;
+  /** Model Codex actually ran each turn on, from `model/rerouted`; read by that turn's done event. */
+  servedModelByTurnId?: Map<string, string>;
   collaborationModes: Set<string> | null;
   collaborationModesReady: Promise<void> | null;
   /** Accepted for the current turn/start; null until that request succeeds. */
@@ -2232,6 +2301,12 @@ type ClaudeTaskToolInput = {
 type ClaudeRuntime = {
   kind: "claude";
   sdkSessionId: string | null;
+  /**
+   * `system/init.apiKeySource` from the current query: which credential the CLI
+   * bills (`ANTHROPIC_API_KEY`, `apiKeyHelper`, `/login managed key`, or
+   * `none` for a claude.ai login). Feeds the done event's account.
+   */
+  apiKeySource?: string | null;
   forkFromSdkSessionId: string | null;
   query: ClaudeQuery | null;
   inputPump: ClaudeInputPump | null;
@@ -2762,6 +2837,8 @@ type CursorRuntime = {
    * recycle-and-resume, or the terminal copy if recovery is already spent.
    */
   sdkStaleTokenFailure?: CursorSdkStaleTokenFailure | null;
+  /** What the Cursor mapper carries across events (an open text-signalled compaction). */
+  eventMapperState: CursorSdkEventMapperState;
 };
 
 /**
@@ -2815,6 +2892,7 @@ type PiRuntime = {
   pendingSteers: QueuedSteer[];
   modelProviderId: string | null;
   modelId: string | null;
+  eventMapperState: PiSdkEventMapperState;
   activeCompactionId: string | null;
   lease: PiSessionLease | null;
   /** Store root this runtime's session file must stay under. */
@@ -3042,6 +3120,20 @@ function rememberInterruptedCodexTurn(runtime: CodexRuntime, turnId: string | nu
     const [first] = runtime.interruptedTurnIds;
     if (first) runtime.interruptedTurnIds.delete(first);
   }
+}
+
+/** The fields every Codex subagent card event carries, from the thread's state. */
+function codexSubagentEventBase(state: CodexSubagentThreadState) {
+  return {
+    taskId: state.threadId,
+    agentId: state.threadId,
+    agentType: state.label,
+    label: state.label,
+    model: state.model,
+    reasoningEffort: state.reasoningEffort,
+    parentToolUseId: state.parentToolUseId,
+    ...(state.parentTurnId ? { turnId: state.parentTurnId } : {}),
+  };
 }
 
 function isInterruptedCodexTurn(runtime: CodexRuntime, turnId: string | null | undefined): boolean {
@@ -4528,16 +4620,6 @@ function queueTranscriptWrite(
   pending.timer.unref?.();
 }
 
-function evictOldestEntries<K, V>(map: Map<K, V>, maxSize: number): void {
-  if (map.size <= maxSize) return;
-  const toDelete = map.size - maxSize;
-  const iter = map.keys();
-  for (let i = 0; i < toDelete; i++) {
-    const next = iter.next();
-    if (next.done) break;
-    map.delete(next.value);
-  }
-}
 const CODEX_REASONING_EFFORTS: Array<{ effort: string; description: string }> = [
   { effort: "none", description: "No extra reasoning when supported by the runtime." },
   { effort: "minimal", description: "Minimal reasoning for fastest responses." },
@@ -4597,6 +4679,16 @@ function codexModelInfoFromDescriptor(
     color: descriptor.color,
     ...(descriptor.aliases?.length ? { aliases: descriptor.aliases } : {}),
   };
+}
+
+/**
+ * ADE's effort tiers among an ACP effort option's values, lowest first. A
+ * value outside ADE's ladder (a dialect's "clear" sentinel) is not a tier.
+ */
+function acpAdvertisedReasoningTiers(values: readonly string[]): string[] {
+  const ladder = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+  const offered = new Set(values.map((value) => value.trim().toLowerCase()));
+  return ladder.filter((tier) => offered.has(tier));
 }
 
 function acpModelInfoFromDescriptor(
@@ -4799,12 +4891,7 @@ function cursorCatalogSupportsFastMode(
 
 function cachedCursorSdkParamsSupportFastMode(session: AgentChatSession): boolean {
   if (session.provider !== "cursor") return false;
-  const modelSdkId = resolveCursorRuntimeModelSdkId(session);
-  // Only a fully expressed selection answers "this model has a fast tier". A
-  // partial resolve is the case where the tier is exactly what ADE could not
-  // express, so its params must not read as support.
-  const selection = resolveCursorSdkModelSelectionFromCache({ modelSdkId, fastMode: true });
-  return selection.status === "ok" && selection.params.length > 0;
+  return cursorModelFastTierFromCache(resolveCursorRuntimeModelSdkId(session)) === true;
 }
 
 function sessionSupportsFastMode(
@@ -5353,6 +5440,21 @@ function normalizeCodexModerationMetadataPayload(params: Record<string, unknown>
     threadId: extractCodexThreadId(params) ?? null,
     turnId: extractCodexTurnId(params) ?? null,
     metadata: asRecord(params.metadata),
+  };
+}
+
+/** `model/rerouted` (Codex app-server `ModelReroutedNotification`). */
+function normalizeCodexModelReroute(params: Record<string, unknown>): {
+  fromModel: string | null;
+  toModel: string | null;
+  turnId: string | null;
+  reason: string | null;
+} {
+  return {
+    fromModel: stringOrNull(params.fromModel ?? params.from_model),
+    toModel: stringOrNull(params.toModel ?? params.to_model),
+    turnId: stringOrNull(params.turnId ?? params.turn_id),
+    reason: stringOrNull(params.reason),
   };
 }
 
@@ -6826,6 +6928,8 @@ function isClaudeModelUsageCostBasis(value: unknown): value is ClaudeModelUsageC
 function extractClaudeModelUsageExtras(value: unknown): {
   thinkingTokens?: number;
   costBasis?: ClaudeModelUsageCostBasis;
+  servedModelCandidate?: string;
+  contextWindow?: number;
 } {
   if (!value || typeof value !== "object") return {};
   const rows = Object.values(value as Record<string, unknown>)
@@ -6841,10 +6945,29 @@ function extractClaudeModelUsageExtras(value: unknown): {
       .map((row) => row.costBasis ?? row.cost_basis)
       .filter(isClaudeModelUsageCostBasis),
   );
+  const leading = pickClaudeLeadingModelUsage(value as Record<string, unknown>);
   return {
     ...(thinkingValues.size === 1 ? { thinkingTokens: [...thinkingValues][0] } : {}),
     ...(costBases.size === 1 ? { costBasis: [...costBases][0] } : {}),
+    ...(leading ? { servedModelCandidate: leading.model } : {}),
+    ...(leading?.contextWindow ? { contextWindow: leading.contextWindow } : {}),
   };
+}
+
+/**
+ * `done.servedModel` for Claude (see `resolveClaudeServedModel`), resolving
+ * reported names through the same table the done payload uses.
+ */
+function claudeServedModelForSession(
+  session: Pick<AgentChatSession, "model" | "modelId">,
+  candidate: string | null | undefined,
+): string | null {
+  return resolveClaudeServedModel({
+    candidate,
+    sessionModel: session.model,
+    sessionModelId: session.modelId ?? resolveModelIdFromStoredValue(session.model, "claude") ?? null,
+    resolveModelId: (served) => resolveClaudeTurnModelPayload(session, [served]).modelId,
+  });
 }
 
 function readClaudeUserMessageUuid(value: unknown): string | null {
@@ -6863,11 +6986,20 @@ type ClaudeResultMetadata = {
   thinkingTokens?: number;
   costBasis?: ClaudeModelUsageCostBasis;
   startupFailureReason?: string;
+  /** Model ModelUsage says answered; `claudeServedModelForSession` decides if it differs. */
+  servedModelCandidate?: string;
+  /** `usage.cache_creation.ephemeral_1h_input_tokens`: the 1h-TTL share of cache writes. */
+  cacheWrite1hTokens?: number;
+  /** ModelUsage context window of the model that carried the turn. */
+  contextWindow?: number;
 };
 
 function extractClaudeResultMetadata(result: Record<string, unknown>): ClaudeResultMetadata {
   const provenance = extractReportedModelUsageProvenance(result.modelUsage);
   const usageExtras = extractClaudeModelUsageExtras(result.modelUsage);
+  const cacheWrite1hTokens = numberOrNull(
+    asRecord(asRecord(result.usage)?.cache_creation)?.ephemeral_1h_input_tokens,
+  );
   const userMessageUuid = normalizeReportedModelName(result.user_message_uuid);
   const queuedTurnCount = numberOrNull(result.queued_turn_count);
   const startupFailureReason = firstNonEmptyString(result.startup_failure_reason);
@@ -6885,6 +7017,7 @@ function extractClaudeResultMetadata(result: Record<string, unknown>): ClaudeRes
     ...(typeof result.request_sent_wall_ms === "number" ? { requestSentWallMs: result.request_sent_wall_ms } : {}),
     ...(queuedTurnCount != null ? { queuedTurnCount } : {}),
     ...(startupFailureReason ? { startupFailureReason } : {}),
+    ...(cacheWrite1hTokens != null ? { cacheWrite1hTokens } : {}),
   };
 }
 
@@ -8689,6 +8822,21 @@ function normalizeCursorConfigValueRecord(
   return Object.keys(normalized).length ? normalized : undefined;
 }
 
+type PiRouteIds = Pick<PersistedChatState, "piProfileId" | "piProviderId" | "piModelId">;
+
+/** The Pi route ids to persist: each one from the session, else from `fallback`. */
+function persistedPiRouteIds(
+  session: Pick<AgentChatSession, "piProfileId" | "piProviderId" | "piModelId">,
+  fallback?: PiRouteIds | null,
+): PiRouteIds {
+  const out: PiRouteIds = {};
+  for (const key of ["piProfileId", "piProviderId", "piModelId"] as const) {
+    const value = session[key] ?? fallback?.[key];
+    if (value) out[key] = value;
+  }
+  return out;
+}
+
 function buildCursorModeSnapshotFromRuntime(runtime: CursorRuntime): AgentChatCursorModeSnapshot | undefined {
   const hasData =
     Boolean(runtime.modeConfigId)
@@ -8808,6 +8956,11 @@ function normalizeDroidSdkReasoningEffort(value: string | null | undefined): Dro
       return normalized;
     case "extra-high":
     case "extra_high":
+      return "xhigh";
+    // Droid has no Ultracode tier. ADE reads it as xhigh everywhere a
+    // runtime lacks one (Claude's effort, Pi, Grok), and dropping it instead
+    // left the previous turn's effort in force.
+    case "ultracode":
       return "xhigh";
     default:
       return null;
@@ -9186,6 +9339,12 @@ export function createAgentChatService(args: {
   /** Low-frequency, content-free hook emitted once when a persisted turn reaches a terminal state. */
   onTurnSettled?: (event: AgentChatTurnSettledEvent) => void;
   /**
+   * The machine-local per-turn usage ledger. It watches the event stream and
+   * writes one row per finished turn; it never changes a turn. Absent in tests
+   * and in hosts that do not keep one.
+   */
+  turnUsageLedger?: TurnUsageLedger | null;
+  /**
    * Content-free hook fired when this client's Claude hooks were ignored
    * because another client already configured the joined session.
    */
@@ -9293,6 +9452,7 @@ export function createAgentChatService(args: {
     createScheduledWorkScheduler = createChatScheduledWorkScheduler,
     onEvent,
     onTurnSettled,
+    turnUsageLedger,
     onClaudeHooksIgnored,
     onClaudePluginsIgnored,
     onChatMentionsExpanded,
@@ -10293,6 +10453,8 @@ export function createAgentChatService(args: {
   const droidRuntimeSetupInterruptRequested = new WeakMap<ManagedChatSession, boolean>();
   /** Interrupt arrived while the Pi SDK worker was still being acquired. */
   const piRuntimeSetupInterruptRequested = new WeakMap<ManagedChatSession, boolean>();
+  /** Released Pi workers still holding their chat's session-file lease. */
+  const piWorkerExits = createPiWorkerExitTracker({ maxWaitMs: PI_WORKER_EXIT_WAIT_MS });
   /** Interrupt arrived while `ensureCursorSdkRuntime` was still acquiring the SDK worker. */
   const cursorRuntimeSetupInterruptRequested = new WeakMap<ManagedChatSession, boolean>();
   /**
@@ -14449,6 +14611,23 @@ export function createAgentChatService(args: {
     });
   };
 
+  const emitPiContextUsage = (
+    managed: ManagedChatSession,
+    runtime: PiRuntime,
+    turnId?: string,
+  ): void => {
+    void runtime.sdk.getContextUsage().then((snapshot) => {
+      if (!snapshot || managed.runtime !== runtime) return;
+      const model = asRecord(runtime.sdk.currentModel);
+      emitChatEvent(managed, liveContextUsageEvent({
+        used: snapshot.tokens,
+        max: snapshot.contextWindow,
+        model: typeof model?.id === "string" ? model.id : null,
+        turnId,
+      }));
+    }).catch(() => undefined);
+  };
+
   const startPiRuntime = async (managed: ManagedChatSession): Promise<PiRuntime> => {
     if (piRuntimeSetupInterruptRequested.get(managed)) {
       piRuntimeSetupInterruptRequested.delete(managed);
@@ -14557,6 +14736,10 @@ export function createAgentChatService(args: {
     // chats in one lane never contend for the same JSONL. The tracked CLI still
     // needs its creation lease: it has to discover which session Pi made.
     let piLease: PiSessionLease | null = null;
+    // The worker a teardown just released still holds this file's lease until
+    // it exits (about 1.5s at most, then it is killed). Without the wait, the
+    // first send after a model switch failed with "already owned".
+    await piWorkerExits.waitForExit(managed.session.id);
     const existingPiSessionFile = resolvePiSessionFile({
       cwd: managed.laneWorktreePath,
       sessionId: sessionId ?? "",
@@ -14608,7 +14791,9 @@ export function createAgentChatService(args: {
         askUserTool: true,
         ...(piExtensionsEnabled ? { extensions: true } : {}),
         ...(piProviderId && piModelId ? { modelRef: { provider: piProviderId, id: piModelId } } : {}),
-        thinkingLevel: managed.session.reasoningEffort ?? null,
+        // Pi accepts only its own levels; an effort carried over from another
+        // provider (Codex `none`, Claude `ultracode`) failed every launch.
+        thinkingLevel: piThinkingLevel(managed.session.reasoningEffort),
         systemPrompt,
         skillsEnv: skillRoots.length ? { ADE_AGENT_SKILLS_DIRS: skillRoots.join(path.delimiter) } : {},
         ...(sessionFile || sessionId
@@ -14682,6 +14867,7 @@ export function createAgentChatService(args: {
       pendingSteers: [],
       modelProviderId: piProviderId,
       modelId: piModelId,
+      eventMapperState: createPiSdkEventMapperState(),
       activeCompactionId: null,
       lease: piLease,
       sessionRoot,
@@ -14729,13 +14915,20 @@ export function createAgentChatService(args: {
         runtime.activeCompactionId = randomUUID();
       }
       const turnId = runtime.activeTurnId ?? undefined;
-      for (const mapped of mapPiSdkEventToChatEvents(event, turnId, runtime.activeCompactionId)) {
+      for (const mapped of mapPiSdkEventToChatEvents(
+        event,
+        turnId,
+        runtime.activeCompactionId,
+        runtime.eventMapperState,
+      )) {
         // Provider retries are ephemeral status, not transcript content. Pi's
         // ordinary activity remains durable for the work-log grouping rules.
         const isRetryActivity = isProviderRetryActivityEvent(mapped);
         if (isRetryActivity) emitLiveOnlyChatEvent(managed, mapped);
         else emitChatEvent(managed, mapped);
       }
+      // No context read here: Pi has no reading right after a compaction.
+      // The turn's own sample, when it ends, carries the post-compaction size.
       if (eventRecord?.type === "compaction_end") runtime.activeCompactionId = null;
       if (eventRecord?.type === "session_info_changed") adoptRuntimeSessionTitle(managed, eventRecord, "pi_session_info");
       if (eventRecord?.type === "message_end") settlePiSessionLease();
@@ -15641,7 +15834,7 @@ export function createAgentChatService(args: {
     void interrupt({ sessionId }).catch((interruptError) => {
       logger.warn("agent_chat.run_session_turn_timeout_interrupt_failed", {
         sessionId,
-        error: interruptError instanceof Error ? interruptError.message : String(interruptError),
+        error: getErrorMessage(interruptError),
       });
     });
     const minutes = Math.round(limit.ms / 60_000);
@@ -15906,17 +16099,16 @@ export function createAgentChatService(args: {
         ? {
             ...(managed.runtime.sdk.sessionId ? { piSessionId: managed.runtime.sdk.sessionId } : {}),
             ...(managed.runtime.sdk.sessionFile ? { piSessionFile: managed.runtime.sdk.sessionFile } : {}),
-            ...(managed.session.piProfileId ? { piProfileId: managed.session.piProfileId } : {}),
-            ...(managed.session.piProviderId ? { piProviderId: managed.session.piProviderId } : {}),
-            ...(managed.session.piModelId ? { piModelId: managed.session.piModelId } : {}),
+            ...persistedPiRouteIds(managed.session),
           }
         : !managed.runtimeInvalidated && (managed.seededPiSessionId || prevPersisted?.piSessionId || prevPersisted?.piSessionFile)
           ? {
               ...(managed.seededPiSessionId || prevPersisted?.piSessionId ? { piSessionId: managed.seededPiSessionId ?? prevPersisted?.piSessionId } : {}),
               ...(managed.seededPiSessionFile || prevPersisted?.piSessionFile ? { piSessionFile: managed.seededPiSessionFile ?? prevPersisted?.piSessionFile } : {}),
-              ...(prevPersisted?.piProfileId ? { piProfileId: prevPersisted.piProfileId } : {}),
-              ...(prevPersisted?.piProviderId ? { piProviderId: prevPersisted.piProviderId } : {}),
-              ...(prevPersisted?.piModelId ? { piModelId: prevPersisted.piModelId } : {}),
+              // The session's own ids first: a model switch made while no Pi
+              // runtime is live sets them, and writing the previous file's ids
+              // back made the next launch resume on the old model.
+              ...persistedPiRouteIds(managed.session, prevPersisted),
             }
           : {}),
       ...(managed.session.provider === "claude" && claudePersistedSdkSessionId
@@ -17905,16 +18097,16 @@ export function createAgentChatService(args: {
   /**
    * The usage-snapshot account id for this chat's Codex login.
    *
-   * Same composition as the usage service's `accountIdForInstance`, because the
-   * renderer's "Use reset" button looks the account up in the usage snapshot by
-   * this string. A chat with no explicit instance is on the provider's default
+   * Built by `usageAccountId`, the rule the usage snapshot uses, because the
+   * renderer's "Use reset" button looks the account up in that snapshot by this
+   * string. A chat with no explicit instance is on the provider's default
    * account, which the registry names.
    */
-  const codexUsageAccountIdForSession = (managed: ManagedChatSession): string => {
-    const instanceId = managed.session.instanceId?.trim()
-      || defaultProviderInstanceId("codex");
-    return `codex:${instanceId}`;
-  };
+  const codexUsageAccountIdForSession = (managed: ManagedChatSession): string =>
+    usageAccountId({
+      provider: "codex",
+      instanceId: managed.session.instanceId?.trim() || defaultProviderInstanceId("codex"),
+    });
 
   const commitChatEvent = (
     managed: ManagedChatSession,
@@ -18084,10 +18276,90 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * Writes the finished turn to the usage ledger, then starts the provider
+   * follow-ups that correct the row once the provider's own record exists.
+   */
+  const recordTurnUsage = (
+    managed: ManagedChatSession,
+    event: Extract<AgentChatEvent, { type: "done" }>,
+  ): void => {
+    if (!turnUsageLedger) return;
+    const record = turnUsageLedger.settle({ session: managed.session, event, projectRoot });
+    if (!record) return;
+    const runtime = managed.runtime;
+    // A cloud run's usage is filed under the cloud agent, not the local
+    // worker's agent (which a promoted chat may still hold from earlier turns).
+    // The done event's own `runtime` says where the turn ran: the cloud run's
+    // `run_result` clears `activeCloudRunId` before the turn emits `done`, so
+    // reading that alone reconciled every cloud turn against the local agent
+    // and the dashboard's served model never reached the ledger.
+    const cloudTurn = event.runtime === "cloud"
+      || (runtime?.kind === "cursor" && Boolean(runtime.activeCloudRunId));
+    const cursorAgentId = runtime?.kind !== "cursor"
+      ? null
+      : cloudTurn
+        ? managed.session.cursorCloudAgentId ?? null
+        : runtime.sdkAgentId;
+    scheduleTurnUsageFollowUps({
+      ledger: turnUsageLedger,
+      record,
+      cursorAgentId,
+      droidSessionId: runtime?.kind === "droid" ? runtime.sdkSessionId : null,
+      logger,
+    });
+  };
+
+  /**
+   * One warning per chat and model pair when a provider answered on a model
+   * that is not the one the user picked (not a spelling, context tier, dated
+   * snapshot, or effort variant of it). Log only; the done event already
+   * carries `servedModel` for every surface that shows it.
+   */
+  const warnedServedModelMismatches = new Set<string>();
+  const warnIfServedModelDiffers = (
+    managed: ManagedChatSession,
+    event: Extract<AgentChatEvent, { type: "done" }>,
+  ): void => {
+    const servedModel = event.servedModel?.trim();
+    if (!servedModel) return;
+    // The chat's own selection: a done event's `model` can already be the
+    // runtime's report (Claude names the model its init announced).
+    const requestedModel = managed.session.model?.trim() || managed.session.modelId || event.model || null;
+    // Every runtime's done event reaches here, ACP turns included. A Pi chat
+    // also names the upstream it asked for, and its done event the upstream
+    // that ran, so a same-name model on another provider still counts.
+    const mismatch = isServedRouteMismatch({
+      requested: requestedModel,
+      served: servedModel,
+      requestedUpstream: managed.session.provider === "pi" ? managed.session.piProviderId : null,
+      servedUpstream: event.account?.provider === "pi" ? event.account.upstream : null,
+    });
+    if (!mismatch) return;
+    const key = `${managed.session.id}\u0000${requestedModel}\u0000${servedModel}`;
+    if (warnedServedModelMismatches.has(key)) return;
+    rememberBoundedId(warnedServedModelMismatches, key, 256);
+    logger.warn("agent_chat.served_model_mismatch", {
+      sessionId: managed.session.id,
+      turnId: event.turnId,
+      provider: managed.session.provider,
+      requestedModel,
+      servedModel,
+    });
+  };
+
   const notifyTurnSettled = (
     managed: ManagedChatSession,
     event: Extract<AgentChatEvent, { type: "done" }>,
   ): void => {
+    try {
+      recordTurnUsage(managed, event);
+    } catch (error) {
+      logger.warn("agent_chat.turn_usage_ledger_failed", {
+        errorKind: error instanceof Error ? error.name : "unknown",
+      });
+    }
+    warnIfServedModelDiffers(managed, event);
     if (managed.runtime?.kind === "claude") {
       void refreshClaudeContextUsageSnapshot(
         managed,
@@ -18289,6 +18561,7 @@ export function createAgentChatService(args: {
           return event;
       }
     })();
+    turnUsageLedger?.observe(managed.session.id, normalizedEvent, managed.session.modelId ?? managed.session.model);
 
     if (normalizedEvent.type === "text") {
       queueBufferedTextEvent(managed, normalizedEvent);
@@ -21683,7 +21956,12 @@ export function createAgentChatService(args: {
         void rt.sdk.abort().catch(() => {});
       }
       const lease = rt.lease;
-      releasePiSdkConnection(rt.poolKey, rt.poolGeneration, () => lease?.release());
+      piWorkerExits.release(managed.session.id, (onExit) => {
+        releasePiSdkConnection(rt.poolKey, rt.poolGeneration, () => {
+          lease?.release();
+          onExit();
+        });
+      });
       managed.runtime = null;
     }
     if (managed.runtime?.kind === "acp") {
@@ -23258,11 +23536,16 @@ export function createAgentChatService(args: {
       cacheReadTokens?: number | null;
       cacheCreationTokens?: number | null;
       thinkingTokens?: number | null;
+      cacheWrite1hTokens?: number | null;
     };
     costUsd: number | null;
     costBasis?: ClaudeModelUsageCostBasis;
     canonicalModel?: string;
     modelProvider?: string;
+    servedModelCandidate?: string;
+    contextWindow?: number;
+    /** Main-thread model requests of the open idle turn (count, closing context). */
+    requestTally: ClaudeTurnRequestTally;
     apiErrorStatus?: number;
     fastModeDisabledReason?: string;
     userMessageUuid?: string;
@@ -23283,6 +23566,23 @@ export function createAgentChatService(args: {
      * assistant message); the tracker must apply exactly once, with the FULL
      * input — content_block_stop, not content_block_start's empty args. */
     emittedTodoToolIds: Set<string>;
+  };
+
+  /** Clears what one idle turn's `result` told the reader, before the next idle turn. */
+  const resetClaudeIdleTurnUsage = (state: ClaudeIdleTurnState): void => {
+    state.usage = undefined;
+    state.costUsd = null;
+    state.costBasis = undefined;
+    state.canonicalModel = undefined;
+    state.modelProvider = undefined;
+    state.servedModelCandidate = undefined;
+    state.contextWindow = undefined;
+    state.requestTally = createClaudeTurnRequestTally();
+    state.apiErrorStatus = undefined;
+    state.fastModeDisabledReason = undefined;
+    state.userMessageUuid = undefined;
+    state.requestSentWallMs = undefined;
+    state.queuedTurnCount = undefined;
   };
 
   /**
@@ -23425,16 +23725,22 @@ export function createAgentChatService(args: {
     reportProviderRuntimeReady("claude");
     emitChatEvent(managed, { type: "status", turnStatus: status, turnId });
     void emitTurnDiffSummaryIfChanged(managed, turnId);
+    const idleUsage = withClaudeTurnRequestUsage(state.usage, state.requestTally, state.contextWindow);
     emitChatEvent(managed, {
       type: "done",
       turnId,
       status,
       ...resolveClaudeTurnModelPayload(managed.session, []),
-      ...(state.usage ? { usage: state.usage } : {}),
-      ...(state.costUsd != null ? { costUsd: state.costUsd } : {}),
+      ...(idleUsage ? { usage: idleUsage } : {}),
+      // Claude's `total_cost_usd` is the CLI's own list-price math, not a bill.
+      ...(state.costUsd != null ? { costUsd: state.costUsd, costSource: "list_price" as const } : {}),
       ...(state.costBasis ? { costBasis: state.costBasis } : {}),
       ...(state.canonicalModel ? { canonicalModel: state.canonicalModel } : {}),
       ...(state.modelProvider ? { modelProvider: state.modelProvider } : {}),
+      ...claudeDoneAttribution(managed, runtime, {
+        servedModelCandidate: state.servedModelCandidate,
+        modelProvider: state.modelProvider,
+      }),
       ...(state.apiErrorStatus != null ? { apiErrorStatus: state.apiErrorStatus } : {}),
       ...(state.fastModeDisabledReason ? { fastModeDisabledReason: state.fastModeDisabledReason } : {}),
       ...(state.userMessageUuid ? { userMessageUuid: state.userMessageUuid } : {}),
@@ -23460,6 +23766,9 @@ export function createAgentChatService(args: {
     state.streamedTextByContentIndex.clear();
     state.streamedThinkingByContentIndex.clear();
     state.recentTextDeltaBuffer = "";
+    // The reader outlives the turn. The next idle turn must not report this
+    // one's usage, cost, or served model if it ends without a result of its own.
+    resetClaudeIdleTurnUsage(state);
     if (!compactionIssued && runtime.pendingSteers.length && managed.runtime === runtime) {
       runtime.idleReaderPromise = null;
       const delivered = await deliverNextQueuedSteer(managed, runtime);
@@ -24025,6 +24334,7 @@ export function createAgentChatService(args: {
     if (isClaudeForwardedSubagentMessage(msg)) return;
 
     if (msg.type === "system" && record.subtype === "init") {
+      runtime.apiKeySource = stringOrNull(record.apiKeySource) ?? runtime.apiKeySource ?? null;
       rememberClaudeTerminalSlashCommands(runtime, record.terminal_slash_commands);
       const initCommands = Array.isArray(record.slash_commands) ? record.slash_commands : [];
       if (initCommands.length) applyClaudeSlashCommands(runtime, initCommands as any[]);
@@ -24326,6 +24636,7 @@ export function createAgentChatService(args: {
         state.streamedThinkingByContentIndex.clear();
         state.recentTextDeltaBuffer = "";
         state.currentStreamMessageId = compactString(message?.id) ?? compactString(streamMsg.uuid) ?? null;
+        recordClaudeRequestStart(state.requestTally, asRecord(message?.usage));
         updateClaudeLiveContextUsage(
           managed,
           runtime,
@@ -24507,8 +24818,13 @@ export function createAgentChatService(args: {
       state.requestSentWallMs = metadata.requestSentWallMs;
       if (metadata.queuedTurnCount != null) state.queuedTurnCount = metadata.queuedTurnCount;
       if (metadata.costBasis) state.costBasis = metadata.costBasis;
+      state.servedModelCandidate = metadata.servedModelCandidate;
+      state.contextWindow = metadata.contextWindow;
       if (metadata.thinkingTokens != null) {
         state.usage = { ...state.usage, thinkingTokens: metadata.thinkingTokens };
+      }
+      if (usage && metadata.cacheWrite1hTokens != null) {
+        state.usage = { ...state.usage, cacheWrite1hTokens: metadata.cacheWrite1hTokens };
       }
       if (resultIsError && turnId) {
         for (const error of resultErrors.userFacing) {
@@ -24580,6 +24896,7 @@ export function createAgentChatService(args: {
       turnId: null,
       assistantText: "",
       costUsd: null,
+      requestTally: createClaudeTurnRequestTally(),
       emittedToolIds: new Set(),
       openToolUses: new Map(),
       structuredActivity: createClaudeStructuredActivityState(),
@@ -24860,8 +25177,11 @@ export function createAgentChatService(args: {
     });
 
     let assistantText = "";
-    let usage: { inputTokens?: number | null; outputTokens?: number | null; cacheReadTokens?: number | null; cacheCreationTokens?: number | null; thinkingTokens?: number | null } | undefined;
+    let usage: { inputTokens?: number | null; outputTokens?: number | null; cacheReadTokens?: number | null; cacheCreationTokens?: number | null; thinkingTokens?: number | null; cacheWrite1hTokens?: number | null } | undefined;
     let costUsd: number | null = null;
+    let resultServedModelCandidate: string | undefined;
+    let resultContextWindow: number | undefined;
+    const claudeRequestTally = createClaudeTurnRequestTally();
     let resultTerminalStatus: ClaudeTerminalStatus = "completed";
     let quotaTrippedThisTurn = false;
     let resultTerminalReason: string | undefined;
@@ -25320,6 +25640,7 @@ export function createAgentChatService(args: {
             adoptClaudeProviderSessionId(managed, runtime, initSessionId);
           }
           reportedInitModel = normalizeReportedModelName(initMsg.model) ?? reportedInitModel;
+          runtime.apiKeySource = stringOrNull(initMsg.apiKeySource) ?? runtime.apiKeySource ?? null;
           rememberClaudeTerminalSlashCommands(runtime, initMsg.terminal_slash_commands);
           if (Array.isArray(initMsg.slash_commands)) {
             applyClaudeSlashCommands(runtime, initMsg.slash_commands);
@@ -26683,6 +27004,7 @@ export function createAgentChatService(args: {
             recentClaudeTextDeltaBuffer = "";
             streamedClaudeThinkingTextByContentIndex.clear();
             const msgUsage = event.message?.usage;
+            recordClaudeRequestStart(claudeRequestTally, asRecord(msgUsage));
             updateClaudeLiveContextUsage(
               managed,
               runtime,
@@ -26771,12 +27093,15 @@ export function createAgentChatService(args: {
           resultRequestSentWallMs = metadata.requestSentWallMs;
           if (metadata.queuedTurnCount != null) resultQueuedTurnCount = metadata.queuedTurnCount;
           if (metadata.costBasis) resultCostBasis = metadata.costBasis;
+          resultServedModelCandidate = metadata.servedModelCandidate;
+          resultContextWindow = metadata.contextWindow;
           if (resultMsg.usage) {
             usage = {
               inputTokens: resultMsg.usage.input_tokens ?? null,
               outputTokens: resultMsg.usage.output_tokens ?? null,
               cacheReadTokens: resultMsg.usage.cache_read_input_tokens ?? null,
               cacheCreationTokens: resultMsg.usage.cache_creation_input_tokens ?? null,
+              ...(metadata.cacheWrite1hTokens != null ? { cacheWrite1hTokens: metadata.cacheWrite1hTokens } : {}),
             };
           }
           if (metadata.thinkingTokens != null) {
@@ -26977,16 +27302,22 @@ export function createAgentChatService(args: {
       if (!runtime.interruptEventsEmitted) {
         emitChatEvent(managed, { type: "status", turnStatus: finalStatus, turnId });
         void emitTurnDiffSummaryIfChanged(managed, turnId);
+        const doneUsage = withClaudeTurnRequestUsage(usage, claudeRequestTally, resultContextWindow);
         emitChatEvent(managed, {
           type: "done",
           turnId,
           status: finalStatus,
           ...doneModel,
-          ...(usage ? { usage } : {}),
-          ...(costUsd != null ? { costUsd } : {}),
+          ...(doneUsage ? { usage: doneUsage } : {}),
+          // Claude's `total_cost_usd` is the CLI's own list-price math, not a bill.
+          ...(costUsd != null ? { costUsd, costSource: "list_price" as const } : {}),
           ...(resultCostBasis ? { costBasis: resultCostBasis } : {}),
           ...(resultCanonicalModel ? { canonicalModel: resultCanonicalModel } : {}),
           ...(resultModelProvider ? { modelProvider: resultModelProvider } : {}),
+          ...claudeDoneAttribution(managed, runtime, {
+            servedModelCandidate: resultServedModelCandidate,
+            modelProvider: resultModelProvider,
+          }),
           ...(resultApiErrorStatus != null ? { apiErrorStatus: resultApiErrorStatus } : {}),
           ...(resultFastModeDisabledReason ? { fastModeDisabledReason: resultFastModeDisabledReason } : {}),
           ...(resultUserMessageUuid ? { userMessageUuid: resultUserMessageUuid } : {}),
@@ -27840,10 +28171,11 @@ export function createAgentChatService(args: {
     mode: AgentChatAcpPermissionMode,
   ): boolean => {
     if (mode !== "yolo") return false;
-    // Qwen, Kimi, and Copilot take the whole posture through
-    // `session/set_config_option`, so the agent stops asking and there is
-    // nothing for ADE to auto-answer.
-    return !dialect.sessionConfig.declared;
+    // Qwen, Kimi, and Copilot take the whole posture through the `mode`
+    // config option, so the agent stops asking and there is nothing for ADE
+    // to auto-answer. Grok sets only model and effort through
+    // `session/set_config_option`; it has no `mode` option.
+    return !(dialect.sessionConfig.declared && dialect.configOptionIds.includes("mode"));
   };
 
   /** ADE's abstract value; the dialect maps it to the native wire value. */
@@ -27859,9 +28191,9 @@ export function createAgentChatService(args: {
   /**
    * Emit each of a dialect's declared holes once per chat.
    *
-   * The note is honest degradation, not an error: Kimi genuinely reports no
-   * usage, and a user who cannot see why the meter vanished assumes ADE broke.
-   * The shown-set is persisted so a runtime restart does not repeat it.
+   * The note is honest degradation, not an error: when a dialect genuinely
+   * lacks a capability, a user who cannot see why a surface is empty assumes
+   * ADE broke. The shown-set is persisted so a runtime restart does not repeat it.
    */
   const emitAcpDegradationNotes = (
     managed: ManagedChatSession,
@@ -27947,11 +28279,32 @@ export function createAgentChatService(args: {
     emitChatEvent(managed, { type: "session_meta_updated", acpConfigSnapshot: next });
 
     // Live model discovery. The agent named the models this account can reach,
-    // so they join the registry alongside the curated rows.
+    // so they join the registry alongside the curated rows. The effort option
+    // the session advertises (Grok's `reasoning_effort`) describes the current
+    // model; a live model that was current before keeps the efforts it had
+    // then, and the others take the session's list, the only evidence there
+    // is. Without it the newest models (grok-4.7) had no effort picker.
     if (next.availableModelIds?.length) {
+      const effortConfigId = runtime.dialect.reasoningEffortOption?.configId;
+      const advertisedTiers = acpAdvertisedReasoningTiers(
+        optionValues(effortConfigId ? runtime.configOptions.find((option) => option.id === effortConfigId) : undefined),
+      );
+      // What the registry already holds for each model: a curated row's
+      // researched (or previously reported) tiers, or what a live model had
+      // when it was current. Read before the merge replaces it.
+      const learnedTiers = new Map(
+        next.availableModelIds.map((modelId) => [
+          modelId,
+          resolveAcpModelDescriptor(runtime.provider, modelId)?.reasoningTiers,
+        ]),
+      );
       mergeDynamicAcpModelDescriptors(
         runtime.provider,
-        next.availableModelIds.map((modelId) => createDynamicAcpModelDescriptor(runtime.provider, modelId)),
+        next.availableModelIds.map((modelId) => {
+          const learned = learnedTiers.get(modelId);
+          const reasoningTiers = modelId === next.currentModelId || !learned?.length ? advertisedTiers : learned;
+          return createDynamicAcpModelDescriptor(runtime.provider, modelId, reasoningTiers.length ? { reasoningTiers } : undefined);
+        }),
       );
     }
   };
@@ -28341,18 +28694,24 @@ export function createAgentChatService(args: {
       const outcome = await runtime.session.prompt({
         turnId,
         blocks,
+        // Read once, synchronously, when the agent answers `session/prompt`.
+        // That is the turn's verdict, as it was before the usage waits that
+        // now follow the answer.
+        isInterrupted: () => runtime.interrupted,
       });
       args.onBackendDispatched?.();
-      // Usage rides the prompt result for Grok and Copilot, and does not exist
-      // at all for Kimi. `outcome.events` is empty in the latter case, so no
-      // usage row is fabricated.
+      // Live usage, context, compaction and subagent events the dialect folded
+      // from the turn (prompt-result usage, `usage_update`, vendor
+      // notifications, provider-local ledgers). A provider that reported
+      // nothing yields no events, so no usage row is fabricated.
       for (const event of outcome.events) emitChatEvent(managed, event);
 
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
       markSessionIdleWithFreshCache(managed);
-      // Client-side cancel accounting. Copilot reports a stopped turn as
-      // `end_turn`, so the agent's stopReason is never the deciding word.
-      const interrupted = outcome.interrupted || runtime.interrupted;
+      // Client-side cancel accounting, taken when the agent answered. Copilot
+      // reports a stopped turn as `end_turn`, so the agent's stopReason is
+      // never the deciding word, and a Stop after the answer is not either.
+      const interrupted = outcome.interrupted;
       if (!interrupted) reportProviderRuntimeReady(provider);
       void emitTurnDiffSummaryIfChanged(managed, turnId);
       emitChatEvent(managed, {
@@ -28365,6 +28724,8 @@ export function createAgentChatService(args: {
         turnId,
         status: interrupted ? "interrupted" : "completed",
         ...doneModel,
+        // Turn totals, context, cost, served model, account, plan usage.
+        ...outcome.done,
       });
       persistChatState(managed);
     } catch (error) {
@@ -28467,6 +28828,9 @@ export function createAgentChatService(args: {
     const turnId = setupTurnId;
     runtime.busy = true;
     runtime.activeTurnId = turnId;
+    // Before anything that can throw: a turn that fails early must not report
+    // the previous turn's usage, served model, or account on its `done`.
+    resetPiSdkEventMapperTurn(runtime.eventMapperState);
     runtime.interrupted = false;
     setSessionActive(managed);
     const attachments = args.attachments ?? [];
@@ -28484,6 +28848,17 @@ export function createAgentChatService(args: {
     emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
     captureTurnBeforeSha(managed);
     emitChatEvent(managed, { type: "activity", ...initialTurnActivity(managed.session), turnId });
+    // Read at settle time, not now: the turn's own events fill the mapper state.
+    const piDoneEvent = (status: "completed" | "interrupted" | "failed") => mapPiSdkRunResultToDoneEvent({
+      turnId,
+      model: managed.session.model,
+      ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+      requestedModel: runtime.modelId,
+      provider: runtime.modelProviderId,
+      account: runtime.sdk.account,
+      state: runtime.eventMapperState,
+      status,
+    });
     try {
       let prompt = args.promptText;
       const pendingContext = consumePendingTurnContextPrefix(managed, false)?.composed;
@@ -28515,30 +28890,28 @@ export function createAgentChatService(args: {
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
       markSessionIdleWithFreshCache(managed);
       reportProviderRuntimeReady("pi");
-      emitChatEvent(managed, { type: "status", turnStatus: runtime.interrupted ? "interrupted" : "completed", turnId });
-      emitChatEvent(managed, {
-        type: "done",
-        turnId,
-        status: runtime.interrupted ? "interrupted" : "completed",
-        model: managed.session.model,
-        ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
-      });
+      const doneEvent = piDoneEvent(runtime.interrupted ? "interrupted" : "completed");
+      emitChatEvent(managed, { type: "status", turnStatus: doneEvent.status, turnId });
+      emitChatEvent(managed, doneEvent);
       persistChatState(managed);
     } catch (error) {
       markSessionIdleWithFreshCache(managed);
       const message = error instanceof Error ? error.message : String(error);
-      if (!runtime.workerFailed && (runtime.interrupted || isAbortRelatedError(error))) {
+      const interrupted = !runtime.workerFailed && (runtime.interrupted || isAbortRelatedError(error));
+      const doneEvent = piDoneEvent(interrupted ? "interrupted" : "failed");
+      if (interrupted) {
         emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
-        emitChatEvent(managed, { type: "done", turnId, status: "interrupted", model: managed.session.model });
+        emitChatEvent(managed, doneEvent);
       } else {
         reportProviderRuntimeFailure("pi", message);
         emitChatEvent(managed, { type: "error", message, turnId });
         emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
-        emitChatEvent(managed, { type: "done", turnId, status: "failed", model: managed.session.model });
+        emitChatEvent(managed, doneEvent);
         appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${message}` });
       }
       persistChatState(managed);
     } finally {
+      emitPiContextUsage(managed, runtime, turnId);
       if (managed.runtime === runtime) {
         runtime.busy = false;
         runtime.activeTurnId = null;
@@ -28556,6 +28929,9 @@ export function createAgentChatService(args: {
   };
 
   // ── Streaming turn for OpenCode runtime ──
+
+  /** Chat, model, and effort triples already warned that Fast did not apply. */
+  const loggedOpenCodeFastFallbacks = new Set<string>();
 
   const runTurn = async (
     managed: ManagedChatSession,
@@ -28627,12 +29003,13 @@ export function createAgentChatService(args: {
       turnId,
     });
 
-    let usage: {
-      inputTokens?: number | null;
-      outputTokens?: number | null;
-      cacheReadTokens?: number | null;
-      cacheCreationTokens?: number | null;
-    } | undefined;
+    // Every parent-session `step-finish` of this turn (one per model request):
+    // the done event reports their sum, and the last one's input side is the
+    // context the next request starts from.
+    const turnUsage = createOpenCodeTurnUsage();
+    // `providerID/modelID` of the latest assistant message, which names the
+    // model that actually answered.
+    let servedOpenCodeModel: { providerID?: string | null; modelID?: string | null } | null = null;
     let finalAssistantText = "";
     const turnStartedAt = Date.now();
     let firstStreamEventLogged = false;
@@ -28699,15 +29076,35 @@ export function createAgentChatService(args: {
       runtime.compactionStartedPartIds.clear();
 
       const toPromptFiles = toOpenCodePromptFiles(resolvedAttachments).files;
-      const openCodeReasoningVariant =
-        managed.session.reasoningEffort
-        && runtime.modelDescriptor.reasoningTiers?.includes(managed.session.reasoningEffort)
-          ? managed.session.reasoningEffort
-          : null;
-      const openCodeVariant =
-        managed.session.fastMode === true && modelSupportsFastMode(runtime.modelDescriptor)
-          ? "fast"
-          : openCodeReasoningVariant;
+      // Fast and the effort share OpenCode's one `variant`, so Fast can move
+      // the turn to the model's fast sibling. The served-model check at the end
+      // of the turn compares against this request, not the row's own model.
+      const openCodeSelection = resolveOpenCodeFastEffortSelection(runtime.modelDescriptor, {
+        fastMode: managed.session.fastMode,
+        reasoningEffort: managed.session.reasoningEffort,
+      });
+      const baseOpenCodeModel = resolveOpenCodeModelSelection(runtime.modelDescriptor);
+      const requestedOpenCodeModel = {
+        providerID: baseOpenCodeModel.providerID,
+        modelID: openCodeSelection.modelId ?? baseOpenCodeModel.modelID,
+      };
+      if (openCodeSelection.fastUnavailableReason) {
+        const fallbackKey = [
+          managed.session.id,
+          runtime.modelDescriptor.id,
+          managed.session.reasoningEffort ?? "",
+        ].join("\u0000");
+        if (!loggedOpenCodeFastFallbacks.has(fallbackKey)) {
+          rememberBoundedId(loggedOpenCodeFastFallbacks, fallbackKey, 256);
+          logger.warn("agent_chat.opencode_fast_not_applied", {
+            sessionId: managed.session.id,
+            turnId,
+            modelId: runtime.modelDescriptor.id,
+            reasoningEffort: managed.session.reasoningEffort ?? null,
+            reason: openCodeSelection.fastUnavailableReason,
+          });
+        }
+      }
       const openCodeAgent = runtime.permissionMode === "config-toml"
         ? null
         : mapPermissionModeToOpenCodeAgent(runtime.permissionMode);
@@ -28727,9 +29124,9 @@ export function createAgentChatService(args: {
         sessionID: runtime.handle.sessionId,
         directory: runtime.handle.directory,
         ...(openCodeAgent ? { agent: openCodeAgent } : {}),
-        model: resolveOpenCodeModelSelection(runtime.modelDescriptor),
+        model: requestedOpenCodeModel,
         ...(openCodeSystemPrompt ? { system: openCodeSystemPrompt } : {}),
-        ...(openCodeVariant ? { variant: openCodeVariant } : {}),
+        ...(openCodeSelection.variant ? { variant: openCodeSelection.variant } : {}),
         parts: buildOpenCodePromptParts({
           prompt: userContent,
           files: toPromptFiles,
@@ -29086,6 +29483,10 @@ export function createAgentChatService(args: {
           }
           if (info.role === "assistant" && info.summary === true) {
             openCodeSummaryMessageIds.add(info.id);
+          } else if (info.role === "assistant") {
+            // A compaction summary can run on its own model; only a reply
+            // message says which model answered the user.
+            servedOpenCodeModel = { providerID: info.providerID, modelID: info.modelID };
           }
           continue;
         }
@@ -29218,12 +29619,20 @@ export function createAgentChatService(args: {
           }
 
           if (part.type === "step-finish") {
-            usage = {
-              inputTokens: part.tokens.input,
-              outputTokens: part.tokens.output,
-              cacheReadTokens: part.tokens.cache.read,
-              cacheCreationTokens: part.tokens.cache.write,
-            };
+            const describesContext = !openCodeSummaryMessageIds.has(part.messageID);
+            const step = recordOpenCodeStepFinish(
+              turnUsage,
+              part.id || `step:${turnUsage.steps.size}`,
+              part,
+              { describesContext },
+            );
+            // One live meter sample per step, shaped like Claude's automatic
+            // snapshots. A compaction summary's input is the conversation it
+            // replaces, so it never moves the meter.
+            const liveContext = describesContext
+              ? buildOpenCodeLiveContextUsage(step, runtime.modelDescriptor.contextWindow, managed.session.model, turnId)
+              : null;
+            if (liveContext) emitChatEvent(managed, { ...liveContext, capturedAt: nowIso() });
             // Without this the activity line keeps naming the step's last tool
             // until the next step-start, so a long gap between steps reads as a
             // command that never finished.
@@ -29674,13 +30083,21 @@ export function createAgentChatService(args: {
         markSessionIdleWithFreshCache(managed);
 
         emitChatEvent(managed, { type: "status", turnStatus: "completed", turnId });
+        const doneUsage = buildOpenCodeDoneUsage(turnUsage, runtime.modelDescriptor.contextWindow);
+        const servedModel = resolveOpenCodeServedModel(requestedOpenCodeModel, servedOpenCodeModel);
         emitChatEvent(managed, {
           type: "done",
           turnId,
           status: "completed",
           model: managed.session.model,
           ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
-          ...(usage ? { usage } : {})
+          ...(doneUsage ? { usage: doneUsage.usage } : {}),
+          ...(doneUsage?.costSource ? { costUsd: doneUsage.costUsd, costSource: doneUsage.costSource } : {}),
+          ...(servedModel ? { servedModel } : {}),
+          account: turnUsageAccounts.openCode(
+            managed,
+            servedOpenCodeModel?.providerID?.trim() || requestedOpenCodeModel.providerID,
+          ),
         });
 
         if (finalAssistantText.trim().length > 0) {
@@ -31459,6 +31876,7 @@ export function createAgentChatService(args: {
       commandOutputStorageClosedItemIds: new Set<string>(),
       fileChangesByItemId: new Map<string, Array<{ path: string; kind: "create" | "modify" | "delete" }>>(),
       transcriptKeys: new Set<string>(),
+      tokenUsage: null,
     };
     state.parentThreadId = state.parentThreadId ?? managed.session.threadId ?? null;
     state.parentTurnId = args.parentTurnId ?? state.parentTurnId;
@@ -31613,20 +32031,63 @@ export function createAgentChatService(args: {
       }, "system"), codexSubagentMetadataForThread(runtime, state.threadId)),
     ]);
     if (!wasRunning) return;
-    emitChatEvent(managed, {
+    emitCodexSubagentResult(managed, state.threadId, state, {
       type: "subagent_result",
-      taskId: state.threadId,
-      agentId: state.threadId,
-      agentType: state.label,
-      label: state.label,
-      model: state.model,
-      reasoningEffort: state.reasoningEffort,
-      parentToolUseId: state.parentToolUseId,
+      ...codexSubagentEventBase(state),
       status,
       summary,
       finalSummary: summary,
-      ...(state.parentTurnId ? { turnId: state.parentTurnId } : {}),
     });
+  }
+
+  /**
+   * Emits a Codex subagent's one result event with the thread's token usage
+   * (see `createCodexSubagentResultEmitter`). A result whose thread resumed
+   * while its rollout read ran is stale and is dropped.
+   */
+  const codexSubagentResults = createCodexSubagentResultEmitter<CodexSubagentResultTarget & {
+    managed: ManagedChatSession;
+    state: CodexSubagentThreadState | undefined;
+  }>({
+    emit: ({ managed }, event) => emitChatEvent(managed, event),
+    isResumed: ({ managed, threadId, state }) => {
+      const runtime = managed.runtime;
+      return state?.status === "running"
+        || (runtime?.kind === "codex" && runtime.activeSubagents.has(threadId));
+    },
+    rolloutPathFor: ({ managed, threadId }) => findCodexSubagentRolloutPath(managed, threadId),
+  });
+
+  function emitCodexSubagentResult(
+    managed: ManagedChatSession,
+    threadId: string,
+    state: CodexSubagentThreadState | undefined,
+    event: Extract<AgentChatEvent, { type: "subagent_result" }>,
+  ): void {
+    codexSubagentResults({
+      managed,
+      state,
+      sessionId: managed.session.id,
+      threadId,
+      liveUsage: state?.tokenUsage,
+    }, event);
+  }
+
+  /**
+   * The rollout file Codex wrote for one subagent thread, under the Codex home
+   * this chat's provider account launches with. Null when there is none.
+   */
+  function findCodexSubagentRolloutPath(managed: ManagedChatSession, threadId: string): string | null {
+    // Only a v7 id carries the creation day the rollout is filed under.
+    if (uuidV7TimestampMs(threadId) == null) return null;
+    try {
+      const codexHome = resolveSessionLaunchPlan(managed)?.codexConfigHome
+        ?? turnUsageAccounts.lookupInstance("codex", managed.session.instanceId)?.configHome
+        ?? codexConfigHome({ env: process.env });
+      return findCodexThreadRolloutPath(codexHome, threadId);
+    } catch {
+      return null;
+    }
   }
 
   function scheduleCodexSubagentInterruptFallback(
@@ -31801,16 +32262,9 @@ export function createAgentChatService(args: {
         });
         emitChatEvent(managed, {
           type: "subagent_progress",
-          taskId: threadId,
-          agentId: threadId,
-          agentType: state.label,
-          label: state.label,
-          model: state.model,
-          reasoningEffort: state.reasoningEffort,
-          parentToolUseId: state.parentToolUseId,
+          ...codexSubagentEventBase(state),
           description: state.prompt ?? state.label,
           summary: "Agent resumed",
-          ...(state.parentTurnId ? { turnId: state.parentTurnId } : {}),
         });
       }
       return true;
@@ -31834,6 +32288,27 @@ export function createAgentChatService(args: {
     if (method === "turn/aborted" || method === "codex/event/turn_aborted") {
       const turnId = turnIdFromParams ?? state.activeTurnId;
       settleCodexSubagentTurn(managed, runtime, state, "stopped", "Agent interrupted", turnId);
+      return true;
+    }
+
+    // The subagent thread's own counter. It stays on the subagent's state and
+    // card: routing it through the parent branch would overwrite the parent's
+    // context meter (`codexTokenUsage`) with a child's numbers.
+    if (method === "thread/tokenUsage/updated") {
+      const totals = normalizeCodexThreadTokenUsage(params)?.total ?? null;
+      if (!totals) return true;
+      state.tokenUsage = totals;
+      // A settled card keeps its result; a progress tick would reopen it.
+      if (state.status !== "running") return true;
+      const usage = codexBreakdownToSubagentUsage(totals);
+      if (!usage) return true;
+      emitChatEvent(managed, {
+        type: "subagent_progress",
+        ...codexSubagentEventBase(state),
+        description: state.prompt ?? state.label,
+        summary: "",
+        usage,
+      });
       return true;
     }
 
@@ -32981,7 +33456,7 @@ export function createAgentChatService(args: {
           }
           if (threadState) threadState.status = subagentStatus;
           runtime.activeSubagents.delete(agentThreadId);
-          emitChatEvent(managed, {
+          emitCodexSubagentResult(managed, agentThreadId, threadState, {
             type: "subagent_result",
             taskId: agentThreadId,
             ...(threadState?.label ? { agentType: threadState.label, label: threadState.label } : {}),
@@ -33010,7 +33485,7 @@ export function createAgentChatService(args: {
             threadState.interruptPending = false;
           }
           runtime.activeSubagents.delete(targetId);
-          emitChatEvent(managed, {
+          emitCodexSubagentResult(managed, targetId, threadState, {
             type: "subagent_result",
             taskId: targetId,
             ...(threadState?.label ? { agentType: threadState.label, label: threadState.label } : {}),
@@ -33821,6 +34296,46 @@ export function createAgentChatService(args: {
     }
   }
 
+  // ── Who paid for a turn (done.account) ──
+  const turnUsageAccounts = createTurnUsageAccountResolvers<ManagedChatSession>({
+    resolveInstance: (provider, instanceId) => getMachineProviderInstanceStore().resolve(provider, instanceId).instance,
+    launchPlan: (managed) => resolveSessionLaunchPlan(managed),
+    sessionInstanceId: (managed) => managed.session.instanceId,
+    openCodeLocalEndpoint: (providerID) => {
+      if (!isLocalProviderFamily(providerID)) return null;
+      // The endpoint ADE hands OpenCode for this local server: a user-typed
+      // one wins over the default.
+      let configured: string | undefined;
+      try {
+        configured = projectConfigService.get().effective.ai?.localProviders?.[providerID]?.endpoint?.trim();
+      } catch {
+        configured = undefined;
+      }
+      return configured || getLocalProviderDefaultEndpoint(providerID);
+    },
+    // A strict-config chat runs its own OpenCode server on ADE's isolated
+    // XDG_DATA_HOME, so its credentials live there, not in the user's store.
+    openCodeDataDirs: (managed) => managed.session.strictMcpConfig === true
+      ? [path.join(resolveOpenCodeIsolatedDataHome(), "opencode")]
+      : undefined,
+  });
+
+  /**
+   * The model Claude actually served (only when it differs from the one asked
+   * for) and who paid, for both Claude `done` builders.
+   */
+  const claudeDoneAttribution = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    args: { servedModelCandidate: string | null | undefined; modelProvider: string | null | undefined },
+  ): { servedModel?: string; account: AgentChatUsageAccount } => {
+    const servedModel = claudeServedModelForSession(managed.session, args.servedModelCandidate);
+    return {
+      ...(servedModel ? { servedModel } : {}),
+      account: turnUsageAccounts.claude(managed, { apiKeySource: runtime.apiKeySource, modelProvider: args.modelProvider }),
+    };
+  };
+
   const handleCodexNotification = async (managed: ManagedChatSession, runtime: CodexRuntime, payload: JsonRpcEnvelope): Promise<void> => {
     const method = typeof payload.method === "string" ? payload.method : "";
     const params = (payload.params as Record<string, unknown> | null) ?? {};
@@ -34156,6 +34671,8 @@ export function createAgentChatService(args: {
       });
 
       void emitTurnDiffSummaryIfChanged(managed, turnId);
+      const servedModel = runtime.servedModelByTurnId?.get(turnId) ?? null;
+      runtime.servedModelByTurnId?.delete(turnId);
       emitChatEvent(managed, {
         type: "done",
         turnId,
@@ -34163,6 +34680,8 @@ export function createAgentChatService(args: {
         model: managed.session.model,
         ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
         ...(usage ? { usage } : {}),
+        ...(servedModel ? { servedModel } : {}),
+        account: turnUsageAccounts.codex(managed, runtime.authMode, runtime.accountPlanType),
       });
 
       const endSha = await computeHeadShaBestEffort(resolveManagedExecutionLaneId(managed)).catch(() => null);
@@ -34493,6 +35012,31 @@ export function createAgentChatService(args: {
       return;
     }
 
+    // Codex 0.15x app-server `ModelReroutedNotification`: the server ran this
+    // turn on a different model than the one requested.
+    if (method === "model/rerouted") {
+      const reroute = normalizeCodexModelReroute(params);
+      if (!reroute.toModel) return;
+      const turnId = reroute.turnId ?? turnIdFromParams ?? runtime.activeTurnId ?? runtime.startedTurnId ?? undefined;
+      if (turnId) {
+        const served = runtime.servedModelByTurnId ?? new Map<string, string>();
+        served.set(turnId, reroute.toModel);
+        evictOldestEntries(served, 16);
+        runtime.servedModelByTurnId = served;
+      }
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        severity: "info",
+        message: reroute.fromModel
+          ? `Codex rerouted this turn from ${reroute.fromModel} to ${reroute.toModel}.`
+          : `Codex rerouted this turn to ${reroute.toModel}.`,
+        ...(reroute.reason ? { detail: `Reason: ${reroute.reason}` } : {}),
+        ...(turnId ? { turnId } : {}),
+      });
+      return;
+    }
+
     if (method === "turn/moderationMetadata") {
       const metadata = normalizeCodexModerationMetadataPayload(params);
       if (!metadata.metadata || Object.keys(metadata.metadata).length === 0) {
@@ -34611,8 +35155,17 @@ export function createAgentChatService(args: {
     }
 
     if (method === "account/updated") {
-      // Account info changed — log but no UI action needed
-      logger.info("agent_chat.codex_account_updated", { sessionId: managed.session.id });
+      // Account info changed — no UI action. The auth mode says whether later
+      // turns bill a ChatGPT plan or an API key (see the done event's account).
+      const authMode = stringOrNull(params.authMode ?? params.auth_mode);
+      if (authMode || params.authMode === null) {
+        runtime.authMode = authMode;
+        runtime.accountPlanType = stringOrNull(params.planType ?? params.plan_type);
+      }
+      logger.info("agent_chat.codex_account_updated", {
+        sessionId: managed.session.id,
+        ...(authMode ? { authMode } : {}),
+      });
       return;
     }
 
@@ -34721,6 +35274,23 @@ export function createAgentChatService(args: {
         paramKeys: Object.keys(params),
       });
     }
+  };
+
+  /**
+   * Reads which credential this app-server bills (`account/read`, a local call
+   * with no model request). Codex sends `account/updated` only when the login
+   * changes, so without this every turn's `done.account` guessed from ADE's
+   * instance record. A later `account/updated` is newer and wins.
+   */
+  const readCodexAccount = (runtime: CodexRuntime): void => {
+    runtime.request<unknown>("account/read", { refreshToken: false })
+      .then((res) => {
+        const account = codexAuthModeFromAccountRead(res);
+        if (!account || runtime.authMode !== undefined) return;
+        runtime.authMode = account.authMode;
+        runtime.accountPlanType = account.planType;
+      })
+      .catch(() => { /* account/read not supported — the instance record decides */ });
   };
 
   const refreshCodexRateLimits = (
@@ -35068,6 +35638,7 @@ export function createAgentChatService(args: {
     ]).then(() => undefined);
 
     runtime.notify("initialized");
+    readCodexAccount(runtime);
     const bundledSkillRoots = runtime.agentSkillRoots;
     if (bundledSkillRoots.length) {
       // A silent `.catch` here used to make a downgrade indistinguishable from
@@ -41875,40 +42446,102 @@ export function createAgentChatService(args: {
     managed.laneWorktreePath,
   ].join(":");
 
-  const resolveCursorSdkModelParamsForSession = (
-    session: Pick<AgentChatSession, "reasoningEffort" | "fastMode" | "cursorCloudServiceTier">,
-    modelSdkId: string,
-  ): Array<{ id: string; value: string }> | undefined =>
-    resolveCursorSdkModelSelectionParams({
-      modelSdkId,
-      reasoningEffort: session.reasoningEffort,
-      // `false` is the legacy boolean representation of "not fast". It is
-      // not an explicit standard-tier request, so leave Cursor's service tier
-      // unset unless the caller selected Fast.
-      fastMode: session.fastMode === true ? true : null,
-      serviceTier: session.cursorCloudServiceTier ?? null,
-    });
+  /** Sessions already told that a Cursor run could not apply everything they chose. */
+  const cursorModelParamsUnavailableNoticed = new Set<string>();
 
   /**
-   * Resolve the model params for a NEW cloud agent, or refuse to create it.
-   *
-   * `verifyExplicitCursorModelSelection` owns the fail-closed rule that both
-   * cloud create paths obey, so this supplies only the fallback for a session
-   * that chose neither control: its ordinary best-effort params. A followup to
-   * an existing agent is unaffected, because its variant is already fixed.
+   * Tell the chat once what a best-effort Cursor run could not apply, or, when
+   * it applied everything, re-arm the notice for the next gap.
    */
-  const requireCursorCloudCreateModelParams = async (
-    session: Pick<AgentChatSession, "reasoningEffort" | "fastMode" | "cursorCloudServiceTier">,
+  const noteUnappliedCursorSelection = (managed: ManagedChatSession, unapplied: string | null): void => {
+    const sessionId = managed.session.id;
+    if (!unapplied) {
+      cursorModelParamsUnavailableNoticed.delete(sessionId);
+      return;
+    }
+    if (cursorModelParamsUnavailableNoticed.has(sessionId)) return;
+    rememberBoundedId(cursorModelParamsUnavailableNoticed, sessionId, 256);
+    emitChatEvent(managed, { type: "system_notice", noticeKind: "info", message: unapplied });
+  };
+
+  /**
+   * Params for a LOCAL Cursor send or worker launch (see
+   * `resolveCursorSdkLocalSelection`). If the catalog cannot load, the turn
+   * runs without the chosen params. Only a send tells the chat (`announce`);
+   * a runtime warm-up on session open or model pick only logs, because no
+   * turn has lost anything yet.
+   */
+  const resolveCursorSdkLocalModelParams = async (
+    managed: ManagedChatSession,
+    modelSdkId: string,
+    options: { announce?: boolean } = {},
+  ): Promise<Array<{ id: string; value: string }> | undefined> => {
+    const input = cursorSdkSelectionInputForSession(managed.session, modelSdkId);
+    const selection = await resolveCursorSdkLocalSelection(getCursorSdkApiKey(), input);
+    if (selection.status === "catalog-unavailable" && hasExplicitCursorSelection(input)) {
+      logger.warn("agent_chat.cursor_model_params_unavailable", {
+        sessionId: managed.session.id,
+        modelSdkId,
+        reason: selection.reason,
+      });
+      if (options.announce) noteUnappliedCursorSelection(managed, describeUnappliedCursorSelection(input, selection));
+      return undefined;
+    }
+    // A local send tells only about a catalog it could not load. Anything
+    // else it could not apply keeps the notice state as it is, so a cloud
+    // follow-up still tells its gap only once.
+    if (!describeUnappliedCursorSelection(input, selection)) noteUnappliedCursorSelection(managed, null);
+    return cursorSelectionParams(selection);
+  };
+
+  /**
+   * Resolve the model params for a CLOUD run, or refuse to start it.
+   *
+   * A create fails closed (`verifyExplicitCursorModelSelection`): Cursor Cloud
+   * runs its default variant for params it was not sent, so a new agent must
+   * not start on settings ADE could not express. A follow-up refuses only a
+   * model the catalog does not list (`resolveCursorSdkFollowUpSelection`). A
+   * catalog that cannot load, or a control the model cannot express, sends
+   * the params that did resolve and tells the chat once what was left out. A
+   * session that chose no control sends its best-effort params either way.
+   */
+  const resolveCursorCloudModelParams = async (
+    managed: ManagedChatSession,
     modelSdkId: string,
     apiKey: string,
-  ): Promise<Array<{ id: string; value: string }> | undefined> => (
-    await verifyExplicitCursorModelSelection(apiKey, {
-      modelSdkId,
-      reasoningEffort: session.reasoningEffort,
-      fastMode: session.fastMode === true ? true : null,
-      serviceTier: session.cursorCloudServiceTier ?? null,
-    })
-  ) ?? resolveCursorSdkModelParamsForSession(session, modelSdkId);
+    operation: "create" | "followup",
+  ): Promise<Array<{ id: string; value: string }> | undefined> => {
+    const input = cursorSdkSelectionInputForSession(managed.session, modelSdkId);
+    if (operation === "create") {
+      return (await verifyExplicitCursorModelSelection(apiKey, input)) ?? resolveCursorSdkModelSelectionParams(input);
+    }
+    const selection = await resolveCursorSdkFollowUpSelection(apiKey, input);
+    if (!selection) return resolveCursorSdkModelSelectionParams(input);
+    const unapplied = describeUnappliedCursorSelection(input, selection);
+    if (unapplied) {
+      logger.warn("agent_chat.cursor_cloud_followup_params_unapplied", {
+        sessionId: managed.session.id,
+        modelSdkId,
+        status: selection.status,
+        ...(selection.status === "partial" ? { unmet: selection.unmet } : {}),
+        ...(selection.status === "catalog-unavailable" ? { reason: selection.reason } : {}),
+      });
+    }
+    noteUnappliedCursorSelection(managed, unapplied);
+    return cursorSelectionParams(selection);
+  };
+
+  /**
+   * Whether the session's current model can take Fast, or `null` when ADE
+   * cannot tell. A Cursor model's tier is known only from Cursor's catalog,
+   * and this reads the catalog in memory only: it runs inside a model switch,
+   * which must not wait on a fetch. Unknown is not unsupported.
+   */
+  const sessionModelSupportsFastMode = (managed: ManagedChatSession): boolean | null => {
+    if (sessionSupportsFastMode(managed.session)) return true;
+    if (managed.session.provider !== "cursor") return false;
+    return cursorModelFastTierFromCache(resolveCursorRuntimeModelSdkId(managed.session));
+  };
 
   const cursorModelParamsForLog = (
     modelParams?: Array<{ id: string; value: string }>,
@@ -42488,24 +43121,81 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * Drop the effort, Fast, tier and model-option choices an adopted model
+   * cannot take (see `unsupportedCursorSelection`). The chat did not pick the
+   * model, so its choices were made for another one. Kept, they came back
+   * unmet on every follow-up. Nothing is dropped while the catalog in memory
+   * cannot answer for the model: unknown is not unsupported.
+   */
+  const dropCursorChoicesTheModelCannotTake = (managed: ManagedChatSession, modelSdkId: string): void => {
+    const unsupported = unsupportedCursorSelection(managed.session, modelSdkId);
+    if (!unsupported) return;
+    const dropped: string[] = [];
+    if (unsupported.reasoningEffort) {
+      managed.session.reasoningEffort = null;
+      dropped.push("reasoningEffort");
+    }
+    if (unsupported.fastMode) {
+      delete managed.session.fastMode;
+      dropped.push("fastMode");
+    }
+    if (unsupported.serviceTier) {
+      delete managed.session.cursorCloudServiceTier;
+      dropped.push("cursorCloudServiceTier");
+    }
+    if (unsupported.configKeys.length && managed.session.cursorConfigValues) {
+      const kept = { ...managed.session.cursorConfigValues };
+      for (const key of unsupported.configKeys) delete kept[key];
+      if (Object.keys(kept).length) managed.session.cursorConfigValues = kept;
+      else delete managed.session.cursorConfigValues;
+      dropped.push(...unsupported.configKeys.map((key) => `cursorConfigValues.${key}`));
+    }
+    if (!dropped.length) return;
+    logger.info("agent_chat.cursor_adopted_model_choices_dropped", {
+      sessionId: managed.session.id,
+      modelSdkId,
+      dropped,
+    });
+    persistChatState(managed);
+    if (!unsupported.configKeys.length) return;
+    if (managed.runtime?.kind === "cursor") {
+      managed.runtime.configOptions = cursorSdkConfigOptions(modelSdkId, managed.session.cursorConfigValues);
+      syncCursorModeSnapshot(managed, managed.runtime);
+    }
+    emitTransientChatEnvelope(managed.session.id, {
+      type: "session_meta_updated",
+      cursorConfigValues: managed.session.cursorConfigValues ?? null,
+      ...(managed.session.cursorModeSnapshot ? { cursorModeSnapshot: managed.session.cursorModeSnapshot } : {}),
+    });
+  };
+
+  /**
+   * Point the chat at a Cursor model the runtime reports. `adopted` marks a
+   * model the chat did not pick (a cloud run started elsewhere): on a change
+   * of model, the choices it cannot take are dropped.
+   */
   const syncCursorSessionDescriptor = (
     managed: ManagedChatSession,
     providerModelId: string,
+    options: { adopted?: boolean } = {},
   ): void => {
     const trimmed = providerModelId.trim();
     if (!trimmed.length) return;
+    const previousModelSdkId = options.adopted ? resolveCursorRuntimeModelSdkId(managed.session) : null;
     managed.session.model = trimmed;
     const descriptor = getModelById(`cursor/${trimmed}`) ?? resolveModelDescriptorForProvider(trimmed, "cursor");
     if (descriptor) {
       managed.session.modelId = descriptor.id;
-      if (managed.runtime?.kind === "cursor") {
-        managed.runtime.modelSdkId = descriptor.providerModelId;
-      }
-      return;
+    } else {
+      delete managed.session.modelId;
     }
-    delete managed.session.modelId;
+    const modelSdkId = descriptor?.providerModelId ?? trimmed;
     if (managed.runtime?.kind === "cursor") {
-      managed.runtime.modelSdkId = trimmed;
+      managed.runtime.modelSdkId = modelSdkId;
+    }
+    if (options.adopted && previousModelSdkId !== modelSdkId) {
+      dropCursorChoicesTheModelCannotTake(managed, modelSdkId);
     }
   };
 
@@ -42838,12 +43528,18 @@ export function createAgentChatService(args: {
     };
     runtime.sdk.bridge.onEvent = (event) => {
       if (managed.runtime !== runtime) return;
+      const record = asRecord(event);
+      // A trailing `context_stats` sample is worker telemetry, possibly from
+      // the previous turn, never proof that this turn reached Droid.
       const pendingDispatchAck = runtime.pendingDispatchAck;
-      if (pendingDispatchAck && pendingDispatchAck.turnId === runtime.activeTurnId) {
+      if (
+        pendingDispatchAck
+        && pendingDispatchAck.turnId === runtime.activeTurnId
+        && record?.type !== "context_stats"
+      ) {
         runtime.pendingDispatchAck = undefined;
         pendingDispatchAck.resolve();
       }
-      const record = asRecord(event);
       if (record?.type === "session_title_updated") {
         adoptRuntimeSessionTitle(managed, { title: record.title }, "droid_sdk_session_title_updated");
       }
@@ -42958,7 +43654,12 @@ export function createAgentChatService(args: {
         runtime.sdkSilenceWatch.runId = event.runId;
       }
       runtime.currentModelId = event.modelSdkId ?? runtime.currentModelId;
-      if (event.modelSdkId) syncCursorSessionDescriptor(managed, event.modelSdkId);
+      // The run echoes the model this runtime sent. A switch made while the
+      // turn was starting is already on the session and waits for the
+      // turn-end rebuild; syncing the echo here would put the old model back.
+      if (event.modelSdkId && !runtime.pendingModelSwitchReset) {
+        syncCursorSessionDescriptor(managed, event.modelSdkId);
+      }
       persistChatState(managed);
     };
     runtime.sdk.bridge.onRunResult = (_result, meta) => {
@@ -43051,6 +43752,7 @@ export function createAgentChatService(args: {
         cwd: managed.laneWorktreePath,
         runtime: isCloud ? "cloud" : "local",
         ...(meta?.runId ? { runId: meta.runId } : {}),
+        state: runtime.eventMapperState,
       });
       for (const ev of events) {
         if (!isCloud && turnId) noteCursorSdkVisibleOutput(runtime, turnId, meta?.runId ?? null, ev.type);
@@ -43114,7 +43816,7 @@ export function createAgentChatService(args: {
       modelRef: launchModelSdkId,
       descriptor: resolveSessionModelDescriptor(managed.session),
     });
-    const launchModelParams = resolveCursorSdkModelParamsForSession(managed.session, launchModelSdkId);
+    const launchModelParams = await resolveCursorSdkLocalModelParams(managed, launchModelSdkId);
     const poolKey = cursorSdkPoolKeyFor(managed, policy, launchModelSdkId, launchModelParams);
     const shouldSyncSessionModel = managed.session.model !== launchModelSdkId || !managed.session.modelId;
     if (shouldSyncSessionModel) {
@@ -43138,6 +43840,7 @@ export function createAgentChatService(args: {
           existing.sdkPolicy = policy;
           existing.currentModeId = displayModeId;
           existing.currentModelId = launchModelSdkId;
+          existing.configOptions = cursorSdkConfigOptions(launchModelSdkId, managed.session.cursorConfigValues);
           wireCursorSdkBridgeHandlers(managed, existing);
           syncCursorModeSnapshot(managed, existing);
           return existing;
@@ -43356,10 +44059,11 @@ export function createAgentChatService(args: {
       currentModeId: displayModeId,
       availableModeIds: [...CURSOR_AVAILABLE_MODE_IDS],
       defaultModeId: "agent",
-      configOptions: [],
+      configOptions: cursorSdkConfigOptions(launchModelSdkId, managed.session.cursorConfigValues),
       cloudRuns: new Map(),
       activeCloudRunId: null,
       sdkSilenceWatch: null,
+      eventMapperState: createCursorSdkEventMapperState(),
     };
     throwIfCursorSetupInterrupted();
     managed.runtime = rt;
@@ -43946,7 +44650,7 @@ export function createAgentChatService(args: {
 
       const { promptText, images } = await buildCursorWorkerPrompt(composed, args.resolvedAttachments);
 
-      const modelParams = resolveCursorSdkModelParamsForSession(managed.session, runtime.modelSdkId);
+      const modelParams = await resolveCursorSdkLocalModelParams(managed, runtime.modelSdkId, { announce: true });
       persistChatState(managed);
       logger.info("agent_chat.cursor_prompt_start", {
         sessionId: managed.session.id,
@@ -44669,6 +45373,10 @@ export function createAgentChatService(args: {
     }
 
     const turnId = args.turnId ?? randomUUID();
+    // The model this run is sent on. A switch made while it runs lands on the
+    // session at once, but it does not name the model that ran this turn.
+    const turnModel = managed.session.model;
+    const turnModelId = managed.session.modelId;
     runtime.interrupted = false;
     runtime.busy = true;
     runtime.activeTurnId = turnId;
@@ -44760,9 +45468,7 @@ export function createAgentChatService(args: {
       let result: unknown;
       const sdkMode = cursorSdkModeForPolicy(runtime.sdkPolicy ?? resolveCursorSdkPolicy(managed.session));
       const modelParams = runtime.modelSdkId
-        ? (isFollowUp
-          ? resolveCursorSdkModelParamsForSession(managed.session, runtime.modelSdkId)
-          : await requireCursorCloudCreateModelParams(managed.session, runtime.modelSdkId, apiKey))
+        ? await resolveCursorCloudModelParams(managed, runtime.modelSdkId, apiKey, cloudOperation)
         : undefined;
       logger.info("agent_chat.cursor_cloud_prompt_start", {
         sessionId: managed.session.id,
@@ -44882,8 +45588,8 @@ export function createAgentChatService(args: {
 
       const doneEvent = mapCursorSdkRunResultToDoneEvent(innerResult ?? startedRecord, {
         turnId,
-        model: managed.session.model,
-        ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+        model: turnModel,
+        ...(turnModelId ? { modelId: turnModelId } : {}),
         runtime: "cloud",
       });
       let doneEventTagged: Extract<AgentChatEvent, { type: "done" }> = {
@@ -44942,8 +45648,8 @@ export function createAgentChatService(args: {
           type: "done",
           turnId,
           status: "interrupted",
-          model: managed.session.model,
-          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+          model: turnModel,
+          ...(turnModelId ? { modelId: turnModelId } : {}),
         });
       } else {
         const classified = classifyCursorSdkChatError(error, {
@@ -44963,19 +45669,31 @@ export function createAgentChatService(args: {
           type: "done",
           turnId,
           status: "failed",
-          model: managed.session.model,
-          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+          model: turnModel,
+          ...(turnModelId ? { modelId: turnModelId } : {}),
         });
         appendCtoTurnJournal(managed, { failureNote: `Cloud turn failed: ${msg}` });
       }
       persistChatState(managed);
       if (failedBeforeDispatch) throw error;
     } finally {
+      // A switch made during this run was deferred (`updateSession`). Consume
+      // it the way the local turn does, or the flag outlives this run and
+      // tears down a later turn's runtime instead.
+      const pendingModelSwitchReset = runtime.pendingModelSwitchReset === true;
+      runtime.pendingModelSwitchReset = false;
       runtime.busy = false;
       runtime.activeTurnId = null;
       runtime.activeCloudRunId = null;
       if (managed.session.status === "active") {
         setSessionIdle(managed);
+      }
+      if (pendingModelSwitchReset && managed.runtime === runtime && !managed.closed) {
+        if (managed.session.identityKey === "cto") {
+          void maybeRefreshIdentityContinuitySummary(managed, "provider_reset");
+        }
+        refreshReconstructionContext(managed);
+        teardownRuntime(managed, "model_switch");
       }
     }
     return { runId: completedRunId ?? "", status: turnStatus };
@@ -45419,6 +46137,8 @@ export function createAgentChatService(args: {
   const cursorCloudEmptyRunReads = new Map<string, Map<string, number>>();
   /** Event-driven name reads made while the title was still a default, per session id. */
   const cursorCloudPlaceholderNameReads = new Map<string, number>();
+  /** The run whose model this session last adopted, per session id. */
+  const cursorCloudModelAdoptedRunIds = new Map<string, string>();
 
   /**
    * Forget one session's cloud hydration state.
@@ -45431,6 +46151,7 @@ export function createAgentChatService(args: {
     cursorCloudRemoteNameReadAt.delete(sessionId);
     cursorCloudEmptyRunReads.delete(sessionId);
     cursorCloudPlaceholderNameReads.delete(sessionId);
+    cursorCloudModelAdoptedRunIds.delete(sessionId);
   };
 
   /** Forget every session's cloud hydration state, for a whole-service dispose. */
@@ -45440,6 +46161,7 @@ export function createAgentChatService(args: {
     cursorCloudRemoteNameReadAt.clear();
     cursorCloudEmptyRunReads.clear();
     cursorCloudPlaceholderNameReads.clear();
+    cursorCloudModelAdoptedRunIds.clear();
   };
 
   type CursorCloudLatestRun = {
@@ -45571,8 +46293,13 @@ export function createAgentChatService(args: {
       }
 
       const latestRun = runs[0] ?? null;
-      if (latestRun?.modelSdkId) {
-        syncCursorSessionDescriptor(managed, latestRun.modelSdkId);
+      // Adopt a run's model once, when that run is new to this chat (the first
+      // attach, or a run started here or on cursor.com). The mirror watch
+      // re-reads the same run every few seconds; adopting it each time put the
+      // previous run's model back over a model the user had just picked.
+      if (latestRun?.modelSdkId && cursorCloudModelAdoptedRunIds.get(managed.session.id) !== latestRun.runId) {
+        cursorCloudModelAdoptedRunIds.set(managed.session.id, latestRun.runId);
+        syncCursorSessionDescriptor(managed, latestRun.modelSdkId, { adopted: true });
       }
 
       const hydrated = cursorCloudHydratedRunIds.get(managed.session.id) ?? new Set<string>();
@@ -47029,6 +47756,7 @@ export function createAgentChatService(args: {
         promptText: sdkPromptText,
         ...(images.length ? { images } : {}),
         settings: buildDroidSdkSessionSettings(managed, runtime.modelId),
+        turnId,
       });
       if (runtime.pendingDispatchAck?.turnId === turnId) {
         const pendingDispatchAck = runtime.pendingDispatchAck;
@@ -47041,6 +47769,7 @@ export function createAgentChatService(args: {
       const doneEvent = mapDroidSdkRunResultToDoneEvent(result, {
         turnId,
         model: managed.session.model,
+        requestedModel: runtime.modelId,
         ...(managed.session.modelId
           ? { modelId: managed.session.modelId }
           : descriptor
@@ -49832,6 +50561,17 @@ export function createAgentChatService(args: {
 
     if (managed.runtime?.kind === "acp") {
       const rt = managed.runtime;
+      // The agent already answered the running turn and ADE is only folding
+      // its usage before `done`: the verdict stands and there is nothing to
+      // cancel. A clearing Stop still clears the queue, as it always has.
+      if (rt.session.turnAnswered) {
+        if (stopModeClearsQueue(mode)) {
+          rt.pendingSteers.length = 0;
+          cancelQueuedSteers(managed, rt, "interrupted");
+          persistChatState(managed);
+        }
+        return result;
+      }
       // Client-side accounting first. The turn body reads this flag, not the
       // agent's stopReason, which Copilot is known to report wrongly and which
       // Grok never sends at all because its cancel is a notification.
@@ -54285,6 +55025,7 @@ export function createAgentChatService(args: {
                   : descriptor.cursorCliVariants?.length
                     ? { cursorCliVariants: descriptor.cursorCliVariants }
                     : {}),
+                ...(descriptor.openCodeFast ? { openCodeFast: descriptor.openCodeFast } : {}),
                 isAvailable: Boolean(entry),
                 connected: providerMeta?.connected ?? Boolean(entry),
                 requiresConfiguration: !entry && (group.key === "opencode" || group.key === "ollama" || group.key === "lmstudio"),
@@ -54930,6 +55671,7 @@ export function createAgentChatService(args: {
       || cursorConfigValues !== undefined
       || requestedAcpPermissionMode !== undefined;
     let modelHandoff: AgentChatModelHandoff | null = null;
+    let modelSwitched = false;
 
     if (modelId !== undefined) {
       const nextModelId = String(modelId ?? "").trim();
@@ -55029,6 +55771,7 @@ export function createAgentChatService(args: {
         providerChanged
         || managed.session.modelId !== descriptor.id
         || managed.session.model !== nextModel;
+      modelSwitched = modelChanged;
       if (providerChanged) {
         modelHandoff = {
           fromProvider: previousProvider,
@@ -55210,11 +55953,14 @@ export function createAgentChatService(args: {
         managed.runtime.threadResumed = false;
         managed.runtime.canAttachResumedTurnStart = false;
       }
-      if (reasoningEffort !== undefined && managed.runtime?.kind === "pi" && managed.session.reasoningEffort) {
-        await managed.runtime.sdk.setThinking(managed.session.reasoningEffort).catch((error) => {
+      // `null` clears the level ADE set, so Pi falls back to its own default
+      // for the model instead of keeping the effort the user just removed.
+      const piThinking = piThinkingLevel(managed.session.reasoningEffort);
+      if (reasoningEffort !== undefined && managed.runtime?.kind === "pi") {
+        await managed.runtime.sdk.setThinking(piThinking).catch((error) => {
           logger.warn("agent_chat.pi_set_thinking_failed", {
             sessionId,
-            thinkingLevel: managed.session.reasoningEffort,
+            thinkingLevel: piThinking,
             error: error instanceof Error ? error.message : String(error),
           });
         });
@@ -55265,11 +56011,13 @@ export function createAgentChatService(args: {
           managed.runtime.canAttachResumedTurnStart = false;
         }
       }
-      if (prev !== next && managed.runtime?.kind === "pi" && next) {
-        await managed.runtime.sdk.setThinking(next).catch((error) => {
+      // `null` clears the level ADE set (Pi's default for the model).
+      const piThinking = piThinkingLevel(next);
+      if (prev !== next && managed.runtime?.kind === "pi") {
+        await managed.runtime.sdk.setThinking(piThinking).catch((error) => {
           logger.warn("agent_chat.pi_set_thinking_failed", {
             sessionId,
-            thinkingLevel: next,
+            thinkingLevel: piThinking,
             error: error instanceof Error ? error.message : String(error),
           });
         });
@@ -55337,6 +56085,24 @@ export function createAgentChatService(args: {
         managed.session.fastMode = true;
       } else {
         delete managed.session.fastMode;
+      }
+    }
+    // Fast is a tier of one model, not a chat-wide preference. A switch keeps
+    // it only when the new model has a fast tier. Left on across a model
+    // without one, it sat hidden (no chip) and came back the moment the chat
+    // reached a fast-capable model the user never turned it on for. Unknown is
+    // not "unsupported": a Cursor model the catalog in memory cannot answer for
+    // keeps it (the switch never waits on a fetch), and the send-time resolver
+    // still applies it only where Cursor has a tier.
+    if (modelSwitched && managed.session.fastMode === true) {
+      const supportsFast = sessionModelSupportsFastMode(managed);
+      if (supportsFast === false) {
+        delete managed.session.fastMode;
+        logger.info("agent_chat.fast_mode_cleared_on_model_switch", {
+          sessionId,
+          provider: managed.session.provider,
+          modelId: managed.session.modelId ?? managed.session.model,
+        });
       }
     }
     if (requestedCursorCloudServiceTier !== undefined) {
@@ -55410,6 +56176,15 @@ export function createAgentChatService(args: {
       managed.session.cursorConfigValues = normalizeCursorConfigValueRecord(cursorConfigValues);
       if (!managed.session.cursorConfigValues) {
         delete managed.session.cursorConfigValues;
+      }
+      // The values ride the next run's model params (resolved per send); the
+      // snapshot only has to show the new choice.
+      if (managed.runtime?.kind === "cursor") {
+        managed.runtime.configOptions = cursorSdkConfigOptions(
+          managed.runtime.modelSdkId,
+          managed.session.cursorConfigValues,
+        );
+        syncCursorModeSnapshot(managed, managed.runtime);
       }
     }
 

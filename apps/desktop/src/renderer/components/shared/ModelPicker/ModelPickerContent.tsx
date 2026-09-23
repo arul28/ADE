@@ -197,6 +197,8 @@ export type ModelPickerContentProps = {
    */
   fastMode?: boolean;
   onFastModeChange?: (next: boolean) => void;
+  /** Why Fast cannot run with the selected model's other picks; shown on its chip. */
+  fastModeUnavailableReason?: string | null;
   serviceTierMode?: boolean;
   serviceTier?: CursorCloudServiceTier | null;
   onServiceTierChange?: (modelId: string, next: CursorCloudServiceTier | null) => void;
@@ -225,6 +227,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   registryFilter,
   fastMode = false,
   onFastModeChange,
+  fastModeUnavailableReason = null,
   serviceTierMode = false,
   serviceTier = null,
   onServiceTierChange,
@@ -1107,6 +1110,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                         onCopyId={handleCopyId}
                         fastModeOn={!serviceTierMode && fastMode && isActive}
                         {...(!serviceTierMode && onFastModeChange ? { onFastModeChange: handleFastChipChange } : {})}
+                        {...(isActive && fastModeUnavailableReason ? { fastUnavailableReason: fastModeUnavailableReason } : {})}
                         {...(serviceTierMode ? {
                           serviceTierMode: true,
                           serviceTier: isActive ? serviceTier : null,

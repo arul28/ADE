@@ -1,6 +1,9 @@
-import type { AgentChatContextUsageState, AgentChatEvent } from "./types";
-
-export type ContextCompactProvider = "claude" | "codex" | "opencode" | "cursor" | "droid" | "pi";
+import type {
+  AgentChatCompactDetection,
+  AgentChatCompactProvider,
+  AgentChatContextUsageState,
+  AgentChatEvent,
+} from "./types";
 
 /** Providers whose `/compact` slash is a real compact action, not a normal prompt. */
 export type ManualCompactProvider = "claude" | "codex" | "pi";
@@ -83,17 +86,22 @@ export type NormalizedContextCompact = {
   postTokens?: number;
   tokensRemoved?: number;
   durationMs?: number;
-  provider?: ContextCompactProvider;
+  provider?: AgentChatCompactProvider;
   sessionCompactionCount?: number;
+  detection?: AgentChatCompactDetection;
 };
 
-const PROVIDER_TINTS: Record<ContextCompactProvider, { ring: string; border: string }> = {
+const PROVIDER_TINTS: Record<AgentChatCompactProvider, { ring: string; border: string }> = {
   claude: { ring: "ring-amber-400/25", border: "border-amber-400/30" },
   codex: { ring: "ring-white/20", border: "border-white/25" },
   opencode: { ring: "ring-sky-400/25", border: "border-sky-400/30" },
   cursor: { ring: "ring-violet-400/25", border: "border-violet-400/30" },
   droid: { ring: "ring-orange-400/25", border: "border-orange-400/30" },
   pi: { ring: "ring-orange-500/25", border: "border-orange-500/30" },
+  qwen: { ring: "ring-indigo-400/25", border: "border-indigo-400/30" },
+  kimi: { ring: "ring-teal-400/25", border: "border-teal-400/30" },
+  grok: { ring: "ring-zinc-300/25", border: "border-zinc-300/30" },
+  copilot: { ring: "ring-emerald-400/25", border: "border-emerald-400/30" },
 };
 
 export function isContextCompactionChatEvent(
@@ -116,6 +124,7 @@ export function normalizeContextCompactEvent(event: AgentChatEvent): NormalizedC
       durationMs: event.durationMs,
       provider: event.provider,
       sessionCompactionCount: event.sessionCompactionCount,
+      ...(event.detection ? { detection: event.detection } : {}),
     };
   }
   if (event.type === "codex_context_compaction") {
@@ -154,12 +163,12 @@ export function formatCompactDuration(durationMs: number | null | undefined): st
   return rem ? `${minutes}m ${rem}s` : `${minutes}m`;
 }
 
-export function resolveProviderTint(provider?: ContextCompactProvider | string | null): {
+export function resolveProviderTint(provider?: AgentChatCompactProvider | string | null): {
   ring: string;
   border: string;
 } {
   if (provider && provider in PROVIDER_TINTS) {
-    return PROVIDER_TINTS[provider as ContextCompactProvider];
+    return PROVIDER_TINTS[provider as AgentChatCompactProvider];
   }
   return PROVIDER_TINTS.claude;
 }
