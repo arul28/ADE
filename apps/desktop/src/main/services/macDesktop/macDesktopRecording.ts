@@ -13,6 +13,7 @@
  * the gates are passed in.
  */
 
+import fs from "node:fs";
 import {
   type DesktopSeatProvider,
   type DesktopSeatReply,
@@ -27,6 +28,17 @@ import { clampFps } from "./macDesktopStreamServer";
 
 /** The turn clip's rate. Low on purpose: it is a time-lapse, not a recording. */
 const TURN_CLIP_FPS = 4;
+
+/** A finished capture's size for the pane's receipt, or null if it cannot be read. */
+export async function readCaptureBytes(filePath: string | null): Promise<number | null> {
+  if (!filePath) return null;
+  try {
+    const stat = await fs.promises.stat(filePath);
+    return stat.isFile() ? stat.size : null;
+  } catch {
+    return null;
+  }
+}
 
 export type MacDesktopRecordingDeps = {
   logger: Logger;
@@ -245,38 +257,46 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
         throw error;
       }
       recordingPaths.delete(laneId);
-      const status: MacDesktopRecordingStatus = {
-        ...existing,
-        running: false,
-        filePath: typeof reply.filePath === "string" && reply.filePath.trim().length
-          ? reply.filePath.trim()
-          : null,
-        durationMs: typeof reply.durationMs === "number" && Number.isFinite(reply.durationMs)
-          ? reply.durationMs
-          : 0,
-        lastError: null,
-      };
-      recordings.set(laneId, status);
-      deps.emit({ type: "recording-changed", status });
+      const filePath = typeof reply.filePath === "string" && reply.filePath.trim().length
+        ? reply.filePath.trim()
+        : null;
+      const durationMs = typeof reply.durationMs === "number" && Number.isFinite(reply.durationMs)
+        ? reply.durationMs
+        : 0;
       // A caption is the opt-in that makes the file reviewer-facing evidence.
       // Without one it stays a scratch file and nothing reaches the drawer.
-      if (status.caption && status.filePath) {
-        await deps.observations.ingestProof({
+      // The pane always sends one; an agent has to write its own.
+      let proofArtifactId: string | null = null;
+      if (existing.caption && filePath) {
+        const filed = await deps.observations.ingestProof({
           laneId,
           chatSessionId: args.chatSessionId ?? null,
           toolName: "desktop record",
-          title: status.caption,
-          caption: status.caption,
-          filePath: status.filePath,
+          title: existing.caption,
+          caption: existing.caption,
+          filePath,
           kind: "video_recording",
-          metadata: { durationMs: status.durationMs },
+          metadata: { durationMs },
         }).catch((error: unknown) => {
           deps.logger.warn("mac_desktop.recording_proof_failed", {
             laneId,
             error: error instanceof Error ? error.message : String(error),
           });
+          return null;
         });
+        proofArtifactId = filed?.artifacts[0]?.id ?? null;
       }
+      const status: MacDesktopRecordingStatus = {
+        ...existing,
+        running: false,
+        filePath,
+        durationMs,
+        lastError: null,
+        proofArtifactId,
+        bytes: await readCaptureBytes(filePath),
+      };
+      recordings.set(laneId, status);
+      deps.emit({ type: "recording-changed", status });
       return status;
     },
 

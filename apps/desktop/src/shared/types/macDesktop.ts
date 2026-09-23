@@ -665,7 +665,30 @@ export type MacDesktopRecordingStatus = {
    * recording is live.
    */
   lastError?: string | null;
+  /**
+   * The proof record a captioned recording was filed as. Set by `stop`, and
+   * null when there was no caption or the filing failed.
+   */
+  proofArtifactId?: string | null;
+  /** Size of the finished file, when the host could read it. */
+  bytes?: number | null;
 };
+
+/**
+ * The caption the pane gives what a person captures from it.
+ *
+ * A caption is what files a capture as proof, and an agent must still write
+ * its own. A person pressing Record or Save screenshot has already said what
+ * they want, so the pane names the capture plainly instead of asking.
+ */
+export function macDesktopPaneCaption(
+  kind: "recording" | "screenshot",
+  laneName: string | null | undefined,
+): string {
+  const lane = laneName?.trim();
+  const base = `Mac Desktop ${kind}`;
+  return lane ? `${base} · ${lane}` : base;
+}
 
 export type MacDesktopRecordStartArgs = {
   laneId: string;
@@ -697,6 +720,11 @@ export type MacDesktopScreenshotArgs = {
   /** Relative paths resolve against the lane worktree and must stay inside it. */
   out?: string | null;
   chatSessionId?: string | null;
+  /**
+   * Files the capture as proof under this caption. The CLI's `screenshot`
+   * never sends one; `mac-desktop proof` files through its own step.
+   */
+  caption?: string | null;
 };
 
 export type MacDesktopScreenshotResult = {
@@ -705,6 +733,10 @@ export type MacDesktopScreenshotResult = {
   width: number;
   height: number;
   capturedAt: string;
+  /** The proof record, when a caption filed one. */
+  proofArtifactId?: string | null;
+  /** Size of the image, when the host could read it. */
+  bytes?: number | null;
 };
 
 // ---------------------------------------------------------------------------

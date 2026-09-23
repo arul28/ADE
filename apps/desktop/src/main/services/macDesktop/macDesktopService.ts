@@ -86,7 +86,7 @@ import {
 } from "./macDesktopOwnership";
 import { createMacDesktopObservations, MacDesktopObservationError } from "./macDesktopObservations";
 import { createMacDesktopInput } from "./macDesktopInput";
-import { createMacDesktopRecording } from "./macDesktopRecording";
+import { createMacDesktopRecording, readCaptureBytes } from "./macDesktopRecording";
 import {
   asNullableString,
   asNumber,
@@ -1037,7 +1037,33 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
 
     async screenshot(args: MacDesktopScreenshotArgs): Promise<MacDesktopScreenshotResult> {
       assertSupported();
-      return await input.screenshot(args);
+      const shot = await input.screenshot(args);
+      // Same rule as a recording: a caption files the picture as proof, and a
+      // capture without one stays a scratch file. The pane's Save screenshot
+      // sends one; the CLI's `screenshot` never does.
+      const caption = args.caption?.trim();
+      if (!caption) return shot;
+      const filed = await observations.ingestProof({
+        laneId: shot.laneId,
+        chatSessionId: args.chatSessionId ?? null,
+        toolName: "desktop screenshot",
+        title: caption,
+        caption,
+        filePath: shot.filePath,
+        kind: "screenshot",
+        metadata: { width: shot.width, height: shot.height },
+      }).catch((error: unknown) => {
+        deps.logger.warn("mac_desktop.screenshot_proof_failed", {
+          laneId: shot.laneId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      });
+      return {
+        ...shot,
+        proofArtifactId: filed?.artifacts[0]?.id ?? null,
+        bytes: await readCaptureBytes(shot.filePath),
+      };
     },
 
     async startRecording(args: MacDesktopRecordStartArgs): Promise<MacDesktopRecordingStatus> {

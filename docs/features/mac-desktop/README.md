@@ -99,6 +99,9 @@ required.
 | `apps/ade-cli/src/bootstrap.ts` | Creates the service next to `iosSimulatorService` and `appControlService`. |
 | `apps/ade-cli/src/cli.ts` | The `ade mac-desktop` command family. |
 | `apps/desktop/src/renderer/components/chat/ChatMacDesktopPanel.tsx` | The Work tools pane tool. |
+| `apps/desktop/src/renderer/components/chat/MacDesktopStatusStrip.tsx` | The pane's one status strip: a sentence, its buttons, and Details. |
+| `apps/desktop/src/renderer/components/shared/RecordingReceipt.tsx` | The recording pill and the "Saved to proof" receipt, shared with the Apple device pane. |
+| `apps/desktop/src/renderer/components/shared/ToolStatusStrip.tsx` | The opaque status strip shell, shared with the Apple device pane. |
 | `apps/desktop/src/renderer/components/chat/useMacDesktopLiveView.ts` | The live view, its low-power idle rate, and its reconnect budget. |
 | `apps/desktop/src/renderer/components/chat/macDesktopLiveViewLease.ts` | The renderer-side ref-counted lease: one stream per lane, one decoder, pane outranking the corner card. |
 | `apps/desktop/src/renderer/components/chat/h264FrameGate.ts` | The pure sequence-gap/keyframe gate both pushed-source decoders hold P-frames with after a skipped record or a decoder error. |
@@ -268,7 +271,7 @@ names the holding lane.
    the service passes `allowPrompt` true only when the window asking is on the
    host, the helper ignores the request without it, and the action is CTO-only so
    an agent cannot reach it. Accessibility missing while the picture already
-   streams is the same card as an amber banner above the picture, because a
+   streams is the pane's status strip with the same two buttons, because a
    synthetic event posted without Accessibility is dropped by macOS with no
    error: the service refuses real input with `MAC_DESKTOP_PERMISSION_REQUIRED`
    naming the grant (`macDesktopInput.ts`) instead of letting a takeover look
@@ -383,8 +386,8 @@ keyframe can still configure its decoder.
 The pane is the picture, a 40px strip above it, and an Apps section under it.
 The strip carries only a small coloured state dot at the far left (green live,
 amber starting, red reconnecting) with the state in its tooltip, plus the icon
-controls on the right — Record, Present, Take over / Return to agent, and Full
-screen / Exit full screen. There is no lane name, no status sentence, and no
+controls on the right — Record, Save screenshot, Present, Take over / Return to
+agent, and Full screen / Exit full screen. There is no lane name, no status sentence, and no
 Windows dropdown: the `ADE · <lane>` name and the window count were what made
 the pane read as confusing. The Apps section names each window parked on this
 desktop in the user's own vocabulary — app icon, app name, its window title
@@ -394,6 +397,26 @@ no sheet over the chat, and an opaque surface. The picker's copy matches
 ("Add an app to this desktop", "Add", "Moves the window onto this lane's
 desktop."), and the word "lease" never appears in the pane. An empty desktop
 reads "No apps on this desktop yet." with the Add app button in its heading.
+
+Under the chrome row sits one status strip, in the Apple device pane's style
+(`MacDesktopStatusStrip.tsx` over the shared `shared/ToolStatusStrip.tsx`). It
+says one thing at a time, most pressing first: a capture that failed or a note
+about one, a refused real input, a missing grant (with Open settings and Check
+again), and a stopped video. The stopped video reads "Video stopped." with a
+Reconnect button, which calls the live view's `restart` — a fresh `startStream`
+with the retry budget reset — and the reason folded behind Details. Only the
+wait ("Connecting to the lane's screen…") is painted on the picture itself.
+Full screen draws the same strip under its own chrome row.
+
+While a recording runs, a pill sits at the bottom centre of the picture: a red
+dot that pulses only when motion is allowed, "Recording 00:12", and Stop. After
+a capture is filed, a "Saved to proof · 00:12 · 3 MB" receipt replaces it for six
+seconds (a screenshot's receipt has no running time), with Open and a dismiss.
+Open scrolls to the proof row when the chat's proof panel is on screen, falls
+back to opening the file when the lane's Mac is this one, and otherwise says the
+capture is in the chat's proof drawer. The pill and the receipt are the Apple
+pane's own components (`shared/RecordingReceipt.tsx`), drawn as siblings of the
+picture so a click on them never takes control.
 
 The token is minted per `startStream` and returned only by `startStream`.
 `getStreamStatus` reports the transport shape with `url` and `token` null,
@@ -493,12 +516,61 @@ attachment — labels itself `iPhone`/`iPad` rather than the device name, and
 resubscribes by itself when a lane's display reports running again after a
 `stopped` stream.
 
+### Floating card, lane mark, and web client header
+
+These follow the Apple device tool's surfaces, using only state the renderer
+already had.
+
+- **Floating card tags.** The Work tab's corner card (`WorkLiveCornerCard.tsx`)
+  reads the lease holder and the recording from the one `getStatus` it already
+  makes, then keeps them current from `lease-changed` and `recording-changed`
+  events. The adapter in `workLiveCard.ts` turns them into the tags every
+  other source shows: `· agent` when an agent holds the lease, `· you` when a
+  person does, nothing when nobody does, and the pulsing red dot while the
+  lane records. The card is still view-only for Mac Desktop. Driving needs the
+  lease, and clicking the card opens the pane.
+- **Picture in picture.** The card's hover pill has the same Picture in
+  picture button as the Apple mini player. It reuses
+  `enterCanvasPictureInPicture` from `workLiveIosPictureInPicture.ts` on the
+  card's own off-screen decoder canvas. The button is enabled only while the
+  card holds the lane's decoder and a frame has been drawn. While the picture
+  is in PiP, the card inside ADE is hidden. PiP ends when the card loses the
+  decoder: the pane took it back, the card was closed, or the display went
+  away.
+- **Lane mark.** The Work session list puts a small `Monitor` glyph beside the
+  lane name when the lane holds a display. It sits in the same slot as the
+  Apple mark, both on the lane header and on a headerless lane's lone card.
+  `useLaneMacDesktops` makes one `getStatus({})` read (`lanes`) for the whole
+  list, and after that `display-created` / `display-destroyed` update the set
+  without another read. There is no timer and nothing runs per row. A host
+  that cannot host a display stops listening, and the web client is excluded,
+  as it is for the Apple mark.
+- **Web client header.** The read-only view (`WorkToolReadOnlyView.tsx`) adds
+  two badges beside the Live badge. A Recording badge appears while
+  `macDesktop.recording.running` is true; an older host sends no `recording`,
+  which reads as not recording. An owner badge says "You have control" when
+  this tab holds the lease, "Agent driving" when an agent does, "Someone has
+  control" when a person holds it from another client, and nothing when
+  nobody holds it.
+
 ## Proof
 
-Proof stays intentional. A bare `ade mac-desktop screenshot` writes a scratch file
-and returns its path. Only `ade mac-desktop proof --caption "<text>"` files a record,
-and it re-observes after the capture so the returned state is the state that was
-filed.
+Proof stays intentional, and a caption is what makes a capture proof. A bare
+`ade mac-desktop screenshot` writes a scratch file and returns its path.
+`ade mac-desktop proof --caption "<text>"` files a record and re-observes after
+the capture so the returned state is the state that was filed. `record start`
+files the finished movie only when it was given `--caption`. Agents keep writing
+their own captions; the CLI never invents one.
+
+The pane is the one caller that supplies a default. A person pressing Record or
+Save screenshot has already said they want the capture kept, so the pane sends
+`macDesktopPaneCaption` — "Mac Desktop recording · <lane>" or "Mac Desktop
+screenshot · <lane>" — and every pane capture reaches the proof drawer. The
+screenshot action takes an optional `caption` for this; the CLI's `screenshot`
+never sends one. `stopRecording` and a captioned `screenshot` return the filed
+record's `proofArtifactId` and the file's `bytes`, which is what the pane's
+receipt shows. A filing that fails leaves `proofArtifactId` null, and the pane
+says the capture was saved but not filed.
 
 Records carry `backendName: "ade-mac-desktop"` and `backendStyle: "manual"`,
 through the same `ingest_computer_use_artifacts` path `ade ios-sim proof` and
@@ -597,7 +669,7 @@ removed — it never reaches the proof drawer.
   the card again while the same display stays closed.
 - **A recording failure is not a display failure.** The pane's display-state
   slot titles the empty state; a refused `stopRecording` (a stale "running"
-  flag after the display died) goes on the strip's own error line, and
+  flag after the display died) goes in the status strip, and
   `display-destroyed` clears the recording with the display. Error text never
   carries a raw lane id: `macDesktopErrorText` replaces it with the lane's name
   when known and drops it otherwise.

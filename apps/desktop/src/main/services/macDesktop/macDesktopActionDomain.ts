@@ -372,6 +372,7 @@ export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): 
       laneId: requiredLaneId(args, "screenshot"),
       windowId: optionalNumber(args, "windowId"),
       out: optionalString(args, "out"),
+      caption: optionalString(args, "caption"),
       ...chatSessionId(args),
     })),
     startRecording: (args?: unknown) => gated(() => service.startRecording({

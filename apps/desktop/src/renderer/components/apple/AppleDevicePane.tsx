@@ -48,7 +48,8 @@ import {
   type AppleViewMode,
 } from "./appleDeviceState";
 import { inspectContextFor, type IosSimulatorSnapshotElement } from "./appleInspectGeometry";
-import { formatRecordingElapsed, recordingElapsedMs, useAppleRecordings } from "./appleRecording";
+import { recordingElapsedMs, useAppleRecordings } from "./appleRecording";
+import { RecordingPill } from "../shared/RecordingReceipt";
 import { useAppleDeviceInput } from "./useAppleDeviceInput";
 import { AppleRecordingSavedRow } from "./AppleRecordingSavedRow";
 import { useAppleDeviceStream } from "./useAppleDeviceStream";
@@ -980,18 +981,11 @@ export function AppleDevicePane({
           />
 
           {recordingActive && appleRailVisible(state) ? (
-            <div
-              data-apple-recording-pill=""
-              className="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-2 rounded-full border border-border bg-surface px-3 py-1 font-sans text-xs text-fg shadow-sm"
-            >
-              <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-error)] motion-safe:animate-pulse" />
-              <span className="tabular-nums">
-                Recording {formatRecordingElapsed(recordingElapsedMs(recordingActive, nowTick))}
-              </span>
-              <Button variant="ghost" size="sm" className="h-5 px-1.5" onClick={() => recordings.stop()}>
-                Stop
-              </Button>
-            </div>
+            <RecordingPill
+              marker={{ "data-apple-recording-pill": "" }}
+              elapsedMs={recordingElapsedMs(recordingActive, nowTick)}
+              onStop={() => recordings.stop()}
+            />
           ) : null}
 
         </div>

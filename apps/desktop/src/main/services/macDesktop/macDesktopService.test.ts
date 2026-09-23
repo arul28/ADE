@@ -3,9 +3,14 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type {
+  ComputerUseArtifactIngestionRequest,
+  ComputerUseArtifactIngestionResult,
+} from "../../../shared/types/computerUseArtifacts";
 import {
   MAC_DESKTOP_IDLE_RELEASE_MS,
   MAC_DESKTOP_LEASE_TTL_MS,
+  macDesktopPaneCaption,
   type MacDesktopEventPayload,
 } from "../../../shared/types/macDesktop";
 import {
@@ -106,6 +111,7 @@ function makeService(options: {
   driver?: ReturnType<typeof createFakeDriver>;
   projectRoot?: string;
   now?: () => number;
+  ingestArtifacts?: (request: ComputerUseArtifactIngestionRequest) => ComputerUseArtifactIngestionResult;
 } = {}) {
   const events: MacDesktopEventPayload[] = [];
   const driver = options.driver ?? createFakeDriver();
@@ -114,6 +120,7 @@ function makeService(options: {
     logger,
     platform: options.platform ?? "darwin",
     ...(options.now ? { now: options.now } : {}),
+    ...(options.ingestArtifacts ? { ingestArtifacts: options.ingestArtifacts } : {}),
     onEvent: (event) => events.push(event),
     createDriverClient: () => driver as unknown as MacDesktopDriverClient,
   });
@@ -812,6 +819,124 @@ describe("macDesktopService recordings", () => {
     // A second stop is a clean "not running" with no path to report.
     await expect(service.stopRecording({ laneId: "lane-1" }))
       .rejects.toThrow(/MAC_DESKTOP_RECORDING_NOT_RUNNING: Lane lane-1 is not recording its desktop\.$/);
+    service.dispose();
+  });
+});
+
+/**
+ * A broker that remembers what it was asked to file and answers with one
+ * record per input, the way `computerUseArtifactBrokerService.ingest` does.
+ */
+function createFakeBroker() {
+  const requests: ComputerUseArtifactIngestionRequest[] = [];
+  const ingest = (request: ComputerUseArtifactIngestionRequest): ComputerUseArtifactIngestionResult => {
+    requests.push(request);
+    return {
+      artifacts: request.inputs.map((input, index) => ({
+        id: `artifact-${requests.length}-${index}`,
+        kind: input.kind,
+        title: input.title ?? "",
+      })) as unknown as ComputerUseArtifactIngestionResult["artifacts"],
+      links: [],
+    };
+  };
+  return { requests, ingest };
+}
+
+/** A real file for the driver to "finish", so the size can be read back. */
+function writeCapture(name: string, bytes: number): string {
+  const filePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "mac-desktop-capture-")), name);
+  fs.writeFileSync(filePath, Buffer.alloc(bytes));
+  return filePath;
+}
+
+describe("macDesktopService proof from the pane", () => {
+  it("names a pane capture after the lane, and plainly without one", () => {
+    expect(macDesktopPaneCaption("recording", "docs-fix")).toBe("Mac Desktop recording · docs-fix");
+    expect(macDesktopPaneCaption("screenshot", "  ")).toBe("Mac Desktop screenshot");
+    expect(macDesktopPaneCaption("recording", null)).toBe("Mac Desktop recording");
+  });
+
+  it("files a captioned recording and hands back its proof record and size", async () => {
+    const clip = writeCapture("clip.mp4", 3_072);
+    const driver = createFakeDriver({
+      [MAC_DESKTOP_DRIVER_OPS.stopRecording]: () => ({ filePath: clip, durationMs: 12_000 }),
+    });
+    const broker = createFakeBroker();
+    const { service } = makeService({ driver, ingestArtifacts: broker.ingest });
+    await service.start({ laneId: "lane-1" });
+    await service.startRecording({
+      laneId: "lane-1",
+      caption: macDesktopPaneCaption("recording", "docs-fix"),
+      chatSessionId: "chat-1",
+    });
+
+    const stopped = await service.stopRecording({ laneId: "lane-1", chatSessionId: "chat-1" });
+
+    expect(stopped).toMatchObject({
+      running: false,
+      filePath: clip,
+      durationMs: 12_000,
+      proofArtifactId: "artifact-1-0",
+      bytes: 3_072,
+    });
+    expect(broker.requests).toHaveLength(1);
+    expect(broker.requests[0]!.inputs[0]).toMatchObject({
+      kind: "video_recording",
+      title: "Mac Desktop recording · docs-fix",
+      path: clip,
+    });
+    // The status read afterwards agrees with what the stop returned.
+    expect((await service.getStatus({ laneId: "lane-1" })).recording?.proofArtifactId).toBe("artifact-1-0");
+    service.dispose();
+  });
+
+  it("keeps an uncaptioned recording out of the drawer, as an agent's must be", async () => {
+    const driver = createFakeDriver({
+      [MAC_DESKTOP_DRIVER_OPS.stopRecording]: () => ({ filePath: "/tmp/clip.mp4", durationMs: 1_200 }),
+    });
+    const broker = createFakeBroker();
+    const { service } = makeService({ driver, ingestArtifacts: broker.ingest });
+    await service.start({ laneId: "lane-1" });
+    await service.startRecording({ laneId: "lane-1" });
+
+    const stopped = await service.stopRecording({ laneId: "lane-1" });
+
+    expect(stopped.proofArtifactId).toBeNull();
+    expect(broker.requests).toHaveLength(0);
+    service.dispose();
+  });
+
+  it("files a captioned screenshot, and leaves an uncaptioned one as scratch", async () => {
+    const driver = createFakeDriver({
+      [MAC_DESKTOP_DRIVER_OPS.screenshot]: (payload) => {
+        fs.writeFileSync(String(payload.path), Buffer.alloc(2_048));
+        return { filePath: payload.path, width: 2560, height: 1440 };
+      },
+    });
+    const broker = createFakeBroker();
+    const { service } = makeService({ driver, ingestArtifacts: broker.ingest });
+    await service.start({ laneId: "lane-1" });
+
+    const scratch = await service.screenshot({ laneId: "lane-1" });
+    expect(scratch.proofArtifactId).toBeUndefined();
+    expect(broker.requests).toHaveLength(0);
+
+    const filed = await service.screenshot({
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+      caption: macDesktopPaneCaption("screenshot", "docs-fix"),
+    });
+    expect(filed).toMatchObject({ proofArtifactId: "artifact-1-0", bytes: 2_048 });
+    expect(broker.requests[0]!.inputs[0]).toMatchObject({
+      kind: "screenshot",
+      title: "Mac Desktop screenshot · docs-fix",
+      path: filed.filePath,
+    });
+    expect(broker.requests[0]!.owners).toEqual(expect.arrayContaining([
+      { kind: "lane", id: "lane-1", relation: "attached_to" },
+      { kind: "chat_session", id: "chat-1", relation: "attached_to" },
+    ]));
     service.dispose();
   });
 });

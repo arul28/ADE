@@ -14,16 +14,16 @@ import {
   ArrowSquareIn,
   ArrowsInSimple,
   ArrowsOutSimple,
+  Camera,
   Cursor,
   Monitor,
   Plus,
   Record,
   Stop,
   WarningCircle,
-  X,
 } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../shared/types";
-import { macDesktopNotParkedPhrase } from "../../../shared/types/macDesktop";
+import { macDesktopNotParkedPhrase, macDesktopPaneCaption } from "../../../shared/types/macDesktop";
 import type {
   MacDesktopDisplay,
   MacDesktopLeaseState,
@@ -32,6 +32,8 @@ import type {
 } from "../../../shared/types/macDesktop";
 import type { SystemSettingsPaneId } from "../../../shared/types/systemSettings";
 import { cn } from "../ui/cn";
+import { RecordingPill, RecordingSavedRow } from "../shared/RecordingReceipt";
+import { RECORDING_RECEIPT_MS, revealProofArtifactRow } from "../shared/recordingFormat";
 import {
   WORK_TOOL_CHROME_CHIP,
   WORK_TOOL_CHROME_ROW,
@@ -44,6 +46,7 @@ import { WorkToolPreviewControls } from "../terminals/workToolPreviewControls";
 import { H264VideoCanvas } from "./H264VideoCanvas";
 import { macDesktopApi } from "./macDesktopApi";
 import { MacDesktopPermissionBlock } from "./MacDesktopPermissionBlock";
+import { MacDesktopStatusStrip, type MacDesktopStripMessage } from "./MacDesktopStatusStrip";
 import { useWorkToolsMaximize } from "../terminals/workToolsMaximize";
 import {
   displayFrameToViewRect,
@@ -211,6 +214,16 @@ const MacDesktopWindowCard = memo(function MacDesktopWindowCard({
   );
 });
 
+/** A capture the pane just filed as proof, for the receipt over the picture. */
+type MacDesktopReceipt = {
+  artifactId: string;
+  /** Null for a screenshot, which has no running time. */
+  durationMs: number | null;
+  bytes: number | null;
+  /** Host-absolute. Opened only when the host is this Mac. */
+  filePath: string | null;
+};
+
 /** What the last observation event said, for the one line under the rail. */
 type MacDesktopLastObservation = {
   caption: string | null;
@@ -272,7 +285,7 @@ export function ChatMacDesktopPanel({
    */
   const [checkingPermissions, setCheckingPermissions] = useState(false);
   /**
-   * A recording toggle that failed, kept OUT of `statusError`.
+   * A recording toggle or a screenshot that failed, kept OUT of `statusError`.
    *
    * `statusError` is the display-state slot: it titles the empty state when
    * the display is gone. A failed `stopRecording` on a lane whose recorder the
@@ -280,11 +293,23 @@ export function ChatMacDesktopPanel({
    * "Lane <uuid> is not recording." over an empty pane — an error about the
    * wrong thing, in the wrong place, with an id in it.
    */
-  const [recordingError, setRecordingError] = useState<string | null>(null);
-  // The line belongs to one lane's recorder; a lane change starts a new one.
+  const [captureError, setCaptureError] = useState<string | null>(null);
+  /** A quiet line about a capture that is fine, such as where a receipt went. */
+  const [captureNotice, setCaptureNotice] = useState<string | null>(null);
+  const [receipt, setReceipt] = useState<MacDesktopReceipt | null>(null);
+  const [screenshotPending, setScreenshotPending] = useState(false);
+  // All three belong to one lane's captures; a lane change starts fresh.
   useEffect(() => {
-    setRecordingError(null);
+    setCaptureError(null);
+    setCaptureNotice(null);
+    setReceipt(null);
   }, [laneId]);
+  // The receipt says the file exists and where it went, then goes away.
+  useEffect(() => {
+    if (!receipt) return undefined;
+    const timer = window.setTimeout(() => setReceipt(null), RECORDING_RECEIPT_MS);
+    return () => window.clearTimeout(timer);
+  }, [receipt]);
   const [viewRect, setViewRect] = useState({ left: 0, top: 0, width: 0, height: 0 });
   /** The pane's own box, which decides stacked vs side by side. */
   /** The window the rail is pointing at on the picture, if any. */
@@ -695,17 +720,90 @@ export function ChatMacDesktopPanel({
     if (!display) return;
     setBusy(true);
     try {
+      // A person pressing Record wants the file kept, so the pane always sends
+      // a caption: that is what files it as proof. An agent still has to
+      // write its own.
       const next = recording?.running
         ? await macDesktopApi().stopRecording({ laneId, chatSessionId: sessionId }, pinRef.current)
-        : await macDesktopApi().startRecording({ laneId, chatSessionId: sessionId }, pinRef.current);
+        : await macDesktopApi().startRecording({
+          laneId,
+          chatSessionId: sessionId,
+          caption: macDesktopPaneCaption("recording", laneName),
+        }, pinRef.current);
       setStatus((current) => (current ? { ...current, recording: next } : current));
-      setRecordingError(null);
+      setCaptureError(null);
+      if (!next.running && next.proofArtifactId) {
+        setReceipt({
+          artifactId: next.proofArtifactId,
+          durationMs: next.durationMs ?? 0,
+          bytes: next.bytes ?? null,
+          filePath: next.filePath,
+        });
+      } else if (!next.running && next.caption && next.proofArtifactId === null) {
+        // Null is the host saying the filing failed. An older host sends no
+        // field at all, and it still filed the captioned movie.
+        setCaptureError("The recording was saved, but it could not be filed as proof.");
+      }
     } catch (error) {
-      setRecordingError(errorText(error));
+      setCaptureError(errorText(error));
     } finally {
       setBusy(false);
     }
-  }, [display, errorText, recording?.running, sessionId, setStatus]);
+  }, [display, errorText, laneId, laneName, recording?.running, sessionId, setStatus]);
+
+  /** Save screenshot: one picture of the lane's screen, filed as proof. */
+  const saveScreenshot = useCallback(async () => {
+    if (!display) return;
+    setScreenshotPending(true);
+    try {
+      const shot = await macDesktopApi().screenshot({
+        laneId,
+        chatSessionId: sessionId,
+        caption: macDesktopPaneCaption("screenshot", laneName),
+      }, pinRef.current);
+      setCaptureError(null);
+      if (shot.proofArtifactId) {
+        setReceipt({
+          artifactId: shot.proofArtifactId,
+          durationMs: null,
+          bytes: shot.bytes ?? null,
+          filePath: shot.filePath,
+        });
+      } else {
+        setCaptureError("The screenshot was taken, but it could not be filed as proof.");
+      }
+    } catch (error) {
+      setCaptureError(errorText(error));
+    } finally {
+      setScreenshotPending(false);
+    }
+  }, [display, errorText, laneId, laneName, sessionId]);
+
+  /**
+   * The receipt's Open, the way the Apple pane's does it: the proof row when
+   * the proof panel is on screen, the file when it is not. A file on another
+   * Mac cannot be opened from here, so a remote lane is pointed at the drawer.
+   */
+  const openReceipt = useCallback((entry: MacDesktopReceipt) => {
+    if (revealProofArtifactRow(entry.artifactId)) return;
+    if (laneHostIsLocal && entry.filePath) {
+      void window.ade.app.openPath(entry.filePath).catch((error: unknown) => {
+        setCaptureError(errorText(error));
+      });
+      return;
+    }
+    setCaptureNotice("It is in this chat's proof drawer.");
+  }, [errorText, laneHostIsLocal]);
+
+  /* The pill's clock. Ticks only while something is recording. */
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  const recordingRunning = Boolean(recording?.running);
+  useEffect(() => {
+    if (!recordingRunning) return undefined;
+    setNowTick(Date.now());
+    const timer = window.setInterval(() => setNowTick(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [recordingRunning]);
 
   const present = useCallback(async (destination: "main" | "display") => {
     setBusy(true);
@@ -1117,6 +1215,15 @@ export function ChatMacDesktopPanel({
             {recording?.running ? <Stop size={16} weight="fill" /> : <Record size={16} weight="fill" />}
           </WorkToolChromeButton>
 
+          <WorkToolChromeButton
+            label={screenshotPending ? "Saving screenshot…" : "Save screenshot"}
+            onClick={() => void saveScreenshot()}
+            disabled={screenshotPending}
+            testId={`mac-desktop-screenshot${suffix}`}
+          >
+            <Camera size={16} />
+          </WorkToolChromeButton>
+
           {presentAction ? (
             <WorkToolChromeButton
               label={presentAction.label}
@@ -1229,12 +1336,14 @@ export function ChatMacDesktopPanel({
             or not expanded. */}
         <div ref={active ? attachCanvasSlot : undefined} className="absolute inset-0" />
 
-        {active && live.status !== "playing" ? (
+        {/* Only the wait is painted on the picture. A stopped video is the
+            strip's to say, because the strip has the Reconnect. */}
+        {active && live.status !== "playing" && live.status !== "error" ? (
           <p
             className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center px-4 text-center text-[12px] text-muted-fg"
             data-testid="mac-desktop-surface-status"
           >
-            {macDesktopErrorText(live.error) ?? (live.url ? "Starting display…" : "Connecting to the lane's screen…")}
+            {live.url ? "Starting display…" : "Connecting to the lane's screen…"}
           </p>
         ) : null}
 
@@ -1308,53 +1417,127 @@ export function ChatMacDesktopPanel({
   };
 
   /**
-   * One amber line for a refusal that belongs to an action, not the display.
+   * The pane's one strip, most pressing thing first.
    *
-   * Real input and a recording toggle both fail while the picture is fine, so
-   * neither may write `statusError` — that slot titles the EMPTY state, and the
-   * recording refusal used to end up there with the lane's raw uuid in it.
+   * A refusal or a note about the capture the person just made leads, because
+   * it answers the click they made. A missing grant comes next: it is usually WHY the video or the mouse
+   * is not working, so it outranks their symptoms. Real input and a capture
+   * both fail while the picture is fine, so neither may write `statusError` —
+   * that slot titles the EMPTY state.
    */
-  const renderStripErrorLine = (
-    suffix: string,
-    testId: string,
-    message: string | null,
-    onDismiss: () => void,
-  ) => (
-    message ? (
-      <div
-        className="flex w-full items-start gap-2 px-1 text-left text-[12px] text-amber-300"
-        data-testid={`${testId}${suffix}`}
-      >
-        <WarningCircle size={12} className="mt-0.5 shrink-0" />
-        <span className="min-w-0 flex-1 whitespace-normal break-words">
-          {message}
-        </span>
-        <button
-          type="button"
-          className="mt-0.5 shrink-0 rounded-[4px] p-0.5 text-amber-200/80 hover:bg-white/[0.06] hover:text-amber-100"
-          title="Dismiss"
-          aria-label="Dismiss"
-          onClick={onDismiss}
-        >
-          <X size={12} />
-        </button>
-      </div>
-    ) : null
-  );
+  const inputErrorText = realInput.inputError
+    ? macDesktopErrorText(realInput.inputError, { laneId, laneName })
+    : null;
+  const hostSuffix = laneHostIsLocal ? "" : ` on ${machineFacts.machineName ?? "the lane's Mac"}`;
+  const appName = status?.responsibleAppName ?? "ADE";
+  const stripMessage = ((): MacDesktopStripMessage | null => {
+    if (captureError) {
+      return {
+        key: `capture:${captureError}`,
+        tone: "error",
+        sentence: captureError,
+        onDismiss: () => setCaptureError(null),
+        testId: "mac-desktop-capture-error",
+      };
+    }
+    if (captureNotice) {
+      return {
+        key: `notice:${captureNotice}`,
+        tone: "notice",
+        sentence: captureNotice,
+        onDismiss: () => setCaptureNotice(null),
+        testId: "mac-desktop-capture-notice",
+      };
+    }
+    if (inputErrorText) {
+      return {
+        key: `input:${inputErrorText}`,
+        tone: "error",
+        sentence: inputErrorText,
+        onDismiss: realInput.clearInputError,
+        testId: "mac-desktop-input-error",
+      };
+    }
+    if (blockedPermission) {
+      // The picture streams without Accessibility; the mouse does not work.
+      // The strip names the grant and carries the same two buttons as the
+      // first screen, so the fix is never a hunt through System Settings.
+      const screenRecording = blockedPermission.kind === "screenRecording";
+      return {
+        key: `permission:${blockedPermission.kind}`,
+        tone: "notice",
+        sentence: screenRecording
+          ? `Screen Recording is off for ${appName}${hostSuffix}. The picture cannot stream.`
+          : `Accessibility is off for ${appName}${hostSuffix}. The mouse and keyboard do nothing until it is on.`,
+        actions: [
+          ...(laneHostIsLocal
+            ? [{
+              label: `Open ${screenRecording ? "Screen Recording" : "Accessibility"} settings`,
+              onClick: () => openSettingsPane(blockedPermission.pane),
+            }]
+            : []),
+          {
+            label: checkingPermissions ? "Checking…" : "Check again",
+            onClick: () => void checkAgain(),
+            disabled: checkingPermissions,
+            muted: laneHostIsLocal,
+          },
+        ],
+        testId: "mac-desktop-permission",
+      };
+    }
+    if (live.status === "error") {
+      return {
+        key: `video:${live.error ?? ""}`,
+        tone: "error",
+        sentence: "Video stopped.",
+        detail: macDesktopErrorText(live.error, { laneId, laneName }),
+        // A fresh `startStream`, budget included: the automatic retries give
+        // up after a few tries, and this is the way back after that.
+        actions: [{ label: "Reconnect", onClick: live.restart }],
+        testId: "mac-desktop-video-stopped",
+      };
+    }
+    return null;
+  })();
 
-  const renderInputErrorLine = (suffix: string) => renderStripErrorLine(
-    suffix,
-    "mac-desktop-input-error",
-    realInput.inputError ? macDesktopErrorText(realInput.inputError, { laneId, laneName }) : null,
-    realInput.clearInputError,
-  );
-
-  const renderRecordingErrorLine = (suffix: string) => renderStripErrorLine(
-    suffix,
-    "mac-desktop-recording-error",
-    recordingError,
-    () => setRecordingError(null),
-  );
+  /**
+   * The recording pill and the "Saved to proof" receipt, over the picture.
+   *
+   * Siblings of the surface, never children: the surface takes control on
+   * any pointer-down, and a Stop or an Open must not also grab the lease.
+   * Lifted clear of the "Driving this screen" hint while the person drives.
+   */
+  const renderCaptureOverlay = (scope: MacDesktopChromeScope) => {
+    if (scope !== (expanded ? "fullscreen" : "pane")) return null;
+    const driving = iHaveControl && live.status === "playing";
+    const inset = scope === "fullscreen" ? MAC_DESKTOP_FULLSCREEN_MARGIN + 12 : 12;
+    const bottom = inset + (driving ? 32 : 0);
+    return (
+      <>
+        {recording?.running ? (
+          <RecordingPill
+            marker={{ "data-testid": `mac-desktop-recording-pill${scope === "pane" ? "" : "-fs"}` }}
+            elapsedMs={Math.max(0, nowTick - (Date.parse(recording.startedAt ?? "") || nowTick))}
+            onStop={() => void toggleRecording()}
+            stopDisabled={busy}
+            className="z-[11]"
+            style={{ bottom }}
+          />
+        ) : null}
+        {receipt ? (
+          <RecordingSavedRow
+            marker={{ "data-testid": `mac-desktop-saved-receipt${scope === "pane" ? "" : "-fs"}` }}
+            durationMs={receipt.durationMs}
+            bytes={receipt.bytes}
+            onOpen={() => openReceipt(receipt)}
+            onDismiss={() => setReceipt(null)}
+            style={{ bottom, left: inset, right: inset }}
+          />
+        ) : null}
+      </>
+    );
+  };
 
   return (
     <div className="relative flex h-full min-h-0 flex-col gap-2" data-testid="mac-desktop-panel">
@@ -1413,40 +1596,10 @@ export function ChatMacDesktopPanel({
       <div className={cn(WORK_TOOL_CHROME_ROW, "relative flex-nowrap gap-1")}>
         {renderChromeRow("pane")}
       </div>
-      {/* ── Permission banner over a live picture ──────────────────────
-          The picture streams without Accessibility; the mouse does not work.
-          The banner names the grant and carries the same two buttons as the
-          first screen, so the fix is never a hunt through System Settings. */}
-      {blockedPermission ? (
-        <div
-          data-testid="mac-desktop-permission"
-          className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-[10px] border border-amber-400/25 bg-amber-400/[0.08] px-3 py-2 text-[12px] text-amber-100"
-        >
-          <WarningCircle size={14} className="shrink-0 text-amber-300" />
-          <span className="min-w-0 flex-1">
-            {blockedPermission.kind === "screenRecording"
-              ? `Screen Recording is off for ${status?.responsibleAppName ?? "ADE"}${laneHostIsLocal ? "" : ` on ${machineFacts.machineName ?? "the lane's Mac"}`}. The picture cannot stream.`
-              : `Accessibility is off for ${status?.responsibleAppName ?? "ADE"}${laneHostIsLocal ? "" : ` on ${machineFacts.machineName ?? "the lane's Mac"}`}. The mouse and keyboard do nothing until it is on.`}
-          </span>
-          {laneHostIsLocal ? (
-            <button
-              type="button"
-              className={cn(WORK_TOOL_PRIMARY_BUTTON, "h-7 px-2.5 text-[11.5px]")}
-              onClick={() => openSettingsPane(blockedPermission.pane)}
-            >
-              {`Open ${blockedPermission.kind === "screenRecording" ? "Screen Recording" : "Accessibility"} settings`}
-            </button>
-          ) : null}
-          <button
-            type="button"
-            className="inline-flex h-7 items-center gap-1 rounded-[8px] border border-amber-300/30 px-2.5 text-[11.5px] font-medium text-amber-100 hover:bg-amber-400/15 disabled:opacity-50"
-            onClick={() => void checkAgain()}
-            disabled={checkingPermissions}
-          >
-            {checkingPermissions ? "Checking…" : "Check again"}
-          </button>
-        </div>
-      ) : null}
+      {/* ── The one strip ─────────────────────────────────────────────
+          A missing grant, a refused action, or a stopped video, one at a
+          time and each with the button that fixes it. */}
+      <MacDesktopStatusStrip message={stripMessage} suffix="" />
 
       {/* ── The screen, and the windows on it ───────────────────────────
 
@@ -1463,10 +1616,9 @@ export function ChatMacDesktopPanel({
         // the owner asked for it and read as a second toolbar.
         className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto"
       >
-        <div className="flex w-full min-w-0 shrink-0 flex-col items-stretch">
-          {renderInputErrorLine("")}
-          {renderRecordingErrorLine("")}
+        <div className="relative flex w-full min-w-0 shrink-0 flex-col items-stretch">
           {renderPicture("pane")}
+          {renderCaptureOverlay("pane")}
         </div>
 
         {/* ── Apps ────────────────────────────────────────────────────────
@@ -1609,13 +1761,13 @@ export function ChatMacDesktopPanel({
               >
                 {renderChromeRow("fullscreen")}
               </div>
-              {renderInputErrorLine("-fs")}
-              {renderRecordingErrorLine("-fs")}
+              <MacDesktopStatusStrip message={stripMessage} suffix="-fs" />
               <div
-                className="flex min-h-0 flex-1 items-stretch justify-stretch"
+                className="relative flex min-h-0 flex-1 items-stretch justify-stretch"
                 style={{ padding: MAC_DESKTOP_FULLSCREEN_MARGIN }}
               >
                 {renderPicture("fullscreen")}
+                {renderCaptureOverlay("fullscreen")}
               </div>
             </div>,
             document.documentElement,

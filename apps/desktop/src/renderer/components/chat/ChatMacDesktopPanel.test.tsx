@@ -102,6 +102,7 @@ const macDesktop = {
   renewLease: vi.fn(),
   startRecording: vi.fn(),
   stopRecording: vi.fn(),
+  screenshot: vi.fn(),
   listWindows: vi.fn(async () => []),
   claimWindow: vi.fn(async () => undefined),
   // Present so a test can prove Escape is NOT forwarded as a keystroke.
@@ -119,6 +120,7 @@ const getConnectionSnapshot = vi.fn(async () => ({
   updatedAt: 1,
 }));
 const onConnectionSnapshotChanged = vi.fn(() => () => {});
+const openPath = vi.fn(async (_path: string) => undefined);
 
 beforeEach(() => {
   resetMacDesktopFrames();
@@ -133,8 +135,10 @@ beforeEach(() => {
   macDesktop.requestPermission.mockResolvedValue({ screenRecording: "granted", accessibility: "granted" });
   getConnectionSnapshot.mockClear();
   onConnectionSnapshotChanged.mockClear();
+  openPath.mockClear();
   (window as unknown as { ade: unknown }).ade = {
     macDesktop,
+    app: { openPath },
     remoteRuntime: { getConnectionSnapshot, onConnectionSnapshotChanged },
   };
   // The retained union slices are a module singleton, so a machine seeded by
@@ -235,7 +239,7 @@ describe("ChatMacDesktopPanel actions on a pinned machine", () => {
     expect(toggle.getAttribute("aria-pressed")).toBe("true");
   });
 
-  it("starts a recording on the focused chat's machine", async () => {
+  it("starts a captioned recording on the focused chat's machine, so it files as proof", async () => {
     macDesktop.startRecording.mockResolvedValue({
       laneId: "lane-1",
       running: true,
@@ -248,7 +252,7 @@ describe("ChatMacDesktopPanel actions on a pinned machine", () => {
     fireEvent.click(await screen.findByTestId("mac-desktop-record"));
 
     await waitFor(() => expect(macDesktop.startRecording).toHaveBeenCalledWith(
-      { laneId: "lane-1", chatSessionId: "chat-1" },
+      { laneId: "lane-1", chatSessionId: "chat-1", caption: "Mac Desktop recording · docs-fix" },
       STUDIO_PIN,
     ));
   });
@@ -443,6 +447,167 @@ describe("ChatMacDesktopPanel actions on a pinned machine", () => {
 
       expect(macDesktop.returnControl).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("ChatMacDesktopPanel captures", () => {
+  const RUNNING = {
+    laneId: "lane-1",
+    running: true,
+    startedAt: new Date(Date.now() - 12_000).toISOString(),
+    filePath: null,
+    durationMs: null,
+    caption: "Mac Desktop recording · docs-fix",
+    lastError: null,
+  };
+
+  beforeEach(() => {
+    macDesktop.getStatus.mockResolvedValue(makeStatus());
+  });
+
+  it("shows a running recording as a pill, and its stop as a Saved to proof receipt", async () => {
+    macDesktop.getStatus.mockResolvedValue(makeStatus({
+      recording: { ...RUNNING, startedAt: new Date(Date.now() - 12_000).toISOString() },
+    }));
+    macDesktop.stopRecording.mockResolvedValue({
+      ...RUNNING,
+      running: false,
+      filePath: "/Users/me/.ade/artifacts/clip.mp4",
+      durationMs: 12_000,
+      proofArtifactId: "artifact-1",
+      bytes: 3 * 1024 * 1024,
+    });
+
+    renderPanel();
+    const pill = await screen.findByTestId("mac-desktop-recording-pill");
+    expect(pill.textContent).toMatch(/Recording 00:1\d/);
+
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+
+    await waitFor(() => expect(macDesktop.stopRecording).toHaveBeenCalledWith(
+      { laneId: "lane-1", chatSessionId: "chat-1" },
+      STUDIO_PIN,
+    ));
+    const receipt = await screen.findByTestId("mac-desktop-saved-receipt");
+    expect(receipt.textContent).toContain("Saved to proof · 00:12 · 3 MB");
+    expect(screen.queryByTestId("mac-desktop-recording-pill")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByTestId("mac-desktop-saved-receipt")).toBeNull();
+  });
+
+  it("opens the proof row the receipt names when the proof panel is on screen", async () => {
+    macDesktop.screenshot.mockResolvedValue({
+      laneId: "lane-1",
+      filePath: "/Users/me/shot.png",
+      width: 2560,
+      height: 1440,
+      capturedAt: "2026-09-18T19:00:00.000Z",
+      proofArtifactId: "artifact-9",
+      bytes: 240 * 1024,
+    });
+    const row = document.createElement("div");
+    row.dataset.chatProofArtifact = "artifact-9";
+    row.scrollIntoView = vi.fn();
+    document.body.appendChild(row);
+
+    try {
+      renderPanel();
+      fireEvent.click(await screen.findByTestId("mac-desktop-screenshot"));
+
+      await waitFor(() => expect(macDesktop.screenshot).toHaveBeenCalledWith(
+        { laneId: "lane-1", chatSessionId: "chat-1", caption: "Mac Desktop screenshot · docs-fix" },
+        STUDIO_PIN,
+      ));
+      const receipt = await screen.findByTestId("mac-desktop-saved-receipt");
+      // A screenshot has no running time, so the receipt leaves it out.
+      expect(receipt.textContent).toContain("Saved to proof · 240 KB");
+
+      fireEvent.click(screen.getByRole("button", { name: "Open" }));
+      expect(row.scrollIntoView).toHaveBeenCalled();
+      expect(openPath).not.toHaveBeenCalled();
+    } finally {
+      row.remove();
+    }
+  });
+
+  it("points a remote lane at the proof drawer when the row is not on screen", async () => {
+    macDesktop.screenshot.mockResolvedValue({
+      laneId: "lane-1",
+      filePath: "/Users/studio/shot.png",
+      width: 2560,
+      height: 1440,
+      capturedAt: "2026-09-18T19:00:00.000Z",
+      proofArtifactId: "artifact-9",
+      bytes: 1_000,
+    });
+
+    renderPanel();
+    fireEvent.click(await screen.findByTestId("mac-desktop-screenshot"));
+    fireEvent.click(await screen.findByRole("button", { name: "Open" }));
+
+    // The file is on the Mac Studio; opening that path here would open nothing.
+    expect(openPath).not.toHaveBeenCalled();
+    expect((await screen.findByTestId("mac-desktop-capture-notice")).textContent)
+      .toContain("It is in this chat's proof drawer.");
+  });
+
+  it("says so in the strip when a capture could not be filed as proof", async () => {
+    macDesktop.screenshot.mockResolvedValue({
+      laneId: "lane-1",
+      filePath: "/tmp/shot.png",
+      width: 2560,
+      height: 1440,
+      capturedAt: "2026-09-18T19:00:00.000Z",
+      proofArtifactId: null,
+    });
+
+    renderPanel();
+    fireEvent.click(await screen.findByTestId("mac-desktop-screenshot"));
+
+    const strip = await screen.findByTestId("mac-desktop-capture-error");
+    expect(strip.textContent).toContain("could not be filed as proof");
+    expect(screen.queryByTestId("mac-desktop-saved-receipt")).toBeNull();
+  });
+});
+
+describe("ChatMacDesktopPanel strip", () => {
+  beforeEach(() => {
+    macDesktop.getStatus.mockResolvedValue(makeStatus());
+  });
+
+  it("offers Reconnect when the video stops, and Reconnect asks for the stream again", async () => {
+    // The default fakes hand back no stream address, so the live view fails.
+    renderPanel();
+
+    const strip = await screen.findByTestId("mac-desktop-video-stopped");
+    expect(strip.textContent).toContain("Video stopped.");
+    // The reason is folded behind Details rather than painted on the picture.
+    expect(screen.queryByTestId("mac-desktop-surface-status")).toBeNull();
+    expect(strip.textContent).not.toContain("returned no stream address");
+    fireEvent.click(screen.getByRole("button", { name: "Details" }));
+    expect(strip.textContent).toContain("returned no stream address");
+
+    const before = macDesktop.startStream.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+    await waitFor(() => expect(macDesktop.startStream.mock.calls.length).toBeGreaterThan(before));
+  });
+
+  it("puts a revoked grant in the same strip, ahead of the stopped video it causes", async () => {
+    macDesktop.getStatus.mockResolvedValue(makeStatus({
+      hostIsLocal: true,
+      responsibleAppName: "ADE",
+      permissions: { screenRecording: "granted", accessibility: "denied" },
+    } as Partial<MacDesktopStatus>));
+
+    renderLocalPanel();
+
+    const strip = await screen.findByTestId("mac-desktop-permission");
+    expect(strip.textContent).toContain("Accessibility is off for ADE.");
+    expect(screen.getByRole("button", { name: "Open Accessibility settings" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+    await waitFor(() => expect(macDesktop.recheckPermissions).toHaveBeenCalled());
+    expect(screen.queryByTestId("mac-desktop-video-stopped")).toBeNull();
   });
 });
 
