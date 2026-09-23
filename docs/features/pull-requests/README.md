@@ -1581,9 +1581,11 @@ interval (clamped to 5 s–5 min, jittered ±10%). Each sweep:
 
 `prService.ingestGithubWebhook` does not emit one `prs-updated` for each
 delivery. The event carries the whole PR list (about 225 KB for 194 PRs), and a
-CI run delivers dozens of `check_run` webhooks in a few seconds. A burst folds
-into one event, emitted 500 ms after the first delivery with the list as it is
-then. An immediate `prs-updated` from another path replaces a waiting one. The
+CI run delivers dozens of `check_run` webhooks in a few seconds. Each delivery
+restarts a 500 ms quiet window, so a burst folds into one event with the list as
+it is when the burst goes quiet. A stream that never goes quiet still sends one
+event every 2 s. An immediate `prs-updated` from another path replaces a
+waiting one. The
 webhook path keeps no fingerprint guard, because consumers such as the chat PR
 pane reload checks on the event even when no row changed.
 

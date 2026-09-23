@@ -327,8 +327,10 @@ const PR_ACTION_RUNS_LIMIT = 12;
  */
 const PR_ACTION_RUN_JOBS_LIMIT = PR_ACTION_RUNS_LIMIT;
 const PR_TERMINAL_ACTION_RUN_JOBS_LIMIT = 6;
-/** Trailing window that folds a webhook burst into one `prs-updated`. */
+/** Quiet time that ends a webhook burst and sends one `prs-updated`. */
 const PRS_UPDATED_COALESCE_MS = 500;
+/** The longest a burst may hold the event back, so a steady stream still updates. */
+const PRS_UPDATED_COALESCE_MAX_WAIT_MS = 2_000;
 
 function chunkValues<T>(values: readonly T[], size = SQL_IN_CLAUSE_CHUNK_SIZE): T[][] {
   const chunks: T[][] = [];
@@ -10558,6 +10560,7 @@ export function createPrService({
   };
 
   let coalescedPrsUpdatedTimer: ReturnType<typeof setTimeout> | null = null;
+  let coalescedPrsUpdatedSinceMs: number | null = null;
 
   const emitPrsUpdated = (): void => {
     // This event carries the full list, so it supersedes one that is waiting.
@@ -10565,6 +10568,7 @@ export function createPrService({
       clearTimeout(coalescedPrsUpdatedTimer);
       coalescedPrsUpdatedTimer = null;
     }
+    coalescedPrsUpdatedSinceMs = null;
     emitPrEvent?.({
       type: "prs-updated",
       polledAt: nowIso(),
@@ -10581,9 +10585,19 @@ export function createPrService({
    * desktop that drained it lost its RPC channel again and again. The event is
    * also a refresh signal (the chat PR pane reloads checks on it), so the
    * burst still ends in one event; it is not dropped by a fingerprint.
+   *
+   * Each delivery restarts the 500 ms quiet window, so a burst ends in one
+   * event after it goes quiet. A stream that never goes quiet still sends one
+   * every 2 s, with the list as it is then.
    */
   const scheduleCoalescedPrsUpdated = (): void => {
-    if (coalescedPrsUpdatedTimer) return;
+    const nowMs = Date.now();
+    if (coalescedPrsUpdatedTimer) clearTimeout(coalescedPrsUpdatedTimer);
+    coalescedPrsUpdatedSinceMs ??= nowMs;
+    const delayMs = Math.max(
+      0,
+      Math.min(PRS_UPDATED_COALESCE_MS, coalescedPrsUpdatedSinceMs + PRS_UPDATED_COALESCE_MAX_WAIT_MS - nowMs),
+    );
     coalescedPrsUpdatedTimer = setTimeout(() => {
       coalescedPrsUpdatedTimer = null;
       // A timer callback, so a throw here is an uncaught exception, which
@@ -10594,7 +10608,7 @@ export function createPrService({
       } catch (error) {
         logger.warn("prs.coalesced_update_failed", { error: getErrorMessage(error) });
       }
-    }, PRS_UPDATED_COALESCE_MS);
+    }, delayMs);
     coalescedPrsUpdatedTimer.unref?.();
   };
 

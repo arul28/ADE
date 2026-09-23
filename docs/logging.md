@@ -146,7 +146,7 @@ channel because a reply would pass its send budget: the channel id, the method
 label (for example `ade/actions/call stream_events`), the reply size, the bytes
 already sent, and the buffered bytes. `prs.coalesced_update_failed` records a
 coalesced `prs-updated` that could not be built, usually because the project
-runtime closed its database inside the 500 ms window.
+runtime closed its database while the event was waiting (at most 2 s).
 `agent_chat.cursor_sdk_worker_orphan_recovered` and
 `agent_chat.cursor_sdk_worker_orphan_recovery_failed` record the startup sweep
 stopping a Cursor SDK worker whose brain is gone, with the pid, ppid and owner

@@ -161,17 +161,12 @@ export function recoverCursorSdkWorkerOrphans(args: {
   });
   const sweep = (async (): Promise<CursorSdkOrphanSweepResult> => {
     const orphans = await findOrphans();
-    // The first kill uses the listing above. Every later one re-lists first:
-    // each grace is 1.5 s, so a pid listed before it can be freed and reused
-    // (fast on Windows), and `taskkill /T /F` would take the new owner's tree.
-    let listingIsFresh = true;
-    const confirm = async (pid: number): Promise<boolean> => {
-      if (listingIsFresh) {
-        listingIsFresh = false;
-        return true;
-      }
-      return (await findOrphans()).some((candidate) => candidate.pid === pid);
-    };
+    // Every kill re-lists first, the first one too. A current worker can exit
+    // on its own once its owner's channel closes, so a listed pid can be freed
+    // and reused (fast on Windows) before any signal, and `taskkill /T /F`
+    // would take the new owner's whole tree.
+    const confirm = async (pid: number): Promise<boolean> =>
+      (await findOrphans()).some((candidate) => candidate.pid === pid);
     const terminationDeps = {
       platform,
       graceMs: CURSOR_SDK_KILL_ESCALATION_MS,

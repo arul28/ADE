@@ -198,8 +198,10 @@ describe("recoverCursorSdkWorkerOrphans", () => {
       deps: {
         platform: "linux",
         selfPid: 1,
+        // The initial listing and the recheck before SIGTERM see the orphan;
+        // the recheck before SIGKILL does not.
         listProcesses: async () => (
-          listed++ === 0 ? [{ pid: 61, ppid: 1, command: `node ${WORKER} --ade-owner-pid=60` }] : []
+          listed++ < 2 ? [{ pid: 61, ppid: 1, command: `node ${WORKER} --ade-owner-pid=60` }] : []
         ),
         isAlive: (pid) => pid === 61,
         kill,
@@ -240,9 +242,32 @@ describe("recoverCursorSdkWorkerOrphans", () => {
     });
 
     expect(killTree.mock.calls).toEqual([[71]]);
-    // The first kill used the initial listing; the second orphan re-listed.
-    expect(listProcesses).toHaveBeenCalledTimes(2);
+    // The initial listing, then one recheck before each orphan's first kill.
+    expect(listProcesses).toHaveBeenCalledTimes(3);
     expect(result).toEqual({ recoveredPids: [71], failedPids: [72] });
+  });
+
+  // A current worker can exit on its own once its owner's channel closes, so
+  // even the first orphan's pid can be reused between the listing and the kill.
+  it("rechecks before the very first kill, so a pid freed after listing is never signalled", async () => {
+    let listed = 0;
+    const kill = vi.fn();
+    const result = await recoverCursorSdkWorkerOrphans({
+      deps: {
+        platform: "linux",
+        selfPid: 1,
+        listProcesses: async () => (
+          listed++ === 0 ? [{ pid: 81, ppid: 1, command: `node ${WORKER} --ade-owner-pid=80` }] : []
+        ),
+        isAlive: (pid) => pid === 81,
+        kill,
+        waitMs: noWait,
+      },
+    });
+
+    expect(kill).not.toHaveBeenCalled();
+    expect(listed).toBe(2);
+    expect(result).toEqual({ recoveredPids: [], failedPids: [81] });
   });
 
   it("runs once per process until a test resets it", async () => {
