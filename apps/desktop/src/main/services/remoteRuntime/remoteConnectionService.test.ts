@@ -1364,6 +1364,46 @@ describe("RemoteConnectionService", () => {
     expect(service.snapshot().connections[0]?.lastError).toBeNull();
   });
 
+  // The probe's ping shares the socket with every event pump. A host that
+  // refused one oversized reply answered, so the probe must not disconnect it.
+  it("keeps a machine connected when its latency probe hits an over-budget channel close", async () => {
+    const previouslyConnected = target("previously-connected", 1_700_000_000);
+    const registry = {
+      list: vi.fn(() => [previouslyConnected]),
+      get: vi.fn((id: string) =>
+        id === previouslyConnected.id ? previouslyConnected : null,
+      ),
+    } as unknown as RemoteTargetRegistry;
+    const pool = {
+      connect: vi.fn(async (target: RemoteRuntimeTarget) =>
+        connectResult(target),
+      ),
+      disconnect: vi.fn(),
+      callMachineForTarget: vi.fn(async () => {
+        throw new Error(
+          "Remote ADE service connection failed: Runtime RPC channel fell behind the sync connection.",
+          { cause: new PairedRuntimeRpcOverBudgetError("Runtime RPC channel fell behind the sync connection.") },
+        );
+      }),
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+
+    const service = new RemoteConnectionService(registry, pool, {
+      pingTimeoutMs: 5_000,
+    });
+    await service.connect(previouslyConnected.id, { explicit: true });
+
+    service.probeSavedConnections();
+    await vi.waitFor(() => {
+      expect(pool.callMachineForTarget).toHaveBeenCalledTimes(1);
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(pool.disconnect).not.toHaveBeenCalled();
+    expect(service.snapshot().connections[0]?.state).toBe("connected");
+    expect(service.snapshot().connections[0]?.lastError).toBeNull();
+  });
+
   it("does not flag the remote unreachable when adding a project fails with a host-side error", async () => {
     const previouslyConnected = target("previously-connected", 1_700_000_000);
     const registry = {

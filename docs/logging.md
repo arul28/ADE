@@ -140,6 +140,23 @@ refuses a recycled pid, and `agent_chat.claude_subprocess_taskkill_failed` on
 Windows. They carry pids and session ids and no command lines, and none is a
 PostHog event.
 
+Four more local operational lines exist, and none is a PostHog event.
+`sync_paired.rpc_channel_over_budget` records the host closing one paired RPC
+channel because a reply would pass its send budget: the channel id, the method
+label (for example `ade/actions/call stream_events`), the reply size, the bytes
+already sent, and the buffered bytes. `prs.coalesced_update_failed` records a
+coalesced `prs-updated` that could not be built, usually because the project
+runtime closed its database inside the 500 ms window.
+`agent_chat.cursor_sdk_worker_orphan_recovered` and
+`agent_chat.cursor_sdk_worker_orphan_recovery_failed` record the startup sweep
+stopping a Cursor SDK worker whose brain is gone, with the pid, ppid and owner
+pid and no command line. The renderer's `[ade-term] image paste failed` console
+line (session id, `remote`/`local`/`bound`, and the failure reason) reaches
+`main.jsonl` as `window.console`. These are connection mechanics, background
+cleanup and a per-paste failure, so they stay local: the connection flaps and
+the sweeps have no user action behind them, and a paste failure's reason is
+free text that cannot cross the analytics boundary.
+
 A CTO voice call and the capture gesture each write their own local structured
 line families, and neither is a PostHog event. `cto_voice.*` covers the call's
 whole life at the runtime that owns it: lifecycle (`start`, `call_end`,
