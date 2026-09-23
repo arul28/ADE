@@ -281,6 +281,7 @@ export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): 
         laneId: requiredLaneId(args, "type"),
         text,
         clear: optionalBoolean(args, "clear"),
+        submit: optionalBoolean(args, "submit"),
         mode: inputMode(args, "type"),
         target: Object.keys(target).length ? target : null,
         silent: optionalBoolean(args, "silent"),
@@ -379,6 +380,8 @@ export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): 
       laneId: requiredLaneId(args, "startRecording"),
       caption: optionalString(args, "caption"),
       fps: optionalNumber(args, "fps"),
+      keepIdle: optionalBoolean(args, "keepIdle"),
+      maxSeconds: optionalNumber(args, "maxSeconds"),
       ...chatSessionId(args),
     })),
     stopRecording: (args?: unknown) => gated(() => service.stopRecording({
@@ -408,6 +411,9 @@ export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): 
     })),
     stopStream: (args?: unknown) => gated(() => service.stopStream({
       laneId: requiredLaneId(args, "stopStream"),
+      ...chatSessionId(args),
+      // A remote desktop's viewer leaving: drop only that viewer.
+      ...(optionalBoolean(args, "localViewer") ? { localViewer: true } : {}),
     })),
     takeControl: (args?: unknown) => gated(() => service.takeControl({
       laneId: requiredLaneId(args, "takeControl"),

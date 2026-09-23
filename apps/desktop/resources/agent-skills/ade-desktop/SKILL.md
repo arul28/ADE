@@ -15,6 +15,35 @@ every other command refuses off macOS with `MAC_DESKTOP_UNSUPPORTED_PLATFORM`.
 `--lane` defaults to `ADE_LANE_ID`. In a chat, the command is pinned to that
 chat's lane: `--lane` naming a different lane is refused, not silently swapped.
 
+## Check each step before you report it
+
+A click, type or press that returns `ok` only means ADE sent the input. It
+does not mean the app did what you wanted. After each step that matters,
+confirm it: read the screen the command printed, `ade mac-desktop wait --label
+"<text>"`, `ade mac-desktop observe`, or a screenshot. Report only what you
+confirmed. If a step failed, say which step, and do not describe the result
+you meant to get. Before `record stop`, confirm the final state, so the video
+ends on it.
+
+## Common tasks
+
+Use these directly; you do not need `--help` for them.
+
+| Task | Command |
+|---|---|
+| Start the screen (do this first) | `ade mac-desktop start --text` |
+| Open an app, file or URL | `ade mac-desktop open "Safari" --text` |
+| What is on screen | `ade mac-desktop observe --text` |
+| Click a control by its label | `ade mac-desktop click --text "Sign in" --text` |
+| Type, then press Return | `ade mac-desktop type "reddit" --submit --text` |
+| Press one key | `ade mac-desktop press return --text` (also `tab`, `escape`) |
+| Wait for a label to appear | `ade mac-desktop wait --label "Done" --timeout 8000 --text` |
+| Record a video | `ade mac-desktop record start --caption "<what>" --text`, then `record stop --text` |
+| Take a screenshot | `ade mac-desktop screenshot --out shot.png --text` |
+| Show the screen to the user | `ade mac-desktop show --text` (tools pane) or `--floating` |
+| Close your own window | `ade mac-desktop press w --cmd --text` |
+| Stop the screen | `ade mac-desktop stop --text` |
+
 ## Operating loop
 
 ### 1. Start the screen and put an app on it
@@ -28,10 +57,11 @@ ade mac-desktop windows --text
 
 `open` takes an app name, a bundle id, a path, or a URL; everything after `--`
 is the app's own argv. Run `start` first: `open` and the rest refuse with "Start
-one first" when the lane has no display, and an idle display with no windows
-and no viewer closes itself after a while. `open` starts a separate copy of the
-app for the lane, so it never shares a process with the user's windows. To
-adopt a window that is already running, claim it:
+one first" when the lane has no display. Viewing the screen does not start it,
+and an idle display with no windows and no viewer closes itself after a while.
+`open` starts a separate copy of the app for the lane, so it never shares a
+process with the user's windows. To adopt a window that is already running,
+claim it:
 
 ```bash
 ade mac-desktop claim --window <id> --text
@@ -65,15 +95,23 @@ ade mac-desktop click obs-a1b2:e:3 --text
 ade mac-desktop click --text "Sign in" --text
 ade mac-desktop type "ada@example.com" --clear --target obs-a1b2:e:7 --text
 ade mac-desktop type "typed into whatever has focus" --text
+ade mac-desktop type "reddit" --submit --target obs-a1b2:e:4 --text
+ade mac-desktop press return --text
+ade mac-desktop press tab --text
 ade mac-desktop press return --cmd --text
 ade mac-desktop scroll down --amount 5 --text
 ade mac-desktop drag --from obs-a1b2:e:3 --to 900,420 --text
 ade mac-desktop wait --label "Saved" --timeout 8000 --text
 ```
 
-Every acting command re-observes and prints what the screen looks like now, so
-you do not need a follow-up `observe` to learn whether your click landed. If a
-handle is refused as expired, observe again and retry.
+`type --submit` presses Return after the text, to submit a search or a form.
+`press` takes one key name (`return`, `tab`, `escape`, `f5`) or one character;
+`key` is the same command.
+
+Every acting command re-observes and prints what the screen looks like now.
+Read that screen to confirm the step worked; `ok` alone does not confirm it.
+If the change takes time to show, run `wait` for a label instead of acting
+again. If a handle is refused as expired, observe again and retry.
 
 ### 4. Real input needs one approval per chat
 
@@ -130,11 +168,44 @@ worktree or the OS temp directory (`$TMPDIR`); anywhere else is refused. `proof`
 is the intentional one and **refuses without `--caption`** — a record nobody can
 judge is not proof. It captures, then re-observes, and prints the state it filed.
 
+A recording cuts still stretches out by default, so the video shows only the
+changes. Add `--keep-idle` to keep them at real length. A recording that a chat
+started stops by itself after 10 minutes; `--max-seconds <n>` sets another
+limit:
+
+```bash
+ade mac-desktop record start --caption "<what>" --keep-idle --max-seconds 1200 --text
+```
+
 `record stop` finalizes within about two seconds. If it fails, the status it
 prints carries an `error` line and the partial file's path — report that instead
 of assuming the clip exists.
+
+If a recording fails, say so. Never attach an older recording or a copied
+file in its place. ADE refuses copied proof.
 
 **Read that state before you rely on the record.** If the observation it
 returns does not show what your caption claims, the proof is wrong: fix the
 screen, then file again. Filing a caption the capture does not support is worse
 than filing nothing.
+
+## Show the screen to the user
+
+When the user asks to see the lane screen ("show me", "open the desktop"):
+
+```bash
+ade mac-desktop show --text              # the Mac Desktop in the tools pane
+ade mac-desktop show --floating --text   # the floating card over the chat
+```
+
+`ade ui show mac-desktop` and `ade ui show floating-mac-desktop` do the same.
+It targets your own chat and reports what really happened:
+
+- `shown` — it is on screen now.
+- `held` — a desktop window has this project open but the user cannot see
+  it yet (your chat is not in front, or the window is hidden). It opens when
+  the user goes to your chat. Say so.
+- `no_desktop` (exit 1) — no desktop window is open for this chat, so nothing
+  was shown. Tell the user; do not claim you opened it.
+
+`show` does not start the screen. Run `ade mac-desktop start` first.

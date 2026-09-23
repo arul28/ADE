@@ -244,6 +244,8 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     target: Record<string, unknown> | null;
     /** A human takeover: act, and do not look. */
     silent?: boolean;
+    /** The first step of two: the second one observes, so this one does not. */
+    skipObservation?: boolean;
   }): Promise<MacDesktopInputResult> => {
     const laneId = args.laneId;
     deps.requireDisplay(laneId);
@@ -293,7 +295,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     // call, the activity notes — is identical; what a silent call skips is the
     // capture, the AX walk, the `observation` event and the caption that would
     // have narrated the user's own keystroke back at them.
-    if (args.silent) {
+    if (args.silent || args.skipObservation) {
       return { ok: true, action: args.action, mode: args.mode, silent: true, resolved: null, observation: null, trace: null };
     }
     const observation = await observeInternal({
@@ -412,7 +414,10 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
       const laneId = args.laneId.trim();
       const target = args.target ? resolveTarget(laneId, args.target) : { payload: {}, element: null, needsReal: false };
       const mode = resolveMode(args.mode, target.needsReal);
-      return await runAction({
+      const silent = isSilent(args, mode);
+      const submit = args.submit === true;
+      const caption = `type · ${args.text.slice(0, 40)}`;
+      const typed = await runAction({
         laneId,
         action: "type",
         command: "type",
@@ -424,9 +429,36 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         resolved: target.element,
         chatSessionId: args.chatSessionId ?? null,
         controllerId: args.controllerId ?? null,
-        silent: isSilent(args, mode),
-        caption: `type · ${args.text.slice(0, 40)}`,
+        silent,
+        skipObservation: submit,
+        caption,
         target: { ...target.payload },
+      });
+      if (!submit) return typed;
+      // `submit` presses Return after the words, as `apple type --submit`
+      // does: a newline is hard to write in a shell argument. The key goes to
+      // the element that took the words — the named target, or else the
+      // focused element of the newest observation, which is the one the
+      // driver types into when no target is named.
+      const focusedHandle = args.target
+        ? null
+        : observations.latest(laneId)?.elements.find((element) => element.focused)?.handle ?? null;
+      return await runAction({
+        laneId,
+        action: "type",
+        command: "press",
+        mode,
+        payload: {
+          ...(args.target ? target.payload : focusedHandle ? { handle: focusedHandle } : {}),
+          key: "return",
+          modifiers: [],
+        },
+        resolved: target.element,
+        chatSessionId: args.chatSessionId ?? null,
+        controllerId: args.controllerId ?? null,
+        silent,
+        caption: `${caption} · return`,
+        target: { ...target.payload, key: "return" },
       });
     },
 

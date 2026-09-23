@@ -30,11 +30,11 @@ function display(): MacDesktopDisplay {
 describe("macDesktopStatusLineText", () => {
   it("asks for the screen to be started when the lane has none", () => {
     expect(macDesktopStatusLineText(null)).toEqual({
-      line: "Start Mac Desktop for this lane",
+      line: "Mac Desktop is off",
       live: false,
     });
     expect(macDesktopStatusLineText({ display: null, windowCount: 0 })).toEqual({
-      line: "Start Mac Desktop for this lane",
+      line: "Mac Desktop is off",
       live: false,
     });
   });

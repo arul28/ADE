@@ -33,6 +33,16 @@ import {
   setDocumentVisibleForTests,
   setWorkToolsPaneVisibleProbeForTests,
 } from "../../lib/workToolOnScreen";
+import {
+  MAC_DESKTOP_CARD_ON_SCREEN_KEY,
+  macDesktopCardGrantedAt,
+  resetMacDesktopCardGrantsForTests,
+} from "../work/macDesktopCardGrants";
+import {
+  readChatCompanionUiState,
+  resetChatCompanionUiStateCacheForTests,
+  setWorkLivePreviewEnabledForChat,
+} from "../chat/chatCompanionUiState";
 
 const crossMachineMocks = vi.hoisted(() => ({
   cancelOptimistic: vi.fn(),
@@ -1826,6 +1836,78 @@ describe("TerminalsPage chat session activation", () => {
         "lane-background",
         expect.objectContaining({ workSidebarTool: "ios" }),
       );
+    });
+
+    describe("Mac Desktop", () => {
+      afterEach(() => {
+        resetMacDesktopCardGrantsForTests();
+        window.localStorage.clear();
+        resetChatCompanionUiStateCacheForTests();
+      });
+
+      it("opens the Mac Desktop tool for the chat in front and answers shown once it is on screen", async () => {
+        paneMountsWhatIsWritten();
+        await renderWithChatInFront();
+        await expect(receiveWorkToolShowRequest(showRequest({ surface: "mac-desktop" }))).resolves.toBe("shown");
+        expect(workMocks.fns.setLaneWorkViewState).toHaveBeenLastCalledWith(
+          "/repo",
+          "lane-background",
+          expect.objectContaining({ workSidebarTool: "mac-desktop" }),
+        );
+      });
+
+      /*
+       * Accessibility-mode input takes no lease and nothing watches yet, so the
+       * card never appeared for the chat whose agent drove the display. The
+       * agent's activity now authorizes the card, for that chat on that lane.
+       */
+      it("authorizes the floating card for the chat whose agent drives the display, and no other", async () => {
+        await renderWithChatInFront();
+        await receiveWorkToolShowRequest(showRequest({ surface: "floating-mac-desktop", auto: true }));
+        expect(macDesktopCardGrantedAt("lane-background", "chat-1")).not.toBeNull();
+
+        await expect(receiveWorkToolShowRequest(showRequest({
+          surface: "floating-mac-desktop",
+          auto: true,
+          chatSessionId: "chat-other",
+          laneId: "lane-other",
+        }))).resolves.toBeNull();
+        expect(macDesktopCardGrantedAt("lane-other", "chat-other")).toBeNull();
+        expect(macDesktopCardGrantedAt("lane-background", "chat-other")).toBeNull();
+      });
+
+      it("floats nothing automatically while the chat's preview is off, or while the tool opens", async () => {
+        setWorkLivePreviewEnabledForChat("chat-1", "mac-desktop", false);
+        await renderWithChatInFront();
+        await receiveWorkToolShowRequest(showRequest({ surface: "floating-mac-desktop", auto: true }));
+        expect(macDesktopCardGrantedAt("lane-background", "chat-1")).toBeNull();
+        cleanup();
+
+        setWorkLivePreviewEnabledForChat("chat-1", "mac-desktop", true);
+        workMocks.laneWorkViewByScope = {
+          "/repo::lane-background": { workSidebarTool: "mac-desktop", workSidebarOpenTools: ["mac-desktop"] },
+        };
+        await renderWithChatInFront({ workSidebarOpen: true });
+        await receiveWorkToolShowRequest(showRequest({ surface: "floating-mac-desktop", auto: true }));
+        expect(macDesktopCardGrantedAt("lane-background", "chat-1")).toBeNull();
+      });
+
+      it("floats the card when asked by name, past an earlier ×, and answers shown once it is on screen", async () => {
+        setWorkLivePreviewEnabledForChat("chat-1", "mac-desktop", false);
+        setDocumentVisibleForTests(true);
+        await renderWithChatInFront();
+        let answer: string | null = "pending";
+        const pending = receiveWorkToolShowRequest(showRequest({ surface: "floating-mac-desktop" }))
+          .then((status) => { answer = status; });
+        await waitFor(() => expect(macDesktopCardGrantedAt("lane-background", "chat-1")).not.toBeNull());
+        expect(readChatCompanionUiState("chat-1").workLiveCardFloating).toContain("mac-desktop");
+        expect(readChatCompanionUiState("chat-1").workLiveCardClosedByTool["mac-desktop"]).toBeUndefined();
+        expect(answer).toBe("pending");
+        // The card mounts over the chat: now it is shown.
+        noteWorkToolMounted(MAC_DESKTOP_CARD_ON_SCREEN_KEY, "lane-background");
+        await pending;
+        expect(answer).toBe("shown");
+      });
     });
   });
 

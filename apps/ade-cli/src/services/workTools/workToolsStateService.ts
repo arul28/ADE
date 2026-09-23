@@ -221,6 +221,8 @@ export type WorkToolsStateService = {
   acknowledgeShow(args: unknown): { ok: boolean };
   /** An agent drove this chat's Apple device; see `WorkToolShowRequests`. */
   noteAgentAppleActivity(args: { laneId: string | null; chatSessionId: string | null }): void;
+  /** An agent drove this chat's lane Mac Desktop; see `WorkToolShowRequests`. */
+  noteAgentMacDesktopActivity(args: { laneId: string | null; chatSessionId: string | null }): void;
   /** Test/diagnostic hook: flushes a pending debounced event immediately. */
   flushPendingEvents(): void;
   dispose(): void;
@@ -836,6 +838,10 @@ export function createWorkToolsStateService(
 
     noteAgentAppleActivity(input) {
       args.showRequests?.noteAgentAppleActivity(input);
+    },
+
+    noteAgentMacDesktopActivity(input) {
+      args.showRequests?.noteAgentMacDesktopActivity(input);
     },
 
     flushPendingEvents() {

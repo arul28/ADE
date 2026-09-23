@@ -56,6 +56,7 @@ import type {
   MacDesktopScrollArgs,
   MacDesktopStartArgs,
   MacDesktopStartStreamArgs,
+  MacDesktopStopStreamArgs,
   MacDesktopStatus,
   MacDesktopStopArgs,
   MacDesktopStopResult,
@@ -2770,7 +2771,7 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<MacDesktopStreamStatus>;
         stopStream: (
-          args: { laneId: string },
+          args: MacDesktopStopStreamArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<MacDesktopStreamStatus>;
         getStreamStatus: (

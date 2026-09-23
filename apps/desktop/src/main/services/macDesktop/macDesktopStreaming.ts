@@ -67,11 +67,17 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
    */
   const streamSubscriptions = new Map<string, Set<string>>();
 
-  const addStreamOwner = (laneId: string, chatSessionId: string | null | undefined): void => {
+  /** True when this chat was not a viewer of the lane yet. */
+  const addStreamOwner = (laneId: string, chatSessionId: string | null | undefined): boolean => {
     const owner = chatSessionId?.trim() || null;
     const owners = streamOwners.get(laneId);
-    if (owners) owners.add(owner);
-    else streamOwners.set(laneId, new Set([owner]));
+    if (!owners) {
+      streamOwners.set(laneId, new Set([owner]));
+      return true;
+    }
+    if (owners.has(owner)) return false;
+    owners.add(owner);
+    return true;
   };
 
   const addSubscriptionOwner = (laneId: string, subscriptionId: string): void => {
@@ -170,9 +176,11 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
     | { kind: "chat"; chatSessionId: string | null | undefined }
     | { kind: "subscription"; subscriptionId: string };
 
-  const addOwner = (laneId: string, owner: StreamOwner): void => {
-    if (owner.kind === "chat") addStreamOwner(laneId, owner.chatSessionId);
-    else addSubscriptionOwner(laneId, owner.subscriptionId);
+  /** True when the viewer list changed: a chat that was not watching now is. */
+  const addOwner = (laneId: string, owner: StreamOwner): boolean => {
+    if (owner.kind === "chat") return addStreamOwner(laneId, owner.chatSessionId);
+    addSubscriptionOwner(laneId, owner.subscriptionId);
+    return false;
   };
 
   async function startStreamFor(
@@ -186,7 +194,10 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
       // A reconnecting viewer asks again. Restarting would mint a second token
       // and cut off every client holding the first one, so the live stream and
       // its token are handed back unchanged; only a stopped stream mints one.
-      addOwner(laneId, owner);
+      // A chat joining changes the viewer list the floating card reads.
+      if (addOwner(laneId, owner)) {
+        deps.emit({ type: "stream-status", status: buildStreamStatus(laneId, { redacted: true }) });
+      }
       deps.touchDisplay(laneId);
       return buildStreamStatus(laneId, { redacted: false, transport: running });
     }
@@ -236,6 +247,33 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
     return await startStreamFor(args, { kind: "subscription", subscriptionId: args.subscriptionId });
   }
 
+  /**
+   * One desktop viewer stopped watching.
+   *
+   * Only its own chat leaves the owner set, so the viewer list stops naming a
+   * chat that no longer looks. The capture stops only when nobody is left:
+   * another chat's viewer, or a phone or web tab reading through the sync
+   * stream, keeps it up. Before, the desktop's last viewer stopped the lane
+   * outright, which cleared every subscription and cut the phone off.
+   */
+  async function releaseViewer(
+    laneId: string,
+    chatSessionId: string | null | undefined,
+  ): Promise<MacDesktopStreamStatus> {
+    const owners = streamOwners.get(laneId);
+    const dropped = owners?.delete(chatSessionId?.trim() || null) ?? false;
+    if (owners && owners.size === 0) streamOwners.delete(laneId);
+    if (!hasStreamOwners(laneId)) return await stopStream(laneId, "viewer-left");
+    const status = buildStreamStatus(laneId, { redacted: true });
+    if (dropped) deps.emit({ type: "stream-status", status });
+    deps.logger.info("mac_desktop.stream_kept_for_other_viewers", {
+      laneId,
+      chats: streamOwners.get(laneId)?.size ?? 0,
+      subscriptions: streamSubscriptions.get(laneId)?.size ?? 0,
+    });
+    return status;
+  }
+
   async function stopStream(laneId: string, reason: string): Promise<MacDesktopStreamStatus> {
     const wasStreaming = streamServer.isStreaming(laneId);
     streamServer.stop(laneId);
@@ -262,6 +300,7 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
     startStream,
     startStreamForSubscription,
     stopStream,
+    releaseViewer,
 
     /** Records an encoder failure the backend reported, and republishes. */
     recordError(laneId: string, message: string): void {

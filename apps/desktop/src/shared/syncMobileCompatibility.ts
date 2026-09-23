@@ -98,7 +98,8 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // Mac Desktop over the sync socket. `getStatus` and the two
   // stream-subscription calls are read-only and viewer-allowed; `start`/`stop`
   // create and destroy a host display, so they are controller-only like the
-  // takeover calls below (the phone is view-only and calls none of them).
+  // takeover calls below. The phone calls `start` from its Off card, and the
+  // takeover calls when the user takes control; it never calls `stop`.
   // Optional because a host with no Mac Desktop service — or a chat-only
   // runtime — registers none of them, and clients then keep the still-image
   // fallback.

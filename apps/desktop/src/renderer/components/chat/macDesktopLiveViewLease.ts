@@ -16,6 +16,11 @@ import type { OpenProjectBinding } from "../../../shared/types";
  * - The stream lives while at least one holder wants it: the first acquire
  *   starts it (the holder's own live view does that), the last release stops
  *   it. A pane→card hand-off never reaches zero, so the encoder never dies.
+ * - A release tells the service only that ITS viewer left, a beat later
+ *   (`MAC_DESKTOP_LIVE_VIEW_STOP_GRACE_MS`). The service drops that chat from
+ *   the viewer list and stops the capture only when no chat and no phone or
+ *   web viewer is left, so the desktop's last viewer leaving never cuts off a
+ *   phone watching the same lane.
  * - The decoder belongs to the highest-priority holder, earliest first. The
  *   pane (and with it full screen) outranks the card, so reopening the pane
  *   demotes the card instead of leaving a passive pane staring at nothing.
@@ -28,10 +33,21 @@ import type { OpenProjectBinding } from "../../../shared/types";
 export const MAC_DESKTOP_LIVE_VIEW_PANE_PRIORITY = 2;
 /** The corner card: a fallback holder that keeps the stream alive unseen. */
 export const MAC_DESKTOP_LIVE_VIEW_CARD_PRIORITY = 1;
+/**
+ * How long a released viewer's stop waits for another viewer to arrive.
+ *
+ * A handover is one viewer replacing another, and the order is not always
+ * "arrive, then leave": the card can go a beat before the pane mounts. The
+ * wait also lets a promoted holder's own `startStream` reach the service
+ * first, so the stop never finds the capture ownerless for a moment.
+ */
+export const MAC_DESKTOP_LIVE_VIEW_STOP_GRACE_MS = 1_000;
 
 type LeaseHolder = {
   id: number;
   priority: number;
+  /** The chat this viewer registered with `startStream`; null when none. */
+  chatSessionId: string | null;
   runtimePin: OpenProjectBinding | null;
   onDecoderOwnershipChange: (ownsDecoder: boolean) => void;
 };
@@ -43,7 +59,22 @@ type LaneLease = {
   nextId: number;
 };
 
+/**
+ * One bucket per lane, keyed by the lane id alone.
+ *
+ * Never by the runtime pin: the pane passes a null pin ("this window's
+ * machine") and the card can hold the same machine resolved. Keyed by pin,
+ * the two viewers of one capture would count in two buckets, and each one
+ * leaving would be "the last viewer" of its own (the Apple tool's
+ * 2026-09-23 bug).
+ */
 const leases = new Map<string, LaneLease>();
+/**
+ * Viewer stops waiting out the grace, one per lane and chat. A second release
+ * of the same chat inside the grace (pane, then card) replaces the first, so
+ * the service hears "this chat left" once.
+ */
+const pendingStops = new Map<string, ReturnType<typeof setTimeout>>();
 
 function bestHolder(lane: LaneLease): LeaseHolder | null {
   let best: LeaseHolder | null = null;
@@ -63,20 +94,44 @@ function electDecoderOwner(lane: LaneLease): void {
   if (nextId != null) lane.holders.get(nextId)?.onDecoderOwnershipChange(true);
 }
 
+function normalizeChat(chatSessionId: string | null | undefined): string | null {
+  return chatSessionId?.trim() || null;
+}
+
 /**
- * Stops the lane's stream once nobody holds it.
+ * Tells the service one viewer left, after the grace.
+ *
+ * Skipped when a holder of the same chat is on the lane by then: the chat is
+ * still watching, and dropping it would take it off the viewer list. The
+ * service stops the capture only when it has nobody left at all.
  *
  * Fire-and-forget, like every other stream stop: the encoder also stops on its
  * own when the last reader detaches, so a failed stop costs a grace period.
  */
-function stopLaneStream(laneId: string, runtimePin: OpenProjectBinding | null): void {
-  const api = globalThis.window?.ade?.macDesktop;
-  if (!api?.stopStream) return;
-  void api.stopStream({ laneId }, runtimePin).catch(() => {});
+function scheduleViewerStop(
+  laneId: string,
+  chatSessionId: string | null,
+  runtimePin: OpenProjectBinding | null,
+): void {
+  const key = `${laneId}\u0000${chatSessionId ?? ""}`;
+  const previous = pendingStops.get(key);
+  if (previous !== undefined) clearTimeout(previous);
+  const timer = setTimeout(() => {
+    pendingStops.delete(key);
+    const lane = leases.get(laneId);
+    if (lane && [...lane.holders.values()].some((holder) => holder.chatSessionId === chatSessionId)) return;
+    const api = globalThis.window?.ade?.macDesktop;
+    if (!api?.stopStream) return;
+    void api.stopStream({ laneId, chatSessionId, localViewer: true }, runtimePin).catch(() => {});
+  }, MAC_DESKTOP_LIVE_VIEW_STOP_GRACE_MS);
+  pendingStops.set(key, timer);
 }
 
 export type MacDesktopLiveViewLease = {
-  /** Stops wanting the lane's stream. The last release stops the encoder. */
+  /**
+   * Stops wanting the lane's stream. The service hears of it after the grace,
+   * and stops the encoder once nobody at all watches.
+   */
   release: () => void;
   /** True while this holder owns the decoder. */
   ownsDecoder: () => boolean;
@@ -86,6 +141,8 @@ export function acquireMacDesktopLiveViewLease(args: {
   laneId: string;
   /** Higher wins the decoder. Defaults to the pane's priority. */
   priority?: number;
+  /** The chat this viewer passes to `startStream`. */
+  chatSessionId?: string | null;
   runtimePin?: OpenProjectBinding | null;
   onDecoderOwnershipChange?: (ownsDecoder: boolean) => void;
 }): MacDesktopLiveViewLease {
@@ -99,6 +156,7 @@ export function acquireMacDesktopLiveViewLease(args: {
   const holder: LeaseHolder = {
     id: laneRef.nextId,
     priority: args.priority ?? MAC_DESKTOP_LIVE_VIEW_PANE_PRIORITY,
+    chatSessionId: normalizeChat(args.chatSessionId),
     runtimePin: args.runtimePin ?? null,
     onDecoderOwnershipChange: args.onDecoderOwnershipChange ?? (() => {}),
   };
@@ -116,10 +174,10 @@ export function acquireMacDesktopLiveViewLease(args: {
         leases.delete(laneId);
         laneRef.decoderOwnerId = null;
         holder.onDecoderOwnershipChange(false);
-        stopLaneStream(laneId, holder.runtimePin);
-        return;
+      } else {
+        electDecoderOwner(laneRef);
       }
-      electDecoderOwner(laneRef);
+      scheduleViewerStop(laneId, holder.chatSessionId, holder.runtimePin);
     },
   };
 }
@@ -135,4 +193,6 @@ export function macDesktopLiveViewLeaseState(
 /** Test-only reset. Module state outlives a test file otherwise. */
 export function resetMacDesktopLiveViewLeasesForTests(): void {
   leases.clear();
+  for (const timer of pendingStops.values()) clearTimeout(timer);
+  pendingStops.clear();
 }

@@ -64,7 +64,7 @@ import {
   createMacDesktopFastInputSender,
   useMacDesktopRealInput,
 } from "./useMacDesktopRealInput";
-import { useMacDesktopStatus } from "./useMacDesktopStatus";
+import { useMacDesktopRecheck, useMacDesktopStatus } from "./useMacDesktopStatus";
 import { MacDesktopClaimPicker } from "./MacDesktopClaimPicker";
 import {
   MAC_DESKTOP_LIST_ROW,
@@ -89,11 +89,11 @@ import {
 /**
  * The lane's private macOS screen, as a Work tools pane tool.
  *
- * What this component is NOT: a launcher. There is no "create a display" card
- * and no device picker — opening the tab starts the display, because a lane
- * that has the tool has exactly one screen and choosing it is not a decision
- * anybody has. The pane is the screen, a one-line strip above it, and a one-line
- * window list below.
+ * There is no device picker: a lane that has the tool has exactly one screen,
+ * and choosing it is not a decision anybody has. Opening the tab never creates
+ * that screen, as opening the Apple tool never boots a device. A lane with no
+ * display shows "Mac Desktop is off." and Start. The pane is the screen, a
+ * one-line strip above it, and a one-line window list below.
  *
  * Nothing here is gated on `process.platform`. This exact component runs on a
  * Windows or Linux desktop watching a Mac-hosted lane: the display, the driver
@@ -256,6 +256,7 @@ export function ChatMacDesktopPanel({
     refresh: refreshStatus,
     start,
     starting,
+    gaveUp,
     cursor,
     notParked,
     dismissNotParked,
@@ -445,6 +446,14 @@ export function ChatMacDesktopPanel({
     enabled: Boolean(display),
     chatSessionId: sessionId,
   });
+
+  // While the video connects, re-read the status: a display that went away
+  // without an event must turn into the Off card, not a "Connecting video"
+  // that never ends.
+  useMacDesktopRecheck(
+    Boolean(display) && !starting && live.status !== "playing" && live.status !== "error",
+    refreshStatus,
+  );
 
   /* ── Geometry ────────────────────────────────────────────────────────── */
 
@@ -1024,6 +1033,16 @@ export function ChatMacDesktopPanel({
     }
   }, [errorText, refreshStatus, start, setStatus, setStatusError]);
 
+  /** Reads the status again after a failed read, and nothing more. */
+  const readAgain = useCallback(async () => {
+    setStatusError(null);
+    try {
+      await refreshStatus();
+    } catch (error) {
+      setStatusError(errorText(error));
+    }
+  }, [errorText, refreshStatus, setStatusError]);
+
   /**
    * "Ask macOS": the explicit local prompt. Only ever drawn for a display on
    * this computer, and the host refuses it for a remote caller regardless.
@@ -1057,15 +1076,15 @@ export function ChatMacDesktopPanel({
 
   if (!display) {
     /*
-      An absent display with a settled status is a start, not a spinner.
-  
-      The auto-start only runs on mount, so after `mac-desktop stop` the pane
-      used to sit on "Starting…" forever, and a stale action error used to take
-      its place. `statusError` is the display's own failure (a denied
-      permission, a refused create), and the manual start is idempotent, so
-      both the retry and the stopped case get the same button.
+      No display is the Off card, not a spinner.
+
+      Watching never creates a display, so a settled status with none is "Mac
+      Desktop is off." and Start. `statusError` is the display's own failure (a
+      denied permission, a refused create, a start that took too long), and it
+      replaces the sentence. A start that took too long offers Start again. A
+      failed first read only reads again: that button must not create a
+      display. Any other failure re-checks the grants and then starts.
     */
-    const settled = status != null && !starting;
     /*
       A denied grant is its own screen, not the one-line start card. The card
       offered a single "Try again" that re-read a cached "denied" and changed
@@ -1088,21 +1107,47 @@ export function ChatMacDesktopPanel({
         />
       );
     }
+    if (starting || (status == null && !statusError)) {
+      return (
+        <WorkToolEmptyLine
+          testId="mac-desktop-starting"
+          title={starting ? "Starting Mac Desktop…" : "Checking Mac Desktop…"}
+        />
+      );
+    }
+    if (statusError) {
+      return (
+        <WorkToolEmptyLine
+          testId="mac-desktop-failed"
+          title={statusError}
+          action={(
+            <button
+              type="button"
+              className={WORK_TOOL_PRIMARY_BUTTON}
+              onClick={() => void (gaveUp ? start() : status == null ? readAgain() : checkAgain())}
+            >
+              <Monitor size={14} />
+              {gaveUp ? "Start" : "Try again"}
+            </button>
+          )}
+        />
+      );
+    }
     return (
       <WorkToolEmptyLine
-        testId="mac-desktop-starting"
-        title={statusError
-          ?? (settled ? "Start Mac Desktop for this lane" : "Starting this lane's screen…")}
-        action={statusError || settled ? (
+        testId="mac-desktop-off"
+        title="Mac Desktop is off."
+        action={(
           <button
             type="button"
+            data-testid="mac-desktop-start"
             className={WORK_TOOL_PRIMARY_BUTTON}
-            onClick={() => void (statusError ? checkAgain() : start())}
+            onClick={() => void start()}
           >
             <Monitor size={14} />
-            {statusError ? "Try again" : "Start Mac Desktop"}
+            Start
           </button>
-        ) : undefined}
+        )}
       />
     );
   }
@@ -1343,7 +1388,9 @@ export function ChatMacDesktopPanel({
             className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center px-4 text-center text-[12px] text-muted-fg"
             data-testid="mac-desktop-surface-status"
           >
-            {live.url ? "Starting display…" : "Connecting to the lane's screen…"}
+            {/* Without a start in flight the display is already up and only the
+                video is connecting, as on the Apple pane. */}
+            {starting ? "Starting Mac Desktop…" : "Connecting video"}
           </p>
         ) : null}
 

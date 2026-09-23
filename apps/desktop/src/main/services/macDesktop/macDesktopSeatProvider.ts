@@ -187,6 +187,9 @@ export function createMacVirtualDisplayProvider(client: MacDesktopDriverClient):
         laneId: args.laneId,
         fps: args.fps,
         filePath: args.filePath,
+        // The driver cuts still time unless told not to. An older driver
+        // ignores the field and records at wall-clock time.
+        ...(args.keepIdle ? { keepIdle: true } : {}),
       });
     },
 

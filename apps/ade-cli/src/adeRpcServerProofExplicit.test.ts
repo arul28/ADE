@@ -287,4 +287,11 @@ describe("resolveIngestToolProvenance", () => {
     expect(resolveIngestToolProvenance("ade-browser", "browser record", video))
       .toEqual({ source: "ade-recorder", refuseDuplicates: true, flagOlderMedia: true });
   });
+
+  it("reads `ade mac-desktop proof` as ADE's capture of a fresh frame", () => {
+    // The CLI files the path its own `screenshot` step returned, under these
+    // two labels. A still screen captured twice is not a copied proof.
+    expect(resolveIngestToolProvenance("ade-mac-desktop", "mac-desktop proof", still))
+      .toEqual({ source: "ade-capture", refuseDuplicates: false, flagOlderMedia: true });
+  });
 });

@@ -5477,6 +5477,47 @@ describe("adeRpcServer", () => {
     expect(noteAgentAppleActivity).not.toHaveBeenCalled();
   });
 
+  it("tells the desktop when an agent drives its lane's Mac Desktop, and not for reads or the user's own input", async () => {
+    setPlatform("darwin");
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => (
+      sessionId === "chat-a" ? { id: "chat-a", laneId: "lane-a" } : null
+    ));
+    const noteAgentAppleActivity = vi.fn();
+    const noteAgentMacDesktopActivity = vi.fn();
+    fixture.runtime.workToolsStateService = { noteAgentAppleActivity, noteAgentMacDesktopActivity };
+    fixture.runtime.macDesktopService = {
+      click: vi.fn(async (args: unknown) => args),
+      getStatus: vi.fn(async () => ({ supported: true })),
+    } as any;
+
+    const agent = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(agent, { callerId: "agent-a", role: "agent", chatSessionId: "chat-a" });
+    const clicked = await callTool(agent, "run_ade_action", {
+      domain: "mac_desktop",
+      action: "click",
+      args: { x: 10, y: 20 },
+    });
+    expect(clicked?.isError).toBeUndefined();
+    // Accessibility-mode input takes no lease, so this note is what lets the
+    // card float for the acting chat, and only for it.
+    expect(noteAgentMacDesktopActivity).toHaveBeenCalledWith({ chatSessionId: "chat-a", laneId: "lane-a" });
+    expect(noteAgentAppleActivity).not.toHaveBeenCalled();
+
+    noteAgentMacDesktopActivity.mockClear();
+    await callTool(agent, "run_ade_action", { domain: "mac_desktop", action: "getStatus", args: {} });
+    expect(noteAgentMacDesktopActivity).not.toHaveBeenCalled();
+
+    const desktop = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(desktop, { callerId: "desktop-1", role: "cto" });
+    await callTool(desktop, "run_ade_action", {
+      domain: "mac_desktop",
+      action: "click",
+      args: { laneId: "lane-a", x: 1, y: 2 },
+    });
+    expect(noteAgentMacDesktopActivity).not.toHaveBeenCalled();
+  });
+
   it("denies work_tools reads to an agent-shaped caller with no resolvable lane", async () => {
     // `isUserClientSession` and `resolveChatSessionLaneId` are not complements:
     // an orchestration step identified only by `runId`, or a chat whose session

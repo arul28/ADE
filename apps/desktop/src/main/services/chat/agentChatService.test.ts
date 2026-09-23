@@ -2698,6 +2698,15 @@ describe("buildComputerUseDirective", () => {
     expect(result).toContain("### Mac Desktop — this lane's own screen (use it first)");
     expect(result).toContain("ade mac-desktop record start --caption");
     expect(result).toMatch(/do not fall back to the user's real screen/);
+    // Same words as the Apple lane hint: an ok result is not a confirmed step,
+    // and a failed recording is reported, never swapped for an older one.
+    expect(result).toContain("an ok result only means the input was sent");
+    expect(result).toContain("Confirm the final state before `record stop`");
+    expect(result).toContain("Never attach an older recording or a file you did not just record.");
+    expect(result).toContain("`type \"<text>\" --submit`");
+    expect(result).toContain("`ade mac-desktop show`");
+    // Viewing the screen no longer starts it.
+    expect(result).toContain("viewing the screen does not start it");
     // A login shell can put an installed, older `ade` first on PATH.
     expect(result).toContain("$ADE_CLI_PATH");
     // The Codex/OpenAI computer-use plugin drives the real screen: only on request.

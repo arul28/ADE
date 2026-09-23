@@ -560,6 +560,8 @@ function WorkMacDesktopTool({
   warningReason,
 }: WorkToolPanelProps) {
   const mountScope = useWorkToolMountScope(runtimePin);
+  // `ade mac-desktop show` answers "shown" only once this is mounted.
+  useLayoutEffect(() => (laneId ? noteWorkToolMounted("mac-desktop", laneId) : undefined), [laneId]);
   if (isReadOnlyWorkTool("mac-desktop", toolContext)) {
     return <WorkToolReadOnlyView tool="mac-desktop" laneId={laneId} />;
   }

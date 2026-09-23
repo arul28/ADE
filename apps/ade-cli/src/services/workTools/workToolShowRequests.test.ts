@@ -90,6 +90,33 @@ describe("workToolShowRequests", () => {
     ]);
   });
 
+  it("offers the floating Mac Desktop on agent activity, throttled apart from the Apple device", () => {
+    let now = 10_000;
+    const { service, emitted } = setup({ activityThrottleMs: 5_000, now: () => now });
+    expect(service.noteAgentMacDesktopActivity({ chatSessionId: "chat-1", laneId: "lane-1" })).toBe(true);
+    expect(service.noteAgentMacDesktopActivity({ chatSessionId: "chat-1", laneId: "lane-1" })).toBe(false);
+    // The same chat driving its Apple device is a different offer.
+    expect(service.noteAgentAppleActivity({ chatSessionId: "chat-1", laneId: "lane-1" })).toBe(true);
+    now += 5_000;
+    expect(service.noteAgentMacDesktopActivity({ chatSessionId: "chat-1", laneId: "lane-1" })).toBe(true);
+    expect(emitted.map((request) => [request.surface, request.chatSessionId, request.laneId, request.auto])).toEqual([
+      ["floating-mac-desktop", "chat-1", "lane-1", true],
+      ["floating-apple", "chat-1", "lane-1", true],
+      ["floating-mac-desktop", "chat-1", "lane-1", true],
+    ]);
+  });
+
+  it("shows the Mac Desktop surfaces like any other", async () => {
+    const { service, emitted } = setup();
+    const pending = service.show({ surface: "floating-mac-desktop", chatSessionId: "chat-1", laneId: "lane-1" });
+    service.acknowledgeShow({ requestId: emitted[0]!.requestId, status: "shown" });
+    await expect(pending).resolves.toMatchObject({
+      status: "shown",
+      surface: "floating-mac-desktop",
+      message: "Showing the floating Mac Desktop.",
+    });
+  });
+
   it("settles pending shows as no_desktop on dispose", async () => {
     const { service } = setup();
     const pending = service.show({ surface: "apple", chatSessionId: "chat-1" });

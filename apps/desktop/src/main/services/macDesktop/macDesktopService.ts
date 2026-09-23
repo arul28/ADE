@@ -56,6 +56,7 @@ import {
   type MacDesktopSigningState,
   type MacDesktopStartArgs,
   type MacDesktopStartStreamArgs,
+  type MacDesktopStopStreamArgs,
   type MacDesktopStatus,
   type MacDesktopStopArgs,
   type MacDesktopStopResult,
@@ -449,6 +450,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
 
   const recording = createMacDesktopRecording({
     logger: deps.logger,
+    ...(deps.resolveLaneName ? { resolveLaneName: deps.resolveLaneName } : {}),
     now,
     isDarwin,
     emit,
@@ -1052,6 +1054,9 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         filePath: shot.filePath,
         kind: "screenshot",
         metadata: { width: shot.width, height: shot.height },
+        // The driver wrote this frame just now. A still screen gives the same
+        // bytes twice, and that is a real capture, not a copied proof.
+        provenance: { source: "ade-capture" },
       }).catch((error: unknown) => {
         deps.logger.warn("mac_desktop.screenshot_proof_failed", {
           laneId: shot.laneId,
@@ -1081,9 +1086,13 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       return await streaming.startStream(args);
     },
 
-    async stopStream(args: { laneId: string }): Promise<MacDesktopStreamStatus> {
+    async stopStream(args: MacDesktopStopStreamArgs): Promise<MacDesktopStreamStatus> {
       assertSupported();
-      return await streaming.stopStream(args.laneId.trim(), "stopped");
+      const laneId = args.laneId.trim();
+      // A desktop viewer leaving drops only itself; a phone or another chat
+      // still watching keeps the capture. See `releaseViewer`.
+      if (args.localViewer) return await streaming.releaseViewer(laneId, args.chatSessionId);
+      return await streaming.stopStream(laneId, "stopped");
     },
 
     async getStreamStatus(args: { laneId: string }): Promise<MacDesktopStreamStatus> {

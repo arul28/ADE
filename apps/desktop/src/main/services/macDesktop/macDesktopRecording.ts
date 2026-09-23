@@ -9,18 +9,33 @@
  * closes the turn clip rather than leaving the helper writing into a file
  * nobody will ever claim.
  *
+ * The captioned recording follows the Apple device's rules (065f48808):
+ *
+ * 1. The chat that starts a recording owns it. The proof is filed under that
+ *    chat, whichever chat stops it.
+ * 2. A recording a chat owns stops itself after ten minutes of wall clock
+ *    (`maxSeconds` changes it) and files itself, so an agent that forgets
+ *    `record stop` cannot leave the display recording for hours. A recording
+ *    with no owning chat has no cap unless it asks for one.
+ * 3. Still time is cut by default. `durationMs` is the video; `wallDurationMs`
+ *    the real time it covers; `idleCutMs` the difference. `keepIdle` turns it
+ *    off. The proof keeps wall-clock times and adds "idle cut m:ss".
+ *
  * Split out of `macDesktopService.ts` as pure code motion: the registries and
  * the gates are passed in.
  */
 
 import fs from "node:fs";
+import { formatProofDuration, proofIdleCutLabel } from "../../../shared/proofProvenance";
 import {
   type DesktopSeatProvider,
   type DesktopSeatReply,
   type MacDesktopEventPayload,
   type MacDesktopRecordStartArgs,
   type MacDesktopRecordingStatus,
+  type MacDesktopRecordingStopReason,
   type MacDesktopTimeLapse,
+  macDesktopPaneCaption,
 } from "../../../shared/types/macDesktop";
 import type { Logger } from "../logging/logger";
 import type { MacDesktopObservations } from "./macDesktopObservations";
@@ -28,6 +43,76 @@ import { clampFps } from "./macDesktopStreamServer";
 
 /** The turn clip's rate. Low on purpose: it is a time-lapse, not a recording. */
 const TURN_CLIP_FPS = 4;
+
+/** How long a recording a chat owns may run. Same as the Apple device's. */
+export const MAC_DESKTOP_RECORDING_MAX_MS = 10 * 60 * 1000;
+
+/** The longest cap `maxSeconds` may ask for. */
+export const MAC_DESKTOP_RECORDING_MAX_SECONDS_LIMIT = 4 * 60 * 60;
+
+/** A caller's `maxSeconds`, in ms, clamped to 1 s .. four hours. Null when absent or not a number. */
+function capFromSeconds(maxSeconds: number | null | undefined): number | null {
+  if (typeof maxSeconds !== "number" || !Number.isFinite(maxSeconds) || maxSeconds <= 0) return null;
+  return Math.round(Math.min(Math.max(maxSeconds, 1), MAC_DESKTOP_RECORDING_MAX_SECONDS_LIMIT) * 1000);
+}
+
+/**
+ * The cap for a recording: the caller's, or the default when a chat owns it.
+ * A person recording with no chat gets none unless they ask.
+ */
+function recordingCapMs(args: { maxSeconds?: number | null; chatSessionId: string | null }): number | null {
+  return capFromSeconds(args.maxSeconds) ?? (args.chatSessionId ? MAC_DESKTOP_RECORDING_MAX_MS : null);
+}
+
+type RecordingLengths = { durationMs: number; wallDurationMs: number; idleCutMs: number };
+
+/**
+ * The three lengths from a `record.stop` reply.
+ *
+ * An older driver sends only `durationMs`. It never cuts idle time, so its
+ * video length is the wall-clock length and nothing was cut.
+ */
+function readLengths(reply: DesktopSeatReply): RecordingLengths {
+  const number = (value: unknown): number | null =>
+    typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : null;
+  const durationMs = number(reply.durationMs) ?? 0;
+  return {
+    durationMs,
+    wallDurationMs: number(reply.wallDurationMs) ?? durationMs,
+    idleCutMs: number(reply.idleCutMs) ?? 0,
+  };
+}
+
+/** What a recording filed without a caption says first. Apple's, for this display. */
+const DEFAULT_RECORDING_DESCRIPTION = "Screen recording of the lane's Mac Desktop.";
+
+/**
+ * "0:23" / "1:10 · idle cut 2:07" — the default caption's duration part. The
+ * first number is the video's length, which is what the player shows.
+ */
+function captionDuration(status: MacDesktopRecordingStatus): string {
+  const video = formatProofDuration(status.durationMs ?? 0);
+  const idleCut = proofIdleCutLabel(status.idleCutMs);
+  return idleCut ? `${video} · ${idleCut}` : video;
+}
+
+/**
+ * The proof's description: the caption (or the default line), then why the
+ * video is shorter than its wall-clock times, then the cap when the cap
+ * stopped it. Same sentences as the Apple device's proof.
+ */
+function recordingProofDescription(lead: string, status: MacDesktopRecordingStatus): string {
+  const idleCut = proofIdleCutLabel(status.idleCutMs);
+  return [
+    lead,
+    idleCut && typeof status.wallDurationMs === "number"
+      ? `Still stretches were shortened: ${idleCut.replace(/^idle cut /, "")} cut from ${formatProofDuration(status.wallDurationMs)} of real time.`
+      : null,
+    status.stopReason === "cap" && typeof status.maxDurationMs === "number"
+      ? `Stopped at its ${formatProofDuration(status.maxDurationMs)} cap.`
+      : null,
+  ].filter(Boolean).join(" ");
+}
 
 /** A finished capture's size for the pane's receipt, or null if it cannot be read. */
 export async function readCaptureBytes(filePath: string | null): Promise<number | null> {
@@ -57,6 +142,8 @@ export type MacDesktopRecordingDeps = {
    * partial file rather than pretending nothing was ever written.
    */
   recordingNotRunning: (laneId: string, partialFilePath?: string | null) => Error;
+  /** The lane's name, for the caption of a recording the cap filed. */
+  resolveLaneName?: (laneId: string) => Promise<string | null> | string | null;
 };
 
 export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
@@ -70,9 +157,165 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
    * is told about so a partial recording is not invisible.
    */
   const recordingPaths = new Map<string, string>();
+  /** laneId → the timer that stops the recording at its cap. */
+  const capTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** laneId → the stop in flight. Serialises a stop against the cap firing. */
+  const stopping = new Map<string, Promise<MacDesktopRecordingStatus>>();
 
   const isUserRecording = (laneId: string): boolean =>
     recordings.get(laneId)?.running === true;
+
+  const clearCap = (laneId: string): void => {
+    const timer = capTimers.get(laneId);
+    if (timer) clearTimeout(timer);
+    capTimers.delete(laneId);
+  };
+
+  const armCap = (laneId: string, ms: number): void => {
+    clearCap(laneId);
+    const timer = setTimeout(() => {
+      capTimers.delete(laneId);
+      deps.logger.info("mac_desktop.recording.cap_reached", { laneId, maxDurationMs: ms });
+      void stopUserRecording(laneId, null, "cap").catch((error: unknown) => {
+        deps.logger.warn("mac_desktop.recording.cap_stop_failed", {
+          laneId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }, ms);
+    // A ten-minute timer must not be the reason Electron refuses to quit.
+    (timer as unknown as { unref?: () => void }).unref?.();
+    capTimers.set(laneId, timer);
+  };
+
+  /**
+   * Stops the lane's recording and files it under the chat that started it.
+   *
+   * `stopperChatSessionId` only matters for a recording no chat owns: it is
+   * then the chat the proof is filed under, as before owners were kept.
+   */
+  const stopUserRecording = (
+    laneId: string,
+    stopperChatSessionId: string | null,
+    reason: MacDesktopRecordingStopReason,
+  ): Promise<MacDesktopRecordingStatus> => {
+    const inFlight = stopping.get(laneId);
+    if (inFlight) return inFlight;
+    const run = finishUserRecording(laneId, stopperChatSessionId, reason);
+    stopping.set(laneId, run);
+    const forget = (): void => {
+      if (stopping.get(laneId) === run) stopping.delete(laneId);
+    };
+    run.then(forget, forget);
+    return run;
+  };
+
+  const finishUserRecording = async (
+    laneId: string,
+    stopperChatSessionId: string | null,
+    reason: MacDesktopRecordingStopReason,
+  ): Promise<MacDesktopRecordingStatus> => {
+    const existing = recordings.get(laneId);
+    if (!existing?.running) {
+      // Only a failed recording has a partial file worth naming; a clean
+      // stop's path is a finished movie and needs no warning attached.
+      throw deps.recordingNotRunning(laneId, existing?.lastError ? existing.filePath : null);
+    }
+    clearCap(laneId);
+    let reply: DesktopSeatReply;
+    try {
+      const provider = await deps.ensureProvider();
+      reply = await provider.stopRecording({ laneId });
+    } catch (error) {
+      // One truth for recording state. The helper removes its recorder
+      // before it finalises, so a stop that fails still means no recording is
+      // running — leaving the local status on `running: true` made `status`
+      // and the next `stop` disagree, and the pane kept showing a stop
+      // button that could only fail. The intended path is kept because a
+      // partial file is still inspectable.
+      const partialFilePath = recordingPaths.get(laneId) ?? existing.filePath;
+      const failed: MacDesktopRecordingStatus = {
+        ...existing,
+        running: false,
+        filePath: partialFilePath,
+        lastError: error instanceof Error ? error.message : String(error),
+        stopReason: reason,
+      };
+      recordings.set(laneId, failed);
+      deps.emit({ type: "recording-changed", status: failed });
+      throw error;
+    }
+    // Wall clock, like the Apple recorder's: the idle cut shortens the video,
+    // never the span of real time the proof says it covers.
+    const recordedTo = new Date(deps.now()).toISOString();
+    recordingPaths.delete(laneId);
+    const filePath = typeof reply.filePath === "string" && reply.filePath.trim().length
+      ? reply.filePath.trim()
+      : null;
+    const lengths = readLengths(reply);
+    const finished: MacDesktopRecordingStatus = {
+      ...existing,
+      running: false,
+      filePath,
+      ...lengths,
+      lastError: null,
+      stopReason: reason,
+    };
+    // A caption is the opt-in that makes the file reviewer-facing evidence.
+    // Without one it stays a scratch file and nothing reaches the drawer.
+    // The pane always sends one; an agent has to write its own. The one
+    // exception is the cap: a chat's recording that ran out files itself, as
+    // the Apple device's does, under "Mac Desktop recording · {lane} · 0:23".
+    const capFiled = !existing.caption && reason === "cap" && Boolean(existing.chatSessionId);
+    const caption = existing.caption
+      ?? (capFiled
+        ? `${macDesktopPaneCaption("recording", await Promise.resolve(deps.resolveLaneName?.(laneId)).catch(() => null))} · ${captionDuration(finished)}`
+        : null);
+    let proofArtifactId: string | null = null;
+    if (caption && filePath) {
+      const filed = await deps.observations.ingestProof({
+        laneId,
+        // The owner, not whoever stopped it: a recording started in one chat
+        // and stopped from another (or by the cap) is still the first chat's.
+        chatSessionId: existing.chatSessionId ?? stopperChatSessionId,
+        toolName: "desktop record",
+        title: caption,
+        caption: recordingProofDescription(existing.caption ?? DEFAULT_RECORDING_DESCRIPTION, finished),
+        filePath,
+        kind: "video_recording",
+        metadata: {
+          durationMs: lengths.durationMs,
+          wallDurationMs: lengths.wallDurationMs,
+          idleCutMs: lengths.idleCutMs,
+          stopReason: reason,
+        },
+        // ADE's own recorder wrote this file between these two times. Without
+        // it the broker read an agent's recording started in an earlier turn
+        // as a video "recorded before this request".
+        provenance: {
+          source: "ade-recorder",
+          recordedFrom: existing.startedAt,
+          recordedTo,
+        },
+      }).catch((error: unknown) => {
+        deps.logger.warn("mac_desktop.recording_proof_failed", {
+          laneId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      });
+      proofArtifactId = filed?.artifacts[0]?.id ?? null;
+    }
+    const status: MacDesktopRecordingStatus = {
+      ...finished,
+      caption,
+      proofArtifactId,
+      bytes: await readCaptureBytes(filePath),
+    };
+    recordings.set(laneId, status);
+    deps.emit({ type: "recording-changed", status });
+    return status;
+  };
 
   /**
    * Closes any turn clip on the lane, whichever chat and turn opened it.
@@ -210,8 +453,10 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
       // the thread before it is ever filed as proof.
       const filePath = deps.observations.artifactPath(`mac-desktop-recording-${laneId}`, "mp4");
       const fps = clampFps(args.fps, 15);
-      await provider.startRecording({ laneId, fps, filePath });
+      await provider.startRecording({ laneId, fps, filePath, keepIdle: args.keepIdle === true });
       recordingPaths.set(laneId, filePath);
+      const chatSessionId = args.chatSessionId?.trim() || null;
+      const maxDurationMs = recordingCapMs({ maxSeconds: args.maxSeconds, chatSessionId });
       const status: MacDesktopRecordingStatus = {
         laneId,
         running: true,
@@ -220,92 +465,27 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
         durationMs: null,
         caption: args.caption?.trim() || null,
         lastError: null,
+        chatSessionId,
+        maxDurationMs,
       };
       recordings.set(laneId, status);
+      if (maxDurationMs !== null) armCap(laneId, maxDurationMs);
       deps.emit({ type: "recording-changed", status });
       return status;
     },
 
     async stopRecording(args: { laneId: string; chatSessionId?: string | null }): Promise<MacDesktopRecordingStatus> {
-      const laneId = args.laneId.trim();
-      const existing = recordings.get(laneId);
-      if (!existing?.running) {
-        // Only a failed recording has a partial file worth naming; a clean
-        // stop's path is a finished movie and needs no warning attached.
-        throw deps.recordingNotRunning(laneId, existing?.lastError ? existing.filePath : null);
-      }
-      let reply: DesktopSeatReply;
-      try {
-        const provider = await deps.ensureProvider();
-        reply = await provider.stopRecording({ laneId });
-      } catch (error) {
-        // One truth for recording state. The helper removes its recorder
-        // before it finalises, so a stop that fails still means no recording is
-        // running — leaving the local status on `running: true` made `status`
-        // and the next `stop` disagree, and the pane kept showing a stop
-        // button that could only fail. The intended path is kept because a
-        // partial file is still inspectable.
-        const partialFilePath = recordingPaths.get(laneId) ?? existing.filePath;
-        const failed: MacDesktopRecordingStatus = {
-          ...existing,
-          running: false,
-          filePath: partialFilePath,
-          lastError: error instanceof Error ? error.message : String(error),
-        };
-        recordings.set(laneId, failed);
-        deps.emit({ type: "recording-changed", status: failed });
-        throw error;
-      }
-      recordingPaths.delete(laneId);
-      const filePath = typeof reply.filePath === "string" && reply.filePath.trim().length
-        ? reply.filePath.trim()
-        : null;
-      const durationMs = typeof reply.durationMs === "number" && Number.isFinite(reply.durationMs)
-        ? reply.durationMs
-        : 0;
-      // A caption is the opt-in that makes the file reviewer-facing evidence.
-      // Without one it stays a scratch file and nothing reaches the drawer.
-      // The pane always sends one; an agent has to write its own.
-      let proofArtifactId: string | null = null;
-      if (existing.caption && filePath) {
-        const filed = await deps.observations.ingestProof({
-          laneId,
-          chatSessionId: args.chatSessionId ?? null,
-          toolName: "desktop record",
-          title: existing.caption,
-          caption: existing.caption,
-          filePath,
-          kind: "video_recording",
-          metadata: { durationMs },
-        }).catch((error: unknown) => {
-          deps.logger.warn("mac_desktop.recording_proof_failed", {
-            laneId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-          return null;
-        });
-        proofArtifactId = filed?.artifacts[0]?.id ?? null;
-      }
-      const status: MacDesktopRecordingStatus = {
-        ...existing,
-        running: false,
-        filePath,
-        durationMs,
-        lastError: null,
-        proofArtifactId,
-        bytes: await readCaptureBytes(filePath),
-      };
-      recordings.set(laneId, status);
-      deps.emit({ type: "recording-changed", status });
-      return status;
+      return await stopUserRecording(args.laneId.trim(), args.chatSessionId?.trim() || null, "requested");
     },
 
     forgetLane(laneId: string): void {
+      clearCap(laneId);
       recordings.delete(laneId);
       recordingPaths.delete(laneId);
     },
 
     clear(): void {
+      for (const laneId of [...capTimers.keys()]) clearCap(laneId);
       recordings.clear();
       recordingPaths.clear();
     },

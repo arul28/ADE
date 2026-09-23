@@ -14434,6 +14434,15 @@ describe("ADE CLI", () => {
     expect(showArgs(["apple", "show", "--floating"]).args)
       .toEqual({ surface: "floating-apple", chatSessionId: "chat-env" });
 
+    // The Mac Desktop surfaces, and `mac-desktop show` as the same call.
+    expect(showArgs(["ui", "show", "mac-desktop"]).args).toEqual({ surface: "mac-desktop", chatSessionId: "chat-env" });
+    expect(showArgs(["ui", "show", "floating-mac-desktop"]).args.surface).toBe("floating-mac-desktop");
+    expect(showArgs(["ui", "show", "desk"]).args.surface).toBe("mac-desktop");
+    expect(showArgs(["mac-desktop", "show", "--lane", "lane-2"]).args)
+      .toEqual({ surface: "mac-desktop", chatSessionId: "chat-env", laneId: "lane-2" });
+    expect(showArgs(["mac-desktop", "show", "--floating"]).args)
+      .toEqual({ surface: "floating-mac-desktop", chatSessionId: "chat-env" });
+
     // Exit 1 when nothing was shown, so a script cannot read it as success.
     const { plan } = showArgs(["ui", "show", "apple"]);
     expect(plan.exitCodeFromResult?.({ status: "shown" })).toBe(0);

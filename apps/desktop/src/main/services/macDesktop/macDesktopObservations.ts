@@ -28,6 +28,7 @@ import type {
   ComputerUseArtifactIngestionRequest,
   ComputerUseArtifactIngestionResult,
   ComputerUseArtifactOwner,
+  ComputerUseProofProvenanceInput,
 } from "../../../shared/types/computerUseArtifacts";
 import {
   createComputerUseArtifactPath,
@@ -353,6 +354,10 @@ export function createMacDesktopObservations(deps: MacDesktopObservationsDeps) {
      * other surfaces use: the lane, the calling chat, and — when the lane has a
      * primary pull request — that PR as a `github_pr` owner with the existing
      * `published_to` relation.
+     *
+     * `provenance` is required, not defaulted: every caller here files bytes
+     * ADE itself wrote, and a missing value reads as "attached" to the broker,
+     * which refuses a repeat screenshot and flags an older recording.
      */
     async ingestProof(args: {
       laneId: string;
@@ -363,6 +368,7 @@ export function createMacDesktopObservations(deps: MacDesktopObservationsDeps) {
       filePath: string;
       kind: "screenshot" | "video_recording";
       metadata?: Record<string, unknown> | null;
+      provenance: ComputerUseProofProvenanceInput;
     }): Promise<ComputerUseArtifactIngestionResult | null> {
       if (!deps.ingestArtifacts) return null;
       const owners: ComputerUseArtifactOwner[] = [{ kind: "lane", id: args.laneId, relation: "attached_to" }];
@@ -377,6 +383,7 @@ export function createMacDesktopObservations(deps: MacDesktopObservationsDeps) {
           toolName: args.toolName,
         },
         callerRoot: deps.projectRoot,
+        provenance: args.provenance,
         inputs: [{
           kind: args.kind,
           title: args.title,

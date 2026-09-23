@@ -159,6 +159,12 @@ describe("ade mac-desktop dispatch", () => {
       .toMatchObject({ modifiers: ["option", "control"] });
     expect(actionArgs(plan(["mac-desktop", "type", "hi", "--clear", "--target", "obs-a1:e:7"])))
       .toMatchObject({ text: "hi", clear: true, target: { handle: "obs-a1:e:7" } });
+    // `--submit` presses Return after the words, as `apple type --submit` does,
+    // and is not read as the text.
+    expect(actionArgs(plan(["mac-desktop", "type", "--submit", "reddit"])))
+      .toMatchObject({ text: "reddit", submit: true });
+    expect(actionArgs(plan(["mac-desktop", "type", "hi"])).submit).toBeUndefined();
+    expect(actionArgs(plan(["mac-desktop", "key", "tab"]))).toMatchObject({ key: "tab" });
     expect(actionArgs(plan(["mac-desktop", "observe", "--map", "--limit", "50"])))
       .toMatchObject({ map: true, limit: 50 });
   });
@@ -419,6 +425,37 @@ describe("mac-desktop recording duration", () => {
     expect(text).toContain("12.0s");
     expect(text).not.toContain("21.4s");
     expect(text).toContain("/tmp/clip.mp4");
+  });
+
+  it("passes --keep-idle and --max-seconds the way `apple record-start` does", () => {
+    expect(actionArgs(plan(["mac-desktop", "record", "start", "--caption", "flow"])))
+      .not.toHaveProperty("keepIdle");
+    const args = actionArgs(plan([
+      "mac-desktop", "record", "start", "--keep-idle", "--max-seconds", "1200", "--caption", "flow",
+    ]));
+    expect(args).toMatchObject({ keepIdle: true, maxSeconds: 1200, caption: "flow", chatSessionId: "chat-1" });
+    expect(() => buildCliPlan(["mac-desktop", "record", "start", "--max-seconds", "0"]))
+      .toThrow(/--max-seconds must be greater than 0/);
+  });
+
+  it("prints the real time, the idle cut, and a stop at the cap", () => {
+    const text = formatOutput(
+      {
+        laneId: "lane-1",
+        running: false,
+        filePath: "/tmp/clip.mp4",
+        durationMs: 70_000,
+        wallDurationMs: 182_000,
+        idleCutMs: 112_000,
+        maxDurationMs: 600_000,
+        stopReason: "cap",
+        caption: "flow",
+      },
+      { text: true } as never,
+      "mac-desktop-recording",
+    );
+    expect(text).toMatch(/real time\s+3:02 · idle cut 1:52/);
+    expect(text).toMatch(/stopped\s+at its 10:00 cap/);
   });
 });
 

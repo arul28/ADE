@@ -67,8 +67,19 @@ export function setWorkToolsPaneVisibleProbeForTests(probe: (() => boolean) | nu
   paneVisibleProbe = probe ?? defaultPaneVisible;
 }
 
-export function isWorkToolOnScreen(tool: string, laneId: string | null): boolean {
-  return isWorkToolMounted(tool, laneId) && paneVisibleProbe();
+/**
+ * `inPane: false` is for a floating surface (the Mac Desktop card): it is not
+ * laid out in the tools pane, so only its own mount and the window count.
+ */
+export type WorkToolOnScreenOptions = { inPane?: boolean };
+
+export function isWorkToolOnScreen(
+  tool: string,
+  laneId: string | null,
+  options: WorkToolOnScreenOptions = {},
+): boolean {
+  if (!isWorkToolMounted(tool, laneId)) return false;
+  return options.inPane === false ? isDocumentVisible() : paneVisibleProbe();
 }
 
 /**
@@ -79,14 +90,14 @@ export function isWorkToolOnScreen(tool: string, laneId: string | null): boolean
 export function waitForWorkToolOnScreen(
   tool: string,
   laneId: string | null,
-  options: { timeoutMs?: number; intervalMs?: number } = {},
+  options: WorkToolOnScreenOptions & { timeoutMs?: number; intervalMs?: number } = {},
 ): Promise<boolean> {
   const timeoutMs = options.timeoutMs ?? 3_000;
   const intervalMs = options.intervalMs ?? 100;
   return new Promise((resolve) => {
     const startedAt = Date.now();
     const check = () => {
-      if (isWorkToolOnScreen(tool, laneId)) {
+      if (isWorkToolOnScreen(tool, laneId, options)) {
         resolve(true);
         return;
       }

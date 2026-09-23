@@ -12,9 +12,17 @@ import {
   makeBuiltInBrowserTab,
 } from "../chat/__fixtures__/builtInBrowserStatus";
 import { resetMacDesktopFrames, setMacDesktopFrame } from "../chat/macDesktopFrameStore";
-import { resetMacDesktopLiveViewLeasesForTests } from "../chat/macDesktopLiveViewLease";
+import {
+  MAC_DESKTOP_LIVE_VIEW_STOP_GRACE_MS,
+  resetMacDesktopLiveViewLeasesForTests,
+} from "../chat/macDesktopLiveViewLease";
 import { useMacDesktopLiveView } from "../chat/useMacDesktopLiveView";
 import { resetMacDesktopSupportCache } from "../terminals/useMacDesktopSupport";
+import {
+  grantMacDesktopCardForChat,
+  macDesktopCardGrantedAt,
+  resetMacDesktopCardGrantsForTests,
+} from "./macDesktopCardGrants";
 import {
   floatWorkLiveCardForChat,
   markWorkLiveCardSeenForChat,
@@ -235,6 +243,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetMacDesktopCardGrantsForTests();
   window.localStorage.clear();
   resetChatCompanionUiStateCacheForTests();
   resetMacDesktopLiveViewLeasesForTests();
@@ -1155,14 +1164,105 @@ describe("WorkLiveCornerCard live tools that predate the card", () => {
     view.rerender(<Harness showPane={false} />);
     await waitFor(() => expect(macDesktopStartStream).toHaveBeenCalledTimes(2));
     expect(macDesktopStopStream).not.toHaveBeenCalled();
+    // The pane's release waits out its grace and then finds the card holding
+    // the same chat, so it sends no stop at all.
+    await new Promise((resolve) => setTimeout(resolve, MAC_DESKTOP_LIVE_VIEW_STOP_GRACE_MS + 150));
+    expect(macDesktopStopStream).not.toHaveBeenCalled();
     // ...and the card owns a decoder now, so frames keep reaching the store.
     const cardNode = screen.getByLabelText("Mac Desktop live preview");
     await waitFor(() => expect(cardNode.parentElement?.querySelector("[data-live-card-decoder]")).toBeTruthy());
 
     // Dismissing the card is the last release: the stream stops.
     fireEvent.click(screen.getByLabelText("Hide the Mac Desktop preview"));
-    await waitFor(() => expect(macDesktopStopStream).toHaveBeenCalledTimes(1));
-    expect(macDesktopStopStream).toHaveBeenCalledWith({ laneId: "lane-1" }, null);
+    await waitFor(() => expect(macDesktopStopStream).toHaveBeenCalledTimes(1), { timeout: 3_000 });
+    expect(macDesktopStopStream).toHaveBeenCalledWith({ laneId: "lane-1", chatSessionId: "chat-1", localViewer: true }, null);
+  });
+});
+
+describe("WorkLiveCornerCard Mac Desktop floated by the chat's agent", () => {
+  /** No tab and no viewer entry: only the agent's activity can authorize. */
+  function withLaneDisplay() {
+    (window.ade.builtInBrowser.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeBuiltInBrowserStatus({ visible: false, activeTabId: null, tabs: [] }),
+    );
+    macDesktopGetStatus.mockResolvedValue({
+      supported: true,
+      display: macDesktopDisplay(),
+      lease: null,
+      windows: [],
+      recording: null,
+    });
+  }
+
+  it("decodes and floats for the chat its agent drove, with no lease and no viewer entry", async () => {
+    withLaneDisplay();
+    fakeDecoder.playing = true;
+    grantMacDesktopCardForChat("lane-1", "chat-1");
+    renderCard({ activeTool: "browser" });
+    await waitFor(() => expect(macDesktopStartStream).toHaveBeenCalledWith(
+      { laneId: "lane-1", chatSessionId: "chat-1" },
+      null,
+    ));
+    expect(await screen.findByLabelText("Mac Desktop live preview", {}, { timeout: 3_000 })).toBeTruthy();
+  });
+
+  it("authorizes nothing for another chat, even on the same lane", async () => {
+    withLaneDisplay();
+    grantMacDesktopCardForChat("lane-1", "chat-other");
+    setMacDesktopFrame(macDesktopFrame());
+    renderCard({ activeTool: "browser" });
+    await waitFor(() => expect(macDesktopGetStatus).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(screen.queryByLabelText("Mac Desktop live preview")).toBeNull();
+    expect(macDesktopStartStream).not.toHaveBeenCalled();
+  });
+
+  it("stays off with the chat's preview toggle off, and × turns the agent's float off", async () => {
+    withLaneDisplay();
+    grantMacDesktopCardForChat("lane-1", "chat-1");
+    setMacDesktopFrame(macDesktopFrame());
+    setWorkLivePreviewEnabledForChat("chat-1", "mac-desktop", false);
+    renderCard({ activeTool: "browser" });
+    await waitFor(() => expect(macDesktopGetStatus).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(screen.queryByLabelText("Mac Desktop live preview")).toBeNull();
+
+    act(() => { setWorkLivePreviewEnabledForChat("chat-1", "mac-desktop", true); });
+    await screen.findByLabelText("Mac Desktop live preview", {}, { timeout: 3_000 });
+    fireEvent.click(screen.getByLabelText("Hide the Mac Desktop preview"));
+    await waitFor(() => expect(screen.queryByLabelText("Mac Desktop live preview")).toBeNull());
+    expect(macDesktopCardGrantedAt("lane-1", "chat-1")).toBeNull();
+    expect(readChatCompanionUiState("chat-1").workLiveCardClosedByTool["mac-desktop"]).toBeTruthy();
+  });
+
+  it("says the display is off when it goes away, and Start starts it for this chat", async () => {
+    withLaneDisplay();
+    grantMacDesktopCardForChat("lane-1", "chat-1");
+    setMacDesktopFrame(macDesktopFrame());
+    const start = vi.fn(async () => ({ supported: true, display: macDesktopDisplay({ displayId: 57 }) }));
+    (window.ade.macDesktop as unknown as { start: unknown }).start = start;
+    renderCard({ activeTool: "browser" });
+    const card = await screen.findByLabelText("Mac Desktop live preview", {}, { timeout: 3_000 });
+    expect(card.querySelector("[data-live-card-off]")).toBeNull();
+
+    emitMacDesktopEvent({ type: "display-destroyed", laneId: "lane-1", reason: "stopped" });
+    expect(await screen.findByText("Mac Desktop is off")).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    });
+    expect(start).toHaveBeenCalledWith({ laneId: "lane-1", chatSessionId: "chat-1" }, null);
+    await waitFor(() => expect(screen.queryByText("Mac Desktop is off")).toBeNull());
+  });
+
+  it("lets a card nobody floated leave with its display", async () => {
+    withLaneDisplay();
+    macDesktopGetStreamStatus.mockResolvedValue(makeStreamStatus({ viewerChatSessionIds: ["chat-1"] }));
+    setMacDesktopFrame(macDesktopFrame());
+    renderCard({ activeTool: "browser" });
+    await screen.findByLabelText("Mac Desktop live preview", {}, { timeout: 3_000 });
+    emitMacDesktopEvent({ type: "display-destroyed", laneId: "lane-1", reason: "stopped" });
+    await waitFor(() => expect(screen.queryByLabelText("Mac Desktop live preview")).toBeNull());
+    expect(screen.queryByText("Mac Desktop is off")).toBeNull();
   });
 });
 

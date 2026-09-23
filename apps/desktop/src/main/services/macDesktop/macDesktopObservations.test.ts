@@ -316,10 +316,13 @@ describe("macDesktopObservations proof", () => {
       caption: "after sign-in",
       filePath: "/tmp/frame.png",
       kind: "screenshot",
+      provenance: { source: "ade-capture" },
     });
     expect(ingested).toHaveLength(1);
     expect(ingested[0]).toMatchObject({
       backend: { name: "ade-mac-desktop", style: "manual", toolName: "desktop proof" },
+      // Passed through as given: the broker decides the checks from it.
+      provenance: { source: "ade-capture" },
       owners: [
         { kind: "lane", id: "lane-1", relation: "attached_to" },
         { kind: "chat_session", id: "chat-1", relation: "attached_to" },
@@ -336,6 +339,7 @@ describe("macDesktopObservations proof", () => {
       title: "x",
       filePath: "/tmp/frame.png",
       kind: "screenshot",
+      provenance: { source: "ade-capture" },
     })).resolves.toBeNull();
   });
 });

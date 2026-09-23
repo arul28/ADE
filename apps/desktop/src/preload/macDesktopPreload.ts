@@ -27,6 +27,7 @@ import type {
   MacDesktopScrollArgs,
   MacDesktopStartArgs,
   MacDesktopStartStreamArgs,
+  MacDesktopStopStreamArgs,
   MacDesktopStatus,
   MacDesktopStopArgs,
   MacDesktopStopResult,
@@ -128,7 +129,7 @@ export function createMacDesktopBridge(deps: MacDesktopBridgeDeps) {
     stopRecording: call<{ laneId: string; chatSessionId?: string | null }, MacDesktopRecordingStatus>("stopRecording", IPC.macDesktopStopRecording),
     /** The only call that hands out the stream token; never cached, never logged. */
     startStream: call<MacDesktopStartStreamArgs, MacDesktopStreamStatus>("startStream", IPC.macDesktopStartStream),
-    stopStream: call<{ laneId: string }, MacDesktopStreamStatus>("stopStream", IPC.macDesktopStopStream),
+    stopStream: call<MacDesktopStopStreamArgs, MacDesktopStreamStatus>("stopStream", IPC.macDesktopStopStream),
     getStreamStatus: call<{ laneId: string }, MacDesktopStreamStatus>("getStreamStatus", IPC.macDesktopGetStreamStatus),
     takeControl: call<MacDesktopTakeoverArgs, MacDesktopLeaseState>("takeControl", IPC.macDesktopTakeControl),
     returnControl: call<{ laneId: string; controllerId: string }, MacDesktopLeaseState | null>("returnControl", IPC.macDesktopReturnControl),

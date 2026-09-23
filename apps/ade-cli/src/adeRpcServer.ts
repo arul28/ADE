@@ -2355,6 +2355,8 @@ const ADE_CAPTURE_INGEST_LABELS: ReadonlyMap<string, "ade-capture" | "ade-record
   ["ade-app-control\u0000app-control proof", "ade-capture"],
   ["ade-browser\u0000browser proof", "ade-capture"],
   ["ade-browser\u0000browser record", "ade-recorder"],
+  // `ade mac-desktop proof` files the frame its own `screenshot` step wrote.
+  ["ade-mac-desktop\u0000mac-desktop proof", "ade-capture"],
 ]);
 
 /**
@@ -3276,6 +3278,25 @@ const APPLE_AGENT_DRIVING_ACTIONS = new Set([
   "tapElement",
   "fillElement",
   "recordStart",
+]);
+
+/**
+ * `mac_desktop` actions that mean an agent is driving the lane's display, so
+ * the desktop may float the Mac Desktop card over that agent's chat (see
+ * `work_tools.noteAgentMacDesktopActivity`). Reads, `stop` and window releases
+ * are not driving.
+ */
+const MAC_DESKTOP_AGENT_DRIVING_ACTIONS = new Set([
+  "start",
+  "open",
+  "claimWindow",
+  "click",
+  "type",
+  "press",
+  "scroll",
+  "drag",
+  "move",
+  "startRecording",
 ]);
 
 const EXTERNAL_SESSION_AUTH_FIND_LIMIT = 500;
@@ -4686,15 +4707,21 @@ async function runTool(args: {
       throw error;
     }
     noteBrowserActivityOnSuccess?.();
-    if (domain === "ios_simulator" && !isUserClient && APPLE_AGENT_DRIVING_ACTIONS.has(action)) {
-      // An agent just drove its chat's device. The desktop showing that chat
-      // may float the device if the user has not turned that off.
+    const drivenDevice = isUserClient
+      ? null
+      : domain === "ios_simulator" && APPLE_AGENT_DRIVING_ACTIONS.has(action)
+        ? "apple"
+        : domain === "mac_desktop" && MAC_DESKTOP_AGENT_DRIVING_ACTIONS.has(action)
+          ? "mac-desktop"
+          : null;
+    if (drivenDevice) {
+      // An agent just drove its chat's device or lane display. The desktop
+      // showing that chat may float it if the user has not turned that off.
       const chatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
       if (chatSessionId) {
-        runtime.workToolsStateService?.noteAgentAppleActivity?.({
-          chatSessionId,
-          laneId: resolveChatSessionLaneId(runtime, session) ?? null,
-        });
+        const activity = { chatSessionId, laneId: resolveChatSessionLaneId(runtime, session) ?? null };
+        if (drivenDevice === "apple") runtime.workToolsStateService?.noteAgentAppleActivity?.(activity);
+        else runtime.workToolsStateService?.noteAgentMacDesktopActivity?.(activity);
       }
     }
     if (domain === "account" && action === "status") {

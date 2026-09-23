@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { OpenProjectBinding } from "../../../shared/types";
 import {
@@ -15,7 +15,11 @@ import { macDesktopErrorText } from "./macDesktopErrorText";
 import { macDesktopApi } from "./macDesktopApi";
 
 /**
- * One lane's desktop status: the first read, the auto-start, and then events.
+ * One lane's desktop status: the first read, then events, and an explicit start.
+ *
+ * Watching never creates a display. Opening the pane only reads; a lane with
+ * no display shows the Off card, and only its Start (or an agent's
+ * `ade mac-desktop start`) creates one. This is the Apple tool's rule.
  *
  * Every field the panel's strip shows moves on an event the service already
  * emits, so a `getStatus` interval would be a second source of truth that is
@@ -23,6 +27,39 @@ import { macDesktopApi } from "./macDesktopApi";
  * and lives in `reduceMacDesktopStatus`, which is what makes it testable
  * without mounting anything.
  */
+
+/**
+ * How often a wait that has not moved re-reads the truth.
+ *
+ * The same cadence as the Apple pane's `APPLE_LOADING_RECHECK_MS`. A start
+ * whose reply never comes, or a `display-destroyed` event that was missed,
+ * must not leave the pane on "Starting" or "Connecting video" for ever.
+ */
+export const MAC_DESKTOP_LOADING_RECHECK_MS = 8_000;
+/**
+ * Past this a start has failed whatever its promise says. The pane then says
+ * so and offers Start again, as the Apple pane does at `APPLE_START_GIVE_UP_MS`.
+ */
+export const MAC_DESKTOP_START_GIVE_UP_MS = 150_000;
+export const MAC_DESKTOP_START_TOO_LONG = "Mac Desktop is taking too long to start.";
+
+/**
+ * Re-reads the status every `MAC_DESKTOP_LOADING_RECHECK_MS` while `waiting`.
+ *
+ * A failed read changes nothing: the next tick tries again, and the wait
+ * itself is what the pane shows.
+ */
+export function useMacDesktopRecheck(waiting: boolean, refresh: () => Promise<unknown>): void {
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  useEffect(() => {
+    if (!waiting) return undefined;
+    const timer = setInterval(() => {
+      void refreshRef.current().catch(() => undefined);
+    }, MAC_DESKTOP_LOADING_RECHECK_MS);
+    return () => clearInterval(timer);
+  }, [waiting]);
+}
 
 /** The agent's last action point, drawn as a cursor and faded on a timer. */
 export type MacDesktopAgentCursor = {
@@ -135,6 +172,11 @@ export type UseMacDesktopStatus = {
   start: () => Promise<MacDesktopStatus | null>;
   /** A create is in flight — the empty state says so instead of offering one. */
   starting: boolean;
+  /**
+   * The last start ran past `MAC_DESKTOP_START_GIVE_UP_MS`. `error` holds the
+   * sentence; the pane offers Start rather than a permission re-check.
+   */
+  gaveUp: boolean;
   cursor: MacDesktopAgentCursor | null;
 };
 
@@ -171,48 +213,92 @@ export function useMacDesktopStatus(args: {
     setStatus(next);
     return next;
   }, [laneId, runtimePin, sessionId]);
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  const statusRef = useRef(status);
+  statusRef.current = status;
 
   /**
-   * Auto-start, and the manual retry the empty state offers.
+   * The explicit start: the Off card's Start, "Check again" and a retry.
    *
-   * The spec's "there is no intermediate card" is load bearing: a tab that
-   * opens onto a button saying "Start display" is a step nobody can decline
-   * meaningfully. `start` is idempotent and serialized per lane on the host, so
-   * two chats in the lane opening the tab at once both get the first display,
-   * and a user pressing the button after a `mac-desktop stop` gets the display
-   * back instead of a button that only re-reads.
+   * `start` is idempotent and serialized per lane on the host, so two chats in
+   * the lane pressing Start at once both get the first display. Each call takes
+   * a token, and only the current one may settle the wait: a start that the
+   * `display-created` event, the give-up timer or a newer start already
+   * replaced changes nothing when its promise finally lands.
    */
-  const [starting, setStarting] = useState(false);
+  const startTokenRef = useRef(0);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const starting = startedAt !== null;
+  const [gaveUp, setGaveUp] = useState(false);
+
+  const settleStart = useCallback(() => {
+    startTokenRef.current += 1;
+    setStartedAt(null);
+  }, []);
 
   const start = useCallback(async (): Promise<MacDesktopStatus | null> => {
-    setStarting(true);
+    const token = startTokenRef.current + 1;
+    startTokenRef.current = token;
+    const current = () => startTokenRef.current === token;
+    setStartedAt(Date.now());
+    setGaveUp(false);
     setError(null);
     try {
       const started = await macDesktopApi().start(
         { laneId, laneName, chatSessionId: sessionId },
         runtimePin,
       );
-      setStatus(started);
+      // A replaced start's answer may be older than what the pane shows now,
+      // so it is not applied. A re-read gives the truth instead.
+      if (current()) setStatus(started);
+      else void refresh().catch(() => undefined);
       return started;
     } catch (caught) {
-      setError(macDesktopErrorText(
-        caught instanceof Error ? caught.message : String(caught),
-        { laneId, laneName, machineName, machineVersion },
-      ));
+      if (current()) {
+        setError(macDesktopErrorText(
+          caught instanceof Error ? caught.message : String(caught),
+          { laneId, laneName, machineName, machineVersion },
+        ));
+      }
       return null;
     } finally {
-      setStarting(false);
+      if (current()) setStartedAt(null);
     }
-  }, [laneId, laneName, machineName, machineVersion, runtimePin, sessionId]);
+  }, [laneId, laneName, machineName, machineVersion, refresh, runtimePin, sessionId]);
 
+  // A display for this lane ends the start, whether the promise, the event or
+  // a re-read brought it.
+  const hasDisplay = Boolean(status?.display);
+  useEffect(() => {
+    if (starting && hasDisplay) settleStart();
+  }, [hasDisplay, settleStart, starting]);
+
+  // Past the give-up time the start has failed, whatever its promise says.
+  useEffect(() => {
+    if (startedAt === null) return undefined;
+    const timer = setTimeout(() => {
+      settleStart();
+      setGaveUp(true);
+      setError(MAC_DESKTOP_START_TOO_LONG);
+    }, Math.max(0, startedAt + MAC_DESKTOP_START_GIVE_UP_MS - Date.now()));
+    return () => clearTimeout(timer);
+  }, [settleStart, startedAt]);
+
+  // A start belongs to one lane on one machine; another one starts fresh.
+  useEffect(() => {
+    settleStart();
+  }, [refresh, settleStart]);
+
+  // The first read only. Watching never creates a display. It runs again when
+  // the machine's name or version arrives, so a failure can name them.
   useEffect(() => {
     let cancelled = false;
     setError(null);
+    setGaveUp(false);
     void (async () => {
       try {
-        const current = await refresh();
-        if (cancelled || !current.supported || current.display) return;
-        await start();
+        await refresh();
       } catch (caught) {
         if (!cancelled) {
           setError(macDesktopErrorText(
@@ -225,13 +311,31 @@ export function useMacDesktopStatus(args: {
     return () => {
       cancelled = true;
     };
-  }, [laneId, laneName, machineName, machineVersion, refresh, start]);
+  }, [laneId, laneName, machineName, machineVersion, refresh]);
+
+  // While the first read or a start is pending, re-read the truth.
+  useMacDesktopRecheck(starting || (status === null && error === null), refresh);
 
   useEffect(() => {
     const api = window.ade.macDesktop;
     if (!api) return;
     return api.onEvent((event) => {
       setStatus((current) => reduceMacDesktopStatus(current, event, laneId));
+      if (
+        (event.type === "display-created" && event.display.laneId === laneId)
+        || (event.type === "display-destroyed" && event.laneId === laneId)
+      ) {
+        // Before the first read lands the reducer drops the event, so read
+        // again: the pane must not wait for the next tick to show the change.
+        if (!statusRef.current) void refreshRef.current().catch(() => undefined);
+        // A failure shown before is stale once a display arrives, and once the
+        // display it was about has closed: that must read as the Off card. A
+        // failed start's own error stays, as there was no display to close.
+        if (event.type === "display-created" || statusRef.current?.display) {
+          setGaveUp(false);
+          setError(null);
+        }
+      }
       // Tracked beside the status rather than inside it: a window that stayed on
       // the human's own screen is not part of `getStatus`'s answer, so a refresh
       // must not silently clear a warning nothing has fixed.
@@ -279,5 +383,17 @@ export function useMacDesktopStatus(args: {
     });
   }, []);
 
-  return { status, setStatus, error, setError, refresh, start, starting, cursor, notParked, dismissNotParked };
+  return {
+    status,
+    setStatus,
+    error,
+    setError,
+    refresh,
+    start,
+    starting,
+    gaveUp,
+    cursor,
+    notParked,
+    dismissNotParked,
+  };
 }

@@ -165,6 +165,7 @@ import {
   MAC_DESKTOP_USER_HAS_CONTROL_CODE,
   MAC_DESKTOP_WINDOW_NOT_FOUND_CODE,
 } from "../../desktop/src/shared/types/macDesktop";
+import { formatProofDuration, proofIdleCutLabel } from "../../desktop/src/shared/proofProvenance";
 import {
   ADE_USAGE_RANGE_PRESETS,
   ADE_USAGE_SCOPES,
@@ -953,7 +954,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
-    $ ade ui show apple | floating-apple | browser | proof
+    $ ade ui show apple | floating-apple | browser | proof | mac-desktop | floating-mac-desktop
                                                     Show a surface of this chat to the user
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
@@ -3446,6 +3447,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade mac-desktop display --text                   Show the resolution
     $ ade mac-desktop display 1440p --text             Set it (1080p, 1440p, 4k)
     $ ade mac-desktop stop --text                      Destroy it and unpark its windows
+    $ ade mac-desktop show --text                      Show it to the user in the tools pane
+    $ ade mac-desktop show --floating --text           ...or as the floating card over the chat
 
   Windows:
     $ ade mac-desktop open <app|path|url> --text       Launch an app onto the display
@@ -3461,6 +3464,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade mac-desktop click --text "Sign in" --text    Click by visible text
     $ ade mac-desktop click --x 900 --y 420 --real     Click a point with real input
     $ ade mac-desktop type "hello" --clear --text      Type into the focused element
+    $ ade mac-desktop type "reddit" --submit --text    Type, then press Return
+    $ ade mac-desktop press return --text              One key (return, tab, escape, f5…)
     $ ade mac-desktop press return --cmd --shift --text Modifiers: --cmd --shift
                                                        --alt (option) --control
     $ ade mac-desktop scroll down --amount 5 --text    Scroll the display or a target
@@ -3478,6 +3483,16 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade mac-desktop record start --caption "<what>"  Record; a caption files it
     $ ade mac-desktop record stop --text
     $ ade mac-desktop proof --caption "<what>" --text  Capture, re-observe, file proof
+
+  Recording flags (record start):
+    --keep-idle            Keep still stretches at real length.
+    --max-seconds <n>      Stop after n seconds of real time (default 600).
+
+  Still time is cut: a still screen longer than 2 s keeps 0.75 s in the video.
+  record stop reports durationMs (video), wallDurationMs (real time) and
+  idleCutMs. A recording a chat owns stops itself after 10 minutes of real
+  time (stopReason "cap") and is filed as proof under the chat that started
+  it, with or without a caption.
 
   "mac-desktop proof" refuses without --caption: a proof record nobody can judge is
   not proof. It re-observes AFTER the capture, so check the state it returns
@@ -3767,6 +3782,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade ui show floating-apple   The floating device player over the chat
     $ ade ui show browser          The browser, in the tools pane
     $ ade ui show proof            The chat's proof drawer
+    $ ade ui show mac-desktop      The lane's Mac Desktop, in the tools pane
+    $ ade ui show floating-mac-desktop
+                                   The floating Mac Desktop card over the chat
 
   Results:
     shown       The surface is on screen now.
@@ -3785,7 +3803,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --json                 Structured JSON (default when piped).
 
   "ade apple show" is the same as "ade ui show apple"; "apple show --floating"
-  is "ui show floating-apple".
+  is "ui show floating-apple". "ade mac-desktop show [--floating]" is the same
+  for the Mac Desktop.
 `,
   "work-tools": `${ADE_BANNER}
   ADE work tools
@@ -12689,6 +12708,7 @@ const MAC_DESKTOP_VALUE_FLAGS: readonly string[] = [
   "--lane",
   "--lane-id",
   "--limit",
+  "--max-seconds",
   "--name",
   "--out",
   "--out-path",
@@ -12888,6 +12908,15 @@ function buildMacDesktopPlan(args: string[]): CliPlan {
 
   if (sub === "status")
     return desktopAction("mac-desktop status", "getStatus", { ...claimArgs }, "mac-desktop-status");
+  if (sub === "show" || sub === "reveal") {
+    // Same verb as `ade ui show mac-desktop`, spelled where an agent driving
+    // the display looks for it. `--floating` asks for the floating card instead.
+    const floating = readFlag(args, ["--floating", "--float"]);
+    return workToolShowPlan(
+      { chatSessionId: asString(claimArgs.chatSessionId), laneId: asString(claimArgs.laneId) },
+      floating ? "floating-mac-desktop" : "mac-desktop",
+    );
+  }
   if (sub === "start" || sub === "create")
     return desktopAction("mac-desktop start", "start", {
       ...requireLane(),
@@ -12984,6 +13013,8 @@ function buildMacDesktopPlan(args: string[]): CliPlan {
       ...requireLane(),
       text,
       ...(readFlag(args, ["--clear", "--replace"]) ? { clear: true } : {}),
+      // Return after the words, as `apple type --submit` does.
+      ...(readFlag(args, ["--submit"]) ? { submit: true } : {}),
       ...(Object.keys(target).length ? { target } : {}),
       ...realMode(),
     }, "mac-desktop-action");
@@ -13060,12 +13091,21 @@ function buildMacDesktopPlan(args: string[]): CliPlan {
     });
   if (sub === "record" || sub === "recording") {
     const mode = (positionals(args)[0] ?? "start").toLowerCase();
-    if (mode === "start")
+    if (mode === "start") {
+      // Same flags and default as `ade apple record-start`.
+      const keepIdle = readFlag(args, ["--keep-idle"]);
+      const maxSeconds = readNumberOption(args, ["--max-seconds"]);
+      if (maxSeconds != null && maxSeconds <= 0) {
+        throw new CliUsageError("mac-desktop record start --max-seconds must be greater than 0.");
+      }
       return desktopAction("mac-desktop record start", "startRecording", {
         ...requireLane(),
         caption: readValue(args, ["--caption", "--description", "--desc"]),
         fps: readNumberOption(args, ["--fps"]),
+        ...(keepIdle ? { keepIdle: true } : {}),
+        ...(maxSeconds == null ? {} : { maxSeconds }),
       }, "mac-desktop-recording");
+    }
     if (mode === "stop")
       return desktopAction(
         "mac-desktop record stop",
@@ -14031,6 +14071,12 @@ const WORK_TOOL_SHOW_SURFACE_ALIASES: Record<string, WorkToolShowSurface> = {
   browser: "browser",
   proof: "proof",
   "proof-drawer": "proof",
+  "mac-desktop": "mac-desktop",
+  mac: "mac-desktop",
+  desk: "mac-desktop",
+  "floating-mac-desktop": "floating-mac-desktop",
+  "floating-mac": "floating-mac-desktop",
+  "floating-desktop": "floating-mac-desktop",
 };
 
 /**
@@ -27041,6 +27087,11 @@ function formatMacDesktopRecording(value: unknown): string {
   const record = isRecord(value) ? value : {};
   const status = firstRecord(record, ["recording", "status"]) ?? record;
   const durationMs = macDesktopRecordingDurationMs(status);
+  const finite = (value: unknown): number | null =>
+    typeof value === "number" && Number.isFinite(value) ? value : null;
+  const wallDurationMs = finite(status.wallDurationMs);
+  const idleCut = proofIdleCutLabel(finite(status.idleCutMs));
+  const maxDurationMs = finite(status.maxDurationMs);
   return renderKeyValues("ADE Mac Desktop recording", [
     ["lane", status.laneId],
     ["running", status.running],
@@ -27050,6 +27101,12 @@ function formatMacDesktopRecording(value: unknown): string {
     // failure was invisible and the file looked like a finished recording.
     ["error", status.lastError],
     ["duration", durationMs == null ? null : `${(durationMs / 1000).toFixed(1)}s`],
+    // The video is shorter than the real time it covers when still time was
+    // cut; the same "idle cut m:ss" the proof drawer prints.
+    ["real time", idleCut && wallDurationMs != null ? `${formatProofDuration(wallDurationMs)} · ${idleCut}` : null],
+    ["stopped", status.stopReason === "cap" && maxDurationMs != null
+      ? `at its ${formatProofDuration(maxDurationMs)} cap`
+      : null],
     ["caption", status.caption],
     [
       "filed",

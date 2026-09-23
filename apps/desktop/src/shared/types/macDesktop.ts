@@ -396,6 +396,8 @@ export type MacDesktopTypeArgs = MacDesktopControllerArgs & MacDesktopSilentArgs
   text: string;
   /** Replace the focused element's value instead of appending to it. */
   clear?: boolean | null;
+  /** Press Return after the text, to submit a search or a form. */
+  submit?: boolean | null;
   mode?: MacDesktopInputMode | null;
   target?: MacDesktopTarget | null;
   chatSessionId?: string | null;
@@ -642,6 +644,19 @@ export type MacDesktopStartStreamArgs = {
   chatSessionId?: string | null;
 };
 
+export type MacDesktopStopStreamArgs = {
+  laneId: string;
+  /** With `localViewer`: the chat whose viewer stopped watching. */
+  chatSessionId?: string | null;
+  /**
+   * A viewer on a desktop stopped watching. Only its own chat is dropped, and
+   * the capture stops only when no chat and no phone or web viewer is left.
+   * Without it the stop is an explicit one (an agent's `stream-stop`) and
+   * ends the capture for everyone.
+   */
+  localViewer?: boolean;
+};
+
 // ---------------------------------------------------------------------------
 // Recording, proof, and the turn time-lapse
 // ---------------------------------------------------------------------------
@@ -672,7 +687,22 @@ export type MacDesktopRecordingStatus = {
   proofArtifactId?: string | null;
   /** Size of the finished file, when the host could read it. */
   bytes?: number | null;
+  /**
+   * The chat that started the recording. The proof is filed under it,
+   * whichever chat stops it, and it is what makes the ten-minute cap apply.
+   */
+  chatSessionId?: string | null;
+  /** Real time the video covers. `durationMs` is the video's own length. */
+  wallDurationMs?: number | null;
+  /** Still time the driver left out of the video: `wallDurationMs - durationMs`. */
+  idleCutMs?: number | null;
+  /** Wall-clock cap, or null for none. The recording stops itself at it. */
+  maxDurationMs?: number | null;
+  /** Why it stopped. `cap` means the cap above ran out. */
+  stopReason?: MacDesktopRecordingStopReason | null;
 };
+
+export type MacDesktopRecordingStopReason = "requested" | "cap";
 
 /**
  * The caption the pane gives what a person captures from it.
@@ -696,6 +726,10 @@ export type MacDesktopRecordStartArgs = {
   caption?: string | null;
   fps?: number | null;
   chatSessionId?: string | null;
+  /** Keep still stretches at wall-clock length (`record start --keep-idle`). */
+  keepIdle?: boolean | null;
+  /** Wall-clock cap in seconds. Default: ten minutes for a chat's recording. */
+  maxSeconds?: number | null;
 };
 
 /**
@@ -1096,7 +1130,8 @@ export type DesktopSeatProvider = {
    */
   setStreamCursorVisible(args: { laneId: string; visible: boolean }): Promise<void>;
   stopStream(args: { laneId: string }): Promise<void>;
-  startRecording(args: { laneId: string; fps: number; filePath: string }): Promise<void>;
+  /** `keepIdle` true keeps still stretches; absent or false cuts them. */
+  startRecording(args: { laneId: string; fps: number; filePath: string; keepIdle?: boolean }): Promise<void>;
   stopRecording(args: { laneId: string }): Promise<DesktopSeatReply>;
 };
 
@@ -1241,7 +1276,7 @@ export type MacDesktopServiceApi = {
 
   /** The only call that hands out the stream token. */
   startStream(args: MacDesktopStartStreamArgs): Promise<MacDesktopStreamStatus>;
-  stopStream(args: { laneId: string }): Promise<MacDesktopStreamStatus>;
+  stopStream(args: MacDesktopStopStreamArgs): Promise<MacDesktopStreamStatus>;
   /** Redacted: `url` and `token` are always null here. */
   getStreamStatus(args: { laneId: string }): Promise<MacDesktopStreamStatus>;
 

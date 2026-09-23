@@ -2,9 +2,12 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { OpenProjectBinding } from "../../../shared/types";
+
 import {
   MAC_DESKTOP_LIVE_VIEW_CARD_PRIORITY,
   MAC_DESKTOP_LIVE_VIEW_PANE_PRIORITY,
+  MAC_DESKTOP_LIVE_VIEW_STOP_GRACE_MS,
   acquireMacDesktopLiveViewLease,
   macDesktopLiveViewLeaseState,
   resetMacDesktopLiveViewLeasesForTests,
@@ -22,7 +25,13 @@ const stopStream = vi.fn(async () => ({
   viewerChatSessionIds: [],
 }));
 
+/** Lets every viewer stop that is waiting out its grace go to the service. */
+function passGrace(): void {
+  vi.advanceTimersByTime(MAC_DESKTOP_LIVE_VIEW_STOP_GRACE_MS + 10);
+}
+
 beforeEach(() => {
+  vi.useFakeTimers();
   resetMacDesktopLiveViewLeasesForTests();
   stopStream.mockClear();
   (window as unknown as { ade: unknown }).ade = { macDesktop: { stopStream } };
@@ -30,6 +39,7 @@ beforeEach(() => {
 
 afterEach(() => {
   resetMacDesktopLiveViewLeasesForTests();
+  vi.useRealTimers();
 });
 
 describe("macDesktopLiveViewLease", () => {
@@ -69,12 +79,16 @@ describe("macDesktopLiveViewLease", () => {
     // the encoder is never asked to stop while anyone still holds the lane.
     expect(cardChanges).toEqual([true]);
     expect(card.ownsDecoder()).toBe(true);
+    passGrace();
     expect(stopStream).not.toHaveBeenCalled();
 
     card.release();
-    expect(stopStream).toHaveBeenCalledTimes(1);
-    expect(stopStream).toHaveBeenCalledWith({ laneId: "lane-1" }, null);
     expect(macDesktopLiveViewLeaseState("lane-1")).toBeNull();
+    // The last viewer's stop waits out the grace, then says only "I left".
+    expect(stopStream).not.toHaveBeenCalled();
+    passGrace();
+    expect(stopStream).toHaveBeenCalledTimes(1);
+    expect(stopStream).toHaveBeenCalledWith({ laneId: "lane-1", chatSessionId: null, localViewer: true }, null);
   });
 
   it("lets a reopened pane take the decoder back from the card", () => {
@@ -104,8 +118,10 @@ describe("macDesktopLiveViewLease", () => {
     reopenedPane.release();
     expect(cardChanges).toEqual([true, false, true]);
     expect(card.ownsDecoder()).toBe(true);
+    passGrace();
     expect(stopStream).not.toHaveBeenCalled();
     card.release();
+    passGrace();
     expect(stopStream).toHaveBeenCalledTimes(1);
   });
 
@@ -115,24 +131,108 @@ describe("macDesktopLiveViewLease", () => {
     expect(a.ownsDecoder()).toBe(true);
     expect(b.ownsDecoder()).toBe(true);
     a.release();
-    expect(stopStream).toHaveBeenCalledWith({ laneId: "lane-a" }, null);
+    passGrace();
+    expect(stopStream).toHaveBeenCalledWith({ laneId: "lane-a", chatSessionId: null, localViewer: true }, null);
     expect(b.ownsDecoder()).toBe(true);
     b.release();
+    passGrace();
     expect(stopStream).toHaveBeenCalledTimes(2);
   });
 
   it("is inert after release, so a double release cannot free someone else's stream", () => {
-    const first = acquireMacDesktopLiveViewLease({ laneId: "lane-1" });
+    const first = acquireMacDesktopLiveViewLease({ laneId: "lane-1", chatSessionId: "chat-1" });
     first.release();
+    passGrace();
     expect(stopStream).toHaveBeenCalledTimes(1);
 
-    const second = acquireMacDesktopLiveViewLease({ laneId: "lane-1" });
+    const second = acquireMacDesktopLiveViewLease({ laneId: "lane-1", chatSessionId: "chat-1" });
     expect(second.ownsDecoder()).toBe(true);
-    expect(stopStream).toHaveBeenCalledTimes(1);
     first.release();
+    passGrace();
     expect(stopStream).toHaveBeenCalledTimes(1);
     expect(second.ownsDecoder()).toBe(true);
     second.release();
+    passGrace();
     expect(stopStream).toHaveBeenCalledTimes(2);
+  });
+
+  it("regression: a viewer arriving inside the grace joins the capture instead of stopping it", () => {
+    // The card can go a beat before the pane mounts. Stopping at once cut the
+    // capture in that gap, and the pane had to open a new one.
+    const card = acquireMacDesktopLiveViewLease({
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+      priority: MAC_DESKTOP_LIVE_VIEW_CARD_PRIORITY,
+    });
+    card.release();
+    vi.advanceTimersByTime(MAC_DESKTOP_LIVE_VIEW_STOP_GRACE_MS / 2);
+    const pane = acquireMacDesktopLiveViewLease({ laneId: "lane-1", chatSessionId: "chat-1" });
+    passGrace();
+    passGrace();
+    expect(stopStream).not.toHaveBeenCalled();
+    expect(macDesktopLiveViewLeaseState("lane-1")?.holders).toBe(1);
+    pane.release();
+  });
+
+  it("tells the service once when both viewers of one chat leave inside the grace", () => {
+    const pane = acquireMacDesktopLiveViewLease({ laneId: "lane-1", chatSessionId: "chat-1" });
+    const card = acquireMacDesktopLiveViewLease({
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+      priority: MAC_DESKTOP_LIVE_VIEW_CARD_PRIORITY,
+    });
+    pane.release();
+    vi.advanceTimersByTime(MAC_DESKTOP_LIVE_VIEW_STOP_GRACE_MS / 2);
+    card.release();
+    passGrace();
+    expect(stopStream).toHaveBeenCalledTimes(1);
+    expect(stopStream).toHaveBeenCalledWith({ laneId: "lane-1", chatSessionId: "chat-1", localViewer: true }, null);
+  });
+
+  it("drops a chat from the viewer list when its viewer leaves, while the lane stays up", () => {
+    // The floating card authorizes a chat by the service's viewer list, so a
+    // chat that looked once must not stay on it after its viewer is gone.
+    const pane = acquireMacDesktopLiveViewLease({ laneId: "lane-1", chatSessionId: "chat-a" });
+    const card = acquireMacDesktopLiveViewLease({
+      laneId: "lane-1",
+      chatSessionId: " chat-b ",
+      priority: MAC_DESKTOP_LIVE_VIEW_CARD_PRIORITY,
+    });
+    pane.release();
+    passGrace();
+    expect(stopStream).toHaveBeenCalledTimes(1);
+    expect(stopStream).toHaveBeenCalledWith({ laneId: "lane-1", chatSessionId: "chat-a", localViewer: true }, null);
+
+    // Another holder of the same chat keeps that chat on the list.
+    const second = acquireMacDesktopLiveViewLease({ laneId: "lane-1", chatSessionId: "chat-b" });
+    card.release();
+    passGrace();
+    expect(stopStream).toHaveBeenCalledTimes(1);
+    second.release();
+    passGrace();
+    expect(stopStream).toHaveBeenLastCalledWith({ laneId: "lane-1", chatSessionId: "chat-b", localViewer: true }, null);
+  });
+
+  it("keeps the pane and the card in one bucket whatever pin each one carries", () => {
+    // The Apple tool's 2026-09-23 bug: the pane keyed by its null pin and the
+    // floating player by the resolved binding, so each one was the "last
+    // viewer" of its own bucket. The Mac Desktop lease keys by lane only.
+    const resolved = { kind: "local", key: "local:/repo" } as unknown as OpenProjectBinding;
+    const card = acquireMacDesktopLiveViewLease({
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+      priority: MAC_DESKTOP_LIVE_VIEW_CARD_PRIORITY,
+      runtimePin: resolved,
+    });
+    const pane = acquireMacDesktopLiveViewLease({ laneId: "lane-1", chatSessionId: "chat-1", runtimePin: null });
+    expect(macDesktopLiveViewLeaseState("lane-1")).toEqual({ holders: 2, decoderOwnerId: 2 });
+    expect(card.ownsDecoder()).toBe(false);
+
+    card.release();
+    passGrace();
+    expect(stopStream).not.toHaveBeenCalled();
+    pane.release();
+    passGrace();
+    expect(stopStream).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+/* @vitest-environment jsdom */
+
+import { act, renderHook } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
   MacDesktopDisplay,
@@ -13,8 +16,12 @@ import {
   reduceMacDesktopNotParked,
 } from "../../../shared/types/macDesktop";
 import {
+  MAC_DESKTOP_LOADING_RECHECK_MS,
+  MAC_DESKTOP_START_GIVE_UP_MS,
+  MAC_DESKTOP_START_TOO_LONG,
   macDesktopCursorFromEvent,
   reduceMacDesktopStatus,
+  useMacDesktopStatus,
 } from "./useMacDesktopStatus";
 
 const display = (laneId: string): MacDesktopDisplay => ({
@@ -319,5 +326,175 @@ describe("macDesktopCursorFromEvent", () => {
       "lane-1",
       5,
     )).toBeNull();
+  });
+});
+
+describe("useMacDesktopStatus", () => {
+  let emit: (event: MacDesktopEventPayload) => void = () => {};
+  const api = {
+    getStatus: vi.fn(),
+    start: vi.fn(),
+    onEvent: vi.fn((cb: (event: MacDesktopEventPayload) => void) => {
+      emit = cb;
+      return () => {};
+    }),
+  };
+  const off = (): MacDesktopStatus => ({ ...baseStatus(), display: null });
+
+  /** A promise the test settles by hand, like a start whose reply is late. */
+  function deferred<T>() {
+    let resolve: (value: T) => void = () => {};
+    const promise = new Promise<T>((done) => {
+      resolve = done;
+    });
+    return { promise, resolve };
+  }
+
+  const mount = () => renderHook(() => useMacDesktopStatus({
+    laneId: "lane-1",
+    laneName: "docs-fix",
+    sessionId: "chat-1",
+    runtimePin: null,
+  }));
+  const flush = () => act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  const advance = (ms: number) => act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    api.getStatus.mockReset();
+    api.start.mockReset();
+    api.onEvent.mockClear();
+    (window as unknown as { ade: unknown }).ade = { macDesktop: api };
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("reads on mount and never starts a display by itself", async () => {
+    api.getStatus.mockResolvedValue(off());
+    const { result } = mount();
+    await flush();
+    await advance(MAC_DESKTOP_LOADING_RECHECK_MS * 3);
+
+    expect(result.current.status?.display).toBeNull();
+    expect(result.current.starting).toBe(false);
+    expect(api.start).not.toHaveBeenCalled();
+    // The Off card waits for events, not a timer.
+    expect(api.getStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-reads every 8 s while a start is out, and a re-read with the display ends it", async () => {
+    api.getStatus.mockResolvedValue(off());
+    const reply = deferred<MacDesktopStatus>();
+    api.start.mockReturnValue(reply.promise);
+    const { result } = mount();
+    await flush();
+
+    act(() => {
+      void result.current.start();
+    });
+    expect(result.current.starting).toBe(true);
+    expect(api.start).toHaveBeenCalledWith(
+      { laneId: "lane-1", laneName: "docs-fix", chatSessionId: "chat-1" },
+      null,
+    );
+
+    await advance(MAC_DESKTOP_LOADING_RECHECK_MS - 1);
+    expect(api.getStatus).toHaveBeenCalledTimes(1);
+    await advance(1);
+    expect(api.getStatus).toHaveBeenCalledTimes(2);
+    expect(result.current.starting).toBe(true);
+
+    // The start's reply never comes, but the display is there.
+    api.getStatus.mockResolvedValue(baseStatus());
+    await advance(MAC_DESKTOP_LOADING_RECHECK_MS);
+    expect(result.current.status?.display?.laneId).toBe("lane-1");
+    expect(result.current.starting).toBe(false);
+
+    // No more re-reads once nothing is waiting.
+    const reads = api.getStatus.mock.calls.length;
+    await advance(MAC_DESKTOP_LOADING_RECHECK_MS * 2);
+    expect(api.getStatus).toHaveBeenCalledTimes(reads);
+  });
+
+  it("gives up after 150 s with the Start sentence, and a late reply changes nothing", async () => {
+    api.getStatus.mockResolvedValue(off());
+    const reply = deferred<MacDesktopStatus>();
+    api.start.mockReturnValue(reply.promise);
+    const { result } = mount();
+    await flush();
+    act(() => {
+      void result.current.start();
+    });
+
+    await advance(MAC_DESKTOP_START_GIVE_UP_MS - 1);
+    expect(result.current.starting).toBe(true);
+    expect(result.current.gaveUp).toBe(false);
+    await advance(1);
+    expect(result.current.starting).toBe(false);
+    expect(result.current.gaveUp).toBe(true);
+    expect(result.current.error).toBe(MAC_DESKTOP_START_TOO_LONG);
+
+    // The replaced start's answer is not applied; the hook reads the truth.
+    const reads = api.getStatus.mock.calls.length;
+    await act(async () => {
+      reply.resolve(baseStatus());
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(api.getStatus).toHaveBeenCalledTimes(reads + 1);
+    expect(result.current.status?.display).toBeNull();
+    expect(result.current.starting).toBe(false);
+  });
+
+  it("ends a start on display-created and goes to Off on display-destroyed at once", async () => {
+    api.getStatus.mockResolvedValue(off());
+    api.start.mockReturnValue(new Promise(() => {}));
+    const { result } = mount();
+    await flush();
+    act(() => {
+      void result.current.start();
+    });
+    expect(result.current.starting).toBe(true);
+
+    act(() => emit({ type: "display-created", display: display("lane-1") }));
+    expect(result.current.status?.display?.laneId).toBe("lane-1");
+    expect(result.current.starting).toBe(false);
+
+    // A failure about the display that was is stale once it closes.
+    act(() => result.current.setError("Could not take control."));
+    act(() => emit({ type: "display-destroyed", laneId: "lane-1", reason: "stopped" }));
+    expect(result.current.status?.display).toBeNull();
+    expect(result.current.error).toBeNull();
+    expect(result.current.starting).toBe(false);
+    expect(api.start).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads again when a display event beats the first read", async () => {
+    const first = deferred<MacDesktopStatus>();
+    api.getStatus.mockReturnValueOnce(first.promise).mockResolvedValue(baseStatus());
+    const { result } = mount();
+    await flush();
+
+    act(() => emit({ type: "display-created", display: display("lane-1") }));
+    await flush();
+    expect(api.getStatus).toHaveBeenCalledTimes(2);
+    expect(result.current.status?.display?.laneId).toBe("lane-1");
+  });
+
+  it("re-reads every 8 s while the first read has not answered", async () => {
+    api.getStatus.mockReturnValueOnce(new Promise(() => {})).mockResolvedValue(off());
+    const { result } = mount();
+    await flush();
+    expect(result.current.status).toBeNull();
+
+    await advance(MAC_DESKTOP_LOADING_RECHECK_MS);
+    expect(api.getStatus).toHaveBeenCalledTimes(2);
+    expect(result.current.status?.display).toBeNull();
+    expect(api.start).not.toHaveBeenCalled();
   });
 });

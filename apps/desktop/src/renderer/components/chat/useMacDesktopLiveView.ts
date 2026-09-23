@@ -39,6 +39,18 @@ import {
 
 export const RETRY_MS = 4_000;
 export const RETRY_MAX_ATTEMPTS = 5;
+/** How long a reader with an address may wait for its first drawn frame. */
+export const FIRST_FRAME_TIMEOUT_MS = 5_000;
+/**
+ * How long after its capture ends a viewer that still wants frames asks
+ * again, times the try number. The same numbers as the Apple tool's viewer.
+ */
+export const RECOVER_DELAY_MS = 750;
+/**
+ * Automatic re-dials in a row before the viewer waits for a human. Reset by
+ * the first drawn frame, so a stream that recovers can recover again.
+ */
+export const RECOVER_MAX_TRIES = 3;
 
 /**
  * Whether the reader should try again, given what the last attempt did.
@@ -130,9 +142,12 @@ export function useMacDesktopLiveView(args: {
       setOwnsDecoder(false);
       return undefined;
     }
+    // The chat rides the lease so its release drops this chat, and only this
+    // chat, from the service's viewer list.
     const lease = acquireMacDesktopLiveViewLease({
       laneId,
       priority,
+      chatSessionId,
       runtimePin: pinRef.current,
       onDecoderOwnershipChange: setOwnsDecoder,
     });
@@ -141,7 +156,59 @@ export function useMacDesktopLiveView(args: {
       setOwnsDecoder(false);
       lease.release();
     };
-  }, [enabled, laneId, pinKey, priority]);
+  }, [chatSessionId, enabled, laneId, pinKey, priority]);
+
+  const wanted = ownsDecoder && enabled && Boolean(laneId);
+  const wantedRef = useRef(wanted);
+  wantedRef.current = wanted;
+  const urlRef = useRef(url);
+  urlRef.current = url;
+
+  /*
+   * A viewer that still wants frames never waits for a remount.
+   *
+   * The capture can end under it: another desktop's explicit stop, the
+   * encoder dying, the last reader timing out on the host. Before, the viewer
+   * kept a dead address and sat on "Connecting" until the pane was reopened.
+   * Now it asks `startStream` again by itself, a few times with a growing
+   * pause, and the host either hands back the running capture or opens one.
+   */
+  const recoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const recoverTriesRef = useRef(0);
+  const scheduleRecover = useCallback(() => {
+    if (recoverTimerRef.current != null) return;
+    if (recoverTriesRef.current >= RECOVER_MAX_TRIES) return;
+    recoverTriesRef.current += 1;
+    recoverTimerRef.current = setTimeout(() => {
+      recoverTimerRef.current = null;
+      if (wantedRef.current) setRestartNonce((nonce) => nonce + 1);
+    }, RECOVER_DELAY_MS * recoverTriesRef.current);
+  }, []);
+  useEffect(() => () => {
+    if (recoverTimerRef.current != null) clearTimeout(recoverTimerRef.current);
+  }, []);
+  // A new lane is a new story: its failures start from zero.
+  useEffect(() => {
+    recoverTriesRef.current = 0;
+  }, [laneId]);
+
+  // The host says this lane's capture ended, or failed, while we read it.
+  useEffect(() => {
+    const api = window.ade?.macDesktop;
+    if (!wanted || !laneId || !api?.onEvent) return undefined;
+    return api.onEvent((event) => {
+      if (event.type !== "stream-stopped" && event.type !== "stream-error") return;
+      if (event.status.laneId !== laneId) return;
+      scheduleRecover();
+    }, pinRef.current);
+  }, [laneId, pinKey, scheduleRecover, wanted]);
+
+  // An address that never draws a frame is as dead as one that ended.
+  useEffect(() => {
+    if (!wanted || !url || status !== "starting") return undefined;
+    const timer = setTimeout(scheduleRecover, FIRST_FRAME_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [scheduleRecover, status, url, wanted]);
 
   const onCanvas = useCallback((canvas: HTMLCanvasElement | null) => {
     canvasRef.current = canvas;
@@ -154,12 +221,23 @@ export function useMacDesktopLiveView(args: {
   }, []);
 
   const onStatus = useCallback((next: H264VideoStatus, nextError: string | null) => {
+    if (next === "stopped") {
+      // With no address the reader has nothing to stop: it says "stopped"
+      // just for mounting, and taken as news it would overwrite a start's
+      // error with "starting", which no retry watches.
+      if (!urlRef.current) return;
+      // The body ended under a viewer that still wants it: the capture went
+      // away. Ask for it again rather than keep a dead address.
+      if (wantedRef.current) scheduleRecover();
+    }
+    if (next === "playing") recoverTriesRef.current = 0;
     setStatus(next === "playing" ? "playing" : next === "error" ? "error" : "starting");
     setError(nextError);
-  }, []);
+  }, [scheduleRecover]);
 
   const restart = useCallback(() => {
     setResolveFailures(0);
+    recoverTriesRef.current = 0;
     setRestartNonce((nonce) => nonce + 1);
   }, []);
 

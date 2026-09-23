@@ -694,8 +694,8 @@ describe("ChatMacDesktopPanel permission first screen", () => {
   } as Partial<MacDesktopStatus>);
 
   beforeEach(() => {
-    // The auto-start still fires and fails on the denied grant; the block is
-    // what the user gets instead of the one-line retry.
+    // A start with the grant denied fails; the block is what the user gets
+    // instead of the one-line retry.
     macDesktop.start.mockRejectedValue(new Error("ADE needs Screen Recording permission."));
   });
 
@@ -751,10 +751,8 @@ describe("ChatMacDesktopPanel permission first screen", () => {
 
   it("Check again calls recheck before start", async () => {
     macDesktop.getStatus.mockResolvedValue(deniedStatus({ signing: "identity" }));
-    // The mount auto-start fails on the denied grant; the start that follows
-    // the recheck succeeds and lands the display.
+    // The start that follows the recheck succeeds and brings the display.
     macDesktop.start.mockResolvedValue(makeStatus());
-    macDesktop.start.mockRejectedValueOnce(new Error("ADE needs Screen Recording permission."));
 
     renderLocalPanel();
     fireEvent.click(await screen.findByTestId("mac-desktop-check-again"));
@@ -763,11 +761,31 @@ describe("ChatMacDesktopPanel permission first screen", () => {
       { restartDriver: true },
       null,
     ));
-    // The start that follows the recheck is what proves the order; the mount
-    // auto-start happened before it.
+    // Opening the pane started nothing; the one start follows the recheck.
     const recheckOrder = macDesktop.recheckPermissions.mock.invocationCallOrder.at(-1) ?? 0;
     await waitFor(() => expect(
       macDesktop.start.mock.invocationCallOrder.some((order) => order > recheckOrder),
     ).toBe(true));
+    expect(macDesktop.start).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ChatMacDesktopPanel with no display", () => {
+  it("shows the Off card instead of starting one, and Start is the one start", async () => {
+    macDesktop.getStatus.mockResolvedValue(makeStatus({ display: null }));
+    macDesktop.start.mockResolvedValue(makeStatus());
+
+    renderPanel();
+
+    expect(await screen.findByTestId("mac-desktop-off")).toBeTruthy();
+    expect(macDesktop.start).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId("mac-desktop-start"));
+    await waitFor(() => expect(macDesktop.start).toHaveBeenCalledWith(
+      { laneId: "lane-1", laneName: "docs-fix", chatSessionId: "chat-1" },
+      STUDIO_PIN,
+    ));
+    expect(await screen.findByTestId("mac-desktop-surface")).toBeTruthy();
+    expect(macDesktop.start).toHaveBeenCalledTimes(1);
   });
 });

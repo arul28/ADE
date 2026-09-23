@@ -12,7 +12,13 @@ import type { WorkSidebarContextTarget } from "./workToolContextInsertion";
 import { cn } from "../ui/cn";
 import { AppleDeviceMiniPlayer } from "../apple/AppleDeviceMiniPlayer";
 import { floatAppleMiniPlayerForChat, type AppleMiniPlayerSurface } from "../apple/appleMiniPlayerStore";
-import { setWorkLivePreviewEnabledForChat } from "../chat/chatCompanionUiState";
+import {
+  floatWorkLiveCardForChat,
+  isWorkLivePreviewEnabled,
+  readChatCompanionUiState,
+  setWorkLivePreviewEnabledForChat,
+} from "../chat/chatCompanionUiState";
+import { MAC_DESKTOP_CARD_ON_SCREEN_KEY, grantMacDesktopCardForChat } from "../work/macDesktopCardGrants";
 import {
   useWorkToolShowHandler,
   useWorkToolShowRequestListener,
@@ -196,7 +202,13 @@ async function allSettledWithConcurrency<T>(
 }
 
 /** What the Work page itself can show for the chat in front. */
-const WORK_PAGE_SHOW_SURFACES: readonly WorkToolShowSurface[] = ["apple", "floating-apple", "browser"];
+const WORK_PAGE_SHOW_SURFACES: readonly WorkToolShowSurface[] = [
+  "apple",
+  "floating-apple",
+  "browser",
+  "mac-desktop",
+  "floating-mac-desktop",
+];
 
 export function TerminalsPage({ active = true }: { active?: boolean }) {
   const work = useWorkSessions({ active });
@@ -1182,8 +1194,13 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
    * the chat's "Show preview when minimized" is on. That is the default; × on
    * the player turns it off for the chat, and it stays off until the user turns
    * it back on or the agent asks with `ade apple show`.
+   *
+   * The Mac Desktop follows the same rule with the corner card: an agent
+   * driving the lane's display grants this chat the card on that lane (see
+   * `macDesktopCardGrants`), and the card floats once a frame arrives.
    */
   const appleToolOpening = workSidebarVisible && workSidebarTool === "ios";
+  const macDesktopToolOpening = workSidebarVisible && workSidebarTool === "mac-desktop";
   const showWorkSurface = useCallback((request: WorkToolShowRequest): boolean | Promise<boolean> => {
     if (!activeWorkSession || request.chatSessionId !== activeWorkSession.id) return false;
     const sessionLaneId = activeWorkSession.laneId || null;
@@ -1205,6 +1222,29 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       setWorkSidebarTool("ios");
       return waitForWorkToolOnScreen("ios", sessionLaneId);
     }
+    if (request.surface === "mac-desktop") {
+      setWorkLivePreviewEnabledForChat(request.chatSessionId, "mac-desktop", true);
+      // The pane outranks the card for the lane's one decoder
+      // (`macDesktopLiveViewLease`), so mounting it takes the picture back.
+      setWorkSidebarTool("mac-desktop");
+      return waitForWorkToolOnScreen("mac-desktop", sessionLaneId);
+    }
+    if (request.surface === "floating-mac-desktop") {
+      if (!sessionLaneId) return false;
+      if (isWorkToolOnScreen("mac-desktop", sessionLaneId)) return true;
+      if (request.auto) {
+        if (macDesktopToolOpening) return false;
+        if (!isWorkLivePreviewEnabled(readChatCompanionUiState(request.chatSessionId), "mac-desktop")) {
+          return false;
+        }
+        return grantMacDesktopCardForChat(sessionLaneId, request.chatSessionId);
+      }
+      // Asked for by name: undo an earlier × and float the card now, with the
+      // Off state and its Start when there is no display.
+      floatWorkLiveCardForChat(request.chatSessionId, "mac-desktop");
+      grantMacDesktopCardForChat(sessionLaneId, request.chatSessionId);
+      return waitForWorkToolOnScreen(MAC_DESKTOP_CARD_ON_SCREEN_KEY, sessionLaneId, { inPane: false });
+    }
     if (request.surface !== "floating-apple") return false;
     // The device is already on screen in the pane.
     if (isWorkToolOnScreen("ios", sessionLaneId)) return true;
@@ -1217,7 +1257,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       runtimePin: activeWorkSessionRuntimePin,
       auto: request.auto,
     }).then((floated) => floated && isDocumentVisible());
-  }, [activeWorkSession, activeWorkSessionRuntimePin, appleToolOpening, setWorkSidebarTool]);
+  }, [activeWorkSession, activeWorkSessionRuntimePin, appleToolOpening, macDesktopToolOpening, setWorkSidebarTool]);
   useWorkToolShowHandler(
     active && activeWorkSession ? activeWorkSession.id : null,
     WORK_PAGE_SHOW_SURFACES,

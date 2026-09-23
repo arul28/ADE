@@ -107,14 +107,14 @@ export function useMacDesktopToolStatus(args: {
  * The card's one line.
  *
  * Exported and pure so the two states can be asserted without a machine.
- * "Start …" rather than "No screen": the card is a button, and the line under
- * a button should say what pressing it does.
+ * "Off" in the pane's own words: the card opens the pane, and the pane shows
+ * the Off card with its Start button. Opening it never starts a display.
  */
 export function macDesktopStatusLineText(state: MacDesktopToolState | null): {
   line: string;
   live: boolean;
 } {
-  if (!state?.display) return { line: "Start Mac Desktop for this lane", live: false };
+  if (!state?.display) return { line: "Mac Desktop is off", live: false };
   return {
     line: state.windowCount > 0
       ? `Mac Desktop active · ${state.windowCount} ${state.windowCount === 1 ? "window" : "windows"}`
