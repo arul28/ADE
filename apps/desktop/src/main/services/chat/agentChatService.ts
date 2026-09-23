@@ -46488,15 +46488,16 @@ export function createAgentChatService(args: {
     // checking earlier without holding the slot let two sends overlap and
     // dispatch concurrently.
     devinCloudSendInFlight.add(managed.session.id);
-    // Deliver attachments for real: the cloud session cannot see local paths,
-    // so each file is uploaded to Devin's attachment store and referenced by
-    // URL in the message (`attachment_urls` on v3, `ATTACHMENT:` lines on v1).
-    // Upload before the user_message emits — a file that cannot be uploaded
-    // fails the turn instead of showing in the transcript as sent.
-    const attachmentUrls: string[] = [];
-    const remoteImageHints: string[] = [];
-    let messageText = args.promptText;
     try {
+      // Deliver attachments for real: the cloud session cannot see local
+      // paths, so each file is uploaded to Devin's attachment store and
+      // referenced by URL in the message (`attachment_urls` on v3,
+      // `ATTACHMENT:` lines on v1). Upload before the user_message emits — a
+      // file that cannot be uploaded fails the turn instead of showing in the
+      // transcript as sent.
+      const attachmentUrls: string[] = [];
+      const remoteImageHints: string[] = [];
+      let messageText = args.promptText;
       for (const attachment of args.resolvedAttachments) {
         if (attachment.type === "image-url") {
           const url = attachment.url?.trim();
@@ -46520,56 +46521,54 @@ export function createAgentChatService(args: {
       if (remoteImageHints.length) {
         messageText = [args.promptText, ...remoteImageHints].join("\n\n");
       }
-    } catch (error) {
-      devinCloudSendInFlight.delete(managed.session.id);
-      throw error;
-    }
-    setSessionActive(managed);
-    emitPreparedUserMessage(managed, {
-      text: userText,
-      displayText,
-      attachments: args.attachments,
-      contextAttachments: args.contextAttachments,
-      metadata: args.metadata,
-      turnId,
-      laneDirectiveKey: args.laneDirectiveKey,
-      onDispatched: args.onDispatched,
-    });
-    emitChatEvent(managed, {
-      type: "status",
-      turnStatus: "started",
-      turnId,
-    });
-    // A fresh send means the remote turn is live again — reset completion so
-    // the mirror can emit `done` for this turn, not just the first one.
-    devinCloudDoneAnnounced.delete(managed.session.id);
-    devinCloudPendingDoneTurn.delete(managed.session.id);
-    // An empty-terminal read limit that retired the mirror only described the
-    // pre-send session — a new turn revives it, so the mirror must poll again.
-    devinCloudEmptyReads.delete(managed.session.id);
-    try {
-      await aiIntegrationService.sendDevinCloudMessage({
-        devinSessionId,
-        message: messageText,
-        ...(attachmentUrls.length ? { attachmentUrls } : {}),
+      setSessionActive(managed);
+      emitPreparedUserMessage(managed, {
+        text: userText,
+        displayText,
+        attachments: args.attachments,
+        contextAttachments: args.contextAttachments,
+        metadata: args.metadata,
+        turnId,
+        laneDirectiveKey: args.laneDirectiveKey,
+        onDispatched: args.onDispatched,
       });
-      args.onBackendDispatched?.();
-    } catch (error) {
       emitChatEvent(managed, {
         type: "status",
-        turnStatus: "failed",
+        turnStatus: "started",
         turnId,
       });
-      emitChatEvent(managed, {
-        type: "done",
-        turnId,
-        status: "failed",
-        runtime: "cloud",
-        terminalReason: error instanceof Error ? error.message : String(error),
-      });
-      markSessionIdleWithFreshCache(managed);
-      persistChatState(managed);
-      throw error;
+      // A fresh send means the remote turn is live again — reset completion
+      // so the mirror can emit `done` for this turn, not just the first one.
+      devinCloudDoneAnnounced.delete(managed.session.id);
+      devinCloudPendingDoneTurn.delete(managed.session.id);
+      // An empty-terminal read limit that retired the mirror only described
+      // the pre-send session — a new turn revives it, so the mirror must
+      // poll again.
+      devinCloudEmptyReads.delete(managed.session.id);
+      try {
+        await aiIntegrationService.sendDevinCloudMessage({
+          devinSessionId,
+          message: messageText,
+          ...(attachmentUrls.length ? { attachmentUrls } : {}),
+        });
+        args.onBackendDispatched?.();
+      } catch (error) {
+        emitChatEvent(managed, {
+          type: "status",
+          turnStatus: "failed",
+          turnId,
+        });
+        emitChatEvent(managed, {
+          type: "done",
+          turnId,
+          status: "failed",
+          runtime: "cloud",
+          terminalReason: error instanceof Error ? error.message : String(error),
+        });
+        markSessionIdleWithFreshCache(managed);
+        persistChatState(managed);
+        throw error;
+      }
     } finally {
       devinCloudSendInFlight.delete(managed.session.id);
     }
