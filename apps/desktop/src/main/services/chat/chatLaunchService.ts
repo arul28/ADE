@@ -34,6 +34,7 @@ import { getErrorMessage } from "../shared/utils";
 import type { LaneCreateRuntimeOptions } from "../lanes/laneService";
 import type { ChatLaunchEnvironmentPlan } from "../lanes/laneEnvironmentSetup";
 import { createChatLaunchRecordStore, type ChatLaunchRecord as LaunchRecord } from "./chatLaunchRecords";
+import { createQueuedMessageDelivery, type QueuedDeliveryState } from "./chatLaunchDelivery";
 import { createLaneSetupTranscriptCard, type LaneSetupCardState } from "./chatLaunchTranscriptCard";
 
 /**
@@ -114,16 +115,12 @@ export type ChatLaunchServiceDeps = {
 
 type EnvironmentOutcome = "ok" | "failed" | "empty";
 
-type LaunchRuntime = LaneSetupCardState & {
+type LaunchRuntime = LaneSetupCardState & QueuedDeliveryState & {
   abort: AbortController;
   /** The running pipeline; Retry/Start anyway re-enter through it, Cancel awaits it. */
   pipeline: Promise<void> | null;
   /** The in-flight environment setup, reused when the pipeline re-enters. */
   environment: Promise<EnvironmentOutcome> | null;
-  /** The in-flight queued-message delivery. */
-  delivery: Promise<void> | null;
-  deliveryAttempts: number;
-  deliveryTimer: ReturnType<typeof setTimeout> | null;
   startNow: (() => void) | null;
   expiryTimer: ReturnType<typeof setTimeout> | null;
   lastProgressEmitAt: number;
@@ -135,10 +132,6 @@ class LaunchCancelledError extends Error {
 }
 
 const MAX_QUEUED_MESSAGES = 10;
-/** `ensureManagedSession`'s wording when the chat no longer exists. */
-const CHAT_SESSION_GONE_PATTERN = /Chat session '[^']*' was not found|is not an agent chat session/;
-/** Automatic re-delivery attempts for a queued message after its first send failed (queueMessage retries too). */
-const QUEUED_DELIVERY_BACKOFF_MS = [2_000, 10_000, 30_000];
 const CANCEL_PIPELINE_WAIT_MS = 15_000;
 const PROGRESS_EMIT_INTERVAL_MS = 120;
 const DEFAULT_FINISHED_RETENTION_MS = 10 * 60_000;
@@ -474,6 +467,14 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     startLaneNaming(record, lane);
   };
 
+  /**
+   * An environment that fails after Start now was requested is a warning (the
+   * agent runs anyway, like "Start anyway"); decided when the failure lands so
+   * no snapshot ever shows a failed setup for a launch whose agent started.
+   */
+  const environmentFailureStatus = (record: LaunchRecord): ChatLaunchStageStatus =>
+    record.startNowRequested ? "warning" : "failed";
+
   /** Resolves when the environment settles (ok or failed); never throws. */
   const runEnvironmentStage = async (record: LaunchRecord): Promise<EnvironmentOutcome> => {
     const laneId = record.snapshot.laneId;
@@ -497,7 +498,12 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       if (progress.overallStatus === "failed") {
         const failedStep = progress.steps.find((step) => step.status === "failed");
         const message = failedStep ? `${failedStep.label}: ${failedStep.error ?? "failed"}` : "Lane environment setup failed.";
-        setStage(record, "environment", "failed", { steps: progress.steps.map((step) => ({ ...step })), error: message });
+        setStage(record, "environment", environmentFailureStatus(record), {
+          steps: progress.steps.map((step) => ({ ...step })),
+          error: message,
+          ...(record.startNowRequested ? { detail: message } : {}),
+        });
+        publish(record);
         return "failed";
       }
       setStage(record, "environment", "done", { steps: progress.steps.map((step) => ({ ...step })) });
@@ -505,7 +511,12 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       return "ok";
     } catch (error) {
       if (record.snapshot.phase === "cancelled") return "failed";
-      setStage(record, "environment", "failed", { error: getErrorMessage(error) });
+      const message = getErrorMessage(error);
+      setStage(record, "environment", environmentFailureStatus(record), {
+        error: message,
+        ...(record.startNowRequested ? { detail: message } : {}),
+      });
+      publish(record);
       return "failed";
     } finally {
       unsubscribe();
@@ -525,76 +536,15 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     return runtime.environment;
   };
 
-  const sendChatMessage = (
-    sessionId: string,
-    message: Pick<ChatLaunchQueueMessageArgs, "text" | "displayText" | "attachments">,
-  ): Promise<unknown> => deps.agentChatService.sendMessage(
-    {
-      sessionId,
-      text: message.text,
-      ...(message.displayText ? { displayText: message.displayText } : {}),
-      ...(message.attachments?.length ? { attachments: message.attachments } : {}),
-    },
-    { awaitDispatch: false, routeActiveToSteer: true },
-  );
-
-  /**
-   * Deliver queued messages in order. A failed send keeps the message (with
-   * `deliveryError` set so clients can show it), stops the queue so order is
-   * preserved, and retries on a bounded backoff — and again on every
-   * queueMessage. Messages are never dropped.
-   */
-  const deliverQueuedMessages = (record: LaunchRecord): Promise<void> => {
-    const runtime = runtimeFor(record.snapshot.launchId);
-    if (runtime.delivery) return runtime.delivery;
-    if (runtime.deliveryTimer) {
-      clearTimeout(runtime.deliveryTimer);
-      runtime.deliveryTimer = null;
-    }
-    const run = (async () => {
-      const sessionId = record.snapshot.sessionId;
-      if (!sessionId) return;
-      while (record.snapshot.queuedMessages.length > 0 && record.snapshot.phase !== "cancelled" && !disposed) {
-        const next = record.snapshot.queuedMessages[0]!;
-        try {
-          await sendChatMessage(sessionId, next);
-        } catch (error) {
-          const message = getErrorMessage(error);
-          logger.warn("chat_launch.queued_message_failed", { launchId: record.snapshot.launchId, attempt: runtime.deliveryAttempts, error: message });
-          if (CHAT_SESSION_GONE_PATTERN.test(message)) {
-            // The chat itself is gone (deleted after it started): nothing can
-            // ever deliver these, so say so once and let the launch expire
-            // instead of pinning it and every later send behind a dead head.
-            const undelivered = record.snapshot.queuedMessages.length;
-            record.snapshot.queuedMessages = [];
-            record.snapshot.error = `The chat was deleted before ${undelivered === 1 ? "a queued message" : `${undelivered} queued messages`} could be sent.`;
-            publish(record);
-            return;
-          }
-          next.deliveryError = message;
-          publish(record);
-          const backoff = QUEUED_DELIVERY_BACKOFF_MS[runtime.deliveryAttempts];
-          runtime.deliveryAttempts += 1;
-          if (backoff != null && !disposed) {
-            runtime.deliveryTimer = setTimeout(() => {
-              runtime.deliveryTimer = null;
-              void deliverQueuedMessages(record);
-            }, backoff);
-            runtime.deliveryTimer.unref?.();
-          }
-          return;
-        }
-        runtime.deliveryAttempts = 0;
-        record.snapshot.queuedMessages.shift();
-        publish(record);
-      }
-    })();
-    runtime.delivery = run;
-    void run.finally(() => {
-      if (runtime.delivery === run) runtime.delivery = null;
-    });
-    return run;
-  };
+  const queuedDelivery = createQueuedMessageDelivery({
+    logger,
+    sendMessage: (args, options) => deps.agentChatService.sendMessage(args, options),
+    stateFor: runtimeFor,
+    publish: (record) => publish(record),
+    isDisposed: () => disposed,
+  });
+  const sendChatMessage = queuedDelivery.send;
+  const deliverQueuedMessages = queuedDelivery.deliver;
 
   const runChatAgentStage = async (record: LaunchRecord): Promise<void> => {
     const chat = record.chat;

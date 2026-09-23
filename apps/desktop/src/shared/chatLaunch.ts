@@ -166,6 +166,15 @@ export function isChatLaunchSucceeded(launch: Pick<ChatLaunchSnapshot, "phase" |
   return launch.phase === "completed" || (launch.agentStarted && launch.phase !== "failed" && launch.phase !== "cancelled");
 }
 
+/**
+ * A stage finished in warning (Start anyway, or an environment that failed
+ * after Start now). On a completed launch this reads "set up with warnings",
+ * never a clean setup and never a failed one: its agent is running.
+ */
+export function chatLaunchHasWarnings(launch: Pick<ChatLaunchSnapshot, "stages">): boolean {
+  return launch.stages.some((stage) => stage.status === "warning" || stage.status === "failed");
+}
+
 function chatLaunchActiveStage(launch: Pick<ChatLaunchSnapshot, "stages">): ChatLaunchStage | null {
   return launch.stages.find((stage) => stage.status === "running")
     ?? launch.stages.find((stage) => stage.status === "failed")
@@ -274,7 +283,11 @@ export function buildLaneSetupCard(snapshot: ChatLaunchSnapshot, nowMs: number):
     };
   });
   const allSettled = snapshot.stages.every((stage) => stage.status !== "pending" && stage.status !== "running");
-  const failed = snapshot.phase === "failed";
+  // A failed stage is a failed setup until the launch completes; after that
+  // the agent runs, so it reads as a warning (the same rule as the live card).
+  const failed = snapshot.phase === "failed"
+    || (snapshot.phase !== "completed" && snapshot.stages.some((stage) => stage.status === "failed"));
+  const warned = !failed && chatLaunchHasWarnings(snapshot);
   const durationMs = snapshot.endedAt
     ? chatLaunchStageDurationMs({ startedAt: snapshot.startedAt, endedAt: snapshot.endedAt }, nowMs)
     : null;
@@ -283,7 +296,9 @@ export function buildLaneSetupCard(snapshot: ChatLaunchSnapshot, nowMs: number):
   const title = failed
     ? "Lane setup failed"
     : allSettled
-      ? durationText ? `Lane set up in ${durationText}` : "Lane set up"
+      ? warned
+        ? durationText ? `Lane set up with warnings in ${durationText}` : "Lane set up with warnings"
+        : durationText ? `Lane set up in ${durationText}` : "Lane set up"
       : "Setting up lane";
   const fallbackText = failed
     ? `Lane ${snapshot.laneName} setup failed: ${snapshot.error ?? "unknown error"}`

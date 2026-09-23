@@ -2,7 +2,7 @@ import type { ChildProcess } from "node:child_process";
 import type { LaneEnvInitEvent } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import { isPathInside } from "../shared/pathCompare";
-import { terminateProcessTree } from "../shared/processExecution";
+import { signalChildProcessTree } from "../shared/utils";
 
 /**
  * Runtime bookkeeping for lane env init: the event fan-out, the setup
@@ -112,7 +112,7 @@ export function createLaneEnvironmentProcesses({
       let killed = 0;
       for (const [child, cwd] of activeChildren) {
         if (!isPathInside(cwd, worktreePath)) continue;
-        terminateProcessTree(child);
+        signalChildProcessTree(child, "SIGKILL");
         activeChildren.delete(child);
         killed += 1;
       }

@@ -38,6 +38,7 @@ import type {
 import {
   CHAT_LAUNCH_STAGE_ORDER,
   LANE_SETUP_CARD_TEMPLATE_METRIC,
+  chatLaunchHasWarnings,
   chatLaunchStageDurationMs,
   chatLaunchStageLabel,
   formatChatLaunchDuration,
@@ -266,7 +267,9 @@ function laneSetupTitle(snapshot: ChatLaunchSnapshot, nowMs = Date.now()): strin
       return "Lane setup cancelled";
     case "completed": {
       const duration = formatChatLaunchDuration(launchDurationMs(snapshot, nowMs));
-      return duration ? `Lane set up in ${duration}` : "Lane set up";
+      const warned = chatLaunchHasWarnings(snapshot);
+      const lead = warned ? "Lane set up with warnings" : "Lane set up";
+      return duration ? `${lead} in ${duration}` : lead;
     }
     case "awaiting-client":
       return "Starting CLI session…";
@@ -873,7 +876,12 @@ export function LaneSetupTranscriptCard({ card }: { card: AdeCardPayload }) {
   }
   if (live && live.phase === "completed") {
     return (
-      <CollapsedSummary title={laneSetupTitle(live)} failed={false} expanded={expanded} onToggle={() => setExpanded((v) => !v)}>
+      <CollapsedSummary
+        title={laneSetupTitle(live)}
+        failed={chatLaunchHasWarnings(live)}
+        expanded={expanded}
+        onToggle={() => setExpanded((v) => !v)}
+      >
         <LaneSetupCard snapshot={live} variant="compact" showTitle={false} />
       </CollapsedSummary>
     );
@@ -891,7 +899,7 @@ function LaneSetupCardFromPayload({
   onToggle: () => void;
 }) {
   const rows = card.rows ?? [];
-  const failed = rows.some((row) => row.icon === "fail");
+  const failed = rows.some((row) => row.icon === "fail" || row.tone === "warning");
   const templateName = card.metrics?.find((metric) => metric.label === LANE_SETUP_CARD_TEMPLATE_METRIC)?.value?.trim() || null;
   const title = card.title;
   const kind = launchKindForCardRows(rows);

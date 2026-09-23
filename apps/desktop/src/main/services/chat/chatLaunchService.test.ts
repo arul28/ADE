@@ -14,6 +14,7 @@ import type {
 import type { AdeCardPayload } from "../../../shared/adeCard";
 import type { LaneCreateRuntimeOptions } from "../lanes/laneService";
 import { createChatLaunchService, type ChatLaunchServiceDeps } from "./chatLaunchService";
+import { buildLaneSetupCard } from "../../../shared/chatLaunch";
 
 const LAUNCH_ID = "6f1c2a4e-1b2c-4d5e-8f90-123456789abc";
 const LANE_ID = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
@@ -300,6 +301,64 @@ describe("chatLaunchService", () => {
       steps: [{ kind: "dependencies", label: "Install dependencies (1 command(s))", status: "completed" }],
     });
     await h.waitFor((snapshot) => snapshot.phase === "completed");
+  });
+
+  it("a late environment failure after Start now ends as a warning, never a clean setup", async () => {
+    const h = harness({ hasEnvironment: true, templateName: "Web app" });
+    await h.service.start(chatArgs());
+    await vi.waitFor(() => expect(h.laneCreateOptions).toBeDefined());
+    h.laneCreate.resolve(laneSummary());
+    await vi.waitFor(() => expect(h.calls).toContain("env.run"));
+    await h.service.startNow({ launchId: LAUNCH_ID });
+    await h.waitFor((snapshot) => snapshot.agentStarted);
+    h.environment.resolve({
+      laneId: LANE_ID,
+      startedAt: new Date().toISOString(),
+      overallStatus: "failed",
+      steps: [{ kind: "dependencies", label: "Install dependencies (1 command(s))", status: "failed", error: "npm ERR" }],
+    });
+    await h.waitFor((snapshot) => snapshot.phase === "completed");
+    const environment = h.latest().stages.find((stage) => stage.id === "environment");
+    expect(environment?.status).toBe("warning");
+    expect(environment?.error).toContain("npm ERR");
+    const card = buildLaneSetupCard(h.latest(), Date.now());
+    expect(card.title).toMatch(/^Lane set up with warnings/);
+    expect(card.rows?.find((row) => row.key === "environment")?.tone).toBe("warning");
+    // An older host may have recorded the stage as failed: a completed launch
+    // still reads as warnings (its agent runs), and the card settles.
+    const legacy = { ...h.latest(), stages: h.latest().stages.map((stage) => (stage.id === "environment" ? { ...stage, status: "failed" as const } : stage)) };
+    const legacyCard = buildLaneSetupCard(legacy, Date.now());
+    expect(legacyCard.title).toMatch(/^Lane set up with warnings/);
+    expect(legacyCard.state).toBe("terminal");
+  });
+
+  it("an environment failure while the Start-now send is still in flight never shows a failed stage", async () => {
+    const h = harness({ hasEnvironment: true, templateName: "Web app" });
+    const send = deferred<void>();
+    vi.mocked(h.deps.agentChatService.sendMessage).mockImplementationOnce(async () => send.promise);
+    await h.service.start(chatArgs());
+    await vi.waitFor(() => expect(h.laneCreateOptions).toBeDefined());
+    h.laneCreate.resolve(laneSummary());
+    await vi.waitFor(() => expect(h.calls).toContain("env.run"));
+    await h.service.startNow({ launchId: LAUNCH_ID });
+    await vi.waitFor(() => expect(h.deps.agentChatService.sendMessage).toHaveBeenCalled());
+
+    const before = h.events.length;
+    h.environment.resolve({
+      laneId: LANE_ID,
+      startedAt: new Date().toISOString(),
+      overallStatus: "failed",
+      steps: [{ kind: "dependencies", label: "Install dependencies (1 command(s))", status: "failed", error: "npm ERR" }],
+    });
+    await h.waitFor((snapshot) => snapshot.stages.find((stage) => stage.id === "environment")?.status === "warning");
+    expect(h.latest().agentStarted).toBe(false);
+    send.resolve();
+    await h.waitFor((snapshot) => snapshot.phase === "completed");
+
+    const published = h.events.slice(before).flatMap((event) => (event.type === "launch-updated" ? [event.launch] : []));
+    expect(published.some((snapshot) => snapshot.phase === "failed")).toBe(false);
+    expect(published.some((snapshot) => snapshot.stages.some((stage) => stage.status === "failed"))).toBe(false);
+    expect(buildLaneSetupCard(h.latest(), Date.now()).title).toMatch(/^Lane set up with warnings/);
   });
 
   it("drops the environment stage when nothing applies to the new lane", async () => {

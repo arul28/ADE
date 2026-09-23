@@ -72,7 +72,9 @@ struct WorkChatLaunchSetupCard: View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
           Text(chatLaunchCardTitle(launch))
             .font(.subheadline.weight(.semibold))
-            .foregroundStyle(launch.phase == .failed ? ADEColor.warning : ADEColor.textPrimary)
+            .foregroundStyle(
+              launch.phase == .failed || chatLaunchCompletedWithWarnings(launch) ? ADEColor.warning : ADEColor.textPrimary
+            )
             .lineLimit(1)
             .contentTransition(.opacity)
           Spacer(minLength: 8)
@@ -92,7 +94,7 @@ struct WorkChatLaunchSetupCard: View {
     switch launch.phase {
     case .failed: return "exclamationmark.triangle.fill"
     case .cancelled: return "minus"
-    case .completed: return "checkmark"
+    case .completed: return chatLaunchCompletedWithWarnings(launch) ? "exclamationmark.triangle.fill" : "checkmark"
     case .running, .awaitingClient: return chatLaunchLaneIsReady(launch) ? "checkmark" : "arrow.branch"
     }
   }

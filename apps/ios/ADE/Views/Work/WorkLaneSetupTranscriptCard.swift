@@ -52,12 +52,16 @@ struct WorkLaneSetupTranscriptCard: View {
   @ViewBuilder
   private var payloadCard: some View {
     let rows = workLaneSetupPayloadRows(card)
-    let failed = card.rows.contains { $0.icon == .fail }
-    let running = rows.contains { $0.status == .running }
+    let phaseStatus = workLaneSetupPayloadPhaseStatus(card)
     WorkLaneSetupCompactCard(
-      title: chatLaunchCardPayloadTitle(title: workLaneSetupHostTitle(card), failed: failed, durationMs: card.durationMs),
+      title: chatLaunchCardPayloadTitle(
+        title: workLaneSetupHostTitle(card),
+        failed: phaseStatus == .failed,
+        warned: phaseStatus == .warning,
+        durationMs: card.durationMs
+      ),
       laneName: card.subtitle ?? "",
-      phaseStatus: failed ? .failed : running ? .running : .done,
+      phaseStatus: phaseStatus,
       rows: rows,
       rail: rows.enumerated().map { index, row in
         ChatLaunchRailSegment(
@@ -68,6 +72,16 @@ struct WorkLaneSetupTranscriptCard: View {
       }
     )
   }
+}
+
+/// The header status of a `lane_setup` card read from its payload alone. A
+/// row in the warning tone (a warning or failed stage) keeps the card from
+/// reading as a clean setup, as on desktop.
+func workLaneSetupPayloadPhaseStatus(_ card: WorkAdeCardModel) -> ChatLaunchStageStatus {
+  if card.rows.contains(where: { $0.icon == .fail }) { return .failed }
+  if card.rows.contains(where: { $0.tone == .warning }) { return .warning }
+  if card.rows.contains(where: { workLaneSetupStatus(for: $0) == .running }) { return .running }
+  return .done
 }
 
 /// Whether the live snapshot describes the same stages as the card, matched
@@ -149,17 +163,19 @@ private struct WorkLaneSetupCompactCard: View {
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+  private var isWarningTone: Bool { phaseStatus == .failed || phaseStatus == .warning }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       HStack(spacing: 8) {
         WorkChatLaunchStageTile(
-          symbol: phaseStatus == .failed ? "exclamationmark.triangle.fill" : phaseStatus == .done ? "checkmark" : "arrow.branch",
+          symbol: WorkChatLaunchTone.phaseSymbol(phaseStatus),
           status: phaseStatus,
           size: 20
         )
         Text(title)
           .font(.footnote.weight(.semibold))
-          .foregroundStyle(phaseStatus == .failed ? ADEColor.warning : ADEColor.textPrimary)
+          .foregroundStyle(isWarningTone ? ADEColor.warning : ADEColor.textPrimary)
           .lineLimit(1)
         Spacer(minLength: 6)
         let name = laneName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -202,7 +218,7 @@ private struct WorkLaneSetupCompactCard: View {
     .background(ADEColor.cardBackground.opacity(0.45), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     .overlay(
       RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .strokeBorder(phaseStatus == .failed ? ADEColor.warning.opacity(0.3) : ADEColor.glassBorder, lineWidth: 1)
+        .strokeBorder(isWarningTone ? ADEColor.warning.opacity(0.3) : ADEColor.glassBorder, lineWidth: 1)
     )
     .animation(ADEMotion.quick(reduceMotion: reduceMotion), value: rows)
     .accessibilityElement(children: .combine)

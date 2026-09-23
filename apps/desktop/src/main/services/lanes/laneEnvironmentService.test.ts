@@ -282,7 +282,9 @@ describe("laneEnvironmentService", () => {
       const service = createService();
       const started = Date.now();
       const init = service.initLaneEnvironment(lane, {
-        setupScript: { commands: ["sleep 30", "printf 'should not run' > after.txt"] },
+        // `&&` makes every shell fork a grandchild (dash never execs the last
+        // command), so this proves the whole process group dies, not just `sh`.
+        setupScript: { commands: ["sleep 30 && echo slept", "printf 'should not run' > after.txt"] },
       }, {});
       await vi.waitFor(() => {
         expect(events.some((event) => event.progress?.steps?.some((step: { status: string }) => step.status === "running"))).toBe(true);

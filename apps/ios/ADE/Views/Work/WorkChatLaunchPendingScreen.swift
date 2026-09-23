@@ -21,6 +21,7 @@ struct WorkChatLaunchPendingScreen: View {
   @State private var sending = false
   @State private var errorMessage: String?
   @State private var busyAction: WorkChatLaunchCardAction?
+  @State private var retryingMessageId: String?
   @FocusState private var composerFocused: Bool
 
   private var entry: ChatLaunchEntry? { store.entry(launchId: launchId) }
@@ -45,8 +46,10 @@ struct WorkChatLaunchPendingScreen: View {
     .onChange(of: store.sendFailures[launchId]) { _, _ in restoreFailedSends() }
   }
 
-  /// Queued messages the host refused: put them back in the composer (ahead of
-  /// anything typed since) with the error.
+  /// Queued messages the host refused: text-only ones go back in the composer
+  /// (ahead of anything typed since) with the error. Ones with attachments
+  /// stay as failed bubbles with Retry (see `failedSends`) — this composer
+  /// cannot hold attachments.
   private func restoreFailedSends() {
     guard let failure = store.takeSendFailure(launchId: launchId) else { return }
     let current = draft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -72,6 +75,18 @@ struct WorkChatLaunchPendingScreen: View {
           ForEach(snapshot.queuedMessages) { message in
             WorkChatLaunchQueuedMessageView(message: message)
               .transition(.opacity.combined(with: .move(edge: .bottom)))
+          }
+          if let failure = store.sendFailures[launchId] {
+            ForEach(failure.messages) { message in
+              WorkChatLaunchFailedSendView(
+                message: message,
+                error: failure.message,
+                busy: retryingMessageId == message.id,
+                onRetry: { Task { await retryFailedSend(message.id) } },
+                onDiscard: { store.takeFailedSend(launchId: launchId, messageId: message.id) }
+              )
+              .transition(.opacity)
+            }
           }
           WorkChatLaunchSetupCard(
             launch: snapshot,
@@ -202,6 +217,21 @@ struct WorkChatLaunchPendingScreen: View {
     }
   }
 
+  /// Resend a failed message that carries attachments, exactly as typed.
+  @MainActor
+  private func retryFailedSend(_ messageId: String) async {
+    guard retryingMessageId == nil else { return }
+    retryingMessageId = messageId
+    defer { retryingMessageId = nil }
+    do {
+      try await syncService.retryFailedChatLaunchMessage(launchId: launchId, messageId: messageId)
+      ADEHaptics.light()
+    } catch {
+      ADEHaptics.error()
+      errorMessage = "Couldn't send — \(error.localizedDescription)"
+    }
+  }
+
   // MARK: Card actions
 
   @MainActor
@@ -248,6 +278,70 @@ struct WorkChatLaunchPendingScreen: View {
       guard let latest = store.snapshot(launchId: launchId), isChatLaunchPending(latest) else { return }
       try? await Task.sleep(nanoseconds: 1_500_000_000)
     }
+  }
+}
+
+// MARK: - Failed send
+
+/// A queued message with attachments the host refused. The pending composer is
+/// text-only, so instead of going back into it the message stays here, whole,
+/// until the user resends or discards it.
+struct WorkChatLaunchFailedSendView: View {
+  let message: ChatLaunchQueuedMessage
+  let error: String
+  var busy = false
+  let onRetry: () -> Void
+  let onDiscard: () -> Void
+
+  var body: some View {
+    VStack(alignment: .trailing, spacing: 4) {
+      WorkChatMessageBubble(
+        message: WorkChatMessage(
+          id: "launch-failed-\(message.id)",
+          role: "user",
+          markdown: message.bubbleText,
+          timestamp: message.createdAt,
+          turnId: nil,
+          itemId: nil,
+          attachments: message.attachments
+        ),
+        maxUserBubbleWidth: 320,
+        onOpenFullOutput: {}
+      )
+      .opacity(0.7)
+      HStack(spacing: 10) {
+        Text(error)
+          .font(.caption2)
+          .foregroundStyle(ADEColor.warning)
+          .lineLimit(2)
+          .multilineTextAlignment(.trailing)
+        Button(action: onDiscard) {
+          Text("Discard")
+            .font(.caption.weight(.medium))
+            .foregroundStyle(ADEColor.textSecondary)
+        }
+        .buttonStyle(.plain)
+        .disabled(busy)
+        .accessibilityLabel("Discard unsent message")
+        Button(action: onRetry) {
+          HStack(spacing: 4) {
+            if busy {
+              ProgressView().controlSize(.mini)
+            } else {
+              Image(systemName: "arrow.clockwise")
+                .font(.system(size: 9, weight: .bold))
+            }
+            Text("Retry")
+          }
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(WorkChatLaunchTone.running)
+        }
+        .buttonStyle(.plain)
+        .disabled(busy)
+        .accessibilityLabel("Retry sending message")
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .trailing)
   }
 }
 

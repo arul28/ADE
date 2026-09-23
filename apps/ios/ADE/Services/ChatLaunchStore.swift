@@ -41,6 +41,11 @@ struct ChatLaunchLocalState {
   var request: ChatLaunchLocalRequest?
   /// `chat.startLaunch` is on the wire right now.
   var startInFlight = false
+  /// The project the in-flight `chat.startLaunch` targets. Held until the
+  /// start settles: deleting the launch mid-start drops its entry (the only
+  /// other record of its project), and the compensating `chat.cancelLaunch`
+  /// must reach the project that got the lane — not whichever is active now.
+  var startScope: ChatLaunchProjectScope?
   /// Deleted locally while its start was still on the wire.
   var cancelledWhileStarting = false
   /// Messages typed before the host accepted the launch; sent in order once it does.
@@ -59,17 +64,27 @@ struct ChatLaunchLocalState {
   }
 
   var isEmpty: Bool {
-    request == nil && !startInFlight && !cancelledWhileStarting
+    request == nil && !startInFlight && startScope == nil && !cancelledWhileStarting
       && deferredMessages.isEmpty && inFlightMessages.isEmpty
   }
 }
 
-/// Queued messages this device typed but could not hand to the host. The
-/// pending chat screen takes them back into its composer draft and shows the
-/// error, so a failed send is never silent.
+/// Queued messages this device typed but could not hand to the host, whole
+/// (text, display text, attachments). The pending chat screen takes the
+/// text-only ones back into its composer draft and shows the error; ones that
+/// carry attachments (the composer there is text-only) stay here as failed
+/// bubbles with Retry until the user resends or discards them. A failed send
+/// is never silent and never loses an attachment.
 struct ChatLaunchSendFailure: Equatable {
-  var texts: [String]
+  var messages: [ChatLaunchQueuedMessage]
   var message: String
+
+  var texts: [String] { messages.map(\.text) }
+}
+
+/// A failed send the pending composer can take back as text alone.
+func chatLaunchSendFailureRestoresToComposer(_ message: ChatLaunchQueuedMessage) -> Bool {
+  message.attachments?.isEmpty ?? true
 }
 
 /// Ids of queued messages created on this device; the host never uses them.
@@ -273,21 +288,51 @@ final class ChatLaunchStore: ObservableObject {
   // MARK: Send failures
 
   /// Record messages that could not be handed to the host. Appends to any
-  /// failure not yet taken, so nothing typed is lost.
-  func recordSendFailure(launchId: String, texts: [String], message: String) {
-    let texts = texts.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-    guard !texts.isEmpty else { return }
-    var failure = sendFailures[launchId] ?? ChatLaunchSendFailure(texts: [], message: message)
-    failure.texts.append(contentsOf: texts)
+  /// failure not yet taken, so nothing typed is lost. A message with neither
+  /// text nor attachments has nothing to restore.
+  func recordSendFailure(launchId: String, messages: [ChatLaunchQueuedMessage], message: String) {
+    let messages = messages.filter { queued in
+      !queued.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        || !(queued.attachments?.isEmpty ?? true)
+    }
+    guard !messages.isEmpty else { return }
+    var failure = sendFailures[launchId] ?? ChatLaunchSendFailure(messages: [], message: message)
+    failure.messages.append(contentsOf: messages.map { queued in
+      var failed = queued
+      // "Retrying" is the host's own delivery loop; this one waits on the user.
+      failed.deliveryError = nil
+      return failed
+    })
     failure.message = message
     sendFailures[launchId] = failure
   }
 
-  /// Hand a recorded failure to the screen that restores it; clears it.
+  /// Hand the composer-restorable part of a recorded failure (text-only
+  /// messages) to the screen that restores it and clear that part. Messages
+  /// carrying attachments stay recorded until `takeFailedSend`. Nil when
+  /// there is nothing for the composer.
   func takeSendFailure(launchId: String) -> ChatLaunchSendFailure? {
     guard let failure = sendFailures[launchId] else { return nil }
-    sendFailures.removeValue(forKey: launchId)
-    return failure
+    let restorable = failure.messages.filter(chatLaunchSendFailureRestoresToComposer)
+    guard !restorable.isEmpty else { return nil }
+    let kept = failure.messages.filter { !chatLaunchSendFailureRestoresToComposer($0) }
+    if kept.isEmpty {
+      sendFailures.removeValue(forKey: launchId)
+    } else {
+      sendFailures[launchId] = ChatLaunchSendFailure(messages: kept, message: failure.message)
+    }
+    return ChatLaunchSendFailure(messages: restorable, message: failure.message)
+  }
+
+  /// Take one failed message off the record, to resend or discard it.
+  @discardableResult
+  func takeFailedSend(launchId: String, messageId: String) -> ChatLaunchQueuedMessage? {
+    guard var failure = sendFailures[launchId],
+          let index = failure.messages.firstIndex(where: { $0.id == messageId })
+    else { return nil }
+    let taken = failure.messages.remove(at: index)
+    sendFailures[launchId] = failure.messages.isEmpty ? nil : failure
+    return taken
   }
 
   // MARK: Local state

@@ -23,11 +23,11 @@ import {
   resolvePathWithinRoot,
   secureCopyPathIntoRoot,
   secureWriteFileWithinRoot,
+  signalChildProcessTree,
 } from "../shared/utils";
 import {
   resolveCliSpawnInvocation,
   resolveWindowsCmdLineInvocation,
-  terminateProcessTree,
   type SpawnInvocation,
 } from "../shared/processExecution";
 import { mergeLaneEnvInitConfig } from "./laneEnvInitMerge";
@@ -324,6 +324,10 @@ export function createLaneEnvironmentService({
         stdio: ["ignore", "pipe", "pipe"],
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
         windowsHide: true,
+        // Own process group on POSIX, so a timeout or an abort can kill the
+        // whole tree: a shell that forks (`sh -c "npm ci"`, dash on Linux)
+        // otherwise leaves the grandchild holding the output pipe open.
+        detached: process.platform !== "win32",
       });
       processes.trackChild(child, cwd);
       let stdout = "";
@@ -332,7 +336,7 @@ export function createLaneEnvironmentService({
       const maxBuffer = 10 * 1024 * 1024;
       const timer = setTimeout(() => {
         if (settled) return;
-        terminateProcessTree(child);
+        signalChildProcessTree(child, "SIGKILL");
       }, timeoutMs);
       const append = (current: string, chunk: Buffer): string =>
         current.length >= maxBuffer

@@ -168,9 +168,25 @@ func chatLaunchParseTimestampMs(_ value: String) -> Double? {
 
 // MARK: - iOS-only presentation
 
+/// A completed launch with a stage that finished in warning (Start anyway, or
+/// an environment that failed after Start now) or failed: it must not read as
+/// a clean setup (desktop `laneSetupTitle` / `LaneSetupTranscriptCard`).
+func chatLaunchCompletedWithWarnings(_ launch: ChatLaunchSnapshot) -> Bool {
+  launch.phase == .completed
+    && launch.stages.contains { $0.status == .warning || $0.status == .failed }
+}
+
+/// "Lane set up in 4.2s" / "Lane set up with warnings in 4.2s", without the
+/// duration when there is none.
+private func chatLaunchSetUpTitle(warned: Bool, duration: String) -> String {
+  let lead = warned ? "Lane set up with warnings" : "Lane set up"
+  return duration.isEmpty ? lead : "\(lead) in \(duration)"
+}
+
 /// Header line of the setup card: desktop `laneSetupTitle`, word for word
 /// ("Setting up lane…", "Lane setup failed", "Lane set up in 4.2s",
-/// "Starting CLI session…"), so the same launch reads the same everywhere.
+/// "Lane set up with warnings in 4.2s", "Starting CLI session…"), so the same
+/// launch reads the same everywhere.
 func chatLaunchCardTitle(
   _ launch: ChatLaunchSnapshot,
   nowMs: Double = Date().timeIntervalSince1970 * 1000
@@ -182,7 +198,7 @@ func chatLaunchCardTitle(
     let duration = formatChatLaunchDuration(
       chatLaunchStageDurationMs(startedAt: launch.startedAt, endedAt: launch.endedAt, nowMs: nowMs)
     )
-    return duration.isEmpty ? "Lane set up" : "Lane set up in \(duration)"
+    return chatLaunchSetUpTitle(warned: chatLaunchCompletedWithWarnings(launch), duration: duration)
   case .awaitingClient:
     return "Starting CLI session…"
   case .running:
@@ -192,12 +208,11 @@ func chatLaunchCardTitle(
 
 /// Title of a `lane_setup` card read from its payload alone: the host's title,
 /// else the desktop fallback from the card's own duration.
-func chatLaunchCardPayloadTitle(title: String, failed: Bool, durationMs: Int?) -> String {
+func chatLaunchCardPayloadTitle(title: String, failed: Bool, warned: Bool = false, durationMs: Int?) -> String {
   let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
   if !trimmed.isEmpty { return trimmed }
   if failed { return "Lane setup failed" }
-  let duration = formatChatLaunchDuration(durationMs.map(Double.init))
-  return duration.isEmpty ? "Lane set up" : "Lane set up in \(duration)"
+  return chatLaunchSetUpTitle(warned: warned, duration: formatChatLaunchDuration(durationMs.map(Double.init)))
 }
 
 /// Every stage but the agent has finished and the lane exists (or the agent is up).

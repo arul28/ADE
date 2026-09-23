@@ -163,9 +163,17 @@ extension SyncService {
   private func sendChatLaunchStart(launchId: String) async {
     let state = chatLaunchStore.localState(launchId: launchId)
     guard var local = state.request, !state.startInFlight else { return }
-    chatLaunchStore.updateLocal(launchId: launchId) { $0.startInFlight = true }
-    defer { chatLaunchStore.updateLocal(launchId: launchId) { $0.startInFlight = false } }
     let scope = chatLaunchScope(launchId: launchId)
+    chatLaunchStore.updateLocal(launchId: launchId) { state in
+      state.startInFlight = true
+      state.startScope = ChatLaunchProjectScope(projectId: scope.projectId, rootPath: scope.rootPath)
+    }
+    defer {
+      chatLaunchStore.updateLocal(launchId: launchId) { state in
+        state.startInFlight = false
+        state.startScope = nil
+      }
+    }
     do {
       let attachments: [AgentChatFileRef]
       if let resolved = local.resolvedAttachments {
@@ -178,7 +186,11 @@ extension SyncService {
       if !attachments.isEmpty {
         chatLaunchStore.update(launchId: launchId) { $0.prompt.attachments = attachments }
       }
-      guard !chatLaunchStore.localState(launchId: launchId).cancelledWhileStarting else { return }
+      if chatLaunchTakeCancelledWhileStarting(launchId: launchId) {
+        // Deleted while its attachments resolved: nothing reached the host.
+        chatLaunchStore.forgetLocalRequest(launchId: launchId)
+        return
+      }
       let args = chatLaunchCommandArgs(
         request: local.request,
         createArgs: local.createArgs,
@@ -203,8 +215,12 @@ extension SyncService {
   private func chatLaunchStartDidReachHost(launchId: String) async {
     if chatLaunchTakeCancelledWhileStarting(launchId: launchId) {
       // Deleted while the start was on the wire: the host now owns a lane the
-      // user already threw away. Delete it there too.
-      let scope = chatLaunchScope(launchId: launchId)
+      // user already threw away. Delete it there too — in the project the
+      // start went to: the entry is gone, so `chatLaunchScope` would fall back
+      // to the active project, which may have changed since.
+      let scope = chatLaunchStore.localState(launchId: launchId).startScope
+        .map { (projectId: $0.projectId, rootPath: $0.rootPath) }
+        ?? chatLaunchScope(launchId: launchId)
       _ = try? await performCommandRequest(
         action: "chat.cancelLaunch",
         args: ["launchId": launchId],
@@ -240,9 +256,12 @@ extension SyncService {
         let unsent = [message] + chatLaunchStore.localState(launchId: launchId).deferredMessages
           .filter { $0.id != message.id }
         chatLaunchStore.updateLocal(launchId: launchId) { $0.deferredMessages = [] }
+        // Whole messages, attachments included: the pending screen restores
+        // text to its composer and keeps attachment-bearing ones as failed
+        // bubbles with Retry.
         chatLaunchStore.recordSendFailure(
           launchId: launchId,
-          texts: unsent.map(\.text),
+          messages: unsent,
           message: chatLaunchSendFailureMessage(error)
         )
         return
@@ -251,7 +270,25 @@ extension SyncService {
   }
 
   private func chatLaunchStartDidFail(launchId: String, error: Error) async {
-    guard chatLaunchStore.entry(launchId: launchId) != nil else { return }
+    // Deleted while the start was on the wire and no answer came back (a
+    // timeout or a dropped connection): the start may still have landed, so
+    // cancel it where it was sent (a cancel for a launch the host never saw is
+    // a harmless no-op there). Only an answer from the host rules that out.
+    if chatLaunchStore.entry(launchId: launchId) == nil {
+      if chatLaunchTakeCancelledWhileStarting(launchId: launchId), !isRemoteCommandApplicationError(error) {
+        if let scope = chatLaunchStore.localState(launchId: launchId).startScope {
+          _ = try? await performCommandRequest(
+            action: "chat.cancelLaunch",
+            args: ["launchId": launchId],
+            disconnectOnTimeout: false,
+            targetProjectId: scope.projectId,
+            targetProjectRootPath: scope.rootPath
+          )
+        }
+      }
+      chatLaunchStore.forgetLocalRequest(launchId: launchId)
+      return
+    }
     if chatLaunchTakeCancelledWhileStarting(launchId: launchId) {
       chatLaunchStore.updateLocal(launchId: launchId) { $0.request = nil }
       return
@@ -368,6 +405,27 @@ extension SyncService {
     let local = chatLaunchStore.localState(launchId: launchId)
     guard entry.hostAccepted, !local.startInFlight else { return }
     await flushDeferredChatLaunchMessages(launchId: launchId)
+  }
+
+  /// Resend a message the host refused earlier, attachments and all. It goes
+  /// back through the ordered send loop; a second refusal records it again.
+  func retryFailedChatLaunchMessage(launchId: String, messageId: String) async throws {
+    guard let failed = chatLaunchStore.takeFailedSend(launchId: launchId, messageId: messageId) else { return }
+    do {
+      try await queueChatLaunchMessage(
+        launchId: launchId,
+        text: failed.text,
+        displayText: failed.displayText,
+        attachments: failed.attachments ?? []
+      )
+    } catch {
+      chatLaunchStore.recordSendFailure(
+        launchId: launchId,
+        messages: [failed],
+        message: chatLaunchSendFailureMessage(error)
+      )
+      throw error
+    }
   }
 
   /// Send one queued message, keeping it on the launch as in flight until the

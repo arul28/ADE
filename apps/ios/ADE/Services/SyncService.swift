@@ -4289,6 +4289,9 @@ final class SyncService: ObservableObject {
   #if DEBUG
   private var capturesOutboundEnvelopesForTesting = false
   private var capturedOutboundEnvelopesForTesting: [(type: String, requestId: String?, projectId: String?)] = []
+  /// Captured `command` payloads by request id: which action went to which
+  /// project scope (the payload's own target, not the envelope's).
+  private var capturedCommandPayloadsForTesting: [String: [String: Any]] = [:]
   private var capturesExactEnvelopesForTesting = false
   private var capturedExactEnvelopesForTesting: [String] = []
   private var completesCapturedRefreshRequestsForTesting = false
@@ -18683,6 +18686,7 @@ final class SyncService: ObservableObject {
 
   func beginOutboundEnvelopeCaptureForTesting() {
     capturedOutboundEnvelopesForTesting = []
+    capturedCommandPayloadsForTesting = [:]
     capturesOutboundEnvelopesForTesting = true
   }
 
@@ -18770,6 +18774,7 @@ final class SyncService: ObservableObject {
 
   func resetOutboundEnvelopeCaptureForTesting() {
     capturedOutboundEnvelopesForTesting = []
+    capturedCommandPayloadsForTesting = [:]
   }
 
   func exhaustReconnectAttemptsForTesting() {
@@ -18794,6 +18799,16 @@ final class SyncService: ObservableObject {
 
   func capturedOutboundProjectIdForTesting(requestId: String) -> String? {
     capturedOutboundEnvelopesForTesting.first { $0.requestId == requestId }?.projectId
+  }
+
+  /// The action and payload project scope of a captured `command` envelope.
+  func capturedCommandForTesting(requestId: String) -> (action: String?, projectId: String?, projectRootPath: String?)? {
+    guard let payload = capturedCommandPayloadsForTesting[requestId] else { return nil }
+    return (
+      action: payload["action"] as? String,
+      projectId: payload["projectId"] as? String,
+      projectRootPath: payload["projectRootPath"] as? String
+    )
   }
 
   func firePendingRequestTimeoutForTesting(requestId: String) {
@@ -18902,6 +18917,7 @@ final class SyncService: ObservableObject {
   func endOutboundEnvelopeCaptureForTesting() {
     capturesOutboundEnvelopesForTesting = false
     capturedOutboundEnvelopesForTesting = []
+    capturedCommandPayloadsForTesting = [:]
     completesCapturedRefreshRequestsForTesting = false
   }
 
@@ -20070,6 +20086,9 @@ final class SyncService: ObservableObject {
       let projectId = syncNormalizedCommandScopeValue(projectIdOverride)
         ?? syncOutboundEnvelopeProjectId(type: type, activeProjectId: activeProjectId)
       capturedOutboundEnvelopesForTesting.append((type: type, requestId: requestId, projectId: projectId))
+      if type == "command", let requestId, let commandPayload = payload as? [String: Any] {
+        capturedCommandPayloadsForTesting[requestId] = commandPayload
+      }
       if completesCapturedRefreshRequestsForTesting,
          let requestId,
          let response = capturedRefreshResponseForTesting(type: type, payload: payload) {

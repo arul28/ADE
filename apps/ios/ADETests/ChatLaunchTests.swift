@@ -238,6 +238,22 @@ final class ChatLaunchTests: XCTestCase {
     var done = launch(phase: .completed, stages: [])
     done.endedAt = "2026-09-22T10:00:04.200Z"
     XCTAssertEqual(chatLaunchCardTitle(done), "Lane set up in 4.2s")
+    XCTAssertEqual(WorkChatLaunchTone.phaseStatus(done), .done)
+    // Start anyway / an environment that failed after Start now: completed,
+    // but not a clean setup.
+    for status in [ChatLaunchStageStatus.warning, .failed] {
+      var warned = launch(phase: .completed, stages: [stage(.checkout, .done), stage(.environment, status), stage(.agent, .done)])
+      warned.endedAt = "2026-09-22T10:00:04.200Z"
+      XCTAssertTrue(chatLaunchCompletedWithWarnings(warned))
+      XCTAssertEqual(chatLaunchCardTitle(warned), "Lane set up with warnings in 4.2s")
+      XCTAssertEqual(WorkChatLaunchTone.phaseStatus(warned), .warning)
+      XCTAssertEqual(WorkChatLaunchTone.phaseSymbol(WorkChatLaunchTone.phaseStatus(warned)), "exclamationmark.triangle.fill")
+      warned.endedAt = nil
+      warned.startedAt = ""
+      XCTAssertEqual(chatLaunchCardTitle(warned), "Lane set up with warnings")
+    }
+    XCTAssertFalse(chatLaunchCompletedWithWarnings(launch(phase: .running, stages: [stage(.environment, .warning)])))
+    XCTAssertEqual(WorkChatLaunchTone.phaseSymbol(.done), "checkmark")
     let ready = launch(laneCreated: true, stages: [stage(.fetch, .done), stage(.checkout, .done), stage(.agent, .running)])
     XCTAssertTrue(chatLaunchLaneIsReady(ready))
     // Desktop `laneSetupTitle` has no "Lane ready" beat: still setting up until the agent runs.
@@ -490,6 +506,104 @@ final class ChatLaunchTests: XCTestCase {
     }
   }
 
+  /// Deleted while `chat.startLaunch` was on the wire, then the user switched
+  /// projects: the compensating `chat.cancelLaunch` must reach the project the
+  /// start went to, not the now-active one (the entry, the only other record
+  /// of its project, is gone by then).
+  func testCancelWhileStartingTargetsTheLaunchProjectAfterAProjectSwitch() async throws {
+    try await withConnectedService { service in
+      // No chat.listLaunches / chat.getLaunch: the only commands on the wire
+      // are the start and its compensating cancel (no hydrate list).
+      let launchActions = ["chat.startLaunch", "chat.cancelLaunch", "chat.queueLaunchMessage"]
+      try service.applyHelloPayloadForTesting([
+        "brain": ["deviceId": "new-host", "deviceName": "Mac Studio"],
+        "features": [
+          "mobileCompatibility": ["mode": "full", "missingActions": [String]()],
+          "commandRouting": [
+            "actions": launchActions.map { ["action": $0, "policy": ["viewerAllowed": true]] as [String: Any] },
+          ],
+        ],
+      ])
+      service.setActiveProjectForTesting(projectId: "p1", rootPath: "/repo")
+      service.resetOutboundEnvelopeCaptureForTesting()
+      for _ in 0..<20 { await Task.yield() }
+      XCTAssertEqual(service.capturedOutboundEnvelopeCountForTesting(type: "command"), 0)
+      let request = makeRequest()
+      service.beginChatLaunch(request)
+
+      var startId: String?
+      for _ in 0..<50 where startId == nil {
+        await Task.yield()
+        startId = service.capturedOutboundRequestIdsForTesting(type: "command").first
+      }
+      let startRequestId = try XCTUnwrap(startId, "chat.startLaunch never went out")
+      let start = try XCTUnwrap(service.capturedCommandForTesting(requestId: startRequestId))
+      XCTAssertEqual(start.action, "chat.startLaunch")
+      XCTAssertEqual(start.projectId, "p1")
+      XCTAssertEqual(
+        service.chatLaunchStore.localState(launchId: request.launchId).startScope,
+        ChatLaunchProjectScope(projectId: "p1", rootPath: "/repo")
+      )
+
+      // Delete mid-start (drops the entry), then switch projects.
+      try await service.cancelChatLaunch(launchId: request.launchId)
+      XCTAssertNil(service.chatLaunchStore.entry(launchId: request.launchId))
+      service.setActiveProjectForTesting(projectId: "p2", rootPath: "/other")
+
+      // The start lands (older result shape: no snapshot in the answer).
+      service.completeCapturedRequestForTesting(requestId: startRequestId, result: NSNull())
+      var cancelId: String?
+      for _ in 0..<50 where cancelId == nil {
+        await Task.yield()
+        cancelId = service.capturedOutboundRequestIdsForTesting(type: "command").first { $0 != startRequestId }
+      }
+      let cancelRequestId = try XCTUnwrap(cancelId, "the compensating chat.cancelLaunch never went out")
+      let cancel = try XCTUnwrap(service.capturedCommandForTesting(requestId: cancelRequestId))
+      XCTAssertEqual(cancel.action, "chat.cancelLaunch")
+      XCTAssertEqual(cancel.projectId, "p1", "the cancel must reach the project the start went to")
+      XCTAssertEqual(cancel.projectRootPath, "/repo")
+      service.completeCapturedRequestForTesting(requestId: cancelRequestId, result: NSNull())
+      for _ in 0..<200 where !service.chatLaunchStore.localState(launchId: request.launchId).isEmpty {
+        try await Task.sleep(nanoseconds: 10_000_000)
+      }
+      let settled = service.chatLaunchStore.localState(launchId: request.launchId)
+      XCTAssertTrue(settled.isEmpty, "settled starts leave no local state: \(settled)")
+
+      // Same delete mid-start, but the connection drops instead of timing out:
+      // the start may still have landed, so it is cancelled all the same.
+      service.setActiveProjectForTesting(projectId: "p1", rootPath: "/repo")
+      service.resetOutboundEnvelopeCaptureForTesting()
+      let dropped = makeRequest()
+      service.beginChatLaunch(dropped)
+      var droppedStartId: String?
+      for _ in 0..<50 where droppedStartId == nil {
+        await Task.yield()
+        droppedStartId = service.capturedOutboundRequestIdsForTesting(type: "command").first
+      }
+      let droppedStartRequestId = try XCTUnwrap(droppedStartId, "the second chat.startLaunch never went out")
+      try await service.cancelChatLaunch(launchId: dropped.launchId)
+      service.failCapturedRequestForTesting(
+        requestId: droppedStartRequestId,
+        error: NSError(domain: NSURLErrorDomain, code: NSURLErrorNetworkConnectionLost)
+      )
+      var droppedCancelId: String?
+      for _ in 0..<50 where droppedCancelId == nil {
+        await Task.yield()
+        droppedCancelId = service.capturedOutboundRequestIdsForTesting(type: "command").first { $0 != droppedStartRequestId }
+      }
+      let droppedCancelRequestId = try XCTUnwrap(droppedCancelId, "a dropped connection must still send the compensating cancel")
+      let droppedCancel = try XCTUnwrap(service.capturedCommandForTesting(requestId: droppedCancelRequestId))
+      XCTAssertEqual(droppedCancel.action, "chat.cancelLaunch")
+      XCTAssertEqual(droppedCancel.projectId, "p1")
+      service.completeCapturedRequestForTesting(requestId: droppedCancelRequestId, result: NSNull())
+      for _ in 0..<200 where !service.chatLaunchStore.localState(launchId: dropped.launchId).isEmpty {
+        try await Task.sleep(nanoseconds: 10_000_000)
+      }
+      let droppedSettled = service.chatLaunchStore.localState(launchId: dropped.launchId)
+      XCTAssertTrue(droppedSettled.isEmpty, "a dropped start leaves no local state: \(droppedSettled)")
+    }
+  }
+
   // MARK: - List projection
 
   func testWorkOverlayAddsPendingRowThenDefersToRealRow() {
@@ -571,6 +685,16 @@ final class ChatLaunchTests: XCTestCase {
     XCTAssertEqual(chatLaunchCardPayloadTitle(title: workLaneSetupHostTitle(card), failed: false, durationMs: card.durationMs), "Lane set up in 4.2s")
     XCTAssertEqual(chatLaunchCardPayloadTitle(title: "", failed: true, durationMs: 4200), "Lane setup failed")
     XCTAssertEqual(chatLaunchCardPayloadTitle(title: "Lane set up in 3s", failed: false, durationMs: nil), "Lane set up in 3s")
+    XCTAssertEqual(chatLaunchCardPayloadTitle(title: "", failed: false, warned: true, durationMs: 4200), "Lane set up with warnings in 4.2s")
+    XCTAssertEqual(chatLaunchCardPayloadTitle(title: "", failed: false, warned: true, durationMs: nil), "Lane set up with warnings")
+
+    // Header status from the payload: a warning-tone row is not clean.
+    XCTAssertEqual(workLaneSetupPayloadPhaseStatus(card), .warning)
+    XCTAssertEqual(workLaneSetupPayloadPhaseStatus(envCard), .done)
+    let failedCard = makeWorkAdeCardModel(from: try JSONDecoder().decode(AgentChatAdeCardPayload.self, from: Data(#"{"cardId":"lane-setup:l","variant":"lane_setup","rows":[{"key":"checkout","icon":"fail","text":"Check out files","tone":"warning"}]}"#.utf8)))
+    XCTAssertEqual(workLaneSetupPayloadPhaseStatus(failedCard), .failed)
+    let runningCard = makeWorkAdeCardModel(from: try JSONDecoder().decode(AgentChatAdeCardPayload.self, from: Data(#"{"cardId":"lane-setup:l","variant":"lane_setup","rows":[{"key":"fetch","icon":"pass","text":"Fetch"},{"key":"checkout","icon":"running","text":"Check out files"}]}"#.utf8)))
+    XCTAssertEqual(workLaneSetupPayloadPhaseStatus(runningCard), .running)
   }
 
   func testLaneSetupCardMatchesLiveSnapshotByKeys() {
@@ -809,14 +933,45 @@ final class ChatLaunchTests: XCTestCase {
   /// until the pending screen puts it back in the composer.
   func testSendFailuresAccumulateUntilTaken() {
     let store = ChatLaunchStore()
+    func queued(_ id: String, _ text: String) -> ChatLaunchQueuedMessage {
+      ChatLaunchQueuedMessage(id: id, text: text, createdAt: "t")
+    }
     XCTAssertNil(store.takeSendFailure(launchId: "l"))
-    store.recordSendFailure(launchId: "l", texts: ["first", "  "], message: "Couldn't send — nope")
-    store.recordSendFailure(launchId: "l", texts: ["second"], message: "Couldn't send — later")
-    XCTAssertEqual(store.sendFailures["l"], ChatLaunchSendFailure(texts: ["first", "second"], message: "Couldn't send — later"))
+    store.recordSendFailure(launchId: "l", messages: [queued("1", "first"), queued("2", "  ")], message: "Couldn't send — nope")
+    store.recordSendFailure(launchId: "l", messages: [queued("3", "second")], message: "Couldn't send — later")
+    XCTAssertEqual(store.sendFailures["l"], ChatLaunchSendFailure(messages: [queued("1", "first"), queued("3", "second")], message: "Couldn't send — later"))
     XCTAssertEqual(store.takeSendFailure(launchId: "l")?.texts, ["first", "second"])
     XCTAssertNil(store.takeSendFailure(launchId: "l"))
-    store.recordSendFailure(launchId: "l", texts: [" "], message: "x")
+    store.recordSendFailure(launchId: "l", messages: [queued("4", " ")], message: "x")
     XCTAssertNil(store.sendFailures["l"], "nothing to restore, nothing recorded")
+  }
+
+  /// A refused message keeps its attachments: attachment-only and
+  /// text-plus-attachment messages stay recorded whole (the pending composer
+  /// is text-only) until resent or discarded; text-only ones go to the composer.
+  func testFailedSendsKeepAttachmentsUntilResentOrDiscarded() {
+    let store = ChatLaunchStore()
+    let image = AgentChatFileRef(path: "/tmp/shot.jpg", type: "image")
+    let textOnly = ChatLaunchQueuedMessage(id: "1", text: "also logout", createdAt: "t1")
+    let withImage = ChatLaunchQueuedMessage(id: "2", text: "like this", displayText: "like this (see image)", attachments: [image], createdAt: "t2")
+    let imageOnly = ChatLaunchQueuedMessage(id: "3", text: "", attachments: [image], createdAt: "t3", deliveryError: "host retrying")
+    store.recordSendFailure(launchId: "l", messages: [textOnly, withImage, imageOnly], message: "Couldn't send — nope")
+    XCTAssertEqual(store.sendFailures["l"]?.messages.map(\.id), ["1", "2", "3"], "an attachment-only message is not blank")
+
+    let restored = store.takeSendFailure(launchId: "l")
+    XCTAssertEqual(restored, ChatLaunchSendFailure(messages: [textOnly], message: "Couldn't send — nope"))
+    // The attachment-bearing ones stay, whole, as failed bubbles.
+    let kept = store.sendFailures["l"]?.messages ?? []
+    XCTAssertEqual(kept.map(\.id), ["2", "3"])
+    XCTAssertEqual(kept.first?.displayText, "like this (see image)")
+    XCTAssertEqual(kept.map(\.attachments), [[image], [image]])
+    XCTAssertNil(kept.last?.deliveryError, "a recorded failure waits on the user, not the host's retry loop")
+    XCTAssertNil(store.takeSendFailure(launchId: "l"), "nothing more for the composer")
+
+    XCTAssertEqual(store.takeFailedSend(launchId: "l", messageId: "2")?.attachments, [image])
+    XCTAssertNil(store.takeFailedSend(launchId: "l", messageId: "2"))
+    XCTAssertEqual(store.takeFailedSend(launchId: "l", messageId: "3")?.id, "3")
+    XCTAssertNil(store.sendFailures["l"])
   }
 
   /// A chat route re-opened mid-setup (store still empty) must not lock onto

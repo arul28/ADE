@@ -93,8 +93,18 @@ enum WorkChatLaunchTone {
     switch launch.phase {
     case .failed: return .failed
     case .cancelled: return .skipped
-    case .completed: return .done
+    case .completed: return chatLaunchCompletedWithWarnings(launch) ? .warning : .done
     case .running, .awaitingClient: return chatLaunchLaneIsReady(launch) ? .done : .running
+    }
+  }
+
+  /// Header glyph for a phase status: warning and failure share the amber
+  /// triangle, done a check, anything still moving the lane mark.
+  static func phaseSymbol(_ status: ChatLaunchStageStatus) -> String {
+    switch status {
+    case .failed, .warning: return "exclamationmark.triangle.fill"
+    case .done: return "checkmark"
+    default: return "arrow.branch"
     }
   }
 }
