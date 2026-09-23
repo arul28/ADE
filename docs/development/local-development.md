@@ -144,6 +144,14 @@ and it now says so — `ADE: This brain serves at role agent, so ADE desktop,
 phone and web clients (role cto) will be refused.` Start a hand-run brain that a
 desktop will connect to as `ade --role cto serve`.
 
+A separate `ADE_HOME` does not isolate a PROJECT. Machine state lives in the
+home, but each project keeps its own database in `<project>/.ade/ade.db`. A
+test brain on `~/.ade-alpha` that opens `~/Projects/ADE` — because it is in that
+home's `projects.json`, or because an `ade` command ran from inside it — writes
+the same `ade.db` as the installed brain. For a test brain that must not touch
+the installed one, register only a throwaway project in its home, and check
+with `lsof <project>/.ade/ade.db` which processes hold a project's database.
+
 Override it when needed:
 
 ```bash
