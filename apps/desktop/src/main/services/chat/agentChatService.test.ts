@@ -57,9 +57,13 @@ function usingFakeTimers(): boolean {
   }
 }
 
+// Captured before any test fakes timers. `realYield` lets pending real I/O
+// settle between fake-time steps for tests a loaded CI runner can outrun.
+const realSetImmediate = globalThis.setImmediate;
+
 async function waitForFakeTimers(
   assertion: () => unknown,
-  options: { steps?: number; stepMs?: number } = {},
+  options: { steps?: number; stepMs?: number; realYield?: boolean } = {},
 ): Promise<void> {
   if (!usingFakeTimers()) {
     await vi.waitFor(assertion);
@@ -76,6 +80,7 @@ async function waitForFakeTimers(
       lastError = error;
     }
     await vi.advanceTimersByTimeAsync(step === 0 ? 0 : stepMs);
+    if (options.realYield) await new Promise<void>((resolve) => realSetImmediate(() => resolve()));
   }
   throw lastError;
 }
@@ -1190,6 +1195,7 @@ import {
 } from "../../../shared/modelRegistry";
 import { CLAUDE_MUTATING_BUILTIN_TOOLS } from "../../../shared/permissionPolicy";
 import { CLAUDE_READ_ONLY_TOOLS } from "./claudeToolGate";
+import { SessionTurnAbandonedError } from "./sessionTurnLimits";
 import { HOST_TOOL_APPROVAL_NAMES } from "../../../shared/__fixtures__/hostToolApprovalNames";
 
 /**
@@ -7946,6 +7952,56 @@ describe("createAgentChatService", () => {
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/fork")).toBe(false);
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/revert")).toBe(false);
       }
+    });
+
+    it("explains a removed thread/rollback on a Codex whose version is unknown", async () => {
+      mockState.codexResponseOverrides.set("thread/rollback", {
+        error: { code: -32601, message: "Method not found" },
+      });
+      const { service, sessionService } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+      });
+      source.threadId = "source-thread-1";
+      source.status = "idle";
+      const envelope = {
+        sessionId: source.id,
+        timestamp: "2026-09-22T20:00:00.000Z",
+        event: { type: "user_message", messageId: "user-1", text: "rewind this turn" },
+      } as AgentChatEventEnvelope;
+      fs.writeFileSync(String(sessionService.get(source.id)?.transcriptPath), `${JSON.stringify(envelope)}\n`, "utf8");
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([envelope]);
+
+      await expect(service.rewindFiles({ sessionId: source.id, userMessageId: "user-1" }))
+        .rejects.toThrow(/removed turn-count rollback/);
+    });
+
+    it("never sends the removed thread/rollback to Codex 0.156 when the turn id is missing", async () => {
+      mockState.codexResponseOverrides.set("initialize", { userAgent: "codex/0.156.0" });
+      const { service, sessionService } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+      });
+      source.threadId = "source-thread-1";
+      source.status = "idle";
+      const transcriptPath = sessionService.get(source.id)?.transcriptPath;
+      const envelope = {
+        sessionId: source.id,
+        timestamp: "2026-09-22T20:00:00.000Z",
+        event: { type: "user_message", messageId: "user-1", text: "rewind this turn" },
+      } as AgentChatEventEnvelope;
+      fs.writeFileSync(String(transcriptPath), `${JSON.stringify(envelope)}\n`, "utf8");
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([envelope]);
+
+      await expect(service.rewindFiles({ sessionId: source.id, userMessageId: "user-1" }))
+        .rejects.toThrow(/removed turn-count rollback/);
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/rollback")).toBe(false);
     });
 
     it("falls back to fork when thread/revert is rejected", async () => {
@@ -24790,6 +24846,181 @@ describe("createAgentChatService", () => {
       expect(service.hasActiveWorkloads()).toBe(false);
     });
 
+    describe("runSessionTurn limits", () => {
+      const codexTurnStarts = (): number => mockState.codexRequestPayloads
+        .filter((payload) => payload.method === "turn/start").length;
+
+      /** Start a headless Codex turn that is busy running one command; `outcome()` is null while it waits. */
+      const startTurnRunningCommand = async (
+        service: any,
+        args: { sessionId: string; timeoutMs: number | null; idleTimeoutMs: number | null },
+      ) => {
+        const startsBefore = codexTurnStarts();
+        let outcome: string | null = null;
+        const turn = service.runSessionTurn({ ...args, text: "Wait on CI." });
+        turn.then(() => { outcome = "resolved"; }, (error: Error) => { outcome = error.message; });
+        await vi.waitFor(() => expect(codexTurnStarts()).toBeGreaterThan(startsBefore));
+        const turnId = `turn-${mockState.codexTurnCounter}`;
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "turn/started",
+          params: { turn: { id: turnId, status: "inProgress" } },
+        });
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "item/started",
+          params: {
+            turnId,
+            item: { id: "cmd-ci", type: "commandExecution", command: "gh run watch", cwd: "/tmp", status: "inProgress", commandActions: [] },
+          },
+        });
+        return { turnId, outcome: () => outcome };
+      };
+
+      it("stops a turn that goes quiet, but never while a command is still running", async () => {
+        const { service } = createService();
+        const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        try {
+          const { turnId, outcome } = await startTurnRunningCommand(service, {
+            sessionId: session.id,
+            timeoutMs: null,
+            idleTimeoutMs: 60_000,
+          });
+
+          // A 40-minute CI wait is one open command, not idleness.
+          await vi.advanceTimersByTimeAsync(40 * 60_000);
+          expect(outcome()).toBeNull();
+
+          mockState.emitCodexPayload({
+            jsonrpc: "2.0",
+            method: "item/completed",
+            params: {
+              turnId,
+              item: {
+                id: "cmd-ci",
+                type: "commandExecution",
+                command: "gh run watch",
+                cwd: "/tmp",
+                status: "completed",
+                aggregatedOutput: "ok",
+                exitCode: 0,
+                commandActions: [],
+              },
+            },
+          });
+          await vi.advanceTimersByTimeAsync(59_000);
+          expect(outcome()).toBeNull();
+
+          const interruptsBefore = mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/interrupt").length;
+          await vi.advanceTimersByTimeAsync(2_000);
+          expect(outcome()).toMatch(/Stopped after 1 min with no activity/);
+          await vi.waitFor(() => {
+            expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/interrupt").length)
+              .toBeGreaterThan(interruptsBefore);
+          });
+        } finally {
+          vi.useRealTimers();
+          service.forceDisposeAll();
+        }
+      });
+
+      it("counts provider retries as activity, so a retrying turn is not stopped as idle", async () => {
+        const { service } = createService();
+        const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        try {
+          const startsBefore = codexTurnStarts();
+          let outcome: string | null = null;
+          service.runSessionTurn({ sessionId: session.id, text: "Ship it.", timeoutMs: null, idleTimeoutMs: 60_000 })
+            .then(() => { outcome = "resolved"; }, (error: Error) => { outcome = error.message; });
+          await vi.waitFor(() => expect(codexTurnStarts()).toBeGreaterThan(startsBefore));
+          const turnId = `turn-${mockState.codexTurnCounter}`;
+          mockState.emitCodexPayload({
+            jsonrpc: "2.0",
+            method: "turn/started",
+            params: { turn: { id: turnId, status: "inProgress" } },
+          });
+
+          // Retry activity is live-only; every 40 s it must restart the 60 s watch.
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            await vi.advanceTimersByTimeAsync(40_000);
+            mockState.emitCodexPayload({
+              jsonrpc: "2.0",
+              method: "error",
+              params: { turnId, willRetry: true, error: { message: "Temporary upstream failure.", codexErrorInfo: "serverOverloaded" } },
+            });
+          }
+          await vi.advanceTimersByTimeAsync(40_000);
+          expect(outcome).toBeNull();
+
+          // A late retry from an earlier turn is not this turn's activity.
+          mockState.emitCodexPayload({
+            jsonrpc: "2.0",
+            method: "error",
+            params: { turnId: "turn-stale", willRetry: true, error: { message: "Temporary upstream failure.", codexErrorInfo: "serverOverloaded" } },
+          });
+          await vi.advanceTimersByTimeAsync(21_000);
+          expect(outcome).toMatch(/with no activity/);
+        } finally {
+          vi.useRealTimers();
+          service.forceDisposeAll();
+        }
+      });
+
+      it("applies no clock at all when the caller asks for none", async () => {
+        const { service } = createService();
+        const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        try {
+          const { turnId, outcome } = await startTurnRunningCommand(service, {
+            sessionId: session.id,
+            timeoutMs: null,
+            idleTimeoutMs: null,
+          });
+
+          // Well past the old 5-minute headless default and the old 20-minute rule cap.
+          await vi.advanceTimersByTimeAsync(90 * 60_000);
+          expect(outcome()).toBeNull();
+
+          mockState.emitCodexPayload({
+            jsonrpc: "2.0",
+            method: "turn/completed",
+            params: { turn: { id: turnId, status: "completed" } },
+          });
+          await vi.waitFor(() => expect(outcome()).toBe("resolved"));
+        } finally {
+          vi.useRealTimers();
+          service.forceDisposeAll();
+        }
+      });
+
+      it("releases a waiting turn when its chat session ends, as an abandoned turn", async () => {
+        const { service } = createService();
+        const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+        const startsBefore = codexTurnStarts();
+        const turn = service.runSessionTurn({ sessionId: session.id, text: "Long job.", timeoutMs: null });
+        const settled = turn.then(() => null, (error: unknown) => error);
+        await vi.waitFor(() => expect(codexTurnStarts()).toBeGreaterThan(startsBefore));
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "turn/started",
+          params: { turn: { id: `turn-${mockState.codexTurnCounter}`, status: "inProgress" } },
+        });
+
+        try {
+          await service.dispose({ sessionId: session.id });
+
+          // Without the release a caller with no clock (an automation) waits forever.
+          const error = await settled;
+          expect(error).toBeInstanceOf(SessionTurnAbandonedError);
+          expect((error as Error).message).toMatch(/ended before the turn finished/);
+        } finally {
+          service.forceDisposeAll();
+        }
+      });
+    });
+
     describe("auto-resume after a provider usage limit resets", () => {
       /**
        * Drives one Codex turn to a usage-limit failure. `resetAt` is the reset
@@ -40162,7 +40393,7 @@ describe("createAgentChatService", () => {
             && event.event.mcp?.pluginId === "local-plugin"
             && event.event.mcp?.appContext?.appName === "Local tools"
           )).toBe(true);
-        });
+        }, { steps: 200, realYield: true });
 
         expect(events.some((event) =>
           event.event.type === "tool_result"
@@ -40953,6 +41184,35 @@ describe("createAgentChatService", () => {
         status: "active",
         tokenBudget: null,
       });
+    });
+
+    it("adopts the plan mode a resumed Codex thread reports (0.156+)", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+      await service.setCodexGoal({ sessionId: session.id, objective: "Ship CLI parity" });
+      expect((await service.getSessionSummary(session.id))?.interactionMode ?? "default").toBe("default");
+
+      mockState.codexResponseOverrides.set("thread/resume", {
+        thread: { id: "thread-1" },
+        collaborationMode: { mode: "plan", settings: {} },
+      });
+      const resumed = createService().service;
+      await resumed.setCodexGoal({ sessionId: session.id, objective: "Keep shipping" });
+
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/resume")).toBe(true);
+      expect((await resumed.getSessionSummary(session.id))?.interactionMode).toBe("plan");
+    });
+
+    it("no longer offers the retired Codex /personality command", async () => {
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.5" });
+      const commands = await service.getSlashCommands({ sessionId: session.id });
+      expect(commands.some((command) => command.name === "/personality")).toBe(false);
+      expect(commands.some((command) => command.name === "/plan")).toBe(true);
     });
 
     it("rejects Codex goals over the app-server objective limit", async () => {

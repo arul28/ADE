@@ -7,6 +7,16 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		CA1A00000000000000000016 /* SyncService+ChatLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1A00000000000000000006 /* SyncService+ChatLaunch.swift */; };
+		CA1A00000000000000000017 /* WorkChatLaunchSetupCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1A00000000000000000007 /* WorkChatLaunchSetupCard.swift */; };
+		CA1A00000000000000000018 /* WorkChatLaunchPendingScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1A00000000000000000008 /* WorkChatLaunchPendingScreen.swift */; };
+		CA1A00000000000000000019 /* WorkLaneSetupTranscriptCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1A00000000000000000009 /* WorkLaneSetupTranscriptCard.swift */; };
+		CA1A0000000000000000001A /* WorkChatLaunchListProjection.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1A0000000000000000000A /* WorkChatLaunchListProjection.swift */; };
+		CA1A00000000000000000015 /* ChatLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1A00000000000000000005 /* ChatLaunchTests.swift */; };
+		CA1A00000000000000000014 /* WorkChatLaunchViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1A00000000000000000004 /* WorkChatLaunchViews.swift */; };
+		CA1A00000000000000000013 /* WorkChatLaunchPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1A00000000000000000003 /* WorkChatLaunchPresentation.swift */; };
+		CA1A00000000000000000012 /* ChatLaunchStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1A00000000000000000002 /* ChatLaunchStore.swift */; };
+		CA1A00000000000000000011 /* ChatLaunchModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1A00000000000000000001 /* ChatLaunchModels.swift */; };
 		EB000000000000000000UI01 /* WorkChatScrollBenchUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB000000000000000000UI01 /* WorkChatScrollBenchUITests.swift */; };
 		DCF01D0000000000000004 /* WorkComposerFoldUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCF01D0000000000000003 /* WorkComposerFoldUITests.swift */; };
 		E20000000000000000000091 /* LinearBrand.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000091 /* LinearBrand.swift */; };
@@ -381,6 +391,16 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		CA1A00000000000000000006 /* SyncService+ChatLaunch.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+ChatLaunch.swift"; path = "ADE/Services/SyncService+ChatLaunch.swift"; sourceTree = "<group>"; };
+		CA1A00000000000000000007 /* WorkChatLaunchSetupCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatLaunchSetupCard.swift; path = ADE/Views/Work/WorkChatLaunchSetupCard.swift; sourceTree = "<group>"; };
+		CA1A00000000000000000008 /* WorkChatLaunchPendingScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatLaunchPendingScreen.swift; path = ADE/Views/Work/WorkChatLaunchPendingScreen.swift; sourceTree = "<group>"; };
+		CA1A00000000000000000009 /* WorkLaneSetupTranscriptCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkLaneSetupTranscriptCard.swift; path = ADE/Views/Work/WorkLaneSetupTranscriptCard.swift; sourceTree = "<group>"; };
+		CA1A0000000000000000000A /* WorkChatLaunchListProjection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatLaunchListProjection.swift; path = ADE/Views/Work/WorkChatLaunchListProjection.swift; sourceTree = "<group>"; };
+		CA1A00000000000000000005 /* ChatLaunchTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChatLaunchTests.swift; path = ADETests/ChatLaunchTests.swift; sourceTree = "<group>"; };
+		CA1A00000000000000000004 /* WorkChatLaunchViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatLaunchViews.swift; path = ADE/Views/Work/WorkChatLaunchViews.swift; sourceTree = "<group>"; };
+		CA1A00000000000000000003 /* WorkChatLaunchPresentation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatLaunchPresentation.swift; path = ADE/Views/Work/WorkChatLaunchPresentation.swift; sourceTree = "<group>"; };
+		CA1A00000000000000000002 /* ChatLaunchStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChatLaunchStore.swift; path = ADE/Services/ChatLaunchStore.swift; sourceTree = "<group>"; };
+		CA1A00000000000000000001 /* ChatLaunchModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChatLaunchModels.swift; path = ADE/Models/ChatLaunchModels.swift; sourceTree = "<group>"; };
 		D20000000000000000000091 /* LinearBrand.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearBrand.swift; path = ADE/Views/Linear/LinearBrand.swift; sourceTree = "<group>"; };
 		D20000000000000000000092 /* LinearSVGPath.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearSVGPath.swift; path = ADE/Views/Linear/LinearSVGPath.swift; sourceTree = "<group>"; };
 		D20000000000000000000093 /* LinearLaunchModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearLaunchModel.swift; path = ADE/Views/Linear/LinearLaunchModel.swift; sourceTree = "<group>"; };
@@ -1003,6 +1023,12 @@
 				D10000000000000000000041 /* WorkNewChatScreen.swift */,
 				D30000000000000000000041 /* WorkUsageActivityCarousel.swift */,
 				D30000000000000000000042 /* WorkUsageLimitsModule.swift */,
+				CA1A00000000000000000004 /* WorkChatLaunchViews.swift */,
+				CA1A00000000000000000003 /* WorkChatLaunchPresentation.swift */,
+				CA1A0000000000000000000A /* WorkChatLaunchListProjection.swift */,
+				CA1A00000000000000000009 /* WorkLaneSetupTranscriptCard.swift */,
+				CA1A00000000000000000008 /* WorkChatLaunchPendingScreen.swift */,
+				CA1A00000000000000000007 /* WorkChatLaunchSetupCard.swift */,
 				D10000000000000000000056 /* WorkImportSessionScreen.swift */,
 				D10000000000000000000F1 /* WorkOutputViewerScreen.swift */,
 				D10000000000000000000057 /* WorkExternalSessionAffordances.swift */,
@@ -1100,8 +1126,10 @@
 				B7000000000000000000009E /* PendingAttentionClearStates.swift */,
 				B80000000000000000000001 /* SyncConnectionRace.swift */,
 				B80000000000000000000007 /* SyncService+MachineWake.swift */,
+				CA1A00000000000000000006 /* SyncService+ChatLaunch.swift */,
 				B80000000000000000000005 /* SyncMachineWake.swift */,
 				B80000000000000000000003 /* SyncTerminalInputQueue.swift */,
+				CA1A00000000000000000002 /* ChatLaunchStore.swift */,
 				A11700000000000000000001 /* MobileUsageQuotaStore.swift */,
 				A11800000000000000000003 /* AppUpdateAdvisor.swift */,
 				AE00000000000000000000A2 /* PushNotificationService.swift */,
@@ -1255,6 +1283,7 @@
 			children = (
 				483C5F1818BAE74B19B84617 /* RemoteModels.swift */,
 				D2000000000000000000004F /* RemoteRosterModels.swift */,
+				CA1A00000000000000000001 /* ChatLaunchModels.swift */,
 			);
 			name = Models;
 			sourceTree = "<group>";
@@ -1291,6 +1320,7 @@
 				AC7500000000000000000006 /* ApprovalRequestKindPrecedenceTests.swift */,
 				AC7500000000000000000007 /* WorkPendingInputRescueTests.swift */,
 				AC7500000000000000000003 /* WorkSessionGroupingTests.swift */,
+				CA1A00000000000000000005 /* ChatLaunchTests.swift */,
 				AC750000000000000000000A /* LaneManageRenameTests.swift */,
 				AC7500000000000000000004 /* ActivityWidgetPresentationTests.swift */,
 				AC7500000000000000000002 /* HubProjectPresentationTests.swift */,
@@ -1682,8 +1712,10 @@
 				B7000000000000000000009F /* PendingAttentionClearStates.swift in Sources */,
 				B80000000000000000000002 /* SyncConnectionRace.swift in Sources */,
 				B80000000000000000000008 /* SyncService+MachineWake.swift in Sources */,
+				CA1A00000000000000000016 /* SyncService+ChatLaunch.swift in Sources */,
 				B80000000000000000000006 /* SyncMachineWake.swift in Sources */,
 				B80000000000000000000004 /* SyncTerminalInputQueue.swift in Sources */,
+				CA1A00000000000000000012 /* ChatLaunchStore.swift in Sources */,
 				A11700000000000000000002 /* MobileUsageQuotaStore.swift in Sources */,
 				A11800000000000000000004 /* AppUpdateAdvisor.swift in Sources */,
 				6BDC22C6450AF0B3CBDB2650 /* FilesTabView.swift in Sources */,
@@ -1701,6 +1733,7 @@
 				E2000000000000000000004D /* FilesWorkspacePickerDropdown.swift in Sources */,
 				E2000000000000000000004E /* FilesSearchScreen.swift in Sources */,
 				E2000000000000000000004F /* RemoteRosterModels.swift in Sources */,
+				CA1A00000000000000000011 /* ChatLaunchModels.swift in Sources */,
 				E20000000000000000000050 /* HubScreen.swift in Sources */,
 				AC8100000000000000000001 /* ProjectHostRecoveryScreen.swift in Sources */,
 				E20000000000000000000051 /* HubComponents.swift in Sources */,
@@ -1809,6 +1842,12 @@
 				E10000000000000000000041 /* WorkNewChatScreen.swift in Sources */,
 				E30000000000000000000041 /* WorkUsageActivityCarousel.swift in Sources */,
 				E30000000000000000000042 /* WorkUsageLimitsModule.swift in Sources */,
+				CA1A00000000000000000014 /* WorkChatLaunchViews.swift in Sources */,
+				CA1A00000000000000000013 /* WorkChatLaunchPresentation.swift in Sources */,
+				CA1A0000000000000000001A /* WorkChatLaunchListProjection.swift in Sources */,
+				CA1A00000000000000000019 /* WorkLaneSetupTranscriptCard.swift in Sources */,
+				CA1A00000000000000000018 /* WorkChatLaunchPendingScreen.swift in Sources */,
+				CA1A00000000000000000017 /* WorkChatLaunchSetupCard.swift in Sources */,
 				E10000000000000000000056 /* WorkImportSessionScreen.swift in Sources */,
 				E10000000000000000000F1 /* WorkOutputViewerScreen.swift in Sources */,
 				E10000000000000000000057 /* WorkExternalSessionAffordances.swift in Sources */,
@@ -1899,6 +1938,7 @@
 				AC7600000000000000000006 /* ApprovalRequestKindPrecedenceTests.swift in Sources */,
 				AC7600000000000000000007 /* WorkPendingInputRescueTests.swift in Sources */,
 				AC7600000000000000000003 /* WorkSessionGroupingTests.swift in Sources */,
+				CA1A00000000000000000015 /* ChatLaunchTests.swift in Sources */,
 				AC760000000000000000000A /* LaneManageRenameTests.swift in Sources */,
 				AC7600000000000000000004 /* ActivityWidgetPresentationTests.swift in Sources */,
 				AC7600000000000000000002 /* HubProjectPresentationTests.swift in Sources */,

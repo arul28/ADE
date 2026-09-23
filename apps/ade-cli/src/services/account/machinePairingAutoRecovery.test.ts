@@ -48,6 +48,7 @@ function harness(options: {
   hasAccountSession?: () => boolean;
   budgetLimit?: number;
   onGaveUp?: (input: { code: string }) => void;
+  onEpisodeStarted?: () => void;
   now: () => number;
 }) {
   let spent = 0;
@@ -71,6 +72,7 @@ function harness(options: {
       },
     },
     onGaveUp: options.onGaveUp,
+    onEpisodeStarted: options.onEpisodeStarted,
     now: options.now,
   });
   return { recovery, spentRepairs: () => spent };
@@ -174,6 +176,36 @@ describe("machinePairingAutoRecovery", () => {
     // saying so repeatedly is what the send budget exists to prevent.
     expect(onGaveUp).toHaveBeenCalledTimes(1);
     expect(onGaveUp).toHaveBeenCalledWith({ code: "machine_revoked" });
+  });
+
+  // The desktop says "ADE stopped trying" from a recorded give-up. A new
+  // episode (after a sign-in, or for another refusal) is trying again, and the
+  // brain clears that record when this fires.
+  it("reports each new episode, once, so an old give-up can be cleared", async () => {
+    let clock = 0;
+    let health = REFUSED_HEALTH("machine_revoked");
+    const onEpisodeStarted = vi.fn();
+    const { recovery } = harness({
+      health: () => health,
+      revoked: () => true,
+      repair: async () => REPAIR_FAILED,
+      onEpisodeStarted,
+      now: () => clock,
+    });
+
+    await recovery.tick();
+    clock += 60_000;
+    await recovery.tick();
+    expect(onEpisodeStarted).toHaveBeenCalledTimes(1);
+
+    // The refusal clears (the episode ends), then comes back.
+    health = createSyncAccountDirectoryHealth("published", null);
+    clock += 60_000;
+    await recovery.tick();
+    health = REFUSED_HEALTH("pairing_authentication_required");
+    clock += 60_000;
+    await recovery.tick();
+    expect(onEpisodeStarted).toHaveBeenCalledTimes(2);
   });
 
   it("reports giving up after the single snapshot_failed cycle does not fix it", async () => {

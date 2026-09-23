@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Logger } from "../logging/logger";
+import { initializeModelManifestService } from "./modelManifestService";
 import type { AdeDb } from "../state/kvDb";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { AgentModelDescriptor, AgentProvider, ExecutorOpts } from "./agentExecutor";
@@ -1035,6 +1036,8 @@ export function createAiIntegrationService(args: {
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   projectRoot: string;
   enableDynamicModelMetadata?: boolean;
+  /** Model directory updates (model-manifest.json). Omitted: bundled copy only. */
+  modelManifest?: { adeVersion: string | null; fetchRemote: boolean };
 }) {
   const { db, logger, projectConfigService, projectRoot } = args;
 
@@ -1046,6 +1049,14 @@ export function createAiIntegrationService(args: {
   if (args.enableDynamicModelMetadata !== false) initModelsDevService().catch((err) => {
     logger.warn("ai.modelsdev.init_failed", { error: err instanceof Error ? err.message : String(err) });
   });
+
+  if (args.modelManifest) {
+    initializeModelManifestService({
+      adeVersion: args.modelManifest.adeVersion,
+      fetchRemote: args.modelManifest.fetchRemote,
+      logger,
+    });
+  }
 
   const detectAuth = async (options?: { force?: boolean; shallowCliAuth?: boolean }): Promise<DetectedAuth[]> => {
     const snapshot = projectConfigService.get();

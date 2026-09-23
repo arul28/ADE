@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { act, render, cleanup, waitFor } from "@testing-library/react";
+import { act, render, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenProjectBinding } from "../../../shared/types";
 
@@ -44,6 +44,14 @@ class MockIntersectionObserver {
 
   constructor(_callback: IntersectionObserverCallback) {}
 }
+
+import {
+  IMAGE_PASTE_NOTICE_MS,
+  attachClipboardImageToRuntime,
+  pasteRuntimeClipboardImageAttachment,
+  type TerminalImagePasteRuntime,
+} from "./terminalImagePaste";
+import { TerminalImagePasteNotice } from "./TerminalImagePasteNotice";
 
 vi.mock("../../state/appStore", () => ({
   selectActiveProjectRoot: (state: {
@@ -1890,7 +1898,7 @@ describe("TerminalView", () => {
     expect(window.ade.agentChat.saveTempAttachment).toHaveBeenCalledWith({
       data: "abc123",
       filename: "clipboard.png",
-    });
+    }, undefined);
     expect(ptyWrite).toHaveBeenCalledWith({
       ptyId: "pty-runtime-image-paste",
       data: "\x1b[200~ADE clipboard image attached.\nPath: /remote/project/.ade/attachments/clipboard.png\nType: image/png\n\x1b[201~",
@@ -1933,6 +1941,55 @@ describe("TerminalView", () => {
       ptyId: "pty-pinned-image-paste",
       data: "\x1b[200~ADE clipboard image attached.\nPath: /remote/image/project/.ade/attachments/clipboard.png\nType: image/png\n\x1b[201~",
     }, runtimePin);
+  });
+
+  it("says why a remote image paste failed instead of dropping it", async () => {
+    const runtimePin = remoteRuntimePin("image-fail", "/remote/fail/project");
+    (window.ade.app.readClipboardImage as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: "failing-image-data",
+      filename: "clipboard.png",
+      mimeType: "image/png",
+    });
+    const saveTempAttachment = window.ade.agentChat.saveTempAttachment as unknown as ReturnType<typeof vi.fn>;
+    saveTempAttachment.mockRejectedValueOnce(new Error(
+      "Error invoking remote method 'ade.remoteRuntime.callAction': Error: Remote ADE service connection closed.",
+    ));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const { container } = render(
+        <TerminalView
+          ptyId="pty-failing-image-paste"
+          sessionId="session-failing-image-paste"
+          runtimePin={runtimePin}
+          isActive
+          imagePasteMode="runtime-attachment"
+        />,
+      );
+      await flushInitialHydration();
+      const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+      ptyWrite.mockClear();
+
+      const terminal = mockState.terminalInstances.at(-1) as { element: HTMLElement | null } | undefined;
+      terminal?.element?.dispatchEvent(createPasteEvent(""));
+      await flushPromises();
+
+      // One attempt, no image text sent to the CLI, and the reason is visible.
+      expect(saveTempAttachment).toHaveBeenCalledTimes(1);
+      expect(ptyWrite).not.toHaveBeenCalled();
+      const notice = container.querySelector("[data-ade-terminal-image-paste-notice]");
+      expect(notice?.textContent).toContain("Couldn't attach the image: Remote ADE service connection closed.");
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(
+        "[ade-term] image paste failed session=session-failing-image-paste machine=remote reason=Remote ADE service connection closed.",
+      ));
+
+      act(() => {
+        (notice?.querySelector("button") as HTMLButtonElement | null)?.click();
+      });
+      expect(container.querySelector("[data-ade-terminal-image-paste-notice]")).toBeNull();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("sends Shift+Enter as a bracketed-paste newline only while the terminal requests bracketed paste mode", async () => {
@@ -3694,5 +3751,117 @@ describe("stripFullScreenRedrawSequences", () => {
 
   it("returns the empty string unchanged", () => {
     expect(stripFullScreenRedrawSequences("")).toBe("");
+  });
+});
+
+function makeImagePasteRuntime(): TerminalImagePasteRuntime & { disposed: boolean } {
+  return {
+    sessionId: "session-1",
+    runtimePin: null,
+    disposed: false,
+    imagePasteNotice: null,
+    imagePasteNoticeTimer: null,
+  };
+}
+
+describe("terminal image paste", () => {
+  const saveTempAttachment = vi.fn();
+  const readClipboardImage = vi.fn();
+  let io: { notify: ReturnType<typeof vi.fn>; writeInput: ReturnType<typeof vi.fn> };
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    io = { notify: vi.fn(), writeInput: vi.fn() };
+    warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { agentChat: { saveTempAttachment }, app: { readClipboardImage } },
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    warn.mockRestore();
+    vi.clearAllMocks();
+  });
+
+  it("pastes the saved path as a bracketed stub and sends no pin for a bound session", async () => {
+    saveTempAttachment.mockResolvedValue({ path: "/p/.ade/attachments/x.png" });
+    const runtime = makeImagePasteRuntime();
+
+    await expect(attachClipboardImageToRuntime(runtime, io, {
+      data: "data:image/png;base64,QUJD",
+      filename: "clipboard.png",
+      mimeType: "image/png",
+    })).resolves.toBe(true);
+
+    expect(saveTempAttachment).toHaveBeenCalledWith({ data: "QUJD", filename: "clipboard.png" }, undefined);
+    expect(io.writeInput).toHaveBeenCalledWith(
+      "\x1b[200~ADE clipboard image attached.\nPath: /p/.ade/attachments/x.png\nType: image/png\n\x1b[201~",
+    );
+  });
+
+  it("shows why a save failed, counts it as handled, and clears the message after the timeout", async () => {
+    saveTempAttachment.mockRejectedValue(new Error("Error: File \"clipboard.png\" is too large (20 MB). Maximum allowed size is 12 MB."));
+    const runtime = makeImagePasteRuntime();
+
+    await expect(attachClipboardImageToRuntime(runtime, io, {
+      data: "QUJD",
+      filename: "clipboard.png",
+      mimeType: "image/png",
+    })).resolves.toBe(true);
+
+    expect(io.writeInput).not.toHaveBeenCalled();
+    expect(runtime.imagePasteNotice).toBe(
+      "Couldn't attach the image: File \"clipboard.png\" is too large (20 MB). Maximum allowed size is 12 MB.",
+    );
+    expect(io.notify).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(IMAGE_PASTE_NOTICE_MS);
+    expect(runtime.imagePasteNotice).toBeNull();
+    expect(io.notify).toHaveBeenCalledTimes(2);
+  });
+
+  it("gives a neutral reason when a clipboard read fails with none, since nothing was saved", async () => {
+    readClipboardImage.mockRejectedValue(new Error(""));
+    const runtime = makeImagePasteRuntime();
+
+    await expect(pasteRuntimeClipboardImageAttachment(runtime, io)).resolves.toBe(true);
+
+    expect(saveTempAttachment).not.toHaveBeenCalled();
+    expect(runtime.imagePasteNotice).toBe("Couldn't attach the image: no reason was given.");
+    expect(warn).toHaveBeenCalledWith(
+      "[ade-term] image paste failed session=session-1 machine=bound reason=no reason was given.",
+    );
+  });
+
+  it("logs but shows nothing once the terminal is gone", async () => {
+    saveTempAttachment.mockRejectedValue(new Error("Remote ADE service connection closed."));
+    const runtime = makeImagePasteRuntime();
+    const pending = attachClipboardImageToRuntime(runtime, io, {
+      data: "QUJD",
+      filename: "clipboard.png",
+      mimeType: "image/png",
+    });
+    runtime.disposed = true;
+    await pending;
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(runtime.imagePasteNotice).toBeNull();
+    expect(io.notify).not.toHaveBeenCalled();
+  });
+});
+
+describe("TerminalImagePasteNotice", () => {
+  afterEach(cleanup);
+
+  it("shows the message as a status and dismisses on the button", () => {
+    const onDismiss = vi.fn();
+    render(<TerminalImagePasteNotice notice="Couldn't attach the image: no reason was given." onDismiss={onDismiss} />);
+
+    expect(screen.getByRole("status").textContent).toContain("Couldn't attach the image: no reason was given.");
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss image paste message" }));
+    expect(onDismiss).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,3 +1,4 @@
+import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -33,7 +34,6 @@ import type {
   AgentChatContextUsageArgs,
   AgentChatCrossMachineDestinationPreflightArgs,
   AgentChatDroidPermissionMode,
-  AgentChatFileRef,
   AgentChatGetSummaryArgs,
   AgentChatGetTurnFileDiffArgs,
   AgentChatHandoffArgs,
@@ -53,7 +53,6 @@ import type {
   AgentChatProvider,
   AgentChatRewindFilesArgs,
   AgentChatRespondToInputArgs,
-  AgentChatSendArgs,
   AgentChatSetParallelLaunchStateArgs,
   AgentChatValidateCrossMachineSourceArgs,
   AgentChatSession,
@@ -297,13 +296,21 @@ import {
   buildLaneEnvTeardown,
   restoreUnarchivedLaneRuntime,
 } from "../../../../desktop/src/main/services/lanes/laneRuntimeLifecycle";
+import { resolveChatCreateModel } from "../../../../desktop/src/main/services/chat/chatCreateModelResolution";
 import {
-  mergeLaneEnvInitConfig,
-  mergeLaneOverrides,
-} from "../../../../desktop/src/main/services/lanes/laneEnvInitMerge";
+  parseAgentChatCreateFields,
+  parseAgentChatFileRefs,
+  parseAgentChatSendArgs,
+  parseChatLaunchArgs,
+  parseChatLaunchCompleteClientArgs,
+  parseChatLaunchIdArgs,
+  parseChatLaunchQueueMessageArgs,
+  parseCursorConfigValues,
+} from "../../../../desktop/src/main/services/chat/chatLaunchArgs";
 import {
-  resolveLaneOverlayContext,
-} from "../../../../desktop/src/main/services/lanes/laneOverlayContext";
+  runLaneEnvironmentSetup,
+  type LaneEnvironmentSetupDeps,
+} from "../../../../desktop/src/main/services/lanes/laneEnvironmentSetup";
 import type { createLaneService } from "../../../../desktop/src/main/services/lanes/laneService";
 import type { createLaneTemplateService } from "../../../../desktop/src/main/services/lanes/laneTemplateService";
 import type { createPortAllocationService } from "../../../../desktop/src/main/services/lanes/portAllocationService";
@@ -376,6 +383,7 @@ type SyncRemoteCommandServiceArgs = {
   operationService?: ReturnType<typeof createOperationService> | null;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
   agentChatService?: ReturnType<typeof createAgentChatService>;
+  chatLaunchService?: ChatLaunchService | null;
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
   personalChatScope?: Pick<PersonalChatScopeContract, "call" | "streamEvents">;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
@@ -700,38 +708,6 @@ function asStringRecord(value: unknown): Record<string, string> | undefined {
     .map(([key, entry]) => [key.trim(), typeof entry === "string" ? entry.trim() : ""] as const)
     .filter(([key, entry]) => key.length > 0 && entry.length > 0);
   return entries.length ? Object.fromEntries(entries) : undefined;
-}
-
-function parseAgentChatFileRefs(value: unknown): AgentChatFileRef[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const attachments: AgentChatFileRef[] = [];
-  for (const entry of value) {
-    if (!isRecord(entry)) continue;
-    const path = asTrimmedString(entry.path);
-    let type: "image" | "file" | null = null;
-    if (entry.type === "image") type = "image";
-    else if (entry.type === "file") type = "file";
-    if (!path || !type) continue;
-    attachments.push({ path, type });
-  }
-  return attachments;
-}
-
-function parseCursorConfigValues(
-  value: unknown,
-): AgentChatUpdateSessionArgs["cursorConfigValues"] | AgentChatCreateArgs["cursorConfigValues"] {
-  if (value == null) return null;
-  if (!isRecord(value)) return {};
-  return Object.fromEntries(
-    Object.entries(value)
-      .filter((entry): entry is [string, string | boolean | number] => (
-        typeof entry[1] === "string"
-        || typeof entry[1] === "boolean"
-        || (typeof entry[1] === "number" && Number.isFinite(entry[1]))
-      ))
-      .map(([key, entryValue]): [string, string | boolean | number] => [key.trim(), entryValue])
-      .filter(([key]) => key.length > 0),
-  );
 }
 
 function requireString(value: unknown, message: string): string {
@@ -2012,7 +1988,6 @@ function createAgentChatAttachmentUpload(
   });
 }
 
-
 function inferPrAiProvider(modelId: string): "codex" | "claude" {
   const descriptor = getModelById(modelId);
   return descriptor?.family === "anthropic" ? "claude" : "codex";
@@ -2541,49 +2516,9 @@ function parseAgentChatGetSummaryArgs(value: Record<string, unknown>): AgentChat
 }
 
 function parseAgentChatCreateArgs(value: Record<string, unknown>): AgentChatCreateArgs {
-  const parsed: AgentChatCreateArgs = {
-    laneId: requireString(value.laneId, "chat.create requires laneId."),
-    provider: (asTrimmedString(value.provider) ?? "codex") as AgentChatCreateArgs["provider"],
-    model: asTrimmedString(value.model) ?? "",
-    ...(asTrimmedString(value.modelId) ? { modelId: asTrimmedString(value.modelId)! } : {}),
-    ...(asTrimmedString(value.reasoningEffort) ? { reasoningEffort: asTrimmedString(value.reasoningEffort)! } : {}),
-  };
-
-  if ("sessionProfile" in value) parsed.sessionProfile = value.sessionProfile == null ? undefined : asTrimmedString(value.sessionProfile) as AgentChatCreateArgs["sessionProfile"];
-  if ("permissionMode" in value) parsed.permissionMode = value.permissionMode == null ? undefined : asTrimmedString(value.permissionMode) as AgentChatCreateArgs["permissionMode"];
-  if ("interactionMode" in value) parsed.interactionMode = value.interactionMode == null ? null : asTrimmedString(value.interactionMode) as AgentChatCreateArgs["interactionMode"];
-  if ("claudePermissionMode" in value) parsed.claudePermissionMode = value.claudePermissionMode == null ? undefined : asTrimmedString(value.claudePermissionMode) as AgentChatCreateArgs["claudePermissionMode"];
-  if ("claudeOutputStyle" in value) parsed.claudeOutputStyle = value.claudeOutputStyle == null ? null : asTrimmedString(value.claudeOutputStyle) ?? null;
-  if ("codexApprovalPolicy" in value) parsed.codexApprovalPolicy = value.codexApprovalPolicy == null ? undefined : asTrimmedString(value.codexApprovalPolicy) as AgentChatCreateArgs["codexApprovalPolicy"];
-  if ("codexSandbox" in value) parsed.codexSandbox = value.codexSandbox == null ? undefined : asTrimmedString(value.codexSandbox) as AgentChatCreateArgs["codexSandbox"];
-  if ("codexConfigSource" in value) parsed.codexConfigSource = value.codexConfigSource == null ? undefined : asTrimmedString(value.codexConfigSource) as AgentChatCreateArgs["codexConfigSource"];
-  if ("fastMode" in value || "codexFastMode" in value) {
-    parsed.fastMode = asOptionalBoolean(value.fastMode) ?? asOptionalBoolean(value.codexFastMode);
-  }
-  if ("opencodePermissionMode" in value) parsed.opencodePermissionMode = value.opencodePermissionMode == null ? undefined : asTrimmedString(value.opencodePermissionMode) as AgentChatCreateArgs["opencodePermissionMode"];
-  if ("piProfileId" in value) parsed.piProfileId = value.piProfileId == null ? null : asTrimmedString(value.piProfileId) ?? null;
-  if ("piProviderId" in value) parsed.piProviderId = value.piProviderId == null ? null : asTrimmedString(value.piProviderId) ?? null;
-  if ("piModelId" in value) parsed.piModelId = value.piModelId == null ? null : asTrimmedString(value.piModelId) ?? null;
-  if ("piSessionId" in value) parsed.piSessionId = value.piSessionId == null ? null : asTrimmedString(value.piSessionId) ?? null;
-  if ("piSessionFile" in value) parsed.piSessionFile = value.piSessionFile == null ? null : asTrimmedString(value.piSessionFile) ?? null;
-  if ("droidPermissionMode" in value) parsed.droidPermissionMode = value.droidPermissionMode == null ? undefined : (asTrimmedString(value.droidPermissionMode) ?? undefined) as AgentChatCreateArgs["droidPermissionMode"];
-  if ("cursorModeId" in value) parsed.cursorModeId = value.cursorModeId == null ? null : asTrimmedString(value.cursorModeId) ?? null;
-  if ("cursorConfigValues" in value) parsed.cursorConfigValues = parseCursorConfigValues(value.cursorConfigValues);
-  if ("requestedCwd" in value) parsed.requestedCwd = value.requestedCwd == null ? undefined : requireString(value.requestedCwd, "chat.create requires a non-empty requestedCwd when provided.");
-
-  return parsed;
-}
-
-function parseAgentChatSendArgs(value: Record<string, unknown>): AgentChatSendArgs {
-  const attachments = parseAgentChatFileRefs(value.attachments);
   return {
-    sessionId: requireString(value.sessionId, "chat.send requires sessionId."),
-    text: requireString(value.text, "chat.send requires text."),
-    ...(asTrimmedString(value.displayText) ? { displayText: asTrimmedString(value.displayText)! } : {}),
-    ...(attachments?.length ? { attachments } : {}),
-    ...(asTrimmedString(value.reasoningEffort) ? { reasoningEffort: asTrimmedString(value.reasoningEffort)! } : {}),
-    ...(asTrimmedString(value.executionMode) ? { executionMode: asTrimmedString(value.executionMode)! as AgentChatSendArgs["executionMode"] } : {}),
-    ...(asTrimmedString(value.interactionMode) ? { interactionMode: asTrimmedString(value.interactionMode)! as AgentChatSendArgs["interactionMode"] } : {}),
+    laneId: requireString(value.laneId, "chat.create requires laneId."),
+    ...parseAgentChatCreateFields(value),
   };
 }
 
@@ -3669,29 +3604,6 @@ function resolveLaneWorktreePathForSync(args: SyncRemoteCommandServiceArgs, lane
   return null;
 }
 
-/**
- * Thin sync-host adapter over the shared resolver in the desktop
- * `lanes/laneOverlayContext` module, so the mobile command path and the desktop
- * hosts resolve a lane's env-init config identically.
- */
-async function resolveLaneOverlayContextForSyncHost(
-  args: SyncRemoteCommandServiceArgs,
-  laneId: string,
-  options: { includeArchived?: boolean } = {},
-) {
-  const projectConfigService = requireService(args.projectConfigService, "Project config service not available.");
-  return await resolveLaneOverlayContext(
-    {
-      laneService: args.laneService,
-      projectConfigService,
-      portAllocationService: args.portAllocationService,
-      laneEnvironmentService: args.laneEnvironmentService,
-    },
-    laneId,
-    options,
-  );
-}
-
 async function deleteLaneWithRuntimeCleanup(
   args: SyncRemoteCommandServiceArgs,
   payload: Record<string, unknown>,
@@ -3739,38 +3651,6 @@ async function unarchiveLaneWithRuntimeSetup(
     });
   }
   return { ok: true };
-}
-
-async function resolveChatCreateArgs<T extends AgentChatCreateArgs>(
-  service: ReturnType<typeof createAgentChatService>,
-  payload: T,
-): Promise<T> {
-  if (payload.model.trim().length > 0) return payload;
-  const available = await service.getAvailableModels({
-    provider: payload.provider,
-    // ACP providers are here for the same reason as OpenCode/Pi: their model
-    // rows are gated on a CLI auth pass, and `activateRuntime` refreshes that
-    // pass. It does not spawn an agent for them.
-    ...(
-      payload.provider === "opencode"
-      || payload.provider === "pi"
-      || payload.provider === "qwen"
-      || payload.provider === "kimi"
-      || payload.provider === "grok"
-      || payload.provider === "copilot"
-        ? { activateRuntime: true }
-        : {}
-    ),
-  });
-  const chosen = available[0];
-  if (!chosen) {
-    throw new Error(`No configured ${payload.provider} chat model is available on the host.`);
-  }
-  return {
-    ...payload,
-    model: chosen.id,
-    ...(!payload.modelId && chosen.modelId ? { modelId: chosen.modelId } : {}),
-  };
 }
 
 function sessionStatusBucket(argsIn: {
@@ -4240,40 +4120,25 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("lanes.getReclaimRisk", { viewerAllowed: true }, async (payload) =>
     args.laneService.getReclaimRisk(requireString(payload.laneId, "lanes.getReclaimRisk requires laneId.")));
   register("lanes.getEnvStatus", { viewerAllowed: true }, async (payload) => args.laneEnvironmentService?.getProgress(requireString(payload.laneId, "lanes.getEnvStatus requires laneId.")) ?? null);
+  // Both route through the one shared setup path (template merged over the
+  // project config). Active lanes only, as the sync host always resolved them.
+  const laneEnvironmentSetupDeps = (): LaneEnvironmentSetupDeps => ({
+    laneService: args.laneService,
+    projectConfigService: requireService(args.projectConfigService, "Project config service not available."),
+    portAllocationService: args.portAllocationService,
+    laneEnvironmentService: requireService(args.laneEnvironmentService, "Lane environment service not available."),
+    laneTemplateService: args.laneTemplateService ?? null,
+  });
   register("lanes.initEnv", { viewerAllowed: true, queueable: true }, async (payload) => {
-    const laneEnvironmentService = requireService(args.laneEnvironmentService, "Lane environment service not available.");
     const laneId = requireString(payload.laneId, "lanes.initEnv requires laneId.");
-    const context = await resolveLaneOverlayContextForSyncHost(args, laneId);
-    if (!context.envInitConfig) {
-      const now = new Date().toISOString();
-      return {
-        laneId,
-        steps: [],
-        startedAt: now,
-        completedAt: now,
-        overallStatus: "completed",
-      } satisfies LaneEnvInitProgress;
-    }
-    return await laneEnvironmentService.initLaneEnvironment(context.lane, context.envInitConfig, context.overrides);
+    return await runLaneEnvironmentSetup(laneEnvironmentSetupDeps(), { laneId, includeArchived: false });
   });
   register("lanes.applyTemplate", { viewerAllowed: true, queueable: true }, async (payload) => {
-    const laneTemplateService = requireService(args.laneTemplateService, "Lane template service not available.");
-    const laneEnvironmentService = requireService(args.laneEnvironmentService, "Lane environment service not available.");
     const parsed = {
       laneId: requireString(payload.laneId, "lanes.applyTemplate requires laneId."),
       templateId: requireString(payload.templateId, "lanes.applyTemplate requires templateId."),
     } satisfies ApplyLaneTemplateArgs;
-    const context = await resolveLaneOverlayContextForSyncHost(args, parsed.laneId);
-    const template = laneTemplateService.getTemplate(parsed.templateId);
-    if (!template) throw new Error(`Template not found: ${parsed.templateId}`);
-    const templateEnvInit = laneTemplateService.resolveTemplateAsEnvInit(template);
-    const mergedOverrides = mergeLaneOverrides(context.overrides, {
-      ...(template.envVars ? { env: template.envVars } : {}),
-      ...(!context.overrides.portRange && template.portRange ? { portRange: template.portRange } : {}),
-      envInit: templateEnvInit,
-    });
-    const mergedEnvInitConfig = mergeLaneEnvInitConfig(context.envInitConfig, templateEnvInit) ?? templateEnvInit;
-    return await laneEnvironmentService.initLaneEnvironment(context.lane, mergedEnvInitConfig, mergedOverrides);
+    return await runLaneEnvironmentSetup(laneEnvironmentSetupDeps(), { ...parsed, includeArchived: false });
   });
 }
 
@@ -4723,7 +4588,7 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.launch", { viewerAllowed: true, queueable: true }, async (payload) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const parsed = parseAgentChatLaunchArgs(payload);
-    const session = await agentChatService.launchHeadless(await resolveChatCreateArgs(agentChatService, parsed));
+    const session = await agentChatService.launchHeadless(await resolveChatCreateModel(agentChatService, parsed));
     return summarizeChatSessionForRemote(agentChatService, session);
   });
   // Tracked CLI launch (the Linear batch-launch path). Without it the web
@@ -4942,9 +4807,28 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.create", { viewerAllowed: true, queueable: true }, async (payload) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const parsed = parseAgentChatCreateArgs(payload);
-    const session = await agentChatService.createSession(await resolveChatCreateArgs(agentChatService, parsed));
+    const session = await agentChatService.createSession(await resolveChatCreateModel(agentChatService, parsed));
     return summarizeChatSessionForRemote(agentChatService, session);
   });
+  // New-lane launches (shared/types/chatLaunch.ts). Not queueable: the phone
+  // shows the launch optimistically and offers Retry, and a lane appearing
+  // minutes later from an offline outbox would surprise everyone.
+  const requireChatLaunchService = () => requireService(args.chatLaunchService, "New-lane launches are not available on this host.");
+  register("chat.startLaunch", { viewerAllowed: true }, async (payload) =>
+    requireChatLaunchService().start(parseChatLaunchArgs(payload)));
+  register("chat.getLaunch", { viewerAllowed: true }, async (payload) =>
+    requireChatLaunchService().get(parseChatLaunchIdArgs(payload, "chat.getLaunch")));
+  register("chat.listLaunches", { viewerAllowed: true }, async () => args.chatLaunchService?.list() ?? []);
+  register("chat.cancelLaunch", { viewerAllowed: true }, async (payload) =>
+    requireChatLaunchService().cancel(parseChatLaunchIdArgs(payload, "chat.cancelLaunch")));
+  register("chat.retryLaunch", { viewerAllowed: true }, async (payload) =>
+    requireChatLaunchService().retry(parseChatLaunchIdArgs(payload, "chat.retryLaunch")));
+  register("chat.startLaunchNow", { viewerAllowed: true }, async (payload) =>
+    requireChatLaunchService().startNow(parseChatLaunchIdArgs(payload, "chat.startLaunchNow")));
+  register("chat.queueLaunchMessage", { viewerAllowed: true }, async (payload) =>
+    requireChatLaunchService().queueMessage(parseChatLaunchQueueMessageArgs(payload)));
+  register("chat.completeLaunchClient", { viewerAllowed: true }, async (payload) =>
+    requireChatLaunchService().completeClient(parseChatLaunchCompleteClientArgs(payload)));
   register("chat.send", { viewerAllowed: true, queueable: true }, async (payload) => {
     const result = await requireService(args.agentChatService, "Agent chat service not available.").sendMessage(
       parseAgentChatSendArgs(payload),

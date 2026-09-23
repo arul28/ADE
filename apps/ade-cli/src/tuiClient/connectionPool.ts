@@ -16,6 +16,7 @@ import { RemoteTargetRegistry } from "../../../desktop/src/main/services/remoteR
 import type { RemoteRuntimeProjectRecord, RemoteRuntimeTarget } from "../../../desktop/src/shared/types/remoteRuntime";
 import type { AdeAccountMachine } from "../../../desktop/src/shared/types/account";
 import { machineStatusLine } from "../../../desktop/src/shared/machinePresence";
+import { accountMachineRowLabel } from "../../../desktop/src/shared/accountDirectory";
 import { deriveProjectId } from "../services/projects/projectRegistry";
 import { AccountMachineDirectoryService } from "../services/account/accountMachineDirectoryService";
 import {
@@ -286,7 +287,8 @@ export function buildMachinePickerRows(args: {
     const name = machine.customName?.trim() || machine.name?.trim() || machine.machineKey;
     rows.push({
       id: machine.machineKey,
-      label: name,
+      // The query keeps the bare name; only the shown label names the install.
+      label: accountMachineRowLabel(machine) ?? name,
       detail: `account · ${accountMachineStatusDetail(machine)}`,
       kind: "account",
       query: {

@@ -146,6 +146,10 @@ enum ADEColor {
   /// Keys cover both the registry id ("anthropic/claude-sonnet-5") and shortId ("sonnet").
   private static let modelColors: [String: UInt32] = [
     // Anthropic
+    "anthropic/claude-opus-5-5": 0xD97706,
+    "anthropic/claude-opus-5-5-api": 0xD97706,
+    "claude-opus-5-5": 0xD97706,
+    "opus": 0xD97706,
     "anthropic/claude-fable-5-1": 0xD97706,
     "anthropic/claude-fable-5-1-api": 0xD97706,
     "claude-fable-5-1": 0xD97706,
@@ -153,9 +157,6 @@ enum ADEColor {
     "anthropic/claude-fable-5-api": 0xD97706,
     "claude-fable-5": 0xD97706,
     "fable": 0xD97706,
-    "anthropic/claude-opus-5-5": 0xD97706,
-    "claude-opus-5-5": 0xD97706,
-    "opus": 0xD97706,
     "anthropic/claude-opus-5": 0xD97706,
     "claude-opus-5": 0xD97706,
     "anthropic/claude-opus-4-8": 0xD97706,
@@ -169,15 +170,19 @@ enum ADEColor {
     "openai/gpt-6-astra": 0x10A37F,
     "gpt-6-astra": 0x10A37F,
     "astra": 0x10A37F,
+    "openai/gpt-6-sol": 0x10A37F,
+    "gpt-6-sol": 0x10A37F,
+    "sol": 0x10A37F,
+    "openai/gpt-6-luna": 0x34D399,
+    "gpt-6-luna": 0x34D399,
+    "luna": 0x34D399,
     "openai/gpt-5.6-sol": 0x10A37F,
     "gpt-5.6-sol": 0x10A37F,
-    "sol": 0x10A37F,
     "openai/gpt-5.6-terra": 0x22B88A,
     "gpt-5.6-terra": 0x22B88A,
     "terra": 0x22B88A,
     "openai/gpt-5.6-luna": 0x34D399,
     "gpt-5.6-luna": 0x34D399,
-    "luna": 0x34D399,
     "openai/gpt-5.5": 0x10A37F,
     "gpt-5.5": 0x10A37F,
     "openai/gpt-5.4": 0x10A37F,
@@ -215,18 +220,24 @@ enum ADEColor {
       append("openai/gpt-6-astra")
       append("gpt-6-astra")
       append("astra")
-    case "sol", "gpt-5.6-sol", "openai/gpt-5.6-sol":
+    case "sol", "gpt-6-sol", "openai/gpt-6-sol":
+      append("openai/gpt-6-sol")
+      append("gpt-6-sol")
+      append("sol")
+    case "luna", "gpt-6-luna", "openai/gpt-6-luna":
+      append("openai/gpt-6-luna")
+      append("gpt-6-luna")
+      append("luna")
+    case "gpt-5.6-sol", "openai/gpt-5.6-sol":
       append("openai/gpt-5.6-sol")
       append("gpt-5.6-sol")
-      append("sol")
     case "terra", "gpt-5.6-terra", "openai/gpt-5.6-terra":
       append("openai/gpt-5.6-terra")
       append("gpt-5.6-terra")
       append("terra")
-    case "luna", "gpt-5.6-luna", "openai/gpt-5.6-luna":
+    case "gpt-5.6-luna", "openai/gpt-5.6-luna":
       append("openai/gpt-5.6-luna")
       append("gpt-5.6-luna")
-      append("luna")
     case "gpt-5.5", "gpt-5.5-codex", "openai/gpt-5.5", "openai/gpt-5.5-codex":
       append("openai/gpt-5.5")
       append("gpt-5.5")
@@ -236,6 +247,13 @@ enum ADEColor {
     case "gpt-5.4-mini", "gpt-5.4-mini-codex", "openai/gpt-5.4-mini", "openai/gpt-5.4-mini-codex":
       append("openai/gpt-5.4-mini")
       append("gpt-5.4-mini")
+    case "opus", "opus-5.5", "opus-5-5",
+         "anthropic/claude-opus-5-5", "anthropic/claude-opus-5-5-api", "claude-opus-5-5",
+         "opencode/anthropic/opus", "opencode/anthropic/claude-opus-5-5":
+      append("anthropic/claude-opus-5-5")
+      append("claude-opus-5-5")
+      append("opencode/anthropic/claude-opus-5-5")
+      append("opus")
     case "fable", "fable-5.1", "fable-5-1", "fable-5", "fable-5.0",
          "anthropic/claude-fable-5-1", "anthropic/claude-fable-5-1-api",
          "claude-fable-5-1", "opencode/anthropic/claude-fable-5-1",
@@ -250,13 +268,6 @@ enum ADEColor {
       append("claude-fable-5")
       append("opencode/anthropic/claude-fable-5")
       append("fable")
-    case "opus", "opus-5.5", "opus-5-5",
-         "anthropic/claude-opus-5-5", "anthropic/claude-opus-5-5-api", "claude-opus-5-5",
-         "opencode/anthropic/opus", "opencode/anthropic/claude-opus-5-5":
-      append("anthropic/claude-opus-5-5")
-      append("claude-opus-5-5")
-      append("opencode/anthropic/claude-opus-5-5")
-      append("opus")
     case "opus-5", "opus-5.0", "opus-5-0",
          "anthropic/claude-opus-5", "anthropic/claude-opus-5-api", "claude-opus-5",
          "opencode/anthropic/claude-opus-5":
@@ -332,6 +343,10 @@ enum ADEColor {
   /// the same effort actions as desktop and the ADE TUI.
   private static let modelReasoningTiers: [String: [String]] = [
     // Claude
+    "anthropic/claude-opus-5-5": ["low", "medium", "high", "xhigh", "max"],
+    "anthropic/claude-opus-5-5-api": ["low", "medium", "high", "xhigh", "max"],
+    "claude-opus-5-5": ["low", "medium", "high", "xhigh", "max"],
+    "opus": ["low", "medium", "high", "xhigh", "max"],
     "anthropic/claude-fable-5-1": ["low", "medium", "high", "xhigh", "max", "ultracode"],
     "anthropic/claude-fable-5-1-api": ["low", "medium", "high", "xhigh", "max", "ultracode"],
     "claude-fable-5-1": ["low", "medium", "high", "xhigh", "max", "ultracode"],
@@ -339,9 +354,6 @@ enum ADEColor {
     "anthropic/claude-fable-5-api": ["low", "medium", "high", "xhigh", "max", "ultracode"],
     "claude-fable-5": ["low", "medium", "high", "xhigh", "max", "ultracode"],
     "fable": ["low", "medium", "high", "xhigh", "max", "ultracode"],
-    "anthropic/claude-opus-5-5": ["low", "medium", "high", "xhigh", "max"],
-    "claude-opus-5-5": ["low", "medium", "high", "xhigh", "max"],
-    "opus": ["low", "medium", "high", "xhigh", "max"],
     "anthropic/claude-opus-5": ["low", "medium", "high", "xhigh", "max"],
     "claude-opus-5": ["low", "medium", "high", "xhigh", "max"],
     "anthropic/claude-opus-4-8": ["low", "medium", "high", "xhigh", "max"],
@@ -354,15 +366,19 @@ enum ADEColor {
     "openai/gpt-6-astra": ["low", "medium", "high", "xhigh", "max"],
     "gpt-6-astra": ["low", "medium", "high", "xhigh", "max"],
     "astra": ["low", "medium", "high", "xhigh", "max"],
+    "openai/gpt-6-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
+    "gpt-6-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
+    "sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
+    "openai/gpt-6-luna": ["low", "medium", "high", "xhigh", "max"],
+    "gpt-6-luna": ["low", "medium", "high", "xhigh", "max"],
+    "luna": ["low", "medium", "high", "xhigh", "max"],
     "openai/gpt-5.6-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
     "gpt-5.6-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
-    "sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
     "openai/gpt-5.6-terra": ["low", "medium", "high", "xhigh", "max", "ultra"],
     "gpt-5.6-terra": ["low", "medium", "high", "xhigh", "max", "ultra"],
     "terra": ["low", "medium", "high", "xhigh", "max", "ultra"],
     "openai/gpt-5.6-luna": ["low", "medium", "high", "xhigh", "max"],
     "gpt-5.6-luna": ["low", "medium", "high", "xhigh", "max"],
-    "luna": ["low", "medium", "high", "xhigh", "max"],
     "openai/gpt-5.5": ["low", "medium", "high", "xhigh"],
     "gpt-5.5": ["low", "medium", "high", "xhigh"],
     "openai/gpt-5.4": ["low", "medium", "high", "xhigh"],

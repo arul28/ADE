@@ -9,6 +9,7 @@ import type {
   AutomationAction,
   AutomationActionResult,
   AutomationActionStatus,
+  AutomationAgentLimits,
   AutomationConfidenceScore,
   AutomationExecution,
   AutomationIngressEventRecord,
@@ -61,8 +62,14 @@ import type { BudgetCapProvider } from "../../../shared/types/usage";
 import { buildClaudeReadOnlyWorkerAllowedTools } from "../ai/tools/workerSandboxDefaults";
 import { isRecord, matchesGlob, normalizeSet, nowIso, resolvePathWithinRoot, safeJsonParse } from "../shared/utils";
 import { terminateProcessTree } from "../shared/processExecution";
-import { getDefaultModelDescriptor, getModelById, modelSupportsFastMode, resolveChatProviderForDescriptor, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
+import { getAppDefaultModelDescriptor, getDefaultModelDescriptor, getModelById, modelSupportsFastMode, resolveChatProviderForDescriptor, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
 import { resolveTailscaleCliPath } from "../sync/resolveTailscaleCliPath";
+import {
+  normalizeAutomationAgentLimits,
+  normalizeRunCommandTimeoutMs,
+  RUN_COMMAND_DEFAULT_TIMEOUT_MS,
+} from "../../../shared/automationLimits";
+import { SessionTurnAbandonedError } from "../chat/sessionTurnLimits";
 
 const execFileAsync = promisify(execFile);
 
@@ -338,7 +345,11 @@ export type AutomationActionOutcome = {
   status: AutomationActionStatus;
   output?: string;
   handoffSessionId?: string;
+  /** False for a failure a retry cannot fix, such as a turn someone stopped. */
+  retryable?: false;
 };
+
+class NonRetryableActionError extends Error {}
 
 export type AutomationSessionSignal = {
   kind: "limit_reached" | "failed";
@@ -396,9 +407,10 @@ type WatchedFileRoot = {
   branchRef?: string;
 };
 
-const DEFAULT_AUTOMATION_CHAT_MODEL_ID =
-  getDefaultModelDescriptor("opencode")?.id
-  ?? getDefaultModelDescriptor("claude")?.id
+/** Read on use: the app-wide default can move with model-manifest.json. */
+const defaultAutomationChatModelId = (): string =>
+  getAppDefaultModelDescriptor()?.id
+  ?? getDefaultModelDescriptor("opencode")?.id
   ?? "anthropic/claude-sonnet-5";
 
 type AutomationRunRow = {
@@ -529,6 +541,36 @@ const TOOL_FAMILY_ALLOWED_TOOLS: Record<AutomationToolFamily, string[]> = {
     "browser_take_screenshot",
   ],
 };
+
+/**
+ * An automation's agent turn gets the limits its rule asked for and nothing
+ * else: with neither set it runs until it finishes or someone stops it, the
+ * same as a chat started by hand.
+ */
+function agentTurnLimits(limits: AutomationAgentLimits | null | undefined): { timeoutMs: number | null; idleTimeoutMs: number | null } {
+  const { stopAfterMin, stopWhenIdleMin } = normalizeAutomationAgentLimits(limits);
+  return {
+    timeoutMs: stopAfterMin != null ? Math.floor(stopAfterMin * 60_000) : null,
+    idleTimeoutMs: stopWhenIdleMin != null ? Math.floor(stopWhenIdleMin * 60_000) : null,
+  };
+}
+
+/**
+ * A turn that was stopped or failed did not do the job, whatever text it left.
+ * A stop is deliberate, so it must not be retried into a fresh agent; a
+ * provider failure may be. Returns null when the turn finished normally.
+ */
+function unfinishedAgentTurn(
+  result: { status?: string; errorMessage?: string | null },
+): { output: string; retryable?: false } | null {
+  if (result.status === "interrupted") {
+    return { output: result.errorMessage?.trim() || "The agent turn was stopped before it finished.", retryable: false };
+  }
+  if (result.status === "failed") {
+    return { output: result.errorMessage?.trim() || "The agent turn failed." };
+  }
+  return null;
+}
 
 function safeJsonParseRecord(raw: string | null): Record<string, unknown> | null {
   const parsed = safeJsonParse(raw, null);
@@ -985,17 +1027,6 @@ export function normalizeRuntimeRule(rule: AutomationRuleInput): AutomationRule 
         ...(rawExecution.session ? { session: rawExecution.session } : {}),
       };
   const outputDisposition = rule.outputs?.disposition ?? "comment-only";
-  // Per-rule budget fields are deprecated in favor of global usage caps. We
-  // keep them in YAML for downgrade compatibility, but do not let runtime
-  // consume them.
-  const sanitizedGuardrails = { ...(rule.guardrails ?? {}) } as AutomationRule["guardrails"] & {
-    budgetCapUsd?: number;
-    maxSpendUsd?: number;
-    budgetUsd?: number;
-  };
-  delete (sanitizedGuardrails as { budgetCapUsd?: number }).budgetCapUsd;
-  delete (sanitizedGuardrails as { maxSpendUsd?: number }).maxSpendUsd;
-  delete (sanitizedGuardrails as { budgetUsd?: number }).budgetUsd;
   // Provenance is rebuilt rather than spread through, so a malformed stored
   // value (unknown origin, scope with no session id) is dropped instead of
   // surviving into the runtime rule.
@@ -1025,7 +1056,7 @@ export function normalizeRuntimeRule(rule: AutomationRuleInput): AutomationRule 
     reviewProfile: rule.reviewProfile ?? "quick",
     toolPalette: rule.toolPalette?.length ? rule.toolPalette : ["repo"],
     contextSources: includeProjectContext && rule.contextSources?.length ? rule.contextSources : [],
-    guardrails: sanitizedGuardrails,
+    guardrails: { ...(rule.guardrails ?? {}) },
     includeProjectContext,
     outputs: {
       disposition: outputDisposition,
@@ -3285,10 +3316,6 @@ export function createAutomationService({
         ?? rule.execution?.session?.reasoningEffort
         ?? rule.modelConfig?.thinkingLevel
         ?? null;
-      const timeoutMs = Math.max(
-        15_000,
-        Math.floor(action.timeoutMs ?? (rule.guardrails.maxDurationMin ?? 10) * 60_000),
-      );
       try {
         const session = await agentChatServiceRef.createSession({
           laneId,
@@ -3313,14 +3340,21 @@ export function createAutomationService({
           text: promptText,
           displayText: action.sessionTitle?.trim() || promptText,
           reasoningEffort,
-          timeoutMs,
+          ...agentTurnLimits(action),
         });
+        const unfinished = unfinishedAgentTurn(result);
+        if (unfinished) return { status: "failed", ...unfinished };
         const output = result.outputText?.trim()
           ? result.outputText
           : `Agent session ${session.id} completed.`;
         return { status: "succeeded", output };
       } catch (err) {
-        return { status: "failed", output: err instanceof Error ? err.message : String(err) };
+        return {
+          status: "failed",
+          output: err instanceof Error ? err.message : String(err),
+          // The chat was ended or deleted; a retry would start a new agent.
+          ...(err instanceof SessionTurnAbandonedError ? { retryable: false as const } : {}),
+        };
       }
     }
     if (action.type === "run-command") {
@@ -3349,7 +3383,8 @@ export function createAutomationService({
       } catch {
         throw new Error(`Configured cwd does not exist: ${configuredCwd || cwd}`);
       }
-      const { output, exitCode } = await runCommand({ command, cwd, timeoutMs: action.timeoutMs ?? 5 * 60_000 });
+      const timeoutMs = normalizeRunCommandTimeoutMs(action.timeoutMs) ?? RUN_COMMAND_DEFAULT_TIMEOUT_MS;
+      const { output, exitCode } = await runCommand({ command, cwd, timeoutMs });
       if (exitCode !== 0) {
         return {
           status: "failed",
@@ -3399,11 +3434,14 @@ export function createAutomationService({
               const result = await runLegacyAction(rule, action, trigger, run.id);
               lastOutput = result.output ?? null;
               if (result.handoffSessionId) handoffSessionId = result.handoffSessionId;
-              if (result.status === "failed") throw new Error(result.output ?? "Action failed");
+              if (result.status === "failed") {
+                const message = result.output ?? "Action failed";
+                throw result.retryable === false ? new NonRetryableActionError(message) : new Error(message);
+              }
               finishAction({ id: actionId, status: result.status, output: result.output ?? null });
               break;
             } catch (error) {
-              if (attempt >= maxRetry) throw error;
+              if (attempt >= maxRetry || error instanceof NonRetryableActionError) throw error;
               await new Promise((resolve) => setTimeout(resolve, 400 * Math.pow(2, attempt)));
             }
           }
@@ -3598,7 +3636,7 @@ export function createAutomationService({
     if (requestedModelId && !getModelById(requestedModelId)) {
       throw new Error(`Unknown model '${requestedModelId}'.`);
     }
-    const modelId = requestedModelId ?? DEFAULT_AUTOMATION_CHAT_MODEL_ID;
+    const modelId = requestedModelId ?? defaultAutomationChatModelId();
     const modelDescriptor = getModelById(modelId) ?? getDefaultModelDescriptor("opencode");
     if (!modelDescriptor) {
       throw new Error(`Unknown model '${modelId}'.`);
@@ -3702,11 +3740,6 @@ export function createAutomationService({
     const reasoningEffort = args.rule.execution?.session?.reasoningEffort ?? args.rule.modelConfig?.thinkingLevel ?? null;
     const fastMode = args.rule.execution?.session?.fastMode === true
       && modelSupportsFastMode(modelDescriptor);
-    const timeoutMs = Math.max(
-      15_000,
-      Math.floor((args.rule.guardrails.maxDurationMin ?? 10) * 60_000),
-    );
-
     let sessionId: string | null = null;
 
     try {
@@ -3740,8 +3773,10 @@ export function createAutomationService({
         text: prompt,
         displayText: args.rule.prompt?.trim() || args.rule.name,
         reasoningEffort,
-        timeoutMs,
+        ...agentTurnLimits(args.rule.execution?.session),
       });
+      const unfinished = unfinishedAgentTurn(result);
+      if (unfinished) throw new Error(unfinished.output);
 
       finishAction({
         id: actionId,

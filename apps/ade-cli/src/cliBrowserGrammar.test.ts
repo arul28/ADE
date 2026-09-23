@@ -607,8 +607,11 @@ const BUILD_CLI_PLAN_HELP_CALL_SITES = 2;
  * only sees cli.ts, which is still the whole browser plan; the moved readers
  * are launch-surface readers no browser subcommand reaches, so nothing they
  * read needs a `BROWSER_VALUE_FLAGS` entry.
+ *
+ * 108 since `buildChatLaunchPlan`: `ade chat launch` reads its new-lane launch
+ * flags in one builder, apart from `buildChatPlan`'s session-scoped readers.
  */
-const ARGV_READER_COUNT = 107;
+const ARGV_READER_COUNT = 108;
 /*
  * The moved readers — `readParentSessionId`, `readAgentSpawnLineage`,
  * `collectLaunchArgs`/`normalizeLaunchArgs` — now live in launchArgs.ts, which

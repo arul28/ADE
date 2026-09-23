@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import http from "node:http";
 import https from "node:https";
+import os from "node:os";
 import path from "node:path";
 import type { RemoteAttachmentUploadRoute } from "./attachmentUploadRoute";
 
@@ -132,4 +133,32 @@ export async function uploadRemoteAttachment(args: {
     body.on("error", fail);
     body.pipe(request);
   });
+}
+
+/**
+ * Run `upload` against a private temp file that holds `bytes`, then remove it.
+ *
+ * The upload streams from disk, but a pasted image is bytes the renderer holds
+ * with no file behind them. A temp file lets pasted bytes take the same route
+ * as a picked file. The host names the stored file itself, so the temp name
+ * does not matter.
+ */
+export async function withTempAttachmentFile<T>(
+  bytes: Buffer,
+  upload: (sourcePath: string) => Promise<T>,
+  tempRoot: string = os.tmpdir(),
+): Promise<T> {
+  // mkdtemp makes the directory 0700 on POSIX, so no other user reads the bytes.
+  const dir = await fs.promises.mkdtemp(path.join(tempRoot, "ade-attachment-upload-"));
+  try {
+    const sourcePath = path.join(dir, "attachment");
+    await fs.promises.writeFile(sourcePath, bytes, { mode: 0o600 });
+    return await upload(sourcePath);
+  } finally {
+    // Retries cover Windows, where a destroyed read stream can hold its handle
+    // for a moment after the upload settles.
+    await fs.promises
+      .rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+      .catch(() => {});
+  }
 }

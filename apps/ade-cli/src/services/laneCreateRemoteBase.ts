@@ -4,6 +4,7 @@ import {
   selectRemoteLaneBaseRef,
 } from "../../../desktop/src/shared/defaultRemoteLaneBase";
 import type { NewLaneBaseSource } from "../../../desktop/src/shared/types";
+import { resolveGitCommit } from "../../../desktop/src/main/services/git/git";
 import type { createProjectConfigService } from "../../../desktop/src/main/services/config/projectConfigService";
 import type { createGitOperationsService } from "../../../desktop/src/main/services/git/gitOperationsService";
 import type { createLaneService } from "../../../desktop/src/main/services/lanes/laneService";
@@ -17,6 +18,22 @@ export interface LaneCreateRemoteBaseDeps {
   projectConfigService?: Pick<ReturnType<typeof createProjectConfigService>, "getEffective"> | null;
   onWarning?: (warning: string) => void;
   fetchTimeoutMs?: number;
+  /**
+   * True when `ref` resolves to a commit in `cwd` (the primary lane's
+   * worktree). Defaults to `git rev-parse --verify --quiet <ref>^{commit}`.
+   */
+  refResolves?: (ref: string, cwd: string) => Promise<boolean>;
+}
+
+export type LaneCreateRemoteBaseResolution = {
+  /** The remote ref to branch from, or null to keep the lane service's local default. */
+  baseRef: string | null;
+  /** Remote fetch outcome; null when no fetch was attempted. */
+  fetchSucceeded: boolean | null;
+};
+
+async function gitRefResolves(ref: string, cwd: string): Promise<boolean> {
+  return (await resolveGitCommit(ref, cwd)) !== null;
 }
 
 /**
@@ -31,8 +48,22 @@ export interface LaneCreateRemoteBaseDeps {
  * `create_lane` tool (`ade lanes create`, agent tool calls).
  */
 export async function resolveLaneCreateRemoteBase(deps: LaneCreateRemoteBaseDeps): Promise<string | null> {
+  return (await resolveLaneCreateRemoteBaseDetailed(deps)).baseRef;
+}
+
+/**
+ * {@link resolveLaneCreateRemoteBase} plus the fetch outcome, for callers that
+ * report it (the chat-launch "Fetch base branch" stage). The chosen ref is
+ * verified to resolve to a commit: a local branch's configured upstream whose
+ * remote ref is gone (`[gone]`) yields null rather than a base every
+ * `laneService.create` would reject.
+ */
+export async function resolveLaneCreateRemoteBaseDetailed(
+  deps: LaneCreateRemoteBaseDeps,
+): Promise<LaneCreateRemoteBaseResolution> {
+  const none = (fetchSucceeded: boolean | null = null): LaneCreateRemoteBaseResolution => ({ baseRef: null, fetchSucceeded });
   const gitService = deps.gitService;
-  if (!gitService) return null;
+  if (!gitService) return none();
   let source: NewLaneBaseSource | null = null;
   try {
     source = deps.projectConfigService?.getEffective().git?.newLaneBaseSource ?? null;
@@ -41,16 +72,17 @@ export async function resolveLaneCreateRemoteBase(deps: LaneCreateRemoteBaseDeps
   }
   // "local" short-circuits before the lane/branch lookups; the callee re-checks
   // as its own contract.
-  if (source === "local") return null;
+  if (source === "local") return none();
+  let fetchSucceeded: boolean | null = null;
   try {
     const lanes = await deps.laneService.list({ includeStatus: false });
     const primary = lanes.find((lane) => lane.laneType === "primary");
-    if (!primary) return null;
+    if (!primary) return none();
     const primaryBaseRef = primary.baseRef || primary.branchRef;
     const remoteCandidate = remoteLaneBaseCandidate(primaryBaseRef);
     const defaultBranch = remoteCandidate.replace(/^origin\//, "") || "main";
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
-    const fetchSucceeded = await Promise.race([
+    fetchSucceeded = await Promise.race([
       gitService.fetch({ laneId: primary.id }).then(() => true).catch(() => false),
       new Promise<boolean>((resolve) => {
         timeoutId = setTimeout(
@@ -67,7 +99,18 @@ export async function resolveLaneCreateRemoteBase(deps: LaneCreateRemoteBaseDeps
 
     const branches = await gitService.listBranches({ laneId: primary.id });
     const remoteBase = selectRemoteLaneBaseRef({ branches, primaryBaseRef });
-    if (remoteBase) return remoteBase;
+    const cwd = primary.worktreePath || null;
+    if (remoteBase && cwd) {
+      // A configured upstream can outlive its remote ref; check it resolves.
+      const resolves = await (deps.refResolves ?? gitRefResolves)(remoteBase, cwd).catch(() => false);
+      if (resolves) return { baseRef: remoteBase, fetchSucceeded };
+      deps.onWarning?.(`⚠ Base ${remoteBase} no longer exists on the remote; using the local base.`);
+      return none(fetchSucceeded);
+    }
+    // Nowhere to verify it: only a remote ref the listing actually shows counts.
+    if (remoteBase && branches.some((branch) => branch.isRemote && branch.name === remoteBase)) {
+      return { baseRef: remoteBase, fetchSucceeded };
+    }
 
     if (fetchSucceeded && gitService.getSyncStatus) {
       try {
@@ -81,8 +124,8 @@ export async function resolveLaneCreateRemoteBase(deps: LaneCreateRemoteBaseDeps
         // Warning enrichment is best-effort; lane creation still falls back locally.
       }
     }
-    return null;
+    return none(fetchSucceeded);
   } catch {
-    return null;
+    return none(fetchSucceeded);
   }
 }

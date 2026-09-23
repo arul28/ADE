@@ -317,9 +317,13 @@ apps/ios/
 │   │   │                            # bounce the URL to a paired host via the
 │   │   │                            # deeplinks.open sync command.
 │   ├── Models/
-│   │   └── RemoteModels.swift       # Codable structs mirroring shared types,
-│   │                                # including legacy and dotted subagent
-│   │                                # lifecycle chat events
+│   │   ├── RemoteModels.swift       # Codable structs mirroring shared types,
+│   │   │                            # including legacy and dotted subagent
+│   │   │                            # lifecycle chat events
+│   │   └── ChatLaunchModels.swift   # hand mirror of shared/types/chatLaunch.ts
+│   │                                # (snapshot, stages, queued messages,
+│   │                                # chat_launch_event envelope); tolerant
+│   │                                # decoding, only launchId required
 │   ├── Resources/
 │   │   ├── DatabaseBootstrap.sql    # generated from desktop kvDb.ts; carries
 │   │   │                            # the replicated `terminal_sessions`
@@ -337,7 +341,9 @@ apps/ios/
 │   │   │                              # precise account-not-found fallback and
 │   │   │                              # matching attempt verification
 │   │   ├── AccountDirectory.swift   # account machine directory list/rename +
-│   │   │                            # Attention relay clients
+│   │   │                            # install labels (channel/adeHome →
+│   │   │                            # installLabel/rowLabel) + Attention relay
+│   │   │                            # clients
 │   │   ├── Database.swift           # SQLite + pure-SQL CRR + offline caches
 │   │   ├── KeychainService.swift    # per-host pairing secrets, stable device
 │   │   │                            # identity, and SSH credential storage
@@ -390,6 +396,14 @@ apps/ios/
 │   │   ├── SyncService+MachineWake.swift # the confirm/waking/failed prompt
 │   │   │                            # state machine and its 90 s decision
 │   │   │                            # deadline
+│   │   ├── ChatLaunchStore.swift    # new-lane launch snapshots per project
+│   │   │                            # plus this device's local facts (start
+│   │   │                            # in flight, retry request, deferred
+│   │   │                            # messages); own observable so launch
+│   │   │                            # ticks re-render only launch surfaces
+│   │   ├── SyncService+ChatLaunch.swift # chat.startLaunch … commands,
+│   │   │                            # chat_launch_event handling, hydration
+│   │   │                            # and foreign-project pull refresh
 │   │   ├── SyncTerminalInputQueue.swift # bounded ordered terminal input,
 │   │   │                                # ACK timeout/retry, stable input ids
 │   │   ├── Dictation/               # SpeechDictationService,
@@ -549,6 +563,14 @@ apps/ios/
 │   │   │                            #   groups, quiet-zone shelves,
 │   │   │                            #   WorkViewStateStore; nested drawers
 │   │   │                            #   come from WorkSpawnNesting),
+│   │   │                            # WorkChatLaunch* (new-lane launches:
+│   │   │                            #   Presentation = hand mirror of
+│   │   │                            #   shared/chatLaunch.ts wording, Views =
+│   │   │                            #   palette/glyphs/rail/stage row,
+│   │   │                            #   SetupCard, PendingScreen + the route
+│   │   │                            #   gate, ListProjection = Work/Hub row
+│   │   │                            #   overlay), WorkLaneSetupTranscriptCard
+│   │   │                            #   (the lane_setup ade_card row),
 │   │   │                            # Work*Helpers, WorkNewChatScreen (chat/CLI
 │   │   │                            #   launcher + per-project interface
 │   │   │                            #   preference shared with Hub; pinned
@@ -1104,6 +1126,20 @@ button and `SettingsMachineRenameSheet`; **Use hostname** clears `customName`
 instead of copying the hostname into it. `AccountService` updates the in-memory
 directory record after the authenticated PATCH, so the machine rows, connection
 header, and Hub pill refresh without reconnecting.
+
+A record can also say which ADE install it is. `AccountMachine` decodes the
+optional `channel` (`AccountMachineInstallChannel`: stable, beta, alpha) and
+`adeHome` (for example `~/.ade-alpha`, at most 120 characters). An unknown
+channel or a bad home drops only the install label, never the machine.
+`installLabel` is "ADE Alpha", or the ADE home when there is no channel.
+`rowLabel` follows the desktop's `accountMachineRowLabel`: the display name
+plus the install ("MacBook Pro · ADE Alpha"), with the host's own " · Alpha"
+suffix removed so it does not show twice. A custom name is kept as typed. Two
+installs on one Mac share a hostname, and this label is what tells them apart.
+The account connections list, the Hub quick-connect rows, and the Settings
+connection rows show `rowLabel`. Rename fields and name matching keep
+`displayName`. `MachineRowView` truncates its title in the middle, so the
+install at the end stays visible.
 
 Primary machine rows state only facts they can prove:
 
@@ -2496,6 +2532,59 @@ stored choice. `WorkNewChatScreen` captures the active project id when pushed;
 `HubComposerDrawer` reloads the preference whenever its Project destination
 changes so a hub-created session cannot accidentally launch with the previous
 project's interface mode.
+
+### New-lane chat launches
+
+A new **chat** on the auto-create-lane target — from `WorkNewChatScreen` or
+the Hub composer drawer — goes through the brain-owned launch
+(`chat.startLaunch`, see
+[Chat › New-lane launches](../chat/README.md#new-lane-launches)) when
+`SyncService.canStartChatLaunch` holds: the host advertises
+`chat.startLaunch`, it has not rejected it as unknown on this connection
+(`chatLaunchKnownUnsupported`, reset on reconnect), and the phone can send
+live requests. CLI sessions, Cursor Cloud mode, offline sends, and older
+hosts keep the chained `lanes.create` → `chat.create` → `chat.send` flow
+unchanged (`ChatLaunchRequest` returns nil).
+
+`SyncService.beginChatLaunch` inserts an optimistic snapshot and returns it
+at once; attachments stage on the host in the background and
+`chat.startLaunch` follows. The session id is the launch id, so the screen
+opens the chat route immediately (Work) or reports the created chat (Hub)
+with no placeholder swap. On the route, `WorkChatLaunchGate` shows
+`WorkChatLaunchPendingScreen` — the opening bubble, the live setup card,
+queued follow-ups, and a composer whose sends go to
+`chat.queueLaunchMessage` — until the agent starts, then hands over to the
+ordinary chat destination for the same session id and never flips back.
+With no launch held, the gate waits until this connection has listed the
+project's launches, so a relaunch mid-setup does not strand the chat without
+its setup screen, Retry, or Delete. The setup card
+(`WorkChatLaunchSetupCard`) offers Start now and Cancel while running, and
+Retry, Start anyway (lane exists and the environment failed) and Delete on
+failure; its wording is a hand mirror of `shared/chatLaunch.ts`
+(`WorkChatLaunchPresentation.swift`, covered by `ChatLaunchTests`). Once the
+chat exists, `WorkLaneSetupTranscriptCard` renders the transcript's
+`lane_setup` `ade_card` from the live snapshot, or from the card's own rows
+(matched by each row's `key`) after a reload.
+
+**Rows.** `workOverlayChatLaunches` folds pending launches into the Work
+list: a launch whose session row has not replicated yet gets a synthesized
+row under its lane (the lane may not have replicated either), and once the
+real row lands only its preview line borrows the launch's status line.
+`WorkSessionRowCard` draws the shared segmented rail under that line.
+`hubRosterOverlayingChatLaunches` does the same for each Hub project's
+roster. Deleting a pending launch row cancels the launch, which deletes the
+lane (worktree, local and remote branch) and the chat on the host;
+`chat.cancelLaunch` gets a 5-minute request budget (longer than `lanes.delete`), matching the desktop: it waits out an in-flight checkout and then deletes the lane.
+
+**Refresh.** Pushed `chat_launch_event` envelopes carry the host's
+`projectId` / `projectRootPath` (older hosts omit them and the push is
+filed under the active project). The active project hydrates with
+`chat.listLaunches` once per connection (project switches reconnect).
+Launches in other projects get no pushes, so the phone pulls
+`chat.listLaunches` per project for any launch the host accepted that is
+still running or awaiting its client — on connect, on foreground, and
+every 3 s while the Hub is on screen and the app is active; the loop stops
+as soon as nothing is moving.
 
 The Work chat composer folds by gesture, not by a control. A downward swipe
 anywhere on the composer card — the field, the controls row, or the card's own

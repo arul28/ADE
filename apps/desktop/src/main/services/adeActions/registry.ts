@@ -127,6 +127,7 @@ import { getModelById } from "../../../shared/modelRegistry";
 import {
   LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
   legacyAttachmentCapMessage,
+  maxBase64EncodedLength,
 } from "../../../shared/chatAttachmentLimits";
 import {
   projectAttachmentsDir,
@@ -139,10 +140,13 @@ import {
   releaseLaneRuntimeResources,
   restoreUnarchivedLaneRuntime,
 } from "../lanes/laneRuntimeLifecycle";
+import { runLaneEnvironmentSetup, type LaneEnvironmentSetupDeps } from "../lanes/laneEnvironmentSetup";
 import {
-  mergeLaneEnvInitConfig,
-  mergeLaneOverrides,
-} from "../lanes/laneEnvInitMerge";
+  parseChatLaunchArgs,
+  parseChatLaunchCompleteClientArgs,
+  parseChatLaunchIdArgs,
+  parseChatLaunchQueueMessageArgs,
+} from "../chat/chatLaunchArgs";
 import { resolveLaneOverlayContext } from "../lanes/laneOverlayContext";
 import { mergeAiConfig } from "../config/projectConfigService";
 import { appendDiffTruncationNotice, MAX_DIFF_SIDE_TEXT_BYTES } from "../diffs/diffService";
@@ -483,7 +487,7 @@ function normalizeAgentChatParallelLaunchState(
 
 
 async function saveAgentChatTempAttachment(projectRoot: string, arg: { data?: string; filename?: string }): Promise<{ path: string }> {
-  const maxEncodedLength = Math.ceil(MAX_TEMP_ATTACHMENT_BYTES / 3) * 4;
+  const maxEncodedLength = maxBase64EncodedLength(MAX_TEMP_ATTACHMENT_BYTES);
   if (typeof arg.data !== "string") {
     throw new Error("Temporary attachment data is required.");
   }
@@ -573,6 +577,7 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
   const agentChatService = runtime.agentChatService;
   if (!agentChatService) return null;
   const base = agentChatService as unknown as OpaqueService;
+  const launches = () => requireService(runtime.chatLaunchService, "Chat launch service not available.");
   const service: OpaqueService = {
     ...base,
     ensureCtoSession: async (args?: { modelId?: string | null; reasoningEffort?: string | null }) => {
@@ -585,6 +590,18 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
         permissionMode: "full-auto",
       });
     },
+    // New-lane launches (shared/types/chatLaunch.ts). Brain-owned end to end;
+    // payloads go through the same parser as the sync `chat.startLaunch` …
+    // commands (chat/chatLaunchArgs.ts), and the service auto-picks an empty model.
+    startLaunch: (args?: unknown) => launches().start(parseChatLaunchArgs(args)),
+    getLaunch: (args?: unknown) =>
+      runtime.chatLaunchService?.get(parseChatLaunchIdArgs(args, "chat.getLaunch")) ?? null,
+    listLaunches: () => runtime.chatLaunchService?.list() ?? [],
+    cancelLaunch: (args?: unknown) => launches().cancel(parseChatLaunchIdArgs(args, "chat.cancelLaunch")),
+    retryLaunch: (args?: unknown) => launches().retry(parseChatLaunchIdArgs(args, "chat.retryLaunch")),
+    startLaunchNow: (args?: unknown) => launches().startNow(parseChatLaunchIdArgs(args, "chat.startLaunchNow")),
+    queueLaunchMessage: (args?: unknown) => launches().queueMessage(parseChatLaunchQueueMessageArgs(args)),
+    completeLaunchClient: (args?: unknown) => launches().completeClient(parseChatLaunchCompleteClientArgs(args)),
     getParallelLaunchState: (args?: { parentLaneId?: string }) => {
       const parentLaneId = requireNonEmptyString(args?.parentLaneId, "parentLaneId");
       const key = agentChatParallelLaunchStateKey(runtime.projectRoot, parentLaneId);
@@ -1607,6 +1624,20 @@ async function resolveLaneOverlayContextForRuntime(runtime: AdeRuntime, laneId: 
   );
 }
 
+/** Deps for the shared `runLaneEnvironmentSetup` (lane.initEnv / lane.applyTemplate). */
+function laneEnvironmentSetupDeps(
+  runtime: AdeRuntime,
+  laneEnvironmentService: NonNullable<AdeRuntime["laneEnvironmentService"]>,
+): LaneEnvironmentSetupDeps {
+  return {
+    laneService: runtime.laneService,
+    projectConfigService: runtime.projectConfigService,
+    portAllocationService: runtime.portAllocationService,
+    laneEnvironmentService,
+    laneTemplateService: runtime.laneTemplateService ?? null,
+  };
+}
+
 async function ensureLanePreviewInfo(runtime: AdeRuntime, laneId: string): Promise<LanePreviewInfo | null> {
   const laneProxyService = runtime.laneProxyService;
   const portAllocationService = runtime.portAllocationService;
@@ -1813,12 +1844,7 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
     initEnv: async (args?: { laneId?: string }): Promise<LaneEnvInitProgress> => {
       const laneEnvironmentService = requireService(runtime.laneEnvironmentService, "Lane environment service not available.");
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
-      const context = await resolveLaneOverlayContextForRuntime(runtime, laneId);
-      if (!context.envInitConfig) {
-        const now = new Date().toISOString();
-        return { laneId, steps: [], startedAt: now, completedAt: now, overallStatus: "completed" };
-      }
-      return laneEnvironmentService.initLaneEnvironment(context.lane, context.envInitConfig, context.overrides);
+      return runLaneEnvironmentSetup(laneEnvironmentSetupDeps(runtime, laneEnvironmentService), { laneId });
     },
     getEnvStatus: (args?: { laneId?: string }) =>
       runtime.laneEnvironmentService?.getProgress(requireNonEmptyString(args?.laneId, "laneId")) ?? null,
@@ -1834,21 +1860,11 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
       requireService(runtime.laneTemplateService, "Lane template service not available.").setDefaultTemplateId(args?.templateId ?? null);
     },
     applyTemplate: async (args?: ApplyLaneTemplateArgs): Promise<LaneEnvInitProgress> => {
-      const laneTemplateService = requireService(runtime.laneTemplateService, "Lane template service not available.");
+      // runLaneEnvironmentSetup throws "Lane template service not available." itself.
       const laneEnvironmentService = requireService(runtime.laneEnvironmentService, "Lane environment service not available.");
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
       const templateId = requireNonEmptyString(args?.templateId, "templateId");
-      const context = await resolveLaneOverlayContextForRuntime(runtime, laneId);
-      const template = laneTemplateService.getTemplate(templateId);
-      if (!template) throw new Error(`Template not found: ${templateId}`);
-      const templateEnvInit = laneTemplateService.resolveTemplateAsEnvInit(template);
-      const mergedOverrides = mergeLaneOverrides(context.overrides, {
-        ...(template.envVars ? { env: template.envVars } : {}),
-        ...(!context.overrides.portRange && template.portRange ? { portRange: template.portRange } : {}),
-        envInit: templateEnvInit,
-      });
-      const mergedEnvInitConfig = mergeLaneEnvInitConfig(context.envInitConfig, templateEnvInit) ?? templateEnvInit;
-      return laneEnvironmentService.initLaneEnvironment(context.lane, mergedEnvInitConfig, mergedOverrides);
+      return runLaneEnvironmentSetup(laneEnvironmentSetupDeps(runtime, laneEnvironmentService), { laneId, templateId });
     },
     saveTemplate: (args?: { template?: unknown }) => {
       const template = args?.template;

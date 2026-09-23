@@ -74,6 +74,9 @@ struct MachineRowView: View {
             .font(.body.weight(.medium))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(1)
+            // The end of an account row names the install ("· ADE Alpha"),
+            // which is what tells two installs on one Mac apart.
+            .truncationMode(.middle)
           if let statusPill {
             ADEStatusPill(text: statusPill.text, tint: statusPill.tint)
           }

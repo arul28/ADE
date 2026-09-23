@@ -12,6 +12,9 @@ import {
 } from "@phosphor-icons/react";
 import { extractError } from "../../lib/format";
 import { useBrainRepair } from "../../hooks/useBrainRepair";
+import { useReconnectThisComputer } from "../../hooks/useReconnectThisComputer";
+import { useThisComputerRefusal } from "../../hooks/useThisComputerRefusal";
+import { describeThisComputerRefusal } from "../../lib/thisComputerRefusal";
 import { BrainRepairButton } from "../settings/BrainRepairButton";
 import { ReportIssueButton } from "../app/ReportIssueButton";
 import {
@@ -537,6 +540,20 @@ export function RemoteTargetList({
   const showRepair = publishHealthDisplay.kind === "failing"
     && isBrainAccountSessionFailure(localPublishHealth?.state)
     && repair.available;
+  // A directory refusal is the one publish failure with a named cause and a
+  // button that fixes it. Without this the line said "couldn't publish it"
+  // and offered only a report, which is how a removal went unnoticed.
+  const { refusal, refresh: refreshRefusal } = useThisComputerRefusal();
+  const reconnect = useReconnectThisComputer({
+    onSettled: () => {
+      refreshRefusal();
+      refreshPublishHealth();
+    },
+  });
+  const refusalCopy = refusal && reconnect.available ? describeThisComputerRefusal(refusal) : null;
+  const reconnectAction = refusalCopy
+    ? reconnect.view({ label: refusalCopy.action, detail: refusalCopy.title })
+    : null;
 
   const openAddMachine = useCallback(() => {
     setSelectedId(null);
@@ -1304,10 +1321,24 @@ export function RemoteTargetList({
                 }}
               >
                 <Warning size={13} weight="fill" style={{ flexShrink: 0 }} />
-                <span>
-                  Other machines may not find this one — ADE couldn't publish it for{" "}
-                  {publishHealthDisplay.minutes} min
-                </span>
+                {reconnectAction ? (
+                  <>
+                    <span>{reconnectAction.detail}</span>
+                    <button
+                      type="button"
+                      disabled={reconnectAction.disabled}
+                      onClick={reconnectAction.onClick}
+                      style={outlineButton({ height: 22, padding: "0 8px", fontSize: 11 })}
+                    >
+                      {reconnectAction.label}
+                    </button>
+                  </>
+                ) : (
+                  <span>
+                    Other machines may not find this one — ADE couldn't publish it for{" "}
+                    {publishHealthDisplay.minutes} min
+                  </span>
+                )}
                 {showRepair ? <BrainRepairButton repair={repair} height={22} /> : null}
                 <ReportIssueButton
                   variant="ghost"

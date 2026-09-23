@@ -30,6 +30,7 @@
 // so a receiver that cannot resolve the primary id can fall back to the
 // branch, PR, or Linear issue — see DeeplinkEnvelope.
 
+import { isUuid } from "./uuid";
 import type { AppNavigationTarget } from "./types/core";
 
 export const ADE_DEEPLINK_SCHEME = "ade";
@@ -146,7 +147,6 @@ export type DeeplinkTarget =
   | DeeplinkPrTarget
   | DeeplinkLinearIssueTarget;
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // GitHub: owner 1-39 chars [A-Za-z0-9-]; repo can include _.-, no path separators.
 const GH_OWNER_RE = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
 const GH_REPO_RE = /^[A-Za-z0-9_.][A-Za-z0-9_.-]{0,99}$/;
@@ -157,10 +157,6 @@ const LINEAR_ID_RE = /^[A-Za-z][A-Za-z0-9]{0,9}-\d{1,9}$/;
 const BRANCH_BAD_RE = /(^|\/)\.\.($|\/)|[\x00-\x1f\x7f]/;
 const OPAQUE_ID_BAD_RE = /[\x00-\x1f\x7f]/;
 const COMMIT_SHA_RE = /^[0-9a-f]{7,40}$/i;
-
-function isValidUuid(value: string): boolean {
-  return UUID_RE.test(value);
-}
 
 function isValidGhOwner(value: string): boolean {
   return GH_OWNER_RE.test(value);
@@ -522,7 +518,7 @@ function parseAdeUrl(url: URL, rawUrl: string): ParseResult {
 
   if (host === "lane") {
     const laneId = pathSegments[0] ? safeDecode(pathSegments[0]) : "";
-    if (!laneId || !isValidUuid(laneId)) {
+    if (!laneId || !isUuid(laneId)) {
       return { ok: false, error: { kind: "malformed", reason: "invalid lane id" }, rawUrl };
     }
     const envelope = readEnvelopeParams(url.searchParams);
@@ -610,7 +606,7 @@ function parseHttpsParams(url: URL, rawUrl: string): ParseResult {
   const type = (url.searchParams.get("type") ?? "").toLowerCase();
   if (type === "lane") {
     const laneId = url.searchParams.get("id") ?? "";
-    if (!isValidUuid(laneId)) return { ok: false, error: { kind: "malformed", reason: "invalid lane id" }, rawUrl };
+    if (!isUuid(laneId)) return { ok: false, error: { kind: "malformed", reason: "invalid lane id" }, rawUrl };
     const envelope = readEnvelopeParams(url.searchParams);
     return { ok: true, target: { kind: "lane", laneId, ...(envelope ? { envelope } : {}) }, rawUrl };
   }
@@ -729,7 +725,7 @@ function buildPrTarget(
 
 function buildSessionTarget(sessionId: string, searchParams: URLSearchParams, rawUrl: string): ParseResult {
   const laneId = searchParams.get("lane") ?? undefined;
-  if (laneId != null && !isValidUuid(laneId)) {
+  if (laneId != null && !isUuid(laneId)) {
     return { ok: false, error: { kind: "malformed", reason: "invalid lane id" }, rawUrl };
   }
   const event = parseNonNegativeIntParam(searchParams.get("event"));
@@ -759,7 +755,7 @@ function buildFileTarget(path: string, searchParams: URLSearchParams, rawUrl: st
     return { ok: false, error: { kind: "malformed", reason: "invalid file path" }, rawUrl };
   }
   const laneId = searchParams.get("lane") ?? undefined;
-  if (laneId != null && !isValidUuid(laneId)) {
+  if (laneId != null && !isUuid(laneId)) {
     return { ok: false, error: { kind: "malformed", reason: "invalid lane id" }, rawUrl };
   }
   const line = parseNonNegativeIntParam(searchParams.get("line"));
@@ -778,7 +774,7 @@ function buildCommitTarget(sha: string, searchParams: URLSearchParams, rawUrl: s
     return { ok: false, error: { kind: "malformed", reason: "invalid commit sha" }, rawUrl };
   }
   const laneId = searchParams.get("lane") ?? undefined;
-  if (laneId != null && !isValidUuid(laneId)) {
+  if (laneId != null && !isUuid(laneId)) {
     return { ok: false, error: { kind: "malformed", reason: "invalid lane id" }, rawUrl };
   }
   const envelope = readEnvelopeParams(searchParams);

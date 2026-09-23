@@ -1,5 +1,6 @@
 import type { CtoVoiceAction } from "../../../shared/types/ctoVoice";
 import type { AdeActionDomain } from "./domains";
+import { ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION } from "../../../shared/types/account";
 
 /**
  * The documented input shape for every action the CTO's curated tools reach.
@@ -160,6 +161,13 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "no input",
       example: "ade account token create",
     },
+    deleteMachine: {
+      description:
+        "Remove a machine from the ADE account. Destructive: the directory revokes it and clears its Activity, and it can only rejoin when someone confirms it on that computer. "
+        + `People only: agents are refused, so ask the user to do it. Refused without confirmation: "${ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION}".`,
+      input: `object { machine: string (machine key), confirmation: "${ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION}" }`,
+      example: `ade machines remove <machine-key> --confirm ${ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION} --text`,
+    },
   },
   proxy: {
     status: {
@@ -304,6 +312,46 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
   },
   chat: {
+    startLaunch: {
+      description: "Launch a chat (or prepare a CLI lane) in a brand-new lane: reserves the chat and lane ids, returns at once, then fetches the base, checks out the worktree, applies the default lane template, creates the chat and sends the opening message. Progress streams as chat_launch_event.",
+      input: "object { launchId: uuid, prompt: string, kind?: \"chat\" | \"cli\" (default chat), mode?: \"foreground\" | \"background\" (default foreground), laneId?: uuid, laneName?, baseBranch? (default: the project's new-lane base), title?, displayPrompt?, attachments?, provider?, modelId?, chat?: { create: <chat.createSession args without laneId>, message: <chat.sendMessage args without sessionId> } (required for kind chat) }",
+      example: "ade actions run chat.startLaunch --input-json '{\"kind\":\"chat\",\"mode\":\"background\",\"launchId\":\"6f1c…\",\"prompt\":\"fix the flaky test\",\"chat\":{\"create\":{\"provider\":\"codex\",\"model\":\"openai/gpt-5.6-sol\"},\"message\":{\"text\":\"fix the flaky test\"}}}'",
+    },
+    listLaunches: {
+      description: "List new-lane launches this brain is running or recently finished.",
+      input: "none",
+      example: "ade actions run chat.listLaunches --json",
+    },
+    cancelLaunch: {
+      description: "Cancel a new-lane launch and fully delete what it created: the chat, the lane's worktree, and its local and remote branch.",
+      input: "object { launchId: uuid }",
+      example: "ade actions run chat.cancelLaunch --input-json '{\"launchId\":\"6f1c…\"}'",
+    },
+    getLaunch: {
+      description: "Read one new-lane launch's current snapshot (stages, phase, lane, chat).",
+      input: "object { launchId: uuid }",
+      example: "ade actions run chat.getLaunch --input-json '{\"launchId\":\"6f1c…\"}' --json",
+    },
+    retryLaunch: {
+      description: "Retry a failed new-lane launch from its first unfinished stage.",
+      input: "object { launchId: uuid }",
+      example: "ade actions run chat.retryLaunch --input-json '{\"launchId\":\"6f1c…\"}'",
+    },
+    startLaunchNow: {
+      description: "Start a new-lane launch's agent without waiting for the rest of its lane environment setup (also 'Start anyway' after an environment failure).",
+      input: "object { launchId: uuid }",
+      example: "ade actions run chat.startLaunchNow --input-json '{\"launchId\":\"6f1c…\"}'",
+    },
+    queueLaunchMessage: {
+      description: "Queue a message for a new-lane launch whose chat is still being set up; it is sent in order once the agent starts.",
+      input: "object { launchId: uuid, text: string, displayText?, attachments? }",
+      example: "ade actions run chat.queueLaunchMessage --input-json '{\"launchId\":\"6f1c…\",\"text\":\"also check CI\"}'",
+    },
+    completeLaunchClient: {
+      description: "Report the CLI session a client started for a CLI new-lane launch (or the error that stopped it).",
+      input: "object { launchId: uuid, sessionId?: string, error?: string }",
+      example: "ade actions run chat.completeLaunchClient --input-json '{\"launchId\":\"6f1c…\",\"sessionId\":\"pty-1\"}'",
+    },
     createSession: {
       description: "Create a persistent ADE Work chat session.",
       input: "object { laneId?, provider?, model?/modelId?, reasoningEffort?, permissionMode?, fastMode?, title?, surface? }",

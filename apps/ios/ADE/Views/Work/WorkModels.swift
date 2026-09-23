@@ -912,6 +912,9 @@ struct WorkAdeCardRow: Hashable {
   let text: String
   let detail: String?
   let tone: WorkAdeCardTone
+  /// Wire `key`: the row's stable identity (a `lane_setup` stage id). Nil on
+  /// cards written before hosts sent it.
+  var key: String? = nil
 }
 
 struct WorkAdeCardProgress: Hashable {
@@ -969,6 +972,7 @@ struct WorkAdeCardModel: Identifiable, Hashable {
     "pr_merge_ready",
     "pr_conflict",
     "claude_session_quota",
+    "lane_setup",
   ]
 
   let id: String

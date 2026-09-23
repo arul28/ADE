@@ -16,9 +16,13 @@ import type {
   AdeAccountMachineRemovalResult,
   MachineInventoryDetail,
 } from "../../../shared/types";
-import { ADE_ACCOUNT_PAIRING_AUTHENTICATION_REQUIRED_CODE } from "../../../shared/types/account";
 import type { MachinePresence } from "../../../shared/types/power";
-import { accountMachineDisplayName } from "../../../shared/accountDirectory";
+import {
+  accountMachineDisplayName,
+  accountMachineRemovalConfirmBody,
+  accountMachineRowLabel,
+} from "../../../shared/accountDirectory";
+import type { ThisMachineRefusal } from "../../../shared/accountMachineRefusal";
 import {
   NO_CONNECTED_MACHINE_IDS,
   accountMachinePresence,
@@ -49,10 +53,9 @@ import {
   type AdeAccountSessionState,
   type AdeAccountStatus,
 } from "../../lib/account";
-import {
-  runAccountDeviceLogin,
-  type AccountDeviceLoginPrompt,
-} from "../../lib/accountLogin";
+import { describeThisComputerRefusal } from "../../lib/thisComputerRefusal";
+import { useReconnectThisComputer } from "../../hooks/useReconnectThisComputer";
+import { useThisComputerRefusal } from "../../hooks/useThisComputerRefusal";
 import {
   formatMachineEndpoint,
   relativeLastSeenPhrase,
@@ -101,6 +104,7 @@ import {
   webMachineCatalogKeys,
   webMachineRosterSummary,
   webMachineRowStatusLine,
+  webMachineRowLabel,
   type WebMachineEntry,
 } from "../../webclient/workspace/webWorkspaceModel";
 
@@ -157,7 +161,10 @@ export function ConfirmSheet({
     return () => window.removeEventListener("keydown", handler, true);
   }, [busy, onCancel]);
 
-  return (
+  // A portal: the card behind this sheet uses `backdrop-filter`, which makes
+  // it the containing block for `position: fixed`. Inside it, a tall sheet was
+  // clipped at the top of the card.
+  return createPortal(
     <div
       role="dialog"
       aria-modal="true"
@@ -195,7 +202,7 @@ export function ConfirmSheet({
           <div style={{ fontFamily: SANS_FONT, fontSize: 15, fontWeight: 700, color: COLORS.textPrimary }}>
             {title}
           </div>
-          <div style={{ marginTop: 8, fontFamily: SANS_FONT, fontSize: 13, lineHeight: 1.55, color: COLORS.textSecondary }}>
+          <div style={{ marginTop: 8, fontFamily: SANS_FONT, fontSize: 13, lineHeight: 1.55, color: COLORS.textSecondary, whiteSpace: "pre-line" }}>
             {body}
           </div>
         </div>
@@ -226,115 +233,36 @@ export function ConfirmSheet({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
-}
-
-/** What the user is told after a reconnect attempt, and how it is styled. */
-type ReconnectOutcome = { tone: "success" | "warning" | "danger"; message: string };
-
-/** Join the brain's reason onto our sentence without doubling its punctuation. */
-function sentence(reason: string): string {
-  const trimmed = reason.trim();
-  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
-}
-
-/**
- * Turn a repair result into copy that stays true to what actually happened.
- *
- * Read against `repairMachinePairing` in ade-cli, not by intuition:
- * `published` is true only on the path that also sets `repaired`, and a
- * successful re-pair reports `pushRestored: false` whenever the push half was
- * never gated — so `!pushRestored` on its own does NOT mean "still muted".
- *
- * The state that does mean it is `repaired && wasRevoked && !pushRestored`:
- * something was gated, the directory took the machine back, and the push
- * revocation did not lift with it. That machine is on the roster and silent —
- * the exact failure the ade-cli side refuses to paper over — so it must not be
- * reported as a clean reconnect.
- */
-function describeReconnectOutcome(
-  result: AdeAccountMachinePairingRepairResult,
-): ReconnectOutcome {
-  if (result.repaired) {
-    if (!result.wasRevoked) {
-      return { tone: "success", message: "This computer is already connected to your account." };
-    }
-    return result.pushRestored
-      ? {
-          tone: "success",
-          message: "This computer is back on your account. Activity and alerts are delivering again.",
-        }
-      : {
-          tone: "warning",
-          message:
-            "This computer is back on your account, but it isn't delivering Activity yet. Reopen ADE on this computer to finish.",
-        };
-  }
-  // Nothing was gated and the brain skipped the publish — no work to report.
-  if (result.state === "not_revoked") {
-    return { tone: "success", message: "This computer is already connected to your account." };
-  }
-  return {
-    tone: "danger",
-    message: result.reason
-      ? `Couldn't reconnect this computer: ${sentence(result.reason)} It's still disconnected from your account.`
-      : "Couldn't reconnect this computer, so it's still disconnected from your account. Try again in a moment.",
-  };
-}
-
-/**
- * Does this failed reconnect mean "prove a fresh sign-in", rather than a
- * transport, configuration, or brain-availability failure?
- *
- * Decided by `reasonCode`, the brain's machine-readable answer. Both refusals
- * still share `state: "http_error"`, but they no longer share a discriminator:
- * `pairing_authentication_required` is the recoverable one, and a present code
- * is authoritative — `machine_revoked` means the sentence must NOT be consulted
- * to talk us into a sign-in the directory did not ask for.
- *
- * Fails CLOSED: an unrecognised or absent answer reports the brain's reason
- * as-is rather than dragging the user into a browser sign-in that would not
- * have fixed anything.
- */
-export function reconnectNeedsFreshSignIn(
-  result: AdeAccountMachinePairingRepairResult,
-): boolean {
-  if (result.repaired) return false;
-  if (result.reasonCode) {
-    return result.reasonCode === ADE_ACCOUNT_PAIRING_AUTHENTICATION_REQUIRED_CODE;
-  }
-  // COMPATIBILITY SHIM — older brain only.
-  //
-  // Brains before `reasonCode` existed encoded this refusal solely in the
-  // user-facing sentence `PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE` (see
-  // `apps/ade-cli/src/services/account/accountMachinePublisherService.ts`; the
-  // renderer cannot import that module because it pulls in Node, so a test pins
-  // the two together). Matched loosely so small copy edits in those already-
-  // shipped builds do not break their recovery path.
-  //
-  // Delete this branch — and the test that pins the sentence — once the
-  // supported brain floor includes `reasonCode`.
-  return /\bsign in\b[\s\S]*\bagain on this computer\b/i.test(result.reason ?? "");
 }
 
 /**
  * Body copy when this computer is missing from the account directory.
  *
- * Absence is not proof of removal: a publish gap, a split sync listener, or an
- * expired sign-in all produce the same empty row. Never claim the computer was
- * removed as fact.
+ * Absence alone is not proof of removal: a publish gap, a split sync listener,
+ * or an expired sign-in all produce the same empty row. Only the directory's
+ * own refusal, read from this machine's publisher health, lets the card say
+ * "removed" and name the date.
  */
-export function describeThisComputerMissing(sessionState: AdeAccountSessionState): {
+export function describeThisComputerMissing(
+  sessionState: AdeAccountSessionState,
+  refusal: ThisMachineRefusal | null = null,
+): {
   title: string;
   body: string;
 } {
+  if (sessionState === "active" && refusal) {
+    const copy = describeThisComputerRefusal(refusal);
+    return { title: copy.title, body: copy.detail };
+  }
   const title = "This computer isn't on your account";
   switch (sessionState) {
     case "expired":
       return {
         title,
-        body: "This computer's ADE sign-in expired, so it stopped publishing itself to your account. Sign in again, then Reconnect. If the row still doesn't come back, Repair restarts ADE's background service on this computer.",
+        body: "This computer's ADE sign-in expired, so it stopped publishing itself to your account. Sign in again, then choose Reconnect this computer. If the row still doesn't come back, Repair restarts ADE's background service on this computer.",
       };
     case "unreadable":
       return {
@@ -373,7 +301,12 @@ function lastSeenLabel(lastSeenAt: number | null): string {
 
 type ComputerDisplayRow = {
   key: string;
+  /** The machine's own name, for rename fields and accessible labels. */
   name: string;
+  /** What the row shows: the name plus the install, as "MacBook Pro · ADE Alpha". */
+  label: string;
+  /** The install's ADE home, shown on hover. */
+  adeHome: string | null;
   thisMac: boolean;
   rememberedOnly: boolean;
   /** This computer holds a live runtime channel to it right now. */
@@ -431,9 +364,12 @@ function displayRowFromAccountMachine(
   // battery" rather than a route hint that has not been dialable for an hour.
   const presence = accountMachinePresence(machine, { connected });
   const awake = machineIsAwake(presence);
+  const name = accountMachineDisplayName(machine) ?? "Unnamed computer";
   return {
     key: machine.machineKey,
-    name: accountMachineDisplayName(machine) ?? "Unnamed computer",
+    name,
+    label: accountMachineRowLabel(machine) ?? name,
+    adeHome: machine.adeHome ?? null,
     thisMac,
     rememberedOnly: false,
     connected: presence === "connected",
@@ -451,6 +387,8 @@ function displayRowFromWebMachine(machine: WebMachineEntry): ComputerDisplayRow 
   return {
     key: machine.key,
     name: machine.name,
+    label: webMachineRowLabel(machine),
+    adeHome: machine.accountMachine?.adeHome ?? null,
     thisMac: false,
     rememberedOnly: machine.rememberedOnly,
     // Hosted web rows keep their own vocabulary in `webMachineRowStatusLine`;
@@ -472,7 +410,8 @@ export function YourMacsCard() {
   const webMachines = useWebMachines();
   const usingWorkspaceRoster = webMode && workspace != null;
   const { status } = useAccountStatus();
-  const missingCopy = describeThisComputerMissing(accountSessionState(status));
+  const { refusal, refresh: refreshRefusal } = useThisComputerRefusal();
+  const missingCopy = describeThisComputerMissing(accountSessionState(status), refusal);
   const [result, setResult] = useState<AdeAccountMachinesResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [localIdentity, setLocalIdentity] = useState<AdeAccountLocalMachineIdentity | null>(null);
@@ -489,15 +428,8 @@ export function YourMacsCard() {
   const [renameValue, setRenameValue] = useState("");
   const [renameBusy, setRenameBusy] = useState(false);
   const [renameError, setRenameError] = useState<string | null>(null);
-  const [reconnecting, setReconnecting] = useState(false);
-  const [reconnectOutcome, setReconnectOutcome] = useState<ReconnectOutcome | null>(null);
-  const [signInPrompt, setSignInPrompt] = useState<AccountDeviceLoginPrompt | null>(null);
   const [expandedMachineKey, setExpandedMachineKey] = useState<string | null>(null);
   const [inventoryByMachine, setInventoryByMachine] = useState<Record<string, MachineInventoryViewState>>({});
-  // A ref, not state: the in-flight sign-in loop reads it between polls, and a
-  // state value captured in that closure would stay false forever.
-  const reconnectCancelledRef = useRef(false);
-
   // Returns what it loaded as well as storing it: the reconnect flow reports
   // its outcome from the directory's own answer, and reading it back out of
   // state would race the render that has not happened yet.
@@ -705,91 +637,19 @@ export function YourMacsCard() {
     && Boolean(localIdentity?.machineKey)
     && !machines.some((candidate) => isThisMac(candidate));
 
-  const canReconnect = !webMode && typeof accountBridge()?.repairMachinePairing === "function";
-
-  /**
-   * Reconnect this computer, signing in again first when the directory demands
-   * proof of one.
-   *
-   * The re-pair is attempted first, because it is the only step needed when the
-   * removal left nothing that requires fresh authentication (a push-only gate,
-   * or a directory grant already in hand). When the directory does refuse for
-   * want of a fresh sign-in, escalating in the same click is the whole point:
-   * the refusal's own advice — "sign in again on this computer" — is exactly
-   * what the user just did by pressing this button.
-   *
-   * The sign-in runs through the DEVICE flow, not the loopback flow the sign-in
-   * card uses. Only the device flow passes through ADE's account directory, so
-   * only it can end with the directory minting the single-use pairing grant
-   * that gets a removed machine back on the roster.
-   *
-   * Nothing re-triggers the repair afterwards: the brain already re-pairs on
-   * its own when an interactive sign-in completes while this machine is
-   * revoked. So the follow-through is the directory read below, which reports
-   * the outcome the user cares about — is this computer on the list again.
-   */
-  const reconnectThisMachine = useCallback(async () => {
-    const api = accountBridge();
-    if (!api?.repairMachinePairing) return;
-    setReconnecting(true);
-    setReconnectOutcome(null);
-    setSignInPrompt(null);
-    reconnectCancelledRef.current = false;
-    try {
-      const first = await api.repairMachinePairing();
-      if (!reconnectNeedsFreshSignIn(first)) {
-        setReconnectOutcome(describeReconnectOutcome(first));
-        invalidateAccountMachines();
-        await load();
-        return;
-      }
-      const signIn = await runAccountDeviceLogin({
-        onPrompt: setSignInPrompt,
-        isCancelled: () => reconnectCancelledRef.current,
-      });
-      setSignInPrompt(null);
-      if (signIn.status === "cancelled") return;
-      if (signIn.status === "failed") {
-        setReconnectOutcome({ tone: "danger", message: signIn.message });
-        return;
-      }
-      invalidateAccountMachines();
-      const refreshed = await load();
-      const back = Boolean(
-        refreshed?.state === "ok"
-        && refreshed.machines.some((candidate) => isThisMac(candidate)),
-      );
-      setReconnectOutcome(
-        back
-          ? {
-              tone: "success",
-              message: "This computer is back on your account. Activity and alerts are delivering again.",
-            }
-          : {
-              tone: "danger",
-              message:
-                "You're signed in, but this computer still isn't on your account. Try reconnecting it again.",
-            },
-      );
-    } catch (err) {
-      // Main already translated the brain's failure into a sentence; only a
-      // truly unexpected throw reaches the fallback.
-      setReconnectOutcome({
-        tone: "danger",
-        message: err instanceof Error && err.message
-          ? err.message
-          : "Couldn't reconnect this computer to your account. Try again in a moment.",
-      });
-    } finally {
-      setSignInPrompt(null);
-      setReconnecting(false);
-    }
-  }, [load, isThisMac]);
-
-  const cancelReconnect = useCallback(() => {
-    reconnectCancelledRef.current = true;
-    setSignInPrompt(null);
-  }, []);
+  // The same flow the shell banner and the Connections pane run. This card
+  // passes its own loader so the list refreshes in the same step.
+  const reconnectFlow = useReconnectThisComputer({
+    reloadMachines: load,
+    isThisMac,
+    onSettled: refreshRefusal,
+  });
+  const canReconnect = reconnectFlow.available;
+  const { reconnecting, outcome: reconnectOutcome } = reconnectFlow;
+  const showReconnectRow = (thisMachineMissing || refusal != null) && canReconnect;
+  // The card keeps its own idle label: it offers the same button whether the
+  // directory refused this computer or only stopped listing it.
+  const reconnectAction = reconnectFlow.view({ label: "Reconnect this computer", detail: missingCopy.body });
 
   // The ⋮ menu is rendered in a fixed portal so it can never be clipped by, or
   // stack behind, the cards that follow this one (mirrors the TabNav pattern).
@@ -978,8 +838,12 @@ export function YourMacsCard() {
         which is why Reconnect lives here — but the same empty row also appears
         when this computer simply stopped publishing. The copy must not claim
         removal as fact.
+
+        A refusal shows it too, even when the list still has a row for this
+        computer: the shell banner hides on this page and points here, so a
+        stale row must not hide the only Reconnect button.
       */}
-      {thisMachineMissing && canReconnect ? (
+      {showReconnectRow ? (
         <div
           style={{
             display: "flex",
@@ -995,29 +859,28 @@ export function YourMacsCard() {
             <div style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>
               {missingCopy.title}
             </div>
-            <div style={{ marginTop: 2, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.5, color: COLORS.textSecondary }}>
-              {missingCopy.body}
+            <div
+              role={reconnectAction.cancels ? "status" : undefined}
+              style={{ marginTop: 2, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.5, color: COLORS.textSecondary }}
+            >
+              {reconnectAction.detail}
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginTop: 10 }}>
               <button
                 type="button"
-                disabled={reconnecting || repair.pending}
-                onClick={() => void reconnectThisMachine()}
-                style={primaryButton({
+                disabled={reconnectAction.disabled || repair.pending}
+                onClick={reconnectAction.onClick}
+                style={(reconnectAction.cancels ? outlineButton : primaryButton)({
                   height: 30,
                   fontSize: 12,
                   padding: "0 12px",
                   flexShrink: 0,
-                  opacity: reconnecting || repair.pending ? 0.6 : 1,
-                  cursor: reconnecting || repair.pending ? "not-allowed" : "pointer",
+                  opacity: reconnectAction.disabled || repair.pending ? 0.6 : 1,
+                  cursor: reconnectAction.disabled || repair.pending ? "not-allowed" : "pointer",
                 })}
               >
-                {reconnecting ? <CircleNotch size={13} weight="bold" className="animate-spin" /> : null}
-                {signInPrompt
-                  ? "Signing in…"
-                  : reconnecting
-                    ? "Reconnecting…"
-                    : "Reconnect this computer"}
+                {reconnectAction.busy ? <CircleNotch size={13} weight="bold" className="animate-spin" /> : null}
+                {reconnectAction.label}
               </button>
               {repair.available ? (
                 <BrainRepairButton repair={repair} height={30} disabled={reconnecting} />
@@ -1136,6 +999,7 @@ export function YourMacsCard() {
                         <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
                           <span
                             data-machine-presence={row.presence ?? undefined}
+                            title={row.adeHome ?? undefined}
                             style={{
                               fontFamily: SANS_FONT,
                               fontSize: 13,
@@ -1146,7 +1010,7 @@ export function YourMacsCard() {
                               whiteSpace: "nowrap",
                             }}
                           >
-                            {row.name}
+                            {row.label}
                           </span>
                           {row.thisMac ? (
                             <span style={inlineBadge(COLORS.accent, { fontSize: 10, padding: "2px 7px", flexShrink: 0 })}>
@@ -1353,10 +1217,12 @@ export function YourMacsCard() {
 
       {/*
         The directory refused the re-pair without proof of a fresh sign-in, so
-        one is in flight. The browser is already open on the pre-filled page;
-        the code is shown for the case where it opened without it.
+        the "Confirm it's you" step is in flight. The browser is already open on the pre-filled page;
+        the code is shown for the case where it opened without it. The warning
+        row above says the same words and holds the Cancel when it is shown;
+        this row carries them when the attempt came from the ⋮ menu instead.
       */}
-      {signInPrompt ? (
+      {reconnectAction.cancels && !showReconnectRow ? (
         <div
           role="status"
           style={{
@@ -1370,31 +1236,25 @@ export function YourMacsCard() {
         >
           <CircleNotch size={14} weight="bold" className="animate-spin" color={COLORS.textSecondary} />
           <div style={{ minWidth: 0, flex: 1, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.5, color: COLORS.textSecondary }}>
-            Finish signing in in your browser to reconnect this computer…
-            <div style={{ color: COLORS.textMuted }}>
-              If the page asks for a code, enter{" "}
-              <span style={{ color: COLORS.textPrimary, fontWeight: 600, letterSpacing: 0.5 }}>
-                {signInPrompt.userCode}
-              </span>
-              .
-            </div>
+            {reconnectAction.detail}
           </div>
           <button
             type="button"
-            onClick={cancelReconnect}
+            onClick={reconnectAction.onClick}
             style={outlineButton({ height: 26, fontSize: 11, padding: "0 10px", flexShrink: 0 })}
           >
-            Cancel
+            {reconnectAction.label}
           </button>
         </div>
       ) : null}
 
       {/*
-        Rendered independently of the banner: a successful reconnect refreshes
-        the directory and the banner disappears with it, and the confirmation
-        must outlive the state that prompted it.
+        Rendered independently of the warning row: a successful reconnect
+        refreshes the directory and the row disappears with it, and the
+        confirmation must outlive the state that prompted it. While the row is
+        shown it already carries a failure's reason in place of its body.
       */}
-      {reconnectOutcome ? (
+      {reconnectOutcome && (!showReconnectRow || reconnectOutcome.tone === "success") ? (
         <div
           role="status"
           style={{
@@ -1531,10 +1391,10 @@ export function YourMacsCard() {
                   <button
                     type="button"
                     role="menuitem"
-                    disabled={reconnecting}
+                    disabled={reconnectAction.disabled}
                     onClick={() => {
                       closeMenu();
-                      void reconnectThisMachine();
+                      reconnectAction.onClick();
                     }}
                     style={{
                       display: "flex",
@@ -1548,15 +1408,11 @@ export function YourMacsCard() {
                       fontFamily: SANS_FONT,
                       fontSize: 12.5,
                       textAlign: "left",
-                      cursor: reconnecting ? "not-allowed" : "pointer",
-                      opacity: reconnecting ? 0.6 : 1,
+                      cursor: reconnectAction.disabled ? "not-allowed" : "pointer",
+                      opacity: reconnectAction.disabled ? 0.6 : 1,
                     }}
                   >
-                    {signInPrompt
-                      ? "Signing in…"
-                      : reconnecting
-                        ? "Reconnecting…"
-                        : "Reconnect this computer"}
+                    {reconnectAction.label}
                   </button>
                 ) : null}
                 {/*
@@ -1637,8 +1493,8 @@ export function YourMacsCard() {
       */}
       {pendingRemoval ? (
         <ConfirmSheet
-          title={`Remove ${accountMachineDisplayName(pendingRemoval) ?? "Unnamed computer"} from your account?`}
-          body="It will no longer connect through your account. You can add it back by signing in to ADE on that computer."
+          title={`Remove ${accountMachineRowLabel(pendingRemoval) ?? "Unnamed computer"} from your account?`}
+          body={accountMachineRemovalConfirmBody(pendingRemoval)}
           confirmLabel="Remove"
           danger
           busy={removing}

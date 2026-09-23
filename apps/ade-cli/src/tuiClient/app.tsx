@@ -471,6 +471,7 @@ import {
   activityItemDeepLink,
   buildActivityPaneModel,
   loadActivitySnapshot,
+  reconnectOutcomeNotice,
 } from "./activityPane";
 import type { AttentionSnapshot } from "../../../desktop/src/shared/types/attention";
 import { deriveProjectId } from "../services/projects/projectRegistry";
@@ -12682,19 +12683,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const result = envelope.result && typeof envelope.result === "object" && !Array.isArray(envelope.result)
         ? envelope.result as Record<string, unknown>
         : envelope;
-      if (result.repaired === true) {
-        addNotice("This computer is reconnected to your ADE account.", "success");
-        await refreshActivityPane();
-        return;
-      }
-      // The directory refuses a re-pair without proof of a freshly completed
-      // interactive sign-in, and only its own device flow can produce that
-      // proof. ADE Code cannot host that flow, so point at the command that
-      // carries it rather than dead-ending on the refusal.
-      const reason = typeof result.reason === "string" && result.reason.trim()
-        ? result.reason.trim()
-        : "This computer is still disconnected from your ADE account.";
-      addNotice(`${reason} Run \`ade machines reconnect\` in a terminal to finish.`, "error");
+      // The directory can refuse a re-pair until someone confirms it in the
+      // browser, and only its own device flow can do that. ADE Code cannot
+      // host that flow, so the notice names the command that carries it.
+      const outcome = reconnectOutcomeNotice(result);
+      addNotice(outcome.message, outcome.kind);
+      if (result.repaired === true) await refreshActivityPane();
       return;
     }
     if (name === "/commit") {

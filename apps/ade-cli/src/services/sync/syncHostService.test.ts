@@ -6326,6 +6326,13 @@ describe("CTO-gated Linear sync commands", () => {
       })?.features?.commandRouting?.actions ?? [];
 
       expect(MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS).toEqual([
+        "chat.startLaunch",
+        "chat.getLaunch",
+        "chat.listLaunches",
+        "chat.cancelLaunch",
+        "chat.retryLaunch",
+        "chat.startLaunchNow",
+        "chat.queueLaunchMessage",
         "cto.startLinearMobileOAuth",
         "cto.completeLinearMobileOAuth",
         "cto.setLinearToken",

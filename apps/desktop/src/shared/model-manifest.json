@@ -1,0 +1,128 @@
+{
+  "version": 1,
+  "updatedAt": "2026-09-22T21:00:00Z",
+  "defaults": {
+    "app": [
+      {
+        "model": "anthropic/claude-opus-5-5"
+      }
+    ],
+    "providers": {
+      "claude": [
+        {
+          "model": "anthropic/claude-opus-5-5"
+        }
+      ],
+      "codex": [
+        {
+          "model": "openai/gpt-6-astra"
+        }
+      ]
+    }
+  },
+  "models": [
+    {
+      "id": "openai/gpt-5.6-sol",
+      "fields": {
+        "aliases": [
+          "gpt-5.6-sol"
+        ]
+      }
+    },
+    {
+      "id": "openai/gpt-5.6-luna",
+      "fields": {
+        "aliases": [
+          "gpt-5.6-luna"
+        ]
+      }
+    },
+    {
+      "id": "openai/gpt-6-sol",
+      "after": "openai/gpt-6-astra",
+      "fields": {
+        "shortId": "gpt-6-sol",
+        "aliases": [
+          "sol",
+          "gpt-6-sol"
+        ],
+        "displayName": "GPT-6 Sol",
+        "family": "openai",
+        "authTypes": [
+          "cli-subscription"
+        ],
+        "contextWindow": 1050000,
+        "maxOutputTokens": 128000,
+        "capabilities": {
+          "tools": true,
+          "vision": true,
+          "reasoning": true,
+          "streaming": true
+        },
+        "reasoningTiers": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ],
+        "defaultReasoningEffort": "medium",
+        "serviceTiers": [
+          "fast"
+        ],
+        "color": "#10A37F",
+        "providerRoute": "codex-cli",
+        "providerModelId": "gpt-6-sol",
+        "cliCommand": "codex",
+        "isCliWrapped": true,
+        "inputPricePer1M": 2,
+        "outputPricePer1M": 10,
+        "costTier": "medium"
+      }
+    },
+    {
+      "id": "openai/gpt-6-luna",
+      "after": "openai/gpt-6-sol",
+      "fields": {
+        "shortId": "gpt-6-luna",
+        "aliases": [
+          "luna",
+          "gpt-6-luna"
+        ],
+        "displayName": "GPT-6 Luna",
+        "family": "openai",
+        "authTypes": [
+          "cli-subscription"
+        ],
+        "contextWindow": 1050000,
+        "maxOutputTokens": 128000,
+        "capabilities": {
+          "tools": true,
+          "vision": true,
+          "reasoning": true,
+          "streaming": true
+        },
+        "reasoningTiers": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "defaultReasoningEffort": "medium",
+        "serviceTiers": [
+          "fast"
+        ],
+        "color": "#34D399",
+        "providerRoute": "codex-cli",
+        "providerModelId": "gpt-6-luna",
+        "cliCommand": "codex",
+        "isCliWrapped": true,
+        "inputPricePer1M": 0.1,
+        "outputPricePer1M": 0.5,
+        "costTier": "low"
+      }
+    }
+  ]
+}

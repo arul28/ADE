@@ -21718,8 +21718,8 @@ final class ADETests: XCTestCase {
     let gpt55 = openAIProvider?.models.first(where: { $0.id == "gpt-5.5" })
 
     XCTAssertEqual(anthropicProvider?.models.map(\.id), [
-      "claude-fable-5-1",
       "claude-opus-5-5",
+      "claude-fable-5-1",
       "claude-sonnet-5",
       "claude-haiku-4-5",
       "claude-opus-5",
@@ -21731,7 +21731,7 @@ final class ADETests: XCTestCase {
       "opencode/anthropic/claude-haiku-4-5",
       "opencode/anthropic/claude-opus-5",
     ])
-    XCTAssertEqual(workDefaultCatalogModelId(provider: "claude"), "claude-fable-5-1")
+    XCTAssertEqual(workDefaultCatalogModelId(provider: "claude"), "claude-opus-5-5")
     XCTAssertEqual(fable?.displayName, "Claude Fable 5.1")
     XCTAssertEqual(fable?.tier, .flagship)
     XCTAssertEqual(fable?.tagline, "Flagship · 1M context")
@@ -21775,8 +21775,10 @@ final class ADETests: XCTestCase {
       .first(where: { $0.key == "openai" })?
       .models
 
-    XCTAssertEqual(codexModels?.prefix(4).map(\.id), [
+    XCTAssertEqual(codexModels?.prefix(6).map(\.id), [
       "gpt-6-astra",
+      "gpt-6-sol",
+      "gpt-6-luna",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
@@ -21810,13 +21812,58 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(luna?.defaultReasoningEffort, "medium")
 
     XCTAssertTrue(workModelIdsEquivalent("astra", "openai/gpt-6-astra"))
-    XCTAssertTrue(workModelIdsEquivalent("sol", "openai/gpt-5.6-sol"))
+    XCTAssertTrue(workModelIdsEquivalent("sol", "openai/gpt-6-sol"))
+    XCTAssertFalse(workModelIdsEquivalent("sol", "openai/gpt-5.6-sol"))
     XCTAssertTrue(workModelIdsEquivalent("terra", "gpt-5.6-terra"))
-    XCTAssertTrue(workModelIdsEquivalent("luna", "openai/gpt-5.6-luna"))
+    XCTAssertTrue(workModelIdsEquivalent("luna", "openai/gpt-6-luna"))
+    XCTAssertFalse(workModelIdsEquivalent("luna", "openai/gpt-5.6-luna"))
     XCTAssertEqual(workModelCatalogGroupKey(for: "sol", currentProvider: ""), "codex")
     XCTAssertEqual(workKnownModelDisplayName("openai/gpt-6-astra"), "GPT-6 Astra")
     XCTAssertEqual(workKnownModelDisplayName("openai/gpt-5.6-terra"), "GPT-5.6 Terra")
     XCTAssertNotNil(ADEColor.modelBrand(for: "luna"))
+  }
+
+  func testWorkModelCatalogResolvesGPT6SolLunaAndOpus55() {
+    XCTAssertEqual(workKnownModelDisplayName("openai/gpt-6-sol"), "GPT-6 Sol")
+    XCTAssertEqual(workKnownModelDisplayName("gpt-6-sol"), "GPT-6 Sol")
+    XCTAssertEqual(workKnownModelDisplayName("sol"), "GPT-6 Sol")
+    XCTAssertEqual(workKnownModelDisplayName("gpt-5.6-sol"), "GPT-5.6 Sol")
+    XCTAssertEqual(workKnownModelDisplayName("openai/gpt-6-luna"), "GPT-6 Luna")
+    XCTAssertEqual(workKnownModelDisplayName("luna"), "GPT-6 Luna")
+    XCTAssertEqual(workKnownModelDisplayName("gpt-5.6-luna"), "GPT-5.6 Luna")
+    XCTAssertEqual(workKnownModelDisplayName("anthropic/claude-opus-5-5"), "Claude Opus 5.5")
+    XCTAssertEqual(workKnownModelDisplayName("claude-opus-5-5"), "Claude Opus 5.5")
+    XCTAssertEqual(workKnownModelDisplayName("opus"), "Claude Opus 5.5")
+    XCTAssertEqual(workKnownModelDisplayName("opus-5"), "Claude Opus 5")
+    XCTAssertTrue(workModelIdsEquivalent("opus", "anthropic/claude-opus-5-5"))
+    XCTAssertFalse(workModelIdsEquivalent("opus", "claude-opus-5"))
+    XCTAssertEqual(workModelCatalogGroupKey(for: "gpt-6-luna", currentProvider: ""), "codex")
+
+    let groups = workModelCatalogGroups(currentModelId: "", currentProvider: "codex")
+    let codexModels = groups.first(where: { $0.key == "codex" })?.providers.first(where: { $0.key == "openai" })?.models
+    let sol = codexModels?.first(where: { $0.id == "gpt-6-sol" })
+    XCTAssertEqual(sol?.displayName, "GPT-6 Sol")
+    XCTAssertEqual(sol?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max", "ultra"])
+    XCTAssertEqual(sol?.defaultReasoningEffort, "medium")
+    XCTAssertTrue(sol?.supportsCodexFastMode == true)
+    let luna = codexModels?.first(where: { $0.id == "gpt-6-luna" })
+    XCTAssertEqual(luna?.displayName, "GPT-6 Luna")
+    XCTAssertEqual(luna?.tier, .fast)
+    XCTAssertEqual(luna?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(luna?.defaultReasoningEffort, "medium")
+    let opus55 = groups.first(where: { $0.key == "claude" })?.providers.first?.models.first
+    XCTAssertEqual(opus55?.id, "claude-opus-5-5")
+    XCTAssertEqual(opus55?.displayName, "Claude Opus 5.5")
+    XCTAssertEqual(opus55?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(opus55?.defaultReasoningEffort, "medium")
+    XCTAssertTrue(opus55?.supportsCodexFastMode == true)
+
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "openai/gpt-6-sol"), ["low", "medium", "high", "xhigh", "max", "ultra"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "gpt-6-luna"), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-opus-5-5"), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertNotNil(ADEColor.modelBrand(for: "gpt-6-sol"))
+    XCTAssertNotNil(ADEColor.modelBrand(for: "openai/gpt-6-luna"))
+    XCTAssertNotNil(ADEColor.modelBrand(for: "claude-opus-5-5"))
   }
 
   func testMobileComposerReasoningTiersMirrorDesktopRegistry() {
@@ -22591,6 +22638,7 @@ final class ADETests: XCTestCase {
 
   func testWorkModelCatalogMapsCurrentAndMigratedOpusAliases() {
     XCTAssertTrue(workModelIdsEquivalent("opus", "claude-opus-5-5"))
+    XCTAssertTrue(workModelIdsEquivalent("opus-5", "claude-opus-5"))
     XCTAssertTrue(workModelIdsEquivalent("anthropic/claude-opus-5-api", "claude-opus-5"))
     XCTAssertTrue(workModelIdsEquivalent("opencode/anthropic/opus", "claude-opus-5-5"))
     XCTAssertTrue(workModelIdsEquivalent("opencode/anthropic/claude-opus-5", "claude-opus-5"))

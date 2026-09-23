@@ -1787,6 +1787,33 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("routes new-lane launches through the chat launch actions and rejects on an older host", async () => {
+    fake.descriptors = descriptors(["chat.startLaunch", "chat.listLaunches", "chat.cancelLaunch", "chat.queueLaunchMessage"]);
+    const launch = { launchId: "launch-1", phase: "running" };
+    fake.commandResults.set("chat.startLaunch", launch);
+    fake.commandResults.set("chat.listLaunches", [launch]);
+    fake.commandResults.set("chat.cancelLaunch", { ...launch, phase: "cancelled" });
+    fake.commandResults.set("chat.queueLaunchMessage", launch);
+
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await expect(adapter.ade.chatLaunch.start({ kind: "chat", mode: "foreground", launchId: "launch-1", prompt: "Fix it" }))
+      .resolves.toEqual(launch);
+    await expect(adapter.ade.chatLaunch.list()).resolves.toEqual([launch]);
+    await expect(adapter.ade.chatLaunch.queueMessage({ launchId: "launch-1", text: "Also this" })).resolves.toEqual(launch);
+    await expect(adapter.ade.chatLaunch.cancel({ launchId: "launch-1" })).resolves.toMatchObject({ phase: "cancelled" });
+    expect(fake.commandCalls.map((call) => call.action)).toEqual([
+      "chat.startLaunch",
+      "chat.listLaunches",
+      "chat.queueLaunchMessage",
+      "chat.cancelLaunch",
+    ]);
+    // A host without the action rejects the write instead of faking a launch.
+    await expect(adapter.ade.chatLaunch.retry({ launchId: "launch-1" })).rejects.toThrow(/chat\.retryLaunch/);
+    adapter.dispose();
+  });
+
   it("routes resume-usage-limit-now through the web chat adapter", async () => {
     fake.descriptors = descriptors(["chat.resumeUsageLimitNow"]);
     fake.commandResults.set("chat.resumeUsageLimitNow", { ok: true, turnId: "turn-9" });

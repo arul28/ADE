@@ -239,3 +239,13 @@ describe("repo cache invalidation through runGit", () => {
     }
   });
 });
+
+describe("runGit cancellation", () => {
+  it("never spawns git when the signal is already aborted", async () => {
+    const abort = new AbortController();
+    abort.abort();
+    // A cwd that does not exist: a spawned git would fail differently.
+    const result = await runGit(["status"], { cwd: path.join(os.tmpdir(), "ade-no-such-dir-for-abort-test"), signal: abort.signal });
+    expect(result).toEqual({ exitCode: 130, stdout: "", stderr: "git was cancelled" });
+  });
+});

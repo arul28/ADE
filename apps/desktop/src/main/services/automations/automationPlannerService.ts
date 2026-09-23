@@ -34,6 +34,11 @@ import {
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { codexReasoningEffortFlags, resolveCodexCliModelForLaunch } from "../../../shared/cliLaunch";
 import { getModelById } from "../../../shared/modelRegistry";
+import {
+  normalizeAutomationAgentLimits,
+  normalizeRunCommandTimeoutMs,
+  RUN_COMMAND_DEFAULT_TIMEOUT_MS,
+} from "../../../shared/automationLimits";
 import type { Logger } from "../logging/logger";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
@@ -744,8 +749,6 @@ function normalizeDraft(args: {
   });
 
   const normalizedActions: AutomationAction[] = [];
-  const MAX_TIMEOUT_MS = 30 * 60_000;
-  const DEFAULT_TIMEOUT_MS = 5 * 60_000;
   // Prefer legacyActions only when it actually carries a chain: authors that
   // populate `actions` while inheriting an empty legacyActions array (e.g.
   // template drafts) must not have their chain shadowed by the empty array.
@@ -790,7 +793,6 @@ function normalizeDraft(args: {
       ...(condition ? { condition } : {}),
       ...(typeof action?.continueOnFailure === "boolean" ? { continueOnFailure: action.continueOnFailure } : {}),
       ...(typeof action?.alwaysRun === "boolean" ? { alwaysRun: action.alwaysRun } : {}),
-      ...(action?.timeoutMs != null ? { timeoutMs: clampNumber(Number(action.timeoutMs), 1000, MAX_TIMEOUT_MS) } : {}),
       ...(action?.retry != null ? { retry: clampNumber(Number(action.retry), 0, 5) } : {})
     } satisfies Partial<AutomationAction>;
 
@@ -896,6 +898,7 @@ function normalizeDraft(args: {
       const prompt = safeTrim(action?.prompt);
       normalizedActions.push({
         ...(base as AutomationAction),
+        ...normalizeAutomationAgentLimits(action),
         ...(prompt ? { prompt } : {}),
         ...(safeTrim(action?.sessionTitle) ? { sessionTitle: safeTrim(action?.sessionTitle) } : {}),
         ...(actionModelConfig ? { modelConfig: actionModelConfig } : {}),
@@ -938,8 +941,12 @@ function normalizeDraft(args: {
         continue;
       }
 
-      const timeoutMs = base.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-      const next: AutomationAction = { ...(base as AutomationAction), command, timeoutMs };
+      // Only a shell command has a process to kill; every other step drops a stored timeoutMs.
+      const next: AutomationAction = {
+        ...(base as AutomationAction),
+        command,
+        timeoutMs: normalizeRunCommandTimeoutMs(action?.timeoutMs) ?? RUN_COMMAND_DEFAULT_TIMEOUT_MS,
+      };
 
       const cwdRaw = safeTrim(action?.cwd);
       if (cwdRaw) {
@@ -1017,6 +1024,7 @@ function normalizeDraft(args: {
                       : (typeof requestedExecution.session?.codexFastMode === "boolean" ? requestedExecution.session.codexFastMode : undefined);
                     return v !== undefined ? { fastMode: v } : {};
                   })(),
+                  ...normalizeAutomationAgentLimits(requestedExecution.session),
                 },
               }
             : {}),
@@ -1106,8 +1114,6 @@ function normalizeDraft(args: {
         ? []
         : [],
     guardrails: {
-      ...(typeof args.draft.guardrails?.budgetUsd === "number" ? { budgetUsd: args.draft.guardrails.budgetUsd } : {}),
-      ...(typeof args.draft.guardrails?.maxDurationMin === "number" ? { maxDurationMin: args.draft.guardrails.maxDurationMin } : {}),
       ...(typeof args.draft.guardrails?.confidenceThreshold === "number" ? { confidenceThreshold: args.draft.guardrails.confidenceThreshold } : {}),
       ...(typeof args.draft.guardrails?.maxFindings === "number" ? { maxFindings: Math.floor(args.draft.guardrails.maxFindings) } : {}),
       ...(typeof args.draft.guardrails?.reserveBudget === "boolean" ? { reserveBudget: args.draft.guardrails.reserveBudget } : {}),

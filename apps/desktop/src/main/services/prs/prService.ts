@@ -332,6 +332,10 @@ const PR_ACTION_RUNS_LIMIT = 12;
  */
 const PR_ACTION_RUN_JOBS_LIMIT = PR_ACTION_RUNS_LIMIT;
 const PR_TERMINAL_ACTION_RUN_JOBS_LIMIT = 6;
+/** Quiet time that ends a webhook burst and sends one `prs-updated`. */
+const PRS_UPDATED_COALESCE_MS = 500;
+/** The longest a burst may hold the event back, so a steady stream still updates. */
+const PRS_UPDATED_COALESCE_MAX_WAIT_MS = 2_000;
 
 function chunkValues<T>(values: readonly T[], size = SQL_IN_CLAUSE_CHUNK_SIZE): T[][] {
   const chunks: T[][] = [];
@@ -10635,12 +10639,57 @@ export function createPrService({
     );
   };
 
+  let coalescedPrsUpdatedTimer: ReturnType<typeof setTimeout> | null = null;
+  let coalescedPrsUpdatedSinceMs: number | null = null;
+
   const emitPrsUpdated = (): void => {
+    // This event carries the full list, so it supersedes one that is waiting.
+    if (coalescedPrsUpdatedTimer) {
+      clearTimeout(coalescedPrsUpdatedTimer);
+      coalescedPrsUpdatedTimer = null;
+    }
+    coalescedPrsUpdatedSinceMs = null;
     emitPrEvent?.({
       type: "prs-updated",
       polledAt: nowIso(),
       prs: withGithubStackMemberships(listRows().map(rowToSummary)),
     });
+  };
+
+  /**
+   * One `prs-updated` for a burst of webhooks, not one for each delivery.
+   *
+   * The event carries the whole PR list (about 225 KB for 194 PRs), and a CI
+   * run delivers dozens of `check_run` webhooks in a few seconds. One event
+   * for each delivery put megabytes on the runtime event stream, and a remote
+   * desktop that drained it lost its RPC channel again and again. The event is
+   * also a refresh signal (the chat PR pane reloads checks on it), so the
+   * burst still ends in one event; it is not dropped by a fingerprint.
+   *
+   * Each delivery restarts the 500 ms quiet window, so a burst ends in one
+   * event after it goes quiet. A stream that never goes quiet still sends one
+   * every 2 s, with the list as it is then.
+   */
+  const scheduleCoalescedPrsUpdated = (): void => {
+    const nowMs = Date.now();
+    if (coalescedPrsUpdatedTimer) clearTimeout(coalescedPrsUpdatedTimer);
+    coalescedPrsUpdatedSinceMs ??= nowMs;
+    const delayMs = Math.max(
+      0,
+      Math.min(PRS_UPDATED_COALESCE_MS, coalescedPrsUpdatedSinceMs + PRS_UPDATED_COALESCE_MAX_WAIT_MS - nowMs),
+    );
+    coalescedPrsUpdatedTimer = setTimeout(() => {
+      coalescedPrsUpdatedTimer = null;
+      // A timer callback, so a throw here is an uncaught exception, which
+      // exits the brain. The project runtime can close its database inside
+      // the window (a repair, a removal, a sync-host move).
+      try {
+        emitPrsUpdated();
+      } catch (error) {
+        logger.warn("prs.coalesced_update_failed", { error: getErrorMessage(error) });
+      }
+    }, delayMs);
+    coalescedPrsUpdatedTimer.unref?.();
   };
 
   const findWebhookRelatedPrIds = (refs: Array<{ repoOwner: string; repoName: string; githubPrNumber: number }>): string[] => {
@@ -10900,7 +10949,7 @@ export function createPrService({
         }
         linkedPrIds = [...new Set(linkedPrIds)];
         invalidateGithubSnapshotCache();
-        emitPrsUpdated();
+        scheduleCoalescedPrsUpdated();
         db.run(
           `
             update github_webhook_deliveries
@@ -10938,7 +10987,7 @@ export function createPrService({
 
       const refs = webhookPrRefsFromPayload(eventName, payload);
       linkedPrIds = findWebhookRelatedPrIds(refs);
-      if (linkedPrIds.length > 0) emitPrsUpdated();
+      if (linkedPrIds.length > 0) scheduleCoalescedPrsUpdated();
       const firstRef = refs[0] ?? null;
       const processed = refs.length > 0;
       const reason = processed ? "invalidated_related_prs" : "unsupported_event";

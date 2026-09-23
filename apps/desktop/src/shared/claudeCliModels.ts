@@ -1,3 +1,5 @@
+import { getModelById } from "./modelRegistry";
+
 export type ClaudeCliModelAlias =
   | "claude-fable-5-1"
   | "claude-opus-5-5"
@@ -80,6 +82,12 @@ export function resolveClaudeCliModelAlias(
 
   const mapped = CLAUDE_CLI_MODEL_ALIAS_MAP[normalized];
   if (mapped) return mapped;
+
+  // Anything the registry knows — including models the model manifest added
+  // after this build shipped — resolves to its own wire id instead of being
+  // snapped to the nearest family below.
+  const known = getModelById(raw);
+  if (known?.providerRoute === "claude-cli") return known.providerModelId;
 
   if (normalized.includes("fable")) return "claude-fable-5-1";
   if (normalized.includes("sonnet")) return "claude-sonnet-5";

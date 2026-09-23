@@ -554,7 +554,10 @@ Browser shell and routes:
   most load-bearing fact and gets a permanent chip rather than a route. Its
   popover lists every machine with live status and a per-row menu: **Connect**,
   **Rename**, **Remove from account**, **Forget on this browser**, over the
-  footer hint that a new Mac is added by signing in to ADE on it.
+  footer hint that a new Mac is added by signing in to ADE on it. A row shows
+  `webMachineRowLabel` (the directory's "MacBook Pro · ADE Alpha" label from
+  `webWorkspaceModel.ts`, with the ADE home on hover), so two installs on one
+  Mac do not look like a duplicate.
 - `apps/desktop/src/renderer/webclient/shell/ScreenShell.tsx` and
   `shellTokens.ts` - the minimal startup/error frame and standalone shell design
   tokens. Machine and project selection live inside the reused app shell's
@@ -1087,7 +1090,9 @@ it disappear on sign-out.
 
 Machine management has two explicit scopes. **Remove from account** deletes the
 owner-scoped directory registration, so the machine disappears for that ADE
-account across clients. **Forget on this browser** deletes only the local
+account across clients. Its confirm names the install ("MacBook Pro · ADE
+Alpha") and, for a machine seen in the last five minutes, warns that removing
+it disconnects it until someone confirms it on that computer. **Forget on this browser** deletes only the local
 IndexedDB environment and its paired secret/key material; it does not remove
 the account machine. Renaming is account-scoped and updates the directory's
 custom display name.

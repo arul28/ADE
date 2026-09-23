@@ -8,6 +8,14 @@ import { inputCls, labelCls, selectCls } from "../designTokens";
 import { stepDef } from "../actionCatalog";
 import type { WorkflowStep } from "./draftBridge";
 import { AgentStepEditor } from "./AgentStepEditor";
+import { MinutesInput } from "./MinutesInput";
+import { RUN_COMMAND_DEFAULT_TIMEOUT_MS, RUN_COMMAND_MAX_TIMEOUT_MS } from "../../../../shared/automationLimits";
+
+/** A stored limit that isn't whole minutes (YAML, planner) is shown as-is, not rounded. */
+function describeOddTimeout(timeoutMs: number | undefined): string | null {
+  if (typeof timeoutMs !== "number" || timeoutMs % 60_000 === 0) return null;
+  return timeoutMs < 60_000 ? `${Math.round(timeoutMs / 1000)} s` : `${(timeoutMs / 60_000).toFixed(1)} min`;
+}
 
 function ToggleRow({
   id,
@@ -111,6 +119,7 @@ export function StepCard({
   const def = stepDef(step.kind);
   const Icon = def.icon;
   const idBase = `step-${index}-${step.kind}`;
+  const oddTimeout = describeOddTimeout(step.timeoutMs);
 
   return (
     <div
@@ -208,21 +217,41 @@ export function StepCard({
         ) : null}
 
         {step.kind === "run-command" ? (
-          <div className="grid gap-2 sm:grid-cols-[2fr_1fr]">
-            <input
-              className={cn(inputCls, "font-mono")}
-              value={step.command ?? ""}
-              onChange={(e) => onChange({ ...step, command: e.target.value })}
-              placeholder="npm test"
-              spellCheck={false}
-            />
-            <input
-              className={inputCls}
-              value={step.cwd ?? ""}
-              onChange={(e) => onChange({ ...step, cwd: e.target.value })}
-              placeholder="Working dir (optional)"
-              spellCheck={false}
-            />
+          <div className="space-y-2.5">
+            <div className="grid gap-2 sm:grid-cols-[2fr_1fr]">
+              <input
+                className={cn(inputCls, "font-mono")}
+                value={step.command ?? ""}
+                onChange={(e) => onChange({ ...step, command: e.target.value })}
+                placeholder="npm test"
+                spellCheck={false}
+              />
+              <input
+                className={inputCls}
+                value={step.cwd ?? ""}
+                onChange={(e) => onChange({ ...step, cwd: e.target.value })}
+                placeholder="Working dir (optional)"
+                spellCheck={false}
+              />
+            </div>
+            <label className="block space-y-1">
+              <span className={labelCls}>Time limit</span>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <MinutesInput
+                  value={typeof step.timeoutMs === "number" && !oddTimeout
+                    ? step.timeoutMs / 60_000
+                    : undefined}
+                  onChange={(v) => onChange({ ...step, timeoutMs: v == null ? undefined : v * 60_000 })}
+                  placeholder={String(RUN_COMMAND_DEFAULT_TIMEOUT_MS / 60_000)}
+                  ariaLabel="Stop the command after this many minutes"
+                  max={RUN_COMMAND_MAX_TIMEOUT_MS / 60_000}
+                />
+                <span className="text-[10.5px] text-muted-fg/60">
+                  {oddTimeout ? `Currently ${oddTimeout}. ` : ""}
+                  Stops the command if it hangs. Default {RUN_COMMAND_DEFAULT_TIMEOUT_MS / 60_000} min.
+                </span>
+              </div>
+            </label>
           </div>
         ) : null}
 

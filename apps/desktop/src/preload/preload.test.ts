@@ -942,6 +942,126 @@ describe("preload Apple device input routing", () => {
     expect(invoke).not.toHaveBeenCalledWith(IPC.appGetImageDataUrl, expect.anything());
   });
 
+  it("streams pasted attachment bytes to a paired machine that takes uploads, and keeps the command otherwise", async () => {
+    const boundRemote = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Studio",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Project",
+    };
+    const pinnedRemote = { ...boundRemote, key: "remote:target-2:project-2", targetId: "target-2", projectId: "project-2" };
+    const localPin = {
+      kind: "local",
+      key: "local:/local/project",
+      rootPath: "/local/project",
+      displayName: "Local",
+    };
+    const modeByTarget = new Map<string, unknown>([
+      ["target-1", { mode: "upload", maxBytes: 50 * 1024 * 1024 }],
+      ["target-2", { mode: "upload", maxBytes: 50 * 1024 * 1024 }],
+    ]);
+    let failUpload = false;
+    const invoke = vi.fn(async (channel: string, payload?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding: boundRemote };
+      }
+      if (channel === IPC.remoteRuntimeAttachmentUploadCapability) {
+        return modeByTarget.get((payload as { id: string }).id) ?? null;
+      }
+      if (channel === IPC.remoteRuntimeUploadChatAttachment) {
+        if (failUpload) throw new Error("Attachment upload failed (HTTP 502).");
+        return { path: "/remote/uploaded.png" };
+      }
+      if (channel === IPC.remoteRuntimeCallAction || channel === IPC.localRuntimeCallAction) {
+        return { ok: true, result: { path: "/via/command.png" }, statusHints: {} };
+      }
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    vi.doMock("electron", () => ({
+      contextBridge: {
+        exposeInMainWorld: vi.fn((_name: string, value: unknown) => {
+          (globalThis as any).__adeBridge = value;
+        }),
+      },
+      ipcRenderer: { invoke, on: vi.fn(), removeListener: vi.fn() },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      await import("./preload");
+      const bridge = (globalThis as any).__adeBridge;
+      const args = { data: "iVBORw0KGgo=", filename: "clipboard.png" };
+
+      // An explicit remote pin streams to that machine, never through the command.
+      await expect(bridge.agentChat.saveTempAttachment(args, pinnedRemote))
+        .resolves.toEqual({ path: "/remote/uploaded.png" });
+      // The machine's own route limit travels with the bytes.
+      expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeUploadChatAttachment, {
+        id: "target-2",
+        projectId: "project-2",
+        data: args.data,
+        filename: args.filename,
+        maxBytes: 50 * 1024 * 1024,
+      });
+      expect(invoke).not.toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, expect.anything());
+
+      // No pin in a window bound to a paired machine streams to the bound machine.
+      invoke.mockClear();
+      await expect(bridge.agentChat.saveTempAttachment(args))
+        .resolves.toEqual({ path: "/remote/uploaded.png" });
+      expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeUploadChatAttachment, expect.objectContaining({
+        id: "target-1",
+        projectId: "project-1",
+      }));
+
+      // A machine that only takes the command keeps the command.
+      invoke.mockClear();
+      modeByTarget.set("target-2", { mode: "base64", maxBytes: 10 * 1024 * 1024 });
+      await expect(bridge.agentChat.saveTempAttachment(args, pinnedRemote))
+        .resolves.toEqual({ path: "/via/command.png" });
+      expect(invoke).not.toHaveBeenCalledWith(IPC.remoteRuntimeUploadChatAttachment, expect.anything());
+      expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, expect.objectContaining({
+        id: "target-2",
+        request: expect.objectContaining({ domain: "chat", action: "saveTempAttachment", args }),
+      }));
+
+      // A failed upload falls back to the command and says so in the console.
+      invoke.mockClear();
+      modeByTarget.set("target-2", { mode: "upload", maxBytes: 50 * 1024 * 1024 });
+      failUpload = true;
+      await expect(bridge.agentChat.saveTempAttachment(args, pinnedRemote))
+        .resolves.toEqual({ path: "/via/command.png" });
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("[ade-attachments] Streamed upload failed"),
+        expect.objectContaining({ error: "Attachment upload failed (HTTP 502)." }),
+      );
+
+      // A payload the command cannot carry is not resent through it. The
+      // upload's own reason reaches the caller.
+      invoke.mockClear();
+      const oversized = { data: "A".repeat(Math.ceil((10 * 1024 * 1024) / 3) * 4 + 4), filename: "big.png" };
+      await expect(bridge.agentChat.saveTempAttachment(oversized, pinnedRemote))
+        .rejects.toThrow("Attachment upload failed (HTTP 502).");
+      expect(invoke).not.toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, expect.anything());
+
+      // A local pin never probes a remote machine.
+      invoke.mockClear();
+      await bridge.agentChat.saveTempAttachment(args, localPin);
+      expect(invoke).not.toHaveBeenCalledWith(IPC.remoteRuntimeAttachmentUploadCapability, expect.anything());
+      expect(invoke).not.toHaveBeenCalledWith(IPC.remoteRuntimeUploadChatAttachment, expect.anything());
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   // The model catalog enumerates the SERVING machine's ollama/LM Studio
   // endpoints, its installed cursor-agent and its opencode inventory. A Work
   // tab unions chats from every machine, so a composer for a chat on another

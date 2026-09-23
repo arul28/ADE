@@ -525,6 +525,26 @@ describe("AgentChatMessageList operator navigation suggestions", () => {
 });
 
 describe("AgentChatMessageList transcript rendering", () => {
+  it("shows a launch message the host could not deliver as failed-to-send, with the reason on hover", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "user_message",
+          text: "Also check the logout",
+          messageId: "launch-queued:q1",
+          deliveryState: "failed",
+          metadata: { launchDeliveryError: "Session is busy." },
+        },
+      },
+    ]);
+
+    const chip = screen.getByTestId("user-message-delivery-chip");
+    expect(chip.textContent).toBe("Couldn't send — retrying");
+    expect(chip.getAttribute("title")).toBe("Session is busy.");
+  });
+
   // Proof used to be appended after every row as a permanently open thread
   // footer. With no transcript rows it is now a compact chronological capture
   // row that starts collapsed.

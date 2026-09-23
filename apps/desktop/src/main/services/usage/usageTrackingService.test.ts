@@ -48,6 +48,8 @@ import type { AdeUsageRollup, UsageSnapshot } from "../../../shared/types/usage"
 import type { ProductAnalyticsCapture } from "../../../shared/types/productAnalytics";
 import type { UsageLedgerScanResult } from "./usageLedgerWorkerClient";
 import { tokenPriceSource, _testing as _pricingTesting } from "./usagePricing";
+// A trimmed extract of https://models.dev/api.json (id + cost only).
+import MODELS_DEV_FIXTURE from "./__fixtures__/models-dev-pricing.json";
 import { encodeActiveDayBits } from "../lanes/laneUsageTombstone";
 // Cross-layer on purpose: the daily split is only useful if the renderer's
 // chart reducer sees it, so the service test asserts against the real reducer
@@ -101,7 +103,6 @@ const {
   pollCodexViaCliRpc,
   resolveTokenPrice,
   resetDynamicTokenPricingForTest,
-  setDynamicTokenPricingForTest,
   discoverClaudeProjectDirs,
   scanClaudeLogs,
   scanCodexLogs,
@@ -185,7 +186,8 @@ beforeEach(() => {
   mockState.spawnSync.mockReset();
   mockState.spawnSync.mockReturnValue({ status: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) });
   mockState.resolveCodexExecutable.mockReset();
-  resetDynamicTokenPricingForTest({ disableDiskCache: true });
+  // Cost figures price from a real models.dev extract, as they do in the app.
+  _pricingTesting.installModelsDevPricingForTest(MODELS_DEV_FIXTURE);
 });
 
 describe("claudePollAllowsKeychain", () => {
@@ -313,7 +315,7 @@ describe("aggregateCosts", () => {
     const entries = [
       {
         messageId: "a:1",
-        model: "claude-3-5-sonnet",
+        model: "claude-sonnet-4-5",
         inputTokens: 1000,
         outputTokens: 500,
         cachedTokens: 200,
@@ -321,7 +323,7 @@ describe("aggregateCosts", () => {
       },
       {
         messageId: "b:2",
-        model: "claude-3-5-sonnet",
+        model: "claude-sonnet-4-5",
         inputTokens: 2000,
         outputTokens: 1000,
         cachedTokens: 0,
@@ -331,14 +333,16 @@ describe("aggregateCosts", () => {
 
     const result = aggregateCosts(entries, "claude");
     expect(result.provider).toBe("claude");
-    expect(result.last30dCostUsd).toBeGreaterThan(0);
+    // models.dev Sonnet 4.5: 3000 in x $3 + 1500 out x $15 + 200 cache-read x
+    // $0.30 per 1M = $0.03156, reported to the cent.
+    expect(result.last30dCostUsd).toBe(0.03);
     expect(result.todayCostUsd).toBeGreaterThan(0);
     expect(result.costUsdByPreset?.today).toBe(result.todayCostUsd);
     expect(result.costUsdByPreset?.["30d"]).toBe(result.last30dCostUsd);
-    expect(result.tokenBreakdown["claude-3-5-sonnet"]).toBeDefined();
-    expect(result.tokenBreakdown["claude-3-5-sonnet"]!.input).toBe(3000);
-    expect(result.tokenBreakdown["claude-3-5-sonnet"]!.output).toBe(1500);
-    expect(result.tokenBreakdown["claude-3-5-sonnet"]!.cached).toBe(200);
+    expect(result.tokenBreakdown["claude-sonnet-4-5"]).toBeDefined();
+    expect(result.tokenBreakdown["claude-sonnet-4-5"]!.input).toBe(3000);
+    expect(result.tokenBreakdown["claude-sonnet-4-5"]!.output).toBe(1500);
+    expect(result.tokenBreakdown["claude-sonnet-4-5"]!.cached).toBe(200);
   });
 
   it("charges cache read and cache write tokens", () => {
@@ -365,7 +369,7 @@ describe("aggregateCosts", () => {
     const entries = [
       {
         messageId: "old:1",
-        model: "claude-3-5-sonnet",
+        model: "claude-sonnet-4-5",
         inputTokens: 10000,
         outputTokens: 5000,
         cachedTokens: 0,
@@ -384,7 +388,7 @@ describe("aggregateCosts", () => {
     const entries = [
       {
         messageId: "today:1",
-        model: "claude-3-5-sonnet",
+        model: "claude-sonnet-4-5",
         inputTokens: 1000,
         outputTokens: 500,
         cachedTokens: 0,
@@ -392,7 +396,7 @@ describe("aggregateCosts", () => {
       },
       {
         messageId: "yesterday:1",
-        model: "claude-3-5-sonnet",
+        model: "claude-sonnet-4-5",
         inputTokens: 1000,
         outputTokens: 500,
         cachedTokens: 0,
@@ -401,13 +405,14 @@ describe("aggregateCosts", () => {
     ];
 
     const result = aggregateCosts(entries, "claude");
-    expect(result.last30dCostUsd).toBeGreaterThan(result.todayCostUsd);
-    expect(result.todayCostUsd).toBeGreaterThan(0);
+    // Each entry: 1000 in x $3 + 500 out x $15 per 1M = $0.0105, reported to the cent.
+    expect(result.last30dCostUsd).toBe(0.02);
+    expect(result.todayCostUsd).toBe(0.01);
     expect(result.costUsdByPreset?.today).toBe(result.todayCostUsd);
     expect(result.costUsdByPreset?.["7d"]).toBe(result.last30dCostUsd);
-    expect(result.tokenBreakdownByPreset?.today?.["claude-3-5-sonnet"]?.input).toBe(1000);
-    expect(result.tokenBreakdownByPreset?.["7d"]?.["claude-3-5-sonnet"]?.input).toBe(2000);
-    expect(result.tokenBreakdownByPreset?.["30d"]?.["claude-3-5-sonnet"]?.input).toBe(2000);
+    expect(result.tokenBreakdownByPreset?.today?.["claude-sonnet-4-5"]?.input).toBe(1000);
+    expect(result.tokenBreakdownByPreset?.["7d"]?.["claude-sonnet-4-5"]?.input).toBe(2000);
+    expect(result.tokenBreakdownByPreset?.["30d"]?.["claude-sonnet-4-5"]?.input).toBe(2000);
   });
 });
 
@@ -635,7 +640,7 @@ describe("daily byProvider split", () => {
     const claude = aggregateCosts([
       {
         messageId: "claude:today",
-        model: "claude-3-5-sonnet",
+        model: "claude-sonnet-4-5",
         inputTokens: 1000,
         outputTokens: 500,
         cachedTokens: 0,
@@ -643,7 +648,7 @@ describe("daily byProvider split", () => {
       },
       {
         messageId: "claude:older",
-        model: "claude-3-5-sonnet",
+        model: "claude-sonnet-4-5",
         inputTokens: 200,
         outputTokens: 100,
         cachedTokens: 0,
@@ -675,8 +680,9 @@ describe("daily byProvider split", () => {
     expect(Object.keys(todayPoint?.byProvider ?? {}).sort()).toEqual(["claude", "codex"]);
     expect(todayPoint?.byProvider?.claude?.totalTokens).toBe(1500);
     expect(todayPoint?.byProvider?.codex?.totalTokens).toBe(600);
-    expect(todayPoint?.byProvider?.claude?.costUsd).toBeGreaterThan(0);
-    expect(todayPoint?.byProvider?.codex?.costUsd).toBeGreaterThan(0);
+    // Sonnet 4.5 1000 in + 500 out = $0.0105; gpt-5.5 400 in x $5 + 200 out x $30 per 1M = $0.008.
+    expect(todayPoint?.byProvider?.claude?.costUsd).toBeCloseTo(0.0105, 6);
+    expect(todayPoint?.byProvider?.codex?.costUsd).toBeCloseTo(0.008, 6);
 
     // Single-provider day.
     const olderPoint = stats.daily.find((point) => point.date === olderKey);
@@ -792,7 +798,7 @@ describe("daily byProvider split", () => {
     const todayMs = nowMs - 60_000;
     const claude = aggregateCosts([{
       messageId: "claude:today",
-      model: "claude-3-5-sonnet",
+      model: "claude-sonnet-4-5",
       inputTokens: 1000,
       outputTokens: 500,
       cachedTokens: 0,
@@ -1055,26 +1061,34 @@ describe("resolveTokenPrice", () => {
     return missing;
   }
 
-  it("returns opus pricing for opus models", () => {
-    const price = resolveTokenPrice("claude-opus-4");
-    expect(price.input).toBe(15 / 1_000_000);
-    expect(price.output).toBe(75 / 1_000_000);
+  it("prices a model at its vendor's own models.dev row", () => {
+    const opus = resolveTokenPrice("claude-opus-5");
+    expect(opus.input).toBe(5 / 1_000_000);
+    expect(opus.output).toBe(25 / 1_000_000);
+    expect(opus.cacheRead).toBe(0.5 / 1_000_000);
+    expect(opus.cacheWrite).toBe(6.25 / 1_000_000);
+    expect(tokenPriceSource("claude-opus-5")).toBe("list");
+
+    const sonnet = resolveTokenPrice("claude-sonnet-5");
+    expect(sonnet.input).toBe(2 / 1_000_000);
+    expect(sonnet.output).toBe(10 / 1_000_000);
+    expect(sonnet.cacheRead).toBe(0.2 / 1_000_000);
+    expect(sonnet.cacheWrite).toBe(2.5 / 1_000_000);
+
+    const gpt4o = resolveTokenPrice("gpt-4o");
+    expect(gpt4o.input).toBe(2.5 / 1_000_000);
+    // The row's own cache-read rate, not the 0.1x convention.
+    expect(gpt4o.cacheRead).toBe(1.25 / 1_000_000);
+
+    const mini = resolveTokenPrice("gpt-5.4-mini");
+    expect(mini.input).toBe(0.75 / 1_000_000);
+    expect(mini.output).toBe(4.5 / 1_000_000);
   });
 
-  it("uses Opus 5.5 pricing for the static fallback", () => {
-    const price = resolveTokenPrice("claude-opus-5-5");
-    expect(price.input).toBe(4 / 1_000_000);
-    expect(price.output).toBe(20 / 1_000_000);
-    expect(price.cacheRead).toBe(0.2 / 1_000_000);
-    expect(price.cacheWrite).toBe(5 / 1_000_000);
-  });
-
-  it("uses Opus 5 pricing for the static fallback", () => {
-    const price = resolveTokenPrice("claude-opus-5");
-    expect(price.input).toBe(5 / 1_000_000);
-    expect(price.output).toBe(25 / 1_000_000);
-    expect(price.cacheRead).toBe(0.5 / 1_000_000);
-    expect(price.cacheWrite).toBe(6.25 / 1_000_000);
+  it("does not treat Gemini as a mini OpenAI model", () => {
+    const price = resolveTokenPrice("gemini-2.5-pro");
+    expect(price.input).toBe(1.25 / 1_000_000);
+    expect(price.output).toBe(10 / 1_000_000);
   });
 
   it("uses Fable 5.1 pricing for short aliases and keeps historical Fable 5 cache read", () => {
@@ -1086,160 +1100,175 @@ describe("resolveTokenPrice", () => {
     expect(resolveTokenPrice("claude-fable-5").cacheRead).toBe(1 / 1_000_000);
   });
 
-  it("returns sonnet pricing for sonnet models", () => {
-    const price = resolveTokenPrice("claude-3-5-sonnet");
-    expect(price.input).toBe(3 / 1_000_000);
-  });
-
-  it("uses Sonnet 5 introductory pricing for the static fallback", () => {
-    const price = resolveTokenPrice("claude-sonnet-5");
-    expect(price.input).toBe(2 / 1_000_000);
-    expect(price.output).toBe(10 / 1_000_000);
-    expect(price.cacheRead).toBe(0.2 / 1_000_000);
-    expect(price.cacheWrite).toBe(2.5 / 1_000_000);
-  });
-
-  it("returns haiku pricing for haiku models", () => {
-    const price = resolveTokenPrice("claude-haiku-3");
-    expect(price.input).toBe(1 / 1_000_000);
-  });
-
-  it("returns codex pricing for GPT/codex models", () => {
-    const price = resolveTokenPrice("gpt-4o");
-    expect(price.input).toBe(2.5 / 1_000_000);
-    expect(price.cacheRead).toBe(1.25 / 1_000_000);
-  });
-
-  it("returns mini pricing for mini OpenAI models", () => {
-    const price = resolveTokenPrice("gpt-5.4-mini");
-    expect(price.input).toBe(0.75 / 1_000_000);
-    expect(price.output).toBe(4.5 / 1_000_000);
-  });
-
-  it("does not treat Gemini as a mini OpenAI model", () => {
-    const price = resolveTokenPrice("gemini-2.5-pro");
-    expect(price.input).toBe(1.25 / 1_000_000);
-    expect(price.output).toBe(10 / 1_000_000);
-  });
-
   it("returns zero pricing for unknown models", () => {
     const price = resolveTokenPrice("unknown-model");
     expect(price.input).toBe(0);
     expect(price.output).toBe(0);
+    expect(tokenPriceSource("unknown-model")).toBe("fallback");
   });
 
   /**
-   * Settled policy: the maintained public rate list wins whenever it prices a
-   * model, and ADE's static table is the fallback for when it cannot be
-   * fetched. Two machines — one with the cached list, one without — reporting
-   * different costs for identical usage is what this ordering prevents.
+   * models.dev lists one model under the vendor and a crowd of resellers, each
+   * at its own price. The fixture puts Venice's marked-up Sonnet 4.5 row ahead
+   * of Anthropic's, so a "last row read wins" or "first row read wins" parser
+   * would bill a bare `claude-sonnet-4-5` at Venice's 3.75/18.75.
    */
-  it("prefers the public rate list over the built-in table, and falls back cleanly", () => {
-    setDynamicTokenPricingForTest({
-      "claude-sonnet-5": {
-        input: 7 / 1_000_000,
-        output: 70 / 1_000_000,
-        cacheWrite: 8.75 / 1_000_000,
-        cacheRead: 0.7 / 1_000_000,
-      },
-    });
-    // The list's number, not the table's 2/10.
-    expect(resolveTokenPrice("claude-sonnet-5").input).toBe(7 / 1_000_000);
-    expect(tokenPriceSource("claude-sonnet-5")).toBe("list");
-    // A model the list has never heard of still prices from the table rather
-    // than falling to zero.
-    expect(resolveTokenPrice("claude-opus-5").input).toBe(5 / 1_000_000);
-    expect(tokenPriceSource("claude-opus-5")).toBe("fallback");
+  it("prices a bare id at the vendor's row, and a provider-qualified name at that provider's row", () => {
+    const parsed = _pricingTesting.parseModelsDevPricing(MODELS_DEV_FIXTURE);
+    expect(parsed?.get("claude-sonnet-4-5")?.input).toBe(3 / 1_000_000);
+    expect(parsed?.get("venice/claude-sonnet-4-5")?.input).toBe(3.75 / 1_000_000);
+    expect(parsed?.get("anthropic/claude-sonnet-4-5")?.input).toBe(3 / 1_000_000);
 
-    // No list at all — a failed fetch — leaves every rate intact.
-    resetDynamicTokenPricingForTest({ disableDiskCache: true });
-    expect(resolveTokenPrice("claude-sonnet-5").input).toBe(2 / 1_000_000);
-    expect(resolveTokenPrice("claude-opus-5").input).toBe(5 / 1_000_000);
-    expect(tokenPriceSource("claude-sonnet-5")).toBe("fallback");
+    expect(resolveTokenPrice("claude-sonnet-4-5").input).toBe(3 / 1_000_000);
+    expect(resolveTokenPrice("claude-sonnet-4-5").output).toBe(15 / 1_000_000);
+    expect(resolveTokenPrice("venice/claude-sonnet-4-5").input).toBe(3.75 / 1_000_000);
+    expect(resolveTokenPrice("venice/claude-sonnet-4-5").output).toBe(18.75 / 1_000_000);
+    // Date snapshots normalize onto the same rows.
+    expect(resolveTokenPrice("claude-sonnet-4-5-20250929").input).toBe(3 / 1_000_000);
+    expect(resolveTokenPrice("venice/claude-sonnet-4-5-20250929").input).toBe(3.75 / 1_000_000);
   });
 
-  it("keeps Opus 5.5 on its own static rate when the list only prices Opus 5", () => {
-    setDynamicTokenPricingForTest({
-      "claude-opus-5": {
-        input: 5 / 1_000_000,
-        output: 25 / 1_000_000,
-        cacheWrite: 6.25 / 1_000_000,
-        cacheRead: 0.5 / 1_000_000,
-      },
-    });
-    const price = resolveTokenPrice("claude-opus-5-5");
-    expect(price.input).toBe(4 / 1_000_000);
-    expect(price.output).toBe(20 / 1_000_000);
-    expect(price.cacheRead).toBe(0.2 / 1_000_000);
-    expect(price.cacheWrite).toBe(5 / 1_000_000);
-    expect(tokenPriceSource("claude-opus-5-5")).toBe("fallback");
-    expect(resolveTokenPrice("claude-opus-5").input).toBe(5 / 1_000_000);
-    expect(tokenPriceSource("claude-opus-5")).toBe("list");
-    resetDynamicTokenPricingForTest({ disableDiskCache: true });
+  it("prices a model the vendor no longer lists from a reseller row that names the vendor", () => {
+    // Anthropic's own models.dev entry dropped Opus 4; nano-gpt still lists
+    // `anthropic/claude-opus-4`, with no cache-write rate.
+    const price = resolveTokenPrice("claude-opus-4");
+    expect(price.input).toBe(15 / 1_000_000);
+    expect(price.output).toBe(75 / 1_000_000);
+    expect(price.cacheRead).toBe(1.5 / 1_000_000);
+    expect(price.cacheWrite).toBeCloseTo(18.75 / 1_000_000, 15);
+    expect(tokenPriceSource("claude-opus-4")).toBe("list");
+  });
+
+  it("fills only the cache rates a models.dev row leaves out, at 0.1x and 1.25x input", () => {
+    // gpt-5.5 carries a cache-read rate but no cache-write rate.
+    const gpt = resolveTokenPrice("gpt-5.5");
+    expect(gpt.input).toBe(5 / 1_000_000);
+    expect(gpt.output).toBe(30 / 1_000_000);
+    expect(gpt.cacheRead).toBe(0.5 / 1_000_000);
+    expect(gpt.cacheWrite).toBeCloseTo(6.25 / 1_000_000, 15);
+    // The Flash Image preview row carries neither.
+    const image = resolveTokenPrice("gemini-3.1-flash-image-preview");
+    expect(image.input).toBe(0.5 / 1_000_000);
+    expect(image.output).toBe(60 / 1_000_000);
+    expect(image.cacheRead).toBeCloseTo(0.05 / 1_000_000, 15);
+    expect(image.cacheWrite).toBeCloseTo(0.625 / 1_000_000, 15);
   });
 
   /**
-   * Most list rows carry input and output and nothing else. Dropping such a row
-   * back to the whole static entry would hand the list's authority to a model
-   * the list actually prices; the missing field is filled on its own.
+   * Settled policy: models.dev wins whenever it prices a model; the registry
+   * (and model manifest) price is the fallback for a model it has not listed
+   * yet; anything else is zero and says so.
    */
-  it("fills a partial rate-list entry field by field, not by falling back to the whole static row", () => {
-    resetDynamicTokenPricingForTest({ disableDiskCache: true });
-    const parsed = _pricingTesting.parsePricingMap({
-      // Input and output only, exactly as the OpenAI rows arrive.
-      "gpt-5.6-luna": { input_cost_per_token: 9 / 1_000_000, output_cost_per_token: 90 / 1_000_000 },
-    });
-    const price = parsed?.get("gpt-5.6-luna");
-    // The list's own input/output survive...
-    expect(price?.input).toBe(9 / 1_000_000);
-    expect(price?.output).toBe(90 / 1_000_000);
-    // ...and only the absent cache fields come from the table's entry for that
-    // same model, rather than the table's input/output overriding the list.
-    expect(price?.cacheRead).toBe(0.02 / 1_000_000);
-  });
-
-  // Reconciled against the list on 2026-08-10. These four moved, so a user's
-  // cost figures moved with them; the values are pinned so a silent drift back
-  // to the old table is a failing test rather than a quiet re-divergence.
-  it("carries the reconciled rates for the models where the table disagreed with the list", () => {
-    resetDynamicTokenPricingForTest({ disableDiskCache: true });
+  it("prefers models.dev over the registry price, and falls back to the registry for a model it lacks", () => {
+    // models.dev's rate, not the registry's 1/6.
     expect(resolveTokenPrice("gpt-5.6-luna").input).toBe(0.2 / 1_000_000);
     expect(resolveTokenPrice("gpt-5.6-luna").output).toBe(1.2 / 1_000_000);
-    expect(resolveTokenPrice("gpt-5.6-terra").input).toBe(2 / 1_000_000);
-    expect(resolveTokenPrice("gpt-5.6-terra").output).toBe(12 / 1_000_000);
-    expect(resolveTokenPrice("gpt-4o-mini").input).toBe(0.165 / 1_000_000);
-    expect(resolveTokenPrice("claude-3-5-haiku").input).toBe(1 / 1_000_000);
-    // Sonnet 4.6 was aliased onto Sonnet 5 and billed at 2/10; the list prices
-    // it at 3/15, and every spelling of the name must agree.
-    for (const name of ["claude-sonnet-4.6", "claude-4.6-sonnet", "claude-4.6-sonnet-thinking", "anthropic--claude-4.6-sonnet"]) {
+    expect(tokenPriceSource("gpt-5.6-luna")).toBe("list");
+    // models.dev's cache-read rate, not the registry-derived 0.1x.
+    expect(resolveTokenPrice("claude-opus-5-5").input).toBe(4 / 1_000_000);
+    expect(resolveTokenPrice("claude-opus-5-5").cacheRead).toBe(0.2 / 1_000_000);
+    expect(tokenPriceSource("claude-opus-5-5")).toBe("list");
+
+    // Not on models.dev yet: the registry prices it rather than zero.
+    const sol = resolveTokenPrice("gpt-6-sol");
+    expect(sol.input).toBe(2 / 1_000_000);
+    expect(sol.output).toBe(10 / 1_000_000);
+    expect(sol.cacheRead).toBeCloseTo(0.2 / 1_000_000, 15);
+    expect(sol.cacheWrite).toBeCloseTo(2.5 / 1_000_000, 15);
+    expect(tokenPriceSource("gpt-6-sol")).toBe("fallback");
+
+    // No list at all (a failed fetch, no cache): registry prices survive and
+    // everything else is zero, reported as fallback.
+    resetDynamicTokenPricingForTest({ disableDiskCache: true });
+    expect(resolveTokenPrice("gpt-5.6-luna").input).toBe(1 / 1_000_000);
+    expect(tokenPriceSource("gpt-5.6-luna")).toBe("fallback");
+    expect(resolveTokenPrice("gpt-6-sol").input).toBe(2 / 1_000_000);
+    expect(resolveTokenPrice("gemini-2.5-pro").input).toBe(0);
+    expect(tokenPriceSource("gemini-2.5-pro")).toBe("fallback");
+  });
+
+  it("keeps the Codex list price when another runtime shares the wire id", () => {
+    // No models.dev data: Copilot's unpriced `gpt-5.4` row must not hide Codex's.
+    _pricingTesting.resetDynamicTokenPricingForTest({ disableDiskCache: true });
+    expect(resolveTokenPrice("gpt-5.4").input).toBe(2.5 / 1_000_000);
+    expect(resolveTokenPrice("gpt-5.3-codex").input).toBeGreaterThan(0);
+  });
+
+  it("prices a provider-qualified variant at that provider's row", () => {
+    _pricingTesting.installModelsDevPricingForTest({
+      venice: { id: "venice", models: { "claude-sonnet-4-5": { id: "claude-sonnet-4-5", cost: { input: 3.75, output: 18.75 } } } },
+      anthropic: { id: "anthropic", models: { "claude-sonnet-4-5": { id: "claude-sonnet-4-5", cost: { input: 3, output: 15 } } } },
+    });
+    expect(resolveTokenPrice("venice/claude-sonnet-4-5-thinking").input).toBe(3.75 / 1_000_000);
+    expect(resolveTokenPrice("claude-sonnet-4-5-thinking").input).toBe(3 / 1_000_000);
+  });
+
+  it("drops models.dev rates older than 30 days even in a long-running process", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-09-01T00:00:00Z"));
+      _pricingTesting.setDynamicTokenPricingForTest({
+        "claude-sonnet-4-5": { input: 99 / 1_000_000, output: 99 / 1_000_000, cacheWrite: 0, cacheRead: 0 },
+      });
+      expect(resolveTokenPrice("claude-sonnet-4-5").input).toBe(99 / 1_000_000);
+      vi.setSystemTime(new Date("2026-10-05T00:00:00Z"));
+      // Expired: no stale list rate, and no undated models.dev override either.
+      expect(resolveTokenPrice("claude-sonnet-4-5").input).not.toBe(99 / 1_000_000);
+      expect(tokenPriceSource("claude-sonnet-4-5")).toBe("fallback");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never prices a newer version at an older version's prefix row", () => {
+    // Only Opus 5 on the list: `claude-opus-5` is a string prefix of
+    // `claude-opus-5-5`, but 5.5 must take its own (registry) price, not 5/25.
+    _pricingTesting.setDynamicTokenPricingForTest({
+      "claude-opus-5": { input: 5 / 1_000_000, output: 25 / 1_000_000, cacheWrite: 6.25 / 1_000_000, cacheRead: 0.5 / 1_000_000 },
+    });
+    expect(resolveTokenPrice("claude-opus-5-5").input).toBe(4 / 1_000_000);
+    expect(resolveTokenPrice("claude-opus-5-5").output).toBe(20 / 1_000_000);
+    // A variant suffix is still the same model.
+    expect(resolveTokenPrice("claude-opus-5-thinking").input).toBe(5 / 1_000_000);
+    // An unknown later version is unpriced rather than billed as Opus 5.
+    expect(resolveTokenPrice("claude-opus-5-9").input).toBe(0);
+  });
+
+  it("prices variants by the closest models.dev prefix", () => {
+    const thinking = resolveTokenPrice("claude-sonnet-4-5-thinking");
+    expect(thinking.input).toBe(3 / 1_000_000);
+    expect(thinking.output).toBe(15 / 1_000_000);
+    expect(tokenPriceSource("claude-sonnet-4-5-thinking")).toBe("list");
+    // Claude Code's `[1m]` tag is not part of the id; left on, the prefix
+    // match would land on `claude-opus-4` and bill Opus 4.8 at 15/75.
+    expect(resolveTokenPrice("claude-opus-4-8[1m]").input).toBe(5 / 1_000_000);
+    expect(resolveTokenPrice("claude-opus-4-8[1m]").output).toBe(25 / 1_000_000);
+  });
+
+  it("prices an ADE registry alias as the model the registry resolves it to", () => {
+    // `opus` is not a models.dev id; the registry launches Opus 5.5 for it.
+    expect(resolveTokenPrice("opus").input).toBe(4 / 1_000_000);
+    expect(resolveTokenPrice("opus").cacheRead).toBe(0.2 / 1_000_000);
+    expect(tokenPriceSource("opus")).toBe("list");
+    expect(resolveTokenPrice("haiku").input).toBe(1 / 1_000_000);
+    expect(resolveTokenPrice("haiku").output).toBe(5 / 1_000_000);
+  });
+
+  it("prices every spelling of Sonnet 4.6 at Sonnet 4.6's row, not Sonnet 5's", () => {
+    for (const name of ["claude-sonnet-4-6", "claude-sonnet-4.6", "claude-4.6-sonnet", "claude-4.6-sonnet-thinking", "anthropic--claude-4.6-sonnet"]) {
       expect(resolveTokenPrice(name).input).toBe(3 / 1_000_000);
       expect(resolveTokenPrice(name).output).toBe(15 / 1_000_000);
     }
   });
 
-  it("prefers Codeburn-style dynamic pricing with provider and date normalization", () => {
-    setDynamicTokenPricingForTest({
-      "openai/gpt-dynamic": {
-        input: 9 / 1_000_000,
-        output: 27 / 1_000_000,
-        cacheWrite: 11.25 / 1_000_000,
-        cacheRead: 0.9 / 1_000_000,
-      },
-    });
-
-    const price = resolveTokenPrice("openai/gpt-dynamic-20260101");
-    expect(price.input).toBe(9 / 1_000_000);
-    expect(price.output).toBe(27 / 1_000_000);
-  });
-
-  it("uses Codeburn-compatible aliases for runtime auto models", () => {
+  it("prices runtime auto models at the model the alias names", () => {
     const price = resolveTokenPrice("cursor-auto");
     expect(price.input).toBe(3 / 1_000_000);
     expect(price.output).toBe(15 / 1_000_000);
     expect(resolveTokenPrice("composer-2.5").input).toBe(2 / 1_000_000);
   });
 
-  it("prices every ADE Claude and Codex registry id and alias without dynamic pricing", () => {
+  it("prices every ADE Claude and Codex registry id and alias", () => {
     const required = MODEL_REGISTRY.filter(
       (descriptor) => descriptor.isCliWrapped && (descriptor.family === "anthropic" || descriptor.family === "openai"),
     );
@@ -1247,7 +1276,7 @@ describe("resolveTokenPrice", () => {
     expect(missingPricedRefsForDescriptors(required)).toEqual([]);
   });
 
-  it("prices known Cursor model families and variants without dynamic pricing", () => {
+  it("prices known Cursor model families and variants", () => {
     const cursorModelIds = [
       "auto",
       "cursor-auto",
@@ -3466,7 +3495,7 @@ describe("scanClaudeLogs (via aggregateCosts)", () => {
     const entries = [
       {
         messageId: "msg1:req1",
-        model: "claude-3-5-sonnet-20250101",
+        model: "claude-sonnet-4-5-20250929",
         inputTokens: 5000,
         outputTokens: 2000,
         cachedTokens: 1000,
@@ -3485,9 +3514,11 @@ describe("scanClaudeLogs (via aggregateCosts)", () => {
     const cost = aggregateCosts(entries, "claude");
     expect(cost.provider).toBe("claude");
     expect(Object.keys(cost.tokenBreakdown)).toHaveLength(2);
-    expect(cost.tokenBreakdown["claude-3-5-sonnet-20250101"]!.input).toBe(5000);
+    expect(cost.tokenBreakdown["claude-sonnet-4-5-20250929"]!.input).toBe(5000);
     expect(cost.tokenBreakdown["claude-opus-4"]!.output).toBe(1500);
-    expect(cost.last30dCostUsd).toBeGreaterThan(0);
+    // The dated snapshot prices at Sonnet 4.5's row (3/15/0.30): $0.0453; Opus 4
+    // at 15/75/1.50: $0.15825. $0.20355 reported to the cent.
+    expect(cost.last30dCostUsd).toBe(0.2);
   });
 
   it("discovers Claude projects from CLAUDE_CONFIG_DIRS", async () => {

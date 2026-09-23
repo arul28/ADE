@@ -5,6 +5,7 @@ import {
   type LaneLifecycleEvent,
   type RebaseRunEventPayload,
 } from "../../../../shared/types";
+import { isChatLaunchLane } from "../../../state/chatLaunchStore";
 import { showToast } from "./toastStore";
 
 /**
@@ -31,6 +32,8 @@ export function useLaneEventToasts(navigate: NavigateFunction): void {
         if (event.type === "lanes-invalidated") return;
         if (!namesARealLane(event)) return;
         const dot = event.color ?? undefined;
+        // A new-lane launch shows its own lane's birth and cancellation.
+        if ((event.type === "lane-created" || event.type === "lane-deleted") && isChatLaunchLane(event.laneId)) return;
         if (event.type === "lane-created") {
           showToast({
             id: `lane-${event.type}-${event.laneId}`,

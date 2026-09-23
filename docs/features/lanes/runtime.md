@@ -33,8 +33,10 @@ fallback target; the ADE runtime hosts the canonical instances.
 
 | Service | Workstream | Responsibility |
 |---------|-----------|----------------|
-| `laneEnvironmentService.ts` | W1 | Env file templating, docker services, dependency install, mount points, copy paths, setup script; docker teardown on archive/delete/reclaim; the per-lane init/cleanup queue and the incomplete-init marker |
-| `laneEnvInitMerge.ts` | W1 | Dependency-free merge kernel for `LaneEnvInitConfig` / `LaneOverlayOverrides` (`mergeLaneEnvInitConfig`, `mergeLaneDockerConfig`, `cloneLaneEnvInitConfig`, `mergeLaneOverrides`). Imported by `projectConfigService`, `registerIpc`, the action-domain registry, and the ade-cli sync command service, which each used to carry their own copy. Kept free of service types so config parsing can import it without a cycle. |
+| `laneEnvironmentService.ts` | W1 | Env file templating, docker services, dependency install, mount points, copy paths, setup script; docker teardown on archive/delete/reclaim; the per-lane init/cleanup queue and the incomplete-init marker; `onEvent` listeners and `abortLaneEnvironment` |
+| `laneEnvironmentProcesses.ts` | W1 | Runtime bookkeeping for env init: event fan-out to the runtime broadcast plus in-process `onEvent` listeners, the setup commands still running per working directory, and the cooperative cancellation flags. See [Aborting a lane's setup](#aborting-a-lanes-setup). |
+| `laneEnvironmentSetup.ts` | W1/W2 | `runLaneEnvironmentSetup` — the single post-create setup path (template merged over project config, or project config alone), shared by the `lane.*` actions, IPC, sync commands and the chat-launch service. `planNewLaneEnvironment` predicts, before a lane exists, whether it will get any setup. |
+| `laneEnvInitMerge.ts` | W1 | Dependency-free merge kernel for `LaneEnvInitConfig` / `LaneOverlayOverrides` (`mergeLaneEnvInitConfig`, `mergeLaneDockerConfig`, `cloneLaneEnvInitConfig`, `mergeLaneOverrides`). Imported by `projectConfigService`, `laneEnvironmentService`, and `laneEnvironmentSetup` (the one path IPC, the action-domain registry, and the ade-cli sync command service use to merge a template over project config). Kept free of service types so config parsing can import it without a cycle. |
 | `laneOverlayContext.ts` | W1 | `resolveLaneOverlayContext` — the one answer for "which lane, which overlay overrides, which env-init config", with the lane's active port lease folded in (`applyLeaseToOverrides`). Used by env init and by every teardown path so two teardowns of the same lane cannot disagree about which compose file to bring down. |
 | `setupScriptConfig.ts` | W2 | Leaf module resolving a `LaneSetupScriptConfig` to the platform's commands / script path (`resolveSetupScriptConfig`) and rejecting script files Windows cannot launch (`unsupportedWindowsScriptPathError`). Lets the executor resolve exactly what the template UI promises without importing template CRUD. |
 | `laneTemplateService.ts` | W2 | CRUD for reusable init recipes, platform-specific setup scripts, default-template selection |
@@ -90,6 +92,30 @@ Lanes tab it keeps `CreateLaneDialog` open and renders
 modal. In the Work tab it closes as soon as the lane row exists and runs
 setup detached; failures create a sticky toast with a Retry action so
 the session sidebar does not need to stay mounted.
+
+A lane created by a new-lane chat launch runs its setup inside the
+launch instead: the brain's `chatLaunchService` calls
+`runLaneEnvironmentSetup` with the project's default lane template (or
+the project config alone), subscribes to `laneEnvironmentService.onEvent`,
+and mirrors each env step into the launch's "Apply lane template" / "Set
+up environment" stage. See
+[Chat › New-lane launches](../chat/README.md#new-lane-launches).
+
+### One setup path
+
+Every post-create environment setup goes through
+`runLaneEnvironmentSetup(deps, { laneId, templateId?, includeArchived? })`
+in `laneEnvironmentSetup.ts`: the `lane.initEnv` / `lane.applyTemplate`
+actions, the `ade.lanes.initEnv` / `ade.lanes.templates.apply` IPC
+handlers, the sync host's `lanes.initEnv` / `lanes.applyTemplate`
+commands, and the chat-launch environment stage. With a `templateId` it
+resolves the template to env init (`resolveTemplateAsEnvInit`), merges
+the template's env vars and port range into the lane's overlay overrides
+(an existing port range wins), and merges the template env init over the
+project's; without one it runs the project config alone, returning a
+zero-step `completed` progress when there is nothing to run. An unknown
+template throws `Template not found: <id>`. `includeArchived` defaults to
+true (the action domain's rule); IPC and the sync host pass false.
 
 Config types live in `src/shared/types/config.ts`:
 
@@ -229,6 +255,18 @@ are marked `skipped` with "Cancelled: lane is being torn down" (neutral
 copy and neutral styling — it fires for delete and archive-and-reclaim
 too, not only archive) and the run ends `failed`. Already-spawned child
 processes keep their own timeouts; nothing is killed.
+
+### Aborting a lane's setup
+
+`laneEnvironmentService.abortLaneEnvironment(laneId, worktreePath)` is
+the hard stop, used when a new-lane launch that owns the lane is
+cancelled and the lane is about to be deleted. It raises the same
+cooperative flag (when an init is in flight), so the run stops at its
+next step boundary, and additionally kills (`terminateProcessTree`) every
+tracked setup command whose working directory is inside the worktree —
+an `npm install` or setup script does not outlive the worktree it runs
+in. Setup children are tracked from spawn until `close` / `error`
+(`laneEnvironmentProcesses.trackChild`).
 
 That leaves a half-initialized worktree, and the evidence disappears
 with it: cleanup deletes the lane's progress entry. So an init that

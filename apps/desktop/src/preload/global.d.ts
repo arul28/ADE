@@ -630,6 +630,12 @@ import type {
   RestoreLaneResult,
   LaneEnvInitProgress,
   LaneEnvInitEvent,
+  ChatLaunchArgs,
+  ChatLaunchCompleteClientArgs,
+  ChatLaunchEvent,
+  ChatLaunchIdArgs,
+  ChatLaunchQueueMessageArgs,
+  ChatLaunchSnapshot,
   LaneOverlayOverrides,
   LaneTemplate,
   LaneListSnapshot,
@@ -1904,6 +1910,17 @@ declare global {
         onChanged: (
           cb: (ev: TerminalSessionChangedEvent) => void,
         ) => () => void;
+      };
+      chatLaunch: {
+        start: (args: ChatLaunchArgs, pin?: OpenProjectBinding | null) => Promise<ChatLaunchSnapshot>;
+        get: (args: ChatLaunchIdArgs, pin?: OpenProjectBinding | null) => Promise<ChatLaunchSnapshot | null>;
+        list: (pin?: OpenProjectBinding | null) => Promise<ChatLaunchSnapshot[]>;
+        cancel: (args: ChatLaunchIdArgs, pin?: OpenProjectBinding | null) => Promise<ChatLaunchSnapshot | null>;
+        retry: (args: ChatLaunchIdArgs, pin?: OpenProjectBinding | null) => Promise<ChatLaunchSnapshot | null>;
+        startNow: (args: ChatLaunchIdArgs, pin?: OpenProjectBinding | null) => Promise<ChatLaunchSnapshot | null>;
+        queueMessage: (args: ChatLaunchQueueMessageArgs, pin?: OpenProjectBinding | null) => Promise<ChatLaunchSnapshot>;
+        completeClient: (args: ChatLaunchCompleteClientArgs, pin?: OpenProjectBinding | null) => Promise<ChatLaunchSnapshot | null>;
+        onEvent: (cb: (event: ChatLaunchEvent) => void, pin?: OpenProjectBinding | null) => () => void;
       };
       agentChat: {
         list: (args?: AgentChatListArgs) => Promise<AgentChatSessionSummary[]>;

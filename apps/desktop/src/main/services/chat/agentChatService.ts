@@ -50,6 +50,7 @@ import { z, type ZodType } from "zod";
 import { buildClaudeV2MessageAsync, inferAttachmentMediaType } from "./buildClaudeV2Message";
 import { listPromptStashAttachmentPaths } from "./promptStashService";
 import { ClaudeInputPump } from "./claudeInputPump";
+import { clampTurnTimerMs, isForeignTurnEvent, SessionTurnAbandonedError, trackTurnInFlight } from "./sessionTurnLimits";
 import {
   claudePluginDeliveryForSource,
   normalizeClaudeInterruptReceipt,
@@ -123,6 +124,7 @@ import {
   codexServerSupportsPaginatedHistory,
   codexServerSupportsThreadQueue,
   codexServerSupportsThreadRevert,
+  codexServerSupportsThreadRollback,
   codexServerSupportsThreadSettings,
   codexServerSupportsUserShell,
 } from "./codexAppServerFeatures";
@@ -621,6 +623,7 @@ import {
   type RuntimeBudgetParticipant,
 } from "./chatRuntimeBudget";
 import { createChatMentionService, markChatMentionsExpanded } from "./chatMentionService";
+import { refreshModelManifestIfStale } from "../ai/modelManifestService";
 import {
   claudeJsonlToChatEvents,
   codexTurnsToChatEvents,
@@ -629,6 +632,8 @@ import {
   readTailLines,
 } from "./externalChatHistoryImport";
 import {
+  getActiveModelManifest,
+  onModelManifestApplied,
   getDefaultModelDescriptor,
   getDynamicOpenCodeModelDescriptors,
   getDynamicPiModelDescriptors,
@@ -2404,7 +2409,6 @@ const CODEX_BUILT_IN_SLASH_COMMANDS: AgentChatSlashCommand[] = [
   { name: "/model", description: "Choose the active model and reasoning effort.", source: "sdk" },
   { name: "/fast", description: "Toggle Fast mode for supported models.", source: "local", argumentHint: "[on|off|status]" },
   { name: "/plan", description: "Switch to plan mode and optionally send a prompt.", source: "local", argumentHint: "[prompt]" },
-  { name: "/personality", description: "Choose a communication style for responses.", source: "sdk" },
   { name: "/quit", description: "Exit the CLI.", source: "sdk" },
   { name: "/review", description: "Ask Codex to review your working tree, a branch, or a prompt.", source: "local", argumentHint: "[diff|branch <name>|prompt <text>]" },
   { name: "/status", description: "Display session configuration and token usage.", source: "sdk" },
@@ -4145,6 +4149,17 @@ type SessionTurnCollector = {
   };
   lastError: string | null;
   timeout: NodeJS.Timeout | null;
+  /**
+   * Optional stop-when-idle watch. The timer restarts on every event of the
+   * turn and stays disarmed while anything in `inFlight` (a tool call, a
+   * command, a subagent, a pending approval) is still open, so a long build
+   * the agent is waiting on never reads as idle.
+   */
+  idle: {
+    timeoutMs: number;
+    timer: NodeJS.Timeout | null;
+    inFlight: Set<string>;
+  } | null;
 };
 
 type PreparedSendMessage = {
@@ -4265,13 +4280,18 @@ const CLAUDE_WARMUP_WAIT_TIMEOUT_MS = 20_000;
 const CLAUDE_STOP_TASK_TIMEOUT_MS = 2_000;
 const CLAUDE_INTERRUPT_REQUEST_TIMEOUT_MS = 2_500;
 
-const DEFAULT_CODEX_DESCRIPTOR = getDefaultModelDescriptor("codex");
-const DEFAULT_CLAUDE_DESCRIPTOR = getDefaultModelDescriptor("claude");
+// Codex and Claude defaults can move at runtime (model-manifest.json), so they
+// are read on use rather than frozen at module load.
+const defaultCodexDescriptor = () => getDefaultModelDescriptor("codex");
+const defaultClaudeDescriptor = () => getDefaultModelDescriptor("claude");
 const DEFAULT_OPENCODE_DESCRIPTOR = getDefaultModelDescriptor("opencode");
 const DEFAULT_CURSOR_DESCRIPTOR = getDefaultModelDescriptor("cursor");
 const DEFAULT_DROID_DESCRIPTOR = getDefaultModelDescriptor("droid");
-const DEFAULT_CODEX_MODEL = DEFAULT_CODEX_DESCRIPTOR?.providerModelId ?? "gpt-6-astra";
-const DEFAULT_CLAUDE_MODEL = DEFAULT_CLAUDE_DESCRIPTOR?.providerModelId ?? DEFAULT_CLAUDE_DESCRIPTOR?.shortId ?? "sonnet";
+const defaultCodexModel = (): string => defaultCodexDescriptor()?.providerModelId ?? "gpt-6-astra";
+const defaultClaudeModel = (): string => {
+  const descriptor = defaultClaudeDescriptor();
+  return descriptor?.providerModelId ?? descriptor?.shortId ?? "sonnet";
+};
 const DEFAULT_OPENCODE_MODEL_ID = DEFAULT_OPENCODE_DESCRIPTOR?.id ?? "anthropic/claude-sonnet-5";
 const DEFAULT_CURSOR_MODEL = DEFAULT_CURSOR_DESCRIPTOR?.providerModelId ?? "auto";
 const DEFAULT_DROID_MODEL = DEFAULT_DROID_DESCRIPTOR?.providerModelId ?? "claude-sonnet-4-5-20250929";
@@ -4502,7 +4522,7 @@ function codexModelInfoFromDescriptor(
     id: descriptor.providerModelId,
     displayName: descriptor.displayName,
     description: overrides?.description ?? describeCodexModel(descriptor.displayName),
-    isDefault: overrides?.isDefault ?? descriptor.id === DEFAULT_CODEX_DESCRIPTOR?.id,
+    isDefault: overrides?.isDefault ?? descriptor.id === defaultCodexDescriptor()?.id,
     reasoningEfforts: advertisedReasoningEfforts,
     defaultReasoningEffort: overrides?.defaultReasoningEffort
       ?? descriptor.defaultReasoningEffort
@@ -4547,15 +4567,15 @@ function acpModelInfoFromDescriptor(
   };
 }
 
-const CODEX_FALLBACK_MODELS: AgentChatModelInfo[] = listModelDescriptorsForProvider("codex").map((descriptor) =>
+const codexFallbackModels = (): AgentChatModelInfo[] => listModelDescriptorsForProvider("codex").map((descriptor) =>
   codexModelInfoFromDescriptor(descriptor)
 );
 
-const CLAUDE_FALLBACK_MODELS: AgentChatModelInfo[] = listModelDescriptorsForProvider("claude").map((descriptor) => ({
+const claudeFallbackModels = (): AgentChatModelInfo[] => listModelDescriptorsForProvider("claude").map((descriptor) => ({
   id: descriptor.providerModelId,
   displayName: descriptor.displayName,
   description: describeClaudeModel(descriptor.displayName),
-  isDefault: descriptor.id === DEFAULT_CLAUDE_DESCRIPTOR?.id,
+  isDefault: descriptor.id === defaultClaudeDescriptor()?.id,
   reasoningEfforts: descriptor.capabilities.reasoning && descriptor.reasoningTiers?.length
     ? CLAUDE_REASONING_EFFORTS.filter((effort) => descriptor.reasoningTiers?.includes(effort.effort))
     : [],
@@ -6881,8 +6901,8 @@ function resolveClaudeTurnModelPayload(
 
 function fallbackModelForProvider(provider: AgentChatProvider): string {
   if (provider === "pi") return getDynamicPiModelDescriptors()[0]?.id ?? "pi/default";
-  if (provider === "codex") return DEFAULT_CODEX_MODEL;
-  if (provider === "claude") return DEFAULT_CLAUDE_MODEL;
+  if (provider === "codex") return defaultCodexModel();
+  if (provider === "claude") return defaultClaudeModel();
   if (provider === "cursor") return DEFAULT_CURSOR_MODEL;
   if (provider === "droid") return DEFAULT_DROID_MODEL;
   return DEFAULT_OPENCODE_MODEL_ID;
@@ -7559,6 +7579,8 @@ type CodexThreadLifecycleResponse = {
   sandbox?: unknown;
   reasoningEffort?: unknown;
   serviceTier?: unknown;
+  /** 0.156+ `thread/resume`: the mode the thread is actually in. */
+  collaborationMode?: unknown;
 };
 
 const CODEX_SANDBOX_CAMEL_CASE_ALIASES: Record<string, AgentChatCodexSandbox> = {
@@ -7616,6 +7638,13 @@ function applyCodexEffectiveThreadState(
 
   if (Object.prototype.hasOwnProperty.call(response, "serviceTier")) {
     managed.session.codexServiceTier = normalizeCodexServiceTier(response.serviceTier);
+  }
+
+  // A resumed thread reports the mode it is really in (it may have been
+  // switched from another Codex client), so the plan toggle follows it.
+  const resumedMode = (response.collaborationMode as { mode?: unknown } | null | undefined)?.mode;
+  if (resumedMode === "plan" || resumedMode === "default") {
+    managed.session.interactionMode = resumedMode;
   }
 
   const threadModel = stringOrNull(response.thread?.model ?? response.model);
@@ -15381,14 +15410,67 @@ export function createAgentChatService(args: {
     }
   };
 
+  const clearSessionTurnCollectorTimers = (collector: SessionTurnCollector): void => {
+    if (collector.timeout) {
+      clearTimeout(collector.timeout);
+      collector.timeout = null;
+    }
+    if (collector.idle?.timer) {
+      clearTimeout(collector.idle.timer);
+      collector.idle.timer = null;
+    }
+  };
+
   const rejectActiveSessionTurnCollector = (sessionId: string, message: string): void => {
     const activeCollector = sessionTurnCollectors.get(sessionId);
     if (!activeCollector) return;
-    if (activeCollector.timeout) {
-      clearTimeout(activeCollector.timeout);
-    }
+    clearSessionTurnCollectorTimers(activeCollector);
     sessionTurnCollectors.delete(sessionId);
-    activeCollector.reject(new Error(message));
+    activeCollector.reject(new SessionTurnAbandonedError(message));
+  };
+
+  /** A limit the caller asked for ran out: interrupt the turn but keep the chat. */
+  const stopSessionTurnOnLimit = (
+    sessionId: string,
+    collector: SessionTurnCollector,
+    limit: { kind: "time" | "idle"; ms: number },
+  ): void => {
+    if (sessionTurnCollectors.get(sessionId) !== collector) return;
+    clearSessionTurnCollectorTimers(collector);
+    sessionTurnCollectors.delete(sessionId);
+    // The one record of why a headless turn (an automation's, usually) ended early.
+    logger.info("agent_chat.run_session_turn_limit_reached", { sessionId, limit: limit.kind, limitMs: limit.ms });
+    void interrupt({ sessionId }).catch((interruptError) => {
+      logger.warn("agent_chat.run_session_turn_timeout_interrupt_failed", {
+        sessionId,
+        error: interruptError instanceof Error ? interruptError.message : String(interruptError),
+      });
+    });
+    const minutes = Math.round(limit.ms / 60_000);
+    const idleFor = minutes > 0 ? `${minutes} min` : `${Math.round(limit.ms / 1000)}s`;
+    collector.reject(new Error(limit.kind === "idle"
+      ? `Stopped after ${idleFor} with no activity. The turn was interrupted, but the chat stayed open.`
+      : `Timed out waiting for session '${sessionId}' to finish the current turn. The turn was interrupted, but the chat stayed open.`));
+  };
+
+  const armSessionTurnIdleTimer = (sessionId: string, collector: SessionTurnCollector): void => {
+    const idle = collector.idle;
+    if (!idle) return;
+    if (idle.timer) {
+      clearTimeout(idle.timer);
+      idle.timer = null;
+    }
+    if (idle.inFlight.size > 0) return;
+    idle.timer = setTimeout(() => {
+      stopSessionTurnOnLimit(sessionId, collector, { kind: "idle", ms: idle.timeoutMs });
+    }, idle.timeoutMs);
+  };
+
+  /** Track open work from one turn event, then restart the idle watch. */
+  const noteSessionTurnActivity = (sessionId: string, collector: SessionTurnCollector, event: AgentChatEvent): void => {
+    if (!collector.idle) return;
+    trackTurnInFlight(collector.idle.inFlight, event);
+    armSessionTurnIdleTimer(sessionId, collector);
   };
 
   const getClaudeSessionPointerForChat = (sessionId: string) => {
@@ -17669,6 +17751,7 @@ export function createAgentChatService(args: {
     if (liveEvent.type === "status" && liveEvent.turnStatus === "started") {
       collector.turnStarted = true;
       if (liveEvent.turnId) collector.turnId = liveEvent.turnId;
+      noteSessionTurnActivity(managed.session.id, collector, liveEvent);
       return;
     }
 
@@ -17676,11 +17759,13 @@ export function createAgentChatService(args: {
     // Never let late text/error/done events from that abandoned turn satisfy a
     // newly-created blocking runSessionTurn collector.
     if (!collector.turnStarted) return;
-    if (collector.turnId && liveEvent.turnId && liveEvent.turnId !== collector.turnId) return;
+    if (isForeignTurnEvent(collector.turnId, liveEvent.turnId)) return;
     if (!collector.turnId && liveEvent.turnId && liveEvent.type !== "done") {
       collector.turnId = liveEvent.turnId;
     }
     if (collector.turnId && liveEvent.type === "done" && liveEvent.turnId !== collector.turnId) return;
+
+    if (liveEvent.type !== "done") noteSessionTurnActivity(managed.session.id, collector, liveEvent);
 
     if (liveEvent.type === "text") {
       collector.outputText += liveEvent.text;
@@ -17700,9 +17785,7 @@ export function createAgentChatService(args: {
     if (liveEvent.type !== "done") return;
 
     collector.usage = liveEvent.usage;
-    if (collector.timeout) {
-      clearTimeout(collector.timeout);
-    }
+    clearSessionTurnCollectorTimers(collector);
     sessionTurnCollectors.delete(managed.session.id);
     collector.resolve({
       sessionId: managed.session.id,
@@ -17801,6 +17884,13 @@ export function createAgentChatService(args: {
       flushBufferedText(managed, "interleave");
     }
     emitTransientChatEnvelope(managed.session.id, event);
+    // Retries and reconnects are live-only, but they are the provider working:
+    // they must restart a headless turn's idle watch like any committed event.
+    const collector = sessionTurnCollectors.get(managed.session.id);
+    const eventTurnId = "turnId" in event ? event.turnId : undefined;
+    if (collector?.turnStarted && !isForeignTurnEvent(collector.turnId, eventTurnId)) {
+      noteSessionTurnActivity(managed.session.id, collector, event);
+    }
   };
 
   const flushBufferedText = (
@@ -21514,6 +21604,9 @@ export function createAgentChatService(args: {
     managed.ctoSessionStartedAt = null;
     persistChatState(managed);
 
+    // An ended session cannot finish its turn, and teardown does not always
+    // emit a closing `done`; without this a headless caller waits forever.
+    rejectActiveSessionTurnCollector(managed.session.id, "The chat session ended before the turn finished.");
     teardownRuntime(managed, "ended_session");
 
     try {
@@ -35386,7 +35479,7 @@ export function createAgentChatService(args: {
       // unrewritten. `resolveClaudeCliModel` is ADE's substring alias table,
       // which is right for ADE's catalog and would silently repoint a preset.
       model: claudePresetPlan?.model?.trim()
-        || resolveClaudeCliModel(claudeDescriptor?.providerModelId ?? managed.session.model ?? DEFAULT_CLAUDE_MODEL),
+        || resolveClaudeCliModel(claudeDescriptor?.providerModelId ?? managed.session.model ?? defaultClaudeModel()),
       spawnClaudeCodeProcess: (spawnOptions) => claudeSubprocessReaper.spawnClaudeCodeProcess(spawnOptions, {
         sessionId: managed.session.id,
         sdkSessionId: runtime.sdkSessionId,
@@ -35642,7 +35735,7 @@ export function createAgentChatService(args: {
         } as any;
       }
     }
-    const model = opts.model ?? resolveClaudeCliModel(managed.session.model) ?? DEFAULT_CLAUDE_MODEL;
+    const model = opts.model ?? resolveClaudeCliModel(managed.session.model) ?? defaultClaudeModel();
     return { ...opts, model };
   };
 
@@ -36817,7 +36910,7 @@ export function createAgentChatService(args: {
         id: randomUUID(),
         laneId: "temporary",
         provider: "codex",
-        model: DEFAULT_CODEX_MODEL,
+        model: defaultCodexModel(),
         capabilityMode: "full_tooling",
         status: "idle",
         idleSinceAt: null,
@@ -36970,7 +37063,7 @@ export function createAgentChatService(args: {
             const appServerEntry = byRegistryId.get(descriptor.id);
             return codexModelInfoFromDescriptor(descriptor, {
               description: appServerEntry?.description ?? describeCodexModel(descriptor.displayName),
-              isDefault: descriptor.id === DEFAULT_CODEX_DESCRIPTOR?.id,
+              isDefault: descriptor.id === defaultCodexDescriptor()?.id,
               reasoningEfforts: appServerEntry?.reasoningEfforts?.length
                 ? appServerEntry.reasoningEfforts
                 : undefined,
@@ -36983,16 +37076,16 @@ export function createAgentChatService(args: {
         const dedupedExtras = extras.filter((entry) => !preferredIds.has(entry.id));
         const result = [...ordered, ...dedupedExtras];
         if (result.length) {
-          const hasRegistryDefault = result.some((entry) => entry.modelId === DEFAULT_CODEX_DESCRIPTOR?.id);
+          const hasRegistryDefault = result.some((entry) => entry.modelId === defaultCodexDescriptor()?.id);
           return result.map((entry, index) => ({
             ...entry,
-            isDefault: entry.modelId === DEFAULT_CODEX_DESCRIPTOR?.id || (!hasRegistryDefault && (entry.isDefault || index === 0)),
+            isDefault: entry.modelId === defaultCodexDescriptor()?.id || (!hasRegistryDefault && (entry.isDefault || index === 0)),
           }));
         }
       }
-      return CODEX_FALLBACK_MODELS;
+      return codexFallbackModels();
     } catch {
-      return CODEX_FALLBACK_MODELS;
+      return codexFallbackModels();
     } finally {
       // This throwaway runtime is not a tracked session; suppress exit-side lifecycle hooks.
       tempSession.closed = true;
@@ -37027,7 +37120,7 @@ export function createAgentChatService(args: {
           id,
           displayName,
           ...(description ? { description } : {}),
-          isDefault: descriptor.id === DEFAULT_CLAUDE_DESCRIPTOR?.id,
+          isDefault: descriptor.id === defaultClaudeDescriptor()?.id,
           reasoningEfforts: descriptor.capabilities.reasoning && descriptor.reasoningTiers?.length
             ? CLAUDE_REASONING_EFFORTS.filter((effort) => descriptor.reasoningTiers?.includes(effort.effort))
             : [],
@@ -37040,7 +37133,7 @@ export function createAgentChatService(args: {
         };
       });
 
-    if (!mapped.length) return CLAUDE_FALLBACK_MODELS;
+    if (!mapped.length) return claudeFallbackModels();
     if (!mapped.some((entry) => entry.isDefault)) {
       const preferredIdx = mapped.findIndex((entry) => /sonnet/i.test(entry.id) || /sonnet/i.test(entry.displayName));
       if (preferredIdx >= 0) {
@@ -37587,9 +37680,9 @@ export function createAgentChatService(args: {
     const normalizedInputModel = rawModel.trim()
       || modelFromModelId
       || (provider === "codex"
-        ? DEFAULT_CODEX_MODEL
+        ? defaultCodexModel()
         : provider === "claude"
-          ? DEFAULT_CLAUDE_MODEL
+          ? defaultClaudeModel()
           : provider === "cursor"
             ? DEFAULT_CURSOR_MODEL
             : provider === "droid"
@@ -40524,7 +40617,7 @@ export function createAgentChatService(args: {
         provider: "claude",
         model: targetDescriptor
           ? (targetDescriptor.isCliWrapped ? targetDescriptor.providerModelId : targetDescriptor.id)
-          : DEFAULT_CLAUDE_MODEL,
+          : defaultClaudeModel(),
         ...(targetDescriptor ? { modelId: targetDescriptor.id } : {}),
         ...(args.title?.trim() ? { title: args.title.trim() } : {}),
       });
@@ -40652,7 +40745,7 @@ export function createAgentChatService(args: {
         provider: "codex",
         model: targetDescriptor
           ? (targetDescriptor.isCliWrapped ? targetDescriptor.providerModelId : targetDescriptor.id)
-          : DEFAULT_CODEX_MODEL,
+          : defaultCodexModel(),
         ...(targetDescriptor ? { modelId: targetDescriptor.id } : {}),
         ...(args.title?.trim() ? { title: args.title.trim() } : {}),
       });
@@ -40780,7 +40873,7 @@ export function createAgentChatService(args: {
         const reader = await createSession({
           laneId: args.laneId,
           provider: "codex",
-          model: DEFAULT_CODEX_MODEL,
+          model: defaultCodexModel(),
         });
         readerSessionId = reader.id;
         const readerManaged = ensureManagedSession(reader.id);
@@ -52120,6 +52213,15 @@ export function createAgentChatService(args: {
     "copilot",
   ];
   let modelCatalogCache: AgentChatModelCatalog | null = null;
+  // A newly applied model manifest can add, hide, or re-default models, so the
+  // cached catalog is stale until the next rebuild — served once more while a
+  // background refresh picks up the change, never rebuilt on the caller.
+  let modelCatalogManifestStale = false;
+  let modelManifestGeneration = 0;
+  const disposeModelManifestListener = onModelManifestApplied(() => {
+    modelManifestGeneration += 1;
+    modelCatalogManifestStale = true;
+  });
 
   const managedSessionSupportsFastMode = (managed: ManagedChatSession): boolean =>
     sessionSupportsFastMode(managed.session, modelCatalogCache);
@@ -52185,7 +52287,7 @@ export function createAgentChatService(args: {
     refreshProvider?: AgentChatModelCatalogRefreshProvider,
     cursorSource?: AgentChatCursorModelSource,
   ): boolean => {
-    if (!modelCatalogCache) return true;
+    if (!modelCatalogCache || modelCatalogManifestStale) return true;
     if (refreshProvider === "cursor") {
       if (!modelCatalogContainsRefreshProvider(modelCatalogCache, refreshProvider, cursorSource)) return true;
       // Stale unless every source the request covers was itself refreshed
@@ -52615,6 +52717,8 @@ export function createAgentChatService(args: {
   };
 
   const buildModelCatalog = async (catalogArgs?: AgentChatModelCatalogArgs): Promise<AgentChatModelCatalog> => {
+    // A manifest that lands mid-build must leave the result stale, not fresh.
+    const manifestGenerationAtStart = modelManifestGeneration;
     const mode = catalogArgs?.mode ?? "refresh-stale";
     const refreshProvider = catalogArgs?.refreshProvider;
     if (mode === "cached" && modelCatalogCache) {
@@ -52840,8 +52944,14 @@ export function createAgentChatService(args: {
     const blocks = buildProviderGroupBlocks(descriptors, createModelOrderMap(), opencodeInventory.providers)
       .filter((group) => !providerIsDisabled(group.key));
 
+    const activeManifest = getActiveModelManifest();
     const catalog: AgentChatModelCatalog = {
       fetchedAt: nowIso(),
+      // Clients overlay the same model directory onto their own registry copy
+      // (renderer pickers read MODEL_REGISTRY directly), gated for this host.
+      ...(activeManifest
+        ? { modelManifest: { manifest: activeManifest.manifest, adeVersion: activeManifest.adeVersion } }
+        : {}),
       groups: blocks.map((group) => ({
         key: group.key as AgentChatProvider,
         displayName: group.label,
@@ -52924,6 +53034,7 @@ export function createAgentChatService(args: {
       })),
     };
     modelCatalogCache = catalog;
+    if (modelManifestGeneration === manifestGenerationAtStart) modelCatalogManifestStale = false;
     if (mode !== "cached" && shouldMarkModelCatalogProviderFresh(catalog, refreshProvider, catalogArgs?.cursorSource)) {
       markModelCatalogProviderFresh(refreshProvider, Date.now(), catalogArgs?.cursorSource);
     }
@@ -52953,6 +53064,9 @@ export function createAgentChatService(args: {
   };
 
   const getModelCatalog = async (catalogArgs?: AgentChatModelCatalogArgs): Promise<AgentChatModelCatalog> => {
+    // Someone is about to look at models: check for a newer model directory.
+    // Rate-limited and non-blocking; a hit marks this catalog stale.
+    refreshModelManifestIfStale();
     const mode = catalogArgs?.mode ?? "refresh-stale";
     if (mode === "refresh-stale" && modelCatalogCache) {
       const stale = isModelCatalogRefreshStale(catalogArgs?.refreshProvider, catalogArgs?.cursorSource);
@@ -53258,6 +53372,7 @@ export function createAgentChatService(args: {
 
   const disposeAll = async (): Promise<void> => {
     beginDispose();
+    disposeModelManifestListener();
     for (const sessionId of [...managedSessions.keys()]) {
       try {
         await disposeManagedSession({ sessionId }, "detached");
@@ -53271,6 +53386,7 @@ export function createAgentChatService(args: {
 
   const forceDisposeAll = (): void => {
     beginDispose();
+    disposeModelManifestListener();
     for (const sessionId of [...sessionTurnCollectors.keys()]) {
       rejectActiveSessionTurnCollector(sessionId, `Chat session '${sessionId}' was closed during shutdown.`);
     }
@@ -55811,7 +55927,7 @@ export function createAgentChatService(args: {
       const canRevert = codexServerSupportsThreadRevert(runtime.serverVersion) && plan.targetTurnId != null;
       const canForkBeforeTurn = codexServerSupportsForkBeforeTurn(runtime.serverVersion)
         && plan.targetTurnId != null;
-      // thread/rollback is deprecated upstream; retain it for <=0.144 servers and turns without a usable id.
+      // thread/rollback was removed in 0.156; retain it for older servers and turns without a usable id.
       // thread/revert is paginated-only (0.148+); fall back to fork, then rollback, when the server rejects it.
       let lifecycleResponse: CodexThreadLifecycleResponse | null = null;
       let rewindMethod: "revert" | "fork_before_turn" | "rollback" = "rollback";
@@ -55832,6 +55948,12 @@ export function createAgentChatService(args: {
           });
         }
       }
+      const rollbackRemovedMessage =
+        "Codex can't rewind this message: its turn id is missing and this Codex version removed turn-count rollback.";
+      if (!lifecycleResponse && !canForkBeforeTurn && !codexServerSupportsThreadRollback(runtime.serverVersion)) {
+        // 0.156+ has no turn-count rollback; without a turn id there is nothing to revert or fork before.
+        throw new Error(rollbackRemovedMessage);
+      }
       if (!lifecycleResponse) {
         rewindMethod = canForkBeforeTurn ? "fork_before_turn" : "rollback";
         lifecycleResponse = canForkBeforeTurn
@@ -55842,7 +55964,10 @@ export function createAgentChatService(args: {
           : await runtime.request<CodexThreadLifecycleResponse>("thread/rollback", {
               threadId,
               numTurns: 1,
-            }, { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
+            }, { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS }).catch((error: unknown) => {
+              // An unreported version may already be 0.156+.
+              throw isCodexRpcMethodNotFound(error) ? new Error(rollbackRemovedMessage) : error;
+            });
       }
       applyCodexEffectiveThreadState(managed, lifecycleResponse);
       adoptRuntimeSessionTitle(
@@ -55942,9 +56067,12 @@ export function createAgentChatService(args: {
     reasoningEffort,
     executionMode,
     timeoutMs,
+    idleTimeoutMs,
     voiceCallId,
   }: AgentChatSendArgs & {
     timeoutMs?: number | null;
+    /** Interrupt the turn after this long with no activity. Absent, null or 0 means no idle watch. */
+    idleTimeoutMs?: number | null;
     /**
      * The CTO voice call this turn belongs to, when one is driving it.
      *
@@ -56000,8 +56128,11 @@ export function createAgentChatService(args: {
       : timeoutMs == null || Number(timeoutMs) === 0
         ? null
         : Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
-          ? Math.max(15_000, Math.floor(Number(timeoutMs)))
+          ? clampTurnTimerMs(Number(timeoutMs))
           : DEFAULT_RUN_SESSION_TURN_TIMEOUT_MS;
+    const normalizedIdleTimeoutMs = idleTimeoutMs != null && Number.isFinite(Number(idleTimeoutMs)) && Number(idleTimeoutMs) > 0
+      ? clampTurnTimerMs(Number(idleTimeoutMs))
+      : null;
     // Held for the life of the turn, and given back however it ends: an
     // abandoned id would stamp the user's NEXT typed message with a call that
     // is already over.
@@ -56019,25 +56150,20 @@ export function createAgentChatService(args: {
         turnStarted: false,
         lastError: null,
         timeout: null,
+        idle: normalizedIdleTimeoutMs != null
+          ? { timeoutMs: normalizedIdleTimeoutMs, timer: null, inFlight: new Set<string>() }
+          : null,
       };
 
       if (normalizedTimeoutMs != null) {
         collector.timeout = setTimeout(() => {
-          if (sessionTurnCollectors.get(sessionId) !== collector) return;
-          sessionTurnCollectors.delete(sessionId);
-          void interrupt({ sessionId }).catch((interruptError) => {
-            logger.warn("agent_chat.run_session_turn_timeout_interrupt_failed", {
-              sessionId,
-              error: interruptError instanceof Error ? interruptError.message : String(interruptError),
-            });
-          });
-          reject(new Error(
-            `Timed out waiting for session '${sessionId}' to finish the current turn. The turn was interrupted, but the chat stayed open.`,
-          ));
+          stopSessionTurnOnLimit(sessionId, collector, { kind: "time", ms: normalizedTimeoutMs });
         }, normalizedTimeoutMs);
       }
 
       sessionTurnCollectors.set(sessionId, collector);
+      // Armed before the provider starts, so a turn that never begins counts as idle too.
+      armSessionTurnIdleTimer(sessionId, collector);
 
       // The headless path is a real CTO turn, not a side channel: the voice's
       // `ask_cto` reaches the thread through here, and without this refresh it
@@ -56059,11 +56185,13 @@ export function createAgentChatService(args: {
       // early enough. Failures are already swallowed inside the refresh — a
       // slow PR round-trip must not be able to fail the turn.
       void refreshCtoLiveStateForTurn(sessionId)
-        .then(() => executePreparedSendMessage(prepared))
+        .then(() => {
+          // A limit can run out during the refresh; that turn is already over.
+          if (sessionTurnCollectors.get(sessionId) !== collector) return;
+          return executePreparedSendMessage(prepared);
+        })
         .catch((error) => {
-          if (collector.timeout) {
-            clearTimeout(collector.timeout);
-          }
+          clearSessionTurnCollectorTimers(collector);
           if (sessionTurnCollectors.get(sessionId) === collector) {
             sessionTurnCollectors.delete(sessionId);
           }

@@ -83,6 +83,7 @@ import {
 } from "./projectConfigCarryOver";
 import { initializeOrRepairAdeProject } from "../projects/adeProjectService";
 import { writeFileAtomic as durableWriteFileAtomic } from "../state/durableFile";
+import { normalizeAutomationAgentLimits } from "../../../shared/automationLimits";
 
 const VERSION = 1;
 const AUTOMATION_TOOL_FAMILIES: AutomationToolFamily[] = [
@@ -621,6 +622,7 @@ function coerceAutomationAction(value: unknown): AutomationAction | null {
   if (modelConfig != null) out.modelConfig = modelConfig;
   if (fastMode != null) out.fastMode = fastMode;
   if (permissionConfig != null) out.permissionConfig = permissionConfig;
+  if (type === "agent-session") Object.assign(out, normalizeAutomationAgentLimits(value));
 
   return out;
 }
@@ -680,11 +682,13 @@ function coerceAutomationExecution(value: unknown): AutomationExecution | undefi
       : legacyTitle;
     const sessionReasoningEffort = isRecord(value.session) ? asString(value.session.reasoningEffort)?.trim() : undefined;
     const sessionFastMode = isRecord(value.session) ? asBool(value.session.fastMode ?? value.session.codexFastMode) : undefined;
-    const session = sessionTitle || sessionReasoningEffort || sessionFastMode != null
+    const sessionLimits = normalizeAutomationAgentLimits(value.session);
+    const session = sessionTitle || sessionReasoningEffort || sessionFastMode != null || Object.keys(sessionLimits).length
       ? {
           ...(sessionTitle ? { title: sessionTitle } : {}),
           ...(sessionReasoningEffort ? { reasoningEffort: sessionReasoningEffort } : {}),
           ...(sessionFastMode != null ? { fastMode: sessionFastMode } : {}),
+          ...sessionLimits,
         }
       : undefined;
     return {
@@ -821,14 +825,10 @@ function coerceAutomationContextSource(value: unknown): AutomationContextSource 
 function coerceAutomationGuardrails(value: unknown): AutomationGuardrails | undefined {
   if (!isRecord(value)) return undefined;
   const out: AutomationGuardrails = {};
-  const budgetUsd = asNumber(value.budgetUsd);
-  const maxDurationMin = asNumber(value.maxDurationMin);
   const confidenceThreshold = asNumber(value.confidenceThreshold);
   const maxFindings = asNumber(value.maxFindings);
   const reserveBudget = asBool(value.reserveBudget);
   const activeHours = coerceAutomationActiveHours(value.activeHours);
-  if (budgetUsd != null) out.budgetUsd = budgetUsd;
-  if (maxDurationMin != null) out.maxDurationMin = maxDurationMin;
   if (confidenceThreshold != null) out.confidenceThreshold = confidenceThreshold;
   if (maxFindings != null) out.maxFindings = maxFindings;
   if (reserveBudget != null) out.reserveBudget = reserveBudget;

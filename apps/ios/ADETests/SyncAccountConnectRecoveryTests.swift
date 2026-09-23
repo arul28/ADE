@@ -867,6 +867,61 @@ final class SyncAccountConnectRecoveryTests: XCTestCase {
     XCTAssertNil(machine.sleepStateAt)
   }
 
+  // MARK: - Install label
+
+  /// Two installs on one Mac share a hostname. The row names the install, the
+  /// same way the desktop does in `accountMachineRowLabel`.
+  func testMachineRowLabelNamesTheInstall() throws {
+    let alpha = try Self.decodeMachine("""
+    {"machineKey": "a", "name": "MacBook Pro · Alpha", "channel": "alpha", "adeHome": "~/.ade-alpha"}
+    """)
+    XCTAssertEqual(alpha.channel, .alpha)
+    XCTAssertEqual(alpha.adeHome, "~/.ade-alpha")
+    XCTAssertEqual(alpha.rowLabel, "MacBook Pro · ADE Alpha")
+    // Rename fields and name matching keep the bare name.
+    XCTAssertEqual(alpha.displayName, "MacBook Pro · Alpha")
+
+    let stable = try Self.decodeMachine("""
+    {"machineKey": "s", "name": "MacBook Pro", "channel": "stable"}
+    """)
+    XCTAssertEqual(stable.rowLabel, "MacBook Pro · ADE")
+
+    let beta = try Self.decodeMachine("""
+    {"machineKey": "b", "name": "MacBook Pro · Beta", "channel": "beta"}
+    """)
+    XCTAssertEqual(beta.rowLabel, "MacBook Pro · ADE Beta")
+
+    // A custom home has no channel; the home names it instead.
+    let custom = try Self.decodeMachine("""
+    {"machineKey": "c", "name": "MacBook Pro", "channel": null, "adeHome": "~/lanes/ade-dev"}
+    """)
+    XCTAssertEqual(custom.rowLabel, "MacBook Pro · ~/lanes/ade-dev")
+
+    // A person's own name is kept as typed.
+    let renamed = try Self.decodeMachine("""
+    {"machineKey": "r", "name": "MacBook Pro · Alpha", "customName": "Work laptop", "channel": "alpha"}
+    """)
+    XCTAssertEqual(renamed.rowLabel, "Work laptop · ADE Alpha")
+  }
+
+  /// Older directories omit both fields, and a channel this build has never
+  /// heard of must not take the machine off the list.
+  func testMachineWithoutInstallFieldsKeepsThePlainName() throws {
+    let old = try Self.decodeMachine("""
+    {"machineKey": "old", "name": "MacBook Pro · Alpha", "online": true}
+    """)
+    XCTAssertNil(old.channel)
+    XCTAssertNil(old.adeHome)
+    XCTAssertEqual(old.rowLabel, "MacBook Pro · Alpha")
+
+    let unknown = try Self.decodeMachine("""
+    {"machineKey": "odd", "name": "MacBook Pro · Alpha", "channel": "nightly", "adeHome": 42}
+    """)
+    XCTAssertNil(unknown.channel)
+    XCTAssertNil(unknown.adeHome)
+    XCTAssertEqual(unknown.rowLabel, "MacBook Pro · Alpha")
+  }
+
   /// A Mac Studio has no battery. Reading "0%" off it — or leaving an empty
   /// slot where a percentage goes — is worse than saying nothing.
   func testMachineWithNoBatteryRendersNoBatteryText() {

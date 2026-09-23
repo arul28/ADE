@@ -15,6 +15,10 @@ subagents, computer use). The pane derives all visible state from the
 | `useDraftMachineRouting.ts`, `draftAttachmentTransfer.ts` | Draft machine selection and machine-safe attachment movement. Routing reconciles the machine restored by the current project/tab before the composer becomes sendable, resolves its `OpenProjectBinding`, and keeps lane selection scoped to that machine: the lane list is exactly the picked machine's lanes plus the auto-create row, a machine switch re-resolves the selection by identity through `remapDraftLaneToMachine` / `findPrimaryDraftLane`, and a foreign machine whose lane catalog has not landed yet holds the selection unresolved behind a bounded `Loading lanes for <machine>…` state (`laneCatalogLoading`) rather than leaving another machine's lane on screen. It also pulls that machine's lane read forward through `requestCrossMachineLanesForMachine`. On a user-requested machine change within one composer scope, `useDraftAttachmentTransfer` preserves portable image URLs and copies local/pasted image bytes from the attachment-owning runtime to the target runtime via pinned `getImageDataUrl` and `saveTempAttachment` calls. It removes non-image files and linked iOS/App Control/built-in-browser context because those machine-owned references are not portable. Pending transfer disables send. If copying fails, the source image references remain visible and sending stays blocked until the user returns to the source machine or removes the images. A project/tab scope change resets ownership only after machine selection has reconciled, so restoring a remote draft cannot be mistaken for an explicit local-to-remote switch. |
 | `apps/desktop/src/renderer/components/usage/ActivityModule.tsx`, `ActivityHeatmap.tsx`, `activityIntensity.ts` | Tabbed cross-client activity/tokens/code/clients module. `AgentChatPane` mounts the self-fetching `WorkActivityModule` (compact variant) beneath the empty Work draft composer when no app panel is open, capped to the launch-shelf width (`w-[calc(100%-6rem)]`, `data-chat-empty-usage`) with an opaque plate that uses the same `--work-popover-bg` darkness as the machine/lane submenu, flattened over `--color-bg`. The component persists the chosen tab and day/week/month/year range under `ade.activity.module.v1`. `ActivityHeatmap` owns the responsive seven-row grid, viewport fitting, and the intensity ramp, while `activityIntensity` provides the shared daily activity score, non-zero quartile buckets, and leading-inactive-day trimming used by the grid and summary counts. The score (`scoreActivityDays`) is series-relative: each of seven dimensions — tokens, sessions, interactions, commits, PRs, changed lines, changed files, with local and GitHub counterparts summed — is scaled against its own maximum across the visible series before the weighted sum, because the dimensions are not in the same units. A raw sum made every non-token term smaller than the rounding noise of daily token counts, so the "activity" heatmap was a token heatmap under another name. `isActiveDay` stays unweighted so one commit still colours a day. `describeActivityInsight` derives the single sentence rendered above the grid from the same scores — busiest-day record, week-over-week trend, or peak day, in that priority — so the callout and the grid can never disagree. Buckets are quartiles over the non-zero days only, GitHub-contribution-graph style: a linear value/max ramp is useless when one 35.9B-token day is normal, because that outlier flattens every other day into the same near-floor tone. The ramp itself is explicit light/dark pairs rather than one hue at five opacities — an opacity ramp of a single hue is only a lightness ramp, which inverts its ordering between a dark and a light card — so hue and saturation both climb with the level and the scale reads in either theme. It deliberately avoids `--color-accent`, which is violet in dark and green in light. Under `prefers-contrast: more` (`renderer/hooks/usePrefersMoreContrast.ts`) every tile also gains a hairline border so the steps stay separable on a forced-contrast display. A "Less → More" key renders alongside the grid so the ramp explains itself. |
 | `apps/desktop/src/renderer/lib/draftLaunchJobs.ts` | Pure helper for Work draft-launch job DTOs, terminal/stale-state detection, and pruning. The list keeps active rows ahead of terminal rows, fills remaining retained slots with terminal rows, and keeps at least one terminal row alongside active jobs. Also owns the durability constants/helpers: `DRAFT_LAUNCH_TIMEOUT_MS` (90 s) + `withDraftLaunchTimeout` (fails a step whose runtime call never settles; the underlying IPC is not cancellable, so it keeps running detached and the timeout only unwedges the renderer-side job) and `LAUNCH_PROJECT_CHANGED_MESSAGE` (the legacy/unpinned abort error used only when no originating project binding is available and the active project drifts mid-launch). |
+| `apps/desktop/src/renderer/state/chatLaunchStore.ts`, `state/useChatLaunchSync.ts` | Renderer mirror of brain-owned new-lane launches (`shared/types/chatLaunch.ts`). Entries are keyed by launch id and remember their project binding; snapshots only move forward (`mergeChatLaunchSnapshot`), and the host's first answer always replaces the optimistic snapshot. Also holds the per-window `originClientId` (sessionStorage) and a non-reactive local record per launch this window started (the `start` args, the composer snapshot for restore, the prepared CLI launch). `useChatLaunchSync`, mounted once in `AppShell`, is the only `chatLaunch.onEvent` subscription: the active binding plus any other binding with a launch in flight, hydrated with `chatLaunch.list` on subscribe and when the window becomes visible. Narrow selectors (`useChatLaunchRowSources`, `useChatLaunchForPane`, `useChatLaunchSelector`) keep the Work page, the pane and the shell from re-rendering on every stage tick. |
+| `components/chat/launch/` (`chatLaunchActions.ts`, `LaneSetupCard.tsx`, `LaunchProgressRail.tsx`, `launchClock.ts`, `chatLaunchSynthetic.ts`, `chatLaunchDock.ts`, `chatLaunchDraftRestore.ts`, `useChatLaunchPaneState.ts`, `newLaneLaunchArgs.ts`, `rendererOwnedLaunch.ts`) | The launch surfaces. `chatLaunchActions` is the one place Start/Retry/Start now/Cancel/Delete/queue go through (always pinned to the launch's binding). `LaneSetupCard` renders the setup card (thread and compact variants) and the transcript's `ade_card` `lane_setup` row. `chatLaunchSynthetic` builds the stand-ins a pending chat shows: the Work roster row under the reserved session id and the thread's prompt bubble, setup card and queued messages. `chatLaunchDock` is the FLIP composer dock; `chatLaunchDraftRestore` is the one hand-off channel from a closed launch back to Work (Work closes the launch's tab and shows the draft; the draft composer takes back the prompt). `useChatLaunchPaneState` is the pane's launch seam (which launch owns the shown chat, whether its session exists yet, whether sends queue) plus its lifecycle effects; `newLaneLaunchArgs` assembles the `chatLaunch.start` args. `rendererOwnedLaunch` is the renderer-owned chain (existing lane, Cursor Cloud, and the fallback for runtimes without `chat.startLaunch`), extracted from `AgentChatPane` with its dependencies passed in. |
+| `renderer/webclient/adapter/chatLaunch.ts`, `renderer/webclient/sync/chatLaunchEvents.ts` | Hosted-web `window.ade.chatLaunch`: the same namespace over the `chat.startLaunch` … `chat.completeLaunchClient` sync commands (writes never use the read cache; an older host that lacks the action rejects so the composer falls back to its own chain), with live updates decoded from the pushed `chat_launch_event` envelope (`decodeChatLaunchEventPayload` drops malformed or unknown event shapes). |
+| `components/app/ChatLaunchesSlideOut.tsx`, `components/terminals/useChatLaunchCliDriver.ts` | The bottom-right Launches slide-out (this window's background chats and CLI launches), and the Work-level driver that starts the PTY for this window's CLI launches once the brain reports `awaiting-client`. |
 | `apps/desktop/src/renderer/lib/handoffLaunchJobs.ts` | Pure helper for handoff placeholder DTOs, scope keys, stable placeholder ids, status labels, and search matching. `AgentChatPane` writes these jobs into the root store while `TerminalsPage` passes matching jobs into the Work session sidebar. The local handoff surface offers a brief summarized handoff or a fork whenever the source provider is fork-capable (`providerSupportsHandoffFork`: Claude, Codex, OpenCode, Droid, Cursor). Fork keeps the new chat on the same provider and lane while allowing the target model to change; Claude forks the SDK session pointer, Codex the app-server thread (`thread/fork`), OpenCode `session.fork`, and Droid `session.fork()`. Cursor has no fork surface, so ADE starts a new Cursor agent and replays the full source transcript into it; `providerForkReplaysTranscript` selects the matching panel copy. |
 | `apps/desktop/src/renderer/lib/chatHandoffIntent.ts` | Module-local one-shot bridge between a handoff entry point outside the pane (the session context menu's **Hand off…** submenu, in `components/terminals/SessionContextMenu.tsx`) and `AgentChatPane`, which owns both handoff dialogs and the cross-machine modal. The menu records a destination (`"local"` \| `"remote"`) with `openChatHandoff` and selects the row; only the active tile drains it, live when the session is already selected or from the single-slot queue when it mounts a render later, then opens the matching surface. A transient command, not store state. |
 | `apps/desktop/src/renderer/lib/aiDiscoveryCache.ts` | Runtime-binding-scoped AI integration-status and provider-model cache shared across renderer surfaces. Local and remote checkouts with the same project identity cannot share model/auth state. `getAiStatusCached` uses a 10-second freshness window and deduplicates concurrent `ade.ai.getStatus` requests; cache update/invalidation events let open ModelPickers react without polling or mounting their own background refresh loops. |
@@ -38,8 +42,9 @@ subagents, computer use). The pane derives all visible state from the
 | `ChatSurfaceShell.tsx` | Floating chat header, body, footer layout. Backdrop-blur glass-morphism styling. Optional `canvasFill` overrides `--chat-canvas-bg`; the Work new-chat draft passes `transparent` so `WorkViewArea`'s mesh shows through. On the Work surface only, `.ade-chat-shell-header` uses `--ade-work-chrome-rail-h` (32 px title + 1 px hairline), the same token as `.ade-tool-header`. Other hosts keep their own header height. |
 | `ChatComposerShell.tsx` | Input container chrome reused by the composer. |
 | `ChatAttachmentTray.tsx`, `ChatAttachmentPreviewModal.tsx` | Inline file/image attachment tray, used both inside the composer and on sent user messages in the transcript. Image attachments render an inline thumbnail and expose a copy-to-clipboard button that ships the image bytes via `window.ade.app.writeClipboardImage`. Every other attachment renders as a chip: file-type icon from the Files tab's `getFileIcon`, middle-truncated filename (so the extension survives), human size when the caller knows it, and a remove ×. Chips are focusable — Delete/Backspace removes, Enter/Space opens, arrows move between attachments. Clicking any attachment opens `ChatAttachmentPreviewModal`, which renders the file with the **Files tab's own viewer platform**: `resolveViewerKind` picks the viewer and `ViewerHost` renders it, so PDFs, CSVs, media, office documents, markdown and code all preview read-only without forking a viewer. The modal is `React.lazy`-loaded because that platform pulls in Monaco and the document renderers, and the composer is on a hot render path. It locates the attachment with `resolveAttachmentWorkspaceTarget` (deepest containing Files workspace, Windows-separator aware) using the session's machine pin, so an attachment staged on a paired host is read from that host; an image outside every workspace falls back to the thumbnail bytes the chip already holds. Size is shown only for attachments this composer staged — a chip replayed from transcript history has only a path, and statting each one would be a round trip per chip. |
+| `apps/desktop/src/renderer/lib/attachmentImage.ts` | `readAttachmentImageDataUrl(path, pin)`, the one reader for an attachment image as a data URL. The tray thumbnail, the prompt-stash thumbnail and restore, and draft transfer between machines all call it. It reads through the pin's runtime (no pin means the window's machine), and it falls back to this computer's `app.getImageDataUrl` only when this computer owns the attachment. See "Attachment images" under Remote hosts. |
 | `chatAttachmentStaging.ts` | How ONE file is staged, given what the destination machine supports. `readAttachmentStagingMode(pin)` asks the chat's machine once per batch (`agentChat.getAttachmentStagingMode`) and never throws — a machine that cannot answer gets `CONSERVATIVE_ATTACHMENT_STAGING_MODE`, the base64 contract every host has supported since attachments existed. `planAttachmentStaging` then decides per file: the machine-level answer is necessary but not sufficient, because three things force the bytes leg even on a capable host — no source path (a clipboard paste, and every file in the hosted web client, where `webUtils` does not exist), a renderer-side conversion (HEIC is decoded to JPEG here, so what gets staged is a buffer this process produced), or the host saying `base64` outright. Whenever the bytes leg is taken the ceiling drops to `LEGACY_MAX_CHAT_ATTACHMENT_BYTES`, because that is what `chat.saveTempAttachment` actually enforces on the other end; returning the larger number would only move the rejection later. `stageAttachmentBytesFromFile` is that leg (chunked base64 encode, HEIC conversion, `saveTempAttachment`), and `AttachmentConversionError` marks the one failure the composer offers no retry for. |
-| `apps/desktop/src/shared/chatAttachmentLimits.ts` | The three ceilings and the two rejection messages, shared by the renderer, the desktop main process, and the CLI sync host. `MAX_CHAT_ATTACHMENT_BYTES` (50 MB) governs attachments that move as *files* — a local disk-to-disk copy or a streamed HTTP upload, where the bytes never sit in a JS string. `LEGACY_MAX_CHAT_ATTACHMENT_BYTES` (10 MB) governs attachments that move as base64 inside a command payload, which is buffered in memory on both ends and chunked into 720 KiB frames under a 25 MB payload cap over sync. `MAX_PROVIDER_INLINE_IMAGE_BYTES` (10 MB) is independent of both — see `attachmentInlineGuard.ts` in the chat [README](README.md#source-file-map). `formatAttachmentSize`, `legacyAttachmentCapMessage`, and `attachmentTooLargeMessage` render every ceiling from its constant, so raising one cannot leave a stale "10 MB" behind in a message. |
+| `apps/desktop/src/shared/chatAttachmentLimits.ts` | The three ceilings and the two rejection messages, shared by the renderer, the desktop main process, and the CLI sync host. `MAX_CHAT_ATTACHMENT_BYTES` (50 MB) governs attachments that move as *files* — a local disk-to-disk copy or a streamed HTTP upload, where the bytes never sit in a JS string. `LEGACY_MAX_CHAT_ATTACHMENT_BYTES` (10 MB) governs attachments that move as base64 inside a command payload, which is buffered in memory on both ends and chunked into 720 KiB frames under a 25 MB payload cap over sync. `MAX_PROVIDER_INLINE_IMAGE_BYTES` (10 MB) is independent of both — see `attachmentInlineGuard.ts` in the chat [README](README.md#source-file-map). `formatAttachmentSize`, `legacyAttachmentCapMessage`, and `attachmentTooLargeMessage` render every ceiling from its constant, so raising one cannot leave a stale "10 MB" behind in a message. `maxBase64EncodedLength` is the one encoded-length check every base64 sink runs before it decodes, so an oversized payload is refused without a second, decoded copy in memory; `approxDecodedBytes` sizes the message for it. |
 | `apps/desktop/src/shared/chatAttachmentStagingFs.ts` | Node-only disk rule for writing into `<projectRoot>/.ade/attachments` — UUID basename, validated extension, containment re-check, stat-before-copy. Shared by desktop main, the ADE action registry, and the CLI sync host's upload route; full contract in the chat [README](README.md#source-file-map). Cursor local chats may Read those staged files (and Cursor's own `~/.cursor/projects/<slug>/assets` copies) through the SDK hook allowlist when worker init supplies the project root; writes stay denied. |
 | `attachmentViewerTarget.ts` | Locates a chat attachment inside a Files workspace so the Files viewers can open it. Attachments live at `<projectRoot>/.ade/attachments/<uuid><ext>`, already inside the primary workspace, so this is a containment question rather than a new capability — and resolving it on the client keeps the whole lookup pin-aware, so an attachment staged on a paired host is read from that host instead of silently matching a same-named path here. Splits on both separators (a Windows attachment path resolves too), compares segment-for-segment through the shared `normalizePathForComparison` so `/a/ADE-backup` cannot match `/a/ADE`, and the longest matching root wins — an attachment inside a lane worktree resolves to the lane's workspace, not the project containing it. |
 | `ChatCommandMenu.tsx` | Popover for slash commands, the mixed `@` menu (files, **folders**, chats, lanes, and terminals ranked together by match quality — not grouped or biased by kind, each row showing a kind icon), and the `#` pull-request menu, which lists the PRs this chat can reach (`ComposerPrSuggestion`, read from `prs.listAll` on the chat's runtime pin) and inserts a PR chip. Consumes a `ComposerTrigger` from `shared/composerTriggers.ts` (so the menu opens for a mid-draft trigger, not just a leading one). Files and mentions are two independently debounced (40 ms) `useDebouncedSuggestions` sources sharing one hook; `rankComposerAtMenuItems` then scores file paths (basename as subtitle) against entity titles with the same exact/prefix/substring/subsequence tiers. Each keeps a per-menu-session query cache (`QUERY_CACHE_MAX = 40`) so cached queries render same-frame while a background revalidation still runs, and both caches clear when the menu closes or the provider identity changes. A bare `@` is a browse of recency-ranked entities (file search returns nothing until there is a query). Multi-word `@` queries stay active through spaces and use the same cached/debounced search path. Flat keyboard-nav indices are precomputed in the sections memo (no render-time counters); all three row types share the `MenuRow` chrome. Selecting a mention inserts an opaque `@chat:<id>` / `@lane:<id>` / `@term:<id>` pointer while the composer displays a compact title chip with a kind icon (see `shared/chatMentions.ts`). An `onNoMatches?(trigger)` callback fires once when a **non-empty** `@` query settles with zero rows, so the owner can close the menu instead of leaving it parked over the draft while the user types the rest of a sentence; an empty query is a browse, not a search — it can legitimately show nothing now and match once the user types — so it never reports. `useDebouncedSuggestions` carries the `query` its results belong to alongside the provider identity, and results from a previous provider *or a previous query* are discarded **and count as still-loading**: state updates from this render's effects are not visible to consumers until the next render, so `loading` alone would read "settled" for one frame after every keystroke and fire a false no-match. |
@@ -57,7 +62,7 @@ subagents, computer use). The pane derives all visible state from the
 | `ChatTasksPanel.tsx` | Todo list rendered from `todo_update` events. |
 | `apps/desktop/src/shared/chatScheduledWork.ts` | Pure scheduled-work derivation. Folds `scheduled_work_update` envelopes into Chat Info schedule rows for Claude wakeups, cron tasks, `/loop`, remote triggers, and background work; defines the shared Background/Schedule Earlier predicates (including fired one-shot wakeups); and formats next-fire labels. A parent turn's terminal event does not stop a background row, and background snapshots whose `sourceTaskId` belongs to a real subagent are omitted so native Agents do not appear twice. Shared by desktop, ADE Code, and mirrored by iOS. |
 | `ChatFileChangesPanel.tsx` | Turn-level file change summary for checkpoint-backed `turn_diff_summary` events, with lazy diff expansion. File rows render the lane-relative path (dimmed directory + filename) rather than a bare basename, so several `index.ts` in one turn stay distinguishable; the directory truncates first and the full path stays in the row tooltip. Diff reads come from `useChatRuntimeScope()`, so a foreign chat's file changes are fetched from the machine that has them. |
-| `RewindFilesConfirmDialog.tsx`, `rewindFilesPreview.ts` | Undo confirmation for provider-backed file rewind. Builds a message-scoped file list from provider dry-run output plus turn diff summaries, then renders per-file expandable diffs before applying `rewindFiles`. Claude uses SDK file checkpoints; Codex forks the thread before the selected turn (`thread/fork` + `beforeTurnId`) on app-server >= 0.145.0, or falls back to `thread/rollback` (latest user message only) on older servers, and restores files through ADE's git plan. |
+| `RewindFilesConfirmDialog.tsx`, `rewindFilesPreview.ts` | Undo confirmation for provider-backed file rewind. Builds a message-scoped file list from provider dry-run output plus turn diff summaries, then renders per-file expandable diffs before applying `rewindFiles`. Claude uses SDK file checkpoints; Codex forks the thread before the selected turn (`thread/fork` + `beforeTurnId`) on app-server >= 0.145.0, or falls back to `thread/rollback` (latest user message only) on pre-0.156 servers, and restores files through ADE's git plan. |
 | `ChatSubagentsPanel.tsx` | Chat Info panel. It renders the Codex goal card, latest plan, tasks, schedule, and subagent/background rosters. Every subagent row shows a sentence-case model chip (`subagentModelAttribution`): a reported envelope `model` is ground truth, and a missing model falls back to the parent session label marked **inherited**. Running subagent and background rows derive elapsed time from the wall clock and tick once per second; terminal rows keep their final compact duration. Large sections cap active rows and add Show all; terminal rows move into one Completed fold; Clear/Restore is a visual per-session filter. Failed and pinned rows remain active, survivors keep source order, and the pane variant owns a single scroller with sticky section headers. Spawned-chat rows are identified by `childSessionId`, show the live child title supplied by `AgentChatPane` / `WorkViewArea`, keep the runtime as a small kind chip, and navigate to the child rather than opening the provider-subagent drawer. Running native subagent rows (and background rows that carry a `sourceTaskId`) expose a square stop whose aria-label is `Stop ${agentType}`; spawned ADE chats (`chat:` task ids) are not stoppable this way. The Schedule header keeps the per-chat pause/play action. For Codex sessions the goal card stays above plan/subagent progress so the current objective stays visible without crowding the chat header. |
 | `ChatComputerUsePanel.tsx` | Complete chat proof drawer with image lightbox, inline video, availability/error states, and irreversible artifact deletion. Preview reads stay runtime-routed through `useChatRuntimeScope()` — the chat's machine, not the tab's — and the surface has no review or Finder/reveal controls. Inline transcript proof is owned by `AgentChatMessageList` + `ChatProofFilmstrip`: a collapsed count on the producing turn expands in chronology instead of pinning the newest items to the thread tail. |
 | `ChatAppControlPanel.tsx` | App Control panel for Electron apps. Two mount points: under the chat composer (chat-scoped, `sessionId` set) and inside the Work right-edge sidebar (lane-scoped, `sessionId={null}`). Two modes: **Control** (live screencast frames + launch/connect form + click/type input + quick `terminal write` / `terminal signal` actions) and **Inspect** (hit-test crosshair on the screenshot; commits selections as `AppControlContextItem`s with screenshot, DOM packet, and source-file candidates). Persists panel state under `sessionStorage["ade.chat.appControlPanel.<key>"]`, where the key is `chat:<sessionId>` for the chat mount and `lane:<laneId>:<projectRoot>` for the sidebar mount. Connect/launch calls forward `laneId` so the resulting `AppControlSession` records its launching lane. It takes a `runtimePin` and every status/target/input call routes through it, so the panel drives the machine the chat runs on rather than the one the tab is bound to; the pin also participates in the panel's `sessionStorage` key so two machines' panels cannot share state. See [App Control](../computer-use/app-control.md). |
@@ -317,6 +322,142 @@ that could not work without it.
   worktree whose HEAD wandered off the lane's branch warns first. See
   [Terminals and sessions](../terminals-and-sessions/README.md) and
   [Lanes › Branch drift](../lanes/README.md#branch-drift).
+
+### New-lane launches
+
+A new chat or CLI session on the "Auto-create lane" target opens
+immediately; the brain sets up its lane while the user watches it happen.
+The contract is `shared/types/chatLaunch.ts` (launch snapshot, stages,
+events) and `shared/chatLaunch.ts` (stage labels, status line, progress,
+duration formatting — every surface uses these, none re-words them).
+
+**Stages.** The host decides which stages a launch has and the card renders
+`snapshot.stages` as given: fetch base branch (omitted when the project
+creates lanes from the local base), check out files (with a live
+percentage), apply lane template / set up environment (only when a default
+template or environment config applies, with its nested steps), and start
+agent / start CLI session. Before the host answers, the optimistic snapshot
+predicts fetch (from the last-read project config, no IPC), checkout and
+agent.
+
+**Foreground chat.** Send switches the Work view to the new chat in the
+same frame: its row appears in the sidebar (grouped under the lane's name,
+not as an orphan, even though the lane list does not have it yet), the
+composer glides from the draft's centered position into its docked place,
+and the thread shows the prompt bubble with the live setup card under it.
+Until the brain reports `sessionCreated`, the pane reads nothing from the
+session — no summary, history, delta or computer-use snapshot — and renders
+the launch instead; the model picker shows the launch's model. Sends while
+the lane is still being set up go to `chatLaunch.queueMessage` and show as
+queued bubbles; the brain sends them in order once the agent starts. A
+message typed before the brain has accepted the launch (the host would
+answer "Launch not found") waits in `chatLaunchActions` with its bubble
+already showing, and goes out right after `start` lands; every message of
+a launch goes through one chain, so they reach the brain in typing order.
+If the brain refuses one, its bubble goes and the text returns to the
+composer with the error. A queued message the brain could not deliver
+stays in the thread after the agent started, marked "Couldn't send —
+retrying" (the reason on hover), with any message queued behind it, until
+the brain delivers it; while one waits, new sends also go through
+`queueMessage` (`launchRoutesSends`), so they keep their order and act as
+the brain's cue to retry. When
+the chat exists, the same pane (same id) reads its summary and transcript,
+and each stand-in yields to its real row: the user bubble to the real
+`user_message`, the card to the transcript's `ade_card` `lane_setup`
+(`cardId` `lane-setup:<launchId>`).
+
+**The setup card.** A header — a phase tile (lane glyph; violet while
+running, emerald when done, amber on failure), the title ("Setting up
+lane…", "Lane setup failed", "Lane set up in 4.2s"), chips for the lane
+name and the base ref, and the live elapsed time — then the shared
+segmented progress rail (`LaunchProgressRail`), then one row per stage
+separated by hairlines: a small tinted tile with the stage's icon
+(CloudArrowDown fetch, Files checkout, Stack / Wrench template or
+environment, Sparkle / TerminalWindow agent or CLI), the label, a muted
+detail ("origin/main at 807fb2c"), checkout's live percent in violet, the
+duration, and a status mark (check, spinning ring, hollow circle, amber
+warning, amber x, or a dash). Environment steps nest under their stage with
+per-kind glyphs (Key env files, ShippingContainer Docker, Package
+dependencies, HardDrives mounts, Copy paths, Scroll setup script). Colour
+carries status everywhere: running is ADE violet, done emerald, warning and
+failure amber — never red. Small icon + text actions sit under a hairline: Details (branch, base,
+worktree, template, error), Start now (while the environment stage runs —
+the agent starts and the remaining steps keep going), Cancel while running,
+and on failure Retry, Start anyway (only when the lane exists and the
+environment stage failed) and Delete. Cancel and Delete confirm first,
+then delete the lane the launch made (worktree, local and remote branch)
+and the chat, close the tab, return Work to the draft, and put the prompt
+back into the composer (merged with anything already typed). The confirm
+re-reads the launch when the user confirms and never cancels one whose
+agent already started or that completed; if that happens while the dialog
+is up, the dialog closes with "Setup finished — nothing to cancel" (a
+toast when the finish also collapsed the card). A cancel the brain refuses
+shows its reason on the card. Failures are
+amber, never red. While the launch is live the transcript row renders from
+the store's snapshot; afterwards it collapses to "Lane set up in 4.2s ›"
+and expands to the stage list. A reload with no live launch renders the
+transcript payload's rows, identified by each row's `key` (its stage id —
+labels are never matched), with the card's own `title`, the template name
+from the card's `Template` metric, the CLI-vs-chat icon from the `agent`
+row, and a pass row in the warning tone shown as a warning.
+
+**Sidebar row.** While the launch is pending, the row's preview line shows
+the status line ("Checking out files · 62%", or "Fetch base branch failed" in amber)
+with a small spinner, and the status slot says "Setting up" / "Setup
+failed" with no settle/snooze actions. The row height does not change. A
+row born this moment slides in once. The roster lists a stand-in row only
+until the chat exists or while the launch still owns it
+(`isChatLaunchPending`), and only for the active binding and the same
+project on another machine (a binding among the retained cross-machine
+slices) — never another project's launches.
+
+**Background chats and CLI launches.** The composer clears and the draft
+shows no banner. The Launches slide-out in the app shell's bottom-right
+stack lists this window's launches (`originClientId`) that are background
+chats or CLI launches of either mode — never a foreground chat, whose
+thread carries the card. It has a summary header ("Setting up 2 lanes…",
+"2 ready · 1 failed") with a dismiss X, and one row per launch: prompt
+kind tile (chat or CLI, with a status badge), prompt title, a Chat/CLI
+chip, lane name, status line, elapsed time and the same `LaunchProgressRail`
+the thread card uses. A row expands to the compact card
+with its actions and Open once the chat or CLI session exists. The
+slide-out leaves by itself three seconds after everything it shows has
+started; a failed launch stays until it is handled or dismissed.
+
+**Render cost.** The brain emits up to ~8 snapshots a second during
+checkout, so every surface is built to take them cheaply.
+`useChatLaunchSync` coalesces events to one store write per frame (newest
+per launch; a 50 ms timeout backs `requestAnimationFrame` up so a hidden
+window still advances CLI launches). The store keeps unchanged stage
+objects — and the stage array — across snapshots
+(`shareChatLaunchStages`), so the memoized stage rows and the rail
+re-render only for the stage that moved, and slide-out rows are memoized
+per launch. Work sidebar rows read `useChatLaunchRowState` (pending /
+failed / startedAt only) and a tiny child reads the status line, so a
+checkout tick re-renders one text node rather than the whole `SessionCard`.
+Every live duration reads one module-level clock (`launchClock.ts`, 250 ms,
+running only while a live duration is mounted, paused while hidden) as a
+formatted string, so a node re-renders only when its text changes. The
+rail is compositor-only: fills are `transform: scaleX()` from the left and
+the running segment's sheen is a translated bar (`ade-launch-rail-sheen`);
+reduced motion drops the sheen.
+
+**CLI launches.** The brain stops at `awaiting-client` once the lane is
+ready. `useChatLaunchCliDriver`, mounted beside `useWorkSessions`, starts
+the PTY through the same `launchPtySession` path every Work CLI launch uses
+(disposition = the launch's mode) and reports it with `completeClient`, or
+reports the error. A window reloaded mid-launch no longer has the prepared
+launch and reports that instead of hanging. If the brain does not take the
+reported session (the launch was cancelled meanwhile, or is gone), the
+driver disposes the PTY it just started.
+
+**Composer dock.** Right before the switch, the draft pane stashes its
+composer rect (`[data-chat-composer-wrapper]`) keyed by the new session id
+(1.5 s TTL). The chat pane takes it in a layout effect and plays a WAAPI
+FLIP translate (340 ms, `cubic-bezier(0.4, 0, 0.2, 1)`), aligning bottom
+edges and centers; it never scales the text field. For that one switch
+`WorkViewArea` skips its blur dissolve and swaps the surfaces quickly so
+the glide is what the eye follows. Reduced motion skips the glide.
 
 ## Composer
 
@@ -790,23 +931,39 @@ that could not work without it.
   sent to every child lane, so the cap is enforced both when toggling
   parallel mode and when adding files.
 
-- **Work auto-create launch behavior.** Auto-created lanes are named
-  deterministically from the prompt (`createDeterministicAutoLaneName`)
-  and created **immediately** — naming never sits on the critical path,
-  so there is no 10 s suggest race anymore. When AI titles are enabled,
-  `startBackgroundLaneNaming` asks the main process for a structured lane
-  title + branch identity in the background. The deterministic fallback stays
-  persisted for failure safety but is masked in lane-label positions by an
-  animated `Naming lane…` state. The renderer retries the background naming
-  pass once (750 ms apart), refreshes the completed identity before unmasking
-  it, and reveals the fallback only when naming fails or produces no change.
-  Branch uniqueness is resolved by the lane service. Each launch creates a `DraftLaunchJob` that
+- **Work auto-create launch behavior.** A single-model local launch on
+  the "Auto-create lane" target — chat or CLI, foreground or background —
+  is owned by the brain (see [New-lane launches](#new-lane-launches)).
+  The composer picks the chat's session id and the lane's id (both UUIDs),
+  names the lane deterministically from the prompt
+  (`createDeterministicAutoLaneName`; the brain renames it in the
+  background once the AI name arrives), inserts an optimistic launch
+  snapshot, clears itself, and fires `chatLaunch.start` without awaiting
+  it. No `DraftLaunchJob` and no draft banner is created for these
+  launches. The chat create args come from the same `buildChatCreateArgs`
+  the direct create path uses (minus the lane) and the opening message
+  from the same prepared text/attachments the old send used, so a
+  brain-owned launch starts the chat with exactly the settings on screen.
+
+  Launches into an existing lane, parallel multi-model launches and
+  Cursor Cloud launches keep the renderer-owned chain below, as does a
+  new-lane launch whose runtime predates `chat.startLaunch`: when `start`
+  rejects because the action does not exist there (the brain's coded
+  `action_not_callable` / `action_not_exposed`, a JSON-RPC `Unknown ADE
+  action`, or the web client finding no command descriptor), that one
+  launch drops its optimistic card and sidebar row and runs the chain
+  instead of showing a failed card. Any other rejection is a real failure
+  and shows on the card.
+
+  The renderer-owned chain (`launch/rendererOwnedLaunch.ts`, called by the
+  pane with its dependencies passed in) creates a `DraftLaunchJob` that
   tracks progress through `creating-lane` / `starting-session` /
-  `sending-prompt` / `ready` / `failed` states (auto-create no longer has
-  a distinct `naming-lane` phase — it goes straight to `creating-lane`).
-  While the background pass runs, affected lanes are flagged in
-  `laneNamingStore` so singleton cards, hover details, and grouped lane headers
-  all show `Naming lane…`.
+  `sending-prompt` / `ready` / `failed` states. Auto-created lanes on this
+  path (Cursor Cloud and the legacy fallback) are named deterministically
+  and created immediately; when AI titles are enabled,
+  `startBackgroundLaneNaming` asks for a structured lane title + branch
+  identity in the background, and affected lanes are flagged in
+  `laneNamingStore` so lane labels show `Naming lane…`.
   The composer is
   cleared optimistically when the job starts so the user can begin
   composing the next prompt immediately; the `DraftLaunchSnapshot`
@@ -986,7 +1143,7 @@ that could not work without it.
   sits above the still-open composer (`data-testid="codex-steering-question"`),
   the session row stays Working with a `?` pip, and `sendMessage` is
   allowed. Missing `isBlocking` still blocks (`unwrap_or(true)` in Codex
-  0.155.1). The same gate runs server-side: `agentChatService`
+  0.156.0). The same gate runs server-side: `agentChatService`
   refuses `sendMessage`, queued steers, and `dispatchSteer` while a
   live **blocking** pending input exists, throwing
   `"Answer or decline the pending request before sending another
@@ -1126,6 +1283,31 @@ allowing a cross-provider fork.
   all fall back to `chat.saveTempAttachment` with the legacy 10 MB
   image-only contract. The capability is purely additive; **iOS stays on
   the legacy path for images** and is not offered the upload route.
+  Pasted bytes take the same route. Preload `agentChat.saveTempAttachment`
+  checks the machine first: for a paired machine (an explicit remote pin,
+  or no pin in a window bound to one) that takes uploads, it sends the
+  base64 to `IPC.remoteRuntimeUploadChatAttachment` as `data`, with the
+  machine's advertised `maxBytes`. The IPC handler only validates and calls
+  `remoteConnectionService.uploadChatAttachmentBytes`. That method enforces the
+  smaller of `maxBytes` and `MAX_CHAT_ATTACHMENT_BYTES`, checks the encoded
+  length before it decodes (`maxBase64EncodedLength`), writes the bytes to a
+  private temp file (`withTempAttachmentFile`), runs the same two-leg upload,
+  and removes the file. A failed upload logs an `[ade-attachments]` warning
+  and falls back to the runtime command, but only when the payload fits the
+  command's 10 MB cap. A larger payload would only be refused again with a
+  misleading 10 MB reason, or overflow the host's RPC buffer, so the upload's
+  own error reaches the caller. The composer's clipboard paste and the
+  terminal's image paste both go through this call, so neither sends a
+  screenshot inside one runtime command when the machine can take a stream.
+- **Attachment images.** Every surface that shows or copies an attachment
+  image (the tray thumbnail, the prompt stash, draft transfer between
+  machines) reads it through `readAttachmentImageDataUrl(path, pin)` in
+  `renderer/lib/attachmentImage.ts`. It reads through the pin's runtime (no
+  pin means the window's machine). It falls back to this computer's
+  `app.getImageDataUrl` only when the owner is this computer: a local pin,
+  or no pin in a window bound to a local project. A remote-owned path is
+  never read here, because on this computer it is missing or names a
+  different file.
 - **File-shaped attachments over sync (iOS).** Documents and videos cannot
   use either of the routes above: `chat.saveTempAttachment` sniffs for an
   image MIME and rejects them, and the HTTP upload route needs a direct TCP
@@ -2299,8 +2481,37 @@ prompt linking Settings → AI connections instead of an empty list.
 
 ## Fragile and tricky wiring
 
-- **Draft launch job lifecycle.** `DraftLaunchJob` tracks multi-step
-  async launches and is stored in the **root** store's
+- **New-lane launch ids.** A chat launch's `launchId` IS the chat's session
+  id, chosen by the renderer before anything exists. Everything keys off it:
+  the Work tab, the sidebar row, the pane's `lockSessionId`, the dock stash
+  and the transcript card id. Never mint a second id for the same launch.
+- **Launch rows in the Work roster.** `useWorkSessions` keeps the host's list
+  in `hostSessions` and derives `sessions` by merging launch rows for chats
+  the roster (or the cross-machine slice) does not list yet. Launch rows are
+  never mirrored into `sessionsCacheByProject` and never count as running for
+  refresh cadence. Tabs close through one channel
+  (`chatLaunchDraftRestore`): the store posts a close notice the first time
+  a host snapshot moves a launch it held to `cancelled` (from any device),
+  which closes the tab and, if it was on screen, returns Work to the draft.
+  Cancel/Delete in this window post a notice with the prompt to restore,
+  which also switches the draft to the launch's kind so the prompt lands in
+  the right composer.
+- **Launch subscriptions stay narrow.** Stage snapshots arrive many times a
+  second during checkout. Only the setup card, the sidebar row of that chat
+  and the slide-out read full snapshots; the Work page, the pane and the app
+  shell read through equality-gated selectors. Adding a plain
+  `useChatLaunchEntries()` to a page-level component re-renders it on every
+  tick.
+- **Pending pane reads.** While `launchAwaitingSession`, the pane skips the
+  locked summary read, history hydration, active-turn recovery, delta and
+  computer-use reads; the history effect re-runs when it flips. Queued sends
+  are intercepted before the model/lane checks in `submit`, because a
+  launching chat has no session model to check against.
+
+- **Draft launch job lifecycle.** `DraftLaunchJob` tracks the
+  renderer-owned multi-step async launches (existing lane, Cursor Cloud, and
+  the fallback for runtimes without `chat.startLaunch`; brain-owned new-lane
+  launches do not create one) and is stored in the **root** store's
   `draftLaunchJobsByScope` (read/written via `useRootAppStore` /
   `rootAppStoreApi.getState().setDraftLaunchJobs`) rather than the
   per-project store or local pane state. This is load-bearing: a launch

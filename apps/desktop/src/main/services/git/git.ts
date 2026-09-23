@@ -118,6 +118,14 @@ export type GitRunOptions = {
   timeoutMs?: number;
   env?: NodeJS.ProcessEnv;
   maxOutputBytes?: number;
+  /**
+   * Called for every stderr line as it arrives. Git redraws progress in place
+   * with `\r`, so both `\r` and `\n` end a line here. Callers that want
+   * checkout progress through a pipe also set `GIT_PROGRESS_DELAY=0`.
+   */
+  onStderrLine?: (line: string) => void;
+  /** Aborting kills the git process tree; the result reports exit code 130. */
+  signal?: AbortSignal;
 };
 
 export type GitRunResult = {
@@ -128,6 +136,21 @@ export type GitRunResult = {
   stdoutTruncated?: boolean;
   stderrTruncated?: boolean;
 };
+
+export type GitCheckoutProgress = { percent: number; completed: number; total: number };
+
+const GIT_CHECKOUT_PROGRESS_LINE = /Updating files:\s+(\d+)%\s+\((\d+)\/(\d+)\)/;
+
+/** Parses `Updating files:  78% (2104/2700)` from git's stderr progress output. */
+export function parseGitCheckoutProgressLine(line: string): GitCheckoutProgress | null {
+  const match = GIT_CHECKOUT_PROGRESS_LINE.exec(line);
+  if (!match) return null;
+  const percent = Number(match[1]);
+  const completed = Number(match[2]);
+  const total = Number(match[3]);
+  if (!Number.isFinite(percent) || !Number.isFinite(completed) || !Number.isFinite(total)) return null;
+  return { percent: Math.max(0, Math.min(100, percent)), completed, total };
+}
 
 export type GitMergeTreeConflict = {
   path: string;
@@ -231,6 +254,11 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
     ? Math.max(0, Math.floor(opts.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES))
     : DEFAULT_MAX_OUTPUT_BYTES;
 
+  // Already cancelled (e.g. while queued for a git slot): never spawn a git
+  // that would start writing only to be killed.
+  if (opts.signal?.aborted) {
+    return { exitCode: 130, stdout: "", stderr: "git was cancelled" };
+  }
   const executable = await resolveGitExecutable();
   return await new Promise<GitRunResult>((resolve) => {
     const child = spawn(executable, args, {
@@ -255,6 +283,7 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
       if (settled) return;
       settled = true;
       clearTimeout(onTimeout);
+      opts.signal?.removeEventListener("abort", onAbort);
       if (typeof child.pid === "number" && child.pid > 0) {
         activeGitPids.delete(child.pid);
       }
@@ -286,9 +315,25 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
       stdoutBytes = next.bytes;
       stdoutTruncated = next.truncated;
     });
+    let stderrLineBuffer = "";
     child.stderr.on("data", (d: Buffer | string) => {
-      if (stderrTruncated) return;
       const chunk = Buffer.isBuffer(d) ? d : Buffer.from(String(d), "utf8");
+      if (opts.onStderrLine) {
+        stderrLineBuffer += chunk.toString("utf8");
+        const parts = stderrLineBuffer.split(/[\r\n]/);
+        stderrLineBuffer = parts.pop() ?? "";
+        for (const part of parts) {
+          if (!part.length) continue;
+          try {
+            opts.onStderrLine(part);
+          } catch {
+            // A progress observer must never break the git call it watches.
+          }
+        }
+        // A pathological line with no terminator must not grow without bound.
+        if (stderrLineBuffer.length > 64 * 1024) stderrLineBuffer = stderrLineBuffer.slice(-4096);
+      }
+      if (stderrTruncated) return;
       const next = appendChunkWithCap({
         current: stderr,
         chunk,
@@ -299,6 +344,32 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
       stderrBytes = next.bytes;
       stderrTruncated = next.truncated;
     });
+
+    // Resolve only once the killed git has actually exited (or after a short
+    // safety window): a caller that cleans up after a cancelled `worktree add`
+    // must not race a git that is still writing files into the worktree.
+    let aborted = false;
+    const finishAborted = () => finish({
+      exitCode: 130,
+      stdout,
+      stderr: stderr.length ? stderr : "git was cancelled",
+      stdoutTruncated,
+      stderrTruncated
+    });
+    const onAbort = () => {
+      if (aborted) return;
+      aborted = true;
+      terminateProcessTree(child, "SIGKILL");
+      if ((child.exitCode ?? null) !== null || (child.signalCode ?? null) !== null) {
+        finishAborted();
+        return;
+      }
+      setTimeout(finishAborted, 2_000).unref?.();
+    };
+    if (opts.signal) {
+      if (opts.signal.aborted) onAbort();
+      else opts.signal.addEventListener("abort", onAbort, { once: true });
+    }
 
     child.on("error", (error) => {
       const friendlyMessage = gitSpawnErrorMessage(error as NodeJS.ErrnoException, opts, executable);
@@ -312,6 +383,10 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
     });
 
     child.on("close", (code) => {
+      if (aborted) {
+        finishAborted();
+        return;
+      }
       finish({
         exitCode: code ?? 1,
         stdout,
@@ -393,6 +468,17 @@ export async function runGit(args: string[], opts: GitRunOptions): Promise<GitRu
     invalidateGitRepoCache(knownGitCommonDir(opts.cwd));
   }
   return result;
+}
+
+/** The commit sha `ref` resolves to in `cwd`, or null when it does not resolve. */
+export async function resolveGitCommit(ref: string, cwd: string, options: { timeoutMs?: number } = {}): Promise<string | null> {
+  const trimmed = ref.trim();
+  if (!trimmed) return null;
+  const result = await runGit(["rev-parse", "--verify", "--quiet", `${trimmed}^{commit}`], {
+    cwd,
+    timeoutMs: options.timeoutMs ?? 8_000,
+  });
+  return result.exitCode === 0 ? result.stdout.trim() || null : null;
 }
 
 const gitCommonDirByCwd = new Map<string, string>();
