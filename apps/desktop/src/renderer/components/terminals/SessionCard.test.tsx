@@ -1458,6 +1458,82 @@ describe("SessionCard status vocabulary", () => {
     expect(status.textContent).not.toContain("12m");
   });
 
+  it("shows one agent-reported activity label on the card", () => {
+    const { container } = render(
+      <SessionCard
+        session={makeSession({
+          toolType: "codex-chat",
+          runtimeState: "running",
+          currentTurnStartedAt: "2026-09-22T11:59:00.000Z",
+          activityStatus: {
+            value: "testing",
+            source: "agent",
+            updatedAt: "2026-09-22T11:59:30.000Z",
+          },
+        })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    const status = container.querySelector("[data-session-status]")!;
+    expect(status.getAttribute("data-session-status")).toBe("Testing");
+    expect(status.getAttribute("data-session-status-source")).toBe("agent");
+    expect(status.textContent).not.toContain("Working");
+  });
+
+  it("keeps Needs you as the only status when input is pending", () => {
+    const { container } = render(
+      <SessionCard
+        session={makeSession({
+          runtimeState: "waiting-input",
+          pendingInputItemId: "pending-1",
+          activityStatus: {
+            value: "testing",
+            source: "agent",
+            updatedAt: "2026-09-22T11:59:30.000Z",
+          },
+        })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    expect(container.querySelector("[data-session-status]")?.getAttribute("data-session-status"))
+      .toBe("Needs you");
+    expect(screen.queryByText("Testing")).toBeNull();
+  });
+
+  it("shows the activity detail once on a Kanban card where the column carries the parent state", () => {
+    const { container } = render(
+      <SessionCard
+        session={makeSession({
+          runtimeState: "running",
+          currentTurnStartedAt: "2026-09-22T11:59:00.000Z",
+          activityStatus: {
+            value: "testing",
+            source: "agent",
+            updatedAt: "2026-09-22T11:59:30.000Z",
+          },
+        })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+        suppressStatusLabel
+      />,
+    );
+
+    const status = container.querySelector("[data-session-status]");
+    expect(status?.getAttribute("data-session-status")).toBe("Testing");
+    expect(container.querySelectorAll("[data-session-status]")).toHaveLength(1);
+    expect(screen.queryByText("Working")).toBeNull();
+  });
+
   it("names background work and times it when the foreground turn is idle", () => {
     // Regression: this row used to read as a bare "Working" with no duration,
     // which is indistinguishable from a live turn that has stalled — it claimed

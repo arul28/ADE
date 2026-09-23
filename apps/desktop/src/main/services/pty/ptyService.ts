@@ -29,6 +29,7 @@ import {
 import { runGit } from "../git/git";
 import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
 import { ensureOpenCodeAdeInstructionsFile } from "../opencode/openCodeAdeInstructions";
+import { SESSION_ACTIVITY_SESSION_ID_ENV } from "../../../shared/sessionActivity";
 import {
   acquirePiSessionLease,
   piSessionCreationLeaseTarget,
@@ -113,6 +114,7 @@ import {
 import { CURSOR_CLI_EXECUTABLES } from "../../../shared/providerCliExecutables";
 import {
   buildOpenCodeReplayResumeLaunchCommand,
+  buildTrackedCliSessionActivityGuidance,
   buildTrackedCliLaunchCommand,
   buildTrackedCliResumeLaunchCommand,
   claudeArgsResumeExistingSession,
@@ -156,14 +158,6 @@ import { summarizeTerminalSession } from "../../utils/sessionSummary";
 import { derivePreviewFromChunk, type PreviewCursorState } from "../../utils/terminalPreview";
 import { claudeConfigHome, codexConfigHome, factoryConfigHome, kimiCodeConfigHome } from "../shared/providerConfigHomes";
 import { checkKimiWindowsPrerequisites } from "../ai/acpExecutables";
-import {
-  clearTuiWaitingInput,
-  createTuiMarkerState,
-  scanTuiMarkers,
-  tuiActivityFromState,
-  type TerminalTuiActivity,
-  type TuiMarkerState,
-} from "../../utils/terminalTuiMarkers";
 import {
   buildOpenCodeReplayResumeCommand,
   buildTrackedCliResumeCommand,
@@ -313,7 +307,6 @@ const AGENT_CLI_LINE_SUBMIT_KEY = "\r";
  * new, outranks it. An explicit settle is a standing instruction, not a
  * timestamp to be beaten by the next repaint.
  */
-const NEVER_WAITING = Number.POSITIVE_INFINITY;
 const AGENT_CLI_SUBMIT_DELAY_MS = 25;
 const CODEX_CLI_PASTE_SUBMIT_DELAY_MS = 180;
 const CURSOR_CLI_PASTE_SUBMIT_DELAY_MS = 500;
@@ -766,8 +759,6 @@ type PtyEntry = {
   previewCursor: PreviewCursorState | null;
   latestPreviewLine: string | null;
   lastPreviewWritten: string | null;
-  /** Per-provider TUI marker scan state; null for shells and unknown CLIs. */
-  tuiMarkers: TuiMarkerState | null;
   toolTypeHint: TerminalToolType | null;
   resumeCommand: string | null;
   resumeCommandIsFallback: boolean;
@@ -5600,29 +5591,6 @@ export function createPtyService({
    * payloads can contain newlines anywhere but never end in one (they end with
    * the paste-end sequence), so multi-line prompt text does not count.
    */
-  /**
-   * The row fields a TUI-derived activity contributes, as one spread.
-   *
-   * `attentionSource: "provider_structured"` is a MISLABEL and known to be one:
-   * this activity comes from regex-scanning a PTY stream for prompt shapes,
-   * while that value is supposed to mean the provider told us it is blocked.
-   * It cannot simply be dropped, because it is currently load-bearing —
-   * `canonicalSessionState` derives the `needs_you` phase from
-   * `pendingInputItemId | attentionRequestedAt | provider_structured` and
-   * ignores `runtimeState: "waiting-input"` entirely, so removing the label
-   * would take the badge away AND make the row unsettleable (`SessionStatusSlot`
-   * only offers Settle on a needs_you row it can dismiss). Fixing it properly
-   * means teaching the canonical layer a heuristic waiting tier, which is a
-   * shared-contract change across all five surfaces rather than a rename here.
-   */
-  const tuiRowOverlay = (activity: TerminalTuiActivity) => (
-    activity === "planning"
-      ? { chatActivityMode: "planning" as const }
-      : activity === "waiting-input"
-        ? { attentionSource: "provider_structured" as const }
-        : {}
-  );
-
   const isTurnSubmitWrite = (data: string): boolean =>
     data.endsWith("\r") || data.endsWith("\n");
 
@@ -5648,8 +5616,6 @@ export function createPtyService({
     }
     entry.lastUserInputAt = Date.now();
     entry.userInputGeneration += 1;
-    // Whatever prompt the TUI was blocked on, the user just answered it.
-    clearTuiWaitingInput(entry.tuiMarkers);
     if (entry.tracked && isTrackedAgentCliToolType(entry.toolTypeHint)) {
       clearTrackedCliTurnStartMarkers(entry.sessionId);
       entry.attentionRequested = false;
@@ -5659,6 +5625,16 @@ export function createPtyService({
     if (entry.attentionRequested) {
       entry.attentionRequested = false;
       sessionService.clearAttentionRequest(entry.sessionId);
+    }
+  };
+
+  const clearCommittedCliActivity = (entry: PtyEntry, data: string): void => {
+    if (
+      entry.tracked
+      && isTrackedAgentCliToolType(entry.toolTypeHint)
+      && isTurnSubmitWrite(data)
+    ) {
+      sessionService.clearSessionActivity(entry.sessionId);
     }
   };
 
@@ -6094,6 +6070,10 @@ export function createPtyService({
       );
       if (isTrackedAgentCliToolType(toolTypeHint)) {
         launchEnv.ADE_DEFAULT_ROLE = "agent";
+        if (tracked) launchEnv[SESSION_ACTIVITY_SESSION_ID_ENV] = sessionId;
+        else delete launchEnv[SESSION_ACTIVITY_SESSION_ID_ENV];
+      } else {
+        delete launchEnv[SESSION_ACTIVITY_SESSION_ID_ENV];
       }
       launchEnv = withResolvedCliLaunchPath(launchEnv, {
         includeInteractiveShell: Boolean(directCommand || startupCommand),
@@ -6319,13 +6299,21 @@ export function createPtyService({
         // assignment silently dropped the ADE contract on exactly the resume
         // path this exists to cover.
         if (isOpenCodeToolType(toolTypeHint)) {
+          const openCodePermissionMode = args.runtimeCliLaunch?.permissionMode
+            ?? initialResumeMetadata?.launch?.permissionMode
+            ?? existingSession?.resumeMetadata?.launch?.permissionMode
+            ?? null;
+          const sessionActivityGuidance = launchEnv.ADE_CLI_PATH?.trim()
+            ? buildTrackedCliSessionActivityGuidance({
+                provider: "opencode",
+                permissionMode: openCodePermissionMode,
+              })
+            : null;
           const instructionsPath = ensureOpenCodeAdeInstructionsFile({
             projectRoot,
             laneWorktreePath: worktreePath,
-            permissionMode: args.runtimeCliLaunch?.permissionMode
-              ?? initialResumeMetadata?.launch?.permissionMode
-              ?? existingSession?.resumeMetadata?.launch?.permissionMode
-              ?? null,
+            permissionMode: openCodePermissionMode,
+            sessionActivityGuidance,
           });
           const withInstructions = withOpenCodeAdeInstructions(
             { env: launchEnv as Record<string, string>, startupCommand },
@@ -6494,11 +6482,6 @@ export function createPtyService({
         previewCursor: null,
         latestPreviewLine: null,
         lastPreviewWritten: null,
-        // PTY-backed agent CLIs only. Chat-backed rows get richer states from
-        // the chat projection, and shells have no TUI to read.
-        tuiMarkers: tracked && isTrackedAgentCliToolType(toolTypeHint)
-          ? createTuiMarkerState(toolTypeHint)
-          : null,
         toolTypeHint,
         resumeCommand: initialResumeCommand,
         resumeCommandIsFallback: Boolean(initialResumeCommand),
@@ -6682,11 +6665,6 @@ export function createPtyService({
         feedTerminalSnapshot(entry, data);
         updatePreviewThrottled(entry, data);
         enqueuePtyData(entry, { ptyId, sessionId, data });
-
-        // Richer CLI states ride the same chunk the OSC 133 scan below reads:
-        // one bounded pass, no extra buffering, and nothing at all for shells
-        // and unrecognized CLIs (they have no marker pack).
-        if (entry.tuiMarkers) scanTuiMarkers(entry.tuiMarkers, { chunk: data });
 
         const prevState = runtimeStates.get(sessionId)?.state ?? "running";
         const markerState = runtimeStateFromOsc133Chunk(data, prevState);
@@ -7303,6 +7281,9 @@ export function createPtyService({
       // Wait until launch succeeds before clearing the previous turn's state.
       clearTrackedCliTurnStartMarkers(sessionId);
       if ((resumeFlightCreated && Boolean(openCodeReplayLaunch)) || promptAtLaunch) {
+        // This prompt was accepted as part of the launched command, so there
+        // will be no Enter write to clear its prior activity report.
+        sessionService.clearSessionActivity(sessionId);
         return buildSessionActionResult(created, { resumed: true, reusedExistingRuntime: false });
       }
 
@@ -7365,6 +7346,7 @@ export function createPtyService({
       try {
         markPtyUserInput(entry, data);
         entry.pty.write(data);
+        clearCommittedCliActivity(entry, data);
         tryCliUserTitleFromWrite(entry, data);
         setRuntimeState(entry.sessionId, "running");
         scheduleIdleTransition(entry.sessionId);
@@ -7696,6 +7678,7 @@ export function createPtyService({
       try {
         markPtyUserInput(entry, args.data);
         entry.pty.write(args.data);
+        clearCommittedCliActivity(entry, args.data);
         tryCliUserTitleFromWrite(entry, args.data);
         setRuntimeState(entry.sessionId, "running");
         scheduleIdleTransition(entry.sessionId);
@@ -7787,6 +7770,7 @@ export function createPtyService({
       try {
         markPtyUserInput(entry, data);
         entry.pty.write(data);
+        clearCommittedCliActivity(entry, data);
         tryCliUserTitleFromWrite(entry, data);
         setRuntimeState(entry.sessionId, "running");
         scheduleIdleTransition(entry.sessionId);
@@ -8157,20 +8141,14 @@ export function createPtyService({
           : idlePersistedChatRuntime
             ? "idle"
             : computeRuntimeState(row.id, fallbackStatus);
-        // The turn anchor and the TUI-derived states are emitted HERE, the one
+        // The turn anchor and host-derived lifecycle are emitted HERE, the one
         // chokepoint desktop, lane snapshots, web and iOS all read, so every
-        // surface tells the same story about a CLI session.
+        // surface tells the same story about a CLI session. PTY text is not
+        // parsed into semantic card states: host lifecycle drives liveness,
+        // while an explicit ADE request can mark the CLI as needing input.
         const liveEntry = live && !isDetachedFromThisRuntime ? live[1] : null;
         const runningSince = liveEntry && runtimeState === "running"
           ? runtimeStates.get(row.id)?.runningSince ?? null
-          : null;
-        const settledAtMs = row.settledAt ? Date.parse(row.settledAt) : Number.NaN;
-        const tuiActivity = liveEntry
-          ? tuiActivityFromState(liveEntry.tuiMarkers, {
-              waitingFloorMs: row.settleOverride === "settled"
-                ? NEVER_WAITING
-                : Number.isFinite(settledAtMs) ? settledAtMs : null,
-            })
           : null;
         return {
           ...row,
@@ -8192,8 +8170,7 @@ export function createPtyService({
           ...(isPersistedChatToolType(row.toolType ?? null)
             ? {}
             : { currentTurnStartedAt: runningSince ? new Date(runningSince).toISOString() : null }),
-          ...tuiRowOverlay(tuiActivity),
-          runtimeState: tuiActivity === "waiting-input" ? "waiting-input" : runtimeState,
+          runtimeState,
           chatSessionId: live
             ? terminalChatSessions.get(row.id) ?? live[1].chatSessionId ?? row.chatSessionId ?? null
             : terminalChatSessions.get(row.id) ?? row.chatSessionId ?? null,

@@ -45,6 +45,51 @@ export function isChatToolType(toolType: string | null | undefined): boolean {
   return normalized === "cursor" || normalized.endsWith("-chat");
 }
 
+const COPILOT_PLAN_MODE_ID = "https://agentclientprotocol.com/protocol/session-modes#plan";
+
+function acpCurrentModeId(chat: AgentChatSessionSummary): string | null {
+  const value = chat.acpConfigSnapshot?.currentModeId
+    ?? chat.acpConfigSnapshot?.configOptions?.find((option) => option.id === "mode")?.currentValue;
+  // ACP config values can also be booleans or numbers; only strings are mode ids.
+  return typeof value === "string" ? value : null;
+}
+
+/**
+ * Read Planning only from the provider's current structured mode. Permission
+ * labels and prompt text are not evidence that a provider is in plan mode.
+ */
+function chatIsPlanning(chat: AgentChatSessionSummary): boolean {
+  switch (chat.provider) {
+    case "claude":
+      return chat.interactionMode === "plan";
+    case "codex":
+      // Permission policy does not prove Plan. The Codex turn path stamps the
+      // collaboration mode only after the app-server accepts turn/start.
+      return chat.codexEffectiveCollaborationMode === "plan";
+    case "cursor":
+      return chat.cursorModeId === "plan"
+        || chat.cursorModeSnapshot?.currentModeId === "plan";
+    case "droid":
+      // read-only is Droid's permission posture. The SDK's native Spec mode is
+      // represented by the explicit interactionMode ADE sends to the SDK.
+      return chat.interactionMode === "plan";
+    case "opencode":
+      return chat.opencodePermissionMode === "plan";
+    case "qwen":
+    case "kimi": {
+      return acpCurrentModeId(chat) === "plan";
+    }
+    case "copilot":
+      return acpCurrentModeId(chat) === COPILOT_PLAN_MODE_ID;
+    // Grok launches with native plan mode disabled because that mode hangs
+    // external hosts. Pi has no provider-native current-mode signal.
+    case "grok":
+    case "pi":
+    default:
+      return false;
+  }
+}
+
 /**
  * Persisted chat rows stay "running" so they remain resumable across provider
  * restarts. If chat-state projection is unavailable, treat that storage state
@@ -90,7 +135,7 @@ export function projectChatOntoSession(
     nextWakeAt: chat.nextWakeAt,
     usageLimitParkedUntil: chat.usageLimitParkedUntil ?? null,
     usageLimitResume: chat.usageLimitResume ?? null,
-    chatActivityMode: chat.interactionMode === "plan" ? "planning" : null,
+    chatActivityMode: chatIsPlanning(chat) ? "planning" : null,
     activeBackgroundTaskCount: chat.activeBackgroundTaskCount ?? 0,
     ...(chat.backgroundWork ? { backgroundWork: chat.backgroundWork } : {}),
     ...(chat.backgroundWorkSince ? { backgroundWorkSince: chat.backgroundWorkSince } : {}),

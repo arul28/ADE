@@ -922,11 +922,16 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
         readStringActionArg(args, "sessionId"),
       );
       if (!summary) return null;
+      const sessionActivity = runtime.sessionService?.getByChatSessionId?.(summary.sessionId);
       // The host zone is added here rather than on `AgentChatSessionSummary`
       // itself so the per-row list payload does not carry the same constant N
       // times; `chat.createScheduledWork` reports the same value the same way.
       // See `AdeChatSessionSummaryActionResult` for the full reasoning.
-      return { ...summary, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone };
+      return {
+        ...summary,
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        ...(sessionActivity ? { activityStatus: sessionActivity.activityStatus ?? null } : {}),
+      };
     };
   }
   if (typeof base.getTurnStatus === "function") {
@@ -1388,6 +1393,18 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
         throw new Error(`Session '${sessionId}' was not found.`);
       }
       return { ok: true, sessionId };
+    },
+    setSessionActivity: (args?: unknown) => {
+      const record = readObjectActionArg(args, "session.setSessionActivity");
+      const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
+      const value = record.value;
+      if (value !== null && typeof value !== "string") {
+        throw new Error("setSessionActivity requires a supported string `value` or null.");
+      }
+      if (!sessionService.setSessionActivity(sessionId, value)) {
+        throw new Error(`Session '${sessionId}' was not found.`);
+      }
+      return { ok: true, sessionId, value };
     },
     // -----------------------------------------------------------------------
     // There is deliberately NO `settleSelfSession` / `unsettleSelfSession`

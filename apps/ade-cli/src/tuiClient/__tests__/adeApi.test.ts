@@ -100,8 +100,14 @@ describe("session lifecycle parity", () => {
     const lifecycle = {
       id: "session-1",
       lastActivityAt: "2026-07-23T12:00:00.000Z",
+      currentTurnStartedAt: "2026-07-23T11:58:00.000Z",
       settledAt: "2026-07-23T12:01:00.000Z",
       statusNote: "PR merged",
+      activityStatus: {
+        value: "testing",
+        source: "agent",
+        updatedAt: "2026-07-23T11:59:00.000Z",
+      },
       instanceId: "codex-work",
       presetId: "preset-1",
       credentialId: "cred-1",
@@ -131,6 +137,8 @@ describe("session lifecycle parity", () => {
     expect(chat[0]).toMatchObject({
       settledAt: lifecycle.settledAt,
       statusNote: "PR merged",
+      activityStatus: lifecycle.activityStatus,
+      currentTurnStartedAt: lifecycle.currentTurnStartedAt,
       lastActivityAt: "2026-07-23T11:30:00.000Z",
     });
 
@@ -157,6 +165,8 @@ describe("session lifecycle parity", () => {
     expect(terminal[0]).toMatchObject({
       settledAt: lifecycle.settledAt,
       statusNote: "PR merged",
+      activityStatus: lifecycle.activityStatus,
+      currentTurnStartedAt: lifecycle.currentTurnStartedAt,
       lastActivityAt: lifecycle.lastActivityAt,
       instanceId: "codex-work",
       presetId: "preset-1",

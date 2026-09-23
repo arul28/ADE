@@ -59,6 +59,7 @@ function seedDatabase(): void {
         archived_at text,
         settled_at text,
         status_note text,
+        activity_status_json text,
         attention_requested_at text,
         attention_message text,
         last_turn_failed_at text,
@@ -105,12 +106,13 @@ function seedDatabase(): void {
   db.prepare(
     `
       update terminal_sessions
-      set settled_at = ?, status_note = ?
+      set settled_at = ?, status_note = ?, activity_status_json = ?
       where id = ?
     `,
   ).run(
     "2026-01-02T00:01:00Z",
     "Indexing complete and waiting for final review now",
+    JSON.stringify({ value: "testing", source: "agent", updatedAt: "2026-01-02T00:02:00Z" }),
     "chat-run",
   );
   db.prepare(
@@ -267,6 +269,8 @@ describe("buildRosterSnapshot", () => {
       settledAt: "2026-01-02T00:01:00Z",
       // Eight words survive: the note only truncates past 72 characters.
       statusNote: "Indexing complete and waiting for final review now",
+      activityStatus: { value: "testing", source: "agent", updatedAt: "2026-01-02T00:02:00.000Z" },
+      lastActivityAt: "2026-01-02T00:02:00.000Z",
       exitCode: null,
     });
     expect(byId.get("chat-await")).toMatchObject({
@@ -287,6 +291,7 @@ describe("buildRosterSnapshot", () => {
     for (const column of [
       "settled_at",
       "status_note",
+      "activity_status_json",
       "attention_requested_at",
       "attention_message",
       "last_turn_failed_at",
@@ -299,6 +304,7 @@ describe("buildRosterSnapshot", () => {
     const chat = projects[0]!.chats.find((row) => row.id === "chat-run")!;
     expect(chat.settledAt).toBeNull();
     expect(chat.statusNote).toBeNull();
+    expect(chat.activityStatus).toBeNull();
     expect(chat.attentionRequestedAt).toBeNull();
     expect(chat.attentionMessage).toBeNull();
     expect(chat.lastTurnFailedAt).toBeNull();

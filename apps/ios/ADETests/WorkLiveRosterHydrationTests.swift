@@ -2,6 +2,35 @@ import XCTest
 @testable import ADE
 
 final class WorkLiveRosterHydrationTests: XCTestCase {
+  func testRosterActivityReportTimestampParticipatesInLocalRowFreshness() throws {
+    var local = makeRosterChat(id: "chat-1", laneId: "lane-1")
+    local.lastActivityAt = "2026-07-22T12:00:00.000Z"
+    local.activityStatus = SessionActivityReport(
+      value: "testing",
+      source: "agent",
+      updatedAt: "2026-07-22T12:05:00.000Z"
+    )
+    var remote = makeRosterChat(id: "chat-1", laneId: "lane-1")
+    remote.lastActivityAt = "2026-07-22T12:03:00.000Z"
+
+    XCTAssertEqual(local.activityFreshness?.timestamp, "2026-07-22T12:05:00.000Z")
+    XCTAssertGreaterThan(
+      try XCTUnwrap(local.activityFreshness?.date),
+      try XCTUnwrap(remote.activityFreshness?.date)
+    )
+  }
+
+  func testRosterActivityFreshnessAcceptsWholeSecondTimestamps() {
+    var session = makeRosterChat(id: "chat-1", laneId: "lane-1")
+    session.activityStatus = SessionActivityReport(
+      value: "monitoring",
+      source: "agent",
+      updatedAt: "2026-07-22T12:05:00Z"
+    )
+
+    XCTAssertEqual(session.activityFreshness?.timestamp, "2026-07-22T12:05:00Z")
+  }
+
   func testAuthoritativeRosterChatLaneBeatsEarlierStaleLaneAndBranchHints() {
     let project = makeProject(id: "project-1", name: "ADE")
     let stale = makeRosterLane(id: "lane-stale", name: "Stale", branch: "feature/stale")

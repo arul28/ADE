@@ -3,6 +3,7 @@ import type { AttentionItem } from "../../../../desktop/src/shared/types/attenti
 import { ATTENTION_CONTRACT_VERSION } from "../../../../desktop/src/shared/types/attention";
 import type { AgentChatUsageLimitResume } from "../../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
+import { SESSION_ACTIVITY_VALUES } from "../../../../desktop/src/shared/types/sessions";
 import type { TuiChatSessionSummary } from "../adeApi";
 import {
   buildWorkListModel,
@@ -425,6 +426,53 @@ describe("workListModel shelves", () => {
 });
 
 describe("workListModel status", () => {
+  it.each(SESSION_ACTIVITY_VALUES)("shows a current agent report as a detail inside the running phase: %s", (value) => {
+    const model = build({
+      lanes: [lane("lane-1", "Feature")],
+      sessions: [session({
+        sessionId: "chat-report",
+        laneId: "lane-1",
+        status: "active",
+        runtimeState: "running",
+        currentTurnStartedAt: "2026-05-12T11:50:00.000Z",
+        activityStatus: {
+          value,
+          source: "agent",
+          updatedAt: "2026-05-12T11:59:00.000Z",
+        },
+      })],
+      activeSessionId: null,
+    });
+
+    const [row] = sessionRows(model);
+    expect(row!.filing).toBe("running");
+    expect(row!.status?.label).toBe(`${value[0]!.toUpperCase()}${value.slice(1)}`);
+  });
+
+  it("keeps Needs you above a current agent activity report", () => {
+    const model = build({
+      lanes: [lane("lane-1", "Feature")],
+      sessions: [session({
+        sessionId: "chat-report-needs-you",
+        laneId: "lane-1",
+        status: "active",
+        runtimeState: "running",
+        currentTurnStartedAt: "2026-05-12T11:50:00.000Z",
+        activityStatus: {
+          value: "testing",
+          source: "agent",
+          updatedAt: "2026-05-12T11:59:00.000Z",
+        },
+        attentionRequestedAt: "2026-05-12T11:59:30.000Z",
+        attentionMessage: "Which account?",
+      })],
+      activeSessionId: null,
+    });
+
+    const [row] = sessionRows(model);
+    expect(row!.status?.label).toBe("Needs you");
+  });
+
   it("lets a raised hand outrank a live snooze — a needs-you row is never buried", () => {
     const model = build({
       lanes: [lane("lane-1", "Feature")],

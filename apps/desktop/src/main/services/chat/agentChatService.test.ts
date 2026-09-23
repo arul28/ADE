@@ -1718,6 +1718,7 @@ function createMockSessionService() {
     setHeadShaEnd: vi.fn(),
     setLastOutputPreview: vi.fn(),
     clearTurnStartMarkers: vi.fn(),
+    clearSessionActivity: vi.fn(),
     markLastTurnFailed: vi.fn(),
     clearLastTurnFailed: vi.fn(),
     setSummary: vi.fn(),
@@ -18322,6 +18323,7 @@ describe("createAgentChatService", () => {
       await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
 
       sessionService.clearTurnStartMarkers.mockClear();
+      sessionService.clearSessionActivity.mockClear();
       await service.sendMessage({
         sessionId: session.id,
         text: "wake prompt",
@@ -18335,10 +18337,13 @@ describe("createAgentChatService", () => {
         } as never,
       });
       expect(sessionService.clearTurnStartMarkers).not.toHaveBeenCalled();
+      expect(sessionService.clearSessionActivity).not.toHaveBeenCalled();
 
       await service.sendMessage({ sessionId: session.id, text: "real user reply" });
       expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledWith(session.id);
       expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledTimes(1);
+      expect(sessionService.clearSessionActivity).toHaveBeenCalledWith(session.id);
+      expect(sessionService.clearSessionActivity).toHaveBeenCalledTimes(1);
     });
 
     it("writes a receipt for every Claude approval it settles, not just a cleared map", async () => {
@@ -18646,6 +18651,7 @@ describe("createAgentChatService", () => {
       const { service, sessionService } = createService();
       const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
       sessionService.clearTurnStartMarkers.mockClear();
+      sessionService.clearSessionActivity.mockClear();
 
       await service.respondToInput({
         sessionId: session.id,
@@ -18654,6 +18660,7 @@ describe("createAgentChatService", () => {
       });
 
       expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledWith(session.id);
+      expect(sessionService.clearSessionActivity).toHaveBeenCalledWith(session.id);
       // And a receipt was written, so the card cannot be redrawn either.
       const history = await service.getChatEventHistory(session.id);
       expect(history.events.some((envelope) =>
@@ -18690,18 +18697,21 @@ describe("createAgentChatService", () => {
         { hostContinuation: { reason: "plan_followup" } },
       ]) {
         sessionService.clearTurnStartMarkers.mockClear();
+        sessionService.clearSessionActivity.mockClear();
         await service.sendMessage({
           sessionId: session.id,
           text: "host-authored delivery",
           metadata: metadata as never,
         });
         expect(sessionService.clearTurnStartMarkers).not.toHaveBeenCalled();
+        expect(sessionService.clearSessionActivity).not.toHaveBeenCalled();
       }
 
       // A board move is host-authored provenance but a HUMAN act, so it does
       // clear — except a move INTO Needs you, which exists to raise the hand
       // the clear would wipe in the same breath.
       sessionService.clearTurnStartMarkers.mockClear();
+      sessionService.clearSessionActivity.mockClear();
       await service.sendMessage({
         sessionId: session.id,
         text: "You moved this chat from Done to Working.",
@@ -18710,8 +18720,10 @@ describe("createAgentChatService", () => {
         } as never,
       });
       expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledWith(session.id);
+      expect(sessionService.clearSessionActivity).toHaveBeenCalledWith(session.id);
 
       sessionService.clearTurnStartMarkers.mockClear();
+      sessionService.clearSessionActivity.mockClear();
       await service.sendMessage({
         sessionId: session.id,
         text: "The user parked this for their input.",
@@ -18720,6 +18732,7 @@ describe("createAgentChatService", () => {
         } as never,
       });
       expect(sessionService.clearTurnStartMarkers).not.toHaveBeenCalled();
+      expect(sessionService.clearSessionActivity).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -18756,6 +18769,7 @@ describe("createAgentChatService", () => {
           modelId,
         });
         sessionService.clearTurnStartMarkers.mockClear();
+        sessionService.clearSessionActivity.mockClear();
 
         let turnSettled = false;
         const steerPromise = service.steerUserMessage({
@@ -18788,6 +18802,8 @@ describe("createAgentChatService", () => {
             expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledWith(session.id);
           });
           expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledTimes(1);
+          expect(sessionService.clearSessionActivity).toHaveBeenCalledWith(session.id);
+          expect(sessionService.clearSessionActivity).toHaveBeenCalledTimes(1);
           expect(turnSettled).toBe(false);
         } finally {
           finishTurn();
@@ -18809,12 +18825,14 @@ describe("createAgentChatService", () => {
         modelId: "cursor/composer-2",
       });
       sessionService.clearTurnStartMarkers.mockClear();
+      sessionService.clearSessionActivity.mockClear();
 
       await expect(service.steerUserMessage({
         sessionId: session.id,
         text: "Continue from my answer.",
       })).rejects.toThrow("Cursor rejected the dispatch.");
       expect(sessionService.clearTurnStartMarkers).not.toHaveBeenCalled();
+      expect(sessionService.clearSessionActivity).not.toHaveBeenCalled();
     });
 
     it("preserves lifecycle markers when an idle OpenCode prompt is rejected before dispatch", async () => {
@@ -37751,6 +37769,9 @@ describe("createAgentChatService", () => {
       expect(collaborationMode?.settings?.model).toBe("gpt-5.4");
       expect(collaborationMode?.settings?.reasoning_effort).toBe("medium");
       expect(collaborationMode?.settings?.developer_instructions).toBeNull();
+      await vi.waitFor(async () => {
+        expect((await service.getSessionSummary(session.id))?.codexEffectiveCollaborationMode).toBe("plan");
+      });
       expect(textInputs).toHaveLength(1);
       expect(textInputs.at(-1)?.text).toContain("User request:");
       expect(textInputs.at(-1)?.text).toContain("Ask one planning question before coding.");
@@ -43788,6 +43809,9 @@ describe("createAgentChatService", () => {
       const collaborationMode = params?.collaborationMode as { mode?: unknown } | undefined;
 
       expect(collaborationMode?.mode).toBe("default");
+      await vi.waitFor(async () => {
+        expect((await service.getSessionSummary(session.id))?.codexEffectiveCollaborationMode).toBe("default");
+      });
     });
   });
 
@@ -52476,6 +52500,16 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
           && event.event.itemId === "cursor-hook-preview-failure",
       );
 
+      expect(service.listPendingInputs({ sessionId: session.id }).requests).toEqual([
+        expect.objectContaining({
+          itemId: "cursor-hook-preview-failure",
+          source: "cursor",
+          kind: "permissions",
+          blocking: true,
+          providerMetadata: expect.objectContaining({ cursorSdk: true, toolName: "shell" }),
+        }),
+      ]);
+
       await service.respondToInput({
         sessionId: session.id,
         itemId: approvalEvent.event.itemId,
@@ -52483,6 +52517,7 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
       });
 
       await expect(hookResponse).resolves.toEqual({ permission: "allow" });
+      expect(service.listPendingInputs({ sessionId: session.id }).requests).toEqual([]);
       expect(logger.warn).toHaveBeenCalledWith(
         "agent_chat.preview_update_failed",
         expect.objectContaining({
@@ -52837,6 +52872,68 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
     expect(updated?.modelId).toBe("droid/custom:claude-sonnet-5-thinking-32000");
     expect(doneEvent.event.model).toBe("custom:claude-sonnet-5-thinking-32000");
     expect(doneEvent.event.modelId).toBe("droid/custom:claude-sonnet-5-thinking-32000");
+  });
+
+  it("lists and resolves a live Droid SDK permission card", async () => {
+    let finishTurn = () => {};
+    mockState.droidPromptGate = new Promise<void>((resolve) => { finishTurn = resolve; });
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "droid",
+      model: "custom:claude-sonnet-5-thinking-32000",
+      modelId: "droid/custom:claude-sonnet-5-thinking-32000",
+    });
+
+    try {
+      const turnPromise = service.sendMessage({
+        sessionId: session.id,
+        text: "Read a file that needs permission.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(mockState.droidPromptCalls.length).toBeGreaterThan(0);
+        expect(typeof mockState.droidPooled?.bridge.onPermissionRequest).toBe("function");
+      });
+
+      const permissionResponse = mockState.droidPooled.bridge.onPermissionRequest({
+        id: "droid-permission-card",
+        title: "Read file",
+        summary: "Read README.md",
+        toolName: "Read",
+        toolInput: { filePath: "README.md" },
+        toolUseIds: ["tool-use-1"],
+        options: [
+          { label: "Allow once", value: "proceed_once" },
+          { label: "Cancel", value: "cancel" },
+        ],
+        raw: { filePath: "README.md" },
+      });
+
+      expect(service.listPendingInputs({ sessionId: session.id }).requests).toEqual([
+        expect.objectContaining({
+          itemId: "droid-permission-card",
+          source: "droid",
+          kind: "permissions",
+          blocking: true,
+          options: expect.arrayContaining([
+            expect.objectContaining({ label: "Allow once", value: "proceed_once" }),
+          ]),
+        }),
+      ]);
+
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: "droid-permission-card",
+        decision: "accept",
+      });
+
+      await expect(permissionResponse).resolves.toEqual({ selectedOption: "proceed_once" });
+      expect(service.listPendingInputs({ sessionId: session.id }).requests).toEqual([]);
+      finishTurn();
+      await expect(turnPromise).resolves.toBeUndefined();
+    } finally {
+      finishTurn();
+    }
   });
 
   it("sends Droid screenshots as attachment paths over worker IPC", async () => {

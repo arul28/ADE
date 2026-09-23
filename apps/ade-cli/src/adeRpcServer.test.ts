@@ -219,6 +219,7 @@ function createRuntime() {
       updateMeta: vi.fn(),
       readTranscriptTail: vi.fn(() => ""),
       requestAttention: vi.fn(() => true),
+      setSessionActivity: vi.fn(() => true),
       setStatusNote: vi.fn(() => true),
       settleSession: vi.fn(() => true),
       unsettleSession: vi.fn(() => true),
@@ -1641,6 +1642,20 @@ describe("adeRpcServer", () => {
         attentionRequestedAt: null,
         lastTurnFailedAt: null,
       } as any);
+      runtime.sessionService.get.mockImplementation((sessionId: string) => {
+        if (sessionId === "attached-terminal") {
+          return { id: "attached-terminal", chatSessionId: "chat-1" } as any;
+        }
+        if (sessionId === "chat-1") {
+          return {
+            id: "chat-1",
+            toolType: "codex-chat",
+            attentionRequestedAt: null,
+            lastTurnFailedAt: null,
+          } as any;
+        }
+        return null;
+      });
 
       const lifecycleCalls = [
         {
@@ -1649,6 +1664,14 @@ describe("adeRpcServer", () => {
           assert: () => expect(runtime.sessionService.requestAttention).toHaveBeenCalledWith(
             "chat-1",
             "Choose a release channel.",
+          ),
+        },
+        {
+          action: "setSessionActivity",
+          args: { value: "testing" },
+          assert: () => expect(runtime.sessionService.setSessionActivity).toHaveBeenCalledWith(
+            "chat-1",
+            "testing",
           ),
         },
         {
@@ -1670,6 +1693,14 @@ describe("adeRpcServer", () => {
         lifecycle.assert();
       }
 
+      const attachedTerminalActivity = await callTool(handler, "run_ade_action", {
+        domain: "session",
+        action: "setSessionActivity",
+        args: { sessionId: "attached-terminal", value: "testing" },
+      });
+      expect(attachedTerminalActivity?.isError).toBeUndefined();
+      expect(runtime.sessionService.setSessionActivity).toHaveBeenCalledWith("attached-terminal", "testing");
+
       const denied = await callTool(handler, "run_ade_action", {
         domain: "session",
         action: "setSessionStatusNote",
@@ -1680,6 +1711,13 @@ describe("adeRpcServer", () => {
         "chat-2",
         "Cross-session write",
       );
+      const activityDenied = await callTool(handler, "run_ade_action", {
+        domain: "session",
+        action: "setSessionActivity",
+        args: { sessionId: "chat-2", value: "testing" },
+      });
+      expect(activityDenied.isError).toBe(true);
+      expect(runtime.sessionService.setSessionActivity).not.toHaveBeenCalledWith("chat-2", "testing");
 
       // Settlement is user- and PR-merge-driven only (2026-07). A session-bound
       // caller gets no settle writer at all: the caller-scoped `*SelfSession`
@@ -1725,6 +1763,14 @@ describe("adeRpcServer", () => {
         "chat-from-env",
         "Running CLI checks",
       );
+
+      const activity = await callTool(handler, "run_ade_action", {
+        domain: "session",
+        action: "setSessionActivity",
+        args: { value: "monitoring" },
+      });
+      expect(activity?.isError).toBeUndefined();
+      expect(runtime.sessionService.setSessionActivity).toHaveBeenCalledWith("chat-from-env", "monitoring");
 
       const denied = await callTool(handler, "run_ade_action", {
         domain: "session",
@@ -7012,6 +7058,21 @@ describe("run_ade_action search scope", () => {
     expect(response?.isError).toBeUndefined();
     const args = search.query.mock.calls[0]![0] as { callerScope?: Record<string, unknown> };
     expect(args.callerScope).toBeUndefined();
+  });
+
+  it("denies unbound agent CLI activity writes to arbitrary sessions", async () => {
+    const { runtime } = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "ade-cli:4242", role: "agent" });
+
+    const response = await callTool(handler, "run_ade_action", {
+      domain: "session",
+      action: "setSessionActivity",
+      args: { sessionId: "another-session", value: "testing" },
+    });
+
+    expect(response?.isError).toBe(true);
+    expect(runtime.sessionService.setSessionActivity).not.toHaveBeenCalled();
   });
 
   it("leaves an unbound external caller unscoped", async () => {

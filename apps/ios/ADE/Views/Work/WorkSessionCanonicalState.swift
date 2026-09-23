@@ -400,6 +400,7 @@ struct WorkSessionStatusPresentation: Equatable {
   let showsElapsed: Bool
   let prominent: Bool
   let kind: SessionBadgeKind?
+  var activityReportUpdatedAt: String? = nil
 }
 
 /// Everything one Work row renders about its state, derived ONCE.
@@ -462,7 +463,9 @@ func workSessionRowPresentation(
     phase: phase,
     resolved: resolved,
     now: now,
-    usageLimitStatus: usageLimitStatus
+    usageLimitStatus: usageLimitStatus,
+    activityStatus: session.activityStatus,
+    currentTurnStartedAt: summary?.currentTurnStartedAt
   )
   // Whether the usage-limit overlay actually took the slot is the slot
   // function's own answer, not something to re-derive from the rendered glyph:
@@ -521,7 +524,9 @@ private func workSessionStatusSlot(
   phase: CanonicalSessionPhase,
   resolved: (kind: SessionBadgeKind?, presentation: ActivityPhasePresentation),
   now: Date,
-  usageLimitStatus: WorkUsageLimitRowStatus?
+  usageLimitStatus: WorkUsageLimitRowStatus?,
+  activityStatus: SessionActivityReport?,
+  currentTurnStartedAt: String?
 ) -> (presentation: WorkSessionStatusPresentation?, ownedByUsageLimit: Bool) {
   // needsYou skips the overlay gate entirely and falls straight through to the
   // phase table below, which already says "Needs you" in amber.
@@ -580,6 +585,30 @@ private func workSessionStatusSlot(
       prominent: false,
       kind: nil
     ), true)
+  }
+
+  // The report refines a running parent phase. It never moves the row into a
+  // different kanban column, and overlays/Needs you above have already won.
+  if phase == .running,
+     let activityStatus,
+     activityStatus.source == "agent",
+     ["planning", "implementing", "testing", "reviewing", "debugging", "monitoring"].contains(activityStatus.value),
+     let updatedAt = workParsedDate(activityStatus.updatedAt) {
+    let isStaleForTurn = currentTurnStartedAt
+      .flatMap(workParsedDate)
+      .map { updatedAt < $0 } ?? false
+    if !isStaleForTurn {
+      let isPlanning = activityStatus.value == "planning"
+      return (WorkSessionStatusPresentation(
+        label: activityStatus.value.capitalized,
+        tone: isPlanning ? .violet : .blue,
+        glyph: isPlanning ? .planning : .working,
+        showsElapsed: true,
+        prominent: false,
+        kind: nil,
+        activityReportUpdatedAt: activityStatus.updatedAt
+      ), false)
+    }
   }
 
   return (WorkSessionStatusPresentation(

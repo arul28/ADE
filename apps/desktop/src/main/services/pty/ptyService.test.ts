@@ -6,6 +6,7 @@ import path from "node:path";
 import type { IPty } from "node-pty";
 import type * as TerminalSessionSignals from "../../utils/terminalSessionSignals";
 import { buildOpenCodeReplayResumeCommand as buildCanonicalOpenCodeReplayResumeCommand } from "../../../shared/cliLaunch";
+import { canonicalSessionState } from "../../../shared/sessionCanonicalState";
 import { parseCommandLine } from "../../../shared/shell";
 import { isPtySendPreDeliveryError } from "../../../shared/types";
 import { expectNoJargon } from "../../../test/jargonGuard";
@@ -496,6 +497,20 @@ function createHarness(overrides: {
       if (!session) return;
       session.lastOutputAt = at;
       if (opts?.clearSettled !== false) session.settledAt = null;
+    }),
+    setSessionActivity: vi.fn((sessionId: string, value: string | null) => {
+      const session = sessionStore.get(sessionId);
+      if (!session) return false;
+      session.activityStatus = value === null
+        ? null
+        : { value, source: "agent", updatedAt: new Date().toISOString() };
+      return true;
+    }),
+    clearSessionActivity: vi.fn((sessionId: string) => {
+      const session = sessionStore.get(sessionId);
+      if (!session) return false;
+      session.activityStatus = null;
+      return true;
     }),
     settleSession: vi.fn((sessionId: string, opts?: { settledAt?: string }) => {
       const session = sessionStore.get(sessionId);
@@ -1578,6 +1593,36 @@ describe("ptyService", () => {
         .toContain("ADE's software engineering agent");
       // The permission block ADE already sent must survive the merge.
       expect(config.permission).toEqual({ edit: "allow" });
+    });
+
+    it("enables OpenCode activity guidance only with ADE CLI and a writable launch mode", async () => {
+      const { service, loadPty } = createHarness({
+        getAdeCliAgentEnv: (env = {}) => ({ ...env, ADE_CLI_PATH: "/runtime/ade" }),
+      });
+
+      const created = await service.create({
+        laneId: "lane-1",
+        title: "OpenCode activity",
+        cols: 80,
+        rows: 24,
+        toolType: "opencode",
+        tracked: true,
+        runtimeCliLaunch: { provider: "opencode", permissionMode: "full-auto" },
+      });
+
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      const opts = ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      const config = JSON.parse(opts?.env?.OPENCODE_CONFIG_CONTENT ?? "{}") as { instructions?: string[] };
+      const instructions = fs.readFileSync(config.instructions![0]!, "utf8");
+
+      expect(opts?.env).toMatchObject({
+        ADE_CLI_PATH: "/runtime/ade",
+        ADE_CHAT_SESSION_ID: created.sessionId,
+        ADE_ACTIVITY_SESSION_ID: created.sessionId,
+      });
+      expect(config.instructions?.[0]).toMatch(/-activity\.md$/);
+      expect(instructions).toContain('"$ADE_CLI_PATH" chat activity testing');
+      expect(instructions).toContain("ADE scopes this command to the tracked terminal row");
     });
 
     it("resumes an OpenCode session with the permission mode it was launched under", async () => {
@@ -7070,6 +7115,41 @@ describe("ptyService", () => {
       expect(enriched[0]).toMatchObject({ id: sessionId, runtimeState: "running", extra: "data" });
     });
 
+    it("does not infer card statuses from TUI text and preserves explicit ADE asks", async () => {
+      const { service, mockPty, sessionService } = createHarness();
+      const { sessionId } = await service.create({
+        laneId: "lane-1",
+        title: "Claude CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+        tracked: true,
+      });
+
+      mockPty._emitter.emit(
+        "data",
+        "⏸ plan mode on\nDo you want to proceed? (y/n)\n",
+      );
+
+      const row = sessionService.get(sessionId);
+      const [fromTuiText] = service.enrichSessions([row] as any);
+      expect(fromTuiText).not.toHaveProperty("chatActivityMode");
+      expect(fromTuiText).not.toHaveProperty("attentionSource");
+      expect(fromTuiText.runtimeState).toBe("running");
+      expect(canonicalSessionState(fromTuiText).phase).toBe("running");
+
+      row.attentionRequestedAt = new Date().toISOString();
+      row.attentionMessage = "What should I do next?";
+      expect(service.setSessionRuntimeState(sessionId, "waiting-input")).toBe(true);
+
+      const [fromExplicitAsk] = service.enrichSessions([row] as any);
+      expect(fromExplicitAsk).toMatchObject({
+        attentionRequestedAt: row.attentionRequestedAt,
+        runtimeState: "waiting-input",
+      });
+      expect(canonicalSessionState(fromExplicitAsk).phase).toBe("needs_you");
+    });
+
     it("overlays live PTY attachment when a persisted row drifted to ended", async () => {
       const { service, sessionService } = createHarness();
       const { ptyId, sessionId } = await service.create({
@@ -9457,6 +9537,20 @@ describe("ptyService", () => {
           return all
             .filter((s) => (args.laneId ? s.laneId === args.laneId : true))
             .slice(0, args.limit ?? all.length);
+        }),
+        setSessionActivity: vi.fn((sessionId: string, value: string | null) => {
+          const session = sessionStore.get(sessionId);
+          if (!session) return false;
+          session.activityStatus = value === null
+            ? null
+            : { value, source: "agent", updatedAt: new Date().toISOString() };
+          return true;
+        }),
+        clearSessionActivity: vi.fn((sessionId: string) => {
+          const session = sessionStore.get(sessionId);
+          if (!session) return false;
+          session.activityStatus = null;
+          return true;
         }),
         setChatSessionId: vi.fn((sessionId: string, chatSessionId: string | null) => {
           const s = sessionStore.get(sessionId);

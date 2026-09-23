@@ -1589,7 +1589,7 @@ describe("sessionService resume metadata", () => {
     }));
   });
 
-  it("normalizes status and attention text and clears turn-start markers", async () => {
+  it("normalizes status and attention text and clears turn-start markers separately from agent activity", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-markers-");
     const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
     activeDisposers.push(async () => db.close());
@@ -1629,6 +1629,20 @@ describe("sessionService resume metadata", () => {
     service.setStatusNote("session-markers", "   ");
     expect(service.get("session-markers")?.statusNote).toBeNull();
 
+    const changedEvents: string[] = [];
+    service.onChanged((event) => changedEvents.push(`${event.reason}:${event.sessionId}`));
+    expect(service.setSessionActivity("session-markers", "testing")).toBe(true);
+    const activityReport = service.get("session-markers")?.activityStatus;
+    expect(activityReport).toMatchObject({ value: "testing", source: "agent" });
+    expect(Date.parse(activityReport?.updatedAt ?? "")).not.toBeNaN();
+    expect(db.get<{ activityStatusJson: string }>(
+      "select activity_status_json as activityStatusJson from terminal_sessions where id = ?",
+      ["session-markers"],
+    )?.activityStatusJson).toEqual(JSON.stringify(activityReport));
+    expect(changedEvents).toEqual(["meta-updated:session-markers"]);
+    expect(() => service.setSessionActivity("session-markers", "inventing"))
+      .toThrow(/supported activity value or null/i);
+
     await service.settleSession("session-markers", {
       settledAt: "2026-03-17T01:00:00.000Z",
       outcome: "Completed fixes and waiting for release review now",
@@ -1666,7 +1680,54 @@ describe("sessionService resume metadata", () => {
       attentionRequestedAt: null,
       attentionMessage: null,
       lastTurnFailedAt: null,
+      activityStatus: expect.objectContaining({ value: "testing" }),
     }));
+    const eventCountBeforeActivityClear = changedEvents.length;
+    service.clearSessionActivity("session-markers");
+    expect(service.get("session-markers")?.activityStatus).toBeNull();
+    expect(changedEvents).toHaveLength(eventCountBeforeActivityClear + 1);
+    expect(changedEvents.at(-1)).toBe("meta-updated:session-markers");
+  });
+
+  it("keeps chat activity on the chat row and attached CLI activity on its terminal row", async () => {
+    const projectRoot = makeProjectRoot("ade-session-activity-projection-");
+    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    activeDisposers.push(async () => db.close());
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+    service.create({
+      sessionId: "chat-owner",
+      laneId: "lane-1",
+      ptyId: null,
+      tracked: true,
+      title: "Chat owner",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: "/tmp/chat-owner.log",
+      toolType: "codex-chat",
+      chatSessionId: "chat-owner",
+    });
+    service.create({
+      sessionId: "attached-terminal",
+      laneId: "lane-1",
+      ptyId: "pty-attached",
+      tracked: true,
+      title: "Attached terminal",
+      startedAt: "2026-03-17T00:11:00.000Z",
+      transcriptPath: "/tmp/attached-terminal.log",
+      toolType: "codex",
+      chatSessionId: "chat-owner",
+    });
+
+    expect(service.setSessionActivity("chat-owner", "planning")).toBe(true);
+    expect(service.setSessionActivity("attached-terminal", "testing")).toBe(true);
+    expect(service.get("chat-owner")?.activityStatus?.value).toBe("planning");
+    expect(service.get("attached-terminal")?.activityStatus?.value).toBe("testing");
+    expect(service.getByChatSessionId("chat-owner")?.id).toBe("chat-owner");
+    expect(service.getByChatSessionId("chat-owner")?.activityStatus?.value).toBe("planning");
+
+    service.clearSessionActivity("attached-terminal");
+    expect(service.get("attached-terminal")?.activityStatus).toBeNull();
+    expect(service.get("chat-owner")?.activityStatus?.value).toBe("planning");
   });
 
   it("lets PTY callers preserve agent settlement while ordinary output clears it", async () => {

@@ -57,6 +57,22 @@ afterEach(() => {
 });
 
 describe("createAdeCliService", () => {
+  it("does not trust an inherited ADE_CLI_PATH when ADE resolved no command", () => {
+    const root = makeTempRoot();
+    const untrustedCommand = path.join(root, "untrusted-ade");
+    writeExecutable(untrustedCommand);
+    const service = createAdeCliService({
+      isPackaged: true,
+      resourcesPath: path.join(root, "empty-resources"),
+      userDataPath: path.join(root, "user-data"),
+      appExecutablePath: path.join(root, "ADE.app", "Contents", "MacOS", "ADE"),
+      logger: logger() as any,
+    });
+
+    expect(service.resolved.commandPath).toBeNull();
+    expect(service.agentEnv({ ADE_CLI_PATH: untrustedCommand }).ADE_CLI_PATH).toBeUndefined();
+  });
+
   it("uses packaged ade-cli/bin when the bundled wrapper exists", () => {
     const root = makeTempRoot();
     const resourcesPath = path.join(root, "Resources");

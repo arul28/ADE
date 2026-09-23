@@ -101,8 +101,8 @@ export function SessionStatusSlot({
     canonicalPhase !== "needs_you"
     || isChatToolType(session.toolType)
     || Boolean(session.attentionRequestedAt)
-    // A CLI raised by TUI-marker detection rather than by a structured provider
-    // event: the read is a heuristic, so the row must always stay settleable.
+    // Structured provider attention can arrive without a chat tool type or
+    // ADE's explicit `ask`; keep its session card dismissible as well.
     || session.attentionSource === "provider_structured";
   const canSettle = settled || (!isActivelyRunning && canDismissNeedsYou);
 

@@ -938,16 +938,12 @@ export const SessionCard = React.memo(function SessionCard({
      (PR state, red for a broken exit). */
   const lanePrList = lanePr ? (lanePrs.length > 0 ? lanePrs : [lanePr]) : [];
   const hoverRows: SessionHoverCardRow[] = [];
-  /* Board rows only. The row face gave the status word up to its column (see
-     `suppressStatusLabel`), and that word is not pure duplication: the column
-     files "Failed" and "Ended" together under Done, and "Stale 4h" next to
-     "Working 14s" under Working. Rather than lose the distinction, it lands
-     here — first, because "what is this actually doing" is the question the
-     card is opened to answer.
-
-     `SessionStatusLabel` renders it, not a re-derived string: one hue and one
-     glyph per state, resolved in exactly one place. */
-  if (suppressStatusLabel && presentation) {
+  /* Board rows put the parent phase in the column. A distinct activity detail
+     stays on the card face; when there is no detail, the full phase copy lands
+     in the hover card so Stale / Failed are not lost. `SessionStatusLabel`
+     renders both from the shared presentation, with one hue and glyph per
+     visible status. */
+  if (suppressStatusLabel && presentation && !presentation.activityDetail) {
     hoverRows.push({
       id: "status",
       icon: (
@@ -1159,7 +1155,7 @@ export const SessionCard = React.memo(function SessionCard({
          (it is what a settled row already uses), so suppression needs no new
          branch inside the slot — and the hover action cluster, which is a
          separate layer, keeps working exactly as it does on a list row. */
-      presentation={suppressStatusLabel ? null : presentation}
+      presentation={suppressStatusLabel && !presentation?.activityDetail ? null : presentation}
       /* Deliberately not `sessionActivityInstant`: the slot's stamp answers
          "when did this finish", so a still-running row shows how long it has
          been going rather than how long since its last token. */

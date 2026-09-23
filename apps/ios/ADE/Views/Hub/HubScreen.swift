@@ -641,16 +641,19 @@ struct HubScreen: View {
 
   private func mergedHubChat(remote: RemoteRosterChat, local: RemoteRosterChat) -> RemoteRosterChat {
     var merged = remote
-    let localIsAtLeastAsFresh = (local.lastActivityAt ?? "") >= (remote.lastActivityAt ?? "")
+    let localFreshness = local.activityFreshness
+    let localIsAtLeastAsFresh = (localFreshness?.date ?? .distantPast)
+      >= (remote.activityFreshness?.date ?? .distantPast)
 
     if localIsAtLeastAsFresh {
       merged.status = local.status
       merged.awaitingInput = local.awaitingInput ?? remote.awaitingInput
       merged.pinned = local.pinned ?? remote.pinned
       merged.archived = local.archived ?? remote.archived
-      merged.lastActivityAt = nonEmpty(local.lastActivityAt) ?? remote.lastActivityAt
+      merged.lastActivityAt = localFreshness?.timestamp ?? remote.lastActivityAt
       merged.title = nonEmpty(local.title) ?? remote.title
       merged.preview = nonEmpty(local.preview) ?? remote.preview
+      merged.activityStatus = local.activityStatus
     }
 
     merged.provider = nonEmpty(remote.provider) ?? local.provider

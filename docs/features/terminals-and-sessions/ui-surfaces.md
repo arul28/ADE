@@ -350,8 +350,11 @@ rows omit the Subagent/Peer lineage pill — they already sit under the parent.
 `SessionStatusSlot` is the card's only permanent status vocabulary. It resolves
 words, glyphs, tone, prominence, and elapsed-time behavior through
 `shared/sessionStatusPresentation.ts`. An active ADE chat in its authoritative
-plan interaction mode reads **Planning** in violet; other active turns retain
-**Working**. Once the foreground turn is idle, provider-reported background
+plan interaction mode reads **Planning** in violet; Codex uses the collaboration
+mode accepted by the active `turn/start`. An eligible, current activity report
+replaces the generic **Working** label for a live turn; without one, the card
+shows **Planning** or **Working** from the provider mode. Once the foreground
+turn is idle, provider-reported background
 tasks read blue **Background work** (**Background work ×N** when several are
 live), while an armed `nextWakeAt` reads neutral
 **Waiting** with a compact countdown. Naming that state rather than reusing
@@ -359,8 +362,8 @@ live), while an armed `nextWakeAt` reads neutral
 "Working" on a finished turn is indistinguishable from one that has hung.
 These contextual labels do not change the
 canonical lifecycle, filing bucket, filters, or attention count, and CLI output
-is never scraped to infer plan mode. Working/Planning elapsed time ticks from
-the active chat's immutable `currentTurnStartedAt`, so streamed activity cannot
+is never scraped to infer plan mode. Working, Planning, and activity elapsed
+time tick from the active chat's immutable `currentTurnStartedAt`, so streamed activity cannot
 reset it; legacy chat rows without that anchor, plus CLI and Stale durations,
 use last activity. Background work counts from `backgroundWorkSince` — when the
 session's live background set last went from empty to non-empty — which the

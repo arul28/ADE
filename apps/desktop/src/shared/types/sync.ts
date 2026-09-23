@@ -23,7 +23,7 @@ import type {
   ExternalSessionListArgs,
   ExternalSessionSummary,
 } from "./externalSessions";
-import type { PtySendToSessionResult, TerminalSessionSummary } from "./sessions";
+import type { PtySendToSessionResult, SessionActivityReport, TerminalSessionSummary } from "./sessions";
 import type { PairedRuntimeSyncEnvelope } from "./pairedRuntime";
 import type { LinearConnectionStatus } from "./linearSync";
 import type { SyncHostConflictPublic, SyncHostReadinessSnapshot } from "./syncHostRecovery";
@@ -878,6 +878,7 @@ export type SyncRosterChat = {
    */
   settledAt?: string | null;
   statusNote?: string | null;
+  activityStatus?: SessionActivityReport | null;
   attentionRequestedAt?: string | null;
   attentionMessage?: string | null;
   lastTurnFailedAt?: string | null;

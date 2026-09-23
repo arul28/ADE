@@ -23412,6 +23412,7 @@ extension SyncService {
         pinned: session.pinned,
         archived: false,
         lastActivityAt: latestTimestamp(
+          session.activityStatus?.updatedAt,
           session.attentionRequestedAt,
           session.settledAt,
           session.lastTurnFailedAt,
@@ -23421,6 +23422,7 @@ extension SyncService {
         preview: session.lastOutputPreview,
         settledAt: session.settledAt,
         statusNote: session.statusNote,
+        activityStatus: session.activityStatus,
         attentionRequestedAt: session.attentionRequestedAt,
         attentionMessage: session.attentionMessage,
         lastTurnFailedAt: session.lastTurnFailedAt,
@@ -23515,18 +23517,21 @@ extension SyncService {
 
   private func mergedRosterChat(remote: RemoteRosterChat, local: RemoteRosterChat) -> RemoteRosterChat {
     var merged = remote
-    let localIsAtLeastAsFresh = (local.lastActivityAt ?? "") >= (remote.lastActivityAt ?? "")
+    let localFreshness = local.activityFreshness
+    let localIsAtLeastAsFresh = (localFreshness?.date ?? .distantPast)
+      >= (remote.activityFreshness?.date ?? .distantPast)
 
     if localIsAtLeastAsFresh {
       merged.status = local.status
       merged.awaitingInput = local.awaitingInput ?? remote.awaitingInput
       merged.pinned = local.pinned ?? remote.pinned
       merged.archived = local.archived ?? remote.archived
-      merged.lastActivityAt = nonEmptyRosterString(local.lastActivityAt) ?? remote.lastActivityAt
+      merged.lastActivityAt = localFreshness?.timestamp ?? remote.lastActivityAt
       merged.title = nonEmptyRosterString(local.title) ?? remote.title
       merged.preview = nonEmptyRosterString(local.preview) ?? remote.preview
       merged.settledAt = local.settledAt
       merged.statusNote = local.statusNote
+      merged.activityStatus = local.activityStatus
       merged.attentionRequestedAt = local.attentionRequestedAt
       merged.attentionMessage = local.attentionMessage
       merged.lastTurnFailedAt = local.lastTurnFailedAt

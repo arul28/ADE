@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import type { TerminalSessionSummary } from "../../shared/types";
 import {
   effectiveSessionFilingBuckets,
-  runningSessionNeedsAttention,
   sanitizeTerminalInlineText,
   sessionNeedsChatTabHighlight,
   sessionStatusBucket,
@@ -12,24 +11,17 @@ import {
 } from "./terminalAttention";
 
 describe("terminalAttention", () => {
-  it("does not treat a plain shell prompt as awaiting user input", () => {
-    expect(runningSessionNeedsAttention("admin@Mac test-4-6a625aeb %")).toBe(false);
-    expect(
-      sessionStatusBucket({
+  it("does not infer Needs you from prompt-looking terminal output", () => {
+    for (const lastOutputPreview of [
+      "admin@Mac test-4-6a625aeb %",
+      "Confirm continue? (y/n)",
+      "Select an option: 1, 2, or 3",
+    ]) {
+      expect(sessionStatusBucket({
         status: "running",
-        lastOutputPreview: "admin@Mac test-4-6a625aeb %",
-      }),
-    ).toBe("running");
-  });
-
-  it("keeps prompt-text detection separate from lifecycle attention", () => {
-    expect(runningSessionNeedsAttention("Confirm continue? (y/n)")).toBe(true);
-    expect(
-      sessionStatusBucket({
-        status: "running",
-        lastOutputPreview: "Confirm continue? (y/n)",
-      }),
-    ).toBe("running");
+        lastOutputPreview,
+      })).toBe("running");
+    }
   });
 
   it("preserves an explicitly snoozed child when its chat parent is settled", () => {

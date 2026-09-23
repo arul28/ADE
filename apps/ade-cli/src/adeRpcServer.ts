@@ -2747,6 +2747,7 @@ const SCOPED_CHAT_ACTIONS = new Set([
   // session-bound agent may only aim it at its own row.
   "continueUsageLimitOnAlternate",
   "requestSessionAttention",
+  "setSessionActivity",
   "setSessionStatusNote",
   // `settleSelfSession` / `unsettleSelfSession` used to be scoped here so a
   // bound agent could only settle its OWN row. Both actions were removed in
@@ -2769,6 +2770,7 @@ function chatUpdateSessionMutatesSpawnKind(chatArgs: Record<string, unknown>): b
 }
 
 function scopeChatAdeActionArgs(
+  runtime: AdeRuntime,
   session: SessionState,
   action: string,
   chatArgs: Record<string, unknown>,
@@ -2777,7 +2779,18 @@ function scopeChatAdeActionArgs(
   const method = `run_ade_action:${domain}.${action}`;
   const spawnKindUpdate = action === "updateSession" && chatUpdateSessionMutatesSpawnKind(chatArgs);
   if (!SCOPED_CHAT_ACTIONS.has(action) && !spawnKindUpdate) return chatArgs;
-  if (isUnboundAdeCliCaller(session)) return chatArgs;
+  if (isUnboundAdeCliCaller(session)) {
+    // A direct, unbound `ade` CLI keeps project-wide access for read actions,
+    // but agent-reported activity is a write and must stay attached to the
+    // caller's own chat or tracked terminal. The CTO/user path is unaffected.
+    if (action === "setSessionActivity") {
+      chatAccessDenied(method, {
+        callerChatSessionId: null,
+        requestedSessionId: asOptionalTrimmedString(chatArgs.sessionId),
+      });
+    }
+    return chatArgs;
+  }
 
   const scopedArgs = { ...chatArgs };
   const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
@@ -2787,7 +2800,14 @@ function scopeChatAdeActionArgs(
     chatAccessDenied(method, { callerChatSessionId, requestedSessionId });
   }
 
-  if (!callerChatSessionId || (requestedSessionId && requestedSessionId !== callerChatSessionId)) {
+  const requestedOwnedTerminal = action === "setSessionActivity"
+    && requestedSessionId != null
+    && callerChatSessionId != null
+    && runtime.sessionService.get(requestedSessionId)?.chatSessionId === callerChatSessionId;
+  if (
+    !callerChatSessionId
+    || (requestedSessionId && requestedSessionId !== callerChatSessionId && !requestedOwnedTerminal)
+  ) {
     chatAccessDenied(method, { callerChatSessionId, requestedSessionId });
   }
   if (!requestedSessionId) scopedArgs.sessionId = callerChatSessionId;
@@ -4119,6 +4139,7 @@ async function runTool(args: {
         };
       } else {
         scopedObjectArgs = scopeChatAdeActionArgs(
+          runtime,
           session,
           action,
           chatArgs,
@@ -4130,6 +4151,7 @@ async function runTool(args: {
       && SCOPED_CHAT_ACTIONS.has(action)
     ) {
       scopedObjectArgs = scopeChatAdeActionArgs(
+        runtime,
         session,
         action,
         requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),

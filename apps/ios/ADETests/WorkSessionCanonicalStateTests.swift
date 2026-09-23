@@ -612,6 +612,69 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     XCTAssertFalse(ActivityPhaseVocabulary.presentation(for: workActivityPhase(for: .starting)).prominent)
   }
 
+  func testAgentActivityRefinesRunningStatusAndKeepsNeedsYouAhead() {
+    let values = ["planning", "implementing", "testing", "reviewing", "debugging", "monitoring"]
+    for value in values {
+      var session = makeSession(status: "running", runtimeState: "running", toolType: "codex-chat")
+      session.activityStatus = SessionActivityReport(
+        value: value,
+        source: "agent",
+        updatedAt: iso(now.addingTimeInterval(-60))
+      )
+      var summary = makeChatSummary(status: "active", awaitingInput: false)
+      summary.currentTurnStartedAt = iso(now.addingTimeInterval(-120))
+      let status = workSessionRowPresentation(session: session, summary: summary, now: now).status
+      XCTAssertEqual(status?.label, value.capitalized, value)
+      XCTAssertEqual(status?.tone, value == "planning" ? .violet : .blue, value)
+      XCTAssertEqual(status?.showsElapsed, true, value)
+    }
+
+    var blocked = makeSession(
+      status: "running",
+      runtimeState: "waiting-input",
+      toolType: "codex-chat",
+      pendingInputItemId: "ask-1"
+    )
+    blocked.activityStatus = SessionActivityReport(
+      value: "testing",
+      source: "agent",
+      updatedAt: iso(now.addingTimeInterval(-60))
+    )
+    let status = workSessionRowPresentation(
+      session: blocked,
+      summary: makeChatSummary(status: "active", awaitingInput: false),
+      now: now
+    ).status
+    XCTAssertEqual(status?.label, "Needs you")
+    XCTAssertEqual(status?.kind, .needsYou)
+  }
+
+  func testAgentActivityDoesNotOverrideSnoozeOrAReportFromAnEarlierTurn() {
+    var snoozed = snoozedSession(untilOffset: 1_800, atOffset: -60)
+    snoozed.activityStatus = SessionActivityReport(
+      value: "monitoring",
+      source: "agent",
+      updatedAt: iso(now.addingTimeInterval(-30))
+    )
+    XCTAssertEqual(
+      workSessionRowPresentation(session: snoozed, summary: nil, now: now).status?.label,
+      "wakes in 30m"
+    )
+
+    var running = makeSession(status: "running", runtimeState: "running", toolType: "codex-chat")
+    running.activityStatus = SessionActivityReport(
+      value: "testing",
+      source: "agent",
+      updatedAt: iso(now.addingTimeInterval(-120))
+    )
+    var summary = makeChatSummary(status: "active", awaitingInput: false)
+    summary.currentTurnStartedAt = iso(now.addingTimeInterval(-60))
+    XCTAssertEqual(
+      workSessionRowPresentation(session: running, summary: summary, now: now).status?.label,
+      "Working"
+    )
+  }
+
   func testCodexSteeringInputStaysWorkingInsteadOfNeedsYou() {
     let session = makeSession(status: "running", runtimeState: "running", toolType: "codex-chat")
     var summary = makeChatSummary(status: "active", awaitingInput: false)

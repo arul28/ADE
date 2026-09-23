@@ -25,7 +25,7 @@ import {
   type PiSdkWorkerInit,
   type PiSdkWorkerRequest,
 } from "./piSdkProtocol";
-import { buildPiWorkerEnvironment } from "./piSdkEnvironment";
+import { buildPiWorkerEnvironment, type PiWorkerActivityScope } from "./piSdkEnvironment";
 
 export type PiSdkBridge = {
   onEvent: ((event: JsonValue) => void) | null;
@@ -120,6 +120,8 @@ export type AcquirePiSdkConnectionArgs = PiSdkPackageLocation & {
   approvalTools?: string[];
   /** Usually process.env; never put auth.json or API keys in this payload. */
   baseEnv?: NodeJS.ProcessEnv;
+  /** Passed only when this chat can run the session-scoped ADE activity command. */
+  activityScope?: PiWorkerActivityScope | null;
   logger?: Logger;
 };
 
@@ -249,7 +251,7 @@ function createPiSdkConnection(args: AcquirePiSdkConnectionArgs): Promise<PiSdkP
     // Enforce the Pi environment boundary at the process boundary as well as
     // at production call sites. Tests and future inventory callers cannot
     // accidentally inherit ADE capability/session variables.
-    env: buildPiWorkerEnvironment(args.baseEnv ?? process.env, args.agentDir),
+    env: buildPiWorkerEnvironment(args.baseEnv ?? process.env, args.agentDir, args.activityScope),
     stdio: ["ignore", "pipe", "pipe", "ipc"],
     execArgv: [],
     windowsHide: true,

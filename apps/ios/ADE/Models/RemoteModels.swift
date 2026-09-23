@@ -1146,6 +1146,8 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   /// omit this additive snapshot field.
   var claudeGoal: AgentChatClaudeGoal? = nil
   var status: String
+  /// Start of the currently active provider turn; nil when no turn is running.
+  var currentTurnStartedAt: String? = nil
   var idleSinceAt: String?
   var startedAt: String
   var endedAt: String?
@@ -1237,6 +1239,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.automationRunId == rhs.automationRunId
       && lhs.capabilityMode == rhs.capabilityMode
       && lhs.status == rhs.status
+      && lhs.currentTurnStartedAt == rhs.currentTurnStartedAt
       && lhs.idleSinceAt == rhs.idleSinceAt
       && lhs.startedAt == rhs.startedAt
       && lhs.endedAt == rhs.endedAt
@@ -4632,6 +4635,15 @@ struct FilesSearchTextMatch: Codable, Identifiable, Equatable {
   var preview: String
 }
 
+/// Agent-authored structured activity, kept separate from the parent session phase.
+/// String fields keep newer host values forward-compatible; presentation only
+/// displays the six ADE-supported values and the `agent` source.
+struct SessionActivityReport: Codable, Equatable {
+  var value: String
+  var source: String
+  var updatedAt: String
+}
+
 struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   var id: String
   var laneId: String
@@ -4649,6 +4661,7 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   var archivedAt: String? = nil
   var settledAt: String? = nil
   var statusNote: String? = nil
+  var activityStatus: SessionActivityReport? = nil
   var attentionRequestedAt: String? = nil
   var attentionMessage: String? = nil
   var attentionSource: String? = nil
@@ -4734,6 +4747,7 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
       && lhs.archivedAt == rhs.archivedAt
       && lhs.settledAt == rhs.settledAt
       && lhs.statusNote == rhs.statusNote
+      && lhs.activityStatus == rhs.activityStatus
       && lhs.attentionRequestedAt == rhs.attentionRequestedAt
       && lhs.attentionMessage == rhs.attentionMessage
       && lhs.attentionSource == rhs.attentionSource
@@ -4789,6 +4803,7 @@ extension TerminalSessionSummary {
     case archivedAt
     case settledAt
     case statusNote
+    case activityStatus
     case attentionRequestedAt
     case attentionMessage
     case attentionSource
@@ -4837,6 +4852,7 @@ extension TerminalSessionSummary {
     archivedAt = try container.decodeIfPresent(String.self, forKey: .archivedAt)
     settledAt = try container.decodeIfPresent(String.self, forKey: .settledAt)
     statusNote = try container.decodeIfPresent(String.self, forKey: .statusNote)
+    activityStatus = try container.decodeIfPresent(SessionActivityReport.self, forKey: .activityStatus)
     attentionRequestedAt = try container.decodeIfPresent(String.self, forKey: .attentionRequestedAt)
     attentionMessage = try container.decodeIfPresent(String.self, forKey: .attentionMessage)
     attentionSource = try container.decodeIfPresent(String.self, forKey: .attentionSource)

@@ -2375,6 +2375,7 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
       archived_at text,
       settled_at text,
       status_note text,
+      activity_status_json text,
       attention_requested_at text,
       attention_message text,
       attention_source text,
@@ -2404,6 +2405,7 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   safeAddColumn(db, "alter table terminal_sessions add column archived_at text");
   safeAddColumn(db, "alter table terminal_sessions add column settled_at text");
   safeAddColumn(db, "alter table terminal_sessions add column status_note text");
+  safeAddColumn(db, "alter table terminal_sessions add column activity_status_json text");
   safeAddColumn(db, "alter table terminal_sessions add column attention_requested_at text");
   safeAddColumn(db, "alter table terminal_sessions add column attention_message text");
   safeAddColumn(db, "alter table terminal_sessions add column attention_source text");

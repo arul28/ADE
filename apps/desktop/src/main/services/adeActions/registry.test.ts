@@ -363,6 +363,11 @@ describe("runtime domain services behind the allowlist", () => {
       description: expect.stringContaining("stalled Codex turn"),
       input: expect.stringContaining("restart_resume_thread"),
     });
+    expect(getAdeActionInputContract("session", "setSessionActivity")).toMatchObject({
+      description: expect.stringContaining("fixed activity label"),
+      input: expect.stringContaining("monitoring"),
+      example: expect.stringContaining("session.setSessionActivity"),
+    });
   });
 
   it("documents lane reclaim contracts for safe CLI action discovery", () => {
@@ -501,6 +506,9 @@ describe("runtime domain services behind the allowlist", () => {
     const createSession = vi.fn(async (args?: unknown) => ({ sessionId: "chat-new", args }));
     const getAvailableModels = vi.fn(async (args: { provider?: string }) => [{ id: args.provider ?? "any" }]);
     const getSessionSummary = vi.fn(async (sessionId: string) => ({ sessionId }));
+    const getByChatSessionId = vi.fn((sessionId: string) => sessionId === "chat-1"
+      ? { activityStatus: { value: "testing", source: "agent", updatedAt: "2026-08-01T12:00:00.000Z" } }
+      : null);
     const getTurnStatus = vi.fn(async (sessionId: string) => ({ sessionId, phase: "idle" }));
     const readTranscript = vi.fn(async (sessionId: string, limit?: number, since?: string) => ([
       { role: "user", text: sessionId, timestamp: since ?? "now", limit },
@@ -517,6 +525,7 @@ describe("runtime domain services behind the allowlist", () => {
     const messageSession = vi.fn(async (args: unknown) => ({ ok: true, args }));
     const steer = vi.fn(async (args: unknown) => ({ ok: true, args }));
     const runtime = {
+      sessionService: { getByChatSessionId },
       agentChatService: {
         createSession,
         getAvailableModels,
@@ -552,11 +561,17 @@ describe("runtime domain services behind the allowlist", () => {
     // actually schedules in. `chat.createScheduledWork` reports the same value.
     const brainTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     await expect(chat.getSessionSummary?.({ sessionId: " chat-1 " }))
-      .resolves.toEqual({ sessionId: "chat-1", timeZone: brainTimeZone });
+      .resolves.toEqual({
+        sessionId: "chat-1",
+        timeZone: brainTimeZone,
+        activityStatus: { value: "testing", source: "agent", updatedAt: "2026-08-01T12:00:00.000Z" },
+      });
     await expect(chat.getSessionSummary?.("chat-2"))
       .resolves.toEqual({ sessionId: "chat-2", timeZone: brainTimeZone });
     expect(getSessionSummary).toHaveBeenNthCalledWith(1, "chat-1");
     expect(getSessionSummary).toHaveBeenNthCalledWith(2, "chat-2");
+    expect(getByChatSessionId).toHaveBeenNthCalledWith(1, "chat-1");
+    expect(getByChatSessionId).toHaveBeenNthCalledWith(2, "chat-2");
 
     await expect(chat.getTurnStatus?.({ sessionId: " chat-1 " })).resolves.toEqual({ sessionId: "chat-1", phase: "idle" });
     await expect(chat.getTurnStatus?.("chat-2")).resolves.toEqual({ sessionId: "chat-2", phase: "idle" });
@@ -1600,6 +1615,7 @@ describe("runtime session actions", () => {
   it("exposes caller note/ask writes but no caller-scoped settle action", async () => {
     const requestAttention = vi.fn(() => true);
     const setStatusNote = vi.fn(() => true);
+    const setSessionActivity = vi.fn(() => true);
     const settleSession = vi.fn(() => true);
     const settleSessionReportingAbort = vi.fn(() => ({ found: true, settled: true }));
     const unsettleSession = vi.fn(() => true);
@@ -1619,6 +1635,7 @@ describe("runtime session actions", () => {
         list: vi.fn(),
         requestAttention,
         setStatusNote,
+        setSessionActivity,
         settleSession,
         settleSessionReportingAbort,
         unsettleSession,
@@ -1635,6 +1652,7 @@ describe("runtime session actions", () => {
     } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
     const sessionActions = getAdeActionDomainServices(runtime).session as {
       requestSessionAttention: (args: { sessionId: string; message: string }) => unknown;
+      setSessionActivity: (args: { sessionId: string; value: string | null }) => unknown;
       setSessionStatusNote: (args: { sessionId: string; note: string }) => unknown;
       unsettleSession: (args: { sessionId: string }) => unknown;
     } & Record<string, unknown>;
@@ -1643,6 +1661,7 @@ describe("runtime session actions", () => {
     expect(allowed).toEqual(
       expect.arrayContaining([
         "requestSessionAttention",
+        "setSessionActivity",
         "setSessionStatusNote",
       ]),
     );
@@ -1672,6 +1691,12 @@ describe("runtime session actions", () => {
     expect(sessionActions.setSessionStatusNote({ sessionId: "session-1", note: "" }))
       .toEqual({ ok: true, sessionId: "session-1" });
     expect(setStatusNote).toHaveBeenCalledWith("session-1", null);
+
+    expect(sessionActions.setSessionActivity({ sessionId: "session-1", value: "testing" }))
+      .toEqual({ ok: true, sessionId: "session-1", value: "testing" });
+    expect(setSessionActivity).toHaveBeenCalledWith("session-1", "testing");
+    expect(() => sessionActions.setSessionActivity({ sessionId: "session-1", value: 3 as never }))
+      .toThrow(/supported string `value` or null/i);
 
     expect(sessionActions.settleSelfSession).toBeUndefined();
     expect(sessionActions.unsettleSelfSession).toBeUndefined();

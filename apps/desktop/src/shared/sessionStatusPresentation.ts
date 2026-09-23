@@ -1,6 +1,7 @@
 import { resolveUsageLimitResumeState } from "./chatAutoResume";
 import { usageLimitResumeRowStatus } from "./usageLimitResumePresentation";
 import type { AgentChatUsageLimitResume } from "./types/chat";
+import type { SessionActivityReport } from "./types/sessions";
 import type {
   CanonicalSessionPhase,
   SessionBackgroundWork,
@@ -60,6 +61,10 @@ export type SessionStatusGlyph =
   | "working"
   | "monitoring"
   | "planning"
+  | "implementing"
+  | "testing"
+  | "reviewing"
+  | "debugging"
   | "waiting"
   | "needs-you"
   | "done"
@@ -88,6 +93,11 @@ export type SessionStatusPresentation = {
    * report).
    */
   prominent: boolean;
+  /** This label is a finer activity detail inside the parent phase. */
+  activityDetail?: boolean;
+  /** Present only for a typed status explicitly reported through ADE. */
+  activitySource?: SessionActivityReport["source"];
+  activityUpdatedAt?: string;
 };
 
 /** Nested compact rows keep the word only for Needs you / Failed. */
@@ -145,6 +155,10 @@ export type SessionStatusOverlay = {
 
 export type SessionStatusActivityContext = {
   chatActivityMode?: "planning" | null;
+  /** Typed, host-stamped activity reported through ADE's CLI. */
+  activityStatus?: SessionActivityReport | null;
+  /** Used to reject a report left over from an earlier foreground turn. */
+  currentTurnStartedAt?: string | null;
   /**
    * Why the session is running, from `canonicalSessionState`. Absent (or
    * `"turn"`) means a live foreground turn and the plain "Working" copy.
@@ -165,6 +179,29 @@ export type SessionStatusActivityContext = {
 
 function countSuffix(count: number): string {
   return count > 1 ? ` ×${count}` : "";
+}
+
+const REPORTED_ACTIVITY_PRESENTATION: Record<SessionActivityReport["value"], SessionStatusPresentation> = {
+  planning: { label: "Planning", tone: "violet", glyph: "planning", showsElapsed: true, prominent: false, activityDetail: true },
+  implementing: { label: "Implementing", tone: "blue", glyph: "implementing", showsElapsed: true, prominent: false, activityDetail: true },
+  testing: { label: "Testing", tone: "blue", glyph: "testing", showsElapsed: true, prominent: false, activityDetail: true },
+  reviewing: { label: "Reviewing", tone: "blue", glyph: "reviewing", showsElapsed: true, prominent: false, activityDetail: true },
+  debugging: { label: "Debugging", tone: "blue", glyph: "debugging", showsElapsed: true, prominent: false, activityDetail: true },
+  monitoring: { label: "Monitoring", tone: "blue", glyph: "monitoring", showsElapsed: true, prominent: false, activityDetail: true },
+};
+
+function currentActivityReport(
+  report: SessionActivityReport | null | undefined,
+  currentTurnStartedAt: string | null | undefined,
+): SessionActivityReport | null {
+  if (!report) return null;
+  const reportedAt = Date.parse(report.updatedAt);
+  if (!Number.isFinite(reportedAt)) return null;
+  if (currentTurnStartedAt) {
+    const turnStartedAt = Date.parse(currentTurnStartedAt);
+    if (Number.isFinite(turnStartedAt) && reportedAt < turnStartedAt) return null;
+  }
+  return report;
 }
 
 export function sessionStatusPresentation(
@@ -192,10 +229,29 @@ export function sessionStatusPresentation(
     return { label: "Woke", tone: "amber", glyph: "woke", showsElapsed: false, prominent: true };
   }
 
+  const liveness = activity.liveness ?? "turn";
+
+  // A structured ADE report refines a live turn only. When the turn ends,
+  // host-observed background work (especially Monitoring) becomes the more
+  // current status and must not be hidden by the agent's last report.
+  // A structured ADE report never changes the phase; Needs you, snooze, and
+  // woke remain higher-priority signals.
+  // The turn timestamp is a second line of defence against stale data arriving
+  // from an older peer after a new accepted turn has already begun.
+  const reportedActivity = phase === "running" && liveness === "turn"
+    ? currentActivityReport(activity.activityStatus, activity.currentTurnStartedAt)
+    : null;
+  if (reportedActivity) {
+    return {
+      ...REPORTED_ACTIVITY_PRESENTATION[reportedActivity.value],
+      activitySource: reportedActivity.source,
+      activityUpdatedAt: reportedActivity.updatedAt,
+    };
+  }
+
   // Planning is a property of a LIVE TURN. A resting session promoted back to
   // `running` by its background work is not planning anything — its plan-mode
   // flag is just the mode the finished turn ran in.
-  const liveness = activity.liveness ?? "turn";
   if (phase === "running" && liveness === "turn" && activity.chatActivityMode === "planning") {
     return {
       label: "Planning",
@@ -203,6 +259,7 @@ export function sessionStatusPresentation(
       glyph: "planning",
       showsElapsed: true,
       prominent: false,
+      activityDetail: true,
     };
   }
 
@@ -232,6 +289,7 @@ export function sessionStatusPresentation(
         glyph: "monitoring",
         showsElapsed: true,
         prominent: false,
+        activityDetail: true,
       };
     }
     return {
@@ -240,6 +298,7 @@ export function sessionStatusPresentation(
       glyph: "working",
       showsElapsed: true,
       prominent: false,
+      activityDetail: true,
     };
   }
 

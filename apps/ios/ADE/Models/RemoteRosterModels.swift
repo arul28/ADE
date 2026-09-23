@@ -43,6 +43,7 @@ struct RemoteRosterChat: Codable, Equatable, Identifiable {
   // memberwise-call compatibility with hosts/builds that predate the fields.
   var settledAt: String? = nil
   var statusNote: String? = nil
+  var activityStatus: SessionActivityReport? = nil
   var attentionRequestedAt: String? = nil
   var attentionMessage: String? = nil
   var lastTurnFailedAt: String? = nil
@@ -61,6 +62,39 @@ struct RemoteRosterChat: Codable, Equatable, Identifiable {
   /// Client-only: the setup rail of a chat launch that still owns this row
   /// (`hubRosterOverlayingChatLaunches`). Hosts never send it.
   var launchRail: [ChatLaunchRailSegment]? = nil
+}
+
+extension RemoteRosterChat {
+  /// The newest host-stamped activity that makes this roster row fresh. A
+  /// detail report can advance without producing another transcript/output
+  /// event, so local-vs-remote reconciliation must consider it alongside the
+  /// row's general activity timestamp.
+  var activityFreshness: (timestamp: String, date: Date)? {
+    [lastActivityAt, activityStatus?.updatedAt]
+      .compactMap { raw -> (timestamp: String, date: Date)? in
+        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+          return nil
+        }
+        if let date = RemoteRosterTimestampFormatters.fractional.date(from: raw) { return (raw, date) }
+        guard let date = RemoteRosterTimestampFormatters.wholeSeconds.date(from: raw) else { return nil }
+        return (raw, date)
+      }
+      .max { $0.date < $1.date }
+  }
+}
+
+private enum RemoteRosterTimestampFormatters {
+  static let fractional: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter
+  }()
+
+  static let wholeSeconds: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime]
+    return formatter
+  }()
 }
 
 struct RemoteRosterLane: Codable, Equatable, Identifiable {
@@ -537,6 +571,7 @@ extension RemoteRosterChat {
       archivedAt: archived == true ? (lastActivityAt ?? "") : nil,
       settledAt: settledAt,
       statusNote: statusNote,
+      activityStatus: activityStatus,
       attentionRequestedAt: attentionRequestedAt,
       attentionMessage: attentionMessage,
       lastTurnFailedAt: lastTurnFailedAt,

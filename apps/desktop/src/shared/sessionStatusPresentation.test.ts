@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { sessionElapsedAnchor, sessionElapsedLabel, sessionStatusPresentation } from "./sessionStatusPresentation";
 import type { AgentChatUsageLimitResume } from "./types/chat";
+import type { SessionActivityReport } from "./types/sessions";
 
 /**
  * `sessionElapsedAnchor` is the shared answer to "how long", read by the
@@ -161,6 +162,53 @@ describe("sessionStatusPresentation usage-limit resume", () => {
     expect(sessionStatusPresentation("idle", {}, {
       usageLimitResume: null,
       nowMs: Date.parse("2026-08-17T12:00:00.000Z"),
+    })?.label).toBe("Done");
+  });
+});
+
+describe("sessionStatusPresentation agent-reported activity", () => {
+  const report: SessionActivityReport = {
+    value: "testing",
+    source: "agent",
+    updatedAt: "2026-09-22T12:00:10.000Z",
+  };
+
+  it("shows one typed activity detail inside a running parent phase", () => {
+    expect(sessionStatusPresentation("running", {}, {
+      activityStatus: report,
+      currentTurnStartedAt: "2026-09-22T12:00:00.000Z",
+    })).toMatchObject({
+      label: "Testing",
+      glyph: "testing",
+      tone: "blue",
+      activityDetail: true,
+      activitySource: "agent",
+      activityUpdatedAt: report.updatedAt,
+    });
+  });
+
+  it("keeps Needs you ahead of an agent-reported activity", () => {
+    expect(sessionStatusPresentation("needs_you", {}, {
+      activityStatus: report,
+    })).toMatchObject({ label: "Needs you", glyph: "needs-you" });
+  });
+
+  it("lets host-detected background monitoring outrank a stale turn report", () => {
+    expect(sessionStatusPresentation("running", {}, {
+      activityStatus: report,
+      liveness: "monitoring",
+      backgroundWork: { workingCount: 0, monitoringCount: 1 },
+      currentTurnStartedAt: null,
+    })).toMatchObject({ label: "Monitoring", glyph: "monitoring" });
+  });
+
+  it("ignores a report from an earlier turn and keeps a Done parent unchanged", () => {
+    expect(sessionStatusPresentation("running", {}, {
+      activityStatus: report,
+      currentTurnStartedAt: "2026-09-22T12:01:00.000Z",
+    })?.label).toBe("Working");
+    expect(sessionStatusPresentation("idle", {}, {
+      activityStatus: report,
     })?.label).toBe("Done");
   });
 });

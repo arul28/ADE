@@ -4988,6 +4988,11 @@ describe("ADE CLI", () => {
         action: "setSessionStatusNote",
         args: { note: "running e2e shard 2/4" },
       },
+      {
+        command: ["activity", "testing"],
+        action: "setSessionActivity",
+        args: { value: "testing" },
+      },
     ];
 
     for (const testCase of cases) {
@@ -5010,6 +5015,29 @@ describe("ADE CLI", () => {
         args: { note: "" },
       },
     });
+
+    const clearActivity = expectExecutePlan(buildCliPlan(["chat", "activity", "clear"]));
+    expect(clearActivity.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "session",
+        action: "setSessionActivity",
+        args: { value: null },
+      },
+    });
+    const terminalActivity = withEnv({ ADE_ACTIVITY_SESSION_ID: "terminal-row-1" }, () =>
+      expectExecutePlan(buildCliPlan(["chat", "activity", "testing"])),
+    );
+    expect(terminalActivity.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "session",
+        action: "setSessionActivity",
+        args: { sessionId: "terminal-row-1", value: "testing" },
+      },
+    });
+    expect(() => buildCliPlan(["chat", "activity", "coding"]))
+      .toThrow(/Unsupported chat activity 'coding'.*planning.*monitoring.*clear/i);
+    expect(() => buildCliPlan(["chat", "activity"]))
+      .toThrow(/chat activity requires one value/i);
 
     const textOutput = parseCliArgs(["chat", "note", "working", "--text"]);
     expect(textOutput.options.text).toBe(true);
@@ -5053,6 +5081,8 @@ describe("ADE CLI", () => {
     expect(help.kind).toBe("help");
     if (help.kind === "help") {
       expect(help.text).toContain("ade chat note");
+      expect(help.text).toContain("ade chat activity testing");
+      expect(help.text).toContain("planning | implementing | testing | reviewing | debugging | monitoring");
       expect(help.text).toContain("ade chat ask");
       expect(help.text).toContain("ade chat generate-names");
       expect(help.text).toContain("ade chat demote");
@@ -5071,6 +5101,7 @@ describe("ADE CLI", () => {
   it.each([
     ["ask", ["q"], "requestSessionAttention", { message: "q" }],
     ["note", ["working"], "setSessionStatusNote", { note: "working" }],
+    ["activity", ["debugging"], "setSessionActivity", { value: "debugging" }],
   ])(
     "passes --session through for chat %s",
     (subcommand, commandArgs, action, expectedArgs) => {
@@ -6315,6 +6346,17 @@ describe("ADE CLI", () => {
         argsList: ["chat-1"],
       },
     });
+    expect(show.formatter).toBe("chat-summary");
+    expect(formatOutput({
+      sessionId: "chat-1",
+      provider: "codex",
+      model: "gpt-5.6",
+      activityStatus: {
+        value: "testing",
+        source: "agent",
+        updatedAt: "2026-09-22T12:00:00.000Z",
+      },
+    }, { text: true } as any, inferFormatter(show))).toMatch(/activity\s+Testing/);
 
     const status = buildCliPlan(["chat", "status", "--session-id", "chat-2"]);
     expect(status.kind).toBe("execute");

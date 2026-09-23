@@ -50,4 +50,34 @@ describe("buildPiWorkerEnvironment", () => {
 
     expect(env).not.toHaveProperty("NOT_AN_ENV");
   });
+
+  it("passes only the explicit per-chat activity scope through the ADE environment boundary", () => {
+    const env = buildPiWorkerEnvironment({
+      PATH: "/bin",
+      ADE_CLI_PATH: "/inherited/ade",
+      ADE_CHAT_SESSION_ID: "other-chat",
+      ADE_DEFAULT_ROLE: "cto",
+      ADE_RUNTIME_SOCKET_PATH: "/other/runtime.sock",
+      ADE_ACTIVITY_SESSION_ID: "terminal-row",
+      ADE_BROWSER_ACTOR_TOKEN: "browser-token",
+      ADE_PARENT_CHAT_SESSION_ID: "parent-chat",
+      ADE_PROJECT_ROOT: "/project",
+    }, undefined, {
+      cliPath: "/resolved/ade",
+      chatSessionId: "chat-1",
+      runtimeSocketPath: "/runtime/ade.sock",
+    });
+
+    expect(env).toMatchObject({
+      PATH: "/bin",
+      ADE_CLI_PATH: "/resolved/ade",
+      ADE_CHAT_SESSION_ID: "chat-1",
+      ADE_DEFAULT_ROLE: "agent",
+      ADE_RUNTIME_SOCKET_PATH: "/runtime/ade.sock",
+    });
+    expect(env).not.toHaveProperty("ADE_ACTIVITY_SESSION_ID");
+    expect(env).not.toHaveProperty("ADE_BROWSER_ACTOR_TOKEN");
+    expect(env).not.toHaveProperty("ADE_PARENT_CHAT_SESSION_ID");
+    expect(env).not.toHaveProperty("ADE_PROJECT_ROOT");
+  });
 });

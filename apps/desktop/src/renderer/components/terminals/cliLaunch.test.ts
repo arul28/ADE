@@ -4,6 +4,7 @@ import {
   buildCliIdentityResumeMetadata,
   buildPtyContinuationLaunchFields,
   buildOpenCodeReplayResumeLaunchCommand,
+  buildTrackedCliSessionActivityGuidance,
   buildTrackedCliLaunchCommand,
   buildTrackedCliResumeLaunchCommand,
   buildTrackedCliResumeCommand,
@@ -696,6 +697,92 @@ describe("piSdkToolPolicyForPermissionMode", () => {
   });
 });
 
+describe("tracked CLI activity guidance", () => {
+  it.each(["codex", "opencode"] as const)(
+    "offers activity reporting for %s outside Plan mode",
+    (provider) => {
+      const guidance = buildTrackedCliSessionActivityGuidance({ provider, permissionMode: "default" });
+      expect(guidance).toContain('"$ADE_CLI_PATH" chat activity testing');
+      expect(guidance).toContain("planning, implementing, testing, reviewing, debugging, monitoring");
+      expect(guidance).toContain("ADE_ACTIVITY_SESSION_ID");
+      expect(guidance).toContain("tracked terminal row");
+      expect(buildTrackedCliSessionActivityGuidance({ provider, permissionMode: "plan" })).toBeNull();
+    },
+  );
+
+  it("requires a write-capable Droid mode and Pi full-auto Bash", () => {
+    expect(buildTrackedCliSessionActivityGuidance({
+      provider: "droid",
+      permissionMode: "default",
+      droidPermissionMode: "agi",
+    })).toBeNull();
+    expect(buildTrackedCliSessionActivityGuidance({
+      provider: "droid",
+      permissionMode: "default",
+      droidPermissionMode: "auto-medium",
+    })).not.toBeNull();
+    expect(buildTrackedCliSessionActivityGuidance({ provider: "pi", permissionMode: "default" })).toBeNull();
+    expect(buildTrackedCliSessionActivityGuidance({ provider: "pi", permissionMode: "full-auto" })).not.toBeNull();
+    expect(buildTrackedCliSessionActivityGuidance({ provider: "pi", permissionMode: "edit" })).toBeNull();
+    expect(buildTrackedCliSessionActivityGuidance({ provider: "pi", permissionMode: "config-toml" })).toBeNull();
+  });
+
+  it("omits external permission configs and unverified CLI guidance paths", () => {
+    expect(buildTrackedCliSessionActivityGuidance({ provider: "codex", permissionMode: "config-toml" })).toBeNull();
+    expect(buildTrackedCliSessionActivityGuidance({ provider: "opencode", permissionMode: "config-toml" })).toBeNull();
+    for (const provider of ["qwen", "kimi", "grok", "copilot"] as const) {
+      expect(buildTrackedCliSessionActivityGuidance({ provider, permissionMode: "default" })).toBeNull();
+    }
+  });
+
+  it("provides shell-specific tracked CLI guidance on Windows", () => {
+    const guidance = withProcessPlatform("win32", () => buildTrackedCliSessionActivityGuidance({
+      provider: "codex",
+      permissionMode: "default",
+    }));
+    expect(guidance).toContain('In PowerShell, report activity with `& "$env:ADE_CLI_PATH" chat activity testing`');
+    expect(guidance).toContain('In cmd.exe, use `"%ADE_CLI_PATH%" chat activity testing`');
+    expect(guidance).toContain("In Git Bash, use `powershell.exe -NoProfile -Command '& \"$env:ADE_CLI_PATH\" chat activity testing'`");
+    expect(guidance).toContain("if none matches, leave activity unchanged");
+  });
+
+  it("omits guidance when Claude fallback or a blank Cursor launch cannot preserve it", () => {
+    expect(buildTrackedCliSessionActivityGuidance({ provider: "claude", permissionMode: "default" })).toBeNull();
+    expect(buildTrackedCliSessionActivityGuidance({ provider: "cursor", permissionMode: "default" })).toBeNull();
+    expect(buildTrackedCliSessionActivityGuidance({
+      provider: "cursor",
+      permissionMode: "default",
+      hasInitialPrompt: true,
+    })).not.toBeNull();
+  });
+
+  it("adds guidance through each verified CLI prompt channel and omits it in Plan", () => {
+    const claude = buildTrackedCliLaunchCommand({ provider: "claude", permissionMode: "default" });
+    expect(claude.args.join("\n")).not.toContain("chat activity testing");
+
+    const codex = buildTrackedCliLaunchCommand({ provider: "codex", permissionMode: "default" });
+    expect(codex.initialInput).toContain('"$ADE_CLI_PATH" chat activity testing');
+    const codexPlan = buildTrackedCliLaunchCommand({ provider: "codex", permissionMode: "plan" });
+    expect(codexPlan.initialInput).not.toContain("chat activity testing");
+
+    const pi = buildTrackedCliLaunchCommand({ provider: "pi", permissionMode: "default" });
+    expect(pi.args.join("\n")).not.toContain("chat activity testing");
+    const piFullAuto = buildTrackedCliLaunchCommand({ provider: "pi", permissionMode: "full-auto" });
+    expect(piFullAuto.args.join("\n")).toContain('"$ADE_CLI_PATH" chat activity testing');
+    const piEdit = buildTrackedCliLaunchCommand({ provider: "pi", permissionMode: "edit" });
+    expect(piEdit.args.join("\n")).not.toContain("chat activity testing");
+
+    const cursorBlank = buildTrackedCliLaunchCommand({ provider: "cursor", permissionMode: "default" });
+    expect(cursorBlank.initialInput).toBeUndefined();
+    const cursorKickoff = buildTrackedCliLaunchCommand({
+      provider: "cursor",
+      permissionMode: "default",
+      initialPrompt: "Fix the bug",
+    });
+    expect(cursorKickoff.initialInput).toContain("ADE_ACTIVITY_SESSION_ID");
+  });
+});
+
 describe("buildTrackedCliStartupCommand", () => {
   it("preserves Pi's native max thinking level", () => {
     expect(piThinkingFlags("max")).toEqual(["--thinking", "max"]);
@@ -739,7 +826,7 @@ describe("buildTrackedCliStartupCommand", () => {
       );
     });
 
-    it("uses Claude's system-prompt hook for ADE guidance", () => {
+    it("keeps Claude's system-prompt guidance but omits unverified activity reporting", () => {
       const launch = buildTrackedCliLaunchCommand({
         provider: "claude",
         permissionMode: "default",
@@ -750,13 +837,16 @@ describe("buildTrackedCliStartupCommand", () => {
         "--session-id",
         "00000000-0000-0000-0000-000000000001",
         "--append-system-prompt",
-        ADE_CLI_AGENT_GUIDANCE,
+        expect.stringContaining(ADE_CLI_AGENT_GUIDANCE),
         "--permission-mode",
         "default",
       ]));
       expect(launch.startupCommand).not.toContain("--append-system-prompt");
       expect(launch.args).toContain("--append-system-prompt");
-      expect(launch.args).toContain(ADE_CLI_AGENT_GUIDANCE);
+      const promptIndex = launch.args.indexOf("--append-system-prompt");
+      const prompt = launch.args[promptIndex + 1] ?? "";
+      expect(prompt).toContain(ADE_CLI_AGENT_GUIDANCE);
+      expect(prompt).not.toContain('"$ADE_CLI_PATH" chat activity testing');
       expect(launch.env?.[ADE_AGENT_SKILLS_DIRS_ENV]).toContain("agent-skills");
     });
 

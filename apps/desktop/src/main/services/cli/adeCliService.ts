@@ -449,6 +449,19 @@ function resolveCliPaths(args: CreateAdeCliServiceArgs, commandName: string): Re
     };
   }
 
+  // A packaged app must only advertise a CLI shipped with that app. Falling
+  // back to a development checkout can make a broken package appear healthy
+  // and hand agents a command path that does not exist on the user's machine.
+  if (args.isPackaged) {
+    return {
+      commandPath: null,
+      binDir: null,
+      installerPath: null,
+      cliJsPath: null,
+      source: "missing",
+    };
+  }
+
   const devCli = resolveDevCliEntry(args.devRepoRoot);
   if (devCli) {
     const shim = writeDevShim({
@@ -613,6 +626,7 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
     const nextPath = prependPathDir(getPathEnvValue(next), resolved.binDir);
     if (nextPath) setPathEnvValue(next, nextPath);
     if (resolved.commandPath) next.ADE_CLI_PATH = resolved.commandPath;
+    else delete next.ADE_CLI_PATH;
     if (resolved.binDir) next.ADE_CLI_BIN_DIR = resolved.binDir;
     next[ADE_AGENT_SKILLS_DIRS_ENV] = prependAgentSkillsRoot(next[ADE_AGENT_SKILLS_DIRS_ENV], bundledAgentSkillsRoot);
     if (bundledAgentSkillsRoot) {
@@ -628,6 +642,7 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
     const nextPath = getPathEnvValue(next);
     if (nextPath) setPathEnvValue(process.env, nextPath);
     if (next.ADE_CLI_PATH) process.env.ADE_CLI_PATH = next.ADE_CLI_PATH;
+    else delete process.env.ADE_CLI_PATH;
     if (next.ADE_CLI_BIN_DIR) process.env.ADE_CLI_BIN_DIR = next.ADE_CLI_BIN_DIR;
     if (next[ADE_AGENT_SKILLS_DIRS_ENV]) process.env[ADE_AGENT_SKILLS_DIRS_ENV] = next[ADE_AGENT_SKILLS_DIRS_ENV];
     if (next[ADE_BUNDLED_AGENT_SKILLS_DIR_ENV]) {

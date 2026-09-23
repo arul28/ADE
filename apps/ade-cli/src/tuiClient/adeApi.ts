@@ -197,6 +197,7 @@ export type TuiSessionLifecycleFields = Pick<
   TerminalSessionSummary,
   | "settledAt"
   | "statusNote"
+  | "activityStatus"
   | "attentionRequestedAt"
   | "attentionMessage"
   | "lastTurnFailedAt"
@@ -226,6 +227,7 @@ export type TuiSessionLifecycleFields = Pick<
     TerminalSessionSummary,
     | "runtimeState"
     | "toolType"
+    | "currentTurnStartedAt"
     | "attentionSource"
     | "exitCode"
     | "laneName"
@@ -267,6 +269,7 @@ function lifecycleFields(
   return {
     settledAt: summary?.settledAt ?? null,
     statusNote: summary?.statusNote ?? null,
+    activityStatus: summary?.activityStatus ?? null,
     attentionRequestedAt: summary?.attentionRequestedAt ?? null,
     attentionMessage: summary?.attentionMessage ?? null,
     lastTurnFailedAt: summary?.lastTurnFailedAt ?? null,
@@ -277,6 +280,7 @@ function lifecycleFields(
     wokeReason: summary?.wokeReason ?? null,
     runtimeState: summary?.runtimeState,
     toolType: summary?.toolType,
+    currentTurnStartedAt: summary?.currentTurnStartedAt ?? null,
     attentionSource: summary?.attentionSource ?? null,
     exitCode: summary?.exitCode ?? null,
     laneName: summary?.laneName,
