@@ -66,6 +66,12 @@ export function activityRelayStub(
     directoryAuth: string | null;
   }> = [];
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    // The Workers runtime's own rule, so a relay call that production would
+    // throw on fails here too. Every relay test used to accept `"error"`,
+    // which is how a 503 on every re-pair reached production.
+    if (init?.redirect !== undefined && init.redirect !== "follow" && init.redirect !== "manual") {
+      throw new TypeError(`Invalid redirect value, must be one of "follow" or "manual" ("${init.redirect}" won't be implemented since it does not make sense at the edge).`);
+    }
     calls.push({
       url: String(input),
       method: init?.method ?? "GET",
