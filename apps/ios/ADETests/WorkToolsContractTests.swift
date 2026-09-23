@@ -598,4 +598,13 @@ final class WorkToolsContractTests: XCTestCase {
     }
     try await body(service)
   }
+
+  func testSimulatorChipSymbolFollowsTheDeviceFamily() {
+    XCTAssertEqual(WorkToolChipKind.simulator(name: "Apple Watch Ultra", family: "watch").symbolName, "applewatch")
+    XCTAssertEqual(WorkToolChipKind.simulator(name: "iPad Pro", family: "ipad").symbolName, "ipad")
+    XCTAssertEqual(WorkToolChipKind.simulator(name: "iPhone 17", family: "iphone").symbolName, "iphone")
+    XCTAssertEqual(WorkToolChipKind.simulator(name: "iPhone 17", family: nil).symbolName, "iphone")
+    XCTAssertEqual(WorkToolChipKind.browser(tabCount: 2, agentUsing: false).symbolName, "globe")
+    XCTAssertEqual(WorkToolChipKind.appControl(appName: "Safari").symbolName, "macwindow")
+  }
 }

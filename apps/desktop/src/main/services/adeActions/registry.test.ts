@@ -5,6 +5,7 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import type { LaneListSnapshot, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import {
   ADE_ACTION_ALLOWLIST,
+  createAutomationAdeActionLookup,
   getAdeActionInputContract,
   getAdeActionDomainServices,
   getTurnFileDiffFromGit,
@@ -72,6 +73,23 @@ describe("work_tools runtime action domain", () => {
   });
 });
 
+
+describe("the automation action lookup", () => {
+  it("regression: an automation's action list hides every verb it would refuse", () => {
+    const lookup = createAutomationAdeActionLookup(() => ({}));
+    const apple = lookup.listActions("ios_simulator");
+    // The user-only verb is in the domain allowlist, but an automation is not a
+    // desktop client, so listing it would offer an action that always fails.
+    expect(ADE_ACTION_ALLOWLIST.ios_simulator).toContain("deviceDeleteInstalled");
+    expect(apple).not.toContain("deviceDeleteInstalled");
+    expect(apple).toContain("deviceDelete");
+    for (const domain of lookup.listDomains()) {
+      for (const action of lookup.listActions(domain)) {
+        expect(lookup.isAllowed(domain, action), `${domain}.${action}`).toBe(true);
+      }
+    }
+  });
+});
 
 describe("machine-scoped API keys on the ai domain", () => {
   it("exposes the machine key trio, so the renderer can write the store the RUNTIME reads", () => {

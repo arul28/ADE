@@ -428,6 +428,38 @@ describe("explicit proof capture", () => {
     expect(fixture.ingest).not.toHaveBeenCalled();
   });
 
+  it("regression: stores an ingest whose only owner is a PR, an issue or an automation run", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    // A CTO user client standing outside every lane, so no lane or chat owner is implied.
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    await handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ade/initialize",
+      params: { identity: { callerId: "ade-cli:4243", role: "cto" } },
+    });
+
+    for (const [ownerKind, ownerId] of [["pr", "pr-7"], ["linear_issue", "ADE-42"], ["automation_run", "run-3"]] as const) {
+      const file = path.join(projectRoot, `clip-${ownerKind}.png`);
+      fs.writeFileSync(file, `bytes-${ownerKind}`);
+      fixture.ingest.mockClear();
+      const result = await callTool(handler, "ingest_computer_use_artifacts", {
+        backendStyle: "manual",
+        backendName: "ade-cli",
+        toolName: "proof attach",
+        callerRoot: projectRoot,
+        ownerKind,
+        ownerId,
+        inputs: [{ kind: "screenshot", title: "Clip", path: file }],
+      });
+      expect(result.isError, `${ownerKind}: ${JSON.stringify(result.error ?? "")}`).not.toBe(true);
+      const [[request]] = fixture.ingest.mock.calls as unknown as Array<[{ owners?: Array<{ kind: string; id: string }> }]>;
+      const expectedKind = ownerKind === "pr" ? "github_pr" : ownerKind;
+      expect(request?.owners).toEqual(expect.arrayContaining([expect.objectContaining({ kind: expectedKind, id: ownerId })]));
+    }
+  });
+
   it("advertises the proof flag on both capture tools so the model can tell them apart", async () => {
     const fixture = createRuntime();
     const handler = await handlerFor(fixture);

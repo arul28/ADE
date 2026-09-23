@@ -3378,6 +3378,30 @@ describe("iosSimulatorService boot contract", () => {
     }
   });
 
+  it("regression: deleting a lane's clone powers it off once, through the power path", async () => {
+    let sentAtShutdown: string[] = [];
+    const { service, calls, helper, dispose } = setup({
+      onShutdown: () => { sentAtShutdown = helper.sent.map((command) => `${String(command.type)} ${String(command.udid ?? "")}`); },
+    });
+    try {
+      await service.deviceStart({ laneId: "lane-a", create: { sourceUdid: "device-2" } });
+      calls.length = 0;
+
+      await service.deviceDelete({ laneId: "lane-a", ignoreOwnership: true });
+
+      // One shutdown, not the power path's plus a raw one from the registry.
+      expect(calls.filter((call) => call === "xcrun simctl shutdown device-clone")).toHaveLength(1);
+      // The helper was reset before the power went.
+      expect(sentAtShutdown).toContain("device-reset device-clone");
+      const shutdownAt = calls.indexOf("xcrun simctl shutdown device-clone");
+      const deleteAt = calls.indexOf("xcrun simctl delete device-clone");
+      expect(deleteAt).toBeGreaterThan(shutdownAt);
+      expect((await service.deviceList({ laneId: "lane-a", installed: false })).lane).toBeNull();
+    } finally {
+      dispose();
+    }
+  });
+
   it("deviceStart starts the device the lane already owns and ignores no udid silently", async () => {
     const { service, dispose } = setup();
     try {

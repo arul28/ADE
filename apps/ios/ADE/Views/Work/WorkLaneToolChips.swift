@@ -14,6 +14,16 @@ enum WorkToolChipKind: Equatable {
   case browser(tabCount: Int, agentUsing: Bool)
   /// What App Control is attached to. Opens `WorkToolsSheet`.
   case appControl(appName: String)
+
+  /// The SF Symbol on the chip. A simulator's follows its device family, so
+  /// an Apple Watch does not show as an iPhone.
+  var symbolName: String {
+    switch self {
+    case .simulator(_, let family): return appleDeviceFamilySymbol(family)
+    case .browser: return "globe"
+    case .appControl: return "macwindow"
+    }
+  }
 }
 
 struct WorkToolChip: Equatable, Identifiable {
@@ -290,13 +300,7 @@ struct WorkLaneToolChipView: View {
     }
   }
 
-  private var symbol: String {
-    switch chip.kind {
-    case .simulator(_, let family): return appleDeviceFamilySymbol(family)
-    case .browser: return "globe"
-    case .appControl: return "macwindow"
-    }
-  }
+  private var symbol: String { chip.kind.symbolName }
 
   /// Neutral by default; the browser chip takes the accent while an agent is
   /// driving it, which is the signal the old Tools row carried as a globe.

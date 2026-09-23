@@ -896,7 +896,7 @@ extension WorkSessionDestinationView {
       do {
         if intent == .preview {
           let size = try await syncService.artifactSize(artifactId: artifact.id, uri: artifact.uri)
-          if size > workArtifactEagerVideoMaxBytes {
+          if workArtifactVideoWaitsForPlay(intent: intent, sizeBytes: size) {
             publish(.videoOnDemand(sizeBytes: size))
             return
           }
@@ -909,14 +909,16 @@ extension WorkSessionDestinationView {
         )
         publish(.video(videoURL))
         return
-      } catch is CancellationError {
-        // Scrolled away or left: leave it unloaded so the next appear retries.
-        return
-      } catch let error where workArtifactHostLacksRangeRead(error) {
-        // Older host: use the whole-file read.
       } catch {
-        publish(.error(artifactLoadErrorMessage(error)))
-        return
+        switch workArtifactVideoLoadFailure(error) {
+        case .retryLater:
+          return
+        case .useWholeFileRead:
+          break
+        case .show:
+          publish(.error(artifactLoadErrorMessage(error)))
+          return
+        }
       }
     }
 

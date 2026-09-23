@@ -159,7 +159,7 @@ describe("useAppleLaneDeviceCard", () => {
     };
   }
 
-  describe("useAppleLaneDeviceCard", () => {
+  describe("events", () => {
     let listeners: Array<(event: IosSimulatorEventPayload) => void>;
     let power: string;
     let hasLane: boolean;
@@ -227,6 +227,23 @@ describe("useAppleLaneDeviceCard", () => {
       hasLane = false;
       emit({ type: "apple.device.state", laneId: "lane-a", udid: "udid-1", phase: "released" });
       await waitFor(() => expect(result.current).toBeNull());
+    });
+
+    it("regression: a booted event reads Running at once, as streaming does", async () => {
+      power = "Shutdown";
+      const { result } = renderHook(() => useAppleLaneDeviceCard({ laneId: "lane-a", runtimePin: null, enabled: true }));
+      await waitFor(() => expect(result.current?.state).toBe("off"));
+
+      // The re-read never answers, so only the event itself can move the card.
+      deviceList.mockImplementation(() => new Promise(() => {}));
+      emit({ type: "apple.device.state", laneId: "lane-a", udid: "udid-1", phase: "booted" });
+      expect(result.current?.state).toBe("running");
+
+      emit({ type: "apple.device.state", laneId: "lane-a", udid: "udid-1", phase: "stopped" });
+      expect(result.current?.state).toBe("off");
+
+      emit({ type: "apple.device.state", laneId: "lane-b", udid: "udid-9", phase: "booted" });
+      expect(result.current?.state).toBe("off");
     });
 
     it("ignores another lane's events", async () => {

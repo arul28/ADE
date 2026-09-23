@@ -23839,24 +23839,33 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(FileManager.default.fileExists(atPath: current.path))
   }
 
-  /// A host older than `readArtifactRange` refuses it with this text
-  /// (`handleFileRequest`'s default case). The phone must then use the
-  /// whole-file read. Any other failure must show as an error.
-  func testOlderHostWithoutTheSliceReadFallsBackToTheWholeFileRead() {
+  /// A row that appears must not download a large proof video: it shows the
+  /// size, and only a tap on play downloads it.
+  func testALargeVideoIsOnlySizedOnPreviewAndDownloadsOnPlay() {
+    XCTAssertEqual(workArtifactEagerVideoMaxBytes, 8 * 1024 * 1024)
+    XCTAssertTrue(workArtifactVideoWaitsForPlay(intent: .preview, sizeBytes: workArtifactEagerVideoMaxBytes + 1))
+    XCTAssertFalse(workArtifactVideoWaitsForPlay(intent: .preview, sizeBytes: workArtifactEagerVideoMaxBytes))
+    XCTAssertFalse(workArtifactVideoWaitsForPlay(intent: .play, sizeBytes: 50_000_000))
+  }
+
+  /// A cancelled load (the row scrolled away) stays unloaded, so the next
+  /// appear retries. It is not shown as an error.
+  func testACancelledVideoLoadStaysUnloadedSoTheNextAppearRetries() {
+    XCTAssertEqual(workArtifactVideoLoadFailure(CancellationError()), .retryLater)
     let legacy = NSError(
       domain: "ADE",
       code: 8,
       userInfo: [NSLocalizedDescriptionKey: "Unsupported file action: readArtifactRange"]
     )
-    XCTAssertTrue(workArtifactHostLacksRangeRead(legacy))
-
+    XCTAssertEqual(workArtifactVideoLoadFailure(legacy), .useWholeFileRead)
     let offline = NSError(
       domain: "ADE",
       code: 16,
       userInfo: [NSLocalizedDescriptionKey: "Can’t reach this computer right now."]
     )
-    XCTAssertFalse(workArtifactHostLacksRangeRead(offline))
-    XCTAssertFalse(workArtifactHostLacksRangeRead(CancellationError()))
+    XCTAssertEqual(workArtifactVideoLoadFailure(offline), .show)
+    let other = NSError(domain: "ADE", code: 8, userInfo: [NSLocalizedDescriptionKey: "boom"])
+    XCTAssertEqual(workArtifactVideoLoadFailure(other), .show)
   }
 
   func testParseANSISegmentsTracksForegroundColors() {

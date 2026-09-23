@@ -1775,6 +1775,29 @@ func workArtifactVideoTempURL(artifactId: String, fileExtension: String) -> URL 
     .appendingPathExtension(fileExtension)
 }
 
+/// True when a row that appears must not download this video: a preview of a
+/// video larger than `workArtifactEagerVideoMaxBytes` shows only its size, and
+/// the download waits for `.play`.
+func workArtifactVideoWaitsForPlay(intent: WorkArtifactLoadIntent, sizeBytes: Int) -> Bool {
+  intent == .preview && sizeBytes > workArtifactEagerVideoMaxBytes
+}
+
+/// What a failed video load does next.
+enum WorkArtifactVideoLoadFailure: Equatable {
+  /// Scrolled away or left: stay unloaded, so the next appear retries.
+  case retryLater
+  /// A host older than the slice read: use the whole-file read.
+  case useWholeFileRead
+  /// Anything else: show the error.
+  case show
+}
+
+func workArtifactVideoLoadFailure(_ error: Error) -> WorkArtifactVideoLoadFailure {
+  if error is CancellationError { return .retryLater }
+  if workArtifactHostLacksRangeRead(error) { return .useWholeFileRead }
+  return .show
+}
+
 /// True when the host is older than the slice read (`readArtifactRange`).
 /// Such a host answers "Unsupported file action: readArtifactRange", and the
 /// phone then uses the whole-file read (`readArtifact`) instead.

@@ -12,6 +12,13 @@ import {
   useWorkToolShowRequestListener,
   WORK_TOOL_SHOW_HOLD_TTL_MS,
 } from "./workToolShowRequests";
+import {
+  isWorkSurfaceOnScreen,
+  noteWorkSurfaceMounted,
+  resetWorkToolOnScreenForTests,
+  setDocumentVisibleForTests,
+  workSurfaceKey,
+} from "./workToolOnScreen";
 
 let nextId = 1;
 function request(overrides: Partial<WorkToolShowRequest> = {}): WorkToolShowRequest {
@@ -152,5 +159,42 @@ describe("work tool show requests", () => {
 
     view.unmount();
     expect(listener).toBeNull();
+  });
+});
+
+describe("work surface on screen", () => {
+  afterEach(() => {
+    resetWorkToolOnScreenForTests();
+    document.body.innerHTML = "";
+  });
+
+  function pane(width: number): HTMLElement {
+    const element = document.createElement("div");
+    element.setAttribute("data-work-sidebar-pane", "");
+    element.getBoundingClientRect = () => ({ width } as DOMRect);
+    document.body.appendChild(element);
+    return element;
+  }
+
+  it("regression: a tool is on screen only when its own pane is laid out, on its own machine", () => {
+    // Another tools pane is wide open; the Apple tool's own pane is a 19px sliver.
+    pane(400);
+    const own = pane(19);
+    const tool = document.createElement("div");
+    tool.getBoundingClientRect = () => ({ width: 400 } as DOMRect);
+    own.appendChild(tool);
+    const key = workSurfaceKey("apple", "bound", "lane-1");
+    noteWorkSurfaceMounted(key, tool);
+    setDocumentVisibleForTests(true);
+
+    expect(isWorkSurfaceOnScreen(key)).toBe(false);
+
+    own.getBoundingClientRect = () => ({ width: 400 } as DOMRect);
+    expect(isWorkSurfaceOnScreen(key)).toBe(true);
+    // The same lane id on another machine is another surface.
+    expect(isWorkSurfaceOnScreen(workSurfaceKey("apple", "remote:studio", "lane-1"))).toBe(false);
+
+    setDocumentVisibleForTests(false);
+    expect(isWorkSurfaceOnScreen(key)).toBe(false);
   });
 });

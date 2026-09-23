@@ -34,7 +34,6 @@ import {
   createLaneAppleDeviceLookup,
   resolveLaneAppleDeviceDirective,
 } from "./laneAppleDeviceDirective";
-import { type AgentChatEventEnvelope, type PendingInputRequest } from "../../../shared/types/chat";
 import { isQuestionShapedPendingInput, readPendingInputRecord } from "./pendingInputRecovery";
 
 /**
