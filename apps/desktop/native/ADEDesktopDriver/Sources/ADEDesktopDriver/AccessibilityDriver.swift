@@ -370,6 +370,17 @@ final class AccessibilityDriver {
         try postText(pid: record.pid, text: text)
     }
 
+    /// Presses a window's own close button. The way ⌘W reaches a lane window:
+    /// a key posted to an app that is not active never runs its menu shortcut.
+    func closeWindow(_ window: AXUIElement) -> Bool {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(window, kAXCloseButtonAttribute as CFString, &value) == .success,
+              let value, CFGetTypeID(value) == AXUIElementGetTypeID()
+        else { return false }
+        let button = value as! AXUIElement
+        return AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
+    }
+
     /// One key, by name, to one process.
     func press(pid: pid_t, key: String, modifiers: [String]) throws {
         guard let keyCode = KeyCodes.code(for: key) else {

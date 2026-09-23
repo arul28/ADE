@@ -142,6 +142,45 @@ extension DriverRuntime {
                     message: "Lane \(laneId) has no window to send a key to."
                 )
             }
+            // A ⌘-shortcut must act on the lane's window, never the user's: one
+            // process owns every window of an app, on every screen.
+            let laneWindows = windows.listWindows(laneId: laneId).filter { $0.pid == pid }
+            let laneWindowIds = Set(laneWindows.map(\.id))
+            // The lane launched it (not merely claimed a window of it) and every
+            // real window it has is on the lane: only then may ⌘Q quit it.
+            let appBelongsToLane = !laneWindows.isEmpty
+                && laneWindows.allSatisfy { $0.origin == "ade_launched" }
+                && !windows.listWindows(pid: pid).contains { !laneWindowIds.contains($0.id) }
+            switch LaneShortcut.plan(key: key, modifiers: modifiers, appBelongsToLane: appBelongsToLane) {
+            case .refuseQuit:
+                let appName = laneWindows.first?.appName ?? "this app"
+                throw DriverError(
+                    code: DriverErrorCode.quitWouldCloseUserWindows,
+                    message: "⌘Q would quit \(appName), which this lane did not start or which has windows outside this lane's screen. Close your own window instead: press w --cmd."
+                )
+            case .closeLaneWindow:
+                // Only a window the lane launched. A claimed window is the
+                // user's document, borrowed: release it, never close it.
+                let launched = laneWindows.filter { $0.origin == "ade_launched" }
+                if launched.isEmpty, let claimed = laneWindows.first {
+                    throw DriverError(
+                        code: DriverErrorCode.windowBelongsToUser,
+                        message: "\(claimed.appName)'s window was claimed from the user's screen, so it is not the lane's to close. Release it instead: ade mac-desktop release --window \(claimed.id)."
+                    )
+                }
+                // The first one with a close button: an app can own hidden
+                // helper windows on the lane that have none.
+                for window in launched {
+                    guard let element = windows.axWindow(for: window) else { continue }
+                    if accessibility.closeWindow(element) { return ["resolvedIndex": resolvedIndex] }
+                }
+            case .quitLaneApp:
+                if let app = NSRunningApplication(processIdentifier: pid), app.terminate() {
+                    return ["resolvedIndex": resolvedIndex]
+                }
+            case .keys:
+                break
+            }
             try accessibility.press(pid: pid, key: key, modifiers: modifiers)
             return ["resolvedIndex": resolvedIndex]
         case "scroll":

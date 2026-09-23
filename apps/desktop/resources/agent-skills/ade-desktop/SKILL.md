@@ -21,13 +21,17 @@ chat's lane: `--lane` naming a different lane is refused, not silently swapped.
 
 ```bash
 ade mac-desktop status --text
+ade mac-desktop start --text
 ade mac-desktop open "Preview" --text
 ade mac-desktop windows --text
 ```
 
 `open` takes an app name, a bundle id, a path, or a URL; everything after `--`
-is the app's own argv. `start` is implicit — the first command that needs a
-display creates one. To adopt a window that is already running, claim it:
+is the app's own argv. Run `start` first: `open` and the rest refuse with "Start
+one first" when the lane has no display, and an idle display with no windows
+and no viewer closes itself after a while. `open` starts a separate copy of the
+app for the lane, so it never shares a process with the user's windows. To
+adopt a window that is already running, claim it:
 
 ```bash
 ade mac-desktop claim --window <id> --text
@@ -90,8 +94,10 @@ a native menu, a control with no `AXPress`.
 - **Never quit an app, and never touch a window you did not open.** An app
   like Safari, TextEdit or Finder is one process for all its windows, on every
   screen. ⌘Q on the lane screen also closes the user's own windows of that app.
-  To finish, close only your own window (`ade mac-desktop press w --cmd --text`
-  with your window focused) or `release` it. Do not "reset" an app the user has
+  To finish, close your own window with `ade mac-desktop press w --cmd --text`
+  (it presses the window's close button) or `release` it. ⌘W refuses a window
+  the lane claimed from the user — release that one — and ⌘Q quits only an app
+  the lane itself opened with `open`; for any other app it refuses. Do not "reset" an app the user has
   open to get a clean start — open a new window for your task instead.
 - **`ade: Unknown command 'mac-desktop'` means your shell found an older
   `ade`,** not that the lane has no screen: a login shell can rebuild PATH and

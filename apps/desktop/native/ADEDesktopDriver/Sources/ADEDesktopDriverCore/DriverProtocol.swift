@@ -141,6 +141,13 @@ public enum DriverErrorCode {
     public static let handleExpired = "MAC_DESKTOP_HANDLE_EXPIRED"
     public static let inputLeaseRequired = "MAC_DESKTOP_INPUT_LEASE_REQUIRED"
     public static let recordingNotRunning = "MAC_DESKTOP_RECORDING_NOT_RUNNING"
+    /// ⌘Q on an app that also has windows outside the lane's display: one
+    /// process owns all of an app's windows, so quitting it would close the
+    /// user's own windows too.
+    public static let quitWouldCloseUserWindows = "MAC_DESKTOP_QUIT_WOULD_CLOSE_USER_WINDOWS"
+    /// ⌘W on a window the lane claimed from the user: it is the user's
+    /// document, so the lane releases it instead of closing it.
+    public static let windowBelongsToUser = "MAC_DESKTOP_WINDOW_BELONGS_TO_USER"
 
     /// Helper-local faults. The service turns these into `MAC_DESKTOP_DRIVER_*`
     /// messages; they are separate so a bad line and a bad display are not the
