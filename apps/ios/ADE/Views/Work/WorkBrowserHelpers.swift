@@ -323,7 +323,7 @@ func workSessionDisplayTitle(session: TerminalSessionSummary, summary: AgentChat
 }
 
 func workSessionActivityTimestamp(session: TerminalSessionSummary, summary: AgentChatSessionSummary?) -> String {
-  summary?.lastActivityAt ?? session.chatIdleSinceAt ?? session.startedAt
+  summary?.lastActivityAt ?? session.lastActivityAt ?? session.chatIdleSinceAt ?? session.startedAt
 }
 
 func workSessionRuntimeLabel(session: TerminalSessionSummary) -> String {

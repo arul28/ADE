@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Logger } from "../logging/logger";
+import { pathKey } from "../shared/pathCompare";
 import { terminateChildProcessTree } from "../shared/utils";
 import {
   PI_SDK_PROTOCOL_VERSION,
@@ -25,7 +26,7 @@ import {
   type PiSdkWorkerInit,
   type PiSdkWorkerRequest,
 } from "./piSdkProtocol";
-import { buildPiWorkerEnvironment } from "./piSdkEnvironment";
+import { buildPiWorkerEnvironment, type PiWorkerActivityScope } from "./piSdkEnvironment";
 
 export type PiSdkBridge = {
   onEvent: ((event: JsonValue) => void) | null;
@@ -120,6 +121,8 @@ export type AcquirePiSdkConnectionArgs = PiSdkPackageLocation & {
   approvalTools?: string[];
   /** Usually process.env; never put auth.json or API keys in this payload. */
   baseEnv?: NodeJS.ProcessEnv;
+  /** Passed only when this chat can run the session-scoped ADE activity command. */
+  activityScope?: PiWorkerActivityScope | null;
   logger?: Logger;
 };
 
@@ -130,11 +133,17 @@ type PendingRpc = {
   timer: NodeJS.Timeout | null;
 };
 
-type PoolEntry = { ref: number; generation: number; pooled: PiSdkPooled };
+type PoolEntry = {
+  ref: number;
+  generation: number;
+  pooled: PiSdkPooled;
+  activityScope: PiWorkerActivityScope | null;
+};
 
 let generationCounter = 0;
 const pools = new Map<string, PoolEntry>();
 const pendingInits = new Map<string, Promise<PiSdkPooled>>();
+const departingWorkers = new Map<string, Promise<void>>();
 const STALE_INIT_RETRY_LIMIT = 2;
 const DISPOSE_GRACE_MS = 1_500;
 const REQUEST_TIMEOUT_MS: Partial<Record<PiSdkRequestType, number>> = {
@@ -178,6 +187,42 @@ function applyReady(pooled: PiSdkPooled, value: PiSdkReady): void {
   pooled.availableModels = value.availableModels;
 }
 
+function normalizedActivityScope(scope: PiWorkerActivityScope | null | undefined): PiWorkerActivityScope | null {
+  if (!scope) return null;
+  return {
+    cliPath: pathKey(scope.cliPath),
+    chatSessionId: scope.chatSessionId,
+    ...(scope.runtimeSocketPath ? { runtimeSocketPath: pathKey(scope.runtimeSocketPath) } : {}),
+  };
+}
+
+function sameActivityScope(
+  left: PiWorkerActivityScope | null | undefined,
+  right: PiWorkerActivityScope | null | undefined,
+): boolean {
+  const normalizedLeft = normalizedActivityScope(left);
+  const normalizedRight = normalizedActivityScope(right);
+  return normalizedLeft?.cliPath === normalizedRight?.cliPath
+    && normalizedLeft?.chatSessionId === normalizedRight?.chatSessionId
+    && normalizedLeft?.runtimeSocketPath === normalizedRight?.runtimeSocketPath;
+}
+
+function disposePiSdkPoolEntry(poolKey: string, entry: PoolEntry): Promise<void> {
+  if (pools.get(poolKey) === entry) pools.delete(poolKey);
+  const departing = departingWorkers.get(poolKey);
+  if (departing) return departing;
+  entry.pooled.dispose();
+  const exit = entry.pooled.waitForExit().finally(() => {
+    if (departingWorkers.get(poolKey) === exit) departingWorkers.delete(poolKey);
+  });
+  departingWorkers.set(poolKey, exit);
+  return exit;
+}
+
+async function waitForDepartingPiSdkWorker(poolKey: string): Promise<void> {
+  await departingWorkers.get(poolKey);
+}
+
 export async function acquirePiSdkConnection(
   args: AcquirePiSdkConnectionArgs,
 ): Promise<{ pooled: PiSdkPooled; generation: number }> {
@@ -185,13 +230,16 @@ export async function acquirePiSdkConnection(
   for (let retries = 0; ; retries += 1) {
     const existing = pools.get(args.poolKey);
     if (existing && isAlive(existing.pooled)) {
-      existing.ref += 1;
-      return { pooled: existing.pooled, generation: existing.generation };
+      if (sameActivityScope(existing.activityScope, args.activityScope)) {
+        existing.ref += 1;
+        return { pooled: existing.pooled, generation: existing.generation };
+      }
+      await disposePiSdkPoolEntry(args.poolKey, existing);
     }
-    if (existing) {
-      pools.delete(args.poolKey);
-      existing.pooled.dispose();
+    if (existing && !isAlive(existing.pooled)) {
+      await disposePiSdkPoolEntry(args.poolKey, existing);
     }
+    await waitForDepartingPiSdkWorker(args.poolKey);
 
     let owner = false;
     let init = pendingInits.get(args.poolKey);
@@ -202,7 +250,8 @@ export async function acquirePiSdkConnection(
     }
     const pooled = await init;
     const entry = pools.get(args.poolKey);
-    if (!entry || entry.pooled !== pooled || !isAlive(pooled)) {
+    if (!entry || entry.pooled !== pooled || !isAlive(pooled)
+      || !sameActivityScope(entry.activityScope, args.activityScope)) {
       if (owner) throw new Error("Pi SDK worker was disposed during initialization.");
       if (retries >= STALE_INIT_RETRY_LIMIT) throw new Error("Pi SDK worker initialization did not settle after retries.");
       continue;
@@ -249,7 +298,7 @@ function createPiSdkConnection(args: AcquirePiSdkConnectionArgs): Promise<PiSdkP
     // Enforce the Pi environment boundary at the process boundary as well as
     // at production call sites. Tests and future inventory callers cannot
     // accidentally inherit ADE capability/session variables.
-    env: buildPiWorkerEnvironment(args.baseEnv ?? process.env, args.agentDir),
+    env: buildPiWorkerEnvironment(args.baseEnv ?? process.env, args.agentDir, args.activityScope),
     stdio: ["ignore", "pipe", "pipe", "ipc"],
     execArgv: [],
     windowsHide: true,
@@ -516,7 +565,12 @@ function createPiSdkConnection(args: AcquirePiSdkConnectionArgs): Promise<PiSdkP
       const result = await pooled.request("init", initPayload);
       applyReady(pooled, result);
       const generation = ++generationCounter;
-      pools.set(args.poolKey, { ref: 1, generation, pooled });
+      pools.set(args.poolKey, {
+        ref: 1,
+        generation,
+        pooled,
+        activityScope: normalizedActivityScope(args.activityScope),
+      });
       return pooled;
     } catch (error) {
       pooled.dispose();

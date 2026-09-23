@@ -87,41 +87,23 @@ and in tests.
   `canAcceptScheduledTurn(sessionId)` is the scheduler's non-mutating delivery
   boundary: ended tracked CLIs are resumable, while live CLIs require a
   provider-specific visible composer marker plus the short quiet window before
-  a durable prompt may be submitted. It also owns the richer CLI state
-  projection: each `PtyEntry` carries an optional `TuiMarkerState` (created at
-  spawn only for tracked agent CLI tool types, so shells and unknown tools
-  allocate nothing) that is folded on the same chunk the OSC 133 scan already
-  reads, plus a `previewCursor` threaded through `derivePreviewFromChunk`. The
-  runtime-state entry gains `runningSince`, stamped only on a
-  non-running → running *transition* and cleared on every non-running state —
+  a durable prompt may be submitted. CLI card status comes from host lifecycle
+  and explicit ADE attention requests: PTY output and OSC 133 can establish
+  liveness, and output silence can establish idle, but painted TUI text is not
+  parsed into Planning or Needs you. An agent's `ade chat ask` still marks a
+  tracked CLI as waiting for the user through ADE's explicit attention path.
+  The service also owns a `previewCursor` threaded through
+  `derivePreviewFromChunk`. The runtime-state entry gains `runningSince`, which
+  is stamped only on a non-running → running *transition* and cleared on every
+  non-running state —
   not `lastActivityAt`, which is re-stamped on every output tick and would
   render as "time since last write". `anchorTurnStart` / `isTurnSubmitWrite`
   re-anchor that turn when a user write ends in a newline (a literal Enter;
-  bracketed-paste payloads contain newlines but never end in one), and the same
-  write path calls `clearTuiWaitingInput`. The shared session-row projection —
+  bracketed-paste payloads contain newlines but never end in one). The shared
+  session-row projection —
   the one chokepoint desktop, lane snapshots, web, and iOS all read — then
-  emits `currentTurnStartedAt` for non-chat rows, the `tuiRowOverlay` spread,
-  and `runtimeState: "waiting-input"` when a marker latch is live.
-  ~4,450 lines.
-- `apps/desktop/src/main/utils/terminalTuiMarkers.ts` — the TUI marker packs
-  that give PTY-backed CLIs the same vocabulary chat sessions already have
-  (planning / waiting-on-you), mapped onto the existing `chatActivityMode` and
-  `runtimeState` fields so no surface needs new rendering. `PACKS` is keyed by
-  `TerminalResumeProvider` and covers claude, codex, cursor, opencode, and
-  droid; anything without a pack resolves to null and does zero scanning.
-  `scanTuiMarkers` does one bounded pass per chunk (`MAX_CHUNK_SCAN_CHARS =
-  8_000` head plus the same tail, joined, with a `CARRY_CHARS = 512` carry
-  across chunk boundaries) and `tuiActivityFromState` resolves it. The two
-  marker shapes are deliberately asymmetric: **planning is a footer state**, so
-  it is sticky with a `PLANNING_TTL_MS = 60_000` decay and needs no
-  "left plan mode" event (none is reliably printed); **waiting-input is an
-  event**, so it is an edge-triggered latch armed only when currently null and
-  cleared only by evidence — a `working` marker painting after the prompt, or
-  `clearTuiWaitingInput` when the user types. `WAITING_TTL_MS` (30 minutes)
-  exists to bound a false positive, not to time out a human. Where a window
-  contains both a prompt and the spinner that replaced it, the later match
-  wins, and waiting-input outranks planning because it is the actionable one.
-  Failure needs no markers: a nonzero exit already lands as `status: "failed"`.
+  emits `currentTurnStartedAt` for non-chat rows. `runtimeState: "waiting-input"`
+  comes from explicit ADE attention requests; it is not inferred from TUI text.
 - `apps/desktop/src/main/utils/terminalPreview.ts` — the one-line session
   preview builder. It is a real column-cursor model (`PreviewCursorState`,
   `createPreviewCursorState`, `derivePreviewFromChunk`) over a mutable cell
@@ -138,8 +120,6 @@ and in tests.
   often enough that per-chunk stripping leaked `[53;37H` into previews as
   literal text — and on overflow the carried tail is re-anchored on its last
   `ESC` so a blind slice cannot write escape garbage into the preview.
-- `apps/desktop/src/main/utils/terminalTuiMarkers.test.ts` — pack matching,
-  latch arming/clearing, and ordering coverage.
 - `apps/desktop/src/main/services/pty/supervisedPtyHost.ts` and
   `ptyHostWorker.ts` — isolated node-pty worker host. Local runtimes fork the
   worker from the built desktop files; remote runtimes can receive
@@ -172,7 +152,9 @@ and in tests.
 - `apps/desktop/src/main/services/sessions/sessionService.ts` — persistence
   layer for `terminal_sessions` rows. CRUD, continuation metadata
   normalization, `reattach`, `reconcileStaleRunningSessions`, and the durable
-  settled/status-note/attention/last-turn-failure mutations. Normalized
+  settled/status-note/attention/last-turn-failure mutations. It also stores
+  fixed-value, host-timestamped agent activity reports without changing the
+  parent lifecycle phase, and clears them when a new turn is accepted. Normalized
   `TerminalResumeMetadata` retains optional `orchestrationParentSessionId` /
   `spawnKind`; tracked agent CLI rows project those fields onto
   `TerminalSessionSummary`, and resume-command backfill merges the existing
@@ -373,6 +355,50 @@ Shared types and IPC:
   and it carries no command lines or environments. `ade session show` is its
   consumer; it exists so "this chat is holding a warm agent process open" is
   answerable without dropping to `ps`.
+
+  #### Provider signal boundaries
+
+  Parent phases use the same host lifecycle rules for every provider. Provider
+  adapters contribute **Needs you** only from structured input/permission
+  requests; tracked PTY CLIs also get explicit `ade chat ask`. PTY text is never
+  parsed into a status. Agent-reported activity requires both the
+  runtime-resolved ADE CLI executable and this runtime's RPC socket, and is
+  disabled for embedded runtimes. Each provider path is advertised only when
+  its command/tool and permission route is verified. Native Plan and
+  agent-reported activity have narrower capability gates:
+
+  | Provider path | Structured Plan signal | Agent-reported activity detail |
+  | --- | --- | --- |
+  | Claude SDK | Current `interactionMode` | Available outside Plan mode when the session runtime resolves the ADE CLI path |
+  | Codex app-server | The accepted `turn/start` collaboration mode | Available in effective default mode, except external `config.toml` sessions |
+  | Cursor SDK | Local `currentMode` | Available in local Agent mode; omitted in Cursor Cloud and other modes |
+  | Droid SDK | Explicit `interactionMode` | Available only with explicit write-capable, non-AGI, non-Spec permission |
+  | OpenCode SDK | Current permission mode | Available outside Plan and external `config-toml` modes |
+  | Pi SDK | No current-mode signal | Available in non-personal POSIX sessions outside Plan when Bash is allowlisted and the ADE CLI resolves |
+  | ACP Qwen | Structured ACP configuration | Not currently offered: ADE injects its CLI path but does not wire verified activity guidance or a command tool |
+  | ACP Kimi / Grok / Copilot | Structured configuration varies by provider | Not currently offered: ADE does not wire activity guidance or a session-scoped command tool; these providers share pooled processes |
+  | Tracked PTY CLI | No Plan inference from terminal text | Activity guidance for Codex and OpenCode outside Plan / external `config-toml`, write-capable non-AGI Droid, Pi full-auto, and Cursor launches with an initial prompt. Windows guidance includes PowerShell and cmd forms plus a PowerShell bridge for Git Bash, and tells the agent to use only the form matching its command shell; if none applies, it leaves activity unchanged. Claude is omitted because its shell fallback drops the activity instruction, and blank Cursor launches remain omitted. `ADE_ACTIVITY_SESSION_ID` scopes reports to the terminal row while `ADE_CHAT_SESSION_ID` remains the owning chat. |
+
+  ACP omission is an ADE wiring gap, not a protocol impossibility. ADE passes
+  the resolved CLI path into ACP environments but currently does not provide a
+  verified command tool or send session-specific activity instructions; each
+  dialect disables ADE's terminal capability. Qwen has a private process, but
+  Kimi, Grok, and Copilot share pooled processes, so their activity reports need
+  an explicit protocol-session target rather than a process environment id.
+
+  Claude, Cursor, Droid, and OpenCode expose pending requests through their
+  provider events; Codex uses app-server input/permission events; Pi uses its
+  approval and AskUser events; ACP providers use `session/request_permission`.
+  Cursor and Droid retain their normalized pending request while waiting, so the
+  card can reconstruct **Needs you** after the renderer reloads. Host task
+  lifecycle events own automatic **Monitoring** detection; an agent's
+  `monitoring` report remains a separate signal.
+
+  Codex Planning uses the collaboration mode in the active `turn/start` request
+  only after the app-server accepts it. Approval and sandbox settings do not
+  imply Plan; when native Plan is unavailable and ADE falls back to `default`,
+  the card stays Working (or shows a valid agent-reported activity detail).
+
   The **settle override** (`terminal_sessions.settle_override`,
   `null | "settled" | "active"`) is consulted at the declared-settle tier, i.e.
   `"settled"` behaves like a declared settle, and `"active"` is an explicit
@@ -423,6 +449,11 @@ Shared types and IPC:
   map its dependency-free glyph ids to platform symbols. `sessionStatusShoutsLabel`
   is the nested-compact filter: the status word is painted only for Needs you
   or a red Failed tone.
+- `apps/desktop/src/shared/types/sessions.ts` — the fixed six-value activity
+  vocabulary. `apps/desktop/src/shared/sessionActivity.ts` imports it and
+  normalizes one host-timestamped agent report at the boundary.
+  The report refines a card's single status slot without moving its parent phase;
+  `sessionActivity.test.ts` pins normalization and malformed-input handling.
 - `apps/desktop/src/shared/sessionSpawnNesting.ts` — the one by-lane filing
   rule desktop, ADE Code, and the iOS Swift mirror consult. Same-lane
   `spawnKind: "subagent"` chats (and tracked CLI `--type subagent` sessions)
@@ -2033,6 +2064,12 @@ hand translation at the drop handler.
 | **Waiting** | snoozed rows, plus running rows whose lane PR is mid-CI or has a review requested | **no** |
 | **Done** | resting rows (`ready`/`idle`), then ended rows, then settled rows | yes |
 
+Each card shows at most one status label and icon. In Kanban, the column names
+the parent state, so the card does not repeat it. A current activity detail can
+occupy the card's one status slot; **Needs you** takes that slot whenever input
+is pending. The list view uses the same single effective status, so an activity
+detail replaces the generic **Working** label instead of appearing beside it.
+
 The first column takes the `needs_you` phase, **not** the list's whole
 `awaiting-input` partition. That partition is a container holding three phases —
 `needs_you`, `ready` and `idle` — which is why the list names it "Your move" and
@@ -2619,17 +2656,12 @@ degrades to "no ADE prompt" rather than a failed launch.
   that is not running it. Similarly, only `markLastTurnFailed` applies the
   strictly-newer-than-`snoozed_at` comparison — drop it and the error the user
   snoozed on top of instantly re-wakes the row, making snooze a no-op.
-- **TUI-marker needs-you rides on `attentionSource: "provider_structured"`, and
-  that label is a known mislabel.** The value is supposed to mean the provider
-  told us it is blocked; for a marker latch the evidence is regex heuristics
-  over painted output. It is load-bearing anyway, because
-  `canonicalSessionState` derives `needs_you` from `pendingInputItemId`,
-  `attentionRequestedAt`, or `provider_structured` and ignores
-  `runtimeState: "waiting-input"` entirely — dropping the label would remove
-  the badge *and* leave the row unsettleable. `SessionStatusSlot` therefore
-  always allows dismissing a `provider_structured` needs-you. The real fix is a
-  heuristic-waiting tier in the canonical layer, which is a shared-contract
-  change across all five surfaces.
+- **PTY text does not create semantic card states.** Painted prompt text is not
+  sufficient evidence that a CLI is blocked on the user, and plan-looking text
+  is not a reliable mode event, so the PTY service does not regex-scan it.
+  Tracked CLI `Needs you` comes from an explicit ADE request such as
+  `ade chat ask`; liveness and idle come from the PTY host. Structured provider
+  input remains a separate adapter event with its own provenance.
 - **Never stamp `provider_structured` without an item id.** Because
   `canonicalSessionState` treats that source as a needs-you trigger in its own
   right, independent of the item id, stamping it alongside a null

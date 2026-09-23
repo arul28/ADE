@@ -172,6 +172,7 @@ private struct WorkSessionRowRenderSignature: Equatable {
   /// one `Text` instead of invalidating every visible row.
   let statusLabel: String?
   let statusGlyph: ActivityGlyph?
+  let statusElapsedSince: String?
   /// The slot's hue token, never a resolved `Color`: this signature is built on
   /// the detached presentation rebuild, and `ActivityTone` is a String-backed
   /// enum that crosses that boundary safely where a `Color` would not.
@@ -268,6 +269,9 @@ private struct WorkSessionRowRenderSignature: Equatable {
     self.rowTone = row.tone
     self.statusLabel = row.status?.label
     self.statusGlyph = row.status?.glyph
+    self.statusElapsedSince = row.status?.showsElapsed == true
+      ? (chatSummary?.currentTurnStartedAt ?? row.status?.activityReportUpdatedAt ?? self.activityTimestamp)
+      : nil
     self.showsElapsed = row.status?.showsElapsed ?? false
     // Settled resolves to a nil presentation, so it is not prominent and recedes.
     // That is the intent, not an oversight: the timestamp owns its slot.
@@ -841,9 +845,7 @@ struct WorkSessionRow: View, Equatable {
         tone: tone,
         glyph: renderSignature.statusGlyph,
         showsElapsed: renderSignature.showsElapsed,
-        elapsedSince: renderSignature.showsElapsed
-          ? workParsedDate(renderSignature.activityTimestamp)
-          : nil,
+        elapsedSince: workParsedDate(renderSignature.statusElapsedSince),
         wraps: wraps,
         // The slot pulses once when this flips true underneath a reader who is
         // already looking at the row. Passing the phase rather than a trigger
@@ -956,10 +958,8 @@ struct WorkSessionRow: View, Equatable {
   /// fact that leaves the VISUAL row must not leave VoiceOver with it. Every
   /// clause below reads a model field, not a view.
   var accessibilityLabel: String {
-    var parts = [chatSummary?.title ?? session.title, session.laneName, sessionStatusLabel(for: status)]
-    if let statusLabel = renderSignature.statusLabel {
-      parts.append(statusLabel)
-    }
+    let effectiveStatus = renderSignature.statusLabel ?? sessionStatusLabel(for: status)
+    var parts = [chatSummary?.title ?? session.title, session.laneName, effectiveStatus]
     if renderSignature.steeringInput && renderSignature.statusGlyph == .working {
       parts.append("has a question")
     }
@@ -1118,12 +1118,10 @@ struct WorkSessionRowStatusSlot: View {
   let tone: ActivityTone
   let glyph: ActivityGlyph?
   let showsElapsed: Bool
-  /// **Divergence, stated so nobody hunts for a bug.** iOS's
-  /// `TerminalSessionSummary` carries no `currentTurnStartedAt`, so the ticker
-  /// anchors on the row's activity timestamp: it measures time since last
-  /// activity, where desktop's `SessionStatusSlot` measures time since the turn
-  /// started. On a live turn the two agree closely; on a quiet one this reads
-  /// larger.
+  /// Elapsed time uses the chat summary's `currentTurnStartedAt` when present,
+  /// matching desktop. When that anchor is absent, iOS falls back to the
+  /// activity report's update time and then the row's activity timestamp;
+  /// desktop and CLI fall back directly to last activity.
   let elapsedSince: Date?
   /// Accessibility sizes let the slot wrap instead of holding one line.
   var wraps: Bool = false

@@ -410,29 +410,33 @@ const isHostAuthoritativeTable = (change: CrsqlChangeRow): boolean =>
   SYNC_HOST_AUTHORITATIVE_TABLES.has(change.table);
 
 /**
- * Settle columns on `terminal_sessions`. The host decides these — a settle
- * arrives as a `session.settle*` remote command and is written by
- * `sessionService`, which is the only place that can weigh the decision against
- * live work.
+ * Host-authoritative columns on `terminal_sessions`: settlement outcome and
+ * agent activity reports. The host decides settlement through `sessionService`,
+ * which can weigh it against live work; agent activity reports are also written
+ * there with a host timestamp.
  *
  * A phone must not author them over CRR. `terminal_sessions` replicates, so a
- * phone's optimistic `settled_at` carries no host lifecycle revision and merges
- * in regardless of what the host decided: the host can *reject* a settle and
- * still end up with a settled row. That is a guard defeated by a merge rather
- * than by a caller, and no amount of host-side checking closes it.
+ * phone's optimistic write carries no host decision and merges in regardless of
+ * what the host decided. That is a guard defeated by a merge rather than by a
+ * caller, and no amount of host-side checking closes it.
  *
- * Current iOS builds no longer write these (they use a local pending-UI overlay
- * instead — see `PendingSessionSettleStates.swift`), but a paired phone on an
- * older build still does, so the host enforces it rather than trusting the
- * client version. The drop is silent and per-column: everything else in the
- * batch, including the phone's own snooze overlay, applies normally.
+ * The phone may hold optimistic copies of these columns, so the host enforces
+ * this rather than trusting the client version. The drop is silent and
+ * per-column: everything else in the batch, including the phone's own snooze
+ * overlay, applies normally.
  *
  * Scoped to phone peers on purpose. A paired *desktop* peer runs the same
- * `sessionService` chokepoint, so its settle writes are host-decided too and
- * must keep replicating.
+ * `sessionService` chokepoint, so its settlement and activity writes are
+ * host-decided too and must keep replicating.
  */
 const HOST_AUTHORITATIVE_COLUMNS_BY_TABLE = new Map<string, ReadonlySet<string>>([
-  ["terminal_sessions", new Set(["settled_at", "settle_override", "settle_source"])],
+  ["terminal_sessions", new Set([
+    "settled_at",
+    "settle_override",
+    "settle_source",
+    "activity_status_json",
+    "activity_status_changed_at",
+  ])],
 ]);
 
 const isHostAuthoritativeColumn = (change: CrsqlChangeRow): boolean =>
@@ -1136,6 +1140,8 @@ type SyncHostServiceArgs = {
   sessionService: ReturnType<typeof createSessionService>;
   sessionDeltaService?: ReturnType<typeof createSessionDeltaService> | null;
   ptyService: ReturnType<typeof createPtyService>;
+  /** False when this runtime has no RPC endpoint that accepts activity reports. */
+  sessionActivityReportingEnabled?: boolean;
   agentChatService?: ReturnType<typeof createAgentChatService>;
   chatLaunchService?: ChatLaunchService | null;
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
@@ -2254,6 +2260,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     prService: args.prService,
     prSummaryService: args.prSummaryService,
     ptyService: args.ptyService,
+    sessionActivityReportingEnabled: args.sessionActivityReportingEnabled,
     sessionService: args.sessionService,
     sessionDeltaService: args.sessionDeltaService,
     fileService: args.fileService,
@@ -3172,6 +3179,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       broadcastChatEvent(event);
     },
   ) ?? null;
+  // Session metadata writes do not necessarily produce a transcript event.
+  // Feed them through the same coalesced roster path so activity reports and
+  // other session-card changes reach subscribed mobile hubs without waiting
+  // for the safety poll.
+  const sessionChangeSubscription = args.sessionService.onChanged?.(() => {
+    markRosterDirty();
+  }) ?? null;
   // New-lane launch progress goes to every phone of this project: a launch is
   // visible before its chat exists, so there is no chat subscription to key on.
   const chatLaunchSubscription = args.chatLaunchService?.subscribe((event) => {
@@ -9420,6 +9434,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       lanePresenceByLaneId.clear();
       dropInFlightCommandRecordsForProject();
       chatEventSubscription?.();
+      sessionChangeSubscription?.();
       chatLaunchSubscription?.();
       clearInterval(pollTimer);
       clearInterval(heartbeatTimer);

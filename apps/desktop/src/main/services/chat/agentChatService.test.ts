@@ -1718,6 +1718,7 @@ function createMockSessionService() {
     setHeadShaEnd: vi.fn(),
     setLastOutputPreview: vi.fn(),
     clearTurnStartMarkers: vi.fn(),
+    clearSessionActivity: vi.fn(),
     markLastTurnFailed: vi.fn(),
     clearLastTurnFailed: vi.fn(),
     setSummary: vi.fn(),
@@ -10062,6 +10063,95 @@ describe("createAgentChatService", () => {
       expect(secondUserContent).not.toContain("CLI controls ADE state");
     });
 
+    it("gives OpenCode activity guidance an explicit per-chat CLI and runtime target", async () => {
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          yield { type: "finish", usage: {} };
+        })(),
+      } as any));
+      const cliPath = path.join(tmpRoot, "activity-cli", "ade");
+      fs.mkdirSync(path.dirname(cliPath), { recursive: true });
+      fs.writeFileSync(cliPath, "#!/bin/sh\nexit 0\n");
+      fs.chmodSync(cliPath, 0o755);
+      const runtimeSocketPath = "/Users/admin/.ade-beta/sock/ade.sock";
+      const staleRuntimeSocketPath = "/Users/admin/.ade/sock/ade.sock";
+      const { service } = createService({
+        runtimeSocketPath,
+        getAdeCliAgentEnv: () => ({
+          PATH: path.dirname(cliPath),
+          ADE_CLI_PATH: cliPath,
+          ADE_RUNTIME_SOCKET_PATH: staleRuntimeSocketPath,
+          ADE_RPC_SOCKET_PATH: staleRuntimeSocketPath,
+          ADE_RPC_URL: staleRuntimeSocketPath,
+        }),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      await service.runSessionTurn({ sessionId: session.id, text: "Check the test state." });
+
+      let promptBody: Record<string, unknown> | undefined;
+      await vi.waitFor(() => {
+        const openCodeState = [...mockState.openCodeSessions.values()].at(-1);
+        promptBody = openCodeState?.promptBodies.at(-1) as Record<string, unknown> | undefined;
+        expect(promptBody).toBeDefined();
+      });
+      const systemPromptArgs = vi.mocked(buildCodingAgentSystemPrompt).mock.calls.at(-1)?.[0];
+      for (const selector of ["ADE_RPC_URL", "ADE_RPC_SOCKET_PATH", "ADE_RUNTIME_SOCKET_PATH"]) {
+        expect(systemPromptArgs?.sessionActivityGuidance)
+          .toContain(`${selector}='${runtimeSocketPath}'`);
+      }
+      expect(systemPromptArgs?.sessionActivityGuidance).toContain("ADE_DEFAULT_ROLE='agent'");
+      expect(systemPromptArgs?.sessionActivityGuidance).toContain(`ADE_CHAT_SESSION_ID='${session.id}'`);
+      expect(systemPromptArgs?.sessionActivityGuidance)
+        .toContain(`'${cliPath}' chat activity testing --session '${session.id}'`);
+      expect(systemPromptArgs?.sessionActivityGuidance).not.toContain(staleRuntimeSocketPath);
+      await service.dispose({ sessionId: session.id });
+    });
+
+    it("withholds SDK activity guidance for an embedded runtime without RPC", async () => {
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          yield { type: "finish", usage: {} };
+        })(),
+      } as any));
+      const cliPath = path.join(tmpRoot, "activity-cli", "ade");
+      fs.mkdirSync(path.dirname(cliPath), { recursive: true });
+      fs.writeFileSync(cliPath, "#!/bin/sh\nexit 0\n");
+      fs.chmodSync(cliPath, 0o755);
+      const { service } = createService({
+        runtimeSocketPath: "/runtime/unserved.sock",
+        sessionActivityReportingEnabled: false,
+        getAdeCliAgentEnv: () => ({
+          PATH: path.dirname(cliPath),
+          ADE_CLI_PATH: cliPath,
+          ADE_RUNTIME_SOCKET_PATH: "/runtime/stable.sock",
+        }),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      await service.runSessionTurn({ sessionId: session.id, text: "Check the test state." });
+
+      let promptBody: Record<string, unknown> | undefined;
+      await vi.waitFor(() => {
+        const openCodeState = [...mockState.openCodeSessions.values()].at(-1);
+        promptBody = openCodeState?.promptBodies.at(-1) as Record<string, unknown> | undefined;
+        expect(promptBody).toBeDefined();
+      });
+      const systemPromptArgs = vi.mocked(buildCodingAgentSystemPrompt).mock.calls.at(-1)?.[0];
+      expect(systemPromptArgs?.sessionActivityGuidance).toBeNull();
+      await service.dispose({ sessionId: session.id });
+    });
+
     it("starts Codex sessions without ADE-owned tool server injection", async () => {
       const laneRootPath = path.join(tmpRoot, "lane-2");
       fs.mkdirSync(laneRootPath, { recursive: true });
@@ -10385,6 +10475,51 @@ describe("createAgentChatService", () => {
       expect(spawnArgs).not.toContain("computer_use");
     });
 
+    it("routes Codex activity reports through the runtime that owns the chat", async () => {
+      const cliPath = path.join(tmpRoot, "activity-cli", "ade");
+      fs.mkdirSync(path.dirname(cliPath), { recursive: true });
+      fs.writeFileSync(cliPath, "#!/bin/sh\nexit 0\n");
+      fs.chmodSync(cliPath, 0o755);
+      const runtimeSocketPath = "/Users/admin/.ade-beta/sock/ade.sock";
+      const staleRuntimeSocketPath = "/Users/admin/.ade/sock/ade.sock";
+      const getAdeCliAgentEnv = vi.fn(() => ({
+        PATH: path.dirname(cliPath),
+        ADE_CLI_PATH: cliPath,
+        ADE_RUNTIME_SOCKET_PATH: staleRuntimeSocketPath,
+        ADE_RPC_SOCKET_PATH: staleRuntimeSocketPath,
+        ADE_RPC_URL: staleRuntimeSocketPath,
+      }));
+      const { service } = createService({ getAdeCliAgentEnv, runtimeSocketPath });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      try {
+        await service.sendMessage(
+          { sessionId: session.id, text: "Run the checks." },
+          { awaitDispatch: true },
+        );
+
+        await vi.waitFor(() => {
+          expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(true);
+        });
+
+        const spawnCall = vi.mocked(spawn).mock.calls.find((call) =>
+          call[0] === "codex" && Array.isArray(call[1]) && call[1].includes("app-server")
+        );
+        const spawnEnv = (spawnCall?.[2] as { env?: NodeJS.ProcessEnv } | undefined)?.env;
+        expect(spawnEnv).toMatchObject({
+          ADE_RPC_URL: runtimeSocketPath,
+          ADE_RPC_SOCKET_PATH: runtimeSocketPath,
+          ADE_RUNTIME_SOCKET_PATH: runtimeSocketPath,
+        });
+      } finally {
+        await service.dispose({ sessionId: session.id });
+      }
+    });
+
     it("passes raw CLI access env to the Cursor SDK pool for worker sanitization", async () => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
       const getAdeCliAgentEnv = vi.fn(() => ({
@@ -10440,6 +10575,79 @@ describe("createAgentChatService", () => {
       await service.dispose({ sessionId: session.id });
 
       expect(resolveBuiltInBrowserActorCapability(actorToken)).toBeNull();
+    });
+
+    it("targets Cursor SDK activity reports at the service runtime and disables them without an exact socket", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const cliPath = path.join(tmpRoot, "activity-cli", "ade");
+      fs.mkdirSync(path.dirname(cliPath), { recursive: true });
+      fs.writeFileSync(cliPath, "#!/bin/sh\nexit 0\n");
+      fs.chmodSync(cliPath, 0o755);
+      const runtimeSocketPath = "/Users/admin/.ade-beta/sock/ade.sock";
+      const getAdeCliAgentEnv = vi.fn(() => ({
+        PATH: path.dirname(cliPath),
+        ADE_CLI_PATH: cliPath,
+        // The service's socket is authoritative if a launcher carries stale env.
+        ADE_RUNTIME_SOCKET_PATH: "/Users/admin/.ade/sock/ade.sock",
+      }));
+
+      const { service } = createService({ getAdeCliAgentEnv, runtimeSocketPath });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      await service.sendMessage({ sessionId: session.id, text: "Run locally." }, { awaitDispatch: true });
+
+      expect(mockState.cursorSdkAcquireCalls.at(-1)).toEqual(expect.objectContaining({
+        activityRuntimeSocketPath: runtimeSocketPath,
+      }));
+      expect(String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? ""))
+        .toContain(`chat activity testing --session '${session.id}'`);
+      await service.dispose({ sessionId: session.id });
+
+      mockState.cursorSdkAcquireCalls = [];
+      mockState.cursorSdkSendCalls = [];
+      const fallbackSocketPath = "/runtime/fallback.sock";
+      const { service: fallbackService } = createService({
+        runtimeSocketPath: "   ",
+        getAdeCliAgentEnv: () => ({
+          PATH: path.dirname(cliPath),
+          ADE_CLI_PATH: cliPath,
+          ADE_RUNTIME_SOCKET_PATH: fallbackSocketPath,
+        }),
+      });
+      const fallbackSession = await fallbackService.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      await fallbackService.sendMessage({ sessionId: fallbackSession.id, text: "Run locally." }, { awaitDispatch: true });
+
+      expect(mockState.cursorSdkAcquireCalls.at(-1)).toEqual(expect.objectContaining({
+        activityRuntimeSocketPath: fallbackSocketPath,
+      }));
+      await fallbackService.dispose({ sessionId: fallbackSession.id });
+
+      mockState.cursorSdkAcquireCalls = [];
+      mockState.cursorSdkSendCalls = [];
+      const { service: noSocketService } = createService({
+        getAdeCliAgentEnv: () => ({ PATH: path.dirname(cliPath), ADE_CLI_PATH: cliPath }),
+      });
+      const noSocketSession = await noSocketService.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      await noSocketService.sendMessage({ sessionId: noSocketSession.id, text: "Run locally." }, { awaitDispatch: true });
+
+      expect(mockState.cursorSdkAcquireCalls.at(-1)).not.toHaveProperty("activityRuntimeSocketPath");
+      expect(String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? ""))
+        .not.toContain("chat activity testing --session");
+      await noSocketService.dispose({ sessionId: noSocketSession.id });
     });
   });
 
@@ -18322,6 +18530,7 @@ describe("createAgentChatService", () => {
       await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
 
       sessionService.clearTurnStartMarkers.mockClear();
+      sessionService.clearSessionActivity.mockClear();
       await service.sendMessage({
         sessionId: session.id,
         text: "wake prompt",
@@ -18335,10 +18544,13 @@ describe("createAgentChatService", () => {
         } as never,
       });
       expect(sessionService.clearTurnStartMarkers).not.toHaveBeenCalled();
+      expect(sessionService.clearSessionActivity).not.toHaveBeenCalled();
 
       await service.sendMessage({ sessionId: session.id, text: "real user reply" });
       expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledWith(session.id);
       expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledTimes(1);
+      expect(sessionService.clearSessionActivity).toHaveBeenCalledWith(session.id);
+      expect(sessionService.clearSessionActivity).toHaveBeenCalledTimes(1);
     });
 
     it("writes a receipt for every Claude approval it settles, not just a cleared map", async () => {
@@ -18646,6 +18858,7 @@ describe("createAgentChatService", () => {
       const { service, sessionService } = createService();
       const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
       sessionService.clearTurnStartMarkers.mockClear();
+      sessionService.clearSessionActivity.mockClear();
 
       await service.respondToInput({
         sessionId: session.id,
@@ -18654,6 +18867,7 @@ describe("createAgentChatService", () => {
       });
 
       expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledWith(session.id);
+      expect(sessionService.clearSessionActivity).toHaveBeenCalledWith(session.id);
       // And a receipt was written, so the card cannot be redrawn either.
       const history = await service.getChatEventHistory(session.id);
       expect(history.events.some((envelope) =>
@@ -18690,18 +18904,21 @@ describe("createAgentChatService", () => {
         { hostContinuation: { reason: "plan_followup" } },
       ]) {
         sessionService.clearTurnStartMarkers.mockClear();
+        sessionService.clearSessionActivity.mockClear();
         await service.sendMessage({
           sessionId: session.id,
           text: "host-authored delivery",
           metadata: metadata as never,
         });
         expect(sessionService.clearTurnStartMarkers).not.toHaveBeenCalled();
+        expect(sessionService.clearSessionActivity).not.toHaveBeenCalled();
       }
 
       // A board move is host-authored provenance but a HUMAN act, so it does
       // clear — except a move INTO Needs you, which exists to raise the hand
       // the clear would wipe in the same breath.
       sessionService.clearTurnStartMarkers.mockClear();
+      sessionService.clearSessionActivity.mockClear();
       await service.sendMessage({
         sessionId: session.id,
         text: "You moved this chat from Done to Working.",
@@ -18710,8 +18927,10 @@ describe("createAgentChatService", () => {
         } as never,
       });
       expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledWith(session.id);
+      expect(sessionService.clearSessionActivity).toHaveBeenCalledWith(session.id);
 
       sessionService.clearTurnStartMarkers.mockClear();
+      sessionService.clearSessionActivity.mockClear();
       await service.sendMessage({
         sessionId: session.id,
         text: "The user parked this for their input.",
@@ -18720,6 +18939,7 @@ describe("createAgentChatService", () => {
         } as never,
       });
       expect(sessionService.clearTurnStartMarkers).not.toHaveBeenCalled();
+      expect(sessionService.clearSessionActivity).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -18756,6 +18976,7 @@ describe("createAgentChatService", () => {
           modelId,
         });
         sessionService.clearTurnStartMarkers.mockClear();
+        sessionService.clearSessionActivity.mockClear();
 
         let turnSettled = false;
         const steerPromise = service.steerUserMessage({
@@ -18788,6 +19009,8 @@ describe("createAgentChatService", () => {
             expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledWith(session.id);
           });
           expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledTimes(1);
+          expect(sessionService.clearSessionActivity).toHaveBeenCalledWith(session.id);
+          expect(sessionService.clearSessionActivity).toHaveBeenCalledTimes(1);
           expect(turnSettled).toBe(false);
         } finally {
           finishTurn();
@@ -18809,12 +19032,14 @@ describe("createAgentChatService", () => {
         modelId: "cursor/composer-2",
       });
       sessionService.clearTurnStartMarkers.mockClear();
+      sessionService.clearSessionActivity.mockClear();
 
       await expect(service.steerUserMessage({
         sessionId: session.id,
         text: "Continue from my answer.",
       })).rejects.toThrow("Cursor rejected the dispatch.");
       expect(sessionService.clearTurnStartMarkers).not.toHaveBeenCalled();
+      expect(sessionService.clearSessionActivity).not.toHaveBeenCalled();
     });
 
     it("preserves lifecycle markers when an idle OpenCode prompt is rejected before dispatch", async () => {
@@ -37708,7 +37933,21 @@ describe("createAgentChatService", () => {
     });
 
     it("sends Codex plan collaboration mode on turn start for plan sessions", async () => {
-      const { service } = createService();
+      const events: AgentChatEventEnvelope[] = [];
+      let readSessionSummary: ((sessionId: string) => Promise<unknown>) | null = null;
+      let summaryReadAtClear: Promise<unknown> | null = null;
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => {
+          events.push(event);
+          if (
+            event.event.type === "session_meta_updated"
+            && event.event.codexEffectiveCollaborationMode === null
+            && readSessionSummary
+          ) {
+            summaryReadAtClear = readSessionSummary(event.sessionId);
+          }
+        },
+      });
       const session = await service.createSession({
         laneId: "lane-1",
         provider: "codex",
@@ -37718,6 +37957,7 @@ describe("createAgentChatService", () => {
         codexConfigSource: "flags",
       });
       expect(session.permissionMode).toBe("plan");
+      readSessionSummary = (sessionId) => service.getSessionSummary(sessionId);
 
       await service.sendMessage({
         sessionId: session.id,
@@ -37751,6 +37991,22 @@ describe("createAgentChatService", () => {
       expect(collaborationMode?.settings?.model).toBe("gpt-5.4");
       expect(collaborationMode?.settings?.reasoning_effort).toBe("medium");
       expect(collaborationMode?.settings?.developer_instructions).toBeNull();
+      await vi.waitFor(async () => {
+        expect((await service.getSessionSummary(session.id))?.codexEffectiveCollaborationMode).toBe("plan");
+      });
+      expect((await service.getSessionSummary(session.id))?.codexEffectiveCollaborationModeWasCleared)
+        .toBeUndefined();
+      expect(events.some(({ event }) =>
+        event.type === "session_meta_updated" && event.codexEffectiveCollaborationMode === null,
+      )).toBe(true);
+      expect(events.some(({ event }) =>
+        event.type === "session_meta_updated" && event.codexEffectiveCollaborationMode === "plan",
+      )).toBe(true);
+      const clearedSummary = summaryReadAtClear;
+      if (!clearedSummary) throw new Error("Expected a summary read while Codex mode was cleared");
+      expect(await clearedSummary).toMatchObject({
+        codexEffectiveCollaborationModeWasCleared: true,
+      });
       expect(textInputs).toHaveLength(1);
       expect(textInputs.at(-1)?.text).toContain("User request:");
       expect(textInputs.at(-1)?.text).toContain("Ask one planning question before coding.");
@@ -37764,6 +38020,7 @@ describe("createAgentChatService", () => {
           runtime: "codex-app-server",
         }),
       );
+
     });
 
     it("turns native Codex plan items into an implementation approval request", async () => {
@@ -43763,7 +44020,10 @@ describe("createAgentChatService", () => {
 
     it("falls back to default collaboration mode when plan is not advertised", async () => {
       mockState.codexCollaborationModes = [{ mode: "default" }];
-      const { service } = createService();
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
       const session = await service.createSession({
         laneId: "lane-1",
         provider: "codex",
@@ -43788,6 +44048,12 @@ describe("createAgentChatService", () => {
       const collaborationMode = params?.collaborationMode as { mode?: unknown } | undefined;
 
       expect(collaborationMode?.mode).toBe("default");
+      await vi.waitFor(async () => {
+        expect((await service.getSessionSummary(session.id))?.codexEffectiveCollaborationMode).toBe("default");
+      });
+      expect(events.some(({ event }) =>
+        event.type === "session_meta_updated" && event.codexEffectiveCollaborationMode === "default",
+      )).toBe(true);
     });
   });
 
@@ -52476,6 +52742,16 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
           && event.event.itemId === "cursor-hook-preview-failure",
       );
 
+      expect(service.listPendingInputs({ sessionId: session.id }).requests).toEqual([
+        expect.objectContaining({
+          itemId: "cursor-hook-preview-failure",
+          source: "cursor",
+          kind: "permissions",
+          blocking: true,
+          providerMetadata: expect.objectContaining({ cursorSdk: true, toolName: "shell" }),
+        }),
+      ]);
+
       await service.respondToInput({
         sessionId: session.id,
         itemId: approvalEvent.event.itemId,
@@ -52483,6 +52759,7 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
       });
 
       await expect(hookResponse).resolves.toEqual({ permission: "allow" });
+      expect(service.listPendingInputs({ sessionId: session.id }).requests).toEqual([]);
       expect(logger.warn).toHaveBeenCalledWith(
         "agent_chat.preview_update_failed",
         expect.objectContaining({
@@ -52837,6 +53114,68 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
     expect(updated?.modelId).toBe("droid/custom:claude-sonnet-5-thinking-32000");
     expect(doneEvent.event.model).toBe("custom:claude-sonnet-5-thinking-32000");
     expect(doneEvent.event.modelId).toBe("droid/custom:claude-sonnet-5-thinking-32000");
+  });
+
+  it("lists and resolves a live Droid SDK permission card", async () => {
+    let finishTurn = () => {};
+    mockState.droidPromptGate = new Promise<void>((resolve) => { finishTurn = resolve; });
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "droid",
+      model: "custom:claude-sonnet-5-thinking-32000",
+      modelId: "droid/custom:claude-sonnet-5-thinking-32000",
+    });
+
+    try {
+      const turnPromise = service.sendMessage({
+        sessionId: session.id,
+        text: "Read a file that needs permission.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(mockState.droidPromptCalls.length).toBeGreaterThan(0);
+        expect(typeof mockState.droidPooled?.bridge.onPermissionRequest).toBe("function");
+      });
+
+      const permissionResponse = mockState.droidPooled.bridge.onPermissionRequest({
+        id: "droid-permission-card",
+        title: "Read file",
+        summary: "Read README.md",
+        toolName: "Read",
+        toolInput: { filePath: "README.md" },
+        toolUseIds: ["tool-use-1"],
+        options: [
+          { label: "Allow once", value: "proceed_once" },
+          { label: "Cancel", value: "cancel" },
+        ],
+        raw: { filePath: "README.md" },
+      });
+
+      expect(service.listPendingInputs({ sessionId: session.id }).requests).toEqual([
+        expect.objectContaining({
+          itemId: "droid-permission-card",
+          source: "droid",
+          kind: "permissions",
+          blocking: true,
+          options: expect.arrayContaining([
+            expect.objectContaining({ label: "Allow once", value: "proceed_once" }),
+          ]),
+        }),
+      ]);
+
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: "droid-permission-card",
+        decision: "accept",
+      });
+
+      await expect(permissionResponse).resolves.toEqual({ selectedOption: "proceed_once" });
+      expect(service.listPendingInputs({ sessionId: session.id }).requests).toEqual([]);
+      finishTurn();
+      await expect(turnPromise).resolves.toBeUndefined();
+    } finally {
+      finishTurn();
+    }
   });
 
   it("sends Droid screenshots as attachment paths over worker IPC", async () => {

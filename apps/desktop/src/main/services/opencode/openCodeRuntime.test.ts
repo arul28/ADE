@@ -845,6 +845,35 @@ describe("ADE instructions for the tracked OpenCode CLI", () => {
     expect(plan).not.toContain("Autonomous mode.");
   });
 
+  it("includes tracked CLI activity only when ADE supplies shell guidance", () => {
+    const activityGuidance = 'Use "$ADE_CLI_PATH" chat activity testing for this session.';
+    const withActivity = buildOpenCodeAdeInstructions({
+      laneWorktreePath: lane,
+      permissionMode: "edit",
+      sessionActivityGuidance: activityGuidance,
+    });
+    const withoutActivity = buildOpenCodeAdeInstructions({ laneWorktreePath: lane, permissionMode: "plan" });
+
+    expect(withActivity).toContain("## Session activity");
+    expect(withActivity).toContain(activityGuidance);
+    expect(withoutActivity).not.toContain("## Session activity");
+  });
+
+  it("keeps activity and non-activity instruction files separate", () => {
+    const basePath = openCodeAdeInstructionsPath({
+      projectRoot,
+      laneWorktreePath: lane,
+      permissionMode: "edit",
+    });
+    const activityPath = openCodeAdeInstructionsPath({
+      projectRoot,
+      laneWorktreePath: lane,
+      permissionMode: "edit",
+      sessionActivityEnabled: true,
+    });
+    expect(activityPath).not.toBe(basePath);
+  });
+
   it("writes into ADE's own cache, never the lane worktree or a shared temp dir", () => {
     const written = ensureOpenCodeAdeInstructionsFile({ projectRoot, laneWorktreePath: lane, permissionMode: "edit" });
 
@@ -888,7 +917,7 @@ describe("ADE instructions for the tracked OpenCode CLI", () => {
       laneWorktreePath: "/repo/lane with spaces/*/weird?",
       permissionMode: "edit",
     }));
-    expect(name).toMatch(/^ade-[0-9a-f]{16}\.md$/);
+    expect(name).toMatch(/^ade-[0-9a-f]{16}(?:-activity)?\.md$/);
   });
 
   it("does not claim an ADE permission tier when the user owns the config", () => {

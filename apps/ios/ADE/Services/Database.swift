@@ -109,6 +109,9 @@ final class DatabaseService {
     let snoozedAt: String?
     let wokeAt: String?
     let wokeReason: String?
+    let activityStatus: SessionActivityReport?
+    let activityStatusChangedAt: String?
+    let lastActivityAt: String?
   }
 
   private struct ComputerUseArtifactRow {
@@ -1098,8 +1101,8 @@ final class DatabaseService {
             exit_code, transcript_path, head_sha_start, head_sha_end, status, last_output_preview,
             last_output_at, summary, runtime_state, resume_command, resume_metadata_json, manually_named, chat_idle_since_at, chat_session_id,
             pending_input_item_id, archived_at, settled_at, status_note, attention_requested_at, attention_message, attention_source, last_turn_failed_at,
-            settle_override, settle_source, snoozed_until, snoozed_at, woke_at, woke_reason
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            settle_override, settle_source, snoozed_until, snoozed_at, woke_at, woke_reason, activity_status_json, activity_status_changed_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           on conflict(id) do update set
             lane_id = excluded.lane_id,
             lane_name = excluded.lane_name,
@@ -1138,7 +1141,9 @@ final class DatabaseService {
             snoozed_until = excluded.snoozed_until,
             snoozed_at = excluded.snoozed_at,
             woke_at = excluded.woke_at,
-            woke_reason = excluded.woke_reason
+            woke_reason = excluded.woke_reason,
+            activity_status_json = excluded.activity_status_json,
+            activity_status_changed_at = excluded.activity_status_changed_at
         """) { statement in
           try bindText(session.id, to: statement, index: 1)
           try bindText(session.laneId, to: statement, index: 2)
@@ -1189,7 +1194,11 @@ final class DatabaseService {
           } else {
             sqlite3_bind_null(statement, 17)
           }
-          try bindText(session.endedAt ?? session.startedAt, to: statement, index: 18)
+          if let lastActivityAt = session.lastActivityAt {
+            try bindText(lastActivityAt, to: statement, index: 18)
+          } else {
+            sqlite3_bind_null(statement, 18)
+          }
           if let summary = session.summary {
             try bindText(summary, to: statement, index: 19)
           } else {
@@ -1282,6 +1291,12 @@ final class DatabaseService {
             try bindText(wokeReason, to: statement, index: 39)
           } else {
             sqlite3_bind_null(statement, 39)
+          }
+          try bindOptionalJson(session.activityStatus, to: statement, index: 40)
+          if let changedAt = session.activityStatusChangedAt ?? session.activityStatus?.updatedAt {
+            try bindText(changedAt, to: statement, index: 41)
+          } else {
+            sqlite3_bind_null(statement, 41)
           }
         }
       }
@@ -1899,7 +1914,8 @@ final class DatabaseService {
              s.head_sha_start, s.head_sha_end, s.last_output_preview, s.summary, s.runtime_state,
              s.resume_command, s.resume_metadata_json, s.chat_idle_since_at, s.chat_session_id, s.pending_input_item_id, s.archived_at,
              s.settled_at, s.status_note, s.attention_requested_at, s.attention_message, s.attention_source, s.last_turn_failed_at,
-             s.settle_override, s.settle_source, s.snoozed_until, s.snoozed_at, s.woke_at, s.woke_reason
+             s.settle_override, s.settle_source, s.snoozed_until, s.snoozed_at, s.woke_at, s.woke_reason,
+             s.activity_status_json, s.activity_status_changed_at, s.last_output_at
         from terminal_sessions s
         left join lanes l on l.id = s.lane_id
        where l.project_id = ?
@@ -1924,7 +1940,8 @@ final class DatabaseService {
              s.head_sha_start, s.head_sha_end, s.last_output_preview, s.summary, s.runtime_state,
              s.resume_command, s.resume_metadata_json, s.chat_idle_since_at, s.chat_session_id, s.pending_input_item_id, s.archived_at,
              s.settled_at, s.status_note, s.attention_requested_at, s.attention_message, s.attention_source, s.last_turn_failed_at,
-             s.settle_override, s.settle_source, s.snoozed_until, s.snoozed_at, s.woke_at, s.woke_reason
+             s.settle_override, s.settle_source, s.snoozed_until, s.snoozed_at, s.woke_at, s.woke_reason,
+             s.activity_status_json, s.activity_status_changed_at, s.last_output_at
         from terminal_sessions s
         left join lanes l on l.id = s.lane_id
        where s.id = ? and (l.project_id = ? or l.id is null)
@@ -1977,7 +1994,10 @@ final class DatabaseService {
       snoozedUntil: stringValue(statement, index: 34),
       snoozedAt: stringValue(statement, index: 35),
       wokeAt: stringValue(statement, index: 36),
-      wokeReason: stringValue(statement, index: 37)
+      wokeReason: stringValue(statement, index: 37),
+      activityStatus: decodeJson(stringValue(statement, index: 38), as: SessionActivityReport.self),
+      activityStatusChangedAt: stringValue(statement, index: 39),
+      lastActivityAt: stringValue(statement, index: 40)
     )
   }
 
@@ -1996,9 +2016,12 @@ final class DatabaseService {
       status: row.status,
       startedAt: row.startedAt,
       endedAt: row.endedAt,
+      lastActivityAt: row.lastActivityAt,
       archivedAt: row.archivedAt,
       settledAt: row.settledAt,
       statusNote: row.statusNote,
+      activityStatus: row.activityStatus,
+      activityStatusChangedAt: row.activityStatusChangedAt ?? row.activityStatus?.updatedAt,
       attentionRequestedAt: row.attentionRequestedAt,
       attentionMessage: row.attentionMessage,
       attentionSource: row.attentionSource,
@@ -2907,6 +2930,16 @@ final class DatabaseService {
     try ensureColumn(
       tableName: "terminal_sessions",
       columnName: "status_note",
+      definition: "text"
+    )
+    try ensureColumn(
+      tableName: "terminal_sessions",
+      columnName: "activity_status_json",
+      definition: "text"
+    )
+    try ensureColumn(
+      tableName: "terminal_sessions",
+      columnName: "activity_status_changed_at",
       definition: "text"
     )
     try ensureColumn(

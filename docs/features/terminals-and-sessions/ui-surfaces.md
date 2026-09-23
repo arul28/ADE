@@ -347,11 +347,17 @@ identicon, title, then the provider glyph on the right (same seat as every
 other session card), plus shout-only status words (Needs you / Failed). Nested
 rows omit the Subagent/Peer lineage pill — they already sit under the parent.
 
-`SessionStatusSlot` is the card's only permanent status vocabulary. It resolves
+`SessionStatusSlot` displays one effective status label at a time. It resolves
 words, glyphs, tone, prominence, and elapsed-time behavior through
-`shared/sessionStatusPresentation.ts`. An active ADE chat in its authoritative
-plan interaction mode reads **Planning** in violet; other active turns retain
-**Working**. Once the foreground turn is idle, provider-reported background
+`shared/sessionStatusPresentation.ts`. **Needs you** has priority over every
+other label; an active snooze or unacknowledged **Woke** marker also takes the
+slot before activity details. An active ADE chat in its authoritative
+plan interaction mode reads **Planning** in violet; Codex uses the collaboration
+mode accepted by the active `turn/start`. An eligible, current activity report
+replaces the generic **Working** label for a live turn with one fixed short
+label and its matching activity glyph on desktop, ADE Code, and iOS; without
+one, the card shows **Planning** or **Working** from the provider mode. Once the
+foreground turn is idle, provider-reported background
 tasks read blue **Background work** (**Background work ×N** when several are
 live), while an armed `nextWakeAt` reads neutral
 **Waiting** with a compact countdown. Naming that state rather than reusing
@@ -359,10 +365,12 @@ live), while an armed `nextWakeAt` reads neutral
 "Working" on a finished turn is indistinguishable from one that has hung.
 These contextual labels do not change the
 canonical lifecycle, filing bucket, filters, or attention count, and CLI output
-is never scraped to infer plan mode. Working/Planning elapsed time ticks from
-the active chat's immutable `currentTurnStartedAt`, so streamed activity cannot
-reset it; legacy chat rows without that anchor, plus CLI and Stale durations,
-use last activity. Background work counts from `backgroundWorkSince` — when the
+is never scraped to infer plan mode. Working, Planning, and activity elapsed
+time use the active chat's immutable `currentTurnStartedAt` when available, so
+streamed activity cannot reset the timer. Desktop and CLI fall back to last
+activity when that anchor is absent. iOS uses an eligible activity report's
+`updatedAt` first, then the row's activity timestamp. Background work counts
+from `backgroundWorkSince` — when the
 session's live background set last went from empty to non-empty — which the
 runtime reports on the session summary. Anchoring it to last activity instead
 made it meaningless: every provider frame refreshes that column, so a job that

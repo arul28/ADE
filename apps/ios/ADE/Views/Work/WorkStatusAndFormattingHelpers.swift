@@ -839,7 +839,7 @@ func normalizedWorkChatSessionStatus(session: TerminalSessionSummary?, summary: 
   // moved in over 7 days is almost certainly never going to resume. Keep
   // explicit awaiting-input sessions visible until they are resolved or closed.
   if raw == "active" || raw == "idle" {
-    let lastActivityRaw = summary?.lastActivityAt ?? session?.chatIdleSinceAt ?? session?.startedAt
+    let lastActivityRaw = summary?.lastActivityAt ?? session?.lastActivityAt ?? session?.chatIdleSinceAt ?? session?.startedAt
     if let last = lastActivityRaw,
        let date = workChatLastActivityDate(last),
        Date().timeIntervalSince(date) > workChatStaleAfterSeconds {

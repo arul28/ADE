@@ -1,5 +1,6 @@
 import { MAX_STATUS_NOTE_CHARACTERS, STATUS_NOTE_GUIDELINE_WORDS } from "./sessionStatusNote";
 import { formatAdeAgentSkillRootsForPrompt, getAdeAgentSkillRootsForPrompt } from "./agentSkillRoots";
+import { SESSION_ACTIVITY_VALUES } from "./types/sessions";
 
 /**
  * The bundled skill index every provider's prompt advertises.
@@ -46,15 +47,124 @@ export const adeBundledAgentSkills = [
 // reads it: the "Board and status" section of the ade-cli-control-plane skill.
 export const ADE_SESSION_STATUS_PROTOCOL_GUIDANCE = [
   "ADE control protocol for truthful Work status:",
-  `- Working: \`ade chat note "testing desktop auth fallback"\`; aim for ${STATUS_NOTE_GUIDELINE_WORDS} words or fewer — a guideline, not a hard limit. Notes truncate past ${MAX_STATUS_NOTE_CHARACTERS} characters, so a long note still beats no note.`,
+  `- Use \`ade chat note "testing desktop auth fallback"\` for a durable one-line summary (aim for ${STATUS_NOTE_GUIDELINE_WORDS} words or fewer; notes truncate past ${MAX_STATUS_NOTE_CHARACTERS} characters).`,
   '- Blocked on input: call `ade chat note "<what and why>"`, then `ade chat ask "<the exact question>"`; a note alone can leave an idle row looking Done.',
   "- The next accepted user message clears the prior hand-raise. Re-note and re-ask before ending if still blocked.",
   '- Done: report it and leave `ade chat note "<delivered result>"`.',
   "- You cannot settle or unsettle a session; that is the user's call, or the automatic result of its PR merging.",
   "- Waiting a while? `ade session snooze <id> --for <duration>` hides the row without claiming done; a hand-raise wakes it.",
-  "- Keep `ade chat note` current as the work changes; do not wait until the end.",
   "- If the lane, branch, or chat name is wrong, rename it: `ade chat generate-names`, `ade chat update --title`, or `ade lanes rename`.",
 ].join("\n");
+
+/**
+ * Pin every ADE CLI socket selector to the same runtime. Different command
+ * entry points prefer different variables, so setting only one can route
+ * activity reports to a stale or unrelated runtime inherited from a preset.
+ */
+export function buildAdeRuntimeSocketEnv(runtimeSocketPath: string | null | undefined): Record<string, string> {
+  const socketPath = runtimeSocketPath?.trim();
+  return socketPath
+    ? {
+      ADE_RPC_URL: socketPath,
+      ADE_RPC_SOCKET_PATH: socketPath,
+      ADE_RUNTIME_SOCKET_PATH: socketPath,
+    }
+    : {};
+}
+
+export type AdeSessionActivityTarget =
+  | { type: "environment" }
+  /** OpenCode's shared server cannot receive this session's environment. */
+  | { type: "inline"; runtimeSocketPath: string };
+
+/**
+ * Agent-set activity is emitted only by provider call sites that have verified
+ * a shell/command tool path and the runtime-resolved ADE CLI executable. The
+ * CLI path is injected into ADE-managed provider processes as ADE_CLI_PATH; the
+ * explicit session id keeps the report scoped even for shared provider hosts.
+ */
+export function buildAdeSessionActivityGuidance(args: {
+  sessionId: string;
+  cliPath: string | null | undefined;
+  shell: "posix" | "powershell";
+  target?: AdeSessionActivityTarget;
+}): string | null {
+  const sessionId = args.sessionId.trim();
+  if (!sessionId || !args.cliPath?.trim()) return null;
+  const cliPath = args.cliPath;
+  const target = args.target ?? { type: "environment" };
+  const runtimeSocketPath = target.type === "inline" ? target.runtimeSocketPath.trim() || null : null;
+  if (target.type === "inline" && !runtimeSocketPath) return null;
+
+  const quoteShellValue = (value: string): string => args.shell === "powershell"
+    ? `'${value.replace(/'/g, "''")}'`
+    : `'${value.replace(/'/g, "'\\''")}'`;
+  const safeSessionId = quoteShellValue(sessionId);
+  const safeCliPath = quoteShellValue(cliPath);
+  let safeRuntimeSocketPath: string | null = null;
+  if (runtimeSocketPath) {
+    safeRuntimeSocketPath = quoteShellValue(runtimeSocketPath);
+  }
+  const runtimeTargetEnv: Record<string, string> = target.type === "inline" && runtimeSocketPath
+    ? {
+      ADE_DEFAULT_ROLE: "agent",
+      ADE_CHAT_SESSION_ID: sessionId,
+      ...buildAdeRuntimeSocketEnv(runtimeSocketPath),
+    }
+    : {};
+  let runtimeTargetAssignments = "";
+  if (target.type === "inline" && Object.keys(runtimeTargetEnv).length > 0) {
+    if (args.shell === "powershell") {
+      runtimeTargetAssignments = `${Object.entries(runtimeTargetEnv)
+        .map(([name, value]) => `$env:${name} = ${quoteShellValue(value)}`)
+        .join("; ")}; `;
+    } else {
+      runtimeTargetAssignments = `${Object.entries(runtimeTargetEnv)
+        .map(([name, value]) => `${name}=${quoteShellValue(value)}`)
+        .join(" ")} `;
+    }
+  }
+  let cliCommand: string;
+  if (target.type === "inline") {
+    cliCommand = args.shell === "powershell" ? `& ${safeCliPath}` : safeCliPath;
+  } else {
+    cliCommand = args.shell === "powershell" ? '& "$env:ADE_CLI_PATH"' : '"$ADE_CLI_PATH"';
+  }
+  const command = (activity: "testing" | "clear"): string => {
+    const invoke = `${cliCommand} chat activity ${activity} --session ${safeSessionId}`;
+    if (target.type !== "inline" || !safeRuntimeSocketPath) return invoke;
+    return `${runtimeTargetAssignments}${invoke}`;
+  };
+  return [
+    `- Report session activity with \`${command("testing")}\`; clear it with \`${command("clear")}\`.`,
+    `  Choose one current state: ${SESSION_ACTIVITY_VALUES.join(", ")}.`,
+  ].join("\n");
+}
+
+/**
+ * Guidance for a tracked CLI PTY. ADE_ACTIVITY_SESSION_ID is the PTY row id;
+ * ADE_CHAT_SESSION_ID continues to identify its owning chat for every other
+ * ADE command. ADE_CLI_PATH is injected by ADE's runtime CLI resolver.
+ */
+export function buildAdeWindowsTrackedCliActivityGuidance(): string {
+  return [
+    "Activity detail for this tracked ADE CLI session:",
+    "- When ADE_CLI_PATH and ADE_ACTIVITY_SESSION_ID are available, first identify your command shell. In PowerShell, report activity with `& \"$env:ADE_CLI_PATH\" chat activity testing` and clear it with `& \"$env:ADE_CLI_PATH\" chat activity clear`.",
+    "  In cmd.exe, use `\"%ADE_CLI_PATH%\" chat activity testing` and `\"%ADE_CLI_PATH%\" chat activity clear`. Replace testing with one value from "
+      + `${SESSION_ACTIVITY_VALUES.join(", ")}.`,
+    "  In Git Bash, use `powershell.exe -NoProfile -Command '& \"$env:ADE_CLI_PATH\" chat activity testing'` and clear with `powershell.exe -NoProfile -Command '& \"$env:ADE_CLI_PATH\" chat activity clear'`.",
+    "  These commands use ADE_ACTIVITY_SESSION_ID to target this terminal row. Do not guess a shell or pass another session id; if none matches, leave activity unchanged.",
+  ].join("\n");
+}
+
+export function buildAdePosixTrackedCliActivityGuidance(): string {
+  const command = '"$ADE_CLI_PATH"';
+  return [
+    "Activity detail for this tracked ADE CLI session:",
+    `- When your command shell exposes ADE_CLI_PATH and ADE_ACTIVITY_SESSION_ID, report activity with \`${command} chat activity testing\`; clear it with \`${command} chat activity clear\`. Replace testing with one value from ${SESSION_ACTIVITY_VALUES.join(", ")}.`,
+    "  ADE scopes this command to the tracked terminal row; do not pass another session id.",
+  ].join("\n");
+}
 
 /**
  * @deprecated Superseded by {@link buildAdeBootstrapGuidance}. Kept as a thin alias so

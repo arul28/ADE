@@ -542,6 +542,7 @@ import {
   type AcpChatProvider,
   type AgentChatAcpConfigSnapshot,
   type AgentChatAcpPermissionMode,
+  type AgentChatCodexCollaborationMode,
   type AgentChatResourceLink,
   type AgentChatWorkflowProgress,
 } from "../../../shared/types/chat";
@@ -664,7 +665,7 @@ import {
   type ModelProviderGroup,
 } from "../../../shared/modelRegistry";
 import { piSdkToolPolicyForPermissionMode } from "../../../shared/cliLaunch";
-import { pathsEqual } from "../shared/pathCompare";
+import { pathKey, pathsEqual } from "../shared/pathCompare";
 import { isProviderDisabled } from "../../../shared/providerEnablement";
 import {
   buildProviderGroupBlocks,
@@ -770,7 +771,12 @@ import {
 } from "../../../shared/claudeModelSwitch";
 import { createChatAutoResumeCoordinator } from "./chatAutoResumeCoordinator";
 import type { ChatAutoResumeAnalyticsProperties } from "./chatAutoResumeCoordinator";
-import { buildAdeCliAgentGuidance } from "../../../shared/adeCliGuidance";
+import {
+  buildAdeCliAgentGuidance,
+  buildAdeSessionActivityGuidance,
+  buildAdeRuntimeSocketEnv,
+  type AdeSessionActivityTarget,
+} from "../../../shared/adeCliGuidance";
 import {
   adePromptAgentSkillRoots,
   agentSkillSlashCommands,
@@ -2082,6 +2088,8 @@ type CodexRuntime = {
   resetCreditNoticeEmitted: boolean;
   collaborationModes: Set<string> | null;
   collaborationModesReady: Promise<void> | null;
+  /** Accepted for the current turn/start; null until that request succeeds. */
+  effectiveCollaborationMode: AgentChatCodexCollaborationMode | null;
   planModeFallbackNotified: boolean;
   goalBudgetClearInFlight: Set<string>;
   goalBudgetClearRetryAfterByThreadId: Map<string, number>;
@@ -2687,6 +2695,7 @@ type OpenCodeRuntime = {
 type CursorPermissionWaiter =
   {
     toolName: string;
+    pendingInputRequest: PendingInputRequest;
     resolve: (value: CursorSdkHookDecision) => void;
   };
 
@@ -2812,7 +2821,7 @@ type PiRuntime = {
   sessionRoot: string;
   /** Pi has named the session file but not written it yet; no header to check. */
   sessionFilePending: boolean;
-  /** Tool/extension policy this worker was built with; a change forces a restart. */
+  /** Worker tool/config identity; a change forces a restart. */
   toolPolicyKey: string;
 };
 
@@ -2838,6 +2847,7 @@ function cancelCursorPermissionWaiter(waiter: CursorPermissionWaiter, reason: st
 type DroidPermissionWaiter = {
   toolName: string;
   request: DroidSdkPermissionRequest;
+  pendingInputRequest: PendingInputRequest;
   resolve: (value: DroidSdkPermissionDecision) => void;
 };
 
@@ -3197,13 +3207,10 @@ function hasLiveSteeringInput(managed: ManagedChatSession | null | undefined): b
  * `awaitingInput: true` with an empty request list is exactly the "blocked with
  * nothing to show" state the pending-inputs action exists to remove.
  *
- * Cursor and Droid are the deliberate exception, and the reason this is not
- * simply `hasLivePendingInput`'s size check inverted. Their `permissionWaiters`
- * hold a resolver function and no `PendingInputRequest`: the request object was
- * never built, so there is nothing to return for them. A session blocked on one
- * reports `awaitingInput: true` and an empty list, which is a gap in those two
- * runtimes rather than in this function. Pi and the ACP providers raise their
- * cards through `localPendingInputs`, which the first loop covers.
+ * Cursor and Droid permission waiters retain the provider answer resolver and
+ * the normalized `PendingInputRequest`, so a host can redraw the blocking card
+ * after a renderer reload. Pi and the ACP providers raise their cards through
+ * `localPendingInputs`, which the first loop covers.
  *
  * `hasLivePendingInput` is NOT derived from this. It runs on the send path for
  * every message, and answering "is anything pending" by allocating an array of
@@ -3234,6 +3241,8 @@ function collectPendingInputRequests(
       for (const pending of runtime.approvals.values()) add(pending.request);
     } else if (runtime.kind === "opencode") {
       for (const pending of runtime.pendingApprovals.values()) add(pending.request);
+    } else if (runtime.kind === "cursor" || runtime.kind === "droid") {
+      for (const pending of runtime.permissionWaiters.values()) add(pending.pendingInputRequest);
     }
   }
   return requests;
@@ -8227,7 +8236,7 @@ function codexSessionAutoAccepts(
 }
 
 type CodexCollaborationModePayload = {
-  mode: "default" | "plan";
+  mode: AgentChatCodexCollaborationMode;
   settings: {
     model: string;
     reasoning_effort: string | null;
@@ -8387,8 +8396,9 @@ function buildCodexDeveloperInstructions(args: {
     | "surface"
     | "instructions"
   >;
-  collaborationMode: "default" | "plan";
+  collaborationMode: AgentChatCodexCollaborationMode;
   spawnGuidance?: SpawnSelfReportGuidanceOpts;
+  sessionActivityGuidance?: string | null;
   /** Optional Linear-tracked-work directive appended to the base instructions. */
   linearDirective?: string | null;
 }): string {
@@ -8403,6 +8413,9 @@ function buildCodexDeveloperInstructions(args: {
     interactive: true,
     runtime: "codex-app-server",
     adeSkillRoots: adePromptAgentSkillRoots({ cwd: args.laneWorktreePath }),
+    sessionActivityGuidance: args.collaborationMode === "default"
+      ? args.sessionActivityGuidance
+      : null,
   });
   const spawnGuidance = buildSpawnSelfReportGuidance(args.session, args.spawnGuidance);
   return [base, args.linearDirective, spawnGuidance].filter(Boolean).join("\n\n");
@@ -8421,6 +8434,7 @@ function buildOpenCodeSystemPrompt(args: {
     | "instructions"
   >;
   spawnGuidance?: SpawnSelfReportGuidanceOpts;
+  sessionActivityGuidance?: string | null;
 }): string {
   if (args.session.surface === "personal") return resolvePersonalSystemPrompt(args.session);
   const mode = args.session.permissionMode === "plan" || args.session.interactionMode === "plan"
@@ -8433,6 +8447,7 @@ function buildOpenCodeSystemPrompt(args: {
     interactive: true,
     runtime: "opencode",
     adeSkillRoots: adePromptAgentSkillRoots({ cwd: args.laneWorktreePath }),
+    sessionActivityGuidance: args.sessionActivityGuidance,
   });
   return [base, buildAdeSessionLineageGuidance(args.session, args.spawnGuidance)]
     .filter(Boolean)
@@ -8448,6 +8463,7 @@ function resolveCodexInstructionCollaborationMode(
 function buildCodexCollaborationMode(
   session: Pick<
     AgentChatSession,
+    | "id"
     | "provider"
     | "permissionMode"
     | "interactionMode"
@@ -8462,6 +8478,7 @@ function buildCodexCollaborationMode(
   laneWorktreePath: string,
   linearDirective?: string | null,
   spawnGuidance?: SpawnSelfReportGuidanceOpts,
+  sessionActivityGuidance?: string | null,
 ): CodexCollaborationModePayload | null {
   if (session.provider !== "codex") return null;
   if (resolveSessionCodexConfigSource(session) === "config-toml") return null;
@@ -8486,6 +8503,7 @@ function buildCodexCollaborationMode(
             collaborationMode: mode,
             linearDirective,
             spawnGuidance,
+            sessionActivityGuidance: mode === "default" ? sessionActivityGuidance : null,
           }),
     },
   };
@@ -9051,6 +9069,8 @@ export function createAgentChatService(args: {
   projectRoot: string;
   /** Control endpoint this runtime actually bound, used for ownership attribution. */
   runtimeSocketPath?: string | null;
+  /** Activity reports require an RPC endpoint that this process actually serves. */
+  sessionActivityReportingEnabled?: boolean;
   adeDir?: string;
   transcriptsDir: string;
   fileService?: ReturnType<typeof createFileService> | null;
@@ -9288,6 +9308,7 @@ export function createAgentChatService(args: {
   const runtimeSocketPath = typeof injectedRuntimeSocketPath === "string"
     ? injectedRuntimeSocketPath.trim() || null
     : null;
+  const sessionActivityReportingEnabled = args.sessionActivityReportingEnabled !== false;
   const claudeResumeDialogPreference = args.claudeResumeDialogPreference ?? null;
   const browserActorCapabilityIssuer =
     args.browserActorCapabilityIssuer ?? localBrowserActorCapabilityIssuer;
@@ -9683,6 +9704,80 @@ export function createAgentChatService(args: {
    */
   const agentSkillRootEnv = (): NodeJS.ProcessEnv => getAdeCliAgentEnv?.(process.env) ?? process.env;
 
+  const resolveSessionActivityRuntime = (
+    session: Pick<AgentChatSession, "id" | "surface">,
+    enabled: boolean,
+  ): { cliPath: string; runtimeSocketPath: string } | null => {
+    if (!sessionActivityReportingEnabled || !enabled || isPersonalSession(session)) return null;
+    // Only trust ADE_CLI_PATH when the launch-time ADE CLI resolver supplied
+    // it. A PATH entry or an inherited user-provided value is not proof that
+    // this agent can reach this ADE runtime.
+    const agentEnv = getAdeCliAgentEnv?.(process.env);
+    const cliPath = agentEnv?.ADE_CLI_PATH;
+    if (!cliPath?.trim()) return null;
+    try {
+      const stat = fs.statSync(cliPath);
+      if (!stat.isFile()) return null;
+      if (process.platform !== "win32") fs.accessSync(cliPath, fs.constants.X_OK);
+    } catch {
+      return null;
+    }
+    // SDK workers intentionally receive a small ADE environment allowlist.
+    // Use the socket that this service was created for first, then the exact
+    // launch-time resolver value. Without an explicit socket, the CLI can
+    // silently fall back to the stable ADE home on Windows and report to a
+    // different channel's runtime, so do not advertise activity reporting.
+    const exactRuntimeSocketPath = runtimeSocketPath
+      ?? (agentEnv?.ADE_RUNTIME_SOCKET_PATH?.trim() || null);
+    if (!exactRuntimeSocketPath) return null;
+    return {
+      cliPath,
+      runtimeSocketPath: exactRuntimeSocketPath,
+    };
+  };
+
+  const sessionActivityGuidanceForRuntime = (
+    session: Pick<AgentChatSession, "id">,
+    runtime: { cliPath: string; runtimeSocketPath: string } | null,
+    target: AdeSessionActivityTarget = { type: "environment" },
+  ): string | null => {
+    if (!runtime) return null;
+    return buildAdeSessionActivityGuidance({
+      sessionId: session.id,
+      cliPath: runtime.cliPath,
+      shell: process.platform === "win32" ? "powershell" : "posix",
+      target,
+    });
+  };
+
+  const buildSessionActivityGuidance = (
+    session: Pick<AgentChatSession, "id" | "surface">,
+    enabled: boolean,
+  ): string | null => sessionActivityGuidanceForRuntime(
+    session,
+    resolveSessionActivityRuntime(session, enabled),
+  );
+
+  const buildOpenCodeSessionActivityGuidance = (
+    session: Pick<AgentChatSession, "id" | "surface">,
+    enabled: boolean,
+  ): string | null => {
+    const runtime = resolveSessionActivityRuntime(session, enabled);
+    const target: AdeSessionActivityTarget = runtime
+      ? { type: "inline", runtimeSocketPath: runtime.runtimeSocketPath }
+      : { type: "environment" };
+    return sessionActivityGuidanceForRuntime(session, runtime, target);
+  };
+
+  const buildCodexSessionActivityGuidance = (
+    managed: ManagedChatSession,
+    collaborationMode = resolveCodexInstructionCollaborationMode(managed.session),
+  ): string | null => buildSessionActivityGuidance(
+    managed.session,
+    collaborationMode === "default"
+      && resolveSessionCodexConfigSource(managed.session) !== "config-toml",
+  );
+
   const buildAgentRuntimeEnv = (managed: ManagedChatSession): NodeJS.ProcessEnv => {
     const personalSession = isPersonalSession(managed.session);
     const issueSync = browserActorCapabilityIssuer.issueSync;
@@ -9755,6 +9850,16 @@ export function createAgentChatService(args: {
     const presetPlan = resolveSessionLaunchPlan(managed);
     if (presetPlan) {
       Object.assign(env, presetPlan.env);
+    }
+    // `ade chat activity` is executed by the agent's child CLI, so its runtime
+    // selection must match this service even when the launcher environment or
+    // a provider preset still carries another ADE channel's socket.
+    const activityRuntime = resolveSessionActivityRuntime(managed.session, true);
+    if (activityRuntime) {
+      // Different ADE CLI entry points prefer different socket environment
+      // variables. Pin every selector so child commands cannot follow a stale
+      // channel URL or RPC socket from the provider preset.
+      Object.assign(env, buildAdeRuntimeSocketEnv(activityRuntime.runtimeSocketPath));
     }
     return env;
   };
@@ -14369,11 +14474,38 @@ export function createAgentChatService(args: {
     // created, so a session switched from default to plan would keep its write
     // tools until something else restarted it. Restart on any policy change.
     const piToolPolicy = piSdkToolPolicyForPermissionMode(managed.session.permissionMode);
+    const piActivityRuntime = resolveSessionActivityRuntime(
+      managed.session,
+      process.platform !== "win32"
+        && managed.session.interactionMode !== "plan"
+        && managed.session.permissionMode !== "plan"
+        && piToolPolicy.tools.includes("bash"),
+    );
+    const piActivityGuidance = sessionActivityGuidanceForRuntime(managed.session, piActivityRuntime);
+    const piActivityScope = piActivityRuntime
+      ? {
+          cliPath: piActivityRuntime.cliPath,
+          chatSessionId: managed.session.id,
+          ...(piActivityRuntime.runtimeSocketPath
+            ? { runtimeSocketPath: piActivityRuntime.runtimeSocketPath }
+            : {}),
+        }
+      : null;
     const piExtensionsEnabled = piChatExtensionsEnabled(managed);
+    const piActivityScopeKey = piActivityScope
+      ? createHash("sha256").update(JSON.stringify({
+          cliPath: pathKey(piActivityScope.cliPath),
+          chatSessionId: piActivityScope.chatSessionId,
+          ...(piActivityScope.runtimeSocketPath
+            ? { runtimeSocketPath: pathKey(piActivityScope.runtimeSocketPath) }
+            : {}),
+        }), "utf8").digest("hex").slice(0, 12)
+      : "no-activity";
     const toolPolicyKey = [
       piToolPolicy.tools.join(","),
       piToolPolicy.approvalTools.join(","),
       piExtensionsEnabled ? "ext" : "no-ext",
+      piActivityScopeKey,
     ].join("|");
     if (managed.runtime?.kind === "pi") {
       // `runtimeInvalidated` is checked here, not only on teardown: a session
@@ -14450,6 +14582,7 @@ export function createAgentChatService(args: {
           interactive: true,
           runtime: "pi-sdk",
           adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
+          sessionActivityGuidance: piActivityGuidance,
         });
     // Pi's built-in tool registry only contains read, bash, edit, and write.
     // Passing ADE's generic grep/find/ls names would make the SDK launch fail.
@@ -14463,31 +14596,32 @@ export function createAgentChatService(args: {
       acquired = await acquirePiSdkConnection({
         poolKey,
         packageRoot: installation.packageRoot,
-      packageEntry: installation.packageEntry,
-      cwd: managed.laneWorktreePath,
-      agentDir: installation.agentDir,
-      sessionRoot,
-      ...(sessionStore.storageDir ? { sessionStorageDir: sessionStore.storageDir } : {}),
-      tools: piTools,
-      ...(piToolPolicy.approvalTools.length ? { approvalTools: piToolPolicy.approvalTools } : {}),
-      // Lets Pi ask the user a question mid-turn, which no tool allowlist can
-      // express. Personal chats get it too — it is how the model checks in.
-      askUserTool: true,
-      ...(piExtensionsEnabled ? { extensions: true } : {}),
-      ...(piProviderId && piModelId ? { modelRef: { provider: piProviderId, id: piModelId } } : {}),
-      thinkingLevel: managed.session.reasoningEffort ?? null,
-      systemPrompt,
-      skillsEnv: skillRoots.length ? { ADE_AGENT_SKILLS_DIRS: skillRoots.join(path.delimiter) } : {},
-      ...(sessionFile || sessionId
-        ? {
-            session: {
-              ...(sessionFile ? { sessionFile } : {}),
-              ...(sessionId ? { sessionId } : {}),
-            },
-          }
-        : {}),
-      baseEnv: runtimeEnv,
-      logger,
+        packageEntry: installation.packageEntry,
+        cwd: managed.laneWorktreePath,
+        agentDir: installation.agentDir,
+        sessionRoot,
+        ...(sessionStore.storageDir ? { sessionStorageDir: sessionStore.storageDir } : {}),
+        tools: piTools,
+        ...(piToolPolicy.approvalTools.length ? { approvalTools: piToolPolicy.approvalTools } : {}),
+        // Lets Pi ask the user a question mid-turn, which no tool allowlist can
+        // express. Personal chats get it too — it is how the model checks in.
+        askUserTool: true,
+        ...(piExtensionsEnabled ? { extensions: true } : {}),
+        ...(piProviderId && piModelId ? { modelRef: { provider: piProviderId, id: piModelId } } : {}),
+        thinkingLevel: managed.session.reasoningEffort ?? null,
+        systemPrompt,
+        skillsEnv: skillRoots.length ? { ADE_AGENT_SKILLS_DIRS: skillRoots.join(path.delimiter) } : {},
+        ...(sessionFile || sessionId
+          ? {
+              session: {
+                ...(sessionFile ? { sessionFile } : {}),
+                ...(sessionId ? { sessionId } : {}),
+              },
+            }
+          : {}),
+        baseEnv: runtimeEnv,
+        activityScope: piActivityScope,
+        logger,
       });
     } catch (error) {
       piLease?.release();
@@ -22390,6 +22524,11 @@ export function createAgentChatService(args: {
       runtime.activeTurnId && (pendingUserShell || pendingMemoryCommand),
     );
     if (!skipTurnStartForActiveComposerCommand) {
+      runtime.effectiveCollaborationMode = null;
+      emitTransientChatEnvelope(managed.session.id, {
+        type: "session_meta_updated",
+        codexEffectiveCollaborationMode: null,
+      });
       setSessionActive(managed);
       if (!args.optimisticCodexTurnStart) {
         emitPreparedUserMessage(managed, {
@@ -22829,6 +22968,7 @@ export function createAgentChatService(args: {
         managed.laneWorktreePath,
         resolveSessionLinearDirective(managed.session.id),
         spawnSelfReportOpts(managed.session),
+        buildSessionActivityGuidance(managed.session, true),
       );
       if (
         requestedCollaborationMode === "plan"
@@ -22878,11 +23018,17 @@ export function createAgentChatService(args: {
         ...codexTurnPolicyArgs(codexPolicy),
         ...(collaborationMode ? { collaborationMode } : {}),
       });
+      runtime.effectiveCollaborationMode = collaborationMode?.mode ?? null;
+      emitTransientChatEnvelope(managed.session.id, {
+        type: "session_meta_updated",
+        codexEffectiveCollaborationMode: runtime.effectiveCollaborationMode,
+      });
     } catch (error) {
       const contextToRestore = runtime.turnStartContextConsumed ? consumedTurnContext : null;
       runtime.awaitingTurnStart = false;
       runtime.turnStartContextConsumed = false;
       runtime.pendingTurnPlanningApprovalGuarded = null;
+      runtime.effectiveCollaborationMode = null;
       if (contextToRestore) {
         managed.pendingTranscriptReplay = contextToRestore.replay || null;
         managed.pendingReconstructionContext = contextToRestore.reconstruction || null;
@@ -27237,6 +27383,12 @@ export function createAgentChatService(args: {
       interactive: true,
       runtime: "claude-code-cli",
       adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
+      sessionActivityGuidance: buildSessionActivityGuidance(
+        managed.session,
+        managed.session.permissionMode !== "plan"
+          && managed.session.interactionMode !== "plan"
+          && managed.session.claudePermissionMode !== "plan",
+      ),
     });
     return [
       harnessPrompt,
@@ -28551,6 +28703,13 @@ export function createAgentChatService(args: {
         laneWorktreePath: managed.laneWorktreePath,
         session: managed.session,
         spawnGuidance: spawnSelfReportOpts(managed.session),
+        sessionActivityGuidance: buildOpenCodeSessionActivityGuidance(
+          managed.session,
+          runtime.permissionMode !== "plan"
+            && runtime.permissionMode !== "config-toml"
+            && managed.session.permissionMode !== "plan"
+            && managed.session.interactionMode !== "plan",
+        ),
       });
       const openCodePromptBody = {
         sessionID: runtime.handle.sessionId,
@@ -34673,6 +34832,7 @@ export function createAgentChatService(args: {
       resetCreditNoticeEmitted: false,
       collaborationModes: null,
       collaborationModesReady: null,
+      effectiveCollaborationMode: null,
       planModeFallbackNotified: false,
       goalBudgetClearInFlight: new Set<string>(),
       goalBudgetClearRetryAfterByThreadId: new Map<string, number>(),
@@ -35042,6 +35202,7 @@ export function createAgentChatService(args: {
         collaborationMode: resolveCodexInstructionCollaborationMode(managed.session),
         linearDirective: resolveSessionLinearDirective(managed.session.id),
         spawnGuidance: spawnSelfReportOpts(managed.session),
+        sessionActivityGuidance: buildCodexSessionActivityGuidance(managed),
       }),
       ...codexServiceTierArgs(managed.session),
       ...codexPolicyArgs(codexPolicy),
@@ -35505,6 +35666,12 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
   ): { model: string } & ClaudeSDKOptions => {
+    // Resolve the activity instruction before native permission normalization.
+    // A queued/default-mode send can temporarily leave the Plan sentinel in a
+    // legacy permission field while interactionMode already reads "default".
+    // Keep that query from receiving an activity command before the canonical
+    // normalization below clears the raw fields.
+    const hadPlanIntentAtOptionBuildStart = isSessionInPlanMode(managed.session);
     const chatConfig = resolveChatConfig();
     const claudePermissionMode = resolveSessionClaudePermissionMode(
       managed.session,
@@ -35796,6 +35963,10 @@ export function createAgentChatService(args: {
         interactive: true,
         runtime: "claude-agent-sdk-query",
         adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
+        sessionActivityGuidance: buildSessionActivityGuidance(
+          managed.session,
+          !hadPlanIntentAtOptionBuildStart && managed.session.interactionMode !== "plan",
+        ),
       });
       opts.systemPrompt = {
         type: "preset",
@@ -41828,7 +41999,13 @@ export function createAgentChatService(args: {
   // Permission mode is enforced by SDK AgentOptions (tools / autoReview /
   // sandboxOptions) plus ADE hook path guards. This injects only the ADE
   // control-protocol reminder — never advisory "you are in Ask/Plan" text.
-  const buildCursorSdkModeDirective = (): string => cursorSdkAdeControlDirective();
+  const buildCursorSdkModeDirective = (
+    managed: ManagedChatSession,
+    policy: CursorSdkPermissionPolicy,
+  ): string => [
+    cursorSdkAdeControlDirective(),
+    buildSessionActivityGuidance(managed.session, policy.chatMode === "agent"),
+  ].filter(Boolean).join("\n");
 
   const buildCursorSdkPendingInputRequest = (
     itemId: string,
@@ -42674,16 +42851,17 @@ export function createAgentChatService(args: {
         if (allow) return { selectedOption: allow.value };
       }
       const itemId = req.id || randomUUID();
+      const request = buildDroidSdkPendingInputRequest(itemId, req, runtime.activeTurnId ?? null);
       return new Promise<DroidSdkPermissionDecision>((outerResolve) => {
         runtime.permissionWaiters.set(itemId, {
           toolName: req.toolName,
           request: req,
+          pendingInputRequest: request,
           resolve: (decision) => {
             runtime.permissionWaiters.delete(itemId);
             outerResolve(decision);
           },
         });
-        const request = buildDroidSdkPendingInputRequest(itemId, req, runtime.activeTurnId ?? null);
         emitChatEvent(managed, {
           type: "approval_request",
           itemId,
@@ -42889,15 +43067,16 @@ export function createAgentChatService(args: {
       }
 
       const itemId = req.id || randomUUID();
+      const request = buildCursorSdkPendingInputRequest(itemId, req, runtime.activeTurnId ?? null);
       return new Promise<CursorSdkHookDecision>((outerResolve) => {
         runtime.permissionWaiters.set(itemId, {
           toolName: req.toolName,
+          pendingInputRequest: request,
           resolve: (decision) => {
             runtime.permissionWaiters.delete(itemId);
             outerResolve(decision);
           },
         });
-        const request = buildCursorSdkPendingInputRequest(itemId, req, runtime.activeTurnId ?? null);
         emitChatEvent(managed, {
           type: "approval_request",
           itemId,
@@ -43017,6 +43196,10 @@ export function createAgentChatService(args: {
     const browserCapabilityReady = prepareBrowserActorCapability(managed);
     if (browserCapabilityReady) await browserCapabilityReady;
     const cursorRuntimeEnv = buildAgentRuntimeEnv(managed);
+    const cursorActivityRuntime = resolveSessionActivityRuntime(
+      managed.session,
+      policy.chatMode === "agent",
+    );
     // Cursor's own skill discovery. ADE copies the bundled catalog into a
     // private shim laid out the way Cursor scans (`.agents/skills/<name>/
     // SKILL.md`) and passes that root as an extra workspace dir, instead of
@@ -43050,6 +43233,9 @@ export function createAgentChatService(args: {
       agentName: manualSessionTitleForRuntime(managed),
       sessionId: managed.session.id,
       policy,
+      ...(cursorActivityRuntime
+        ? { activityRuntimeSocketPath: cursorActivityRuntime.runtimeSocketPath }
+        : {}),
       ...(cursorMcpServerConfig ? { mcpServers: cursorMcpServerConfig } : {}),
       ...(cursorAgentSkills.dirs.length ? { agentSkillDirs: cursorAgentSkills.dirs } : {}),
       logger,
@@ -43728,7 +43914,7 @@ export function createAgentChatService(args: {
         composed = `${pendingTurnContext.composed}\n\n${composed}`;
       }
       const policy = runtime.sdkPolicy ?? resolveCursorSdkPolicy(managed.session);
-      const modeDirective = buildCursorSdkModeDirective();
+      const modeDirective = buildCursorSdkModeDirective(managed, policy);
       if (modeDirective) {
         composed = `${modeDirective}\n\n${composed}`;
       }
@@ -46742,15 +46928,24 @@ export function createAgentChatService(args: {
       }
 
       runtime.eventMapperState = createDroidSdkEventMapperState();
+      const droidPermissionMode = resolveSessionDroidPermissionModeOrNull(managed.session);
+      const droidInteractionMode = resolveDroidSdkInteractionMode(managed.session);
       const droidHarnessPrompt = isPersonalSession(managed.session)
         ? resolvePersonalSystemPrompt(managed.session)
         : buildCodingAgentSystemPrompt({
             cwd: managed.laneWorktreePath,
-            mode: resolveDroidSdkInteractionMode(managed.session) === "spec" ? "planning" : "coding",
+            mode: droidInteractionMode === "spec" ? "planning" : "coding",
             permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
             interactive: true,
             runtime: "droid-sdk",
             adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
+            sessionActivityGuidance: buildSessionActivityGuidance(
+              managed.session,
+              droidPermissionMode !== null
+                && droidPermissionMode !== "read-only"
+                && droidPermissionMode !== "agi"
+                && droidInteractionMode !== "spec",
+            ),
           });
       const sdkInput = [
         droidHarnessPrompt,
@@ -47208,6 +47403,7 @@ export function createAgentChatService(args: {
                 collaborationMode: resolveCodexInstructionCollaborationMode(managed.session),
                 linearDirective: resolveSessionLinearDirective(managed.session.id),
                 spawnGuidance: spawnSelfReportOpts(managed.session),
+                sessionActivityGuidance: buildCodexSessionActivityGuidance(managed),
               }),
               ...codexServiceTierArgs(managed.session),
               ...codexPolicyArgs(codexPolicy),
@@ -47504,6 +47700,7 @@ export function createAgentChatService(args: {
     const clearUserTurnMarkers = (): void => {
       if (messageClearsAttentionMarkers(args.metadata)) {
         sessionService.clearTurnStartMarkers(args.sessionId);
+        sessionService.clearSessionActivity(args.sessionId);
       }
     };
     if (options?.routeActiveToSteer && routableText && canRouteActiveSendToSteer(managed)) {
@@ -48535,6 +48732,7 @@ export function createAgentChatService(args: {
       }
       markersCleared = true;
       sessionService.clearTurnStartMarkers(args.sessionId);
+      sessionService.clearSessionActivity(args.sessionId);
     };
     const result = await steerWithOptions(args, {
       onAcceptedDispatch: clearAcceptedUserMarkers,
@@ -50287,6 +50485,7 @@ export function createAgentChatService(args: {
               collaborationMode: resolveCodexInstructionCollaborationMode(managed.session),
               linearDirective: resolveSessionLinearDirective(managed.session.id),
               spawnGuidance: spawnSelfReportOpts(managed.session),
+              sessionActivityGuidance: buildCodexSessionActivityGuidance(managed),
             }),
             ...codexServiceTierArgs(managed.session),
             ...codexPolicyArgs(codexPolicy),
@@ -51022,6 +51221,12 @@ export function createAgentChatService(args: {
       : hasPersistedCodexServiceTier
         ? persisted?.codexServiceTier ?? null
         : undefined;
+    const liveCodexRuntime = provider === "codex"
+      && liveSession?.status === "active"
+      && liveManaged?.runtime?.kind === "codex"
+      ? liveManaged.runtime
+      : null;
+    const codexEffectiveCollaborationMode = liveCodexRuntime?.effectiveCollaborationMode ?? null;
     const claudeTag = provider === "claude"
       ? getClaudeSessionPointerForChat(row.id)?.tags[0] ?? null
       : undefined;
@@ -51142,6 +51347,10 @@ export function createAgentChatService(args: {
       reasoningEffort: liveSession?.reasoningEffort ?? persisted?.reasoningEffort ?? null,
       fastMode: (liveSession?.fastMode ?? persisted?.fastMode) === true,
       ...(codexServiceTier !== undefined ? { codexServiceTier } : {}),
+      ...(codexEffectiveCollaborationMode ? { codexEffectiveCollaborationMode } : {}),
+      ...(liveCodexRuntime && codexEffectiveCollaborationMode === null
+        ? { codexEffectiveCollaborationModeWasCleared: true }
+        : {}),
       executionMode: liveSession?.executionMode ?? persisted?.executionMode ?? null,
       interactionMode: liveSession?.interactionMode ?? persisted?.interactionMode ?? null,
         ...(liveSession?.claudePermissionMode || persisted?.claudePermissionMode
@@ -53071,15 +53280,17 @@ export function createAgentChatService(args: {
    * (an unwritable Codex stdin, say) leaves the card and the markers alone,
    * because the question really is still open.
    *
-   * Columns cleared, by `sessionService.clearTurnStartMarkers`:
-   * `attention_requested_at`, `attention_message`, `attention_source`,
-   * `last_turn_failed_at`, plus the settle-lifecycle clear-on-activity.
+   * `sessionService.clearTurnStartMarkers` clears the attention and failure
+   * columns plus the settle-lifecycle clear-on-activity. The separate
+   * `sessionService.clearSessionActivity` clears `activity_status_json`; that
+   * report belongs to the turn and must not be cleared by ordinary PTY input.
    * `pending_input_item_id` is NOT written here — it is owned by the card
    * stores and their `pending_input_resolved` receipts.
    */
   const respondToInput = async (args: AgentChatRespondToInputArgs): Promise<void> => {
     await deliverInputResponse(args);
     sessionService.clearTurnStartMarkers(args.sessionId);
+    sessionService.clearSessionActivity(args.sessionId);
   };
 
   /**
@@ -57502,6 +57713,7 @@ export function createAgentChatService(args: {
             session: managed.session,
             collaborationMode: resolveCodexInstructionCollaborationMode(managed.session),
             spawnGuidance: spawnSelfReportOpts(managed.session),
+            sessionActivityGuidance: buildCodexSessionActivityGuidance(managed),
           }),
           ...codexServiceTierArgs(managed.session),
           ...codexPolicyArgs(codexPolicy),

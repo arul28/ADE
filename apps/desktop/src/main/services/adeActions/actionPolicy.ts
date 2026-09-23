@@ -732,6 +732,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "moveOnBoard",
     "readTranscriptTail",
     "requestSessionAttention",
+    "setSessionActivity",
     "setSessionStatusNote",
     "setSettleOverride",
     "undoBoardMove",

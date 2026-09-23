@@ -140,6 +140,8 @@ export function buildCodingAgentSystemPrompt(args: {
   interactive?: boolean;
   runtime?: AdeRuntimeKind;
   adeSkillRoots?: readonly string[];
+  /** Provider-gated status advice; omitted unless this session can run ADE CLI. */
+  sessionActivityGuidance?: string | null;
 }): string {
   const mode = args.mode ?? "coding";
   const permissionMode = args.permissionMode ?? "edit";
@@ -242,6 +244,7 @@ export function buildCodingAgentSystemPrompt(args: {
     "If tool results fail or contradict the current plan, synthesize the finding and adapt rather than repeating the same failing action.",
     "",
     buildAdeCliAgentGuidance(adeSkillRoots),
+    ...(args.sessionActivityGuidance ? ["", args.sessionActivityGuidance] : []),
     ...(hasWorkflowTools
       ? [
           "",
