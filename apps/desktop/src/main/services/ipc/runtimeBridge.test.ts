@@ -61,6 +61,8 @@ vi.mock("electron", () => ({
     getPath: vi.fn(() => "/tmp"),
     getVersion: vi.fn(() => "1.0.0"),
     isPackaged: false,
+    // registerIpc disposes the Mac Desktop Escape hotkey on will-quit.
+    once: vi.fn(),
   },
   BrowserWindow: {
     fromWebContents: browserWindowFromWebContents,

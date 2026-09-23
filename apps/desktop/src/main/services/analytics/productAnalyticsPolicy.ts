@@ -340,11 +340,11 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // answer different questions, and the first is the guardrail working.
     "skipped_budget",
     // Which Work tool was opened. Prefixed so these can never be confused with
-    // the usage scopes above, and closed to the six ids in
-    // `shared/types/workTools.ts` — a seventh tool has to be added here
+    // the usage scopes above, and closed to the ids in
+    // `shared/types/workTools.ts` — a new tool has to be added here
     // deliberately rather than arriving as free text.
     "tool_terminal", "tool_git", "tool_files", "tool_ios", "tool_app_control",
-    "tool_browser",
+    "tool_browser", "tool_mac_desktop",
     // The two iOS live-view backends, prefixed for the same reason the tool ids
     // are. `backend_window` captures the Simulator window on this Mac;
     // `backend_host_encoded` encodes on the machine that owns the simulator and
