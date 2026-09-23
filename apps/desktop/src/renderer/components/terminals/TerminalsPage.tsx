@@ -212,7 +212,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set());
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
-  const stopAndDeleteConfirm = useConfirmDialog();
+  const destructiveConfirm = useConfirmDialog();
   const workContentPaneRef = useRef<HTMLDivElement | null>(null);
   const unifiedChromeRef = useRef<HTMLDivElement | null>(null);
   const sessionsPaneRoRef = useRef<ResizeObserver | null>(null);
@@ -571,49 +571,54 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       runtimePin?: OpenProjectBinding | null,
     ) => {
       const label = (session.goal ?? session.title).trim() || "this chat";
-      const confirmed = window.confirm(
-        `Delete "${label}"?\n\nThis permanently removes the saved chat history from ADE.`,
-      );
-      if (!confirmed) return;
-
-      setSessionActionError(null);
-      setDeletingSessionId(session.id);
-      // A caller supplies a binding only when the row was rendered under a
-      // foreign machine group. Ownership is not a property of where the row was
-      // drawn: the info popover has no binding to pass, and a stale row can sit
-      // in the active roster while its session lives elsewhere. Delete now
-      // resolves the owning machine the same way resume/continue/stop already
-      // do, instead of defaulting to whichever machine the tab is bound to.
-      const pin = runtimePin ?? resolveSessionRuntimePin(session);
-      const deletion = pin
-        ? window.ade.agentChat.delete({ sessionId: session.id }, pin)
-        : window.ade.agentChat.delete({ sessionId: session.id });
-      void deletion
-        .then(async () => {
-          invalidateSessionListCache();
-          if (pin) {
-            cancelCrossMachineOptimisticChatSession(pin, session.id);
-          }
-          work.removeSessionFromList(session.id);
-          work.closeTab(session.id);
-          setContextMenu((current) => (current?.session.id === session.id ? null : current));
-          setInfoPopover((current) => (current?.session.id === session.id ? null : current));
-          // Refresh is post-delete housekeeping; a failure here must not be
-          // reported as "Delete failed" because the delete itself succeeded.
-          await work.refresh({ showLoading: false, force: true }).catch((refreshErr: unknown) => {
-            console.error("[TerminalsPage] refresh after delete failed", { sessionId: session.id, refreshErr });
-          });
-        })
-        .catch((err: unknown) => {
-          console.error("[TerminalsPage] delete chat failed", { sessionId: session.id, err });
-          setSessionActionError(formatSessionActionError(err, "Delete"));
-          window.setTimeout(() => setSessionActionError(null), 6000);
-        })
-        .finally(() => {
-          setDeletingSessionId((current) => (current === session.id ? null : current));
+      void (async () => {
+        const confirmed = await destructiveConfirm.confirmAsync({
+          title: "Delete chat",
+          message: `Delete "${label}"?\n\nThis permanently removes the saved chat history from ADE.`,
+          confirmLabel: "Delete",
+          danger: true,
         });
+        if (!confirmed) return;
+
+        setSessionActionError(null);
+        setDeletingSessionId(session.id);
+        // A caller supplies a binding only when the row was rendered under a
+        // foreign machine group. Ownership is not a property of where the row was
+        // drawn: the info popover has no binding to pass, and a stale row can sit
+        // in the active roster while its session lives elsewhere. Delete now
+        // resolves the owning machine the same way resume/continue/stop already
+        // do, instead of defaulting to whichever machine the tab is bound to.
+        const pin = runtimePin ?? resolveSessionRuntimePin(session);
+        const deletion = pin
+          ? window.ade.agentChat.delete({ sessionId: session.id }, pin)
+          : window.ade.agentChat.delete({ sessionId: session.id });
+        void deletion
+          .then(async () => {
+            invalidateSessionListCache();
+            if (pin) {
+              cancelCrossMachineOptimisticChatSession(pin, session.id);
+            }
+            work.removeSessionFromList(session.id);
+            work.closeTab(session.id);
+            setContextMenu((current) => (current?.session.id === session.id ? null : current));
+            setInfoPopover((current) => (current?.session.id === session.id ? null : current));
+            // Refresh is post-delete housekeeping; a failure here must not be
+            // reported as "Delete failed" because the delete itself succeeded.
+            await work.refresh({ showLoading: false, force: true }).catch((refreshErr: unknown) => {
+              console.error("[TerminalsPage] refresh after delete failed", { sessionId: session.id, refreshErr });
+            });
+          })
+          .catch((err: unknown) => {
+            console.error("[TerminalsPage] delete chat failed", { sessionId: session.id, err });
+            setSessionActionError(formatSessionActionError(err, "Delete"));
+            window.setTimeout(() => setSessionActionError(null), 6000);
+          })
+          .finally(() => {
+            setDeletingSessionId((current) => (current === session.id ? null : current));
+          });
+      })();
     },
-    [resolveSessionRuntimePin, work],
+    [destructiveConfirm, resolveSessionRuntimePin, work],
   );
 
   const handleDeleteSession = useCallback(
@@ -622,39 +627,44 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       runtimePin?: OpenProjectBinding | null,
     ) => {
       const label = (session.goal ?? session.title).trim() || "this session";
-      const confirmed = window.confirm(
-        `Delete "${label}"?\n\nThis permanently removes the saved terminal session from ADE.`,
-      );
-      if (!confirmed) return;
-
-      setSessionActionError(null);
-      setDeletingSessionId(session.id);
-      // Same ownership resolution as `handleDeleteChat` — see the note there.
-      const pin = runtimePin ?? resolveSessionRuntimePin(session);
-      const deletion = pin
-        ? window.ade.sessions.delete({ sessionId: session.id }, pin)
-        : window.ade.sessions.delete({ sessionId: session.id });
-      void deletion
-        .then(async () => {
-          invalidateSessionListCache();
-          work.removeSessionFromList(session.id);
-          work.closeTab(session.id);
-          setContextMenu((current) => (current?.session.id === session.id ? null : current));
-          setInfoPopover((current) => (current?.session.id === session.id ? null : current));
-          await work.refresh({ showLoading: false, force: true }).catch((refreshErr: unknown) => {
-            console.error("[TerminalsPage] refresh after session delete failed", { sessionId: session.id, refreshErr });
-          });
-        })
-        .catch((err: unknown) => {
-          console.error("[TerminalsPage] delete session failed", { sessionId: session.id, err });
-          setSessionActionError(formatSessionActionError(err, "Delete"));
-          window.setTimeout(() => setSessionActionError(null), 6000);
-        })
-        .finally(() => {
-          setDeletingSessionId((current) => (current === session.id ? null : current));
+      void (async () => {
+        const confirmed = await destructiveConfirm.confirmAsync({
+          title: "Delete session",
+          message: `Delete "${label}"?\n\nThis permanently removes the saved terminal session from ADE.`,
+          confirmLabel: "Delete",
+          danger: true,
         });
+        if (!confirmed) return;
+
+        setSessionActionError(null);
+        setDeletingSessionId(session.id);
+        // Same ownership resolution as `handleDeleteChat` — see the note there.
+        const pin = runtimePin ?? resolveSessionRuntimePin(session);
+        const deletion = pin
+          ? window.ade.sessions.delete({ sessionId: session.id }, pin)
+          : window.ade.sessions.delete({ sessionId: session.id });
+        void deletion
+          .then(async () => {
+            invalidateSessionListCache();
+            work.removeSessionFromList(session.id);
+            work.closeTab(session.id);
+            setContextMenu((current) => (current?.session.id === session.id ? null : current));
+            setInfoPopover((current) => (current?.session.id === session.id ? null : current));
+            await work.refresh({ showLoading: false, force: true }).catch((refreshErr: unknown) => {
+              console.error("[TerminalsPage] refresh after session delete failed", { sessionId: session.id, refreshErr });
+            });
+          })
+          .catch((err: unknown) => {
+            console.error("[TerminalsPage] delete session failed", { sessionId: session.id, err });
+            setSessionActionError(formatSessionActionError(err, "Delete"));
+            window.setTimeout(() => setSessionActionError(null), 6000);
+          })
+          .finally(() => {
+            setDeletingSessionId((current) => (current === session.id ? null : current));
+          });
+      })();
     },
-    [resolveSessionRuntimePin, work],
+    [destructiveConfirm, resolveSessionRuntimePin, work],
   );
 
   const handleSettleSession = useCallback((
@@ -684,7 +694,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     ) => {
       void (async () => {
         const label = (session.goal ?? session.title).trim() || "this session";
-        const confirmed = await stopAndDeleteConfirm.confirmAsync({
+        const confirmed = await destructiveConfirm.confirmAsync({
           title: "Stop and delete session",
           message: `Stop the runtime for "${label}" and permanently delete it?\n\nThis terminates the running process and removes the saved session from ADE.`,
           confirmLabel: "Stop & delete",
@@ -718,7 +728,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         }
       })();
     },
-    [resolveSessionRuntimePin, stopAndDeleteConfirm, work],
+    [resolveSessionRuntimePin, destructiveConfirm, work],
   );
 
   const selectedSessions = useMemo(
@@ -752,37 +762,42 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const handleBulkCloseSelected = useCallback(() => {
     const running = selectedSessions.filter(canBulkStopSession);
     if (!running.length) return;
-    const confirmed = window.confirm(
-      `Stop ${running.length} running runtime${running.length === 1 ? "" : "s"}?\n\nThis terminates the underlying CLI or shell process for each selected running session. Saved transcripts stay in ADE.`,
-    );
-    if (!confirmed) return;
-
-    setSessionActionError(null);
-    void Promise.allSettled(
-      running.map((session) => {
-        if (session.ptyId) {
-          return work.stopRuntime(session.ptyId, session.id);
-        }
-        return Promise.resolve();
-      }),
-    )
-      .then((results) => {
-        const failed = results.filter((result) => result.status === "rejected").length;
-        if (failed > 0) {
-          setSessionActionError(`Stop failed for ${failed} selected runtime${failed === 1 ? "" : "s"}.`);
-          window.setTimeout(() => setSessionActionError(null), 6000);
-        }
-        setSelectedSessionIds(new Set());
-        setSelectionAnchorId(null);
-        invalidateSessionListCache();
-        return work.refresh({ showLoading: false, force: true });
-      })
-      .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        setSessionActionError(`Stop failed: ${message}`);
-        window.setTimeout(() => setSessionActionError(null), 6000);
+    void (async () => {
+      const confirmed = await destructiveConfirm.confirmAsync({
+        title: "Stop runtimes",
+        message: `Stop ${running.length} running runtime${running.length === 1 ? "" : "s"}?\n\nThis terminates the underlying CLI or shell process for each selected running session. Saved transcripts stay in ADE.`,
+        confirmLabel: "Stop",
+        danger: true,
       });
-  }, [selectedSessions, work]);
+      if (!confirmed) return;
+
+      setSessionActionError(null);
+      void Promise.allSettled(
+        running.map((session) => {
+          if (session.ptyId) {
+            return work.stopRuntime(session.ptyId, session.id);
+          }
+          return Promise.resolve();
+        }),
+      )
+        .then((results) => {
+          const failed = results.filter((result) => result.status === "rejected").length;
+          if (failed > 0) {
+            setSessionActionError(`Stop failed for ${failed} selected runtime${failed === 1 ? "" : "s"}.`);
+            window.setTimeout(() => setSessionActionError(null), 6000);
+          }
+          setSelectedSessionIds(new Set());
+          setSelectionAnchorId(null);
+          invalidateSessionListCache();
+          return work.refresh({ showLoading: false, force: true });
+        })
+        .catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          setSessionActionError(`Stop failed: ${message}`);
+          window.setTimeout(() => setSessionActionError(null), 6000);
+        });
+    })();
+  }, [destructiveConfirm, selectedSessions, work]);
 
   const handleBulkDeleteSelected = useCallback(() => {
     const deletable = selectedSessions.filter(canBulkDeleteSession);
@@ -794,21 +809,25 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       window.setTimeout(() => setSessionActionError(null), 6000);
       return;
     }
-    const confirmed = window.confirm(
-      `Delete ${deletable.length} selected session${deletable.length === 1 ? "" : "s"}?\n\nThis permanently removes the selected saved session history from ADE.`,
-    );
-    if (!confirmed) return;
+    void (async () => {
+      const confirmed = await destructiveConfirm.confirmAsync({
+        title: "Delete sessions",
+        message: `Delete ${deletable.length} selected session${deletable.length === 1 ? "" : "s"}?\n\nThis permanently removes the selected saved session history from ADE.`,
+        confirmLabel: "Delete",
+        danger: true,
+      });
+      if (!confirmed) return;
 
-    setSessionActionError(null);
-    setDeletingSessionId("bulk");
-    void allSettledWithConcurrency(
-      deletable,
-      BULK_SESSION_DELETE_CONCURRENCY,
-      // Every row is routed to the machine that owns it, and each is settled
-      // independently: one row that cannot be deleted must not take the rest of
-      // the batch down with it.
-      (session) => deleteSelectedSession(session),
-    )
+      setSessionActionError(null);
+      setDeletingSessionId("bulk");
+      void allSettledWithConcurrency(
+        deletable,
+        BULK_SESSION_DELETE_CONCURRENCY,
+        // Every row is routed to the machine that owns it, and each is settled
+        // independently: one row that cannot be deleted must not take the rest of
+        // the batch down with it.
+        (session) => deleteSelectedSession(session),
+      )
       .then(async (results) => {
         const failed = results.filter((result) => result.status === "rejected").length;
         const succeededIds = deletable
@@ -847,7 +866,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       .finally(() => {
         setDeletingSessionId((current) => (current === "bulk" ? null : current));
       });
-  }, [deleteSelectedSession, selectedSessions, work]);
+    })();
+  }, [deleteSelectedSession, destructiveConfirm, selectedSessions, work]);
 
   const handleRefreshOrphanSessions = useCallback(() => {
     setSessionActionError(null);
@@ -872,7 +892,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       const targets = selectedSessions;
       if (!targets.length) return;
       const runningCount = targets.filter(canBulkStopSession).length;
-      const confirmed = await stopAndDeleteConfirm.confirmAsync({
+      const confirmed = await destructiveConfirm.confirmAsync({
         title: "Stop and delete sessions",
         message: `Stop ${runningCount} running runtime${runningCount === 1 ? "" : "s"} and permanently delete ${targets.length} selected session${targets.length === 1 ? "" : "s"}?\n\nThis terminates running CLI and shell processes, then removes every selected session from ADE.`,
         confirmLabel: "Stop & delete",
@@ -924,7 +944,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         setDeletingSessionId((current) => (current === "bulk" ? null : current));
       }
     })();
-  }, [deleteSelectedSession, selectedSessions, stopAndDeleteConfirm, work]);
+  }, [deleteSelectedSession, selectedSessions, destructiveConfirm, work]);
 
   const finalizeCliResumeResult = useCallback(
     async (
@@ -1913,7 +1933,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         deletingSessionId={deletingSessionId}
       />
 
-      <ConfirmDialog state={stopAndDeleteConfirm.state} onClose={stopAndDeleteConfirm.close} />
+      <ConfirmDialog state={destructiveConfirm.state} onClose={destructiveConfirm.close} />
     </div>
   );
 }

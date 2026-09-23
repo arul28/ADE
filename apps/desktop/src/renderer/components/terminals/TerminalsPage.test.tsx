@@ -1825,7 +1825,6 @@ describe("TerminalsPage chat session activation", () => {
     const runningShell = workMocks.makeTerminalSession("shell-running", "lane-primary", "shell");
     const agentChatDelete = vi.fn().mockResolvedValue(undefined);
     const sessionDelete = vi.fn().mockResolvedValue(undefined);
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
 
     Object.defineProperty(window, "ade", {
       configurable: true,
@@ -1852,6 +1851,8 @@ describe("TerminalsPage chat session activation", () => {
     fireEvent.click(await screen.findByRole("button", { name: "select chat-running-claude" }), { metaKey: true });
     fireEvent.click(await screen.findByRole("button", { name: "select shell-running" }), { metaKey: true });
     fireEvent.click(await screen.findByRole("button", { name: "bulk delete" }));
+    await screen.findByText(/Delete 2 selected sessions\?/);
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
 
     await waitFor(() => {
       expect(agentChatDelete).toHaveBeenCalledTimes(2);
@@ -1862,8 +1863,6 @@ describe("TerminalsPage chat session activation", () => {
     });
     expect(sessionDelete).not.toHaveBeenCalled();
     expect(workMocks.currentWork.removeSessionFromList).not.toHaveBeenCalledWith("shell-running");
-    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("Delete 2 selected sessions?"));
-    confirmSpy.mockRestore();
   });
 
   it("refreshes orphaned session records without deleting sessions or lanes", async () => {
@@ -2023,7 +2022,6 @@ describe("TerminalsPage chat session activation", () => {
       hostname: "studio.local",
     };
     const agentChatDelete = vi.fn().mockResolvedValue(undefined);
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     Object.defineProperty(window, "ade", {
       configurable: true,
       value: {
@@ -2054,6 +2052,7 @@ describe("TerminalsPage chat session activation", () => {
     fireEvent.click(await screen.findByRole("button", {
       name: "context delete chat chat-studio",
     }));
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
 
     await waitFor(() => {
       expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "chat-studio" }, binding);
@@ -2222,7 +2221,6 @@ describe("TerminalsPage chat session activation", () => {
       ptyId: null,
     });
     const agentChatDelete = vi.fn().mockResolvedValue(undefined);
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     mountForeignMachine([foreignChat]);
     Object.defineProperty(window, "ade", {
       configurable: true,
@@ -2241,6 +2239,7 @@ describe("TerminalsPage chat session activation", () => {
       sessionListPaneProps.latest?.onContextMenu(foreignChat, event);
     });
     fireEvent.click(await screen.findByRole("button", { name: "context delete chat chat-foreign-delete" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
 
     await waitFor(() => {
       expect(agentChatDelete).toHaveBeenCalledWith(
@@ -2248,7 +2247,6 @@ describe("TerminalsPage chat session activation", () => {
         expect.objectContaining({ key: studioBindingForDelete.key }),
       );
     });
-    confirmSpy.mockRestore();
   });
 
   it("clears a foreign row's woke marker on its own machine when opened via Hand off", async () => {
@@ -2295,7 +2293,6 @@ describe("TerminalsPage chat session activation", () => {
       runtimeState: "exited",
     });
     const sessionDelete = vi.fn().mockResolvedValue(undefined);
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     mountForeignMachine([foreignShell]);
     Object.defineProperty(window, "ade", {
       configurable: true,
@@ -2319,6 +2316,7 @@ describe("TerminalsPage chat session activation", () => {
       );
     });
     fireEvent.click(await screen.findByRole("button", { name: "bulk delete" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
 
     await waitFor(() => {
       expect(sessionDelete).toHaveBeenCalledWith(
@@ -2327,7 +2325,6 @@ describe("TerminalsPage chat session activation", () => {
       );
       expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("shell-foreign-bulk");
     });
-    confirmSpy.mockRestore();
   });
 
   it("finishes a bulk delete past a row that fails, and never shows the IPC channel", async () => {
@@ -2340,7 +2337,6 @@ describe("TerminalsPage chat session activation", () => {
         );
       }
     });
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     Object.defineProperty(window, "ade", {
       configurable: true,
       value: {
@@ -2365,6 +2361,7 @@ describe("TerminalsPage chat session activation", () => {
     fireEvent.click(await screen.findByRole("button", { name: "select chat-stale" }), { metaKey: true });
     fireEvent.click(await screen.findByRole("button", { name: "select chat-live" }), { metaKey: true });
     fireEvent.click(await screen.findByRole("button", { name: "bulk delete" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
 
     await waitFor(() => {
       // One bad row must not abort the batch.
@@ -2376,7 +2373,6 @@ describe("TerminalsPage chat session activation", () => {
     expect(banner.textContent).toContain("1 of 2 deleted");
     expect(banner.textContent).not.toContain("Error invoking remote method");
     expect(banner.textContent).toContain("Refresh the list");
-    confirmSpy.mockRestore();
   });
 
   it("gives the tools-pane splitter a keyboard, not just a mouse", () => {
