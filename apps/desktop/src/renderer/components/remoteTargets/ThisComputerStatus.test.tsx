@@ -2,6 +2,8 @@
 
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { resetReconnectFlowForTests } from "../../lib/reconnectThisComputer";
+import { reconnectBrowserPromptText } from "../../lib/thisComputerRefusal";
 import { ThisComputerStatus } from "./ThisComputerStatus";
 
 const appMock = {
@@ -19,7 +21,16 @@ const accountMock = {
   cancelDeviceLogin: vi.fn(async () => ({})),
 };
 
-function installAdeMock(publishHealth: Record<string, unknown> | null): void {
+const syncMock = {
+  getStatus: vi.fn(async () => ({ routeHealth: { accountDirectory: null } })),
+  onEvent: vi.fn(() => () => {}),
+};
+
+function installAdeMock(
+  publishHealth: Record<string, unknown> | null,
+  accountDirectory: Record<string, unknown> | null = null,
+): void {
+  syncMock.getStatus.mockResolvedValue({ routeHealth: { accountDirectory } } as never);
   appMock.getInfo.mockResolvedValue({ localRuntime: publishHealth ? { publishHealth } : null });
   accountMock.repairMachinePairing.mockResolvedValue({
     repaired: false,
@@ -31,7 +42,7 @@ function installAdeMock(publishHealth: Record<string, unknown> | null): void {
   });
   Object.defineProperty(window, "ade", {
     configurable: true,
-    value: { app: appMock, account: accountMock },
+    value: { app: appMock, account: accountMock, sync: syncMock },
   });
 }
 
@@ -47,6 +58,7 @@ function refusal(lastHttpReason: string) {
 
 afterEach(() => {
   cleanup();
+  resetReconnectFlowForTests();
   vi.clearAllMocks();
 });
 
@@ -76,13 +88,26 @@ describe("ThisComputerStatus", () => {
     await waitFor(() => expect(accountMock.repairMachinePairing).toHaveBeenCalledTimes(1));
   });
 
-  it("says Sign in again when the directory wants fresh proof", async () => {
+  it("says Confirm it's you, never Sign in again, when the directory wants fresh proof", async () => {
     installAdeMock(refusal("pairing_authentication_required"));
     render(<ThisComputerStatus accountSignedIn />);
-    expect(await screen.findByRole("button", { name: "Sign in again" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Confirm it's you" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Sign in again" })).toBeNull();
   });
 
-  it("shows the browser prompt with Open sign-in page and Cancel, never Done", async () => {
+  it("uses the shared reconnect wording, removal date included, when this machine's sync snapshot names the refusal", async () => {
+    const revoked = {
+      ...refusal("machine_revoked"),
+      revokedAt: "2026-08-14T03:46:07.933Z",
+      recoveryGaveUpAt: null,
+    };
+    installAdeMock(revoked, revoked);
+    render(<ThisComputerStatus accountSignedIn />);
+    expect(await screen.findByText(/^This computer was removed from your account on .*1[34]/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reconnect this computer" })).toBeTruthy();
+  });
+
+  it("shows the shared flow's browser line with Cancel while the sign-in runs, never Done", async () => {
     installAdeMock(refusal("pairing_authentication_required"));
     accountMock.repairMachinePairing.mockResolvedValue({
       repaired: false,
@@ -105,25 +130,14 @@ describe("ThisComputerStatus", () => {
     accountMock.pollDeviceLogin.mockReturnValue(new Promise(() => {}));
 
     render(<ThisComputerStatus accountSignedIn />);
-    fireEvent.click(await screen.findByRole("button", { name: "Sign in again" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Confirm it's you" }));
 
-    expect(
-      await screen.findByText("Finish signing in in your browser. This closes on its own."),
-    ).toBeTruthy();
-    expect(screen.getByText("WDJB-MJHT")).toBeTruthy();
-    const card = screen.getByText("WDJB-MJHT").closest("[data-this-computer-card]") as HTMLElement;
+    expect(await screen.findByText(reconnectBrowserPromptText("WDJB-MJHT"))).toBeTruthy();
+    const card = screen.getByText(reconnectBrowserPromptText("WDJB-MJHT"))
+      .closest("[data-this-computer-card]") as HTMLElement;
     const labels = within(card).getAllByRole("button").map((button) => button.textContent);
-    expect(labels).toContain("Open sign-in page");
-    expect(labels).toContain("Cancel");
+    expect(labels).toEqual(["Cancel"]);
     expect(labels).not.toContain("Done");
-
-    // The page can open behind ADE; the button opens it again on purpose.
-    fireEvent.click(screen.getByRole("button", { name: "Open sign-in page" }));
-    await waitFor(() =>
-      expect(appMock.openExternal).toHaveBeenLastCalledWith(
-        "https://directory.test/device?user_code=WDJB-MJHT",
-      ),
-    );
   });
 
   it("offers Repair only for an unreadable brain session, and clears when the brain recovers", async () => {

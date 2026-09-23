@@ -609,8 +609,8 @@ export function describeUnpublishedAccountDirectory(
       }
       if (refusalCode === "pairing_authentication_required") {
         return {
-          summary: "sign in again to reconnect this computer",
-          nextAction: "Sign in again",
+          summary: "confirm it's you to reconnect this computer",
+          nextAction: "Confirm it's you",
         };
       }
       return {
@@ -683,7 +683,7 @@ export function thisComputerAction(
     return { label: "Reconnect this computer", ...none };
   }
   if (refusal === "pairing_authentication_required") {
-    return { label: "Sign in again", ...none, needsSignIn: true };
+    return { label: "Confirm it's you", ...none, needsSignIn: true };
   }
   if (isBrainAccountSessionFailure(state)) {
     // The Repair control owns this one; the card renders it beside the line.

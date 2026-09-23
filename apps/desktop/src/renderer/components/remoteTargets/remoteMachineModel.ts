@@ -273,8 +273,8 @@ export function describePublishRefusal(
   if (code === "pairing_authentication_required") {
     return {
       code,
-      summary: "sign in again to reconnect this computer",
-      actionLabel: "Sign in again",
+      summary: "confirm it's you to reconnect this computer",
+      actionLabel: "Confirm it's you",
     };
   }
   return null;

@@ -31,8 +31,8 @@ describe("describeUnpublishedAccountDirectory http_error refusal branches", () =
       lastHttpReason: "pairing_authentication_required",
     });
     expect(describeUnpublishedAccountDirectory("http_error", health)).toEqual({
-      summary: "sign in again to reconnect this computer",
-      nextAction: "Sign in again",
+      summary: "confirm it's you to reconnect this computer",
+      nextAction: "Confirm it's you",
     });
   });
 
@@ -120,7 +120,7 @@ describe("thisComputerAction button labels", () => {
       lastHttpReason: "pairing_authentication_required",
     });
     expect(thisComputerAction("http_error", health)).toEqual({
-      label: "Sign in again",
+      label: "Confirm it's you",
       needsSignIn: true,
       retry: false,
       startSync: false,

@@ -1,14 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowSquareOut, CheckCircle, Warning } from "@phosphor-icons/react";
-import {
-  runMachinePairingReconnect,
-  type MachinePairingReconnectOutcome,
-} from "../../lib/machinePairingReconnect";
-import type { AccountDeviceLoginPrompt } from "../../lib/accountLogin";
-import { openExternalUrl } from "../../lib/openExternal";
+import { CheckCircle, Warning } from "@phosphor-icons/react";
 import { useBrainRepair } from "../../hooks/useBrainRepair";
+import { useReconnectThisComputer } from "../../hooks/useReconnectThisComputer";
+import { useThisComputerRefusal } from "../../hooks/useThisComputerRefusal";
+import { describeThisComputerRefusal } from "../../lib/thisComputerRefusal";
 import { BrainRepairButton } from "../settings/BrainRepairButton";
-import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { isBrainAccountSessionFailure } from "../../../shared/types";
 import { helperTextStyle } from "./remoteTargetListStyles";
 import {
@@ -16,6 +13,8 @@ import {
   describeThisComputerCard,
   type LocalPublishHealth,
 } from "./remoteMachineModel";
+
+type CardOutcome = { tone: "success" | "warning" | "danger"; message: string };
 
 /**
  * This computer's standing with the ADE account, and the one thing to press.
@@ -26,11 +25,13 @@ import {
  * Machines heading, and then a third "This computer" card on top of both. One
  * component, one place, one button.
  *
- * The state comes from the brain's publisher health (`getInfo`), which is the
- * same record the Account page reads, so the two surfaces cannot disagree. The
- * button label follows the brain's refusal code: "Sign in again" when the
- * directory wants fresh proof, "Reconnect this computer" when it removed the
- * machine, "Retry" for a plain failure.
+ * A directory refusal (this computer was removed, or must confirm it's you) is
+ * the shared reconnect flow's, word for word: `describeThisComputerRefusal`
+ * for the sentence and `useReconnectThisComputer` for the button. That flow is
+ * one per window, so this card, the shell banner and the Account page can never
+ * start two browser sign-ins or say different things. The card keeps what that
+ * flow has no answer for: Retry for a plain publish failure, Start sync when
+ * nobody hosts sync here, and Repair for an unreadable brain session.
  */
 export function ThisComputerStatus({
   accountSignedIn,
@@ -41,12 +42,8 @@ export function ThisComputerStatus({
   onAccountMachinesChanged?: () => void;
 }) {
   const [publishHealth, setPublishHealth] = useState<LocalPublishHealth | null>(null);
-  const [reconnecting, setReconnecting] = useState(false);
-  const [outcome, setOutcome] = useState<MachinePairingReconnectOutcome | null>(null);
-  // The device sign-in prompt while a reconnect is proving fresh authentication.
-  const [signInPrompt, setSignInPrompt] = useState<AccountDeviceLoginPrompt | null>(null);
-  const [linkCopied, setLinkCopied] = useState(false);
-  const cancelledRef = useRef(false);
+  const [startingSync, setStartingSync] = useState(false);
+  const [outcome, setOutcome] = useState<CardOutcome | null>(null);
   const mountedRef = useRef(true);
   // An older in-flight read must not land after a newer one and bring a
   // cleared failure back.
@@ -84,42 +81,19 @@ export function ThisComputerStatus({
     };
   }, [refresh]);
 
+  const { refusal, refresh: refreshRefusal } = useThisComputerRefusal();
+  const reconnect = useReconnectThisComputer({
+    onSettled: () => {
+      refreshRefusal();
+      refresh();
+      onAccountMachinesChanged?.();
+    },
+  });
+
   const repair = useBrainRepair(refresh);
   const card = useMemo(() => describeThisComputerCard(publishHealth), [publishHealth]);
   const failing = describePublishHealth(publishHealth).kind === "failing";
   const showRepair = failing && isBrainAccountSessionFailure(publishHealth?.state) && repair.available;
-
-  const reconnect = useCallback(async () => {
-    const api = window.ade.account;
-    if (!api?.repairMachinePairing) return;
-    setReconnecting(true);
-    setOutcome(null);
-    setSignInPrompt(null);
-    setLinkCopied(false);
-    cancelledRef.current = false;
-    try {
-      const result = await runMachinePairingReconnect({
-        repair: () => api.repairMachinePairing(),
-        onPrompt: (prompt) => {
-          setSignInPrompt(prompt);
-          setLinkCopied(false);
-        },
-        isCancelled: () => cancelledRef.current,
-        afterAttempt: async () => {
-          refresh();
-          return "unverified";
-        },
-      });
-      if (result) setOutcome(result);
-      if (result?.tone === "success") {
-        onAccountMachinesChanged?.();
-        refresh();
-      }
-    } finally {
-      setSignInPrompt(null);
-      setReconnecting(false);
-    }
-  }, [onAccountMachinesChanged, refresh]);
 
   /**
    * "Start sync": the brain's own sync-host recovery. What it says back is the
@@ -132,7 +106,7 @@ export function ThisComputerStatus({
       setOutcome({ tone: "danger", message: "This ADE build can't start sync from here. Restart ADE to start sync." });
       return;
     }
-    setReconnecting(true);
+    setStartingSync(true);
     setOutcome(null);
     try {
       const result = await start();
@@ -145,55 +119,91 @@ export function ThisComputerStatus({
     } catch (error) {
       setOutcome({ tone: "danger", message: error instanceof Error ? error.message : String(error) });
     } finally {
-      setReconnecting(false);
+      setStartingSync(false);
     }
   }, [onAccountMachinesChanged, refresh]);
 
-  const cancel = useCallback(() => {
-    cancelledRef.current = true;
-    setSignInPrompt(null);
-  }, []);
-
-  const signInUrl = signInPrompt?.verificationUriComplete ?? signInPrompt?.verificationUri ?? null;
-
-  const copyLink = useCallback(() => {
-    const write = window.ade.app?.writeClipboardText;
-    if (!signInUrl || !write) return;
-    void write(signInUrl).then(() => setLinkCopied(true)).catch(() => {});
-  }, [signInUrl]);
+  // The refusal read comes from this machine's sync snapshot; the card's own
+  // read comes from the brain's publisher. Either one naming a refusal puts the
+  // shared flow's button on the card.
+  const refusalCopy = refusal && reconnect.available ? describeThisComputerRefusal(refusal) : null;
+  const cardWantsReconnect = Boolean(
+    card?.action.label
+      && card.action.label !== "Repair"
+      && !card.action.retry
+      && !card.action.startSync,
+  );
+  const reconnectView = reconnect.available && (refusalCopy || cardWantsReconnect)
+    ? reconnect.view({
+        label: refusalCopy?.action ?? card?.action.label ?? "Reconnect this computer",
+        detail: refusalCopy?.detail,
+      })
+    : null;
+  const reconnectOutcome = reconnect.outcome;
 
   // Nothing to say while signed out or while the brain has not reported yet,
-  // unless the brain itself cannot read the account session (Repair).
-  if (!card) return null;
-  if (!accountSignedIn && !isBrainAccountSessionFailure(publishHealth?.state)) return null;
+  // unless the brain itself cannot read the account session (Repair), or the
+  // directory refuses this computer.
+  if (!card && !refusalCopy) return null;
+  if (!accountSignedIn && !isBrainAccountSessionFailure(publishHealth?.state) && !refusalCopy) return null;
 
-  const button = card.action.label === "Repair"
-    ? (showRepair ? <BrainRepairButton repair={repair} height={24} /> : null)
-    : card.action.label
-      ? (
-        <button
-          type="button"
-          disabled={reconnecting}
-          onClick={() => {
-            if (card.action.retry) refresh();
-            else if (card.action.startSync) void startSync();
-            else void reconnect();
-          }}
-          style={outlineButton({
-            height: 24,
-            padding: "0 10px",
-            fontSize: 11,
-            flexShrink: 0,
-            opacity: reconnecting ? 0.6 : 1,
-            cursor: reconnecting ? "not-allowed" : "pointer",
-          })}
-        >
-          {reconnecting
-            ? (signInPrompt ? "Waiting for sign-in…" : card.action.startSync ? "Starting sync…" : "Reconnecting…")
-            : card.action.label}
-        </button>
-      )
-      : null;
+  const tone = refusalCopy ? "warning" : card?.tone ?? "warning";
+  const summary = refusalCopy?.title ?? capitalizeSentence(card?.summary ?? "");
+
+  const button = reconnectView
+    ? (
+      <button
+        type="button"
+        disabled={reconnectView.disabled}
+        onClick={reconnectView.onClick}
+        style={outlineButton({
+          height: 24,
+          padding: "0 10px",
+          fontSize: 11,
+          flexShrink: 0,
+          opacity: reconnectView.disabled ? 0.6 : 1,
+          cursor: reconnectView.disabled ? "not-allowed" : "pointer",
+        })}
+      >
+        {reconnectView.label}
+      </button>
+    )
+    : card?.action.label === "Repair"
+      ? (showRepair ? <BrainRepairButton repair={repair} height={24} /> : null)
+      // Retry and Start sync only: a reconnect label with no shared flow
+      // behind it (the hosted web client) gets no button rather than one that
+      // only refreshes.
+      : card?.action.label && (card.action.retry || card.action.startSync)
+        ? (
+          <button
+            type="button"
+            disabled={startingSync}
+            onClick={() => {
+              if (card.action.startSync) void startSync();
+              else refresh();
+            }}
+            style={outlineButton({
+              height: 24,
+              padding: "0 10px",
+              fontSize: 11,
+              flexShrink: 0,
+              opacity: startingSync ? 0.6 : 1,
+              cursor: startingSync ? "not-allowed" : "pointer",
+            })}
+          >
+            {startingSync ? "Starting sync…" : card.action.label}
+          </button>
+        )
+        : null;
+
+  // The shared flow's line: the browser code while it waits, the reason after
+  // a failed attempt, or the refusal's own detail.
+  const detail = reconnectView?.detail ?? null;
+  const shownOutcome: CardOutcome | null = reconnectOutcome
+    ? { tone: reconnectOutcome.tone === "success" ? "success" : "danger", message: reconnectOutcome.message }
+    : outcome;
+  // A failed reconnect already shows its reason as the detail line.
+  const showOutcome = shownOutcome && !(reconnectView && shownOutcome.tone !== "success");
 
   return (
     <div data-this-computer-card style={{ display: "grid", gap: 6, minWidth: 0 }}>
@@ -208,78 +218,36 @@ export function ThisComputerStatus({
             fontFamily: SANS_FONT,
             fontSize: 11.5,
             lineHeight: 1.4,
-            color: card.tone === "healthy" ? COLORS.textSecondary : COLORS.warning,
+            color: tone === "healthy" ? COLORS.textSecondary : COLORS.warning,
           }}
         >
-          {card.tone === "healthy"
+          {tone === "healthy"
             ? <CheckCircle size={13} weight="fill" color={COLORS.accent} style={{ flexShrink: 0 }} />
             : <Warning size={13} weight="fill" style={{ flexShrink: 0 }} />}
-          <span>{capitalizeSentence(card.summary)}</span>
+          <span>{summary}</span>
         </span>
         {button}
       </div>
 
-      {signInPrompt && signInUrl ? (
-        <div
-          style={{
-            display: "grid",
-            gap: 8,
-            padding: "9px 10px",
-            borderRadius: 8,
-            border: `1px solid ${COLORS.borderMuted}`,
-            background: COLORS.recessedBg,
-          }}
-        >
-          <div style={{ ...helperTextStyle, color: COLORS.textPrimary, fontSize: 12 }}>
-            {signInPrompt.browserOpened
-              ? "Finish signing in in your browser. This closes on its own."
-              : "Open the sign-in page in your browser and press Continue."}
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-            {/* Always offered: the browser can open behind ADE, or not at all. */}
-            <button
-              type="button"
-              onClick={() => openExternalUrl(signInUrl)}
-              style={outlineButton({ height: 24, padding: "0 10px", fontSize: 11 })}
-            >
-              <ArrowSquareOut size={12} />
-              Open sign-in page
-            </button>
-            <button
-              type="button"
-              onClick={copyLink}
-              style={outlineButton({ height: 24, padding: "0 10px", fontSize: 11 })}
-            >
-              {linkCopied ? "Copied" : "Copy link"}
-            </button>
-            <button
-              type="button"
-              onClick={cancel}
-              style={outlineButton({ height: 24, padding: "0 10px", fontSize: 11 })}
-            >
-              Cancel
-            </button>
-          </div>
-          <div style={{ ...helperTextStyle, fontSize: 11 }}>
-            Code <span style={{ fontFamily: MONO_FONT, color: COLORS.textPrimary }}>{signInPrompt.userCode}</span>
-            {signInPrompt.browserOpened ? ", already filled in on the page." : ", enter it on the page."}
-          </div>
+      {detail ? (
+        <div style={{ ...helperTextStyle, color: reconnectView?.cancels ? COLORS.textPrimary : undefined }}>
+          {detail}
         </div>
       ) : null}
 
-      {outcome ? (
+      {showOutcome && shownOutcome ? (
         <div
           role="status"
           style={{
             ...helperTextStyle,
-            color: outcome.tone === "success"
+            color: shownOutcome.tone === "success"
               ? COLORS.success
-              : outcome.tone === "warning"
+              : shownOutcome.tone === "warning"
                 ? COLORS.warning
                 : COLORS.danger,
           }}
         >
-          {outcome.message}
+          {shownOutcome.message}
         </div>
       ) : null}
     </div>
