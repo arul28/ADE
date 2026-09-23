@@ -227,7 +227,6 @@ import { buildRewindPreviewFiles, deriveRewindDiffSummaries } from "./rewindFile
 import { ChatCursorCloudPanel } from "./ChatCursorCloudPanel";
 import { ChatDevinCloudPanel } from "./ChatDevinCloudPanel";
 import { getLaneAccent } from "../lanes/laneColorPalette";
-import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
 import { ChatTerminalDrawer } from "./ChatTerminalDrawer";
 import { deriveChatSubagentSnapshots, deriveTodoItems, deriveTurnDiffSummaries, mergeManagedScheduledWorkSnapshots } from "./chatExecutionSummary";
 import { navigateToSpawnedChat } from "./spawnNavigation";
@@ -13821,7 +13820,8 @@ export function AgentChatPane({
         title={resolvedTitle}
         laneId={laneId}
         prBadgeOnly
-        titleAccessory={selectedSession?.cursorCloudAgentId && cursorCloudAgentWebUrl(selectedSession.cursorCloudAgentId) ? (
+        titleAccessory={<>
+        {selectedSession?.cursorCloudAgentId && cursorCloudAgentWebUrl(selectedSession.cursorCloudAgentId) ? (
           <button
             type="button"
             data-testid="cursor-cloud-header-link"
@@ -13856,7 +13856,6 @@ export function AgentChatPane({
           </button>
         ) : null}
         </>}
-        onLaneChipClick={laneId ? () => navigate(openLaneInLanesTabPath(laneId)) : undefined}
         showCacheBadge={showClaudeCacheTimer}
         cacheIdleSinceAt={selectedSession?.idleSinceAt ?? null}
         lifecycleSessionId={selectedSessionId ?? null}
