@@ -17,7 +17,19 @@
  */
 
 import type { AgentChatEvent, AgentChatPlanStep } from "../../../../shared/types";
-import { assertNever, type AcpSlashCommand, type AcpUsageSample } from "./acpHostTypes";
+import {
+  assertNever,
+  type AcpSlashCommand,
+  type AcpTelemetrySignal,
+  type AcpUsageSample,
+} from "./acpHostTypes";
+import { liveContextUsageEvent } from "../liveContextUsageEvent";
+import {
+  acpContextBreakdown,
+  hasTokenCounts,
+  readAcpCompactionUpdate,
+  tokenSplitFields,
+} from "./acpTelemetryReaders";
 import {
   normalizeAcpConfigOptions,
   type AcpAvailableCommand,
@@ -65,6 +77,11 @@ export type AcpTranslatorCallbacks = {
   onSessionInfo?: (info: { title: string | null; updatedAt: string | null }) => void;
   /** Fired for every usage sample the dialect could read. */
   onUsage?: (sample: AcpUsageSample) => void;
+  /**
+   * Fired for a standard update that is telemetry, not a row (compaction).
+   * Returns the chat events the session's telemetry produced for it.
+   */
+  onTelemetry?: (signal: AcpTelemetrySignal) => AgentChatEvent[];
 };
 
 export type AcpEventTranslatorOptions = {
@@ -496,10 +513,15 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
         return usageSampleToEvents(sample, turnId);
       }
 
-      case "compaction_update":
+      case "compaction_update": {
+        const signal = readAcpCompactionUpdate(update);
+        if (!signal) return [];
+        return options.callbacks?.onTelemetry?.(signal) ?? [];
+      }
+
       case "compaction_summary_chunk":
-        // ADE has no compaction card for ACP providers yet. Dropping these is
-        // deliberate, and it is recorded in the conformance matrix.
+        // The streamed summary text has no home in ADE's compaction divider.
+        // The `compaction_update` around it carries the lifecycle.
         return [];
 
       default:
@@ -542,41 +564,21 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
  */
 export function usageSampleToEvents(sample: AcpUsageSample, turnId: string | null): AgentChatEvent[] {
   const events: AgentChatEvent[] = [];
-  const hasTokens =
-    sample.inputTokens !== undefined
-    || sample.outputTokens !== undefined
-    || sample.cacheReadTokens !== undefined
-    || sample.cacheWriteTokens !== undefined;
-  if (hasTokens && turnId) {
+  if (hasTokenCounts(sample) && turnId) {
     events.push({
       type: "tokens",
       turnId,
-      ...(sample.inputTokens !== undefined ? { inputTokens: sample.inputTokens } : {}),
-      ...(sample.outputTokens !== undefined ? { outputTokens: sample.outputTokens } : {}),
-      ...(sample.cacheReadTokens !== undefined ? { cacheReadTokens: sample.cacheReadTokens } : {}),
-      ...(sample.cacheWriteTokens !== undefined ? { cacheWriteTokens: sample.cacheWriteTokens } : {}),
+      ...tokenSplitFields(sample),
       ...(sample.contextWindowTokens !== undefined ? { contextWindow: sample.contextWindowTokens } : {}),
     });
   }
   if (sample.contextUsedTokens !== undefined && sample.contextWindowTokens) {
-    const percentage = Math.min(
-      100,
-      Math.max(0, Math.round((sample.contextUsedTokens / sample.contextWindowTokens) * 100)),
-    );
-    events.push({
-      type: "context_usage",
-      origin: "live",
-      usage: {
-        categories: [],
-        totalTokens: sample.contextUsedTokens,
-        maxTokens: sample.contextWindowTokens,
-        percentage,
-        ...(sample.inputTokens !== undefined ? { inputTokens: sample.inputTokens } : {}),
-        ...(sample.outputTokens !== undefined ? { outputTokens: sample.outputTokens } : {}),
-        ...(sample.cacheReadTokens !== undefined ? { cacheReadTokens: sample.cacheReadTokens } : {}),
-      },
-      ...(turnId ? { turnId } : {}),
-    });
+    events.push(liveContextUsageEvent({
+      used: sample.contextUsedTokens,
+      max: sample.contextWindowTokens,
+      breakdown: acpContextBreakdown(sample),
+      turnId,
+    }));
   }
   return events;
 }

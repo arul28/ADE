@@ -756,6 +756,8 @@ describe("Cursor SDK pool paths", () => {
     expect(env.ADE_CURSOR_SDK_LANE_ROOT).toBe("/repo/.ade/worktrees/lane");
     expect(env.ADE_CURSOR_SDK_SESSION_ID).toBe("session-1");
     expect(env.ADE_CURSOR_SDK_STATE_ROOT).toBe("/repo/.ade/cache/cursor-sdk/hash/state");
+    // Only an agent this worker spawned may send a preCompact report.
+    expect(env.ADE_CURSOR_SDK_PRECOMPACT).toBe("1");
   });
 
   it("passes only the explicitly authorized ADE runtime socket for activity reports", () => {

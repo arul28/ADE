@@ -3,7 +3,9 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { PI_SDK_MIN_NODE } from "../chat/piSdkProtocol";
+import { isPiLoopbackBaseUrl, piAuthSummary, piProviderAuthType, type PiAuthOptions } from "../chat/piSdkAuth";
 import { acquirePiSdkConnection, releasePiSdkConnection } from "../chat/piSdkPool";
+import { piThinkingLevel } from "../../../shared/cliLaunch";
 import {
   createDynamicPiModelDescriptor,
   decodePiRegistryId,
@@ -47,6 +49,11 @@ export type PiProfileInventory = {
   blocker: string | null;
   providers: AiPiProviderStatus[];
   availableModelIds: string[];
+  /**
+   * The thinking levels Pi offers per model, keyed like `availableModelIds`.
+   * Only Pi's live runtime knows them, so a profile-file reading has none.
+   */
+  modelThinkingLevels?: Record<string, string[]>;
   stale: boolean;
   authFileDetected: boolean;
   modelsFileDetected: boolean;
@@ -194,37 +201,11 @@ export function resolvePiInstallation(env: NodeJS.ProcessEnv = process.env): PiI
   };
 }
 
-/** Loopback hosts are the tell for "a model server the user runs themselves". */
-const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"]);
-
 /**
- * The base URL of a provider served from this machine, or `null`.
- *
- * Deliberately host-based rather than key-based: a placeholder API key means
- * nothing, and a remote provider reached through a custom `baseUrl` proxy is
- * still a remote provider the user must authenticate to.
+ * Settings reads Pi's profile files by the frozen `"settings"` rules: what a
+ * provider shows here never moves with the per-turn usage classification.
  */
-function loopbackBaseUrl(value: unknown): string | null {
-  const raw = nonEmpty(value);
-  if (!raw) return null;
-  try {
-    return LOOPBACK_HOSTS.has(new URL(raw).hostname.toLowerCase()) ? raw : null;
-  } catch {
-    return null;
-  }
-}
-
-function authSummary(value: unknown): { type: AiPiProviderStatus["authType"]; expiresAt?: number | null } {
-  const record = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
-  if (!record) return { type: null };
-  const type = nonEmpty(record.type)?.toLowerCase();
-  const expires = typeof record.expires === "number" ? record.expires : null;
-  if (type === "oauth" || type === "token") return { type: "oauth", expiresAt: expires };
-  if (type === "api-key" || type === "apikey" || type === "api_key") return { type: "api-key", expiresAt: expires };
-  if (record.apiKey != null || record.api_key != null) return { type: "api-key", expiresAt: expires };
-  if (Object.keys(record).some((key) => /key|token|access|refresh/i.test(key))) return { type: "oauth", expiresAt: expires };
-  return { type: "unknown", expiresAt: expires };
-}
+const SETTINGS_AUTH_RULES: PiAuthOptions = { rules: "settings" };
 
 /** Read only provider/model metadata. Secret values are never returned. */
 export function readPiProfileInventory(installation = resolvePiInstallation()): PiProfileInventory {
@@ -245,21 +226,20 @@ export function readPiProfileInventory(installation = resolvePiInstallation()): 
       const id = nonEmpty((model as Record<string, unknown> | null)?.id);
       if (id) ids.add(encodePiRegistryId("default", providerId, id));
     }
-    const authInfo = authSummary(auth[providerId]);
-    // A loopback base URL wins over everything, including a stored auth entry.
+    const authInfo = piAuthSummary(auth[providerId], SETTINGS_AUTH_RULES);
     // LM Studio ships `apiKey: "lmstudio"` in models.json — a placeholder its
     // OpenAI-compatible endpoint requires and ignores — so keying off the
     // presence of a key classified a server the user runs as an API provider,
     // offered to "sign in" to it, and reported it connected on the strength of
-    // a config file rather than a reachable server.
-    const localBaseUrl = loopbackBaseUrl(provider.baseUrl);
-    // A stored auth entry still wins: it is the one piece of evidence that the
-    // provider really has an interactive credential. Only the *placeholder*
-    // key case — a loopback server with no auth-store entry, which is what LM
-    // Studio ships — is reclassified, so a provider behind a local gateway
-    // does not lose its sign-in.
-    const authType = authInfo.type
-      ?? (localBaseUrl ? "local" as const : provider.apiKey ? "api-key" as const : provider.baseUrl ? "local" as const : null);
+    // a config file rather than a reachable server. A stored auth entry still
+    // wins: it is the one evidence of an interactive credential, so a provider
+    // behind a local gateway does not lose its sign-in.
+    const localBaseUrl = isPiLoopbackBaseUrl(provider.baseUrl, SETTINGS_AUTH_RULES) ? nonEmpty(provider.baseUrl) : null;
+    const authType = piProviderAuthType({
+      authEntry: auth[providerId],
+      baseUrl: provider.baseUrl,
+      configKey: provider.apiKey,
+    }, SETTINGS_AUTH_RULES);
     providers.set(providerId, {
       id: providerId,
       name: nonEmpty(provider.name) ?? providerId,
@@ -277,7 +257,7 @@ export function readPiProfileInventory(installation = resolvePiInstallation()): 
   }
   for (const [providerId, value] of Object.entries(auth)) {
     if (providers.has(providerId)) continue;
-    const authInfo = authSummary(value);
+    const authInfo = piAuthSummary(value, SETTINGS_AUTH_RULES);
     providers.set(providerId, {
       id: providerId,
       name: providerId,
@@ -351,6 +331,18 @@ function runtimeConfigured(value: Record<string, unknown> | null): boolean {
   return value?.configured === true || value?.authenticated === true || value?.isAuthenticated === true;
 }
 
+/**
+ * ADE's effort choices for one Pi model: the thinking levels Pi offers for it,
+ * as the values `piThinkingLevel` hands back to Pi. Undefined when Pi reported
+ * none (a profile-file reading), and empty for a model that cannot think.
+ */
+function piReasoningTiers(levels: readonly string[] | undefined): string[] | undefined {
+  if (!levels) return undefined;
+  const tiers = [...new Set(levels.map((level) => piThinkingLevel(level)).filter((level): level is string => Boolean(level)))];
+  // "off" alone is not a choice.
+  return tiers.some((tier) => tier !== "off") ? tiers : [];
+}
+
 /** Build one canonical set of picker descriptors from the Pi inventory. */
 export function piModelDescriptorsFromInventory(inventory: PiProfileInventory) {
   const providersById = new Map(inventory.providers.map((provider) => [provider.id, provider] as const));
@@ -358,10 +350,12 @@ export function piModelDescriptorsFromInventory(inventory: PiProfileInventory) {
     const decoded = decodePiRegistryId(modelId);
     if (!decoded) return [];
     const provider = providersById.get(decoded.providerId);
+    const reasoningTiers = piReasoningTiers(inventory.modelThinkingLevels?.[modelId]);
     return [createDynamicPiModelDescriptor(decoded.providerId, decoded.modelId, {
       profileId: decoded.profileId,
       displayName: `${provider?.name ?? decoded.providerId} / ${decoded.modelId}`,
       ...(provider?.authMethods.length ? { authTypes: provider.authMethods } : {}),
+      ...(reasoningTiers ? { reasoningTiers, capabilities: { reasoning: reasoningTiers.length > 0 } } : {}),
       // Pi's chat accent, so a Pi model reads as Pi wherever the per-model
       // colour is used instead of the provider accent.
       color: "#181C25",
@@ -392,13 +386,18 @@ export async function probePiProfileInventory(
     });
     const availableModels = acquired.pooled.ready?.availableModels ?? [];
     const availableCounts = new Map<string, number>();
+    const modelThinkingLevels: Record<string, string[]> = {};
     const availableModelIds = availableModels.flatMap((model) => {
       const record = runtimeRecord(model);
       const providerId = nonEmpty(record?.provider);
       const modelId = nonEmpty(record?.id);
       if (!providerId || !modelId) return [];
       availableCounts.set(providerId, (availableCounts.get(providerId) ?? 0) + 1);
-      return [encodePiRegistryId("default", providerId, modelId)];
+      const registryId = encodePiRegistryId("default", providerId, modelId);
+      if (Array.isArray(record?.thinkingLevels)) {
+        modelThinkingLevels[registryId] = record.thinkingLevels.filter((level): level is string => typeof level === "string");
+      }
+      return [registryId];
     });
     const runtimeAuth = await acquired.pooled.requestAuth().catch(() => []);
     const fallbackProvidersById = new Map(fallback.providers.map((provider) => [provider.id, provider] as const));
@@ -469,6 +468,7 @@ export async function probePiProfileInventory(
       blocker: installation.blocker,
       providers: [...providersById.values()].sort((a, b) => a.name.localeCompare(b.name)),
       availableModelIds: [...new Set(availableModelIds)].sort(),
+      ...(Object.keys(modelThinkingLevels).length ? { modelThinkingLevels } : {}),
       stale: false,
       authFileDetected: fallback.authFileDetected,
       modelsFileDetected: fallback.modelsFileDetected,

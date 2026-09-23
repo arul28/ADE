@@ -105,6 +105,12 @@ export type ModelPickerProps = {
    * better than `modelSupportsFastMode` for the *selected* model.
    */
   fastModeSupported?: boolean;
+  /**
+   * Why Fast cannot run with the selected model's other picks (an OpenCode
+   * effort with no Fast route). The trigger drops its Fast suffix and the
+   * selected row's chip shows the reason and cannot turn Fast on.
+   */
+  fastModeUnavailableReason?: string | null;
   /** Cursor Cloud's nullable three-state service-tier control. */
   serviceTierMode?: boolean;
   serviceTier?: CursorCloudServiceTier | null;
@@ -151,7 +157,8 @@ export const ModelPicker = memo(function ModelPicker({
   onFastModeChange,
   fastModeActive,
   onFastModeToggle,
-  fastModeSupported,
+  fastModeSupported: fastModeSupportedProp,
+  fastModeUnavailableReason = null,
   serviceTierMode = false,
   serviceTier = null,
   onServiceTierChange,
@@ -429,7 +436,9 @@ export const ModelPicker = memo(function ModelPicker({
   // (per-row affordance + trigger suffix); the deprecated `onFastModeToggle`
   // keeps the old sibling chip alive for surfaces that have not migrated yet.
   const fastModeOn = fastMode ?? fastModeActive ?? false;
-  const legacyFastChip = !onFastModeChange && typeof onFastModeToggle === "function";
+  // Fast that cannot run is not shown as the selection's mode.
+  const fastModeSupported = fastModeUnavailableReason ? false : fastModeSupportedProp;
+  const legacyFastChip =!onFastModeChange && typeof onFastModeToggle === "function";
   const legacyFastSupported = legacyFastChip
     && (fastModeSupported ?? modelSupportsFastMode(selectedModel));
   const serviceTierSupported = serviceTierMode
@@ -498,6 +507,7 @@ export const ModelPicker = memo(function ModelPicker({
                 fastMode={fastModeOn}
                 {...(typeof fastModeSupported === "boolean" ? { fastModeSupported } : {})}
                 {...(!serviceTierMode && onFastModeChange ? { onFastModeChange } : {})}
+                {...(fastModeUnavailableReason ? { fastModeUnavailableReason } : {})}
                 {...(serviceTierMode ? {
                   serviceTierMode: true,
                   serviceTier,

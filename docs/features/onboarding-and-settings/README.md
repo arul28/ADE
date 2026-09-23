@@ -1270,7 +1270,8 @@ Renderer — settings:
   publishing under a different key would mint a phantom machine no peer ever
   reconciles with the real one.
 - `apps/desktop/src/main/services/usage/providerQuotaParsers.ts` — normalizes
-  Claude and Codex live-quota response variants. Codex buckets use their
+  the live-quota responses of Claude, Codex, Cursor, Copilot, Grok, OpenCode
+  Go, and Kimi, and the Factory session credits. Codex buckets use their
   advertised duration (minute- or second-based fields) to determine whether a
   window is five-hour, weekly, or monthly; primary/secondary position is only a
   fallback for older payloads that omit duration metadata.
@@ -1282,6 +1283,33 @@ Renderer — settings:
   with the newest Codex `state_*.sqlite` thread index under bounded row and
   lookup budgets; a zero-cost all-time-only remainder preserves the exact union
   token headline without fabricating day, project, or cost attribution.
+- `apps/desktop/src/main/services/usage/ledgers/ledgerScanCore.ts` — the
+  plumbing that all history scanners share: `TokenEntry`, scan completeness,
+  file discovery, line-streamed JSONL reads, and the read-only SQLite opener.
+- `apps/desktop/src/main/services/usage/ledgers/acpProviderLedgers.ts` — the
+  history scanners for the ledgers that Pi, Qwen, Grok, and Copilot CLI keep
+  on disk.
+- `apps/desktop/src/main/services/usage/usageLedgerScanners.ts` — the one list
+  of history scanners. The ledger worker and the in-process scan both walk it.
+- `apps/desktop/src/main/services/usage/providerLedgerFormats.ts` and
+  `tokenSplit.ts` — the provider record constants and token-split rules that
+  the live chat path and the history scanners share.
+- `apps/desktop/src/main/services/usage/cursorBilledUsageStore.ts` — the
+  Cursor `getUsage` billed rows of API-key turns, one row per run. The worker
+  scan does not read them.
+- `apps/desktop/src/main/services/usage/cursorDashboardUsage.ts` — reads
+  Cursor's dashboard usage events for the per-turn ledger. It writes no Usage
+  rows.
+- `apps/desktop/src/main/services/usage/usageAccountId.ts` — the one rule for
+  a usage account id, shared by the quota poller and the per-turn ledger.
+- `apps/desktop/src/main/services/usage/turnUsageLedger.ts` — the per-turn
+  usage ledger: one JSON line per finished chat turn under
+  `<adeHome>/usage/`. `usage.getTurnUsageSummary` reads it asynchronously.
+- `apps/desktop/src/main/services/usage/quotaBurnRate.ts` — what one percent
+  of a subscription window costs, from the ledger's quota readings and rows.
+- `apps/desktop/src/main/services/usage/turnUsageReconcilers.ts` — amends a
+  ledger row after the turn, from Cursor's dashboard events and Factory
+  session credits.
 - `apps/desktop/src/main/services/usage/usageStatsStore.ts` — aggregates the
   project database and owns the low-volume `usage_events` ledger. Only
   successful, meaningful user mutations are recorded; read/poll IPC is

@@ -16,6 +16,7 @@ import {
   resolveCleanShellLaunchFields,
   resolvePiCliModelForLaunch,
   piThinkingFlags,
+  piThinkingLevel,
   piSdkToolPolicyForPermissionMode,
   piToolsForPermissionMode,
   piToolFlags,
@@ -27,6 +28,8 @@ import {
   withCodexNoAltScreen,
 } from "./cliLaunch";
 import { ADE_CLI_AGENT_GUIDANCE } from "../../../shared/adeCliGuidance";
+import { PI_THINKING_LEVELS } from "../../../shared/cliLaunch";
+import { PI_THINKING_LEVELS as PI_SDK_THINKING_LEVELS } from "../../../main/services/chat/piSdkProtocol";
 import { ADE_AGENT_SKILLS_DIRS_ENV } from "../../../shared/agentSkillRoots";
 import { GROK_CLAUDE_MARKER_OVERRIDE_ENV } from "../../../shared/grokSupervision";
 import type { AgentChatPermissionMode, TerminalSessionSummary } from "../../../shared/types";
@@ -801,6 +804,22 @@ describe("buildTrackedCliStartupCommand", () => {
   it("preserves Pi's native max thinking level", () => {
     expect(piThinkingFlags("max")).toEqual(["--thinking", "max"]);
     expect(piThinkingFlags("ultracode")).toEqual(["--thinking", "xhigh"]);
+  });
+
+  it("gives the Pi chat worker only a level Pi accepts", () => {
+    // The worker rejects anything else, so an effort carried over from another
+    // provider failed every launch.
+    expect(piThinkingLevel("HIGH")).toBe("high");
+    expect(piThinkingLevel("ultracode")).toBe("xhigh");
+    expect(piThinkingLevel("ultra")).toBe("xhigh");
+    expect(piThinkingLevel("none")).toBeNull();
+    expect(piThinkingLevel("default")).toBeNull();
+    expect(piThinkingLevel(null)).toBeNull();
+  });
+
+  it("maps onto the one Pi thinking-level list the worker protocol checks", () => {
+    expect(PI_SDK_THINKING_LEVELS).toBe(PI_THINKING_LEVELS);
+    for (const level of PI_THINKING_LEVELS) expect(piThinkingLevel(level)).toBe(level);
   });
 
   describe("claude provider", () => {

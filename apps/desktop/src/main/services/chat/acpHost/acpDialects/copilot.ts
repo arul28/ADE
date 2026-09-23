@@ -41,6 +41,35 @@
  *   rewrite of user state, so it stays.
  * - `COPILOT_HOME` names the config directory, and `--config-dir` is the flag
  *   form. Sessions live at `<config home>/session-state/<uuid>/`.
+ * - Usage: `usage_update { used, size }` is context occupancy, and the prompt
+ *   result `usage` is the turn's tokens. The model Copilot actually picked,
+ *   its premium requests, its AI units, and subagent usage are only in
+ *   Copilot's own `session-store.db`, which ADE reads read-only after each
+ *   turn (`copilotUsageLedger.ts`).
+ *
+ * ## Model selection
+ *
+ * ADE sends the model twice: `--model <id>` at spawn and `session/set_model`
+ * after every entry. In 1.0.88 `session/set_model` and
+ * `session/set_config_option { configId: "model" }` run the same code
+ * (`validateSelection`, then `model.switchTo`). The `session/new` result
+ * lists a `model` option only when Copilot's model state projects one. When
+ * it does, the coordinator sends only a model from that list.
+ *
+ * On a plan that includes only Auto, Copilot ignores all of it. Verified on
+ * this machine (1.0.88): the CAPI `/models` list marks every model
+ * `model_picker_enabled: false`, `session/new` lists no `model` option, and
+ * `session/set_model` answers `{}` and writes `session.model_change`. Then
+ * `session.auto_mode_resolved` (`routingMethod: auto_v2`) picks the model,
+ * and the turn runs on it: `claude-haiku-4.5` and `mai-code-1.1-flash` were
+ * asked for, and `gpt-5.6-luna` answered both times. The binary says why:
+ * "only Auto mode is available on your plan", and "The --model argument will
+ * be overridden". `COPILOT_MODEL` goes through the same resolution. No ACP
+ * mechanism selects the model on such a plan. ADE reads the model that
+ * answered from `session-store.db`, reports it as `done.servedModel` (the chat
+ * service logs `agent_chat.served_model_mismatch`), and tells the user once
+ * per served model. A chat that asked for `auto` asked Copilot to pick, so its
+ * pick is never a mismatch.
  */
 
 import {
@@ -55,6 +84,7 @@ import { resolveCopilotCliModelForLaunch } from "../../../../../shared/cliLaunch
 import {
   ADE_CLIENT_INFO,
   inlineImagePrompt,
+  standardAcpUsage,
   standardClose,
   standardLoad,
   standardSetModel,
@@ -62,6 +92,8 @@ import {
   transportGatedMcpInjection,
   withOptionalEnv,
 } from "./shared";
+import { readCopilotAccount } from "./acpAccounts";
+import { createCopilotUsageLedger } from "./copilotUsageLedger";
 
 /**
  * Commands the Copilot terminal UI owns. ADE hides them from its picker.
@@ -102,6 +134,9 @@ export const COPILOT_NATIVE_MODE_IDS = {
 } as const;
 
 export const COPILOT_CONFIG_OPTION_IDS = ["mode", "allow_all"] as const;
+
+export const COPILOT_SERVED_MODEL_NOTE =
+  "Copilot routes every turn through Auto when the plan includes only Auto, or when the chosen model is rate limited.";
 
 export function copilotNativeModeValue(mode: string): string {
   if (mode === "plan") return COPILOT_NATIVE_MODE_IDS.plan;
@@ -170,7 +205,13 @@ export const copilotDialect = defineAcpDialect({
   postSessionNewNotifications: () => [],
   includeSlashCommand: includeCopilotSlashCommand,
 
-  ignoredNotificationMethods: [],
+  extensionNotifications: {},
+  localUsage: capability(createCopilotUsageLedger),
+  readAccount: readCopilotAccount,
+  // Copilot compacts without saying so; a sharp drop in `usage_update.used`
+  // is the tell.
+  inferCompaction: true,
+  usageUpdateAfterTurn: false,
 
   sessionIdPersistence: {
     assignableAtLaunch: true,
@@ -187,29 +228,7 @@ export const copilotDialect = defineAcpDialect({
   degradationNotes: [COPILOT_CANCEL_DEGRADATION_NOTE],
   degradationNoteForMode: copilotPermissionModeDegradationNote,
 
-  usageSource: "usage_update",
-  usage: capability(({ usageUpdate, promptUsage }) => {
-    if (usageUpdate) {
-      return {
-        contextUsedTokens: usageUpdate.used,
-        contextWindowTokens: usageUpdate.size,
-        ...(usageUpdate.cost && usageUpdate.cost.currency.toUpperCase() === "USD"
-          ? { costUsd: usageUpdate.cost.amount }
-          : {}),
-      };
-    }
-    if (promptUsage) {
-      return {
-        ...(promptUsage.inputTokens !== undefined ? { inputTokens: promptUsage.inputTokens } : {}),
-        ...(promptUsage.outputTokens !== undefined ? { outputTokens: promptUsage.outputTokens } : {}),
-        ...(promptUsage.totalTokens !== undefined ? { totalTokens: promptUsage.totalTokens } : {}),
-        ...(promptUsage.cachedReadTokens != null ? { cacheReadTokens: promptUsage.cachedReadTokens } : {}),
-        ...(promptUsage.cachedWriteTokens != null ? { cacheWriteTokens: promptUsage.cachedWriteTokens } : {}),
-        ...(promptUsage.thoughtTokens != null ? { reasoningTokens: promptUsage.thoughtTokens } : {}),
-      };
-    }
-    return null;
-  }),
+  usage: capability(standardAcpUsage),
 
   closeStyle: "close_request",
   closeSession: capability(standardClose),
@@ -224,8 +243,10 @@ export const copilotDialect = defineAcpDialect({
   supervisionPermissionMode: copilotSupervisionPermissionMode,
   modeSetupRequired: true,
   sessionConfig: capability(standardSetConfigOption),
+  // Accepted, but not always honored. See "Model selection" above.
   modelSelection: capability(standardSetModel),
   mcpInjection: capability(transportGatedMcpInjection),
   imagePrompts: capability(inlineImagePrompt),
   configOptionIds: COPILOT_CONFIG_OPTION_IDS,
+  servedModelMismatchNote: COPILOT_SERVED_MODEL_NOTE,
 });

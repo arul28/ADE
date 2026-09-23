@@ -11,8 +11,22 @@ vi.mock("node:os", async (importOriginal) => ({
   homedir: () => HOME,
 }));
 
-const { claudeConfigHome, codexConfigHome, factoryConfigHome, grokConfigHome } = await import("./providerConfigHomes");
-const ENV_KEYS = ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "FACTORY_HOME_OVERRIDE", "GROK_HOME"] as const;
+const {
+  claudeConfigHome,
+  codexConfigHome,
+  factoryConfigHome,
+  grokConfigHome,
+  grokSessionsDir,
+  qwenUsageDir,
+} = await import("./providerConfigHomes");
+const ENV_KEYS = [
+  "CLAUDE_CONFIG_DIR",
+  "CODEX_HOME",
+  "FACTORY_HOME_OVERRIDE",
+  "GROK_HOME",
+  "QWEN_HOME",
+  "QWEN_RUNTIME_DIR",
+] as const;
 
 let saved: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>>;
 
@@ -82,5 +96,16 @@ describe("providerConfigHomes", () => {
     process.env.GROK_HOME = "/ambient-grok";
     expect(grokConfigHome({ env: { GROK_HOME: "/injected-grok" } })).toBe("/injected-grok");
     expect(grokConfigHome({ env: {} })).toBe(path.join(HOME, ".grok"));
+  });
+
+  it("keeps Grok's session ledgers under its config home, GROK_HOME included", () => {
+    expect(grokSessionsDir()).toBe(path.join(HOME, ".grok", "sessions"));
+    expect(grokSessionsDir({ env: { GROK_HOME: "/accounts/grok" } })).toBe(path.join(path.resolve("/accounts/grok"), "sessions"));
+  });
+
+  it("reads Qwen usage rows from the Qwen home, or from QWEN_RUNTIME_DIR where the Qwen binary writes them", () => {
+    expect(qwenUsageDir({ env: { QWEN_HOME: "/accounts/qwen" } })).toBe(path.join(path.resolve("/accounts/qwen"), "usage"));
+    expect(qwenUsageDir({ env: { QWEN_HOME: "/accounts/qwen", QWEN_RUNTIME_DIR: "/runtime/qwen" } }))
+      .toBe(path.join(path.resolve("/runtime/qwen"), "usage"));
   });
 });

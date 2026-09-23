@@ -2471,6 +2471,8 @@ struct AgentChatTurnUsage: Codable, Equatable {
   var cacheCreationTokens: Int?
   var reasoningTokens: Int?
   var contextWindow: Int?
+  /// Occupancy after the turn: the input side of its last request. Older hosts omit it.
+  var contextTokens: Int?
 }
 
 struct AgentChatCodexTokenUsageBreakdown: Codable, Equatable {

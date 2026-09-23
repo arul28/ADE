@@ -7,11 +7,15 @@
  * holds the custom provider, the selected model, and the env-key slot the
  * CLI uses for the API key.
  *
- * Never return the key itself. Callers need "is there a key" and "which
- * model ids did they configure".
+ * Never return the key itself. Callers need "is there a key", "which model
+ * ids did they configure", "which auth type is selected", and "where is the
+ * model served from" (an origin, never the full base URL).
+ *
+ * The file is JSONC: the Qwen CLI accepts `//` and block comments in it.
  */
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { urlOriginOnly } from "../../../shared/remoteLoopbackUrl";
 import { qwenConfigHome } from "../shared/providerConfigHomes";
 
 export type QwenSettingsModel = {
@@ -23,12 +27,24 @@ export type QwenUserSettings = {
   authenticated: boolean;
   models: QwenSettingsModel[];
   defaultModelId: string | null;
+  /**
+   * `security.auth.selectedType`: the upstream the NEXT session picks
+   * (`openai`, `anthropic`, `qwen-oauth`, ...).
+   */
+  selectedType: string | null;
+  /**
+   * Origin of `model.baseUrl`. Only the origin: a base URL can carry a key
+   * in its userinfo or query.
+   */
+  baseUrlOrigin: string | null;
 };
 
 const EMPTY: QwenUserSettings = {
   authenticated: false,
   models: [],
   defaultModelId: null,
+  selectedType: null,
+  baseUrlOrigin: null,
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -43,6 +59,54 @@ function trimmedString(value: unknown): string | null {
   return next.length ? next : null;
 }
 
+/** Drop `//` and block comments outside strings. The rest stays byte for byte. */
+function stripJsonComments(text: string): string {
+  let out = "";
+  let inString = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (inString) {
+      out += char;
+      if (char === "\\") {
+        out += text[index + 1] ?? "";
+        index += 1;
+      } else if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === "/" && text[index + 1] === "/") {
+      const lineEnd = text.indexOf("\n", index);
+      if (lineEnd === -1) break;
+      index = lineEnd - 1;
+      continue;
+    }
+    if (char === "/" && text[index + 1] === "*") {
+      const blockEnd = text.indexOf("*/", index + 2);
+      if (blockEnd === -1) break;
+      index = blockEnd + 1;
+      continue;
+    }
+    if (char === "\"") inString = true;
+    out += char;
+  }
+  return out;
+}
+
+/** Parse settings text as JSON, then as JSONC. `null` when neither reads. */
+function parseSettingsText(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    // Fall through to the comment-tolerant read.
+  }
+  try {
+    return JSON.parse(stripJsonComments(text));
+  } catch {
+    return null;
+  }
+}
+
 function openaiProviders(settings: Record<string, unknown>): Array<Record<string, unknown>> {
   const providers = asRecord(settings.modelProviders);
   const openai = providers?.openai;
@@ -51,11 +115,12 @@ function openaiProviders(settings: Record<string, unknown>): Array<Record<string
 }
 
 /**
- * Parse a Qwen `settings.json` object. Used by tests and by the disk reader.
- * Ignores unknown keys so a newer CLI schema cannot crash ADE.
+ * Parse a Qwen `settings.json`: the file's text (JSON or JSONC) or an
+ * already-parsed object. Ignores unknown keys so a newer CLI schema cannot
+ * crash ADE; text that does not parse reads as empty settings.
  */
 export function parseQwenUserSettings(raw: unknown): QwenUserSettings {
-  const settings = asRecord(raw);
+  const settings = asRecord(typeof raw === "string" ? parseSettingsText(raw) : raw);
   if (!settings) return EMPTY;
 
   const security = asRecord(settings.security);
@@ -89,6 +154,8 @@ export function parseQwenUserSettings(raw: unknown): QwenUserSettings {
     authenticated: hasInlineApiKey || hasProviderKey,
     models,
     defaultModelId,
+    selectedType: trimmedString(auth?.selectedType),
+    baseUrlOrigin: urlOriginOnly(trimmedString(model?.baseUrl)),
   };
 }
 
@@ -99,8 +166,7 @@ export async function loadQwenUserSettings(args: {
 } = {}): Promise<QwenUserSettings> {
   const root = qwenConfigHome(args);
   try {
-    const raw = JSON.parse(await readFile(path.join(root, "settings.json"), "utf8")) as unknown;
-    return parseQwenUserSettings(raw);
+    return parseQwenUserSettings(await readFile(path.join(root, "settings.json"), "utf8"));
   } catch {
     return EMPTY;
   }

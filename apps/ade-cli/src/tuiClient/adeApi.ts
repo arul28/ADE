@@ -1422,6 +1422,10 @@ export function latestTokenStats(
   let compactionProtected = false;
   let protectedCompactionTurnId: string | null = null;
   let rateLimit: TokenStats["rateLimit"] = null;
+  // Parity with desktop's contextUsageModel: a turn that produced an exact
+  // occupancy sample (live `context_usage`, Codex's per-request counter) keeps
+  // it; that turn's summed `tokens`/`done` totals must not overwrite it.
+  const turnsWithExactOccupancy = new Set<string>();
   const readCacheReadTokens = (bucket: Record<string, unknown> | null): number | null => {
     if (!bucket) return null;
     if (typeof bucket.cacheReadTokens === "number") return bucket.cacheReadTokens;
@@ -1447,6 +1451,7 @@ export function latestTokenStats(
     if (event.type === "done" || (event.type === "status" && event.turnStatus === "completed")) streaming = false;
     if (event.type === "tokens") {
       if (compactionProtected) continue;
+      if (typeof event.turnId === "string" && turnsWithExactOccupancy.has(event.turnId)) continue;
       contextState = "measured";
       inputTokens = typeof event.inputTokens === "number" ? event.inputTokens : inputTokens;
       outputTokens = typeof event.outputTokens === "number" ? event.outputTokens : outputTokens;
@@ -1455,6 +1460,7 @@ export function latestTokenStats(
       if (typeof event.contextWindow === "number") eventLimit = event.contextWindow;
     }
     if (event.type === "codex_token_usage") {
+      if (typeof event.turnId === "string") turnsWithExactOccupancy.add(event.turnId);
       const usage = event.usage && typeof event.usage === "object" ? event.usage as Record<string, unknown> : null;
       const total = usage?.total && typeof usage.total === "object" ? usage.total as Record<string, unknown> : null;
       const last = usage?.last && typeof usage.last === "object" ? usage.last as Record<string, unknown> : null;
@@ -1475,6 +1481,7 @@ export function latestTokenStats(
       cacheCreationTokens = readCacheWriteTokens(last) ?? readCacheWriteTokens(total) ?? cacheCreationTokens;
     }
     if (event.type === "context_usage") {
+      if (typeof event.turnId === "string") turnsWithExactOccupancy.add(event.turnId);
       const usage = event.usage && typeof event.usage === "object" ? event.usage as Record<string, unknown> : null;
       const nextState = event.state === "compacting"
         || event.state === "recalculating"
@@ -1493,11 +1500,25 @@ export function latestTokenStats(
     if (event.type === "done") {
       if (compactionProtected) continue;
       const usage = event.usage && typeof event.usage === "object" ? event.usage as Record<string, unknown> : null;
-      inputTokens = typeof usage?.inputTokens === "number" ? usage.inputTokens : inputTokens;
-      outputTokens = typeof usage?.outputTokens === "number" ? usage.outputTokens : outputTokens;
-      cacheReadTokens = readCacheReadTokens(usage) ?? cacheReadTokens;
-      cacheCreationTokens = typeof usage?.cacheCreationTokens === "number" ? usage.cacheCreationTokens : cacheCreationTokens;
       costUsd = typeof event.costUsd === "number" ? event.costUsd : costUsd;
+      const contextTokens = typeof usage?.contextTokens === "number" && usage.contextTokens > 0 ? usage.contextTokens : null;
+      if (contextTokens != null) {
+        // The runtime reported the occupancy after the turn; the token totals
+        // sum every request in the turn and would overstate it. The occupancy
+        // is the whole figure, so the turn's output is not added to it, and a
+        // later `tokens` event for this turn does not replace it.
+        contextState = "measured";
+        inputTokens = contextTokens;
+        outputTokens = null;
+        cacheReadTokens = null;
+        cacheCreationTokens = null;
+        if (typeof event.turnId === "string") turnsWithExactOccupancy.add(event.turnId);
+      } else if (!(typeof event.turnId === "string" && turnsWithExactOccupancy.has(event.turnId))) {
+        inputTokens = typeof usage?.inputTokens === "number" ? usage.inputTokens : inputTokens;
+        outputTokens = typeof usage?.outputTokens === "number" ? usage.outputTokens : outputTokens;
+        cacheReadTokens = readCacheReadTokens(usage) ?? cacheReadTokens;
+        cacheCreationTokens = typeof usage?.cacheCreationTokens === "number" ? usage.cacheCreationTokens : cacheCreationTokens;
+      }
       // Parity with desktop's contextUsageModel: the non-Codex runtimes attach the
       // effective context window to the terminal `done` event, so honor it for the
       // dial when present (runtime-reported window beats the registry fallback).

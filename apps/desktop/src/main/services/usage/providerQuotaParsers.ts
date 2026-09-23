@@ -1,5 +1,6 @@
-import type { ExtraUsage, UsageWindow } from "../../../shared/types";
-import { isRecord } from "../shared/utils";
+import type { ExtraUsage, UsageProvider, UsageWindow, UsageWindowType } from "../../../shared/types";
+import { asRecord, finiteNumberFromNumeric, finiteNumberOrNull, isRecord, toOptionalString } from "../shared/utils";
+import { usageAccountId } from "./usageAccountId";
 
 export interface ClaudeUsageResponse {
   five_hour?: ClaudeUsageBucket;
@@ -59,11 +60,348 @@ function usagePercent(bucket: Record<string, unknown> | null | undefined): numbe
 
 function codexResetAt(value: unknown): string {
   if (typeof value === "string" && value.trim()) return value;
-  if (typeof value === "number" && Number.isFinite(value)) {
-    const ms = value > 1_000_000_000_000 ? value : value * 1_000;
-    return new Date(ms).toISOString();
+  const seconds = finiteNumberOrNull(value);
+  if (seconds == null) return "";
+  return new Date(seconds > 1_000_000_000_000 ? seconds : seconds * 1_000).toISOString();
+}
+
+/** The first of `keys` holding a non-blank string, trimmed. */
+export function stringField(record: Record<string, unknown> | null | undefined, ...keys: string[]): string | null {
+  if (!record) return null;
+  for (const key of keys) {
+    const value = toOptionalString(record[key]);
+    if (value) return value;
   }
-  return "";
+  return null;
+}
+
+/**
+ * Kimi's window units as its API spells them, in ms. Kimi Code's own client
+ * (`packages/oauth/src/managed-usage.ts`) reads exactly these four and treats
+ * any other unit as no window.
+ */
+const KIMI_TIME_UNIT_MS: ReadonlyMap<string, number> = new Map([
+  ["TIME_UNIT_MINUTE", 60_000],
+  ["TIME_UNIT_HOUR", 3_600_000],
+  ["TIME_UNIT_DAY", 86_400_000],
+  ["TIME_UNIT_WEEK", 7 * 86_400_000],
+]);
+
+/** The top-level `usage` block carries no window; Kimi's client reads it as one week. */
+const KIMI_SUMMARY_WINDOW_MS = 7 * 86_400_000;
+
+function kimiWindowDurationMs(window: unknown): number | null {
+  const record = asRecord(window);
+  // Protobuf JSON sends int64 as text, so counts may be numeric strings.
+  const duration = finiteNumberFromNumeric(record?.duration);
+  const unitMs = typeof record?.timeUnit === "string" ? KIMI_TIME_UNIT_MS.get(record.timeUnit) : undefined;
+  return duration != null && duration > 0 && unitMs != null ? duration * unitMs : null;
+}
+
+/** By length when Kimi states one; a row with no readable window falls back to its name. */
+function kimiWindowType(durationMs: number | null, name: string): UsageWindowType {
+  if (durationMs != null) {
+    if (durationMs <= 8 * 3_600_000) return "five_hour";
+    if (durationMs <= 10 * 86_400_000) return "weekly";
+    return "monthly";
+  }
+  const lower = name.toLowerCase();
+  if (/5[\s_-]*hour|five[\s_-]*hour|\b5h\b/.test(lower)) return "five_hour";
+  if (/week|7[\s_-]*day/.test(lower)) return "weekly";
+  return "monthly";
+}
+
+function kimiResetAt(value: unknown): string {
+  const reset = codexResetAt(value);
+  return reset && Number.isFinite(Date.parse(reset)) ? reset : "";
+}
+
+/**
+ * Used percent of a Kimi `{ used, limit }` pair. Protobuf JSON omits a zero
+ * `used`, so a missing `used` beside a real limit is 0%, as Kimi's client reads
+ * it. A missing or zero limit is no window.
+ */
+function kimiUsedPercent(detail: Record<string, unknown> | null): number | null {
+  const limit = finiteNumberFromNumeric(detail?.limit);
+  if (!detail || limit == null || limit <= 0) return null;
+  const percent = ((finiteNumberFromNumeric(detail.used) ?? 0) / limit) * 100;
+  return Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : null;
+}
+
+/**
+ * Kimi Code's managed `/usages` response, read the way Kimi Code's own client
+ * reads it: `{ usage: { used, limit, resetTime }, limits: [{ name?, window:
+ * { duration, timeUnit }, detail: { used, limit, resetTime } }] }`. The
+ * top-level `usage` is the weekly quota; each `limits[]` row is typed by its
+ * length, not its position. Only the first window of each type is kept, since
+ * the burn-rate history keys on provider, account, and window type.
+ */
+export function parseKimiUsage(
+  payload: unknown,
+  nowMs: number,
+  email?: string | null,
+): UsageWindow[] {
+  const root = asRecord(payload);
+  if (!root) return [];
+  const accountId = usageAccountId({ provider: "kimi", email });
+  const rows: Array<{ detail: Record<string, unknown> | null; durationMs: number | null; name: string }> = [
+    { detail: asRecord(root.usage), durationMs: KIMI_SUMMARY_WINDOW_MS, name: "" },
+  ];
+  for (const raw of Array.isArray(root.limits) ? root.limits : []) {
+    const row = asRecord(raw);
+    if (!row) continue;
+    rows.push({
+      detail: asRecord(row.detail),
+      durationMs: kimiWindowDurationMs(row.window),
+      name: stringField(row, "name") ?? "",
+    });
+  }
+  const windows: UsageWindow[] = [];
+  for (const row of rows) {
+    const percentUsed = kimiUsedPercent(row.detail);
+    if (percentUsed == null) continue;
+    const windowType = kimiWindowType(row.durationMs, row.name);
+    if (windows.some((window) => window.windowType === windowType)) continue;
+    const resetsAt = kimiResetAt(row.detail?.resetTime);
+    const resetMs = resetsAt ? Date.parse(resetsAt) : Number.NaN;
+    windows.push({
+      provider: "kimi",
+      windowType,
+      percentUsed,
+      resetsAt,
+      resetsInMs: Number.isFinite(resetMs) ? Math.max(0, resetMs - nowMs) : 0,
+      accountId,
+      ...(row.durationMs ? { windowDurationMs: row.durationMs } : {}),
+    });
+  }
+  return windows;
+}
+
+export type KimiIdentity = {
+  email: string | null;
+  name: string | null;
+};
+
+/** Kimi's `/me`: `email` and `nickname` at the top level (Kimi's client reads them there). */
+export function parseKimiIdentity(payload: unknown): KimiIdentity {
+  const root = asRecord(payload);
+  const nested = asRecord(root?.user);
+  return {
+    email: stringField(root, "email", "email_address") ?? stringField(nested, "email", "email_address"),
+    name: stringField(root, "nickname", "name", "display_name", "full_name")
+      ?? stringField(nested, "nickname", "name", "display_name", "full_name"),
+  };
+}
+
+export type CopilotIdentity = {
+  login: string | null;
+  email: string | null;
+};
+
+export function parseCopilotIdentity(payload: unknown): CopilotIdentity {
+  const root = asRecord(payload);
+  return {
+    login: stringField(root, "login"),
+    email: stringField(root, "email"),
+  };
+}
+
+export function parseFactorySessionCredits(payload: unknown): number | null {
+  const root = asRecord(payload);
+  const candidates = [root, asRecord(root?.data), asRecord(root?.tokenUsage), asRecord(root?.token_usage)];
+  for (const candidate of candidates) {
+    const credits = finiteNumberFromNumeric(candidate?.factoryCredits ?? candidate?.factory_credits);
+    if (credits != null && credits >= 0) return credits;
+  }
+  return null;
+}
+
+/** Whole-number percents. 1 means 1%, never 100%. */
+export function wholePercent(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 100) return null;
+  return value;
+}
+
+function ratioPercent(used: unknown, limit: unknown): number | null {
+  const usedValue = finiteNumberOrNull(used);
+  const limitValue = finiteNumberOrNull(limit);
+  if (usedValue == null || limitValue == null || limitValue <= 0) return null;
+  return wholePercent((usedValue / limitValue) * 100);
+}
+
+function isoField(record: Record<string, unknown> | null, ...keys: string[]): string | null {
+  if (!record) return null;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && Number.isFinite(Date.parse(value))) return value;
+  }
+  return null;
+}
+
+function quotaWindow(input: {
+  provider: UsageProvider;
+  windowType: UsageWindowType;
+  percentUsed: number;
+  resetsAt: string | null;
+  nowMs: number;
+  email?: string | null;
+  windowDurationMs?: number;
+}): UsageWindow {
+  const resetsAt = input.resetsAt ?? "";
+  const resetMs = resetsAt ? Date.parse(resetsAt) : Number.NaN;
+  return {
+    provider: input.provider,
+    windowType: input.windowType,
+    accountId: usageAccountId({ provider: input.provider, email: input.email }),
+    percentUsed: input.percentUsed,
+    resetsAt,
+    resetsInMs: Number.isFinite(resetMs) ? Math.max(0, resetMs - input.nowMs) : 0,
+    ...(input.windowDurationMs && input.windowDurationMs > 0 ? { windowDurationMs: input.windowDurationMs } : {}),
+  };
+}
+
+function resetFromSeconds(seconds: unknown, nowMs: number): string | null {
+  const value = finiteNumberOrNull(seconds);
+  if (value == null || value < 0) return null;
+  return new Date(nowMs + value * 1000).toISOString();
+}
+
+function windowFromUsageNode(
+  provider: UsageProvider,
+  windowType: UsageWindowType,
+  node: Record<string, unknown> | null,
+  nowMs: number,
+  windowDurationMs?: number,
+): UsageWindow | null {
+  if (!node) return null;
+  const percent = wholePercent(node.percent)
+    ?? wholePercent(node.usagePercent)
+    ?? wholePercent(node.percentUsed);
+  if (percent == null) return null;
+  const resetsAt = isoField(node, "resetsAt", "resets_at")
+    ?? resetFromSeconds(node.resetInSec ?? node.reset_in_sec, nowMs);
+  return quotaWindow({ provider, windowType, percentUsed: percent, resetsAt, nowMs, windowDurationMs });
+}
+
+export function parseCursorUsageSummary(payload: unknown, nowMs: number): {
+  windows: UsageWindow[];
+  plan: string | null;
+  email: string | null;
+} {
+  const root = asRecord(payload);
+  const individual = asRecord(root?.individualUsage) ?? asRecord(root?.individual_usage);
+  const planNode = asRecord(individual?.plan) ?? asRecord(root?.plan);
+  const percent = wholePercent(planNode?.totalPercentUsed)
+    ?? wholePercent(planNode?.total_percent_used)
+    ?? ratioPercent(planNode?.used, planNode?.limit);
+  if (!root || percent == null) return { windows: [], plan: null, email: null };
+  const email = stringField(root, "email");
+  const plan = stringField(root, "membershipType", "membership_type");
+  const resetsAt = isoField(root, "billingCycleEnd", "billing_cycle_end");
+  return {
+    windows: [quotaWindow({
+      provider: "cursor",
+      windowType: "monthly",
+      percentUsed: percent,
+      resetsAt,
+      nowMs,
+      email,
+    })],
+    plan,
+    email,
+  };
+}
+
+export function parseCopilotQuota(payload: unknown, nowMs: number, email?: string | null): {
+  windows: UsageWindow[];
+  plan: string | null;
+} {
+  const root = asRecord(payload);
+  const snapshots = asRecord(root?.quotaSnapshots) ?? asRecord(root?.quota_snapshots);
+  const premium = asRecord(snapshots?.premiumInteractions) ?? asRecord(snapshots?.premium_interactions);
+  const remaining = wholePercent(premium?.percentRemaining) ?? wholePercent(premium?.percent_remaining);
+  const percent = remaining == null ? null : wholePercent(100 - remaining);
+  if (percent == null) return { windows: [], plan: null };
+  const plan = stringField(root, "copilotPlan", "copilot_plan");
+  const resetsAt = isoField(premium, "resetAt", "reset_at")
+    ?? isoField(root,
+      "quotaResetAt",
+      "quota_reset_at",
+      "quotaResetDateUtc",
+      "quota_reset_date_utc",
+      "quotaResetDate",
+      "quota_reset_date",
+    );
+  return {
+    windows: [quotaWindow({
+      provider: "copilot",
+      windowType: "monthly",
+      percentUsed: percent,
+      resetsAt,
+      nowMs,
+      email,
+    })],
+    plan,
+  };
+}
+
+function grokWindowType(startIso: string | null, endIso: string | null): {
+  windowType: UsageWindowType;
+  windowDurationMs?: number;
+} {
+  if (!startIso || !endIso) return { windowType: "monthly" };
+  const duration = Date.parse(endIso) - Date.parse(startIso);
+  if (!Number.isFinite(duration) || duration <= 0) return { windowType: "monthly" };
+  const days = duration / 86_400_000;
+  if (days >= 5 && days <= 9) return { windowType: "weekly", windowDurationMs: duration };
+  return { windowType: "monthly", windowDurationMs: duration };
+}
+
+export function parseGrokCredits(payload: unknown, nowMs: number, email?: string | null): {
+  windows: UsageWindow[];
+  plan: string | null;
+} {
+  const root = asRecord(payload);
+  const config = asRecord(root?.config) ?? root;
+  if (!config) return { windows: [], plan: null };
+  const onDemandUsed = asRecord(config.onDemandUsed) ?? asRecord(config.on_demand_used);
+  const onDemandCap = asRecord(config.onDemandCap) ?? asRecord(config.on_demand_cap);
+  const percent = wholePercent(config.creditUsagePercent)
+    ?? wholePercent(config.credit_usage_percent)
+    ?? ratioPercent(onDemandUsed?.val, onDemandCap?.val);
+  if (percent == null) return { windows: [], plan: null };
+  const period = asRecord(config.currentPeriod) ?? asRecord(config.current_period);
+  const start = isoField(period, "start") ?? isoField(config, "billingPeriodStart", "billing_period_start");
+  const end = isoField(period, "end")
+    ?? isoField(config, "billingPeriodEnd", "billing_period_end");
+  const cycle = grokWindowType(start, end);
+  const plan = stringField(config, "subscriptionTier", "subscription_tier_display", "subscription_tier");
+  return {
+    windows: [quotaWindow({
+      provider: "grok",
+      windowType: cycle.windowType,
+      percentUsed: percent,
+      resetsAt: end,
+      nowMs,
+      email,
+      ...(cycle.windowDurationMs ? { windowDurationMs: cycle.windowDurationMs } : {}),
+    })],
+    plan,
+  };
+}
+
+export function parseOpenCodeGoUsage(payload: unknown, nowMs: number): UsageWindow[] {
+  const root = asRecord(payload);
+  const usage = asRecord(root?.usage) ?? root;
+  if (!usage) return [];
+  const rolling = asRecord(usage.rolling) ?? asRecord(usage.rollingUsage);
+  const weekly = asRecord(usage.weekly) ?? asRecord(usage.weeklyUsage);
+  const monthly = asRecord(usage.monthly) ?? asRecord(usage.monthlyUsage);
+  return [
+    windowFromUsageNode("opencode", "five_hour", rolling, nowMs, 5 * 3_600_000),
+    windowFromUsageNode("opencode", "weekly", weekly, nowMs),
+    windowFromUsageNode("opencode", "monthly", monthly, nowMs),
+  ].filter((window): window is UsageWindow => window != null);
 }
 
 export function parseClaudeWindows(data: ClaudeUsageResponse): { windows: UsageWindow[]; extraUsage: ExtraUsage | null } {
@@ -321,14 +659,14 @@ function codexWindowTypeFromDuration(value: number | null): UsageWindow["windowT
 }
 
 function codexWindowDurationMins(bucket: Record<string, unknown>): number | null {
-  const minutes = bucket.windowDurationMins ?? bucket.window_duration_mins;
-  if (typeof minutes === "number" && Number.isFinite(minutes) && minutes > 0) return minutes;
+  const minutes = finiteNumberOrNull(bucket.windowDurationMins ?? bucket.window_duration_mins);
+  if (minutes != null && minutes > 0) return minutes;
 
-  const seconds = bucket.limitWindowSeconds
+  const seconds = finiteNumberOrNull(bucket.limitWindowSeconds
     ?? bucket.limit_window_seconds
     ?? bucket.windowDurationSeconds
-    ?? bucket.window_duration_seconds;
-  if (typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0) return seconds / 60;
+    ?? bucket.window_duration_seconds);
+  if (seconds != null && seconds > 0) return seconds / 60;
   return null;
 }
 

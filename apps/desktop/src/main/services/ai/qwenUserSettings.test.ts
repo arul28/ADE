@@ -12,6 +12,8 @@ describe("parseQwenUserSettings", () => {
       authenticated: false,
       models: [],
       defaultModelId: null,
+      selectedType: null,
+      baseUrlOrigin: null,
     });
   });
 
@@ -32,7 +34,34 @@ describe("parseQwenUserSettings", () => {
     expect(parsed.authenticated).toBe(true);
     expect(parsed.defaultModelId).toBe("gpt-5.5");
     expect(parsed.models).toEqual([{ id: "gpt-5.5", displayName: "gpt-5.5" }]);
+    expect(parsed.selectedType).toBe("openai");
+    expect(parsed.baseUrlOrigin).toBe("http://localhost:8317");
     expect(JSON.stringify(parsed)).not.toMatch(/dummy/i);
+  });
+
+  it("reads JSONC text, keeps comment markers inside strings, and returns only the base URL's origin", () => {
+    const parsed = parseQwenUserSettings([
+      "// Qwen settings",
+      "{",
+      "  /* the proxy */",
+      '  "model": { "name": "coder // plus", "baseUrl": "http://user:sk-secret@127.0.0.1:11434/v1?key=sk-query" },',
+      '  "security": { "auth": { "selectedType": " qwen-oauth " } } // trailing',
+      "}",
+    ].join("\n"));
+    expect(parsed.defaultModelId).toBe("coder // plus");
+    expect(parsed.selectedType).toBe("qwen-oauth");
+    expect(parsed.baseUrlOrigin).toBe("http://127.0.0.1:11434");
+    expect(JSON.stringify(parsed)).not.toMatch(/secret|sk-query|\/v1/);
+  });
+
+  it("reads text that is not JSON as empty settings", () => {
+    expect(parseQwenUserSettings("{ not json")).toEqual({
+      authenticated: false,
+      models: [],
+      defaultModelId: null,
+      selectedType: null,
+      baseUrlOrigin: null,
+    });
   });
 
   it("does not treat an OpenAI selection without a key as signed in", () => {
@@ -53,7 +82,7 @@ describe("loadQwenUserSettings", () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "ade-qwen-settings-"));
     dirs.push(root);
     mkdirSync(root, { recursive: true });
-    writeFileSync(path.join(root, "settings.json"), `${JSON.stringify({
+    writeFileSync(path.join(root, "settings.json"), `// hand-edited\n${JSON.stringify({
       security: { auth: { selectedType: "openai", apiKey: "sk-test" } },
       model: { name: "gpt-5.5" },
     })}\n`);
@@ -70,6 +99,8 @@ describe("loadQwenUserSettings", () => {
       authenticated: false,
       models: [],
       defaultModelId: null,
+      selectedType: null,
+      baseUrlOrigin: null,
     });
   });
 });

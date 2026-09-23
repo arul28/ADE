@@ -211,6 +211,61 @@ describe("mergeSelectorModels", () => {
     expect(resolveModelDescriptorWithRuntimeCatalog("cursor/composer-2")?.reasoningTiers).toEqual(["high"]);
   });
 
+  it("takes an OpenCode row's tiers and Fast routes only from the catalog", () => {
+    // Without an inventory this registry guesses the canonical Opus 5.5 ladder
+    // (low..max, `medium` by default) for the `opus` alias row. OpenCode
+    // reported `high` alone, and Fast through a sibling model.
+    const openCodeFast = {
+      withoutEffort: { modelId: "opus-fast" },
+      byEffort: { high: { modelId: "opus-fast", variant: "high" } },
+    };
+    const openCodeRow = (id: string, patch: Record<string, unknown>) => ({
+      id,
+      runtimeModelId: id,
+      provider: "opencode" as const,
+      providerKey: "anthropic",
+      groupKey: "opencode" as const,
+      displayName: id,
+      isDefault: false,
+      isAvailable: true,
+      ...patch,
+    });
+    const catalog: AgentChatModelCatalog = {
+      fetchedAt: new Date().toISOString(),
+      groups: [{
+        key: "opencode",
+        displayName: "OpenCode",
+        providers: [{
+          key: "anthropic",
+          displayName: "Anthropic",
+          badgeColor: "#D97706",
+          modelCount: 2,
+          subsections: [{
+            key: "anthropic",
+            label: "Anthropic",
+            models: [
+              openCodeRow("opencode/anthropic/claude-opus-5-5", {
+                reasoningEfforts: [{ effort: "high", description: "high reasoning" }],
+                serviceTiers: ["fast"],
+                openCodeFast,
+              }),
+              openCodeRow("opencode/anthropic/claude-sonnet-5", { reasoningEfforts: [] }),
+            ],
+          }],
+        }],
+      }],
+    };
+
+    const { models } = descriptorsFromAgentChatModelCatalog(catalog);
+    const opus = models.find((model) => model.id === "opencode/anthropic/claude-opus-5-5");
+    expect(opus?.reasoningTiers).toEqual(["high"]);
+    expect(opus?.defaultReasoningEffort).toBeUndefined();
+    expect(opus?.openCodeFast).toEqual(openCodeFast);
+    const sonnet = models.find((model) => model.id === "opencode/anthropic/claude-sonnet-5");
+    expect(sonnet?.reasoningTiers).toBeUndefined();
+    expect(sonnet?.serviceTiers).toBeUndefined();
+  });
+
   it("preserves the complete GPT-5.6 app-server effort ladders", () => {
     const model = (
       id: "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna",

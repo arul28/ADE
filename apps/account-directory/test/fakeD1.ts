@@ -97,8 +97,39 @@ export type StoredPairingGrant = {
   reserved_at: number | null;
 };
 
+/** One `usage_research_daily` row. */
+export type StoredUsageResearchRow = {
+  install_id: string;
+  day: string;
+  schema_version: number;
+  app_version: string | null;
+  platform: string | null;
+  arch: string | null;
+  utc_offset_minutes: number | null;
+  report: string;
+  bytes: number;
+  received_at: number;
+  updated_at: number;
+};
+
 export class FakeD1Database {
   rows: StoredMachine[] = [];
+  /** `usage_research_daily`, keyed `${install_id}|${day}` — the table's primary key. */
+  usageResearchRows = new Map<string, StoredUsageResearchRow>();
+  /** `usage_research_days`: the fleet write budget, one row per UTC day of receipt. */
+  usageResearchDays = new Map<string, number>();
+  /** `usage_research_identity_days`, keyed `${day}|${identity}`. */
+  usageResearchIdentityDays = new Map<string, number>();
+  /** `usage_research_totals.bytes`. The migration seeds it at 0; `null` is the row missing. */
+  usageResearchTotalBytes: number | null = 0;
+  /**
+   * Every statement whose SQL matches throws, the way D1 does when a table is
+   * missing or the database is having a bad minute. Lets a test fail exactly
+   * one step of a multi-statement flow.
+   */
+  failingStatements: RegExp | null = null;
+  /** The SQL of every `run()`, in order, so a test can prove a path wrote nothing. */
+  ranStatements: string[] = [];
   revocations: StoredRevocation[] = [];
   deviceRows: StoredDeviceAuthorization[] = [];
   pairingGrants: StoredPairingGrant[] = [];
@@ -115,6 +146,25 @@ export class FakeD1Database {
     promise: Promise<void>;
     release: () => void;
   } | null = null;
+  private usageResearchReadBarrier: {
+    remaining: number;
+    promise: Promise<void>;
+    release: () => void;
+  } | null = null;
+
+  /**
+   * Holds each `usage_research_daily` lookup until `expectedReads` of them
+   * have run, so concurrent requests for one install and day all read the row
+   * before any of them writes it: the interleaving the write's compare-and-swap
+   * exists for.
+   */
+  synchronizeUsageResearchReads(expectedReads: number): void {
+    let release = () => {};
+    const promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.usageResearchReadBarrier = { remaining: expectedReads, promise, release };
+  }
 
   synchronizeRateLimitReads(expectedReads: number): void {
     let release = () => {};
@@ -138,7 +188,9 @@ export class FakeD1Database {
       ? this.rateLimitReadBarrier
       : normalized.includes("from device_authorizations") && normalized.includes("where oauth_state_hash")
         ? this.oauthStateReadBarrier
-        : null;
+        : normalized.includes("from usage_research_daily")
+          ? this.usageResearchReadBarrier
+          : null;
     if (!barrier) return;
     barrier.remaining -= 1;
     if (barrier.remaining === 0) barrier.release();
@@ -167,8 +219,199 @@ export class FakeD1Database {
   /** One entry per `batch()` call, so a test can assert the deletes were not a loop. */
   batchedStatementCounts: number[] = [];
 
+  private throwIfFailing(sql: string): void {
+    if (this.failingStatements?.test(sql)) throw new Error("D1_ERROR: injected failure");
+  }
+
+  /**
+   * The rows the retention sweep takes in one tick: expired, oldest first by
+   * the primary key, at most `limit`. Both halves of the sweep batch use it, as
+   * both source statements select by the same order and limit.
+   */
+  private expiredUsageResearchRows(cutoff: string, limit: number): StoredUsageResearchRow[] {
+    return [...this.usageResearchRows.values()]
+      .filter((row) => row.day < cutoff)
+      .sort((left, right) =>
+        left.day === right.day
+          ? left.install_id.localeCompare(right.install_id)
+          : left.day.localeCompare(right.day)
+      )
+      .slice(0, limit);
+  }
+
+  /**
+   * The usage-research tables, or null when the statement is not theirs.
+   *
+   * Every guard is read off the STATEMENT rather than assumed, the same as the
+   * diagnostics budget above. The `where` on each claim, the ceiling predicate,
+   * the refund floors and `received_at` staying out of the conflict update are
+   * each what enforces a bound. A worker that drops one must fail a test
+   * here, not have the fake absorb it.
+   */
+  private runUsageResearch(normalized: string, values: unknown[]): number | null {
+    if (normalized.includes("update usage_research_totals")) {
+      if (this.usageResearchTotalBytes === null) return 0;
+      if (normalized.includes("sum(bytes)")) {
+        // Sweep, half one: subtract exactly the rows half two deletes.
+        const [cutoff, limit] = values;
+        const freed = this.expiredUsageResearchRows(String(cutoff), Number(limit))
+          .reduce((sum, row) => sum + row.bytes, 0);
+        this.usageResearchTotalBytes = Math.max(0, this.usageResearchTotalBytes - freed);
+        return 1;
+      }
+      // Refund of a storage claim whose write did not happen.
+      const floored = /max\(\s*0\s*,/.test(normalized);
+      const next = this.usageResearchTotalBytes - Number(values[0]);
+      this.usageResearchTotalBytes = floored ? Math.max(0, next) : next;
+      return 1;
+    }
+    if (normalized.includes("insert into usage_research_totals")) {
+      const [initial, delta, , , ceiling] = values;
+      if (this.usageResearchTotalBytes === null) {
+        this.usageResearchTotalBytes = Number(initial);
+        return 1;
+      }
+      const capped = /where\s+\?\s*<=\s*0\s+or\s+bytes\s*\+\s*\?\s*<=\s*\?/.test(normalized);
+      const grow = Number(delta);
+      if (capped && grow > 0 && this.usageResearchTotalBytes + grow > Number(ceiling)) return 0;
+      this.usageResearchTotalBytes += grow;
+      return 1;
+    }
+    if (normalized.includes("delete from usage_research_daily")) {
+      // Sweep, half two. Bounded by the statement's own limit.
+      const [cutoff, limit] = values;
+      const doomed = this.expiredUsageResearchRows(String(cutoff), Number(limit));
+      for (const row of doomed) this.usageResearchRows.delete(`${row.install_id}|${row.day}`);
+      return doomed.length;
+    }
+    if (normalized.includes("insert into usage_research_daily")) {
+      const [
+        installId, day, schemaVersion, appVersion, platform, arch,
+        utcOffsetMinutes, report, bytes, receivedAt, updatedAt,
+      ] = values;
+      const key = `${installId}|${day}`;
+      const existing = this.usageResearchRows.get(key);
+      // The insert path must never overwrite a row a concurrent first send
+      // created: only `do nothing` leaves it alone. A plain upsert is modeled
+      // as the overwrite it is, so a regression shows up as a wrong total.
+      if (existing && /on\s+conflict\s*\([^)]*\)\s*do\s+nothing/.test(normalized)) return 0;
+      const overwritesReceivedAt = /received_at\s*=\s*excluded\.received_at/.test(normalized);
+      this.usageResearchRows.set(key, {
+        install_id: String(installId),
+        day: String(day),
+        schema_version: Number(schemaVersion),
+        app_version: appVersion == null ? null : String(appVersion),
+        platform: platform == null ? null : String(platform),
+        arch: arch == null ? null : String(arch),
+        utc_offset_minutes: utcOffsetMinutes == null ? null : Number(utcOffsetMinutes),
+        report: String(report),
+        bytes: Number(bytes),
+        received_at: existing && !overwritesReceivedAt ? existing.received_at : Number(receivedAt),
+        updated_at: Number(updatedAt),
+      });
+      return 1;
+    }
+    if (normalized.includes("update usage_research_daily")) {
+      // The replace path: a compare-and-swap on the `bytes` the request read.
+      const [
+        schemaVersion, appVersion, platform, arch, utcOffsetMinutes,
+        report, bytes, updatedAt, installId, day, expectedBytes,
+      ] = values;
+      const key = `${installId}|${day}`;
+      const existing = this.usageResearchRows.get(key);
+      if (!existing) return 0;
+      const guarded = /where\s+install_id\s*=\s*\?\s+and\s+day\s*=\s*\?\s+and\s+bytes\s*=\s*\?/.test(normalized);
+      if (guarded && existing.bytes !== Number(expectedBytes)) return 0;
+      this.usageResearchRows.set(key, {
+        ...existing,
+        schema_version: Number(schemaVersion),
+        app_version: appVersion == null ? null : String(appVersion),
+        platform: platform == null ? null : String(platform),
+        arch: arch == null ? null : String(arch),
+        utc_offset_minutes: utcOffsetMinutes == null ? null : Number(utcOffsetMinutes),
+        report: String(report),
+        bytes: Number(bytes),
+        received_at: /received_at\s*=/.test(normalized) ? Number(updatedAt) : existing.received_at,
+        updated_at: Number(updatedAt),
+      });
+      return 1;
+    }
+    if (normalized.includes("insert into usage_research_days")) {
+      const [day, limit] = values;
+      const stored = this.usageResearchDays.get(String(day));
+      if (stored === undefined) {
+        this.usageResearchDays.set(String(day), 1);
+        return 1;
+      }
+      if (/where\s+writes\s*<\s*\?/.test(normalized) && stored >= Number(limit)) return 0;
+      this.usageResearchDays.set(String(day), stored + 1);
+      return 1;
+    }
+    if (normalized.includes("update usage_research_days")) {
+      const stored = this.usageResearchDays.get(String(values[0]));
+      if (stored === undefined || (/writes\s*>\s*0/.test(normalized) && stored <= 0)) return 0;
+      this.usageResearchDays.set(String(values[0]), stored - 1);
+      return 1;
+    }
+    if (normalized.includes("delete from usage_research_days")) {
+      return this.deleteDaysBefore(this.usageResearchDays, String(values[0]), (key) => key);
+    }
+    if (normalized.includes("insert into usage_research_identity_days")) {
+      const [day, identity, limit] = values;
+      const key = `${day}|${identity}`;
+      const stored = this.usageResearchIdentityDays.get(key);
+      if (stored === undefined) {
+        this.usageResearchIdentityDays.set(key, 1);
+        return 1;
+      }
+      if (/where\s+writes\s*<\s*\?/.test(normalized) && stored >= Number(limit)) return 0;
+      this.usageResearchIdentityDays.set(key, stored + 1);
+      return 1;
+    }
+    if (normalized.includes("update usage_research_identity_days")) {
+      const key = `${values[0]}|${values[1]}`;
+      const stored = this.usageResearchIdentityDays.get(key);
+      if (stored === undefined || (/writes\s*>\s*0/.test(normalized) && stored <= 0)) return 0;
+      this.usageResearchIdentityDays.set(key, stored - 1);
+      return 1;
+    }
+    if (normalized.includes("delete from usage_research_identity_days")) {
+      return this.deleteDaysBefore(
+        this.usageResearchIdentityDays,
+        String(values[0]),
+        (key) => key.split("|")[0]!,
+      );
+    }
+    return null;
+  }
+
+  /** Lexicographic on a fixed-width ISO date, same as SQLite. */
+  private deleteDaysBefore(
+    table: Map<string, number>,
+    cutoff: string,
+    dayOf: (key: string) => string,
+  ): number {
+    let changes = 0;
+    for (const key of [...table.keys()]) {
+      if (dayOf(key) >= cutoff) continue;
+      table.delete(key);
+      changes += 1;
+    }
+    return changes;
+  }
+
   first<T>(sql: string, values: unknown[]): T | null {
+    this.throwIfFailing(sql);
     const normalized = sql.toLowerCase();
+    if (normalized.includes("from usage_research_daily")) {
+      const [installId, day] = values;
+      const row = this.usageResearchRows.get(`${installId}|${day}`);
+      return (row ? { ...row } : null) as T | null;
+    }
+    if (normalized.includes("from usage_research_days")) {
+      const writes = this.usageResearchDays.get(String(values[0]));
+      return (writes === undefined ? null : { writes }) as T | null;
+    }
     if (normalized.includes("from revoked_machines")) {
       const [userId, machineKey] = values;
       return (this.revocations.find((row) =>
@@ -228,7 +471,11 @@ export class FakeD1Database {
   }
 
   run(sql: string, values: unknown[]): number {
+    this.throwIfFailing(sql);
+    this.ranStatements.push(sql);
     const normalized = sql.toLowerCase();
+    const usageResearch = this.runUsageResearch(normalized, values);
+    if (usageResearch !== null) return usageResearch;
     if (normalized.includes("insert into diagnostics_upload_days")) {
       // The fleet budget claim. Mirrors the upsert's `where count < ?` exactly,
       // because that predicate IS the cap: a worker that drops it (or checks the

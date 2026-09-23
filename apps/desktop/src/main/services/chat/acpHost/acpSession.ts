@@ -6,7 +6,7 @@
  *
  *   acquire connection (pool)
  *     -> initialize                     (done by the pool)
- *     -> attach update, permission, and ignored-notification handlers
+ *     -> attach update, permission, and extension-notification handlers
  *     -> session/new | session/resume | session/load
  *     -> post-session-new notifications (Grok's auto-mode neutralizer)
  *     -> prompt / cancel / prompt ...
@@ -18,6 +18,13 @@
  * `stopReason` the agent returns. Copilot has a known bug that reports a
  * cancelled turn as `end_turn`, and Grok only accepts cancel as a notification,
  * so there is no reply to read. The client-side flag is the only honest source.
+ *
+ * The verdict is taken once, when the `session/prompt` result arrives. The
+ * telemetry reads after it can take up to half a second; a Stop pressed during
+ * them meets an agent that has already finished, so it neither marks the turn
+ * interrupted nor sends `session/cancel` to the idle agent. `turnAnswered`
+ * tells the caller it is in that window, so its own Stop can leave the
+ * finished turn alone too.
  *
  * ## Replay suppression
  *
@@ -31,11 +38,22 @@
  * The host also decides, per turn, whether the approval cards it renders are
  * real. See `acpSupervisionGuard.ts`: writes with no `session/request_permission`
  * in an ask-style mode mean the agent gated itself, and the user is told once.
+ *
+ * ## Telemetry
+ *
+ * Context samples, the dialect's extension notifications, and the provider's
+ * local usage ledger feed one `AcpTurnTelemetry` per session
+ * (`acpTurnTelemetry.ts`). A turn's `outcome.done` is the set of `done` fields
+ * ADE stamps on the turn: totals, context occupancy, request count, provider
+ * cost, the served model, the paying account, plan units, and helper agents'
+ * usage. The local ledger read and the wait for a post-turn `usage_update` are
+ * each bounded to a quarter second, and neither can fail the turn.
  */
 
 import { randomUUID } from "node:crypto";
 import type { AgentChatEvent } from "../../../../shared/types";
 import type { Logger } from "../../logging/logger";
+import { getErrorMessage, settleWithin } from "../../shared/utils";
 import {
   AcpRpcError,
   type AcpConnection,
@@ -43,10 +61,12 @@ import {
 import {
   behaviorOf,
   type AcpDialect,
+  type AcpLocalUsageReader,
   type AcpSlashCommand,
   type AcpUsageSample,
 } from "./acpHostTypes";
 import { createAcpEventTranslator, usageSampleToEvents, type AcpEventTranslator } from "./acpEventTranslator";
+import { createAcpTurnTelemetry, type AcpDoneTelemetry } from "./acpTurnTelemetry";
 import {
   createAcpPermissionBridge,
   type AcpPendingPermission,
@@ -73,6 +93,12 @@ import { acpSessionPool, type AcpPooledConnection, type AcpSessionPool } from ".
 
 /** A turn is bounded by the user, not by a timer. Cancel is the way out. */
 const ACP_PROMPT_NO_TIMEOUT = 0;
+
+/** Longest the turn end waits for a post-turn `usage_update` (Kimi). */
+export const ACP_SETTLED_USAGE_WAIT_MS = 250;
+
+/** Longest the turn end waits for the provider's local usage ledger. */
+export const ACP_LOCAL_USAGE_DEADLINE_MS = 250;
 
 export type AcpSessionEntryMode = "new" | "resume" | "load";
 
@@ -135,11 +161,19 @@ export function resolveAcpSessionEntry(args: {
 
 export type AcpTurnOutcome = {
   stopReason: AcpStopReason | null;
-  /** True when ADE cancelled, or when the agent reported a cancel. */
+  /**
+   * True when ADE cancelled, the agent reported a cancel, or the caller's
+   * `isInterrupted` answered true, all read when the prompt result arrived.
+   */
   interrupted: boolean;
   usage: AcpUsageSample | null;
   /** Events derived from the prompt result. Publish them after the stream. */
   events: AgentChatEvent[];
+  /**
+   * The `done` fields the host owns: usage totals and context, provider cost,
+   * served model, account, plan units, and confidence. Spread into `done`.
+   */
+  done: AcpDoneTelemetry;
 };
 
 export type AcpSessionCallbacks = {
@@ -174,15 +208,51 @@ export type AcpSession = {
    * caller persists it so a runtime restart does not repeat the line.
    */
   readonly unsupervised: boolean;
+  /**
+   * True from the moment the running turn's `session/prompt` result arrives
+   * until `prompt()` returns or throws; false otherwise, including while the
+   * agent is still working and after a prompt that failed before any answer.
+   * In that window the agent is idle and the turn's verdict is taken, so a
+   * Stop has nothing to stop.
+   */
+  readonly turnAnswered: boolean;
 
-  /** Run one turn. Resolves when the agent stops. */
-  prompt(args: { turnId: string; blocks: AcpContentBlock[] }): Promise<AcpTurnOutcome>;
-  /** Stop the running turn. Answers every open permission request first. */
+  /** Run one turn. Resolves when the agent stops and the turn's telemetry is read. */
+  prompt(args: AcpPromptArgs): Promise<AcpTurnOutcome>;
+  /**
+   * Stop the running turn. Answers every open permission request first. Once
+   * the agent has answered the prompt it is idle: no `session/cancel` is sent,
+   * and the turn's `interrupted` verdict is already taken.
+   */
   cancel(reason: string): Promise<void>;
-  /** Set one session config option, when the dialect supports it. */
-  setConfigOption(args: { configId: string; value: string | boolean }): Promise<void>;
+  /**
+   * Set one session config option, when the dialect supports it. Resolves with
+   * the option set the agent reported back, or `[]` when it reported none.
+   */
+  setConfigOption(args: { configId: string; value: string | boolean }): Promise<AcpSessionConfigOption[]>;
+  /**
+   * Record the model that ADE put on the session, for an agent that accepted
+   * the change without reporting its option set (Copilot's `session/set_model`,
+   * Kimi's `session/set_config_option`). A turn whose provider names no served
+   * model then falls back to this model, not to the one the entry call
+   * reported.
+   */
+  noteCurrentModel(modelId: string): void;
   /** End the session and release the pooled connection. Idempotent. */
   close(reason: string): Promise<void>;
+};
+
+export type AcpPromptArgs = {
+  turnId: string;
+  blocks: AcpContentBlock[];
+  /**
+   * The caller's own stop flag, read once, synchronously, when the prompt
+   * result arrives, and folded into `outcome.interrupted`. A stop the caller
+   * records after that moment does not change the outcome. A pure read: the
+   * session may skip it, and `turnAnswered` is how the caller learns the
+   * agent answered.
+   */
+  isInterrupted?: () => boolean;
 };
 
 export type OpenAcpSessionArgs = {
@@ -213,6 +283,12 @@ export type OpenAcpSessionArgs = {
   supervisionAlreadyNotified?: boolean;
   /** True when ADE can already render this chat's history. */
   adeHasTranscript?: boolean;
+  /**
+   * The provider-native model token ADE launched the agent with, when the user
+   * picked one. It is the requested model the turn's `servedModel` is compared
+   * against, so a turn served by the model it asked for reports none.
+   */
+  requestedModelId?: string | null;
   /** MCP servers to offer. The caller already removed anything unsafe. */
   mcpServers?: AcpMcpServer[];
   callbacks: AcpSessionCallbacks;
@@ -222,6 +298,8 @@ export type OpenAcpSessionArgs = {
   spawnOverride?: Parameters<AcpSessionPool["acquire"]>[0]["spawnOverride"];
   handshakeTimeoutMs?: number;
   idleTtlMs?: number;
+  /** Test seam. How long to wait for a post-turn `usage_update`. */
+  settledUsageWaitMs?: number;
 };
 
 export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSession> {
@@ -246,18 +324,63 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
   let suppressUpdates = false;
   let closed = false;
   let cancelRequested = false;
+  /**
+   * Where the running turn is. `prompting`: from the `session/prompt` send
+   * until its result or failure arrives. `answered`: from the result until
+   * `prompt()` exits. `idle` otherwise, including after a failed prompt.
+   */
+  let turnPhase: "idle" | "prompting" | "answered" = "idle";
   const unsubscribers: Array<() => void> = [];
 
+  const publish = (events: AgentChatEvent[]): void => {
+    if (events.length) callbacks.onEvents(events);
+  };
+
+  const requestedModelToken = args.requestedModelId?.trim() || null;
+  const plainModelId = (raw: string): string => dialect.modelIdFromAgent ? dialect.modelIdFromAgent(raw) : raw;
+  const telemetry = createAcpTurnTelemetry({
+    providerId: dialect.providerId,
+    inferCompaction: dialect.inferCompaction,
+    requestedModelId: requestedModelToken ? plainModelId(requestedModelToken) : null,
+    modelIdFromAgent: plainModelId,
+    providerLabel: dialect.displayName,
+    ...(dialect.servedModelMismatchNote ? { servedModelMismatchNote: dialect.servedModelMismatchNote } : {}),
+    hasLocalUsage: dialect.localUsage.declared,
+    readAccount: () => dialect.readAccount({ env: args.spawnPlan.env }),
+    ...(args.logger ? { logger: args.logger } : {}),
+  });
+
+  /** The agent's `model` config option is the model it reports running. */
+  const noteAgentConfigOptions = (options: AcpSessionConfigOption[]): void => {
+    const model = options.find((option) => option.id === "model");
+    if (typeof model?.value !== "string" || !model.value.length) return;
+    telemetry.noteSignal({ kind: "current_model", modelId: plainModelId(model.value) });
+  };
+
+  // Kimi sends its `usage_update` after the prompt result. `prompt` parks a
+  // resolver here while it waits for that one sample.
+  let settledUsageWaiter: (() => void) | null = null;
+  let settledUsageSeen = false;
+  let settledUsageMissed = false;
+
   const translator: AcpEventTranslator = createAcpEventTranslator({
-    readUsage: dialect.usageSource === "usage_update" ? (update) => {
-      const behavior = behaviorOf(dialect.usage);
-      return behavior ? behavior({ usageUpdate: update }) : null;
-    } : null,
+    readUsage: (update) => dialect.usage.behavior({ usageUpdate: update }),
     includeSlashCommand: dialect.includeSlashCommand,
     callbacks: {
       ...(callbacks.onSlashCommands ? { onSlashCommands: callbacks.onSlashCommands } : {}),
-      ...(callbacks.onConfigOptions ? { onConfigOptions: callbacks.onConfigOptions } : {}),
+      onConfigOptions: (snapshot) => {
+        noteAgentConfigOptions(snapshot.options);
+        callbacks.onConfigOptions?.(snapshot);
+      },
       ...(callbacks.onSessionInfo ? { onSessionInfo: callbacks.onSessionInfo } : {}),
+      onUsage: (sample) => {
+        if (sample.contextUsedTokens === undefined || !sample.contextWindowTokens) return;
+        // An inferred compaction publishes before the sample that revealed it.
+        publish(telemetry.noteContextSample({ used: sample.contextUsedTokens, size: sample.contextWindowTokens }));
+        settledUsageSeen = true;
+        settledUsageWaiter?.();
+      },
+      onTelemetry: (signal) => telemetry.noteSignal(signal),
     },
   });
 
@@ -320,10 +443,18 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
     ),
   );
 
-  for (const method of dialect.ignoredNotificationMethods) {
-    // Receive and drop. Registering the handler keeps the method out of the
-    // "unhandled notification" path and documents that the silence is meant.
-    unsubscribers.push(connection.onNotification(method, () => undefined));
+  for (const [method, read] of Object.entries(dialect.extensionNotifications)) {
+    unsubscribers.push(
+      connection.onNotification(method, (params) => {
+        if (suppressUpdates) return;
+        const { sessionId: target, signals } = read(params);
+        // A pooled process carries other chats' sessions. A payload that names
+        // a session belongs to that session only; a nameless one is
+        // process-wide (Grok's model catalog).
+        if (target && target !== sessionId) return;
+        for (const signal of signals) publish(telemetry.noteSignal(signal));
+      }),
+    );
   }
 
   unsubscribers.push(
@@ -382,6 +513,36 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
     throw error;
   }
 
+  noteAgentConfigOptions(initialConfigOptions);
+  const localUsageBehavior = behaviorOf(dialect.localUsage);
+  const localUsage: AcpLocalUsageReader | null = localUsageBehavior
+    ? localUsageBehavior({ sessionId, env: args.spawnPlan.env })
+    : null;
+
+  const settledUsageWaitMs = args.settledUsageWaitMs ?? ACP_SETTLED_USAGE_WAIT_MS;
+  /**
+   * Wait for the one `usage_update` an agent sends after the turn settles.
+   * Once a wait times out (Kimi skips a model outside its catalog), later
+   * turns stop waiting until a `usage_update` shows up again.
+   */
+  const waitForSettledUsage = async (): Promise<void> => {
+    if (!dialect.usageUpdateAfterTurn || telemetry.turnHasContextSample) return;
+    if (settledUsageMissed && !settledUsageSeen) return;
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        settledUsageWaiter = null;
+        settledUsageMissed = true;
+        settledUsageSeen = false;
+        resolve();
+      }, settledUsageWaitMs);
+      settledUsageWaiter = () => {
+        clearTimeout(timer);
+        settledUsageWaiter = null;
+        resolve();
+      };
+    });
+  };
+
   const detach = () => {
     for (const unsubscribe of unsubscribers) unsubscribe();
     unsubscribers.length = 0;
@@ -398,48 +559,94 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
     get unsupervised() {
       return supervision.unsupervised;
     },
+    get turnAnswered() {
+      return turnPhase === "answered";
+    },
 
-    prompt: async ({ turnId, blocks }) => {
+    prompt: async ({ turnId, blocks, isInterrupted }) => {
       cancelRequested = false;
       translator.beginTurn(turnId);
-      permissionBridge.setTurnId(turnId);
-      // A preflight verdict was reached before the caller owned this runtime,
-      // so its notice waits for the first turn to have a live event path.
-      publishSupervision(supervision.drainQueued(turnId));
-      let response: AcpPromptResponse | null = null;
+      telemetry.beginTurn(turnId);
       try {
-        response = await connection.request<AcpPromptResponse>(
-          ACP_METHOD.sessionPrompt,
-          { sessionId, prompt: blocks },
-          { timeoutMs: ACP_PROMPT_NO_TIMEOUT },
-        );
-      } finally {
-        // Every open permission request belongs to the turn that just ended.
-        permissionBridge.cancelAll("the turn ended");
-        permissionBridge.setTurnId(null);
-        // A failed or cancelled turn can still have written files, so the
-        // verdict is taken on every exit, not just the happy one.
-        publishSupervision(supervision.endTurn(turnId));
-      }
+        try {
+          localUsage?.beginTurn();
+        } catch (error) {
+          args.logger?.warn("agent_chat.acp_local_usage_mark_failed", {
+            provider: dialect.providerId,
+            error: getErrorMessage(error),
+          });
+        }
+        permissionBridge.setTurnId(turnId);
+        // A preflight verdict was reached before the caller owned this runtime,
+        // so its notice waits for the first turn to have a live event path.
+        publishSupervision(supervision.drainQueued(turnId));
+        let response: AcpPromptResponse | null = null;
+        let interrupted = false;
+        turnPhase = "prompting";
+        try {
+          response = await connection.request<AcpPromptResponse>(
+            ACP_METHOD.sessionPrompt,
+            { sessionId, prompt: blocks },
+            { timeoutMs: ACP_PROMPT_NO_TIMEOUT },
+          );
+          turnPhase = "answered";
+          // The verdict, taken once, the moment the agent answered. Client-side
+          // accounting: Copilot can report `end_turn` for a turn ADE cancelled,
+          // so the agent's word is not the deciding one. A Stop pressed during
+          // the telemetry reads below found a finished turn and changes nothing.
+          interrupted = cancelRequested || response?.stopReason === "cancelled" || isInterrupted?.() === true;
+        } finally {
+          if (turnPhase === "prompting") turnPhase = "idle";
+          // Every open permission request belongs to the turn that just ended.
+          permissionBridge.cancelAll("the turn ended");
+          permissionBridge.setTurnId(null);
+          // A failed or cancelled turn can still have written files, so the
+          // supervision verdict is taken on every exit, not just the happy one.
+          publishSupervision(supervision.endTurn(turnId));
+        }
 
-      const usage = readPromptUsage(dialect, response);
-      const events = usage ? usageSampleToEvents(usage, turnId) : [];
-      translator.endTurn();
-      return {
-        stopReason: response?.stopReason ?? null,
-        // Client-side accounting. Copilot can report `end_turn` for a turn ADE
-        // cancelled, so the agent's word is not the deciding one.
-        interrupted: cancelRequested || response?.stopReason === "cancelled",
-        usage,
-        events,
-      };
+        await waitForSettledUsage();
+        const usage = readPromptUsage(dialect, response);
+        const local = localUsage
+          ? await settleWithin(
+            // A later tick, so the deadline is armed before a reader that does
+            // work in its synchronous prefix starts it.
+            Promise.resolve().then(() => localUsage.finishTurn()),
+            ACP_LOCAL_USAGE_DEADLINE_MS,
+            null,
+          )
+          : null;
+        const turnTelemetry = telemetry.finishTurn({ promptUsage: usage, local });
+        // The prompt result's `tokens` row is the fallback meter. A turn that
+        // produced an exact context sample keeps that sample on the meter.
+        const events = [
+          ...(usage && !telemetry.turnHasContextSample ? usageSampleToEvents(usage, turnId) : []),
+          ...turnTelemetry.events,
+        ];
+        return {
+          stopReason: response?.stopReason ?? null,
+          interrupted,
+          usage,
+          events,
+          done: turnTelemetry.done,
+        };
+      } finally {
+        // On every exit, a failed prompt included: nothing that arrives
+        // between turns may carry this turn's id.
+        if (turnPhase === "answered") turnPhase = "idle";
+        translator.endTurn();
+        telemetry.endTurn();
+      }
     },
 
     cancel: async (reason: string) => {
-      cancelRequested = true;
       // Answer the open cards first. A permission request that outlives its
       // turn blocks the agent even after the cancel lands.
       permissionBridge.cancelAll(reason);
+      // An agent that already answered the prompt is idle. The turn's verdict
+      // is taken, and a cancel would reach an agent with nothing to stop.
+      if (turnPhase !== "prompting") return;
+      cancelRequested = true;
       if (dialect.cancelStyle === "notification") {
         connection.notify(ACP_METHOD.sessionCancel, { sessionId });
         return;
@@ -455,7 +662,7 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
         }
         args.logger?.warn("agent_chat.acp_cancel_failed", {
           provider: dialect.providerId,
-          error: error instanceof Error ? error.message : String(error),
+          error: getErrorMessage(error),
         });
       }
     },
@@ -466,7 +673,17 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
         throw new Error(`${dialect.displayName} does not accept session config options.`);
       }
       const call = behavior({ sessionId, configId, value });
-      await connection.request(call.method, call.params);
+      const response = await connection.request<{ configOptions?: unknown } | null>(call.method, call.params);
+      // Grok, Qwen, Copilot, and Kimi answer with the whole option set as it
+      // stands after the change.
+      const options = normalizeAcpConfigOptions(response?.configOptions ?? []);
+      noteAgentConfigOptions(options);
+      return options;
+    },
+
+    noteCurrentModel: (modelId: string) => {
+      const model = modelId.trim();
+      if (model) telemetry.noteSignal({ kind: "current_model", modelId: plainModelId(model) });
     },
 
     close: async (reason: string) => {
@@ -483,7 +700,7 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
         } catch (error) {
           args.logger?.warn("agent_chat.acp_close_failed", {
             provider: dialect.providerId,
-            error: error instanceof Error ? error.message : String(error),
+            error: getErrorMessage(error),
           });
         }
         detach();
@@ -520,9 +737,7 @@ function filterMcpServers(
 
 function readPromptUsage(dialect: AcpDialect, response: AcpPromptResponse | null): AcpUsageSample | null {
   if (!response) return null;
-  const behavior = behaviorOf(dialect.usage);
-  if (!behavior) return null;
-  return behavior({ promptResponse: response, promptUsage: response.usage ?? null });
+  return dialect.usage.behavior({ promptResponse: response, promptUsage: response.usage ?? null });
 }
 
 /** Build a plain text prompt block. The common case. */

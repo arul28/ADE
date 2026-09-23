@@ -155,6 +155,12 @@ import {
   isAdeUsageRangePreset,
   isAdeUsageScope,
 } from "../../desktop/src/shared/types/usage";
+import {
+  ADE_TURN_USAGE_GROUP_BY,
+  ADE_TURN_USAGE_MAX_DAYS,
+  ADE_TURN_USAGE_MAX_RECENT,
+  isAdeTurnUsageGroupBy,
+} from "../../desktop/src/shared/types/turnUsage";
 import { PERSONAL_CHAT_ACTIONS } from "../../desktop/src/shared/types/personalChats";
 import {
   isWorkToolId,
@@ -3685,6 +3691,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade usage stats --scope project --preset 30d  This project only
     $ ade usage stats --scope account --force       Skip the account fan-out rate floor
     $ ade usage stats --since 2026-08-01T00:00:00Z --until 2026-08-08T00:00:00Z
+    $ ade usage turns --days 14 --text              Per-turn ledger by provider, account, model
+    $ ade usage turns --group-by provider --recent 20  Add the 20 newest turns
     $ ade --role cto usage refresh --text           Refresh live provider quota only
     $ ade --role cto usage refresh --history --text Scan local provider history and costs
     $ ade usage budget get --text                   Read budget guardrail config
@@ -15070,6 +15078,33 @@ function buildUsagePlan(args: string[]): CliPlan {
           ...(until != null ? { until } : {}),
           ...(force ? { force: true } : {}),
         })),
+      ],
+    };
+  }
+  // The router's input: what each provider, account, and model cost per turn
+  // on this machine, and what a percent of each subscription window is worth.
+  if (sub === "turns") {
+    const days = readValue(args, ["--days"]);
+    if (days != null && !(Number(days) >= 1 && Number(days) <= ADE_TURN_USAGE_MAX_DAYS)) {
+      throw new CliUsageError(`usage turns --days must be a number from 1 to ${ADE_TURN_USAGE_MAX_DAYS}.`);
+    }
+    const groupBy = readValue(args, ["--group-by"]);
+    if (groupBy != null && !isAdeTurnUsageGroupBy(groupBy)) {
+      throw new CliUsageError(`usage turns --group-by must be one of ${ADE_TURN_USAGE_GROUP_BY.join(", ")}.`);
+    }
+    const recent = readValue(args, ["--recent"]);
+    if (recent != null && !(Number(recent) >= 0 && Number(recent) <= ADE_TURN_USAGE_MAX_RECENT)) {
+      throw new CliUsageError(`usage turns --recent must be a number from 0 to ${ADE_TURN_USAGE_MAX_RECENT}.`);
+    }
+    return {
+      kind: "execute",
+      label: "usage turns",
+      steps: [
+        actionStep("result", "usage", "getTurnUsageSummary", {
+          ...(days != null ? { days: Number(days) } : {}),
+          ...(groupBy != null ? { groupBy } : {}),
+          ...(recent != null ? { recent: Number(recent) } : {}),
+        }),
       ],
     };
   }

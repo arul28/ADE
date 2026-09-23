@@ -366,6 +366,7 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
         cacheCreationTokens: usage?.cacheCreationTokens,
         reasoningTokens: usage?.reasoningTokens,
         contextWindow: usage?.contextWindow,
+        contextTokens: usage?.contextTokens,
         costUsd: costUsd
       ),
       turnId: turnId,

@@ -28,11 +28,13 @@ import { dirname, resolve } from "node:path";
  * without it no `access-control-allow-origin` is emitted, so the browser client
  * at app.ade-app.dev is blocked outright.
  *
- * `ONLINE_WINDOW_MS` and `DIAGNOSTICS_DAILY_GLOBAL_LIMIT` are deliberately NOT
- * hard requirements: both have code defaults equal to the committed values
- * (`DEFAULT_ONLINE_WINDOW_MS` = 90_000, `DEFAULT_DIAGNOSTICS_DAILY_GLOBAL_LIMIT`
- * = 400), so their absence changes no behavior — the diagnostics cost ceiling
- * still applies at 400/day. Blocking a deploy on them would be a false gate.
+ * `ONLINE_WINDOW_MS`, `DIAGNOSTICS_DAILY_GLOBAL_LIMIT` and the three
+ * `USAGE_RESEARCH_*` bounds are deliberately NOT hard requirements: each has a
+ * code default equal to the committed value (`DEFAULT_ONLINE_WINDOW_MS` =
+ * 90_000, `DEFAULT_DIAGNOSTICS_DAILY_GLOBAL_LIMIT` = 400, and 20000 writes/day,
+ * 180 days and 4096 MB in `src/usageResearch.ts`), so their absence changes no
+ * behavior — every cost ceiling still applies. Blocking a deploy on them would
+ * be a false gate.
  * They warn instead, including when they are set to something the Worker cannot
  * parse, because that silently falls back to the default rather than erroring.
  *
@@ -56,6 +58,9 @@ export const REQUIRED_SERVICE_BINDINGS = [{ binding: "ACTIVITY_RELAY", service: 
 export const DEFAULTED_VARS = [
   { name: "ONLINE_WINDOW_MS", codeDefault: "90000" },
   { name: "DIAGNOSTICS_DAILY_GLOBAL_LIMIT", codeDefault: "400" },
+  { name: "USAGE_RESEARCH_DAILY_GLOBAL_LIMIT", codeDefault: "20000" },
+  { name: "USAGE_RESEARCH_RETENTION_DAYS", codeDefault: "180" },
+  { name: "USAGE_RESEARCH_STORAGE_CEILING_MB", codeDefault: "4096" },
 ];
 export const ENVIRONMENTS = ["default", "production"];
 

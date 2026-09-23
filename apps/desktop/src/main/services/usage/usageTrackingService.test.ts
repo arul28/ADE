@@ -51,6 +51,7 @@ import { tokenPriceSource, _testing as _pricingTesting } from "./usagePricing";
 // A trimmed extract of https://models.dev/api.json (id + cost only).
 import MODELS_DEV_FIXTURE from "./__fixtures__/models-dev-pricing.json";
 import { encodeActiveDayBits } from "../lanes/laneUsageTombstone";
+import { createTurnUsageLedger, createTurnUsageLedgerStore } from "./turnUsageLedger";
 // Cross-layer on purpose: the daily split is only useful if the renderer's
 // chart reducer sees it, so the service test asserts against the real reducer
 // rather than a local re-implementation of it. The model module, not the
@@ -67,11 +68,11 @@ import {
   usageLedgerTranscriptRootExists,
   usageLedgerTranscriptRoots,
 } from "./ledgers/localUsageLedgers";
-import { providerScanners } from "./usageLedgerWorker";
+import { usageLedgerScanners } from "./usageLedgerScanners";
 import { clearProviderAccountCache } from "./providerAccountIdentity";
 import { clearClaudeCredentialCache } from "../ai/providerCredentialSources";
 import type { TokenEntry } from "./ledgers/localUsageLedgers";
-import type { CostSnapshot } from "../../../shared/types";
+import type { AdeTurnUsageRecord, CostSnapshot } from "../../../shared/types";
 import { CURSOR_BILLED_USAGE_KV_REF } from "./cursorBilledUsageStore";
 import {
   codexFiveHourUsedPercent,
@@ -80,7 +81,6 @@ import {
 
 const {
   aggregateCosts,
-  bucketDaily7d,
   localDayKey,
   makeDailySkeleton,
   dateIntersectsRange,
@@ -131,6 +131,44 @@ function createLogger() {
 
 function makeTmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "ade-usage-test-"));
+}
+
+/** A settled Claude ledger row with every field the ledger writes, unknowns null. */
+function ledgerRow(overrides: Partial<AdeTurnUsageRecord> & Pick<AdeTurnUsageRecord, "key" | "sessionId" | "turnId" | "at">): AdeTurnUsageRecord {
+  return {
+    v: 1,
+    startedAt: null,
+    projectRoot: null,
+    laneId: null,
+    surface: null,
+    parentSessionId: null,
+    provider: "claude",
+    status: "completed",
+    requestedModel: null,
+    servedModel: null,
+    reasoningEffort: null,
+    account: null,
+    accountKey: "claude:local",
+    inputTokens: null,
+    outputTokens: null,
+    cacheReadTokens: null,
+    cacheWriteTokens: null,
+    cacheWrite1hTokens: null,
+    reasoningTokens: null,
+    contextTokens: null,
+    contextWindow: null,
+    requestCount: null,
+    subagentTokens: null,
+    costUsd: null,
+    costSource: null,
+    apiEquivalentUsd: null,
+    planUsage: null,
+    factoryCreditsSessionTotal: null,
+    usageConfidence: null,
+    durationMs: null,
+    compactions: 0,
+    ...overrides,
+  };
 }
 
 function setPlatform(value: NodeJS.Platform): void {
@@ -359,8 +397,10 @@ describe("aggregateCosts", () => {
       },
     ], "codex");
 
-    expect(result.last30dCostUsd).toBe(41.75);
-    expect(result.costUsdByPreset?.today).toBe(41.75);
+    // GPT-5.5 writes a cached prefix at the plain input rate (OpenAI charges the
+    // 1.25x write premium only from GPT-5.6 on): 5 + 30 + 0.5 read + 5 write.
+    expect(result.last30dCostUsd).toBe(40.5);
+    expect(result.costUsdByPreset?.today).toBe(40.5);
     expect(result.tokenBreakdown["gpt-5.5"]!.cacheWrite).toBe(1_000_000);
   });
 
@@ -1139,13 +1179,14 @@ describe("resolveTokenPrice", () => {
     expect(tokenPriceSource("claude-opus-4")).toBe("list");
   });
 
-  it("fills only the cache rates a models.dev row leaves out, at 0.1x and 1.25x input", () => {
-    // gpt-5.5 carries a cache-read rate but no cache-write rate.
+  it("fills only the cache rates a models.dev row leaves out: no write premium where the vendor charges none, 0.1x/1.25x otherwise", () => {
+    // gpt-5.5 carries a cache-read rate but no cache-write rate, and OpenAI
+    // charges no write premium before GPT-5.6: a new prefix bills at input.
     const gpt = resolveTokenPrice("gpt-5.5");
     expect(gpt.input).toBe(5 / 1_000_000);
     expect(gpt.output).toBe(30 / 1_000_000);
     expect(gpt.cacheRead).toBe(0.5 / 1_000_000);
-    expect(gpt.cacheWrite).toBeCloseTo(6.25 / 1_000_000, 15);
+    expect(gpt.cacheWrite).toBeCloseTo(5 / 1_000_000, 15);
     // The Flash Image preview row carries neither.
     const image = resolveTokenPrice("gemini-3.1-flash-image-preview");
     expect(image.input).toBe(0.5 / 1_000_000);
@@ -1192,6 +1233,23 @@ describe("resolveTokenPrice", () => {
     _pricingTesting.resetDynamicTokenPricingForTest({ disableDiskCache: true });
     expect(resolveTokenPrice("gpt-5.4").input).toBe(2.5 / 1_000_000);
     expect(resolveTokenPrice("gpt-5.3-codex").input).toBeGreaterThan(0);
+  });
+
+  it("bills a single request above a vendor's long-context threshold at the tier rate, and an aggregate at the base rate", () => {
+    _pricingTesting.installModelsDevPricingForTest({
+      xai: { id: "xai", models: { "grok-4.7": { id: "grok-4.7", cost: {
+        input: 2, output: 6, cache_read: 0.5,
+        tiers: [{ input: 4, output: 12, cache_read: 1, tier: { type: "context", size: 200000 } }],
+      } } } },
+    });
+    const now = Date.now();
+    const base = { model: "grok-4.7", inputTokens: 1_000_000, outputTokens: 0, cachedTokens: 0, timestamp: now - 1000 };
+    // One request whose own context is 300k: the whole request bills at 4/M.
+    const longRequest = aggregateCosts([{ ...base, messageId: "grok:long", requestContextTokens: 300_000 }], "grok");
+    expect(longRequest.last30dCostUsd).toBeCloseTo(4, 10);
+    // The same tokens as a turn aggregate (no per-request context) stay at 2/M.
+    const aggregate = aggregateCosts([{ ...base, messageId: "grok:turn" }], "grok");
+    expect(aggregate.last30dCostUsd).toBeCloseTo(2, 10);
   });
 
   it("prices a provider-qualified variant at that provider's row", () => {
@@ -1969,6 +2027,102 @@ describe("createUsageTrackingService", () => {
     scanDroidLogs: vi.fn(async () => [] as never[]),
     scanCopilotLogs: vi.fn(async () => [] as never[]),
     scanGeminiLogs: vi.fn(async () => [] as never[]),
+  });
+
+  it("adds changed quota readings to the turn ledger and answers the router summary from it", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-turn-ledger-"));
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+    try {
+      const store = createTurnUsageLedgerStore({ dir });
+      const ledger = createTurnUsageLedger({ store });
+      const resetsAt = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString();
+      let percentUsed = 10;
+      const service = createUsageTrackingService({
+        logger: createLogger(),
+        dependencies: {
+          ...createFastDependencies(),
+          pollClaudeUsage: vi.fn(async () => ({
+            windows: [{ provider: "claude" as const, windowType: "five_hour" as const, percentUsed, resetsAt, resetsInMs: 3 * 60 * 60 * 1000 }],
+            extraUsage: null,
+            errors: [] as never[],
+          })),
+          turnUsageLedger: ledger,
+        },
+      });
+
+      await service.forceRefresh();
+      // An unchanged reading is not written twice.
+      await service.forceRefresh();
+      await tick();
+      store.appendTurn(ledgerRow({
+        key: "chat-1:turn-1",
+        at: new Date().toISOString(),
+        sessionId: "chat-1",
+        turnId: "turn-1",
+        requestedModel: "claude-opus-5-5",
+        accountKey: "claude:local",
+        inputTokens: 1_000,
+        outputTokens: 500,
+        cacheReadTokens: 90_000,
+        cacheWriteTokens: 9_000,
+        contextTokens: 100_000,
+        apiEquivalentUsd: 4,
+      }));
+      await tick();
+      percentUsed = 30;
+      await service.forceRefresh();
+
+      expect((await store.readQuotaSamples()).map((sample) => sample.percentUsed)).toEqual([10, 30]);
+      const summary = await service.getTurnUsageSummary({ days: 7, recent: 5 });
+      expect(summary.available).toBe(true);
+      expect(summary.turns).toBe(1);
+      expect(summary.recent?.map((row) => row.key)).toEqual(["chat-1:turn-1"]);
+      expect(summary.rows[0]).toMatchObject({ provider: "claude", model: "claude-opus-5-5", turns: 1, cacheHitRatio: 0.9 });
+      const burn = summary.burnRates.find((rate) => rate.provider === "claude" && rate.windowType === "five_hour");
+      expect(burn).toMatchObject({ observedPercent: 20, observedTurns: 1, usdPerPercent: 0.2, headroomUsd: 14, confidence: "high" });
+      service.dispose();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("answers recent rows from the calling project only, and totals from the whole machine", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-turn-ledger-"));
+    try {
+      const store = createTurnUsageLedgerStore({ dir });
+      const at = new Date().toISOString();
+      store.appendTurn(ledgerRow({ key: "a:1", sessionId: "a", turnId: "1", at, projectRoot: "/repo-a", requestedModel: "m" }));
+      store.appendTurn(ledgerRow({ key: "b:1", sessionId: "b", turnId: "1", at, projectRoot: "/repo-b", requestedModel: "m" }));
+      const logger = createLogger();
+      const service = createUsageTrackingService({
+        logger,
+        projectRoot: "/repo-a",
+        dependencies: { ...createFastDependencies(), turnUsageLedger: createTurnUsageLedger({ store }) },
+      });
+      const scopeB = service.attachProjectScope({ key: "repo-b", projectRoot: "/repo-b", logger });
+
+      const fromA = await service.getTurnUsageSummary({ recent: 10 });
+      const fromB = await scopeB.getTurnUsageSummary({ recent: 10 });
+      expect(fromA.recent?.map((row) => row.key)).toEqual(["a:1"]);
+      expect(fromB.recent?.map((row) => row.key)).toEqual(["b:1"]);
+      expect(fromA.turns).toBe(2);
+      expect(fromB.rows).toEqual(fromA.rows);
+      expect(fromA.rows[0]).toMatchObject({ provider: "claude", model: "m", turns: 2 });
+
+      scopeB.dispose();
+      service.dispose();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports the router summary as unavailable when the host keeps no ledger", async () => {
+    const service = createUsageTrackingService({ logger: createLogger(), dependencies: createFastDependencies() });
+    const summary = await service.getTurnUsageSummary({ days: 500, groupBy: "provider" });
+    expect(summary).toMatchObject({ available: false, turns: 0, rows: [], burnRates: [], groupBy: "provider" });
+    // Days clamp to 90.
+    expect(Date.parse(summary.until) - Date.parse(summary.since)).toBe(90 * 24 * 60 * 60 * 1000);
+    service.dispose();
   });
 
   it("returns an empty snapshot before polling", () => {
@@ -3776,7 +3930,7 @@ describe("scanClaudeLogs (via aggregateCosts)", () => {
       // The mismatch the guard above covers for: a scanner slug that is not a
       // key in the roots map silently loses its scan-completeness signal.
       const roots = usageLedgerTranscriptRoots();
-      const unmapped = providerScanners
+      const unmapped = usageLedgerScanners
         .map((scanner) => scanner.provider)
         .filter((provider) => !roots[provider]);
       expect(unmapped).toEqual([]);
@@ -4417,14 +4571,13 @@ describe("scanDroidLogs", () => {
       const entries = await scanDroidLogs(path.join(tmpDir, "sessions"));
 
       expect(entries).toHaveLength(2);
-      // Thinking tokens are billed at the output rate but are not output: they
-      // show up only in `billableOutputTokens`, so the displayed output count
-      // stays reasoning-free.
+      // Droid's thinking tokens are already inside its output count, so the
+      // output alone is billed and thinking is never added on top.
       expect(entries[0]).toMatchObject({
         model: "claude-sonnet-5",
         inputTokens: 50,
         outputTokens: 20,
-        billableOutputTokens: 21,
+        billableOutputTokens: 20,
         cachedTokens: 4,
         billableCachedTokens: 4,
         cacheWriteTokens: 2,
@@ -4432,7 +4585,7 @@ describe("scanDroidLogs", () => {
       expect(entries[1]).toMatchObject({
         inputTokens: 51,
         outputTokens: 21,
-        billableOutputTokens: 22,
+        billableOutputTokens: 21,
         cachedTokens: 5,
         billableCachedTokens: 5,
         cacheWriteTokens: 3,
@@ -6138,8 +6291,8 @@ describe("usage ledger end-to-end accuracy", () => {
         // Gemini "thoughts" bill as output but are not output, so the display
         // total carries only the 12 real output tokens.
         gemini: { input: 41, output: 12, cached: 9, cacheWrite: 0 },
-        // Droid "thinking" tokens bill as output but are not output, so the
-        // display total carries only the 9 real output tokens.
+        // Droid counts "thinking" inside its output count, so the display
+        // total and the bill both carry the 9 output tokens.
         droid: { input: 21, output: 9, cached: 5, cacheWrite: 3 },
       };
       const expectedProjectTotals: Record<string, TokenTotals> = {
@@ -6190,8 +6343,9 @@ describe("usage ledger end-to-end accuracy", () => {
         claude: { ade: 20, external: 127 },
         codex: { ade: 23, external: 89 },
         cursor: { ade: 0, external: 19 },
-        // Gemini "thoughts" (3) and Droid "thinking" (3) are billed as output but
-        // are not output, so they no longer inflate the displayed token totals.
+        // Gemini "thoughts" (3) are billed as output but are not output, and
+        // Droid "thinking" (3) is already inside output, so neither inflates
+        // the displayed token totals.
         gemini: { ade: 0, external: 62 },
         droid: { ade: 0, external: 38 },
       });

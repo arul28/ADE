@@ -317,6 +317,205 @@ close the route. The cron sweep prunes budget rows older than seven days;
 today's row is never in range, so a sweep can never hand back budget the running
 day has already spent.
 
+## Usage research reports
+
+`POST /usage-research/daily` receives one compact usage report per ADE install
+per local day. The owner collects them to study how to build a model router.
+The reports go into **this Worker's D1 database**, the same one that holds
+machines, device authorizations and pairing grants. A full D1 database refuses
+every write, sign-in included, so this route is built so that research data can
+never fill it.
+
+**Contract** (`src/usageResearch.ts`; the desktop client mirrors it)
+
+| | |
+|---|---|
+| Method | `POST`. Anything else is `405` with `allow: POST`. No `OPTIONS` preflight and no CORS headers: the senders are the desktop main process and the CLI, never a browser, and a web page cannot make a visitor's browser post JSON here |
+| Content type | `application/json` (a `charset` parameter is fine). Anything else is `415 {"error":"usage_research_unsupported_media_type"}` |
+| Body | Exactly `{ schemaVersion, installId, day, appVersion, platform, arch, utcOffsetMinutes, report }`. Any other top-level key is a `400`. `report` is the only place to add fields without bumping `schemaVersion` |
+| Field rules | `schemaVersion` is the number `1`. `installId` matches `^[0-9a-f]{32}$`. `day` is a real `YYYY-MM-DD` inside the accepted window (below). `appVersion` is 1–40, `platform` 1–16 and `arch` 1–16 printable ASCII characters. `utcOffsetMinutes` is an integer in −840…840. `report` is a JSON object, stored re-serialized compactly and never interpreted. Anything else is `400 {"error":"usage_research_invalid"}` |
+| Accepted days | From `utcDate(now − 12 h − 8 days)` to `utcDate(now + 14 h)`, inclusive: any local date on Earth from eight days ago to today. That covers a seven-day backfill from any time zone, and nothing in the future |
+| Size | `413 {"error":"usage_research_too_large"}` above 32 KB for the whole body, counted as the stream arrives. A report that grows past 32 KB when re-serialized (`1e20` becomes 21 digits) is also `413`. A body stream that breaks mid-read (the client went away) is `400` with one log line |
+| Auth | None. The senders post without an account token, and the route reads no `Authorization` header |
+| Per-caller limit | 20 writes per caller address per UTC day → `429 {"error":"usage_research_identity_limit"}`. The address is `cf-connecting-ip` (never `x-forwarded-for`), with an IPv6 address cut to its /64 so one customer's prefix is one caller |
+| Fleet limit | `USAGE_RESEARCH_DAILY_GLOBAL_LIMIT` writes per UTC day across all callers (default 20000; `0` stops all writes) → `429 {"error":"usage_research_daily_limit"}`. A stopped or already spent fleet answers from one read, before any quota is claimed, so a refusal writes nothing |
+| Storage ceiling | `USAGE_RESEARCH_STORAGE_CEILING_MB` of report bytes in total (default 4096, clamped to 6144; `0` stops growth) → `429 {"error":"usage_research_storage_full"}` |
+| `retry-after` | On every `429`: the seconds until the next UTC midnight |
+| Success | `201 {"ok":true,"stored":"inserted"}` for the first report of an install and day. `200 {"ok":true,"stored":"replaced"}` for a re-send |
+| Unavailable | `503 {"error":"usage_research_unavailable"}` when there is no `DB` binding, D1 refuses any statement, or another write to the same install and day won a race. Every limit **fails closed**, and claims already taken are given back |
+
+**No duplicates, by construction.** The primary key is `(install_id, day)`, so
+a re-send replaces the row and never adds a second one. `received_at` keeps the
+first arrival and `updated_at` moves.
+
+**What the budgets count: writes that change a row.** A re-send whose envelope
+and report are byte-for-byte what the row already holds is answered from a
+single read. It writes nothing and claims no budget, so a client retrying a send
+whose response it lost costs nothing. A changed re-send is a real D1 write and
+counts like an insert. Counting only first inserts would have left a client
+stuck re-sending changed reports bounded only by the per-identity limit.
+
+**Four bounds, and why the write cap alone is not enough.**
+
+```
+body            32 KB hard cap (413 above it); typical reports are 4–12 KB
+rows            one per install per local day; the sweep deletes rows older
+                than USAGE_RESEARCH_RETENTION_DAYS (default 180, never below 9)
+writes          20 per identity per UTC day; 20,000 fleet-wide per UTC day
+storage         4,096 MB of stored bytes in total (clamped to 6,144 MB);
+                each row counts its report plus a fixed 256 bytes
+```
+
+The write cap does not bound storage on its own:
+
+```
+20,000 new rows/day × 181 days × 32 KB ≈ 116 GB worst case
+```
+
+That is more than ten times D1's 10 GB per-database limit. The storage ceiling
+is the bound that holds the line. `usage_research_totals` keeps a running total
+of `usage_research_daily.bytes`, which is each report's UTF-8 length plus a
+fixed 256 bytes for the key, the envelope columns and the day index, so a flood
+of tiny reports cannot fill pages the total never counted. Every write that
+grows the table claims its growth against the ceiling first, in one statement,
+the same upsert idiom as the budgets. The row write is then a compare-and-swap
+on the size that claim was computed from: a first send inserts with
+`on conflict do nothing`, and a re-send updates only while the row still has
+the `bytes` it read. A write that loses a race to another write of the same
+install and day matches no row, gives back every claim, and answers `503`, so
+the total stays equal to `sum(bytes)`. The sweep subtracts what it deletes in
+the same transaction as the delete. The one way the total drifts is a refund
+lost to a D1 error, and that errs **upward**: the ceiling trips early, never
+late. To resync it:
+
+```sql
+update usage_research_totals
+set bytes = (select coalesce(sum(bytes), 0) from usage_research_daily)
+where id = 1;
+```
+
+**Storage arithmetic.** Assumptions: the account is on **Workers Paid**, since
+the push relay's sizing already relies on the Paid plan's 50 M D1 rows written
+per month. D1 limits and pricing are as Cloudflare documented them when this
+was written; nothing in this repo pins them, so re-check
+<https://developers.cloudflare.com/d1/platform/limits/> and
+<https://developers.cloudflare.com/d1/platform/pricing/> before changing a
+default:
+
+- 10 GB maximum per database on Paid (500 MB on Free).
+- 5 GB of D1 storage included per account on Paid, then $0.75/GB-month.
+- 50 M rows written and 25 B rows read included per month on Paid.
+
+```
+1,000 daily-active installs × 10 KB × 180 days  ≈ 1.8 GB of reports
++ ~10–15% for keys, the day index and page slack ≈ 2.1 GB on disk
+  (the 256 bytes per row the ceiling counts is ~2.5% of a 10 KB report;
+  it matters for small reports, which it keeps from under-counting)
+
+ceiling  4,096 MB of stored bytes ≈ 4.6 GB on disk
+         inside the 5 GB Paid storage allowance, under half of the 10 GB limit
+max      6,144 MB of reports ≈ 7 GB on disk, leaving ~3 GB for everything else
+
+capacity at the defaults: 4 GB ÷ (10 KB × 180 days) ≈ 2,300 daily-active installs
+```
+
+Past that capacity the table fills and new reports get `429 …_storage_full`.
+Then each daily sweep frees one day of old rows, and each day's earliest
+senders fill it again. Collection degrades to a sample of each day. Machines
+and sign-in are unaffected. When `usage_research_totals.bytes` approaches the
+ceiling, lower the retention (90 days doubles capacity), raise the ceiling (up
+to 6,144), or export and archive the data.
+
+Write cost: an accepted write is about five D1 rows written (identity slot,
+fleet slot, byte total, the row, its day-index entry) and two rows read (the
+report row and today's fleet row). At the full 20,000 a day that is about 3 M
+rows written a month, 6% of the Paid allowance. An identical re-send is one row
+read, and a refusal for a stopped or spent fleet is two rows read and none
+written. On the **Free** plan the defaults do not fit: the database is
+500 MB and the whole account gets 100,000 rows written a day. Lower all three
+vars before deploying there.
+
+**Retention and cleanup.** The existing once-a-minute cron (`scheduled` in
+`src/index.ts`) runs each cleanup on its own guard, so one that throws logs a
+`scheduled_cleanup_failed` line and the others still run. The usage research
+cleanup is one D1 batch per tick:
+
+- it deletes up to 500 reports whose `day` is older than
+  `USAGE_RESEARCH_RETENTION_DAYS`, oldest first, and subtracts their bytes;
+- it prunes fleet-budget rows older than seven days;
+- it deletes per-identity rows once their UTC day is over.
+
+500 rows a minute is 720,000 a day, so shortening retention on a full table
+drains in days. Retention is never shorter than 9 days. A shorter one would
+sweep days the route still accepts, and a backfill would re-insert them every
+minute.
+
+**Privacy.** Report rows hold only the envelope fields above and the report.
+There is no user id, no IP address and no token. Per-caller quota rows hold a
+SHA-256 of `day + address` (an IPv6 /64), so they cannot be joined across days,
+and they are deleted when the day ends. An address hash is pseudonymous, not
+anonymous (IPv4 can be enumerated), so its protection is that one-day lifetime.
+The log line (`kind: "usage_research_upload"`) carries only outcome, status,
+reason and the report's byte count. It never includes the install id or any of
+the report.
+
+**Changing the limits.** Edit the var in `wrangler.jsonc`, under both the
+top-level `vars` and `env.production.vars` (wrangler environments do not
+inherit vars), then deploy. A dashboard edit takes effect at once, but the next
+deploy resets it to the committed value. `USAGE_RESEARCH_DAILY_GLOBAL_LIMIT=0`
+stops every write. `USAGE_RESEARCH_STORAGE_CEILING_MB=0` stops every write that
+would grow the table. An unset or unparseable value falls back to the default,
+so a typo can neither uncap nor close the route.
+
+**Querying.** `--remote` is required. Without it, wrangler queries the local
+development database.
+
+```sh
+# Reports and bytes per day (default environment)
+npx wrangler d1 execute ade-account-directory --remote \
+  --command "SELECT day, count(*) AS reports, sum(bytes) AS bytes FROM usage_research_daily GROUP BY day ORDER BY day"
+
+# The same against production
+npx wrangler d1 execute DB --remote --env production \
+  --command "SELECT day, count(*) AS reports, sum(bytes) AS bytes FROM usage_research_daily GROUP BY day ORDER BY day"
+
+# Headroom under the storage ceiling, and the last week of fleet writes
+npx wrangler d1 execute DB --remote --env production \
+  --command "SELECT bytes FROM usage_research_totals"
+npx wrangler d1 execute DB --remote --env production \
+  --command "SELECT day, writes FROM usage_research_days ORDER BY day DESC"
+
+# `report` is JSON text, so SQLite's JSON functions work on it
+npx wrangler d1 execute DB --remote --env production --json \
+  --command "SELECT day, platform, json_extract(report, '\$.someField') FROM usage_research_daily WHERE day >= '2026-09-01'"
+
+# Full export for offline analysis
+npx wrangler d1 export DB --remote --env production \
+  --table usage_research_daily --output usage-research.sql
+```
+
+**Deploying it** (instructions only; nothing here runs automatically from a
+branch):
+
+1. **Production** is deployed when this merges to `main`.
+   `.github/workflows/deploy-web.yml` runs `npm run deploy:production`, which
+   applies `migrations/0012_usage_research.sql` to
+   `ade-account-directory-production` and then deploys. To do it by hand:
+   `npx wrangler d1 migrations apply DB --remote --env production`, then
+   `npx wrangler deploy --env production`.
+2. The **default (development)** environment is not deployed by CI. Run
+   `npm run deploy`, or by hand
+   `npx wrangler d1 migrations apply ade-account-directory --remote`, then
+   `npx wrangler deploy`.
+3. Apply the migration **before** the deploy (both scripts do). If a Worker
+   ships without the tables, this route answers `503` and the sweep fails,
+   until the migration lands. No other route is affected and nothing is lost.
+4. Check that it landed: `npx wrangler d1 migrations list DB --remote --env
+   production` should show nothing pending, and
+   `SELECT bytes FROM usage_research_totals` should return one row, `0` on a
+   fresh table. (A malformed request is refused before D1 is touched, so a
+   `400` from the route proves nothing about the migration.)
+
 ## Local checks
 
 ```sh

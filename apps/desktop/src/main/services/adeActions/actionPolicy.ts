@@ -812,6 +812,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "consumeResetCredit",
     "forceRefresh",
     "getAdeUsageStats",
+    "getTurnUsageSummary",
     "getUsageSnapshot",
     "noteQuotaDemand",
     "refreshHistory",

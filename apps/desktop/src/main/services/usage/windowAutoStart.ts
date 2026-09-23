@@ -15,6 +15,7 @@ import {
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
 import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
+import { usageAccountId } from "./usageAccountId";
 
 const AUTOSTART_DELAY_MS = 5_000;
 const AUTOSTART_TIMEOUT_MS = 60_000;
@@ -46,16 +47,12 @@ type AutoStartTimer = AutoStartTimerState & {
   timer: ReturnType<typeof setTimeout>;
 };
 
-function accountIdFor(provider: ProviderInstanceProvider, instanceId: string): string {
-  return `${provider}:${instanceId}`;
-}
-
 function findFiveHourWindow(
   snapshot: UsageSnapshot,
   provider: ProviderInstanceProvider,
   instance: ProviderInstance,
 ): UsageWindow | undefined {
-  const accountId = accountIdFor(provider, instance.id);
+  const accountId = usageAccountId({ provider, instanceId: instance.id });
   const account = snapshot.accounts?.find(
     (candidate) => candidate.provider === provider && candidate.instanceId === instance.id,
   );
@@ -90,7 +87,7 @@ export function createWindowAutoStartScheduler({
   const arm = (provider: ProviderInstanceProvider, instance: ProviderInstance, window: UsageWindow): void => {
     const resetAtMs = Date.parse(window.resetsAt);
     if (!Number.isFinite(resetAtMs) || resetAtMs <= nowMs()) return;
-    const key = accountIdFor(provider, instance.id);
+    const key = usageAccountId({ provider, instanceId: instance.id });
     const dueAtMs = resetAtMs + AUTOSTART_DELAY_MS;
     const isBase = isBaseProviderInstance(instance);
     const existing = timers.get(key);
@@ -226,7 +223,7 @@ export function createWindowAutoStartScheduler({
         if (!window) continue;
         const resetAtMs = Date.parse(window.resetsAt);
         if (!Number.isFinite(resetAtMs) || resetAtMs <= nowMs()) continue;
-        const key = accountIdFor(provider, instance.id);
+        const key = usageAccountId({ provider, instanceId: instance.id });
         expected.add(key);
         arm(provider, instance, window);
       }

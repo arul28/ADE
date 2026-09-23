@@ -3,11 +3,14 @@ import {
   PI_APPROVAL_ALLOW,
   PI_APPROVAL_ALLOW_SESSION,
   PI_UI_ANSWER_ID,
+  createPiSdkEventMapperState,
   mapPiSdkEventToChatEvents,
+  mapPiSdkRunResultToDoneEvent,
   piExtensionLoadNotice,
   piUiNoticeToChatEvents,
   piUiRequestToPendingInput,
   piUiResponseFromAnswer,
+  resetPiSdkEventMapperTurn,
 } from "./piSdkEventMapper";
 import type { PiSdkUiRequestPayload } from "./piSdkProtocol";
 
@@ -111,13 +114,200 @@ describe("mapPiSdkEventToChatEvents", () => {
       attempt: 2,
       maxAttempts: 5,
       retryDelayMs: 4_000,
-    }, "turn-1")).toEqual([{
+    }, "turn-1", null, createPiSdkEventMapperState())).toEqual([{
       type: "activity",
       activity: "working",
       providerRetry: true,
       detail: "Reconnecting to Pi · attempt 2 of 5 · retrying in 4s",
       turnId: "turn-1",
     }]);
+  });
+
+  it("accumulates assistant message usage across a turn", () => {
+    const state = createPiSdkEventMapperState();
+    const first = mapPiSdkEventToChatEvents({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        provider: "anthropic",
+        model: "claude-sonnet",
+        responseId: "response-1",
+        usage: {
+          input: 100,
+          output: 40,
+          cacheRead: 20,
+          cacheWrite: 5,
+          cacheWrite1h: 2,
+          reasoning: 10,
+          cost: { total: 0.25 },
+        },
+      },
+    }, "turn-1", null, state);
+    const second = mapPiSdkEventToChatEvents({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        provider: "anthropic",
+        model: "claude-sonnet",
+        responseModel: "claude-opus-served",
+        responseId: "response-2",
+        account: { kind: "subscription", upstream: "anthropic" },
+        usage: {
+          input: 200,
+          output: 60,
+          cacheRead: 30,
+          cacheWrite: 7,
+          cacheWrite1h: 3,
+          reasoning: 12,
+          cost: { total: 0.5 },
+        },
+      },
+    }, "turn-1", null, state);
+
+    expect(first[0]).toMatchObject({ type: "tokens", itemId: "response-1", inputTokens: 100, outputTokens: 40, cacheReadTokens: 20, cacheWriteTokens: 5, reasoningTokens: 10 });
+    expect(second[0]).toMatchObject({ type: "tokens", itemId: "response-2", inputTokens: 200, outputTokens: 60, cacheReadTokens: 30, cacheWriteTokens: 7, reasoningTokens: 12 });
+    const done = mapPiSdkRunResultToDoneEvent({
+      turnId: "turn-1",
+      model: "Pi Chat",
+      modelId: "pi/claude-sonnet",
+      requestedModel: "claude-sonnet",
+      state,
+      status: "completed",
+    });
+    expect(done).toMatchObject({
+      type: "done",
+      usage: {
+        inputTokens: 300,
+        outputTokens: 100,
+        cacheReadTokens: 50,
+        cacheCreationTokens: 12,
+        cacheWrite1hTokens: 5,
+        reasoningTokens: 22,
+        contextTokens: 237,
+        requestCount: 2,
+      },
+      costUsd: 0.75,
+      costSource: "list_price",
+      servedModel: "claude-opus-served",
+      account: { provider: "pi", kind: "subscription", upstream: "anthropic" },
+    });
+    // The cost is on `done.costUsd`, not in `usage`, and `usage` is a snapshot:
+    // clearing the live state for the next turn leaves this done intact.
+    expect(done.usage).not.toHaveProperty("costUsd");
+    expect(done.usage).not.toBe(state.usage);
+    resetPiSdkEventMapperTurn(state);
+    expect(done.usage).toMatchObject({ inputTokens: 300, requestCount: 2 });
+  });
+
+  // A Pi route is provider + model: the same model id from another provider is
+  // another paid route, so it is the route that answered, not a spelling of it.
+  it("reports a turn served by another provider even when the model id matches", () => {
+    const answeredBy = (provider: string, model: string) => {
+      const state = createPiSdkEventMapperState();
+      mapPiSdkEventToChatEvents({
+        type: "message_end",
+        message: { role: "assistant", provider, model, usage: { input: 1, output: 1 } },
+      }, "turn-1", null, state);
+      return mapPiSdkRunResultToDoneEvent({
+        turnId: "turn-1",
+        model: "Pi Chat",
+        requestedModel: "gpt-5",
+        provider: "openai",
+        state,
+        status: "completed",
+      });
+    };
+
+    expect(answeredBy("openrouter", "gpt-5").servedModel).toBe("openrouter/gpt-5");
+    expect(answeredBy("openrouter", "gpt-5-mini").servedModel).toBe("openrouter/gpt-5-mini");
+    expect(answeredBy("openai", "gpt-5-mini").servedModel).toBe("gpt-5-mini");
+    expect(answeredBy("openai", "gpt-5")).not.toHaveProperty("servedModel");
+  });
+
+  it("reports nothing from the previous turn on a turn that failed before any event", () => {
+    // The host resets the state as the turn starts, before anything that can
+    // throw, so an early failure's `done` is built from an empty state.
+    const state = createPiSdkEventMapperState();
+    mapPiSdkEventToChatEvents({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        provider: "anthropic",
+        responseModel: "claude-opus-served",
+        account: { kind: "subscription", upstream: "anthropic" },
+        usage: { input: 100, output: 40, cost: { total: 0.25 } },
+      },
+    }, "turn-1", null, state);
+    resetPiSdkEventMapperTurn(state);
+    const failed = mapPiSdkRunResultToDoneEvent({
+      turnId: "turn-2",
+      model: "Pi Chat",
+      requestedModel: "claude-sonnet",
+      provider: "anthropic",
+      state,
+      status: "failed",
+    });
+    expect(failed).not.toHaveProperty("usage");
+    expect(failed).not.toHaveProperty("costUsd");
+    expect(failed).not.toHaveProperty("servedModel");
+    expect(failed.account).toEqual({ provider: "pi", kind: "unknown", upstream: "anthropic" });
+  });
+
+  it("names the account for the upstream that ran, preferring the turn's own report", () => {
+    const state = createPiSdkEventMapperState();
+    const meta = {
+      turnId: "turn-1",
+      model: "Pi Chat",
+      provider: "openai-codex",
+      account: { kind: "api_key" as const, upstream: "anthropic" },
+      state,
+      status: "interrupted" as const,
+    };
+    expect(mapPiSdkRunResultToDoneEvent(meta)).toMatchObject({
+      status: "interrupted",
+      account: { provider: "pi", kind: "unknown", upstream: "openai-codex" },
+    });
+    expect(mapPiSdkRunResultToDoneEvent({
+      ...meta,
+      account: { kind: "api_key", upstream: "openai-codex", accountId: "acct-worker" },
+    }).account).toEqual({ provider: "pi", kind: "api_key", upstream: "openai-codex", accountId: "acct-worker" });
+    state.account = { kind: "subscription", upstream: "openai-codex", accountId: "acct-turn" };
+    expect(mapPiSdkRunResultToDoneEvent({
+      ...meta,
+      account: { kind: "api_key", upstream: "openai-codex", accountId: "acct-worker" },
+    }).account).toEqual({ provider: "pi", kind: "subscription", upstream: "openai-codex", accountId: "acct-turn" });
+  });
+
+  it("ignores an account with an unknown kind", () => {
+    const state = createPiSdkEventMapperState();
+    mapPiSdkEventToChatEvents({
+      type: "message_end",
+      message: { role: "assistant", provider: "anthropic", account: { kind: "sponsor", upstream: "anthropic" } },
+    }, "turn-1", null, state);
+    expect(state.account).toBeUndefined();
+  });
+
+  it("carries Pi compaction sizes and leaves the session count to the shared emitter", () => {
+    const state = createPiSdkEventMapperState();
+    mapPiSdkEventToChatEvents({ type: "compaction_start" }, "turn-1", "compact-1", state);
+    const first = mapPiSdkEventToChatEvents({
+      type: "compaction_end",
+      result: { tokensBefore: 1_000, estimatedTokensAfter: 400 },
+    }, "turn-1", "compact-1", state);
+    mapPiSdkEventToChatEvents({ type: "compaction_start" }, "turn-2", "compact-2", state);
+    const second = mapPiSdkEventToChatEvents({
+      type: "compaction_end",
+      result: { tokensBefore: 2_000, estimatedTokensAfter: 500 },
+    }, "turn-2", "compact-2", state);
+
+    expect(first[0]).toMatchObject({ type: "context_compact", state: "completed", preTokens: 1_000, postTokens: 400 });
+    expect(second[0]).toMatchObject({
+      type: "context_compact",
+      state: "completed",
+      preTokens: 2_000,
+      postTokens: 500,
+    });
+    expect(second[0]).not.toHaveProperty("sessionCompactionCount");
   });
 });
 

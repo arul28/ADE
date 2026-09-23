@@ -6,6 +6,7 @@ import type {
   UsageAccount,
   UsageWindow,
 } from "../../../shared/types/usage";
+import { usageAccountId } from "./usageAccountId";
 
 export type AccountBalancePick = {
   instanceId: string;
@@ -86,7 +87,7 @@ export function pickInstanceForNewChat({
     const account = accounts.find(
       (candidate) => candidate.provider === provider && candidate.instanceId === instance.id,
     );
-    const accountId = account?.id ?? `${provider}:${instance.id}`;
+    const accountId = account?.id ?? usageAccountId({ provider, instanceId: instance.id });
     const windows = windowsForAccount(windowsByAccountId, accountId);
     const fiveHour = windowForType(windows, "five_hour");
     const weekly = windowForType(windows, "weekly");
@@ -160,7 +161,7 @@ export function pickAlternateInstanceForLimitedChat({
     const account = accounts.find((candidate) => (
       candidate.provider === provider && candidate.instanceId === instance.id
     ));
-    const accountId = account?.id ?? `${provider}:${instance.id}`;
+    const accountId = account?.id ?? usageAccountId({ provider, instanceId: instance.id });
     return hasImmediateRoom(windowsForAccount(windowsByAccountId, accountId));
   });
   if (withRoom.length === 0) return null;

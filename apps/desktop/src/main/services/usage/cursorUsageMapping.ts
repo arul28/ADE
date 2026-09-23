@@ -1,6 +1,7 @@
 import type { TokenEntry } from "../usage/ledgers/localUsageLedgers";
 import type { AgentChatEvent } from "../../../shared/types";
 import { mapTurnEndedTokensToEvent } from "../chat/cursorSdkEventMapper";
+import { asRecord, finiteNumberFromNumeric } from "../shared/utils";
 
 export type CursorAgentUsageCost = {
   rawCostCents: number | null;
@@ -19,22 +20,7 @@ export type CursorAgentUsageSnapshot = {
   cost: CursorAgentUsageCost | null;
 };
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
-}
-
-function readNumber(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim()) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
-}
-
-function centsToUsd(cents: number | null): number | null {
+export function centsToUsd(cents: number | null): number | null {
   if (cents == null || !Number.isFinite(cents)) return null;
   return Math.round((cents / 100) * 1_000_000) / 1_000_000;
 }
@@ -50,21 +36,21 @@ export function mapCursorAgentUsage(raw: unknown, args: {
   const record = asRecord(raw) ?? {};
   const usage = asRecord(record.usage) ?? record;
   const costRecord = asRecord(usage.cost) ?? asRecord(record.cost);
-  const inputTokens = readNumber(
+  const inputTokens = finiteNumberFromNumeric(
     usage.inputTokens ?? usage.input_tokens ?? usage.totalInputTokens ?? usage.total_input_tokens,
   );
-  const outputTokens = readNumber(
+  const outputTokens = finiteNumberFromNumeric(
     usage.outputTokens ?? usage.output_tokens ?? usage.totalOutputTokens ?? usage.total_output_tokens,
   );
-  const cacheReadTokens = readNumber(usage.cacheReadTokens ?? usage.cache_read_tokens);
-  const cacheWriteTokens = readNumber(
+  const cacheReadTokens = finiteNumberFromNumeric(usage.cacheReadTokens ?? usage.cache_read_tokens);
+  const cacheWriteTokens = finiteNumberFromNumeric(
     usage.cacheWriteTokens ?? usage.cache_write_tokens ?? usage.cacheCreationTokens ?? usage.cache_creation_tokens,
   );
-  const reasoningTokens = readNumber(usage.reasoningTokens ?? usage.reasoning_tokens);
-  const totalTokens = readNumber(usage.totalTokens ?? usage.total_tokens)
+  const reasoningTokens = finiteNumberFromNumeric(usage.reasoningTokens ?? usage.reasoning_tokens);
+  const totalTokens = finiteNumberFromNumeric(usage.totalTokens ?? usage.total_tokens)
     ?? ((inputTokens ?? 0) + (outputTokens ?? 0) + (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0) || null);
-  const chargedCents = readNumber(costRecord?.chargedCents ?? costRecord?.charged_cents);
-  const rawCostCents = readNumber(costRecord?.rawCostCents ?? costRecord?.raw_cost_cents);
+  const chargedCents = finiteNumberFromNumeric(costRecord?.chargedCents ?? costRecord?.charged_cents);
+  const rawCostCents = finiteNumberFromNumeric(costRecord?.rawCostCents ?? costRecord?.raw_cost_cents);
   return {
     agentId: args.agentId,
     runId: args.runId ?? (typeof record.runId === "string" ? record.runId : typeof record.run_id === "string" ? record.run_id : null),
@@ -121,6 +107,7 @@ export function mapCursorAgentUsageToTokensEvent(
       outputTokens: snapshot.outputTokens,
       cacheReadTokens: snapshot.cacheReadTokens,
       cacheWriteTokens: snapshot.cacheWriteTokens,
+      reasoningTokens: snapshot.reasoningTokens,
     },
   }, {
     turnId: meta.turnId,

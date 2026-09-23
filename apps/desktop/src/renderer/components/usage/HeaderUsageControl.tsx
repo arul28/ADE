@@ -34,6 +34,7 @@ const PROVIDER_LABEL: Record<UsageProvider, string> = {
   copilot: "Copilot",
   grok: "Grok",
   opencode: "OpenCode",
+  kimi: "Kimi",
 };
 
 function ProviderLogo({ provider, size = 14 }: { provider: UsageProvider; size?: number }) {

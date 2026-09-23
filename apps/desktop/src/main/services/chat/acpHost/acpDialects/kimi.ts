@@ -7,9 +7,17 @@
  * resume, **and `session/close`** (also delete/fork/additionalDirectories).
  * A dummy `session/close` returns `{}`. Kimi Code 2.0.0's ACP v1 reference
  * retains that lifecycle surface and adds the documented mode/model/thinking
- * `session/set_config_option` dispatcher, which ADE exposes below. **No usage
- * on the wire** is still assumed until a live authenticated turn proves
- * otherwise; the meter stays hidden. Image prompts yes. Audio no.
+ * `session/set_config_option` dispatcher, which ADE exposes below. Image
+ * prompts yes. Audio no.
+ *
+ * Usage (code-verified in the 0.39.1 binary, not live-verified): after every
+ * settled turn Kimi pushes one `usage_update { used, size }`, where `used` is
+ * the agent's context token count and `size` the bound model's window. It is
+ * skipped while the bound model is not in Kimi's catalog, and it arrives AFTER
+ * the `session/prompt` result, so the host waits briefly for it. The prompt
+ * result may also carry the ACP `usage` block (`inputTokens`, `outputTokens`,
+ * `cachedReadTokens`, `cachedWriteTokens`, `thoughtTokens`, `totalTokens`).
+ * Both are read when present; absent stays absent, with no banner.
  * `agentCapabilities.auth.logout` is advertised; ADE has no ACP logout action
  * yet.
  *
@@ -40,6 +48,7 @@ import { resolveKimiCliModelForLaunch } from "../../../../../shared/cliLaunch";
 import {
   ADE_CLIENT_INFO,
   inlineImagePrompt,
+  standardAcpUsage,
   standardClose,
   standardLoad,
   standardResume,
@@ -47,9 +56,7 @@ import {
   transportGatedMcpInjection,
   withOptionalEnv,
 } from "./shared";
-
-export const KIMI_USAGE_DEGRADATION_NOTE =
-  "Kimi does not report token usage, so the usage meter is hidden for this chat.";
+import { readKimiAccount } from "./acpAccounts";
 
 export const KIMI_WINDOWS_DEGRADATION_NOTE =
   "Kimi needs Git for Windows on this machine, because Git Bash is its shell.";
@@ -97,7 +104,13 @@ export const kimiDialect = defineAcpDialect({
   postSessionNewNotifications: () => [],
   includeSlashCommand: () => true,
 
-  ignoredNotificationMethods: [],
+  extensionNotifications: {},
+  localUsage: capabilityAbsent,
+  readAccount: readKimiAccount,
+  // Kimi reports context size but no compaction event.
+  inferCompaction: true,
+  // `emitUsageUpdate()` runs after the prompt result settles.
+  usageUpdateAfterTurn: true,
 
   sessionIdPersistence: {
     // The launcher cannot choose the id. The agent mints it.
@@ -112,10 +125,9 @@ export const kimiDialect = defineAcpDialect({
     apiKeyEnvVars: ["MOONSHOT_API_KEY"],
   },
 
-  degradationNotes: [KIMI_USAGE_DEGRADATION_NOTE],
+  degradationNotes: [],
 
-  usageSource: "none",
-  usage: capabilityAbsent,
+  usage: capability(standardAcpUsage),
 
   closeStyle: "close_request",
   closeSession: capability(standardClose),
@@ -132,4 +144,10 @@ export const kimiDialect = defineAcpDialect({
   mcpInjection: capability(transportGatedMcpInjection),
   imagePrompts: capability(inlineImagePrompt),
   configOptionIds: KIMI_CONFIG_OPTION_IDS,
+  // The `thinking` option lists `off` plus the model's declared effort levels
+  // (0.39.1 source; not live-verified, there is no Kimi account). ADE's levels
+  // go through unchanged, and only a level the session offers is sent. A
+  // clear puts back the level the session opened with. A failed set is
+  // logged, and the session keeps running on its own level.
+  reasoningEffortOption: { configId: "thinking", toAgentValue: (effort) => effort },
 });

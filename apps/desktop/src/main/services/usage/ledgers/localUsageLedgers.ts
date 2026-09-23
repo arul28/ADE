@@ -1,87 +1,62 @@
-import { AsyncLocalStorage } from "node:async_hooks";
+/**
+ * History scanners for the CLI and IDE ledgers ADE reads from disk: Claude,
+ * Codex, OpenClaw, Droid, Copilot's event log and VS Code transcripts, Gemini,
+ * OpenCode, Cursor, and Cursor Agent. The ACP providers' own ledgers (Pi, Qwen,
+ * Grok, Copilot CLI's measured store) are read in `acpProviderLedgers.ts`, and
+ * the plumbing both share is in `ledgerScanCore.ts`.
+ */
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import type { SqlValue } from "../../state/kvDb";
-import { factoryConfigHome } from "../../shared/providerConfigHomes";
-import { isRecord, safeJsonParse } from "../../shared/utils";
+import { piSessionRootForEnvironment } from "../../chat/piSessionStore";
+import {
+  copilotConfigHome,
+  copilotSessionStorePath,
+  factoryConfigHome,
+  grokSessionsDir,
+  qwenUsageDir,
+} from "../../shared/providerConfigHomes";
+import { finiteNumberOrNull, isRecord, safeJsonParse } from "../../shared/utils";
+import { copilotEventsNotInStore, scanCopilotCliRows } from "./acpProviderLedgers";
+import {
+  LOCAL_COST_SCAN_ALL_DAYS,
+  LOCAL_COST_SCAN_MAX_ENTRIES,
+  LOCAL_COST_SCAN_MAX_FILE_BYTES,
+  LOCAL_COST_SCAN_MAX_FILES,
+  LOCAL_SQLITE_SCAN_MAX_ROWS,
+  collectLedgerEntries,
+  findJsonlFiles,
+  findRecentFiles,
+  isAdeWorktreePath,
+  markLedgerScanIncomplete,
+  markLedgerScanIncompleteUnlessMissing,
+  newestCandidatePaths,
+  normalizeUsageLabel,
+  numberFromRecord,
+  openReadonlyUsageDatabase,
+  readJsonlLines,
+  runInLedgerScan,
+  textFromSqliteValue,
+  timestampMsFromUnixish,
+  timestampMsFromValue,
+  toNonNegativeInt,
+  usageSqliteAll,
+  type LedgerScanCompleteness,
+  type RecentFileCandidate,
+  type TokenEntry,
+} from "./ledgerScanCore";
 
-/**
- * Whether a scan could read everything it set out to read.
- *
- * Every failure in this file is swallowed — a locked SQLite file, a directory
- * that momentarily refuses to list, one unreadable transcript — and the scan
- * returns whatever it managed to collect. That is right for the page: a flaky
- * file must not blank the usage numbers. It is wrong for the cross-machine
- * dedupe, which compares this machine's per-day `provider|model` totals against
- * a peer's and reads "content on one side the other could not possibly have" as
- * proof the two read *different* files. A partial read looks exactly like that,
- * and the conclusion — two machines, count both — doubles every shared token
- * silently.
- *
- * So completeness is recorded at the granularity the failures actually happen
- * at (a directory, a file, a database) and reported per provider, where the
- * comparison's existing provider filter can use it. The state is one boolean
- * per in-flight scan; no error text is retained.
- *
- * `AsyncLocalStorage` rather than a module-level flag because the non-worker
- * path scans all nine providers with `Promise.all`, and a shared flag would
- * attribute one provider's failure to whichever scan happened to finish next.
- */
-type LedgerScanCompleteness = { complete: boolean };
+// Importers outside the ledgers read the shared plumbing through this module.
+export {
+  compareRecentFileCandidates,
+  findJsonlFiles,
+  findRecentFiles,
+  runLedgerScanWithCompleteness,
+  type TokenEntry,
+} from "./ledgerScanCore";
 
-const ledgerScanCompleteness = new AsyncLocalStorage<LedgerScanCompleteness>();
-
-/** Record that this provider's scan could not read everything this round. */
-export function markLedgerScanIncomplete(): void {
-  const state = ledgerScanCompleteness.getStore();
-  if (state) state.complete = false;
-}
-
-/**
- * A path that is simply not there is not an incomplete read.
- *
- * Provider roots are absent on every machine that never installed that
- * provider, and optional subtrees (`subagents/`, a `chats/` directory a project
- * never created) are absent on almost every machine that did. Treating those as
- * incompleteness would mark every provider incomplete on an ordinary machine,
- * empty the compared provider set, and leave the dedupe unable to tell a clone
- * from a shared mount — which is the failure in the other direction.
- */
-function isMissingPathError(error: unknown): boolean {
-  const code = (error as NodeJS.ErrnoException | null | undefined)?.code;
-  return code === "ENOENT" || code === "ENOTDIR";
-}
-
-/** For directory listings: absence is normal, anything else lost content. */
-function markLedgerScanIncompleteUnlessMissing(error: unknown): void {
-  if (isMissingPathError(error)) return;
-  markLedgerScanIncomplete();
-}
-
-/**
- * Run one provider scan and report whether it read everything.
- *
- * The completeness verdict belongs to this call alone, so two concurrent scans
- * — or one scan that shares an in-flight promise with another, as Codex does —
- * never inherit each other's failures.
- */
-export async function runLedgerScanWithCompleteness<T>(
-  scan: () => Promise<T>,
-): Promise<{ value: T; complete: boolean }> {
-  const state: LedgerScanCompleteness = { complete: true };
-  const value = await ledgerScanCompleteness.run(state, scan);
-  return { value, complete: state.complete };
-}
-
-const LOCAL_COST_SCAN_MAX_FILES = 5_000;
-const LOCAL_COST_SCAN_MAX_FILE_BYTES = 768 * 1024 * 1024;
-const LOCAL_JSONL_MAX_LINE_BYTES = 16 * 1024 * 1024;
-const LOCAL_COST_SCAN_MAX_ENTRIES = 1_000_000;
-const LOCAL_COST_SCAN_ALL_DAYS = 3650;
 // Codex rollouts are the largest ledger on disk by an order of magnitude: a
 // single long-running session can pass 200 MB, and a heavy user's whole history
 // runs to tens of gigabytes. These budgets are the *lifetime* total the Usage
@@ -93,23 +68,9 @@ const CODEX_COST_SCAN_MAX_FILE_BYTES = 1024 * 1024 * 1024;
 const CODEX_COST_SCAN_MAX_TOTAL_BYTES = 64 * 1024 * 1024 * 1024;
 const CODEX_COST_SCAN_MAX_FILES = 50_000;
 const CODEX_COST_SCAN_MAX_ENTRIES = 1_000_000;
-const LOCAL_SQLITE_SCAN_MAX_ROWS = 250_000;
 const LOCAL_CURSOR_SQLITE_RECENT_ROWS = 250_000;
 const CURSOR_CHARS_PER_TOKEN = 4;
 
-type UsageSqliteStatement = {
-  all: (...params: SqlValue[]) => Record<string, unknown>[];
-};
-type UsageSqliteDatabase = {
-  prepare: (sql: string) => UsageSqliteStatement;
-  exec?: (sql: string) => void;
-  close: () => void;
-};
-type UsageSqliteConstructor = new (dbPath: string, options?: { readOnly?: boolean }) => UsageSqliteDatabase;
-type RecentFileCandidate = { path: string; mtimeMs: number };
-
-const requireForUsageSqlite = createRequire(path.join(process.cwd(), "ade-runtime.cjs"));
-let usageSqliteConstructor: UsageSqliteConstructor | null | undefined;
 type CodexLogScanInFlight = { promise: Promise<TokenEntry[]>; state: LedgerScanCompleteness };
 let codexLogScanInFlight: CodexLogScanInFlight | null = null;
 
@@ -117,41 +78,6 @@ type CodexLogScanOptions = {
   maxJsonlLineBytes?: number;
   maxEntries?: number;
 };
-
-function toFiniteNumber(value: unknown): number {
-  const numberValue = Number(value ?? 0);
-  return Number.isFinite(numberValue) ? numberValue : 0;
-}
-
-function toNonNegativeInt(value: unknown): number {
-  return Math.max(0, Math.floor(toFiniteNumber(value)));
-}
-
-function normalizeUsageLabel(value: unknown, fallback: string): string {
-  const text = typeof value === "string" ? value.trim() : "";
-  return text.length > 0 ? text : fallback;
-}
-
-export interface TokenEntry {
-  messageId: string;
-  model: string;
-  originator?: string;
-  projectPath?: string;
-  projectKey?: string;
-  adeOriginated?: boolean;
-  estimation?: "chars" | "mixed" | "distribution";
-  inputTokens: number;
-  billableInputTokens?: number;
-  outputTokens: number;
-  billableOutputTokens?: number;
-  cachedTokens: number;
-  billableCachedTokens?: number;
-  cacheWriteTokens?: number;
-  oneHourCacheWriteTokens?: number;
-  webSearchRequests?: number;
-  costOverrideUsd?: number;
-  timestamp: number;
-}
 
 /**
  * Claude Code names its per-project directory under `~/.claude/projects/` by
@@ -171,113 +97,9 @@ export function sanitizeClaudeProjectPath(value: string): string {
   return value.replace(/[^a-zA-Z0-9]/gu, "-");
 }
 
-function isAdeWorktreePath(value: string): boolean {
-  return value.replace(/\\/g, "/").includes("/.ade/worktrees/");
-}
-
-export function optionalNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function numberFromRecord(record: Record<string, unknown> | undefined, ...keys: string[]): number {
-  if (!record) return 0;
-  for (const key of keys) {
-    const value = optionalNumber(record[key]);
-    if (value != null) return value;
-  }
-  return 0;
-}
-
-function timestampMsFromValue(value: unknown): number {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string") {
-    const ms = Date.parse(value);
-    if (Number.isFinite(ms)) return ms;
-  }
-  return Date.now();
-}
-
-function timestampMsFromUnixish(value: unknown): number {
-  const numeric = optionalNumber(value);
-  if (numeric != null) return numeric < 1_000_000_000_000 ? numeric * 1_000 : numeric;
-  return timestampMsFromValue(value);
-}
-
 function estimateTokensFromText(value: string): number {
   if (!value) return 0;
   return Math.ceil(value.length / CURSOR_CHARS_PER_TOKEN);
-}
-
-/**
- * Newest-first, then path-ascending. The tiebreak is not cosmetic: `sort` is
- * stable, so equal mtimes would otherwise resolve to `readdir` order, and two
- * clients of one NFS/SMB share are not required to agree on that. With more
- * transcript files than the cap and an mtime collision straddling the cutoff,
- * two machines reading the same directory would retain different files, count
- * different tokens, and be judged diverged by the account-usage dedupe — which
- * silently double-counts every token they actually share. Paths are unique
- * within a scan, so this makes the retained set a pure function of the files.
- */
-export function compareRecentFileCandidates(a: RecentFileCandidate, b: RecentFileCandidate): number {
-  if (a.mtimeMs !== b.mtimeMs) return b.mtimeMs - a.mtimeMs;
-  return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
-}
-
-function newestCandidatePaths(files: RecentFileCandidate[]): string[] {
-  return files
-    .sort(compareRecentFileCandidates)
-    .slice(0, LOCAL_COST_SCAN_MAX_FILES)
-    .map((file) => file.path);
-}
-
-function textFromSqliteValue(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (value instanceof Uint8Array) return Buffer.from(value).toString("utf8");
-  if (value == null) return "";
-  return String(value);
-}
-
-function loadUsageSqliteConstructor(): UsageSqliteConstructor | null {
-  if (usageSqliteConstructor !== undefined) return usageSqliteConstructor;
-  try {
-    const sqlite = requireForUsageSqlite("node:sqlite") as { DatabaseSync?: UsageSqliteConstructor };
-    usageSqliteConstructor = sqlite.DatabaseSync ?? null;
-  } catch {
-    usageSqliteConstructor = null;
-  }
-  return usageSqliteConstructor;
-}
-
-function openReadonlyUsageDatabase(dbPath: string): UsageSqliteDatabase | null {
-  // No file is no ledger — the same on every machine reading this directory.
-  if (!fs.existsSync(dbPath)) return null;
-  const DatabaseSync = loadUsageSqliteConstructor();
-  // From here on the ledger exists and we failed to read it: a locked database,
-  // a runtime without SQLite. Whatever it holds is content this round missed.
-  if (!DatabaseSync) {
-    markLedgerScanIncomplete();
-    return null;
-  }
-  try {
-    const db = new DatabaseSync(dbPath, { readOnly: true });
-    try {
-      db.exec?.("PRAGMA busy_timeout = 1000");
-    } catch {
-      // Best-effort only; read-only scans should still work without it.
-    }
-    return db;
-  } catch {
-    markLedgerScanIncomplete();
-    return null;
-  }
-}
-
-function usageSqliteAll<T extends Record<string, unknown>>(
-  db: UsageSqliteDatabase,
-  sql: string,
-  params: SqlValue[] = [],
-): T[] {
-  return db.prepare(sql).all(...params) as T[];
 }
 
 function claudeCacheCreationTokens(usage: Record<string, unknown>): { total: number; oneHour: number } {
@@ -449,6 +271,11 @@ export async function scanClaudeLogs(projectDirsOverride?: string[]): Promise<To
           messageOrder.push(dedupeKey);
         }
 
+        const requestInputTokens = typeof usage.input_tokens === "number" ? usage.input_tokens : 0;
+        const requestCachedTokens = typeof usage.cache_read_input_tokens === "number"
+          ? usage.cache_read_input_tokens
+          : typeof usage.cached_tokens === "number" ? usage.cached_tokens : 0;
+        const requestContextTokens = requestInputTokens + requestCachedTokens + cacheCreation.total;
         lastEntryByMessageId.set(dedupeKey, {
           messageId: dedupeKey,
           model,
@@ -460,14 +287,16 @@ export async function scanClaudeLogs(projectDirsOverride?: string[]): Promise<To
             (projectPath && isAdeWorktreePath(projectPath))
             || sourceProjectKey.includes("--ade-worktrees-"),
           ),
-          inputTokens: typeof usage.input_tokens === "number" ? usage.input_tokens : 0,
+          inputTokens: requestInputTokens,
           outputTokens: typeof usage.output_tokens === "number" ? usage.output_tokens : 0,
-          cachedTokens: typeof usage.cache_read_input_tokens === "number"
-            ? usage.cache_read_input_tokens
-            : typeof usage.cached_tokens === "number" ? usage.cached_tokens : 0,
+          cachedTokens: requestCachedTokens,
           cacheWriteTokens: cacheCreation.total,
           oneHourCacheWriteTokens: cacheCreation.oneHour,
           webSearchRequests,
+          // One Claude JSONL record is one API request, so its input side is
+          // that request's context (Anthropic is flat-priced today; the field
+          // keeps tier pricing correct if that changes).
+          ...(requestContextTokens > 0 ? { requestContextTokens } : {}),
           timestamp,
         });
       }
@@ -517,7 +346,7 @@ export function scanCodexLogs(
   let current!: CodexLogScanInFlight;
   current = {
     state,
-    promise: ledgerScanCompleteness.run(state, () => scanCodexLogsOnce(options)).finally(() => {
+    promise: runInLedgerScan(state, () => scanCodexLogsOnce(options)).finally(() => {
       if (codexLogScanInFlight === current) codexLogScanInFlight = null;
     }),
   };
@@ -640,9 +469,15 @@ async function scanCodexLogsOnce(
           let rawInputTokens = 0;
           let cachedTokens = 0;
           let outputTokens = 0;
+          // `last_token_usage` is ONE model response, so its input (which
+          // includes the cached part) is that request's context and picks the
+          // long-context tier. A delta between cumulative totals can span
+          // several responses and must be priced at the base rate.
+          let requestContextTokens: number | undefined;
 
           if (lastUsage) {
             rawInputTokens = numberFromRecord(lastUsage, "input_tokens");
+            requestContextTokens = rawInputTokens > 0 ? rawInputTokens : undefined;
             cachedTokens = numberFromRecord(lastUsage, "cached_input_tokens", "cache_read_input_tokens");
             outputTokens = numberFromRecord(lastUsage, "output_tokens");
           } else if (cumulativeTotal > 0 && totalUsage) {
@@ -668,8 +503,8 @@ async function scanCodexLogsOnce(
           rawInputTokens = Math.max(0, rawInputTokens);
           cachedTokens = Math.max(0, cachedTokens);
           outputTokens = Math.max(0, outputTokens);
-          // Codex counts reasoning INSIDE `output_tokens`, unlike Droid,
-          // Gemini and OpenCode which report it as a sibling field. Verified
+          // Codex counts reasoning INSIDE `output_tokens`, unlike Gemini and
+          // OpenCode which report it as a sibling field. Verified
           // against 46,398 real `last_token_usage` records: 46,010 satisfy
           // `total == input + output`, none satisfy
           // `total == input + output + reasoning`, and `reasoning > output`
@@ -719,6 +554,7 @@ async function scanCodexLogsOnce(
             originator: sessionOriginator,
             ...(sessionProjectPath ? { projectPath: sessionProjectPath } : {}),
             adeOriginated: sessionOriginator.trim().toLowerCase().startsWith("ade"),
+            ...(requestContextTokens ? { requestContextTokens } : {}),
             inputTokens,
             billableInputTokens,
             outputTokens,
@@ -856,7 +692,7 @@ export async function scanOpenClawLogs(agentRoots = defaultOpenClawAgentRoots())
         if (inputTokens + outputTokens + cachedTokens + cacheWriteTokens === 0) continue;
 
         const timestamp = timestampMsFromValue(record.timestamp ?? sessionTimestamp);
-        const cost = isRecord(usage.cost) ? optionalNumber(usage.cost.total) : null;
+        const cost = isRecord(usage.cost) ? finiteNumberOrNull(usage.cost.total) : null;
         const model = typeof message.model === "string" && message.model.trim()
           ? message.model
           : currentModel;
@@ -975,14 +811,12 @@ export async function scanDroidLogs(sessionsDir = defaultDroidSessionsDir()): Pr
       const totalOutput = numberFromRecord(tokenUsage, "outputTokens");
       const totalCacheWrite = numberFromRecord(tokenUsage, "cacheCreationTokens");
       const totalCacheRead = numberFromRecord(tokenUsage, "cacheReadTokens");
-      const totalThinking = numberFromRecord(tokenUsage, "thinkingTokens");
-      if (totalInput + totalOutput + totalCacheWrite + totalCacheRead + totalThinking === 0) continue;
+      if (totalInput + totalOutput + totalCacheWrite + totalCacheRead === 0) continue;
 
       const inputPerCall = Math.floor(totalInput / assistantCalls.length);
       const outputPerCall = Math.floor(totalOutput / assistantCalls.length);
       const cacheWritePerCall = Math.floor(totalCacheWrite / assistantCalls.length);
       const cacheReadPerCall = Math.floor(totalCacheRead / assistantCalls.length);
-      const thinkingPerCall = Math.floor(totalThinking / assistantCalls.length);
 
       for (let i = 0; i < assistantCalls.length; i++) {
         const call = assistantCalls[i]!;
@@ -990,18 +824,16 @@ export async function scanDroidLogs(sessionsDir = defaultDroidSessionsDir()): Pr
         const dedupeKey = `droid:${sessionId}:${call.id}`;
         if (seen.has(dedupeKey)) continue;
         seen.add(dedupeKey);
-        // Reasoning ("thinking") tokens bill at the output rate but are not
-        // output: keep them out of the displayed output count and fold them in
-        // only through `billableOutputTokens`, which is all `calculateTokenEntryCost`
-        // reads.
+        // Droid's `thinkingTokens` are already inside `outputTokens`: none of
+        // 920 local sessions has thinking above output (largest ratio 0.83), so
+        // output alone is the billable figure and thinking is never added.
         const callOutputTokens = isLast ? totalOutput - outputPerCall * i : outputPerCall;
-        const callThinkingTokens = isLast ? totalThinking - thinkingPerCall * i : thinkingPerCall;
         entries.push({
           messageId: dedupeKey,
           model,
           inputTokens: isLast ? totalInput - inputPerCall * i : inputPerCall,
           outputTokens: callOutputTokens,
-          billableOutputTokens: callOutputTokens + callThinkingTokens,
+          billableOutputTokens: callOutputTokens,
           cachedTokens: isLast ? totalCacheRead - cacheReadPerCall * i : cacheReadPerCall,
           billableCachedTokens: isLast ? totalCacheRead - cacheReadPerCall * i : cacheReadPerCall,
           cacheWriteTokens: isLast ? totalCacheWrite - cacheWritePerCall * i : cacheWritePerCall,
@@ -1021,7 +853,30 @@ export async function scanDroidLogs(sessionsDir = defaultDroidSessionsDir()): Pr
 }
 
 function defaultCopilotSessionStateDir(): string {
-  return path.join(os.homedir(), ".copilot", "session-state");
+  return path.join(copilotConfigHome(), "session-state");
+}
+
+/**
+ * Copilot CLI's SQLite usage store for the Copilot home that holds
+ * `sessionStateDir`. Both come from the same home, so a caller that points the
+ * event scan at a fixture home (as the tests do) reads the fixture's store and
+ * never the developer's real one. For the default `session-state/` this is
+ * exactly `copilotSessionStorePath()`, the path the live chat ledger reads.
+ */
+function copilotSessionStoreDbPathFor(sessionStateDir: string): string {
+  return copilotSessionStorePath({ env: { COPILOT_HOME: path.dirname(sessionStateDir) } });
+}
+
+/**
+ * The session id a Copilot transcript belongs to. Shared by the event parser and
+ * the scan-level dedupe so a DB row and its event-log twin resolve to the same
+ * key: a 36-character basename is the session id (VS Code writes
+ * `<sessionId>.jsonl`), otherwise the containing directory is (`session-state/
+ * <sessionId>/events.jsonl`).
+ */
+function copilotSessionIdForPath(sourcePath: string): string {
+  const base = path.basename(sourcePath, ".jsonl");
+  return base.length === 36 ? base : path.basename(path.dirname(sourcePath));
 }
 
 function defaultVSCodeWorkspaceStorageDirs(): string[] {
@@ -1091,9 +946,7 @@ export function parseCopilotEvents(raw: string, sourcePath: string, fallbackProj
     return fallbackProjectPath?.trim() ?? "";
   })();
   const isTranscript = first?.type === "session.start" && isRecord(first.data) && first.data.producer === "copilot-agent";
-  const sessionId = path.basename(sourcePath, ".jsonl").length === 36
-    ? path.basename(sourcePath, ".jsonl")
-    : path.basename(path.dirname(sourcePath));
+  const sessionId = copilotSessionIdForPath(sourcePath);
   let currentModel = "";
   let pendingUserMessage = "";
 
@@ -1254,26 +1107,22 @@ async function discoverCopilotTranscriptFiles(
 export async function scanCopilotLogs(
   sessionStateDir = defaultCopilotSessionStateDir(),
   workspaceStorageDirs = defaultVSCodeWorkspaceStorageDirs(),
+  sessionStoreDbPath = copilotSessionStoreDbPathFor(sessionStateDir),
 ): Promise<TokenEntry[]> {
-  const entries: TokenEntry[] = [];
-  const seen = new Set<string>();
+  // Copilot CLI's SQLite store holds measured token counts for requests the
+  // `session-state` event log only approximates. Every store row counts, and an
+  // event-log entry is dropped when a row of its session covers the same
+  // request, so no request is counted from both sources: the measured row wins.
+  const store = await scanCopilotCliRows(sessionStoreDbPath);
   const { paths, projectPathByFile } = await discoverCopilotTranscriptFiles(sessionStateDir, workspaceStorageDirs);
-  for (const filePath of paths) {
-    try {
-      const raw = await fs.promises.readFile(filePath, "utf8");
-      for (const entry of parseCopilotEvents(raw, filePath, projectPathByFile.get(filePath))) {
-        if (entry.inputTokens + entry.outputTokens + entry.cachedTokens + toNonNegativeInt(entry.cacheWriteTokens) === 0) continue;
-        if (seen.has(entry.messageId)) continue;
-        seen.add(entry.messageId);
-        entries.push(entry);
-        if (entries.length >= LOCAL_COST_SCAN_MAX_ENTRIES) return entries;
-      }
-    } catch {
-      // Skip unreadable Copilot logs.
-      markLedgerScanIncomplete();
-    }
-  }
-  return entries;
+  const eventEntries = await collectLedgerEntries(paths, (raw, filePath) => {
+    const parsed = parseCopilotEvents(raw, filePath, projectPathByFile.get(filePath));
+    const requestTimes = store.requestTimesBySession.get(copilotSessionIdForPath(filePath)) ?? [];
+    return copilotEventsNotInStore(parsed, requestTimes).filter((entry) => (
+      entry.inputTokens + entry.outputTokens + entry.cachedTokens + toNonNegativeInt(entry.cacheWriteTokens) > 0
+    ));
+  });
+  return [...store.entries, ...eventEntries].slice(0, LOCAL_COST_SCAN_MAX_ENTRIES);
 }
 
 function defaultGeminiTmpDir(): string {
@@ -1408,24 +1257,8 @@ async function discoverGeminiSessionFiles(
 }
 
 export async function scanGeminiLogs(tmpDir = defaultGeminiTmpDir()): Promise<TokenEntry[]> {
-  const entries: TokenEntry[] = [];
-  const seen = new Set<string>();
   const { paths, projectPathByFile } = await discoverGeminiSessionFiles(tmpDir);
-  for (const filePath of paths) {
-    try {
-      const raw = await fs.promises.readFile(filePath, "utf8");
-      for (const entry of parseGeminiEntries(raw, filePath, projectPathByFile.get(filePath))) {
-        if (seen.has(entry.messageId)) continue;
-        seen.add(entry.messageId);
-        entries.push(entry);
-        if (entries.length >= LOCAL_COST_SCAN_MAX_ENTRIES) return entries;
-      }
-    } catch {
-      // Skip unreadable Gemini logs.
-      markLedgerScanIncomplete();
-    }
-  }
-  return entries;
+  return collectLedgerEntries(paths, (raw, filePath) => parseGeminiEntries(raw, filePath, projectPathByFile.get(filePath)));
 }
 
 function defaultOpenCodeDataDir(): string {
@@ -1496,7 +1329,7 @@ export async function scanOpenCodeLogs(dataDir = defaultOpenCodeDataDir()): Prom
         const reasoningTokens = numberFromRecord(tokens, "reasoning");
         const cachedTokens = numberFromRecord(cache, "read");
         const cacheWriteTokens = numberFromRecord(cache, "write");
-        const cost = optionalNumber(data.cost);
+        const cost = finiteNumberOrNull(data.cost);
         if (inputTokens + outputTokens + reasoningTokens + cachedTokens + cacheWriteTokens === 0 && !(cost && cost > 0)) continue;
 
         const sessionId = typeof row.sessionId === "string" && row.sessionId ? row.sessionId : "unknown";
@@ -1771,73 +1604,6 @@ export async function scanCursorAgentLogs(projectsDir = path.join(os.homedir(), 
   return entries;
 }
 
-export async function findRecentFiles(
-  dir: string,
-  maxAgeDays: number,
-  suffixes: string[],
-  options: { maxFiles?: number; maxFileBytes?: number; maxTotalBytes?: number } = {},
-): Promise<string[]> {
-  const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
-  const maxFiles = Math.max(1, Math.floor(options.maxFiles ?? LOCAL_COST_SCAN_MAX_FILES));
-  const maxFileBytes = Math.max(1, Math.floor(options.maxFileBytes ?? LOCAL_COST_SCAN_MAX_FILE_BYTES));
-  const maxTotalBytes = options.maxTotalBytes !== undefined && Number.isFinite(options.maxTotalBytes)
-    ? Math.max(1, Math.floor(options.maxTotalBytes))
-    : Number.POSITIVE_INFINITY;
-  const files: Array<{ path: string; mtimeMs: number; size: number }> = [];
-
-  async function walk(current: string, depth: number) {
-    if (depth > 6) return; // Prevent deep traversal
-    try {
-      const entries = await fs.promises.readdir(current, { withFileTypes: true });
-      const dirPromises: Promise<void>[] = [];
-      const fileStatPromises: Promise<void>[] = [];
-      for (const entry of entries) {
-        const fullPath = path.join(current, entry.name);
-        if (entry.isDirectory()) {
-          dirPromises.push(walk(fullPath, depth + 1));
-        } else if (suffixes.some((suffix) => entry.name.endsWith(suffix))) {
-          fileStatPromises.push(
-            fs.promises.stat(fullPath).then((stat) => {
-              if (stat.mtimeMs >= cutoff && stat.size <= maxFileBytes) {
-                files.push({ path: fullPath, mtimeMs: stat.mtimeMs, size: stat.size });
-              }
-            }).catch((error: unknown) => {
-              // Skip files we can't stat
-              markLedgerScanIncompleteUnlessMissing(error);
-            })
-          );
-        }
-      }
-      await Promise.all([...dirPromises, ...fileStatPromises]);
-    } catch (error) {
-      // Skip directories we can't read
-      markLedgerScanIncompleteUnlessMissing(error);
-    }
-  }
-
-  await walk(dir, 0);
-  const selected: string[] = [];
-  let selectedBytes = 0;
-  // Same determinism requirement as `newestCandidatePaths`: with a byte budget
-  // and a file cap, mtime ties decided by readdir order make the retained set
-  // machine-dependent on a shared filesystem.
-  for (const file of files.sort(compareRecentFileCandidates)) {
-    if (selected.length >= maxFiles) break;
-    if (selectedBytes + file.size > maxTotalBytes) continue;
-    selected.push(file.path);
-    selectedBytes += file.size;
-  }
-  return selected;
-}
-
-export async function findJsonlFiles(
-  dir: string,
-  maxAgeDays: number,
-  options: { maxFiles?: number; maxFileBytes?: number; maxTotalBytes?: number } = {},
-): Promise<string[]> {
-  return findRecentFiles(dir, maxAgeDays, [".jsonl"], options);
-}
-
 async function findClaudeJsonlFilesInProjectDirs(projectDirs: string[], maxAgeDays: number): Promise<string[]> {
   const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
   const files = new Map<string, { path: string; mtimeMs: number }>();
@@ -1914,7 +1680,8 @@ async function findClaudeJsonlFilesInProjectDirs(projectDirs: string[], maxAgeDa
 }
 
 /**
- * Where each provider keeps the transcripts this file reads.
+ * Where each provider keeps the transcripts the history scanners read (this
+ * file's and `acpProviderLedgers.ts`'s).
  *
  * Only ever consulted for existence, and only to answer one question: a scan
  * that returned nothing — was there nothing to read, or did we fail to read it?
@@ -1941,8 +1708,15 @@ export function usageLedgerTranscriptRoots(): Record<string, string[]> {
     openclaw: defaultOpenClawAgentRoots(),
     opencode: [defaultOpenCodeDataDir()],
     droid: [defaultDroidSessionsDir()],
-    copilot: [defaultCopilotSessionStateDir(), ...defaultVSCodeWorkspaceStorageDirs()],
+    copilot: [
+      defaultCopilotSessionStateDir(),
+      ...defaultVSCodeWorkspaceStorageDirs(),
+      copilotSessionStorePath(),
+    ],
     gemini: [defaultGeminiTmpDir()],
+    pi: [piSessionRootForEnvironment()],
+    qwen: [qwenUsageDir()],
+    grok: [grokSessionsDir()],
   };
 }
 
@@ -1971,58 +1745,4 @@ export function usageLedgerTranscriptRootExists(
       return true;
     }
   });
-}
-
-async function* readJsonlLines(
-  filePath: string,
-  maxLineBytes = LOCAL_JSONL_MAX_LINE_BYTES,
-): AsyncGenerator<string> {
-  const normalizedMaxLineBytes = Number.isFinite(maxLineBytes)
-    ? Math.max(1, Math.floor(maxLineBytes))
-    : LOCAL_JSONL_MAX_LINE_BYTES;
-  const stream = fs.createReadStream(filePath);
-  let lineChunks: Buffer[] = [];
-  let lineBytes = 0;
-  let discardingOversizedLine = false;
-
-  const takeLine = (): string => {
-    const line = lineChunks.length === 1
-      ? lineChunks[0]!
-      : Buffer.concat(lineChunks, lineBytes);
-    const content = line[line.length - 1] === 0x0d ? line.subarray(0, -1) : line;
-    return content.toString("utf8");
-  };
-
-  try {
-    for await (const chunk of stream) {
-      let start = 0;
-      while (start < chunk.length) {
-        const newline = chunk.indexOf(0x0a, start);
-        const end = newline >= 0 ? newline : chunk.length;
-
-        if (!discardingOversizedLine) {
-          const segment = chunk.subarray(start, end);
-          if (lineBytes + segment.length <= normalizedMaxLineBytes) {
-            lineChunks.push(segment);
-            lineBytes += segment.length;
-          } else {
-            lineChunks = [];
-            lineBytes = 0;
-            discardingOversizedLine = true;
-          }
-        }
-
-        if (newline < 0) break;
-        if (!discardingOversizedLine) yield takeLine();
-        lineChunks = [];
-        lineBytes = 0;
-        discardingOversizedLine = false;
-        start = newline + 1;
-      }
-    }
-
-    if (!discardingOversizedLine && lineBytes > 0) yield takeLine();
-  } finally {
-    stream.destroy();
-  }
 }

@@ -2,7 +2,40 @@ import fs from "node:fs";
 import path from "node:path";
 import { buildAdeRuntimeSocketEnv } from "../../../shared/adeCliGuidance";
 
-const PI_STANDARD_ENVIRONMENT_KEYS = [
+/**
+ * The environment keys the Pi worker classifies a turn's account from, by Pi
+ * provider. It mirrors pi-ai's own provider-to-variable map
+ * (`getApiKeyEnvVars` in `@earendil-works/pi-ai` 0.84 `env-api-keys.js`), so a
+ * variable counts only for the provider Pi itself reads it for, limited to
+ * the keys the worker already receives (see `PI_STANDARD_ENVIRONMENT_KEYS`).
+ * Usage telemetry never widens what Pi can authenticate with, so a provider
+ * whose key ADE does not pass through (Copilot's `COPILOT_GITHUB_TOKEN`,
+ * `ANTHROPIC_OAUTH_TOKEN`, the `-cn` variants) is simply absent: its turns
+ * read as an unknown account, never as a new login.
+ */
+export const PI_PROVIDER_ENV_KEYS: Readonly<Record<string, readonly string[]>> = {
+  anthropic: ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"],
+  openai: ["OPENAI_API_KEY"],
+  deepseek: ["DEEPSEEK_API_KEY"],
+  google: ["GEMINI_API_KEY"],
+  groq: ["GROQ_API_KEY"],
+  cerebras: ["CEREBRAS_API_KEY"],
+  xai: ["XAI_API_KEY"],
+  openrouter: ["OPENROUTER_API_KEY"],
+  zai: ["ZAI_API_KEY"],
+  mistral: ["MISTRAL_API_KEY"],
+  minimax: ["MINIMAX_API_KEY"],
+  moonshotai: ["MOONSHOT_API_KEY"],
+  "moonshotai-cn": ["MOONSHOT_API_KEY"],
+  together: ["TOGETHER_API_KEY"],
+};
+
+/** True when the provider's API key variable is set (non-blank) in `env`. */
+export function piProviderHasEnvKey(providerId: string, env: NodeJS.ProcessEnv): boolean {
+  return (PI_PROVIDER_ENV_KEYS[providerId] ?? []).some((key) => Boolean(env[key]?.trim()));
+}
+
+const PI_STANDARD_ENVIRONMENT_KEYS: readonly string[] = [
   "PATH", "Path", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA",
   "TEMP", "TMP", "TMPDIR", "SystemRoot", "ComSpec", "COMSPEC", "OS", "PATHEXT",
   "LANG", "LC_ALL", "LC_CTYPE", "TERM", "COLORTERM",
@@ -14,7 +47,7 @@ const PI_STANDARD_ENVIRONMENT_KEYS = [
   "TOGETHER_API_KEY", "OPENROUTER_API_KEY", "CEREBRAS_API_KEY", "PERPLEXITY_API_KEY",
   "COHERE_API_KEY", "MINIMAX_API_KEY", "MOONSHOT_API_KEY", "ZAI_API_KEY",
   "OLLAMA_API_KEY", "LM_STUDIO_API_KEY", "GITHUB_TOKEN", "GH_TOKEN",
-] as const;
+];
 
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 

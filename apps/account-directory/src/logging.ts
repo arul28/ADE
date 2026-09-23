@@ -111,6 +111,48 @@ export function logDiagnosticsUpload(args: {
   }));
 }
 
+/**
+ * One line per usage-research request, stored or refused.
+ *
+ * Deliberately the smallest line in this file: outcome, status, a reason on the
+ * refusal paths, and the report's byte count. No install id, no identity hash, no day,
+ * and never a byte of the report — the table already holds the data, and a log
+ * line that could be joined back to a row would make the logs a second copy of
+ * it with a longer retention than the one the owner chose.
+ */
+export function logUsageResearchUpload(args: {
+  outcome: "inserted" | "replaced" | "unchanged" | "rejected";
+  status: number;
+  reason?: string;
+  bytes: number;
+}): void {
+  console.log(JSON.stringify({
+    ts: new Date().toISOString(),
+    svc: SERVICE,
+    kind: "usage_research_upload",
+    outcome: args.outcome,
+    status: args.status,
+    ...(args.reason ? { reason: args.reason } : {}),
+    bytes: args.bytes,
+  }));
+}
+
+/**
+ * One line per cron cleanup that threw. Each cleanup is guarded on its own, so
+ * one failing table does not take the others' sweep down with it, and this
+ * line is how a sweep that keeps failing gets noticed.
+ */
+export function logScheduledCleanupFailure(args: { task: string; error: unknown }): void {
+  const reason = args.error instanceof Error ? args.error.message : String(args.error);
+  console.error(JSON.stringify({
+    ts: new Date().toISOString(),
+    svc: SERVICE,
+    kind: "scheduled_cleanup_failed",
+    task: args.task,
+    reason: reason.slice(0, 300),
+  }));
+}
+
 export function logDirectoryLifecycle(args: {
   correlationId: string;
   /** The matched account route's kind, or null for anything else. */
