@@ -2293,38 +2293,52 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
         requireNonEmptyString(args?.agentId, "agentId"),
       ),
     getDevinCloudAuthStatus: () => aiIntegrationService.getDevinCloudAuthStatus(),
-    setDevinCloudCredentials: (args?: { apiKey?: string; orgId?: string | null }) =>
-      aiIntegrationService.setDevinCloudCredentials({
+    setDevinCloudCredentials: async (args?: { apiKey?: string; orgId?: string | null }) => {
+      const status = await aiIntegrationService.setDevinCloudCredentials({
         apiKey: args?.apiKey ?? "",
         ...(args?.orgId !== undefined ? { orgId: args.orgId } : {}),
-      }),
+      });
+      runtime.devinCloudFleetService?.invalidateCache();
+      return status;
+    },
     getDevinCloudFleet: (args?: { force?: boolean; includeArchived?: boolean }) =>
       requireService(runtime.devinCloudFleetService, "Devin Cloud fleet not available.").getFleet({
         includeArchived: args?.includeArchived === true,
         ...(args?.force !== undefined ? { force: args.force } : {}),
       }),
-    pullDevinCloudSessionIntoLane: (args?: { devinSessionId?: string }) =>
-      requireService(runtime.devinCloudFleetService, "Devin Cloud fleet not available.").pullIntoLane(
+    pullDevinCloudSessionIntoLane: async (args?: { devinSessionId?: string }) => {
+      const result = await requireService(runtime.devinCloudFleetService, "Devin Cloud fleet not available.").pullIntoLane(
         requireNonEmptyString(args?.devinSessionId, "devinSessionId"),
-      ),
-    terminateDevinCloudSession: (args?: { devinSessionId?: string; archive?: boolean }) =>
-      aiIntegrationService.terminateDevinCloudSession({
+      );
+      runtime.devinCloudFleetService?.invalidateCache();
+      return result;
+    },
+    terminateDevinCloudSession: async (args?: { devinSessionId?: string; archive?: boolean }) => {
+      await aiIntegrationService.terminateDevinCloudSession({
         devinSessionId: requireNonEmptyString(args?.devinSessionId, "devinSessionId"),
         ...(args?.archive !== undefined ? { archive: args.archive } : {}),
-      }),
-    archiveDevinCloudSession: (args?: { devinSessionId?: string }) =>
-      aiIntegrationService.archiveDevinCloudSession(
+      });
+      runtime.devinCloudFleetService?.invalidateCache();
+    },
+    archiveDevinCloudSession: async (args?: { devinSessionId?: string }) => {
+      await aiIntegrationService.archiveDevinCloudSession(
         requireNonEmptyString(args?.devinSessionId, "devinSessionId"),
-      ),
-    unarchiveDevinCloudSession: (args?: { devinSessionId?: string }) =>
-      aiIntegrationService.unarchiveDevinCloudSession(
+      );
+      runtime.devinCloudFleetService?.invalidateCache();
+    },
+    unarchiveDevinCloudSession: async (args?: { devinSessionId?: string }) => {
+      await aiIntegrationService.unarchiveDevinCloudSession(
         requireNonEmptyString(args?.devinSessionId, "devinSessionId"),
-      ),
-    devinCloudFollowUp: (args?: { devinSessionId?: string; message?: string }) =>
-      requireService(runtime.agentChatService, "Agent chat service not available.").devinCloudFollowUp({
+      );
+      runtime.devinCloudFleetService?.invalidateCache();
+    },
+    devinCloudFollowUp: async (args?: { devinSessionId?: string; message?: string }) => {
+      await requireService(runtime.agentChatService, "Agent chat service not available.").devinCloudFollowUp({
         devinSessionId: requireNonEmptyString(args?.devinSessionId, "devinSessionId"),
         message: requireNonEmptyString(args?.message, "message"),
-      }),
+      });
+      runtime.devinCloudFleetService?.invalidateCache();
+    },
     openDevinCloudChat: (args?: {
       devinSessionId?: string;
       laneId?: string;
@@ -2365,6 +2379,9 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
         ...(args?.projectId ? { projectId: args.projectId } : {}),
         ...(args?.platform !== undefined ? { platform: args.platform } : {}),
         ...(args?.bypassApproval !== undefined ? { bypassApproval: args.bypassApproval } : {}),
+      }).then((result) => {
+        runtime.devinCloudFleetService?.invalidateCache();
+        return result;
       }),
   };
 }

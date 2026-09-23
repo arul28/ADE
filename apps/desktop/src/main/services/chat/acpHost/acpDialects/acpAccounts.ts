@@ -8,13 +8,12 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import type { AgentChatUsageAccount } from "../../../../../shared/types";
 import { loopbackOrigin } from "../../../../../shared/remoteLoopbackUrl";
 import { parseQwenUserSettings } from "../../../ai/qwenUserSettings";
 import { resolveKimiCodeLogin } from "../../../shared/kimiCodeLogin";
-import { grokConfigHome, qwenConfigHome } from "../../../shared/providerConfigHomes";
+import { devinCredentialFiles, grokConfigHome, qwenConfigHome } from "../../../shared/providerConfigHomes";
 import { asRecord, toOptionalString } from "../../../shared/utils";
 
 function readText(filePath: string): string | null {
@@ -82,10 +81,7 @@ export function readKimiAccount({ env }: { env: NodeJS.ProcessEnv }): AgentChatU
  * API-key path.
  */
 export function readDevinAccount({ env }: { env: NodeJS.ProcessEnv }): AgentChatUsageAccount {
-  const dataHome = env.XDG_DATA_HOME?.trim().length
-    ? env.XDG_DATA_HOME.trim()
-    : path.join(os.homedir(), ".local", "share");
-  if (existsSync(path.join(dataHome, "devin", "credentials.toml"))) {
+  if (devinCredentialFiles({ env }).some((file) => existsSync(file))) {
     return { provider: "devin", kind: "subscription" };
   }
   if (hasEnv(env, "WINDSURF_API_KEY")) return { provider: "devin", kind: "api_key" };

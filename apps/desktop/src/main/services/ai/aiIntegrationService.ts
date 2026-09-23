@@ -2316,7 +2316,7 @@ export function createAiIntegrationService(args: {
           // detectAuth -> detectAllAuth already called detectCliAuthStatuses() and
           // populated the cache, so this reads instantly from cache:
           const cliStatuses = timeSyncPhase("read_cli_auth_cache", () => getCachedCliAuthStatuses());
-          const installedAcp = ( ["qwen", "kimi", "grok", "copilot"] as const)
+          const installedAcp = ( ["qwen", "kimi", "grok", "copilot", "devin"] as const)
             .filter((provider) => cliStatuses.some((status) => status.cli === provider && status.installed));
           // The disk heuristic proves only that a provider left credentials on
           // disk. A forced Settings refresh must wait for the ACP handshake so
@@ -2332,7 +2332,7 @@ export function createAiIntegrationService(args: {
               }))
             : {};
           const runtimeReadyAcpProviders = new Set<string>();
-          for (const provider of ["qwen", "kimi", "grok", "copilot"] as const) {
+          for (const provider of ["qwen", "kimi", "grok", "copilot", "devin"] as const) {
             const probe = acpProbeResults[provider];
             const health = getProviderRuntimeHealth(provider);
             if (probe?.state === "ready" || health?.state === "ready") {
@@ -2346,7 +2346,7 @@ export function createAiIntegrationService(args: {
             const cli = cliStatuses.find((status) => status.cli === provider);
             authForModels.push({
               type: "cli-subscription",
-              cli: provider as "qwen" | "kimi" | "grok" | "copilot",
+              cli: provider as "qwen" | "kimi" | "grok" | "copilot" | "devin",
               path: cli?.path ?? provider,
               authenticated: true,
               verified: true,

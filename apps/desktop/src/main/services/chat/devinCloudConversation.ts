@@ -53,8 +53,9 @@ export const DEVIN_CLOUD_REMOTE_MESSAGE_ID_PREFIX = "devin:";
  * carries for a user message this host emitted, else null. Call only for
  * remote `source: "user"` rows — agent output dedupes on event id, never
  * text, so repeated identical Devin messages still print. The return is the
- * LOCAL key, not the remote candidate — fuzzy suffix matches differ, and
- * persisting the remote text would fail to retire the local echo on rebuild.
+ * LOCAL key, not the remote candidate — a remote row whose text differs by
+ * appended delivery lines is still the same send, but persisting the remote
+ * text would fail to retire the local echo on rebuild.
  */
 export function consumeDevinEchoFingerprint(
   echoes: Map<string, number>,
@@ -67,15 +68,20 @@ export function consumeDevinEchoFingerprint(
     return key;
   };
   if (echoes.has(candidate)) return claim(candidate);
+  // A local send's remote copy can only differ by lines ADE appended itself —
+  // `Image URL:` hints and v1 `ATTACHMENT:` delivery lines. Strip exactly
+  // those and compare again: any other divergence means the remote row is a
+  // distinct message, not this host's echo.
   const [kind, ...rest] = candidate.split(":");
   const value = rest.join(":");
   if (!value) return null;
-  for (const existing of echoes.keys()) {
-    if (!existing.startsWith(`${kind}:`)) continue;
-    const known = existing.slice(kind.length + 1);
-    if (value === known || value.endsWith(known) || known.endsWith(value)) {
-      return claim(existing);
-    }
+  const stripped = value
+    .split("\n")
+    .filter((line) => !/^(?:Image URL: |ATTACHMENT:)/.test(line.trimStart()))
+    .join("\n")
+    .trim();
+  if (stripped !== value.trim() && echoes.has(`${kind}:${stripped}`)) {
+    return claim(`${kind}:${stripped}`);
   }
   return null;
 }

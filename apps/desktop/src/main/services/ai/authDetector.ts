@@ -4,7 +4,7 @@
 
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { homedir, platform } from "node:os";
+import { homedir } from "node:os";
 import { spawnAsync } from "../shared/utils";
 import {
   augmentProcessPathWithShellAndKnownCliDirs,
@@ -17,7 +17,7 @@ import type { AiLocalProviderConfigs } from "../../../shared/types";
 import { inspectLocalProvider, clearLocalProviderInspectionCache } from "./localModelDiscovery";
 import { resolveDroidExecutable } from "./droidExecutable";
 import { loadQwenUserSettings } from "./qwenUserSettings";
-import { grokConfigHome } from "../shared/providerConfigHomes";
+import { devinCredentialFiles, grokConfigHome } from "../shared/providerConfigHomes";
 import {
   reportProviderRuntimeAuthFailure,
   reportProviderRuntimeFailure,
@@ -169,16 +169,12 @@ async function inspectAcpCliCredentials(
   }
 
   if (cli === "devin") {
-    // Devin reads WINDSURF_API_KEY first, then stored creds under
-    // ~/.config/devin (%APPDATA%\devin on Windows). There is no config-home
-    // env override, so probe the fixed location.
+    // Devin reads WINDSURF_API_KEY first, then the login `devin auth login`
+    // leaves in `credentials.toml` under the XDG data dir — the same list
+    // the ACP account reader checks.
     if (env.WINDSURF_API_KEY?.trim()) return { authenticated: true, verified: false };
-    const root = platform() === "win32"
-      ? path.join(env.APPDATA?.trim() || path.join(home, "AppData", "Roaming"), "devin")
-      : path.join(env.XDG_CONFIG_HOME?.trim() || path.join(home, ".config"), "devin");
-    const candidates = ["auth.json", "credentials.json", "credentials", "config.json"];
-    for (const name of candidates) {
-      if (await fileExists(path.join(root, name))) {
+    for (const file of devinCredentialFiles({ env, homeDir: home })) {
+      if (await fileExists(file)) {
         return { authenticated: true, verified: false };
       }
     }
