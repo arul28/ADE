@@ -106,8 +106,10 @@ extension DriverRuntime {
             try accessibility.click(element, record: record)
             return ["resolvedIndex": .int(record.index)]
         case "type":
-            let text = payload["text"]?.stringValue ?? ""
-            let (element, record) = try resolve(payload: payload)
+            let (text, target) = TypeCommand.split(payload)
+            let (element, record) = TypeCommand.hasTarget(target)
+                ? try resolve(payload: target)
+                : try accessibility.focusedElementInNewestObservation()
             try accessibility.type(
                 element,
                 record: record,
@@ -326,7 +328,7 @@ extension DriverRuntime {
             try realInput.text(
                 laneId: laneId,
                 holderId: holderId,
-                text: payload["text"]?.stringValue ?? "",
+                text: TypeCommand.split(payload).text,
                 targetPid: WindowHitTest.frontmostPid(in: hitCandidates())
             )
         default:

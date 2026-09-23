@@ -588,6 +588,23 @@ describe("macDesktopService real input and the lease", () => {
     expect(input?.payload.lease).toBeUndefined();
     service.dispose();
   });
+
+  it("sends the words to type apart from a text target's label", async () => {
+    // Both used to ride `text`: the words overwrote the label, and the driver
+    // then searched the screen for the words it was asked to type.
+    const driver = createFakeDriver();
+    const { service } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+    await service.type({ laneId: "lane-1", text: "hello", target: { text: "Search" }, chatSessionId: "chat-1" });
+    await service.type({ laneId: "lane-1", text: "again", chatSessionId: "chat-1" });
+    const inputs = driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.input);
+    const commandPayload = (call: (typeof inputs)[number]) =>
+      (call.payload.payload ?? call.payload) as Record<string, unknown>;
+    expect(commandPayload(inputs[0]!)).toMatchObject({ typeText: "hello", text: "Search" });
+    expect(commandPayload(inputs[1]!)).toMatchObject({ typeText: "again" });
+    expect(commandPayload(inputs[1]!)).not.toHaveProperty("text");
+    service.dispose();
+  });
 });
 
 describe("macDesktopService wait and the gesture gate", () => {

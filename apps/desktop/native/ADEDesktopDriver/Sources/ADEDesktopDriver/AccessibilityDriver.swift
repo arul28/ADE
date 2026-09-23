@@ -225,6 +225,29 @@ final class AccessibilityDriver {
         )
     }
 
+    /// The element the newest observation saw holding keyboard focus: where
+    /// `type` with no target goes, as a person's typing would.
+    func focusedElementInNewestObservation() throws -> (element: AXUIElement, record: ObservedElement) {
+        guard let observationId = handles.newestObservationId else {
+            throw DriverError(
+                code: DriverErrorCode.handleExpired,
+                message: "Nothing has been observed yet. Observe first, or name a target."
+            )
+        }
+        lock.lock()
+        let elements = elementsByObservation[observationId] ?? []
+        let records = recordsByObservation[observationId] ?? []
+        lock.unlock()
+        for (offset, record) in records.enumerated() where record.focused {
+            guard offset < elements.count else { continue }
+            return (elements[offset], record)
+        }
+        throw DriverError(
+            code: DriverErrorCode.invalidArgument,
+            message: "Nothing has keyboard focus in the latest observation. Name a target: a handle from observe, or --target \"<label>\"."
+        )
+    }
+
     private static func children(of element: AXUIElement) -> [AXUIElement] {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &value) == .success,

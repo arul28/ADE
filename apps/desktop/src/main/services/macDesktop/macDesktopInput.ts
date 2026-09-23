@@ -417,7 +417,10 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         action: "type",
         command: "type",
         mode,
-        payload: { ...target.payload, text: args.text, clear: args.clear === true },
+        // The words ride `typeText`, so a text target's label in `text` is not
+        // overwritten by them. The driver reads `text` as the words only when
+        // `typeText` is absent (an older service), and then never as a label.
+        payload: { ...target.payload, typeText: args.text, clear: args.clear === true },
         resolved: target.element,
         chatSessionId: args.chatSessionId ?? null,
         controllerId: args.controllerId ?? null,
