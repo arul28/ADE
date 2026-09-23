@@ -7449,6 +7449,15 @@ export function computerUseDirectiveFingerprint(directive: string): string {
 
 export function buildComputerUseDirective(
   backendStatus: ComputerUseBackendStatus | null,
+  options: {
+    /**
+     * This host can give the lane a private macOS screen (Mac Desktop). The
+     * lane need not have one yet: an agent that is never told the lane screen
+     * exists reaches for the user's real screen instead (2026-09-23 baseline:
+     * a plain "record opening Safari" quit the user's own Safari).
+     */
+    macDesktopAvailable?: boolean;
+  } = {},
 ): string | null {
   const hasExternalBackends = backendStatus
     ? backendStatus.backends.some((b) => b.available)
@@ -7475,12 +7484,27 @@ export function buildComputerUseDirective(
       "When the user asks for proof, capture visual proof first. Console logs and text files are supporting diagnostics only; do not use them as the only proof unless the user explicitly asks for logs or visual capture fails and you say so.",
       "ADE does not passively ingest computer-use output. When a capture is worth keeping as reviewer-visible proof, attach it intentionally with `ade proof ...` or `ingest_computer_use_artifacts`.",
       "",
-      "When the `mcp__computer_use` tools are present, use that direct signed Computer Use MCP surface. Start with `list_apps` or `get_app_state` as appropriate, honor its per-app approval prompts, and do not bootstrap `@oai/sky` through `node_repl` as a substitute.",
+      "The user's own screen, apps and windows are not yours to change. Never close, quit, hide, minimize or reset an app or window you did not open for this task, even to get a clean starting state — open a new window instead, or use the lane's own screen. Act on the user's real screen only when the user explicitly asks you to.",
+      options.macDesktopAvailable
+        ? "`mcp__computer_use` (and any Codex or OpenAI computer-use plugin) drives the user's real screen and apps. This lane has its own screen, so do not use it for task work; use it only when the user explicitly asks you to operate their own screen. When you do, start with `list_apps` or `get_app_state`, honor its per-app approval prompts, and do not bootstrap `@oai/sky` through `node_repl` as a substitute."
+        : "When the `mcp__computer_use` tools are present, use that direct signed Computer Use MCP surface. Start with `list_apps` or `get_app_state` as appropriate, honor its per-app approval prompts, and do not bootstrap `@oai/sky` through `node_repl` as a substitute.",
       "If `get_computer_use_backend_status` is exposed in your current tool list, call it to check available backends before attempting computer use. If it is not exposed, do not stall; use the available computer-use, browser, app-control, or ADE CLI status tools and clearly report any missing backend-status visibility.",
       "Respect the backend the user requested. If that backend is unavailable or hangs, stop and report the block instead of silently switching to a different backend.",
       "When the user asks you to send proof, register the resulting artifact with ADE via `ade proof ...` or `ingest_computer_use_artifacts` so it appears in the active proof drawer.",
     ].join("\n"),
   );
+
+  // --- Mac Desktop (this host can give the lane its own screen) ---
+  if (options.macDesktopAvailable) {
+    sections.push(
+      [
+        "### Mac Desktop — this lane's own screen (use it first)",
+        "For anything that needs a macOS app or a screen — opening an app, clicking, typing, checking a UI, recording a video — use this lane's private Mac Desktop with `ade mac-desktop`. It runs apps on a separate virtual display, so it never touches the user's screen, windows or pointer, and the user can watch it live from any of their devices. Read the **ade-desktop** skill before your first action.",
+        "The loop: `ade mac-desktop start`, `ade mac-desktop open <app or file>`, `ade mac-desktop observe`, then act on the handles it returns (`click`, `type`, `press`, `scroll`). For proof, wrap the work in `ade mac-desktop record start --caption \"<what it shows>\"` … `ade mac-desktop record stop` — a captioned recording is filed to the proof drawer — or file a still with `ade mac-desktop proof --caption \"<what>\"`.",
+        "Quit or `release` only the windows you opened on the lane screen. If `ade mac-desktop` is missing or refuses, stop and report it; do not fall back to the user's real screen.",
+      ].join("\n"),
+    );
+  }
 
   // --- Ghost OS section (only if a Ghost OS backend is detected) ---
   const ghostOsBackend = backendStatus?.backends.find(
@@ -7532,7 +7556,9 @@ export function buildComputerUseDirective(
   sections.push(
     [
       "### Proof Capture",
-      "Proof is intentional. Use `ade proof capture` for a reviewer-facing checkpoint, or `ade proof attach` / `ingest_computer_use_artifacts` for an existing screenshot, image, video, or trace. Add logs only as secondary context unless the user explicitly asks for them.",
+      options.macDesktopAvailable
+        ? "Proof is intentional. For work on the lane's Mac Desktop, record with `ade mac-desktop record` or file a still with `ade mac-desktop proof`. `ade proof capture` and `ade proof record` capture the user's whole real screen — use them only when the proof is of that screen. Use `ade proof attach` / `ingest_computer_use_artifacts` for an existing screenshot, image, video, or trace. Add logs only as secondary context unless the user explicitly asks for them."
+        : "Proof is intentional. Use `ade proof capture` for a reviewer-facing checkpoint, or `ade proof attach` / `ingest_computer_use_artifacts` for an existing screenshot, image, video, or trace. Add logs only as secondary context unless the user explicitly asks for them.",
     ].join("\n"),
   );
 
@@ -9118,7 +9144,7 @@ export function createAgentChatService(args: {
   macDesktopTurnRecorder?: Pick<
     MacDesktopRuntimeService,
     "hasDisplaySync" | "beginTurn" | "noteTurnEnded"
-  > | null;
+  > & Partial<Pick<MacDesktopRuntimeService, "supportsLaneDisplaySync">> | null;
   getAppControlService?: () => CtoOperatorToolDeps["appControlService"];
   getBuiltInBrowserService?: () => CtoOperatorToolDeps["builtInBrowserService"];
   getGitService?: () => CtoOperatorToolDeps["gitService"];
@@ -41390,7 +41416,9 @@ export function createAgentChatService(args: {
     // it is available on the next turn that re-announces.
     const computerUseDirective = personalSession
       ? null
-      : buildComputerUseDirective(computerUseArtifactBrokerRef?.getBackendStatus() ?? null);
+      : buildComputerUseDirective(computerUseArtifactBrokerRef?.getBackendStatus() ?? null, {
+        macDesktopAvailable: macDesktopTurnRecorder?.supportsLaneDisplaySync?.() === true,
+      });
     const computerUseDirectiveKey = computerUseDirective
       ? `${laneDirectiveKey ?? "no-lane"}::${computerUseDirectiveFingerprint(computerUseDirective)}`
       : null;

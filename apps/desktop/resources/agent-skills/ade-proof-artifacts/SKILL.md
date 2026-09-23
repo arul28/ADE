@@ -22,8 +22,11 @@ proof you did not file.
 ade proof attach "$TMPDIR/checkout.png" --caption "Checkout completes" --text
 ade proof list --text          # confirm the row is there
 ade proof status --text
-ade proof capture --caption "Checkout confirmation visible" --text
-ade proof record --seconds 20 --caption "Retry flow recovers" --text
+ade proof capture --caption "Checkout confirmation visible" --text     # the user's WHOLE real screen
+ade proof record --seconds 20 --caption "Retry flow recovers" --text  # the user's WHOLE real screen
+ade mac-desktop record start --caption "Note saved in TextEdit" --text # the lane's own screen
+ade mac-desktop record stop --text
+ade mac-desktop proof --caption "Preferences shows the new key" --text
 ade --socket browser proof --tab <tab-id> --caption "Verified" --text
 ade --socket browser proof --browser-session <session-id> --caption "Verified" --text
 ade help proof
@@ -67,7 +70,8 @@ so you can see whether you are looking at your own lane and chat.
 
 Only a proof-named command files a drawer entry. Taking a screenshot is not the same as filing proof:
 
-- `ade proof capture --caption "…"`, `ade proof record`, `ade proof attach <path> --caption "…"`, and `ade browser proof` **do** file.
+- `ade proof capture --caption "…"`, `ade proof record`, `ade proof attach <path> --caption "…"`, `ade browser proof`, `ade mac-desktop proof --caption "…"` and a captioned `ade mac-desktop record` **do** file.
+- `ade proof capture` and `ade proof record` capture the user's whole real screen, with whatever else they have open. For desktop app work on a Mac host, work on the lane's own screen (see the **ade-desktop** skill) and record there instead.
 - A bare `screenshot_environment` / `record_environment` call **does not** — it hands you a scratch file path for your own look at the screen. Promote one with `ade proof attach <that path> --caption "…"` when a reviewer should see it. (There is no `captureScreenshot` tool; if you have seen it named somewhere, it does not exist and calling it fails.)
 
 Artifacts worth filing:

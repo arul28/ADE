@@ -14,6 +14,7 @@
  * on any host.
  */
 
+import fs from "node:fs";
 import type { Logger } from "../logging/logger";
 import {
   MAC_DESKTOP_DEFAULT_RESOLUTION,
@@ -222,6 +223,13 @@ export type MacDesktopRuntimeService = MacDesktopServiceApi & {
    */
   hasDisplaySync(laneId: string | null | undefined): boolean;
   /**
+   * Whether this host can give a lane a display at all: a Mac with the driver
+   * installed. The computer-use prompt asks it on the send path, so a lane that
+   * has not started a display yet still learns the lane screen exists instead
+   * of reaching for the user's real screen.
+   */
+  supportsLaneDisplaySync(): boolean;
+  /**
    * The sync live view's activity hook. A viewer that keeps receiving records
    * is watching, so the encoder must not treat the lane as idle between input
    * events; the fan-out calls this on subscribe and while frames flow.
@@ -245,6 +253,9 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   };
 
   /** How the running app was signed, for the ad-hoc grant note. */
+  // A "yes" never changes while this process runs; a "no" is re-checked, since
+  // the driver can be installed after the brain starts.
+  let laneDisplaySupportCache: { supported: boolean; checkedAt: number } | null = null;
   let signingCache: MacDesktopSigningState | null = null;
   const signingState = (): MacDesktopSigningState => {
     if (deps.readSigningState) return deps.readSigningState();
@@ -1194,6 +1205,23 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       const trimmed = laneId?.trim();
       if (!trimmed || !isDarwin) return false;
       return ownership.hasDisplay(trimmed);
+    },
+    supportsLaneDisplaySync(): boolean {
+      if (!isDarwin) return false;
+      const now = Date.now();
+      if (laneDisplaySupportCache && (laneDisplaySupportCache.supported || now - laneDisplaySupportCache.checkedAt < 60_000)) {
+        return laneDisplaySupportCache.supported;
+      }
+      const driverPath = resolveMacDesktopDriverBinary({ platform, logger: deps.logger });
+      let supported = false;
+      try {
+        supported = Boolean(driverPath) && fs.statSync(driverPath as string).isFile();
+        if (supported) fs.accessSync(driverPath as string, fs.constants.X_OK);
+      } catch {
+        supported = false;
+      }
+      laneDisplaySupportCache = { supported, checkedAt: now };
+      return supported;
     },
     /** A delivered sync record keeps the lane's encoder at full rate. */
     noteStreamActivity(laneId: string): void {

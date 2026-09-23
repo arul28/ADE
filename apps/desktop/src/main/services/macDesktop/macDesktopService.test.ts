@@ -134,6 +134,12 @@ describe("macDesktopService capability gate", () => {
     service.dispose();
   });
 
+  it("tells the prompt a Windows host has no lane screen to offer", () => {
+    const { service } = makeService({ platform: "win32" });
+    expect(service.supportsLaneDisplaySync()).toBe(false);
+    service.dispose();
+  });
+
   it("every other method rejects off macOS with the platform code", async () => {
     const { service } = makeService({ platform: "win32" });
     const rejections = await Promise.allSettled([

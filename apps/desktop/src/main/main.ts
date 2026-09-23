@@ -4104,6 +4104,7 @@ app.whenReady().then(async () => {
       // this same bootstrap, and every call here is read per-turn.
       macDesktopTurnRecorder: {
         hasDisplaySync: (laneId) => macDesktopService.hasDisplaySync(laneId),
+        supportsLaneDisplaySync: () => macDesktopService.supportsLaneDisplaySync(),
         beginTurn: (args) => macDesktopService.beginTurn(args),
         noteTurnEnded: (args) => macDesktopService.noteTurnEnded(args),
       },

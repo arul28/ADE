@@ -36,6 +36,12 @@ ade mac-desktop release --window <id> --text
 
 Window ids die with their process. Re-run `windows` rather than caching one.
 
+`open` answers before the app has a window (`watching: yes`, no windows yet).
+Wait for it before you observe — `ade mac-desktop wait --label "<window title>"
+--timeout 8000 --text`, or re-run `windows`. Some apps open no window when
+launched bare (TextEdit, Preview): open a file with them, or press ⌘N
+(`ade mac-desktop press n --cmd --text`) once the app is up.
+
 ### 2. Observe before you act
 
 ```bash
@@ -54,10 +60,11 @@ the layout did not move. Add `--map` when you want a numbered image to look at.
 ade mac-desktop click obs-a1b2:e:3 --text
 ade mac-desktop click --text "Sign in" --text
 ade mac-desktop type "ada@example.com" --clear --target obs-a1b2:e:7 --text
+ade mac-desktop type "typed into whatever has focus" --text
 ade mac-desktop press return --cmd --text
 ade mac-desktop scroll down --amount 5 --text
 ade mac-desktop drag --from obs-a1b2:e:3 --to 900,420 --text
-ade mac-desktop wait --text "Saved" --timeout 8000 --text
+ade mac-desktop wait --label "Saved" --timeout 8000 --text
 ```
 
 Every acting command re-observes and prints what the screen looks like now, so
@@ -79,6 +86,16 @@ Ask for it only when accessibility input genuinely cannot do the job — a drag,
 a native menu, a control with no `AXPress`.
 
 ## Rules that will bite you
+
+- **Never quit an app, and never touch a window you did not open.** An app
+  like Safari, TextEdit or Finder is one process for all its windows, on every
+  screen. ⌘Q on the lane screen also closes the user's own windows of that app.
+  To finish, close only your own window (`ade mac-desktop press w --cmd --text`
+  with your window focused) or `release` it. Do not "reset" an app the user has
+  open to get a clean start — open a new window for your task instead.
+- **If `ade mac-desktop` is missing or refuses, stop and report it.** Do not
+  fall back to the user's real screen, and do not record it with `ade proof
+  record` — that command captures the user's whole screen.
 
 - **The user can take control.** While they hold it your input is refused with
   `MAC_DESKTOP_USER_HAS_CONTROL`. Wait and retry; do not force anything.

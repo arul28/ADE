@@ -2684,6 +2684,32 @@ describe("buildComputerUseDirective", () => {
     expect(result).toBeNull();
   });
 
+  it("tells every agent the user's own apps are not its to close or reset", () => {
+    // 2026-09-23: a plain "record opening Safari" quit the user's own Safari
+    // with ⌘Q to get a "clean" start.
+    const result = buildComputerUseDirective(makeBackendStatus({ localFallback: true }))!;
+    expect(result).toMatch(/Never close, quit, hide, minimize or reset an app or window you did not open/);
+  });
+
+  it("sends a Mac host's agent to the lane screen first, and fences the real-screen tools", () => {
+    const result = buildComputerUseDirective(makeBackendStatus({ localFallback: true }), {
+      macDesktopAvailable: true,
+    })!;
+    expect(result).toContain("### Mac Desktop — this lane's own screen (use it first)");
+    expect(result).toContain("ade mac-desktop record start --caption");
+    expect(result).toMatch(/do not fall back to the user's real screen/);
+    // The Codex/OpenAI computer-use plugin drives the real screen: only on request.
+    expect(result).toMatch(/`mcp__computer_use`[^\n]*drives the user's real screen/);
+    // `ade proof capture/record` is the real screen too, so it is not the default.
+    expect(result).toMatch(/`ade proof capture` and `ade proof record` capture the user's whole real screen/);
+  });
+
+  it("says nothing about a lane screen on a host that cannot give one", () => {
+    const result = buildComputerUseDirective(makeBackendStatus({ localFallback: true }))!;
+    expect(result).not.toContain("Mac Desktop");
+    expect(result).toContain("Use `ade proof capture` for a reviewer-facing checkpoint");
+  });
+
   it("emits no directive when no artifact broker is attached", () => {
     // `getBackendStatus()` is synchronous and never returns null, so a null
     // status means the session has no artifact broker — no backends, no local

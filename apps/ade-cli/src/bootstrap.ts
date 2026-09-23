@@ -1758,6 +1758,7 @@ export async function createAdeRuntime(args: {
         macDesktopTurnRecorder: macDesktopService
           ? {
             hasDisplaySync: (laneId) => macDesktopService.hasDisplaySync(laneId),
+            supportsLaneDisplaySync: () => macDesktopService.supportsLaneDisplaySync(),
             beginTurn: (args) => macDesktopService.beginTurn(args),
             noteTurnEnded: (args) => macDesktopService.noteTurnEnded(args),
           }
