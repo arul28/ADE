@@ -73,13 +73,9 @@ describe("WorkToolPicker", () => {
     // Still behind the cards: painted first, so the scrolling column sits on
     // top of it without needing a z-index.
     expect(backdrop?.className).toContain("ade-tool-picker-backdrop");
-    // Backdrop, then the scrim that calms the middle of it, then the column.
-    // Paint order IS the stacking here — no z-index anywhere in the picker.
-    const scrim = document.querySelector("[data-tool-picker-scrim]");
-    expect(backdrop?.nextElementSibling).toBe(scrim);
-    expect(scrim?.nextElementSibling).toBe(scroller);
-    expect(scroller?.contains(scrim as Node)).toBe(false);
-    expect(scrim?.getAttribute("aria-hidden")).toBe("true");
+    // Backdrop, then the column: nothing between the gradient and the cards.
+    expect(backdrop?.nextElementSibling).toBe(scroller);
+    expect(document.querySelector("[data-tool-picker-scrim]")).toBeNull();
   });
 
   it("renders an untitled column of cards, each with its live status line", () => {
@@ -323,8 +319,8 @@ describe("WorkToolPicker", () => {
     expect(backdrop).toBeTruthy();
     // Decoration, never a target and never announced.
     expect(backdrop?.getAttribute("aria-hidden")).toBe("true");
-    // Behind the column, not in front of it — with the scrim in between.
-    expect(backdrop?.nextElementSibling?.nextElementSibling?.contains(
+    // Behind the column, not in front of it.
+    expect(backdrop?.nextElementSibling?.contains(
       screen.getByRole("group", { name: "Work tools" }),
     )).toBe(true);
   });

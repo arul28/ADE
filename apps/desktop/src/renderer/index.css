@@ -2342,121 +2342,46 @@ button:active, [role="button"]:active {
   pointer-events: none;
 }
 
-/* The no-WebGL fallback. A software-rendered mesh would be the most expensive
-   thing in the window, so this is the same ramp painted flat — four stops of it,
-   not a corner light. A fallback that reads as "the gradient failed" is worse
-   than no gradient, so the stops here are the shader's own (`--color-bg` →
-   `--color-accent-deep` → `--color-accent` → `--color-accent-bright`) at
-   alphas chosen to land in the same luminance band the shader does. */
+/* The no-WebGL fallback: the same corner light, flat. A software-rendered mesh
+   would be the most expensive thing in the window. */
 .ade-tool-picker-static {
   background:
     radial-gradient(
-      90% 70% at 12% 6%,
-      color-mix(in srgb, var(--color-accent-deep) 72%, transparent),
+      130% 100% at 18% 12%,
+      color-mix(in srgb, #6366F1 28%, transparent),
       transparent 64%
     ),
     radial-gradient(
-      75% 65% at 82% 18%,
-      color-mix(in srgb, var(--color-accent) 46%, transparent),
+      120% 90% at 82% 78%,
+      color-mix(in srgb, var(--color-accent) 22%, transparent),
       transparent 62%
     ),
-    radial-gradient(
-      85% 75% at 70% 92%,
-      color-mix(in srgb, var(--color-accent-bright) 34%, transparent),
-      transparent 66%
-    ),
-    radial-gradient(
-      60% 50% at 30% 62%,
-      color-mix(in srgb, var(--color-accent-deep) 40%, transparent),
-      transparent 70%
-    ),
-    /* The deep stop is TINTED, like the shader's own base and like the
-       reference's `#031C26`. Bottoming out on `--color-bg` gives the fallback
-       no bottom — it just dissolves into the pane. */
-    #17122E;
+    var(--color-bg);
 }
 
 [data-theme="light"] .ade-tool-picker-static {
   background:
     radial-gradient(
-      90% 70% at 12% 6%,
-      color-mix(in srgb, var(--color-accent-deep) 34%, transparent),
+      130% 100% at 18% 12%,
+      color-mix(in srgb, #A5B4FC 30%, transparent),
       transparent 64%
     ),
     radial-gradient(
-      75% 65% at 82% 18%,
-      color-mix(in srgb, var(--color-accent) 24%, transparent),
+      120% 90% at 82% 78%,
+      color-mix(in srgb, var(--color-accent-bright) 22%, transparent),
       transparent 62%
     ),
-    radial-gradient(
-      85% 75% at 70% 92%,
-      color-mix(in srgb, var(--color-accent-bright) 30%, transparent),
-      transparent 66%
-    ),
-    radial-gradient(
-      60% 50% at 30% 62%,
-      color-mix(in srgb, var(--color-accent-bright) 22%, transparent),
-      transparent 70%
-    ),
     var(--color-surface);
-}
-
-/* The scrim: one element between the backdrop and the grid, and the reason the
-   ramp above is allowed to be this bold.
-
-   The alternative — the one this file used to take — is to flatten the mesh
-   until the cards win, which is how the backdrop ended up invisible. This
-   instead calms only the middle third, where the cards actually stand, and
-   leaves the corners at full strength. Pure paint, no filter, no layout: an
-   ellipse of `--color-bg` fading to nothing well before the edge, plus a
-   top-and-bottom wash so the column's scroll edges do not cut the gradient off
-   mid-lobe. Untouchable, like the canvas under it. */
-.ade-tool-picker-scrim {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background:
-    radial-gradient(
-      68% 52% at 50% 48%,
-      color-mix(in srgb, var(--color-bg) 58%, transparent),
-      color-mix(in srgb, var(--color-bg) 22%, transparent) 62%,
-      transparent 82%
-    ),
-    linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--color-bg) 30%, transparent) 0%,
-      transparent 24%,
-      transparent 76%,
-      color-mix(in srgb, var(--color-bg) 30%, transparent) 100%
-    );
-}
-
-[data-theme="light"] .ade-tool-picker-scrim {
-  background:
-    radial-gradient(
-      68% 52% at 50% 48%,
-      color-mix(in srgb, var(--color-surface) 62%, transparent),
-      color-mix(in srgb, var(--color-surface) 24%, transparent) 62%,
-      transparent 82%
-    ),
-    linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--color-surface) 34%, transparent) 0%,
-      transparent 24%,
-      transparent 76%,
-      color-mix(in srgb, var(--color-surface) 34%, transparent) 100%
-    );
 }
 
 /* The card: a piece of glass standing on the gradient, not a flat rectangle
    punched out of it.
 
    Three layers, and each one is there for a reason the flat version could not
-   cover. The FILL is a translucent `--color-card` — 80% now rather than the old
-   82%, because the scrim already takes the mesh under the grid down to roughly
-   the band the old 82% was compensating for, so the card can afford to be more
-   glass and still hold a 12px muted line at 4:1 over the brightest spot it can
-   sit on. The INNER hairline (`inset 0 0 0 1px`) is the accent at low alpha:
+   cover. The FILL is a translucent `--color-card` at 82% (84% under the
+   cursor): enough to hold a 12px muted line at 4:1 over the brightest spot of
+   the mesh it can sit on, with no scrim between the two. The INNER hairline
+   (`inset 0 0 0 1px`) is the accent at low alpha:
    it is what makes the edge read as lit from the gradient rather than drawn on
    top of it, and it costs one shadow with no blur. The OUTER hairline is still
    the border, kept neutral so the two do not fight.
@@ -2480,7 +2405,7 @@ button:active, [role="button"]:active {
   position: relative;
   border-radius: 12px;
   border: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
-  background: color-mix(in srgb, var(--color-card) 80%, transparent);
+  background: color-mix(in srgb, var(--color-card) 82%, transparent);
   box-shadow:
     inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 12%, transparent),
     inset 0 1px 0 0 rgb(255 255 255 / 0.06),
@@ -2514,7 +2439,7 @@ button:active, [role="button"]:active {
 
 [data-theme="light"] .ade-tool-card {
   border-color: color-mix(in srgb, var(--color-border) 70%, transparent);
-  background: color-mix(in srgb, var(--color-card) 82%, transparent);
+  background: color-mix(in srgb, var(--color-card) 84%, transparent);
   box-shadow:
     inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 10%, transparent),
     inset 0 1px 0 0 rgb(255 255 255 / 0.5),

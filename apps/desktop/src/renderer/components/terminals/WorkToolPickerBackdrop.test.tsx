@@ -184,72 +184,45 @@ describe("resolveBackdropSize", () => {
     // cannot. If a blur ever comes back, this budget has to be re-argued.
     expect(FRAG).not.toMatch(/blur/iu);
     expect(UNIFORMS).not.toHaveProperty("blur");
-    // The one pointer mode we did adopt — the reference's "rotate" swirl.
-    expect(UNIFORMS.cursorStrength).toBeCloseTo(0.73, 3);
-    expect(UNIFORMS.cursorRadius).toBeCloseTo(0.365, 3);
   });
 });
 
 describe("backdropThemeFor", () => {
-  const luma = (c: readonly [number, number, number]) =>
-    0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
-
-  it("does not darken either ramp back into the page behind it", () => {
-    // The regression this file exists to prevent: the dark ramp used to end at
-    // `--color-accent-bright` and then subtract 0.24 of brightness off, which
-    // put its median luminance within nine levels of `--color-bg` and made the
-    // whole backdrop invisible. The reference recipe runs brightness at 0 and
-    // buys card legibility with `.ade-tool-picker-scrim` instead.
-    for (const theme of ["dark", "light"] as const) {
-      const { brightness, saturation } = backdropThemeFor(theme);
-      expect(brightness).toBe(0);
-      // Desaturating was the other half of the old disappearing act.
-      expect(saturation).toBe(1);
-    }
+  it("keeps light well under dark's intensity and vignette", () => {
+    const dark = backdropThemeFor("dark");
+    const light = backdropThemeFor("light");
+    expect(dark.intensity).toBeCloseTo(0.44, 2);
+    expect(light.intensity).toBeLessThan(dark.intensity);
+    expect(light.vignette).toBeLessThan(dark.vignette);
+    expect(dark.vignette).toBeLessThan(0.3);
+    expect(dark.vignette).toBeGreaterThan(0.12);
+    // Dark sits slightly under the mesh's own brightness so the flat cards
+    // still read as the brightest thing on the page.
+    expect(dark.brightness).toBeLessThan(0);
+    expect(dark.brightness).toBeGreaterThan(-0.2);
+    expect(dark.saturation).toBeLessThan(1);
+    // Indigo stop — the bluish lobe the all-violet ramp lost.
+    expect(dark.colors).toContainEqual([0x63 / 255, 0x66 / 255, 0xf1 / 255]);
   });
 
-  it("bottoms out on a tinted deep tone, never on the page's own black", () => {
-    // The reference's base stop is `#031C26`, not `#000`. A ramp that bottoms
-    // out on `--color-bg` has no bottom — it dissolves into the pane.
-    const base = backdropThemeFor("dark").colors[0]!;
-    expect(luma(base)).toBeGreaterThan(0.04);
-    expect(luma(base)).toBeLessThan(0.16);
-    // Tinted, not grey: violet means blue leads red leads green.
-    expect(base[2]).toBeGreaterThan(base[0]);
-    expect(base[0]).toBeGreaterThan(base[1]);
-    // Light starts on its own canvas, `--color-surface`.
-    expect(backdropThemeFor("light").colors[0]).toEqual([0xfa / 255, 0xf8 / 255, 0xf5 / 255]);
+  it("starts each ramp on that theme's own canvas and never exceeds 8 stops", () => {
+    const dark = backdropThemeFor("dark");
+    const light = backdropThemeFor("light");
+    // #0C0B10 — `--color-bg`.
+    expect(dark.colors[0]).toEqual([0x0c / 255, 0x0b / 255, 0x10 / 255]);
+    // #faf8f5 — `--color-surface` in light.
+    expect(light.colors[0]).toEqual([0xfa / 255, 0xf8 / 255, 0xf5 / 255]);
+    expect(dark.colors.length).toBeLessThanOrEqual(8);
+    expect(light.colors.length).toBeLessThanOrEqual(8);
+    expect(dark.colors.length).toBeGreaterThan(1);
   });
 
-  it("carries the reference's four-stop structure up to a near-white highlight", () => {
-    const spreadOf = (theme: "dark" | "light") => {
-      const { colors } = backdropThemeFor(theme);
-      // Four stops, like the reference. Never more than the shader's 8.
-      expect(colors.length).toBe(4);
-      expect(colors.length).toBeLessThanOrEqual(8);
-      return Math.max(...colors.map(luma)) - Math.min(...colors.map(luma));
-    };
-    // Dark matches the reference's envelope: the top stop is what makes it a
-    // gradient rather than a tint, and dropping its near-white for
-    // `--color-accent-bright` costs ~45 points of peak luminance.
-    expect(spreadOf("dark")).toBeGreaterThan(0.75);
-    expect(luma(backdropThemeFor("dark").colors.at(-1)!)).toBeGreaterThan(0.9);
-    // Light deliberately runs a shorter ramp — inverting the reference's p5 of
-    // ~13 onto a light canvas reads as a stain, not as light. The floor here is
-    // still a real guard: the old flat light ramp spread only 0.34.
-    expect(spreadOf("light")).toBeGreaterThan(0.4);
-  });
-
-  it("paints light in ADE's green and dark in ADE's violet", () => {
-    // Light's accent is `#049068`, not a violet — the violets this ramp used to
-    // hardcode were the dark theme's `--color-accent-*` leaking through a light
-    // block that never redefines them.
-    const lightAccent = backdropThemeFor("light").colors.at(-1)!;
-    expect(lightAccent[1]).toBeGreaterThan(lightAccent[0]);
-    expect(lightAccent[1]).toBeGreaterThan(lightAccent[2]);
-    const darkAccent = backdropThemeFor("dark").colors[1]!;
-    expect(darkAccent[2]).toBeGreaterThan(darkAccent[1]);
-    expect(darkAccent[2]).toBeGreaterThan(darkAccent[0]);
+  it("keeps the mesh scaled so the colour field fills the pane", () => {
+    expect(UNIFORMS.scale).toBeGreaterThan(0.9);
+    expect(UNIFORMS.scale).toBeLessThan(1.2);
+    expect(FRAG).toContain("exp(-dot(p - c, p - c) * 3.5)");
+    expect(FRAG).toContain("u_colors[0] * 0.10");
+    expect(FRAG).toContain("smoothstep(0.48, 1.08, vd)");
   });
 });
 
