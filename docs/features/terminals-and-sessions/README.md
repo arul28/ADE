@@ -1295,9 +1295,7 @@ Renderer surfaces:
   the reason is "no reason was given.", because a failed clipboard read also
   lands here and nothing was saved. A failed save counts as handled, so the
   paste is not tried a second time. The paste code lives in
-  `terminalImagePaste.ts`, which sees the runtime through a narrow interface
-  (session id, pin, disposed, the notice fields, `notify`, `writeInput`); the
-  message is `TerminalImagePasteNotice`. Selected terminal
+  `terminalImagePaste.ts` (see below). Selected terminal
   text copies through the local desktop clipboard bridge (with browser clipboard
   fallback for previews). Shift+drag remains available for local text
   selection when a full-screen CLI enables terminal mouse tracking; on macOS,
@@ -1328,6 +1326,18 @@ Renderer surfaces:
   `rehydrate-after-fit`, `hydrate-normalize-declined`, `hydrate-complete`, …);
   a dims mismatch warns on **columns only**, since row disagreement is normal
   and columns are what decide wrapping.
+- `apps/desktop/src/renderer/components/terminals/terminalImagePaste.ts`,
+  `TerminalImagePasteNotice.tsx`, and `terminalBracketedPaste.ts` — the image
+  paste path of a Work-tracked CLI terminal, split out of `TerminalView`.
+  `terminalImagePaste.ts` reads the clipboard image, saves it on the session's
+  machine, and writes the path stub into the PTY. It sees the runtime through a
+  narrow interface (session id, pin, disposed, the notice fields, `notify`,
+  `writeInput`), so tests drive it without a mounted terminal. A failure goes
+  through one reporter that logs the `[ade-term] image paste failed` line and
+  sets the pane message for `IMAGE_PASTE_NOTICE_MS` (8 s).
+  `TerminalImagePasteNotice` renders that message with a dismiss button.
+  `terminalBracketedPaste.ts` holds the DEC mode 2004 start and end markers
+  that `TerminalView` and the paste path share.
 - `apps/desktop/src/renderer/components/terminals/terminalTranscriptNormalize.ts`
   — the runtime-free transcript hydration helpers, split out of `TerminalView`
   so they are testable without a mounted terminal. `inferTranscriptColumns`

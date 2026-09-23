@@ -930,7 +930,7 @@ the two populations stay separable on the server.
 | Recovery diagnosis reached a terminal state | `main/services/runtime/projectRecoveryService.ts` (`diagnose`, via `onTerminalDiagnosis`) | the `AdeRecoveryErrorCode` — `disk_full`, `brain_crash_looping`, … |
 | Renderer crash | `renderer/components/app/RendererErrorBoundary.tsx` (`componentDidCatch`, via `IPC.diagnosticsAutoReport`) | `renderer_crash` |
 | Post-update transaction failed | `main/main.ts`, beside `autoUpdate.transaction_failed` | `update_<step>` |
-| Pairing auto-recovery gave up | `ade-cli/.../machinePairingAutoRecovery.ts` (`onGaveUp`) | the refusal code, or `snapshot_failed` |
+| Pairing auto-recovery gave up | `ade-cli/.../machinePairingAutoRecovery.ts` (`onGaveUp`, wired in `cli.ts`; the same hook records `recoveryGaveUpAt` in publisher health, so the desktop also shows a lasting banner and does not depend on this report) | the refusal code, or `snapshot_failed` |
 | Account publisher failing > 5 min | `ade-cli/.../accountMachinePublisherService.ts` (`onSustainedFailure`) | the health state, e.g. `snapshot_failed` |
 | Sync host refused by unreadable storage, 3 attempts running | `ade-cli/.../sync/syncHostStartupLoop.ts` (`onSustainedStorageFault`) | `storage_read_failed` |
 

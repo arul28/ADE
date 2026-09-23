@@ -304,6 +304,9 @@ create`, stores it in a secret manager, and exposes it to the machine brain as
 `ADE_ACCOUNT_TOKEN`. The envelope includes the public OAuth refresh context, so
 the consuming host needs no local Clerk configuration. The token never enters
 project files or operational logs, and account actions remain CTO-only.
+`account.deleteMachine` goes further: it refuses every agent, the CTO included,
+so an agent asks the user to remove a machine on the Account page or with
+`ade machines remove --confirm REMOVE` in their own terminal.
 
 ## Identity shape
 

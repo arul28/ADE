@@ -365,7 +365,8 @@ just signed in interactively on that machine. Two proofs are accepted:
   10 minutes. Never derived from `iat`, and it fails closed: a token carrying
   neither claim proves nothing.
 - **A single-use pairing grant.** `POST /device/code` now accepts the machine
-  key, and `POST /device/token` mints a grant — 32 random bytes, base64url —
+  key (and an optional `machine_name`, display text for the browser page only),
+  and `POST /device/token` mints a grant — 32 random bytes, base64url —
   only after it wins the one-time consume, so a racing second redemption cannot
   mint a second grant. Only the SHA-256 digest is stored, in
   `machine_pairing_grants`, bound to both the signing-in user and that machine
@@ -402,7 +403,9 @@ name a refusal an older desktop has never heard of, and anything unrecognized
 Four entry points reach it:
 
 - `ade machines reconnect` (alias `repair`), which takes no machine selector
-  because a brain can only lift its own machine's revocation. When the directory
+  because a brain can only lift its own machine's revocation. With `--text` it
+  prints one sentence from `shared/reconnectOutcome.ts`, the same words the
+  desktop button shows. When the directory
   answers `pairing_authentication_required`, the CLI prints the recovery line,
   runs the device sign-in, and re-executes the plan — no second command.
 - `account.call { action: "repairMachinePairing" }` on the multi-project RPC
@@ -411,12 +414,14 @@ Four entry points reach it:
   completed login.
 - **Reconnect this computer** in the desktop, over
   `ade.account.repairMachinePairing`. The Account page shows it when this
-  machine is missing from the account list; the shell bar and the Connections
-  pane show it when the directory refuses this machine. All three run one hook
-  (`useReconnectThisComputer`), which runs the same device-login recovery
-  ("Confirm it's you") when the directory demands fresh proof and reports the
-  honest outcome — including the case where the machine re-joined but push has
-  not resumed.
+  machine is missing from the account list; the shell bar, the Connections
+  pane's This computer card and the Machines list show it when the directory
+  refuses this machine. Every surface runs one flow per window
+  (`renderer/lib/reconnectThisComputer.ts`, behind `useReconnectThisComputer`),
+  so a second press joins the running attempt. The flow runs the same
+  device-login recovery ("Confirm it's you") when the directory demands fresh
+  proof and reports the honest outcome — including the case where the machine
+  re-joined but push has not resumed.
 - `machinePairingAutoRecovery`, the brain's own slow loop, which calls the same
   function unattended once a refusal has been latched for a while. A headless
   box has no Settings button to press, so without it a stale row or a key

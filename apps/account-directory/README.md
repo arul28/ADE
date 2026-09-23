@@ -31,6 +31,24 @@ Device codes and approval-attempt rate limits are stored in D1. The daemon
 secret is stored only as a SHA-256 digest; approved token pairs are cleared by
 the one-time redemption update or when the device code expires.
 
+## Which install a machine row is
+
+Stable (`~/.ade`) and Alpha (`~/.ade-alpha`) on one computer are two machines
+in the account, and both report the same hostname. A register call may say
+which install it is: `channel` (`stable`, `beta` or `alpha`; any other value is
+dropped) and `adeHome` (the ADE home as `~/.ade-alpha`, or a folder name, never
+a full path). Migration `0011` stores them in `machines.channel` and
+`machines.ade_home`, and every machine row returns them. A register that omits
+them keeps the stored values, because an older host sends neither.
+
+Client-supplied text that a page or a list shows (`adeHome`, and the device
+flow's `machine_name`, which migration `0010` stores on
+`device_authorizations`) goes through `boundedDisplayText` in
+`src/displayText.ts`. It replaces control and format characters (bidi
+overrides, zero-width marks), folds whitespace, and cuts the text to a fixed
+length. It cleans rather than refuses, so an odd name never blocks the request
+that carried it.
+
 ## Removing a machine
 
 `DELETE /account/machines/:machineKey` is not just a row delete. The machine's

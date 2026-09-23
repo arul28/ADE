@@ -10,7 +10,7 @@ import {
   describeReconnectOutcome,
   reconnectNeedsFreshSignIn,
   type ReconnectOutcome,
-} from "./thisComputerRefusal";
+} from "../../shared/reconnectOutcome";
 import { isWebClientMode } from "./webClientMode";
 
 /**

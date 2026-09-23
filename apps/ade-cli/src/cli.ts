@@ -121,6 +121,13 @@ import { deriveGithubAccountAuthState } from "../../desktop/src/renderer/lib/git
 import type { GitHubAppUserAuthStatus } from "../../desktop/src/shared/types";
 import { ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION } from "../../desktop/src/shared/types/account";
 import {
+  describeThisMachineRefusal,
+  parseThisMachineRefusal,
+  readThisMachineRefusalFromWire,
+  thisMachineRefusalState,
+} from "./services/account/thisMachineRefusalText";
+import { describeReconnectOutcome, readReconnectResult } from "../../desktop/src/shared/reconnectOutcome";
+import {
   IOS_SIMULATOR_ACCESSIBILITY_OPTIONS,
   IOS_SIMULATOR_CONTENT_SIZES,
   IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE,
@@ -383,6 +390,7 @@ type FormatterId =
   | "account-machines"
   | "account-machine-rename"
   | "account-machine-remove"
+  | "account-machine-reconnect"
   | "projects-list"
   | "linear-quick-view"
   | "lanes"
@@ -16739,7 +16747,19 @@ function buildCliPlan(
       // This first-party typed command intentionally shows the operator their
       // account identity; generic agent actions keep the redacted status view.
       connectRole: "cto",
-      steps: [accountActionStep("result", "status")],
+      steps: [
+        accountActionStep("result", "status"),
+        // A signed-in computer the account removed still says "Signed in".
+        // The desktop shows that refusal in a banner, so read it here too.
+        // Optional: an older brain or a slow sync read must not fail the
+        // sign-in answer.
+        {
+          key: "thisComputer",
+          method: "sync.getStatus",
+          params: { includeTransferReadiness: false },
+          optional: true,
+        },
+      ],
     };
   }
   if (primary === "account") {
@@ -18671,6 +18691,7 @@ function buildMachinesPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "account machine reconnect",
+      formatter: "account-machine-reconnect",
       machineOnly: true,
       machineAutoStart: true,
       connectRole: "cto",
@@ -23522,6 +23543,13 @@ function formatSyncStatus(value: unknown): string {
     && Number.isFinite(accountDirectory.lastSuccessAt)
     ? new Date(accountDirectory.lastSuccessAt).toISOString()
     : null;
+  // The directory refusing THIS computer is the state the desktop banner shows
+  // with a date and a Reconnect button. `directory reason` has only the
+  // sentence, so name the date, the give-up, and the command here too.
+  const refusal = readThisMachineRefusalFromWire(accountDirectory);
+  const recoveryGaveUpAt = refusal?.recoveryGaveUpAt != null
+    ? new Date(refusal.recoveryGaveUpAt).toISOString()
+    : null;
 
   const peers = Array.isArray(snapshot.connectedPeers)
     ? snapshot.connectedPeers.length
@@ -23606,6 +23634,9 @@ function formatSyncStatus(value: unknown): string {
     ["directory reason", skipReason],
     ["directory attempt", lastAttempt],
     ["directory success", lastSuccess],
+    ["this computer", refusal ? thisMachineRefusalState(refusal) : null],
+    ["auto repair stopped", recoveryGaveUpAt],
+    ["reconnect with", refusal ? "ade machines reconnect" : null],
     ["transfer readiness", transferState],
     ...transferRows,
     ["pairing code", describeSyncPairingCode(snapshot)],
@@ -26504,7 +26535,9 @@ function formatTextOutput(
         ?? asString(value.userId)
         ?? "ADE account";
       const source = asString(value.source);
-      return `Signed in as ${identity}${source ? ` (${source})` : ""}`;
+      const signedIn = `Signed in as ${identity}${source ? ` (${source})` : ""}`;
+      const refusal = parseThisMachineRefusal(value.thisComputerRefusal);
+      return refusal ? `${signedIn}\n${describeThisMachineRefusal(refusal)}` : signedIn;
     }
     case "account-token": {
       const token = isRecord(value) ? asString(value.token) : null;
@@ -26523,6 +26556,13 @@ function formatTextOutput(
       return machine.customName
         ? `Renamed ${machine.machineKey} to ${displayName}.`
         : `Cleared the custom name for ${machine.machineKey}; using ${displayName}.`;
+    }
+    case "account-machine-reconnect": {
+      const result = readReconnectResult(value);
+      if (!result) {
+        return renderKeyValues("ADE result", Object.entries(isRecord(value) ? value : {}));
+      }
+      return describeReconnectOutcome(result).message;
     }
     case "account-machine-remove": {
       const removed = isRecord(value) ? asString(value.machineKey) : null;
@@ -27124,6 +27164,19 @@ function summarizeExecution(args: {
 
   if (plan.label === "sync web") {
     return buildSyncWebPairingOutput(values.result);
+  }
+
+  if (plan.label === "auth status") {
+    const status = unwrapActionEnvelope(values.result);
+    if (!isRecord(status) || status.signedIn !== true) return status;
+    const sync = unwrapActionEnvelope(values.thisComputer);
+    const routeHealth = isRecord(sync) && isRecord(sync.routeHealth) ? sync.routeHealth : null;
+    return {
+      ...status,
+      // Null when the directory accepts this computer, or when the sync read
+      // failed; the refusal is { code, revokedAt, recoveryGaveUpAt }.
+      thisComputerRefusal: readThisMachineRefusalFromWire(routeHealth?.accountDirectory),
+    };
   }
 
   if (plan.label.startsWith("personal chat ") && isRecord(values.result)) {

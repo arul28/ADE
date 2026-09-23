@@ -608,7 +608,12 @@ Runtime support files outside `services/sync/`:
   once through `consumePairingGrant` and cleared on sign-out. That grant is the
   proof a removed machine needs to re-pair, which is why the desktop's Reconnect
   affordance and `ade machines reconnect` both run the device flow rather than
-  the loopback PKCE flow. A definitively rejected grant is **marked dead, not
+  the loopback PKCE flow. The device flow also sends this computer's name with
+  its channel (`getMachineName`, for example "MacBook Pro · Alpha") as
+  `machine_name`, so the browser page can say which computer asked. The name
+  waits for the macOS ComputerName probe (`resolveDeviceDisplayNameSettled`),
+  so the page does not show the network hostname. A name that cannot be read
+  only drops the label; it never blocks the sign-in. A definitively rejected grant is **marked dead, not
   deleted** (`rejectedAt` / `needsReauth` / `rejectedReason` on the stored
   record) and `sessionState` reports `active | signed_out | expired |
   unreadable` so every surface can say which it is; see
@@ -690,10 +695,13 @@ Runtime support files outside `services/sync/`:
   (`describeAdeInstall`): `channel` (`stable` only for the default `~/.ade`
   home, else `alpha`/`beta` from the package channel, omitted for a custom
   home) and `adeHome` (the home relative to the user's home folder, as
-  `~/.ade-alpha`, never a username). The client shows them beside the name
-  (`accountMachineRowLabel`), which survives a custom name. The directory
-  ignores both fields until the Worker stores and returns them; rows then fall
-  back to the suffixed name.
+  `~/.ade-alpha`, or only the folder name for a home outside it, never a
+  username). The Worker stores them in the `channel` and `ade_home` columns
+  (migration `0011_machine_install.sql`), cleans the home as display text, and
+  returns both on every machine row. A register without them keeps the stored
+  values. The client shows them beside the name (`accountMachineRowLabel`, "MacBook
+  Pro · ADE Alpha"), which survives a custom name. A row from a directory that
+  does not return them falls back to the suffixed name.
   A LAN endpoint is only emitted for an address candidate whose `kind` is `lan`;
   because `syncPairingConnectInfo.buildAddressCandidates` now classifies the
   saved `lastHost` as `lan`/`tailscale` when it matches the current address set
@@ -858,10 +866,32 @@ Runtime support files outside `services/sync/`:
   `_budget_exhausted`, `_episode_ended`). An exhausted budget stops arguing.
   Its `onGaveUp` (wired in `cli.ts`) sends the auto-diagnostic report and calls
   the publisher's `recordPairingRecoveryGaveUp`, so publisher health carries
-  `recoveryGaveUpAt` next to `revokedAt` until the next successful publish.
-  The desktop reads both from `routeHealth.accountDirectory` and shows a lasting
-  banner with the date and a **Reconnect this computer** button. The report on
-  its own was invisible whenever its upload failed.
+  `recoveryGaveUpAt` next to `revokedAt`. The next successful publish clears
+  it, and so does `onEpisodeStarted`, because a new episode means the loop is
+  trying again. `revokedAt` is sent only while the removal is latched. The
+  desktop reads both from `routeHealth.accountDirectory`: its lasting banner
+  names the date and offers **Reconnect this computer**, and adds "ADE stopped
+  trying to reconnect it on its own." after a give-up. The report on its own
+  was invisible whenever its upload failed.
+- `apps/ade-cli/src/services/account/thisMachineRefusalText.ts` — the CLI's
+  words for a directory refusal of this computer, with the same facts as the
+  desktop banner: the removal date (an ISO day, because agents read this output
+  too), whether the automatic repair stopped, and `ade machines reconnect`.
+  `readThisMachineRefusalFromWire` reads it from a publisher health record, and
+  a partial record from an older brain reads as no refusal. `ade auth status`
+  adds the sentence in `--text` and a `thisComputerRefusal` field (`code`,
+  `revokedAt`, `recoveryGaveUpAt`) in JSON when the account is signed in and
+  refused. `ade sync status --text` adds the `this computer`, `auto repair
+  stopped` and `reconnect with` rows, and the `ade doctor` **Publish health**
+  row uses the sentence (`doctorPublishHealthFromSync` in `commands/doctor.ts`
+  keeps the refusal fields that the runtime parser drops). See the
+  [ADE CLI README](../../../apps/ade-cli/README.md) for the command output.
+- `apps/desktop/src/shared/reconnectOutcome.ts` — what a reconnect did, in one
+  sentence: `describeReconnectOutcome`, `reconnectNeedsFreshSignIn`,
+  `readReconnectResult`, and the `ReconnectOutcome` type. The desktop's
+  Reconnect surfaces, `ade machines reconnect --text`, and the `ade code`
+  `/reconnect` notice all read it, so they cannot disagree. A result that needs
+  a fresh sign-in says "Confirm it's you", never "Sign in again".
 - `apps/desktop/src/shared/accountMachineRefusal.ts` — `readAccountRefusalCode`,
   the single decoder for "why did the directory refuse to register this
   machine", read by the auto-recovery loop above and by the desktop's
@@ -1276,7 +1306,20 @@ Desktop connection UI:
   `TypeError` and blank the entire Connections pane, and now degrades to
   "Signed in — sync state isn't available on this computer yet".
 - `apps/desktop/src/renderer/components/settings/accountDirectorySummary.ts` —
-  turns that advice into the one Connections line: `Signed in — <summary>`.
+  turns that advice into the one Connections line: `Signed in — <summary>`. The
+  caller passes the directory's refusal of this computer
+  (`readThisMachineRefusal`), read once with the same guard that shows the
+  card's Reconnect button. A refusal replaces the "can't reach, retrying" line
+  with what happened ("This computer was removed from your account on 14
+  August"), because the directory answered and nothing retries on its own. The
+  caller passes null for another machine's snapshot, because the refusal copy
+  says "This computer".
+- `apps/desktop/src/renderer/components/remoteTargets/RemoteTargetList.tsx` —
+  the Machines tab. When this computer's publish is failing because the
+  directory refuses it, the warning line names the refusal and carries a
+  **Reconnect this computer** button (`useThisComputerRefusal` +
+  `useReconnectThisComputer`) instead of only "ADE couldn't publish it" and a
+  report button.
 - `apps/desktop/src/renderer/components/app/IntegrationBannerHost.tsx` — hosts
   the `relay-offline` banner alongside the GitHub/AI-provider family.
   `AppShell` seeds `routeHealth.relay` from `sync.getLocalStatus` (the physical
@@ -1317,7 +1360,11 @@ Desktop connection UI:
   `shared/types/sync.ts`, currently exactly `token_unreadable` — the This
   computer card renders a **Repair** control next to the directory summary; the
   re-read that follows a repair is forced, because a repair is a user action and
-  must not wait out the degraded-read backoff window. The local-brain-only
+  must not wait out the degraded-read backoff window. When the directory refuses
+  this computer, the card shows **Reconnect this computer** (or **Confirm it's
+  you**) beside the directory line. It reads the refusal only for the local
+  machine: a remote-bound pane or the hosted web client shows another machine,
+  and this computer's button cannot fix that one. The local-brain-only
   `window.ade.sync.getLocalStatus(...)` accessor is available for the card to
   consume so a window bound to another machine can still show the physical
   computer's identity, pairing code, and Phone/Web device lists.
@@ -3114,19 +3161,26 @@ than ten minutes old, which is the same window in which the directory would
 still accept the machine's existing sign-in. Waiting that window out means the
 only repair this loop can land is one granted on stale-but-valid grounds: a
 stale row, a key rotation, a directory hiccup. A deliberate removal stands, and
-recovering from it needs the user's next interactive sign-in. When the loop
-gives up, the desktop says so in a lasting banner ("This computer was removed
-from your account on 14 August", with **Reconnect this computer**, or **Confirm
-it's you** when the directory wants a fresh sign-in) rather than only a
-diagnostic toast.
+recovering from it needs the user's next interactive sign-in. While the
+directory refuses the machine, the desktop shows a lasting banner ("This
+computer was removed from your account on 14 August", with **Reconnect this
+computer**, or **Confirm it's you** when the directory wants a fresh sign-in).
+When the loop gives up, the banner says so, rather than only a diagnostic
+toast. The browser page of that confirmation names the computer that asked
+("A computer named MacBook Pro · Alpha asked to sign in to ADE") when the
+client sent its name.
 
 Removal itself asks twice. Every Remove confirmation (desktop sheet and web
 client) names the install ("MacBook Pro · ADE Alpha") and warns when the
 machine reported in during the last five minutes. The `account.deleteMachine`
-action refuses unless the caller passes `confirmation: "REMOVE"`, the same
-token `ade machines remove --confirm REMOVE` takes, so a CTO-role agent cannot
-remove a machine in one unasked call. The desktop Account page and the web
-client remove through the directory directly, behind their own dialogs.
+action is for people only. It refuses a caller whose identity names a chat, run,
+step or attempt (`callerIdentityIsAgent` in `apps/ade-cli/src/runtimeRoles.ts`),
+the CTO included. It also refuses without `confirmation: "REMOVE"`
+(`ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION`), the same token `ade machines remove
+--confirm REMOVE` takes and forwards. The identity is the caller's own claim,
+so this stops the ordinary agent path, not a process that strips its
+environment. The desktop Account page and the web client remove through the
+directory directly, behind their own dialogs.
 
 Every refusal the Worker issues is also logged with its wire code, a finer
 `reason`, the correlation id, and 8-character identifier prefixes, because by

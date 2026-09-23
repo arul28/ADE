@@ -8,11 +8,8 @@ import {
   subscribeReconnectFlow,
   type ReconnectThisComputerOptions,
 } from "../lib/reconnectThisComputer";
-import {
-  reconnectActionView,
-  type ReconnectActionView,
-  type ReconnectOutcome,
-} from "../lib/thisComputerRefusal";
+import type { ReconnectOutcome } from "../../shared/reconnectOutcome";
+import { reconnectActionView, type ReconnectActionView } from "../lib/thisComputerRefusal";
 
 /**
  * "Reconnect this computer" for one surface. The flow itself is one per window

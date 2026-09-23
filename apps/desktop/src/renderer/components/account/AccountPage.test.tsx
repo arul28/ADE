@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { AccountPage, SignInCard, describeThisComputerMissing } from "./AccountPage";
-import { reconnectNeedsFreshSignIn } from "../../lib/thisComputerRefusal";
+import { reconnectNeedsFreshSignIn } from "../../../shared/reconnectOutcome";
 import { resetReconnectFlowForTests } from "../../lib/reconnectThisComputer";
 import { PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE } from "../../../../../ade-cli/src/services/account/accountMachinePublisherService";
 import { docs } from "../../onboarding/docsLinks";

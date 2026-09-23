@@ -381,11 +381,15 @@ Renderer — onboarding:
   own." once the brain's automatic repair gave up, and offers **Reconnect this
   computer** — or **Confirm it's you** for `pairing_authentication_required`.
   The button runs `hooks/useReconnectThisComputer.ts`, the same flow as the
-  Account page card, and the browser step shows its code in the bar. It is not
+  Account page card, and the browser step shows its code in the bar. The hook
+  only subscribes: the flow is one per window, in
+  `renderer/lib/reconnectThisComputer.ts`, so a press on a second surface joins
+  the attempt that is already running instead of starting a second device
+  login. It is not
   dismissable either: the automatic repair used to give up with only a
   diagnostic toast, and one install stayed removed for a month. The copy lives
-  in `renderer/lib/thisComputerRefusal.ts`, which the Account card and the
-  Connections pane also read. The desktop raises no OS notification for a give-up:
+  in `renderer/lib/thisComputerRefusal.ts`, which the Account card, the
+  Connections pane's This computer card, and the Machines list also read. The desktop raises no OS notification for a give-up:
   the only notification code in main is inline in `main.ts`, with no helper that
   brain events reach.
 - `apps/desktop/src/renderer/components/account/AccountPage.tsx` — account
@@ -434,11 +438,18 @@ Renderer — onboarding:
   Removing a machine is terminal — heartbeats never re-register it — so
   Reconnect is the only way back onto the roster. Outcome copy stays honest
   about the in-between case where the machine rejoined but push delivery has
-  not resumed. `ConfirmSheet` and `describeThisComputerMissing` live here; the
-  reconnect flow, `describeReconnectOutcome` and `reconnectNeedsFreshSignIn`
-  live in `hooks/useReconnectThisComputer.ts`, shared with the shell bar and the
-  Connections pane. `AccountPage` re-exports the pure helpers for existing
-  tests.
+  not resumed. `ConfirmSheet` and `describeThisComputerMissing` live here. The
+  reconnect flow lives in `renderer/lib/reconnectThisComputer.ts` (one attempt
+  per window) behind `hooks/useReconnectThisComputer.ts`. The refusal words live
+  in `renderer/lib/thisComputerRefusal.ts`. The outcome words
+  (`describeReconnectOutcome`, `reconnectNeedsFreshSignIn`, `readReconnectResult`
+  and the `ReconnectOutcome` type) live in `shared/reconnectOutcome.ts`, which
+  has no renderer or Node globals. `ade machines reconnect --text` and the
+  `ade code` `/reconnect` notice (`reconnectOutcomeNotice` in
+  `tuiClient/activityPane.ts`) read that module too, so the desktop, the CLI and
+  ADE Code say the same thing. The shell bar, the Connections pane and the
+  Machines list share the flow and both copy modules. `AccountPage` re-exports
+  `describeThisComputerMissing` for existing tests.
 - `apps/desktop/src/renderer/components/onboarding/WelcomeVideoGate.tsx`
   — one-time app-level welcome card backed by global app state. It
   uses the website's canonical hero assets and the privacy-enhanced YouTube
@@ -985,7 +996,12 @@ Renderer — settings:
   used to forget paired phones or revoke web clients. When the account-directory
   state is the brain-side unreadable session (`isBrainAccountSessionFailure`),
   the card adds a **Repair** button that restarts this Mac's background service
-  and re-reads the snapshot once it settles — see
+  and re-reads the snapshot once it settles. When the account directory refuses
+  this computer, the card's directory line says so ("This computer was removed
+  from your account on 14 August") and a **Reconnect this computer** (or
+  **Confirm it's you**) button sits beside it. The card reads that refusal only
+  from this computer's own snapshot, so a remote-bound pane and the hosted web
+  client never show it — see
   [Sync and multi-device](../sync-and-multi-device/README.md).
 - `apps/desktop/src/renderer/components/app/TopBar.tsx` and
   `ConnectionsPanel.tsx` — the single top-bar Connections control and its

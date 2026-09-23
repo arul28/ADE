@@ -361,6 +361,11 @@ describe("ADE CLI", () => {
       steps: [{
         method: "account.call",
         params: { action: "status", args: {} },
+      }, {
+        // A signed-in computer the account removed must not read as healthy.
+        key: "thisComputer",
+        method: "sync.getStatus",
+        optional: true,
       }],
     });
     expect(shouldAutoRegisterProjectForPlan(statusPlan)).toBe(false);
@@ -494,6 +499,22 @@ describe("ADE CLI", () => {
     expect(() => buildCliPlan(["machines", "reconnect", "mk_studio"])).toThrow(
       /does not accept a machine selector/,
     );
+    // --text says what happened in the desktop's words, including the partial
+    // success where the machine is back but Activity is still gated.
+    const reconnectText = (value: unknown) =>
+      formatOutput(value, { text: true } as any, inferFormatter(reconnect));
+    expect(reconnectText({
+      repaired: true, wasRevoked: true, published: true, pushRestored: true, state: "published", reason: null,
+    })).toBe("This computer is back on your account. Activity and alerts are delivering again.\n");
+    expect(reconnectText({
+      repaired: true, wasRevoked: true, published: true, pushRestored: false, state: "published", reason: null,
+    })).toContain("isn't delivering Activity yet");
+    expect(reconnectText({
+      repaired: false, wasRevoked: true, published: false, pushRestored: false, state: "http_error",
+      reason: "The account directory is unreachable", reasonCode: null,
+    })).toBe(
+      "Couldn't reconnect this computer: The account directory is unreachable. It's still disconnected from your account.\n",
+    );
     expect(() => buildCliPlan([
       "machines",
       "rename",
@@ -617,6 +638,50 @@ describe("ADE CLI", () => {
       text: true,
     }, inferFormatter(statusPlan))).toBe(
       "Not signed in — run `ade login`.\n",
+    );
+
+    // Signed in, but the directory refuses this computer: the answer names the
+    // removal date and the command, as the desktop banner does.
+    const removed = summarizeExecution({
+      plan: statusPlan,
+      connection,
+      values: {
+        result: { signedIn: true, email: "person@example.com", source: "device" },
+        thisComputer: {
+          routeHealth: {
+            accountDirectory: {
+              state: "http_error",
+              lastHttpStatus: 403,
+              lastHttpReason: "machine_revoked",
+              revokedAt: "2026-08-14T10:00:00.000Z",
+              recoveryGaveUpAt: Date.parse("2026-08-15T10:00:00.000Z"),
+            },
+          },
+        },
+      },
+    });
+    expect(removed).toMatchObject({
+      signedIn: true,
+      thisComputerRefusal: {
+        code: "machine_revoked",
+        revokedAt: "2026-08-14T10:00:00.000Z",
+        recoveryGaveUpAt: Date.parse("2026-08-15T10:00:00.000Z"),
+      },
+    });
+    expect(formatOutput(removed, { text: true } as any, "account-auth")).toBe(
+      "Signed in as person@example.com (device)\n"
+        + "This computer was removed from your ADE account on 2026-08-14. "
+        + "ADE stopped trying to reconnect it on its own. Run `ade machines reconnect` to rejoin.\n",
+    );
+    // A failed sync read (the step is optional) leaves the answer as it was.
+    const unknown = summarizeExecution({
+      plan: statusPlan,
+      connection,
+      values: { result: { signedIn: true, email: "person@example.com", source: "device" } },
+    });
+    expect(unknown).toMatchObject({ thisComputerRefusal: null });
+    expect(formatOutput(unknown, { text: true } as any, "account-auth")).toBe(
+      "Signed in as person@example.com (device)\n",
     );
   });
 
@@ -2142,6 +2207,24 @@ describe("ADE CLI", () => {
     expect(output).toContain("Shell: Stop the active shell before transferring the host.");
     expect(output).toContain("Paused chats remain available.");
     expect(output).toContain("Live sessions must stop first.");
+    // An HTTP 401 is not a refusal of this computer, so no removal rows.
+    expect(output).not.toContain("this computer");
+
+    const removedOutput = formatOutput({
+      routeHealth: {
+        accountDirectory: {
+          state: "http_error",
+          skipReason: "This machine was removed from your ADE account. Pair it again to reconnect.",
+          lastHttpStatus: 403,
+          lastHttpReason: "machine_revoked",
+          revokedAt: "2026-08-14T10:00:00.000Z",
+          recoveryGaveUpAt: Date.parse("2026-08-15T10:00:00.000Z"),
+        },
+      },
+    }, { text: true } as any, inferFormatter(plan));
+    expect(removedOutput).toMatch(/this computer\s+removed from your ADE account on 2026-08-14/);
+    expect(removedOutput).toMatch(/auto repair stopped\s+2026-08-15T10:00:00\.000Z/);
+    expect(removedOutput).toMatch(/reconnect with\s+ade machines reconnect/);
   });
 
   it("formats the authoritative relay blocker without mistaking historical control errors for one", () => {
@@ -6925,9 +7008,15 @@ describe("ADE CLI", () => {
       for (const request of initializeRequests) {
         expect(request.params).toMatchObject({ identity: { role: "cto" } });
       }
-      expect(requests.at(-1)).toEqual({
+      expect(requests.at(-2)).toEqual({
         method: "account.call",
         params: { action: "status", args: {} },
+      });
+      // The refusal read is optional: this server refuses it, and the sign-in
+      // answer above is unchanged.
+      expect(requests.at(-1)).toEqual({
+        method: "sync.getStatus",
+        params: { includeTransferReadiness: false },
       });
       expect(requests.some((request) => request.method === "projects.add")).toBe(false);
 
