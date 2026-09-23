@@ -5911,6 +5911,14 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
     if (typeof payload.apiKey !== "string") {
       throw new Error("ai.setDevinCloudCredentials requires apiKey.");
     }
+    // Bounds: Devin tokens are well under 1 KB and org ids under 64 chars —
+    // anything past these caps is abuse, not a credential.
+    if (payload.apiKey.length > 8192) {
+      throw new Error("ai.setDevinCloudCredentials apiKey is too long.");
+    }
+    if (typeof payload.orgId === "string" && payload.orgId.length > 256) {
+      throw new Error("ai.setDevinCloudCredentials orgId is too long.");
+    }
     const status = await requireService(args.aiIntegrationService, "AI integration service not available.").setDevinCloudCredentials({
       apiKey: payload.apiKey,
       ...(typeof payload.orgId === "string" ? { orgId: payload.orgId } : {}),

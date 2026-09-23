@@ -275,19 +275,21 @@ export function createDevinCloudFleetService(deps: FleetServiceDeps) {
     if (!session) throw new Error("Could not find this Devin session in your org.");
     if (session.isArchived) throw new Error("Unarchive this session before pulling it into a lane.");
 
-    const prUrl = session.pullRequests[0]?.prUrl ?? null;
-    const prNumber = githubPullNumber(prUrl);
-    if (!prNumber) {
+    if (!session.pullRequests.length) {
       throw new Error(
         "This session has not opened a GitHub pull request yet, so there is nothing to pull.",
       );
     }
 
-    // PR numbers are repo-local and the fleet is org-wide: a session from a
-    // different repository must not merge this project's same-numbered PR.
-    const prRepoKey = repoMatchKey(githubPullRepo(prUrl));
+    // PR numbers are repo-local and the fleet is org-wide, and a session can
+    // bind several repositories: find the PR that belongs to THIS project
+    // rather than trusting the first entry.
     const projectRepoKey = await originMatchKey();
-    if (!prRepoKey || !projectRepoKey || prRepoKey !== projectRepoKey) {
+    const prUrl = projectRepoKey
+      ? session.pullRequests.find((pr) => repoMatchKey(githubPullRepo(pr.prUrl)) === projectRepoKey)?.prUrl ?? null
+      : null;
+    const prNumber = githubPullNumber(prUrl);
+    if (!prNumber) {
       throw new Error("This session's pull request is not for this project's repository.");
     }
 

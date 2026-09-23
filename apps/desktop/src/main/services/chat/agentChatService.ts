@@ -46405,37 +46405,39 @@ export function createAgentChatService(args: {
     const laneBranch = laneInfo.branchRef?.trim();
     let branchOnRemote = false;
     if (repoUrl && laneBranch) {
-      try {
-        const headSha = (await runGit(["rev-parse", "HEAD"], {
+      const headSha = (await runGit(["rev-parse", "HEAD"], {
+        cwd: laneInfo.worktreePath,
+        timeoutMs: 8_000,
+      })).stdout.trim();
+      const remoteSha = async (): Promise<string | null> => {
+        const ls = await runGit(
+          ["ls-remote", "--heads", "origin", `refs/heads/${laneBranch}`],
+          { cwd: laneInfo.worktreePath, timeoutMs: 15_000 },
+        );
+        return ls.exitCode === 0 ? ls.stdout.split(/\s+/)[0] ?? null : null;
+      };
+      // Existence is not freshness: the remote ref must point at the lane's
+      // current HEAD or unpushed commits never reach the cloud session. When a
+      // publish is needed it must succeed — a cloud session launched against
+      // the default branch silently works from stale code.
+      if (headSha && (await remoteSha()) !== headSha) {
+        const push = await runGit(["push", "origin", `${laneBranch}:${laneBranch}`], {
           cwd: laneInfo.worktreePath,
-          timeoutMs: 8_000,
-        })).stdout.trim();
-        const remoteSha = async (): Promise<string | null> => {
-          const ls = await runGit(
-            ["ls-remote", "--heads", "origin", `refs/heads/${laneBranch}`],
-            { cwd: laneInfo.worktreePath, timeoutMs: 15_000 },
-          );
-          return ls.exitCode === 0 ? ls.stdout.split(/\s+/)[0] ?? null : null;
-        };
-        // Existence is not freshness: the remote ref must point at the lane's
-        // current HEAD or unpushed commits never reach the cloud session.
-        if (headSha && (await remoteSha()) !== headSha) {
-          const push = await runGit(["push", "origin", `${laneBranch}:${laneBranch}`], {
-            cwd: laneInfo.worktreePath,
-            timeoutMs: 60_000,
-          });
-          if (push.exitCode === 0) {
-            branchOnRemote = (await remoteSha()) === headSha;
-          }
-        } else {
-          branchOnRemote = Boolean(headSha);
-        }
-      } catch (error) {
-        logger.warn("agent_chat.devin_cloud_branch_publish_failed", {
-          laneId: trimmedLane,
-          branch: laneBranch,
-          error: error instanceof Error ? error.message : String(error),
+          timeoutMs: 60_000,
         });
+        if (push.exitCode !== 0) {
+          throw new Error(
+            `Could not publish lane branch '${laneBranch}' to origin — the Devin session would start without your lane commits. ${push.stderr.trim()}`,
+          );
+        }
+        branchOnRemote = (await remoteSha()) === headSha;
+        if (!branchOnRemote) {
+          throw new Error(
+            `Lane branch '${laneBranch}' did not reach origin at the expected commit — the Devin session would start without your lane commits.`,
+          );
+        }
+      } else {
+        branchOnRemote = Boolean(headSha);
       }
     }
     const cloudPrompt = repoUrl && laneBranch && branchOnRemote

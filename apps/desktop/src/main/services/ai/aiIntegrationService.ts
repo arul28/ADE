@@ -1675,7 +1675,10 @@ export function createAiIntegrationService(args: {
       persistDevinCloudOrgId(null);
       devinCloudClientCache = null;
       devinCloudCaller = null;
-      return { configured: false, authMode: null, orgId: null, orgName: null, error: null };
+      // Report the EFFECTIVE state: a DEVIN_API_KEY process env var still
+      // counts as configured, so Remove answers honestly instead of promising
+      // a disconnect the env overrides on the next read.
+      return getDevinCloudAuthStatus();
     }
     const orgId = args.orgId?.trim() || null;
     // Verify before persisting so a bad key never reaches the store.
