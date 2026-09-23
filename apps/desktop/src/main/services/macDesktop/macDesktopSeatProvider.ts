@@ -17,6 +17,7 @@ import type {
   DesktopSeatProvider,
   DesktopSeatReply,
   MacDesktopInputMode,
+  MacDesktopWalkStop,
   MacDesktopWindow,
 } from "../../../shared/types/macDesktop";
 import { MAC_DESKTOP_DRIVER_OPS, type MacDesktopDriverClient } from "./macDesktopDriverClient";
@@ -55,6 +56,22 @@ export const asNumber = (value: unknown, fallback: number): number =>
 /** A driver field that should have been a non-empty string. */
 export const asNullableString = (value: unknown): string | null =>
   (typeof value === "string" && value.trim().length ? value.trim() : null);
+
+const WALK_STOPS: ReadonlySet<string> = new Set<MacDesktopWalkStop>(["timeout", "stalled", "node_cap", "limit"]);
+
+/** The driver's `truncatedReason`, or null for a complete walk or an unknown reason. */
+export const asWalkStop = (value: unknown): MacDesktopWalkStop | null =>
+  (typeof value === "string" && WALK_STOPS.has(value) ? value as MacDesktopWalkStop : null);
+
+/**
+ * The lanes the driver says have a display, from a `ping` reply. Null when the
+ * reply has no list — an older driver — so the caller cannot mistake "not
+ * reported" for "none".
+ */
+export const asDisplayLaneIds = (value: unknown): Set<string> | null =>
+  (Array.isArray(value)
+    ? new Set(value.filter((laneId): laneId is string => typeof laneId === "string" && laneId.length > 0))
+    : null);
 
 export function createMacVirtualDisplayProvider(client: MacDesktopDriverClient): DesktopSeatProvider {
   const request = async (

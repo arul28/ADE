@@ -334,6 +334,29 @@ describe("ade mac-desktop text output", () => {
     expect(text).toContain("#91 Safari — Sign in");
   });
 
+  it("names the app that stopped answering instead of advising --limit", () => {
+    const observation = (extra: Record<string, unknown>) => formatOutput(
+      {
+        observation: {
+          id: "obs-b2",
+          laneId: "lane-1",
+          display: { width: 2560, height: 1440, scale: 2 },
+          elementCount: 0,
+          truncated: true,
+          elements: [],
+          windows: [{ id: 91, appName: "TextEdit", title: "Open" }],
+          ...extra,
+        },
+      },
+      { text: true } as never,
+      "mac-desktop-observation",
+    );
+    const stalled = observation({ truncatedReason: "stalled", stalledApps: ["TextEdit"] });
+    expect(stalled).toContain("Incomplete: TextEdit did not answer accessibility");
+    expect(stalled).not.toContain("raise --limit");
+    expect(observation({ truncatedReason: "timeout", stalledApps: [] })).toContain("ran out of time after 0 elements");
+  });
+
   it("prints an action result as what it resolved plus the state that followed", () => {
     const text = formatOutput(
       {

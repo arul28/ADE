@@ -89,6 +89,7 @@ import { createMacDesktopObservations, MacDesktopObservationError } from "./macD
 import { createMacDesktopInput } from "./macDesktopInput";
 import { createMacDesktopRecording, readCaptureBytes } from "./macDesktopRecording";
 import {
+  asDisplayLaneIds,
   asNullableString,
   asNumber,
   asRecord,
@@ -103,6 +104,32 @@ export const MAC_DESKTOP_RESOLUTION_SETTING_KEY = "macDesktop.resolution";
 
 /** How often the idle sweep runs. Cheap: it reads maps, never the driver. */
 const IDLE_SWEEP_INTERVAL_MS = 30_000;
+
+/**
+ * The most a status read waits on the driver for the lane's window list, and
+ * for the permission-watch toggle that rides along with it.
+ *
+ * `getStatus` is what every surface opens with — the pane sits on "Checking
+ * Mac Desktop…" until it answers — and with the helper busy those two driver
+ * calls used to wait out the client's 20-second timeout each. A status read
+ * that says "0 windows" a few seconds late is better than one that never
+ * arrives before the caller gives up.
+ */
+const STATUS_DRIVER_READ_TIMEOUT_MS = 4_000;
+
+type MacDesktopDisplayDestroyedReason = Extract<MacDesktopEventPayload, { type: "display-destroyed" }>["reason"];
+
+/** Resolves to `fallback` when `promise` has not settled within `ms`. */
+function withDeadline<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const deadline = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(fallback), ms);
+    timer.unref?.();
+  });
+  return Promise.race([promise.catch(() => fallback), deadline]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
 
 /**
  * A sweep that arrives this much later than scheduled means the machine was
@@ -331,7 +358,109 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
    */
   const listeners = new Set<(payload: MacDesktopEventPayload) => void>();
 
+  /** The last `clients/viewers` a lane's stream reported, so only a change is logged. */
+  const streamAudience = new Map<string, string>();
+  let lastLoggedHealthState: string | null = null;
+
+  /**
+   * The persistent record of what happened to each lane's display.
+   *
+   * One place, fed by the same events every client sees, so the log cannot
+   * disagree with what the pane was told. Ids, app names, sizes and reasons
+   * only: no file path, no token, no window title.
+   */
+  const logEvent = (payload: MacDesktopEventPayload): void => {
+    switch (payload.type) {
+      case "display-created":
+        deps.logger.info("mac_desktop.display_created", {
+          laneId: payload.display.laneId,
+          displayId: payload.display.displayId,
+          mode: payload.display.mode,
+          width: payload.display.width,
+          height: payload.display.height,
+        });
+        return;
+      case "display-destroyed":
+        streamAudience.delete(payload.laneId);
+        deps.logger[payload.reason === "driver_lost" ? "warn" : "info"]("mac_desktop.display_destroyed", {
+          laneId: payload.laneId,
+          reason: payload.reason,
+        });
+        return;
+      case "stream-started":
+        streamAudience.set(payload.status.laneId, `${payload.status.clients}/${payload.status.viewerChatSessionIds.length}`);
+        deps.logger.info("mac_desktop.stream_started", {
+          laneId: payload.status.laneId,
+          fps: payload.status.fps,
+          clients: payload.status.clients,
+          viewers: payload.status.viewerChatSessionIds.length,
+        });
+        return;
+      case "stream-stopped":
+        streamAudience.delete(payload.status.laneId);
+        deps.logger.info("mac_desktop.stream_stopped", {
+          laneId: payload.status.laneId,
+          lastError: payload.status.lastError,
+        });
+        return;
+      case "stream-error":
+        deps.logger.warn("mac_desktop.stream_error", {
+          laneId: payload.status.laneId,
+          error: payload.status.lastError,
+        });
+        return;
+      case "stream-status": {
+        const audience = `${payload.status.clients}/${payload.status.viewerChatSessionIds.length}`;
+        if (streamAudience.get(payload.status.laneId) === audience) return;
+        streamAudience.set(payload.status.laneId, audience);
+        deps.logger.info("mac_desktop.stream_viewers_changed", {
+          laneId: payload.status.laneId,
+          running: payload.status.running,
+          clients: payload.status.clients,
+          viewers: payload.status.viewerChatSessionIds.length,
+        });
+        return;
+      }
+      case "recording-changed":
+        deps.logger[payload.status.lastError ? "warn" : "info"](
+          payload.status.running ? "mac_desktop.recording_started" : "mac_desktop.recording_stopped",
+          {
+            laneId: payload.status.laneId,
+            durationMs: payload.status.durationMs,
+            captioned: Boolean(payload.status.caption),
+            error: payload.status.lastError ?? null,
+          },
+        );
+        return;
+      case "permission-changed":
+        deps.logger.info("mac_desktop.permissions_changed", { ...payload.permissions });
+        return;
+      case "driver-health":
+        if (payload.health.state === lastLoggedHealthState) return;
+        lastLoggedHealthState = payload.health.state;
+        deps.logger[payload.health.state === "running" || payload.health.state === "starting" ? "info" : "warn"](
+          "mac_desktop.driver_health",
+          { state: payload.health.state, version: payload.health.version },
+        );
+        return;
+      case "observation": {
+        const reason = payload.observation.truncatedReason;
+        if (reason !== "timeout" && reason !== "stalled") return;
+        deps.logger.warn("mac_desktop.observe_truncated", {
+          laneId: payload.laneId,
+          reason,
+          stalledApps: payload.observation.stalledApps ?? [],
+          elementCount: payload.observation.elementCount,
+        });
+        return;
+      }
+      default:
+        return;
+    }
+  };
+
   const emit = (payload: MacDesktopEventPayload): void => {
+    logEvent(payload);
     try {
       deps.onEvent?.(payload);
     } catch (error) {
@@ -418,7 +547,11 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     const client = backend?.client;
     if (!client || !client.isRunning()) return;
     try {
-      await client.request(MAC_DESKTOP_DRIVER_OPS.watchPermissions, { watch: desired });
+      await client.request(
+        MAC_DESKTOP_DRIVER_OPS.watchPermissions,
+        { watch: desired },
+        { timeoutMs: STATUS_DRIVER_READ_TIMEOUT_MS },
+      );
       permissionWatchSent = desired;
     } catch (error) {
       // Leave the recorded state disagreeing with the ask so the next sync
@@ -577,12 +710,10 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         // publishes the real reason itself, so the echo is dropped rather than
         // publishing a second, vaguer copy of the same fact.
         if (destroyingLanes.has(laneId)) return;
-        ownership.removeDisplay(laneId);
-        leases.releaseLane(laneId);
-        observations.forgetLane(laneId);
-        streaming.forgetLane(laneId);
-        recording.forgetLane(laneId);
-        emit({ type: "display-destroyed", laneId, reason: "stopped" });
+        // `terminated`: the window server ended the display. To every client
+        // that is the same fact as a lost driver — the screen is gone and
+        // nobody asked — so it is published with that reason.
+        forgetDisplay(laneId, asNullableString(event.reason) === "terminated" ? "driver_lost" : "stopped");
         return;
       }
       default:
@@ -606,18 +737,77 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     if (backend) emit({ type: "driver-health", health: backend.client.getHealth() });
   };
 
-  const onDriverLost = (reason: string): void => {
-    for (const laneId of ownership.laneIds()) {
-      streaming.forgetLane(laneId);
-      observations.forgetLane(laneId);
-      leases.releaseLane(laneId);
-      emit({ type: "display-destroyed", laneId, reason: "driver_lost" });
+  /**
+   * Drops a lane whose display is gone without ADE asking — the helper died
+   * or was restarted, or the window server ended the display — and tells every
+   * client, one fact per event, so each surface lands on Off.
+   *
+   * `display-destroyed` alone was not enough: a surface that keeps its own
+   * copy of the window list, the lease or the stream (the tool tile's "Mac
+   * Desktop active · 1 window", the floating player, the phone) only updates
+   * on the event for that piece, and kept showing a live desktop that no
+   * longer existed. So each piece this lane held is announced as released
+   * before the display itself. `destroyDisplay` is the path for a display ADE
+   * asked to destroy.
+   */
+  const forgetDisplay = (laneId: string, reason: MacDesktopDisplayDestroyedReason): void => {
+    const hadDisplay = ownership.hasDisplay(laneId);
+    const hadWindows = ownership.windowCount(laneId) > 0;
+    const wasStreaming = streamServer.isStreaming(laneId);
+    const hadLease = leases.get(laneId) != null;
+    const liveRecording = recordings.get(laneId);
+    streaming.forgetLane(laneId);
+    observations.forgetLane(laneId);
+    leases.releaseLane(laneId);
+    recording.forgetLane(laneId);
+    ownership.removeDisplay(laneId);
+    if (wasStreaming) {
+      emit({ type: "stream-stopped", status: streaming.buildStreamStatus(laneId, { redacted: true }) });
     }
+    if (liveRecording?.running) {
+      emit({
+        type: "recording-changed",
+        status: {
+          ...liveRecording,
+          running: false,
+          lastError: "The lane's Mac Desktop display was lost before the recording stopped.",
+        },
+      });
+    }
+    if (hadLease) emit({ type: "lease-changed", laneId, lease: null });
+    if (hadWindows) emit({ type: "windows-changed", laneId, windows: [] });
+    if (hadDisplay) emit({ type: "display-destroyed", laneId, reason });
+  };
+
+  const onDriverLost = (reason: string): void => {
+    deps.logger.warn("mac_desktop.driver_lost", { reason, lanes: ownership.laneIds() });
+    for (const laneId of ownership.laneIds()) forgetDisplay(laneId, "driver_lost");
     ownership.clear();
     recording.clear();
     streaming.clear();
     reconciled = false;
-    deps.logger.warn("mac_desktop.driver_lost", { reason });
+  };
+
+  /**
+   * Drops every lane the service holds a display for that the helper does not.
+   *
+   * Runs on each health read, so it covers every way the two can disagree: a
+   * helper restarted behind the service's back, a display the window server
+   * ended while its event was lost, a helper replaced by a new one. `before`
+   * is the service's view from before the `ping` was sent. A lane is only
+   * dropped if it was already there then and has not been replaced since,
+   * because a display whose `create` was answered after the `ping` was taken
+   * is simply not in that `ping`'s list yet.
+   */
+  const reconcileWithDriver = (driverLaneIds: Set<string>, before: Map<string, MacDesktopDisplay>): void => {
+    for (const [laneId, earlier] of before) {
+      if (driverLaneIds.has(laneId)) continue;
+      if (destroyingLanes.has(laneId)) continue;
+      const current = ownership.getDisplay(laneId);
+      if (!current || current.createdAt !== earlier.createdAt || current.displayId !== earlier.displayId) continue;
+      deps.logger.warn("mac_desktop.display_missing_from_driver", { laneId, displayId: current.displayId });
+      forgetDisplay(laneId, "driver_lost");
+    }
   };
 
   const ensureDriver = async (): Promise<{ client: MacDesktopDriverClient; provider: DesktopSeatProvider }> => {
@@ -651,8 +841,11 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   };
 
   const refreshDriverHealth = async (client: MacDesktopDriverClient, seat: DesktopSeatProvider): Promise<void> => {
+    const before = new Map(ownership.listDisplays().map((display) => [display.laneId, display]));
     try {
       const reply = await seat.health();
+      const driverLaneIds = asDisplayLaneIds(reply.displays);
+      if (driverLaneIds) reconcileWithDriver(driverLaneIds, before);
       client.setVersion(asNullableString(reply.version));
       applyPermissions(asRecord(reply.permissions) as Partial<MacDesktopPermissions>);
       const mode = asNullableString(reply.displayMode);
@@ -677,7 +870,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     try {
       await seat.reconcile({ liveLaneIds: ownership.laneIds() });
     } catch (error) {
-      deps.logger.debug("mac_desktop.reconcile_failed", {
+      deps.logger.warn("mac_desktop.reconcile_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
     }
@@ -697,8 +890,12 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       version: null,
     };
     const supported = isDarwin && driverHealth.state !== "missing" && driverHealth.state !== "unsupported";
+    const windows = laneId
+      ? await withDeadline(windowLifecycle.listInternal(laneId), STATUS_DRIVER_READ_TIMEOUT_MS, [])
+      : [];
+    // Read after the window list, not before it: the display can be dropped
+    // while that read is in flight, and a status must not report it anyway.
     const display = laneId ? ownership.getDisplay(laneId) : null;
-    const windows = laneId ? await windowLifecycle.listInternal(laneId).catch(() => []) : [];
     const streamStatus = laneId ? streaming.buildStreamStatus(laneId, { redacted: true }) : null;
     return {
       platform,
@@ -749,6 +946,11 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       ? args.resolution
       : null;
     if (requested) deps.writeSetting?.(MAC_DESKTOP_RESOLUTION_SETTING_KEY, requested);
+    // The backend first: bringing it up reads its health, and that read drops
+    // any display the helper no longer has. Checking `existing` before it made
+    // `start` answer "already running" for a screen that was gone, and every
+    // command after it fail with "no display".
+    await ensureProvider();
     const existing = ownership.getDisplay(laneId);
     if (existing) {
       const wanted = requested ? MAC_DESKTOP_RESOLUTION_PRESETS[requested] : null;
@@ -827,7 +1029,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
           const reply = await seat.destroy({ laneId });
           releasedWindows = asNumber(reply.releasedWindows, releasedWindows);
         } catch (error) {
-          deps.logger.debug("mac_desktop.destroy_display_failed", {
+          deps.logger.warn("mac_desktop.destroy_display_failed", {
             laneId,
             error: error instanceof Error ? error.message : String(error),
           });
@@ -873,7 +1075,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       const lastActivityMs = Date.parse(display.lastActivityAt);
       if (Number.isFinite(lastActivityMs) && atMs - lastActivityMs < MAC_DESKTOP_IDLE_RELEASE_MS) continue;
       void destroyDisplay(display.laneId, "idle").catch((error) => {
-        deps.logger.debug("mac_desktop.idle_release_failed", {
+        deps.logger.warn("mac_desktop.idle_release_failed", {
           laneId: display.laneId,
           error: error instanceof Error ? error.message : String(error),
         });
@@ -903,7 +1105,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         // rather than a permanent "starting". A failure to start is health,
         // not an exception.
         await ensureDriver().catch((error) => {
-          deps.logger.debug("mac_desktop.status_driver_start_failed", {
+          deps.logger.warn("mac_desktop.status_driver_start_failed", {
             error: error instanceof Error ? error.message : String(error),
           });
         });

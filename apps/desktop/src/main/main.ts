@@ -371,6 +371,7 @@ import { createArtifactMediaServer } from "./services/computerUse/artifactMediaS
 import { sceneDocumentStore } from "./services/scenes/sceneDocumentStore";
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
 import { createMacDesktopService } from "./services/macDesktop/macDesktopService";
+import { createMacDesktopLogger } from "./services/macDesktop/macDesktopLogger";
 import { createAppleStreamRelayForService } from "./services/ios/appleStreamRelay";
 import { hasAppleLocalViewer } from "./services/ios/appleLocalViewers";
 import { setActiveAppleStreamRouter } from "../../../ade-cli/src/services/sync/appleStreamListenerRoute";
@@ -4675,7 +4676,8 @@ app.whenReady().then(async () => {
      */
     const macDesktopService = createMacDesktopService({
       projectRoot,
-      logger,
+      // Also `desktop-main.jsonl`: see `macDesktopLogger.ts`.
+      logger: createMacDesktopLogger(logger, getMachineMainLogger()),
       onEvent: (payload) => emitProjectEvent(projectRoot, IPC.macDesktopEvent, payload),
       resolveLaneWorktreePath: (laneId: string): string | null => {
         try {

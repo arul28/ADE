@@ -167,6 +167,7 @@ import {
   createMacDesktopService,
   type MacDesktopService,
 } from "../../desktop/src/main/services/macDesktop/macDesktopService";
+import { createMacDesktopLogger } from "../../desktop/src/main/services/macDesktop/macDesktopLogger";
 import type { BuiltInBrowserService } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserService";
 import {
   createBridgeBrowserActorCapabilityIssuer,
@@ -185,6 +186,7 @@ import {
 import { createWorkToolShowRequests } from "./services/workTools/workToolShowRequests";
 import { WORK_TOOLS_STATE_CHANGED_EVENT } from "../../desktop/src/shared/types/workTools";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
+import { createBrainLogger } from "./services/runtime/brainLogger";
 import { createPushRegistrationStore } from "./services/push/pushRegistrationStore";
 import { createPushRelayClient } from "./services/push/pushRelayClient";
 import { createAccountRuntimeLifecycle } from "./services/account/accountRuntimeLifecycle";
@@ -585,6 +587,24 @@ export function inferAgentSkillsRootForCliEntry(
 }
 
 let legacyAdeSkillsCleanedForCli = false;
+
+/**
+ * `brain.jsonl`, for the Mac Desktop service. One per process: the driver, its
+ * displays and its permission probes are machine facts, whichever project
+ * runtime spawned the helper. Null when the machine layout cannot be resolved,
+ * in which case the service still logs to its project log.
+ */
+let macDesktopMachineLogger: Logger | null | undefined;
+
+function getMacDesktopMachineLogger(): Logger | null {
+  if (macDesktopMachineLogger !== undefined) return macDesktopMachineLogger;
+  try {
+    macDesktopMachineLogger = createBrainLogger(path.join(resolveMachineAdeLayout().runtimeDir, "brain.jsonl"));
+  } catch {
+    macDesktopMachineLogger = null;
+  }
+  return macDesktopMachineLogger;
+}
 
 /**
  * Remove legacy ADE-managed user-global copies when they are provably unchanged.
@@ -1569,7 +1589,7 @@ export async function createAdeRuntime(args: {
       ? null
       : createMacDesktopService({
         projectRoot,
-        logger,
+        logger: createMacDesktopLogger(logger, getMacDesktopMachineLogger()),
         onEvent: (event) => pushEvent("runtime", { type: "mac_desktop_event", event }),
         resolveLaneWorktreePath: (laneId: string): string | null => {
           try {

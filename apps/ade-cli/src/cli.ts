@@ -26896,8 +26896,18 @@ function macDesktopObservationSections(
   }
   // Truncation is a fact the agent has to act on — it means the element it
   // wants may simply not be in the list — so it is stated, not implied by two
-  // numbers in the header.
-  if (observation.truncated === true) {
+  // numbers in the header. A timeout or a stalled app is a different fact from
+  // a cap: part of the display was never read, and --limit cannot bring it back.
+  const stalledApps = (Array.isArray(observation.stalledApps) ? observation.stalledApps : [])
+    .filter((app): app is string => typeof app === "string" && app.length > 0);
+  if (observation.truncatedReason === "stalled" || observation.truncatedReason === "timeout") {
+    sections.push(
+      "",
+      stalledApps.length
+        ? `Incomplete: ${stalledApps.join(", ")} did not answer accessibility, so those elements are missing. Take a screenshot to see it, or observe again in a few seconds.`
+        : `Incomplete: the element walk ran out of time after ${elements.length} elements. Narrow with --window <id>.`,
+    );
+  } else if (observation.truncated === true) {
     sections.push(
       "",
       `Truncated: ${elements.length} of ${observation.elementCount ?? "?"} elements shown. Narrow with --window <id>, or raise --limit.`,

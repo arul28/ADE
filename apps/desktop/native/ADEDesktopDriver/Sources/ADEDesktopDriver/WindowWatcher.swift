@@ -99,6 +99,7 @@ extension WindowControl {
             for window in current where !known.contains(window.id) && window.laneId == nil {
                 do {
                     _ = try park(laneId: laneId, windowId: window.id, origin: "ade_launched")
+                    notReadyLogged.remove(window.id)
                     touchedLanes.insert(laneId)
                 } catch {
                     let code = (error as? DriverError)?.code
@@ -119,7 +120,9 @@ extension WindowControl {
                                 ]
                             )
                         )
-                        log("window \(window.id) of pid \(pid) is not ready yet; retrying on the next poll")
+                        if notReadyLogged.insert(window.id).inserted {
+                            log("window \(window.id) of pid \(pid) is not ready yet; retrying on each poll")
+                        }
                     } else {
                         emit(
                             DriverEvent(

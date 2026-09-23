@@ -131,19 +131,30 @@ final class WindowControl {
     var watchedPids: [pid_t: String] = [:]
     var observers: [pid_t: AXObserver] = [:]
     var knownWindowsByPid: [pid_t: Set<CGWindowID>] = [:]
+    /// Windows the sweep has already logged as "not ready". The sweep retries
+    /// such a window every second, and its log now reaches the machine log,
+    /// so the line is written once per window rather than once per second.
+    var notReadyLogged: Set<CGWindowID> = []
     var pollTimer: Timer?
     private var placements: [String: DisplayPlacement] = [:]
     private var displayIds: [String: CGDirectDisplayID] = [:]
     let lock = NSRecursiveLock()
 
+    /// Apps that stopped answering the Accessibility API recently. Shared with
+    /// the observation walk, so a stall one of them sees is skipped by the
+    /// other instead of paid for again. See `AXWalkBudget.swift`.
+    let stalls: AXStallRegistry
+
     init(
         ownership: OwnershipRegistry,
         log: @escaping (String) -> Void,
-        emit: @escaping (DriverEvent) -> Void
+        emit: @escaping (DriverEvent) -> Void,
+        stalls: AXStallRegistry = AXStallRegistry()
     ) {
         self.ownership = ownership
         self.log = log
         self.emit = emit
+        self.stalls = stalls
     }
 
     // -----------------------------------------------------------------------
@@ -336,23 +347,25 @@ final class WindowControl {
     /// One app's real windows, and which of them are minimized.
     ///
     /// `nil` — not an empty dictionary — when the app cannot be read: no
-    /// Accessibility trust, an app that publishes no `AXWindows`, or a system
-    /// without the private `CGWindowID` bridge. The caller must treat that as
+    /// Accessibility trust, an app that publishes no `AXWindows`, an app that
+    /// stopped answering, or a system without the private `CGWindowID` bridge. The caller must treat that as
     /// "no opinion" and keep the window server's answer, because a `nil` read
     /// mistaken for "this app has no windows" hides every window it owns.
     private func axWindowMinimizedState(pid: pid_t) -> [CGWindowID: Bool]? {
         guard AXWindowBridge.isAvailable else { return nil }
-        let application = AXUIElementCreateApplication(pid)
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(application, kAXWindowsAttribute as CFString, &value) == .success,
-              let elements = value as? [AXUIElement],
+        guard let elements = axWindowElements(pid: pid),
               !elements.isEmpty
         else { return nil }
         var state: [CGWindowID: Bool] = [:]
         for element in elements {
             guard let id = AXWindowBridge.windowId(of: element) else { continue }
             var minimizedValue: CFTypeRef?
+            AXUIElementSetMessagingTimeout(element, AXTimeouts.walkRead)
             let read = AXUIElementCopyAttributeValue(element, kAXMinimizedAttribute as CFString, &minimizedValue)
+            if AXCallResult.classify(rawError: read.rawValue) == .timedOut {
+                noteStall(pid: pid, during: "reading a window's minimized state")
+                return nil
+            }
             state[id] = read == .success && (minimizedValue as? Bool ?? false)
         }
         // Every element answered without an id is the bridge failing on this
@@ -419,12 +432,36 @@ final class WindowControl {
     // The CGWindowID → AXUIElement bridge
     // -----------------------------------------------------------------------
 
-    func axWindow(for window: DesktopWindow) -> AXUIElement? {
-        let application = AXUIElementCreateApplication(window.pid)
+    /// An app's `AXWindows`, read with the walk's short timeout, or nil.
+    ///
+    /// Every lookup of a window by id starts here, from the watcher's sweep to
+    /// `observe`, so this is where a stalled app is noticed and then skipped:
+    /// the read is not even attempted while the app is cooling down, and a read
+    /// that times out puts it there. Without that, a sweep every second paid a
+    /// full timeout per window of a stalled app on the main thread.
+    func axWindowElements(pid: pid_t) -> [AXUIElement]? {
+        if stalls.isStalled(pid: pid) { return nil }
+        let application = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(application, AXTimeouts.walkRead)
         var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(application, kAXWindowsAttribute as CFString, &value) == .success,
-              let elements = value as? [AXUIElement]
-        else { return nil }
+        let result = AXUIElementCopyAttributeValue(application, kAXWindowsAttribute as CFString, &value)
+        if AXCallResult.classify(rawError: result.rawValue) == .timedOut {
+            noteStall(pid: pid, during: "reading its windows")
+            return nil
+        }
+        guard result == .success, let elements = value as? [AXUIElement] else { return nil }
+        return elements
+    }
+
+    /// Records a stall, and logs it only when it is new.
+    func noteStall(pid: pid_t, during activity: String) {
+        guard stalls.noteStall(pid: pid) else { return }
+        let appName = NSRunningApplication(processIdentifier: pid)?.localizedName ?? "pid \(pid)"
+        log("\(appName) did not answer accessibility within \(AXTimeouts.walkRead)s while \(activity); skipping it for \(Int(stalls.cooldown))s")
+    }
+
+    func axWindow(for window: DesktopWindow) -> AXUIElement? {
+        guard let elements = axWindowElements(pid: window.pid) else { return nil }
 
         if AXWindowBridge.isAvailable {
             for element in elements where AXWindowBridge.windowId(of: element) == window.id {
@@ -458,6 +495,10 @@ final class WindowControl {
     func axWindowWhenReady(for window: DesktopWindow) -> Result<AXUIElement, WindowReadinessFailure> {
         var attempt = 0
         while let delay = WindowReadiness.delaySeconds(beforeAttempt: attempt) {
+            // A stalled app is not a slow one: every retry would pay the same
+            // timeout again. "Not ready" keeps it on the watch list, and the
+            // next sweep after the cooldown tries again.
+            if stalls.isStalled(pid: window.pid) { return .failure(.notReady) }
             if delay > 0 {
                 // The run loop keeps turning: the app publishing the window is
                 // answering on the main thread too, and sleeping outright would

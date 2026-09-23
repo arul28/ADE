@@ -242,6 +242,9 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
         stopReason: reason,
       };
       recordings.set(laneId, failed);
+      // Cleared before the event: a listener that asks to stop again on
+      // "stopped" must hear "not running", not get this finished stop back.
+      stopping.delete(laneId);
       deps.emit({ type: "recording-changed", status: failed });
       throw error;
     }
@@ -313,6 +316,7 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
       bytes: await readCaptureBytes(filePath),
     };
     recordings.set(laneId, status);
+    stopping.delete(laneId);
     deps.emit({ type: "recording-changed", status });
     return status;
   };

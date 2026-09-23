@@ -69,6 +69,10 @@ final class VirtualDisplayHost {
     /// Why the private API could not be used, once something has tried.
     private(set) var unavailableReason: String?
 
+    /// Called on the main queue when the window server ends a lane's current
+    /// display on its own. The handle is already gone by then.
+    var onTerminated: ((String) -> Void)?
+
     init(log: @escaping (String) -> Void) {
         self.log = log
         self.unavailableReason = Self.probeReason(className: className)
@@ -198,6 +202,22 @@ final class VirtualDisplayHost {
         return stale.sorted()
     }
 
+    /// The window server's termination handler.
+    ///
+    /// It used to only log, which left the handle in place: the driver kept
+    /// answering for a display that no longer existed, and the service kept
+    /// telling every client the lane had a screen. A display this process
+    /// released itself has no handle by the time the handler runs, so a
+    /// termination that follows our own destroy is a no-op here.
+    private func displayTerminated(laneId: String, displayId: CGDirectDisplayID?) {
+        lock.lock()
+        let isCurrent = displayId != nil && handles[laneId]?.displayId == displayId
+        if isCurrent { handles.removeValue(forKey: laneId) }
+        lock.unlock()
+        log("window server terminated virtual display \(displayId.map(String.init) ?? "?") for lane \(laneId)")
+        if isCurrent { onTerminated?(laneId) }
+    }
+
     func destroyAll() {
         lock.lock()
         defer { lock.unlock() }
@@ -251,8 +271,12 @@ final class VirtualDisplayHost {
             NSNumber(value: VirtualDisplayIdentity.serial(forLane: laneId))
         )
         ObjCDynamic.setProperty(descriptor, "queue", DispatchQueue.main)
+        // Filled in once the display has an id. The handler compares it with
+        // the lane's current handle, so a late termination of a display this
+        // lane already replaced cannot take the new one down with it.
+        let createdDisplayId = ValueBox<CGDirectDisplayID>()
         let terminationHandler: @convention(block) (AnyObject?, AnyObject?) -> Void = { [weak self] _, _ in
-            self?.log("window server terminated the virtual display for lane \(laneId)")
+            self?.displayTerminated(laneId: laneId, displayId: createdDisplayId.value)
         }
         ObjCDynamic.setProperty(descriptor, "terminationHandler", terminationHandler)
 
@@ -294,6 +318,7 @@ final class VirtualDisplayHost {
             fail("The virtual display came up without a display id.")
             return nil
         }
+        createdDisplayId.set(displayId)
 
         // Everything reported back is measured, never assumed: `hiDPI` is a
         // request, and a display that came up at a different size or scale than

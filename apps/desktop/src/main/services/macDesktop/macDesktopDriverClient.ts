@@ -84,6 +84,19 @@ const MAX_RESTART_DELAY_MS = 10_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
 /** A single NDJSON line longer than this is a protocol fault, not a message. */
 const MAX_LINE_BYTES = 8 * 1024 * 1024;
+/**
+ * How long a restart waits for the old helper to exit on SIGTERM before it
+ * kills it outright.
+ *
+ * The helper handles SIGTERM on its main thread, and a main thread stuck in a
+ * framework call does not get to it. Going ahead without the kill started a
+ * second helper while the first still held every lane's virtual display.
+ */
+const RESTART_TERM_GRACE_MS = 2_000;
+/** And how long after the SIGKILL before the restart proceeds regardless. */
+const RESTART_KILL_GRACE_MS = 1_000;
+/** One stderr line longer than this is cut before it reaches the log. */
+const MAX_STDERR_LINE_CHARS = 2_000;
 
 export class MacDesktopDriverError extends Error {
   readonly code: string;
@@ -134,6 +147,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
   let childReady = false;
   let disposed = false;
   let stdoutBuffer = "";
+  let stderrBuffer = "";
   let nextRequestId = 0;
   let restartAttempts = 0;
   let restartTimer: ReturnType<typeof setTimeout> | null = null;
@@ -303,14 +317,43 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
     }
   };
 
+  /**
+   * The helper's stderr, one log line per line it wrote.
+   *
+   * At `info`, not `debug`: the default level drops `debug`, and the helper's
+   * stderr is the only record of what it saw — a watchdog answering for a
+   * stuck request, an app that stopped answering accessibility, a display the
+   * window server ended. Everything it writes there is a lane id, an app name,
+   * a window id or a framework error; nothing a user typed.
+   */
+  const consumeStderr = (chunk: string): void => {
+    stderrBuffer += chunk;
+    let newlineIndex = stderrBuffer.indexOf("\n");
+    while (newlineIndex >= 0) {
+      const line = stderrBuffer.slice(0, newlineIndex).trim();
+      stderrBuffer = stderrBuffer.slice(newlineIndex + 1);
+      if (line.length) {
+        deps.logger.info("mac_desktop.driver_stderr", { message: line.slice(0, MAX_STDERR_LINE_CHARS) });
+      }
+      newlineIndex = stderrBuffer.indexOf("\n");
+    }
+    // A partial line this long is not going to end; log what there is.
+    if (stderrBuffer.length > MAX_STDERR_LINE_CHARS) {
+      deps.logger.info("mac_desktop.driver_stderr", { message: stderrBuffer.slice(0, MAX_STDERR_LINE_CHARS) });
+      stderrBuffer = "";
+    }
+  };
+
   const scheduleRestart = (): void => {
     if (disposed || restartTimer) return;
     restartAttempts += 1;
     if (restartAttempts > MAX_RESTART_ATTEMPTS) {
+      deps.logger.error("mac_desktop.driver_crash_loop", { attempts: restartAttempts - 1 });
       publishHealth();
       return;
     }
     const delay = Math.min(MAX_RESTART_DELAY_MS, BASE_RESTART_DELAY_MS * 2 ** (restartAttempts - 1));
+    deps.logger.info("mac_desktop.driver_restart_scheduled", { attempt: restartAttempts, delayMs: delay });
     restartTimer = setTimeout(() => {
       restartTimer = null;
       if (disposed) return;
@@ -374,12 +417,11 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
       child = spawned;
       childReady = false;
       stdoutBuffer = "";
+      stderrBuffer = "";
       spawned.stdout.setEncoding("utf8");
       spawned.stderr.setEncoding("utf8");
       spawned.stdout.on("data", (chunk: string) => consumeStdout(chunk));
-      spawned.stderr.on("data", (chunk: string) => {
-        deps.logger.debug("mac_desktop.driver_stderr", { message: chunk.slice(0, 2_000) });
-      });
+      spawned.stderr.on("data", (chunk: string) => consumeStderr(chunk));
       spawned.stdin.on("error", (error: Error) => {
         if (!disposed) deps.logger.debug("mac_desktop.driver_stdin_error", { error: error.message });
       });
@@ -430,7 +472,14 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
           stableTimer = null;
         }
         const detail = signal ? `signal ${signal}` : `code ${code ?? "unknown"}`;
-        deps.logger.info("mac_desktop.driver_exited", { code, signal, disposed });
+        // Unasked-for, this took every lane's display with it: a warning.
+        deps.logger[disposed ? "info" : "warn"]("mac_desktop.driver_exited", {
+          code,
+          signal,
+          disposed,
+          pid: spawned.pid ?? null,
+          pendingRequests: pending.size,
+        });
         settlePending(new MacDesktopDriverError(
           "MAC_DESKTOP_DRIVER_UNAVAILABLE",
           `The desktop driver stopped (${detail}).`,
@@ -481,6 +530,15 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
       const timer = timeoutMs > 0
         ? setTimeout(() => {
           pending.delete(id);
+          // The helper's own watchdog answers a stuck handler at 15 seconds,
+          // so a request that reaches this timer was never dispatched: the
+          // helper's main thread was busy with something else the whole time.
+          deps.logger.warn("mac_desktop.driver_request_timeout", {
+            op,
+            timeoutMs,
+            pendingRequests: pending.size,
+            pid: active.pid ?? null,
+          });
           reject(new MacDesktopDriverError(
             "MAC_DESKTOP_DRIVER_UNAVAILABLE",
             `The desktop driver did not answer ${op} in ${timeoutMs}ms.`,
@@ -532,6 +590,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
         restartTimer = null;
       }
       const running = child;
+      deps.logger.info("mac_desktop.driver_restart_requested", { pid: running?.pid ?? null });
       if (running) {
         // Null `child` first. The `close` handler attributes a close to the
         // current handle, so leaving this one current would let a requested
@@ -560,10 +619,22 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
             // Already gone; the handle was the only thing left of it.
             done();
           }
-          // A close that never arrives must not wedge the restart. Unref'd so
-          // it cannot hold the process open on its own.
-          const fallback = setTimeout(done, 2_000);
-          fallback.unref?.();
+          // A close that never arrives must not wedge the restart, and the
+          // process behind it must not outlive it either: a helper still
+          // holding its displays beside a new one is two owners of one lane.
+          // Unref'd so neither timer holds the process open on its own.
+          const escalate = setTimeout(() => {
+            if (settled) return;
+            deps.logger.warn("mac_desktop.driver_restart_kill", { pid: running.pid ?? null });
+            try {
+              running.kill("SIGKILL");
+            } catch {
+              // Already gone.
+            }
+            const fallback = setTimeout(done, RESTART_KILL_GRACE_MS);
+            fallback.unref?.();
+          }, RESTART_TERM_GRACE_MS);
+          escalate.unref?.();
         });
       }
       restartAttempts = 0;

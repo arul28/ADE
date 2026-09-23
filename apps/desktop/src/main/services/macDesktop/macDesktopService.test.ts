@@ -12,6 +12,7 @@ import {
   MAC_DESKTOP_LEASE_TTL_MS,
   macDesktopPaneCaption,
   type MacDesktopEventPayload,
+  type MacDesktopRecordingStatus,
 } from "../../../shared/types/macDesktop";
 import {
   MAC_DESKTOP_DRIVER_OPS,
@@ -1020,6 +1021,25 @@ describe("macDesktopService proof provenance and recording rules", () => {
     vi.useRealTimers();
   });
 
+  /**
+   * The next time a lane's recording is published as stopped.
+   *
+   * A cap stop is a timer, but what it runs is not: it files the proof and
+   * reads the finished file's size from disk before it publishes. Advancing
+   * fake timers fires the timer and nothing more, so an assertion made right
+   * after the advance raced real disk I/O, and lost it under load. Awaiting
+   * the published stop is the one moment the stop is actually done.
+   */
+  const nextRecordingStop = (
+    service: ReturnType<typeof makeService>["service"],
+  ): Promise<MacDesktopRecordingStatus> => new Promise((resolve) => {
+    const unsubscribe = service.subscribe((event) => {
+      if (event.type !== "recording-changed" || event.status.running) return;
+      unsubscribe();
+      resolve(event.status);
+    });
+  });
+
   const chatOwners = (request: ComputerUseArtifactIngestionRequest): string[] =>
     (request.owners ?? []).filter((owner) => owner.kind === "chat_session").map((owner) => owner.id);
 
@@ -1086,10 +1106,12 @@ describe("macDesktopService proof provenance and recording rules", () => {
     const started = await service.startRecording({ laneId: "lane-1", caption: "the flow", chatSessionId: "chat-1" });
     expect(started.maxDurationMs).toBe(600_000);
 
+    const capStop = nextRecordingStop(service);
     await vi.advanceTimersByTimeAsync(599_000);
     expect(driver.calls.some((call) => call.op === MAC_DESKTOP_DRIVER_OPS.stopRecording)).toBe(false);
 
     await vi.advanceTimersByTimeAsync(1_000);
+    await capStop;
     expect(driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.stopRecording)).toHaveLength(1);
     const stopped = events.filter((event) =>
       event.type === "recording-changed" && event.status.running === false);
@@ -1097,7 +1119,12 @@ describe("macDesktopService proof provenance and recording rules", () => {
     expect(stopped[0]).toMatchObject({ status: { stopReason: "cap", proofArtifactId: "artifact-1-0" } });
     expect(broker.requests[0]!.inputs[0]!.description).toContain("Stopped at its 10:00 cap.");
     expect(chatOwners(broker.requests[0]!)).toEqual(["chat-1"]);
-    // A stop after the cap is a clean "not running", not a second file.
+    // A stop after the cap is a clean "not running", not a second file. The
+    // recorder publishes "stopped" a moment before it lets go of its own stop,
+    // and a stop asked in that moment is handed that same stop back; the first
+    // call waits it out whichever side of the moment it lands on.
+    await service.stopRecording({ laneId: "lane-1" }).catch(() => null);
+    expect(driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.stopRecording)).toHaveLength(1);
     await expect(service.stopRecording({ laneId: "lane-1" })).rejects.toThrow(/is not recording its desktop/);
     service.dispose();
   });
@@ -1111,7 +1138,9 @@ describe("macDesktopService proof provenance and recording rules", () => {
     const { service, events } = makeService({ driver, ingestArtifacts: broker.ingest });
     await service.start({ laneId: "lane-1" });
     await service.startRecording({ laneId: "lane-1", chatSessionId: "chat-1" });
+    const capStop = nextRecordingStop(service);
     await vi.advanceTimersByTimeAsync(600_000);
+    await capStop;
 
     expect(broker.requests).toHaveLength(1);
     expect(broker.requests[0]!.inputs[0]).toMatchObject({
@@ -1147,7 +1176,9 @@ describe("macDesktopService proof provenance and recording rules", () => {
 
     const capped = await service.startRecording({ laneId: "lane-1", caption: "short", maxSeconds: 30 });
     expect(capped.maxDurationMs).toBe(30_000);
+    const capStop = nextRecordingStop(service);
     await vi.advanceTimersByTimeAsync(30_000);
+    await capStop;
     expect((await service.getStatus({ laneId: "lane-1" })).recording).toMatchObject({
       running: false,
       stopReason: "cap",
@@ -1445,6 +1476,215 @@ describe("macDesktopService teardown", () => {
     unsubscribe();
     await service.stop({ laneId: "lane-1" });
     expect(seen.some((event) => event.type === "display-destroyed")).toBe(false);
+    service.dispose();
+  });
+});
+
+describe("macDesktopService stale display state", () => {
+  const window = (laneId: string) => ({
+    id: 501,
+    pid: 77,
+    appName: "TextEdit",
+    bundleId: "com.apple.TextEdit",
+    title: "Untitled",
+    frame: { x: 8000, y: 0, width: 800, height: 600 },
+    laneId,
+    origin: "ade_launched",
+    onDisplayId: 7,
+    minimized: false,
+    singleInstance: false,
+  });
+
+  const healthWith = (displays: string[]) => () => ({
+    version: "1.0.0",
+    permissions: { screenRecording: "granted", accessibility: "granted" },
+    displayMode: "virtual",
+    displays,
+  });
+
+  it("a lost driver releases the lane's windows, lease and recording before the display, so every surface goes Off", async () => {
+    const driver = createFakeDriver();
+    const events: MacDesktopEventPayload[] = [];
+    const driverLost: Array<(reason: string) => void> = [];
+    const service = createMacDesktopService({
+      projectRoot: fs.mkdtempSync(path.join(os.tmpdir(), "mac-desktop-test-")),
+      logger,
+      platform: "darwin",
+      onEvent: (event) => events.push(event),
+      createDriverClient: (args) => {
+        driverLost.push(args.onDriverLost);
+        return driver as unknown as MacDesktopDriverClient;
+      },
+    });
+    await service.start({ laneId: "lane-1" });
+    driver.overrides[MAC_DESKTOP_DRIVER_OPS.listWindows] = () => ({ windows: [window("lane-1")] });
+    for (const listener of driver.listeners) {
+      listener({ event: "windows-changed", laneId: "lane-1", windows: [window("lane-1")] });
+    }
+    await service.takeControl({ laneId: "lane-1", controllerId: "ade-window:1" });
+    await service.startRecording({ laneId: "lane-1" });
+    expect((await service.getStatus({ laneId: "lane-1" })).lanes[0]?.windowCount).toBe(1);
+    events.length = 0;
+
+    driverLost[0]?.("signal SIGKILL");
+
+    // The tool tile read "Mac Desktop active · 1 window" from these, not from
+    // `display-destroyed`, and kept reading it after the screen was gone.
+    expect(events.map((event) => event.type)).toEqual([
+      "recording-changed",
+      "lease-changed",
+      "windows-changed",
+      "display-destroyed",
+    ]);
+    expect(events[0]).toMatchObject({ status: { laneId: "lane-1", running: false } });
+    expect(events[1]).toEqual({ type: "lease-changed", laneId: "lane-1", lease: null });
+    expect(events[2]).toEqual({ type: "windows-changed", laneId: "lane-1", windows: [] });
+    expect(events[3]).toEqual({ type: "display-destroyed", laneId: "lane-1", reason: "driver_lost" });
+    const status = await service.getStatus({ laneId: "lane-1" });
+    expect(status.display).toBeNull();
+    expect(status.lanes).toEqual([]);
+    expect(status.lease).toBeNull();
+    service.dispose();
+  });
+
+  it("drops a display the driver no longer reports, on the next status read", async () => {
+    const driver = createFakeDriver({ [MAC_DESKTOP_DRIVER_OPS.health]: healthWith([]) });
+    const { service, events } = makeService({ driver });
+    driver.overrides[MAC_DESKTOP_DRIVER_OPS.health] = healthWith(["lane-1", "lane-2"]);
+    await service.start({ laneId: "lane-1" });
+    await service.start({ laneId: "lane-2" });
+    expect((await service.getStatus({ laneId: "lane-1" })).display?.laneId).toBe("lane-1");
+
+    // The helper was replaced behind the service's back, and only lane-2's
+    // display came back with it.
+    driver.overrides[MAC_DESKTOP_DRIVER_OPS.health] = healthWith(["lane-2"]);
+    const status = await service.getStatus({ laneId: "lane-1" });
+
+    expect(status.display).toBeNull();
+    expect(status.lanes.map((lane) => lane.laneId)).toEqual(["lane-2"]);
+    expect(events.filter((event) => event.type === "display-destroyed")).toEqual([
+      { type: "display-destroyed", laneId: "lane-1", reason: "driver_lost" },
+    ]);
+    service.dispose();
+  });
+
+  it("never reconciles against an older driver that sends no display list", async () => {
+    const driver = createFakeDriver();
+    const { service, events } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+    await service.getStatus({ laneId: "lane-1" });
+    expect((await service.getStatus({ laneId: "lane-1" })).display?.laneId).toBe("lane-1");
+    expect(events.some((event) => event.type === "display-destroyed")).toBe(false);
+    service.dispose();
+  });
+
+  it("start after the display was lost creates a new one instead of answering with the old", async () => {
+    const driver = createFakeDriver({ [MAC_DESKTOP_DRIVER_OPS.health]: healthWith(["lane-1"]) });
+    const { service } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+    driver.overrides[MAC_DESKTOP_DRIVER_OPS.health] = healthWith([]);
+
+    const status = await service.start({ laneId: "lane-1" });
+
+    expect(driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.createDisplay)).toHaveLength(2);
+    expect(status.display?.laneId).toBe("lane-1");
+    service.dispose();
+  });
+
+  it("publishes a display the window server ended as lost, and forgets its windows", async () => {
+    const driver = createFakeDriver();
+    const { service, events } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+    for (const listener of driver.listeners) {
+      listener({ event: "windows-changed", laneId: "lane-1", windows: [window("lane-1")] });
+    }
+    events.length = 0;
+    for (const listener of driver.listeners) {
+      listener({ event: "display-destroyed", laneId: "lane-1", reason: "terminated" });
+    }
+    expect(events).toEqual([
+      { type: "windows-changed", laneId: "lane-1", windows: [] },
+      { type: "display-destroyed", laneId: "lane-1", reason: "driver_lost" },
+    ]);
+    expect(service.hasDisplaySync("lane-1")).toBe(false);
+    service.dispose();
+  });
+
+  it("answers a status read when the driver never answers the window list", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const driver = createFakeDriver();
+      const { service } = makeService({ driver });
+      await service.start({ laneId: "lane-1" });
+      driver.overrides[MAC_DESKTOP_DRIVER_OPS.listWindows] = () => new Promise(() => {});
+      let settled = false;
+      const read = service.getStatus({ laneId: "lane-1" }).then((status) => {
+        settled = true;
+        return status;
+      });
+      await vi.advanceTimersByTimeAsync(3_900);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(200);
+      const status = await read;
+      // "Checking Mac Desktop…" waits on exactly this read.
+      expect(status.display?.laneId).toBe("lane-1");
+      expect(status.windows).toEqual([]);
+      service.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("macDesktopService persistent log", () => {
+  function recordingLogger() {
+    const lines: Array<{ level: string; event: string; meta?: Record<string, unknown> }> = [];
+    const at = (level: string) => (event: string, meta?: Record<string, unknown>) => {
+      lines.push({ level, event, ...(meta ? { meta } : {}) });
+    };
+    return { lines, logger: { debug: at("debug"), info: at("info"), warn: at("warn"), error: at("error") } };
+  }
+
+  it("records the display lifecycle and a truncated observation, with ids and app names only", async () => {
+    const { lines, logger: recorded } = recordingLogger();
+    const driver = createFakeDriver({
+      [MAC_DESKTOP_DRIVER_OPS.observe]: () => ({
+        id: "obs-1",
+        elements: [],
+        elementCount: 0,
+        truncated: true,
+        truncatedReason: "stalled",
+        stalledApps: ["TextEdit"],
+        windows: [],
+      }),
+    });
+    const service = createMacDesktopService({
+      projectRoot: fs.mkdtempSync(path.join(os.tmpdir(), "mac-desktop-test-")),
+      logger: recorded,
+      platform: "darwin",
+      createDriverClient: () => driver as unknown as MacDesktopDriverClient,
+    });
+    await service.start({ laneId: "lane-1" });
+    const observation = await service.observe({ laneId: "lane-1" });
+    expect(observation.truncatedReason).toBe("stalled");
+    expect(observation.stalledApps).toEqual(["TextEdit"]);
+    await service.stop({ laneId: "lane-1" });
+
+    const persistent = lines.filter((line) => line.level !== "debug");
+    expect(persistent.map((line) => line.event)).toEqual([
+      "mac_desktop.permissions_changed",
+      "mac_desktop.driver_health",
+      "mac_desktop.display_created",
+      "mac_desktop.observe_truncated",
+      "mac_desktop.display_destroyed",
+    ]);
+    expect(persistent[3]).toMatchObject({
+      level: "warn",
+      meta: { laneId: "lane-1", reason: "stalled", stalledApps: ["TextEdit"] },
+    });
+    expect(persistent[4]).toMatchObject({ meta: { laneId: "lane-1", reason: "stopped" } });
+    // No screenshot path, no window title.
+    expect(JSON.stringify(persistent)).not.toContain(os.tmpdir());
     service.dispose();
   });
 });

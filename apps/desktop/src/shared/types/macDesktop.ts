@@ -306,11 +306,23 @@ export type MacDesktopObservation = {
   elements: MacDesktopElement[];
   /** Total elements found before the observation cap trimmed the list. */
   elementCount: number;
-  /** True when `elements` is shorter than `elementCount`. */
+  /** True when `elements` is not the whole tree; `truncatedReason` says why. */
   truncated: boolean;
+  /**
+   * Why the walk stopped short. `timeout` and `stalled` mean part of the
+   * display was never read — an app stopped answering accessibility, or the
+   * walk ran out of time — so the element an agent wants may be missing for a
+   * reason `--limit` cannot fix. Absent from an older driver.
+   */
+  truncatedReason?: MacDesktopWalkStop | null;
+  /** Apps that did not answer accessibility during this observation. */
+  stalledApps?: string[];
   /** One line describing what produced this frame, e.g. "click · Sign in". */
   caption: string | null;
 };
+
+/** `WalkStop` in the driver, by its wire spelling. */
+export type MacDesktopWalkStop = "timeout" | "stalled" | "node_cap" | "limit";
 
 export type MacDesktopObserveArgs = {
   laneId: string;
@@ -974,7 +986,8 @@ export function macDesktopNotParkedPhrase(reason: string): string {
   if (code.includes("permission") || code.includes("accessibility") || code.includes("not_trusted")) {
     return "needs Accessibility permission";
   }
-  return reason;
+  // Never the raw code: a user cannot act on "window_not_movable".
+  return "couldn't move to the lane screen";
 }
 
 /**

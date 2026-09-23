@@ -62,16 +62,27 @@ extension DriverRuntime {
         if let refusal = gestures.waitRefusal() { throw refusal }
         let deadline = Date().addingTimeInterval(Double(condition.timeoutMs) / 1000)
         var outcome = WaitOutcome.pending
+        // The last poll's walk, for the reply: a wait that timed out because
+        // the app stopped answering has to say so, or it reads as "the label
+        // never appeared".
+        var lastStop: WalkStop?
+        var stalledApps: [String] = []
         repeat {
             let parked = windows.listWindows(laneId: laneId)
             var matchedIndex: Int? = nil
             if let needle = condition.elementNeedle {
+                // Each poll is bounded on its own, so a stalled app or a huge
+                // tree cannot turn one poll into the whole wait with the run
+                // loop never pumped in between.
                 let observation = accessibility.observe(
                     windows: parked,
                     limit: Self.waitObservationLimit,
-                    windowControl: windows
+                    windowControl: windows,
+                    timeBudget: AXWalkBudget.waitPollBudget(now: Date(), waitDeadline: deadline)
                 )
                 matchedIndex = observation.elements.first { $0.matches(text: needle) }?.index
+                lastStop = observation.truncatedReason
+                stalledApps = observation.stalledApps
             }
             outcome = condition.outcome(
                 matchedIndex: matchedIndex,
@@ -87,11 +98,19 @@ extension DriverRuntime {
             RunLoopPump.wait(until: { false }, timeout: delay)
         } while Date() < deadline
         touch(laneId)
+        let walk: [String: JSONValue] = [
+            "truncatedReason": lastStop.map { JSONValue.string($0.rawValue) } ?? .null,
+            "stalledApps": .array(stalledApps.map(JSONValue.string)),
+        ]
         switch outcome {
         case .pending:
-            return ["ok": .bool(false), "resolvedIndex": .null]
+            if !stalledApps.isEmpty || lastStop == .timeout {
+                log("wait on lane \(laneId) ended unmet; last poll \(lastStop?.rawValue ?? "complete")\(stalledApps.isEmpty ? "" : ", not answering: \(stalledApps.joined(separator: ", "))")")
+            }
+            return ["ok": .bool(false), "resolvedIndex": .null].merging(walk) { current, _ in current }
         case let .met(index):
             return ["ok": .bool(true), "resolvedIndex": index.map(JSONValue.int) ?? .null]
+                .merging(walk) { current, _ in current }
         }
     }
 

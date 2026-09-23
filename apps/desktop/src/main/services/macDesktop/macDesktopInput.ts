@@ -40,7 +40,7 @@ import { MAC_DESKTOP_GESTURE_IN_FLIGHT_CODE } from "./macDesktopDriverClient";
 import type { MacDesktopLeaseRegistry } from "./macDesktopLease";
 import type { MacDesktopObservations } from "./macDesktopObservations";
 import type { MacDesktopOwnershipRegistry } from "./macDesktopOwnership";
-import { asNullableString, asNumber, asRecord, asWindows } from "./macDesktopSeatProvider";
+import { asNullableString, asNumber, asRecord, asWalkStop, asWindows } from "./macDesktopSeatProvider";
 
 /** An observation asking for more than this is clamped. */
 const MAX_OBSERVATION_LIMIT = MAC_DESKTOP_OBSERVATION_ELEMENT_LIMIT;
@@ -125,6 +125,10 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
       elements,
       elementCount: asNumber(reply.elementCount, elements.length),
       truncated: reply.truncated === true || asNumber(reply.elementCount, elements.length) > elements.length,
+      truncatedReason: asWalkStop(reply.truncatedReason),
+      stalledApps: Array.isArray(reply.stalledApps)
+        ? reply.stalledApps.filter((app): app is string => typeof app === "string" && app.length > 0)
+        : [],
       caption: asNullableString(reply.caption) ?? args.caption?.trim() ?? null,
     };
     observations.writeObservationSidecar({

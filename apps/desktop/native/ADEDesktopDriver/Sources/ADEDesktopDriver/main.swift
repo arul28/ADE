@@ -38,7 +38,11 @@ final class DriverRuntime: NSObject {
     private let handles = HandleRegistry()
     private let leases = InputLeaseStore()
 
-    lazy var displays = VirtualDisplayHost(log: log)
+    lazy var displays: VirtualDisplayHost = {
+        let host = VirtualDisplayHost(log: log)
+        host.onTerminated = { [weak self] laneId in self?.displayTerminated(laneId: laneId) }
+        return host
+    }()
     lazy var windows: WindowControl = {
         let control = WindowControl(ownership: ownership, log: log, emit: emit)
         control.isGestureInFlight = { [weak self] in self?.gestures.isActive ?? false }
@@ -78,6 +82,18 @@ final class DriverRuntime: NSObject {
 
     private var signalSources: [DispatchSourceSignal] = []
     private var isShuttingDown = false
+    /// `isShuttingDown`, readable off the main thread by the forced-exit timer.
+    private let shutdownStarted = SettledFlag()
+
+    /// How long a SIGTERM or a closed stdin waits for the main thread to begin
+    /// the orderly shutdown before the process exits without it.
+    ///
+    /// Both are handled on the main thread, because that is where the displays,
+    /// the recorders and the parked windows live. A main thread stuck inside a
+    /// framework call never gets to them, and the process then outlived the
+    /// client that asked it to go: the client started a replacement while this
+    /// one still held its lanes' virtual displays.
+    private static let forcedExitGrace: TimeInterval = 5
 
     /// Every request currently being handled, and the right to answer it.
     ///
@@ -104,6 +120,11 @@ final class DriverRuntime: NSObject {
     func run() {
         let application = NSApplication.shared
         application.setActivationPolicy(.accessory)
+        // The default is about six seconds per call, and one stalled app could
+        // then hold the main thread — and with it `ping` and every other lane —
+        // for minutes. The walk sets a shorter timeout on each element it
+        // reads; this bounds every other call. See `AXTimeouts.global`.
+        AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), AXTimeouts.global)
         startReading()
         installSignalHandlers()
         startWatchdog()
@@ -129,6 +150,28 @@ final class DriverRuntime: NSObject {
             }
             source.resume()
             signalSources.append(source)
+            // A second source for the same signal, off the main thread, for the
+            // case the one above cannot run: a main thread that is stuck.
+            let backstop = DispatchSource.makeSignalSource(signal: number, queue: .global(qos: .utility))
+            backstop.setEventHandler { [weak self] in
+                self?.armForcedExit(reason: number == SIGTERM ? "SIGTERM" : "SIGINT")
+            }
+            backstop.resume()
+            signalSources.append(backstop)
+        }
+    }
+
+    /// Exits the process if the main thread has not begun shutting down within
+    /// `forcedExitGrace`. Safe from any thread.
+    ///
+    /// Losing the orderly shutdown loses an in-flight recording's last seconds;
+    /// keeping a process nobody talks to loses the user's screen layout to a
+    /// virtual display that no client knows about. The second is worse.
+    private func armForcedExit(reason: String) {
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + Self.forcedExitGrace) { [weak self] in
+            guard let self, !self.shutdownStarted.isSet else { return }
+            self.log("main thread did not start shutting down \(Int(Self.forcedExitGrace))s after \(reason); exiting without it")
+            exit(0)
         }
     }
 
@@ -161,6 +204,7 @@ final class DriverRuntime: NSObject {
                 let chunk = handle.availableData
                 if chunk.isEmpty {
                     self?.performOnMain(#selector(DriverRuntime.shutdownFromStdin), with: nil)
+                    self?.armForcedExit(reason: "stdin closed")
                     return
                 }
                 buffer.append(chunk)
@@ -197,6 +241,7 @@ final class DriverRuntime: NSObject {
     private func shutdown(reason: String) {
         guard !isShuttingDown else { return }
         isShuttingDown = true
+        shutdownStarted.set()
         log("shutting down: \(reason)")
         watchdog?.cancel()
         watchdog = nil
@@ -461,6 +506,11 @@ final class DriverRuntime: NSObject {
             ]),
             "axWindowBridge": .bool(AXWindowBridge.isAvailable),
             "idleSeconds": .double(PhysicalInput.secondsSinceLastEvent()),
+            // The lanes that have a display in this process right now. The
+            // service reconciles against it on every health read, so it never
+            // reports a display this process no longer has — after a restart,
+            // or after the window server ended one.
+            "displays": .array(displays.all().map { .string($0.laneId) }),
         ]
     }
 
@@ -501,6 +551,26 @@ final class DriverRuntime: NSObject {
         )
         updatePermissionProbe()
         return ["destroyed": .bool(destroyed), "releasedWindows": .int(released)]
+    }
+
+    /// The window server ended a lane's display without being asked.
+    ///
+    /// Everything `display.destroy` would do, minus destroying the display,
+    /// and the same `display-destroyed` event with a reason of its own, so the
+    /// service drops the lane rather than keep reporting a screen that is gone.
+    private func displayTerminated(laneId: String) {
+        capture.stopStream(laneId: laneId)
+        _ = try? capture.stopRecording(laneId: laneId)
+        let released = windows.releaseLane(laneId)
+        lastActivity.removeValue(forKey: laneId)
+        log("lane \(laneId) lost its virtual display; released \(released) window(s)")
+        emit(
+            DriverEvent(
+                event: "display-destroyed",
+                fields: ["laneId": .string(laneId), "reason": .string("terminated")]
+            )
+        )
+        updatePermissionProbe()
     }
 
     private func reconcileDisplays(_ request: DriverRequest) -> [String: JSONValue] {
@@ -618,7 +688,18 @@ final class DriverRuntime: NSObject {
             log("observe on lane \(laneId) captured no frame: \(error)")
         }
 
-        let observation = accessibility.observe(windows: parked, limit: limit, windowControl: windows)
+        let observation = accessibility.observe(
+            windows: parked,
+            limit: limit,
+            windowControl: windows,
+            timeBudget: AXTimeouts.observeWalk
+        )
+        if let reason = observation.truncatedReason, reason == .timeout || reason == .stalled {
+            let stalled = observation.stalledApps.isEmpty
+                ? ""
+                : "; not answering: \(observation.stalledApps.joined(separator: ", "))"
+            log("observe on lane \(laneId) stopped early (\(reason.rawValue)) after \(observation.walkMs)ms with \(observation.elementCount) element(s)\(stalled)")
+        }
 
         var mapPath: JSONValue = .null
         if request.bool("map") == true, captureFailure == nil {
@@ -654,6 +735,9 @@ final class DriverRuntime: NSObject {
             "elements": .array(observation.elements.map { .object($0.asJSON()) }),
             "elementCount": .int(observation.elementCount),
             "truncated": .bool(observation.truncated),
+            "truncatedReason": observation.truncatedReason.map { JSONValue.string($0.rawValue) } ?? .null,
+            "stalledApps": .array(observation.stalledApps.map(JSONValue.string)),
+            "walkMs": .int(observation.walkMs),
             "caption": request.string("caption").map(JSONValue.string) ?? .null,
         ]
         if let captureFailure {

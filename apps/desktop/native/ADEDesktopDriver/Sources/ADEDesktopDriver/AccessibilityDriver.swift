@@ -91,6 +91,96 @@ struct ObservationResult {
     let elements: [ObservedElement]
     let elementCount: Int
     let truncated: Bool
+    /// Why the walk returned less than the tree holds, or nil for a complete
+    /// walk. `.timeout` and `.stalled` mean part of the display was never read.
+    let truncatedReason: WalkStop?
+    /// Apps that stopped answering during this walk, or were skipped because
+    /// they had stopped answering just before it.
+    let stalledApps: [String]
+    let walkMs: Int
+}
+
+/// One walk's attribute reads: a memory of whether any read timed out, and
+/// the walk's deadline.
+///
+/// Once one read times out, every later read through the same reader answers
+/// nil without asking. A stalled app answers the next call as slowly as the
+/// last, so the second timeout would only double the cost of learning nothing.
+/// The deadline covers the other slow case: an app that answers every call,
+/// just slowly, would otherwise keep one element's dozen reads going long
+/// after the walk's budget was spent.
+struct AXWalkReader {
+    let deadline: Date
+    private(set) var timedOut = false
+    private(set) var outOfTime = false
+
+    init(deadline: Date) {
+        self.deadline = deadline
+    }
+
+    mutating func copy(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {
+        guard !timedOut, !outOfTime else { return nil }
+        if Date() >= deadline {
+            outOfTime = true
+            return nil
+        }
+        var value: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
+        switch AXCallResult.classify(rawError: result.rawValue) {
+        case .ok:
+            return value
+        case .timedOut:
+            timedOut = true
+            return nil
+        case .failed:
+            return nil
+        }
+    }
+
+    mutating func string(_ element: AXUIElement, _ attribute: String) -> String? {
+        copy(element, attribute) as? String
+    }
+
+    mutating func bool(_ element: AXUIElement, _ attribute: String) -> Bool? {
+        (copy(element, attribute) as? NSNumber)?.boolValue
+    }
+
+    mutating func value(_ element: AXUIElement) -> String? {
+        let value = copy(element, kAXValueAttribute)
+        if let text = value as? String { return text }
+        if let number = value as? NSNumber { return number.stringValue }
+        return nil
+    }
+
+    mutating func actions(_ element: AXUIElement) -> [String] {
+        guard !timedOut, !outOfTime else { return [] }
+        var names: CFArray?
+        let result = AXUIElementCopyActionNames(element, &names)
+        if AXCallResult.classify(rawError: result.rawValue) == .timedOut {
+            timedOut = true
+            return []
+        }
+        return result == .success ? (names as? [String] ?? []) : []
+    }
+
+    mutating func frame(_ element: AXUIElement) -> CGRect? {
+        guard let position = copy(element, kAXPositionAttribute),
+              let size = copy(element, kAXSizeAttribute),
+              CFGetTypeID(position) == AXValueGetTypeID(),
+              CFGetTypeID(size) == AXValueGetTypeID()
+        else { return nil }
+        var origin = CGPoint.zero
+        var extent = CGSize.zero
+        // swiftlint:disable:next force_cast
+        AXValueGetValue(position as! AXValue, .cgPoint, &origin)
+        // swiftlint:disable:next force_cast
+        AXValueGetValue(size as! AXValue, .cgSize, &extent)
+        return CGRect(origin: origin, size: extent)
+    }
+
+    mutating func children(_ element: AXUIElement) -> [AXUIElement] {
+        copy(element, kAXChildrenAttribute) as? [AXUIElement] ?? []
+    }
 }
 
 final class AccessibilityDriver {
@@ -99,9 +189,11 @@ final class AccessibilityDriver {
     /// The cap on returned elements does not bound the *walk*: a Finder window
     /// with a long list still has thousands of nodes underneath it, and an
     /// unbounded depth-first walk of an Electron app can take minutes. This
-    /// bounds the visiting.
+    /// bounds the visiting; the time budget bounds the waiting.
     static let maxVisitedNodes = 6_000
     static let maxDepth = 24
+    /// See `AXWalkBudget.maxForeignNodes`.
+    static let maxForeignNodes = 3_000
 
     private let handles: HandleRegistry
     private let log: (String) -> Void
@@ -119,41 +211,104 @@ final class AccessibilityDriver {
     // Observation
     // -----------------------------------------------------------------------
 
-    /// Walks the tree for one window, or for every window in `windows`.
-    func observe(windows: [DesktopWindow], limit: Int, windowControl: WindowControl) -> ObservationResult {
+    /// Walks the tree for one window, or for every window in `windows`, for at
+    /// most `timeBudget` seconds.
+    ///
+    /// Never fails and never runs long. An app that stops answering ends its
+    /// own part of the walk after one short timeout and is skipped by later
+    /// walks for a cooldown; a walk that runs out of time returns what it read,
+    /// with `truncatedReason` saying so. Breadth-first, so what is cut is the
+    /// deepest part of the tree, not a whole window.
+    func observe(
+        windows: [DesktopWindow],
+        limit: Int,
+        windowControl: WindowControl,
+        timeBudget: TimeInterval
+    ) -> ObservationResult {
         lock.lock()
         sequence += 1
         let observationId = "\(Int(Date().timeIntervalSince1970 * 1000))-\(sequence)"
         lock.unlock()
 
+        var budget = AXWalkBudget(
+            startedAt: Date(),
+            timeBudget: timeBudget,
+            maxNodes: Self.maxVisitedNodes,
+            maxForeignNodes: Self.maxForeignNodes
+        )
         var records: [ObservedElement] = []
         var elements: [AXUIElement] = []
-        var visited = 0
         var total = 0
 
-        for window in windows {
-            guard let root = windowControl.axWindow(for: window) else { continue }
-            var queue: [(element: AXUIElement, parentIndex: Int?, depth: Int)] = [(root, nil, 0)]
-            while !queue.isEmpty {
-                let node = queue.removeFirst()
-                visited += 1
-                if visited > Self.maxVisitedNodes { break }
-                guard let record = describe(
+        windowLoop: for window in windows {
+            if budget.remaining(now: Date()) <= 0 {
+                budget.expire()
+                break
+            }
+            if budget.isStalled(pid: window.pid) { continue }
+            if windowControl.stalls.isStalled(pid: window.pid) {
+                budget.noteStall(pid: window.pid, appName: window.appName)
+                continue
+            }
+            guard let root = windowControl.axWindow(for: window) else {
+                // The lookup itself is where a stalled app is usually found.
+                if windowControl.stalls.isStalled(pid: window.pid) {
+                    budget.noteStall(pid: window.pid, appName: window.appName)
+                }
+                continue
+            }
+            var queue: [(element: AXUIElement, parentIndex: Int?, depth: Int, pid: pid_t)] = [
+                (root, nil, 0, window.pid),
+            ]
+            var head = 0
+            while head < queue.count {
+                let node = queue[head]
+                head += 1
+                if budget.isStalled(pid: node.pid) { continue }
+                guard budget.admitNode(now: Date()) else { break windowLoop }
+                let timeout = budget.readTimeout(now: Date())
+                AXUIElementSetMessagingTimeout(node.element, timeout.seconds)
+                var reader = AXWalkReader(deadline: budget.deadline)
+                let described = describe(
                     node.element,
+                    reader: &reader,
                     index: records.count,
                     parentIndex: node.parentIndex,
                     observationId: observationId,
-                    window: window
-                ) else { continue }
+                    window: window,
+                    pid: node.pid
+                )
+                let children = described != nil && node.depth < Self.maxDepth
+                    ? reader.children(node.element)
+                    : []
+                if reader.outOfTime || (reader.timedOut && !timeout.isFull) {
+                    budget.expire()
+                    break windowLoop
+                }
+                if reader.timedOut {
+                    let appName = node.pid == window.pid
+                        ? window.appName
+                        : NSRunningApplication(processIdentifier: node.pid)?.localizedName ?? "pid \(node.pid)"
+                    budget.noteStall(pid: node.pid, appName: appName)
+                    windowControl.noteStall(pid: node.pid, during: "an observation walk")
+                    continue
+                }
+                guard let record = described else { continue }
                 total += 1
                 let ownIndex = records.count
                 if records.count < limit {
                     records.append(record)
+                    // A handle outlives the walk: the click or type that uses
+                    // it must get the ordinary timeout, not the walk's
+                    // (possibly shortened) read timeout.
+                    AXUIElementSetMessagingTimeout(node.element, AXTimeouts.global)
                     elements.append(node.element)
                 }
-                guard node.depth < Self.maxDepth else { continue }
-                for child in Self.children(of: node.element) {
-                    queue.append((child, records.count <= limit ? ownIndex : nil, node.depth + 1))
+                for child in children {
+                    var childPid: pid_t = node.pid
+                    AXUIElementGetPid(child, &childPid)
+                    guard budget.admitChild(pid: childPid, windowPid: window.pid) else { continue }
+                    queue.append((child, records.count <= limit ? ownIndex : nil, node.depth + 1, childPid))
                 }
             }
         }
@@ -167,11 +322,15 @@ final class AccessibilityDriver {
         }
         lock.unlock()
 
+        let reason = budget.stopReason(limitHit: total > records.count)
         return ObservationResult(
             id: observationId,
             elements: records,
             elementCount: total,
-            truncated: total > records.count
+            truncated: reason != nil,
+            truncatedReason: reason,
+            stalledApps: budget.stalled.map(\.appName),
+            walkMs: budget.elapsedMs(now: Date())
         )
     }
 
@@ -258,38 +417,35 @@ final class AccessibilityDriver {
 
     private func describe(
         _ element: AXUIElement,
+        reader: inout AXWalkReader,
         index: Int,
         parentIndex: Int?,
         observationId: String,
-        window: DesktopWindow
+        window: DesktopWindow,
+        pid: pid_t
     ) -> ObservedElement? {
-        guard let role = WindowControl.stringAttribute(element, kAXRoleAttribute) else { return nil }
-        var actionNames: CFArray?
-        var actions: [String] = []
-        if AXUIElementCopyActionNames(element, &actionNames) == .success,
-           let list = actionNames as? [String] {
-            actions = list
-        }
-        var pid: pid_t = window.pid
-        AXUIElementGetPid(element, &pid)
-        return ObservedElement(
+        guard let role = reader.string(element, kAXRoleAttribute) else { return nil }
+        let record = ObservedElement(
             index: index,
             handle: HandleRegistry.handle(observationId: observationId, index: index),
             role: role,
-            subrole: WindowControl.stringAttribute(element, kAXSubroleAttribute),
-            title: WindowControl.stringAttribute(element, kAXTitleAttribute),
-            label: WindowControl.stringAttribute(element, kAXDescriptionAttribute),
-            value: Self.stringValue(of: element),
-            identifier: WindowControl.stringAttribute(element, kAXIdentifierAttribute),
-            help: WindowControl.stringAttribute(element, kAXHelpAttribute),
-            enabled: Self.boolAttribute(element, kAXEnabledAttribute) ?? true,
-            focused: Self.boolAttribute(element, kAXFocusedAttribute) ?? false,
-            actions: actions,
-            frame: WindowControl.frame(of: element) ?? .zero,
+            subrole: reader.string(element, kAXSubroleAttribute),
+            title: reader.string(element, kAXTitleAttribute),
+            label: reader.string(element, kAXDescriptionAttribute),
+            value: reader.value(element),
+            identifier: reader.string(element, kAXIdentifierAttribute),
+            help: reader.string(element, kAXHelpAttribute),
+            enabled: reader.bool(element, kAXEnabledAttribute) ?? true,
+            focused: reader.bool(element, kAXFocusedAttribute) ?? false,
+            actions: reader.actions(element),
+            frame: reader.frame(element) ?? .zero,
             windowId: window.id,
             pid: pid,
             parentIndex: parentIndex
         )
+        // A record half-read before a timeout is not a record: its empty
+        // fields would read as facts about the element.
+        return reader.timedOut || reader.outOfTime ? nil : record
     }
 
     static func stringValue(of element: AXUIElement) -> String? {
@@ -300,12 +456,6 @@ final class AccessibilityDriver {
         if let text = value as? String { return text }
         if let number = value as? NSNumber { return number.stringValue }
         return nil
-    }
-
-    static func boolAttribute(_ element: AXUIElement, _ attribute: String) -> Bool? {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
-        return (value as? NSNumber)?.boolValue
     }
 
     // -----------------------------------------------------------------------
@@ -327,12 +477,14 @@ final class AccessibilityDriver {
         default:
             preferred = ["AXPress", "AXConfirm", "AXShowMenu", "AXOpen"]
         }
+        // A timed-out perform was delivered: see `AXCallResult.wasDelivered`.
+        // Trying the next action after one would press the element twice.
         for action in preferred where record.actions.contains(action) {
-            if AXUIElementPerformAction(element, action as CFString) == .success { return }
+            if Self.perform(element, action) { return }
         }
         // Last resort: whatever the element says it can do, in its own order.
         for action in record.actions where action != "AXShowAlternateUI" && action != "AXShowDefaultUI" {
-            if AXUIElementPerformAction(element, action as CFString) == .success { return }
+            if Self.perform(element, action) { return }
         }
         throw DriverError(
             code: DriverErrorCode.invalidArgument,
@@ -340,8 +492,15 @@ final class AccessibilityDriver {
         )
     }
 
+    /// True when the value reached the app, including a set whose reply timed
+    /// out: typing it again as key events would enter the text twice.
     func setValue(_ element: AXUIElement, to text: String) -> Bool {
-        AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, text as CFTypeRef) == .success
+        let result = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, text as CFTypeRef)
+        return AXCallResult.wasDelivered(rawError: result.rawValue)
+    }
+
+    private static func perform(_ element: AXUIElement, _ action: String) -> Bool {
+        AXCallResult.wasDelivered(rawError: AXUIElementPerformAction(element, action as CFString).rawValue)
     }
 
     /// `type`, in the order that disturbs the least.
@@ -378,7 +537,7 @@ final class AccessibilityDriver {
               let value, CFGetTypeID(value) == AXUIElementGetTypeID()
         else { return false }
         let button = value as! AXUIElement
-        return AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
+        return Self.perform(button, kAXPressAction)
     }
 
     /// One key, by name, to one process.
