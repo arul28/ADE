@@ -72,6 +72,7 @@ function setup(initialOwner: string | null) {
     emit,
     serializeDeviceLifecycle,
     bound: () => bound,
+    setBound: (next: AppleLaneDevice | null) => { bound = next; },
     setOwner: (next: string | null) => { owner = next; },
   };
 }
@@ -154,16 +155,48 @@ describe("laneDeviceLifecycle", () => {
     expect(bound()).toBe(device);
   });
 
-  it("a forced delete whose clone became attached while it waited says to detach", async () => {
-    const { lifecycle, laneDevices } = setup(null);
+  it("regression: an unforced delete of an attached device is refused before the stream stops", async () => {
+    const { lifecycle, laneDevices, shutdown, setBound } = setup("chat-owner");
     const attached = { ...device, origin: "attached" as const };
-    (laneDevices.deviceDelete as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
-      new AppleDeviceAttachedNotDeletableError(attached),
-    );
+    setBound(attached);
 
-    const refused = lifecycle.deviceDelete({ laneId: "lane-b", force: true });
-    await expect(refused).rejects.toThrow(/APPLE_DEVICE_ATTACHED_NOT_DELETABLE/);
-    await expect(refused).rejects.toThrow(/became attached .* Run device-detach/);
-    await expect(refused).rejects.not.toThrow(/Pass force/);
+    await expect(lifecycle.deviceDelete({ laneId: "lane-b", chatSessionId: "chat-owner" }))
+      .rejects.toBeInstanceOf(AppleDeviceAttachedNotDeletableError);
+    expect(shutdown).not.toHaveBeenCalled();
+    expect(laneDevices.deviceDetach).not.toHaveBeenCalled();
+    expect(laneDevices.deviceDelete).not.toHaveBeenCalled();
+  });
+
+  it("regression: a delete reads the lane's device once, in the queue, after a start in flight has changed it", async () => {
+    const attached = { ...device, origin: "attached" as const };
+
+    // Forced: the device the start left behind is attached, so it is detached, not deleted.
+    const forced = setup(null);
+    forced.setBound(null);
+    const forcedStart = forced.serializeDeviceLifecycle(null, async () => { forced.setBound(attached); });
+    await forced.lifecycle.deviceDelete({ laneId: "lane-b", force: true });
+    await forcedStart;
+    expect(forced.laneDevices.deviceDetach).toHaveBeenCalledWith({ laneId: "lane-b" });
+    expect(forced.laneDevices.deviceDelete).not.toHaveBeenCalled();
+
+    // Unforced: refused, and the stream the start opened keeps running.
+    const unforced = setup(null);
+    const unforcedStart = unforced.serializeDeviceLifecycle(null, async () => { unforced.setBound(attached); });
+    await expect(unforced.lifecycle.deviceDelete({ laneId: "lane-b" }))
+      .rejects.toBeInstanceOf(AppleDeviceAttachedNotDeletableError);
+    await unforcedStart;
+    expect(unforced.shutdown).not.toHaveBeenCalled();
+    expect(unforced.laneDevices.deviceDelete).not.toHaveBeenCalled();
+  });
+
+  it("deletes a clone: the stream stops first, then the registry deletes and the lane hears released", async () => {
+    const { lifecycle, laneDevices, shutdown, emit } = setup(null);
+    await lifecycle.deviceDelete({ laneId: "lane-b" });
+    expect(shutdown).toHaveBeenCalledWith(expect.objectContaining({ laneId: "lane-b", ignoreOwnership: true }));
+    expect(laneDevices.deviceDelete).toHaveBeenCalledWith({ laneId: "lane-b" });
+    expect(shutdown.mock.invocationCallOrder[0]).toBeLessThan(
+      (laneDevices.deviceDelete as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0],
+    );
+    expect(emit).toHaveBeenCalledWith({ type: "apple.device.state", laneId: "lane-b", udid: "device-clone", phase: "released" });
   });
 });

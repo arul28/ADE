@@ -110,6 +110,20 @@ export function createLaneDeviceLifecycle<R extends LifecycleLaneRuntime>(deps: 
   };
 
   /**
+   * The body of a detach, for a caller already in the lane's queue: forget
+   * the binding, then release the lane's hold. Null when the lane had no device.
+   */
+  const detachStep = async (runtime: R): Promise<AppleLaneDevice | null> => {
+    const detached = await deps.laneDevices.deviceDetach({ laneId: runtime.key });
+    if (!detached) return null;
+    // After the binding is gone, so the `released` event this sends is read
+    // against a registry that already says the lane has no device.
+    await releaseLaneHold(detached);
+    deps.logger.info("apple.lane_device_detached_by_request", { laneId: detached.laneId, udid: detached.udid });
+    return detached;
+  };
+
+  /**
    * Give up the lane's device and keep the simulator installed.
    *
    * The off card's "Choose another device": the lane goes back to the picker
@@ -128,13 +142,7 @@ export function createLaneDeviceLifecycle<R extends LifecycleLaneRuntime>(deps: 
     return deps.serializeDeviceLifecycle(runtime, async () => {
       if (!deps.laneDevices.get(runtime.key)) return null;
       deps.assertSessionOwner(runtime, detachArgs);
-      const detached = await deps.laneDevices.deviceDetach({ laneId: runtime.key });
-      if (!detached) return null;
-      // After the binding is gone, so the `released` event this sends is read
-      // against a registry that already says the lane has no device.
-      await releaseLaneHold(detached);
-      deps.logger.info("apple.lane_device_detached_by_request", { laneId: detached.laneId, udid: detached.udid });
-      return detached;
+      return detachStep(runtime);
     });
   };
 
@@ -144,45 +152,32 @@ export function createLaneDeviceLifecycle<R extends LifecycleLaneRuntime>(deps: 
    * `force`, because ADE never deletes a simulator it did not create.
    *
    * Same single-owner rule as `deviceDetach`. `force` does not step around
-   * it: it only says "detach an attached device". Checked up front and again
-   * inside the queue, because a start already in flight can claim the
-   * session between the two.
+   * it: it only says "detach an attached device". Everything is decided in
+   * the lane's queue, from one read of the binding, so a start already in
+   * flight cannot claim the session or change the device between the check
+   * and the teardown.
    */
   const deviceDelete = async (deleteArgs: AppleDeviceDeleteArgs = {}): Promise<void> => {
     const runtime = deps.requireLaneScope(deleteArgs);
-    const caller = { chatSessionId: deleteArgs.chatSessionId, ignoreOwnership: deleteArgs.ignoreOwnership };
-    deps.assertSessionOwner(runtime, caller);
-    if (deps.laneDevices.get(runtime.key)?.origin === "attached" && deleteArgs.force) {
-      // Not queued here: `deviceDetach` queues itself and checks the owner again.
-      await deviceDetach({ laneId: runtime.key, ...caller });
-      return;
-    }
     await deps.serializeDeviceLifecycle(runtime, async () => {
-      deps.assertSessionOwner(runtime, caller);
       const laneDevice = deps.laneDevices.get(runtime.key);
+      if (!laneDevice) return;
+      deps.assertSessionOwner(runtime, { chatSessionId: deleteArgs.chatSessionId, ignoreOwnership: deleteArgs.ignoreOwnership });
+      if (laneDevice.origin === "attached") {
+        // Refused before the stream stops, so the owner keeps a working view.
+        if (!deleteArgs.force) throw new AppleDeviceAttachedNotDeletableError(laneDevice);
+        await detachStep(runtime);
+        return;
+      }
       // Whatever was driving it stops first: deleting a simulator out from
       // under a running stream leaves the reader waiting on bytes that never come.
       await deps.shutdown({ laneId: runtime.laneId, chatSessionId: deleteArgs.chatSessionId, ignoreOwnership: true })
         .catch(() => undefined);
-      try {
-        await deps.laneDevices.deviceDelete({ laneId: runtime.key });
-      } catch (error) {
-        // With `force`, this lane had a clone or nothing when the call came
-        // in, so the device became attached since. Same refusal, true advice.
-        if (error instanceof AppleDeviceAttachedNotDeletableError && deleteArgs.force) {
-          throw new AppleDeviceAttachedNotDeletableError(
-            error.device,
-            `It became attached to lane ${error.device.laneId} while this delete waited. Run device-detach to release it.`,
-          );
-        }
-        throw error;
-      }
+      await deps.laneDevices.deviceDelete({ laneId: runtime.key });
       deps.invalidateStatus(runtime);
       // The lane's binding changed ("Choose another device"): every surface
       // that shows the lane's device re-reads now rather than on its next poll.
-      if (laneDevice && runtime.key) {
-        deps.emit({ type: "apple.device.state", laneId: runtime.key, udid: laneDevice.udid, phase: "released" });
-      }
+      deps.emit({ type: "apple.device.state", laneId: runtime.key, udid: laneDevice.udid, phase: "released" });
     });
   };
 

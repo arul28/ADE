@@ -57,11 +57,8 @@ export class AppleDeviceExistsError extends Error {
 export class AppleDeviceAttachedNotDeletableError extends Error {
   readonly code = APPLE_DEVICE_ATTACHED_NOT_DELETABLE_CODE;
 
-  constructor(
-    readonly device: AppleLaneDevice,
-    hint = `Pass force to detach it from lane ${device.laneId} instead.`,
-  ) {
-    super(`${APPLE_DEVICE_ATTACHED_NOT_DELETABLE_CODE}: ${device.name} was attached, not created by ADE, so ADE will not delete it. ${hint}`);
+  constructor(readonly device: AppleLaneDevice) {
+    super(`${APPLE_DEVICE_ATTACHED_NOT_DELETABLE_CODE}: ${device.name} was attached, not created by ADE, so ADE will not delete it. Pass force to detach it from lane ${device.laneId} instead.`);
     this.name = "AppleDeviceAttachedNotDeletableError";
   }
 }

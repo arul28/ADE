@@ -10875,14 +10875,13 @@ function buildIosSimulatorPlan(
   if (sub === "close-device" || sub === "close-sim") {
     const device = readIosSimulatorDevice(args);
     const force = readFlag(args, ["--force", "-f"]);
-    const ignoreOwnership = readIgnoreOwnershipArg(args);
     // ADE never shuts down a device it did not boot unless the caller says so.
     const shutdownDevice = readFlag(args, ["--shutdown", "--shutdown-device"]);
     return iosAction("iOS simulator close device", "closeDevice", {
       deviceUdid: device,
       chatSessionId: claimArgs.chatSessionId,
       ...(force ? { force: true } : {}),
-      ...ignoreOwnership,
+      ...readIgnoreOwnershipArg(args),
       ...(shutdownDevice ? { shutdownDevice: true } : {}),
     });
   }
