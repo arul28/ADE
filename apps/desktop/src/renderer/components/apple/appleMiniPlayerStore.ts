@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
+import { effectiveRuntimeBinding, workRuntimeScopeKey } from "../../lib/chatMachineRouting";
 import { useAppStore } from "../../state/appStore";
 import type { OpenProjectBinding } from "../../../shared/types";
 import {
@@ -34,6 +34,48 @@ export type AppleMiniPlayerTarget = {
   family: "iphone" | "ipad";
   runtimePin: OpenProjectBinding | null;
 };
+
+/**
+ * The Work surface in front of the player: the session the page is showing,
+ * reduced to what decides whether the floating device belongs over it.
+ *
+ * Null is the new-chat / empty composer screen. That screen may have a lane
+ * picked in its composer, but it is not a surface OF that lane yet — nothing
+ * has been started there — and it is exactly where the owner saw a lane's
+ * simulator float uninvited (2026-09-23, "it shouldn't have done that").
+ */
+export type AppleMiniPlayerSurface = {
+  /** The session's lane; null for a lane-less (projectless) session. */
+  laneId: string | null;
+  /** The session's own pin, as `resolveSessionRuntimePin` answers it. */
+  runtimePin: OpenProjectBinding | null;
+  /** The machine this window is bound to, which a null pin means. */
+  boundBinding: OpenProjectBinding | null;
+};
+
+/**
+ * Does the floating device belong over this surface?
+ *
+ * Only over a session of the SAME lane on the SAME machine. The device is a
+ * lane's simulator; over another lane's chat it is someone else's picture, and
+ * a lane id alone is not an identity — two machines can each have a lane
+ * called the same thing, so the machine is compared too, through the same
+ * `workRuntimeScopeKey` the Work tools key themselves on. Both sides resolve a
+ * null pin against the window's CURRENT binding, which is what a null pin
+ * means to the stream as well.
+ *
+ * A lane-less target (a projectless chat's device) belongs only on lane-less
+ * surfaces, by the same rule: null lane equals null lane.
+ */
+export function appleMiniPlayerBelongsToSurface(
+  target: AppleMiniPlayerTarget,
+  surface: AppleMiniPlayerSurface | null,
+): boolean {
+  if (!surface) return false;
+  if ((target.laneId || null) !== (surface.laneId || null)) return false;
+  return workRuntimeScopeKey(target.runtimePin, surface.boundBinding)
+    === workRuntimeScopeKey(surface.runtimePin, surface.boundBinding);
+}
 
 let current: AppleMiniPlayerTarget | null = null;
 let listeners = new Set<() => void>();

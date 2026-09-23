@@ -14,11 +14,13 @@ import {
   type AppleMiniPlayerResizeDirection,
 } from "./appleMiniPlayerLayout";
 import {
+  appleMiniPlayerBelongsToSurface,
   closeAppleMiniPlayer,
   releaseAppleMiniPlayerHandoverHold,
   retakeAppleMiniPlayer,
   takeAppleMiniPlayerPoster,
   useAppleMiniPlayerTarget,
+  type AppleMiniPlayerSurface,
   type AppleMiniPlayerTarget,
 } from "./appleMiniPlayerStore";
 import {
@@ -51,10 +53,17 @@ const RESIZE_ZONES: { direction: AppleMiniPlayerResizeDirection; className: stri
  */
 export function AppleDeviceMiniPlayer({
   onOpenInPane,
+  surface,
   recording = false,
 }: {
   /** Brings the device back into the Apple pane. */
   onOpenInPane: (target: AppleMiniPlayerTarget) => void;
+  /**
+   * The Work surface in front, or null on the new-chat screen. Required, not
+   * optional: a mount that forgot it would float the device over every
+   * surface again, which is the bug this exists to prevent.
+   */
+  surface: AppleMiniPlayerSurface | null;
   recording?: boolean;
 }) {
   const target = useAppleMiniPlayerTarget();
@@ -63,6 +72,7 @@ export function AppleDeviceMiniPlayer({
     <AppleMiniPlayerFrameView
       key={target.deviceUdid}
       target={target}
+      visible={appleMiniPlayerBelongsToSurface(target, surface)}
       recording={recording}
       onOpenInPane={onOpenInPane}
     />
@@ -71,10 +81,21 @@ export function AppleDeviceMiniPlayer({
 
 function AppleMiniPlayerFrameView({
   target,
+  visible,
   recording,
   onOpenInPane,
 }: {
   target: AppleMiniPlayerTarget;
+  /**
+   * False while the surface in front is another lane's, another machine's, or
+   * the new-chat screen (the owner's 2026-09-23 report: a lane's simulator
+   * floated over a new chat). Hidden, NOT closed: the target stays in the
+   * store, so going back to a surface of the device's lane brings the player
+   * back where it was, at the size it was. Staying mounted is what keeps the
+   * position and width; the stream is what must not stay, and `hidden` below
+   * gives this viewer's lease back exactly as an unmount would.
+   */
+  visible: boolean;
   recording: boolean;
   onOpenInPane: (target: AppleMiniPlayerTarget) => void;
 }) {
@@ -113,7 +134,9 @@ function AppleMiniPlayerFrameView({
     laneId: target.laneId,
     chatSessionId: target.chatSessionId,
     enabled: true,
-    hidden: false,
+    // Hidden releases this viewer's lease (and stops the capture when it was
+    // the last one), so a player nobody can see is not encoding H.264.
+    hidden: !visible,
     machineName: null,
     bitrateKbpsCap: null,
     runtimePinRef: pinRef,
@@ -128,10 +151,15 @@ function AppleMiniPlayerFrameView({
    * lease is acquired — has already run by the time this one does. Releasing
    * first would drop the count to zero between the two and stop the capture,
    * which is exactly the tear-down this whole mechanism exists to avoid.
+   *
+   * Only while visible: a hidden player holds no lease of its own, and this
+   * release never stops a capture, so giving the hold back here would leave
+   * the helper encoding for nobody. Left alone, the hold's own expiry stops it
+   * — or, if the user comes back within the window, this runs then instead.
    */
   useEffect(() => {
-    releaseAppleMiniPlayerHandoverHold();
-  }, []);
+    if (visible) releaseAppleMiniPlayerHandoverHold();
+  }, [visible]);
 
   // The poster is a stand-in for frames, so the first real frame retires it.
   useEffect(() => {
@@ -250,6 +278,15 @@ function AppleMiniPlayerFrameView({
     pipRef.current = null;
   }, []);
 
+  // Hiding stops the frames, so a picture-in-picture window would freeze on
+  // the last one; and a hidden box never sees the pointer leave it, so the
+  // hover bar would still be open when it comes back.
+  useEffect(() => {
+    if (visible) return;
+    stopPip();
+    setHovered(false);
+  }, [stopPip, visible]);
+
   const handleDimensions = useCallback((size: { width: number; height: number }) => {
     setScreen((value) => (
       value && value.width === size.width && value.height === size.height ? value : size
@@ -295,6 +332,7 @@ function AppleMiniPlayerFrameView({
   return (
     <div
       ref={hostRef}
+      hidden={!visible}
       data-apple-mini-player={target.deviceUdid}
       role="group"
       aria-label={`${target.deviceName}, floating`}

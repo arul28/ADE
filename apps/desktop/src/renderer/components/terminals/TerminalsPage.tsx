@@ -10,6 +10,7 @@ import { WorkLiveCornerCard } from "../work/WorkLiveCornerCard";
 import { WorkSidebar } from "./WorkSidebar";
 import type { WorkSidebarContextTarget } from "./workToolContextInsertion";
 import { AppleDeviceMiniPlayer } from "../apple/AppleDeviceMiniPlayer";
+import type { AppleMiniPlayerSurface } from "../apple/appleMiniPlayerStore";
 import { AppleShutdownConfirmHost } from "../apple/AppleShutdownConfirm";
 import { NativeToolFeedsProvider } from "./NativeToolFeedsContext";
 import { useWorkSidebarTool } from "./useWorkSidebarTool";
@@ -1124,6 +1125,25 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     setWorkSidebarTool("ios");
   }, [setWorkSidebarTool]);
 
+  /**
+   * What the floating device checks before it shows itself.
+   *
+   * Built from the SESSION in front, never from `activeLaneId`: on the
+   * new-chat screen that falls back to the composer's draft lane (and then the
+   * selected or primary lane), so a lane's simulator read as "belonging" to a
+   * new chat that had not started anywhere — the owner's 2026-09-23 report.
+   * No session means no surface, and the player hides (without closing).
+   */
+  const appleMiniPlayerSurface = useMemo<AppleMiniPlayerSurface | null>(() => (
+    activeWorkSession
+      ? {
+          laneId: activeWorkSession.laneId || null,
+          runtimePin: activeWorkSessionRuntimePin,
+          boundBinding: projectBinding,
+        }
+      : null
+  ), [activeWorkSession, activeWorkSessionRuntimePin, projectBinding]);
+
   useEffect(() => {
     if (!active) return;
     const openBrowserSidebar = () => {
@@ -1526,7 +1546,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
               in a pane of its own, because "float over chat" is the whole
               point of it — and it is opened by the rail, never by ADE.
             */}
-            <AppleDeviceMiniPlayer onOpenInPane={openAppleTool} />
+            <AppleDeviceMiniPlayer onOpenInPane={openAppleTool} surface={appleMiniPlayerSurface} />
             {/*
               §B3's "Shut down {device}?" — mounted beside the player because
               they are the same story: one asks before the tab close powers the
@@ -1624,6 +1644,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       workViewArea,
       activeLaneDeleteProgress,
       openAppleTool,
+      appleMiniPlayerSurface,
     ],
   );
 
