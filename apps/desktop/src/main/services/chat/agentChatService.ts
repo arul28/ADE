@@ -46580,6 +46580,11 @@ export function createAgentChatService(args: {
     if (!laneInfo) throw new Error(`Lane '${trimmedLane}' was not found.`);
 
     const repoUrl = await detectLaneGitRemoteUrl(laneInfo.worktreePath);
+    if (!repoUrl) {
+      // Same hard-fail as Cursor Cloud: a session launched without repoUrls
+      // runs against no repository at all and looks identical in the fleet.
+      throw new Error("Devin Cloud requires a repo URL. Configure a git remote on the lane.");
+    }
     const tags = buildDevinCloudAdeTags({
       laneId: trimmedLane,
       projectId: args.projectId,
@@ -46590,7 +46595,7 @@ export function createAgentChatService(args: {
     // some callers (drawer, remote command) never push.
     const laneBranch = laneInfo.branchRef?.trim();
     let branchOnRemote = false;
-    if (repoUrl && laneBranch) {
+    if (laneBranch) {
       const headSha = (await runGit(["rev-parse", "HEAD"], {
         cwd: laneInfo.worktreePath,
         timeoutMs: 8_000,
@@ -46626,12 +46631,12 @@ export function createAgentChatService(args: {
         branchOnRemote = Boolean(headSha);
       }
     }
-    const cloudPrompt = repoUrl && laneBranch && branchOnRemote
+    const cloudPrompt = laneBranch && branchOnRemote
       ? `Repo: ${repoUrl} (branch: ${laneBranch})\nCheck out the existing '${laneBranch}' branch first — it has been pushed to the remote and carries this lane's commits.\n\n${prompt}`
       : prompt;
     const created = await aiIntegrationService.createDevinCloudSession({
       prompt: cloudPrompt,
-      ...(repoUrl ? { repoUrls: [repoUrl] } : {}),
+      repoUrls: [repoUrl],
       tags,
       ...(args.title?.trim() ? { title: args.title.trim() } : {}),
       ...(args.devinMode ? { devinMode: args.devinMode } : {}),

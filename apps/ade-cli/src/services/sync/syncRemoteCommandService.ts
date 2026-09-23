@@ -5915,10 +5915,11 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
     if (typeof payload.apiKey !== "string") {
       throw new Error("ai.setDevinCloudCredentials requires apiKey.");
     }
-    // Bounds: Devin tokens are well under 1 KB and org ids under 64 chars —
-    // anything past these caps is abuse, not a credential.
-    if (payload.apiKey.length > 8192) {
-      throw new Error("ai.setDevinCloudCredentials apiKey is too long.");
+    // Same boundary as `ai.storeApiKey` (deliberately unregistered): adding or
+    // replacing a provider key is a desktop-only operation. Remote callers may
+    // only clear the stored credential with an empty string.
+    if (payload.apiKey.length > 0) {
+      throw new Error("Setting a Devin API key is a desktop-only operation — add the key in ADE's Settings on the host.");
     }
     if (typeof payload.orgId === "string" && payload.orgId.length > 256) {
       throw new Error("ai.setDevinCloudCredentials orgId is too long.");
@@ -5965,7 +5966,11 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("ai.devinCloudFollowUp", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
     await requireService(args.agentChatService, "Agent chat service not available.").devinCloudFollowUp({
       devinSessionId: requireString(payload.devinSessionId, "ai.devinCloudFollowUp requires devinSessionId."),
-      message: requireString(payload.message, "ai.devinCloudFollowUp requires message."),
+      message: (() => {
+        const message = requireString(payload.message, "ai.devinCloudFollowUp requires message.");
+        if (message.length > 100_000) throw new Error("ai.devinCloudFollowUp message is too long.");
+        return message;
+      })(),
     });
     args.devinCloudFleetService?.invalidateCache();
   });
@@ -5994,9 +5999,16 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
     const title = asTrimmedString(payload.title);
     const projectId = asTrimmedString(payload.projectId);
     const platform = asTrimmedString(payload.platform);
+    const prompt = requireString(payload.prompt, "ai.createDevinCloudSession requires prompt.");
+    // Bounds matching the credential caps above: identifiers are short and a
+    // prompt past 100 KB is abuse, not a task.
+    if (prompt.length > 100_000) throw new Error("ai.createDevinCloudSession prompt is too long.");
+    for (const [name, value] of [["sessionId", sessionId], ["title", title], ["projectId", projectId], ["platform", platform]] as const) {
+      if (value && value.length > 256) throw new Error(`ai.createDevinCloudSession ${name} is too long.`);
+    }
     const result = await requireService(args.agentChatService, "Agent chat service not available.").createDevinCloudSessionForLane({
       laneId: requireString(payload.laneId, "ai.createDevinCloudSession requires laneId."),
-      prompt: requireString(payload.prompt, "ai.createDevinCloudSession requires prompt."),
+      prompt,
       ...(sessionId ? { sessionId } : {}),
       ...(title ? { title } : {}),
       ...(devinMode !== undefined ? { devinMode } : {}),

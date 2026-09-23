@@ -175,7 +175,7 @@ async function inspectAcpCliCredentials(
     if (env.WINDSURF_API_KEY?.trim()) return { authenticated: true, verified: false };
     const root = platform() === "win32"
       ? path.join(env.APPDATA?.trim() || path.join(home, "AppData", "Roaming"), "devin")
-      : dir(env.XDG_CONFIG_HOME, ".config/devin");
+      : path.join(env.XDG_CONFIG_HOME?.trim() || path.join(home, ".config"), "devin");
     const candidates = ["auth.json", "credentials.json", "credentials", "config.json"];
     for (const name of candidates) {
       if (await fileExists(path.join(root, name))) {
