@@ -71,6 +71,7 @@ type AgentChatServiceLike = {
   emitAdeCard: (args: { sessionId: string; card: AdeCardPayload }) => Promise<void>;
   subscribeToEvents: (callback: (event: AgentChatEventEnvelope) => void) => () => void;
   generateAutoLaneIdentity?: (args: AgentChatSuggestLaneNameArgs) => Promise<AutoLaneIdentitySuggestion>;
+  getChatTranscript?: (args: { sessionId: string; limit?: number }) => Promise<{ entries: Array<{ role: string }> }>;
 };
 
 export type ChatLaunchBaseResolution = {
@@ -546,12 +547,22 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
   const sendChatMessage = queuedDelivery.send;
   const deliverQueuedMessages = queuedDelivery.deliver;
 
+  const openingMessageLanded = async (sessionId: string): Promise<boolean> => {
+    try {
+      const transcript = await deps.agentChatService.getChatTranscript?.({ sessionId, limit: 20 });
+      return transcript?.entries.some((entry) => entry.role === "user") ?? false;
+    } catch {
+      return false;
+    }
+  };
+
   const runChatAgentStage = async (record: LaunchRecord): Promise<void> => {
     const chat = record.chat;
     if (!chat) throw new Error("Chat launch is missing its chat arguments.");
     setStage(record, "agent", "running");
     publish(record, { persist: false });
     const sessionId = record.snapshot.launchId;
+    const resumingSession = record.snapshot.sessionCreated;
     if (!record.snapshot.sessionCreated) {
       await deps.agentChatService.createSession({
         ...chat.create,
@@ -563,6 +574,12 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       publish(record);
     }
     assertActive(record);
+    if (!record.messageSent && resumingSession && await openingMessageLanded(sessionId)) {
+      // A restart (or a send that failed after it reached the chat) lost the
+      // "sent" mark; the chat exists only for this launch, so a user message
+      // in it is the opening prompt. Never send it twice.
+      record.messageSent = true;
+    }
     if (!record.messageSent) {
       transcriptCard.arm(record);
       await deps.agentChatService.sendMessage({ ...chat.message, sessionId });

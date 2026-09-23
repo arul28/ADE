@@ -482,6 +482,33 @@ describe("chatLaunchService", () => {
     reloaded.dispose();
   });
 
+  it("Retry after a restart never resends an opening prompt the chat already received", async () => {
+    const h = harness();
+    const send = deferred<void>();
+    vi.mocked(h.deps.agentChatService.sendMessage).mockImplementationOnce(async () => send.promise);
+    await h.service.start(chatArgs());
+    await vi.waitFor(() => expect(h.laneCreateOptions).toBeDefined());
+    h.laneCreate.resolve(laneSummary());
+    await vi.waitFor(() => expect(h.deps.agentChatService.sendMessage).toHaveBeenCalledTimes(1));
+    // The chat took the prompt; the process dies before "sent" is recorded.
+    h.service.dispose();
+
+    const events: ChatLaunchEvent[] = [];
+    const getChatTranscript = vi.fn(async () => ({ entries: [{ role: "user" }] }));
+    const reloaded = createChatLaunchService({
+      ...h.deps,
+      agentChatService: { ...h.deps.agentChatService, getChatTranscript },
+      emit: (event) => events.push(event),
+    });
+    expect(reloaded.get({ launchId: LAUNCH_ID })?.sessionCreated).toBe(true);
+    await reloaded.retry({ launchId: LAUNCH_ID });
+    await vi.waitFor(() => expect(reloaded.get({ launchId: LAUNCH_ID })?.phase).toBe("completed"));
+    expect(getChatTranscript).toHaveBeenCalledWith({ sessionId: LAUNCH_ID, limit: 20 });
+    expect(h.deps.agentChatService.sendMessage).toHaveBeenCalledTimes(1);
+    expect(h.deps.agentChatService.createSession).toHaveBeenCalledTimes(1);
+    reloaded.dispose();
+  });
+
   it("the interrupted snapshot outranks every snapshot clients saw before the restart", async () => {
     const h = harness();
     await h.service.start(chatArgs());
