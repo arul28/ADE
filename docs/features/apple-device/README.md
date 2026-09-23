@@ -58,14 +58,43 @@ existing simulator without cloning. Only installed simulators/runtimes —
 `APPLE_NO_INSTALLED_SIMULATORS` with a hint naming Xcode ▸ Settings ▸
 Components if none exist.
 
-`device-delete` removes a clone. An attached device is refused unless
-`--force`, and `--force` only detaches it. The clone is deleted on lane
-archive. `deviceDetach` gives up the lane's device and leaves the simulator
-installed; agents may call it, under the same owner rule as `deviceStop`: it
-is refused for another chat's session unless `--force` or `ignoreOwnership`.
-`deviceDeleteInstalled` deletes a simulator the user picked in the desktop
-picker. It is never listed to agents, and it is refused to agents,
-automations and CLI or TUI processes that have no chat.
+The verbs that end a lane's hold on its device live in
+`laneDeviceLifecycle.ts`. Each one tears down the recording, the stream, the
+chat claim and the hub session in the same order.
+
+- `device-detach` (`deviceDetach`) gives up the lane's device and leaves the
+  simulator installed, with its power state unchanged. The device then shows
+  as free in the picker. Agents may call it.
+- `device-delete` (`deviceDelete`) removes a clone. The registry powers the
+  clone off first. An attached device is refused unless `--force`, and
+  `--force` only detaches it. ADE never deletes a simulator it did not create.
+  The clone is also deleted on lane archive.
+- Both verbs use the same owner rule as `stop` (`deviceStop`). They are
+  refused while another chat drives the device, unless the caller passes
+  `--ignore-ownership`. For detach, `--force` also passes. For delete,
+  `--force` only means "detach an attached device" and does not pass the
+  owner check. A refused call changes nothing.
+- `deviceStart`, `deviceStop`, `deviceDetach` and `deviceDelete` run one at a
+  time per lane, in the lane's lifecycle queue. A delete decides everything
+  inside that queue, from one read of the lane's binding. So a start that is
+  already in flight cannot claim the session or change the device between the
+  check and the teardown. The standalone `device-create` and `device-attach`
+  verbs are not queued. For that reason, the registry delete gets the udid
+  that the queue read, and does nothing when the lane holds a different
+  device by then.
+
+`deviceDeleteInstalled` deletes a simulator that the user picked in the
+desktop picker. It is the one entry in `APPLE_USER_ONLY_ACTIONS`. The
+`ios_simulator` action domain allows it, but `getStatus().capabilities` never
+lists it. The RPC server refuses it to agent callers, and allows it only to a
+user client whose connect name is a desktop client name
+(`isDesktopClientName` in `shared/runtimeClientNames.ts`). The name is the
+client's own claim, not authentication. It separates the desktop from the
+`ade` CLI and TUI, and from an agent shell that has no chat identity.
+Automations cannot run it. The phone and the web client reach it through the
+`apple.invoke` remote command, which is controller-only. The registry refuses
+a device that any lane holds. Before the delete, ADE stops each stream and hub
+session that still reads a device no lane holds.
 
 **One lane owns a device at a time.** `device-attach` on a simulator another
 lane holds MOVES the binding rather than adding a second one: the losing lane's
@@ -103,17 +132,58 @@ agent may call, spread from `APPLE_AGENT_ACTIONS` in
 `shared/types/iosSimulator.ts`. That same constant feeds the action allowlist,
 so the surface an agent is told about and the surface it is allowed to use
 cannot drift apart. An agent landing in a lane reads `status` and learns the
-device, its state and what it may do, without reading source.
+device, its state and what it may do, without reading source. The
+user-only verbs (`APPLE_USER_ONLY_ACTIONS`) are added to the allowlist but
+never to `capabilities`.
+
+Agents often see only a skill index, not the `ade-apple` skill body. So when a
+lane holds a device, the chat service adds a short hint to the
+provider-bound prompt (`laneAppleDeviceDirective.ts`). The hint names the
+device and points the agent at `ade apple`, not at `simctl` or
+`Simulator.app`. It is sent on the first turn after a device is bound, and
+again only when the bound udid changes. It never enters the transcript. Off
+macOS there is no lookup and no hint.
+
+An agent can put its device on the user's screen with `ade apple show`
+(or `ade ui show apple`). `--floating` shows the floating player instead of
+the pane. The brain publishes a show request on the runtime event stream. The
+desktop renderer that shows the chat opens the surface and answers. The CLI
+prints `shown`, `held` (a window has the project open but not this chat), or
+`no_desktop` (exit 1). An agent's input to the device can also raise the
+floating player by itself, unless the user turned off "Show preview when
+minimized" for that chat.
 
 ## Source file map
 
 | Path | Role |
 |---|---|
-| `apps/desktop/native/ADESimHelper/` | Vendored Swift helper: framebuffer capture, H.264 encode, HID input, accessibility tree. |
+| `apps/desktop/native/ADESimHelper/` | Vendored Swift helper: framebuffer capture, H.264 encode, HID input, accessibility tree, recording (`RecordingSession.swift`, idle-gap cut in `IdleGapCompressor.swift`). |
 | `apps/desktop/scripts/build-sim-helper.mjs` | Builds `resources/native/ade-sim-helper` for macOS dist. |
 | `apps/desktop/src/main/services/ios/` | Device lifecycle, launch, screenshots, helper transport, recording, Preview Lab. Preload namespace stays `iosSimulator`. |
-| `apps/desktop/src/shared/types/iosSimulator.ts` | Cross-process types, including `LaneDevice` and recording records. |
+| `apps/desktop/src/main/services/ios/iosSimulatorService.ts` | The `ios_simulator` service: app sessions, input, streams, screenshots, and the wiring of the modules below. |
+| `apps/desktop/src/main/services/ios/laneDeviceRegistry.ts` | One device per lane: clone, attach, takeover, and the `lane_apple_devices` rows. |
+| `apps/desktop/src/main/services/ios/laneDeviceLifecycle.ts` | `deviceDetach`, `deviceDelete`, the takeover release, and `deviceDeleteInstalled`. Runs each verb's teardown in one order. |
+| `apps/desktop/src/main/services/ios/simulatorPower.ts` | The one place ADE boots or powers off a simulator. It resets the helper session, stops a recording, and drops the cached `simctl list`. |
+| `apps/desktop/src/main/services/ios/iosDeviceHub.ts`, `simHelperClient.ts` | Device sessions, and the NDJSON client that supervises the helper. |
+| `apps/desktop/src/main/services/ios/appleStreamRelay.ts`, `appleLocalViewers.ts` | Brain-side forwarder for the H.264 stream, and which lanes have a viewer on this machine. |
+| `apps/desktop/src/main/services/ios/recording/simRecordingService.ts` | Recording rules: auto-record, caps, orphan recovery, filing each recording as proof. |
+| `apps/desktop/src/main/services/ios/recording/appleRecordingsStore.ts` | The on-disk layout `<projectRoot>/.ade/artifacts/apple-recordings/<laneId>/<id>.mp4` plus the `<id>.json` sidecar. Every walk of that layout goes through it. |
+| `apps/desktop/src/main/services/chat/laneAppleDeviceDirective.ts` | The turn-time hint that tells an agent its lane has a device. |
+| `apps/desktop/src/shared/types/iosSimulator.ts` | Cross-process types, including `LaneDevice`, recording records, `APPLE_AGENT_ACTIONS` and `APPLE_USER_ONLY_ACTIONS`. |
+| `apps/desktop/src/shared/runtimeClientNames.ts` | `DESKTOP_CLIENT_NAMES` and `isDesktopClientName`, the gate for user-only verbs on the RPC server. |
+| `apps/desktop/src/shared/types/workToolShow.ts` | The show-request surfaces (`apple`, `floating-apple`, `browser`, `proof`) and event shape. |
+| `apps/desktop/src/renderer/components/apple/AppleDevicePane.tsx` | The pane body. It composes the picker, stage, rail, drawer and status strip. |
+| `apps/desktop/src/renderer/components/apple/useAppleLaneDeviceList.ts` | Service status (polled while on screen) and the lane's device list for the pane. |
+| `apps/desktop/src/renderer/components/apple/useAppleDeviceStartTracker.ts` | Tracks a device start for the loading card, and re-reads the truth when the card stops moving. |
+| `apps/desktop/src/renderer/components/apple/useAppleInspect.tsx` | Inspect mode: one snapshot per switch-on, the hovered and selected element, and the overlay. |
+| `apps/desktop/src/renderer/components/apple/appleDeviceScene.ts`, `appleDeviceModelLoader.ts`, `AppleDevice3DView.tsx` | The 3D body and screen math, the GLB loader, and the 3D presenter. |
+| `apps/desktop/src/renderer/components/apple/AppleDevicePicker.tsx`, `applePickerInventory.ts` | The picker and its grouping (this lane's device, free devices, devices another lane holds). |
+| `apps/desktop/src/renderer/components/apple/useLaneAppleDevices.ts`, `LaneAppleDeviceMarker.tsx` | The Apple mark beside each lane in the Work session list that holds a device. |
+| `apps/desktop/src/renderer/components/apple/AppleDeviceMiniPlayer.tsx`, `appleMiniPlayerStore.ts` | The floating device player over the chat. |
 | `apps/ade-cli/src/cli.ts` | `ade apple` typed commands. `ade ios-sim` is the deprecated alias. |
+| `apps/ade-cli/src/help/appleHelp.ts` | Help text for each `ade apple` subcommand, and the help aliases. |
+| `apps/ade-cli/src/services/sync/appleRemoteCommands.ts` | `apple.*` remote commands for the phone and the web client, including `apple.invoke`. |
+| `apps/ade-cli/src/services/workTools/workToolShowRequests.ts` | `ade apple show` / `ade ui show` on the brain side. |
 | `apps/desktop/resources/agent-skills/ade-apple/SKILL.md` | Agent skill for the verbs below. |
 | `apps/ios/ADE/Debug/ADEInspectorKit/ADEInspectable.swift` | DEBUG-only Swift helpers that publish element frames into the app container. See [inspector.md](./inspector.md). |
 
@@ -163,13 +233,22 @@ ade --socket apple record-delete --id <id> --text
 
 ade --socket apple start [--udid <udid>|--create <sourceUdid>] --text
 ade --socket apple stop [--force] --text
+ade --socket apple device-detach [--force] --text
+ade --socket apple show [--floating] --text
 ade --socket apple scroll --x <x> --y <y> --dy <delta> --text
 ade --socket apple foreground --text
 
 ade --socket apple frame [--out <path>] --text
 ade --socket apple button home --text
 ade --socket apple rotate landscape-left --text
+
+ade --socket apple type "reddit" --submit --text
+ade --socket apple key return --text
 ```
+
+`type --submit` presses Return after the text, so a search or form submits.
+With `--submit` and no text, it presses Return alone. `key` presses one named
+key: `return` (alias `enter`) or `tab`. Both send the key through `typeText`.
 
 `frame` grabs a decoded stream frame and fails with
 `APPLE_STREAM_NOT_RUNNING` when no stream is running. `screenshot` does not
@@ -184,8 +263,8 @@ portrait-upside-down, landscape-left, or landscape-right.
 `rotate` verifies itself. The helper's `orientation` command answers `true`
 once its GSEvent reaches `PurpleWorkspacePort` with `KERN_SUCCESS`, which is a
 statement about a mach message and nothing else, so the service reads the real
-framebuffer either side of the send instead. What that measurement showed
-(2026-09-21, on a machine with no `Simulator.app` installed at all):
+framebuffer either side of the send instead. A measurement on a machine with
+no `Simulator.app` installed showed:
 
 - the send always succeeds and the **device** orientation really does change —
   rotation does not need `Simulator.app`;
@@ -248,8 +327,8 @@ identical and is deliberately not claimed.
    helper about the lane's device even when the service has no recording.
 8. A recording ends before its device goes away: `device-stop`,
    `device-delete`, and a takeover by another lane each stop it first. A
-   recording that outlived its device used to block every later
-   `record-start` on that device until the helper process was killed.
+   recording that outlives its device blocks every later `record-start` on
+   that device until the helper process stops.
 
 Overlays (tap rings and typed-text badges) are composited into the saved file
 only. Live viewers never show them. Secure text is excluded before it is
@@ -262,7 +341,13 @@ forwarded.
 | `device-create` | `deviceCreate` | `--from/--simulator`, `--name`, `--lane` |
 | `device-attach` | `deviceAttach` | `--simulator/--device/--udid` (required), `--lane` |
 | `device-list` | `deviceList` | `--installed`, `--lane <lane-id>` (defaults to `$ADE_LANE_ID`) |
-| `device-delete` | `deviceDelete` | `--force`, `--lane` |
+| `device-detach` (`detach`) | `deviceDetach` | `--force`, `--ignore-ownership`, `--chat-session`, `--lane` |
+| `device-delete` | `deviceDelete` | `--force`, `--ignore-ownership`, `--chat-session`, `--lane` |
+| `start` | `deviceStart` | `--udid`, `--create`, `--lane` |
+| `stop` (`device-stop`, `power-off`, `poweroff`) | `deviceStop` | `--udid/--device`, `--force`, `--ignore-ownership`, `--chat-session`, `--lane` |
+| `type` (`text`) | `typeText` | positional text or `--value`, `--submit`, `--device` |
+| `key` | `typeText` | positional `return\|enter\|tab`, `--device` |
+| `show` (`reveal`) | show request (not an `ios_simulator` action) | `--floating`, `--session` |
 | `open-device` (`open-sim`, `boot`) | `openDevice` | `--device/--udid`, `--lane`, `--chat-session`, `--no-window`, `--force` |
 | `close-device` (`close-sim`) | `closeDevice` | `--device`, `--chat-session`, `--force`, `--ignore-ownership`, `--shutdown` |
 | `record-start` | `recordStart` | `--overlays on\|off`, `--label`, `--keep-idle`, `--max-seconds`, `--lane` |

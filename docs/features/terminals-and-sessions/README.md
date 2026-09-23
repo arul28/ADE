@@ -865,6 +865,20 @@ Renderer surfaces:
   surfaces outside the Work page file instead of writing pane state directly,
   the pushed-diagnostics fold behind the red activity dots, and the two-unit
   splitter clamp.
+- `apps/desktop/src/renderer/components/terminals/useWorkShowRequests.ts`,
+  `apps/desktop/src/renderer/lib/workToolShowRequests.ts`,
+  `apps/desktop/src/renderer/lib/workToolOnScreen.ts` — the Work page's side
+  of `ade ui show`. The page registers a handler only while Work is on screen,
+  and only for the session in front. A request for another chat is held until
+  the user opens it. A show answers `shown` only when the surface is mounted,
+  its pane has real width, and the window is visible. The same hook decides
+  whether an agent's automatic request may raise the floating Apple player.
+  See [chat › Agents open panes](../chat/README.md#agents-open-panes-ade-ui-show).
+- `apps/desktop/src/renderer/components/apple/useLaneAppleDevices.ts`,
+  `LaneAppleDeviceMarker.tsx` — the small Apple mark beside a lane name in the
+  Work session list (`SessionListPane`, `SessionCard`) when that lane holds a
+  simulator. A booted device reads a little stronger. The tooltip names the
+  device.
 - `apps/desktop/src/renderer/components/terminals/workToolChrome.tsx` — the one
   chrome vocabulary every tool panel spends instead of inventing: a single
   40 px row per tool under the pane's 32 px header, ghost controls that change

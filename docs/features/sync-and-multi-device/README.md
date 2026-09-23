@@ -1597,6 +1597,11 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   untrusted, binds the peer surface and canonical host project, strips claimed
   identity fields, and applies the peer's consent bit before dispatch. Paired
   consent never changes the machine-wide preference.
+- `appleRemoteCommands.ts` — the `apple.*` remote commands for the phone and
+  the hosted web client. `apple.invoke` is controller-only and calls one
+  `ios_simulator` method by name. It refuses any method outside the
+  `ios_simulator` action allowlist (`APPLE_AGENT_ACTIONS` plus
+  `APPLE_USER_ONLY_ACTIONS`). See [Apple device](../apple-device/README.md).
 
 - `syncService.ts` (~1,160 lines) — orchestrator that wires the runtime,
   peer client, device registry, draft persistence, pin store, and the
