@@ -34,6 +34,7 @@ import { getDefaultModelDescriptor } from "../shared/modelRegistry";
 import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../shared/chatAttachmentLimits";
 import { normalizeAppPackageChannel, type AppPackageChannel } from "../shared/packageChannel";
 import { deriveSmartLinkPreview } from "../shared/smartLinks";
+import { createChatLaunchSnapshot, toQueuedMessage } from "../shared/chatLaunch";
 // The fixture must demo the link the product actually opens, so it reads the
 // same source the host stamps onto every snapshot.
 import { usageProviderAccountUrl } from "../shared/types/usage";
@@ -71,6 +72,7 @@ import {
   type PromptStashEntry,
   type RemoteRuntimeActionRequest,
 } from "../shared/types";
+import type { ChatLaunchEvent, ChatLaunchSnapshot } from "../shared/types/chatLaunch";
 import type { AccountSettingRow } from "../shared/types/accountSettings";
 import type {
   ApiCredentialGetArgs,
@@ -122,6 +124,86 @@ const resolvedArg2 =
   <T>(v: T) =>
   async (_a: any, _b: any) =>
     v;
+/* ── chatLaunch (browser preview) ─────────────────────────────────────────
+   A small simulator so the Vite preview shows a new-lane launch moving:
+   fetch → check out files (with %) → start agent, a few hundred ms apart. A
+   CLI launch parks at awaiting-client like the real brain. */
+const browserMockChatLaunches = new Map<string, ChatLaunchSnapshot>();
+const browserMockChatLaunchListeners = new Set<(event: ChatLaunchEvent) => void>();
+
+function emitBrowserMockChatLaunch(launch: ChatLaunchSnapshot): ChatLaunchSnapshot {
+  const next = { ...launch, sequence: launch.sequence + 1, updatedAt: new Date().toISOString() };
+  browserMockChatLaunches.set(next.launchId, next);
+  for (const listener of browserMockChatLaunchListeners) listener({ type: "launch-updated", launch: next });
+  return next;
+}
+
+function advanceBrowserMockChatLaunch(launchId: string): void {
+  const launch = browserMockChatLaunches.get(launchId);
+  if (!launch || launch.phase !== "running") return;
+  const now = new Date().toISOString();
+  const stages = launch.stages.map((stage) => ({ ...stage }));
+  const running = stages.find((stage) => stage.status === "running");
+  if (running?.id === "checkout" && (running.percent ?? 0) < 100) {
+    running.percent = Math.min(100, (running.percent ?? 0) + 25);
+    running.detail = "4,917 files";
+    emitBrowserMockChatLaunch({ ...launch, stages, laneCreated: true, worktreePath: `/tmp/${launch.laneName}` });
+    window.setTimeout(() => advanceBrowserMockChatLaunch(launchId), 260);
+    return;
+  }
+  if (running) {
+    running.status = "done";
+    running.endedAt = now;
+    if (running.id === "fetch") running.detail = "origin/main at 807fb2c";
+  }
+  const next = stages.find((stage) => stage.status === "pending");
+  if (next && !(next.id === "agent" && launch.kind === "cli")) {
+    next.status = "running";
+    next.startedAt = now;
+    if (next.id === "checkout") next.percent = 0;
+    emitBrowserMockChatLaunch({ ...launch, stages, laneCreated: launch.laneCreated || next.id !== "fetch" });
+    window.setTimeout(() => advanceBrowserMockChatLaunch(launchId), 420);
+    return;
+  }
+  if (next && launch.kind === "cli") {
+    emitBrowserMockChatLaunch({ ...launch, stages, phase: "awaiting-client", laneCreated: true });
+    return;
+  }
+  emitBrowserMockChatLaunch({
+    ...launch,
+    stages,
+    phase: "completed",
+    laneCreated: true,
+    sessionCreated: true,
+    agentStarted: true,
+    endedAt: now,
+    queuedMessages: [],
+  });
+}
+
+function startBrowserMockChatLaunch(args: any = {}): ChatLaunchSnapshot {
+  const existing = browserMockChatLaunches.get(String(args.launchId));
+  if (existing) return existing;
+  const now = new Date().toISOString();
+  const base = createChatLaunchSnapshot({
+    launch: { ...args, launchId: String(args.launchId) },
+    laneId: String(args.laneId ?? `lane-${Date.now()}`),
+    laneName: String(args.laneName ?? "New lane"),
+    includeFetch: true,
+    includeEnvironment: false,
+    nowIso: now,
+  });
+  const launch: ChatLaunchSnapshot = {
+    ...base,
+    branchRef: `refs/heads/ade/${base.launchId.slice(0, 8)}`,
+    baseRef: base.baseRef ?? "origin/main",
+    stages: base.stages.map((stage, index) => (index === 0 ? { ...stage, status: "running", startedAt: now } : stage)),
+  };
+  browserMockChatLaunches.set(launch.launchId, launch);
+  window.setTimeout(() => advanceBrowserMockChatLaunch(launch.launchId), 420);
+  return launch;
+}
+
 /**
  * Reads a preview-only override from the URL (plain query or hash query) and
  * remembers it in localStorage so it survives in-app navigation.
@@ -4946,6 +5028,58 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         return { action, result };
       },
       streamEvents: async ({ cursor = 0 }: any = {}) => ({ events: [], nextCursor: cursor, hasMore: false }),
+    },
+    chatLaunch: {
+      start: async (args: any = {}) => startBrowserMockChatLaunch(args),
+      get: async (args: any = {}) => browserMockChatLaunches.get(String(args?.launchId)) ?? null,
+      list: async () => [...browserMockChatLaunches.values()],
+      cancel: async (args: any = {}) => {
+        const launch = browserMockChatLaunches.get(String(args?.launchId));
+        if (!launch) return null;
+        if (launch.phase === "cancelled") return launch;
+        if (launch.agentStarted || launch.phase === "completed") {
+          throw new Error("This chat already started — delete its lane from the lane menu instead.");
+        }
+        return emitBrowserMockChatLaunch({ ...launch, phase: "cancelled", queuedMessages: [], endedAt: new Date().toISOString() });
+      },
+      retry: async (args: any = {}) => browserMockChatLaunches.get(String(args?.launchId)) ?? null,
+      startNow: async (args: any = {}) => browserMockChatLaunches.get(String(args?.launchId)) ?? null,
+      queueMessage: async (args: any = {}) => {
+        const launch = browserMockChatLaunches.get(String(args?.launchId));
+        if (!launch) throw new Error(`Launch not found: ${String(args?.launchId)}`);
+        return emitBrowserMockChatLaunch({
+          ...launch,
+          queuedMessages: [
+            ...launch.queuedMessages,
+            toQueuedMessage(
+              { text: String(args.text ?? ""), displayText: args.displayText ? String(args.displayText) : null },
+              { id: `mock-queued-${Date.now()}`, createdAt: new Date().toISOString() },
+            ),
+          ],
+        });
+      },
+      completeClient: async (args: any = {}) => {
+        const launch = browserMockChatLaunches.get(String(args?.launchId));
+        if (!launch) return null;
+        const now = new Date().toISOString();
+        return emitBrowserMockChatLaunch({
+          ...launch,
+          sessionId: args.sessionId ?? launch.sessionId,
+          phase: args.error ? "failed" : "completed",
+          error: args.error ?? null,
+          agentStarted: !args.error,
+          endedAt: args.error ? null : now,
+          stages: launch.stages.map((stage) => (stage.id === "agent"
+            ? { ...stage, status: args.error ? "failed" : "done", startedAt: stage.startedAt ?? now, endedAt: now, error: args.error ?? null }
+            : stage)),
+        });
+      },
+      onEvent: (listener: (event: ChatLaunchEvent) => void) => {
+        browserMockChatLaunchListeners.add(listener);
+        return () => {
+          browserMockChatLaunchListeners.delete(listener);
+        };
+      },
     },
     agentChat: {
       list: async (args: any = {}) => listMockAgentChatSummaries(args),

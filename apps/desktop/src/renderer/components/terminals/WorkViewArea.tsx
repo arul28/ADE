@@ -41,6 +41,7 @@ import { ChatComposerShell } from "../chat/ChatComposerShell";
 import { ModelRowLogo } from "../shared/ProviderLogos";
 import { resolveModelDescriptorWithRuntimeCatalog, createUnknownModelPlaceholder } from "../shared/ModelPicker/modelCatalog";
 import { WorkStartSurface } from "./WorkStartSurface";
+import { hasPendingComposerDock } from "../chat/launch/chatLaunchDock";
 import { WorkToolPickerBackdrop } from "./WorkToolPickerBackdrop";
 import { CliSessionWorkSurfaceHeader } from "./CliSessionWorkSurfaceHeader";
 import { ChatPrPane } from "../chat/ChatPrPane";
@@ -1066,6 +1067,20 @@ function SessionSurface({
   );
 }
 
+const WORK_AREA_MODE_TRANSITION = { duration: 0.3, ease: STANDARD_EASE } as const;
+const WORK_AREA_DOCK_TRANSITION = { duration: 0.14, ease: STANDARD_EASE } as const;
+
+/** `custom` = the switch is a composer dock (no blur, quick swap). */
+const WORK_AREA_MODE_VARIANTS = {
+  enter: (dock: boolean) => (dock
+    ? { opacity: 1, filter: "blur(0px)", scale: 1 }
+    : { opacity: 0, filter: "blur(12px)", scale: 0.992 }),
+  visible: { opacity: 1, filter: "blur(0px)", scale: 1, transition: WORK_AREA_MODE_TRANSITION },
+  exit: (dock: boolean) => (dock
+    ? { opacity: 0, filter: "blur(0px)", scale: 1, transition: WORK_AREA_DOCK_TRANSITION }
+    : { opacity: 0, filter: "blur(12px)", scale: 0.992, transition: WORK_AREA_MODE_TRANSITION }),
+};
+
 const MODE_OPTIONS: Array<{
   kind: WorkDraftKind;
   label: string;
@@ -1357,16 +1372,22 @@ export function WorkViewArea({
       </div>
     );
 
+  // A foreground new-lane launch opens its chat while the draft composer is
+  // still on screen. That one switch skips the blur dissolve: the chat's own
+  // composer glides down from the draft's position (`chatLaunchDock`), so the
+  // surface underneath just swaps quickly instead of blurring the glide away.
+  const composerDockTransition = workAreaMode === "single" && hasPendingComposerDock(activeSession?.id);
   const tabBody = (
     <div className="relative min-h-0 flex-1" style={{ background: workAreaMode === "empty" ? "transparent" : "var(--chat-canvas-bg)" }}>
-      <AnimatePresence initial={false}>
+      <AnimatePresence initial={false} custom={composerDockTransition}>
         <motion.div
           key={workAreaMode}
           className="absolute inset-0"
-          initial={{ opacity: 0, filter: "blur(12px)", scale: 0.992 }}
-          animate={{ opacity: 1, filter: "blur(0px)", scale: 1 }}
-          exit={{ opacity: 0, filter: "blur(12px)", scale: 0.992 }}
-          transition={{ duration: 0.3, ease: STANDARD_EASE }}
+          custom={composerDockTransition}
+          variants={WORK_AREA_MODE_VARIANTS}
+          initial="enter"
+          animate="visible"
+          exit="exit"
         >
           {workAreaContent}
         </motion.div>

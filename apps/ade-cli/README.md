@@ -606,6 +606,10 @@ ade new chat --mode cli --lane lane-id --provider codex --type peer --parent cha
 ade chat list --lane lane-id --include-automation --no-archived --text
 ade chat create --lane lane-id --provider codex --model openai/gpt-5.6-sol --no-parent --permissions full-auto --print-config --json
 ade chat create --lane lane-id --provider codex --no-parent   # tracked agent shells inherit $ADE_CHAT_SESSION_ID; parented launches must add --type subagent|peer, while --no-parent deliberately opts out
+ade chat launch "fix the flaky test" --provider codex --model openai/gpt-5.6-sol --wait --text   # new-lane chat owned by the brain (chat.startLaunch): fetch base, check out worktree, default lane template, then create the chat + send; --wait polls chat.getLaunch (exit 0 completed / 1 failed, cancelled, or timed out)
+ade chat launches --text                                     # chat.listLaunches: launches running or recently finished on the brain
+ade chat launch-status launch-id --text                      # chat.getLaunch (exit 1 when unknown or expired); `ade chat launch-cancel launch-id` = chat.cancelLaunch (deletes the chat, lane, and branch)
+ade actions run chat.retryLaunch --input-json '{"launchId":"launch-id"}'   # also startLaunchNow / queueLaunchMessage / completeLaunchClient (client-side CLI-launch handshake)
 ade chat read session-id --limit 20 --max-chars 8000 --text
 ade chat read session-id --page --cursor 4096 --limit 20 --max-chars 8000 --text
 ade chat status session-id --text                            # live turn phase (exit 0 running / 1 idle / 2 blocked); adds a `resume` line while a usage limit is live

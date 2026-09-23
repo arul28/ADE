@@ -23,9 +23,12 @@ export function remoteLaneBaseCandidate(baseRef: string | null | undefined): str
 
 /**
  * Pick the remote-tracking ref for the project's primary base branch, preferring
- * the local base branch's configured upstream. Returns null when no matching
- * remote ref exists (e.g. no remote, unfetched) — callers then keep the local
- * default rather than failing creation.
+ * the local base branch's configured upstream. Returns null when there is no
+ * candidate (e.g. no remote, unfetched) — callers then keep the local default
+ * rather than failing creation. A configured upstream is returned even when
+ * its remote ref is gone (`[gone]`), so callers MUST verify the ref resolves
+ * before branching from it (the host's `resolveLaneCreateRemoteBaseDetailed`
+ * does, with `git rev-parse --verify`).
  */
 export function selectRemoteLaneBaseRef(args: {
   branches: GitBranchSummary[];
@@ -35,14 +38,15 @@ export function selectRemoteLaneBaseRef(args: {
   const localBase = base
     ? args.branches.find((branch) => !branch.isRemote && branch.name === base)
     : undefined;
-  const candidates = [
-    localBase?.upstream?.trim() || "",
-    remoteLaneBaseCandidate(base),
-  ].filter(Boolean);
-  for (const candidate of candidates) {
-    if (args.branches.some((branch) => branch.isRemote && branch.name === candidate)) {
-      return candidate;
-    }
+  // A local base branch's configured upstream is the answer on its own:
+  // branch listings fold a remote ref into the local branch that tracks it, so
+  // `origin/main` is usually absent from the remote rows precisely because
+  // `main` tracks it. Callers verify the ref resolves before branching from it.
+  const upstream = localBase?.upstream?.trim() || "";
+  if (upstream) return upstream;
+  const candidate = remoteLaneBaseCandidate(base);
+  if (candidate && args.branches.some((branch) => branch.isRemote && branch.name === candidate)) {
+    return candidate;
   }
   return null;
 }
@@ -51,7 +55,8 @@ export function selectRemoteLaneBaseRef(args: {
  * Resolve the default base for a caller that omitted one. Fetches the remote
  * first (bounded — a slow remote must not stall lane creation), then maps the
  * primary base branch to its remote-tracking ref. Any failure resolves to null
- * so creation proceeds with the existing local-default behavior.
+ * so creation proceeds with the existing local-default behavior. Like
+ * {@link selectRemoteLaneBaseRef}, the result is unverified.
  */
 export async function resolveDefaultRemoteLaneBase(args: {
   newLaneBaseSource: NewLaneBaseSource | null;

@@ -275,6 +275,28 @@ describe("laneEnvironmentService", () => {
       expect(fs.realpathSync(cwd!)).toBe(fs.realpathSync(worktreePath));
     });
 
+    it("abortLaneEnvironment kills a running setup command inside the lane and stops the init", async () => {
+      const worktreePath = path.join(projectRoot, "wt-abort");
+      fs.mkdirSync(worktreePath, { recursive: true });
+      const lane = makeLane({ id: "lane-abort", name: "abort-me", worktreePath });
+      const service = createService();
+      const started = Date.now();
+      const init = service.initLaneEnvironment(lane, {
+        setupScript: { commands: ["sleep 30", "printf 'should not run' > after.txt"] },
+      }, {});
+      await vi.waitFor(() => {
+        expect(events.some((event) => event.progress?.steps?.some((step: { status: string }) => step.status === "running"))).toBe(true);
+      });
+      await vi.waitFor(() => {
+        expect(service.abortLaneEnvironment("lane-abort", worktreePath)).toBeGreaterThan(0);
+      });
+      const result = await init;
+      expect(Date.now() - started).toBeLessThan(20_000);
+      expect(result.overallStatus).toBe("failed");
+      expect(fs.existsSync(path.join(worktreePath, "after.txt"))).toBe(false);
+      expect(service.abortLaneEnvironment("lane-abort", worktreePath)).toBe(0);
+    });
+
     it("omits PRIMARY_WORKTREE_PATH unless the template opts in", async () => {
       const worktreePath = path.join(projectRoot, "wt-setup-noinject");
       fs.mkdirSync(worktreePath, { recursive: true });

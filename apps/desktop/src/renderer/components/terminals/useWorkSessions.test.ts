@@ -91,6 +91,7 @@ vi.mock("../../lib/sessions", () => ({
     resumeCommand: null,
   })),
   isChatToolType: vi.fn(() => false),
+  chatToolTypeForProvider: vi.fn(() => "claude-chat"),
 }));
 
 vi.mock("../../state/crossMachineLanes", async (importOriginal) => {
@@ -175,6 +176,12 @@ import {
 } from "../../state/crossMachineLanes";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 import { isChatToolType } from "../../lib/sessions";
+import {
+  applyChatLaunchSnapshot,
+  buildOptimisticChatLaunchSnapshot,
+  resetChatLaunchStoreForTests,
+} from "../../state/chatLaunchStore";
+import { announceChatLaunchClosed, resetChatLaunchDraftRestoreForTests } from "../chat/launch/chatLaunchDraftRestore";
 
 // ---------------------------------------------------------------------------
 // window.ade stubs
@@ -234,6 +241,151 @@ function setDocumentVisibility(value: DocumentVisibilityState) {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+describe("useWorkSessions — pending new-lane chat launches", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetFakeAppStoreState();
+    resetProjectOriginMemory();
+    resetCrossMachineLaneSyncForTest();
+    installWindowAde();
+    listSessionsCachedMock.mockResolvedValue([]);
+    useSearchParamsMock.mockReturnValue([new URLSearchParams(), vi.fn()]);
+    setDocumentVisibility("visible");
+  });
+
+  afterEach(() => {
+    cleanup();
+    resetChatLaunchStoreForTests();
+    resetChatLaunchDraftRestoreForTests();
+    delete (window as any).ade;
+  });
+
+  function launch(overrides: Record<string, unknown> = {}) {
+    return {
+      ...buildOptimisticChatLaunchSnapshot({
+        launch: {
+          kind: "chat",
+          mode: "foreground",
+          launchId: "launch-1",
+          laneId: "lane-new",
+          laneName: "Fix Login Redirect",
+          prompt: "Fix the login redirect",
+        },
+        includeFetch: true,
+        nowIso: "2026-04-01T12:05:00.000Z",
+      }),
+      sequence: 1,
+      ...overrides,
+    } as ReturnType<typeof buildOptimisticChatLaunchSnapshot>;
+  }
+
+  it("lists the launching chat under its lane name, then yields to the real row with the same id", async () => {
+    const { result } = renderHook(() => useWorkSessions());
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    act(() => {
+      applyChatLaunchSnapshot(null, launch());
+    });
+    const pending = result.current.sessionsById.get("launch-1");
+    expect(pending).toMatchObject({ laneId: "lane-new", laneName: "Fix Login Redirect", title: "Fix the login redirect" });
+    // A launch row is not host data: it must never be mirrored into the warm cache.
+    expect(result.current.sessions.filter((session) => session.id === "launch-1")).toHaveLength(1);
+
+    listSessionsCachedMock.mockResolvedValue([makeSession("launch-1", "lane-new", { title: "Real chat" })]);
+    await act(async () => {
+      await result.current.refresh({ showLoading: false, force: true });
+    });
+    const rows = result.current.sessions.filter((session) => session.id === "launch-1");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.title).toBe("Real chat");
+  });
+
+  it("drops a cancelled launch's row and sends a shown launch tab back to the draft", async () => {
+    const { result } = renderHook(() => useWorkSessions());
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+    act(() => {
+      applyChatLaunchSnapshot(null, launch());
+    });
+    expect(result.current.sessionsById.has("launch-1")).toBe(true);
+
+    // The host reporting the cancel (from this device or another) is what
+    // closes the tab — no separate scan at tab-prune time.
+    setWorkViewStateSpy.mockClear();
+    act(() => {
+      applyChatLaunchSnapshot(null, launch({ phase: "cancelled", sequence: 4 }));
+    });
+    expect(result.current.sessionsById.has("launch-1")).toBe(false);
+    // The close notice is posted synchronously with the store write, so its
+    // tab update is the first view-state write after it.
+    const apply = setWorkViewStateSpy.mock.calls
+      .map((call) => call[1])
+      .find((arg) => typeof arg === "function") as (prev: Record<string, unknown>) => Record<string, unknown>;
+    expect(typeof apply).toBe("function");
+    const shown = apply({
+      ...createDefaultWorkProjectViewState(),
+      openItemIds: ["other", "launch-1"],
+      activeItemId: "launch-1",
+      selectedItemId: "launch-1",
+    });
+    expect(shown).toMatchObject({ openItemIds: ["other"], activeItemId: null, selectedItemId: null, draftKind: "chat" });
+
+    // Cancelled elsewhere while this window sits on a CLI draft: the draft stays.
+    const onDraft = apply({ ...createDefaultWorkProjectViewState(), openItemIds: ["launch-1"], draftKind: "cli" });
+    expect(onDraft).toMatchObject({ openItemIds: [], draftKind: "cli" });
+
+    // Only a notice that hands the prompt back switches the draft to its kind.
+    setWorkViewStateSpy.mockClear();
+    act(() => {
+      announceChatLaunchClosed({ launchId: "launch-1", sessionId: "launch-1", kind: "chat" }, {
+        launchId: "launch-1",
+        kind: "chat",
+        draftSnapshot: null,
+        prompt: { text: "Fix the login redirect", attachments: [] },
+      });
+    });
+    const restoreUpdater = setWorkViewStateSpy.mock.calls.at(-1)?.[1] as (prev: Record<string, unknown>) => Record<string, unknown>;
+    expect(restoreUpdater({ ...createDefaultWorkProjectViewState(), draftKind: "cli" })).toMatchObject({ draftKind: "chat" });
+  });
+
+  it("never lists another project's launch, and drops its own once the chat is the host's", async () => {
+    const otherProject = { kind: "local" as const, key: "local:/other-project", rootPath: "/other-project", displayName: "other" };
+    const { result } = renderHook(() => useWorkSessions());
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    // Another local project's launch, even mid-flight, is not this roster's.
+    act(() => {
+      applyChatLaunchSnapshot(otherProject, launch());
+    });
+    expect(result.current.sessionsById.has("launch-1")).toBe(false);
+
+    // The active binding's own failed launch keeps its row until the host lists the chat.
+    act(() => {
+      applyChatLaunchSnapshot(null, launch({ launchId: "launch-2", sessionId: "launch-2", phase: "failed", sequence: 2 }));
+    });
+    expect(result.current.sessionsById.has("launch-2")).toBe(true);
+
+    // Once the chat exists and the agent runs, the host's row is the chat: no stand-in
+    // (so a chat deleted or archived later does not come back as a ghost).
+    act(() => {
+      applyChatLaunchSnapshot(null, launch({
+        launchId: "launch-2",
+        sessionId: "launch-2",
+        phase: "completed",
+        sessionCreated: true,
+        agentStarted: true,
+        sequence: 3,
+      }));
+    });
+    expect(result.current.sessionsById.has("launch-2")).toBe(false);
+  });
+});
 
 describe("useWorkSessions — refresh-before-focus ordering", () => {
   beforeEach(() => {

@@ -744,7 +744,7 @@ import {
   releaseLaneRuntimeResources,
   restoreUnarchivedLaneRuntime,
 } from "../lanes/laneRuntimeLifecycle";
-import { mergeLaneEnvInitConfig, mergeLaneOverrides } from "../lanes/laneEnvInitMerge";
+import { runLaneEnvironmentSetup, type LaneEnvironmentSetupDeps } from "../lanes/laneEnvironmentSetup";
 import { resolveLaneOverlayContext } from "../lanes/laneOverlayContext";
 import type { createOAuthRedirectService } from "../lanes/oauthRedirectService";
 import type { createRuntimeDiagnosticsService } from "../lanes/runtimeDiagnosticsService";
@@ -1523,6 +1523,18 @@ async function resolveLaneOverlayContextForCtx(ctx: AppContext, laneId: string) 
     portAllocationService: ctx.portAllocationService,
     laneEnvironmentService: ctx.laneEnvironmentService,
   }, laneId);
+}
+
+function laneEnvironmentSetupDepsForCtx(ctx: AppContext): LaneEnvironmentSetupDeps {
+  requireAppContextServices(ctx, ["laneService", "projectConfigService"] as const);
+  if (!ctx.laneEnvironmentService) throw new Error("Lane environment service not available");
+  return {
+    laneService: ctx.laneService,
+    projectConfigService: ctx.projectConfigService,
+    portAllocationService: ctx.portAllocationService,
+    laneEnvironmentService: ctx.laneEnvironmentService,
+    laneTemplateService: ctx.laneTemplateService,
+  };
 }
 
 async function buildLinearConnectionStatus(
@@ -7045,11 +7057,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.lanesInitEnv, async (_event, args: { laneId: string }) => {
     const ctx = getCtx();
-    if (!ctx.laneEnvironmentService) throw new Error("Lane environment service not available");
-    const { lane, overrides, envInitConfig } = await resolveLaneOverlayContextForCtx(ctx, args.laneId);
-
-    if (!envInitConfig) return { laneId: lane.id, steps: [], startedAt: new Date().toISOString(), completedAt: new Date().toISOString(), overallStatus: "completed" };
-    return await ctx.laneEnvironmentService.initLaneEnvironment(lane, envInitConfig, overrides);
+    return await runLaneEnvironmentSetup(laneEnvironmentSetupDepsForCtx(ctx), { laneId: args.laneId, includeArchived: false });
   });
 
   ipcMain.handle(IPC.lanesGetEnvStatus, async (_event, args: { laneId: string }) => {
@@ -7085,21 +7093,11 @@ export function registerIpc({
 
   ipcMain.handle(IPC.lanesApplyTemplate, async (_event, args: { laneId: string; templateId: string }) => {
     const ctx = getCtx();
-    if (!ctx.laneTemplateService || !ctx.laneEnvironmentService) {
-      throw new Error("Lane template or environment service not available");
-    }
-    const { lane, overrides, envInitConfig } = await resolveLaneOverlayContextForCtx(ctx, args.laneId);
-    const template = ctx.laneTemplateService.getTemplate(args.templateId);
-    if (!template) throw new Error(`Template not found: ${args.templateId}`);
-    const templateEnvInit = ctx.laneTemplateService.resolveTemplateAsEnvInit(template);
-    const mergedOverrides = mergeLaneOverrides(overrides, {
-      ...(template.envVars ? { env: template.envVars } : {}),
-      ...(!overrides.portRange && template.portRange ? { portRange: template.portRange } : {}),
-      envInit: templateEnvInit
+    return await runLaneEnvironmentSetup(laneEnvironmentSetupDepsForCtx(ctx), {
+      laneId: args.laneId,
+      templateId: args.templateId,
+      includeArchived: false,
     });
-    const mergedEnvInitConfig =
-      mergeLaneEnvInitConfig(envInitConfig, templateEnvInit) ?? templateEnvInit;
-    return await ctx.laneEnvironmentService.initLaneEnvironment(lane, mergedEnvInitConfig, mergedOverrides);
   });
 
   ipcMain.handle(IPC.lanesSaveTemplate, async (_event, args: { template: LaneTemplate }) => {

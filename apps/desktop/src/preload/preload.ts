@@ -686,6 +686,12 @@ import type {
   RestoreLaneResult,
   LaneEnvInitProgress,
   LaneEnvInitEvent,
+  ChatLaunchArgs,
+  ChatLaunchCompleteClientArgs,
+  ChatLaunchEvent,
+  ChatLaunchIdArgs,
+  ChatLaunchQueueMessageArgs,
+  ChatLaunchSnapshot,
   LaneOverlayOverrides,
   LaneTemplate,
   GetLaneTemplateArgs,
@@ -1735,6 +1741,12 @@ async function callLocalProjectActionStrictIfBound<T>(
 // Electron's in-process registry is not that machine's OpenCode list.
 const MUTATING_CHAT_ACTIONS = new Set<string>([
   "sendMessage",
+  "startLaunch",
+  "cancelLaunch",
+  "retryLaunch",
+  "startLaunchNow",
+  "queueLaunchMessage",
+  "completeLaunchClient",
   "respondToInput",
   "dismissPendingInput",
   "approveToolUse",
@@ -2081,6 +2093,17 @@ async function uploadAttachmentBytesToRemote(
     });
     return null;
   }
+}
+
+// Chat launches exist only on a runtime (local daemon or remote machine); an
+// unbound window has no brain to own the launch, so it fails loudly.
+function callChatLaunchAction<T>(
+  pin: OpenProjectBinding | null | undefined,
+  action: string,
+  request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
+): Promise<T> {
+  return callPinnedOrBoundRuntimeActionOr<T>(pin, "chat", action, request, () =>
+    Promise.reject(new Error("New-lane launches need a connected ADE runtime. Reconnect the machine and try again.")));
 }
 
 async function readLegacySyncStatuses(
@@ -2488,6 +2511,11 @@ const remoteLaneEnvEventFanout = createRemoteRuntimeFanout<LaneEnvInitEvent>({
   label: "lane env",
   onSubscribe: () => ensureRemoteRuntimeEventPump(),
 });
+const remoteChatLaunchEventFanout = createRemoteRuntimeFanout<ChatLaunchEvent>({
+  eventType: "chat_launch_event",
+  label: "chat launch",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+});
 const remoteLanePortEventFanout = createRemoteRuntimeFanout<PortAllocationEvent>({
   eventType: "lane_port_event",
   label: "lane port",
@@ -2664,6 +2692,7 @@ export const REMOTE_RUNTIME_FANOUTS: readonly RemoteRuntimeFanoutEntry[] = [
   remoteLaneRebaseSuggestionsEventFanout,
   remoteLaneAutoRebaseEventFanout,
   remoteLaneEnvEventFanout,
+  remoteChatLaunchEventFanout,
   remoteLanePortEventFanout,
   remoteLaneProxyEventFanout,
   remoteLaneOAuthEventFanout,
@@ -6745,6 +6774,38 @@ const adeBridge = {
         removeRemote();
         removeLocal();
       };
+    },
+  },
+  /**
+   * New-lane chat launches owned by the brain (see shared/types/chatLaunch.ts).
+   * Always runtime-backed: there is no in-process Electron implementation.
+   */
+  chatLaunch: {
+    start: (args: ChatLaunchArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot> =>
+      callChatLaunchAction<ChatLaunchSnapshot>(pin, "startLaunch", { args }),
+    get: (args: ChatLaunchIdArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot | null> =>
+      callChatLaunchAction<ChatLaunchSnapshot | null>(pin, "getLaunch", { args }),
+    list: (pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot[]> =>
+      callChatLaunchAction<ChatLaunchSnapshot[]>(pin, "listLaunches", { args: {} }),
+    cancel: (args: ChatLaunchIdArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot | null> =>
+      callChatLaunchAction<ChatLaunchSnapshot | null>(pin, "cancelLaunch", { args }),
+    retry: (args: ChatLaunchIdArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot | null> =>
+      callChatLaunchAction<ChatLaunchSnapshot | null>(pin, "retryLaunch", { args }),
+    startNow: (args: ChatLaunchIdArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot | null> =>
+      callChatLaunchAction<ChatLaunchSnapshot | null>(pin, "startLaunchNow", { args }),
+    queueMessage: (args: ChatLaunchQueueMessageArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot> =>
+      callChatLaunchAction<ChatLaunchSnapshot>(pin, "queueLaunchMessage", { args }),
+    completeClient: (args: ChatLaunchCompleteClientArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot | null> =>
+      callChatLaunchAction<ChatLaunchSnapshot | null>(pin, "completeLaunchClient", { args }),
+    onEvent: (cb: (event: ChatLaunchEvent) => void, pin?: OpenProjectBinding | null): (() => void) => {
+      const removePinned = subscribePinnedProjectRuntimeEvents(
+        pin,
+        (payload) => toWrappedEvent<ChatLaunchEvent>(payload, "chat_launch_event"),
+        cb,
+        "chat launch",
+      );
+      if (removePinned) return removePinned;
+      return remoteChatLaunchEventFanout.subscribe(cb);
     },
   },
   agentChat: {

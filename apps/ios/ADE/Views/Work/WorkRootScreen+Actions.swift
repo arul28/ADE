@@ -64,9 +64,16 @@ extension WorkRootScreen {
       roster: activeRoster,
       identitySessionIds: identitySessionIds
     )
-    let sessionsSnapshot = rosterProjection.sessions
+    // Chats launched into a lane that is still being set up: a row under the
+    // launch's lane until the real session row lands, then only the status line.
+    let launchProjection = workOverlayChatLaunches(
+      sessions: rosterProjection.sessions,
+      lanes: rosterProjection.lanes,
+      launches: localProjectionIsCurrent ? syncService.activeProjectChatLaunches() : []
+    )
+    let sessionsSnapshot = launchProjection.sessions
     let deletingLaneIds = syncService.pendingLaneDeletionIds
-    let lanesSnapshot = rosterProjection.lanes.filter { !deletingLaneIds.contains($0.id) }
+    let lanesSnapshot = launchProjection.lanes.filter { !deletingLaneIds.contains($0.id) }
     let pullRequestsSnapshot = localProjectionIsCurrent ? pullRequests : []
     let githubPrsSnapshot = localProjectionIsCurrent ? syncService.laneGithubPrItems : []
     // Fold offline "Pending sync" chat-creation rows into the optimistic set so
@@ -739,6 +746,19 @@ extension WorkRootScreen {
     // Deleting a pending-sync row cancels the queued creation locally.
     if workIsPendingChatCreationSession(session) {
       syncService.cancelPendingChatCreation(id: workPendingChatCreationCommandId(session))
+      return
+    }
+    // A chat whose lane is still being set up: deleting it deletes the launch,
+    // which removes the lane (branch + worktree) and the chat on the host.
+    if let launch = syncService.chatLaunchEntry(sessionId: session.id), isChatLaunchPending(launch.snapshot) {
+      Task {
+        do {
+          try await syncService.cancelChatLaunch(launchId: launch.launchId)
+        } catch {
+          ADEHaptics.error()
+          errorMessage = error.localizedDescription
+        }
+      }
       return
     }
     Task {

@@ -56,7 +56,11 @@ Primary lanes reuse the repo root itself (no worktree creation); their
    collision suffixing.
 4. Run `git worktree add -b <branch> <worktree-path> <baseRef>` via
    `runGitOrThrow`. This creates the new branch and checks it out
-   into the new worktree in one step.
+   into the new worktree in one step. In-process callers can pass
+   `LaneCreateRuntimeOptions` (a reserved lane id, a checkout-progress
+   callback fed by git's `Updating files:` stderr lines, and an abort
+   signal); see [Lanes › Reserved ids, checkout progress, and
+   cancellation](./README.md#reserved-ids-checkout-progress-and-cancellation).
 5. Insert the `lanes` row with `lane_type = 'worktree'`,
    `is_edit_protected = 0`, `status = 'active'`.
 6. Compute initial `LaneStatus`.
@@ -66,8 +70,15 @@ Failure modes handled inline:
 
 - `git worktree add` fails (branch already exists, path exists, base
   ref invalid) → no row inserted, error propagated to the IPC caller.
-- SQLite insert fails after worktree creation → worktree is torn down
-  (`git worktree remove --force`) to avoid orphaned directories.
+- SQLite insert fails after worktree creation → worktree and branch are
+  torn down (`git worktree remove --force --force`, falling back to
+  directory removal plus `worktree unlock` + `worktree prune`) to avoid
+  orphaned directories.
+- The caller's abort signal fires mid-checkout → `runGit` kills the git
+  process tree and waits for it to exit, then the half-written worktree
+  (still locked "initializing" by the killed git, which is why removal
+  passes `--force` twice) and the new branch are removed. An abort that
+  lands before git started creates and removes nothing.
 
 ## Worktrees you created yourself
 

@@ -119,7 +119,8 @@ private func workAdeCardRows(from value: Any?) -> [WorkAdeCardRow] {
       icon: workAdeCardIcon(from: row["icon"]),
       text: text,
       detail: optionalString(row["detail"]),
-      tone: workAdeCardTone(from: row["tone"])
+      tone: workAdeCardTone(from: row["tone"]),
+      key: workAdeCardRowKey(row["key"] as? String)
     )
   }
 }

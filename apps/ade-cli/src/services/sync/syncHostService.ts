@@ -1,3 +1,4 @@
+import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import fs from "node:fs";
 import http from "node:http";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
@@ -64,6 +65,7 @@ import type {
   SyncChatHistoryRequestPayload,
   SyncChatToolResultRequestPayload,
   SyncChatToolResultResponsePayload,
+  SyncChatLaunchEventPayload,
   SyncChatSubscribePayload,
   SyncChatSubscribeSnapshotPayload,
   SyncChatUnsubscribePayload,
@@ -1134,6 +1136,7 @@ type SyncHostServiceArgs = {
   sessionDeltaService?: ReturnType<typeof createSessionDeltaService> | null;
   ptyService: ReturnType<typeof createPtyService>;
   agentChatService?: ReturnType<typeof createAgentChatService>;
+  chatLaunchService?: ChatLaunchService | null;
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
   personalChatScope?: Pick<
     PersonalChatScopeContract,
@@ -2258,6 +2261,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     conflictService: args.conflictService,
     operationService: args.operationService,
     agentChatService: args.agentChatService,
+    chatLaunchService: args.chatLaunchService,
     cursorCloudFleetService: args.cursorCloudFleetService,
     personalChatScope: args.personalChatScope,
     aiIntegrationService: args.aiIntegrationService,
@@ -3165,6 +3169,21 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       broadcastChatEvent(event);
     },
   ) ?? null;
+  // New-lane launch progress goes to every phone of this project: a launch is
+  // visible before its chat exists, so there is no chat subscription to key on.
+  const chatLaunchSubscription = args.chatLaunchService?.subscribe((event) => {
+    const payload: SyncChatLaunchEventPayload = {
+      ...event,
+      projectId: toOptionalString(args.projectId),
+      projectRootPath: args.projectRoot,
+    };
+    for (const peer of peers) {
+      if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
+      if (isRuntimeOnlyPairedHost(peer)) continue;
+      if (isPeerBackpressured(peer)) continue;
+      send(peer.ws, "chat_launch_event", payload);
+    }
+  }) ?? null;
 
   /**
    * Snap a PTY back to the desktop-preferred size once no connected peer is
@@ -9398,6 +9417,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       lanePresenceByLaneId.clear();
       dropInFlightCommandRecordsForProject();
       chatEventSubscription?.();
+      chatLaunchSubscription?.();
       clearInterval(pollTimer);
       clearInterval(heartbeatTimer);
       clearInterval(brainStatusTimer);

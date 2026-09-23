@@ -2268,9 +2268,16 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   default) resolve a **remote-first default base** on the host before
   creation: the project's `git.newLaneBaseSource` config (effective
   default `"remote"`) selects between a bounded remote fetch +
-  `origin/<primary base>` mapping and the legacy local primary tip; the
-  resolution helper is `apps/desktop/src/shared/defaultRemoteLaneBase.ts`
-  (shared with the desktop create-lane dialog's renderer-side default).
+  remote-tracking mapping (the local base branch's configured upstream,
+  else `origin/<primary base>`, verified to resolve to a commit) and the
+  legacy local primary tip; the resolution helper is
+  `apps/ade-cli/src/services/laneCreateRemoteBase.ts`, built on
+  `apps/desktop/src/shared/defaultRemoteLaneBase.ts` (shared with the
+  desktop create-lane dialog's renderer-side default).
+  New-lane chat launches (`chat.startLaunch` … `chat.completeLaunchClient`)
+  are brain-owned end to end; their progress is pushed to every peer of the
+  project as `chat_launch_event`. See
+  [Remote commands › New-lane launch commands](remote-commands.md#new-lane-launch-commands).
 - `deviceRegistryService.ts` (~670 lines) — synced `devices` table and
   `sync_cluster_state` singleton. Peer app provenance — `appVersion`,
   `appBuild`, `bundleIdentifier` — carried on `SyncPeerMetadata` (parsed from
@@ -3399,6 +3406,7 @@ Envelopes are JSON with fields:
         "chat_history" | "chat_tool_result" |
         "roster_subscribe" | "roster_unsubscribe" |
         "roster_snapshot" | "roster_delta" |
+        "chat_launch_event" |
         "brain_status" |
         "project_catalog_request" | "project_catalog" |
         "project_catalog_chunk" |

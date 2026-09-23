@@ -15,6 +15,10 @@ subagents, computer use). The pane derives all visible state from the
 | `useDraftMachineRouting.ts`, `draftAttachmentTransfer.ts` | Draft machine selection and machine-safe attachment movement. Routing reconciles the machine restored by the current project/tab before the composer becomes sendable, resolves its `OpenProjectBinding`, and keeps lane selection scoped to that machine: the lane list is exactly the picked machine's lanes plus the auto-create row, a machine switch re-resolves the selection by identity through `remapDraftLaneToMachine` / `findPrimaryDraftLane`, and a foreign machine whose lane catalog has not landed yet holds the selection unresolved behind a bounded `Loading lanes for <machine>…` state (`laneCatalogLoading`) rather than leaving another machine's lane on screen. It also pulls that machine's lane read forward through `requestCrossMachineLanesForMachine`. On a user-requested machine change within one composer scope, `useDraftAttachmentTransfer` preserves portable image URLs and copies local/pasted image bytes from the attachment-owning runtime to the target runtime via pinned `getImageDataUrl` and `saveTempAttachment` calls. It removes non-image files and linked iOS/App Control/built-in-browser context because those machine-owned references are not portable. Pending transfer disables send. If copying fails, the source image references remain visible and sending stays blocked until the user returns to the source machine or removes the images. A project/tab scope change resets ownership only after machine selection has reconciled, so restoring a remote draft cannot be mistaken for an explicit local-to-remote switch. |
 | `apps/desktop/src/renderer/components/usage/ActivityModule.tsx`, `ActivityHeatmap.tsx`, `activityIntensity.ts` | Tabbed cross-client activity/tokens/code/clients module. `AgentChatPane` mounts the self-fetching `WorkActivityModule` (compact variant) beneath the empty Work draft composer when no app panel is open, capped to the launch-shelf width (`w-[calc(100%-6rem)]`, `data-chat-empty-usage`) with an opaque plate that uses the same `--work-popover-bg` darkness as the machine/lane submenu, flattened over `--color-bg`. The component persists the chosen tab and day/week/month/year range under `ade.activity.module.v1`. `ActivityHeatmap` owns the responsive seven-row grid, viewport fitting, and the intensity ramp, while `activityIntensity` provides the shared daily activity score, non-zero quartile buckets, and leading-inactive-day trimming used by the grid and summary counts. The score (`scoreActivityDays`) is series-relative: each of seven dimensions — tokens, sessions, interactions, commits, PRs, changed lines, changed files, with local and GitHub counterparts summed — is scaled against its own maximum across the visible series before the weighted sum, because the dimensions are not in the same units. A raw sum made every non-token term smaller than the rounding noise of daily token counts, so the "activity" heatmap was a token heatmap under another name. `isActiveDay` stays unweighted so one commit still colours a day. `describeActivityInsight` derives the single sentence rendered above the grid from the same scores — busiest-day record, week-over-week trend, or peak day, in that priority — so the callout and the grid can never disagree. Buckets are quartiles over the non-zero days only, GitHub-contribution-graph style: a linear value/max ramp is useless when one 35.9B-token day is normal, because that outlier flattens every other day into the same near-floor tone. The ramp itself is explicit light/dark pairs rather than one hue at five opacities — an opacity ramp of a single hue is only a lightness ramp, which inverts its ordering between a dark and a light card — so hue and saturation both climb with the level and the scale reads in either theme. It deliberately avoids `--color-accent`, which is violet in dark and green in light. Under `prefers-contrast: more` (`renderer/hooks/usePrefersMoreContrast.ts`) every tile also gains a hairline border so the steps stay separable on a forced-contrast display. A "Less → More" key renders alongside the grid so the ramp explains itself. |
 | `apps/desktop/src/renderer/lib/draftLaunchJobs.ts` | Pure helper for Work draft-launch job DTOs, terminal/stale-state detection, and pruning. The list keeps active rows ahead of terminal rows, fills remaining retained slots with terminal rows, and keeps at least one terminal row alongside active jobs. Also owns the durability constants/helpers: `DRAFT_LAUNCH_TIMEOUT_MS` (90 s) + `withDraftLaunchTimeout` (fails a step whose runtime call never settles; the underlying IPC is not cancellable, so it keeps running detached and the timeout only unwedges the renderer-side job) and `LAUNCH_PROJECT_CHANGED_MESSAGE` (the legacy/unpinned abort error used only when no originating project binding is available and the active project drifts mid-launch). |
+| `apps/desktop/src/renderer/state/chatLaunchStore.ts`, `state/useChatLaunchSync.ts` | Renderer mirror of brain-owned new-lane launches (`shared/types/chatLaunch.ts`). Entries are keyed by launch id and remember their project binding; snapshots only move forward (`mergeChatLaunchSnapshot`), and the host's first answer always replaces the optimistic snapshot. Also holds the per-window `originClientId` (sessionStorage) and a non-reactive local record per launch this window started (the `start` args, the composer snapshot for restore, the prepared CLI launch). `useChatLaunchSync`, mounted once in `AppShell`, is the only `chatLaunch.onEvent` subscription: the active binding plus any other binding with a launch in flight, hydrated with `chatLaunch.list` on subscribe and when the window becomes visible. Narrow selectors (`useChatLaunchRowSources`, `useChatLaunchForPane`, `useChatLaunchSelector`) keep the Work page, the pane and the shell from re-rendering on every stage tick. |
+| `components/chat/launch/` (`chatLaunchActions.ts`, `LaneSetupCard.tsx`, `LaunchProgressRail.tsx`, `launchClock.ts`, `chatLaunchSynthetic.ts`, `chatLaunchDock.ts`, `chatLaunchDraftRestore.ts`, `useChatLaunchPaneState.ts`, `newLaneLaunchArgs.ts`, `rendererOwnedLaunch.ts`) | The launch surfaces. `chatLaunchActions` is the one place Start/Retry/Start now/Cancel/Delete/queue go through (always pinned to the launch's binding). `LaneSetupCard` renders the setup card (thread and compact variants) and the transcript's `ade_card` `lane_setup` row. `chatLaunchSynthetic` builds the stand-ins a pending chat shows: the Work roster row under the reserved session id and the thread's prompt bubble, setup card and queued messages. `chatLaunchDock` is the FLIP composer dock; `chatLaunchDraftRestore` is the one hand-off channel from a closed launch back to Work (Work closes the launch's tab and shows the draft; the draft composer takes back the prompt). `useChatLaunchPaneState` is the pane's launch seam (which launch owns the shown chat, whether its session exists yet, whether sends queue) plus its lifecycle effects; `newLaneLaunchArgs` assembles the `chatLaunch.start` args. `rendererOwnedLaunch` is the renderer-owned chain (existing lane, Cursor Cloud, and the fallback for runtimes without `chat.startLaunch`), extracted from `AgentChatPane` with its dependencies passed in. |
+| `renderer/webclient/adapter/chatLaunch.ts`, `renderer/webclient/sync/chatLaunchEvents.ts` | Hosted-web `window.ade.chatLaunch`: the same namespace over the `chat.startLaunch` … `chat.completeLaunchClient` sync commands (writes never use the read cache; an older host that lacks the action rejects so the composer falls back to its own chain), with live updates decoded from the pushed `chat_launch_event` envelope (`decodeChatLaunchEventPayload` drops malformed or unknown event shapes). |
+| `components/app/ChatLaunchesSlideOut.tsx`, `components/terminals/useChatLaunchCliDriver.ts` | The bottom-right Launches slide-out (this window's background chats and CLI launches), and the Work-level driver that starts the PTY for this window's CLI launches once the brain reports `awaiting-client`. |
 | `apps/desktop/src/renderer/lib/handoffLaunchJobs.ts` | Pure helper for handoff placeholder DTOs, scope keys, stable placeholder ids, status labels, and search matching. `AgentChatPane` writes these jobs into the root store while `TerminalsPage` passes matching jobs into the Work session sidebar. The local handoff surface offers a brief summarized handoff or a fork whenever the source provider is fork-capable (`providerSupportsHandoffFork`: Claude, Codex, OpenCode, Droid, Cursor). Fork keeps the new chat on the same provider and lane while allowing the target model to change; Claude forks the SDK session pointer, Codex the app-server thread (`thread/fork`), OpenCode `session.fork`, and Droid `session.fork()`. Cursor has no fork surface, so ADE starts a new Cursor agent and replays the full source transcript into it; `providerForkReplaysTranscript` selects the matching panel copy. |
 | `apps/desktop/src/renderer/lib/chatHandoffIntent.ts` | Module-local one-shot bridge between a handoff entry point outside the pane (the session context menu's **Hand off…** submenu, in `components/terminals/SessionContextMenu.tsx`) and `AgentChatPane`, which owns the Handoff tab and both handoff modals. The menu records a destination (`"local"` \| `"remote"`) with `openChatHandoff` and selects the row; the pane drains it live when the session is already selected or from the single-slot queue when it mounts a render later, then routes it through the same turn/remote gates the landing cards use. A transient command, not store state. |
 | `apps/desktop/src/renderer/lib/aiDiscoveryCache.ts` | Runtime-binding-scoped AI integration-status and provider-model cache shared across renderer surfaces. Local and remote checkouts with the same project identity cannot share model/auth state. `getAiStatusCached` uses a 10-second freshness window and deduplicates concurrent `ade.ai.getStatus` requests; cache update/invalidation events let open ModelPickers react without polling or mounting their own background refresh loops. |
@@ -312,6 +316,142 @@ that could not work without it.
   worktree whose HEAD wandered off the lane's branch warns first. See
   [Terminals and sessions](../terminals-and-sessions/README.md) and
   [Lanes › Branch drift](../lanes/README.md#branch-drift).
+
+### New-lane launches
+
+A new chat or CLI session on the "Auto-create lane" target opens
+immediately; the brain sets up its lane while the user watches it happen.
+The contract is `shared/types/chatLaunch.ts` (launch snapshot, stages,
+events) and `shared/chatLaunch.ts` (stage labels, status line, progress,
+duration formatting — every surface uses these, none re-words them).
+
+**Stages.** The host decides which stages a launch has and the card renders
+`snapshot.stages` as given: fetch base branch (omitted when the project
+creates lanes from the local base), check out files (with a live
+percentage), apply lane template / set up environment (only when a default
+template or environment config applies, with its nested steps), and start
+agent / start CLI session. Before the host answers, the optimistic snapshot
+predicts fetch (from the last-read project config, no IPC), checkout and
+agent.
+
+**Foreground chat.** Send switches the Work view to the new chat in the
+same frame: its row appears in the sidebar (grouped under the lane's name,
+not as an orphan, even though the lane list does not have it yet), the
+composer glides from the draft's centered position into its docked place,
+and the thread shows the prompt bubble with the live setup card under it.
+Until the brain reports `sessionCreated`, the pane reads nothing from the
+session — no summary, history, delta or computer-use snapshot — and renders
+the launch instead; the model picker shows the launch's model. Sends while
+the lane is still being set up go to `chatLaunch.queueMessage` and show as
+queued bubbles; the brain sends them in order once the agent starts. A
+message typed before the brain has accepted the launch (the host would
+answer "Launch not found") waits in `chatLaunchActions` with its bubble
+already showing, and goes out right after `start` lands; every message of
+a launch goes through one chain, so they reach the brain in typing order.
+If the brain refuses one, its bubble goes and the text returns to the
+composer with the error. A queued message the brain could not deliver
+stays in the thread after the agent started, marked "Couldn't send —
+retrying" (the reason on hover), with any message queued behind it, until
+the brain delivers it; while one waits, new sends also go through
+`queueMessage` (`launchRoutesSends`), so they keep their order and act as
+the brain's cue to retry. When
+the chat exists, the same pane (same id) reads its summary and transcript,
+and each stand-in yields to its real row: the user bubble to the real
+`user_message`, the card to the transcript's `ade_card` `lane_setup`
+(`cardId` `lane-setup:<launchId>`).
+
+**The setup card.** A header — a phase tile (lane glyph; violet while
+running, emerald when done, amber on failure), the title ("Setting up
+lane…", "Lane setup failed", "Lane set up in 4.2s"), chips for the lane
+name and the base ref, and the live elapsed time — then the shared
+segmented progress rail (`LaunchProgressRail`), then one row per stage
+separated by hairlines: a small tinted tile with the stage's icon
+(CloudArrowDown fetch, Files checkout, Stack / Wrench template or
+environment, Sparkle / TerminalWindow agent or CLI), the label, a muted
+detail ("origin/main at 807fb2c"), checkout's live percent in violet, the
+duration, and a status mark (check, spinning ring, hollow circle, amber
+warning, amber x, or a dash). Environment steps nest under their stage with
+per-kind glyphs (Key env files, ShippingContainer Docker, Package
+dependencies, HardDrives mounts, Copy paths, Scroll setup script). Colour
+carries status everywhere: running is ADE violet, done emerald, warning and
+failure amber — never red. Small icon + text actions sit under a hairline: Details (branch, base,
+worktree, template, error), Start now (while the environment stage runs —
+the agent starts and the remaining steps keep going), Cancel while running,
+and on failure Retry, Start anyway (only when the lane exists and the
+environment stage failed) and Delete. Cancel and Delete confirm first,
+then delete the lane the launch made (worktree, local and remote branch)
+and the chat, close the tab, return Work to the draft, and put the prompt
+back into the composer (merged with anything already typed). The confirm
+re-reads the launch when the user confirms and never cancels one whose
+agent already started or that completed; if that happens while the dialog
+is up, the dialog closes with "Setup finished — nothing to cancel" (a
+toast when the finish also collapsed the card). A cancel the brain refuses
+shows its reason on the card. Failures are
+amber, never red. While the launch is live the transcript row renders from
+the store's snapshot; afterwards it collapses to "Lane set up in 4.2s ›"
+and expands to the stage list. A reload with no live launch renders the
+transcript payload's rows, identified by each row's `key` (its stage id —
+labels are never matched), with the card's own `title`, the template name
+from the card's `Template` metric, the CLI-vs-chat icon from the `agent`
+row, and a pass row in the warning tone shown as a warning.
+
+**Sidebar row.** While the launch is pending, the row's preview line shows
+the status line ("Checking out files · 62%", or "Fetch base branch failed" in amber)
+with a small spinner, and the status slot says "Setting up" / "Setup
+failed" with no settle/snooze actions. The row height does not change. A
+row born this moment slides in once. The roster lists a stand-in row only
+until the chat exists or while the launch still owns it
+(`isChatLaunchPending`), and only for the active binding and the same
+project on another machine (a binding among the retained cross-machine
+slices) — never another project's launches.
+
+**Background chats and CLI launches.** The composer clears and the draft
+shows no banner. The Launches slide-out in the app shell's bottom-right
+stack lists this window's launches (`originClientId`) that are background
+chats or CLI launches of either mode — never a foreground chat, whose
+thread carries the card. It has a summary header ("Setting up 2 lanes…",
+"2 ready · 1 failed") with a dismiss X, and one row per launch: prompt
+kind tile (chat or CLI, with a status badge), prompt title, a Chat/CLI
+chip, lane name, status line, elapsed time and the same `LaunchProgressRail`
+the thread card uses. A row expands to the compact card
+with its actions and Open once the chat or CLI session exists. The
+slide-out leaves by itself three seconds after everything it shows has
+started; a failed launch stays until it is handled or dismissed.
+
+**Render cost.** The brain emits up to ~8 snapshots a second during
+checkout, so every surface is built to take them cheaply.
+`useChatLaunchSync` coalesces events to one store write per frame (newest
+per launch; a 50 ms timeout backs `requestAnimationFrame` up so a hidden
+window still advances CLI launches). The store keeps unchanged stage
+objects — and the stage array — across snapshots
+(`shareChatLaunchStages`), so the memoized stage rows and the rail
+re-render only for the stage that moved, and slide-out rows are memoized
+per launch. Work sidebar rows read `useChatLaunchRowState` (pending /
+failed / startedAt only) and a tiny child reads the status line, so a
+checkout tick re-renders one text node rather than the whole `SessionCard`.
+Every live duration reads one module-level clock (`launchClock.ts`, 250 ms,
+running only while a live duration is mounted, paused while hidden) as a
+formatted string, so a node re-renders only when its text changes. The
+rail is compositor-only: fills are `transform: scaleX()` from the left and
+the running segment's sheen is a translated bar (`ade-launch-rail-sheen`);
+reduced motion drops the sheen.
+
+**CLI launches.** The brain stops at `awaiting-client` once the lane is
+ready. `useChatLaunchCliDriver`, mounted beside `useWorkSessions`, starts
+the PTY through the same `launchPtySession` path every Work CLI launch uses
+(disposition = the launch's mode) and reports it with `completeClient`, or
+reports the error. A window reloaded mid-launch no longer has the prepared
+launch and reports that instead of hanging. If the brain does not take the
+reported session (the launch was cancelled meanwhile, or is gone), the
+driver disposes the PTY it just started.
+
+**Composer dock.** Right before the switch, the draft pane stashes its
+composer rect (`[data-chat-composer-wrapper]`) keyed by the new session id
+(1.5 s TTL). The chat pane takes it in a layout effect and plays a WAAPI
+FLIP translate (340 ms, `cubic-bezier(0.4, 0, 0.2, 1)`), aligning bottom
+edges and centers; it never scales the text field. For that one switch
+`WorkViewArea` skips its blur dissolve and swaps the surfaces quickly so
+the glide is what the eye follows. Reduced motion skips the glide.
 
 ## Composer
 
@@ -784,23 +924,39 @@ that could not work without it.
   sent to every child lane, so the cap is enforced both when toggling
   parallel mode and when adding files.
 
-- **Work auto-create launch behavior.** Auto-created lanes are named
-  deterministically from the prompt (`createDeterministicAutoLaneName`)
-  and created **immediately** — naming never sits on the critical path,
-  so there is no 10 s suggest race anymore. When AI titles are enabled,
-  `startBackgroundLaneNaming` asks the main process for a structured lane
-  title + branch identity in the background. The deterministic fallback stays
-  persisted for failure safety but is masked in lane-label positions by an
-  animated `Naming lane…` state. The renderer retries the background naming
-  pass once (750 ms apart), refreshes the completed identity before unmasking
-  it, and reveals the fallback only when naming fails or produces no change.
-  Branch uniqueness is resolved by the lane service. Each launch creates a `DraftLaunchJob` that
+- **Work auto-create launch behavior.** A single-model local launch on
+  the "Auto-create lane" target — chat or CLI, foreground or background —
+  is owned by the brain (see [New-lane launches](#new-lane-launches)).
+  The composer picks the chat's session id and the lane's id (both UUIDs),
+  names the lane deterministically from the prompt
+  (`createDeterministicAutoLaneName`; the brain renames it in the
+  background once the AI name arrives), inserts an optimistic launch
+  snapshot, clears itself, and fires `chatLaunch.start` without awaiting
+  it. No `DraftLaunchJob` and no draft banner is created for these
+  launches. The chat create args come from the same `buildChatCreateArgs`
+  the direct create path uses (minus the lane) and the opening message
+  from the same prepared text/attachments the old send used, so a
+  brain-owned launch starts the chat with exactly the settings on screen.
+
+  Launches into an existing lane, parallel multi-model launches and
+  Cursor Cloud launches keep the renderer-owned chain below, as does a
+  new-lane launch whose runtime predates `chat.startLaunch`: when `start`
+  rejects because the action does not exist there (the brain's coded
+  `action_not_callable` / `action_not_exposed`, a JSON-RPC `Unknown ADE
+  action`, or the web client finding no command descriptor), that one
+  launch drops its optimistic card and sidebar row and runs the chain
+  instead of showing a failed card. Any other rejection is a real failure
+  and shows on the card.
+
+  The renderer-owned chain (`launch/rendererOwnedLaunch.ts`, called by the
+  pane with its dependencies passed in) creates a `DraftLaunchJob` that
   tracks progress through `creating-lane` / `starting-session` /
-  `sending-prompt` / `ready` / `failed` states (auto-create no longer has
-  a distinct `naming-lane` phase — it goes straight to `creating-lane`).
-  While the background pass runs, affected lanes are flagged in
-  `laneNamingStore` so singleton cards, hover details, and grouped lane headers
-  all show `Naming lane…`.
+  `sending-prompt` / `ready` / `failed` states. Auto-created lanes on this
+  path (Cursor Cloud and the legacy fallback) are named deterministically
+  and created immediately; when AI titles are enabled,
+  `startBackgroundLaneNaming` asks for a structured lane title + branch
+  identity in the background, and affected lanes are flagged in
+  `laneNamingStore` so lane labels show `Naming lane…`.
   The composer is
   cleared optimistically when the job starts so the user can begin
   composing the next prompt immediately; the `DraftLaunchSnapshot`
@@ -2293,8 +2449,37 @@ prompt linking Settings → AI connections instead of an empty list.
 
 ## Fragile and tricky wiring
 
-- **Draft launch job lifecycle.** `DraftLaunchJob` tracks multi-step
-  async launches and is stored in the **root** store's
+- **New-lane launch ids.** A chat launch's `launchId` IS the chat's session
+  id, chosen by the renderer before anything exists. Everything keys off it:
+  the Work tab, the sidebar row, the pane's `lockSessionId`, the dock stash
+  and the transcript card id. Never mint a second id for the same launch.
+- **Launch rows in the Work roster.** `useWorkSessions` keeps the host's list
+  in `hostSessions` and derives `sessions` by merging launch rows for chats
+  the roster (or the cross-machine slice) does not list yet. Launch rows are
+  never mirrored into `sessionsCacheByProject` and never count as running for
+  refresh cadence. Tabs close through one channel
+  (`chatLaunchDraftRestore`): the store posts a close notice the first time
+  a host snapshot moves a launch it held to `cancelled` (from any device),
+  which closes the tab and, if it was on screen, returns Work to the draft.
+  Cancel/Delete in this window post a notice with the prompt to restore,
+  which also switches the draft to the launch's kind so the prompt lands in
+  the right composer.
+- **Launch subscriptions stay narrow.** Stage snapshots arrive many times a
+  second during checkout. Only the setup card, the sidebar row of that chat
+  and the slide-out read full snapshots; the Work page, the pane and the app
+  shell read through equality-gated selectors. Adding a plain
+  `useChatLaunchEntries()` to a page-level component re-renders it on every
+  tick.
+- **Pending pane reads.** While `launchAwaitingSession`, the pane skips the
+  locked summary read, history hydration, active-turn recovery, delta and
+  computer-use reads; the history effect re-runs when it flips. Queued sends
+  are intercepted before the model/lane checks in `submit`, because a
+  launching chat has no session model to check against.
+
+- **Draft launch job lifecycle.** `DraftLaunchJob` tracks the
+  renderer-owned multi-step async launches (existing lane, Cursor Cloud, and
+  the fallback for runtimes without `chat.startLaunch`; brain-owned new-lane
+  launches do not create one) and is stored in the **root** store's
   `draftLaunchJobsByScope` (read/written via `useRootAppStore` /
   `rootAppStoreApi.getState().setDraftLaunchJobs`) rather than the
   per-project store or local pane state. This is load-bearing: a launch

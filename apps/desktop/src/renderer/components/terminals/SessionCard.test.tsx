@@ -13,6 +13,11 @@ import { setLaneNaming } from "../../state/laneNamingStore";
 import { setSessionMetadataGenerating } from "../../state/sessionMetadataGeneratingStore";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import {
+  applyChatLaunchSnapshot,
+  buildOptimisticChatLaunchSnapshot,
+  resetChatLaunchStoreForTests,
+} from "../../state/chatLaunchStore";
+import {
   resetAgentBrowserPresenceForTest,
   setAgentBrowserPresenceForTest,
 } from "./agentBrowserPresence";
@@ -49,6 +54,7 @@ afterEach(() => {
   sessionDeltaMock.mockReset();
   sessionDeltaMock.mockReturnValue(null);
   resetAgentBrowserPresenceForTest();
+  resetChatLaunchStoreForTests();
   delete (window as unknown as { ade?: unknown }).ade;
 });
 
@@ -112,6 +118,68 @@ function row(container: HTMLElement): HTMLElement {
   if (!element) throw new Error("session row not found");
   return element as HTMLElement;
 }
+
+describe("SessionCard new-lane launch status", () => {
+  function launchFor(overrides: Record<string, unknown> = {}) {
+    return {
+      ...buildOptimisticChatLaunchSnapshot({
+        launch: {
+          kind: "chat",
+          mode: "foreground",
+          launchId: "session-1",
+          laneId: "lane-1",
+          laneName: "Lane 1",
+          prompt: "Build the plan panel",
+        },
+        includeFetch: true,
+      }),
+      sequence: 1,
+      ...overrides,
+    } as ReturnType<typeof buildOptimisticChatLaunchSnapshot>;
+  }
+
+  it("shows the live setup line with a spinner and a short status word while the lane is set up", () => {
+    applyChatLaunchSnapshot(null, launchFor({
+      stages: [
+        { id: "fetch", status: "done", startedAt: null, endedAt: null, percent: null, detail: null, error: null },
+        { id: "checkout", status: "running", startedAt: null, endedAt: null, percent: 62, detail: null, error: null },
+        { id: "agent", status: "pending", startedAt: null, endedAt: null, percent: null, detail: null, error: null },
+      ],
+    }));
+    const { container } = render(
+      <SessionCard session={makeSession()} lane={lane} isSelected={false} onSelect={vi.fn()} onContextMenu={vi.fn()} />,
+    );
+    expect(screen.getByTestId("session-launch-status").textContent).toContain("Checking out files · 62%");
+    expect(screen.getByTestId("session-status-label").textContent).toBe("Setting up");
+    // Same fixed three-line row as every other card.
+    expect(container.querySelector(".h-\\[4\\.875rem\\]")).toBeTruthy();
+    expect(screen.queryByTestId("session-settle-button")).toBeNull();
+  });
+
+  it("turns amber with the failed stage when setup fails, and steps aside once the agent starts", () => {
+    applyChatLaunchSnapshot(null, launchFor({
+      phase: "failed",
+      stages: [
+        { id: "fetch", status: "failed", startedAt: null, endedAt: null, percent: null, detail: null, error: "offline" },
+        { id: "checkout", status: "pending", startedAt: null, endedAt: null, percent: null, detail: null, error: null },
+        { id: "agent", status: "pending", startedAt: null, endedAt: null, percent: null, detail: null, error: null },
+      ],
+    }));
+    const view = render(
+      <SessionCard session={makeSession()} lane={lane} isSelected={false} onSelect={vi.fn()} onContextMenu={vi.fn()} />,
+    );
+    expect(screen.getByTestId("session-launch-status").textContent).toContain("Fetch base branch failed");
+    expect(screen.getByTestId("session-status-label").getAttribute("data-session-launch-status")).toBe("failed");
+
+    act(() => {
+      applyChatLaunchSnapshot(null, launchFor({ phase: "completed", agentStarted: true, sessionCreated: true, sequence: 9 }));
+    });
+    view.rerender(
+      <SessionCard session={makeSession()} lane={lane} isSelected={false} onSelect={vi.fn()} onContextMenu={vi.fn()} />,
+    );
+    expect(screen.queryByTestId("session-launch-status")).toBeNull();
+  });
+});
 
 describe("SessionCard agent browser presence", () => {
   it("badges only the chat that is using the browser", () => {

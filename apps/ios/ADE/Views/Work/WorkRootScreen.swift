@@ -108,6 +108,8 @@ struct WorkRootSessionPresentationTaskKey: Equatable {
   /// unrelated change happens to rebuild the presentation.
   let snoozeEpoch: Int
   let pinnedLaneIdsStorage: String
+  /// Pending chat launches render as rows before their session replicates.
+  let chatLaunchRevision: Int
 }
 
 struct WorkRootScreen: View {
@@ -499,7 +501,8 @@ struct WorkRootScreen: View {
       loadedProjectionProjectId: loadedProjectionProjectId,
       pendingLaneDeletionIds: syncService.pendingLaneDeletionIds,
       snoozeEpoch: snoozeEpoch,
-      pinnedLaneIdsStorage: pinnedLaneIdsStorage
+      pinnedLaneIdsStorage: pinnedLaneIdsStorage,
+      chatLaunchRevision: syncService.chatLaunchRevision
     )
   }
 
@@ -821,6 +824,10 @@ struct WorkRootScreen: View {
           : nil
         let initialSession = optimisticSessions[route.sessionId]
           ?? mergedSessions.first(where: { $0.id == route.sessionId })
+          ?? syncService.chatLaunchEntry(sessionId: route.sessionId).map(workChatLaunchOptimisticSession)
+        // A chat still being launched into a new lane shows its setup first;
+        // the same session id then hands over to the ordinary destination.
+        WorkChatLaunchGate(sessionId: route.sessionId) {
         WorkSessionDestinationView(
           sessionId: route.sessionId,
           initialOpeningPrompt: route.openingPrompt,
@@ -839,6 +846,7 @@ struct WorkRootScreen: View {
           lanes: workOrderedLanes.isEmpty ? lanes : workOrderedLanes
         )
         .equatable()
+        }
         .id(route.openId)
         .environmentObject(syncService)
         .environmentObject(dictationController)
@@ -901,7 +909,18 @@ struct WorkRootScreen: View {
               await reload(refreshRemote: true)
             }
           },
-          onRefreshLanes: { await reload(refreshRemote: true) }
+          onRefreshLanes: { await reload(refreshRemote: true) },
+          onLaunchStarted: { snapshot in
+            // Open the chat now under the session id the host reserved. The
+            // gate on the route shows the lane setup until the agent starts.
+            let sessionId = snapshot.chatSessionId
+            selectedSessionTransitionId = nil
+            var fresh = NavigationPath()
+            fresh.append(WorkSessionRoute(sessionId: sessionId))
+            await Task.yield()
+            path = fresh
+            syncService.persistOpenWorkSessionRoute(sessionId: sessionId)
+          }
         )
         .environmentObject(syncService)
         .environmentObject(dictationController)

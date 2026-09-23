@@ -96,6 +96,7 @@ import {
   type WorkNestingDrawers,
 } from "../../../shared/sessionSpawnNesting";
 import { SESSION_TONE_TEXT_CLASS } from "../../../shared/sessionStatusPresentation";
+import { usePendingChatLaunchLaneIds } from "../../state/chatLaunchStore";
 
 
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
@@ -1848,8 +1849,14 @@ export const SessionListPane = React.memo(function SessionListPane({
     canStartLaneDrag,
   );
 
-  const missingLaneSessionGroups = useMemo(() => {
-    if (!sessionsGroupedByLane) return [];
+  const pendingLaunchLaneIds = usePendingChatLaunchLaneIds();
+  // Groups whose lane the lane list does not have, split once into lanes a
+  // new-lane launch is still setting up and genuinely orphaned sessions.
+  const { missingLaneSessionGroups, launchingLaneGroups, orphanLaneGroups } = useMemo(() => {
+    type LaneGroup = [string, TerminalSessionSummary[]];
+    if (!sessionsGroupedByLane) {
+      return { missingLaneSessionGroups: [] as LaneGroup[], launchingLaneGroups: [] as LaneGroup[], orphanLaneGroups: [] as LaneGroup[] };
+    }
     const knownLaneIds = new Set(lanes.map((lane) => lane.id));
     const latestStartedAt = (sessions: TerminalSessionSummary[]): number => {
       const times = sessions
@@ -1861,7 +1868,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       const trimmed = (name ?? "").trim();
       return trimmed.length > 0 ? trimmed : fallback;
     };
-    return [...sessionsGroupedByLane.entries()]
+    const missing: LaneGroup[] = [...sessionsGroupedByLane.entries()]
       .filter(([laneId, sessions]) => !knownLaneIds.has(laneId) && sessions.length > 0)
       .sort(([leftLaneId, leftSessions], [rightLaneId, rightSessions]) => {
         const leftLatest = latestStartedAt(leftSessions);
@@ -1871,7 +1878,11 @@ export const SessionListPane = React.memo(function SessionListPane({
         const rightName = orphanLabel(rightSessions[0]?.laneName, rightLaneId);
         return leftName.localeCompare(rightName);
       });
-  }, [lanes, sessionsGroupedByLane]);
+    const launching: LaneGroup[] = [];
+    const orphaned: LaneGroup[] = [];
+    for (const group of missing) (pendingLaunchLaneIds.has(group[0]) ? launching : orphaned).push(group);
+    return { missingLaneSessionGroups: missing, launchingLaneGroups: launching, orphanLaneGroups: orphaned };
+  }, [lanes, pendingLaunchLaneIds, sessionsGroupedByLane]);
   const handoffOnlyMissingLaneGroups = useMemo(() => {
     const knownLaneIds = new Set(lanes.map((lane) => lane.id));
     const missingSessionLaneIds = new Set(missingLaneSessionGroups.map(([laneId]) => laneId));
@@ -3199,8 +3210,26 @@ export const SessionListPane = React.memo(function SessionListPane({
     // so any extra bottom padding reads as dead space under the last shelf row
     // rather than as the deliberate breathing room above the footer rule.
     <div className={cn(GROUP_STACK_CLASS, SESSION_LIST_BLEED_CLASS, "px-1 pb-2")}>
+      {/* Lanes a new-lane launch is still setting up. The brain has reserved
+          the lane but the lane list does not have it yet, so the group is
+          named from the launch; it is a lane in the making, not an orphan.
+          Sits where a brand-new lane lands once real (newest first). */}
+      {launchingLaneGroups.map(([laneId, list]) => (
+        <StickyGroupHeader
+          key={laneId}
+          sectionId={laneId}
+          icon={<LaneIcon size={12} weight="regular" className="h-3.5 w-3.5 shrink-0 text-muted-fg/55" />}
+          label={list[0]?.laneName?.trim() || laneId}
+          variant="lane"
+          count={list.length}
+          collapsed={workCollapsedLaneIds.includes(laneId)}
+          onToggleCollapsed={() => toggleWorkLaneCollapsed(laneId)}
+        >
+          {renderLaneSessionLists(laneId, list)}
+        </StickyGroupHeader>
+      ))}
       {renderSharedBranchClusters(clusterLaneItems(mainLanes, mainForeignRows), GROUP_STACK_CLASS)}
-      {missingLaneSessionGroups.map(([laneId, list]) => {
+      {orphanLaneGroups.map(([laneId, list]) => {
         const laneHandoffJobs = handoffJobsByLaneId.get(laneId) ?? [];
         const collapsed = workCollapsedLaneIds.includes(laneId);
         const trimmedLaneName = (list[0]?.laneName ?? "").trim();

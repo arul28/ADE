@@ -255,6 +255,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `proxy` | `start`, `stop` | `completed` | omitted; no provider is involved |
 | `usage` | `reset_credit_consumed` | `completed`, `nothing_to_reset`, `no_credit`, `already_redeemed`, `failed` | `codex` |
 | `chat` | `pending_input_dismissed` | `completed` | coarse session provider family |
+| `chat` | `new_lane_launch` | `completed`, `cancelled`, `failed` | coarse chat provider family |
 
 Every row is passed through `sanitizeProductAnalyticsProperties` in
 `apps/desktop/src/main/services/analytics/productAnalyticsPolicy.ts`, which
@@ -462,6 +463,18 @@ before budgets. The event-level `ade_feature_used` 140-per-day /
 30-per-minute limits are the hard accepted bound, and the shared daily budget
 remains 200. Approval responses, pending input reads, and provider runtime
 polling do not emit this fact.
+
+A chat started in a new lane (the brain-owned launch in
+`chatLaunchService`) records `chat/new_lane_launch` once per outcome per
+launch, captured at the brain (surface `api`) through the service's outcome
+hook: `completed` when the agent started, `cancelled` when the user deleted the
+launch during setup, `failed` when a setup stage failed. Checkout progress,
+stage transitions, retries, queued messages, and lane naming emit nothing; the
+lane name, branch, base ref, template, prompt, and launch id stay local. The
+one-hour action/outcome/family key admits at most 3 outcomes × 11 families ×
+24 = 792 key slots per day before budgets; the event-level `ade_feature_used`
+140-per-day / 30-per-minute limits remain the hard bound, and no ceiling was
+raised.
 
 The two Claude session-capability facts are siblings on the same
 `ade_feature_used` event with `feature: "chat"`, `outcome: "failed"`,

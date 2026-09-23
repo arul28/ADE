@@ -734,7 +734,8 @@ func makeWorkAdeCardModel(from payload: AgentChatAdeCardPayload) -> WorkAdeCardM
       icon: row.icon.flatMap { WorkAdeCardIcon(rawValue: $0.lowercased()) },
       text: text,
       detail: row.detail,
-      tone: workAdeCardTone(from: row.tone)
+      tone: workAdeCardTone(from: row.tone),
+      key: workAdeCardRowKey(row.key)
     )
   }
 
@@ -1151,4 +1152,10 @@ func stringValue(_ value: Any?) -> String {
 func optionalString(_ value: Any?) -> String? {
   let text = stringValue(value).trimmingCharacters(in: .whitespacesAndNewlines)
   return text.isEmpty ? nil : text
+}
+
+/// A card row's wire `key`, trimmed; nil when absent, blank, or not a string.
+func workAdeCardRowKey(_ raw: String?) -> String? {
+  let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return trimmed.isEmpty ? nil : trimmed
 }

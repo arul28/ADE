@@ -668,6 +668,10 @@ struct WorkNewChatScreen: View {
   let onCliStarted: @MainActor (TerminalSessionSummary) async -> Void
   let onChatImported: @MainActor (AgentChatSessionSummary) async -> Void
   let onRefreshLanes: @MainActor () async -> Void
+  /// A new chat into an auto-created lane went through the host-owned launch:
+  /// open the chat (session id = launch id) right away; the host is still
+  /// setting the lane up.
+  let onLaunchStarted: @MainActor (ChatLaunchSnapshot) async -> Void
 
   @State private var selectedLaneId: String = ""
   @State private var provider: String = "claude"
@@ -725,7 +729,8 @@ struct WorkNewChatScreen: View {
     onStarted: @escaping @MainActor (AgentChatSessionSummary, String, Bool, String?, [AgentChatFileRef]) async -> Void,
     onCliStarted: @escaping @MainActor (TerminalSessionSummary) async -> Void,
     onChatImported: @escaping @MainActor (AgentChatSessionSummary) async -> Void = { _ in },
-    onRefreshLanes: @escaping @MainActor () async -> Void
+    onRefreshLanes: @escaping @MainActor () async -> Void,
+    onLaunchStarted: @escaping @MainActor (ChatLaunchSnapshot) async -> Void = { _ in }
   ) {
     self.lanes = lanes
     self.preferredLaneId = preferredLaneId
@@ -735,6 +740,7 @@ struct WorkNewChatScreen: View {
     self.onCliStarted = onCliStarted
     self.onChatImported = onChatImported
     self.onRefreshLanes = onRefreshLanes
+    self.onLaunchStarted = onLaunchStarted
     // Restore the last-used model + access mode so a fresh New Chat screen opens
     // on the user's most recent choices. Seeding the @State initial values here
     // (rather than assigning in onAppear) avoids the provider/model onChange
@@ -1511,6 +1517,48 @@ struct WorkNewChatScreen: View {
       piModelId: selectedModelOption?.piModelId
     )
     let normalizedReasoning = reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
+
+    // Auto-create lane + plain chat: the host owns the whole launch (reserve
+    // ids, fetch, checkout, template, create the chat, send the opener) and
+    // this screen opens the chat immediately. Older hosts that do not
+    // advertise `chat.startLaunch` — and offline sends — keep the chained flow
+    // below unchanged.
+    if let request = ChatLaunchRequest(
+      composerOpener: opener,
+      laneName: autoCreatedLaneName(opener: opener),
+      provider: provider,
+      modelId: modelId,
+      reasoningEffort: reasoningEffort,
+      codexFastMode: codexFastMode,
+      piMetadata: piMetadata,
+      wire: wire,
+      projectId: activeProjectId,
+      projectRootPath: activeProjectRootPath,
+      originClientId: syncService.pairingDeviceId,
+      isAutoCreateLane: isAutoCreateLane,
+      isChatSession: sessionMode == .chat,
+      cursorCloudMode: cursorCloudMode,
+      hostCanStartLaunch: syncService.canStartChatLaunch
+    ) {
+      let syncService = syncService
+      let attachmentsToStage = readyAttachments
+      let scopeProjectId = activeProjectId
+      let scopeProjectRootPath = activeProjectRootPath
+      // Attachments stage on the host in the background (same helper and scope
+      // the chained flow uses before `chat.send`); the launch carries the refs.
+      let snapshot = syncService.beginChatLaunch(request) {
+        try await workChatSaveInputAttachments(
+          attachmentsToStage,
+          syncService: syncService,
+          targetProjectId: scopeProjectId,
+          targetProjectRootPath: scopeProjectRootPath
+        )
+      }
+      ADEHaptics.success()
+      busy = false
+      await onLaunchStarted(snapshot)
+      return true
+    }
 
     // Compute the cloud request identity before auto-creating a lane. The lane
     // itself is retry state, not user input: including a freshly minted lane id

@@ -705,7 +705,9 @@ enum SyncRequestTimeout {
 
   static func commandTimeoutNanoseconds(for action: String) -> UInt64 {
     switch action {
-    case "lanes.delete":
+    case "lanes.delete", "chat.cancelLaunch":
+      // Cancelling a launch deletes its lane (worktree, local and remote
+      // branch) on the host, so it gets the same budget as a lane delete.
       return laneDeleteTimeoutNanoseconds
     case "prs.refresh", "prs.getGitHubSnapshot":
       // These fan out to the GitHub API on the host and routinely take
@@ -4058,6 +4060,18 @@ final class SyncService: ObservableObject {
   /// authoritative and this bounded cache keeps the list useful offline.
   @Published private(set) var personalChatSessions: [AgentChatSessionSummary] = []
   @Published private(set) var personalChatsRevision = 0
+  /// Chat launches (instant new-lane chats) this device knows about: host
+  /// snapshots plus the per-launch local state (retry request, in-flight start,
+  /// deferred messages). Its own observable so a transcript card re-renders on
+  /// launch progress only; `chatLaunchRevision` mirrors every snapshot change
+  /// for surfaces that already observe `SyncService` (Work list, Hub). The
+  /// logic lives in `SyncService+ChatLaunch.swift`.
+  let chatLaunchStore = ChatLaunchStore()
+  @Published private(set) var chatLaunchRevision = 0
+  /// Set when the connected host advertised `chat.startLaunch` but then
+  /// rejected it as an unknown command; new chats fall back to the chained
+  /// flow until the next connection resets it.
+  var chatLaunchKnownUnsupported = false
   /// Last applied roster `seq`; gates delta-vs-resnapshot. nil ⇒ no baseline.
   var rosterSeq: Int?
   /// Whether `roster_subscribe` has been sent on the current connection.
@@ -6130,6 +6144,10 @@ final class SyncService: ObservableObject {
     // attention action intent bridge. Tests that need an isolated instance may
     // overwrite it after init.
     Self.shared = self
+
+    chatLaunchStore.onChange = { [weak self] in
+      self?.chatLaunchRevision &+= 1
+    }
 
     refreshActiveSessionsAndSnapshot()
   }
@@ -8909,12 +8927,16 @@ final class SyncService: ObservableObject {
       async let laneRefresh: Void? = try? await refreshLaneSnapshots()
       async let workSessionRefresh: Void? = try? await refreshWorkSessions()
       async let pullRequestRefresh: Void? = try? await refreshPullRequestSnapshots()
+      // Launches in other projects get no pushes; catch them up (no-op when
+      // none is setting up).
+      async let foreignLaunchRefresh: Void = refreshForeignProjectChatLaunches()
       _ = await (
         lanePresence,
         projectCatalog,
         laneRefresh,
         workSessionRefresh,
-        pullRequestRefresh
+        pullRequestRefresh,
+        foreignLaunchRefresh
       )
       flushPendingOperationsAndScheduleRetry()
       return
@@ -13643,7 +13665,7 @@ final class SyncService: ObservableObject {
     }
   }
 
-  private func chatSessionCreateArgs(
+  func chatSessionCreateArgs(
     laneId: String,
     provider: String,
     model: String,
@@ -14143,16 +14165,7 @@ final class SyncService: ObservableObject {
     let scope = chatCommandScope(for: sessionId)
     var args: [String: Any] = ["sessionId": sessionId, "text": text]
     if let attachments, !attachments.isEmpty {
-      args["attachments"] = attachments.map { ref in
-        var entry: [String: Any] = [
-          "path": ref.path,
-          "type": ref.type,
-        ]
-        if let url = ref.url, !url.isEmpty {
-          entry["url"] = url
-        }
-        return entry
-      }
+      args["attachments"] = chatAttachmentArgs(attachments)
     }
     let response = try await sendCommand(
       action: chatActionName("chat.send", sessionId: sessionId),
@@ -14471,11 +14484,7 @@ final class SyncService: ObservableObject {
     try requireInvokableRemoteAction("chat.createPromptStash")
     var args: [String: Any] = ["text": text]
     if !attachments.isEmpty {
-      args["attachments"] = attachments.map { ref in
-        var entry: [String: Any] = ["path": ref.path, "type": ref.type]
-        if let url = ref.url, !url.isEmpty { entry["url"] = url }
-        return entry
-      }
+      args["attachments"] = chatAttachmentArgs(attachments)
     }
     if let provider, !provider.isEmpty { args["provider"] = provider }
     if let modelId, !modelId.isEmpty { args["modelId"] = modelId }
@@ -16004,7 +16013,7 @@ final class SyncService: ObservableObject {
     return canSendLiveRequests() || isRemoteActionQueueable(action)
   }
 
-  private func requireInvokableRemoteAction(_ action: String) throws {
+  func requireInvokableRemoteAction(_ action: String) throws {
     guard supportsRemoteAction(action) else {
       throw NSError(
         domain: "ADE",
@@ -19237,6 +19246,8 @@ final class SyncService: ObservableObject {
     restoreTerminalSubscriptions()
     restoreChatEventSubscriptions()
     subscribeRosterIfNeeded()
+    chatLaunchKnownUnsupported = false
+    hydrateChatLaunchesIfSupported()
     if let relayAuthorizationLease {
       scheduleRelayReauthorization(lease: relayAuthorizationLease)
     }
@@ -19262,7 +19273,7 @@ final class SyncService: ObservableObject {
     }
   }
 
-  private func canSendLiveRequests() -> Bool {
+  func canSendLiveRequests() -> Bool {
     socket != nil && (connectionState == .connected)
   }
 
@@ -19741,6 +19752,10 @@ final class SyncService: ObservableObject {
     case "roster_delta":
       if let delta = try? decode(payload, as: RemoteRosterDeltaPayload.self) {
         applyRosterDelta(delta)
+      }
+    case "chat_launch_event":
+      if let envelope = try? decode(payload, as: ChatLaunchEventEnvelope.self) {
+        applyChatLaunchEventEnvelope(envelope)
       }
     default:
       break
@@ -20476,7 +20491,7 @@ final class SyncService: ObservableObject {
     }
   }
 
-  private func decode<T: Decodable>(_ object: Any, as type: T.Type) throws -> T {
+  func decode<T: Decodable>(_ object: Any, as type: T.Type) throws -> T {
     let data = try adeJSONData(withJSONObject: object)
     return try decoder.decode(T.self, from: data)
   }
@@ -20924,7 +20939,7 @@ final class SyncService: ObservableObject {
     return false
   }
 
-  private func performCommandRequest(
+  func performCommandRequest(
     action: String,
     args: [String: Any],
     commandId: String? = nil,

@@ -31,6 +31,7 @@ import {
   type SpawnInvocation,
 } from "../shared/processExecution";
 import { mergeLaneEnvInitConfig } from "./laneEnvInitMerge";
+import { createLaneEnvironmentProcesses } from "./laneEnvironmentProcesses";
 import {
   resolveSetupScriptConfig,
   unsupportedWindowsScriptPathError,
@@ -157,13 +158,15 @@ export function createLaneEnvironmentService({
   projectRoot,
   adeDir,
   logger,
-  broadcastEvent,
+  broadcastEvent: broadcastToRuntime,
 }: {
   projectRoot: string;
   adeDir: string;
   logger: Logger;
   broadcastEvent: (ev: LaneEnvInitEvent) => void;
 }) {
+  const processes = createLaneEnvironmentProcesses({ logger, broadcastToRuntime });
+  const broadcastEvent = processes.broadcastEvent;
   // Track in-progress and completed init progress per lane
   const progressMap = new Map<string, LaneEnvInitProgress>();
 
@@ -322,6 +325,7 @@ export function createLaneEnvironmentService({
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
         windowsHide: true,
       });
+      processes.trackChild(child, cwd);
       let stdout = "";
       let stderr = "";
       let settled = false;
@@ -644,24 +648,8 @@ export function createLaneEnvironmentService({
    */
   const laneQueues = new Map<string, Promise<unknown>>();
 
-  /**
-   * Lanes whose cleanup is waiting behind an in-flight init.
-   *
-   * Serializing is not enough on its own: a full init can legitimately run for
-   * minutes (dependency installs and `docker compose up` have 120s/300s budgets
-   * each, and lane creation kicks init off detached), so an archive or delete
-   * arriving mid-init would sit in the queue that whole time with no signal.
-   * The cleanup wrapper raises the flag before it enqueues and `runPlannedInit`
-   * reads it at every step boundary, so init stops at the next boundary instead
-   * of running the rest of a sequence whose lane is about to go away.
-   *
-   * Cooperative by design: already-spawned children keep their own timeouts,
-   * they are not killed here.
-   */
-  const cleanupRequested = new Set<string>();
-
-  /** Inits that have been enqueued and not yet settled, per lane. */
-  const inFlightInits = new Map<string, number>();
+  // Cooperative cancellation flags (cleanupRequested / inFlightInits) live in
+  // laneEnvironmentProcesses.ts; see the rationale there.
 
   // "Torn down", not "archived": the same cancellation fires for delete and
   // archive-and-reclaim, and naming only archive was wrong for two of the three.
@@ -850,7 +838,7 @@ export function createLaneEnvironmentService({
       for (const entry of planned) {
         // Cooperative cancellation point: a queued archive/delete must not wait
         // out the rest of a multi-minute sequence for a lane that is going away.
-        if (cleanupRequested.has(lane.id)) return abortInitForCleanup(progress, lane.id);
+        if (processes.isCleanupRequested(lane.id)) return abortInitForCleanup(progress, lane.id);
         const ok = await runStep(progress, lane.id, entry.kind, entry.run);
         if (!ok) return progress;
       }
@@ -865,6 +853,12 @@ export function createLaneEnvironmentService({
       logger.info("lane_env_init.completed", { laneId: lane.id, steps: steps.length });
       return progress;
     },
+
+    /** Kill the lane's running setup commands and stop its init; see laneEnvironmentProcesses.ts. */
+    abortLaneEnvironment: processes.abortLaneEnvironment,
+
+    /** Observe every env-init progress update for every lane. Returns the unsubscribe. */
+    onEvent: processes.onEvent,
 
     /**
      * Get the current or last env init progress for a lane.
@@ -956,17 +950,10 @@ export function createLaneEnvironmentService({
     dispose(): void {
       progressMap.clear();
       laneQueues.clear();
-      cleanupRequested.clear();
-      inFlightInits.clear();
+      processes.reset();
       // The on-disk marker is deliberately left alone: it outlives the process.
     }
   };
-
-  function noteInitSettled(laneId: string): void {
-    const remaining = (inFlightInits.get(laneId) ?? 1) - 1;
-    if (remaining > 0) inFlightInits.set(laneId, remaining);
-    else inFlightInits.delete(laneId);
-  }
 
   return {
     ...service,
@@ -976,22 +963,22 @@ export function createLaneEnvironmentService({
       overrides: LaneOverlayOverrides,
       options?: LaneEnvInitOptions,
     ): Promise<LaneEnvInitProgress> => {
-      inFlightInits.set(lane.id, (inFlightInits.get(lane.id) ?? 0) + 1);
+      processes.noteInitStarted(lane.id);
       return withLaneQueue(lane.id, () =>
         service.initLaneEnvironment(lane, config, overrides, options),
-      ).finally(() => noteInitSettled(lane.id));
+      ).finally(() => processes.noteInitSettled(lane.id));
     },
     cleanupLaneEnvironment: (lane: LaneSummary, config: LaneEnvInitConfig | undefined): Promise<void> => {
       // Raised BEFORE enqueuing so an init already running for this lane sees it
       // at its next step boundary rather than after the whole sequence.
-      if (inFlightInits.has(lane.id)) {
-        cleanupRequested.add(lane.id);
+      if (processes.hasInFlightInit(lane.id)) {
+        processes.requestCleanup(lane.id);
         logger.warn("lane_env_cleanup.waiting_for_inflight_init", { laneId: lane.id });
       }
       return withLaneQueue(lane.id, () => {
         // Cleared as cleanup starts: a later init for this lane (unarchive,
         // re-init) must not inherit a cancellation meant for this teardown.
-        cleanupRequested.delete(lane.id);
+        processes.clearCleanupRequest(lane.id);
         return service.cleanupLaneEnvironment(lane, config);
       });
     },

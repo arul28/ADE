@@ -41,6 +41,14 @@ describe("selectRemoteLaneBaseRef", () => {
     expect(selectRemoteLaneBaseRef({ branches, primaryBaseRef: "main" })).toBe("origin/main");
   });
 
+  it("returns the tracked upstream even though branch listings fold that remote row into its local branch", () => {
+    const folded = [
+      branch({ name: "main", isCurrent: true, upstream: "origin/main" }),
+      branch({ name: "origin/develop", isRemote: true }),
+    ];
+    expect(selectRemoteLaneBaseRef({ branches: folded, primaryBaseRef: "main" })).toBe("origin/main");
+  });
+
   it("falls back to origin/<base> when no upstream is configured", () => {
     const noUpstream = [
       branch({ name: "develop" }),
