@@ -751,6 +751,16 @@ function MacDesktopPanel({
         ? `Someone has control${lease.holderLabel ? ` · ${lease.holderLabel}` : ""}`
         : `Agent driving${lease.holderLabel ? ` · ${lease.holderLabel}` : ""}`)
       : "Nobody has taken control.";
+  // The same answer as a badge beside the name, so who drives reads at a
+  // glance. Only this tab's own takeover is "you"; a person holding it from
+  // elsewhere is someone else as far as this tab can tell.
+  const ownerBadge = controlHolderId
+    ? "You have control"
+    : lease
+      ? (lease.holder === "user" ? "Someone has control" : "Agent driving")
+      : null;
+  // Optional on the wire: an older host sends no recording, which reads as none.
+  const recording = macDesktop.recording?.running === true;
 
   const runAction = async (action: "start" | "stop") => {
     if (!api) return;
@@ -801,6 +811,8 @@ function MacDesktopPanel({
           {streamError && pictureVisible && streamStatus === "error"
             ? <Badge label="No signal" />
             : null}
+          {recording ? <Badge label="Recording" tone="recording" testId="mac-desktop-web-recording" /> : null}
+          {ownerBadge ? <Badge label={ownerBadge} testId="mac-desktop-web-owner" /> : null}
         </div>
         <div className="text-[11px] text-muted-fg">
           {display.width} × {display.height} · {display.mode}
@@ -977,9 +989,31 @@ function ObservationFrame({
   );
 }
 
-function Badge({ label }: { label: string }): JSX.Element {
+function Badge({
+  label,
+  tone = "muted",
+  testId,
+}: {
+  label: string;
+  /** `recording` is red with a pulsing dot, as recording reads everywhere else. */
+  tone?: "muted" | "recording";
+  testId?: string;
+}): JSX.Element {
   return (
-    <span className="shrink-0 rounded-sm border border-border/60 px-1 text-[10px] uppercase tracking-wide text-muted-fg">
+    <span
+      data-testid={testId}
+      className={
+        tone === "recording"
+          ? "inline-flex shrink-0 items-center gap-1 rounded-sm border border-red-400/50 px-1 text-[10px] uppercase tracking-wide text-red-300"
+          : "shrink-0 rounded-sm border border-border/60 px-1 text-[10px] uppercase tracking-wide text-muted-fg"
+      }
+    >
+      {tone === "recording" ? (
+        <span
+          aria-hidden="true"
+          className="h-1.5 w-1.5 rounded-full bg-[var(--color-error)] [animation:ade-status-pulse_1.6s_steps(1)_infinite] motion-reduce:animate-none"
+        />
+      ) : null}
       {label}
     </span>
   );

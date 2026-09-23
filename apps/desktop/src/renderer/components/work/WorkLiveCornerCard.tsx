@@ -6,13 +6,15 @@ import {
   useMotionValue,
   useReducedMotion,
 } from "motion/react";
-import { X } from "@phosphor-icons/react";
+import { PictureInPicture, X } from "@phosphor-icons/react";
 import type {
   AppControlEventPayload,
   BuiltInBrowserActionTraceEntry,
   BuiltInBrowserEventPayload,
   BuiltInBrowserStatus,
   MacDesktopEventPayload,
+  MacDesktopLeaseHolderKind,
+  MacDesktopLeaseState,
   OpenProjectBinding,
 } from "../../../shared/types";
 import {
@@ -34,6 +36,7 @@ import {
 } from "../../state/workLiveCardState";
 import { EMPHASIZED_EASE, exitTransition } from "../../lib/motion";
 import { cn } from "../ui/cn";
+import { PaneTooltip } from "../ui/PaneTooltip";
 import { workToolDefinition } from "../terminals/workTools";
 import { clearMacDesktopFrame, useMacDesktopFrame } from "../chat/macDesktopFrameStore";
 import { H264VideoCanvas } from "../chat/H264VideoCanvas";
@@ -75,6 +78,12 @@ import {
   type WorkLiveCardPosition,
   type WorkLiveScrubFrame,
 } from "./workLiveCard";
+import {
+  WORK_LIVE_PIP_UNSUPPORTED_LABEL,
+  enterCanvasPictureInPicture,
+  isWorkLivePictureInPictureSupported,
+  type WorkLivePipSession,
+} from "./workLiveIosPictureInPicture";
 
 /**
  * The floating live-preview card.
@@ -154,17 +163,25 @@ function browserActivitySignature(status: BuiltInBrowserStatus | null): string {
  * stream status who its viewers are (ids only) and the lease who holds it.
  * Both reads are tolerant of a surface without the namespace. The display key
  * is what the "×" marker is stored under: a stop-and-recreate is a new
- * session, and a lane id could never tell the two apart.
+ * session, and a lane id could never tell the two apart. The lease holder's
+ * kind and the recording flag feed the card's owner tag and red dot.
  */
 function useMacDesktopChatScope(args: {
   enabled: boolean;
   laneId: string | null;
   chatSessionId: string | null;
   runtimePin: OpenProjectBinding | null;
-}): { viewerChatSessionIds: string[]; leaseHolderId: string | null; displayKey: string | null } {
+}): {
+  viewerChatSessionIds: string[];
+  leaseHolderId: string | null;
+  leaseHolderKind: MacDesktopLeaseHolderKind | null;
+  recording: boolean;
+  displayKey: string | null;
+} {
   const { enabled, laneId, chatSessionId, runtimePin } = args;
   const [viewerChatSessionIds, setViewerChatSessionIds] = useState<string[]>([]);
-  const [leaseHolderId, setLeaseHolderId] = useState<string | null>(null);
+  const [lease, setLease] = useState<{ id: string; kind: MacDesktopLeaseHolderKind } | null>(null);
+  const [recording, setRecording] = useState(false);
   const [displayKey, setDisplayKey] = useState<string | null>(null);
   // Read through a ref so a caller passing a fresh pin object each render cannot
   // re-issue the stream read; only the pin's key is a dependency.
@@ -175,7 +192,8 @@ function useMacDesktopChatScope(args: {
   useEffect(() => {
     if (!enabled || !laneId) {
       setViewerChatSessionIds([]);
-      setLeaseHolderId(null);
+      setLease(null);
+      setRecording(false);
       setDisplayKey(null);
       return undefined;
     }
@@ -183,7 +201,8 @@ function useMacDesktopChatScope(args: {
     if (!api || !chatSessionId) {
       // Without a chat there is nothing to authorize; skip the reads entirely.
       setViewerChatSessionIds([]);
-      setLeaseHolderId(null);
+      setLease(null);
+      setRecording(false);
       setDisplayKey(null);
       return undefined;
     }
@@ -199,7 +218,8 @@ function useMacDesktopChatScope(args: {
     void api.getStatus?.({ laneId, chatSessionId }, pinRef.current)
       .then((status) => {
         if (cancelled) return;
-        setLeaseHolderId(status?.lease?.holderId ?? null);
+        setLease(leaseOf(status?.lease));
+        setRecording(status?.recording?.running === true);
         setDisplayKey(workLiveMacDesktopSessionKey(status?.display));
       })
       .catch(() => {});
@@ -216,7 +236,11 @@ function useMacDesktopChatScope(args: {
         return;
       }
       if (event.type === "lease-changed" && event.laneId === laneId) {
-        setLeaseHolderId(event.lease?.holderId ?? null);
+        setLease(leaseOf(event.lease));
+        return;
+      }
+      if (event.type === "recording-changed" && event.status.laneId === laneId) {
+        setRecording(event.status.running === true);
         return;
       }
       if (event.type === "display-created") {
@@ -227,6 +251,8 @@ function useMacDesktopChatScope(args: {
       }
       if (event.type === "display-destroyed" && event.laneId === laneId) {
         setDisplayKey(null);
+        // A recording cannot outlive its display; the stop event may never come.
+        setRecording(false);
         // The picture is of a display that no longer exists; the pane clears
         // the shared frame too, but the card must not depend on the pane being
         // open to stop showing a dead screen.
@@ -239,7 +265,17 @@ function useMacDesktopChatScope(args: {
     };
   }, [chatSessionId, enabled, laneId, pinKey]);
 
-  return { viewerChatSessionIds, leaseHolderId, displayKey };
+  return {
+    viewerChatSessionIds,
+    leaseHolderId: lease?.id ?? null,
+    leaseHolderKind: lease?.kind ?? null,
+    recording,
+    displayKey,
+  };
+}
+
+function leaseOf(lease: MacDesktopLeaseState | null | undefined): { id: string; kind: MacDesktopLeaseHolderKind } | null {
+  return lease?.holderId ? { id: lease.holderId, kind: lease.holder } : null;
 }
 
 export function WorkLiveCornerCard({
@@ -597,7 +633,16 @@ export function WorkLiveCornerCard({
     macDesktopFrame: macDesktopFrame
       ? { ...macDesktopFrame, displayKey: macScope.displayKey }
       : null,
-  }), [activeBrowserTab, appControlSession, iosSession, macDesktopFrame, macScope.displayKey]);
+    macDesktopControl: { leaseHolder: macScope.leaseHolderKind, recording: macScope.recording },
+  }), [
+    activeBrowserTab,
+    appControlSession,
+    iosSession,
+    macDesktopFrame,
+    macScope.displayKey,
+    macScope.leaseHolderKind,
+    macScope.recording,
+  ]);
 
   const sources = useMemo(() => ({
     browser: workLiveSource("browser", sourceState),
@@ -753,6 +798,58 @@ export function WorkLiveCornerCard({
     }),
     [activeTool, activities, chatSessionId, closed, floating],
   );
+
+  /* ── Picture in picture (Mac Desktop) ─────────────────────────────────── */
+
+  /**
+   * The Mac Desktop picture in its own OS window, the same way the Apple mini
+   * player does it: the card's decoder canvas goes through `captureStream()`.
+   * Only the card's own decoder can feed it, so it is offered only while the
+   * card holds the lane's decoder and a frame has been drawn.
+   */
+  const decoderHostRef = useRef<HTMLDivElement | null>(null);
+  const pipRef = useRef<WorkLivePipSession | null>(null);
+  const [pipActive, setPipActive] = useState(false);
+  const stopPip = useCallback(() => {
+    pipRef.current?.stop();
+    pipRef.current = null;
+    setPipActive(false);
+  }, []);
+  const enterPip = useCallback(async () => {
+    const canvas = decoderHostRef.current?.querySelector("canvas");
+    if (!canvas) return;
+    try {
+      const session = await enterCanvasPictureInPicture(canvas);
+      // The decoder went away while the window opened: it would get no frames.
+      if (!canvas.isConnected) {
+        session.stop();
+        return;
+      }
+      pipRef.current?.stop();
+      pipRef.current = session;
+      setPipActive(true);
+      session.video.addEventListener("leavepictureinpicture", () => {
+        session.stop();
+        if (pipRef.current === session) pipRef.current = null;
+        setPipActive(false);
+      }, { once: true });
+    } catch {
+      stopPip();
+    }
+  }, [stopPip]);
+  useEffect(() => () => {
+    pipRef.current?.stop();
+    pipRef.current = null;
+  }, []);
+  // The card lost the decoder (the pane took it back, the card was closed, the
+  // display went away): the PiP window would freeze on the last frame.
+  useEffect(() => {
+    if (pipActive && !macDesktopLive.url) stopPip();
+  }, [macDesktopLive.url, pipActive, stopPip]);
+  const pipSupported = isWorkLivePictureInPictureSupported();
+  const macDesktopHasPicture = Boolean(macDesktopLive.url) && macDesktopLive.status === "playing";
+  /** While the desktop is in its PiP window, the card inside ADE steps aside. */
+  const pipConcealed = pipActive && tool === "mac-desktop";
 
   const storedCardWidth = normalizeWorkLiveCardWidth(storedWidth);
   const chosenWidth = projectStateKey
@@ -1168,9 +1265,15 @@ export function WorkLiveCornerCard({
       */}
       {macDesktopLive.url ? (
         <div
+          ref={decoderHostRef}
           aria-hidden="true"
           data-live-card-decoder=""
-          className="pointer-events-none absolute left-0 top-0 h-px w-px overflow-hidden opacity-0"
+          className={cn(
+            "pointer-events-none absolute left-0 top-0 h-px w-px overflow-hidden",
+            // Kept barely composited while PiP reads it: a canvas the
+            // compositor treats as invisible can hand PiP a black surface.
+            pipActive ? "opacity-[0.002]" : "opacity-0",
+          )}
         >
           <H264VideoCanvas
             url={macDesktopLive.url}
@@ -1229,9 +1332,11 @@ export function WorkLiveCornerCard({
               ? { duration: 0 }
               : ENTER}
             data-work-live-card={tool}
+            data-live-card-pip={pipConcealed ? "" : undefined}
             className={cn(
               "group pointer-events-auto absolute cursor-pointer overflow-hidden",
               "select-none",
+              pipConcealed ? "invisible" : null,
               "rounded-[var(--radius-lg)] bg-[var(--color-surface)] shadow-[var(--shadow-float)]",
               "transition-shadow duration-[120ms] ease-out motion-reduce:transition-none",
               "hover:shadow-[var(--shadow-card-hover)]",
@@ -1404,6 +1509,36 @@ export function WorkLiveCornerCard({
                 <span className="shrink-0 text-[9.5px] font-medium tracking-[0.2px] text-muted-fg/70">
                   Live
                 </span>
+              ) : null}
+              {tool === "mac-desktop" ? (
+                <PaneTooltip
+                  label={!pipSupported
+                    ? WORK_LIVE_PIP_UNSUPPORTED_LABEL
+                    : macDesktopHasPicture
+                      ? "Picture in picture"
+                      : "Waiting for the first frame"}
+                >
+                  <button
+                    type="button"
+                    data-live-card-inert=""
+                    aria-label="Picture in picture"
+                    disabled={!pipSupported || !macDesktopHasPicture}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      if (pipActive) stopPip();
+                      else void enterPip();
+                    }}
+                    className={cn(
+                      "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-[6px]",
+                      "text-muted-fg/80 transition-colors duration-[120ms] motion-reduce:transition-none",
+                      "hover:bg-white/[0.08] hover:text-fg disabled:opacity-40",
+                      "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
+                    )}
+                  >
+                    <PictureInPicture size={12} />
+                  </button>
+                </PaneTooltip>
               ) : null}
               <button
                 type="button"

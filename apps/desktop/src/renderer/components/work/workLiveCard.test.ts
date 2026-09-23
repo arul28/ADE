@@ -794,6 +794,22 @@ describe("workLiveSource", () => {
     }).sessionKey).toBe("display:31:2026-09-18T19:00:00.000Z");
   });
 
+  it("names the Mac Desktop lease holder and its recording", () => {
+    const frame = { laneId: "lane-1" };
+    expect(workLiveSource("mac-desktop", {
+      ...empty,
+      macDesktopFrame: frame,
+      macDesktopControl: { leaseHolder: "agent", recording: true },
+    })).toMatchObject({ ownerLabel: "agent", recording: true });
+    expect(workLiveSource("mac-desktop", {
+      ...empty,
+      macDesktopFrame: frame,
+      macDesktopControl: { leaseHolder: "user", recording: false },
+    })).toMatchObject({ ownerLabel: "you", recording: null });
+    expect(workLiveSource("mac-desktop", { ...empty, macDesktopFrame: frame }))
+      .toMatchObject({ ownerLabel: null, recording: null });
+  });
+
   it("reads a simulator recording from status, and captions app over device", () => {
     expect(workLiveSource("ios", {
       ...empty,

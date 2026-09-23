@@ -435,8 +435,8 @@ describe("WorkToolReadOnlyView", () => {
       controllerId: expect.any(String),
       controllerLabel: "ADE Web",
     });
-    expect(screen.getByTestId("mac-desktop-web-takeover-banner")).toBeTruthy();
-    expect(screen.getByText("You have control")).toBeTruthy();
+    expect(screen.getByTestId("mac-desktop-web-takeover-banner").textContent).toContain("You have control");
+    expect(screen.getByTestId("mac-desktop-web-owner").textContent).toBe("You have control");
     expect(screen.getByText("Return to agent")).toBeTruthy();
     expect(screen.getByText("You have control.")).toBeTruthy();
 
@@ -448,6 +448,37 @@ describe("WorkToolReadOnlyView", () => {
       laneId: "lane-1",
       controllerId: api.takeControl.mock.calls[0]?.[0]?.controllerId,
     });
+  });
+
+  it("badges who drives the lane and whether it is recording", async () => {
+    const getLaneState = vi.fn(async () => laneState({
+      macDesktop: macDesktopState({
+        lease: { ...USER_LEASE, holder: "agent", holderId: "chat-7", holderLabel: "Fix login" },
+        recording: { running: true, startedAt: "2026-09-18T10:00:00.000Z" },
+      }),
+    }));
+    installAde({ getLaneState, readObservationPreview: vi.fn(async () => null) }, controlApi());
+
+    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" />);
+
+    expect((await screen.findByTestId("mac-desktop-web-owner")).textContent).toBe("Agent driving");
+    expect(screen.getByTestId("mac-desktop-web-recording").textContent).toBe("Recording");
+  });
+
+  it("shows no owner or recording badge on an idle lane, or from a host that sends no recording", async () => {
+    installAde(
+      {
+        getLaneState: vi.fn(async () => laneState({ macDesktop: macDesktopState() })),
+        readObservationPreview: vi.fn(async () => null),
+      },
+      controlApi(),
+    );
+
+    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" />);
+
+    expect(await screen.findByTestId("mac-desktop-web-takeover")).toBeTruthy();
+    expect(screen.queryByTestId("mac-desktop-web-owner")).toBeNull();
+    expect(screen.queryByTestId("mac-desktop-web-recording")).toBeNull();
   });
 
   it("returns control when the tab goes hidden", async () => {

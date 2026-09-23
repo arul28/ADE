@@ -23,6 +23,55 @@ import {
   setWorkLivePreviewEnabledForChat,
 } from "../chat/chatCompanionUiState";
 
+/**
+ * The decoder, faked only when a test asks: it draws a canvas and says it is
+ * playing, which jsdom's missing WebCodecs never would.
+ */
+const fakeDecoder = { playing: false };
+
+vi.mock("../chat/H264VideoCanvas", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../chat/H264VideoCanvas")>();
+  const { useEffect } = await import("react");
+  function FakeH264VideoCanvas(props: Parameters<typeof actual.H264VideoCanvas>[0]) {
+    useEffect(() => {
+      props.onStatus?.("playing", null);
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    return (
+      <canvas
+        data-testid="fake-decoder-canvas"
+        ref={(node) => {
+          // jsdom cannot encode a canvas; the frame snapshot only needs a string.
+          if (node) node.toDataURL = () => "data:image/jpeg;base64,ZnJhbWU=";
+          props.onCanvas?.(node);
+        }}
+      />
+    );
+  }
+  return {
+    ...actual,
+    H264VideoCanvas: (props: Parameters<typeof actual.H264VideoCanvas>[0]) => (
+      fakeDecoder.playing ? <FakeH264VideoCanvas {...props} /> : <actual.H264VideoCanvas {...props} />
+    ),
+  };
+});
+
+/** The PiP window, faked: jsdom has none. Each entry is one session opened. */
+const pipSessions: { video: HTMLVideoElement; stop: ReturnType<typeof vi.fn> }[] = [];
+const pipSupport = { supported: false };
+
+vi.mock("./workLiveIosPictureInPicture", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./workLiveIosPictureInPicture")>();
+  return {
+    ...actual,
+    isWorkLivePictureInPictureSupported: () => pipSupport.supported,
+    enterCanvasPictureInPicture: vi.fn(async (_canvas: HTMLCanvasElement) => {
+      const session = { video: document.createElement("video"), stop: vi.fn() };
+      pipSessions.push(session);
+      return session;
+    }),
+  };
+});
+
 type BrowserEventListener = (event: unknown) => void;
 
 const browserListeners = new Set<BrowserEventListener>();
@@ -120,6 +169,9 @@ function loadImage(image: HTMLImageElement, width: number, height: number): void
 }
 
 beforeEach(() => {
+  fakeDecoder.playing = false;
+  pipSupport.supported = false;
+  pipSessions.length = 0;
   browserListeners.clear();
   appControlListeners.clear();
   macDesktopListeners.clear();
@@ -1111,5 +1163,143 @@ describe("WorkLiveCornerCard live tools that predate the card", () => {
     fireEvent.click(screen.getByLabelText("Hide the Mac Desktop preview"));
     await waitFor(() => expect(macDesktopStopStream).toHaveBeenCalledTimes(1));
     expect(macDesktopStopStream).toHaveBeenCalledWith({ laneId: "lane-1" }, null);
+  });
+});
+
+describe("WorkLiveCornerCard Mac Desktop tags and picture in picture", () => {
+  const AGENT_LEASE = {
+    laneId: "lane-1",
+    holder: "agent" as const,
+    holderId: "chat-7",
+    holderLabel: "Fix login",
+    grantedAt: "2026-09-18T19:00:00.000Z",
+    expiresAt: "2026-09-18T19:01:00.000Z",
+  };
+
+  async function showMacDesktopCard(status: Partial<MacDesktopStatus> = {}) {
+    (window.ade.builtInBrowser.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeBuiltInBrowserStatus({ visible: false, activeTabId: null, tabs: [] }),
+    );
+    macDesktopGetStatus.mockResolvedValue({
+      supported: true,
+      display: macDesktopDisplay(),
+      lease: null,
+      windows: [],
+      recording: null,
+      ...status,
+    });
+    macDesktopGetStreamStatus.mockResolvedValue(
+      makeStreamStatus({ viewerChatSessionIds: ["chat-1"] }),
+    );
+    setMacDesktopFrame(macDesktopFrame());
+    const { onPick } = renderCard({ activeTool: "browser" });
+    const card = await screen.findByLabelText("Mac Desktop live preview", {}, { timeout: 3_000 });
+    return Object.assign(card, { onPick });
+  }
+
+  function pillText(card: HTMLElement): string {
+    return card.querySelector("[data-live-card-pill]")?.textContent ?? "";
+  }
+
+  function restStatus(card: HTMLElement): string | undefined {
+    return card.querySelector<HTMLElement>("[data-live-card-status]")?.dataset.liveCardStatus;
+  }
+
+  it("names the agent holding the lease and pulses red while the desktop records", async () => {
+    const card = await showMacDesktopCard({
+      lease: AGENT_LEASE,
+      recording: {
+        laneId: "lane-1",
+        running: true,
+        startedAt: "2026-09-18T19:00:00.000Z",
+        filePath: null,
+        durationMs: null,
+        caption: null,
+      },
+    });
+
+    await waitFor(() => expect(pillText(card)).toContain("· agent"));
+    expect(restStatus(card)).toBe("recording");
+    expect(card.querySelector("[data-live-card-pill] [title='Recording']")).toBeTruthy();
+  });
+
+  it("follows the lease and the recording as they change", async () => {
+    const card = await showMacDesktopCard();
+    await waitFor(() => expect(macDesktopGetStatus).toHaveBeenCalled());
+    expect(pillText(card)).not.toContain("· agent");
+    expect(restStatus(card)).toBe("idle");
+
+    emitMacDesktopEvent({ type: "lease-changed", laneId: "lane-1", lease: AGENT_LEASE });
+    await waitFor(() => expect(pillText(card)).toContain("· agent"));
+
+    emitMacDesktopEvent({
+      type: "lease-changed",
+      laneId: "lane-1",
+      lease: { ...AGENT_LEASE, holder: "user", holderId: "ade-window:1", holderLabel: "You" },
+    });
+    await waitFor(() => expect(pillText(card)).toContain("· you"));
+
+    emitMacDesktopEvent({
+      type: "recording-changed",
+      status: {
+        laneId: "lane-1",
+        running: true,
+        startedAt: "2026-09-18T19:00:00.000Z",
+        filePath: null,
+        durationMs: null,
+        caption: null,
+      },
+    });
+    await waitFor(() => expect(restStatus(card)).toBe("recording"));
+
+    // Another lane's events say nothing about this one.
+    emitMacDesktopEvent({ type: "lease-changed", laneId: "lane-2", lease: null });
+    expect(pillText(card)).toContain("· you");
+
+    emitMacDesktopEvent({ type: "lease-changed", laneId: "lane-1", lease: null });
+    emitMacDesktopEvent({
+      type: "recording-changed",
+      status: { laneId: "lane-1", running: false, startedAt: null, filePath: "/tmp/r.mp4", durationMs: 900, caption: null },
+    });
+    await waitFor(() => expect(restStatus(card)).toBe("idle"));
+    expect(pillText(card)).not.toContain("· you");
+  });
+
+  it("keeps picture in picture off where the window cannot do it", async () => {
+    const card = await showMacDesktopCard();
+    const button = card.querySelector<HTMLButtonElement>("[aria-label='Picture in picture']");
+    expect(button).toBeTruthy();
+    expect(button?.disabled).toBe(true);
+  });
+
+  it("offers no picture in picture on a browser card", async () => {
+    renderCard({ activeTool: "mac-desktop" });
+    const card = await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 });
+    expect(card.querySelector("[aria-label='Picture in picture']")).toBeNull();
+  });
+
+  it("floats the card's decoder canvas into picture in picture, and comes back when it closes", async () => {
+    fakeDecoder.playing = true;
+    pipSupport.supported = true;
+    const card = await showMacDesktopCard();
+    const canvas = await screen.findByTestId("fake-decoder-canvas", {}, { timeout: 3_000 });
+    const button = card.querySelector<HTMLButtonElement>("[aria-label='Picture in picture']");
+    await waitFor(() => expect(button?.disabled).toBe(false));
+
+    await act(async () => {
+      fireEvent.click(button!);
+    });
+    const { enterCanvasPictureInPicture } = await import("./workLiveIosPictureInPicture");
+    expect(enterCanvasPictureInPicture).toHaveBeenCalledWith(canvas);
+    await waitFor(() => expect(card.hasAttribute("data-live-card-pip")).toBe(true));
+    expect(pipSessions).toHaveLength(1);
+    // The button is the card's chrome, not a click through to the pane.
+    expect(card.onPick).not.toHaveBeenCalled();
+
+    act(() => {
+      pipSessions[0]!.video.dispatchEvent(new Event("leavepictureinpicture"));
+    });
+    await waitFor(() => expect(card.hasAttribute("data-live-card-pip")).toBe(false));
+    expect(pipSessions[0]!.stop).toHaveBeenCalled();
   });
 });

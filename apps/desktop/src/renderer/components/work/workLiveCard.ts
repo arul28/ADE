@@ -196,13 +196,16 @@ export function selectWorkLiveCardTool(args: {
 export type WorkLiveSource = {
   /** Something of this tool's is running right now. */
   live: boolean;
-  /** `"agent"` when an agent session owns it, else null. */
+  /**
+   * `"agent"` when an agent session owns it (for Mac Desktop, holds its input
+   * lease), `"you"` when a person holds the Mac Desktop lease, else null.
+   */
   ownerLabel: string | null;
   /** The tool's own idea of what it is showing, before any action caption. */
   caption: string | null;
   /** A login handoff or equivalent "needs you" state, or null. */
   handoff: WorkLiveHandoff;
-  /** Truthy while the tool is recording. Browser tabs and Apple devices can be. */
+  /** Truthy while the tool is recording. Browser tabs, Apple devices and Mac Desktop can be. */
   recording: unknown;
   /** The current session identity, for the "×" rule. */
   sessionKey: string | null;
@@ -280,6 +283,16 @@ export type WorkLiveSourceState = {
      */
     displayKey?: string | null;
   } | null;
+  /**
+   * Who drives the lane's desktop and whether it is being recorded, from the
+   * status read and the `lease-changed` / `recording-changed` events. Optional:
+   * a caller with no Mac Desktop state leaves it out.
+   */
+  macDesktopControl?: {
+    /** The lease holder's kind, or null when nobody holds it. */
+    leaseHolder?: "agent" | "user" | null;
+    recording?: boolean | null;
+  } | null;
 };
 
 /**
@@ -303,6 +316,8 @@ export function workLiveMacDesktopSessionKey(
 }
 
 const AGENT_OWNER_LABEL = "agent";
+/** A person took over the lane's desktop. Lowercase to sit beside "agent". */
+const USER_OWNER_LABEL = "you";
 
 /**
  * `https://example.com/a/b?c` → `example.com`.
@@ -351,14 +366,18 @@ export const WORK_LIVE_SOURCES: Record<
     recording: null,
     sessionKey: appControlSession?.id ?? null,
   }),
-  "mac-desktop": ({ macDesktopFrame }) => ({
+  "mac-desktop": ({ macDesktopFrame, macDesktopControl }) => ({
     live: Boolean(macDesktopFrame),
-    // Never "agent": the display belongs to the lane, not to a chat, and every
-    // chat in the lane shares it. Claiming one owner would be a guess.
-    ownerLabel: null,
+    // The display belongs to the lane, so the owner is whoever holds its input
+    // lease right now, not a chat. Nobody holding it names nobody.
+    ownerLabel: macDesktopControl?.leaseHolder === "agent"
+      ? AGENT_OWNER_LABEL
+      : macDesktopControl?.leaseHolder === "user"
+        ? USER_OWNER_LABEL
+        : null,
     caption: macDesktopFrame?.caption ?? null,
     handoff: null,
-    recording: null,
+    recording: macDesktopControl?.recording ? true : null,
     // A display is per lane and long-lived, so the display's own identity is
     // the session key for the "×" rule: closing the preview hides it until
     // this display is replaced (or the user floats it back).
