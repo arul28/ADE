@@ -741,7 +741,12 @@ export async function handleDeviceAuthorizationRequest(
 ): Promise<Response | null> {
   const pathname = new URL(request.url).pathname;
   const resolved = {
-    fetchImpl: options.fetchImpl ?? fetch,
+    // Wrapped, never stored bare: the callback calls this as
+    // `options.fetchImpl(...)`, and the Workers runtime refuses a `fetch`
+    // whose `this` is not the global scope ("Illegal invocation"). Stored bare,
+    // every token exchange threw, and every "Confirm it's you" ended as
+    // "Sign-in failed" with "OAuth token exchange failed." in the row.
+    fetchImpl: options.fetchImpl ?? ((input, init) => fetch(input, init)),
     now: options.now ?? Date.now,
     randomBytes: options.randomBytes ?? defaultRandomBytes,
     mintPairingGrant: options.mintPairingGrant,
