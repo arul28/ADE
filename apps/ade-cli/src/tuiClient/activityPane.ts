@@ -96,7 +96,7 @@ export function accountSessionLabel(state: AdeAccountSessionState): string | nul
  */
 export function reconnectOutcomeNotice(
   value: unknown,
-): { message: string; kind: "success" | "error" } {
+): { message: string; kind: "success" | "info" | "error" } {
   const result = readReconnectResult(value);
   if (!result) {
     return { kind: "error", message: "Couldn't reconnect this computer: the brain gave no result." };
@@ -109,7 +109,10 @@ export function reconnectOutcomeNotice(
     };
   }
   const outcome = describeReconnectOutcome(result);
-  return { kind: outcome.tone === "danger" ? "error" : "success", message: outcome.message };
+  // The notice has no warning tone. "Back on your account but not delivering
+  // yet" is unfinished, so it is info, not a success.
+  const kind = outcome.tone === "danger" ? "error" : outcome.tone === "warning" ? "info" : "success";
+  return { kind, message: outcome.message };
 }
 
 function nowIso(): string {

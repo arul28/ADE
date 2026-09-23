@@ -269,27 +269,6 @@ function doctorTimeout<T>(
   });
 }
 
-/**
- * The publish row's input from `sync.getStatus` `routeHealth.accountDirectory`.
- *
- * The runtime parser keeps only the publish state and timing. The fields that
- * name a directory refusal of this computer, and its date, are copied from the
- * raw record here; each is left out when the brain did not send it.
- */
-export function doctorPublishHealthFromSync(
-  raw: Record<string, unknown>,
-): DoctorInput["publishHealth"] {
-  const parsed = toDoctorPublishHealth(parseRuntimePublishHealth(raw));
-  if (!parsed) return null;
-  return {
-    ...parsed,
-    ...(typeof raw.lastHttpStatus === "number" ? { lastHttpStatus: raw.lastHttpStatus } : {}),
-    ...(typeof raw.lastHttpReason === "string" ? { lastHttpReason: raw.lastHttpReason } : {}),
-    ...(typeof raw.revokedAt === "string" ? { revokedAt: raw.revokedAt } : {}),
-    ...(typeof raw.recoveryGaveUpAt === "number" ? { recoveryGaveUpAt: raw.recoveryGaveUpAt } : {}),
-  };
-}
-
 function toDoctorPublishHealth(
   health: RuntimePublishHealth | null,
 ): DoctorInput["publishHealth"] {
@@ -1181,7 +1160,7 @@ export async function runDoctorCommand<Options extends DoctorCommandOptions>(
     ? syncRouteHealth.accountDirectory
     : null;
   const publishHealth = rawPublishHealth
-    ? doctorPublishHealthFromSync(rawPublishHealth)
+    ? toDoctorPublishHealth(parseRuntimePublishHealth(rawPublishHealth))
     : brainProbe.runtimePublishHealth;
   const relayHealth = syncRouteHealth && isRecord(syncRouteHealth.relay)
     ? syncRouteHealth.relay as DoctorInput["relayHealth"]

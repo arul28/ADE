@@ -520,5 +520,8 @@ describe("account-wide Activity pane", () => {
       kind: "success",
       message: "This computer is back on your account. Activity and alerts are delivering again.",
     });
+    // Back on the account but not delivering yet is unfinished, not a success.
+    expect(reconnectOutcomeNotice({ repaired: true, wasRevoked: true, pushRestored: false, state: "registered" }).kind)
+      .toBe("info");
   });
 });

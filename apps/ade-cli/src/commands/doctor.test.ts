@@ -4,7 +4,6 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   compareDoctorVersions,
-  doctorPublishHealthFromSync,
   doctorRuntimeStatusFromInitialize,
   evaluateDoctorRows,
   parseWindowsDesktopInstallProbe,
@@ -19,6 +18,7 @@ import type {
 } from "../services/diagnostics/storageEnvironmentProbe";
 import type { MachineAdeLayout } from "../services/projects/machineLayout";
 import { createSyncAccountDirectoryHealth } from "../../../desktop/src/shared/types/sync";
+import { parseRuntimePublishHealth } from "../../../desktop/src/shared/adeRuntimeProtocol";
 import { PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE } from "../services/account/accountMachinePublisherService";
 
 const NOW = Date.parse("2026-07-23T12:00:00.000Z");
@@ -384,9 +384,9 @@ describe("doctor row evaluation", () => {
 
   it("names the removal date and `ade machines reconnect` for a removed computer", () => {
     // The desktop banner says when the account removed this computer and that
-    // the automatic repair stopped. The runtime parser drops those fields, so
-    // the doctor reads them off the raw sync health.
-    const publishHealth = doctorPublishHealthFromSync({
+    // the automatic repair stopped. The shared runtime parser keeps those
+    // fields, so both doctor inputs (sync status and the brain probe) name them.
+    const publishHealth = parseRuntimePublishHealth({
       ...createSyncAccountDirectoryHealth(
         "http_error",
         "This machine was removed from your ADE account. Pair it again to reconnect.",
@@ -401,7 +401,7 @@ describe("doctor row evaluation", () => {
       revokedAt: "2026-07-17T09:30:00.000Z",
     });
     const input = healthyInput();
-    input.publishHealth = publishHealth;
+    input.publishHealth = publishHealth as typeof input.publishHealth;
 
     const publish = evaluateDoctorRows(input).find((row) => row.key === "publish");
 

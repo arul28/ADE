@@ -126,7 +126,11 @@ import {
   readThisMachineRefusalFromWire,
   thisMachineRefusalState,
 } from "./services/account/thisMachineRefusalText";
-import { describeReconnectOutcome, readReconnectResult } from "../../desktop/src/shared/reconnectOutcome";
+import {
+  describeReconnectOutcome,
+  readReconnectResult,
+  reconnectNeedsFreshSignIn,
+} from "../../desktop/src/shared/reconnectOutcome";
 import {
   IOS_SIMULATOR_ACCESSIBILITY_OPTIONS,
   IOS_SIMULATOR_CONTENT_SIZES,
@@ -273,11 +277,7 @@ import {
   inspectCredentialStoreHealth,
 } from "./services/credentials/credentialStore";
 import type { AccountMachinePublisherService } from "./services/account/accountMachinePublisherService";
-import {
-  ACCOUNT_PAIRING_AUTHENTICATION_REQUIRED_CODE,
-  PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE,
-  readMachineInventorySummary,
-} from "./services/account/accountMachinePublisherService";
+import { readMachineInventorySummary } from "./services/account/accountMachinePublisherService";
 import {
   getMachineProviderInstanceStore,
   resolveProviderInstanceForLaunch,
@@ -27264,13 +27264,10 @@ export function detectAccountLoginMode(args: {
  * code says the machine is simply revoked.
  */
 export function accountReconnectNeedsFreshSignIn(result: unknown): boolean {
-  if (!isRecord(result) || result.repaired === true) return false;
-  const reasonCode = asString(result.reasonCode)?.trim();
-  if (reasonCode) return reasonCode === ACCOUNT_PAIRING_AUTHENTICATION_REQUIRED_CODE;
-  // COMPATIBILITY SHIM — older brain only. A brain built before `reasonCode`
-  // existed says nothing but the sentence. Delete this branch, and the test
-  // pinning the sentence, once the supported brain floor carries the code.
-  return asString(result.reason)?.trim() === PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE;
+  // The shared rule, so `ade machines reconnect`, the desktop and `ade code`
+  // start the browser step for exactly the same results.
+  const parsed = readReconnectResult(result);
+  return parsed != null && reconnectNeedsFreshSignIn(parsed);
 }
 
 /**
