@@ -494,7 +494,7 @@ describe("chatLaunchService", () => {
     h.service.dispose();
 
     const events: ChatLaunchEvent[] = [];
-    const getChatTranscript = vi.fn(async () => ({ entries: [{ role: "user" }] }));
+    const getChatTranscript = vi.fn(async () => ({ entries: [{ role: "user" }, { role: "assistant" }] }));
     const reloaded = createChatLaunchService({
       ...h.deps,
       agentChatService: { ...h.deps.agentChatService, getChatTranscript },
@@ -506,6 +506,28 @@ describe("chatLaunchService", () => {
     expect(getChatTranscript).toHaveBeenCalledWith({ sessionId: LAUNCH_ID, limit: 20 });
     expect(h.deps.agentChatService.sendMessage).toHaveBeenCalledTimes(1);
     expect(h.deps.agentChatService.createSession).toHaveBeenCalledTimes(1);
+    reloaded.dispose();
+  });
+
+  it("Retry resends an opening prompt the provider never answered", async () => {
+    const h = harness();
+    const send = deferred<void>();
+    vi.mocked(h.deps.agentChatService.sendMessage).mockImplementationOnce(async () => send.promise);
+    await h.service.start(chatArgs());
+    await vi.waitFor(() => expect(h.laneCreateOptions).toBeDefined());
+    h.laneCreate.resolve(laneSummary());
+    await vi.waitFor(() => expect(h.deps.agentChatService.sendMessage).toHaveBeenCalledTimes(1));
+    h.service.dispose();
+
+    const reloaded = createChatLaunchService({
+      ...h.deps,
+      agentChatService: { ...h.deps.agentChatService, getChatTranscript: vi.fn(async () => ({ entries: [{ role: "user" }] })) },
+      emit: () => {},
+    });
+    await reloaded.retry({ launchId: LAUNCH_ID });
+    await vi.waitFor(() => expect(reloaded.get({ launchId: LAUNCH_ID })?.phase).toBe("completed"));
+    expect(h.deps.agentChatService.sendMessage).toHaveBeenCalledTimes(2);
+    expect(reloaded.get({ launchId: LAUNCH_ID })?.agentStarted).toBe(true);
     reloaded.dispose();
   });
 

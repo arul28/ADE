@@ -550,7 +550,9 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
   const openingMessageLanded = async (sessionId: string): Promise<boolean> => {
     try {
       const transcript = await deps.agentChatService.getChatTranscript?.({ sessionId, limit: 20 });
-      return transcript?.entries.some((entry) => entry.role === "user") ?? false;
+      // A user row alone proves nothing: providers persist it before they
+      // dispatch. An assistant reply means the provider took the prompt.
+      return transcript?.entries.some((entry) => entry.role === "assistant") ?? false;
     } catch {
       return false;
     }
@@ -574,11 +576,13 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       publish(record);
     }
     assertActive(record);
-    if (!record.messageSent && resumingSession && await openingMessageLanded(sessionId)) {
-      // A restart (or a send that failed after it reached the chat) lost the
-      // "sent" mark; the chat exists only for this launch, so a user message
-      // in it is the opening prompt. Never send it twice.
-      record.messageSent = true;
+    if (!record.messageSent && resumingSession) {
+      // A restart (or a send that failed after it reached the provider) lost
+      // the "sent" mark. The chat exists only for this launch, so a reply in
+      // it answers the opening prompt: never send that twice.
+      const landed = await openingMessageLanded(sessionId);
+      assertActive(record);
+      if (landed) record.messageSent = true;
     }
     if (!record.messageSent) {
       transcriptCard.arm(record);
