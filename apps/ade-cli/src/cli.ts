@@ -3,6 +3,10 @@
 // pull in `node:sqlite`, whose experimental-feature warning would otherwise
 // print on every single `ade` invocation. See ./lib/nodeWarnings.
 import "./lib/nodeWarnings";
+// Second on purpose: hands this run to $ADE_CLI_PATH when a shell rc put an
+// older `ade` first on PATH, before the rest of the bundle loads.
+import { pendingCliDelegation } from "./lib/cliDelegationEntry";
+import { isCliMainArgv } from "./lib/cliDelegation";
 import { Buffer } from "node:buffer";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -28654,7 +28658,7 @@ async function main(): Promise<void> {
   }
 }
 
-if (/(^|[/\\])cli\.(?:ts|js|cjs)$/.test(process.argv[1] ?? "")) {
+function runMainAndExit(): void {
   void main().finally(async () => {
     try {
       const { shutdownAllSharedProductAnalyticsServices } = await import(
@@ -28666,6 +28670,18 @@ if (/(^|[/\\])cli\.(?:ts|js|cjs)$/.test(process.argv[1] ?? "")) {
     }
     process.exit(typeof process.exitCode === "number" ? process.exitCode : 0);
   });
+}
+
+if (isCliMainArgv(process.argv[1])) {
+  // A started delegation exits this process with the child's status; it
+  // resolves false only when $ADE_CLI_PATH could not be launched.
+  if (pendingCliDelegation) {
+    void pendingCliDelegation.then((delegated) => {
+      if (!delegated) runMainAndExit();
+    });
+  } else {
+    runMainAndExit();
+  }
 }
 
 export {
