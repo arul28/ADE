@@ -424,6 +424,103 @@ final class WorkToolsContractTests: XCTestCase {
     XCTAssertEqual(WorkToolChip(kind: .appControl, label: "iPhone Mirroring").displayLabel, "iPhone Mirroring")
   }
 
+  private static func macDesktop(
+    supported: Bool = true,
+    display: Bool = true,
+    stream: WorkToolsMacDesktopStream? = nil,
+    leaseHolder: String? = nil
+  ) -> WorkToolsMacDesktopState {
+    WorkToolsMacDesktopState(
+      supported: supported,
+      display: display
+        ? WorkToolsMacDesktopDisplay(name: "ADE · fix-header", width: 2560, height: 1440, mode: "virtual")
+        : nil,
+      lease: leaseHolder.map { WorkToolsMacDesktopLease(holder: $0, holderLabel: "Fix the header") },
+      stream: stream
+    )
+  }
+
+  func testMacDesktopIsAChipOnlyWhileTheLaneHasADisplay() {
+    let chip = WorkToolChip(kind: .macDesktop, label: "Mac Desktop")
+    XCTAssertEqual(
+      workToolChips(state: WorkToolsLaneState(laneId: "lane-1", macDesktop: Self.macDesktop()), appleDevice: nil),
+      [chip])
+    XCTAssertEqual(chip.id, "mac-desktop")
+    XCTAssertEqual(chip.displayLabel, "Mac Desktop")
+    // No display yet, a host that cannot hold one, or no service at all.
+    XCTAssertNil(macDesktopToolChip(Self.macDesktop(display: false)))
+    XCTAssertNil(macDesktopToolChip(Self.macDesktop(supported: false)))
+    XCTAssertNil(macDesktopToolChip(nil))
+  }
+
+  func testMacDesktopChipIsLiveOnlyAtFullRateAndMarksAnAgentDriving() {
+    let live = macDesktopToolChip(Self.macDesktop(stream: WorkToolsMacDesktopStream(running: true, idle: false)))
+    XCTAssertEqual(live?.streamLive, true)
+    XCTAssertEqual(live?.agentDriving, false)
+    let idle = macDesktopToolChip(Self.macDesktop(stream: WorkToolsMacDesktopStream(running: true, idle: true)))
+    XCTAssertEqual(idle?.streamLive, false)
+    let stopped = macDesktopToolChip(Self.macDesktop(stream: WorkToolsMacDesktopStream(running: false, idle: false)))
+    XCTAssertEqual(stopped?.streamLive, false)
+    XCTAssertEqual(macDesktopToolChip(Self.macDesktop(leaseHolder: "agent"))?.agentDriving, true)
+    XCTAssertEqual(macDesktopToolChip(Self.macDesktop(leaseHolder: "user"))?.agentDriving, false)
+  }
+
+  func testChipsAreOrderedWithTheTwoWatchableScreensFirst() {
+    let state = WorkToolsLaneState(
+      laneId: "lane-1",
+      browser: Self.tabs(2),
+      appControl: WorkToolsAppControlState(appName: "Ghost", status: "attached", driver: "cdp"),
+      macDesktop: Self.macDesktop())
+    XCTAssertEqual(
+      workToolChips(state: state, appleDevice: Self.device("iPhone 16 Pro")).map(\.id),
+      ["simulator", "mac-desktop", "browser", "app-control"])
+  }
+
+  // MARK: - Mac Desktop viewer
+
+  func testViewerRibbonSaysWhoIsDrivingAndThisPhonesControlWins() {
+    let agent = WorkToolsMacDesktopLease(holder: "agent", holderLabel: "Fix the header")
+    let user = WorkToolsMacDesktopLease(holder: "user", holderLabel: "You")
+    XCTAssertEqual(
+      macDesktopViewerRibbon(controlling: false, lease: agent, displayName: "ADE · fix-header"),
+      "Watching · agent driving · ADE · fix-header")
+    // The snapshot lags a take by up to one poll; the phone's own control wins.
+    XCTAssertEqual(
+      macDesktopViewerRibbon(controlling: true, lease: agent, displayName: "ADE · fix-header"),
+      "Watching · you have control · ADE · fix-header")
+    XCTAssertEqual(
+      macDesktopViewerRibbon(controlling: false, lease: user, displayName: nil),
+      "Watching · someone else has control")
+    XCTAssertEqual(macDesktopViewerRibbon(controlling: false, lease: nil, displayName: "  "), "Watching")
+  }
+
+  func testViewerOverlayOffersReconnectOnlyWhenTheStreamIsDown() {
+    XCTAssertNil(macDesktopViewerOverlay(phase: .live, hasFrame: true, hostError: nil))
+    XCTAssertEqual(
+      macDesktopViewerOverlay(phase: .connecting, hasFrame: false, hostError: nil),
+      MacDesktopViewerOverlay(message: "Connecting to the Mac…", busy: true, offersReconnect: false))
+    XCTAssertEqual(
+      macDesktopViewerOverlay(phase: .connecting, hasFrame: true, hostError: nil)?.message,
+      "Reconnecting…")
+    XCTAssertEqual(
+      macDesktopViewerOverlay(phase: .ended(reason: "stopped", message: nil), hasFrame: true, hostError: nil),
+      MacDesktopViewerOverlay(message: "The stream stopped.", busy: false, offersReconnect: true))
+    // The Mac knows why its encoder quit; that beats the generic sentence.
+    XCTAssertEqual(
+      macDesktopViewerOverlay(
+        phase: .ended(reason: "stopped", message: nil),
+        hasFrame: false,
+        hostError: "Screen Recording was revoked.")?.message,
+      "Screen Recording was revoked.")
+    XCTAssertEqual(
+      macDesktopViewerOverlay(phase: .ended(reason: "display_destroyed", message: nil), hasFrame: false, hostError: nil)?
+        .message,
+      "This lane's desktop closed.")
+    XCTAssertEqual(
+      macDesktopViewerOverlay(phase: .failed("Nope"), hasFrame: false, hostError: nil),
+      MacDesktopViewerOverlay(message: "Nope", busy: false, offersReconnect: true))
+  }
+
   // MARK: - Handshake gating
 
   @MainActor
@@ -596,7 +693,8 @@ final class WorkToolsContractTests: XCTestCase {
           "caption": "click · Sign in",
           "screenshotPath": "/p/.ade/cache/mac-desktop-observations/lane-1/obs-1.png"
         },
-        "hostIsLocal": true
+        "hostIsLocal": true,
+        "recording": { "running": true, "startedAt": "2026-09-16T10:00:30.000Z" }
       },
       "capturedAt": "2026-09-16T10:01:01.000Z"
     }
@@ -613,6 +711,12 @@ final class WorkToolsContractTests: XCTestCase {
     XCTAssertEqual(macDesktop.windows?.first?.id, 11)
     XCTAssertEqual(macDesktop.stream?.running, true)
     XCTAssertEqual(macDesktop.stream?.idle, false)
+    XCTAssertEqual(macDesktop.stream?.fps, 30)
+    XCTAssertEqual(macDesktop.stream?.bitrateKbps, 2000)
+    XCTAssertNil(macDesktop.stream?.lastError)
+    XCTAssertEqual(
+      macDesktop.recording,
+      WorkToolsMacDesktopRecording(running: true, startedAt: "2026-09-16T10:00:30.000Z"))
     XCTAssertEqual(
       macDesktop.lastObservation?.screenshotPath,
       "/p/.ade/cache/mac-desktop-observations/lane-1/obs-1.png")
@@ -658,6 +762,8 @@ final class WorkToolsContractTests: XCTestCase {
     let state = try JSONDecoder().decode(WorkToolsLaneState.self, from: unsupported)
     XCTAssertEqual(state.macDesktop?.supported, false)
     XCTAssertNil(state.macDesktop?.display)
+    // An older host sends no recording key at all; that reads as "not recording".
+    XCTAssertNil(state.macDesktop?.recording)
     XCTAssertEqual(macDesktopLeaseLine(nil), "Nobody has taken control.")
   }
 

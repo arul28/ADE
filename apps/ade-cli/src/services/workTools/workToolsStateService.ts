@@ -448,6 +448,11 @@ function summarizeMacDesktop(
     // the wire at all. Copied out of the tracking list so a later mutation of
     // it cannot reach a published state object.
     notParked: macDesktopVisibleNotParked(notParked, Date.now()),
+    // Running and start time only; the file path is host-absolute and the
+    // caption is proof metadata, neither of which a viewer needs.
+    recording: status.recording
+      ? { running: status.recording.running, startedAt: status.recording.startedAt }
+      : null,
   };
 }
 

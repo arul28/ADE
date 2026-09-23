@@ -13,6 +13,9 @@ enum WorkToolChipKind: Equatable {
   case browser
   /// What App Control is attached to. Opens `WorkToolsSheet`.
   case appControl
+  /// The lane's private macOS screen, while it has one. Opens
+  /// `MacDesktopViewer`.
+  case macDesktop
 }
 
 struct WorkToolChip: Equatable, Identifiable {
@@ -20,6 +23,10 @@ struct WorkToolChip: Equatable, Identifiable {
   let label: String
   /// Browser chip only: a chat in this lane is driving the browser right now.
   var agentUsingBrowser: Bool = false
+  /// Mac Desktop chip only: frames are flowing at full rate.
+  var streamLive: Bool = false
+  /// Mac Desktop chip only: an agent holds the lane screen's input lease.
+  var agentDriving: Bool = false
 
   /// The text on the chip. The simulator chip already shows the device icon,
   /// so it drops the family word: "iPhone 16 Pro" shows as "16 Pro". VoiceOver
@@ -34,15 +41,20 @@ struct WorkToolChip: Equatable, Identifiable {
     case .simulator: return "simulator"
     case .browser: return "browser"
     case .appControl: return "app-control"
+    case .macDesktop: return "mac-desktop"
     }
   }
 }
 
 /// The lane's tool chips for the chat's floating badge row, in order:
-/// simulator, browser, App Control.
+/// simulator, Mac Desktop, browser, App Control. The two screens the phone can
+/// watch lead.
 ///
 /// - Simulator: only while the lane's device is up (`appleDeviceRunningName`).
 ///   A device the lane keeps after Shut down is not advertised.
+/// - Mac Desktop: only while the lane holds a display on a host that can host
+///   one. Live dot while frames flow at full rate; accent while an agent
+///   drives it.
 /// - Browser: when the desktop browser has tabs ("1 tab" / "N tabs"), or when
 ///   an agent is driving it with none listed ("Browser") — an agent on the
 ///   browser was always reason enough to surface it.
@@ -51,6 +63,9 @@ func workToolChips(state: WorkToolsLaneState?, appleDevice: AppleDeviceStatus?) 
   var chips: [WorkToolChip] = []
   if let name = appleDeviceRunningName(appleDevice) {
     chips.append(WorkToolChip(kind: .simulator(family: appleDevice?.device?.family), label: name))
+  }
+  if let chip = macDesktopToolChip(state?.macDesktop) {
+    chips.append(chip)
   }
   let tabCount = state?.browser?.tabs.count ?? 0
   let agentUsingBrowser = workToolsAgentIsUsingBrowser(state)
@@ -68,6 +83,20 @@ func workToolChips(state: WorkToolsLaneState?, appleDevice: AppleDeviceStatus?) 
     chips.append(WorkToolChip(kind: .appControl, label: appName))
   }
   return chips
+}
+
+/// The Mac Desktop chip, or nil when the lane has no screen to show. A host
+/// that cannot hold a display (`supported: false`) and a lane that has not
+/// created one both read as "nothing to open".
+func macDesktopToolChip(_ macDesktop: WorkToolsMacDesktopState?) -> WorkToolChip? {
+  guard let macDesktop, macDesktop.supported, macDesktop.display != nil else { return nil }
+  let stream = macDesktop.stream
+  return WorkToolChip(
+    kind: .macDesktop,
+    label: "Mac Desktop",
+    streamLive: stream?.running == true && stream?.idle != true,
+    agentDriving: macDesktop.lease?.holder == "agent"
+  )
 }
 
 /// Whether a chat in this lane is driving the browser right now. Derived on the
@@ -131,6 +160,8 @@ final class WorkLaneToolsModel: ObservableObject {
   @Published private(set) var chips: [WorkToolChip] = []
   /// Handed to `AppleDeviceViewer` as its first frame of state. Not published.
   private(set) var appleStatus: AppleDeviceStatus?
+  /// Handed to `MacDesktopViewer` the same way. Not published.
+  private(set) var macDesktopState: WorkToolsMacDesktopState?
   /// True while the tools sheet or the device viewer is up. Both poll the same
   /// reads faster and are the authoritative view, so a tick here would be a
   /// duplicate RPC for chips nobody can see. The next tick after dismissal
@@ -140,6 +171,7 @@ final class WorkLaneToolsModel: ObservableObject {
   func run(laneId: String, syncService: SyncService) async {
     chips = []
     appleStatus = nil
+    macDesktopState = nil
     let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return }
     await refresh(laneId: trimmed, syncService: syncService)
@@ -166,6 +198,7 @@ final class WorkLaneToolsModel: ObservableObject {
     let (tools, apple) = await (nextState, nextApple)
     guard !Task.isCancelled else { return }
     appleStatus = apple
+    macDesktopState = tools?.macDesktop
     let next = workToolChips(state: tools, appleDevice: apple)
     if next != chips { chips = next }
   }
@@ -174,6 +207,7 @@ final class WorkLaneToolsModel: ObservableObject {
   /// Fixture seam for previews and simulator screenshots.
   func installPreview(state: WorkToolsLaneState?, appleStatus: AppleDeviceStatus?) {
     self.appleStatus = appleStatus
+    macDesktopState = state?.macDesktop
     chips = workToolChips(state: state, appleDevice: appleStatus)
   }
   #endif
@@ -207,8 +241,8 @@ struct WorkLaneToolChipView: View {
       Text(chip.displayLabel)
         .font(.caption.weight(.semibold))
         .lineLimit(1)
-      if case .simulator = chip.kind {
-        // The device is up: a small live dot, the one colour on the chip.
+      if showsLiveDot {
+        // The device is up, or the desktop is streaming: a small live dot.
         Circle()
           .fill(ADEColor.success)
           .frame(width: 6, height: 6)
@@ -222,13 +256,23 @@ struct WorkLaneToolChipView: View {
     case .simulator(let family): return family == "ipad" ? "ipad" : "iphone"
     case .browser: return "globe"
     case .appControl: return "macwindow"
+    case .macDesktop: return "desktopcomputer"
     }
   }
 
-  /// Neutral by default; the browser chip takes the accent while an agent is
-  /// driving it, which is the signal the old Tools row carried as a globe.
+  private var showsLiveDot: Bool {
+    switch chip.kind {
+    case .simulator: return true
+    case .macDesktop: return chip.streamLive
+    case .browser, .appControl: return false
+    }
+  }
+
+  /// Neutral by default; the browser and Mac Desktop chips take the accent
+  /// while an agent is driving them, which is the signal the old Tools row
+  /// carried as a globe.
   private var tint: Color {
-    chip.agentUsingBrowser ? ADEColor.accent : ADEColor.textSecondary
+    chip.agentUsingBrowser || chip.agentDriving ? ADEColor.accent : ADEColor.textSecondary
   }
 
   private var accessibilityText: String {
@@ -242,6 +286,11 @@ struct WorkLaneToolChipView: View {
         : "\(base). Tap for details."
     case .appControl:
       return "App Control on your Mac, \(chip.label). Tap for details."
+    case .macDesktop:
+      var text = "This lane's Mac Desktop"
+      if chip.streamLive { text += ", live" }
+      if chip.agentDriving { text += ". An agent is driving it" }
+      return text + ". Tap to watch."
     }
   }
 }

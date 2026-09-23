@@ -6585,6 +6585,19 @@ struct MacDesktopControlLease: Codable, Equatable {
 struct WorkToolsMacDesktopStream: Codable, Equatable {
   var running: Bool
   var idle: Bool
+  /// The encoder's current rate and bitrate, and the host's own last capture
+  /// error. All optional: an older snapshot, or one from a test fixture, may
+  /// omit them, and none of them decides whether the tool is shown.
+  var fps: Double?
+  var bitrateKbps: Double?
+  var lastError: String?
+}
+
+/// Whether the lane's screen is being recorded right now. The host keeps the
+/// file path and caption to itself; `startedAt` is ISO-8601 when present.
+struct WorkToolsMacDesktopRecording: Codable, Equatable {
+  var running: Bool
+  var startedAt: String?
 }
 
 /// The newest frame captured on the lane's screen. `screenshotPath` is opaque
@@ -6616,6 +6629,8 @@ struct WorkToolsMacDesktopState: Codable, Equatable {
   /// Newest first, at most three. Absent from an older host, which is not the
   /// same as "nothing is stranded" — it is "this host cannot say".
   var notParked: [WorkToolsMacDesktopNotParked]?
+  /// Absent from an older host; nil reads as "not recording".
+  var recording: WorkToolsMacDesktopRecording?
 }
 
 struct WorkToolsObservationPreview: Codable, Equatable {

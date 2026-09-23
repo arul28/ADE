@@ -486,6 +486,7 @@ struct WorkChatSessionView: View {
   @StateObject private var laneTools = WorkLaneToolsModel()
   @State private var laneToolsSheetPresented = false
   @State private var appleViewerPresented = false
+  @State private var macDesktopViewerPresented = false
   #if DEBUG
   /// Fixture seam: installs these chips instead of polling the sync socket.
   var previewLaneTools: WorkLaneToolsPreview? = nil
@@ -1876,7 +1877,7 @@ struct WorkChatSessionView: View {
         guard !isPersonalChat else { return }
         await laneTools.run(laneId: session.laneId, syncService: syncService)
       }
-      .onChange(of: laneToolsSheetPresented || appleViewerPresented) { _, presented in
+      .onChange(of: laneToolsSheetPresented || appleViewerPresented || macDesktopViewerPresented) { _, presented in
         laneTools.paused = presented
       }
       .sheet(isPresented: $laneToolsSheetPresented) {
@@ -1889,6 +1890,9 @@ struct WorkChatSessionView: View {
       .fullScreenCover(isPresented: $appleViewerPresented) {
         AppleDeviceViewer(laneId: session.laneId, initialStatus: laneTools.appleStatus)
       }
+      .fullScreenCover(isPresented: $macDesktopViewerPresented) {
+        MacDesktopViewer(laneId: session.laneId, initialState: laneTools.macDesktopState)
+      }
   }
 
   private func openLaneToolChip(_ chip: WorkToolChip) {
@@ -1896,6 +1900,14 @@ struct WorkChatSessionView: View {
     switch chip.kind {
     case .simulator:
       appleViewerPresented = true
+    case .macDesktop:
+      // A host without the live stream can still describe the screen; the
+      // sheet shows its last still instead of a viewer that could only fail.
+      if syncService.supportsMacDesktopStream {
+        macDesktopViewerPresented = true
+      } else {
+        laneToolsSheetPresented = true
+      }
     case .browser, .appControl:
       laneToolsSheetPresented = true
     }

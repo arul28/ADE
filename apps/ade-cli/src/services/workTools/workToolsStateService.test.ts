@@ -707,6 +707,30 @@ describe("workToolsStateService", () => {
       service.dispose();
     });
 
+    it("carries only whether the lane is recording and since when", async () => {
+      let recording: MacDesktopStatus["recording"] = null;
+      const mac = macService(() => macStatus({ recording }));
+      const service = createWorkToolsStateService({ projectRoot, macDesktopService: mac.reader });
+      expect((await service.getLaneState({ laneId: "lane-1" })).macDesktop?.recording).toBeNull();
+
+      recording = {
+        laneId: "lane-1",
+        running: true,
+        startedAt: "2026-01-02T00:00:00.000Z",
+        filePath: "/Users/someone/private/rec.mp4",
+        durationMs: null,
+        caption: "Proof caption",
+      };
+      const live = await service.getLaneState({ laneId: "lane-1" });
+      // The host path and the caption never cross the wire.
+      expect(live.macDesktop?.recording).toEqual({ running: true, startedAt: "2026-01-02T00:00:00.000Z" });
+
+      recording = { ...recording, running: false, filePath: "/Users/someone/private/rec.mp4", durationMs: 4000 };
+      const stopped = await service.getLaneState({ laneId: "lane-1" });
+      expect(stopped.macDesktop?.recording).toEqual({ running: false, startedAt: "2026-01-02T00:00:00.000Z" });
+      service.dispose();
+    });
+
     it("re-derives from the observation event rather than polling for frames", async () => {
       const mac = macService(() => macStatus());
       const service = createWorkToolsStateService({ projectRoot, macDesktopService: mac.reader });

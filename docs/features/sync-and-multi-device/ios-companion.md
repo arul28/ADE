@@ -3043,6 +3043,39 @@ phone never polls a still while a session is mounted. The phone never calls
 `macDesktop.start`/`stop` and sends no input; the lease line and the sheet's
 "Control from the desktop" line still apply.
 
+#### Mac Desktop chip, card, and full-screen viewer
+
+The Mac Desktop is shaped like the Apple device on the phone. The chat's
+badge row gets a `desktopcomputer` **Mac Desktop chip** (`WorkToolChipKind.macDesktop`)
+from the same 10 s `workTools.getLaneState` poll — no new RPC — shown only
+while `macDesktop.supported` is true and the lane has a `display`. It carries
+the green live dot while `stream.running && !stream.idle` and takes the accent
+tint while an agent holds the lease. Chips order: simulator, Mac Desktop,
+browser, App Control. Tapping it opens `MacDesktopViewer` when the host
+advertises the stream, else the tools sheet.
+
+In the tools sheet the card now sits directly under the Apple card: a
+subtitle of "W × H · bitrate · fps" (rate only while streaming), a chips row
+(display name, window count, a danger **Recording** badge), the inline live
+picture as the stage with a white-on-dark **Live**/**Idle** capsule, the host's
+`stream.lastError` line, the lease ribbon ("Agent driving · <chat>"), the
+parked windows, and a **Watch** button. Inline Take control / Return stays.
+
+`MacDesktopViewer.swift` is the full-screen view: Close and Reconnect on top,
+the same `MacDesktopControlPicture` (Take control / Return included) on black,
+a status card with Reconnect when the stream stops or fails (the host's
+`lastError` wins over the generic sentence), and a footer
+"Watching · agent driving | you have control | someone else has control ·
+<display name>" plus a **Recording** label. It polls the lane state every 3 s
+and subscribes under its own id (`…-mac-desktop-viewer-<lane>`); the sheet
+stops its inline subscription and poll while the viewer is up, which also
+unmounts the inline picture and hands back any control it held.
+
+The wire gained `macDesktop.recording` (`{ running, startedAt }`, optional —
+an older host omits it and the phone reads "not recording"); the phone also
+now decodes the `fps`, `bitrateKbps` and `lastError` the stream summary
+already carried.
+
 
 ### The Proof sheet and viewer
 

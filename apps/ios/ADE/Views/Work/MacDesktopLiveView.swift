@@ -528,6 +528,9 @@ struct MacDesktopLiveView: UIViewRepresentable {
 struct MacDesktopLivePicture: View {
   @ObservedObject var session: MacDesktopLiveSession
   var placeholder: UIImage?
+  /// False when the host view draws its own status over the picture (the
+  /// full-screen viewer), so the same sentence is not shown twice.
+  var showsWaitingStatus: Bool = true
 
   var body: some View {
     ZStack {
@@ -537,7 +540,7 @@ struct MacDesktopLivePicture: View {
           Image(uiImage: placeholder)
             .resizable()
             .scaledToFit()
-        } else {
+        } else if showsWaitingStatus {
           waitingSurface
         }
       }
@@ -711,6 +714,11 @@ struct MacDesktopControlPicture: View {
   let display: WorkToolsMacDesktopDisplay
   var session: MacDesktopLiveSession?
   var placeholder: UIImage?
+  /// Passed to `MacDesktopLivePicture.showsWaitingStatus`.
+  var showsPictureStatus: Bool = true
+  /// Told whenever this picture takes or gives back control, so a host view
+  /// can say "you have control" without owning the lease itself.
+  var onControlChange: ((Bool) -> Void)?
 
   @EnvironmentObject private var syncService: SyncService
   @Environment(\.scenePhase) private var scenePhase
@@ -750,6 +758,7 @@ struct MacDesktopControlPicture: View {
         }
         .onChange(of: controlling) { _, next in
           focused = next
+          onControlChange?(next)
         }
       controls
     }
@@ -785,7 +794,7 @@ struct MacDesktopControlPicture: View {
   @ViewBuilder
   private var pictureBody: some View {
     if let session {
-      MacDesktopLivePicture(session: session, placeholder: placeholder)
+      MacDesktopLivePicture(session: session, placeholder: placeholder, showsWaitingStatus: showsPictureStatus)
     } else if let placeholder {
       Image(uiImage: placeholder)
         .resizable()

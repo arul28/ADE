@@ -244,6 +244,20 @@ export type WorkToolsMacDesktopState = {
    * must read it as `notParked ?? []` rather than as "none stranded".
    */
   notParked?: MacDesktopNotParked[];
+  /**
+   * Whether a recording of the lane's screen is being written right now, and
+   * since when. Only the two fields a viewer shows: the file path and caption
+   * stay on the host.
+   *
+   * Optional on the wire: an older daemon publishes no such field, and a client
+   * reads its absence as "not recording".
+   */
+  recording?: WorkToolsMacDesktopRecording | null;
+};
+
+export type WorkToolsMacDesktopRecording = {
+  running: boolean;
+  startedAt: string | null;
 };
 
 export type WorkToolsLaneState = {
