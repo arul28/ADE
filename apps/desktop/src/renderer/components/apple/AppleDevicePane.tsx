@@ -795,35 +795,50 @@ export function AppleDevicePane({
       case "live":
       default:
         return (
-          <AppleDeviceStage
-            streamUrl={stream.url}
-            streamToken={stream.token}
-            reconnectNonce={stream.reconnectNonce}
-            mode={effectiveMode}
-            viewNonce={viewNonce}
-            family={familyOf(laneDevice)}
-            deviceTypeName={deviceName}
-            deviceTypeIdentifier={deviceTypeIdentifier}
-            orientation={orientation}
-            devicePointSize={stream.devicePointSize}
-            interactive={appleInputAllowed(state)}
-            onDeviceInput={input.send}
-            onDeviceScroll={input.scroll}
-            onDeviceKey={input.key}
-            onReaderStatus={stream.handleReaderStatus}
-            onDimensions={stream.handleDimensions}
-            onFrame={stream.noteFrame}
-            frameVersion={stream.frameVersion}
-            onThreeUnavailable={handleThreeUnavailable}
-            renderScreenOverlay={renderInspectOverlay}
-            className={cn("bg-transparent", state === "video-lost" && "opacity-40")}
-          >
+          <>
+            <AppleDeviceStage
+              streamUrl={stream.url}
+              streamToken={stream.token}
+              reconnectNonce={stream.reconnectNonce}
+              mode={effectiveMode}
+              viewNonce={viewNonce}
+              family={familyOf(laneDevice)}
+              deviceTypeName={deviceName}
+              deviceTypeIdentifier={deviceTypeIdentifier}
+              orientation={orientation}
+              devicePointSize={stream.devicePointSize}
+              interactive={appleInputAllowed(state)}
+              onDeviceInput={input.send}
+              onDeviceScroll={input.scroll}
+              onDeviceKey={input.key}
+              onReaderStatus={stream.handleReaderStatus}
+              onDimensions={stream.handleDimensions}
+              onFrame={stream.noteFrame}
+              frameVersion={stream.frameVersion}
+              onThreeUnavailable={handleThreeUnavailable}
+              renderScreenOverlay={renderInspectOverlay}
+              className={cn(
+                "bg-transparent",
+                (state === "video-lost" || state === "stopped") && "opacity-40",
+              )}
+            />
+            {/*
+              An OFF device is a dimmed body with one quiet word on it. It used
+              to carry the Apple logo, which is what a booting device shows, so a
+              powered-off lane device read as one that was about to come up. The
+              label sits outside the stage so the dimming does not fade it too.
+            */}
             {state === "stopped" ? (
-              <div className="pointer-events-none absolute inset-0 grid place-items-center">
-                <AppleLogo size={72} className="text-fg/10" />
+              <div
+                data-apple-off-screen=""
+                className="pointer-events-none absolute inset-0 grid place-items-center"
+              >
+                <span className="rounded-full border border-border bg-surface px-3 py-1 font-sans text-xs text-muted-fg">
+                  Off
+                </span>
               </div>
             ) : null}
-          </AppleDeviceStage>
+          </>
         );
     }
   }
@@ -876,6 +891,10 @@ export function AppleDevicePane({
             sentence={`${deviceName} is off.`}
             actionLabel="Start"
             onAction={restart}
+            /* The same inline confirm the rail's "Switch device…" opens:
+               nothing is deleted or detached until the person says so. */
+            secondaryActionLabel="Choose another device"
+            onSecondaryAction={() => setConfirmSwitch(true)}
           />
         )
         /* §A1: the ONE sentence a fallback to flat is allowed to say. */
