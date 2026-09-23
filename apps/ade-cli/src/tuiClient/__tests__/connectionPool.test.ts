@@ -166,6 +166,21 @@ describe("buildMachinePickerRows", () => {
     });
     expect(rows[1]?.detail).toBe("account · online · plugged in");
   });
+
+  // Two installs on one Mac share a hostname. The row names the install, as
+  // the desktop's account rows do; the hop still matches the bare name.
+  it("names the install beside the machine and keeps the bare name for the hop", () => {
+    const rows = buildMachinePickerRows({
+      localLabel: "this machine",
+      localProjectRoot: "/repos/ADE",
+      pooled: [],
+      targets: [],
+      accountMachines: [machine({ name: "MacBook Pro · Alpha", channel: "alpha", adeHome: "~/.ade-alpha" })],
+      activeMachineKey: LOCAL_MACHINE_KEY,
+    });
+    expect(rows[1]?.label).toBe("MacBook Pro · ADE Alpha");
+    expect(rows[1]?.query.name).toBe("MacBook Pro · Alpha");
+  });
 });
 
 describe("rankProjectsForPicker", () => {

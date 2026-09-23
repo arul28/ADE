@@ -41,6 +41,7 @@ import type {
 import {
   LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
   MAX_CHAT_ATTACHMENT_BYTES,
+  maxBase64EncodedLength,
 } from "../shared/chatAttachmentLimits";
 import {
   type AttentionAcknowledgmentOutcome,
@@ -2007,6 +2008,79 @@ function callPinnedOrBoundRuntimeActionOr<T>(
 ): Promise<T> {
   if (pin) return callPinnedRuntimeAction<T>(pin, domain, action, request);
   return callProjectRuntimeActionOr<T>(domain, action, request, local);
+}
+
+/** How a paired machine takes attachments; see `agentChat.getAttachmentStagingMode`. */
+async function readRemoteAttachmentStagingMode(targetId: string): Promise<ChatAttachmentStagingMode> {
+  const capability = (await ipcRenderer.invoke(
+    IPC.remoteRuntimeAttachmentUploadCapability,
+    { id: targetId },
+  )) as ChatAttachmentStagingMode | null;
+  if (capability?.mode === "upload" || capability?.mode === "base64") {
+    return capability;
+  }
+  return { mode: "base64", maxBytes: LEGACY_MAX_CHAT_ATTACHMENT_BYTES };
+}
+
+/**
+ * The paired machine that owns an attachment, or null when it is not a paired
+ * machine. No pin means the machine this window is bound to.
+ */
+async function resolveRemoteUploadBinding(
+  pin: OpenProjectBinding | null | undefined,
+): Promise<Extract<OpenProjectBinding, { kind: "remote" }> | null> {
+  if (pin) return pin.kind === "remote" ? pin : null;
+  // During a project switch the command path decides, because it raises the
+  // switching error.
+  if (projectRuntimeTransitionDepth > 0) return null;
+  return await getRemoteProjectBinding();
+}
+
+/**
+ * Stage attachment bytes on a paired machine through the streamed upload
+ * route, when that machine takes it.
+ *
+ * Without this, `saveTempAttachment` sends the whole image inside one runtime
+ * command. That command is the one leg a remote paste takes and a local paste
+ * does not. Picked files already stream (`stageFileAttachment`), so this puts
+ * pasted bytes (a terminal's clipboard image, a composer screenshot) on the
+ * same route.
+ *
+ * Returns null when the machine only takes the command, so the caller uses the
+ * command. A failed upload also returns null, but only for a payload the
+ * command can carry. A larger one would only be refused again with the
+ * command's 10 MB reason, or overflow the host's RPC buffer, so the upload's
+ * own error is thrown instead.
+ */
+async function uploadAttachmentBytesToRemote(
+  pin: OpenProjectBinding | null | undefined,
+  args: { data: string; filename: string },
+): Promise<{ path: string } | null> {
+  const binding = await resolveRemoteUploadBinding(pin);
+  if (!binding) return null;
+  let mode: ChatAttachmentStagingMode;
+  try {
+    mode = await readRemoteAttachmentStagingMode(binding.targetId);
+  } catch {
+    return null;
+  }
+  if (mode.mode !== "upload") return null;
+  try {
+    return (await ipcRenderer.invoke(IPC.remoteRuntimeUploadChatAttachment, {
+      id: binding.targetId,
+      projectId: binding.projectId,
+      data: args.data,
+      filename: args.filename,
+      maxBytes: mode.maxBytes,
+    })) as { path: string };
+  } catch (error) {
+    if (args.data.length > maxBase64EncodedLength(LEGACY_MAX_CHAT_ATTACHMENT_BYTES)) throw error;
+    console.warn("[ade-attachments] Streamed upload failed; sending the bytes in the runtime command instead.", {
+      targetId: binding.targetId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
 }
 
 async function readLegacySyncStatuses(
@@ -7491,10 +7565,13 @@ const adeBridge = {
         filename: string;
       },
       pin?: OpenProjectBinding | null,
-    ): Promise<{ path: string }> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "chat", "saveTempAttachment", { args }, () =>
+    ): Promise<{ path: string }> => {
+      const uploaded = await uploadAttachmentBytesToRemote(pin, args);
+      if (uploaded) return uploaded;
+      return await callPinnedOrBoundRuntimeActionOr(pin, "chat", "saveTempAttachment", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatSaveTempAttachment, args),
-      ),
+      );
+    },
     /**
      * How a staged attachment reaches the machine that owns this chat, and how
      * large it may be. The composer asks once per batch and routes on the
@@ -7511,14 +7588,7 @@ const adeBridge = {
         // decided here and every other mode comes back ready to use.
         return { mode: "copy", maxBytes: MAX_CHAT_ATTACHMENT_BYTES };
       }
-      const capability = (await ipcRenderer.invoke(
-        IPC.remoteRuntimeAttachmentUploadCapability,
-        { id: pin.targetId },
-      )) as ChatAttachmentStagingMode | null;
-      if (capability?.mode === "upload" || capability?.mode === "base64") {
-        return capability;
-      }
-      return { mode: "base64", maxBytes: LEGACY_MAX_CHAT_ATTACHMENT_BYTES };
+      return await readRemoteAttachmentStagingMode(pin.targetId);
     },
     /**
      * Stage a file that exists on this machine's disk without reading it into

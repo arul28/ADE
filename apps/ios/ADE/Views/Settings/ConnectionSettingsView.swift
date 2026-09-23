@@ -844,7 +844,7 @@ struct SettingsMachinesSection: View {
         key: (machine.deviceId ?? machine.machineKey).lowercased(),
         entry: Entry(
           id: "account-\(machine.id)",
-          name: machine.displayName,
+          name: machine.rowLabel,
           // Route-neutral to match the saved rows below; the route kind stays
           // in the Connection details section, never on the primary list.
           routeHint: accountMachineDetailLine(

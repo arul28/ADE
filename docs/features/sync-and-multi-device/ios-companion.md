@@ -337,7 +337,9 @@ apps/ios/
 │   │   │                              # precise account-not-found fallback and
 │   │   │                              # matching attempt verification
 │   │   ├── AccountDirectory.swift   # account machine directory list/rename +
-│   │   │                            # Attention relay clients
+│   │   │                            # install labels (channel/adeHome →
+│   │   │                            # installLabel/rowLabel) + Attention relay
+│   │   │                            # clients
 │   │   ├── Database.swift           # SQLite + pure-SQL CRR + offline caches
 │   │   ├── KeychainService.swift    # per-host pairing secrets, stable device
 │   │   │                            # identity, and SSH credential storage
@@ -1104,6 +1106,20 @@ button and `SettingsMachineRenameSheet`; **Use hostname** clears `customName`
 instead of copying the hostname into it. `AccountService` updates the in-memory
 directory record after the authenticated PATCH, so the machine rows, connection
 header, and Hub pill refresh without reconnecting.
+
+A record can also say which ADE install it is. `AccountMachine` decodes the
+optional `channel` (`AccountMachineInstallChannel`: stable, beta, alpha) and
+`adeHome` (for example `~/.ade-alpha`, at most 120 characters). An unknown
+channel or a bad home drops only the install label, never the machine.
+`installLabel` is "ADE Alpha", or the ADE home when there is no channel.
+`rowLabel` follows the desktop's `accountMachineRowLabel`: the display name
+plus the install ("MacBook Pro · ADE Alpha"), with the host's own " · Alpha"
+suffix removed so it does not show twice. A custom name is kept as typed. Two
+installs on one Mac share a hostname, and this label is what tells them apart.
+The account connections list, the Hub quick-connect rows, and the Settings
+connection rows show `rowLabel`. Rename fields and name matching keep
+`displayName`. `MachineRowView` truncates its title in the middle, so the
+install at the end stays visible.
 
 Primary machine rows state only facts they can prove:
 

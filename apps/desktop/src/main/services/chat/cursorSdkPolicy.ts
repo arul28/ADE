@@ -701,3 +701,15 @@ export function approvalPolicyLabel(policy: CursorSdkApprovalPolicy): string {
   if (policy === "read-only") return "Read-only";
   return "On request";
 }
+
+/**
+ * How long a Cursor SDK worker gets to exit after it is asked to, before it is
+ * killed: after dispose in the pool, and after SIGTERM (or the first taskkill)
+ * in the orphan sweep.
+ *
+ * Named rather than left to `terminateChildProcessTree`'s default, because the
+ * pool's replacement wait is derived from it: two independent numbers would
+ * drift, and the drift is only observable as a failed turn an hour into a
+ * session.
+ */
+export const CURSOR_SDK_KILL_ESCALATION_MS = 1_500;

@@ -66,6 +66,7 @@ import { effectiveCursorModeId } from "../../desktop/src/shared/cursorModes";
 import {
   accountMachineDisplayName,
   accountMachineConnectionState,
+  accountMachineRowLabel,
   parseAccountMachine,
 } from "../../desktop/src/shared/accountDirectory";
 import {
@@ -118,6 +119,18 @@ import {
 } from "../../desktop/src/renderer/lib/terminalAttention";
 import { deriveGithubAccountAuthState } from "../../desktop/src/renderer/lib/githubIntegrationStatus";
 import type { GitHubAppUserAuthStatus } from "../../desktop/src/shared/types";
+import { ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION } from "../../desktop/src/shared/types/account";
+import {
+  describeThisMachineRefusal,
+  parseThisMachineRefusal,
+  readThisMachineRefusalFromWire,
+  thisMachineRefusalState,
+} from "./services/account/thisMachineRefusalText";
+import {
+  describeReconnectOutcome,
+  readReconnectResult,
+  reconnectNeedsFreshSignIn,
+} from "../../desktop/src/shared/reconnectOutcome";
 import {
   IOS_SIMULATOR_ACCESSIBILITY_OPTIONS,
   IOS_SIMULATOR_CONTENT_SIZES,
@@ -264,11 +277,7 @@ import {
   inspectCredentialStoreHealth,
 } from "./services/credentials/credentialStore";
 import type { AccountMachinePublisherService } from "./services/account/accountMachinePublisherService";
-import {
-  ACCOUNT_PAIRING_AUTHENTICATION_REQUIRED_CODE,
-  PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE,
-  readMachineInventorySummary,
-} from "./services/account/accountMachinePublisherService";
+import { readMachineInventorySummary } from "./services/account/accountMachinePublisherService";
 import {
   getMachineProviderInstanceStore,
   resolveProviderInstanceForLaunch,
@@ -381,6 +390,7 @@ type FormatterId =
   | "account-machines"
   | "account-machine-rename"
   | "account-machine-remove"
+  | "account-machine-reconnect"
   | "projects-list"
   | "linear-quick-view"
   | "lanes"
@@ -2163,8 +2173,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
   \`remove\` takes a machine off the account, revokes it, and clears the Activity
   it published — one request, so a failure to clear Activity is reported as a
   failed removal you can retry rather than as a clean one. It is destructive and
-  requires \`--confirm REMOVE\`. The removed machine can only rejoin by signing in
-  again on it (see \`reconnect\`); nothing this machine runs can bring it back.
+  requires \`--confirm REMOVE\`. The removed machine can only rejoin when someone
+  confirms it on that computer (see \`reconnect\`); nothing this machine runs can
+  bring it back.
 
   \`reconnect\` re-pairs THIS machine after it was removed from the account
   (takes no selector). Removal is terminal by design — heartbeats never
@@ -16736,7 +16747,19 @@ function buildCliPlan(
       // This first-party typed command intentionally shows the operator their
       // account identity; generic agent actions keep the redacted status view.
       connectRole: "cto",
-      steps: [accountActionStep("result", "status")],
+      steps: [
+        accountActionStep("result", "status"),
+        // A signed-in computer the account removed still says "Signed in".
+        // The desktop shows that refusal in a banner, so read it here too.
+        // Optional: an older brain or a slow sync read must not fail the
+        // sign-in answer.
+        {
+          key: "thisComputer",
+          method: "sync.getStatus",
+          params: { includeTransferReadiness: false },
+          optional: true,
+        },
+      ],
     };
   }
   if (primary === "account") {
@@ -18623,7 +18646,7 @@ function buildMachinesPlan(args: string[]): CliPlan {
     // Same shape as `lanes archive-and-reclaim`: the only destructive account
     // command, and the only one whose damage a re-run cannot undo. Removal
     // revokes the machine and purges its Activity, and the machine can only
-    // come back through a fresh interactive sign-in on it.
+    // come back when someone confirms it on that computer.
     //
     // Read before the positional: the readers consume as they go, so a bare
     // `machines rm --confirm REMOVE` would otherwise take REMOVE as the
@@ -18634,9 +18657,9 @@ function buildMachinesPlan(args: string[]): CliPlan {
     if (!machine?.trim()) {
       throw new CliUsageError(`machines ${sub} requires a stable machine key.`);
     }
-    if (confirmation !== "REMOVE") {
+    if (confirmation !== ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION) {
       throw new CliUsageError(
-        `machines ${sub} requires --confirm REMOVE. Run "ade machines list" first, and note the machine can only rejoin by signing in again on it.`,
+        `machines ${sub} requires --confirm REMOVE. Run "ade machines list" first, and note the machine can only rejoin when someone confirms it on that computer.`,
       );
     }
     if (firstStandalonePositional(args)) {
@@ -18651,6 +18674,9 @@ function buildMachinesPlan(args: string[]): CliPlan {
       connectRole: "cto",
       steps: [accountActionStep("result", "deleteMachine", {
         machine: machine.trim(),
+        // The action checks the same token again: an RPC caller that skips
+        // this command must still say it.
+        confirmation,
       })],
     };
   }
@@ -18665,6 +18691,7 @@ function buildMachinesPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "account machine reconnect",
+      formatter: "account-machine-reconnect",
       machineOnly: true,
       machineAutoStart: true,
       connectRole: "cto",
@@ -21975,6 +22002,14 @@ async function runServe(
     await scopeRegistry.disposeAll();
     await personalChatScope.dispose();
     try {
+      // Scope disposal ends chat sessions, but the shared Cursor one-shot
+      // workers belong to no session, so release them here.
+      const { disposeAllCursorSdkConnections } = await import("../../desktop/src/main/services/chat/cursorSdkPool");
+      await disposeAllCursorSdkConnections();
+    } catch {
+      // Best effort: the workers also exit on their own once the IPC channel closes.
+    }
+    try {
       const {
         defaultProductAnalyticsStateFile,
         peekSharedProductAnalyticsService,
@@ -22380,8 +22415,13 @@ async function runServe(
       },
       budget: machineCloudRelayStore,
       logger: headlessProjectLogger,
+      onEpisodeStarted: () => accountMachinePublisher?.clearPairingRecoveryGaveUp(),
       // The loop has stopped arguing and this computer is still disconnected.
       onGaveUp: ({ code }) => {
+        // The report alone was invisible when its upload failed. The publisher
+        // health carries the give-up to the desktop, which shows a lasting
+        // banner with a Reconnect button.
+        accountMachinePublisher?.recordPairingRecoveryGaveUp();
         void brainAutoDiagnostics
           .report({
             failureCode: code,
@@ -22446,6 +22486,12 @@ async function runServe(
       startBackgroundAgentToolsFetch(headlessProjectLogger);
     });
   }
+
+  // A brain that died without unwinding (the loop watchdog SIGKILLs it) left
+  // its Cursor SDK workers behind. Reap the ones whose owning brain is gone.
+  void import("../../desktop/src/main/services/chat/cursorSdkWorkerOrphans")
+    .then(({ recoverCursorSdkWorkerOrphans }) => recoverCursorSdkWorkerOrphans({ logger: headlessProjectLogger }))
+    .catch(() => {});
 
   const serviceCommand = resolveAdeServeCommand();
   const preparedServiceCommand = prepareMachineRuntimeDaemonCommand(serviceCommand);
@@ -23497,6 +23543,13 @@ function formatSyncStatus(value: unknown): string {
     && Number.isFinite(accountDirectory.lastSuccessAt)
     ? new Date(accountDirectory.lastSuccessAt).toISOString()
     : null;
+  // The directory refusing THIS computer is the state the desktop banner shows
+  // with a date and a Reconnect button. `directory reason` has only the
+  // sentence, so name the date, the give-up, and the command here too.
+  const refusal = readThisMachineRefusalFromWire(accountDirectory);
+  const recoveryGaveUpAt = refusal?.recoveryGaveUpAt != null
+    ? new Date(refusal.recoveryGaveUpAt).toISOString()
+    : null;
 
   const peers = Array.isArray(snapshot.connectedPeers)
     ? snapshot.connectedPeers.length
@@ -23581,6 +23634,9 @@ function formatSyncStatus(value: unknown): string {
     ["directory reason", skipReason],
     ["directory attempt", lastAttempt],
     ["directory success", lastSuccess],
+    ["this computer", refusal ? thisMachineRefusalState(refusal) : null],
+    ["auto repair stopped", recoveryGaveUpAt],
+    ["reconnect with", refusal ? "ade machines reconnect" : null],
     ["transfer readiness", transferState],
     ...transferRows,
     ["pairing code", describeSyncPairingCode(snapshot)],
@@ -26158,7 +26214,9 @@ function formatAccountMachines(value: unknown): string {
       : "never";
     return [
       asString(machine.machineKey) ?? "—",
-      accountMachineDisplayName(machine) ?? asString(machine.deviceId) ?? "Unnamed machine",
+      // With the install ("MacBook Pro · ADE Alpha"), so two installs on one
+      // Mac do not look like a duplicate to remove.
+      accountMachineRowLabel(machine) ?? asString(machine.deviceId) ?? "Unnamed machine",
       connectionState,
       machineStatusLine(machine) ?? "—",
       lastSeenAt,
@@ -26477,7 +26535,9 @@ function formatTextOutput(
         ?? asString(value.userId)
         ?? "ADE account";
       const source = asString(value.source);
-      return `Signed in as ${identity}${source ? ` (${source})` : ""}`;
+      const signedIn = `Signed in as ${identity}${source ? ` (${source})` : ""}`;
+      const refusal = parseThisMachineRefusal(value.thisComputerRefusal);
+      return refusal ? `${signedIn}\n${describeThisMachineRefusal(refusal)}` : signedIn;
     }
     case "account-token": {
       const token = isRecord(value) ? asString(value.token) : null;
@@ -26497,13 +26557,20 @@ function formatTextOutput(
         ? `Renamed ${machine.machineKey} to ${displayName}.`
         : `Cleared the custom name for ${machine.machineKey}; using ${displayName}.`;
     }
+    case "account-machine-reconnect": {
+      const result = readReconnectResult(value);
+      if (!result) {
+        return renderKeyValues("ADE result", Object.entries(isRecord(value) ? value : {}));
+      }
+      return describeReconnectOutcome(result).message;
+    }
     case "account-machine-remove": {
       const removed = isRecord(value) ? asString(value.machineKey) : null;
       // The directory purges the removed machine's Activity as part of the same
       // request, so a plain success here means both landed; a partial removal
       // arrives as an error, not as this line.
       return `Removed ${removed ?? "the machine"} from your ADE account and cleared its Activity. ` +
-        "It can only rejoin by signing in again on that computer (`ade machines reconnect`).";
+        "It rejoins only when someone runs `ade machines reconnect` (or Reconnect this computer) on that computer.";
     }
     case "projects-list":
       return formatProjectsList(value);
@@ -27099,6 +27166,19 @@ function summarizeExecution(args: {
     return buildSyncWebPairingOutput(values.result);
   }
 
+  if (plan.label === "auth status") {
+    const status = unwrapActionEnvelope(values.result);
+    if (!isRecord(status) || status.signedIn !== true) return status;
+    const sync = unwrapActionEnvelope(values.thisComputer);
+    const routeHealth = isRecord(sync) && isRecord(sync.routeHealth) ? sync.routeHealth : null;
+    return {
+      ...status,
+      // Null when the directory accepts this computer, or when the sync read
+      // failed; the refusal is { code, revokedAt, recoveryGaveUpAt }.
+      thisComputerRefusal: readThisMachineRefusalFromWire(routeHealth?.accountDirectory),
+    };
+  }
+
   if (plan.label.startsWith("personal chat ") && isRecord(values.result)) {
     return values.result.result;
   }
@@ -27184,13 +27264,10 @@ export function detectAccountLoginMode(args: {
  * code says the machine is simply revoked.
  */
 export function accountReconnectNeedsFreshSignIn(result: unknown): boolean {
-  if (!isRecord(result) || result.repaired === true) return false;
-  const reasonCode = asString(result.reasonCode)?.trim();
-  if (reasonCode) return reasonCode === ACCOUNT_PAIRING_AUTHENTICATION_REQUIRED_CODE;
-  // COMPATIBILITY SHIM — older brain only. A brain built before `reasonCode`
-  // existed says nothing but the sentence. Delete this branch, and the test
-  // pinning the sentence, once the supported brain floor carries the code.
-  return asString(result.reason)?.trim() === PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE;
+  // The shared rule, so `ade machines reconnect`, the desktop and `ade code`
+  // start the browser step for exactly the same results.
+  const parsed = readReconnectResult(result);
+  return parsed != null && reconnectNeedsFreshSignIn(parsed);
 }
 
 /**
@@ -27215,8 +27292,11 @@ async function recoverAccountMachineReconnect(
   options: GlobalOptions,
 ): Promise<boolean> {
   if (!accountReconnectNeedsFreshSignIn(result)) return false;
+  // The person is signed in; the directory wants proof of a fresh sign-in.
+  // `PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE` stays the wire sentence that
+  // older brains are matched against, but it is not what a person reads here.
   process.stderr.write(
-    `\n${PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE}\n`,
+    "\nConfirm it's you in your browser to reconnect this computer.\n",
   );
   const login = await runAccountLogin(
     { kind: "account-login", maxWaitSec: null, explicitHeadless: true },
@@ -27224,7 +27304,7 @@ async function recoverAccountMachineReconnect(
   );
   if (login.exitCode !== 0) {
     process.stderr.write(
-      "Sign-in did not complete, so this computer is still disconnected from your account.\n",
+      "The browser confirmation did not complete, so this computer is still disconnected from your account.\n",
     );
     return false;
   }

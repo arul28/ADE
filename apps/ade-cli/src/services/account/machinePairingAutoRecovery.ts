@@ -103,6 +103,12 @@ export type MachinePairingAutoRecoveryArgs = {
    * episode invites a listener to start making decisions from it.
    */
   onGaveUp?: (input: { code: string }) => void;
+  /**
+   * A new episode started: the loop is trying again. A give-up recorded for an
+   * earlier episode no longer holds, so the desktop must stop saying "ADE
+   * stopped trying".
+   */
+  onEpisodeStarted?: () => void;
   /** Test seams. */
   pollMs?: number;
   delaysMs?: readonly number[];
@@ -337,6 +343,7 @@ export function createMachinePairingAutoRecovery(
         code: observed.code,
         firstAttemptInMs: delayFor(0),
       });
+      args.onEpisodeStarted?.();
       return;
     }
     if (episode.settled || now() < episode.nextAttemptAtMs) return;

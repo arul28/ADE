@@ -8,9 +8,21 @@ The Worker also hosts ADE's device-authorization bridge for headless sign-in:
 
 - `POST /device/code` creates a short-lived code bound to a daemon-generated secret.
   An optional `machine_key` names the machine signing in, which is what a pairing
-  grant (below) can later be spent on.
-- `GET /device` renders a read-only human-code confirmation page.
-- `POST /device` confirms the code and redirects through Clerk OAuth + PKCE.
+  grant (below) can later be spent on. An optional `machine_name` (cleaned, at
+  most 80 characters) is display text only.
+- `GET /device` renders a read-only human-code confirmation page. With a
+  `machine_name`, it says "A computer named … asked to sign in to ADE" and tells
+  the reader to continue only if they started it there, because the name is
+  the client's claim. Without one, it says "ADE on your computer".
+- `POST /device` confirms the code and opens Clerk OAuth + PKCE.
+  It accepts only a same-origin form POST: the `Origin` must match, or, when a
+  browser sends no `Origin` or the text `null`, `Sec-Fetch-Site` must be
+  `same-origin`. The page is served with `referrer-policy: same-origin`, because
+  under `no-referrer` a browser sends `Origin: null` for its own form. A
+  confirmed POST answers with a small page that opens the Clerk sign-in (a
+  meta refresh and a link), not a 302: browsers apply the page's
+  `form-action 'self'` to every redirect after a form POST, and Clerk's
+  authorize URL redirects on through more hosts.
 - `GET /device/callback` exchanges the Clerk code and holds the token pair briefly.
 - `POST /device/token` lets the initiating daemon redeem the pair once, and returns
   a `pairing_grant` alongside it when the request declared a `machine_key`.
@@ -18,6 +30,24 @@ The Worker also hosts ADE's device-authorization bridge for headless sign-in:
 Device codes and approval-attempt rate limits are stored in D1. The daemon
 secret is stored only as a SHA-256 digest; approved token pairs are cleared by
 the one-time redemption update or when the device code expires.
+
+## Which install a machine row is
+
+Stable (`~/.ade`) and Alpha (`~/.ade-alpha`) on one computer are two machines
+in the account, and both report the same hostname. A register call may say
+which install it is: `channel` (`stable`, `beta` or `alpha`; any other value is
+dropped) and `adeHome` (the ADE home as `~/.ade-alpha`, or a folder name, never
+a full path). Migration `0011` stores them in `machines.channel` and
+`machines.ade_home`, and every machine row returns them. A register that omits
+them keeps the stored values, because an older host sends neither.
+
+Client-supplied text that a page or a list shows (`adeHome`, and the device
+flow's `machine_name`, which migration `0010` stores on
+`device_authorizations`) goes through `boundedDisplayText` in
+`src/displayText.ts`. It replaces control and format characters (bidi
+overrides, zero-width marks), folds whitespace, and cuts the text to a fixed
+length. It cleans rather than refuses, so an odd name never blocks the request
+that carried it.
 
 ## Removing a machine
 

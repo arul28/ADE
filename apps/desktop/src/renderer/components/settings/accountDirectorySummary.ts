@@ -5,7 +5,9 @@ import {
   type SyncAccountDirectoryState,
   type SyncRoleSnapshot,
 } from "../../../shared/types";
+import type { ThisMachineRefusal } from "../../../shared/accountMachineRefusal";
 import { accountSessionConnectionsSubtitle } from "../../lib/account";
+import { describeThisComputerRefusal } from "../../lib/thisComputerRefusal";
 
 export type AccountDirectorySummary = {
   label: string;
@@ -41,6 +43,13 @@ function unpublishedMachineLabel(state: SyncAccountDirectoryState): string {
 export function accountDirectorySummary(
   status: SyncRoleSnapshot,
   sessionState: AdeAccountSessionState,
+  /**
+   * The directory's refusal of THIS computer, read once by the caller with the
+   * same guard that shows its Reconnect button. Null when the snapshot is
+   * another machine's (a remote-bound pane, or the hosted web client): the
+   * refusal copy says "This computer", which would then name the wrong machine.
+   */
+  refusal: ThisMachineRefusal | null,
 ): AccountDirectorySummary {
   if (sessionState === "unreadable") {
     return {
@@ -71,6 +80,12 @@ export function accountDirectorySummary(
     // Deliberately just the fact of the connection. The published-route count was
     // plumbing detail the reader could neither act on nor interpret.
     return { label: "Connected to your ADE account", healthy: true };
+  }
+  // A refusal is not "can't reach your account, retrying": the directory
+  // answered, and nothing retries on its own. Say what happened; the card
+  // puts the Reconnect button beside this line.
+  if (refusal) {
+    return { label: describeThisComputerRefusal(refusal).title, healthy: false };
   }
   return { label: unpublishedMachineLabel(health.state), healthy: false };
 }

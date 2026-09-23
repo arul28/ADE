@@ -9,6 +9,7 @@ import type { BuiltInBrowserEventPayload } from "../../../shared/types";
 import {
   LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
   legacyAttachmentCapMessage,
+  maxBase64EncodedLength,
 } from "../../../shared/chatAttachmentLimits";
 import {
   projectAttachmentsDir,
@@ -3807,7 +3808,7 @@ export function registerIpc({
       const filename = typeof arg.filename === "string" && arg.filename.trim()
         ? arg.filename
         : "photo.heic";
-      const maxEncodedLength = Math.ceil(MAX_TEMP_ATTACHMENT_BYTES / 3) * 4;
+      const maxEncodedLength = maxBase64EncodedLength(MAX_TEMP_ATTACHMENT_BYTES);
       if (arg.data.length > maxEncodedLength) {
         throw new Error(legacyAttachmentCapMessage("Temporary attachments"));
       }
@@ -8657,7 +8658,7 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.agentChatSaveTempAttachment, async (_event, arg: { data: string; filename: string }): Promise<{ path: string }> => {
-    const maxEncodedLength = Math.ceil(MAX_TEMP_ATTACHMENT_BYTES / 3) * 4;
+    const maxEncodedLength = maxBase64EncodedLength(MAX_TEMP_ATTACHMENT_BYTES);
     if (typeof arg.data === "string" && arg.data.length > maxEncodedLength) {
       throw new Error(legacyAttachmentCapMessage("Temporary attachments"));
     }

@@ -47,6 +47,18 @@ import {
 import { ensureCursorSdkUserHook } from "./cursorSdkHooks";
 import { loadCursorSdk } from "../ai/cursorSdkLoader";
 import { buildCursorCloudCreateCloudExtras } from "./cursorCloudCreateOptions";
+import {
+  CURSOR_SDK_OWNER_POLL_MS,
+  createCursorSdkWorkerExit,
+  cursorSdkOwnerStillOwns,
+  ignoreCursorSdkWorkerPipeErrors,
+  readCursorSdkOwnerPid,
+  sendToCursorSdkParent,
+} from "./cursorSdkWorkerGuards";
+import {
+  processIsAlive,
+  startParentDeathWatchdog,
+} from "../../../../../ade-cli/src/services/runtime/parentDeathWatchdog";
 
 type CursorSdkModule = typeof CursorSdkModuleTypes;
 type SdkAgent = Awaited<ReturnType<CursorSdkModule["Agent"]["create"]>>;
@@ -94,9 +106,7 @@ function asCursorSdkRunStoreLike(store: unknown): CursorSdkRunStoreLike | null {
 }
 
 function post(message: CursorSdkWorkerResponse): void {
-  if (process.send) {
-    process.send(message);
-  }
+  sendToCursorSdkParent(process, message);
 }
 
 function errorMessage(error: unknown): string {
@@ -1234,28 +1244,44 @@ function reportRequestFailure(requestId: string, error: unknown): void {
   post({ type: "response", requestId, ok: false, ...classifyWorkerError(error) });
 }
 
+// Every exit trigger goes through here. See cursorSdkWorkerGuards.ts for why
+// each path needs a timer deadline and not only `dispose().finally(exit)`.
+const exitWorker = createCursorSdkWorkerExit({
+  dispose,
+  exit: (code) => process.exit(code),
+});
+
 function scheduleExitAfterUnhandled(): void {
   if (unhandledExitScheduled) return;
   unhandledExitScheduled = true;
-  setTimeout(() => {
-    void dispose().finally(() => process.exit(1));
-  }, 20).unref();
+  setTimeout(() => exitWorker(1), 20).unref();
 }
 
 function handleUnhandledWorkerError(error: unknown, origin: "unhandledRejection" | "uncaughtException"): void {
-  post({
-    type: "log",
-    level: "warn",
-    message: "Cursor SDK worker caught an unhandled SDK failure.",
-    detail: { origin, error: errorMessage(error) },
-  });
-  const activeRequest = Array.from(activeRequests.entries())
-    .reverse()
-    .find(([, type]) => type !== "hook_response" && type !== "dispose");
-  if (activeRequest) {
-    reportRequestFailure(activeRequest[0], error);
+  // Not re-entrant. The first failure already reports and schedules the exit,
+  // and a failure raised while handling one must not start the loop again.
+  if (unhandledExitScheduled) return;
+  if (!process.connected) {
+    // The parent is gone, so there is nobody to report to.
+    scheduleExitAfterUnhandled();
+    return;
   }
-  scheduleExitAfterUnhandled();
+  try {
+    post({
+      type: "log",
+      level: "warn",
+      message: "Cursor SDK worker caught an unhandled SDK failure.",
+      detail: { origin, error: errorMessage(error) },
+    });
+    const activeRequest = Array.from(activeRequests.entries())
+      .reverse()
+      .find(([, type]) => type !== "hook_response" && type !== "dispose");
+    if (activeRequest) {
+      reportRequestFailure(activeRequest[0], error);
+    }
+  } finally {
+    scheduleExitAfterUnhandled();
+  }
 }
 
 process.on("message", (raw: unknown) => {
@@ -1289,14 +1315,28 @@ process.on("uncaughtException", (error) => {
   handleUnhandledWorkerError(error, "uncaughtException");
 });
 
+ignoreCursorSdkWorkerPipeErrors(process, [process.stdout, process.stderr]);
+
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
-  process.on(signal, () => {
-    void dispose().finally(() => process.exit(0));
-  });
+  process.on(signal, () => exitWorker(0));
 }
 
-process.on("disconnect", () => {
-  void dispose().finally(() => process.exit(0));
+process.on("disconnect", () => exitWorker(0));
+
+// Second guard for the `disconnect` event: poll the owner too. The pool puts
+// the owner pid in argv; a worker started some other way falls back to the
+// parent it booted under.
+const ownerPid = readCursorSdkOwnerPid(process.argv) ?? process.ppid;
+startParentDeathWatchdog({
+  parentPid: ownerPid,
+  intervalMs: CURSOR_SDK_OWNER_POLL_MS,
+  isAlive: (pid) => cursorSdkOwnerStillOwns({
+    ownerPid: pid,
+    proc: process,
+    platform: process.platform,
+    isAlive: processIsAlive,
+  }),
+  onParentGone: () => exitWorker(0),
 });
 
 post({
