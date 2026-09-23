@@ -26755,7 +26755,9 @@ function formatMacDesktopAction(value: unknown): string {
         // that resolved nothing was never "acted on a point".
         : (result.action === "click" || result.action === "drag"
           ? "(no element; acted on a point)"
-          : result.action === "wait"
+          // A wait result carries `waitedMs` and no `action`: a timed-out wait
+          // was printed as a key "sent to the focused window".
+          : result.action === "wait" || typeof result.waitedMs === "number"
             ? "(no element matched)"
             : "(no element; sent to the focused window)"),
     ],

@@ -1825,6 +1825,17 @@ describe("ADE CLI", () => {
     ).toBeNull();
   });
 
+  it("prints a timed-out mac-desktop wait as nothing matched, not as a key sent", () => {
+    // A wait result carries `waitedMs` and no `action`.
+    const text = formatOutput(
+      { ok: false, waitedMs: 4313 },
+      { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
+      "mac-desktop-action",
+    );
+    expect(text).toContain("(no element matched)");
+    expect(text).not.toContain("sent to the focused window");
+  });
+
   it("names every failed runtime check at once, not only the first", () => {
     const runtimeInfo = {
       version: process.env.ADE_CLI_VERSION?.trim() || "0.0.0",
