@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  createDeviceModelLoader,
   appleCanvasHasDecoded,
   appleDeviceInputSize,
   appleDragIntent,
@@ -137,3 +138,25 @@ describe("appleCanvasHasDecoded", () => {
     expect(appleCanvasHasDecoded(canvas(300, 650))).toBe(true);
   });
 });
+
+describe("createDeviceModelLoader", () => {
+  it("regression: loads embedded textures through an <img>, which the CSP allows", async () => {
+    // GLTFLoader picks ImageBitmapLoader in Chromium, which fetch()es each
+    // embedded image's blob: URL. The renderer CSP refuses blob: in
+    // connect-src, so all 17 textures of every model failed and the body
+    // rendered with bare materials. TextureLoader goes through img-src.
+    const THREE = await import("three");
+    const { GLTFLoader } = await import("three/examples/jsm/loaders/GLTFLoader.js");
+    const loader = createDeviceModelLoader(THREE, GLTFLoader);
+    const manager = new THREE.LoadingManager();
+    const parser = { textureLoader: new THREE.ImageBitmapLoader(), options: { manager } };
+
+    const plugins = (loader as unknown as { pluginCallbacks: Array<(p: unknown) => { name: string }> }).pluginCallbacks;
+    const ours = plugins.map((callback) => callback(parser)).find((plugin) => plugin.name === "ADE_textures_through_img");
+
+    expect(ours).toBeDefined();
+    expect(parser.textureLoader).toBeInstanceOf(THREE.TextureLoader);
+    expect((parser.textureLoader as InstanceType<typeof THREE.TextureLoader>).manager).toBe(manager);
+  });
+});
+

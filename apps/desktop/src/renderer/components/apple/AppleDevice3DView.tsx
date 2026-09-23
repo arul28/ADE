@@ -102,6 +102,30 @@ async function importThreeRuntime() {
 type ThreeNS = Awaited<ReturnType<typeof importThreeRuntime>>["THREE"];
 type GltfLoaderCtor = Awaited<ReturnType<typeof importThreeRuntime>>["GLTFLoader"];
 
+/**
+ * A GLTFLoader whose embedded textures load through an `<img>`, not `fetch()`.
+ *
+ * In Chromium, GLTFLoader decodes a `.glb`'s embedded images with
+ * `ImageBitmapLoader`, which reads each image's `blob:` URL with `fetch()`.
+ * The renderer CSP keeps `blob:` out of `connect-src` on purpose, so every one
+ * of the 17 WebP textures failed ("Couldn't load texture blob:…") and the body
+ * rendered with bare materials. `img-src` already allows `blob:`, and
+ * `TextureLoader` goes through an `<img>`, so the textures load without
+ * widening the policy.
+ */
+export function createDeviceModelLoader(THREE: Pick<ThreeNS, "TextureLoader">, GLTFLoader: GltfLoaderCtor) {
+  const loader = new GLTFLoader();
+  loader.register((parser) => {
+    const withLoader = parser as unknown as {
+      textureLoader: unknown;
+      options: { manager?: ConstructorParameters<ThreeNS["TextureLoader"]>[0] };
+    };
+    withLoader.textureLoader = new THREE.TextureLoader(withLoader.options.manager);
+    return { name: "ADE_textures_through_img" };
+  });
+  return loader;
+}
+
 type DisplayLayout = {
   rotation: number;
   rawLandscape: boolean;
@@ -339,9 +363,9 @@ function meshMaterials(material: Mesh["material"]): Material[] {
  *
  * Measured on this machine: the 3D view mounted ten times in one session and
  * every mount fetched 2.4 MB, ran a GLTF parse of 427 accessors, decoded 17
- * WebP images and uploaded them to the GPU — then the superseded load's
- * textures failed as it was torn down, which is the whole of the
- * `THREE.GLTFLoader: Couldn't load texture blob:` noise (17 per mount, exactly).
+ * WebP images and uploaded them to the GPU. (The 17 `Couldn't load texture
+ * blob:` errors per mount were a separate fault, the CSP refusing `fetch()` of
+ * a `blob:` URL; see `createDeviceModelLoader`.)
  *
  * What is cached is the PARSED scene, which is the expensive half. What is NOT
  * shared is anything `disposeImportedSubtree` destroys: it disposes geometries
@@ -769,7 +793,7 @@ function createViewer(
           template = (async () => {
             const response = await fetch(source.url);
             if (!response.ok) throw new Error(`model ${response.status}`);
-            const gltf = await new GLTFLoader().parseAsync(await response.arrayBuffer(), "");
+            const gltf = await createDeviceModelLoader(THREE, GLTFLoader).parseAsync(await response.arrayBuffer(), "");
             return gltf.scene;
           })();
           parsedModelCache.set(source.id, template);
