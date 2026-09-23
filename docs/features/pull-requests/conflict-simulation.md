@@ -197,11 +197,9 @@ Shared conflict IPC consumed by PR flows:
 
 | Channel | Description |
 |---------|-------------|
-| `ade.conflicts.simulateMerge` | Run a merge simulation between two lanes (or lane-to-base) |
 | `ade.conflicts.getLaneStatus` | Lane conflict status badge |
 | `ade.conflicts.listOverlaps` | Per-peer overlap lists |
 | `ade.conflicts.runPrediction` | Trigger prediction for a lane or pair |
-| `ade.conflicts.getBatchAssessment` | Batch view (used by Graph risk matrix) |
 
 ## Renderer wiring
 
@@ -215,8 +213,7 @@ Shared conflict IPC consumed by PR flows:
   from the parsed output.
 - `IntegrationPrContextPanel.tsx` shows the integration proposal's
   evidence inline on the PR detail.
-- `graph/shared/RiskMatrix.tsx` renders the full pairwise matrix
-  (see [`../workspace-graph/README.md`](../workspace-graph/README.md)).
+- The pairwise matrix is the conflicts service assessment. Integration and lane surfaces read it; there is no separate canvas page.
 
 ## Gotchas
 

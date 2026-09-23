@@ -123,7 +123,7 @@ The entire signed-out → machine → project funnel is a custom `WebWorkspaceHu
   to a shell "top strip" wrapper that no longer exists — `WebClientRoot` mounts `AppRoot` directly under `#root`.
   Fix: give `#root` definite height (`height: 100%` in `webclient.html`, keep splash `min-height`); one line, fixes
   every web route at once.
-  **Confirming evidence (round 4):** /lanes and /graph cut at *different* heights than /work — exactly what
+  **Confirming evidence (round 4):** /lanes and /prs cut at *different* heights than /work — exactly what
   collapse-to-content-height predicts (each route's content computes a different intrinsic height). One root cause,
   route-dependent symptom; not separate bugs.
 
@@ -233,11 +233,7 @@ Headline: **`WEB_CLIENT_TAB_PATHS` is dead code** (nothing imports it); the real
 `APP_ROUTE_ROOTS` (`WebClientRoot.tsx:61-78`) and reachable via CommandPalette (rendered unconditionally,
 `AppShell.tsx:1723`) — hence the owner's graph discovery. Every hidden page is `React.lazy`; the entry-graph guard
 (`check-webclient-entry.mjs:8-9`) is unaffected by adding nav entries → **no first-load perf risk**.
-- C12a `works-today` — **Graph `/graph`: enable now.** Reads/mutations all covered (reparent incl. multi-lane
-  rollback, env mappings via `projectConfig.get`, activity via real `pty.onData/onExit` subs). Punch list:
-  hide "Open folder" menu item (silent no-op, `adapter/lanes.ts:187`); `conflicts.simulateMerge` adapter-wired but
-  **no host descriptor** → null (`adapter/git.ts:89`); `conflicts.onEvent` hard no-op → progress bar inert
-  (`adapter/git.ts:105`, static matrix still fills); `graphState` browser-local only (positions don't roam).
+- C12a `removed` — The workspace Graph tab is gone. Do not add a `/graph` route back.
 - C12b `small-fix` — **History `/history`: enable after** 3 new host descriptors (`git.getCommit`,
   `git.getOriginRemote`, `git.getOpenPrForBranch` — adapter-wired at `adapter/git.ts:52,57,58`, host-missing) +
   wire `cto.getState` in adapter (host has it, `syncRemoteCommandService.ts:4777`). Degrades gracefully without.

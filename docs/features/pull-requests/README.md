@@ -220,40 +220,42 @@ Renderer components (`apps/desktop/src/renderer/components/prs/`):
 | `tabs/rebaseWorkflowModel.ts` | Pure model for active rebase bucketing and operation-history filtering |
 | `tabs/githubTabModel.ts` | Pure list model for the GitHub tab: `githubCoordKey`, `matchesFilter`, `countGitHubItemsByState`, `reconcileLinkedPrState`, `computeTerminalOverlayItems`, and `applyOptimisticTerminalState` — which folds a locally-confirmed merge/close over a snapshot row. That overlay only ever moves a row **into** a terminal bucket, never back out, and expires after `OPTIMISTIC_TERMINAL_TTL_MS` (5 min) so a reopened PR cannot stay pinned to Closed for the session. |
 | `detail/PrDetailPane.tsx` | Selected PR detail pane: status, checks, reviews, comments, files, commits, merge readiness, bypass, and resolver flows. Rich detail/files/commits/action-run reads render progressively; late cached snapshot hydration can update snapshot-owned fields but cannot overwrite richer live data. Persists the selected sub-tab (`overview | files | checks`) per PR in `localStorage` under `ade:prs:detailTabs:v1`, mirrored through the `detailTab` URL param so deep links restore the selected tab. The old `activity` target remains accepted as an alias for Overview. The failing-log drawer's **Fix in chat** action queues a bounded log excerpt into the lane's most recent Work chat (or a new-chat draft) and then navigates there. Merge, close and reopen are issued for any selected PR — there is no lane precondition and no "this PR isn't mapped" refusal — and each records or clears an optimistic terminal state through `PrsContext` (`markPrTerminalLocally` on a confirmed merge/close, `clearPrTerminalLocally` on reopen) so the list and the pane agree before the refetch lands. The header's **Open as lane** offer is suppressed for terminal PRs: it needs an open PR and a live head branch, so on a merged PR it led nowhere. |
-| `detail/PrDetailTimelineRails.tsx` | Resizable Timeline+Rails overview: the thread (`PrTimeline`) on the left with the commit tick pill floating over its top-left corner, and ONE rail on the right — reviewers/metadata → checks → files changed → merge readiness pinned at the bottom. The old left rail is gone and its width key (`ade.prs.overviewLeftRailWidth`) is retired. The right rail's width is pixel-preserving, drag-resizable and persisted per project under `ade.prs.overviewRightRailWidth.v2`; its floor equals its default (390px) so it can never be squeezed below the width that shows its content, and `GitHubTabView` derives the detail pane's own floor from that plus the thread minimum and the gutter. Seeds the timeline with description, review threads, activity-stream entries (commits, comments, reviews, label changes, merges, deployments), and check fallbacks. `buildTimelineEvents` pins the description first after the stable timestamp sort. Owns deep-link scrolling and merge-bypass plumbing. |
+| `detail/PrDetailTimelineRails.tsx` | The Overview: one thread column with the push tick rail (`PrPushTickRail`) on its right edge and the floating dock (`PrFloatingDock`) at the bottom right. Both are laid over the thread, so the thread keeps its full width. Builds `PrTimelineEvent[]` (`buildTimelineEvents`), turns it into the triage model (`buildDigestTimelineModel`), and computes the next step with `resolvePrNextStep`. Owns the Merge card actions (chat hand-off, update branch, draft, auto-merge, merge dialog), deep-link scrolling, and the `PrMarkdownEnvContext` that gives the description its file chips and `#123` pills. The draft and auto-merge actions go to the host as the same `PrNextStepAction` names (`PrStateAction`: `ready_for_review`, `enable_auto_merge`, `disable_auto_merge`); there is no second action vocabulary. `buildCommitRailCommits` returns `PrCommitTick[]`, and that type is defined here. The Reviewers card sends a `ReviewerRequest` (from `shared/types/prs.ts`). `PR_OVERVIEW_MIN_PX` (520) is the detail pane floor that `GitHubTabView` uses. The same layout serves the PRs tab and the chat tools panel. |
 | `detail/PrChecksTab.tsx` | CI workspace with Graph / List / Failures views. Graph nodes come from `PrWorkflowGraph`, which resolves by GitHub coordinates and so charts any PR in the repository; a workflow whose YAML will not parse degrades to honest swimlanes, and a *failed* Actions-runs read now surfaces "couldn't reach GitHub" with a retry instead of an empty chart that looks like "this repo has no CI". Matrix legs collapse to pips, running jobs show live elapsed time and step progress, and stale-head runs are called out. The first failing job auto-opens the detail drawer; a passing job opens it too, without a fetch. |
 | `detail/prChecksApi.ts` | The renderer's side of the checks IPC, and the one place the "is a log fetch worth it" decision lives. `isCheckLogFetchWorthwhile` says no for `passed` / `running` / `queued` / `skipped` — the graph node already carries that job's steps, conclusions and timings from the poll the pane runs anyway. `fetchCheckLogForState` returns a `resolution` of `fetched` / `skipped` / `no-api` so a caller never reads "no excerpt" as "the fetch failed", and `force` (a user asking for a green job's log) is the only thing that sets `includeLog` and steps outside the automatic-read budget. |
-| `detail/PrDetailHeader.tsx`, `detail/PrDetailHeader.css` | The PR detail header, on ONE line: number, title, state badge, hover-revealed edit pencil │ branch pair │ tabs … GitHub link. It used to be three stacked lines carrying a repo name the surface already establishes, a CI rollup the CI tab counts, and a per-PR refresh the tab-level sync covers. The sheet holds the narrowing ladder (badge → branch names → branches+rule → title → tab labels) as container queries on the header's own width, because the PR list column is drag-resizable and the window width says nothing about the room this row has. Anything a query hides must be styled in the sheet: an inline `display` beats it. |
+| `detail/PrDetailHeader.tsx`, `detail/PrDetailHeader.css` | The PR header card. Row 1: `#N` (opens GitHub), author, open time, the last update time (only when it reads differently from the open time; the full date is in the tooltip), state, and "Open as lane" for a PR with no lane. Row 2: the title, with the edit pencil on hover. Row 3: `base ← head`, the lane chip, and chips for the chats linked through `PrSummary.chatSessionIds`. The tabs row has Overview, Files, and Checks with a live note (`3/5` while running, then a result dot), then refresh, "Ready for review" on a draft, and the `⋯` menu. Container queries on the header width hide the state badge and then the tab words in the narrow tools panel. |
 | `detail/PrChecksGraphCanvas.tsx`, `PrChecksGraphNode.tsx`, `PrChecksGraphEdge.tsx`, `PrChecksGraphSkeleton.tsx` | The React Flow DAG, pan/zoom, GitHub-Actions style. The canvas is behind `React.lazy` and nothing outside it may import `@xyflow/react` — `scripts/check-webclient-entry.mjs` caps the web client's first-load entry graph and rejects an eagerly linked chunk matching `/graph/`. Nodes are ARIA buttons, not `<button>`s, because they carry a second control; a second activation of the same node closes the drawer. |
 | `detail/prChecksGraphLayout.ts` | Pure Sugiyama-style layout: Kahn longest-path layering (so a malformed cyclic `needs:` is detected rather than looped on), barycentre crossing reduction, and critical-path marking. Tiers are clamped to a whole number inside the node count before they index a column. |
 | `detail/prChecksGraphCache.ts` | Module-scoped graph cache keyed `prId@headSha`, with a longer TTL for a charted graph than an uncharted one, plus in-flight de-duplication. A rejected read is never cached — storing it as "no graph here" is the failed-read-that-looks-empty bug. |
 | `detail/prChecksListModel.ts` | Pure grouping for the List view: workflow sections, worst-state-first ordering, and per-section counts. Shares `workflowNameOf`/`stripWorkflowPrefix` with `prChecksModel.ts` and the rank table with `shared/prPipelineState.ts`. |
 | `detail/prChecksVisuals.tsx` | The one status vocabulary for the CI surface — `STATE_COLOR`, `STATE_LABEL`, `STATE_BORDER_STYLE`, `StateIcon`, `tint`, `fmtMs` — plus `OpenOnGitHubButton`. Colour is never the only channel: every state also carries a distinct glyph shape, a distinct border style, and a written word. Imported by both the eager tab and the lazy canvas, so it stays free of heavy imports. |
-| `shared/PrTimeline.tsx` | Timeline column: renders the pre-computed `PrTimelineEvent[]` from `PrDetailTimelineRails`, handles per-PR filters (`PrTimelineFilters`), and groups events. Comment/reaction/edit identity is `writeViewerLogin` when that prop is present (including explicit `null`), else `viewerLogin`. Bot review cards (`PrBotReviewCard`) and long bot-authored issue comments render collapsed by default so a late Greptile/Copilot/codex review or a large bot-authored summary shows a clamped preview with a Show more/less affordance (`CollapsibleCommentBody`) instead of dumping a wall of text at the end of the thread; `isLongBotCommentBody` gates a comment as long at >12 lines or >900 chars. |
+| `shared/PrTimeline.tsx` | The virtualized thread. It renders the `digest` model (a required prop) in the triage layout: the description as a document, the pinned "Needs attention" block (open, not outdated threads; six rows, then "Show N more"), a divider per push, and one folded row per bot per push. A bot row expands into one line per item, and a line opens the full card (reply, resolve, react, edit stay the same components). There are no thread filters. Resolved and outdated threads stay in the thread (in a bot row, or as their own row), so a deep link can always focus them. `n` / `p` step through the unresolved threads. Comment/reaction/edit identity is `writeViewerLogin` when that prop is present (including explicit `null`), else `viewerLogin`. |
+| `shared/prDigestTimelineModel.ts` | Turns `PrTimelineEvent[]` into the triage render items (`attention`, `push`, `bot-group`, `event`) and the push ticks. Consecutive commits with no conversation between them are one push; a force-push starts its own. Uses the shared `buildPrConversationDigest`. |
+| `shared/PrTimelineDigestRows.tsx` | The digest row components that `PrTimeline` renders: `DigestRowShell` (the measured, absolutely positioned row), `NeedsAttentionBlock`, `PushDivider`, and `BotGroupRow`. A bot row opens by itself when the focused event is inside it. Bot blocks split out of the PR body show a note that the PR author wrote them. |
+| `shared/PrFloatingDock.tsx`, `shared/PrFloatingDock.css` | The bubble column and its cards: Merge (open by default, ring in the next-step tone that pulses once when the step changes, off under Reduce Motion), Comment (comment or review), Reviewers (requested reviewers plus everyone who reviewed, split into People and Agents), Labels, and Assignees. One card is open at a time; Escape closes it. `PrMergeCard` renders the next step: headline, detail, main action, secondary action, "Merge anyway" or "Bypass & merge", and the requirement chips. The Overview resolves the two buttons before it renders the card: `PrMergeCardActions` holds `primary` and `secondary` as `{ action, label, busy }` or `null` (null when the host cannot run that action), plus `run` and `onChip`. On a merged PR the card shows `PrShippedSummary`. |
+| `shared/PrPushTickRail.tsx` | One tick per push on the thread's right edge. A tick is amber when its push has open threads and carries a dot when it drew comments. Hover shows the commit, time, and comment count; a click scrolls to that push. |
+| `shared/PrActionsMenu.tsx`, `shared/prChatActions.ts` | The `⋯` menu model and its two renderers: the header dropdown and the sidebar row's right-click menu (`GitHubTabPrRow`). Chat actions (Ask, Explain, Fix open review findings, Fix failing checks, Resolve conflicts, Update the description) put a prompt in a chat composer and never send it. One linked chat is used directly; several give a submenu; none starts a chat in the PR's lane (a lane-owned PR is in every lane chat's PR scope). A PR with no lane has no chat actions. The rest: Convert to draft / Ready for review, Enable or Turn off auto-merge, Refresh, Open on GitHub, Copy link / PR number / branch / checkout command, Manage lane… (only for a PR with a lane; opens `PrManageLaneDialogHost`), and Close (with a confirm) or Reopen. |
+| `shared/PrShippedSummary.tsx` | The record of how a PR shipped, in the Merge card after a merge: who merged it and when, its size, and the ADE lane that produced it. Each group is omitted when its data is missing. The lane counts are frozen at detach time, so they stay after the lane is deleted. |
+| `shared/PrAgentAvatar.tsx` | Agent and bot marks, keyed on `classifyPrAuthor` from `apps/desktop/src/shared/prBotIdentity.ts`. A bundled logo when ADE ships one (single-color SVGs are drawn as a CSS mask in the brand color, quoted because Vite inlines them as `data:` URLs), else the GitHub app avatar, which is the app's real logo, else a brand-colored monogram. A person gets `PrUserAvatar`. |
+| `shared/prMarkdownContext.tsx` | What PR markdown knows inside the Overview: the PR file list (inline code that names a PR file becomes a chip that opens its diff in the Files tab; a repo path opens the Files editor), other PRs' states (`#123` pills), and the GitHub alert callouts. Outside the Overview the markdown falls back to plain code and links. |
+| `shared/PrMarkdown.tsx` | The PR markdown renderer (GitHub-flavored, sanitized). `variant="document"` renders the description as a document; `comment` is the default. A fenced block with a file name in its info string gets a header with the file icon, the name, and a Copy button. A blockquote that starts with `[!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, or `[!CAUTION]` renders as a GitHub alert callout. `#123` links to the same repository render as state pills, and inline code that names a PR file renders as a file chip, both from `prMarkdownContext`. |
 | `shared/PrTimelineCommentCards.tsx` | Description and issue-comment cards used by the timeline: markdown body, optional Edit (author must match the mutation viewer), `PrCommentEditForm`, and `PrReactionBar`. |
 | `shared/PrReactionBar.tsx` | Compact reaction chips plus an add-reaction picker. Optimistic `ade.prs.reactToComment` against the subject's GitHub node id; no-ops when the viewer already placed that reaction. Hidden entirely when there is neither a write-capable viewer nor existing reactions. |
 | `shared/usePrCommentEdit.ts`, `shared/PrCommentEditForm.tsx` | Shared edit state (`ade.prs.updateComment` with `commentId` + `source`) and the inline Save/Cancel form. `canEdit` requires a numeric GitHub comment id and author === mutation viewer. |
-| `shared/PrDetailMergeRail.tsx` | Merge readiness panel, and the only accent-outlined frame in the detail view — merging is the one irreversible act on the surface. Hosts the GitHub-style `PrMergeChecklist` (one row per requirement, with the inline "Update branch" split button on the behind-base row) over a single action row split 70/30: **Merge…** opens the portaled `PrMergeDialog`, and **Close** opens a `LaneDialogShell` confirmation naming the PR and stating that the head branch is kept and the PR can be reopened. Closing is a first-class action here, not a lane-gated one. The merge button is the pane's only filled control — green for a clean merge, red when the only route through is an admin bypass, recessed when disabled. Deleting the head branch is *not* part of merging: the **Delete branch** affordance appears on the merged banner and calls `cleanupBranch`, and a PR switch disarms both it and the close dialog. Owns the per-PR live-status re-poll loop that keeps `mergeStateStatus` fresh and clears the "Checking mergeability…" state. Calls helpers from `prMergeRailUtils.ts`. Once merged, the banner carries `PrShippedSummary` in three independently-omitted groups: merger avatar + merge time, then commit/file counts and how long the PR was open, then the accent-marked `ADE lane` provenance block with its frozen chat/proof counts. |
-| `shared/PrMergeDialog.tsx` | Portaled merge dialog (in `LaneDialogShell`, so its method dropdown is never clipped by the rail). Method picker (`squash` / `merge` / `rebase`, remembered default), editable commit title/body seeded from `buildDefaultCommitMessage` with a "reset to GitHub default" affordance (hidden for `rebase`), collapsible command-line instructions, a stale-head guard that re-seeds defaults if the PR head advances while open, and an admin "Override & merge" path shown only when the viewer `canBypass` and the merge box is `blocked`. The bypass checkbox *is* the deliberate confirmation, so the primary button submits on one click; the old arm/confirm double-click on the same screen added nothing. Returns `{ method, commitTitle, commitBody, bypassRules, expectedHeadSha }`. It does not offer branch deletion: on desktop a merge always keeps the remote branch, and removing it is the separate **Delete branch** action on the merged rail. |
-| `shared/PrMergeChecklist.tsx` | GitHub-parity requirement checklist for the merge surface: a header pill (`Checking mergeability…` while `mergeabilityComputing`, `Draft`, `Merging is blocked`, or `Ready to merge`) over a row per requirement (conflicts, behind base, checks, review). Renders approving-review avatars on the review row and the inline update-branch split button (merge commit / rebase) on the behind row. |
-| `shared/PrDetailRightMetadataRail.tsx` | Right-rail stack for reviewers/labels/participants plus the checks summary, built from `prSection.tsx`'s flat `PrSection` vocabulary rather than the old floating panes — borders are spent only where a real boundary is (Checks, Files changed). It feeds `shared/PrChecksCard.tsx` a `previewLimit` (`CHECKS_PREVIEW_LIMIT`, 5) so the card shows the worst five rows — `buildUnifiedChecks` already orders failures and in-flight jobs first — and the card renders required contexts from `checksMissingRequired` that never reported as dimmed ghost rows above the reported checks, and gates its own header on `checksStatus` so a producer-blind row count cannot claim a pass. Review actions are folded into the reviewer section. Also owns the review-submit dialog. |
-| `shared/PrCommitTickPill.tsx`, `shared/prCommitTickPill.logic.ts` | The commit index, as a small floating pill in the thread's top-left corner: one vertical tick per commit, newest at the top, hover to preview and click to jump. Force-push entries are filtered out of the ticks (the timeline still shows each one). Hidden below two commits. The `.logic` module holds the pure geometry — pitch, span, pill height, tick height and the lens — and shares its index/position maths with the chat minimap through `renderer/lib/tickStripGeometry.ts`. |
-| `shared/prSection.tsx` | The flat section vocabulary the right rail is built from: `PrSection` (icon, title, meta, action, optional inline-empty and divided variants) plus `prSectionAction`, `prFlatButton` and `prSolidButton`. Replaces the old floating-pane treatment. |
-| `shared/PrFilesChangedCard.tsx` | Capped changed-files summary with additions/deletions, in the right rail below checks; opens the Files tab rather than trying to be it. |
+| `shared/PrMergeDialog.tsx` | Portaled merge dialog (in `LaneDialogShell`, so its method dropdown is never clipped by the dock card). Method picker (`squash` / `merge` / `rebase`, remembered default), editable commit title/body seeded from `buildDefaultCommitMessage` with a "reset to GitHub default" affordance (hidden for `rebase`), collapsible command-line instructions, a stale-head guard that re-seeds defaults if the PR head advances while open, and an admin "Override & merge" path shown only when the viewer `canBypass` and the merge box is `blocked`. The bypass checkbox *is* the deliberate confirmation, so the primary button submits on one click; the old arm/confirm double-click on the same screen added nothing. Returns `{ method, commitTitle, commitBody, bypassRules, expectedHeadSha }`. It does not offer branch deletion: on desktop a merge always keeps the remote branch, and removing it is the separate **Delete branch** action in the Merge card of a merged PR. |
+| `shared/prSection.tsx` | The flat section vocabulary: `PrSection` (icon, title, meta, action, optional inline-empty and divided variants), used by the Checks tab, plus the `prFlatButton` and `prSolidButton` styles. |
 | `shared/PrCheckLogDrawer.tsx` | Per-job detail surface shared by the checks workspace, rendered for the job's **actual** state. Failed: named failing step, failure headline, bounded log tail, Fix in chat. Passed / running / queued / skipped: the step breakdown with per-step durations, drawn from `drawer.node.steps` (already hydrated by the checks poll) plus the full log on GitHub — no log fetch, and no failure wording. `buildCheckDetailPlan` in `detail/prChecksModel.ts` is the pure model behind it. It never fetches until opened, and for a job that did not fail it does not fetch at all. |
 | `shared/prListGrouping.ts` | Pure day/week grouping for the terminal buckets. `buildPrListRows(items, { grouped })` interleaves `PrListGroupHeader` rows into an already-sorted, newest-first item array without reordering it; `prListGroupLabel` names the period (`Today`, `Yesterday`, `This week`, `Last week`, a Monday-anchored `Jul 21 – 27` range within the same year, else `July 2026`); `prListGroupTimestamp` files a row under `mergedAt` → `updatedAt` → `createdAt`; `prListHeaderIndices` feeds sticky-header pinning; `formatPrListGroupDiff` renders the per-period `+1.2k −380` aggregate. Open PRs are deliberately ungrouped — a work queue reads better flat. iOS mirrors the same rules in `PrHelpers.swift`. |
-| `shared/prCheckList.tsx` | Pure compact check rendering and live-duration math shared by PR summary surfaces. |
-| `shared/prMergeRailUtils.ts` | Shared merge-rail helpers: `mergeMethodLabel` / `mergeMethodShortLabel`, `canAttemptMerge` (prefers `status.mergeStateStatus`, falls back to the legacy boolean), `buildMergeChecklist` (the per-requirement rows driven by `mergeStateStatus` + `reviewDecision`), `buildDefaultCommitMessage` (GitHub-style default merge/squash commit title + body), `deriveMergeBlockers`, `buildMergeCommandLineInstructions`, `deriveParticipants`, `reviewStateForLogin`, `isBotLogin`. Consumed by the merge dialog, checklist, metadata rail, and the timeline composer plumbing. `buildMergeChecklist` and `deriveMergeBlockers` both take the verdict from the canonical rollup (`status.checksStatus ?? pr.checksStatus`) rather than from `summarizeChecks`' row counts, which are producer-blind; a `not_run` rollup becomes a neutral "No CI has run on this commit" row instead of "All 3 checks passed". |
+| `shared/prMergeRailUtils.ts` | Shared merge helpers: `readLastMergeMethod` / `writeLastMergeMethod` (the last method the user picked, in `localStorage` under `ade:prs:lastMergeMethod`; every merge surface shares the key), `mergeMethodLabel` / `mergeMethodShortLabel`, `canAttemptMerge` (prefers `status.mergeStateStatus`, falls back to the legacy boolean), `buildDefaultCommitMessage` (GitHub-style default merge/squash commit title + body), and `buildMergeCommandLineInstructions`. Used by the merge dialog, the Merge card, the `⋯` menu, and the detail pane (auto-merge uses the remembered method). |
 | `shared/prUnifiedChecks.ts` | Reconciler between GitHub `PrCheck` rows and `PrActionRun.jobs`. Produces `UnifiedCheckItem[]` so the Checks sub-tab can display Actions jobs and named checks in a single list with steps + duration + details URL. |
 | `apps/desktop/src/shared/prPipelineState.ts` | Canonical status/conclusion → pipeline-state mapping and worst-state ranking used by service graphing, chat cards, and renderer rollups so cancelled/unknown/running jobs cannot be classified differently by surface. `pipelineStateOf` accepts `waiting` (an Actions run parked on a deployment approval — runs carry it, checks do not) and folds it into `queued`. `STATE_RANK` is exported because three surfaces sort by it (graph rollup, live matrix rollup, list sections) and three hand-written copies is three chances to disagree about where `unknown` sits. |
 | `apps/desktop/src/shared/prChecksRollup.ts` | The canonical checks rollup — the single answer to "was this commit verified?". Two entry points: `rollupChecks(input)` for the service, which sees check runs, legacy commit statuses and required contexts separately; and `rollupPrChecks(rows)` for surfaces that only hold a flattened `PrCheck[]` (the ADE CLI, the `ade code` TUI, chat toolbars). State mapping delegates to `prPipelineState`, so the rollup can never disagree with the per-job rows rendered beneath it. Also exports `NON_CI_PRODUCER_APP_SLUGS`' predicates (`isCiProducerAppSlug`, `isCiProducerCheck`), the `COMMIT_STATUS_APP_SLUG` sentinel, `NO_CI_REASON`, and `CI_PENDING_GRACE_MS`. See [Checks rollup](#checks-rollup-what-counts-as-a-pass). |
-| `shared/PrCommentComposer.tsx` | Inline comment composer used at the bottom of the timeline view; thin wrapper around `ChatComposerShell` with Enter-to-submit semantics. |
 | `shared/PrReviewSubmitModal.tsx` | Modal that captures the optional review body and `Approve` / `Request changes` / `Comment` event before submitting through `ade.prs.submitReview`. |
 | `shared/PrManageLaneDialogHost.tsx` | Hosts the shared `ManageLaneDialog` (delete / archive / adopt / appearance) from PR surfaces. Owns the local delete-confirmation state so the lane dialog can mount without polluting the PR detail pane. |
 | `shared/GitHubPrSearchInput.tsx`, `shared/GitHubRepoSyncBar.tsx` | Repo-PR header chrome shared by the GitHub tab and detail views: the magnifying-glass search input and the "syncing…" toolbar that drives manual snapshot refreshes. |
 | `shared/PrUserAvatar.tsx` | Shared GitHub user avatar with a fallback `UserCircle` glyph for users that don't have a cached avatar URL. Commit rows without a linked GitHub account use the Gravatar identicon URL the service derives from the commit-author email (see `prService.getCommits`), so the CSP allowlist includes `gravatar.com`. |
 | `shared/PrCommandPalettes.tsx` | `g c` (commits) / `g t` (threads) / `g f` (files) palettes opened by the keyboard chord and by the timeline toolbar |
-| `shared/PrReviewThreadCard.tsx`, `shared/PrBotReviewCard.tsx` | Rich thread cards for the timeline (bot-review collapse, reply box, resolve, `PrReactionBar`, and per-comment Edit via `usePrCommentEdit`) |
+| `shared/PrReviewThreadCard.tsx`, `shared/PrBotReviewCard.tsx` | Rich thread cards for the timeline (bot-review collapse, reply box, resolve, `PrReactionBar`, and per-comment Edit via `usePrCommentEdit`). `PrBotReviewCard` takes its name from `classifyPrAuthor` and its mark from `PrAgentAvatar`, so it uses the same bot table as every other PR surface. It reads severity, issue-count, and confidence badges from the body only for a bot that the table knows. |
 | `shared/PrDeploymentCard.tsx` | Deployment row used in the status rail and on the timeline |
 | `shared/PrAiResolverPanel.tsx` | AI resolver launch controls in Rebase/Integration flows, including additional-instructions passthrough |
 | `shared/PrLaneCleanupBanner.tsx` | Post-merge cleanup banner on the PR detail. Also renders a dedicated "PR branch cleanup" variant when the PR is linked to the primary lane but its head branch differs — the primary lane is never deleted, but the user can still delete the local and/or remote PR branch after confirming `delete <branch>` |
@@ -262,7 +264,7 @@ Renderer components (`apps/desktop/src/renderer/components/prs/`):
 | `shared/rebaseNeedUtils.ts` | Rebase need dedup, route selection, upstream rebase chain |
 | `shared/rebaseAttentionUtils.ts` | Auto-rebase attention items for the Rebase tab |
 | `shared/lanePrWarnings.ts` | Pre-submit lane-health warnings |
-| `shared/prFormatters.ts` | Formatting helpers shared across PR surfaces. `formatPrBadgeLabel(pr)` returns a state-aware compact badge (`PR #123`, `DRAFT #123`, `MERGED #123`, `CLOSED #123`) used by the chat git toolbar and the lane list PR tag so closed/merged PRs aren't visually identical to open ones. |
+| `shared/prFormatters.ts` | Formatting helpers shared across PR surfaces. `formatPrBadgeLabel(pr)` returns a state-aware compact badge (`PR #123`, `DRAFT #123`, `MERGED #123`, `CLOSED #123`) used by the chat git toolbar and the lane list PR tag so closed/merged PRs aren't visually identical to open ones. `formatError` turns a thrown value into a message for the detail pane and the `⋯` menu. |
 | `shared/laneBranchTargets.ts` | Target branch resolution for PR creation |
 | `ConflictFilePreview.tsx` | File-level conflict marker preview |
 | `PrRebaseBanner.tsx` | Rebase banner on a PR |
@@ -287,6 +289,11 @@ Shared contracts:
 | `apps/desktop/src/shared/types/git.ts` | `BranchPullRequest` (branch / prNumber / title / state / url / author / updatedAt) — the lightweight PR shape returned by `prService.listOpenPullRequests` and consumed by the branch picker without going through `PrSummary`. `GitHubAutolink` (id / keyPrefix / urlTemplate / isAlphanumeric) backs `ade.github.listRepoAutolinks` / `ade.github.createRepoAutolink`. The same module owns the optional `GitHubStatus` credential-chain fields described in [GitHub connectivity model](#github-connectivity-model). |
 | `apps/desktop/src/shared/types/conflicts.ts` | Conflict resolver DTOs; `PrepareResolverSessionArgs.additionalInstructions` is appended to generated resolver prompts. |
 | `apps/desktop/src/shared/linearMagicWords.ts` | Pure helpers for PR/commit Linear references. `linearPrMagicWord` / `buildLinearPrReference` / `ensureLinearPrReference` (single-issue magic word in the PR body), `dedupeLinearPrIssueReferences` / `ensureLinearPrReferences` (multi-issue dedupe + injection), and `renderLinearPrIssueLinkSection` / `ensureLinearPrIssueLinkSection` (the `<!-- ade:linear-links v=1 -->`-fenced "Linked Linear issues" markdown block appended to PR bodies by `prService.applyLinearPrLinkage`). |
+| `apps/desktop/src/shared/prNextStep.ts` | `resolvePrNextStep` / `resolvePrNextStepFromStatus`: the one next step for a PR (kind, headline, tone, requirement chips, and the "Merge anyway" skip list). See [Overview (triage layout)](#overview-triage-layout). The Merge card uses it, and `prService` stores the short `PrLaneNextStep` (`kind`, `headline`, `tone`) on `PrLaneSummary.nextStep` for the `ade code` TUI. |
+| `apps/desktop/src/shared/prBotIdentity.ts` | `classifyPrAuthor`, `isPrBotAuthor`, `normalizeGithubLogin`: tells a review bot or agent from a person, from GitHub's bot flag and the known agent logins. |
+| `apps/desktop/src/shared/prConversationDigest.ts` | `buildPrConversationDigest`: the conversation in triage shape. Open threads are pinned, the rest is one section per push, and bot activity is one row per bot with thread and comment counts (`describeBotGroup`). Person entries are never folded. |
+| `apps/desktop/src/shared/prBodyBotSections.ts` | `splitPrBodyBotSections`: removes the blocks that review bots write into the PR description (CodeRabbit release notes, the Cursor summary, the Devin review badge) by their HTML comment markers. The description keeps only the author's text. Each block becomes a synthetic comment (id prefix `desc-bot:`) from that bot, which the digest folds into the bot's row with the note "from the PR description". No text is dropped. |
+| `apps/desktop/src/shared/prAutoMerge.ts` | `describeAutoMergeFailure`: turns a GitHub auto-merge error into a sentence that names the repository setting to change. |
 | `apps/desktop/src/shared/prMarkdownText.ts` | `normalizeEscapedMarkdownNewlines(text)` — unescapes literal `\n` / `\r\n` / `\r` / `\t` sequences that arrive in PR bodies after GitHub round-trips them through JSON. Used by `PrMarkdown` before handing the string to ReactMarkdown so escaped newlines render as paragraph breaks. |
 | `apps/desktop/src/shared/ipc.ts` / `apps/desktop/src/preload/preload.ts` | PR IPC constants and renderer bridge for proposal simulation, update, commit, resolver, cleanup, and read flows. Read-heavy PR tab calls route to the remote runtime only for remote-bound windows and use in-process IPC for local-bound windows. Local PR/session push subscriptions are multiplexed so multiple renderer subscribers share one IPC listener per channel. |
 
@@ -389,9 +396,7 @@ for an unattributed run.
 `PrChecksStatus` has five values. `none` means nothing was observed **and**
 nothing led ADE to expect anything — a repo without CI stays quiet. `not_run`
 means something was expected and nothing verified the commit; it is the only one
-of the two that is a finding. It reads muted everywhere — never the danger colour: a hollow dashed ring on desktop PR rows and PR detail and on iOS, and a muted dot or label on Lanes, the workspace graph, the `pr_ci` chat card, and the TUI.
-the danger colour — absence is not failure) on desktop PR rows, Lanes, the
-workspace graph, PR detail, the Work-chat `pr_ci` card, iOS, and the TUI. The
+of the two that is a finding. It reads muted everywhere — never the danger colour: a hollow dashed ring on desktop PR rows and PR detail and on iOS, and a muted dot or label on Lanes, the Work-chat `pr_ci` card, and the TUI. The
 merge checklist and `deriveMergeBlockers` surface it as a neutral "No CI has run
 on this commit" row rather than a pass.
 
@@ -1723,18 +1728,18 @@ null`) the status carries `mergeabilityComputing: true` and the renderer
 re-polls, so the merge UI never gets stuck on a dead "Checking
 mergeability…" spinner.
 
-`PrMergeChecklist` renders that state as a GitHub-style requirement list
-(conflicts, behind base, checks, review) under a single header pill
-(`Checking mergeability…` / `Draft` / `Merging is blocked` / `Ready to
-merge`). The behind-base row carries an inline "Update branch" split
-button that calls `prService.updateBranch` with `strategy: "merge"`
-(GitHub's update-branch API) or `strategy: "rebase"` (ADE's local lane
-rebase onto the base + `--force-with-lease` push; on conflict the rebase
-auto-aborts and `hasConflicts` routes the user to the existing resolver).
+The Merge card (`PrMergeCard` in `shared/PrFloatingDock.tsx`) shows that
+state. It gives the next-step headline, then one requirement row per chip
+(conflicts, behind base, checks, review). When the branch is behind base,
+the main action is **Update branch**. It calls `prService.updateBranch`
+with `strategy: "merge"` (GitHub's update-branch API). The service also
+accepts `strategy: "rebase"` (ADE's local lane rebase onto the base +
+`--force-with-lease` push; on conflict the rebase auto-aborts and
+`hasConflicts` routes the user to the existing resolver).
 
 The actual merge runs through the portaled `PrMergeDialog`. It is
 mounted in `LaneDialogShell` so the method dropdown is never clipped by
-the rail. The dialog offers the method picker (remembered default), an
+the dock card. The dialog offers the method picker (remembered default), an
 editable commit title/body seeded from `buildDefaultCommitMessage` (sent
 as `commit_title` / `commit_message` on the REST merge and `--subject` /
 `--body` on the admin retry; ignored for `rebase`), collapsible
@@ -1782,15 +1787,35 @@ own "automatically delete head branches" setting may have won the race.
 
 ### Admin bypass
 
-When GitHub reports the merge box as `blocked` and the viewer has bypass
-permission (`status.canBypass`, derived from `viewerPermission ===
-"ADMIN"`), the dialog shows an "Override & merge" path instead of the
+When GitHub reports the merge box as `blocked` or `behind` and the viewer has
+bypass permission (`status.canBypass`, derived from `viewerPermission ===
+"ADMIN"`), the Merge card's "Merge anyway" becomes "Bypass & merge". It opens
+`PrMergeDialog` with the bypass box already ticked (`preferBypass`) and the
+list of what the merge skips (`skips`). The dialog shows an "Override & merge" path instead of the
 normal confirm button. Ticking the bypass checkbox is the deliberate
 confirmation, so the button submits on one click. It
 sets `LandPrArgs.bypassRules = true`, which instructs `prService.land` to
 retry with `gh pr merge --admin` (carrying the same commit title/body)
 after the standard REST merge comes back blocked. The merge request still
 goes through GitHub — GitHub itself decides whether the bypass is allowed.
+
+### Auto-merge and draft
+
+`prService.setAutoMerge` arms or disarms GitHub auto-merge with the
+`enablePullRequestAutoMerge` / `disablePullRequestAutoMerge` GraphQL mutations
+on the PR's node id. `prService.setDraft` uses `convertPullRequestToDraft` /
+`markPullRequestReadyForReview`. Both are reachable over IPC, the `pr` action
+domain, the web client adapter, and the sync commands `prs.setAutoMerge` /
+`prs.setDraft`.
+
+The merge-state GraphQL read also returns `repository.autoMergeAllowed` and
+`pullRequest.autoMergeRequest`, so `PrStatus` carries `autoMergeAllowed`,
+`autoMergeEnabled`, and `autoMergeMethod` at no extra request cost. The menu
+shows "Enable auto-merge" only when the repo allows it (or when an older
+runtime did not say), "Turn off auto-merge" when it is armed, and for an admin
+a link to the repo settings when it is off. A refused arm comes back through
+`describeAutoMergeFailure` (`shared/prAutoMerge.ts`) as a sentence that says
+what to do; an unknown error keeps GitHub's own words.
 
 ## Post-merge cleanup
 
@@ -1820,7 +1845,7 @@ made the opt-in a silent no-op for exactly the PRs it exists to serve.
 `prService.cleanupBranch` is a second cleanup entry point scoped to the
 PR branch itself rather than a lane. It is reachable from
 `PrLaneCleanupBanner` when the PR is linked to the primary lane but its
-head branch differs, and from the merge rail's **Delete branch** button on any
+head branch differs, and from the Merge card's **Delete branch** button on any
 merged PR. It works without a `pull_requests` row — state and head branch come
 from GitHub when ADE has none, and the local half is already guarded by a
 `show-ref` check, so a PR with no local branch simply deletes nothing locally.
@@ -1952,36 +1977,20 @@ The corresponding database columns are
 bootstrap schema and `IntegrationProposal` model so synced PR workflow
 cards can display the same state.
 
-## Timeline + Rails overview (PRs tab redesign)
+## Overview (triage layout)
 
-`PrDetailPane` always renders `PrDetailTimelineRails` for Overview; the
-legacy grid and its feature flag have been removed. The horizontal group has
-TWO pixel-preserving panels, split by one drag-resizable gutter whose width is
-persisted per project:
+`PrDetailPane` renders `PrDetailTimelineRails` for Overview in the PRs tab and in the chat tools panel. It is one column; nothing resizes.
 
-- **Left — what happened:** `PrTimeline` owns the chronological thread and the
-  inline comment composer. Author/avatar identity lives inside each
-  comment/review card; the old dedicated avatar gutter is gone. `PrCommitTickPill`
-  floats over its top-left corner, out of flow, so the thread keeps its full
-  width. There used to be a third panel here holding commits and files-changed;
-  it spent a whole column on a handful of short lines and squeezed the thread.
-- **Right — can this land:** `PrDetailRightMetadataRail` starts with
-  reviewers/labels/participants, then checks, then `PrFilesChangedCard`.
-  `PrDetailMergeRail` is a separate content-height card pinned at the bottom,
-  capped at 52% of the rail so its own scroller has a bounded parent.
+- **The thread:** `PrTimeline` with the digest model. The description comes first and renders as a document (`PrMarkdown` `variant="document"`). The "Needs attention" block follows with the open review threads, people first, then bots. Then one section per push, with each bot folded into one row. People, lifecycle events, labels, and deployments stay as full rows in the section where they happened.
+- **The push tick rail:** `PrPushTickRail` on the right edge. It replaces the floating commit pill.
+- **The floating dock:** `PrFloatingDock` at the bottom right. The thread reserves bottom padding so its last row scrolls clear of the dock.
 
-Below the timeline column itself, `PrCommentComposer` renders an
-inline shell-of-`ChatComposerShell` text area that posts an issue
-comment without the user having to switch sub-tabs.
+Bot detection uses `shared/prBotIdentity.ts`. GitHub marks a bot account in two ways: REST `user.type === "Bot"` (the login ends in `[bot]`) and GraphQL `__typename === "Bot"` (no suffix). The service stores the flag as `authorIsBot` / `reviewerIsBot` / `isBot`. A known agent login that is distinctive (`coderabbitai`, `devin-ai-integration`) counts without the flag, so older snapshots still classify. A short product word (`cursor`, `claude`) counts only with GitHub's flag or suffix, because a person can own that login.
 
-Per-PR state (persisted to `localStorage` under
-`ade:prs:timelineFiltersByPrId` and `ade:prs:dismissedAiSummaries`):
+The next step comes from `shared/prNextStep.ts`, one pure function in this priority order: merged, closed, draft, computing, conflicts, behind, checks failing, changes requested, auto-merge armed, checks running, review required, rules blocked, ready. It guides and does not gate: "Merge anyway" shows on every open, non-draft PR and lists what the merge skips. It is disabled only where GitHub itself refuses (conflicts, a draft, protection rules for a non-admin). `rules_blocked` exists so the card never says "Ready to merge" over GitHub's own `blocked` verdict.
 
-- `PrTimelineFilters` — which event types to show (description,
-  commits, reviews, threads, comments, checks, deployments, labels,
-  merges).
-- `dismissedAiSummaries[prId]` — whether the AI summary card is
-  collapsed for this PR.
+Timeline identity state (in `PrsContext`, not persisted). The Overview has no thread filters:
+
 - `viewerLogin` — authenticated GitHub login used to highlight
   reactions the viewer already placed, and the fallback mutation
   identity when `writeViewerLogin` is omitted.
@@ -2080,10 +2089,8 @@ best-effort — failures log a warning and do not abort the tick.
 - Workflow surfaces batch PR merge context through `prs.getMergeContexts(prIds)` instead of fanning out one `getMergeContext(prId)` call per card. The service builds the batch from metadata-only lane rows so integration/rebase views do not pay full git status cost on render.
 - `PrsContext` owns PR list, GitHub stack state, rebase needs, proposals,
   and the Timeline+Rails UI state
-  (`timelineFiltersByPrId`, `viewerLogin`,
-  `writeViewerLogin`, `detailReviewThreads`,
+  (`viewerLogin`, `writeViewerLogin`, `detailReviewThreads`,
   `detailDeployments`). It exposes
-  `setTimelineFilters` and
   `setViewerLogin` / `setWriteViewerLogin`.
 - Chat-side PR surfaces (`ChatGitToolbar`, `ChatPrPane`) first scope the cached
   lane PR set to the selected chat's explicit edges, so one chat can show more

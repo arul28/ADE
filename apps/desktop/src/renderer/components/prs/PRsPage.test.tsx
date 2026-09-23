@@ -15,6 +15,7 @@ const usePrsMock = vi.fn();
 vi.mock("./state/PrsContext", () => ({
   PrsProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   usePrs: () => usePrsMock(),
+  useOptionalPrs: () => usePrsMock(),
 }));
 
 // Stub the heavy tab subtrees: we only care about the page-level render branch.

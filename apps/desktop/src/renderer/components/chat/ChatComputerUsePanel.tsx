@@ -669,19 +669,7 @@ export function ChatComputerUsePanel({
     });
   }, [artifacts, scope.pin, withBusy]);
 
-  if (!snapshot || artifacts.length === 0) {
-    return (
-      <div className="flex min-h-44 flex-col items-center justify-center px-5 py-8 text-center">
-        <div className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-white/[0.06] bg-white/[0.025] text-muted-fg/25">
-          <Cube size={18} weight="duotone" />
-        </div>
-        <div className="mt-3 font-sans text-[12px] font-medium text-fg/55">No proof collected yet</div>
-        <div className="mt-1 max-w-64 font-sans text-[10.5px] leading-4 text-muted-fg/38">
-          Screenshots, recordings, browser captures, and other intentional proof attached to this chat will appear here.
-        </div>
-      </div>
-    );
-  }
+  if (!snapshot || artifacts.length === 0) return null;
 
   return (
     <div className="flex min-w-0 flex-col gap-2.5">

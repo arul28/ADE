@@ -255,7 +255,6 @@ import type {
   ResolveLaneBranchDriftResult,
   DeleteLaneArgs,
   DockLayout,
-  GraphPersistedState,
   FileChangeEvent,
   FileContent,
   FileTreeNode,
@@ -311,8 +310,6 @@ import type {
   GitStashRefArgs,
   GitStashSummary,
   GitSyncArgs,
-  GitSyncStatuses,
-  GitSyncStatusesArgs,
   GitHubAppDeviceAuthPollResult,
   GitHubAppDeviceAuthStartResult,
   GitHubAppUserAuthStatus,
@@ -535,8 +532,6 @@ import type {
   ListSessionsArgs,
   DeleteSessionArgs,
   ListTestRunsArgs,
-  MergeSimulationArgs,
-  MergeSimulationResult,
   OperationRecord,
   ProjectConfigCandidate,
   ProjectConfigDiff,
@@ -6801,18 +6796,6 @@ export function registerIpc({
     ctx.logger.debug("tilingTree.set", { key });
   });
 
-  ipcMain.handle(IPC.graphStateGet, async (_event, arg: { projectId: string }): Promise<GraphPersistedState | null> => {
-    const ctx = ensureDbContext();
-    const key = `graph_state:${arg.projectId}`;
-    return ctx.db.getJson<GraphPersistedState>(key);
-  });
-
-  ipcMain.handle(IPC.graphStateSet, async (_event, arg: { projectId: string; state: GraphPersistedState }): Promise<void> => {
-    const ctx = ensureDbContext();
-    const key = `graph_state:${arg.projectId}`;
-    ctx.db.setJson(key, arg.state);
-  });
-
   const ensureLaneContext = (): AppContextWith<"laneService"> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["laneService"] as const);
@@ -10408,11 +10391,6 @@ export function registerIpc({
     return await ctx.gitService.getSyncStatus(arg);
   });
 
-  ipcMain.handle(IPC.gitGetSyncStatuses, async (_event, arg: GitSyncStatusesArgs): Promise<GitSyncStatuses> => {
-    const ctx = ensureGitContext();
-    return await ctx.gitService.getSyncStatuses(arg);
-  });
-
   ipcMain.handle(IPC.gitGetOriginRemote, async (_event, arg: { laneId: string }): Promise<{ remoteUrl: string | null; branch: string | null }> => {
     const ctx = ensureGitLaneContext();
     const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
@@ -10559,19 +10537,9 @@ export function registerIpc({
     return await ctx.conflictService.getRiskMatrix();
   });
 
-  ipcMain.handle(IPC.conflictsSimulateMerge, async (_event, arg: MergeSimulationArgs): Promise<MergeSimulationResult> => {
-    const ctx = ensureConflictContext();
-    return await ctx.conflictService.simulateMerge(arg);
-  });
-
   ipcMain.handle(IPC.conflictsRunPrediction, async (_event, arg: RunConflictPredictionArgs = {}): Promise<BatchAssessmentResult> => {
     const ctx = ensureConflictContext();
     return await ctx.conflictService.runPrediction(arg);
-  });
-
-  ipcMain.handle(IPC.conflictsGetBatchAssessment, async (): Promise<BatchAssessmentResult> => {
-    const ctx = ensureConflictContext();
-    return await ctx.conflictService.getBatchAssessment();
   });
 
   ipcMain.handle(IPC.conflictsListProposals, async (_event, arg: { laneId: string }): Promise<ConflictProposal[]> => {
@@ -11989,6 +11957,8 @@ export function registerIpc({
   ipcMain.handle(IPC.prsSubmitReview, (_e, args) => ensurePrReadContext().prService.submitReview(args));
   ipcMain.handle(IPC.prsClose, (_e, args) => ensurePrReadContext().prService.closePr(args));
   ipcMain.handle(IPC.prsReopen, (_e, args) => ensurePrReadContext().prService.reopenPr(args));
+  ipcMain.handle(IPC.prsSetDraft, (_e, args) => ensurePrReadContext().prService.setDraft(args));
+  ipcMain.handle(IPC.prsSetAutoMerge, (_e, args) => ensurePrReadContext().prService.setAutoMerge(args));
   ipcMain.handle(IPC.prsRerunChecks, (_e, args) => ensurePrReadContext().prService.rerunChecks(args));
   ipcMain.handle(IPC.prsAiReviewSummary, (_e, args) => ensurePrReadContext().prService.aiReviewSummary(args));
 

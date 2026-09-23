@@ -28,6 +28,48 @@ function PlanMarkdown({ markdown }: { markdown: string }) {
   );
 }
 
+export function ChatPlanChecklist({
+  name,
+  steps,
+}: {
+  name?: string | null;
+  steps: AgentChatPlanStep[];
+}) {
+  const completed = steps.filter((step) => step.status === "completed").length;
+  const planName = name?.trim() || "";
+  return (
+    <>
+      <ChatCardRow
+        tone="neutral"
+        icon={ListChecks}
+        meta={steps.length ? `${completed}/${steps.length}` : null}
+      >
+        <div className="flex min-w-0 items-baseline gap-2">
+          <ChatCardTitle className="shrink-0 font-semibold">plan</ChatCardTitle>
+          {planName ? (
+            <span className="truncate text-[length:calc(var(--chat-font-size)*11/14)] text-fg/62">
+              {planName}
+            </span>
+          ) : null}
+        </div>
+      </ChatCardRow>
+      {steps.length ? (
+        <ChatCardDetail>
+          {steps.map((step, index) => (
+            <ChatCardDetailRow
+              key={`${step.text}:${index}`}
+              tone={planStepTone(step.status)}
+              strike={step.status === "completed"}
+              label={step.text}
+              title={step.text}
+            />
+          ))}
+        </ChatCardDetail>
+      ) : null}
+    </>
+  );
+}
+
 /** Step status → the shared tone vocabulary. A failed step is amber, not red. */
 function planStepTone(status: AgentChatPlanStep["status"]): ChatCardTone {
   if (status === "completed") return "ok";
@@ -40,13 +82,6 @@ export function CodexPlanCard({ event, onOpenInfo }: CodexPlanCardProps) {
   const [liveOpen, setLiveOpen] = useState(false);
   const steps = Array.isArray(event.steps) ? event.steps : [];
   const hasStreaming = Boolean(event.streamingText && event.streamingText.trim().length);
-  let stateLabel: string;
-  switch (event.state) {
-    case "complete": stateLabel = "Plan ready"; break;
-    case "active":
-    case "delta":    stateLabel = "Planning"; break;
-    default:         stateLabel = "Plan";
-  }
   const streamingTrimmed = (event.streamingText ?? "").trim();
   const showCompletedMarkdownInline = hasStreaming && event.state === "complete" && !steps.length;
   const showMarkdownToggle = hasStreaming && !showCompletedMarkdownInline;
@@ -75,35 +110,9 @@ export function CodexPlanCard({ event, onOpenInfo }: CodexPlanCardProps) {
         onOpenInfo && "cursor-pointer transition-colors hover:bg-white/[0.05] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/45",
       )}
     >
-      <ChatCardRow
-        // The plan itself is a static summary; only an in-progress task should
-        // use the running tone (and its spinner).
-        tone={event.state === "complete" ? "ok" : "neutral"}
-        icon={ListChecks}
-        align={event.explanation ? "top" : "center"}
-        meta={steps.length ? `${steps.filter((s) => s.status === "completed").length}/${steps.length}` : null}
-      >
-        <ChatCardTitle>{stateLabel}</ChatCardTitle>
-        {event.explanation ? (
-          <p className="mt-1 whitespace-normal text-[length:calc(var(--chat-font-size)*10.5/14)] leading-snug text-fg/62">
-            {event.explanation}
-          </p>
-        ) : null}
-      </ChatCardRow>
+      <ChatPlanChecklist name={event.explanation} steps={steps} />
 
-      {steps.length ? (
-        <ChatCardDetail>
-          {steps.map((step, idx) => (
-            <ChatCardDetailRow
-              key={`${step.text}:${idx}`}
-              tone={planStepTone(step.status)}
-              strike={step.status === "completed"}
-              label={step.text}
-              title={step.text}
-            />
-          ))}
-        </ChatCardDetail>
-      ) : !hasStreaming ? (
+      {!steps.length && !hasStreaming ? (
         <div className="ml-[26px] mt-1 text-[length:calc(var(--chat-font-size)*10.5/14)] italic text-fg/35">
           Drafting steps…
         </div>

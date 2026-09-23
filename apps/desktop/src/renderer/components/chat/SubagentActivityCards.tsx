@@ -341,7 +341,6 @@ export function SubagentResultCard({
   const statusWord = isSuccess ? "Finished" : isStopped ? stoppedResultStatusLine(event) : "Failed";
   const title = event.description?.trim() || statusWord;
   const summary = firstMeaningfulSummary(event.summaryPreview);
-  const stoppedActivity = event.lastActivity?.trim() || null;
   const childSessionId = event.childSessionId?.trim() || null;
   const typeAccent = spawnTypeAccent(event.spawnKind);
 
@@ -371,9 +370,36 @@ export function SubagentResultCard({
       className="inline-flex items-center gap-1 whitespace-nowrap font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-fg/45 transition-colors hover:text-[color:var(--chat-accent)]"
       title="View transcript"
     >
-      View transcript
+      view transcript
+      <CaretRight size={11} weight="bold" aria-hidden />
     </button>
   ) : null;
+
+  if (isStopped) {
+    const rawName = event.description?.trim() || "";
+    const name = rawName && !/^stopped\b/i.test(rawName) ? rawName : "Subagent";
+    const cause = event.stopSource === "user"
+      ? "you interrupted"
+      : (event.stopReason?.trim() || "stopped");
+    return (
+      <ChatCard skin="rail" tone="warn" data-testid="subagent-stopped-card">
+        <div className="flex min-w-0 items-center gap-2">
+          <Stop size={14} weight="bold" className="shrink-0 text-amber-300/85" aria-hidden />
+          <SubagentProviderMark provider={provider} />
+          <ChatCardTitle className="shrink-0 text-amber-100/85">{name}</ChatCardTitle>
+          {duration ? (
+            <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*10/14)] tabular-nums text-fg/45">
+              ran {duration}
+            </span>
+          ) : null}
+          <span className="min-w-0 truncate text-[length:calc(var(--chat-font-size)*11/14)] text-amber-100/70">
+            {cause}
+          </span>
+          {action ? <span className="ml-auto shrink-0">{action}</span> : null}
+        </div>
+      </ChatCard>
+    );
+  }
 
   return (
     <ChatCard skin={isSuccess ? "inset" : "rail"} tone={isSuccess ? "ok" : "warn"}>
@@ -445,18 +471,6 @@ export function SubagentResultCard({
             </div>
           ) : null}
         </div>
-      ) : null}
-      {isStopped ? (
-        <ChatCardDetail>
-          {stoppedActivity ? (
-            <ChatCardDetailRow tone="idle" label="last activity" value={stoppedActivity} />
-          ) : null}
-          <ChatCardDetailRow
-            tone={event.resultLanded ? "ok" : "idle"}
-            label="outcome"
-            value={stoppedResultOutcome(event.resultLanded)}
-          />
-        </ChatCardDetail>
       ) : null}
     </ChatCard>
   );
@@ -675,7 +689,6 @@ export function SubagentStoppedGroupCard({
               tone="idle"
               label={stoppedGroupItemLabel(item)}
               title={item.lastActivity ? `${item.title} — ${item.lastActivity}` : item.title}
-              value={stoppedGroupItemOutcome(item)}
             />
           ))}
         </ChatCardDetail>

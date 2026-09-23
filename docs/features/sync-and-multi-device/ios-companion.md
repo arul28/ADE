@@ -3155,7 +3155,7 @@ available.
 
 ### Planned
 
-- Automations, Graph, History tabs.
+- Automations and History tabs.
 - Full Settings parity with the desktop.
 - iPad adaptive layout, Spotlight.
 
@@ -3418,11 +3418,10 @@ Timeline+Rails PR view. Its Overview is emitted as sibling `List` rows
 virtualizes offscreen thread content instead of laying out the whole PR on
 every scroll frame. The navigation header uses a plain back chevron, centered
 PR title with `#number · lane · branch`, and a plain ellipsis actions button.
-Reading order (desktop parity, folded to one column):
+Reading order (the desktop triage layout, native to a phone):
 
-1. a compact summary section (`PrDetailSummarySection`) with a state/approval
-   line and three metrics: Checks, Changes, and Commits. Commits expand inline
-   from their metric and jump to the matching timeline anchor;
+1. the header card (`PrDetailHeaderCard`, `PrDetailRedesign.swift`): number,
+   author and age, state, the title, `base ← head`, and the lane;
 2. a collapsed-by-default local-lane offer (`PrLocalLaneOfferBanner`) when no
    local lane tracks this PR's branch — "Create a lane from this branch, or link
    one you already have, to edit the code on your machine". It is an offer to
@@ -3433,31 +3432,35 @@ Reading order (desktop parity, folded to one column):
 3. the PR description (`PrThreadDescriptionCard`). GitHub's embedded HTML is
    normalized into safe Markdown, while `<details>/<summary>` regions become
    native `DisclosureGroup` rows instead of visible raw tags;
-4. a chronological event feed — one row per timeline event or folded
-   commit group, ascending oldest → newest, built by
-   `buildPullRequestTimeline` and folded via `buildPrTimelineDisplayItems`
-   (`PrDetailActivityTab.swift`) so runs of same-author commits collapse
-   into a single group row;
-5. review threads (unresolved first, resolved folded into a collapsible
-   section). Individual thread/comment cards are also collapsible on mobile:
-   folded rows use cheap inline preview text, while expanded rows render the
-   full normalized markdown body through `WorkMarkdownRenderer`;
-6. the comment composer — shown for every PR. Commenting is a GitHub call, so a
-   local lane is not a precondition and there is no locked-composer state;
-7. the inline merge rail (`PrOverviewMergeRail`) carrying the desktop
-   GitHub-style requirement checklist (`PrMergeChecklist` —
-   conflicts / behind-base / checks / review), the merge-method sheet, and
-   admin-bypass gating;
-8. metadata cards — checks, commits, files, people, and the stack card,
-   plus a post-merge cleanup banner.
+4. "Needs attention" (`PrNeedsAttentionHeader`): the unresolved review threads,
+   with reply and resolve, pinned above the history;
+5. the history, built by `buildPullRequestTimeline` and folded by
+   `buildPrDigestDisplayItems`: a divider per push (`PrPushDividerRow`) and one
+   folded row per bot per push (`PrBotGroupRow`). People and lifecycle events
+   stay as full rows. GitHub's bot flag (`reviewerIsBot` / `authorIsBot`)
+   rides along, so a GraphQL-style bot login without `[bot]` still folds;
+6. resolved threads, folded into a collapsible section;
+7. the comment composer — shown for every PR;
+8. the people card, the ADE stack card, and the post-merge cleanup banner.
 
-There is no separate Activity sub-tab — the activity feed lives inside
-Overview, and the visible sub-tabs are Overview / Files / CI-Checks (a
-persisted `.activity` selection routes to Overview). The
-render-path-expensive derived models — the sorted timeline, the folded
-display items, the unresolved/resolved thread split, and the synthesized
-fallback PR — are precomputed once per data change in
-`recomputeDerivedModels()`, never inside `body`.
+The next step is a bar above the tab bar on every tab (`PrNextStepBar`). It
+shows the headline from `PrNextStep.resolve` (the Swift port of the desktop
+`resolvePrNextStep`, same priority order) and its one action. A tap on the
+headline opens `PrNextStepSheet` with the detail, the requirement chips, the
+secondary action, and "Merge anyway" (the admin bypass when rules block), which
+opens the existing merge-method sheet. The inline merge rail and the checks,
+commits, and files cards are gone from Overview: the bar and the tabs carry
+them.
+
+The sub-tabs are Overview / Files / Checks. Checks has a live note
+(`PrChecksTabNote`): passed/total while any check runs, then a pass or fail
+mark. A persisted `.activity` selection routes to Overview. The `⋯` actions
+sheet adds Convert to draft / Ready for review (`prs.setDraft`), Enable or Turn
+off auto-merge (`prs.setAutoMerge`, shown from the repo's `autoMergeAllowed`),
+and Copy PR number / branch / checkout command. The render-path-expensive
+derived models — the sorted timeline, the digest items, the unresolved/resolved
+thread split, and the synthesized fallback PR — are precomputed once per data
+change in `recomputeDerivedModels()`, never inside `body`.
 
 A PR with no local `pull_requests` row navigates to this same full screen with a
 synthetic `gh:owner/repo#number` route instead of opening the old metadata-only
@@ -3477,9 +3480,10 @@ tell a test job from a preview bot, and reimplementing the producer rule locally
 is exactly how the two would drift. The host's canonical rollup arrives on the
 replicated `pull_requests` row as `checksStatus` (`passing | failing | pending |
 none | not_run`) plus `checksReason` and `checksMissingRequired`, and every iOS
-surface reads it: `PrRowCard`'s status dot, the merge checklist
-(`PrMergeChecklist`), the merge gate card, the Work-chat PR views, and
-`PrDetailChecksTab`. `not_run` — something was expected and nothing verified the
+surface reads it: `PrRowCard`'s status dot, the next-step resolver and its
+requirement chips (`PrDetailRedesign.swift`), the merge checklist
+(`PrMergeChecklist`), the merge gate (`prComputeMergeGate`), the Work-chat PR
+views, and `PrDetailChecksTab`. `not_run` — something was expected and nothing verified the
 commit — renders as a hollow dashed ring, distinct from `none` (a repo with no
 CI, which stays quiet), and the CI-Checks empty state reads "No CI ran on this
 commit" over the host's `checksReason` sentence instead of the default "No CI
@@ -3639,7 +3643,7 @@ the stats and shows update guidance.
 | Work tab | Implemented; live chat-event push from runtime, subscribed terminal input/resize control with `terminal_unsubscribe` on view disappear, in-app CLI session launcher (`work.startCliSession`) with camera-roll and pasted-image prompts, external provider-session browse/import (`work.listExternalSessions` / `work.importExternalSession`), message-to-continue on ended agent CLI rows, cross-client activity carousel in the new-chat screen's collapsible header (kept mounted, collapsed rather than unmounted, when the header tier hides it) |
 | PRs tab | Implemented; driven by `prs.getMobileSnapshot` |
 | Settings tab (pairing / appearance / diagnostics) | Implemented |
-| Automations / Graph / History tabs | Planned |
+| Automations / History tabs | Planned |
 | Full Settings parity | Planned |
 | Lock Screen widget | Implemented; one prioritized account status across signed-in machines/projects, agents, PRs, sync, offline, and idle states |
 | Push notifications (APNs alerts + exact cross-machine deep links) | Implemented (on-device E2E needs a physical iPhone) |

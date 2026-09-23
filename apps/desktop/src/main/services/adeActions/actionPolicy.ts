@@ -506,6 +506,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "resolveReviewThread",
     "retargetBase",
     "reopenPr",
+    "setDraft",
+    "setAutoMerge",
     "replyToReviewThread",
     "rerunChecks",
     "regenerateAiSummary",
@@ -854,7 +856,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   terminal: ["list", "read", "preview", "write", "resize", "signal", "activeForChat", "reattachChatCli"],
   layout: ["get", "set"],
   tiling_tree: ["get", "set"],
-  graph_state: ["get", "set"],
   // Read-only for everyone except the desktop that owns the pane:
   // `setActiveTool` is how a desktop renderer publishes which tool it has open
   // so phones and the hosted web client can mirror it.

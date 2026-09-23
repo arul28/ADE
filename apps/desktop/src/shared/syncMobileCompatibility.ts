@@ -122,6 +122,10 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "apple.recordList",
   "apple.recordStart",
   "apple.recordStop",
+  // Draft and auto-merge toggles. The phone hides each control until the
+  // host advertises the action, so an older host stays "full".
+  "prs.setDraft",
+  "prs.setAutoMerge",
 ] as const satisfies readonly SyncRemoteCommandAction[];
 
 export const MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS = [

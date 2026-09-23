@@ -9136,3 +9136,64 @@ describe("parseSyntheticGithubPrId", () => {
     expect(parseSyntheticGithubPrId(prId)).toBeNull();
   });
 });
+
+describe("draft and auto-merge mutations", () => {
+  const syntheticId = `gh:${REPO.owner}/${REPO.name}#77`;
+
+  function graphqlService(handle: (query: string, variables: Record<string, unknown>) => unknown) {
+    return makeGithubService({
+      apiRequest: vi.fn(async (args: { path: string; body?: unknown }) => {
+        if (args.path !== "/graphql") return { data: [] };
+        const body = (args.body ?? {}) as { query?: string; variables?: Record<string, unknown> };
+        const query = String(body.query ?? "");
+        if (query.includes("pullRequest(number:$number){ id }")) {
+          return { data: { data: { repository: { pullRequest: { id: "PR_node_77" } } } } };
+        }
+        return { data: handle(query, body.variables ?? {}) };
+      }),
+    });
+  }
+
+  function mutationCalls(githubService: ReturnType<typeof makeGithubService>) {
+    return githubService.apiRequest.mock.calls
+      .map(([args]: [{ body?: { query?: string; variables?: Record<string, unknown> }; capability?: string; repo?: unknown }]) => args)
+      .filter((args: { body?: { query?: string } }) => /^\s*mutation\b/i.test(String(args.body?.query ?? "")));
+  }
+
+  it("arms auto-merge on the PR node with the chosen method, as a write on the owning repo", async () => {
+    const githubService = graphqlService(() => ({ data: { enablePullRequestAutoMerge: { clientMutationId: null } } }));
+    const { service } = buildService({ githubService });
+    await service.setAutoMerge({ prId: syntheticId, enabled: true, method: "rebase" });
+    const [call] = mutationCalls(githubService);
+    expect(call?.body?.query).toContain("enablePullRequestAutoMerge");
+    expect(call?.body?.variables).toEqual({ id: "PR_node_77", method: "REBASE" });
+    expect(call).toEqual(expect.objectContaining({ capability: "write", repo: REPO }));
+  });
+
+  it("disarms auto-merge without a method", async () => {
+    const githubService = graphqlService(() => ({ data: { disablePullRequestAutoMerge: { clientMutationId: null } } }));
+    const { service } = buildService({ githubService });
+    await service.setAutoMerge({ prId: syntheticId, enabled: false });
+    const [call] = mutationCalls(githubService);
+    expect(call?.body?.query).toContain("disablePullRequestAutoMerge");
+    expect(call?.body?.variables).toEqual({ id: "PR_node_77" });
+  });
+
+  it("says where the repo setting is when GitHub refuses auto-merge", async () => {
+    const githubService = graphqlService(() => ({ errors: [{ message: "Pull request Auto merge is not allowed for this repository" }] }));
+    const { service } = buildService({ githubService });
+    await expect(service.setAutoMerge({ prId: syntheticId, enabled: true })).rejects.toThrow(
+      `Auto-merge is off for ${REPO.owner}/${REPO.name}. Turn on "Allow auto-merge" in the repository settings, then try again.`,
+    );
+  });
+
+  it("converts to draft and marks ready with the two GitHub mutations", async () => {
+    const githubService = graphqlService(() => ({ data: { convertPullRequestToDraft: { pullRequest: { isDraft: true } }, markPullRequestReadyForReview: { pullRequest: { isDraft: false } } } }));
+    const { service } = buildService({ githubService });
+    await service.setDraft({ prId: syntheticId, draft: true });
+    await service.setDraft({ prId: syntheticId, draft: false });
+    const queries = mutationCalls(githubService).map((call: { body?: { query?: string } }) => call.body?.query ?? "");
+    expect(queries[0]).toContain("convertPullRequestToDraft");
+    expect(queries[1]).toContain("markPullRequestReadyForReview");
+  });
+});

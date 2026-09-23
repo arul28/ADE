@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createRef } from "react";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { createRef, type Ref } from "react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 // Mock child cards to keep this test focused on Timeline behavior.
 vi.mock("./PrReviewThreadCard", () => ({
@@ -25,7 +25,6 @@ vi.mock("./PrBotReviewCard", () => ({
       data-default-open={defaultOpen ? "true" : "false"}
     />
   ),
-  detectBotProvider: (login: string) => (login.endsWith("[bot]") ? "coderabbit" : null),
 }));
 
 vi.mock("./PrMarkdown", () => ({
@@ -62,12 +61,10 @@ import type {
 } from "../../../../shared/types/prs";
 import {
   PrTimeline,
-  applyTimelineFilters,
-  buildRenderItems,
-  DEFAULT_PR_TIMELINE_FILTERS,
+  type PrTimelineProps,
   type PrTimelineRef,
-  type PrTimelineFilters,
 } from "./PrTimeline";
+import { buildDigestTimelineModel } from "./prDigestTimelineModel";
 
 beforeEach(() => {
   // IntersectionObserver stub — mark everything immediately visible.
@@ -115,322 +112,57 @@ function makeEvent(overrides: Partial<PrTimelineEvent> & Pick<PrTimelineEvent, "
 function fixture500(): PrTimelineEvent[] {
   const events: PrTimelineEvent[] = [];
   for (let i = 0; i < 500; i += 1) {
-    // Distinct author per commit so the same-author commit-grouping fold does
-    // not collapse the list — this fixture exists to exercise virtualization
-    // over a large render-item count, not the grouping path.
+    // People are never folded, so each comment stays its own digest row.
     events.push(
       makeEvent({
         id: `e-${i}`,
-        type: "commit_push",
+        type: "issue_comment",
+        commentId: `e-${i}`,
         author: `dev-${i}`,
-        sha: "a".repeat(40),
-        shortSha: "aaaaaaa",
-        subject: `commit ${i}`,
-        commitCount: 1,
-        forcePushed: false,
+        timestamp: new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString(),
+        body: `comment ${i}`,
+        isBot: false,
       }),
     );
   }
   return events;
 }
 
-describe("applyTimelineFilters", () => {
-  const events: PrTimelineEvent[] = [
-    makeEvent({
-      id: "t-open",
-      type: "review_thread",
-      threadId: "t-open",
-      path: "a.ts",
-      line: 1,
-      startLine: null,
-      isResolved: false,
-      isOutdated: false,
-      commentCount: 1,
-      firstCommentBody: "issue",
-    }),
-    makeEvent({
-      id: "t-resolved",
-      type: "review_thread",
-      threadId: "t-resolved",
-      path: "b.ts",
-      line: 2,
-      startLine: null,
-      isResolved: true,
-      isOutdated: false,
-      commentCount: 1,
-      firstCommentBody: "done",
-    }),
-    makeEvent({
-      id: "t-outdated",
-      type: "review_thread",
-      threadId: "t-outdated",
-      path: "c.ts",
-      line: 3,
-      startLine: null,
-      isResolved: false,
-      isOutdated: true,
-      commentCount: 1,
-      firstCommentBody: "stale",
-    }),
-  ];
-
-  it("shows resolved and outdated threads by default", () => {
-    const out = applyTimelineFilters(events, DEFAULT_PR_TIMELINE_FILTERS, "alice");
-    expect(out).toHaveLength(3);
-  });
-
-  it("hides resolved and outdated when flags are off", () => {
-    const filters: PrTimelineFilters = {
-      showResolved: false,
-      showOutdated: false,
-      onlyMine: false,
-      onlyBots: false,
-    };
-    const out = applyTimelineFilters(events, filters, "alice");
-    const ids = out.map((e) => e.id);
-    expect(ids).toEqual(["t-open"]);
-  });
-
-  it("includes resolved + outdated when flags are on", () => {
-    const filters: PrTimelineFilters = {
-      showResolved: true,
-      showOutdated: true,
-      onlyMine: false,
-      onlyBots: false,
-    };
-    const out = applyTimelineFilters(events, filters, "alice");
-    expect(out).toHaveLength(3);
-  });
-
-  it("excludes check notifications from the overview feed", () => {
-    const out = applyTimelineFilters(
-      [
-        makeEvent({
-          id: "check:Vercel:2026-05-15T00:03:20Z",
-          type: "check_update",
-          checkName: "Vercel",
-          status: "completed",
-          conclusion: "success",
-          detailsUrl: "https://example.com",
-        }),
-        makeEvent({
-          id: "t-open",
-          type: "review_thread",
-          threadId: "t-open",
-          path: "a.ts",
-          line: 1,
-          startLine: null,
-          isResolved: false,
-          isOutdated: false,
-          commentCount: 1,
-          firstCommentBody: "open",
-        }),
-      ],
-      DEFAULT_PR_TIMELINE_FILTERS,
-      "alice",
-    );
-    expect(out.map((event) => event.id)).toEqual(["t-open"]);
-  });
-
-  it("always keeps pr_opened events even when mine/bots filters are active", () => {
-    const opened = makeEvent({
-      id: "opened:pr-1",
-      type: "pr_opened",
-      author: "octocat",
-      title: "Add PR opened banner",
-      githubPrNumber: 42,
-      repoOwner: "acme",
-      repoName: "ade",
-      baseBranch: "main",
-      headBranch: "feature/banner",
-      isDraft: false,
-      additions: 12,
-      deletions: 3,
-    });
-    const mineOnly: PrTimelineFilters = {
-      ...DEFAULT_PR_TIMELINE_FILTERS,
-      onlyMine: true,
-    };
-    const botsOnly: PrTimelineFilters = {
-      ...DEFAULT_PR_TIMELINE_FILTERS,
-      onlyBots: true,
-    };
-    expect(applyTimelineFilters([opened], mineOnly, "alice").map((e) => e.id)).toEqual(["opened:pr-1"]);
-    expect(applyTimelineFilters([opened], botsOnly, "alice").map((e) => e.id)).toEqual(["opened:pr-1"]);
-  });
-});
-
-function makeThread(id: string, isResolved: boolean): PrTimelineEvent {
-  return makeEvent({
-    id,
-    type: "review_thread",
-    threadId: id,
-    path: "a.ts",
-    line: 1,
-    startLine: null,
-    isResolved,
-    isOutdated: false,
-    commentCount: 1,
-    firstCommentBody: id,
-  });
+function renderTimeline(
+  events: PrTimelineEvent[],
+  overrides: Partial<PrTimelineProps> & { ref?: Ref<PrTimelineRef> } = {},
+) {
+  return render(
+    <PrTimeline
+      events={events}
+      digest={buildDigestTimelineModel(events)}
+      prId="pr-1"
+      laneId={null}
+      repoOwner="acme"
+      repoName="ade"
+      viewerLogin="alice"
+      {...overrides}
+    />,
+  );
 }
 
-describe("buildRenderItems", () => {
-  it("folds a run of 2+ consecutive resolved threads into one resolved-group", () => {
-    const items = buildRenderItems([
-      makeThread("r1", true),
-      makeThread("r2", true),
-      makeThread("r3", true),
-    ]);
-    expect(items).toHaveLength(1);
-    const group = items[0]!;
-    expect(group.kind).toBe("resolved-group");
-    if (group.kind !== "resolved-group") throw new Error("expected resolved-group");
-    expect(group.threads.map((t) => t.id)).toEqual(["r1", "r2", "r3"]);
-    // Group id is derived from the first folded thread so it stays stable.
-    expect(group.id).toBe("resolved-group:r1");
-  });
-
-  it("leaves a single resolved thread as a plain event (no fold)", () => {
-    const items = buildRenderItems([makeThread("solo", true)]);
-    expect(items).toHaveLength(1);
-    expect(items[0]!.kind).toBe("event");
-    expect(items[0]!.id).toBe("solo");
-  });
-
-  it("does not fold an unresolved thread sandwiched between resolved ones — it breaks the run", () => {
-    const items = buildRenderItems([
-      makeThread("r1", true),
-      makeThread("r2", true),
-      makeThread("open", false),
-      makeThread("r3", true),
-      makeThread("r4", true),
-    ]);
-    // Two folded groups around the unresolved event in the middle.
-    expect(items.map((i) => i.kind)).toEqual(["resolved-group", "event", "resolved-group"]);
-    expect(items[1]!.kind === "event" && items[1]!.event.id).toBe("open");
-    if (items[0]!.kind !== "resolved-group" || items[2]!.kind !== "resolved-group") {
-      throw new Error("expected resolved-group bookends");
-    }
-    expect(items[0]!.threads.map((t) => t.id)).toEqual(["r1", "r2"]);
-    expect(items[2]!.threads.map((t) => t.id)).toEqual(["r3", "r4"]);
-  });
-
-  it("flushes a trailing resolved run after a non-thread event", () => {
-    const items = buildRenderItems([
-      makeEvent({
-        type: "commit_push",
-        id: "c1",
-        author: "solo",
-        sha: "a".repeat(40),
-        shortSha: "aaaaaaa",
-        subject: "commit",
-        commitCount: 1,
-        forcePushed: false,
-      }),
-      makeThread("r1", true),
-      makeThread("r2", true),
-    ]);
-    expect(items.map((i) => i.kind)).toEqual(["event", "resolved-group"]);
-    expect(items[0]!.id).toBe("c1");
-  });
-
-  function makeCommit(id: string, author: string): PrTimelineEvent {
-    return makeEvent({
-      id,
-      type: "commit_push",
-      author,
-      sha: "a".repeat(40),
-      shortSha: id.slice(0, 7),
-      subject: id,
-      commitCount: 1,
-      forcePushed: false,
-    });
-  }
-
-  it("folds 2+ consecutive same-author commits into one commit-group", () => {
-    const items = buildRenderItems([
-      makeCommit("c1", "alice"),
-      makeCommit("c2", "alice"),
-      makeCommit("c3", "alice"),
-    ]);
-    expect(items).toHaveLength(1);
-    const group = items[0]!;
-    expect(group.kind).toBe("commit-group");
-    if (group.kind !== "commit-group") throw new Error("expected commit-group");
-    expect(group.commits.map((c) => c.id)).toEqual(["c1", "c2", "c3"]);
-    expect(group.id).toBe("commit-group:c1");
-  });
-
-  it("breaks the commit run when the author changes", () => {
-    const items = buildRenderItems([
-      makeCommit("c1", "alice"),
-      makeCommit("c2", "alice"),
-      makeCommit("c3", "bob"),
-    ]);
-    // alice's pair folds; bob's single stays a plain event.
-    expect(items.map((i) => i.kind)).toEqual(["commit-group", "event"]);
-    expect(items[1]!.kind === "event" && items[1]!.event.id).toBe("c3");
-  });
-
-  it("synthesizes a single checks-summary before the merge from all check rows", () => {
-    const items = buildRenderItems([
-      makeEvent({
-        id: "check:lint",
-        type: "check_update",
-        checkName: "lint",
-        status: "completed",
-        conclusion: "success",
-        detailsUrl: null,
-      }),
-      makeEvent({
-        id: "check:test",
-        type: "check_update",
-        checkName: "test",
-        status: "completed",
-        conclusion: "failure",
-        detailsUrl: null,
-      }),
-      makeEvent({
-        type: "merge",
-        id: "merge:1",
-        mergeCommitSha: "abc1234",
-        method: "squash",
-        baseBranch: "main",
-      }),
-    ]);
-    // Check rows collapse into one summary placed *before* the merge.
-    expect(items.map((i) => i.kind)).toEqual(["checks-summary", "event"]);
-    const summary = items[0]!;
-    if (summary.kind !== "checks-summary") throw new Error("expected checks-summary");
-    expect(summary.checks.map((c) => c.checkName).sort()).toEqual(["lint", "test"]);
-    expect(items[1]!.kind === "event" && items[1]!.event.type).toBe("merge");
-  });
-});
+function openBotGroup(agent: string) {
+  const group = document.querySelector(`[data-testid="pr-digest-bot-group"][data-agent="${agent}"]`) as HTMLElement;
+  fireEvent.click(group.querySelector("button[aria-expanded]")!);
+  return group;
+}
 
 describe("PrTimeline", () => {
   it("mounts without crashing on a 500-event fixture and uses the virtualizer", () => {
     virtualizerSpy.mockClear();
-    const events = fixture500();
-    render(
-      <PrTimeline
-        events={events}
-        prId="pr-1"
-        laneId={null}
-        repoOwner="acme"
-        repoName="ade"
-        viewerLogin="alice"
-        filters={{ ...DEFAULT_PR_TIMELINE_FILTERS, showResolved: true }}
-        onFiltersChange={() => {}}
-      />,
-    );
+    renderTimeline(fixture500());
     expect(virtualizerSpy).toHaveBeenCalled();
     const args = virtualizerSpy.mock.calls[0]![0] as { count: number };
     expect(args.count).toBe(500);
   });
 
-  it("renders an identity-bearing author avatar once — in the card header, never also on the rail gutter", () => {
-    const events: PrTimelineEvent[] = [
+  it("renders an author avatar once, in the card header", () => {
+    renderTimeline([
       makeEvent({
         id: "c1",
         type: "issue_comment",
@@ -440,120 +172,98 @@ describe("PrTimeline", () => {
         body: "looks good",
         isBot: false,
       }),
-    ];
-    render(
-      <PrTimeline
-        events={events}
-        prId="pr-1"
-        laneId={null}
-        repoOwner="acme"
-        repoName="ade"
-        viewerLogin="alice"
-        filters={DEFAULT_PR_TIMELINE_FILTERS}
-        onFiltersChange={() => {}}
-      />,
-    );
-    // The gutter is a 2px spine now: one avatar total (the card header's), and
-    // no icon node for an event that already carries a face.
-    const avatars = document.querySelectorAll('img[src="https://avatars.example/alice.png"]');
-    expect(avatars).toHaveLength(1);
-    expect(screen.getAllByTestId("pr-timeline-rail-spine").length).toBeGreaterThan(0);
-    expect(screen.queryAllByTestId("pr-timeline-rail-icon")).toHaveLength(0);
-  });
-
-  it("keeps a rail icon node for events with no identity (nothing else marks them on the spine)", () => {
-    const events: PrTimelineEvent[] = [
-      makeEvent({
-        id: "d1",
-        type: "deployment",
-        author: null,
-        deploymentId: "d1",
-        environment: "preview",
-        state: "success",
-        environmentUrl: null,
-      }),
-    ];
-    render(
-      <PrTimeline
-        events={events}
-        prId="pr-1"
-        laneId={null}
-        repoOwner="acme"
-        repoName="ade"
-        viewerLogin="alice"
-        filters={DEFAULT_PR_TIMELINE_FILTERS}
-        onFiltersChange={() => {}}
-      />,
-    );
-    expect(screen.getAllByTestId("pr-timeline-rail-icon").length).toBeGreaterThan(0);
+    ]);
+    expect(document.querySelectorAll('img[src="https://avatars.example/alice.png"]')).toHaveLength(1);
   });
 
   it("renders a bodyful bot review collapsed by default (no defaultOpen override)", () => {
-    const events: PrTimelineEvent[] = [
+    renderTimeline([
       makeEvent({
         id: "r1",
         type: "review",
         reviewId: "r1",
         state: "commented",
         isBot: true,
-        author: "greptile[bot]",
+        author: "greptile-apps[bot]",
         body: "## Greptile review\n" + "finding\n".repeat(40),
       }),
-    ];
-    render(
-      <PrTimeline
-        events={events}
-        prId="pr-1"
-        laneId={null}
-        repoOwner="acme"
-        repoName="ade"
-        viewerLogin="alice"
-        filters={DEFAULT_PR_TIMELINE_FILTERS}
-        onFiltersChange={() => {}}
-      />,
-    );
+    ]);
+    const group = openBotGroup("greptile");
+    fireEvent.click(group.querySelector('li[data-event-id="r1"] button')!);
     const card = screen.getByTestId("bot-review-card");
     // A late bot review must not dump its full body expanded at the thread end.
     expect(card.getAttribute("data-default-open")).toBe("false");
   });
 
   it("collapses a long bot-authored issue comment behind a Show more affordance", () => {
-    const longBotComment: PrTimelineEvent = makeEvent({
-      id: "c-bot-long",
-      type: "issue_comment",
-      commentId: "c-bot-long",
-      isBot: true,
-      author: "ade[bot]",
-      body: "## Bot review\n" + "detail line\n".repeat(30),
-    });
-    const shortHumanComment: PrTimelineEvent = makeEvent({
-      id: "c-human",
-      type: "issue_comment",
-      commentId: "c-human",
-      isBot: false,
-      author: "alice",
-      body: "looks good to me",
-    });
-    render(
-      <PrTimeline
-        events={[longBotComment, shortHumanComment]}
-        prId="pr-1"
-        laneId={null}
-        repoOwner="acme"
-        repoName="ade"
-        viewerLogin="alice"
-        filters={DEFAULT_PR_TIMELINE_FILTERS}
-        onFiltersChange={() => {}}
-      />,
-    );
-    // The long bot comment collapses (expand affordance present); the short human
-    // comment renders inline with no collapse control.
-    expect(screen.getByText("Show more")).toBeTruthy();
+    renderTimeline([
+      makeEvent({
+        id: "c-bot-long",
+        type: "issue_comment",
+        commentId: "c-bot-long",
+        isBot: true,
+        author: "ade[bot]",
+        body: "## Bot review\n" + "detail line\n".repeat(30),
+      }),
+      makeEvent({
+        id: "c-human",
+        type: "issue_comment",
+        commentId: "c-human",
+        isBot: false,
+        author: "alice",
+        body: "looks good to me",
+      }),
+    ]);
+    const group = openBotGroup("ade");
+    fireEvent.click(group.querySelector('li[data-event-id="c-bot-long"] button')!);
+    // The long bot comment collapses; the short human comment has no collapse control.
     expect(screen.getAllByText("Show more")).toHaveLength(1);
   });
 
-  it("keeps resolved review threads in the full overview thread", () => {
-    const events: PrTimelineEvent[] = [
+  it("marks bot text split out of the PR body as from the PR description", () => {
+    const at = "2026-01-01T00:00:00Z";
+    renderTimeline([
+      makeEvent({
+        id: "desc-bot:pr-1:coderabbit-summary",
+        type: "issue_comment",
+        commentId: "desc-bot:coderabbit-summary",
+        author: "coderabbitai",
+        timestamp: at,
+        body: "Summary by CodeRabbit",
+        isBot: true,
+      }),
+      makeEvent({
+        id: "desc-bot:pr-1:cursor-summary",
+        type: "issue_comment",
+        commentId: "desc-bot:cursor-summary",
+        author: "cursor",
+        timestamp: at,
+        body: "Cursor summary",
+        isBot: true,
+      }),
+      makeEvent({
+        id: "comment:real",
+        type: "issue_comment",
+        commentId: "real",
+        author: "cursor",
+        timestamp: "2026-01-01T01:00:00Z",
+        body: "A real Cursor comment",
+        isBot: true,
+      }),
+    ]);
+    // Every CodeRabbit entry came from the body: the note sits by the name.
+    const coderabbit = document.querySelector('[data-agent="coderabbit"]') as HTMLElement;
+    expect(coderabbit.querySelector('[data-testid="pr-digest-desc-bot-note"]')?.textContent).toBe("from the PR description");
+    // Cursor mixes one body block with one real comment: only that entry is marked.
+    const cursor = openBotGroup("cursor");
+    const notes = cursor.querySelectorAll('[data-testid="pr-digest-desc-bot-note"]');
+    expect(notes).toHaveLength(1);
+    expect(notes[0]!.closest("li")?.getAttribute("data-event-id")).toBe("desc-bot:pr-1:cursor-summary");
+    expect(cursor.querySelector('li[data-event-id="comment:real"] [data-testid="pr-digest-desc-bot-note"]')).toBeNull();
+  });
+
+  it("keeps resolved review threads in the overview thread", () => {
+    renderTimeline([
       makeEvent({
         id: "open",
         type: "review_thread",
@@ -578,321 +288,95 @@ describe("PrTimeline", () => {
         commentCount: 1,
         firstCommentBody: "closed",
       }),
-    ];
-    render(
-      <PrTimeline
-        events={events}
-        prId="pr-1"
-        laneId={null}
-        repoOwner="acme"
-        repoName="ade"
-        viewerLogin="alice"
-        filters={{ ...DEFAULT_PR_TIMELINE_FILTERS, showResolved: true }}
-        onFiltersChange={() => {}}
-      />,
-    );
-    const cards = screen.getAllByTestId("review-thread-card");
-    const ids = cards.map((c) => c.getAttribute("data-thread-id"));
+    ]);
+    const ids = screen.getAllByTestId("review-thread-card").map((c) => c.getAttribute("data-thread-id"));
     expect(ids).toContain("t1");
     expect(ids).toContain("t2");
   });
 
   it("nextUnresolved advances the focused event id via imperative handle", () => {
-    const events: PrTimelineEvent[] = [
+    const thread = (id: string, at: string) =>
       makeEvent({
-        id: "t1",
+        id,
         type: "review_thread",
-        threadId: "t1",
+        threadId: id,
+        timestamp: at,
         path: null,
         line: null,
         startLine: null,
         isResolved: false,
         isOutdated: false,
         commentCount: 1,
-        firstCommentBody: "a",
-      }),
-      makeEvent({
-        id: "t2",
-        type: "review_thread",
-        threadId: "t2",
-        path: null,
-        line: null,
-        startLine: null,
-        isResolved: false,
-        isOutdated: false,
-        commentCount: 1,
-        firstCommentBody: "b",
-      }),
-    ];
+        firstCommentBody: id,
+      });
     const ref = createRef<PrTimelineRef>();
-    render(
-      <PrTimeline
-        ref={ref}
-        events={events}
-        prId="pr-1"
-        laneId={null}
-        repoOwner="acme"
-        repoName="ade"
-        viewerLogin="alice"
-        filters={DEFAULT_PR_TIMELINE_FILTERS}
-        onFiltersChange={() => {}}
-      />,
-    );
+    renderTimeline([thread("t1", "2026-01-01T00:00:00Z"), thread("t2", "2026-01-01T01:00:00Z")], { ref });
     expect(ref.current).not.toBeNull();
+    const focusedThreadId = () =>
+      screen
+        .getAllByTestId("review-thread-card")
+        .find((card) => card.getAttribute("data-focused") === "true")
+        ?.getAttribute("data-thread-id");
     act(() => ref.current!.nextUnresolved());
-    const first = screen
-      .getAllByTestId("review-thread-card")
-      .find((card) => card.getAttribute("data-focused") === "true");
-    expect(first?.getAttribute("data-thread-id")).toBe("t1");
+    expect(focusedThreadId()).toBe("t1");
     act(() => ref.current!.nextUnresolved());
-    const second = screen
-      .getAllByTestId("review-thread-card")
-      .find((card) => card.getAttribute("data-focused") === "true");
-    expect(second?.getAttribute("data-thread-id")).toBe("t2");
+    expect(focusedThreadId()).toBe("t2");
   });
 
-  it("distinguishes empty filtered results from an empty timeline", () => {
-    render(
-      <PrTimeline
-        events={[
-          makeEvent({
-            id: "resolved-only",
-            type: "review_thread",
-            threadId: "resolved-only",
-            path: "a.ts",
-            line: 1,
-            startLine: null,
-            isResolved: true,
-            isOutdated: false,
-            commentCount: 1,
-            firstCommentBody: "resolved",
-          }),
-        ]}
-        prId="pr-1"
-        laneId={null}
-        repoOwner="acme"
-        repoName="ade"
-        viewerLogin="alice"
-        filters={{ ...DEFAULT_PR_TIMELINE_FILTERS, showResolved: false }}
-        onFiltersChange={() => {}}
-      />,
+  it("focusing an entry folded into a bot row opens that row and entry", () => {
+    const ref = createRef<PrTimelineRef>();
+    renderTimeline(
+      [
+        makeEvent({
+          id: "bot-thread",
+          type: "review_thread",
+          threadId: "bot-thread",
+          author: "coderabbitai",
+          path: "a.ts",
+          line: 1,
+          startLine: null,
+          isResolved: true,
+          isOutdated: false,
+          commentCount: 1,
+          firstCommentBody: "done",
+        }),
+      ],
+      { ref },
     );
-
-    expect(screen.getByText("No events match the current filters.")).toBeTruthy();
+    expect(screen.queryAllByTestId("review-thread-card")).toHaveLength(0);
+    act(() => ref.current!.focusEvent("bot-thread"));
+    expect(screen.getByTestId("review-thread-card").getAttribute("data-thread-id")).toBe("bot-thread");
   });
 
-  it("does not render an AI summary card above the timeline", () => {
-    render(
-      <PrTimeline
-        events={[]}
-        prId="pr-1"
-        laneId={null}
-        repoOwner="acme"
-        repoName="ade"
-        viewerLogin="alice"
-        filters={DEFAULT_PR_TIMELINE_FILTERS}
-        onFiltersChange={() => {}}
-      />,
-    );
+  it("shows an empty state when there are no events", () => {
+    renderTimeline([]);
+    expect(screen.getByText("No activity yet.")).toBeTruthy();
     expect(screen.queryByTestId("ai-summary-card")).toBeNull();
     expect(screen.queryByTestId("pr-timeline-summary")).toBeNull();
   });
 
-  it("renders the PR opened banner with title, branches, and stats", () => {
-    render(
-      <PrTimeline
-        events={[
-          makeEvent({
-            type: "pr_opened",
-            id: "opened:pr-1",
-            author: "arul28",
-            title: "ship: prepare lane for review",
-            githubPrNumber: 128,
-            repoOwner: "acme",
-            repoName: "ade",
-            baseBranch: "main",
-            headBranch: "ship/lane-review",
-            isDraft: false,
-            additions: 240,
-            deletions: 18,
-          }),
-        ]}
-        prId="pr-1"
-        laneId={null}
-        repoOwner="acme"
-        repoName="ade"
-        viewerLogin="alice"
-        filters={DEFAULT_PR_TIMELINE_FILTERS}
-        onFiltersChange={() => {}}
-      />,
-    );
-    const banner = screen.getByTestId("pr-timeline-opened-banner");
-    expect(banner.textContent).toContain("Pull request opened");
-    expect(banner.textContent).toContain("ship: prepare lane for review");
-    expect(banner.textContent).toContain("#128");
-    expect(banner.textContent).toContain("@arul28");
-    expect(banner.textContent).toContain("ship/lane-review");
-    expect(banner.textContent).toContain("main");
-    expect(banner.textContent).toContain("+240");
-    expect(banner.textContent).toContain("-18");
-  });
-
-  it("collapses 2+ consecutive resolved threads into a foldable group instead of separate cards", () => {
-    render(
-      <PrTimeline
-        events={[makeThread("r1", true), makeThread("r2", true)]}
-        prId="pr-1"
-        laneId={null}
-        repoOwner="acme"
-        repoName="ade"
-        viewerLogin="alice"
-        filters={{ ...DEFAULT_PR_TIMELINE_FILTERS, showResolved: true }}
-        onFiltersChange={() => {}}
-      />,
-    );
-    const group = screen.getByTestId("pr-timeline-resolved-group");
-    expect(group.textContent).toContain("2 resolved conversations");
-    // Folded threads stay hidden until the group is expanded.
-    expect(screen.queryAllByTestId("review-thread-card")).toHaveLength(0);
-  });
-
-  it("does not nest the commit author button inside the commit-group expander", () => {
-    render(
-      <PrTimeline
-        events={[
-          makeEvent({
-            type: "commit_push",
-            id: "commit:abc1234",
-            sha: "abc1234",
-            shortSha: "abc1234",
-            subject: "Fix scroll behavior",
-            commitCount: 1,
-            forcePushed: false,
-            author: "alice",
-          }),
-          makeEvent({
-            type: "commit_push",
-            id: "commit:def5678",
-            sha: "def5678",
-            shortSha: "def5678",
-            subject: "Follow up",
-            commitCount: 1,
-            forcePushed: false,
-            author: "alice",
-          }),
-        ]}
-        prId="pr-1"
-        laneId={null}
-        repoOwner="acme"
-        repoName="ade"
-        viewerLogin="alice"
-        filters={DEFAULT_PR_TIMELINE_FILTERS}
-        onFiltersChange={() => {}}
-      />,
-    );
-
-    const group = screen.getByTestId("pr-timeline-commit-group");
-    expect(group.textContent).toContain("alice added 2 commits");
-    expect(group.querySelector("button button")).toBeNull();
-  });
-
-  it("focusing a folded thread expands its group so the thread renders (indexById maps to the group)", () => {
-    const ref = createRef<PrTimelineRef>();
-    render(
-      <PrTimeline
-        ref={ref}
-        events={[makeThread("r1", true), makeThread("r2", true)]}
-        prId="pr-1"
-        laneId={null}
-        repoOwner="acme"
-        repoName="ade"
-        viewerLogin="alice"
-        filters={{ ...DEFAULT_PR_TIMELINE_FILTERS, showResolved: true }}
-        onFiltersChange={() => {}}
-      />,
-    );
-    expect(screen.queryAllByTestId("review-thread-card")).toHaveLength(0);
-    // scrollToEventId/focusEvent must resolve a *folded* thread id via indexById;
-    // focusing it expands the containing group and reveals the cards.
-    act(() => ref.current!.focusEvent("r2"));
-    const ids = screen
-      .getAllByTestId("review-thread-card")
-      .map((c) => c.getAttribute("data-thread-id"));
-    expect(ids).toContain("r1");
-    expect(ids).toContain("r2");
-  });
-
-  it("renders commit pushes as compact dividers without unresolved floating chip", () => {
-    render(
-      <PrTimeline
-        events={[
-          makeEvent({
-            type: "commit_push",
-            id: "commit:abc1234",
-            sha: "abc1234",
-            shortSha: "abc1234",
-            subject: "Fix scroll behavior",
-            commitCount: 1,
-            forcePushed: false,
-          }),
-          makeEvent({
-            type: "review_thread",
-            id: "thread:t1",
-            threadId: "t1",
-            path: "src/app.ts",
-            line: 12,
-            startLine: null,
-            isResolved: false,
-            isOutdated: false,
-            commentCount: 1,
-            firstCommentBody: "Please fix",
-          }),
-        ]}
-        prId="pr-1"
-        laneId={null}
-        repoOwner="acme"
-        repoName="ade"
-        viewerLogin="alice"
-        filters={DEFAULT_PR_TIMELINE_FILTERS}
-        onFiltersChange={() => {}}
-      />,
-    );
-    expect(screen.getByTestId("pr-timeline-commit-divider").textContent).toContain("Fix scroll behavior");
-    expect(screen.queryByTestId("pr-timeline-unresolved-fab")).toBeNull();
-  });
-
   it("hides comment mutation controls when writeViewerLogin is null", () => {
-    const events: PrTimelineEvent[] = [
-      makeEvent({
-        id: "c-edit",
-        type: "issue_comment",
-        commentId: "c-edit",
-        author: "alice",
-        body: "looks good",
-        isBot: false,
-        commentGithubId: 555,
-        commentNodeId: "IC_kwDO",
-      }),
-    ];
-    render(
-      <PrTimeline
-        events={events}
-        prId="pr-1"
-        laneId={null}
-        repoOwner="acme"
-        repoName="ade"
-        viewerLogin="alice"
-        writeViewerLogin={null}
-        filters={DEFAULT_PR_TIMELINE_FILTERS}
-        onFiltersChange={() => {}}
-      />,
+    renderTimeline(
+      [
+        makeEvent({
+          id: "c-edit",
+          type: "issue_comment",
+          commentId: "c-edit",
+          author: "alice",
+          body: "looks good",
+          isBot: false,
+          commentGithubId: 555,
+          commentNodeId: "IC_kwDO",
+        }),
+      ],
+      { writeViewerLogin: null },
     );
     expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Add reaction" })).toBeNull();
   });
 
   it("keeps comment mutation controls when writeViewerLogin is omitted", () => {
-    const events: PrTimelineEvent[] = [
+    renderTimeline([
       makeEvent({
         id: "c-edit-fallback",
         type: "issue_comment",
@@ -903,19 +387,7 @@ describe("PrTimeline", () => {
         commentGithubId: 556,
         commentNodeId: "IC_kwDP",
       }),
-    ];
-    render(
-      <PrTimeline
-        events={events}
-        prId="pr-1"
-        laneId={null}
-        repoOwner="acme"
-        repoName="ade"
-        viewerLogin="alice"
-        filters={DEFAULT_PR_TIMELINE_FILTERS}
-        onFiltersChange={() => {}}
-      />,
-    );
+    ]);
     expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy();
   });
 });

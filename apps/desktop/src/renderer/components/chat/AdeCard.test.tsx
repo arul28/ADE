@@ -188,6 +188,63 @@ describe("AdeCard", () => {
     }
   });
 
+  it("renders a finished CI failure as a short rail with the checks tab one click away", () => {
+    const listener = vi.fn();
+    window.addEventListener(ADE_NAVIGATE_TARGET_EVENT, listener);
+    try {
+      render(
+        <AdeCard
+          card={card({
+            variant: "pr_ci",
+            state: "terminal",
+            title: "CI failed",
+            subtitle: "PR #1280 · CI",
+            fallbackText: "PR #1280 ci failed.",
+            progress: { passed: 35, failed: 3, running: 0, queued: 0 },
+            metrics: [
+              { label: "passed", value: "35", tone: "success" },
+              { label: "failed", value: "3", tone: "warning" },
+              { label: "other checks", value: "3", tone: "neutral" },
+            ],
+            rows: [
+              { icon: "fail", text: "ci-pass", detail: "CI · failed", tone: "warning" },
+              { icon: "fail", text: "test-desktop (8)", detail: "Run vitest · 6m 20s", tone: "warning" },
+              { icon: "fail", text: "windows-foundation", detail: "timed out · 35m", tone: "warning" },
+            ],
+            rowsTruncated: 36,
+            navTarget: {
+              kind: "pr",
+              repoOwner: "arul28",
+              repoName: "ADE",
+              prNumber: 1280,
+              detailTab: "checks",
+            },
+          })}
+        />,
+      );
+
+      expect(screen.getByText("CI Failure")).toBeTruthy();
+      expect(screen.getByText("pr 1280")).toBeTruthy();
+      expect(screen.getByText("35 passed")).toBeTruthy();
+      expect(screen.getByText("3 failed")).toBeTruthy();
+      expect(screen.queryByText("other checks")).toBeNull();
+      expect(screen.queryByText("CI · failed")).toBeNull();
+      expect(screen.getByText("failed")).toBeTruthy();
+      expect(screen.getByText("Run vitest · 6m 20s")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Open checks" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Open checks" }).textContent).toMatch(/open/);
+
+      fireEvent.click(screen.getByRole("button", { name: "Open pull request" }));
+      fireEvent.click(screen.getByRole("button", { name: "Open checks" }));
+      fireEvent.click(screen.getByRole("button", { name: "+36 more" }));
+
+      const targets = listener.mock.calls.map((call) => (call[0] as CustomEvent).detail.target);
+      expect(targets.map((target) => target.detailTab)).toEqual(["overview", "checks", "checks"]);
+    } finally {
+      window.removeEventListener(ADE_NAVIGATE_TARGET_EVENT, listener);
+    }
+  });
+
   it("never renders a red failure tone — failures are amber (house policy)", () => {
     const { container } = render(
       <AdeCard

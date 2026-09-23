@@ -30,6 +30,7 @@ import type {
 import type { ModelWizardStep } from "./modelWizard";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
 import type { PrChecksStatus } from "../../../desktop/src/shared/types/prs";
+import type { PrLaneNextStep } from "../../../desktop/src/shared/prNextStep";
 import type { UsageProviderSource, UsageProviderState } from "../../../desktop/src/shared/types/usage";
 import type { BufferedEvent } from "../eventBuffer";
 import type { HelpGroup } from "./helpIndex";
@@ -194,6 +195,10 @@ export type ChatInfoPrSummary = {
   checksTotal: number;
   /** ADE-135 canonical rollup; `passed === total` is not proof of a pass. */
   checksStatus?: PrChecksStatus;
+  /** The one next step from the cached status (`PrLaneSummary.nextStep`). */
+  nextStep?: PrLaneNextStep | null;
+  /** Agent reviewers on the PR, by product name. */
+  agents?: string[];
 };
 
 export type ChatInfoSnapshot = {
@@ -476,6 +481,8 @@ export type RightPaneContent =
         checksFailed: number;
         /** ADE-135 canonical rollup; `passed === total` is not proof of a pass. */
         checksStatus?: PrChecksStatus;
+        nextStep?: PrLaneNextStep | null;
+        agents?: string[];
       } | null;
       chats: {
         active: number;

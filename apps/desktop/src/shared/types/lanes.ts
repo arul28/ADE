@@ -729,42 +729,6 @@ export type AutoRebaseEventPayload = {
   statuses: AutoRebaseLaneStatus[];
 };
 
-// --------------------------------
-// Graph / Workspace layout types
-// --------------------------------
-
-export type GraphViewMode = "stack" | "risk" | "activity" | "all";
-
-export type GraphNodePosition = {
-  x: number;
-  y: number;
-};
-
-export type GraphStatusFilter = "conflict" | "at-risk" | "clean" | "unknown";
-
-export type GraphFilterState = {
-  status: GraphStatusFilter[];
-  laneTypes: LaneType[];
-  tags: string[];
-  hidePrimary: boolean;
-  hideAttached: boolean;
-  hideArchived: boolean;
-  rootLaneId: string | null;
-  search: string;
-};
-
-export type GraphLayoutSnapshot = {
-  nodePositions: Record<string, GraphNodePosition>;
-  collapsedLaneIds: string[];
-  viewMode: GraphViewMode;
-  filters: GraphFilterState;
-  updatedAt: string;
-};
-
-export type GraphPersistedState = {
-  lastViewMode: GraphViewMode;
-};
-
 // --- Lane Environment Init args (Phase 5 W1) ---
 
 export type InitLaneEnvArgs = {

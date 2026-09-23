@@ -27,7 +27,6 @@ import type {
   PrSnapshotHydration,
   PrAgentPermissionMode,
 } from "../../../../shared/types";
-import type { PrTimelineFilters } from "../shared/PrTimeline";
 import { buildPrAiResolutionContextKey } from "../../../../shared/types";
 import { getModelById, resolveProviderGroupForModel, type ModelProviderGroup } from "../../../../shared/modelRegistry";
 import { hasExplicitPrsRouteState, parsePrsRouteState, prRouteCoordinatesKey, resolvePrsActiveTab } from "../prsRouteState";
@@ -135,7 +134,6 @@ type PrsState = {
   resolverPermissionMode: PrAgentPermissionMode;
   resolverSessionsByContextKey: Record<string, PrAiResolutionSessionInfo>;
 
-  timelineFiltersByPrId: Record<string, PrTimelineFilters>;
   viewerLogin: string | null;
   writeViewerLogin?: string | null;
 
@@ -164,7 +162,6 @@ type PrsContextValue = PrsState & {
   setInlineTerminal: (terminal: InlineTerminalState) => void;
   refresh: (args?: { prId?: string; prIds?: string[] }) => Promise<void>;
 
-  setTimelineFilters: (prId: string, filters: PrTimelineFilters) => void;
   setViewerLogin: (login: string | null) => void;
   setWriteViewerLogin: (login: string | null) => void;
   /** Record a merge/close the moment GitHub confirms it, before any refetch. */
@@ -188,7 +185,6 @@ const PrsContext = createContext<PrsContextValue | null>(null);
 const LS_MODEL_KEY = "ade:prs:resolverModel";
 const LS_REASONING_KEY = "ade:prs:resolverReasoningLevel";
 const LS_PERMISSION_KEY = "ade:prs:resolverPermissions";
-const LS_TIMELINE_FILTERS_KEY = "ade:prs:timelineFiltersByPrId";
 const PRS_CONTEXT_CACHE_TTL_MS = 120_000;
 const PRS_DETAIL_CACHE_TTL_MS = 60_000;
 const PRS_CONTEXT_DEFAULT_CACHE_KEY = "__default_project__";
@@ -240,24 +236,6 @@ function readBoolLs(key: string, fallback: boolean): boolean {
     /* ignore */
   }
   return fallback;
-}
-
-function readJsonLs<T>(key: string, fallback: T): T {
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return fallback;
-    return JSON.parse(raw) as T;
-  } catch {
-    return fallback;
-  }
-}
-
-function writeJsonLs(key: string, value: unknown): void {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    /* ignore */
-  }
 }
 
 type ResolverPermissionFamily = Extract<
@@ -539,18 +517,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     detailSnapshot,
     detailStatus,
   ]);
-
-  const [timelineFiltersByPrId, setTimelineFiltersByPrId] = useState<Record<string, PrTimelineFilters>>(
-    () => readJsonLs<Record<string, PrTimelineFilters>>(LS_TIMELINE_FILTERS_KEY, {}),
-  );
-
-  const setTimelineFilters = useCallback((prId: string, filters: PrTimelineFilters) => {
-    setTimelineFiltersByPrId((prev) => {
-      const next = { ...prev, [prId]: filters };
-      writeJsonLs(LS_TIMELINE_FILTERS_KEY, next);
-      return next;
-    });
-  }, []);
 
   // Rebase state
   const [rebaseNeeds, setRebaseNeeds] = useState<RebaseNeed[]>(() => warmCache?.rebaseNeeds ?? []);
@@ -1525,7 +1491,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       resolverReasoningLevel,
       resolverPermissionMode: resolverPermissions[resolvePermissionFamilyForModel(resolverModel)],
       resolverSessionsByContextKey,
-      timelineFiltersByPrId,
       viewerLogin,
       writeViewerLogin,
       optimisticTerminalStates,
@@ -1542,7 +1507,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       clearResolverSession,
       setInlineTerminal,
       refresh,
-      setTimelineFilters,
       setViewerLogin,
       setWriteViewerLogin,
       isGithubPollStoodDown,
@@ -1586,7 +1550,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       resolverReasoningLevel,
       resolverPermissions,
       resolverSessionsByContextKey,
-      timelineFiltersByPrId,
       viewerLogin,
       writeViewerLogin,
       setResolverModel,
@@ -1595,7 +1558,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       upsertResolverSession,
       clearResolverSession,
       refresh,
-      setTimelineFilters,
       isGithubPollStoodDown,
       noteGithubReadFailure,
       noteGithubReadSuccess,
@@ -1605,6 +1567,11 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
   );
 
   return <PrsContext.Provider value={value}>{children}</PrsContext.Provider>;
+}
+
+/** For controls that also render outside the PRs tab, where there is no provider. */
+export function useOptionalPrs(): PrsContextValue | null {
+  return useContext(PrsContext);
 }
 
 export function usePrs(): PrsContextValue {

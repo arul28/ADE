@@ -164,6 +164,7 @@ func workToolsDisplayName(_ toolId: String?) -> String? {
   case "ios": return "Apple"
   case "app-control": return "App Control"
   case "browser": return "Browser"
+  case "pr": return "PR"
   default: return toolId
   }
 }

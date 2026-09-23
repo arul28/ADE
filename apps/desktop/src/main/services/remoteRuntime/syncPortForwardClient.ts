@@ -10,7 +10,22 @@ import {
 import type { AuthenticatedSyncConnection } from "./syncRuntimeTransport";
 
 const LOCAL_FORWARD_HOST = "127.0.0.1" as const;
+/** Local→remote queue ceiling. A healthy upload pauses the socket well before this. */
 const MAX_PENDING_BYTES = 4 * 1024 * 1024;
+/**
+ * Remote→local pause point. Past this the browser socket is full, so the peer
+ * must stop sending until `drain`. A 49MB dev-server bundle crosses it; closing
+ * here is what left the remote browser on a blank document.
+ */
+const DEFAULT_INBOUND_PAUSE_BYTES = 4 * 1024 * 1024;
+/**
+ * Bytes we will hold while paused for a peer that ignores `fwd_pause`.
+ * A transfer that drains stays near the pause point; one that never drains
+ * stops here instead of growing without bound.
+ */
+const DEFAULT_INBOUND_HARD_CAP_BYTES = 64 * 1024 * 1024;
+/** A socket that stays paused this long is not a live browser. */
+const DEFAULT_INBOUND_STALL_MS = 60_000;
 
 type ActiveSocket = {
   socket: net.Socket;
@@ -20,6 +35,14 @@ type ActiveSocket = {
   outboundPendingBytes: number;
   outboundTimer: ReturnType<typeof setInterval> | null;
   remoteClosed: boolean;
+  /** Remote→local bytes held while the local socket is above the pause point. */
+  inboundQueue: Buffer[];
+  inboundQueueBytes: number;
+  inboundPaused: boolean;
+  inboundTimer: ReturnType<typeof setInterval> | null;
+  inboundStallTimer: ReturnType<typeof setTimeout> | null;
+  /** One `drain` listener at a time. The poll must not stack a new one per blocked write. */
+  drainArmed: boolean;
 };
 
 type ForwardEntry = PairedRuntimePortForward & {
@@ -45,6 +68,12 @@ function forwardKey(host: string, port: number): string {
   return `${host}:${port}`;
 }
 
+function normalizePositive(value: number | undefined, fallback: number): number {
+  const parsed = Number(value ?? fallback);
+  if (!Number.isFinite(parsed) || parsed < 1) return fallback;
+  return Math.floor(parsed);
+}
+
 function snapshot(entry: ForwardEntry): PairedRuntimePortForward {
   return {
     remoteHost: entry.remoteHost,
@@ -65,10 +94,28 @@ export class SyncPortForwardClient {
   private readonly removeErrorListener: () => void;
   private disposed = false;
 
+  private readonly inboundPauseBytes: number;
+  private readonly inboundHardCapBytes: number;
+  private readonly inboundStallMs: number;
+
   constructor(
     private readonly connection: AuthenticatedSyncConnection,
-    private readonly options: { createServer?: typeof net.createServer } = {},
+    private readonly options: {
+      createServer?: typeof net.createServer;
+      /** Test seam. Production pauses at 4 MiB. */
+      inboundPauseBytes?: number;
+      /** Test seam. Production refuses to queue more than 64 MiB while paused. */
+      inboundHardCapBytes?: number;
+      /** Test seam. Production closes a forward that stays paused for 60s. */
+      inboundStallMs?: number;
+    } = {},
   ) {
+    this.inboundPauseBytes = normalizePositive(options.inboundPauseBytes, DEFAULT_INBOUND_PAUSE_BYTES);
+    this.inboundHardCapBytes = Math.max(
+      this.inboundPauseBytes,
+      normalizePositive(options.inboundHardCapBytes, DEFAULT_INBOUND_HARD_CAP_BYTES),
+    );
+    this.inboundStallMs = normalizePositive(options.inboundStallMs, DEFAULT_INBOUND_STALL_MS);
     if (connection.hello.features?.portForward !== true) {
       throw new Error("The paired machine does not advertise port-forward support.");
     }
@@ -92,11 +139,7 @@ export class SyncPortForwardClient {
         this.closeActiveSocket(active, true, "Forward received invalid base64 data.");
         return;
       }
-      if (!active.socket.write(bytes) || active.socket.writableLength > MAX_PENDING_BYTES) {
-        if (active.socket.writableLength > MAX_PENDING_BYTES) {
-          this.closeActiveSocket(active, true, "Forwarded data exceeded the local pending buffer limit.");
-        }
-      }
+      this.acceptInbound(active, bytes);
     });
     this.removeCloseListener = connection.onClose(() => this.dispose(false));
     this.removeErrorListener = connection.onError(() => this.dispose(false));
@@ -171,6 +214,12 @@ export class SyncPortForwardClient {
         outboundPendingBytes: 0,
         outboundTimer: null,
         remoteClosed: false,
+        inboundQueue: [],
+        inboundQueueBytes: 0,
+        inboundPaused: false,
+        inboundTimer: null,
+        inboundStallTimer: null,
+        drainArmed: false,
       };
       sockets.set(forwardId, active);
       this.sockets.set(forwardId, active);
@@ -234,6 +283,114 @@ export class SyncPortForwardClient {
         });
       });
     });
+  }
+
+  private acceptInbound(active: ActiveSocket, bytes: Buffer): void {
+    if (!this.sockets.has(active.forwardId)) return;
+    if (active.inboundPaused || active.inboundQueueBytes > 0) {
+      this.enqueueInbound(active, bytes);
+      return;
+    }
+    const accepted = active.socket.write(bytes);
+    if (!accepted || active.socket.writableLength > this.inboundPauseBytes) {
+      this.pauseInbound(active);
+    }
+  }
+
+  private enqueueInbound(active: ActiveSocket, bytes: Buffer): void {
+    if (active.inboundQueueBytes + bytes.byteLength > this.inboundHardCapBytes) {
+      this.closeActiveSocket(active, true, "Forwarded data exceeded the local pending buffer limit.");
+      return;
+    }
+    active.inboundQueue.push(bytes);
+    active.inboundQueueBytes += bytes.byteLength;
+  }
+
+  /**
+   * The local browser socket is full. Tell the paired machine to stop reading
+   * its TCP socket, and hold only the bytes already in flight.
+   */
+  private pauseInbound(active: ActiveSocket): void {
+    if (active.inboundPaused || !this.sockets.has(active.forwardId)) return;
+    active.inboundPaused = true;
+    try {
+      this.connection.send("fwd_pause", { forwardId: active.forwardId });
+    } catch {
+      this.closeActiveSocket(active, false);
+      return;
+    }
+    this.armInboundWatch(active);
+  }
+
+  private armInboundWatch(active: ActiveSocket): void {
+    if (!active.inboundTimer) {
+      active.inboundTimer = setInterval(() => this.flushInbound(active, false), BACKPRESSURE_POLL_MS);
+      active.inboundTimer.unref?.();
+    }
+    this.armInboundStall(active);
+    this.armInboundDrain(active);
+  }
+
+  private armInboundDrain(active: ActiveSocket): void {
+    if (active.drainArmed) return;
+    active.drainArmed = true;
+    active.socket.once("drain", () => {
+      active.drainArmed = false;
+      this.flushInbound(active, true);
+    });
+  }
+
+  private armInboundStall(active: ActiveSocket): void {
+    if (active.inboundStallTimer) clearTimeout(active.inboundStallTimer);
+    active.inboundStallTimer = setTimeout(() => {
+      if (!this.sockets.has(active.forwardId) || !active.inboundPaused) return;
+      this.closeActiveSocket(active, true, "Local forward socket did not drain in time.");
+    }, this.inboundStallMs);
+    active.inboundStallTimer.unref?.();
+  }
+
+  private flushInbound(active: ActiveSocket, fromDrain: boolean): void {
+    if (!this.sockets.has(active.forwardId) || !active.inboundPaused) return;
+    while (
+      active.inboundQueue.length > 0
+      && active.socket.writableLength <= this.inboundPauseBytes
+    ) {
+      const chunk = active.inboundQueue[0]!;
+      const accepted = active.socket.write(chunk);
+      active.inboundQueue.shift();
+      active.inboundQueueBytes -= chunk.byteLength;
+      if (!accepted || active.socket.writableLength > this.inboundPauseBytes) {
+        this.armInboundStall(active);
+        this.armInboundDrain(active);
+        return;
+      }
+    }
+    if (active.inboundQueue.length > 0 || active.socket.writableLength > this.inboundPauseBytes) {
+      return;
+    }
+    // `write()` returned false around the socket high-water mark, long before
+    // the pause ceiling. Resuming on the poll while bytes are still buffered
+    // would ask the peer for another burst the browser has not read.
+    if (!fromDrain && active.socket.writableLength > 0) return;
+    this.resumeInbound(active);
+  }
+
+  private resumeInbound(active: ActiveSocket): void {
+    if (!active.inboundPaused || !this.sockets.has(active.forwardId)) return;
+    active.inboundPaused = false;
+    this.clearInboundTimers(active);
+    try {
+      this.connection.send("fwd_resume", { forwardId: active.forwardId });
+    } catch {
+      this.closeActiveSocket(active, false);
+    }
+  }
+
+  private clearInboundTimers(active: ActiveSocket): void {
+    if (active.inboundTimer) clearInterval(active.inboundTimer);
+    active.inboundTimer = null;
+    if (active.inboundStallTimer) clearTimeout(active.inboundStallTimer);
+    active.inboundStallTimer = null;
   }
 
   private sendLocalData(active: ActiveSocket, data: Buffer): void {
@@ -311,6 +468,11 @@ export class SyncPortForwardClient {
     active.outboundTimer = null;
     active.outboundPending = [];
     active.outboundPendingBytes = 0;
+    this.clearInboundTimers(active);
+    active.drainArmed = false;
+    active.inboundQueue = [];
+    active.inboundQueueBytes = 0;
+    active.inboundPaused = false;
     if (notifyRemote) {
       try {
         this.connection.send("fwd_close", { forwardId: active.forwardId, reason });

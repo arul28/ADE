@@ -253,33 +253,6 @@ private enum PrDetailPreviewFixtures {
       )
     ]
   )
-
-  static let checklist: [PrMergeChecklistItem] = [
-    PrMergeChecklistItem(id: "review", label: "Review required", state: .fail, detail: "0 of 1 required approvals"),
-    PrMergeChecklistItem(id: "checks", label: "1 failing check", state: .fail),
-    PrMergeChecklistItem(id: "conflicts", label: "No conflicts with base branch", state: .pass),
-    PrMergeChecklistItem(id: "behind", label: "Up to date with base branch", state: .pass),
-  ]
-
-  static let mergeRailModel = PrOverviewMergeRailModel(
-    phase: .active,
-    repoOwner: "arul28",
-    repoName: "ade",
-    prNumber: 701,
-    gate: PrMergeGateInfo(tone: .red, subline: "1 failing check · 1 unresolved", target: .checks),
-    isDraft: false,
-    canMerge: false,
-    canClose: true,
-    canDeleteBranch: true,
-    canReopen: false,
-    isBusy: false,
-    mergeMethod: .squash,
-    onMerge: {},
-    onChangeMethod: {},
-    onClose: {},
-    onReopen: {},
-    onDeleteBranch: {}
-  )
 }
 
 private struct PrDetailOverviewPreviewScreen: View {
@@ -315,9 +288,6 @@ private struct PrDetailOverviewPreviewScreen: View {
           .prListRow()
       }
 
-      PrThreadSectionHeader(title: "Threads", trailing: "1 unresolved")
-        .prListRow()
-
       PrReviewThreadCard(
         thread: PrDetailPreviewFixtures.unresolvedThread,
         isLive: true,
@@ -337,21 +307,6 @@ private struct PrDetailOverviewPreviewScreen: View {
         onClearFocus: nil
       )
       .prListRow()
-
-      PrOverviewMergeRail(
-        model: PrDetailPreviewFixtures.mergeRailModel,
-        checklist: PrDetailPreviewFixtures.checklist
-      )
-      .prListRow()
-
-      PrOverviewChecksCard(checks: PrDetailPreviewFixtures.checks, onSeeAll: {})
-        .prListRow()
-
-      PrOverviewCommitsCard(commits: PrDetailPreviewFixtures.commits)
-        .prListRow()
-
-      PrOverviewFilesCard(files: PrDetailPreviewFixtures.files, onSeeAll: {})
-        .prListRow()
 
       PrOverviewPeopleCard(
         detail: PrDetailPreviewFixtures.detail,

@@ -15179,6 +15179,23 @@ final class SyncService: ObservableObject {
     _ = try await sendCommand(action: "prs.reopen", args: ["prId": prId])
   }
 
+  /// `draft: true` converts to draft; `false` marks it ready for review.
+  func setPullRequestDraft(prId: String, draft: Bool) async throws {
+    // Optional host action: an older host never advertised it, so refuse here
+    // instead of queueing a command that host would reject on replay.
+    try requireInvokableRemoteAction("prs.setDraft")
+    _ = try await sendCommand(action: "prs.setDraft", args: ["prId": prId, "draft": draft])
+  }
+
+  /// Arm or disarm GitHub auto-merge. A refused arm comes back with the host's
+  /// explanation (repo setting off, already mergeable, draft).
+  func setPullRequestAutoMerge(prId: String, enabled: Bool, method: String? = nil) async throws {
+    try requireInvokableRemoteAction("prs.setAutoMerge")
+    var args: [String: Any] = ["prId": prId, "enabled": enabled]
+    if let method { args["method"] = method }
+    _ = try await sendCommand(action: "prs.setAutoMerge", args: args)
+  }
+
   func requestReviewers(prId: String, reviewers: [String]) async throws {
     _ = try await sendCommand(action: "prs.requestReviewers", args: [
       "prId": prId,

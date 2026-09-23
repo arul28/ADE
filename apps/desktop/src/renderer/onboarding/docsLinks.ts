@@ -35,7 +35,6 @@ export const docs = {
   ctoWorkers: `${DOCS_BASE}/cto/workers`,
   automationsOverview: `${DOCS_BASE}/automations/overview`,
   automationsGuardrails: `${DOCS_BASE}/automations/guardrails`,
-  workspaceGraph: `${DOCS_BASE}/tools/workspace-graph`,
   computerUseOverview: `${DOCS_BASE}/computer-use/overview`,
   proof: `${DOCS_BASE}/proof`,
   deeplinks: `${DOCS_BASE}/deeplinks`,

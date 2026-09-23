@@ -9366,6 +9366,37 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("routes prs draft/ready/auto-merge to pr.setDraft and pr.setAutoMerge", () => {
+    const argsOf = (argv: string[]) => {
+      const plan = buildCliPlan(argv);
+      if (plan.kind !== "execute") throw new Error(`Expected ${argv.join(" ")} to produce an execute plan`);
+      return plan.steps[0]?.params;
+    };
+    expect(argsOf(["prs", "draft", "pr-1"])).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "pr", action: "setDraft", args: { prId: "pr-1", draft: true } },
+    });
+    expect(argsOf(["prs", "ready", "gh:acme/ade#42"])).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "pr", action: "setDraft", args: { prId: "gh:acme/ade#42", draft: false } },
+    });
+    expect(argsOf(["prs", "auto-merge", "pr-1", "on", "--method", "rebase"])).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "pr", action: "setAutoMerge", args: { prId: "pr-1", enabled: true, method: "rebase" } },
+    });
+    expect(argsOf(["prs", "auto-merge", "pr-1"])).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "pr", action: "setAutoMerge", args: { prId: "pr-1", enabled: true } },
+    });
+    expect(argsOf(["prs", "auto-merge", "pr-1", "off"])).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "pr", action: "setAutoMerge", args: { prId: "pr-1", enabled: false } },
+    });
+    expect(() => buildCliPlan(["prs", "auto-merge", "pr-1", "maybe"])).toThrow(/on or off/);
+    expect(() => buildCliPlan(["prs", "auto-merge", "pr-1", "off", "--method", "squash"])).toThrow(/--method/);
+    expect(() => buildCliPlan(["prs", "auto-merge", "pr-1", "--method", "fast"])).toThrow(/merge, squash, or rebase/);
+  });
+
   it("maps git user-identity and prs list-open to typed RPC tools", () => {
     const identity = buildCliPlan(["git", "user-identity"]);
     expect(identity.kind).toBe("execute");

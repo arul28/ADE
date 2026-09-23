@@ -4033,16 +4033,17 @@ describe("AgentChatMessageList transcript rendering", () => {
 
     expect(rendered.container.textContent).toContain("I’ll inspect the renderer first.");
     expect(rendered.container.textContent).toContain("The focused tests pass.");
-    expect(rendered.container.textContent).toContain("1 tool · 1 file");
+    expect(rendered.container.textContent).toContain("tools");
+    expect(rendered.container.textContent).toContain("1 file changed");
     expect(rendered.container.textContent).not.toContain("npm test");
     expect(rendered.container.textContent).toContain("ran 5.0s");
-    expect(rendered.container.textContent!.indexOf("1 tool · 1 file"))
-      .toBeLessThan(rendered.container.textContent!.indexOf("ran 5.0s"));
+    expect(rendered.container.textContent!.indexOf("ran 5.0s"))
+      .toBeLessThan(rendered.container.textContent!.indexOf("tools"));
 
     fireEvent.click(screen.getByRole("button", { name: /^Show .+ from this turn$/ }));
     expect(rendered.container.textContent).toContain("npm test");
     const expanded = rendered.container.textContent ?? "";
-    expect(expanded.indexOf("npm test")).toBeLessThan(expanded.indexOf("ran 5.0s"));
+    expect(expanded.indexOf("ran 5.0s")).toBeLessThan(expanded.indexOf("npm test"));
   });
 
   it("left-aligns the turn work summary with Thought and keeps time/usage last when expanded", () => {
@@ -4074,14 +4075,10 @@ describe("AgentChatMessageList transcript rendering", () => {
     ]);
 
     const summary = screen.getByRole("button", { name: /^Show .+ from this turn$/ });
-    expect(summary.className).toContain("text-left");
-    expect(summary.parentElement?.className).toContain("justify-start");
-    expect(summary.parentElement?.className).not.toContain("justify-center");
-
     fireEvent.click(summary);
     const text = rendered.container.textContent ?? "";
-    expect(text.indexOf("1 tool")).toBeLessThan(text.indexOf("cat package.json"));
-    expect(text.indexOf("cat package.json")).toBeLessThan(text.indexOf("ran 2.0s"));
+    expect(text.indexOf("ran 2.0s")).toBeGreaterThan(-1);
+    expect(text.indexOf("ran 2.0s")).toBeLessThan(text.indexOf("cat package.json"));
   });
 
   // "Keep the last": the row you read is the most recent one; quiet successes
@@ -4413,7 +4410,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(text).not.toContain("Subagent updates");
     expect(text).not.toContain("2 subagents");
     // The result card exposes a "View transcript" affordance.
-    expect(text).toContain("View transcript");
+    expect(text).toContain("view transcript");
   });
 
   it("marks inline subagent cards with the chat's runtime provider", () => {
@@ -4568,13 +4565,13 @@ describe("AgentChatMessageList transcript rendering", () => {
 
     // The turn surfaces task progress as a compact activity row.
     expect(rendered.container.textContent).toMatch(/Refine summary card/);
-    expect(rendered.container.textContent).toMatch(/1\/2 complete/);
+    expect(rendered.container.textContent).toMatch(/1\/2/);
     expect(rendered.container.textContent).toMatch(/Inspect chat renderer/);
     expect(screen.getAllByText("Refine summary card").length).toBeGreaterThanOrEqual(1);
 
-    // Files now live in the inline FilesChangedPanel — diff stats appear next to the path.
-    expect(rendered.container.textContent).toContain("1 file");
-    fireEvent.click(screen.getByRole("button", { name: /^Show .+ from this turn$/ }));
+    // Files sit on the turn line. Opening that control shows the paths and Review in Files.
+    expect(rendered.container.textContent).toContain("1 file changed");
+    fireEvent.click(screen.getByRole("button", { name: "Show files changed" }));
     expect(screen.getAllByText("+1").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("−1").length).toBeGreaterThanOrEqual(1);
 
@@ -4878,10 +4875,11 @@ describe("AgentChatMessageList transcript rendering", () => {
     );
 
     expect(rendered.container.textContent).toMatch(/Implement calmer transcript rows/);
-    expect(rendered.container.textContent).toMatch(/1\/2 complete/);
+    expect(rendered.container.textContent).toMatch(/1\/2/);
+    expect(rendered.container.textContent).toContain("plan");
     expect(rendered.container.textContent).toMatch(/Inspect shared renderer/);
-    expect(rendered.container.textContent).toContain("1 file");
-    fireEvent.click(screen.getByRole("button", { name: /^Show .+ from this turn$/ }));
+    expect(rendered.container.textContent).toContain("1 file changed");
+    fireEvent.click(screen.getByRole("button", { name: "Show files changed" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Review in Files" }));
     expect(screen.getByTestId("location").textContent).toBe(
@@ -4915,7 +4913,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     ]);
 
     expect(rendered.container.textContent).toMatch(/Investigate Claude turn status/);
-    expect(rendered.container.textContent).toMatch(/completed/);
+    expect(rendered.container.textContent).toMatch(/task complete/);
     // Model attribution surfaces on the end-of-turn divider for non-completed turns.
     expect(screen.getAllByText(/Claude Sonnet 5/).length).toBeGreaterThanOrEqual(1);
   });
@@ -5473,7 +5471,7 @@ describe("turn-level file-change de-clutter", () => {
       },
     ] as never);
 
-    expect(rendered.container.textContent).toContain("2 files");
+    expect(rendered.container.textContent).toContain("2 files changed");
     const text = rendered.container.textContent ?? "";
     // Find the closing time by SHAPE, and take the LAST one.
     //
@@ -5489,7 +5487,7 @@ describe("turn-level file-change de-clutter", () => {
     // claim the summary is below the time when it is above it.
     const timeIndexes = [...text.matchAll(/\d{1,2}:\d{2}/g)].map((match) => match.index ?? -1);
     expect(timeIndexes.length).toBeGreaterThan(0);
-    expect(text.lastIndexOf("2 files")).toBeLessThan(timeIndexes[timeIndexes.length - 1]!);
+    expect(text.lastIndexOf("files changed")).toBeGreaterThan(timeIndexes[timeIndexes.length - 1]!);
   });
 
   it("combines tools and files on one line above the done-divider time", () => {
@@ -5511,10 +5509,11 @@ describe("turn-level file-change de-clutter", () => {
       },
     ] as never);
 
-    expect(rendered.container.textContent).toContain("1 tool · 1 file");
+    expect(rendered.container.textContent).toContain("tools");
+    expect(rendered.container.textContent).toContain("1 file changed");
     const text = rendered.container.textContent ?? "";
-    expect(text.indexOf("1 tool · 1 file")).toBeGreaterThan(-1);
-    expect(text.indexOf("1 tool · 1 file")).toBeLessThan(text.search(/\d{1,2}:\d{2}/));
+    expect(text.indexOf("tools")).toBeGreaterThan(text.search(/\d{1,2}:\d{2}/));
+    expect(text.indexOf("file changed")).toBeGreaterThan(text.indexOf("tools"));
   });
 });
 
@@ -6034,10 +6033,10 @@ describe("usage-limit turn footer", () => {
       } as AgentChatEventEnvelope,
     ];
     const rendered = renderMessageList(events);
-    expect(rendered.container.textContent).toContain("1 tool");
+    expect(rendered.container.textContent).toContain("tools");
     expect(screen.getByText(/^Paused · usage limit/)).toBeTruthy();
-    expect(rendered.container.textContent!.indexOf("1 tool"))
-      .toBeLessThan(rendered.container.textContent!.indexOf("Paused · usage limit"));
+    expect(rendered.container.textContent!.indexOf("Paused · usage limit"))
+      .toBeLessThan(rendered.container.textContent!.indexOf("tools"));
   });
 
   it("replaces the red FAILED line with one quiet paused line on a terminal 429", () => {

@@ -15,12 +15,22 @@ import type {
   AgentChatSessionSummary,
   PrCheckLogExcerpt,
   PrRerunChecksTarget,
+  ReviewerRequest,
 } from "../../../../shared/types";
-import { DEFAULT_PR_TIMELINE_FILTERS, type PrTimelineFilters } from "../shared/PrTimeline";
 import type { PaletteKind } from "../shared/PrCommandPalettes";
 import { parsePrsRouteState, type PrDetailRouteTab } from "../prsRouteState";
-import { PrDetailTimelineRails as TimelineRailsOverview, type PrDetailTimelineRailsRef } from "./PrDetailTimelineRails";
-import { PrDetailHeader, type UnmappedAffordance } from "./PrDetailHeader";
+import { PrDetailTimelineRails as TimelineRailsOverview, type PrDetailTimelineRailsRef, type PrStateAction } from "./PrDetailTimelineRails";
+import { PrDetailHeader, type PrHeaderChecksNote, type UnmappedAffordance } from "./PrDetailHeader";
+import {
+  handPromptToChat,
+  linkedPrChats,
+  newestWorkChat,
+  prFailingCheckNames,
+  prOpenFindings,
+} from "../shared/prChatActions";
+import { readLastMergeMethod } from "../shared/prMergeRailUtils";
+import { formatError } from "../shared/prFormatters";
+import type { PrActionsContext } from "../shared/PrActionsMenu";
 import { PrChecksTab } from "./PrChecksTab";
 import { resolveMergeabilityDeadline, type MergeabilityDeadline } from "./mergeabilityDeadline";
 import { PrManageLaneDialogHost } from "../shared/PrManageLaneDialogHost";
@@ -29,12 +39,10 @@ import { AdeDiffViewer } from "../../shared/AdeDiffViewer";
 import { usePrs } from "../state/PrsContext";
 import {
   buildUnifiedChecks,
-  findUnifiedCheckId,
   isPipelineTerminal,
   summarizePipelineStates,
 } from "../shared/prUnifiedChecks";
 import type { PrReviewEvent } from "../shared/PrReviewSubmitModal";
-import type { ReviewerRequest } from "../shared/PrDetailRightMetadataRail";
 import { navigateToAppTarget } from "../../../lib/openExternal";
 import { queueAgentChatDraftHandoff } from "../../../lib/agentChatDraftHandoff";
 import { isWebClientMode } from "../../../lib/webClientMode";
@@ -204,16 +212,6 @@ export function buildCiFixPrompt(
   ].filter((line): line is string => line != null).join("\n");
 }
 
-function newestWorkChat(sessions: AgentChatSessionSummary[]): AgentChatSessionSummary | null {
-  const timestamp = (session: AgentChatSessionSummary): number => {
-    const parsed = Date.parse(session.lastActivityAt);
-    return Number.isFinite(parsed) ? parsed : 0;
-  };
-  return sessions
-    .filter((session) => (session.surface ?? "work") === "work" && session.archivedAt == null)
-    .sort((left, right) => timestamp(right) - timestamp(left))[0] ?? null;
-}
-
 function PrDetailLoadingPill() {
   return (
     <div
@@ -233,7 +231,7 @@ function PrDetailLoadingPill() {
         padding: "0 12px",
         borderRadius: 999,
         border: `1px solid ${COLORS.border}`,
-        background: "rgba(24, 20, 36, 0.88)",
+        background: "color-mix(in srgb, var(--color-popup-bg) 88%, transparent)",
         boxShadow: "0 10px 30px rgba(0,0,0,0.32)",
         color: COLORS.textSecondary,
         fontFamily: SANS_FONT,
@@ -360,7 +358,6 @@ type PrDetailPaneProps = {
   mergeMethod: MergeMethod;
   onRefresh: (args?: { prId?: string; prIds?: string[] }) => Promise<void>;
   onNavigate: (path: string) => void;
-  onShowInGraph?: (laneId: string) => void;
   onOpenRebaseTab?: (laneId?: string) => void;
   initialDetailTab?: DetailTab | null;
   onDetailTabChange?: (tab: DetailTab) => void;
@@ -396,7 +393,6 @@ export function PrDetailPane({
   mergeMethod,
   onRefresh,
   onNavigate: _onNavigate,
-  onShowInGraph,
   onOpenRebaseTab,
   initialDetailTab,
   onDetailTabChange,
@@ -406,13 +402,11 @@ export function PrDetailPane({
   unmappedAffordance = null,
 }: PrDetailPaneProps) {
   const {
-    timelineFiltersByPrId,
     detailReviewThreads: ctxReviewThreads,
     detailDeployments,
     detailLiveDataPrId: ctxDetailPrId,
     viewerLogin,
     writeViewerLogin,
-    setTimelineFilters,
     isGithubPollStoodDown,
     noteGithubReadFailure,
     noteGithubReadSuccess,
@@ -426,7 +420,6 @@ export function PrDetailPane({
   const [activeTab, setActiveTabState] = React.useState<DetailTab>(
     () => normalizeDetailTab(initialDetailTab ?? readStoredDetailTab(pr.id)),
   );
-  const [focusedCheckId, setFocusedCheckId] = React.useState<string | null>(null);
   // Bumped by the `g k` chord so the CI tab knows to open its checks palette.
   const [checksPaletteRequest, setChecksPaletteRequest] = React.useState(0);
   const [detail, setDetail] = React.useState<PrDetail | null>(() => initialSnapshotHydration?.detail ?? initialPaneWarmCache?.detail ?? null);
@@ -505,14 +498,6 @@ export function PrDetailPane({
     setActiveTab("checks");
   }, [setActiveTab]);
 
-  const handleFocusedCheckConsumed = React.useCallback(() => setFocusedCheckId(null), []);
-
-  const handleSelectCheckFromRail = React.useCallback((check: PrCheck) => {
-    const unifiedId = findUnifiedCheckId(check, checks, actionRuns);
-    setFocusedCheckId(unifiedId);
-    setActiveTab("checks");
-  }, [actionRuns, checks, setActiveTab]);
-
   React.useEffect(() => {
     const next = normalizeDetailTab(initialDetailTab ?? readStoredDetailTab(pr.id));
     setActiveTabState(next);
@@ -524,29 +509,11 @@ export function PrDetailPane({
   const deepLinkState = React.useMemo(() => {
     try {
       const parsed = parsePrsRouteState({ search: window.location.search, hash: window.location.hash });
-      const searchParams = new URLSearchParams(window.location.search.startsWith("?") ? window.location.search.slice(1) : window.location.search);
-      const hashQuery = window.location.hash.includes("?") ? window.location.hash.slice(window.location.hash.indexOf("?") + 1) : "";
-      const hashParams = new URLSearchParams(hashQuery);
-      const legacyActivityTab = searchParams.get("detailTab") === "activity" || hashParams.get("detailTab") === "activity";
-      return { eventId: parsed.eventId, threadId: parsed.threadId, commitSha: parsed.commitSha, legacyActivityTab };
+      return { eventId: parsed.eventId, threadId: parsed.threadId, commitSha: parsed.commitSha };
     } catch {
-      return { eventId: null, threadId: null, commitSha: null, legacyActivityTab: false };
+      return { eventId: null, threadId: null, commitSha: null };
     }
   }, [pr.id]); // eslint-disable-line react-hooks/exhaustive-deps
-  const timelineDeepLinkNeedsAllThreads = Boolean(deepLinkState.eventId || deepLinkState.threadId || deepLinkState.legacyActivityTab);
-  const timelineFilters: PrTimelineFilters = React.useMemo(
-    () => {
-      const filters = timelineFiltersByPrId?.[pr.id] ?? DEFAULT_PR_TIMELINE_FILTERS;
-      return timelineDeepLinkNeedsAllThreads
-        ? { ...filters, showResolved: true, showOutdated: true }
-        : filters;
-    },
-    [timelineFiltersByPrId, pr.id, timelineDeepLinkNeedsAllThreads],
-  );
-  const handleTimelineFiltersChange = React.useCallback(
-    (next: PrTimelineFilters) => setTimelineFilters?.(pr.id, next),
-    [pr.id, setTimelineFilters],
-  );
   const reviewThreadsForTimeline = React.useMemo(
     () => (ctxDetailPrId === pr.id && (ctxReviewThreads?.length ?? 0) > 0 ? ctxReviewThreads! : reviewThreads),
     [ctxDetailPrId, ctxReviewThreads, pr.id, reviewThreads],
@@ -639,10 +606,6 @@ export function PrDetailPane({
   const [commentDraft, setCommentDraft] = React.useState("");
   const [editingTitle, setEditingTitle] = React.useState(false);
   const [titleDraft, setTitleDraft] = React.useState("");
-  const [labelInput, setLabelInput] = React.useState("");
-  const [showLabelEditor, setShowLabelEditor] = React.useState(false);
-  const [reviewerInput, setReviewerInput] = React.useState("");
-  const [showReviewerEditor, setShowReviewerEditor] = React.useState(false);
   const [manageLaneOpen, setManageLaneOpen] = React.useState(false);
   const [expandedFile, setExpandedFile] = React.useState<string | null>(null);
   const detailLoadSeqRef = React.useRef(0);
@@ -683,7 +646,7 @@ export function PrDetailPane({
       queueAgentChatDraftHandoff({ draftTargetId }, prompt);
       navigateToAppTarget({ kind: "work", laneId: pr.laneId });
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : String(error));
+      setActionError(formatError(error));
     }
   }, [pr]);
 
@@ -874,8 +837,6 @@ export function PrDetailPane({
     setActionError(null);
     setActionResult(null);
     setEditingTitle(false);
-    setShowLabelEditor(false);
-    setShowReviewerEditor(false);
     setActivity([]);
     activityFetchKeyRef.current = null;
     liveDetailLoadedForPrRef.current = null;
@@ -1152,11 +1113,16 @@ export function PrDetailPane({
     try {
       await fn();
     } catch (err: unknown) {
-      setActionError(err instanceof Error ? err.message : String(err));
+      setActionError(formatError(err));
     } finally {
       setActionBusy(false);
     }
   }, []);
+
+  /** Read the PR's status and detail again from GitHub. */
+  const refreshAll = React.useCallback(async () => {
+    await Promise.all([onRefresh({ prId: pr.id }), loadDetail({ forceLive: true })]);
+  }, [loadDetail, onRefresh, pr.id]);
 
   // ---- Actions ----
   const handleMerge = (
@@ -1223,14 +1189,14 @@ export function PrDetailPane({
           setUpdateBranchNotice({ tone: "success", text: "Branch updated with base." });
         }
         // Re-poll status + detail so the checklist refreshes off the new head.
-        await Promise.all([onRefresh({ prId: pr.id }), loadDetail({ forceLive: true })]);
+        await refreshAll();
       } catch (err: unknown) {
-        setUpdateBranchNotice({ tone: "error", text: err instanceof Error ? err.message : String(err) });
+        setUpdateBranchNotice({ tone: "error", text: formatError(err) });
       } finally {
         setUpdateBranchBusy(false);
       }
     },
-    [loadDetail, onOpenRebaseTab, onRefresh, pr.id, pr.laneId, status?.headSha],
+    [onOpenRebaseTab, pr.id, pr.laneId, refreshAll, status?.headSha],
   );
 
   const handleDeleteBranch = () => runAction(async () => {
@@ -1278,7 +1244,6 @@ export function PrDetailPane({
 
   const handleSetLabels = (labels: string[]) => runAction(async () => {
     await window.ade.prs.setLabels({ prId: pr.id, labels });
-    setShowLabelEditor(false);
     await loadDetail({ forceLive: true });
   });
 
@@ -1288,19 +1253,14 @@ export function PrDetailPane({
       reviewers: request.reviewers,
       teamReviewers: request.teamReviewers,
     });
-    setShowReviewerEditor(false);
     await onRefresh();
     await loadDetail({ forceLive: true });
   });
 
   const handleSubmitReview = (event: PrReviewEvent, body: string) => runAction(async () => {
     await window.ade.prs.submitReview({ prId: pr.id, event, body: body || undefined });
-    await onRefresh();
-  });
-
-  const handleClosePr = () => runAction(async () => {
-    await window.ade.prs.close({ prId: pr.id });
-    markPrTerminalLocally(pr, "closed");
+    // Clear the draft only now: a rejected review keeps the text to retry.
+    setCommentDraft("");
     await onRefresh();
   });
 
@@ -1322,10 +1282,97 @@ export function PrDetailPane({
     () => lanes.find((lane) => lane.id === pr.laneId && !lane.archivedAt) ?? null,
     [lanes, pr.laneId],
   );
-  const handleOpenManageLane = React.useCallback(() => {
-    if (!laneForPr) return;
-    setManageLaneOpen(true);
-  }, [laneForPr]);
+  const handleOpenManageLane = React.useCallback(() => setManageLaneOpen(true), []);
+
+  // Lane chats back the header's chat chips and the ⋯ menu's chat choice. A
+  // local read, and only for a PR that has a lane.
+  const [laneChats, setLaneChats] = React.useState<AgentChatSessionSummary[]>([]);
+  React.useEffect(() => {
+    setLaneChats([]);
+    if (!pr.laneId) return undefined;
+    let cancelled = false;
+    void window.ade.agentChat
+      .list({ laneId: pr.laneId, includeArchived: false })
+      .then((sessions) => { if (!cancelled) setLaneChats(sessions); })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [pr.laneId, pr.id]);
+  const linkedChats = React.useMemo(() => linkedPrChats(pr, laneChats), [laneChats, pr]);
+  const handleOpenChat = React.useCallback((session: AgentChatSessionSummary) => {
+    navigateToAppTarget({ kind: "work", laneId: session.laneId, sessionId: session.sessionId });
+  }, []);
+  const handleOpenLane = React.useCallback(() => {
+    if (pr.laneId) navigateToAppTarget({ kind: "work", laneId: pr.laneId });
+  }, [pr.laneId]);
+
+  const checksBuckets = React.useMemo(() => summarizePipelineStates(headerChecks), [headerChecks]);
+  const checksNote = React.useMemo<PrHeaderChecksNote>(() => {
+    if (checksBuckets.total === 0) return { state: "none", passed: 0, total: 0 };
+    const settled = isPipelineTerminal(checksBuckets);
+    return {
+      state: !settled ? "running" : checksBuckets.failed > 0 ? "failing" : "passing",
+      passed: checksBuckets.passed + checksBuckets.skipped,
+      total: checksBuckets.total,
+    };
+  }, [checksBuckets]);
+  // The Merge card (in the Overview) reads the same unified checks and threads.
+  const failingCheckNames = React.useMemo(() => prFailingCheckNames(headerChecks), [headerChecks]);
+  const openFindings = React.useMemo(() => prOpenFindings(reviewThreadsForTimeline), [reviewThreadsForTimeline]);
+
+  const [refreshing, setRefreshing] = React.useState(false);
+  const handleHeaderRefresh = React.useCallback(() => {
+    setRefreshing(true);
+    void refreshAll()
+      .catch((error: unknown) => setActionError(formatError(error)))
+      .finally(() => setRefreshing(false));
+  }, [refreshAll]);
+
+  /** Chat hand-off from the Merge card and the Needs-attention rows. */
+  const handPrPrompt = React.useCallback((prompt: string) => {
+    if (!pr.laneId) return;
+    // Same rule as the ⋯ menu: the newest linked chat, else a new lane chat.
+    handPromptToChat({ laneId: pr.laneId, sessionId: linkedChats[0]?.sessionId ?? null, prompt });
+  }, [linkedChats, pr.laneId]);
+
+  const handlePrStateAction = React.useCallback(async (action: PrStateAction) => {
+    try {
+      if (action === "ready_for_review") await window.ade.prs.setDraft({ prId: pr.id, draft: false });
+      else {
+        await window.ade.prs.setAutoMerge({
+          prId: pr.id,
+          enabled: action === "enable_auto_merge",
+          method: readLastMergeMethod(mergeMethod),
+        });
+      }
+      await refreshAll();
+    } catch (error) {
+      setActionError(formatError(error));
+    }
+  }, [mergeMethod, pr.id, refreshAll]);
+
+  const [readyBusy, setReadyBusy] = React.useState(false);
+  const handleReadyForReview = React.useCallback(() => {
+    setReadyBusy(true);
+    void handlePrStateAction("ready_for_review").finally(() => setReadyBusy(false));
+  }, [handlePrStateAction]);
+
+  const actionsContext = React.useMemo<PrActionsContext>(() => ({
+    pr,
+    status,
+    findings: openFindings,
+    failingChecks: failingCheckNames,
+    mergeMethod: readLastMergeMethod(mergeMethod),
+    laneChats,
+    onRefresh: handleHeaderRefresh,
+    refreshing,
+    onChanged: refreshAll,
+    onError: setActionError,
+    // The lane dialog needs a live lane; a PR without one has nothing to manage.
+    ...(laneForPr ? { onManageLane: handleOpenManageLane } : {}),
+  }), [
+    failingCheckNames, handleHeaderRefresh, handleOpenManageLane, laneChats, laneForPr,
+    mergeMethod, openFindings, pr, refreshAll, refreshing, status,
+  ]);
   const showDetailLoadingPill = (detailLoading || detailBusy) && !hasVisibleDetailData;
 
   const overviewRailsActive = activeTab === "overview";
@@ -1350,14 +1397,21 @@ export function PrDetailPane({
         activeTab={activeTab}
         onSelectTab={setActiveTab}
         filesCount={files.length}
-        checksCount={headerChecks.length}
+        checksNote={checksNote}
+        author={detail?.author ?? null}
+        lane={laneForPr}
+        linkedChats={linkedChats}
+        onOpenChat={handleOpenChat}
+        onOpenLane={pr.laneId ? handleOpenLane : null}
+        onReadyForReview={handleReadyForReview}
+        readyForReviewBusy={readyBusy}
+        actions={actionsContext}
         editingTitle={editingTitle}
         titleDraft={titleDraft}
         onTitleDraftChange={setTitleDraft}
         onStartTitleEdit={handleStartTitleEdit}
         onCancelTitleEdit={handleCancelTitleEdit}
         onSubmitTitle={handleUpdateTitle}
-        onShowInGraph={onShowInGraph}
         unmappedAffordance={unmappedAffordance}
       />
 
@@ -1407,27 +1461,15 @@ export function PrDetailPane({
             deployments={deploymentsForTimeline}
             viewerLogin={viewerLogin}
             writeViewerLogin={writeViewerLogin}
-            filters={timelineFilters}
-            onFiltersChange={handleTimelineFiltersChange}
             commentDraft={commentDraft}
             setCommentDraft={setCommentDraft}
             actionBusy={actionBusy}
             onAddComment={handleAddComment}
             deepLink={deepLinkState}
             actionRuns={actionRuns}
-            onSelectCheck={handleSelectCheckFromRail}
             onOpenChecksTab={handleOpenChecksTab}
             onRerunChecks={handleRerunChecks}
-            onOpenFilesTab={() => setActiveTab("files")}
             mergeMethod={mergeMethod}
-            showReviewerEditor={showReviewerEditor}
-            setShowReviewerEditor={setShowReviewerEditor}
-            reviewerInput={reviewerInput}
-            setReviewerInput={setReviewerInput}
-            showLabelEditor={showLabelEditor}
-            setShowLabelEditor={setShowLabelEditor}
-            labelInput={labelInput}
-            setLabelInput={setLabelInput}
             onMerge={handleMerge}
             onUpdateBranch={handleUpdateBranch}
             updateBranchBusy={updateBranchBusy}
@@ -1436,10 +1478,14 @@ export function PrDetailPane({
             onSetLabels={handleSetLabels}
             onDeleteBranch={handleDeleteBranch}
             deleteBranchBusy={actionBusy}
-            onOpenManageLane={handleOpenManageLane}
-            onClose={handleClosePr}
             onReopen={handleReopenPr}
             onSubmitReview={handleSubmitReview}
+            onHandPrompt={pr.laneId ? handPrPrompt : undefined}
+            onOpenPrFile={(path) => {
+              setExpandedFile(path);
+              setActiveTab("files");
+            }}
+            onPrStateAction={handlePrStateAction}
           />
         )}
         <PrManageLaneDialogHost
@@ -1459,8 +1505,6 @@ export function PrDetailPane({
             actionBusy={actionBusy}
             checksStatus={checksStatusForHeader}
             onRerunChecks={handleRerunChecks}
-            focusedCheckId={focusedCheckId}
-            onFocusedCheckConsumed={handleFocusedCheckConsumed}
             paletteRequest={checksPaletteRequest}
             onFixInChat={pr.laneId ? handleFixInChat : undefined}
             pollGovernor={checksPollGovernor}
@@ -1522,7 +1566,7 @@ function FilesTab({ files, expandedFile, setExpandedFile }: { files: PrFile[]; e
                   style={{
                     display: "flex", alignItems: "center", gap: 10, width: "100%",
                     padding: "10px 14px", border: "none", cursor: "pointer",
-                    background: isExpanded ? `${statusCol}08` : "transparent",
+                    background: isExpanded ? `color-mix(in srgb, ${statusCol} 3%, transparent)` : "transparent",
                     borderBottom: idx < files.length - 1 || isExpanded ? `1px solid ${COLORS.border}` : "none",
                     textAlign: "left",
                     transition: "background 120ms ease",
@@ -1535,7 +1579,7 @@ function FilesTab({ files, expandedFile, setExpandedFile }: { files: PrFile[]; e
                   <span style={{
                     fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700,
                     color: statusCol, width: 20, height: 20, textAlign: "center",
-                    background: `${statusCol}15`, borderRadius: 4, lineHeight: "20px",
+                    background: `color-mix(in srgb, ${statusCol} 8%, transparent)`, borderRadius: 4, lineHeight: "20px",
                   }}>
                     {fileStatusLabel(file.status)}
                   </span>

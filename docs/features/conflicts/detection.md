@@ -7,8 +7,8 @@ desktop fallback target also points at the same source). It runs
 `git merge-tree` on the host that owns the worktrees to predict
 whether a merge or rebase would produce conflicts — without actually
 performing the merge. Results are cached in `conflict_predictions`
-and surfaced as lane status badges, risk matrix cells, overlap chips,
-and rebase needs. For remote-bound windows the entire prediction loop
+and surfaced as lane status badges, overlap chips, and rebase needs.
+The risk matrix is available through the conflicts tools and actions. For remote-bound windows the entire prediction loop
 runs on the remote host; the desktop renderer subscribes to events
 through preload's runtime event pump and never spawns git itself.
 
@@ -135,8 +135,7 @@ Stale predictions are still returned by `getBatchAssessment` and
 `getLaneStatus` with their original `lastPredictedAt` timestamp.
 The UI decorates them rather than refetching:
 
-- Risk matrix cells render at reduced opacity with a clock icon
-  (`renderer/components/graph/shared/RiskMatrix.tsx`).
+- Stale predictions stay in the assessment payload with their original timestamp.
 - Hover tooltip shows "Last computed N min ago. Click to refresh."
 - Clicking triggers `runPrediction` for the specific pair.
 

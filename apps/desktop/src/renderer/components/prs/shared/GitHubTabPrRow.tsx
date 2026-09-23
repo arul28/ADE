@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowSquareOut, ChatText, CheckCircle, CircleDashed, GitBranch, XCircle } from "@phosphor-icons/react";
+import { ChatText, CheckCircle, CircleDashed, GitBranch, XCircle } from "@phosphor-icons/react";
 
 import type { GitHubPrListItem, PrSummary } from "../../../../shared/types/prs";
 import { COLORS, MONO_FONT, SANS_FONT, inlineBadge } from "../../lanes/laneDesignTokens";
@@ -12,6 +12,8 @@ import { GitHubStackBadge } from "./GitHubStackBadge";
 import { formatPrListGroupDiff, type PrListGroupHeader as PrListGroupHeaderModel } from "./prListGrouping";
 import { NO_CI_REASON } from "../../../../shared/prChecksRollup";
 import "./prListRow.css";
+import { PrActionsContextMenu, type PrActionsTarget } from "./PrActionsMenu";
+import { syntheticUnmappedPrId } from "../tabs/githubTabModel";
 
 /**
  * Presentation for one row of the GitHub PR list, and the period header that groups
@@ -350,11 +352,17 @@ export const GitHubTabPrRow = React.memo(function GitHubTabPrRow({
   selected,
   linkedPr,
   onSelect,
+  onActionDone,
+  onActionError,
 }: {
   item: GitHubPrListItem;
   selected: boolean;
   linkedPr: PrSummary | null;
   onSelect: (item: GitHubPrListItem) => void;
+  /** After a right-click menu action changes this PR. */
+  onActionDone?: (prId: string) => void;
+  /** When a right-click menu action fails. */
+  onActionError?: (message: string) => void;
 }) {
   const sc = stateColor(item.state);
   // A merged PR is a record, not a queue item: CI outcome, "review required" and the
@@ -363,14 +371,25 @@ export const GitHubTabPrRow = React.memo(function GitHubTabPrRow({
   // wall of signals.
   const terminal = isTerminalPrState(item.state);
   const review = terminal ? null : reviewIndicator(linkedPr);
-  // Open rows are about how long something has been waiting; merged rows are about
-  // when it shipped.
-  const ago = formatTimeAgoCompact(terminal ? (item.mergedAt ?? item.updatedAt) : item.createdAt);
   const labels = item.labels ?? [];
   const visibleLabels = labels.slice(0, 4);
   const overflowCount = labels.length - 4;
   const rowLinkedLaneColor = useLaneColorById(item.linkedLaneId ?? null);
+  const actionTarget = React.useMemo<PrActionsTarget>(() => ({
+    id: linkedPr?.id ?? syntheticUnmappedPrId(item),
+    laneId: linkedPr?.laneId ?? item.linkedLaneId ?? "",
+    githubPrNumber: item.githubPrNumber,
+    repoOwner: item.repoOwner,
+    repoName: item.repoName,
+    headBranch: item.headBranch ?? linkedPr?.headBranch ?? "",
+    baseBranch: item.baseBranch ?? linkedPr?.baseBranch ?? "",
+    title: item.title,
+    githubUrl: item.githubUrl,
+    state: item.isDraft && item.state === "open" ? "draft" : item.state,
+    chatSessionIds: linkedPr?.chatSessionIds,
+  }), [item, linkedPr]);
   return (
+    <PrActionsContextMenu pr={actionTarget} onChanged={() => onActionDone?.(actionTarget.id)} onError={onActionError}>
     <div className="ade-pr-row" style={{ position: "relative" }}>
       <button
         type="button"
@@ -506,7 +525,7 @@ export const GitHubTabPrRow = React.memo(function GitHubTabPrRow({
         ) : null}
         <PrRowLaneChip item={item} linkedLaneColor={rowLinkedLaneColor} />
         {review ? (
-          <span style={{ display: "inline-flex", alignItems: "center", padding: "2px 6px", fontSize: 10, fontWeight: 500, fontFamily: SANS_FONT, color: review.color, background: `${review.color}10`, borderRadius: 4 }}>
+          <span style={{ display: "inline-flex", alignItems: "center", padding: "2px 6px", fontSize: 10, fontWeight: 500, fontFamily: SANS_FONT, color: review.color, background: `color-mix(in srgb, ${review.color} 6%, transparent)`, borderRadius: 4 }}>
             {review.label}
           </span>
         ) : null}
@@ -527,9 +546,6 @@ export const GitHubTabPrRow = React.memo(function GitHubTabPrRow({
             branch
           </span>
         ) : null}
-        {/* Activity, pushed to the right so it ends up beside the GitHub link at the
-            bottom-right of the card. Open rows count how long this has been waiting;
-            terminal rows say when it shipped. */}
         {item.commentCount > 0 ? (
           <span style={{
             marginLeft: "auto",
@@ -543,47 +559,10 @@ export const GitHubTabPrRow = React.memo(function GitHubTabPrRow({
             <span style={{ fontFamily: MONO_FONT, fontSize: 10 }}>{item.commentCount}</span>
           </span>
         ) : null}
-        {ago ? (
-          <span style={{
-            ...(item.commentCount > 0 ? {} : { marginLeft: "auto" }),
-            flexShrink: 0,
-            fontFamily: MONO_FONT,
-            fontSize: 10,
-            color: COLORS.textDim,
-          }}>
-            {ago}
-          </span>
-        ) : null}
       </div>
       </button>
-      <button
-        type="button"
-        aria-label="View on GitHub"
-        onClick={() => { void window.ade.app.openExternal(item.githubUrl); }}
-        style={{
-          position: "absolute",
-          right: 14,
-          bottom: 11,
-          display: "inline-flex",
-          alignItems: "center",
-          justifyContent: "center",
-          width: 20,
-          height: 20,
-          padding: 0,
-          border: "none",
-          borderRadius: 4,
-          background: "transparent",
-          cursor: "pointer",
-          color: COLORS.textDim,
-          transition: "color 100ms ease",
-        }}
-        title="Open on GitHub"
-        onMouseEnter={(e) => { e.currentTarget.style.color = COLORS.textSecondary; }}
-        onMouseLeave={(e) => { e.currentTarget.style.color = COLORS.textDim; }}
-      >
-        <ArrowSquareOut size={13} />
-      </button>
     </div>
+    </PrActionsContextMenu>
   );
 });
 

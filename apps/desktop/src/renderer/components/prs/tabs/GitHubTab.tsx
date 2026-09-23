@@ -9,6 +9,7 @@ import type {
   PrEventPayload,
   PrWithConflicts,
 } from "../../../../shared/types";
+import { parseSyntheticGithubPrId } from "../../../../shared/types/prs";
 import { selectActiveProjectRoot, useAppStore, useAppStoreApi } from "../../../state/appStore";
 import type { UnmappedAffordance } from "../detail/PrDetailPane";
 import { usePrs } from "../state/PrsContext";
@@ -778,6 +779,12 @@ export function GitHubTab({
     };
   }, [handleOpenCreateLaneFromPrBranch, lanes, selectedItem]);
 
+  // A stable callback, so the memoized rows do not re-render on each render.
+  const handleRowActionDone = React.useCallback((prId: string) => {
+    // A synthetic `gh:` id has no row to refresh by id; resync the list.
+    void handleSync(parseSyntheticGithubPrId(prId) ? {} : { prId });
+  }, [handleSync]);
+
   const detailPaneProps = selectedItem && selectedDisplayPr ? {
     pr: selectedDisplayPr,
     status: selectedLinkedPr ? detailStatus : null,
@@ -824,6 +831,8 @@ export function GitHubTab({
         }}
         list={{
           parentRef: listRef,
+          onRowActionDone: handleRowActionDone,
+          onRowActionError: setError,
           filter,
           filterCounts,
           loading,

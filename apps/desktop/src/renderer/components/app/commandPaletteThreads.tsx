@@ -15,14 +15,13 @@
 import React, { useMemo } from "react";
 import {
   ArrowUUpLeft,
-  ChatCircle,
   Check,
   Moon,
   PencilSimple,
   Plus,
   Sun,
-  Terminal,
 } from "@phosphor-icons/react";
+import { ToolLogo } from "../terminals/ToolLogos";
 import type {
   LaneSummary,
   OpenProjectBinding,
@@ -63,6 +62,7 @@ import {
 } from "../../lib/terminalAttention";
 import { cn } from "../ui/cn";
 import { highlightRanges, highlightTitle } from "./commandPaletteSearch";
+import { clipCaption, paletteCaption } from "./commandPaletteMarks";
 
 /**
  * Rows rendered in the Recent threads group. The palette can be opened against
@@ -447,12 +447,7 @@ export function threadStatusPresentation(
 }
 
 function ThreadGlyph({ session }: { session: TerminalSessionSummary }) {
-  const className = "shrink-0 text-[var(--color-muted-fg)]";
-  return isChatToolType(session.toolType) ? (
-    <ChatCircle size={15} weight="regular" className={className} />
-  ) : (
-    <Terminal size={15} weight="regular" className={className} />
-  );
+  return <ToolLogo toolType={session.toolType} size={16} />;
 }
 
 export const ThreadResultRow = React.memo(function ThreadResultRow({
@@ -532,6 +527,8 @@ export const ThreadResultRow = React.memo(function ThreadResultRow({
   else if (entry.laneName) contextParts.push(entry.laneName);
   if (entry.branch) contextParts.push(`#${entry.branch}`);
   else if (rowProjectName && entry.laneName) contextParts.push(entry.laneName);
+  const contextCaption = paletteCaption(contextParts.join(" · "));
+  const clippedContent = contentHit?.snippet ? clipCaption(contentHit.snippet) : null;
 
   const actionButtonClass = "inline-flex h-6 items-center gap-1 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 text-[10px] text-[var(--color-muted-fg)] transition-colors hover:border-[var(--color-accent)] hover:text-[var(--color-fg)]";
 
@@ -539,10 +536,8 @@ export const ThreadResultRow = React.memo(function ThreadResultRow({
     <li>
       <div
         className={cn(
-          "mx-2 overflow-hidden rounded-lg border transition-colors",
-          isSelected
-            ? "border-[var(--color-accent)] bg-[var(--color-accent-muted)]"
-            : "border-transparent hover:border-[var(--color-border)] hover:bg-[var(--color-muted)]",
+          "mx-2 overflow-hidden rounded-lg border border-transparent transition-colors",
+          isSelected ? "bg-white/[0.06]" : "hover:bg-white/[0.04]",
         )}
         data-thread-id={session.id}
         data-machine-id={entry.machineId}
@@ -563,7 +558,7 @@ export const ThreadResultRow = React.memo(function ThreadResultRow({
         >
           <span
             className={cn(
-              "flex h-5 w-5 shrink-0 items-center justify-center rounded-md",
+              "flex h-7 w-7 shrink-0 items-center justify-center rounded-md",
               offline && "opacity-55",
             )}
             style={{
@@ -602,10 +597,10 @@ export const ThreadResultRow = React.memo(function ThreadResultRow({
             <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-[var(--color-muted-fg)]">
               {machineMarker ? <LaneMachineMarker marker={machineMarker} /> : null}
               <span className="min-w-0 truncate">
-                {contextParts.join(" · ")}
+                {contextCaption}
                 {isCurrent ? (
                   <span className="text-[var(--color-accent)]">
-                    {contextParts.length > 0 ? " · " : ""}Current thread
+                    {contextCaption ? " · " : ""}Current thread
                   </span>
                 ) : null}
               </span>
@@ -636,9 +631,17 @@ export const ThreadResultRow = React.memo(function ThreadResultRow({
                 </span>
               ) : null}
             </div>
-            {contentHit?.snippet ? (
+            {clippedContent ? (
               <div className="mt-1 truncate text-[11px] text-[var(--color-muted-fg)]">
-                {highlightRanges(contentHit.snippet, contentHit.matchRanges)}
+                {highlightRanges(
+                  clippedContent.text,
+                  (contentHit?.matchRanges ?? [])
+                    .filter((range) => range.start < clippedContent.end)
+                    .map((range) => ({
+                      start: range.start,
+                      end: Math.min(range.end, clippedContent.end),
+                    })),
+                )}
               </div>
             ) : null}
             {matchFields.length > 0 ? (

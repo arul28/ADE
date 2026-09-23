@@ -5056,6 +5056,12 @@ struct PrStatus: Codable, Equatable {
   var canBypass: Bool?
   /// Head SHA at the time status was computed; used for the stale-head guard.
   var headSha: String?
+  /// Repository setting "Allow auto-merge". Nil against older hosts.
+  var autoMergeAllowed: Bool? = nil
+  /// Auto-merge is armed on this PR.
+  var autoMergeEnabled: Bool? = nil
+  /// Method the armed auto-merge will use ("squash" / "merge" / "rebase").
+  var autoMergeMethod: String? = nil
 
   /// Decodes an unknown `reviewDecision` string to nil instead of throwing, so a
   /// new GitHub enum value never fails the whole snapshot decode. All other
@@ -5065,6 +5071,7 @@ struct PrStatus: Codable, Equatable {
     case reviewStatus, isMergeable, mergeConflicts, behindBaseBy
     case mergeStateStatus, reviewDecision, approvalsCount, requiredApprovals
     case mergeabilityComputing, canBypass, headSha
+    case autoMergeAllowed, autoMergeEnabled, autoMergeMethod
   }
 
   init(from decoder: Decoder) throws {
@@ -5091,6 +5098,9 @@ struct PrStatus: Codable, Equatable {
     mergeabilityComputing = try c.decodeIfPresent(Bool.self, forKey: .mergeabilityComputing)
     canBypass = try c.decodeIfPresent(Bool.self, forKey: .canBypass)
     headSha = try c.decodeIfPresent(String.self, forKey: .headSha)
+    autoMergeAllowed = try c.decodeIfPresent(Bool.self, forKey: .autoMergeAllowed)
+    autoMergeEnabled = try c.decodeIfPresent(Bool.self, forKey: .autoMergeEnabled)
+    autoMergeMethod = try c.decodeIfPresent(String.self, forKey: .autoMergeMethod)
   }
 
   /// Memberwise init retained for previews / tests now that a custom decoder
@@ -5148,11 +5158,15 @@ struct PrReview: Codable, Identifiable, Equatable {
   var state: String
   var body: String?
   var submittedAt: String?
+  /// GitHub marks the reviewer as an app or bot. Nil against older hosts.
+  var reviewerIsBot: Bool? = nil
 }
 
 struct PrComment: Codable, Identifiable, Equatable {
   var id: String
   var author: String
+  /// GitHub marks the author as an app or bot. Nil against older hosts.
+  var authorIsBot: Bool? = nil
   var body: String?
   var source: String
   var url: String?
@@ -5205,6 +5219,8 @@ struct PrUser: Codable, Identifiable, Equatable {
   var id: String { login }
   var login: String
   var avatarUrl: String?
+  /// GitHub marks the account as an app or bot. Nil against older hosts.
+  var isBot: Bool? = nil
 }
 
 struct PrLinkedIssue: Codable, Identifiable, Equatable {
@@ -5406,6 +5422,8 @@ struct PrReviewThreadComment: Codable, Identifiable, Equatable {
   var id: String
   var author: String
   var authorAvatarUrl: String?
+  /// GitHub GraphQL `__typename == "Bot"`; GraphQL bot logins have no `[bot]`.
+  var authorIsBot: Bool? = nil
   var body: String?
   var url: String?
   var createdAt: String?

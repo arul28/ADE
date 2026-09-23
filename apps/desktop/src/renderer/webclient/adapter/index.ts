@@ -141,7 +141,6 @@ export function createAdeWebAdapter(
     zoom: misc.zoom,
     layout: misc.layout,
     tilingTree: misc.tilingTree,
-    graphState: misc.graphState,
     workTools: misc.workTools,
     tests: misc.tests,
     projectConfig: misc.projectConfig,

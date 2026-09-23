@@ -134,23 +134,6 @@ export const PrSection = memo(function PrSection({
 });
 
 /**
- * A section header's right-hand action. Text only, accent-toned, no chrome —
- * the row it sits in already carries the grouping.
- */
-export function prSectionAction(overrides?: CSSProperties): CSSProperties {
-  return {
-    color: COLORS.accent,
-    fontFamily: SANS_FONT,
-    fontSize: 11,
-    background: "none",
-    border: "none",
-    padding: 0,
-    cursor: "pointer",
-    ...overrides,
-  };
-}
-
-/**
  * A flat control: one hairline border, small radius, no gradient and no shadow.
  * Pass a `tone` to colour the label and border for a destructive or accent
  * action; the fill stays transparent either way.

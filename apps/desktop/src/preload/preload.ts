@@ -6,7 +6,6 @@ import {
 } from "../shared/types/systemSettings";
 import { IPC } from "../shared/ipc";
 import { isUnsupportedAdeActionError } from "../shared/codedError";
-import { normalizeSyncStatusLaneIds, settleLaneSyncStatuses } from "../shared/gitSyncStatuses";
 import { settlePrDetailBundle } from "../shared/prDetailBundle";
 import type {
   CtoVoiceBridge,
@@ -297,7 +296,6 @@ import type {
   DevToolsCheckResult,
   DiffChanges,
   DockLayout,
-  GraphPersistedState,
   FileChangeEvent,
   FileContent,
   FileDiff,
@@ -361,8 +359,6 @@ import type {
   GitStashPushArgs,
   GitStashRefArgs,
   GitStashSummary,
-  GitSyncStatuses,
-  GitSyncStatusesArgs,
   GitUpstreamSyncStatus,
   GitSyncArgs,
   GitHubAppDeviceAuthPollResult,
@@ -437,6 +433,8 @@ import type {
   SubmitPrReviewResult,
   ClosePrArgs,
   ReopenPrArgs,
+  SetPrAutoMergeArgs,
+  SetPrDraftArgs,
   RerunPrChecksArgs,
   AiReviewSummaryArgs,
   AiReviewSummary,
@@ -585,8 +583,6 @@ import type {
   ListSessionsArgs,
   DeleteSessionArgs,
   ListTestRunsArgs,
-  MergeSimulationArgs,
-  MergeSimulationResult,
   OperationRecord,
   ProjectConfigCandidate,
   ProjectConfigDiff,
@@ -2113,21 +2109,6 @@ function callChatLaunchAction<T>(
 ): Promise<T> {
   return callPinnedOrBoundRuntimeActionOr<T>(pin, "chat", action, request, () =>
     Promise.reject(new Error("New-lane launches need a connected ADE runtime. Reconnect the machine and try again.")));
-}
-
-async function readLegacySyncStatuses(
-  laneIds: string[],
-  pin?: OpenProjectBinding | null,
-): Promise<GitSyncStatuses> {
-  return settleLaneSyncStatuses(laneIds, (laneId) =>
-    callPinnedOrBoundRuntimeActionOr<GitUpstreamSyncStatus>(
-      pin,
-      "git",
-      "getSyncStatus",
-      { args: { laneId } },
-      () => ipcRenderer.invoke(IPC.gitGetSyncStatus, { laneId }),
-    ),
-  );
 }
 
 function readLegacyPrDetailBundle(prId: string): Promise<PrDetailBundle> {
@@ -10390,25 +10371,6 @@ const adeBridge = {
         { args },
         () => ipcRenderer.invoke(IPC.gitGetSyncStatus, args),
       ),
-    getSyncStatuses: async (
-      args: GitSyncStatusesArgs,
-      pin?: OpenProjectBinding | null,
-    ): Promise<GitSyncStatuses> => {
-      const laneIds = normalizeSyncStatusLaneIds(args);
-      if (laneIds.length === 0) return {};
-      try {
-        return await callPinnedOrBoundRuntimeActionOr<GitSyncStatuses>(
-          pin,
-          "git",
-          "getSyncStatuses",
-          { args: { laneIds } },
-          () => ipcRenderer.invoke(IPC.gitGetSyncStatuses, { laneIds }),
-        );
-      } catch (error) {
-        if (!isUnsupportedAdeActionError(error)) throw error;
-        return await readLegacySyncStatuses(laneIds, pin);
-      }
-    },
     getOriginRemote: async (
       args: { laneId: string },
       pin?: OpenProjectBinding | null,
@@ -10586,21 +10548,11 @@ const adeBridge = {
       callProjectRuntimeActionOr("conflicts", "getRiskMatrix", {}, () =>
         ipcRenderer.invoke(IPC.conflictsGetRiskMatrix),
       ),
-    simulateMerge: async (
-      args: MergeSimulationArgs,
-    ): Promise<MergeSimulationResult> =>
-      callProjectRuntimeActionOr("conflicts", "simulateMerge", { args }, () =>
-        ipcRenderer.invoke(IPC.conflictsSimulateMerge, args),
-      ),
     runPrediction: async (
       args: RunConflictPredictionArgs = {},
     ): Promise<BatchAssessmentResult> =>
       callProjectRuntimeActionOr("conflicts", "runPrediction", { args }, () =>
         ipcRenderer.invoke(IPC.conflictsRunPrediction, args),
-      ),
-    getBatchAssessment: async (): Promise<BatchAssessmentResult> =>
-      callProjectRuntimeActionOr("conflicts", "getBatchAssessment", {}, () =>
-        ipcRenderer.invoke(IPC.conflictsGetBatchAssessment),
       ),
     listProposals: async (laneId: string): Promise<ConflictProposal[]> =>
       callProjectRuntimeActionOr(
@@ -11525,6 +11477,14 @@ const adeBridge = {
       callProjectRuntimeActionOr("pr", "reopenPr", { args }, () =>
         ipcRenderer.invoke(IPC.prsReopen, args),
       ),
+    setDraft: async (args: SetPrDraftArgs): Promise<void> =>
+      callProjectRuntimeActionOr("pr", "setDraft", { args }, () =>
+        ipcRenderer.invoke(IPC.prsSetDraft, args),
+      ),
+    setAutoMerge: async (args: SetPrAutoMergeArgs): Promise<void> =>
+      callProjectRuntimeActionOr("pr", "setAutoMerge", { args }, () =>
+        ipcRenderer.invoke(IPC.prsSetAutoMerge, args),
+      ),
     rerunChecks: async (args: RerunPrChecksArgs): Promise<void> =>
       callProjectRuntimeActionOr("pr", "rerunChecks", { args }, () =>
         ipcRenderer.invoke(IPC.prsRerunChecks, args),
@@ -11703,19 +11663,6 @@ const adeBridge = {
         "set",
         { args: { layoutId, tree } },
         () => ipcRenderer.invoke(IPC.tilingTreeSet, { layoutId, tree }),
-      ).then(() => undefined),
-  },
-  graphState: {
-    get: async (projectId: string): Promise<GraphPersistedState | null> =>
-      callProjectRuntimeActionOr("graph_state", "get", {}, () =>
-        ipcRenderer.invoke(IPC.graphStateGet, { projectId }),
-      ),
-    set: async (projectId: string, state: GraphPersistedState): Promise<void> =>
-      callProjectRuntimeActionOr(
-        "graph_state",
-        "set",
-        { args: { state } },
-        () => ipcRenderer.invoke(IPC.graphStateSet, { projectId, state }),
       ).then(() => undefined),
   },
   /**

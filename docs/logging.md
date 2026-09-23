@@ -503,12 +503,12 @@ Which tool an installation opens in the Work tools pane records the existing
 palette, and the reveal channel a dev-server chip uses) with `feature: "work"`,
 `action: "tool_opened"`, `source: "renderer_route"`, and the tool id on a
 closed, prefixed `outcome`: `tool_terminal`, `tool_git`, `tool_files`,
-`tool_ios`, `tool_app_control`, or `tool_browser`. It is emitted from
+`tool_ios`, `tool_app_control`, `tool_browser`, or `tool_pr`. It is emitted from
 the renderer because tool selection has no durable backend mutation — the
 runtime publish that mirrors it to iOS and the hosted web client is a
 device-mirror push, not a record of the choice.
 
-The product question is only which of the six tools an installation actually
+The product question is only which Work tool an installation actually
 uses; `ade_screen_viewed` `work` says the surface was reached and cannot tell a
 Browser install from a Git one. Nothing finer crosses the boundary: no lane,
 project, tab, URL, session, ordering, or dwell time — a tool id says what was
@@ -767,8 +767,8 @@ Persisted `usage_events` are the preferred source for meaningful user mutations.
 
 Pull-request mutations reach analytics through that ledger and nowhere else.
 `prs.land`, `prs.close`, `prs.reopen`, `prs.createFromLane`, `prs.updateBranch`,
-`prs.retargetBase`, `prs.addComment`, `prs.submitReview`, and `prs.rerunChecks`
-are recorded at the IPC channel / RPC domain boundary, keyed on the action name
+`prs.retargetBase`, `prs.addComment`, `prs.submitReview`, `prs.rerunChecks`,
+`prs.setDraft`, and `prs.setAutoMerge` are recorded at the IPC channel / RPC domain boundary, keyed on the action name
 rather than on the presence of a local `pull_requests` row — so removing the
 lane-mapping gate widened what an installation can do without needing any new
 instrumentation. `prs.cleanupBranch` joined the set for the same reason: while
@@ -783,7 +783,10 @@ when someone asks the question.
 
 Everything else the PRs tab does is a read or a view mechanic — list polling,
 snapshot refreshes, the CI graph fetch, tab and drawer toggles, commit-tick
-hover, header narrowing, pane resizing — and stays untracked by the rule above.
+hover, header narrowing, pane resizing, the ⋯ menu and its right-click twin,
+the floating dock's bubbles and cards, the push tick rail, and the bot-row
+expansion — and stays untracked by the rule above. A ⋯ chat action only puts a
+prompt in the composer; the send that may follow is the chat's own event.
 The `ade_screen_viewed` `prs` arrival already records that the surface was
 opened.
 

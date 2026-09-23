@@ -1787,24 +1787,6 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
   },
 
   // ---------------------------------------------------------------------------
-  // graph_state
-  // ---------------------------------------------------------------------------
-  {
-    domain: "graph_state",
-    action: "get",
-    label: "Get graph state",
-    description: "Return the persisted lanes-graph state for the current project.",
-    params: [],
-  },
-  {
-    domain: "graph_state",
-    action: "set",
-    label: "Set graph state",
-    description: "Persist the lanes-graph state for the current project.",
-    params: [{ name: "state", type: "json", required: true, description: "State object or null to clear." }],
-  },
-
-  // ---------------------------------------------------------------------------
   // computer_use_artifacts
   // ---------------------------------------------------------------------------
   // No `ingest` entry: proof-drawer records are created only through the

@@ -159,7 +159,7 @@ export type ConflictProposalProvider = "subscription";
 
 export type ExternalConflictResolverProvider = "codex" | "claude";
 
-export type ConflictResolverOriginSurface = "integration" | "rebase" | "queue" | "graph" | "manual";
+export type ConflictResolverOriginSurface = "integration" | "rebase" | "queue" | "manual";
 
 export type ConflictResolverPermissionMode = "read_only" | "guarded_edit" | "full_edit";
 

@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 import {
   Code,
   CodeBlock,
@@ -39,6 +39,8 @@ export type PrMarkdownEditorProps = {
   maxHeight?: number;
   autoFocus?: boolean;
   ariaLabel?: string;
+  /** Grow the text field with its content, from minHeight up to maxHeight. */
+  autoGrow?: boolean;
   /** Extra content rendered on the right of the tab strip (e.g. char count). */
   toolbarTrailing?: ReactNode;
   onKeyDown?: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
@@ -140,11 +142,19 @@ export function PrMarkdownEditor({
   maxHeight = 320,
   autoFocus = false,
   ariaLabel = "Markdown editor",
+  autoGrow = false,
   toolbarTrailing,
   onKeyDown,
 }: PrMarkdownEditorProps) {
   const [mode, setMode] = useState<EditorMode>("write");
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  useLayoutEffect(() => {
+    const node = textareaRef.current;
+    if (!autoGrow || !node || mode !== "write") return;
+    node.style.height = "auto";
+    node.style.height = `${Math.min(maxHeight, Math.max(minHeight, node.scrollHeight))}px`;
+  }, [autoGrow, maxHeight, minHeight, mode, value]);
 
   const runAction = useCallback(
     (action: ToolbarAction) => {
@@ -187,7 +197,7 @@ export function PrMarkdownEditor({
     <div className="flex min-h-0 flex-1 flex-col">
       {/* Tab strip + toolbar */}
       <div
-        className="flex items-center gap-1"
+        className="flex flex-wrap items-center gap-1"
         style={{ borderBottom: `1px solid ${COLORS.border}`, padding: "4px 6px" }}
       >
         <button
@@ -249,8 +259,9 @@ export function PrMarkdownEditor({
           disabled={disabled}
           autoFocus={autoFocus}
           aria-label={ariaLabel}
-          className="w-full flex-1 resize-none bg-transparent outline-none"
+          className={autoGrow ? "w-full resize-none bg-transparent outline-none" : "w-full flex-1 resize-none bg-transparent outline-none"}
           style={{
+            overflowX: "hidden",
             minHeight,
             maxHeight,
             padding: "10px 12px",
