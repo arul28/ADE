@@ -364,9 +364,11 @@ live), while an armed `nextWakeAt` reads neutral
 These contextual labels do not change the
 canonical lifecycle, filing bucket, filters, or attention count, and CLI output
 is never scraped to infer plan mode. Working, Planning, and activity elapsed
-time tick from the active chat's immutable `currentTurnStartedAt`, so streamed activity cannot
-reset it; legacy chat rows without that anchor, plus CLI and Stale durations,
-use last activity. Background work counts from `backgroundWorkSince` — when the
+time use the active chat's immutable `currentTurnStartedAt` when available, so
+streamed activity cannot reset the timer. Desktop and CLI fall back to last
+activity when that anchor is absent. iOS uses an eligible activity report's
+`updatedAt` first, then the row's activity timestamp. Background work counts
+from `backgroundWorkSince` — when the
 session's live background set last went from empty to non-empty — which the
 runtime reports on the session summary. Anchoring it to last activity instead
 made it meaningless: every provider frame refreshes that column, so a job that

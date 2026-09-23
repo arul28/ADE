@@ -1118,12 +1118,10 @@ struct WorkSessionRowStatusSlot: View {
   let tone: ActivityTone
   let glyph: ActivityGlyph?
   let showsElapsed: Bool
-  /// **Divergence, stated so nobody hunts for a bug.** iOS's
-  /// `TerminalSessionSummary` carries no `currentTurnStartedAt`, so the ticker
-  /// anchors on the row's activity timestamp: it measures time since last
-  /// activity, where desktop's `SessionStatusSlot` measures time since the turn
-  /// started. On a live turn the two agree closely; on a quiet one this reads
-  /// larger.
+  /// Elapsed time uses the chat summary's `currentTurnStartedAt` when present,
+  /// matching desktop. When that anchor is absent, iOS falls back to the
+  /// activity report's update time and then the row's activity timestamp;
+  /// desktop and CLI fall back directly to last activity.
   let elapsedSince: Date?
   /// Accessibility sizes let the slot wrap instead of holding one line.
   var wraps: Bool = false
