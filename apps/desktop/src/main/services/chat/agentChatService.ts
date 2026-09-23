@@ -46296,6 +46296,9 @@ export function createAgentChatService(args: {
     // the mirror can emit `done` for this turn, not just the first one.
     devinCloudDoneAnnounced.delete(managed.session.id);
     devinCloudPendingDoneTurn.delete(managed.session.id);
+    // An empty-terminal read limit that retired the mirror only described the
+    // pre-send session — a new turn revives it, so the mirror must poll again.
+    devinCloudEmptyReads.delete(managed.session.id);
     try {
       await aiIntegrationService.sendDevinCloudMessage({
         devinSessionId,

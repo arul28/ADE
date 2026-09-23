@@ -495,7 +495,10 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
       const params = new URLSearchParams({ limit: String(Math.min(first, 100)), offset: String(offset) });
       if (listArgs.tags?.length) params.set("tags", listArgs.tags.join(","));
       const page = await request<unknown>(`/v1/sessions?${params.toString()}`);
-      const sessions = isRecord(page) && Array.isArray(page.sessions) ? page.sessions : [];
+      if (!isRecord(page) || !Array.isArray(page.sessions)) {
+        throw new DevinCloudResponseError("/v1/sessions");
+      }
+      const sessions = page.sessions;
       const items = sessions.filter(isRecord).map(normalizeV1SessionSummary);
       const next = items.length >= Math.min(first, 100) ? String(offset + items.length) : null;
       return { items, endCursor: next, offset: offset + items.length };
@@ -513,11 +516,12 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
     const page = await request<unknown>(
       `${await orgPath("/sessions")}?qs=${encodeURIComponent(JSON.stringify(qs))}`,
     );
-    const items = isRecord(page) && Array.isArray(page.items) ? page.items : [];
-    const endCursor = isRecord(page) ? readString(page.end_cursor) : null;
+    if (!isRecord(page) || !Array.isArray(page.items)) {
+      throw new DevinCloudResponseError("/v3/organizations/{org}/sessions");
+    }
     return {
-      items: items.filter(isRecord).map(normalizeV3Session),
-      endCursor,
+      items: page.items.filter(isRecord).map(normalizeV3Session),
+      endCursor: readString(page.end_cursor),
     };
   };
 
@@ -597,7 +601,10 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
     if (authMode === "v1") {
       // v1 has no messages endpoint; the session record carries them inline.
       const record = await request<unknown>(`/v1/sessions/${encodeURIComponent(id)}`);
-      const raw = isRecord(record) && Array.isArray(record.messages) ? record.messages : [];
+      if (!isRecord(record) || (record.messages !== undefined && !Array.isArray(record.messages))) {
+        throw new DevinCloudResponseError("/v1/sessions/{id}");
+      }
+      const raw = Array.isArray(record.messages) ? record.messages : [];
       const items = raw
         .filter(isRecord)
         .map(normalizeV1Message)
@@ -614,14 +621,15 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
     const page = await request<unknown>(
       `${await orgPath(`/sessions/${encodeURIComponent(id)}/messages`)}?qs=${encodeURIComponent(JSON.stringify(qs))}`,
     );
-    const items = isRecord(page) && Array.isArray(page.items) ? page.items : [];
-    const endCursor = isRecord(page) ? readString(page.end_cursor) : null;
+    if (!isRecord(page) || !Array.isArray(page.items)) {
+      throw new DevinCloudResponseError("/v3/organizations/{org}/sessions/{id}/messages");
+    }
     return {
-      items: items
+      items: page.items
         .filter(isRecord)
         .map(normalizeV3Message)
         .filter((m): m is DevinCloudMessage => m !== null),
-      endCursor,
+      endCursor: readString(page.end_cursor),
     };
   };
 

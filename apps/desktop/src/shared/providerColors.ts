@@ -27,6 +27,7 @@ export const PROVIDER_COLOR_TABLE = {
     lmstudio: { light: "#6D28D9", dark: "#9F7BEA" },
     openrouter: { light: "#0284C7", dark: "#38BDF8" },
     openclaw: { light: "#B45309", dark: "#E0A82E" },
+    xai: { light: "#3F3F46", dark: "#B4B4BD" },
     grok: { light: "#3F3F46", dark: "#B4B4BD" },
     devin: { light: "#1F1F1F", dark: "#A1A1AA" },
   },
