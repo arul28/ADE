@@ -6675,12 +6675,16 @@ export function AgentChatPane({
           sessionId,
           fetchedAt: Date.now(),
         };
-        if (selectedSessionIdRef.current === sessionId) {
+        // A read that a newer one replaced writes nothing: its data is older.
+        if (selectedSessionIdRef.current === sessionId && computerUseSnapshotInFlightRef.current?.promise === request) {
           setComputerUseSnapshot(snapshot);
         }
       } catch {
-        if (selectedSessionIdRef.current === sessionId && !options?.keepOnError) {
-          setComputerUseSnapshot(null);
+        if (selectedSessionIdRef.current === sessionId && computerUseSnapshotInFlightRef.current?.promise === request) {
+          // `keepOnError` keeps this chat's proof on screen, never another chat's.
+          setComputerUseSnapshot((current) => (
+            options?.keepOnError && current?.owner.kind === "chat_session" && current.owner.id === sessionId ? current : null
+          ));
         }
       } finally {
         if (request && computerUseSnapshotInFlightRef.current?.promise === request) {
