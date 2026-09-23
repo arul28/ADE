@@ -17,6 +17,11 @@ import {
   activityNotificationItems,
 } from "../../../desktop/src/renderer/components/activity/activityPriority";
 import type { AdeAccountSessionState } from "../../../desktop/src/shared/types/account";
+import {
+  describeReconnectOutcome,
+  readReconnectResult,
+  reconnectNeedsFreshSignIn,
+} from "../../../desktop/src/shared/reconnectOutcome";
 import { formatRelativePastTime } from "./relativeTime";
 import type { AdeCodeConnection } from "./types";
 
@@ -80,6 +85,34 @@ export function accountSessionLabel(state: AdeAccountSessionState): string | nul
   if (state === "expired") return "account sign-in expired · ade login";
   if (state === "unreadable") return "account sign-in unreadable · retry";
   return null;
+}
+
+/**
+ * The notice `/reconnect` shows for a `repairMachinePairing` result.
+ *
+ * The person is signed in here, so a refusal that wants proof of a fresh
+ * sign-in says "confirm it's you", never "sign in again". ADE Code cannot
+ * host the browser step, so it names the command that runs it.
+ */
+export function reconnectOutcomeNotice(
+  value: unknown,
+): { message: string; kind: "success" | "info" | "error" } {
+  const result = readReconnectResult(value);
+  if (!result) {
+    return { kind: "error", message: "Couldn't reconnect this computer: the brain gave no result." };
+  }
+  if (reconnectNeedsFreshSignIn(result)) {
+    return {
+      kind: "error",
+      message:
+        "Confirm it's you in your browser to reconnect this computer. Run `ade machines reconnect` in a terminal to open the confirmation.",
+    };
+  }
+  const outcome = describeReconnectOutcome(result);
+  // The notice has no warning tone. "Back on your account but not delivering
+  // yet" is unfinished, so it is info, not a success.
+  const kind = outcome.tone === "danger" ? "error" : outcome.tone === "warning" ? "info" : "success";
+  return { kind, message: outcome.message };
 }
 
 function nowIso(): string {

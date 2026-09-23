@@ -37,6 +37,9 @@ import type { ChatAttachmentStagingMode } from "../../../shared/types/chat";
 import {
   LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
   MAX_CHAT_ATTACHMENT_BYTES,
+  approxDecodedBytes,
+  attachmentTooLargeMessage,
+  maxBase64EncodedLength,
 } from "../../../shared/chatAttachmentLimits";
 import {
   capRemoteRuntimeErrorDetail,
@@ -46,6 +49,7 @@ import { coerceProjects } from "./remoteBootstrap";
 import {
   parseRemoteAttachmentUploadTicket,
   uploadRemoteAttachment,
+  withTempAttachmentFile,
 } from "./attachmentUploadClient";
 import {
   isRemoteRuntimeConnectionError,
@@ -63,6 +67,7 @@ import {
 } from "./discoveredPairedRuntime";
 import { runRemoteRuntimeDoctor } from "./connectionDoctor";
 import {
+  isPairedRuntimeRpcOverBudgetError,
   PairedRuntimeRelayAuthRequiredError,
   PairedRuntimeSshTrustRequiredError,
   PairedRuntimeTransportUnavailableError,
@@ -215,6 +220,9 @@ export function automaticReconnectBackoffMs(failureCount: number): number {
 }
 
 function isImplicitConnectionFailure(error: unknown): boolean {
+  // One oversized reply closed one RPC channel. The host answered, so the
+  // machine is reachable; the next call opens a new channel.
+  if (isPairedRuntimeRpcOverBudgetError(error)) return false;
   if (isRemoteRuntimeConnectionError(error)) return true;
   const message = errorMessage(error);
   return /remote (?:runtime|ADE service) connection was interrupted|sync (?:connection|websocket|endpoint).*(?:closed|failed)|remote target is not connected|SSH server at .* closed the connection before ADE could finish the SSH handshake|Timed out while waiting for the SSH handshake/i.test(
@@ -265,6 +273,10 @@ export class RemoteConnectionService {
     (snapshot: RemoteRuntimeConnectionSnapshot) => void
   >();
   private autoconnectTimer: NodeJS.Timeout | null = null;
+  private readonly inFlightStreamEvents = new Map<
+    string,
+    Promise<RemoteRuntimeStreamEventsResult>
+  >();
 
   constructor(
     private readonly registry: RemoteTargetRegistry,
@@ -277,6 +289,9 @@ export class RemoteConnectionService {
       if (current?.state !== "connected" && current?.state !== "connecting") {
         return;
       }
+      // The host answered and refused one reply as too large. The next call
+      // opens a new channel, so the machine is still reachable.
+      if (isPairedRuntimeRpcOverBudgetError(error)) return;
       this.mergeStatus(targetId, {
         state: "error",
         ...errorStatusPatch(error),
@@ -1041,6 +1056,39 @@ export class RemoteConnectionService {
     });
   }
 
+  /**
+   * Stage attachment bytes that have no file behind them, such as a pasted
+   * image, through the same two-leg upload a picked file takes.
+   *
+   * `maxBytes` is what the machine advertised for its upload route. The ceiling
+   * is the smaller of that and the product cap, because the host knows its own
+   * route limit. The encoded length is checked first, so an oversized paste is
+   * refused before it is decoded into a second copy.
+   */
+  async uploadChatAttachmentBytes(args: {
+    targetId: string;
+    projectId: string;
+    data: string;
+    filename: string;
+    maxBytes: number;
+  }): Promise<{ path: string }> {
+    const limit = Number.isFinite(args.maxBytes) && args.maxBytes > 0
+      ? Math.min(args.maxBytes, MAX_CHAT_ATTACHMENT_BYTES)
+      : MAX_CHAT_ATTACHMENT_BYTES;
+    const tooLarge = (bytes: number) => new Error(attachmentTooLargeMessage(args.filename, bytes, limit));
+    if (args.data.length > maxBase64EncodedLength(limit)) {
+      throw tooLarge(approxDecodedBytes(args.data.length));
+    }
+    const bytes = Buffer.from(args.data, "base64");
+    if (bytes.byteLength > limit) throw tooLarge(bytes.byteLength);
+    return await withTempAttachmentFile(bytes, (sourcePath) => this.uploadChatAttachment({
+      targetId: args.targetId,
+      projectId: args.projectId,
+      sourcePath,
+      filename: args.filename,
+    }));
+  }
+
   async callAction(
     targetId: string,
     projectId: string,
@@ -1066,10 +1114,37 @@ export class RemoteConnectionService {
     }
   }
 
-  async streamEvents(
+  /**
+   * About eight event pumps (chat, PTY, PR, browser and others) poll one
+   * binding. When two ask for the same window at the same time, they share one
+   * read, so the host does not send the same reply twice on one socket.
+   */
+  streamEvents(
     targetId: string,
     projectId: string,
     request: RemoteRuntimeStreamEventsRequest = {},
+  ): Promise<RemoteRuntimeStreamEventsResult> {
+    const key = JSON.stringify([
+      targetId,
+      projectId,
+      request.cursor ?? null,
+      request.limit ?? null,
+      request.category ?? null,
+      request.replay ?? null,
+    ]);
+    const inFlight = this.inFlightStreamEvents.get(key);
+    if (inFlight) return inFlight;
+    const read = this.readStreamEvents(targetId, projectId, request).finally(() => {
+      if (this.inFlightStreamEvents.get(key) === read) this.inFlightStreamEvents.delete(key);
+    });
+    this.inFlightStreamEvents.set(key, read);
+    return read;
+  }
+
+  private async readStreamEvents(
+    targetId: string,
+    projectId: string,
+    request: RemoteRuntimeStreamEventsRequest,
   ): Promise<RemoteRuntimeStreamEventsResult> {
     const target = await this.requireTargetForImplicitUse(targetId);
     try {

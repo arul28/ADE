@@ -7,8 +7,9 @@ import { fileURLToPath } from "node:url";
 import type { Logger } from "../logging/logger";
 import { buildPackagedRuntimeNodeModulePaths } from "../runtime/packagedNodePath";
 import { pathKey } from "../shared/pathCompare";
-import { CURSOR_SDK_ONESHOT_POLICY } from "./cursorSdkPolicy";
+import { CURSOR_SDK_KILL_ESCALATION_MS, CURSOR_SDK_ONESHOT_POLICY } from "./cursorSdkPolicy";
 import { terminateChildProcessTree } from "../shared/utils";
+import { cursorSdkOwnerPidArg } from "./cursorSdkWorkerGuards";
 import type {
   CursorSdkCloudArtifactDescriptor,
   CursorSdkErrorDetail,
@@ -119,15 +120,6 @@ function sameSkillDirs(a: readonly string[] | undefined, b: readonly string[] | 
  * closing the SDK agent, and on Windows it is the only orderly path there is.
  */
 const CURSOR_SDK_DISPOSE_GRACE_MS = 3_000;
-/**
- * Gap between SIGTERM and SIGKILL once the dispose grace expires.
- *
- * Named here rather than left to `terminateChildProcessTree`'s default, because
- * the replacement wait below has to be derived from it: two independent numbers
- * would drift, and the drift is only observable as a failed turn an hour into a
- * session.
- */
-const CURSOR_SDK_KILL_ESCALATION_MS = 1_500;
 /**
  * Cap how long a replacement waits for the previous worker of the same pool key.
  *
@@ -601,9 +593,13 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
   fs.mkdirSync(paths.stateRoot, { recursive: true });
   ensurePrivateSocketPath(paths.socketPath);
 
+  // The owner pid rides in argv so the orphan sweep
+  // (`cursorSdkWorkerOrphans.ts`) can read it from a process listing on every
+  // platform.
+  //
   // fork() forwards its options to spawn(), which supports windowsHide, but
   // the installed @types/node ForkOptions declaration omits that property.
-  const child = fork(workerPath, [], {
+  const child = fork(workerPath, [cursorSdkOwnerPidArg(process.pid)], {
     cwd: args.workspacePath,
     env: buildCursorSdkWorkerEnv({
       baseEnv: args.baseEnv,
@@ -1466,4 +1462,29 @@ export async function runCursorSdkLocalPrompt(args: {
       }
     }
   });
+}
+
+/**
+ * Release every pooled worker, the shared one-shot workers included.
+ *
+ * The one-shot workers (`cloud-oneshot:`, `local-oneshot:`) belong to no chat
+ * session, so no session teardown ever releases them. Brain shutdown calls
+ * this. It waits for the workers to exit, capped by the replace wait, which
+ * covers the whole dispose-then-kill ladder.
+ */
+export async function disposeAllCursorSdkConnections(): Promise<void> {
+  for (const [poolKey, entry] of [...pools.entries()]) {
+    disposeCursorSdkPoolEntry(poolKey, entry);
+  }
+  const departing = [...departingWorkers.values()];
+  if (!departing.length) return;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  await Promise.race([
+    Promise.allSettled(departing),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, CURSOR_SDK_REPLACE_WAIT_MS);
+      timer.unref();
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
 }

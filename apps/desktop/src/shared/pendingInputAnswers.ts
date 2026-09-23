@@ -125,7 +125,7 @@ export function isDismissiblePendingRequest(
 }
 
 /**
- * Codex 0.155.1 `requestUserInput` with `isBlocking: false` (Astra mid-turn
+ * Codex 0.156.0 `requestUserInput` with `isBlocking: false` (Astra mid-turn
  * steering). Missing `blocking` stays a send-gate, matching Codex
  * `unwrap_or(true)`.
  */

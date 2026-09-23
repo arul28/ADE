@@ -1,4 +1,5 @@
 import { isLoopbackHostname } from "./trustedOrigin";
+import { boundedDisplayText } from "./displayText";
 
 const DEVICE_CODE_TTL_SECONDS = 10 * 60;
 const DEVICE_POLL_INTERVAL_SECONDS = 5;
@@ -9,6 +10,7 @@ const APPROVAL_RATE_LIMIT_MAX_ATTEMPTS = 10;
 const DEVICE_AUTHORIZATION_RETENTION_MS = 60 * 60_000;
 const USER_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const MAX_MACHINE_KEY_CHARS = 128;
+const MAX_MACHINE_NAME_CHARS = 80;
 
 export interface DeviceAuthorizationEnv {
   DB: D1Database;
@@ -43,6 +45,12 @@ type DeviceAuthorizationRow = {
   device_secret_hash: string;
   /** Machine this login was started from, or null for a non-machine login. */
   machine_key: string | null;
+  /**
+   * Display name the client sent for the computer that started this sign-in.
+   * Older clients send none, so the confirmation page treats null as "your
+   * computer".
+   */
+  machine_name: string | null;
   status: "pending" | "approved" | "consumed" | "expired" | "error";
   code_verifier: string | null;
   oauth_state_hash: string | null;
@@ -77,19 +85,12 @@ function html(value: string, status = 200): Response {
       "cache-control": "no-store",
       "content-security-policy": "default-src 'none'; form-action 'self'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
       "content-type": "text/html; charset=utf-8",
-      "referrer-policy": "no-referrer",
+      // Not `no-referrer`: under that policy a browser sends the text `null`
+      // as the `Origin` of this page's own form POST, and the confirmation
+      // check needs the real origin. `same-origin` still sends nothing to
+      // another site.
+      "referrer-policy": "same-origin",
       "x-content-type-options": "nosniff",
-    },
-  });
-}
-
-function redirect(location: string): Response {
-  return new Response(null, {
-    status: 302,
-    headers: {
-      "cache-control": "no-store",
-      location,
-      "referrer-policy": "no-referrer",
     },
   });
 }
@@ -159,12 +160,12 @@ function encodeQuery(entries: Array<[string, string]>): string {
   return entries.map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`).join("&");
 }
 
-function page(args: { title: string; body: string; status?: number }): Response {
+function page(args: { title: string; body: string; status?: number; head?: string }): Response {
   return html(`<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1">${args.head ?? ""}
     <title>${args.title}</title>
     <style>
       :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, sans-serif; }
@@ -175,23 +176,83 @@ function page(args: { title: string; body: string; status?: number }): Response 
       label { display: block; margin: 1.5rem 0 .5rem; font-weight: 600; }
       input { box-sizing: border-box; width: 100%; padding: .8rem; border: 1px solid #4d5058; border-radius: .5rem; background: #101114; color: inherit; font: inherit; letter-spacing: .12em; text-transform: uppercase; }
       button { width: 100%; margin-top: 1rem; padding: .8rem; border: 0; border-radius: .5rem; background: #f5f5f5; color: #101114; font: inherit; font-weight: 700; cursor: pointer; }
+      a { color: #f5f5f5; }
     </style>
   </head>
   <body><main>${args.body}</main></body>
 </html>`, args.status ?? 200);
 }
 
+/**
+ * The typed-code form, for a sign-in started from the CLI. The reader is
+ * looking at a terminal, so the copy tells them where the code is.
+ */
 function approvalForm(userCode = ""): Response {
   return page({
     title: "Sign in to ADE",
     body: `<h1>Sign in to ADE</h1>
-      <p>Enter the code shown by <code>ade login</code> on your other machine.</p>
+      <p>Enter the code shown by <code>ade login</code> in your terminal.</p>
       <form method="post" action="/device">
         <label for="user_code">Device code</label>
         <input id="user_code" name="user_code" value="${userCode}" autocomplete="one-time-code" maxlength="9" required autofocus>
         <button type="submit">Continue</button>
       </form>`,
   });
+}
+
+/**
+ * The pre-filled confirmation page, for a sign-in the desktop app started. The
+ * code already rode the link, so it is shown read-only and carried in a hidden
+ * field; the only action is Continue.
+ */
+function confirmationPage(userCode: string, machineName: string | null): Response {
+  // The name comes from the client that started the sign-in, so it is shown
+  // as what that computer says it is, with a line that tells the reader to
+  // stop if they did not start this.
+  const name = machineName?.trim();
+  const who = name
+    ? `<p>A computer named <strong>${escapeHtml(name)}</strong> asked to sign in to ADE.</p>
+      <p>Continue only if you started this on that computer.</p>`
+    : "<p>ADE on your computer asked to sign in.</p>";
+  return page({
+    title: "Confirm this sign-in",
+    body: `<h1>Confirm this sign-in</h1>
+      ${who}
+      <div style="margin:1.5rem 0 .5rem;font-weight:600">Device code</div>
+      <p style="margin:0 0 1rem;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:1.4rem;letter-spacing:.18em;color:#f5f5f5">${escapeHtml(userCode)}</p>
+      <form method="post" action="/device">
+        <input type="hidden" name="user_code" value="${escapeHtml(userCode)}">
+        <button type="submit">Continue</button>
+      </form>`,
+  });
+}
+
+/**
+ * The answer to a confirmed POST: a page that opens the Clerk sign-in.
+ *
+ * Not a 302. Browsers apply the page's `form-action 'self'` to every redirect
+ * that follows a form POST, and Clerk's authorize URL redirects on through
+ * more hosts. A 302 there was blocked in Chromium, and Continue left the
+ * person on the same page. A meta refresh starts a new navigation, which
+ * `form-action` does not cover, and the link is there if it does not fire.
+ */
+function continueToSignIn(authorizeUrl: string): Response {
+  const href = escapeHtml(authorizeUrl);
+  return page({
+    title: "Opening sign-in",
+    head: `\n    <meta http-equiv="refresh" content="0;url=${href}">`,
+    body: `<h1>Opening sign-in</h1>
+      <p>If nothing happens, <a href="${href}">open the sign-in page</a>.</p>`,
+  });
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function approvalMessage(title: string, message: string, status = 200): Response {
@@ -300,6 +361,8 @@ async function handleDeviceCode(
     return json({ error: "invalid_request", error_description: "machine_key is too long" }, { status: 400 });
   }
 
+  const machineName = boundedDisplayText(body?.machine_name, MAX_MACHINE_NAME_CHARS);
+
   const now = options.now();
   if (!(await checkDeviceRateLimit(request, env, now, "issuance", DEVICE_CODE_RATE_LIMIT_MAX_ATTEMPTS))) {
     return json(
@@ -317,8 +380,8 @@ async function handleDeviceCode(
       await env.DB.prepare(`
         insert into device_authorizations (
           device_code, user_code, device_secret_hash, status, poll_interval_seconds,
-          created_at, expires_at, machine_key
-        ) values (?, ?, ?, 'pending', ?, ?, ?, ?)
+          created_at, expires_at, machine_key, machine_name
+        ) values (?, ?, ?, 'pending', ?, ?, ?, ?, ?)
       `).bind(
         deviceCode,
         userCode,
@@ -327,6 +390,7 @@ async function handleDeviceCode(
         now,
         expiresAt,
         machineKey,
+        machineName,
       ).run();
       break;
     } catch (error) {
@@ -346,6 +410,31 @@ async function handleDeviceCode(
   });
 }
 
+/**
+ * Is this confirmation a same-origin submission of our own form?
+ *
+ * `Origin` alone answered this, and it refused real people. A browser sends
+ * the text `null` as the `Origin` of a form POST from a page whose referrer
+ * policy is `no-referrer`, which this page used to have. Some browsers also
+ * omit `Origin` on a same-origin form POST. Either way the person saw
+ * "Confirmation required" on the page they were already on, and the sign-in
+ * could never complete.
+ *
+ * When `Origin` is absent or `null`, `Sec-Fetch-Site` answers the same
+ * question. The browser attaches it and a page cannot set it, which is why
+ * this worker already trusts it in `diagnostics.ts`. A sandboxed frame or
+ * another site also sends `Origin: null`, but its `Sec-Fetch-Site` is never
+ * `same-origin`.
+ *
+ * A request with neither signal is still refused, and an `Origin` that is
+ * present and wrong still fails.
+ */
+function isSameOriginConfirmation(request: Request, url: URL): boolean {
+  const origin = request.headers.get("origin")?.trim();
+  if (origin && origin !== "null") return origin === url.origin;
+  return request.headers.get("sec-fetch-site")?.trim().toLowerCase() === "same-origin";
+}
+
 async function handleDeviceApproval(
   request: Request,
   env: DeviceAuthorizationEnv,
@@ -353,12 +442,16 @@ async function handleDeviceApproval(
 ): Promise<Response> {
   const url = new URL(request.url);
   if (request.method === "GET") {
-    const rawUserCode = url.searchParams.get("user_code");
-    if (!rawUserCode) return approvalForm();
-    return approvalForm(normalizeUserCode(rawUserCode) ?? "");
+    const userCode = normalizeUserCode(url.searchParams.get("user_code") ?? "");
+    if (!userCode) return approvalForm();
+    // A read-only preview. It names the computer only while the code can
+    // still be confirmed: a dead code shows no client-chosen name.
+    const row = await findByUserCode(env, userCode);
+    const live = row?.status === "pending" && row.expires_at > options.now();
+    return confirmationPage(userCode, live ? row.machine_name : null);
   }
   if (request.method !== "POST") return new Response("method not allowed", { status: 405 });
-  if (request.headers.get("origin") !== url.origin) {
+  if (!isSameOriginConfirmation(request, url)) {
     return approvalMessage("Confirmation required", "Open the ADE sign-in page and confirm this device code.", 403);
   }
 
@@ -427,7 +520,7 @@ async function handleDeviceApproval(
     ["state", oauthState],
     ["scope", "openid profile email offline_access"],
   ])}`;
-  return redirect(authorizeUrl);
+  return continueToSignIn(authorizeUrl);
 }
 
 async function handleDeviceCallback(
@@ -543,7 +636,7 @@ async function handleDeviceCallback(
     now,
   ).run();
   if (changes(approved) < 1) return approvalMessage("Code unavailable", "Return to ADE and start sign-in again.", 409);
-  return approvalMessage("Signed in to ADE", "You can close this tab and return to ADE.");
+  return approvalMessage("You're signed in", "Go back to ADE.");
 }
 
 async function handleDeviceToken(

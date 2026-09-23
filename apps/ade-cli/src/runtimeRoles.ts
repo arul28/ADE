@@ -82,3 +82,23 @@ export function resolveSessionBoundRole(args: {
   }
   return "agent";
 }
+
+/**
+ * Does this caller identity belong to an agent: a chat, an orchestrator run,
+ * step or attempt? The `ade` CLI fills these from the environment ADE gives
+ * an agent's shell; a person's terminal carries none of them.
+ *
+ * A claim, not proof: a process running as the same OS user can leave them
+ * out. It keeps the ordinary agent path away from actions meant for a person.
+ */
+export function callerIdentityIsAgent(identity: {
+  chatSessionId?: unknown;
+  runId?: unknown;
+  stepId?: unknown;
+  attemptId?: unknown;
+} | null | undefined): boolean {
+  if (!identity) return false;
+  return [identity.chatSessionId, identity.runId, identity.stepId, identity.attemptId].some(
+    (value) => typeof value === "string" && value.trim().length > 0,
+  );
+}

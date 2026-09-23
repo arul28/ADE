@@ -1208,6 +1208,13 @@ export async function createAdeRuntime(args: {
       projectConfigService,
       projectRoot,
       enableDynamicModelMetadata: false,
+      // A long-lived agent runtime (the machine brain) keeps the model
+      // directory current; one-shot CLI commands and embedded guests stay
+      // offline and use the bundled/disk copy.
+      modelManifest: {
+        adeVersion: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || null,
+        fetchRemote: resolvedArgs.chatRuntime === "agent" && !embeddedRuntime,
+      },
     });
 
     const conflictService = createConflictService({

@@ -19,9 +19,16 @@ export type EventBufferDrainResult = {
   oldestCursor: number | null;
 };
 
+export type EventBufferDrainOptions = {
+  /** Returns only matching events. The cursor still moves past the rest. */
+  filter?: (event: BufferedEvent) => boolean;
+  /** With `filter`: the most events one drain looks at. Defaults to `limit`. */
+  maxScan?: number;
+};
+
 export type EventBuffer = {
   push(event: Omit<BufferedEvent, "id">): void;
-  drain(cursor: number, limit?: number): EventBufferDrainResult;
+  drain(cursor: number, limit?: number, options?: EventBufferDrainOptions): EventBufferDrainResult;
   subscribe(listener: (event: BufferedEvent) => void): () => void;
   epoch(): string;
   latestCursor(): number;
@@ -36,10 +43,24 @@ type RetainedBufferedEvent = {
 export type EventBufferOptions = {
   maxBytes?: number;
   maxEventBytes?: number;
+  /**
+   * Byte budget for the events one drain returns. The first event always
+   * returns, so one large event cannot stall the stream.
+   */
+  drainMaxBytes?: number;
 };
 
 const DEFAULT_EVENT_BUFFER_MAX_BYTES = 16 * 1024 * 1024;
 const DEFAULT_EVENT_BUFFER_MAX_EVENT_BYTES = 1024 * 1024;
+/**
+ * A drain is one RPC reply. A remote desktop reads it over the sync socket, and
+ * the host closes an RPC channel when the socket holds 12 MiB it has not sent
+ * (`RPC_CHANNEL_BACKPRESSURE_BYTES`). With only a count cap, 200 full-list PR
+ * events made an 11.5 MB reply, and the channel closed on every poll. Several
+ * event pumps share one socket, so each reply stays small: 1 MiB, or one event
+ * when that event alone is larger (the buffer keeps none over 1 MiB).
+ */
+export const DEFAULT_EVENT_BUFFER_DRAIN_MAX_BYTES = 1024 * 1024;
 
 export function createEventBuffer(
   capacity = 10_000,
@@ -50,6 +71,7 @@ export function createEventBuffer(
   const eventEpoch = randomUUID();
   const maxBytes = Math.max(0, Math.floor(options.maxBytes ?? DEFAULT_EVENT_BUFFER_MAX_BYTES));
   const maxEventBytes = Math.max(0, Math.floor(options.maxEventBytes ?? DEFAULT_EVENT_BUFFER_MAX_EVENT_BYTES));
+  const drainMaxBytes = Math.max(0, Math.floor(options.drainMaxBytes ?? DEFAULT_EVENT_BUFFER_DRAIN_MAX_BYTES));
   let nextId = 1;
   let retainedBytes = 0;
   let lastSkippedCursor: number | null = null;
@@ -100,8 +122,12 @@ export function createEventBuffer(
         }
       }
     },
-    drain(cursor, limit = 100) {
+    drain(cursor, limit = 100, drainOptions = {}) {
       const clamped = Math.max(1, Math.min(1000, limit));
+      const { filter } = drainOptions;
+      const maxScan = filter
+        ? Math.max(clamped, Math.min(1000, Math.floor(drainOptions.maxScan ?? clamped)))
+        : clamped;
       const metadata = drainMetadata(cursor);
       const startIdx = events.findIndex((e) => e.event.id > cursor);
       if (startIdx === -1) {
@@ -113,13 +139,25 @@ export function createEventBuffer(
           ...metadata,
         };
       }
-      const slice = events.slice(startIdx, startIdx + clamped);
-      const drained = slice.map((entry) => entry.event);
-      const lastId = drained.length > 0 ? drained[drained.length - 1]!.id : cursor;
+      const drained: BufferedEvent[] = [];
+      let drainedBytes = 0;
+      let nextCursor = cursor;
+      let index = startIdx;
+      for (; index < events.length && index - startIdx < maxScan && drained.length < clamped; index += 1) {
+        const entry = events[index]!;
+        if (filter && !filter(entry.event)) {
+          nextCursor = entry.event.id;
+          continue;
+        }
+        if (drained.length > 0 && drainedBytes + entry.bytes > drainMaxBytes) break;
+        drained.push(entry.event);
+        drainedBytes += entry.bytes;
+        nextCursor = entry.event.id;
+      }
       return {
         events: drained,
-        nextCursor: lastId,
-        hasMore: startIdx + clamped < events.length,
+        nextCursor,
+        hasMore: index < events.length,
         eventEpoch,
         ...metadata,
       };

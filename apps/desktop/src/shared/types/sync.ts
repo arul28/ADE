@@ -554,6 +554,18 @@ export type SyncAccountDirectoryHealth = {
   reachableEndpointCount: number;
   lastLegDurations: SyncAccountDirectoryLegDurations;
   failingSinceMs: number | null;
+  /**
+   * When the account removed this machine (ISO), while the directory refuses
+   * it. The desktop names the date in its banner. Optional because brains
+   * built before this field never send it.
+   */
+  revokedAt?: string | null;
+  /**
+   * Epoch ms at which the automatic repair stopped trying for the current
+   * refusal. Cleared by the next successful publish. Optional for the same
+   * reason as `revokedAt`.
+   */
+  recoveryGaveUpAt?: number | null;
 };
 
 export function createSyncAccountDirectoryHealth(

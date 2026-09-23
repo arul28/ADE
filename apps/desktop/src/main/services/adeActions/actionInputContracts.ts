@@ -1,5 +1,6 @@
 import type { CtoVoiceAction } from "../../../shared/types/ctoVoice";
 import type { AdeActionDomain } from "./domains";
+import { ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION } from "../../../shared/types/account";
 
 /**
  * The documented input shape for every action the CTO's curated tools reach.
@@ -159,6 +160,13 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description: "Return a self-contained durable account token once for ADE_ACCOUNT_TOKEN provisioning.",
       input: "no input",
       example: "ade account token create",
+    },
+    deleteMachine: {
+      description:
+        "Remove a machine from the ADE account. Destructive: the directory revokes it and clears its Activity, and it can only rejoin when someone confirms it on that computer. "
+        + `People only: agents are refused, so ask the user to do it. Refused without confirmation: "${ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION}".`,
+      input: `object { machine: string (machine key), confirmation: "${ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION}" }`,
+      example: `ade machines remove <machine-key> --confirm ${ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION} --text`,
     },
   },
   proxy: {

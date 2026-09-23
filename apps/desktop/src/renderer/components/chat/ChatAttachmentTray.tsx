@@ -1,8 +1,9 @@
-import { Suspense, forwardRef, lazy, useEffect, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { Suspense, forwardRef, lazy, useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { Copy, GithubLogo, Globe, Image, X } from "@phosphor-icons/react";
 import type { AgentChatContextAttachment, AgentChatFileRef, ChatSurfaceMode } from "../../../shared/types";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { chatContextAttachmentKey } from "../../../shared/chatContextAttachments";
+import { readAttachmentImageDataUrl } from "../../lib/attachmentImage";
 import { formatAttachmentSize } from "../../../shared/chatAttachmentLimits";
 import { githubIssueIdentifier } from "../../../shared/laneGitHubIssue";
 import { cn } from "../ui/cn";
@@ -298,6 +299,10 @@ function ImageAttachmentPreview({
     fallbackImageDataUrl: dataUrl,
   });
 
+  // The read is keyed on the pin's identity, not the object, so a re-created
+  // pin for the same machine does not read the image again.
+  const machinePinRef = useRef(machinePin);
+  machinePinRef.current = machinePin;
   useEffect(() => {
     let cancelled = false;
     setDataUrl(initialPreviewUrl ?? null);
@@ -307,24 +312,7 @@ function ImageAttachmentPreview({
         cancelled = true;
       };
     }
-    const runtimeImageDataUrl = window.ade?.agentChat?.getImageDataUrl;
-    const localImageDataUrl = window.ade?.app?.getImageDataUrl;
-    if (!runtimeImageDataUrl && !localImageDataUrl) {
-      setPreviewFailed(true);
-      return;
-    }
-    const readPreview = async (): Promise<{ dataUrl: string }> => {
-      if (!runtimeImageDataUrl) {
-        return localImageDataUrl!(attachment.path);
-      }
-      try {
-        return await runtimeImageDataUrl(attachment.path);
-      } catch (error) {
-        if (!localImageDataUrl) throw error;
-        return localImageDataUrl(attachment.path);
-      }
-    };
-    readPreview()
+    readAttachmentImageDataUrl(attachment.path, machinePinRef.current)
       .then((result) => {
         if (!cancelled) setDataUrl(result.dataUrl);
       })
@@ -334,7 +322,7 @@ function ImageAttachmentPreview({
     return () => {
       cancelled = true;
     };
-  }, [attachment.path, initialPreviewUrl]);
+  }, [attachment.path, initialPreviewUrl, machinePin?.key]);
 
   useEffect(() => {
     if (copyState === "idle") return;

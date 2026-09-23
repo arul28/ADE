@@ -19,6 +19,8 @@ export type BannerAction = {
   label: string;
   onClick: () => void;
   variant?: "primary" | "secondary";
+  /** Shown but not pressable, e.g. while the action it started still runs. */
+  disabled?: boolean;
 };
 
 export type BannerModel = {
@@ -104,7 +106,11 @@ export function Banner({
             <button
               key={action.label}
               type="button"
-              style={action.variant === "primary" ? primaryActionStyle(tokens.color) : secondaryActionStyle}
+              disabled={action.disabled}
+              style={{
+                ...(action.variant === "primary" ? primaryActionStyle(tokens.color) : secondaryActionStyle),
+                ...(action.disabled ? disabledActionStyle : null),
+              }}
               onClick={action.onClick}
             >
               {action.label}
@@ -203,6 +209,11 @@ const secondaryActionStyle: CSSProperties = {
   color: COLORS.textSecondary,
   background: "transparent",
   border: `1px solid ${COLORS.borderMuted}`,
+};
+
+const disabledActionStyle: CSSProperties = {
+  cursor: "not-allowed",
+  opacity: 0.6,
 };
 
 const dismissButtonStyle: CSSProperties = {

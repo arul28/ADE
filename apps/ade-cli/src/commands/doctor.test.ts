@@ -18,6 +18,7 @@ import type {
 } from "../services/diagnostics/storageEnvironmentProbe";
 import type { MachineAdeLayout } from "../services/projects/machineLayout";
 import { createSyncAccountDirectoryHealth } from "../../../desktop/src/shared/types/sync";
+import { parseRuntimePublishHealth } from "../../../desktop/src/shared/adeRuntimeProtocol";
 import { PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE } from "../services/account/accountMachinePublisherService";
 
 const NOW = Date.parse("2026-07-23T12:00:00.000Z");
@@ -379,6 +380,35 @@ describe("doctor row evaluation", () => {
 
     expect(publish?.status).toBe("fail");
     expect(publish?.detail).toContain(PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE);
+  });
+
+  it("names the removal date and `ade machines reconnect` for a removed computer", () => {
+    // The desktop banner says when the account removed this computer and that
+    // the automatic repair stopped. The shared runtime parser keeps those
+    // fields, so both doctor inputs (sync status and the brain probe) name them.
+    const publishHealth = parseRuntimePublishHealth({
+      ...createSyncAccountDirectoryHealth(
+        "http_error",
+        "This machine was removed from your ADE account. Pair it again to reconnect.",
+        { failingSinceMs: NOW - 6 * 24 * 60 * 60_000, lastHttpStatus: 403, lastHttpReason: "machine_revoked" },
+      ),
+      revokedAt: "2026-07-17T09:30:00.000Z",
+      recoveryGaveUpAt: NOW - 60 * 60_000,
+    });
+    expect(publishHealth).toMatchObject({
+      lastHttpStatus: 403,
+      lastHttpReason: "machine_revoked",
+      revokedAt: "2026-07-17T09:30:00.000Z",
+    });
+    const input = healthyInput();
+    input.publishHealth = publishHealth as typeof input.publishHealth;
+
+    const publish = evaluateDoctorRows(input).find((row) => row.key === "publish");
+
+    expect(publish?.status).toBe("fail");
+    expect(publish?.detail).toContain("This computer was removed from your ADE account on 2026-07-17.");
+    expect(publish?.detail).toContain("ADE stopped trying to reconnect it on its own.");
+    expect(publish?.detail).toContain("ade machines reconnect");
   });
 
   it("points an unreadable account session at `ade brain restart`", () => {

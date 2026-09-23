@@ -50,7 +50,10 @@ import type {
 } from "../../../shared/types";
 import { isRemoteRuntimeEventCategory } from "../../../shared/types/remoteRuntime";
 import type { ChatAttachmentStagingMode } from "../../../shared/types/chat";
-import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../../../shared/chatAttachmentLimits";
+import {
+  LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
+  MAX_CHAT_ATTACHMENT_BYTES,
+} from "../../../shared/chatAttachmentLimits";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
 import { matchRemoteProjectByRootPath } from "../attention/remoteProjectIdentity";
 import { RemoteConnectionPool } from "../remoteRuntime/remoteConnectionPool";
@@ -1191,19 +1194,30 @@ export function registerRuntimeBridge({
     IPC.remoteRuntimeUploadChatAttachment,
     async (
       _event,
-      arg: {
-        id: string;
-        projectId: string;
-        sourcePath: string;
-        filename: string;
-      },
+      arg: { id: string; projectId: string; filename: string } & (
+        /** A file on this machine. */
+        | { sourcePath: string }
+        /** Or base64 bytes with no file behind them, such as a pasted image, and the machine's upload limit. */
+        | { data: string; maxBytes?: number }
+      ),
     ): Promise<{ path: string }> => {
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
       const projectId = typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
-      const sourcePath = typeof arg?.sourcePath === "string" ? arg.sourcePath.trim() : "";
       const filename = typeof arg?.filename === "string" ? arg.filename.trim() : "";
       if (!id) throw new Error("Remote target id is required.");
       if (!projectId) throw new Error("Remote project is required.");
+      if (arg && "data" in arg && typeof arg.data === "string" && arg.data) {
+        return await remoteConnectionService.uploadChatAttachmentBytes({
+          targetId: id,
+          projectId,
+          data: arg.data,
+          filename,
+          maxBytes: typeof arg.maxBytes === "number" ? arg.maxBytes : MAX_CHAT_ATTACHMENT_BYTES,
+        });
+      }
+      const sourcePath = arg && "sourcePath" in arg && typeof arg.sourcePath === "string"
+        ? arg.sourcePath.trim()
+        : "";
       if (!sourcePath) throw new Error("Attachment source path is required.");
       return await remoteConnectionService.uploadChatAttachment({
         targetId: id,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveSessionBoundRole } from "./runtimeRoles";
+import { callerIdentityIsAgent, resolveSessionBoundRole } from "./runtimeRoles";
 
 describe("resolveSessionBoundRole", () => {
   it("clamps inherited or requested CTO authority for session-bound callers", () => {
@@ -31,5 +31,17 @@ describe("resolveSessionBoundRole", () => {
       requestedRole: "cto",
       chatSessionId: null,
     })).toBe("cto");
+  });
+});
+
+describe("callerIdentityIsAgent", () => {
+  it("treats any chat, run, step or attempt id as an agent, and a blank one as absent", () => {
+    expect(callerIdentityIsAgent({ chatSessionId: "chat-1" })).toBe(true);
+    expect(callerIdentityIsAgent({ runId: "run-1" })).toBe(true);
+    expect(callerIdentityIsAgent({ stepId: "step-1" })).toBe(true);
+    expect(callerIdentityIsAgent({ attemptId: "attempt-1" })).toBe(true);
+    expect(callerIdentityIsAgent({ chatSessionId: "  ", runId: null })).toBe(false);
+    expect(callerIdentityIsAgent({})).toBe(false);
+    expect(callerIdentityIsAgent(null)).toBe(false);
   });
 });

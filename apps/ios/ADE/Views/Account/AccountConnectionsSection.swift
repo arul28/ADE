@@ -311,7 +311,7 @@ struct AccountMachineRow: View {
     } label: {
       MachineRowView(
         deviceSymbol: machineDeviceSymbol(deviceType: machine.deviceType, platform: machine.platform),
-        title: machine.displayName,
+        title: machine.rowLabel,
         // Keep the route kind (lan/tailnet/relay) out of the primary row —
         // presence is only a hint and route detail lives in Connection details.
         routeHint: reachabilityText,
@@ -322,7 +322,7 @@ struct AccountMachineRow: View {
       )
     }
     .buttonStyle(ADEScaleButtonStyle())
-    .accessibilityLabel("\(machine.displayName), \(reachabilityText)")
+    .accessibilityLabel("\(machine.rowLabel), \(reachabilityText)")
     .accessibilityHint(isAsleep ? "Wake and connect." : "Connect.")
   }
 }
