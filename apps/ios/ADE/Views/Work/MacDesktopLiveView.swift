@@ -258,7 +258,7 @@ final class MacDesktopLiveSession: ObservableObject {
         return
       }
       guard let display = status.display else {
-        phase = .failed("This lane has no desktop running.")
+        phase = .failed("Mac Desktop is off.")
         return
       }
       pictureWidth = display.width

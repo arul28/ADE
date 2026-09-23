@@ -28,6 +28,10 @@ struct MacDesktopViewer: View {
   @State private var desktop: WorkToolsMacDesktopState?
   @State private var session: MacDesktopLiveSession?
   @State private var controlling = false
+  /// The Off card's Start is in flight. Opening this viewer never starts a
+  /// display; only that button does.
+  @State private var starting = false
+  @State private var startError: String?
 
   init(laneId: String, initialState: WorkToolsMacDesktopState?) {
     self.laneId = laneId
@@ -122,7 +126,38 @@ struct MacDesktopViewer: View {
     } else if desktop == nil {
       ProgressView().tint(.white)
     } else {
-      stageMessage("This lane has no desktop running.")
+      offCard
+    }
+  }
+
+  /// "Mac Desktop is off." and Start, like the Apple Off card. The poll brings
+  /// the display in once the host has made it.
+  private var offCard: some View {
+    VStack(spacing: 12) {
+      if starting {
+        ProgressView().tint(.white)
+      }
+      stageMessage(macDesktopOffCardMessage(
+        starting: starting,
+        error: startError,
+        canStart: syncService.supportsMacDesktopStart
+      ))
+      if !starting && syncService.supportsMacDesktopStart {
+        Button {
+          ADEHaptics.light()
+          startDesktop()
+        } label: {
+          Text("Start")
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 9)
+            .background(Color.white.opacity(0.16), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .disabled(syncService.connectionState != .connected)
+        .accessibilityHint("Starts this lane's Mac Desktop on your Mac")
+      }
     }
   }
 
@@ -173,6 +208,21 @@ struct MacDesktopViewer: View {
     guard !Task.isCancelled else { return }
     desktop = next.macDesktop
     retryStoppedSessionIfNeeded()
+  }
+
+  private func startDesktop() {
+    guard !starting else { return }
+    starting = true
+    startError = nil
+    Task {
+      do {
+        try await syncService.macDesktopStart(laneId: laneId)
+        await refresh()
+      } catch {
+        startError = (error as NSError).localizedDescription
+      }
+      starting = false
+    }
   }
 
   // MARK: - Live stream lifecycle
@@ -308,6 +358,16 @@ private struct MacDesktopViewerStatusOverlay: View {
 }
 
 // MARK: - Pure helpers
+
+/// The Off card's one line: the start in flight, why the last one failed, or
+/// that the display is off.
+func macDesktopOffCardMessage(starting: Bool, error: String?, canStart: Bool) -> String {
+  if starting { return "Starting Mac Desktop…" }
+  if let error = error?.trimmingCharacters(in: .whitespacesAndNewlines), !error.isEmpty {
+    return error
+  }
+  return canStart ? "Mac Desktop is off." : "Mac Desktop is off. Start it in ADE on your Mac."
+}
 
 /// What the viewer's status card says, or nil while the picture is live.
 struct MacDesktopViewerOverlay: Equatable {

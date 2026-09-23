@@ -15150,12 +15150,47 @@ final class SyncService: ObservableObject {
     )
   }
 
+  /// Whether the phone can start the lane's Mac Desktop. `macDesktop.start` is
+  /// controller-allowed, and a paired phone is an interactive controller.
+  var supportsMacDesktopStart: Bool {
+    supportsViewerRemoteAction("macDesktop.start")
+  }
+
+  /// How long a start may take before the phone gives up. The desktop pane
+  /// gives up at the same 150 s.
+  static let macDesktopStartTimeoutNanoseconds: UInt64 = 150_000_000_000
+
+  /// Creates the lane's display on the host. Only the Off card's Start calls
+  /// this: watching never starts a display. The host is idempotent per lane and
+  /// finds the lane's name itself, so a second press is safe.
+  func macDesktopStart(laneId: String) async throws {
+    guard supportsMacDesktopStart else {
+      throw NSError(
+        domain: "ADE",
+        code: 17,
+        userInfo: [
+          NSLocalizedDescriptionKey: "Start Mac Desktop in ADE on your Mac. This machine version can't start it from here.",
+          "ADEErrorCode": "unsupported_action",
+        ]
+      )
+    }
+    let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    _ = try await sendCommand(
+      action: "macDesktop.start",
+      args: ["laneId": trimmed],
+      disconnectOnTimeout: false,
+      timeoutMessage: "Mac Desktop is taking too long to start.",
+      timeoutNanoseconds: Self.macDesktopStartTimeoutNanoseconds,
+      attemptedLiveFailurePolicy: .preserveForManualRetry
+    )
+  }
+
   /// Asks the host to attach this viewer to the lane's stream.
   ///
   /// The host starts the encoder if it is not already running and pushes a
   /// `config` record followed by a keyframe. This is the view-only path: the
-  /// phone never calls `macDesktop.start`/`stop`, so no display is created or
-  /// torn down by watching one.
+  /// host refuses a lane with no display, so watching never creates or tears
+  /// down a display. Only `macDesktopStart` creates one.
   func macDesktopStreamSubscribe(
     laneId: String,
     subscriptionId: String,

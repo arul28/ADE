@@ -521,6 +521,18 @@ final class WorkToolsContractTests: XCTestCase {
       MacDesktopViewerOverlay(message: "Nope", busy: false, offersReconnect: true))
   }
 
+  func testOffCardSaysOffAndOnlyPointsAtTheMacWhenThePhoneCannotStart() {
+    XCTAssertEqual(macDesktopOffCardMessage(starting: false, error: nil, canStart: true), "Mac Desktop is off.")
+    XCTAssertEqual(
+      macDesktopOffCardMessage(starting: false, error: nil, canStart: false),
+      "Mac Desktop is off. Start it in ADE on your Mac.")
+    XCTAssertEqual(macDesktopOffCardMessage(starting: true, error: "Old", canStart: true), "Starting Mac Desktop…")
+    XCTAssertEqual(
+      macDesktopOffCardMessage(starting: false, error: "Mac Desktop is taking too long to start.", canStart: true),
+      "Mac Desktop is taking too long to start.")
+    XCTAssertEqual(macDesktopOffCardMessage(starting: false, error: "  ", canStart: true), "Mac Desktop is off.")
+  }
+
   // MARK: - Handshake gating
 
   @MainActor

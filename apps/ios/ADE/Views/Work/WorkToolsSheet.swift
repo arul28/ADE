@@ -49,6 +49,10 @@ struct WorkToolsSheet: View {
   /// While the full-screen viewer is up it owns the picture and the poll, so
   /// the inline session stops rather than streaming the same screen twice.
   @State private var macDesktopViewerPresented = false
+  /// The Off row's Start is in flight. Opening the sheet never starts a
+  /// display; only that button does.
+  @State private var macDesktopStarting = false
+  @State private var macDesktopStartError: String?
 
   #if DEBUG
   /// Fixture seam for previews and simulator screenshots. When set, `refresh`
@@ -348,12 +352,56 @@ struct WorkToolsSheet: View {
           }
           .frame(maxWidth: .infinity, alignment: .leading)
         } else {
-          Text("This lane has no desktop running.")
-            .font(.footnote)
-            .foregroundStyle(ADEColor.textSecondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
+          macDesktopOffRow
         }
       }
+    }
+  }
+
+  /// "Mac Desktop is off." and Start, like the Apple Off card. The poll brings
+  /// the display in once the host has made it.
+  private var macDesktopOffRow: some View {
+    let canStart = syncService.supportsMacDesktopStart
+    return HStack(spacing: 10) {
+      if macDesktopStarting {
+        ProgressView()
+      }
+      Text(macDesktopOffCardMessage(starting: macDesktopStarting, error: macDesktopStartError, canStart: canStart))
+        .font(.footnote)
+        .foregroundStyle(ADEColor.textSecondary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+      if canStart && !macDesktopStarting {
+        Button {
+          ADEHaptics.light()
+          startMacDesktop()
+        } label: {
+          Label("Start", systemImage: "play.fill")
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .frame(minHeight: 44)
+            .background(Capsule().fill(ADEColor.textPrimary.opacity(0.1)))
+        }
+        .buttonStyle(.plain)
+        .disabled(syncService.connectionState != .connected)
+        .accessibilityHint("Starts this lane's Mac Desktop on your Mac")
+      }
+    }
+  }
+
+  private func startMacDesktop() {
+    guard !macDesktopStarting else { return }
+    macDesktopStarting = true
+    macDesktopStartError = nil
+    Task {
+      do {
+        try await syncService.macDesktopStart(laneId: laneId)
+        await refresh()
+      } catch {
+        macDesktopStartError = (error as NSError).localizedDescription
+      }
+      macDesktopStarting = false
     }
   }
 
