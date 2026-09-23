@@ -47,6 +47,11 @@ function makeScene(): THREE.Group {
 
 vi.mock("three/examples/jsm/loaders/GLTFLoader.js", () => ({
   GLTFLoader: class {
+    // The real loader's plugin hook; the view registers one to load textures
+    // through an <img>.
+    register() {
+      return this;
+    }
     async parseAsync() {
       parses.count += 1;
       return { scene: makeScene() };

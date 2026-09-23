@@ -156,7 +156,7 @@ describe("createDeviceModelLoader", () => {
 
     expect(ours).toBeDefined();
     expect(parser.textureLoader).toBeInstanceOf(THREE.TextureLoader);
-    expect((parser.textureLoader as InstanceType<typeof THREE.TextureLoader>).manager).toBe(manager);
+    expect((parser.textureLoader as unknown as InstanceType<typeof THREE.TextureLoader>).manager).toBe(manager);
   });
 });
 
