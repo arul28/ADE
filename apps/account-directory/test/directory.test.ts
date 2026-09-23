@@ -559,10 +559,14 @@ describe("machine directory", () => {
     const env = makeEnv();
     const token = await mintToken({ sub: "user_1" });
     await register(env, token, "machine-a");
-    const relay = activityRelayStub(() => new Response(null, {
-      status: 302,
-      headers: { location: "https://elsewhere.example/steal" },
-    }));
+    const redirectModes: Array<RequestRedirect | undefined> = [];
+    const relay = activityRelayStub((_url, init) => {
+      redirectModes.push(init?.redirect);
+      return new Response(null, {
+        status: 302,
+        headers: { location: "https://elsewhere.example/steal" },
+      });
+    });
 
     const deleted = await handleRequest(
       request("DELETE", "/account/machines/machine-a", token),
@@ -572,6 +576,9 @@ describe("machine directory", () => {
 
     // One call to the relay, no second hop, and the removal reports the relay
     // as failed rather than as done.
+    // The stub never follows a redirect itself, so the mode is what proves
+    // the real runtime will not follow one either.
+    expect(redirectModes).toEqual(["manual"]);
     expect(relay.calls.map((call) => call.url)).toEqual([`${RELAY_URL}/attention/account/machines/machine-a`]);
     expect(deleted.status).not.toBe(200);
   });
