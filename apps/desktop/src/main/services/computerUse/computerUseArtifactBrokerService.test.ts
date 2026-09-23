@@ -473,8 +473,10 @@ describe("computerUseArtifactBrokerService", () => {
       inputs: [{ kind: "console_logs", title: "Shared notes", text: "hello" }],
     }).artifacts[0]!;
     const filePath = path.join(canonicalProjectRoot, first.uri);
+    // An ADE capture, so the duplicate refusal for attaches does not apply.
     const second = broker.ingest({
       backend: { name: "ade-cli", style: "manual" },
+      provenance: { source: "ade-capture" },
       inputs: [{ kind: "console_logs", title: "Shared notes again", path: filePath }],
     }).artifacts[0]!;
 
@@ -513,8 +515,10 @@ describe("computerUseArtifactBrokerService", () => {
       inputs: [{ kind: "console_logs", title: "Batched notes", text: "hello" }],
     }).artifacts[0]!;
     const filePath = path.join(canonicalProjectRoot, first.uri);
+    // An ADE capture, so the duplicate refusal for attaches does not apply.
     const second = broker.ingest({
       backend: { name: "ade-cli", style: "manual" },
+      provenance: { source: "ade-capture" },
       inputs: [{ kind: "console_logs", title: "Batched notes again", path: filePath }],
     }).artifacts[0]!;
 
@@ -537,8 +541,10 @@ describe("computerUseArtifactBrokerService", () => {
       inputs: [{ kind: "console_logs", title: "Shared aliases", text: "hello" }],
     }).artifacts[0]!;
     const filePath = path.join(canonicalProjectRoot, first.uri);
+    // An ADE capture, so the duplicate refusal for attaches does not apply.
     const second = broker.ingest({
       backend: { name: "ade-cli", style: "manual" },
+      provenance: { source: "ade-capture" },
       inputs: [{ kind: "console_logs", title: "Shared aliases again", path: filePath }],
     }).artifacts[0]!;
     db.run(

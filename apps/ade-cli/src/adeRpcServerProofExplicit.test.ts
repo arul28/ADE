@@ -45,7 +45,7 @@ vi.mock("node:child_process", async (importOriginal) => {
   };
 });
 
-const { createAdeRpcRequestHandler, isExplicitProofCall } = await import("./adeRpcServer");
+const { createAdeRpcRequestHandler, isExplicitProofCall, resolveIngestToolProvenance } = await import("./adeRpcServer");
 
 let projectRoot = "";
 const createdRoots: string[] = [];
@@ -145,6 +145,7 @@ describe("explicit proof capture", () => {
 
     expect(result.isError).toBeFalsy();
     expect(fixture.ingest).toHaveBeenCalledTimes(1);
+    expect(fixture.ingest.mock.calls[0]).toEqual([expect.objectContaining({ provenance: { source: "ade-capture" } })]);
     expect(result.structuredContent.proof).toBe(true);
     const capturePath: string = result.structuredContent.artifact.path;
     expect(capturePath.startsWith(path.join(projectRoot, ".ade", "artifacts", "computer-use"))).toBe(true);
@@ -200,6 +201,44 @@ describe("explicit proof capture", () => {
     expect(proofResult.isError).toBeFalsy();
     expect(proof.ingest).toHaveBeenCalledTimes(1);
     expect(proofResult.structuredContent.proof).toBe(true);
+    // ADE ran the recorder, so the drawer can say when.
+    const [[request]] = proof.ingest.mock.calls as unknown as Array<[{ provenance?: Record<string, unknown> }]>;
+    expect(request?.provenance).toMatchObject({
+      source: "ade-recorder",
+      recordedFrom: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+      recordedTo: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+    });
+  });
+
+  it("files `ade proof attach` as an attach, never trusting provenance from the arguments", async () => {
+    const fixture = createRuntime();
+    const laneRoot = path.join(projectRoot, ".ade", "worktrees", "lane-7");
+    fs.mkdirSync(laneRoot, { recursive: true });
+    fixture.runtime.laneService.list = vi.fn(async () => [
+      { id: "lane-7", worktreePath: laneRoot, attachedRootPath: null },
+    ]);
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ade/initialize",
+      params: { identity: { callerId: "ade-cli:4242", role: "agent" } },
+    });
+    const file = path.join(laneRoot, "clip.mp4");
+    fs.writeFileSync(file, "bytes");
+
+    const result = await callTool(handler, "ingest_computer_use_artifacts", {
+      backendStyle: "manual",
+      backendName: "ade-cli",
+      toolName: "proof attach",
+      callerRoot: laneRoot,
+      provenance: { source: "ade-recorder" },
+      inputs: [{ kind: "video_recording", title: "Clip", path: file }],
+    });
+
+    expect(JSON.stringify(result.error ?? null)).toBe("null");
+    const [[request]] = fixture.ingest.mock.calls as unknown as Array<[{ provenance?: Record<string, unknown> }]>;
+    expect(request?.provenance).toEqual({ source: "attached" });
   });
 
   it("advertises the proof flag on both capture tools so the model can tell them apart", async () => {
@@ -225,5 +264,27 @@ describe("isExplicitProofCall", () => {
     expect(isExplicitProofCall({ proof: "true" })).toBe(false);
     expect(isExplicitProofCall({ name: "screenshot" })).toBe(false);
     expect(isExplicitProofCall({ proof: true })).toBe(true);
+  });
+});
+
+describe("resolveIngestToolProvenance", () => {
+  const still = [{ kind: "screenshot" }];
+  const video = [{ kind: "video_recording" }];
+
+  it("treats every unlabelled call as an attach", () => {
+    expect(resolveIngestToolProvenance("ade-cli", "proof attach", video)).toEqual({ source: "attached" });
+    expect(resolveIngestToolProvenance("agent-browser", null, still)).toEqual({ source: "attached" });
+  });
+
+  it("lifts the duplicate check only for ADE's own stills", () => {
+    expect(resolveIngestToolProvenance("ade-ios-simulator", "ios-sim proof", still))
+      .toEqual({ source: "ade-capture", refuseDuplicates: false, flagOlderMedia: true });
+    expect(resolveIngestToolProvenance("ade-browser", "browser proof", [{ kind: "screenshot" }, { kind: "browser_trace" }]))
+      .toEqual({ source: "ade-capture", refuseDuplicates: false, flagOlderMedia: true });
+    // A label on a video is typed, not proven, so the checks stay on.
+    expect(resolveIngestToolProvenance("ade-ios-simulator", "ios-sim proof", video))
+      .toEqual({ source: "ade-capture", refuseDuplicates: true, flagOlderMedia: true });
+    expect(resolveIngestToolProvenance("ade-browser", "browser record", video))
+      .toEqual({ source: "ade-recorder", refuseDuplicates: true, flagOlderMedia: true });
   });
 });

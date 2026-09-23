@@ -1944,6 +1944,41 @@ describe("iosSimulatorService screenshots and platform guards", () => {
     }
   });
 
+  it("files a screenshot as proof captured by ADE", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-screenshot-proof-`);
+    const { run } = simulatorRunMock();
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    const filed: Array<Record<string, unknown>> = [];
+    const service = createIosSimulatorService({
+      projectRoot,
+      logger: noopLogger,
+      recordingDeps: {
+        artifactFiler: {
+          ingest(request) {
+            filed.push(request as Record<string, unknown>);
+            return { artifacts: [{ id: "artifact-1" }], links: [] };
+          },
+        },
+      },
+    });
+
+    try {
+      const shot = await service.screenshot({ projectRoot });
+      expect(shot.proofArtifactId).toBe("artifact-1");
+      expect(filed).toHaveLength(1);
+      expect(filed[0]).toMatchObject({
+        backend: { toolName: "apple_screenshot" },
+        provenance: { source: "ade-capture" },
+      });
+    } finally {
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
   it("refuses an --out that reaches outside the build root through a symlink", async () => {
     // The lexical containment check cannot see this: every segment sits under
     // the root, and the write still lands wherever the link points.

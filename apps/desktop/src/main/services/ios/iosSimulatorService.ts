@@ -4602,6 +4602,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         backend: { name: "apple-device", style: "local_fallback", toolName: "apple_screenshot" },
         ...(owners.length ? { owners } : {}),
         ...(args.projectRoot ? { callerRoot: args.projectRoot } : {}),
+        provenance: { source: "ade-capture" },
         inputs: [
           {
             kind: "screenshot",

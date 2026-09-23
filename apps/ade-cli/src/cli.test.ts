@@ -8970,6 +8970,23 @@ describe("ADE CLI", () => {
       );
     });
 
+    it("prints the broker's warning about an older video before the confirmation line", () => {
+      const plan = expectExecutePlan(buildCliPlan(["proof", "attach", "/tmp/clip.mp4"]));
+      const warning = "This video was recorded at 5:19 AM, before this request. It will be marked as older in the proof drawer.";
+      const summarized = summarizeExecution({
+        plan,
+        connection,
+        values: {
+          result: { ...ingestResult, warnings: [warning] },
+          verify: { artifacts: [{ id: "artifact-1" }] },
+        },
+      }) as Record<string, unknown>;
+      expect(summarized.warnings).toEqual([warning]);
+      const output = formatOutput(summarized, textOpts(), inferFormatter(plan));
+      expect(output).toContain(`warning: ${warning}`);
+      expect(output.trimEnd().split("\n").at(-1)).toMatch(/^Attached 1 artifact/);
+    });
+
     it("fails when the filed artifact cannot be read back", () => {
       const plan = expectExecutePlan(buildCliPlan(["proof", "attach", "/tmp/shot.png"]));
       // The word "failed" is load-bearing: a caller grepping stderr for it is

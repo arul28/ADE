@@ -14,6 +14,7 @@ final class WorkProofRowModelTests: XCTestCase {
         kind: String = "screenshot",
         title: String = "Login page",
         mimeType: String? = "image/png",
+        metadataJson: String? = nil,
         createdAt: String
     ) -> ComputerUseArtifactSummary {
         ComputerUseArtifactSummary(
@@ -28,7 +29,7 @@ final class WorkProofRowModelTests: XCTestCase {
             uri: "file:///tmp/\(id).png",
             storageKind: "file",
             mimeType: mimeType,
-            metadataJson: nil,
+            metadataJson: metadataJson,
             createdAt: createdAt,
             ownerKind: "chat",
             ownerId: "chat-1",
@@ -102,5 +103,77 @@ final class WorkProofRowModelTests: XCTestCase {
     /// Unparseable timestamps fall back to the raw string rather than a wrong age.
     func testUnparseableTimestampFallsBackToRawValue() {
         XCTAssertEqual(workProofRelativeTime("not-a-date", now: now), "not-a-date")
+    }
+
+    // MARK: - Provenance lines
+
+    /// A fixed clock so the wording is pinned independent of locale and zone.
+    private func fixedClock(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "h:mm a"
+        return formatter.string(from: date)
+    }
+
+    func testRecorderRowSaysRecordedByADEWithItsTimes() {
+        let lines = workProofProvenanceLines(
+            #"{"proofSource":"ade-recorder","recordedFrom":"2026-09-23T10:24:00.000Z","recordedTo":"2026-09-23T10:25:40.000Z"}"#,
+            formatClock: fixedClock
+        )
+        XCTAssertEqual(lines.source, "Recorded by ADE · 10:24–10:25 AM")
+        XCTAssertNil(lines.older)
+    }
+
+    func testRangeKeepsBothDayPeriodsWhenTheyDiffer() {
+        let lines = workProofProvenanceLines(
+            #"{"proofSource":"ade-recorder","recordedFrom":"2026-09-23T11:58:00Z","recordedTo":"2026-09-23T12:02:00Z"}"#,
+            formatClock: fixedClock
+        )
+        XCTAssertEqual(lines.source, "Recorded by ADE · 11:58 AM–12:02 PM")
+    }
+
+    func testCaptureAndAttachLines() {
+        XCTAssertEqual(workProofProvenanceLines(#"{"proofSource":"ade-capture"}"#).source, "Captured by ADE")
+        XCTAssertEqual(workProofProvenanceLines(#"{"proofSource":"attached"}"#).source, "Attached by the agent")
+        XCTAssertEqual(workProofProvenanceLines(#"{"proofSource":"ade-recorder"}"#).source, "Recorded by ADE")
+    }
+
+    func testOldRowsAndBadMetadataPrintNothing() {
+        XCTAssertNil(workProofProvenanceLines(nil).source)
+        XCTAssertNil(workProofProvenanceLines("{}").source)
+        XCTAssertNil(workProofProvenanceLines("not json").source)
+        XCTAssertNil(workProofProvenanceLines(#"{"proofSource":"someone"}"#).source)
+        XCTAssertNil(workProofProvenanceLines("{}").older)
+    }
+
+    func testOlderVideoGetsTheWarningLine() {
+        let lines = workProofProvenanceLines(
+            #"{"proofSource":"attached","mediaCreatedAt":"2026-09-23T05:19:00Z","recordedBeforeRequest":true}"#,
+            formatClock: fixedClock
+        )
+        XCTAssertEqual(lines.source, "Attached by the agent")
+        XCTAssertEqual(lines.older, "Recorded at 5:19 AM, before this request.")
+        let unflagged = workProofProvenanceLines(#"{"mediaCreatedAt":"2026-09-23T05:19:00Z"}"#)
+        XCTAssertNil(unflagged.older)
+    }
+
+    func testRowModelCarriesTheLinesIntoVoiceOver() {
+        let model = WorkProofRowModel(
+            artifact: artifact(
+                kind: "video_recording",
+                mimeType: "video/mp4",
+                metadataJson: #"{"proofSource":"attached","mediaCreatedAt":"2026-09-23T05:19:00Z","recordedBeforeRequest":true}"#,
+                createdAt: iso(minutesAgo: 2)
+            ),
+            now: now,
+            formatClock: fixedClock
+        )
+        XCTAssertEqual(model.sourceLine, "Attached by the agent")
+        XCTAssertEqual(model.olderLine, "Recorded at 5:19 AM, before this request.")
+        XCTAssertEqual(
+            model.accessibilityLabel,
+            "Video Recording, Login page, 2m ago, Attached by the agent, Recorded at 5:19 AM, before this request."
+        )
     }
 }

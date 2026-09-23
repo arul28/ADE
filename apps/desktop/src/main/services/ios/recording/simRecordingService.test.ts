@@ -247,6 +247,8 @@ describe("simRecordingService", () => {
     expect(filed[0]).toMatchObject({
       inputs: [expect.objectContaining({ kind: "video_recording", path: started.path, mimeType: "video/mp4" })],
       owners: [{ kind: "chat_session", id: "chat-1" }, { kind: "lane", id: lane }],
+      // ADE's recorder made these bytes, from start to stop.
+      provenance: { source: "ade-recorder", recordedFrom: started.startedAt, recordedTo: pinned!.endedAt },
     });
     expect((await service.list({ laneId: lane }))[0]!.proof).toBe(true);
   });

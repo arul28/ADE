@@ -390,3 +390,58 @@ describe("proof rendering", () => {
     expect(window.ade.app.openExternal).toHaveBeenCalledWith(remote.uri);
   });
 });
+
+describe("proof provenance lines", () => {
+  // Local wall-clock times, so the clock text is the same in every time zone.
+  const at = (hour: number, minute: number) => new Date(2026, 8, 23, hour, minute).toISOString();
+  const clock = (iso: string) => new Date(iso).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+
+  it("says an ADE recording was recorded by ADE, with its times, in the drawer and the timeline", () => {
+    const recorded = artifact(1, {
+      kind: "video_recording",
+      mimeType: "video/mp4",
+      metadata: { proofSource: "ade-recorder", recordedFrom: at(10, 24), recordedTo: at(10, 25) },
+    });
+    render(<ChatComputerUsePanel snapshot={snapshotOf([recorded])} onRefresh={vi.fn()} />);
+    const drawerLine = document.querySelector("[data-proof-source]")!;
+    expect(drawerLine.textContent).toMatch(/^Recorded by ADE · 10:24/);
+    expect(drawerLine.textContent).toContain(clock(at(10, 25)));
+    cleanup();
+
+    render(<ChatProofTimeline artifacts={[recorded]} />);
+    expect(document.querySelector("[data-proof-source]")!.textContent).toMatch(/^Recorded by ADE · 10:24/);
+  });
+
+  it("says captured by ADE, or attached by the agent", () => {
+    render(
+      <ChatComputerUsePanel
+        snapshot={snapshotOf([
+          artifact(1, { metadata: { proofSource: "ade-capture" } }),
+          artifact(2, { metadata: { proofSource: "attached" } }),
+        ])}
+        onRefresh={vi.fn()}
+      />,
+    );
+    const lines = [...document.querySelectorAll("[data-proof-source]")].map((node) => node.textContent);
+    expect(lines).toEqual(["Captured by ADE", "Attached by the agent"]);
+  });
+
+  it("shows nothing for a row filed before provenance existed", () => {
+    render(<ChatComputerUsePanel snapshot={snapshotOf([artifact(1)])} onRefresh={vi.fn()} />);
+    expect(document.querySelector("[data-proof-source]")).toBeNull();
+    expect(document.querySelector("[data-proof-recorded-before-request]")).toBeNull();
+  });
+
+  it("adds an amber line for a video recorded before the request", () => {
+    const older = artifact(1, {
+      kind: "video_recording",
+      mimeType: "video/mp4",
+      metadata: { proofSource: "attached", mediaCreatedAt: at(5, 19), recordedBeforeRequest: true },
+    });
+    render(<ChatProofTimeline artifacts={[older]} />);
+    const line = document.querySelector("[data-proof-recorded-before-request]")!;
+    expect(line.textContent).toBe(`Recorded at ${clock(at(5, 19))}, before this request.`);
+    expect(line.className).toContain("text-amber-200");
+    expect(document.querySelector("[data-proof-source]")!.textContent).toBe("Attached by the agent");
+  });
+});

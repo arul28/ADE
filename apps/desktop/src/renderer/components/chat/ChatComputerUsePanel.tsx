@@ -24,6 +24,11 @@ import type {
   ComputerUseArtifactView,
   ComputerUseOwnerSnapshot,
 } from "../../../shared/types";
+import {
+  proofRecordedBeforeRequestLine,
+  proofSourceLine,
+  readProofProvenance,
+} from "../../../shared/proofProvenance";
 import { cn } from "../ui/cn";
 import { playableMediaDataUrl } from "../../lib/playableMedia";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
@@ -113,6 +118,35 @@ function assertArtifactDeletionSucceeded(result: ComputerUseArtifactDeleteResult
 
 function localArtifactUrl(uri: string): string | null {
   return /^ade-artifact:\/\/project(?:\/|$)/i.test(uri) ? uri : null;
+}
+
+/**
+ * Who made the bytes, and whether an attached video predates the request.
+ * One quiet line each; rows filed before ADE recorded this print nothing.
+ */
+function ProofProvenanceLines({ artifact, className, warningClassName }: {
+  artifact: ComputerUseArtifactView;
+  className: string;
+  warningClassName: string;
+}) {
+  const provenance = readProofProvenance(artifact.metadata);
+  const source = proofSourceLine(provenance);
+  const older = proofRecordedBeforeRequestLine(provenance);
+  if (!source && !older) return null;
+  return (
+    <>
+      {source ? (
+        <div data-proof-source="" className={cn("truncate", className)} title={source}>
+          {source}
+        </div>
+      ) : null}
+      {older ? (
+        <div data-proof-recorded-before-request="" className={cn("truncate", warningClassName)} title={older}>
+          {older}
+        </div>
+      ) : null}
+    </>
+  );
 }
 
 function ArtifactKindIcon({ artifact, size = 14 }: {
@@ -402,6 +436,11 @@ export function ChatProofArtifactCard({
             <span aria-hidden>·</span>
             <span className="shrink-0">{relativeTime(artifact.createdAt)}</span>
           </div>
+          <ProofProvenanceLines
+            artifact={artifact}
+            className="mt-0.5 font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-muted-fg/40"
+            warningClassName="mt-0.5 font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-amber-200/60"
+          />
         </div>
         {externalUrl ? (
           <button
@@ -679,6 +718,11 @@ function DrawerProofTile({
         <div className="truncate font-mono text-[8.5px] leading-[13px] text-muted-fg/34">
           {relativeTime(artifact.createdAt)}
         </div>
+        <ProofProvenanceLines
+          artifact={artifact}
+          className="font-sans text-[9px] leading-[13px] text-muted-fg/38"
+          warningClassName="font-sans text-[9px] leading-[13px] text-amber-200/55"
+        />
         {hasPreviewProblem ? (
           <div className="mt-1 font-sans text-[9px] leading-[13px] text-amber-200/40">
             {externalUrl ? "Stored at its source." : artifactPreviewExplanation(artifact)}

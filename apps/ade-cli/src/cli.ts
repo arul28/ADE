@@ -3188,6 +3188,14 @@ const HELP_BY_COMMAND: Record<string, string> = {
   \`Attached 1 artifact to lane <id> / chat <id> (<title>)\`. Anything else is a
   failure: they exit non-zero and print \`ade: proof attach failed — <reason>\`.
   Pass --no-verify to skip the re-read.
+
+  Attaching a file that is already proof
+
+  ADE hashes every proof file. An attach whose bytes match earlier proof in
+  this project (a renamed copy included) fails with PROOF_DUPLICATE and names
+  the earlier proof. Record a new one, or report that recording failed.
+  An attached video whose own creation time is before the chat's request is
+  kept, marked older in the proof drawer, and the command prints a warning.
 `,
   "apple": `${ADE_BANNER}
   Apple Development
@@ -25084,6 +25092,9 @@ function formatProofFiled(value: unknown): string {
   const record = isRecord(value) ? value : {};
   const artifacts = firstArray(record, ["artifacts"]);
   const confirmation = asString(record.confirmation) ?? "";
+  const warnings = Array.isArray(record.warnings)
+    ? record.warnings.filter((warning): warning is string => typeof warning === "string")
+    : [];
   return [
     renderTable(
       ["artifact", "kind", "title", "path"],
@@ -25098,6 +25109,7 @@ function formatProofFiled(value: unknown): string {
     record.verified === true
       ? "verified: re-read through ade proof list"
       : "verified: skipped (--no-verify)",
+    ...warnings.map((warning) => `warning: ${warning}`),
     "",
     confirmation,
   ].join("\n");
@@ -27070,6 +27082,11 @@ function summarizeProofFiling(
   }
 
   const title = asString(artifacts[0]?.title) ?? "untitled";
+  // The broker's own notes, e.g. a video recorded before this request. The
+  // agent has to repeat these to the user, so they travel with the result.
+  const warnings = Array.isArray(record.warnings)
+    ? record.warnings.filter((warning): warning is string => typeof warning === "string" && warning.trim().length > 0)
+    : [];
   const owner = [
     `lane ${laneId ? shortProofOwnerId(laneId) : "none"}`,
     `chat ${chatSessionId ? shortProofOwnerId(chatSessionId) : "none"}`,
@@ -27087,6 +27104,7 @@ function summarizeProofFiling(
       title: artifact.title,
       uri: artifact.uri,
     })),
+    ...(warnings.length ? { warnings } : {}),
     confirmation:
       `Attached ${artifacts.length} artifact${artifacts.length === 1 ? "" : "s"} `
       + `to ${owner} (${title})`,

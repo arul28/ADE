@@ -4561,6 +4561,10 @@ app.whenReady().then(async () => {
     agentChatService.setComputerUseArtifactBrokerService(
       computerUseArtifactBrokerService,
     );
+    // The broker judges an attached video against the chat's turn start.
+    computerUseArtifactBrokerService.setChatTurnStartResolver(
+      (sessionId) => agentChatService.getTurnStartedAt(sessionId),
+    );
 
     // Backfill starts well past the boot window so index writes never compete
     // with project startup.

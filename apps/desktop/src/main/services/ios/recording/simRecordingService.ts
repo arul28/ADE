@@ -290,6 +290,14 @@ export type AppleRecordingArtifactFiler = {
     inputs: Array<Record<string, unknown>>;
     owners?: Array<{ kind: string; id: string }>;
     callerRoot?: string | null;
+    /** ADE made these bytes, so the drawer can say so. */
+    provenance?: {
+      source: "ade-recorder" | "ade-capture" | "attached";
+      recordedFrom?: string | null;
+      recordedTo?: string | null;
+      refuseDuplicates?: boolean;
+      flagOlderMedia?: boolean;
+    } | null;
   }): unknown;
   /** Deleting the video deletes its drawer row too. Optional so tests can omit it. */
   deleteArtifacts?(args: { artifactIds: string[] }): unknown;
@@ -679,6 +687,7 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
         // is returned by no `ade proof list` scope, project-wide included.
         ...(recordingOwners(record).length ? { owners: recordingOwners(record) } : {}),
         ...(deps.projectRoot ? { callerRoot: deps.projectRoot } : {}),
+        provenance: { source: "ade-recorder", recordedFrom: record.startedAt, recordedTo: record.endedAt },
         inputs: [
           {
             kind: "video_recording",

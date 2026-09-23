@@ -32,7 +32,10 @@ import { resolvePathWithinRoot } from "../../desktop/src/main/services/shared/ut
 import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
 import { buildAdeCliInlineGuidance } from "../../desktop/src/shared/adeCliGuidance";
 import { buildDeeplink, isValidCommitSha, isValidRepoRelativePath } from "../../desktop/src/shared/deeplinks";
-import { PROOF_LISTING_ARTIFACT_FILTER } from "../../desktop/src/shared/types/computerUseArtifacts";
+import {
+  PROOF_LISTING_ARTIFACT_FILTER,
+  type ComputerUseProofProvenanceInput,
+} from "../../desktop/src/shared/types/computerUseArtifacts";
 import { resolveStableLaneBaseBranch } from "../../desktop/src/shared/laneBaseResolution";
 import { rollupPrChecks } from "../../desktop/src/shared/prChecksRollup";
 import {
@@ -2342,6 +2345,47 @@ export function isExplicitProofCall(toolArgs: Record<string, unknown>): boolean 
   return toolArgs?.proof === true;
 }
 
+/**
+ * The ADE capture commands that file through `ingest_computer_use_artifacts`,
+ * by the backend and tool names the CLI writes for them.
+ */
+const ADE_CAPTURE_INGEST_LABELS: ReadonlyMap<string, "ade-capture" | "ade-recorder"> = new Map([
+  ["ade-ios-simulator\u0000ios-sim proof", "ade-capture"],
+  ["ade-app-control\u0000app-control proof", "ade-capture"],
+  ["ade-browser\u0000browser proof", "ade-capture"],
+  ["ade-browser\u0000browser record", "ade-recorder"],
+]);
+
+/**
+ * Where the bytes of an `ingest_computer_use_artifacts` call came from.
+ *
+ * `ade proof attach` and every other caller are attaches of an existing file,
+ * so the broker refuses bytes that are already proof and flags a video older
+ * than the request. ADE's own capture commands file through the same tool, and
+ * their labels are the only thing that tells them apart. Labels can be typed,
+ * so a label only lifts the duplicate check for still images, where a real
+ * capture of an unchanged screen can repeat bytes (`ade apple proof` also
+ * files the still twice, once from `screenshot`). A video is never exempt: a
+ * real recording is always new bytes. The age flag stays on for every call.
+ */
+export function resolveIngestToolProvenance(
+  backendName: string,
+  toolName: string | null,
+  inputs: Array<Record<string, unknown>>,
+): ComputerUseProofProvenanceInput {
+  const labelled = ADE_CAPTURE_INGEST_LABELS.get(`${backendName}\u0000${toolName ?? ""}`);
+  if (!labelled) return { source: "attached" };
+  const allStills = inputs.every((input) => {
+    const kind = asOptionalTrimmedString(input.kind);
+    return kind === "screenshot" || kind === "browser_trace";
+  });
+  return {
+    source: labelled,
+    refuseDuplicates: !allStills,
+    flagOlderMedia: true,
+  };
+}
+
 function validateComputerUseOwnerClaims(
   runtime: AdeRuntime,
   session: SessionState,
@@ -3887,6 +3931,9 @@ async function runTool(args: {
     toolArgs: Record<string, unknown>;
     /** True only for an explicit proof call — see `isExplicitProofCall`. */
     proof: boolean;
+    /** When `screencapture -v` ran, for a recording. */
+    recordedFrom?: string;
+    recordedTo?: string;
   }) => {
     if (!args.proof) {
       // Scratch capture: the caller gets the bytes, the proof drawer stays a
@@ -3934,6 +3981,10 @@ async function runTool(args: {
         style: "local_fallback",
         toolName: args.toolName,
       },
+      // ADE ran `screencapture` itself, into a new file.
+      provenance: args.kind === "video_recording"
+        ? { source: "ade-recorder", recordedFrom: args.recordedFrom ?? null, recordedTo: args.recordedTo ?? null }
+        : { source: "ade-capture" },
       inputs: [
         {
           kind: args.kind,
@@ -5183,12 +5234,16 @@ async function runTool(args: {
     const commandArgs = ["-v", `-V${durationSec}`, "-x"];
     if (displayId) commandArgs.push(`-D${displayId}`);
     commandArgs.push(artifactPath);
+    const recordedFrom = new Date().toISOString();
     runLocalCommand("screencapture", commandArgs);
+    const recordedTo = new Date().toISOString();
     return await ingestLocalComputerUseArtifact({
       sessionState: session,
       toolName: name,
       title,
       kind: "video_recording",
+      recordedFrom,
+      recordedTo,
       artifactPath,
       mimeType: "video/quicktime",
       metadata: {
@@ -5237,6 +5292,8 @@ async function runTool(args: {
         toolName: asOptionalTrimmedString(toolArgs.toolName),
         command: asOptionalTrimmedString(toolArgs.command),
       },
+      // Decided here from the call, never read from the caller's arguments.
+      provenance: resolveIngestToolProvenance(backendName, asOptionalTrimmedString(toolArgs.toolName), inputs),
       callerRoot: authorized.callerRoot,
       inputs: inputs.map((entry) => ({
         kind: asOptionalTrimmedString(entry.kind),

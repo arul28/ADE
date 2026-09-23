@@ -96,6 +96,12 @@ for a reviewer. Only an explicit proof call writes a record:
   scratch file path. It reaches the proof drawer as a `video_recording` artifact
   **only** when `record start` was given a `--caption`, mirroring
   `ade browser proof`; without one, nothing is ingested.
+- **Proof must be new bytes.** The broker hashes every stored proof file and
+  refuses an attach whose bytes are already proof (`PROOF_DUPLICATE`), reads an
+  attached MP4/MOV's `mvhd` creation time to flag a video recorded before the
+  chat's turn, and stamps `metadata.proofSource` on every record. ADE's own
+  recorders and captures pass `provenance` on the ingest request and skip both
+  checks. See [Already-filed bytes and older videos](../proof.md#already-filed-bytes-and-older-videos).
 - **Browser use is visible to the human, automatically.** Every
   capability-validated `ade browser …` command marks the calling chat as using
   the browser, so a globe appears on its session card and chat header, the

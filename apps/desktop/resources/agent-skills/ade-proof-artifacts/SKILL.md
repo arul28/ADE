@@ -76,6 +76,20 @@ Artifacts worth filing:
 - App Control, iOS Simulator, or ADE browser capture.
 - Test output or log bundle when visual proof is not the right artifact.
 
+## Proof must be new
+
+Proof shows what you did for this request. ADE checks:
+
+- An attach whose bytes are already proof (an earlier recording copied to a
+  new name, say) fails with `PROOF_DUPLICATE` and names the earlier proof.
+  Do not work around it. Record a new one, or tell the user the recording
+  failed.
+- An attached MP4/MOV whose own creation time is before this request still
+  files, but prints `warning: This video was recorded at …, before this
+  request.` and the drawer marks it older. Repeat that warning to the user.
+- The drawer says where each proof came from: recorded by ADE, captured by
+  ADE, or attached by the agent.
+
 ## Gotchas
 
 - Do not leave proof as an unregistered local file when the user expects ADE to show it.

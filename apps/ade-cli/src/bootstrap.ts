@@ -1725,6 +1725,10 @@ export async function createAdeRuntime(args: {
     }
     agentChatServiceHolder.current = agentChatService;
     teardown.push(() => agentChatService?.forceDisposeAll?.());
+    // The broker judges an attached video against the chat's turn start.
+    computerUseArtifactBrokerService.setChatTurnStartResolver(
+      (sessionId) => agentChatService?.getTurnStartedAt?.(sessionId) ?? null,
+    );
     bindIosSimulatorReleaseOnChatEnd({
       agentChatService,
       iosSimulatorService,
