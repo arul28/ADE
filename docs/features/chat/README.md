@@ -1855,9 +1855,9 @@ messages, waits up to 15 s for the pipeline to stop, and fully deletes whatever
 the launch created: the chat, the lane's worktree (including a lane whose row
 landed before a restart), and its local and remote branch. If the pipeline
 outlives that wait, whatever it still creates is deleted when it settles. The desktop's local runtime client gives `chat.cancelLaunch` a
-five-minute budget (`localRuntimeTimeoutPolicy.ts`) and iOS gives it the
-`lanes.delete` budget, because it waits out a checkout and then deletes a
-lane including its remote branch. `chat.retryLaunch` reruns from the first unfinished stage — every stage
+five-minute budget (`localRuntimeTimeoutPolicy.ts`) and iOS gives it the same
+five minutes, because it waits out a checkout and then deletes a lane including
+its remote branch. `chat.retryLaunch` reruns from the first unfinished stage — every stage
 checks what already happened, so a retry never creates a second lane or chat,
 nor starts a second environment run.
 `chat.startLaunchNow` starts the agent while the environment keeps running, and

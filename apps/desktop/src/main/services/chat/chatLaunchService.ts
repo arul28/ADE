@@ -231,6 +231,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       const current = records.get(launchId);
       if (!current || !isChatLaunchTerminal(current.snapshot.phase) || owesQueuedMessages(current.snapshot)) return;
       records.delete(launchId);
+      reportedOutcomes.delete(launchId);
       disposeRuntime(launchId);
       store.unpersist(launchId);
       emit({ type: "launch-removed", launchId });
@@ -238,7 +239,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     runtime.expiryTimer.unref?.();
   };
 
-  /** Publish the record's current state. Every mutation funnels through here. */
+  /** Outcomes already handed to analytics, per launch (seeded from reloaded records). */
   const reportedOutcomes = new Map<string, ChatLaunchPhase>();
   const reportOutcome = (record: LaunchRecord): void => {
     const phase = record.snapshot.phase;
@@ -253,6 +254,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     }
   };
 
+  /** Publish the record's current state. Every mutation funnels through here. */
   const publish = (record: LaunchRecord, options: { persist?: boolean } = {}): void => {
     // Disposed: the host is shutting down and the persisted record is what the
     // next start revives; late pipeline work must not emit or re-arm timers.
@@ -986,6 +988,11 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
 
   for (const record of store.loadAll(nowIso())) {
     records.set(record.snapshot.launchId, record);
+    // An outcome reached before the restart was already reported.
+    const reloadedPhase = record.snapshot.phase;
+    if (reloadedPhase === "completed" || reloadedPhase === "cancelled" || reloadedPhase === "failed") {
+      reportedOutcomes.set(record.snapshot.launchId, reloadedPhase);
+    }
     // A completed launch reloaded with undelivered queued messages resumes delivery.
     if (record.snapshot.phase === "completed") void deliverQueuedMessages(record);
   }

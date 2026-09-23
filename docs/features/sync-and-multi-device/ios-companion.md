@@ -2574,7 +2574,7 @@ real row lands only its preview line borrows the launch's status line.
 `hubRosterOverlayingChatLaunches` does the same for each Hub project's
 roster. Deleting a pending launch row cancels the launch, which deletes the
 lane (worktree, local and remote branch) and the chat on the host;
-`chat.cancelLaunch` gets the same request budget as `lanes.delete`.
+`chat.cancelLaunch` gets a 5-minute request budget (longer than `lanes.delete`), matching the desktop: it waits out an in-flight checkout and then deletes the lane.
 
 **Refresh.** Pushed `chat_launch_event` envelopes carry the host's
 `projectId` / `projectRootPath` (older hosts omit them and the push is

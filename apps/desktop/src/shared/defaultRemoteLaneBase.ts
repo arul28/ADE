@@ -1,4 +1,4 @@
-import type { GitBranchSummary, NewLaneBaseSource } from "./types";
+import type { GitBranchSummary } from "./types";
 
 // Host-side counterpart of the renderer's `newLaneBaseSource.ts`: resolve the
 // base ref a new lane should branch from when the caller did not pick one.
@@ -49,38 +49,4 @@ export function selectRemoteLaneBaseRef(args: {
     return candidate;
   }
   return null;
-}
-
-/**
- * Resolve the default base for a caller that omitted one. Fetches the remote
- * first (bounded — a slow remote must not stall lane creation), then maps the
- * primary base branch to its remote-tracking ref. Any failure resolves to null
- * so creation proceeds with the existing local-default behavior. Like
- * {@link selectRemoteLaneBaseRef}, the result is unverified.
- */
-export async function resolveDefaultRemoteLaneBase(args: {
-  newLaneBaseSource: NewLaneBaseSource | null;
-  primaryBaseRef: string | null | undefined;
-  fetchRemote: () => Promise<unknown>;
-  listBranches: () => Promise<GitBranchSummary[]>;
-  fetchTimeoutMs?: number;
-}): Promise<string | null> {
-  if (args.newLaneBaseSource === "local") return null;
-  try {
-    let timeoutId: ReturnType<typeof setTimeout> | null = null;
-    try {
-      await Promise.race([
-        args.fetchRemote().catch(() => {}),
-        new Promise<void>((resolve) => {
-          timeoutId = setTimeout(resolve, args.fetchTimeoutMs ?? DEFAULT_LANE_BASE_REMOTE_FETCH_TIMEOUT_MS);
-        }),
-      ]);
-    } finally {
-      if (timeoutId) clearTimeout(timeoutId);
-    }
-    const branches = await args.listBranches();
-    return selectRemoteLaneBaseRef({ branches, primaryBaseRef: args.primaryBaseRef });
-  } catch {
-    return null;
-  }
 }

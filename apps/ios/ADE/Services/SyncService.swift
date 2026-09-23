@@ -700,15 +700,20 @@ enum SyncRequestTimeout {
   static let modelCatalogTimeoutNanoseconds: UInt64 = 6_000_000_000
   static let chatSendTimeoutNanoseconds: UInt64 = 120_000_000_000
   static let laneDeleteTimeoutNanoseconds: UInt64 = 240_000_000_000
+  /// A launch cancel waits up to 15 s for an in-flight checkout, then runs a
+  /// full lane delete — the desktop gives it 5 minutes for the same reason.
+  static let chatLaunchCancelTimeoutNanoseconds: UInt64 = 300_000_000_000
   static let message = "The machine took too long to respond. Try again."
   static let chatSendMessage = "ADE couldn't confirm whether this message started. Your draft was restored; check the transcript before sending again."
 
   static func commandTimeoutNanoseconds(for action: String) -> UInt64 {
     switch action {
-    case "lanes.delete", "chat.cancelLaunch":
-      // Cancelling a launch deletes its lane (worktree, local and remote
-      // branch) on the host, so it gets the same budget as a lane delete.
+    case "lanes.delete":
       return laneDeleteTimeoutNanoseconds
+    case "chat.cancelLaunch":
+      // Waits out an in-flight checkout, then deletes the lane (worktree,
+      // local and remote branch) on the host.
+      return chatLaunchCancelTimeoutNanoseconds
     case "prs.refresh", "prs.getGitHubSnapshot":
       // These fan out to the GitHub API on the host and routinely take
       // longer than the default budget; a short timeout here surfaced as

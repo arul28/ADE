@@ -311,9 +311,9 @@ function isRetryableRemoveError(error: unknown): boolean {
  * Remove a worktree directory, recovering from read-only files and — on
  * Windows — handles a just-killed git (or an indexer/AV scanner) still holds:
  * those fail with EBUSY/EPERM/EACCES until the handle closes, so retry on a
- * bounded schedule (~5 s) instead of failing the cleanup outright.
+ * bounded schedule (~5 s) instead of failing the cleanup outright. Exported
+ * only for the Windows lock-retry regression test.
  */
-/** Exported for the Windows lock-retry regression test; callers inside this module only. */
 export async function removeWorktreeDirectoryWithRecovery(targetPath: string): Promise<void> {
   for (let attempt = 1; ; attempt += 1) {
     try {

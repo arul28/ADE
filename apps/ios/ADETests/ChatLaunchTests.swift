@@ -751,8 +751,12 @@ final class ChatLaunchTests: XCTestCase {
     )
   }
 
-  func testCancelLaunchGetsTheLaneDeleteTimeout() {
+  func testCancelLaunchOutlivesTheCheckoutWaitPlusALaneDelete() {
     XCTAssertEqual(
+      SyncRequestTimeout.commandTimeoutNanoseconds(for: "chat.cancelLaunch"),
+      300_000_000_000
+    )
+    XCTAssertGreaterThan(
       SyncRequestTimeout.commandTimeoutNanoseconds(for: "chat.cancelLaunch"),
       SyncRequestTimeout.commandTimeoutNanoseconds(for: "lanes.delete")
     )
