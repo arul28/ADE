@@ -348,6 +348,30 @@ function rowToDevice(row: LaneDeviceRow): AppleLaneDevice {
   };
 }
 
+const LANE_DEVICE_COLUMNS = "lane_id, udid, name, origin, family, runtime, created_at, template_udid";
+
+/**
+ * The lane's bound device, straight from `lane_apple_devices` — one indexed
+ * row read, never `simctl`.
+ *
+ * Standalone (like `releaseLaneAppleDevice`) so a host that never built the
+ * simulator service can still ask which device a lane owns: the chat send path
+ * reads it to tell the agent about the lane's device. Throws on a store error;
+ * callers decide whether that is fatal.
+ */
+export function readLaneAppleDevice(
+  store: Pick<LaneDeviceStore, "get">,
+  laneId: string,
+): AppleLaneDevice | null {
+  const trimmed = laneId.trim();
+  if (!trimmed) return null;
+  const row = store.get<LaneDeviceRow>(
+    `select ${LANE_DEVICE_COLUMNS} from ${LANE_APPLE_DEVICES_TABLE} where lane_id = ?`,
+    [trimmed],
+  );
+  return row ? rowToDevice(row) : null;
+}
+
 export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDeviceRegistry {
   const now = deps.now ?? (() => new Date());
   // Used only when no lanes DB was handed in — the CLI's chat-only runtime has
@@ -359,7 +383,7 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
     if (!deps.store) return [...memory.values()];
     try {
       return deps.store
-        .all<LaneDeviceRow>(`select lane_id, udid, name, origin, family, runtime, created_at, template_udid from ${LANE_APPLE_DEVICES_TABLE}`)
+        .all<LaneDeviceRow>(`select ${LANE_DEVICE_COLUMNS} from ${LANE_APPLE_DEVICES_TABLE}`)
         .map(rowToDevice);
     } catch (error) {
       deps.logger.debug("apple.lane_device_read_failed", {
@@ -374,11 +398,7 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
     if (!trimmed) return null;
     if (!deps.store) return memory.get(trimmed) ?? null;
     try {
-      const row = deps.store.get<LaneDeviceRow>(
-        `select lane_id, udid, name, origin, family, runtime, created_at, template_udid from ${LANE_APPLE_DEVICES_TABLE} where lane_id = ?`,
-        [trimmed],
-      );
-      return row ? rowToDevice(row) : null;
+      return readLaneAppleDevice(deps.store, trimmed);
     } catch (error) {
       deps.logger.debug("apple.lane_device_read_failed", {
         laneId: trimmed,
