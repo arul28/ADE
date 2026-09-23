@@ -373,6 +373,8 @@ type SyncRemoteCommandServiceArgs = {
   prService: ReturnType<typeof createPrService>;
   prSummaryService?: ReturnType<typeof createPrSummaryService> | null;
   ptyService: ReturnType<typeof createPtyService>;
+  /** False when this runtime has no RPC endpoint that accepts activity reports. */
+  sessionActivityReportingEnabled?: boolean;
   sessionService: ReturnType<typeof createSessionService>;
   sessionDeltaService?: ReturnType<typeof createSessionDeltaService> | null;
   fileService: ReturnType<typeof createFileService>;
@@ -4350,6 +4352,7 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
       return buildTrackedCliLaunchCommand({
         provider,
         permissionMode,
+        sessionActivityReportingEnabled: args.sessionActivityReportingEnabled,
         ...(parsed.droidPermissionMode !== undefined ? { droidPermissionMode: parsed.droidPermissionMode } : {}),
         sessionId: preassignedSessionId,
         model: parsed.modelId ?? parsed.model ?? undefined,
@@ -4598,6 +4601,7 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     launchAgentChatCli(parseAgentChatLaunchCliArgs(payload), {
       laneService: args.laneService,
       ptyService: args.ptyService,
+      sessionActivityReportingEnabled: args.sessionActivityReportingEnabled,
       logger: args.logger,
     }));
   // Auto-lane naming. It degrades to a deterministic name on the client, so an

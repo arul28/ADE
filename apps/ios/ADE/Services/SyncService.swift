@@ -23412,6 +23412,16 @@ extension SyncService {
         pinned: session.pinned,
         archived: false,
         lastActivityAt: latestTimestamp(
+          session.lastActivityAt,
+          session.activityStatusChangedAt,
+          session.attentionRequestedAt,
+          session.settledAt,
+          session.lastTurnFailedAt,
+          session.endedAt,
+          session.startedAt
+        ),
+        lifecycleUpdatedAt: latestTimestamp(
+          session.lastActivityAt,
           session.attentionRequestedAt,
           session.settledAt,
           session.lastTurnFailedAt,
@@ -23421,6 +23431,8 @@ extension SyncService {
         preview: session.lastOutputPreview,
         settledAt: session.settledAt,
         statusNote: session.statusNote,
+        activityStatus: session.activityStatus,
+        activityStatusChangedAt: session.activityStatusChangedAt ?? session.activityStatus?.updatedAt,
         attentionRequestedAt: session.attentionRequestedAt,
         attentionMessage: session.attentionMessage,
         lastTurnFailedAt: session.lastTurnFailedAt,
@@ -23499,7 +23511,7 @@ extension SyncService {
     var chatIndexById = Dictionary(uniqueKeysWithValues: merged.chats.enumerated().map { ($0.element.id, $0.offset) })
     for localChat in local.chats {
       if let index = chatIndexById[localChat.id] {
-        merged.chats[index] = mergedRosterChat(remote: merged.chats[index], local: localChat)
+        merged.chats[index] = merged.chats[index].merging(local: localChat)
       } else {
         chatIndexById[localChat.id] = merged.chats.count
         merged.chats.append(localChat)
@@ -23511,40 +23523,6 @@ extension SyncService {
     merged.attentionCount = merged.chats.filter(\.needsAttention).count
     merged.chats.sort { ($0.lastActivityAt ?? "") > ($1.lastActivityAt ?? "") }
     return merged.excludingIdentityChats()
-  }
-
-  private func mergedRosterChat(remote: RemoteRosterChat, local: RemoteRosterChat) -> RemoteRosterChat {
-    var merged = remote
-    let localIsAtLeastAsFresh = (local.lastActivityAt ?? "") >= (remote.lastActivityAt ?? "")
-
-    if localIsAtLeastAsFresh {
-      merged.status = local.status
-      merged.awaitingInput = local.awaitingInput ?? remote.awaitingInput
-      merged.pinned = local.pinned ?? remote.pinned
-      merged.archived = local.archived ?? remote.archived
-      merged.lastActivityAt = nonEmptyRosterString(local.lastActivityAt) ?? remote.lastActivityAt
-      merged.title = nonEmptyRosterString(local.title) ?? remote.title
-      merged.preview = nonEmptyRosterString(local.preview) ?? remote.preview
-      merged.settledAt = local.settledAt
-      merged.statusNote = local.statusNote
-      merged.attentionRequestedAt = local.attentionRequestedAt
-      merged.attentionMessage = local.attentionMessage
-      merged.lastTurnFailedAt = local.lastTurnFailedAt
-      merged.exitCode = local.exitCode
-    }
-
-    merged.provider = nonEmptyRosterString(remote.provider) ?? local.provider
-    merged.model = nonEmptyRosterString(remote.model) ?? local.model
-    merged.toolType = nonEmptyRosterString(remote.toolType) ?? local.toolType
-    merged.chatSessionId = nonEmptyRosterString(remote.chatSessionId) ?? local.chatSessionId
-    merged.identityKey = nonEmptyRosterString(remote.identityKey) ?? local.identityKey
-    merged.applyLocalSnoozeOverlay(local)
-    return merged
-  }
-
-  private func nonEmptyRosterString(_ value: String?) -> String? {
-    guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
-    return value
   }
 
   private func isRosterTopLevelToolType(_ toolType: String?) -> Bool {

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { buildAdeRuntimeSocketEnv } from "../../../shared/adeCliGuidance";
 
 const PI_STANDARD_ENVIRONMENT_KEYS = [
   "PATH", "Path", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA",
@@ -16,6 +17,13 @@ const PI_STANDARD_ENVIRONMENT_KEYS = [
 ] as const;
 
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
+
+/** The narrow ADE CLI identity Pi needs for session-scoped activity reports. */
+export type PiWorkerActivityScope = {
+  cliPath: string;
+  chatSessionId: string;
+  runtimeSocketPath?: string;
+};
 
 function isBlockedPiEnvironmentName(name: string): boolean {
   return name.toUpperCase().startsWith("ADE_");
@@ -97,6 +105,7 @@ function declaredPiEnvironmentNames(agentDir: string | undefined): Set<string> {
 export function buildPiWorkerEnvironment(
   source: NodeJS.ProcessEnv,
   agentDir?: string | null,
+  activityScope?: PiWorkerActivityScope | null,
 ): NodeJS.ProcessEnv {
   const allowed = new Set<string>(PI_STANDARD_ENVIRONMENT_KEYS);
   for (const name of declaredPiEnvironmentNames(agentDir ?? source.PI_CODING_AGENT_DIR)) {
@@ -105,6 +114,17 @@ export function buildPiWorkerEnvironment(
   const result: NodeJS.ProcessEnv = {};
   for (const key of allowed) {
     if (typeof source[key] === "string") result[key] = source[key];
+  }
+  const cliPath = activityScope?.cliPath.trim();
+  const chatSessionId = activityScope?.chatSessionId.trim();
+  if (cliPath && chatSessionId) {
+    result.ADE_CLI_PATH = cliPath;
+    result.ADE_CHAT_SESSION_ID = chatSessionId;
+    result.ADE_DEFAULT_ROLE = "agent";
+    const runtimeSocketPath = activityScope?.runtimeSocketPath?.trim();
+    if (runtimeSocketPath) {
+      Object.assign(result, buildAdeRuntimeSocketEnv(runtimeSocketPath));
+    }
   }
   return result;
 }

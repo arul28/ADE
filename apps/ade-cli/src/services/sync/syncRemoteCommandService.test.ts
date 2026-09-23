@@ -42,6 +42,7 @@ function createService(options?: {
   prSummaryService?: Record<string, unknown>;
   projectRoot?: string;
   ptyService?: Record<string, unknown>;
+  sessionActivityReportingEnabled?: boolean;
   sessionDeltaService?: Record<string, unknown>;
   sessionService?: Record<string, unknown>;
   projectConfigService?: Record<string, unknown>;
@@ -93,6 +94,7 @@ function createService(options?: {
     prService: options?.prService ?? {},
     ...(options?.prSummaryService ? { prSummaryService: options.prSummaryService } : {}),
     ptyService,
+    sessionActivityReportingEnabled: options?.sessionActivityReportingEnabled,
     sessionService,
     ...(options?.sessionDeltaService ? { sessionDeltaService: options.sessionDeltaService } : {}),
     fileService: {},
@@ -3839,6 +3841,48 @@ describe("web-reachable settings and lane-risk commands", () => {
         credentialId: "credential-work",
       }),
     }));
+  });
+
+  it("omits activity guidance when the runtime cannot accept activity reports", async () => {
+    const create = vi.fn().mockResolvedValue({ sessionId: "session-chat-cli", ptyId: "pty-chat-cli", pid: 1 });
+    const { service } = createService({
+      sessionActivityReportingEnabled: false,
+      laneService: {
+        getLaneWorktreePath: vi.fn(() => "/repo/lane-1"),
+        getLaneBaseAndBranch: vi.fn(() => undefined),
+      },
+      ptyService: { create },
+    });
+
+    await service.execute(makePayload("chat.launchCli", {
+      laneId: "lane-1",
+      provider: "codex",
+      kickoffPrompt: "Run the checks.",
+    }));
+
+    const createArg = create.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(JSON.stringify(createArg)).not.toContain("Activity detail for this tracked ADE CLI session");
+  });
+
+  it("omits work-session activity guidance when the runtime cannot accept activity reports", async () => {
+    const create = vi.fn().mockResolvedValue({ sessionId: "session-work-cli", ptyId: "pty-work-cli", pid: 1 });
+    const { service } = createService({
+      sessionActivityReportingEnabled: false,
+      laneService: {
+        getLaneBaseAndBranch: vi.fn(() => ({ worktreePath: "/repo/lane-1" })),
+      },
+      ptyService: { create },
+    });
+
+    await service.execute(makePayload("work.startCliSession", {
+      laneId: "lane-1",
+      provider: "codex",
+      permissionMode: "edit",
+      initialInput: "Run the checks.",
+    }));
+
+    const createArg = create.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(JSON.stringify(createArg)).not.toContain("Activity detail for this tracked ADE CLI session");
   });
 
   it("persists the selected account and preset for remote CLI resume and reattach", async () => {

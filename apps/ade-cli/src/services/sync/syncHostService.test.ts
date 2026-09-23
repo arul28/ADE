@@ -23,6 +23,8 @@ import type {
   SyncPeerMetadata,
   SyncProjectCatalogPayload,
   SyncRemoteCommandDescriptor,
+  SyncRosterProject,
+  TerminalSessionChangedEvent,
 } from "../../../../desktop/src/shared/types";
 import {
   SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
@@ -8566,7 +8568,7 @@ describe("inbound changeset_batch guards", () => {
   }
 
   /** One column of one `terminal_sessions` row, as a peer would author it. */
-  function makeSettleChange(cid: string, dbVersion: number, seq: number, val: string): CrsqlChangeRow {
+  function makeTerminalSessionChange(cid: string, dbVersion: number, seq: number, val: string): CrsqlChangeRow {
     const change = makePeerChange("terminal_sessions", dbVersion, seq, val);
     change.cid = cid;
     change.pk = "session-1";
@@ -8705,7 +8707,7 @@ describe("inbound changeset_batch guards", () => {
     }
   });
 
-  it("strips a phone's settle columns while applying the rest of the same batch", async () => {
+  it("strips a phone's host-authoritative session columns while applying the rest of the batch", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const applyChanges = vi.fn((changes: CrsqlChangeRow[]) => ({ appliedCount: changes.length }));
     const host = createGuardHost(projectRoot, applyChanges);
@@ -8714,12 +8716,11 @@ describe("inbound changeset_batch guards", () => {
       const port = await host.waitUntilListening();
       peer = await connectPeer(port, host.getBootstrapToken(), "ios-settler");
 
-      // `settled_at` is host-authoritative. A phone on a build that predates the
-      // fix still writes it into its own CRR replica optimistically, and
-      // `terminal_sessions` replicates — so without this filter the phone's row
-      // merges upstream and settles a session the host *rejected*. The guard has
-      // to live here because a CRDT merge never reaches the caller a host-side
-      // check would guard.
+      // The host owns both settlement and agent activity reports. A phone on an
+      // older build can write these columns optimistically into its own CRR
+      // replica; without this filter, those values merge upstream even though
+      // the host did not authorize them. The guard has to live here because a
+      // CRDT merge never reaches the caller a host-side check would guard.
       const requestId = "batch-settle";
       peer.ws.send(encodeSyncEnvelope({
         type: "changeset_batch",
@@ -8727,21 +8728,25 @@ describe("inbound changeset_batch guards", () => {
         payload: {
           batchId: requestId,
           fromDbVersion: 0,
-          toDbVersion: 5,
+          toDbVersion: 7,
           changes: [
-            makeSettleChange("settled_at", 1, 0, "2026-08-10T00:00:00.000Z"),
-            makeSettleChange("settle_override", 2, 1, "settled"),
-            makeSettleChange("settle_source", 3, 2, "user"),
+            makeTerminalSessionChange("settled_at", 1, 0, "2026-08-10T00:00:00.000Z"),
+            makeTerminalSessionChange("settle_override", 2, 1, "settled"),
+            makeTerminalSessionChange("settle_source", 3, 2, "user"),
             // The snooze overlay is NOT host-authoritative — the phone owns its
             // optimistic write there and it must keep replicating.
-            makeSettleChange("snoozed_until", 4, 3, "2026-08-11T00:00:00.000Z"),
-            makeSettleChange("title", 5, 4, "renamed from phone"),
+            makeTerminalSessionChange("snoozed_until", 4, 3, "2026-08-11T00:00:00.000Z"),
+            makeTerminalSessionChange("title", 5, 4, "renamed from phone"),
+            makeTerminalSessionChange("activity_status_json", 6, 5, '{"value":"testing"}'),
+            makeTerminalSessionChange("activity_status_changed_at", 7, 6, "2026-08-10T00:01:00.000Z"),
           ],
         },
       }));
 
       const ack = await waitForEnvelope(peer.envelopes, "changeset_ack", requestId);
-      expect((ack.payload as { ok?: boolean }).ok).toBe(true);
+      const ackPayload = ack.payload as { ok?: boolean; appliedCount?: number };
+      expect(ackPayload.ok).toBe(true);
+      expect(ackPayload.appliedCount).toBe(2);
       expect(applyChanges).toHaveBeenCalledTimes(1);
       const appliedRows = applyChanges.mock.calls[0]?.[0] as CrsqlChangeRow[];
       expect(appliedRows.map((row) => row.cid)).toEqual(["snoozed_until", "title"]);
@@ -8756,7 +8761,7 @@ describe("inbound changeset_batch guards", () => {
     }
   });
 
-  it("acks a batch that was entirely settle columns without applying anything", async () => {
+  it("acks a batch made entirely of host-authoritative session columns", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const applyChanges = vi.fn((changes: CrsqlChangeRow[]) => ({ appliedCount: changes.length }));
     const host = createGuardHost(projectRoot, applyChanges);
@@ -8772,8 +8777,13 @@ describe("inbound changeset_batch guards", () => {
         payload: {
           batchId: requestId,
           fromDbVersion: 0,
-          toDbVersion: 1,
-          changes: [makeSettleChange("settled_at", 1, 0, "2026-08-10T00:00:00.000Z")],
+          toDbVersion: 4,
+          changes: [
+            makeTerminalSessionChange("settled_at", 1, 0, "2026-08-10T00:00:00.000Z"),
+            makeTerminalSessionChange("settle_override", 2, 1, "settled"),
+            makeTerminalSessionChange("activity_status_json", 3, 2, '{"value":"testing"}'),
+            makeTerminalSessionChange("activity_status_changed_at", 4, 3, "2026-08-10T00:01:00.000Z"),
+          ],
         },
       }));
 
@@ -8795,15 +8805,15 @@ describe("inbound changeset_batch guards", () => {
     }
   });
 
-  it("keeps applying settle columns from a paired desktop peer", async () => {
+  it("keeps applying host-authoritative session columns from a paired desktop peer", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const applyChanges = vi.fn((changes: CrsqlChangeRow[]) => ({ appliedCount: changes.length }));
     const host = createGuardHost(projectRoot, applyChanges);
     let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
     try {
       const port = await host.waitUntilListening();
-      // A desktop runs the same `sessionService` chokepoint, so its settle
-      // writes are host-decided too and must keep replicating.
+      // A desktop runs the same `sessionService` chokepoint, so its settlement
+      // and activity writes are host-decided too and must keep replicating.
       peer = await connectPeer(port, host.getBootstrapToken(), "desktop-peer", {
         platform: "macOS",
         deviceType: "desktop",
@@ -8816,18 +8826,26 @@ describe("inbound changeset_batch guards", () => {
         payload: {
           batchId: requestId,
           fromDbVersion: 0,
-          toDbVersion: 1,
-          changes: [makeSettleChange("settled_at", 1, 0, "2026-08-10T00:00:00.000Z")],
+          toDbVersion: 3,
+          changes: [
+            makeTerminalSessionChange("settled_at", 1, 0, "2026-08-10T00:00:00.000Z"),
+            makeTerminalSessionChange("activity_status_json", 2, 1, '{"value":"testing"}'),
+            makeTerminalSessionChange("activity_status_changed_at", 3, 2, "2026-08-10T00:01:00.000Z"),
+          ],
         },
       }));
 
       const ack = await waitForEnvelope(peer.envelopes, "changeset_ack", requestId);
       const ackPayload = ack.payload as { ok?: boolean; appliedCount?: number };
       expect(ackPayload.ok).toBe(true);
-      expect(ackPayload.appliedCount).toBe(1);
+      expect(ackPayload.appliedCount).toBe(3);
       expect(applyChanges).toHaveBeenCalledTimes(1);
       const appliedRows = applyChanges.mock.calls[0]?.[0] as CrsqlChangeRow[];
-      expect(appliedRows.map((row) => row.cid)).toEqual(["settled_at"]);
+      expect(appliedRows.map((row) => row.cid)).toEqual([
+        "settled_at",
+        "activity_status_json",
+        "activity_status_changed_at",
+      ]);
     } finally {
       try {
         peer?.ws.close();
@@ -13739,7 +13757,7 @@ describe("createSyncHostService all-projects roster", () => {
     spawnMock.mockImplementation(() => ({ kill: vi.fn(), once: vi.fn(), unref: vi.fn() }));
   });
 
-  function rosterProject(projectId: string, runningCount: number) {
+  function rosterProject(projectId: string, runningCount: number): SyncRosterProject {
     return {
       projectId,
       rootPath: `/tmp/${projectId}`,
@@ -13754,8 +13772,11 @@ describe("createSyncHostService all-projects roster", () => {
 
   function createRosterHost(
     projectRoot: string,
-    rosterState: { projects: ReturnType<typeof rosterProject>[] },
-    options: { withRosterProvider?: boolean } = {},
+    rosterState: { projects: SyncRosterProject[] },
+    options: {
+      withRosterProvider?: boolean;
+      onSessionChanged?: (listener: (event: TerminalSessionChangedEvent) => void) => () => void;
+    } = {},
   ) {
     const base = createHostArgs(projectRoot, []);
     const args = {
@@ -13773,6 +13794,10 @@ describe("createSyncHostService all-projects roster", () => {
       deviceRegistryService: {
         ...base.deviceRegistryService,
         upsertPeerMetadata: vi.fn(),
+      },
+      sessionService: {
+        ...base.sessionService,
+        ...(options.onSessionChanged ? { onChanged: options.onSessionChanged } : {}),
       },
       projectCatalogProvider: {
         listProjects: vi.fn(async () => ({ projects: [] })),
@@ -13843,6 +13868,70 @@ describe("createSyncHostService all-projects roster", () => {
       expect(changed).toHaveLength(1);
       expect(changed[0]).toMatchObject({ projectId: "project-a", runningCount: 5 });
       expect((delta.payload as { removed?: string[] }).removed).toBeUndefined();
+    } finally {
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("pushes an activity report after a session change without waiting for the safety poll", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const rosterState: { projects: SyncRosterProject[] } = {
+      projects: [rosterProject("project-a", 1)],
+    };
+    const sessionChanges: {
+      listener: ((event: TerminalSessionChangedEvent) => void) | null;
+    } = { listener: null };
+    const unsubscribe = vi.fn();
+    const host = createRosterHost(projectRoot, rosterState, {
+      onSessionChanged: (listener) => {
+        sessionChanges.listener = listener;
+        return unsubscribe;
+      },
+    });
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-roster-activity");
+
+      peer.ws.send(encodeSyncEnvelope({ type: "roster_subscribe", requestId: "roster-activity", payload: {} }));
+      await waitForEnvelope(peer.envelopes, "roster_snapshot", "roster-activity");
+
+      rosterState.projects = [{
+        ...rosterProject("project-a", 1),
+        chats: [{
+          id: "session-1",
+          laneId: "lane-1",
+          status: "running",
+          activityStatus: {
+            value: "testing",
+            source: "agent",
+            updatedAt: "2026-09-23T12:00:00.000Z",
+          },
+          activityStatusChangedAt: "2026-09-23T12:00:00.000Z",
+        }],
+      }];
+      sessionChanges.listener?.({ sessionId: "session-1", reason: "meta-updated" });
+
+      const delta = await waitForValue(
+        () => peer?.envelopes.find((envelope) => envelope.type === "roster_delta"),
+        "roster_delta after session activity update",
+      );
+      expect(delta.payload).toMatchObject({
+        seq: 2,
+        changed: [{
+          projectId: "project-a",
+          chats: [{ id: "session-1", activityStatus: { value: "testing" } }],
+        }],
+      });
+
+      await host.dispose();
+      expect(unsubscribe).toHaveBeenCalledTimes(1);
     } finally {
       try {
         peer?.ws.close();

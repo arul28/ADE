@@ -2799,14 +2799,21 @@ The iOS pieces:
 
 - `apps/ios/ADE/Resources/DatabaseBootstrap.sql` declares the five new nullable
   `terminal_sessions` columns (`settle_override`, `snoozed_until`,
-  `snoozed_at`, `woke_at`, `woke_reason`) for fresh installs.
+  `snoozed_at`, `woke_at`, `woke_reason`) for fresh installs. The separate
+  `activity_status_json` and `activity_status_changed_at` columns carry the
+  host-authored Work-card activity detail.
 - `apps/ios/ADE/Services/Database.swift` carries the matching `ensureColumn`
   migrations for existing installs, plus the columns threaded through the
-  session upsert bind indices, the row struct, and the session read queries.
+  session upsert bind indices, the row struct, and the session read queries,
+  including the two activity-report columns.
 - `apps/ios/ADE/Models/RemoteModels.swift` and `RemoteRosterModels.swift` decode
   `settleOverride`, `snoozedUntil`, `snoozedAt`, `wokeAt`, and `wokeReason` as
   optional `String` fields through `decodeIfPresent`, and include them in
-  equality so a lifecycle-only change still redraws the row. Roster chats expose
+  equality so a lifecycle-only change still redraws the row. Session summaries
+  also decode `activityStatus` and `activityStatusChangedAt`; chat summaries
+  carry `currentTurnStartedAt` for the Work-row timer. Roster chats merge
+  activity reports by their own timestamp, separately from lifecycle freshness.
+  Roster chats expose
   `countsTowardRunning` (live running, not snoozed) and
   `applyLocalSnoozeOverlay`, because snooze does not bump `lastActivityAt` and a
   fresher remote row would otherwise wipe the overlay the phone just wrote.
@@ -2815,8 +2822,10 @@ The iOS pieces:
   is `idle`, and both `idle` and `ended` strings land on `idle` rather than
   `done` so week-old roster history does not paint emerald.
 - `apps/ios/ADE/Services/SyncService.swift` holds the `session.*` remote-command
-  callers. The phone never decides a lifecycle value, so these commands are the
-  mechanism, and the connect-time descriptor list gates the affordances.
+  callers. The phone does not author activity-report columns; the host filters
+  phone-authored copies and sends normalized reports through CRR. Session
+  commands remain the lifecycle mutation path, and the connect-time descriptor
+  list gates the affordances.
 - **The settle columns are host-authoritative and the phone never writes them.**
   `settled_at`, `settle_override`, and `settle_source` are decided by the host's
   `sessionService`, which is the only place that can weigh a settle against live
@@ -2838,6 +2847,9 @@ The iOS pieces:
   from inbound phone changesets (`syncHostService`), and such a phone self-heals
   on the next `refreshWorkSessions`. See
   [settle-teardown design §3c-i](../terminals-and-sessions/settle-teardown-design.md).
+  The same phone-only inbound changeset filter protects `activity_status_json`
+  and `activity_status_changed_at`: these reports are written and timestamped
+  by the host, then replicated to the phone for display.
 - **Attention clears get the same treatment, on a shorter fuse.**
   `PendingAttentionClearStates.swift` is the second local, non-persisted overlay,
   covering the three host-authoritative columns the needs-you tier reads
@@ -2972,6 +2984,16 @@ supposed to mean *your move*, so the "Needs you" badge stopped registering.
 2. Title plus the lane's PR badge (`WorkLanePrIndicator` / `LanePrTag`).
 3. An italic preview line plus the provider mark.
 
+The status slot shows one effective label. A structured provider mode may show
+**Planning** for the live turn; a current agent activity report can refine a
+running row to **Planning**, **Implementing**, **Testing**, **Reviewing**,
+**Debugging**, or **Monitoring**. Pending input keeps **Needs you** in the slot
+ahead of an activity detail. The report refines the card presentation only: it
+does not change the session phase, Work-board column, or grouped Activity count.
+The phone does not generate these reports; it displays the host-authoritative
+value. Provider-specific planning signals and activity-report eligibility are
+listed in [the session provider signal boundaries](../terminals-and-sessions/README.md#provider-signal-boundaries).
+
 A nested same-lane subagent is a compact one-line card: identicon, title, then
 the provider mark on the trailing edge (same seat as a full card), and
 shout-only status words (Needs you / Failed). The **N subagents** drawer
@@ -3038,11 +3060,13 @@ Known limits, all deliberate:
   `spawnKind`, so the by-lane Work list nests same-lane subagent chats under
   the parent the way desktop does (`WorkSpawnNesting.swift`). Nested compact
   rows put the identicon and title on the leading edge and the provider mark
-  on the trailing edge. It still omits `branchRef`,
-  `currentTurnStartedAt`, `nextWakeAt`, and `lastActivityAt`, so desktop's
-  branch chip, machine tower glyph, grid indicator, and `nextWakeAt`-driven
-  "Waiting" status have no iOS equivalent, and the elapsed ticker anchors on
-  activity time rather than turn start. `parentIdentityKey` is present.
+  on the trailing edge. The terminal summary still omits `branchRef` and
+  `nextWakeAt`, so desktop's branch chip, machine tower glyph, grid indicator,
+  and `nextWakeAt`-driven **Waiting** status have no iOS equivalent. It includes
+  `lastActivityAt`, which drives row freshness and sorting. Chat summaries carry
+  `currentTurnStartedAt` for foreground chat timers; tracked CLI rows have no
+  such turn anchor and fall back to an eligible activity report's timestamp,
+  then the row's activity timestamp. `parentIdentityKey` is also present.
 - Against a host that predates `dismissPendingInput` on the bulk action, the
   flag is ignored: the settle reports success and the row stays "Needs you".
 

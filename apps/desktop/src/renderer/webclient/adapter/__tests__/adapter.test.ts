@@ -1156,7 +1156,12 @@ describe("createAdeWebAdapter", () => {
       "chat.getChatEventHistory",
     ]);
     fake.commandResults.set("lanes.list", [{ id: "lane-1" }]);
-    fake.commandResults.set("work.listSessions", [{ id: "session-1", ptyId: "pty-1" }]);
+    const activityStatus = {
+      value: "testing",
+      source: "agent",
+      updatedAt: "2026-09-23T08:00:00.000Z",
+    };
+    fake.commandResults.set("work.listSessions", [{ id: "session-1", ptyId: "pty-1", activityStatus }]);
     fake.commandResults.set("prs.list", [{ id: "pr-1" }]);
     fake.commandResults.set("git.getChanges", { files: [{ path: "a.ts" }] });
     fake.commandResults.set("chat.getChatEventHistory", {
@@ -1171,7 +1176,11 @@ describe("createAdeWebAdapter", () => {
     adapter.bindProject(project, "project-1");
 
     await expect(adapter.ade.lanes.list()).resolves.toEqual([{ id: "lane-1" }]);
-    await expect(adapter.ade.sessions.list()).resolves.toEqual([{ id: "session-1", ptyId: "pty-1" }]);
+    await expect(adapter.ade.sessions.list()).resolves.toEqual([{
+      id: "session-1",
+      ptyId: "pty-1",
+      activityStatus,
+    }]);
     await expect(adapter.ade.prs.listAll()).resolves.toEqual([{ id: "pr-1" }]);
     await expect(adapter.ade.diff.getChanges({ laneId: "lane-1" } as never)).resolves.toEqual({
       files: [{ path: "a.ts" }],

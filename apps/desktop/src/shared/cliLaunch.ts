@@ -27,7 +27,12 @@ import {
   getAgentSkillRootCandidates,
   joinAdeAgentSkillRoots,
 } from "./agentSkillRoots";
-import { buildAdeCliAgentGuidance, buildAdeCliInlineGuidance } from "./adeCliGuidance";
+import {
+  buildAdeCliAgentGuidance,
+  buildAdeCliInlineGuidance,
+  buildAdePosixTrackedCliActivityGuidance,
+  buildAdeWindowsTrackedCliActivityGuidance,
+} from "./adeCliGuidance";
 import { isProviderSlashCommandInput } from "./chatSlashCommands";
 import { resolveClaudeCliModelAlias } from "./claudeCliModels";
 import { grokSupervisionEnv } from "./grokSupervision";
@@ -696,7 +701,10 @@ export function codexComputerUseMcpFlags(
   ];
 }
 
-function workTabCliPreamblePrompt(skillRoots: readonly string[], hasInitialPrompt = false): string {
+function workTabCliPreamblePrompt(
+  skillRoots: readonly string[],
+  hasInitialPrompt = false,
+): string {
   const launchInstruction = hasInitialPrompt
     ? [
         "ADE session guidance. Treat this as operating guidance for the CLI session",
@@ -866,6 +874,8 @@ export function buildTrackedCliLaunchCommand(args: {
    * alias rewrite.
    */
   preset?: TrackedCliPresetLaunch | null;
+  /** False when this runtime has no RPC endpoint that can accept agent reports. */
+  sessionActivityReportingEnabled?: boolean;
 }): TrackedCliLaunchCommand {
   const permissionMode = args.permissionMode ?? "default";
   validateLaunchProfilePermissionMode(args.provider, permissionMode);
@@ -887,6 +897,13 @@ export function buildTrackedCliLaunchCommand(args: {
   const modelForLaunch = passthroughModelId
     ? normalizeCliFlagValue(args.model)
     : args.model;
+  const activityGuidance = buildTrackedCliSessionActivityGuidance({
+    provider: args.provider,
+    permissionMode,
+    droidPermissionMode: args.droidPermissionMode,
+    hasInitialPrompt: Boolean(initialPrompt),
+    sessionActivityReportingEnabled: args.sessionActivityReportingEnabled,
+  });
 
   if (args.provider === "claude") {
     const commandArgs: string[] = [];
@@ -902,7 +919,9 @@ export function buildTrackedCliLaunchCommand(args: {
     }
     commandArgs.push(...claudeRuntimeEffortFlags(args.reasoningEffort));
     commandArgs.push(...claudeSessionSettingsFlags(args.fastMode, args.reasoningEffort));
-    const guidance = buildAdeCliAgentGuidance(skillRoots);
+    const guidance = [buildAdeCliAgentGuidance(skillRoots), activityGuidance]
+      .filter((part): part is string => Boolean(part))
+      .join("\n\n");
     commandArgs.push("--append-system-prompt", guidance);
     commandArgs.push(...permissionModeToClaudeFlag(permissionMode));
     // Windows keeps the user's prompt off argv. ADE launches the bare word
@@ -944,7 +963,7 @@ export function buildTrackedCliLaunchCommand(args: {
     const codexModel = passthroughModelId
       ? normalizeCliFlagValue(args.model)
       : resolveCodexCliModelForLaunch(args.model);
-    const initialInput = workTabCliPrompt(initialPrompt, skillRoots);
+    const initialInput = workTabCliPrompt(initialPrompt, skillRoots, activityGuidance);
     const commandArgs: string[] = [
       "--no-alt-screen",
       ...modelToCliFlag(codexModel),
@@ -980,7 +999,9 @@ export function buildTrackedCliLaunchCommand(args: {
       ...permissionModeToCursorFlags(permissionMode),
       ...modelToCliFlag(cursorModel),
     ];
-    const initialInput = initialPrompt ? workTabCliPrompt(initialPrompt, skillRoots) : null;
+    const initialInput = initialPrompt
+      ? workTabCliPrompt(initialPrompt, skillRoots, activityGuidance)
+      : null;
     return {
       command: "cursor-agent",
       args: commandArgs,
@@ -991,7 +1012,7 @@ export function buildTrackedCliLaunchCommand(args: {
   }
 
   if (args.provider === "droid") {
-    const prompt = workTabCliPrompt(initialPrompt, skillRoots);
+    const prompt = workTabCliPrompt(initialPrompt, skillRoots, activityGuidance);
     if (currentPlatform() === "win32") {
       // Windows Droid has to run through `powershell.exe -Command <line>` so the
       // settings JSON can be written to a temp file before droid starts, and
@@ -1039,8 +1060,9 @@ export function buildTrackedCliLaunchCommand(args: {
   if (args.provider === "pi") {
     const guidance = [
       buildAdeCliAgentGuidance(skillRoots),
+      activityGuidance,
       `ADE permission policy for this Pi session: ${permissionMode}. Pi has no supported native ADE permission flag, so follow this policy and the ADE guidance without bypassing it.`,
-    ].join("\n");
+    ].filter((part): part is string => Boolean(part)).join("\n\n");
     const commandArgs = [
       ...modelToCliFlag(resolvePiCliModelForLaunch(modelForLaunch)),
       ...piThinkingFlags(args.reasoningEffort),
@@ -1203,6 +1225,60 @@ export function buildTrackedCliLaunchCommand(args: {
     startupCommand: opencode.startupCommand,
     ...(opencodeEnv ? { env: opencodeEnv } : {}),
   };
+}
+
+/**
+ * Expose agent-reported detail only when this CLI launch mode has an ADE
+ * guidance channel and a command tool ADE can rely on. The PTY host supplies
+ * ADE_CLI_PATH and ADE_CHAT_SESSION_ID for chat-scoped commands, plus
+ * ADE_ACTIVITY_SESSION_ID for activity reports, after this prompt is built.
+ */
+export function buildTrackedCliSessionActivityGuidance(args: {
+  provider: CliProvider;
+  permissionMode: AgentChatPermissionMode | null | undefined;
+  droidPermissionMode?: AgentChatDroidPermissionMode | null;
+  hasInitialPrompt?: boolean;
+  sessionActivityReportingEnabled?: boolean;
+}): string | null {
+  if (args.sessionActivityReportingEnabled === false) return null;
+  const mode = args.permissionMode;
+  if (!mode || mode === "plan") return null;
+
+  let supported = false;
+  switch (args.provider) {
+    case "claude":
+      // The shell fallback intentionally removes --append-system-prompt. Do
+      // not promise activity reporting until that launch path can carry it.
+      supported = false;
+      break;
+    case "codex":
+    case "opencode":
+      // config-toml deliberately delegates tool permission to external config.
+      supported = mode !== "config-toml";
+      break;
+    case "cursor":
+      supported = args.hasInitialPrompt === true
+        && (mode === "default" || mode === "edit" || mode === "full-auto");
+      break;
+    case "droid": {
+      const droidMode = args.droidPermissionMode ?? droidPermissionModeFromLegacyPermissionMode(mode);
+      supported = droidMode === "auto-low" || droidMode === "auto-medium" || droidMode === "auto-high";
+      break;
+    }
+    case "pi":
+      // Pi's tracked CLI allowlist grants Bash only in full-auto mode.
+      supported = mode === "full-auto";
+      break;
+    default:
+      // Qwen, Kimi, Grok, and Copilot do not yet have a verified tracked-CLI
+      // path that combines ADE's system guidance, scoped CLI access, and shell.
+      supported = false;
+  }
+  if (!supported) return null;
+
+  return currentPlatform() === "win32"
+    ? buildAdeWindowsTrackedCliActivityGuidance()
+    : buildAdePosixTrackedCliActivityGuidance();
 }
 
 /**
@@ -1370,7 +1446,7 @@ function claudeSessionSettingsFlags(
 function workTabCliPrompt(
   initialPrompt: string | null,
   skillRoots: readonly string[],
-  additionalGuidance?: string,
+  additionalGuidance?: string | null,
 ): string {
   const preamble = workTabCliPreamblePrompt(skillRoots, Boolean(initialPrompt));
   const withAdditionalGuidance = additionalGuidance

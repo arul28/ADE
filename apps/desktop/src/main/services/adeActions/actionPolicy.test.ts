@@ -167,6 +167,7 @@ describe("isAllowedAdeAction", () => {
 
   it("exposes caller lifecycle writes through the runtime session surface", () => {
     expect(isAllowedAdeAction("session", "requestSessionAttention")).toBe(true);
+    expect(isAllowedAdeAction("session", "setSessionActivity")).toBe(true);
     expect(isAllowedAdeAction("session", "setSessionStatusNote")).toBe(true);
     expect(isAllowedAdeAction("session", "settleSession")).toBe(true);
     // The residue read path. It was added to the CTO-only list but NOT to the

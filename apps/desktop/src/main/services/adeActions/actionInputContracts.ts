@@ -1,6 +1,9 @@
 import type { CtoVoiceAction } from "../../../shared/types/ctoVoice";
+import { SESSION_ACTIVITY_VALUES } from "../../../shared/types/sessions";
 import type { AdeActionDomain } from "./domains";
 import { ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION } from "../../../shared/types/account";
+
+const sessionActivityValueInput = SESSION_ACTIVITY_VALUES.map((value) => `"${value}"`).join(" | ");
 
 /**
  * The documented input shape for every action the CTO's curated tools reach.
@@ -486,6 +489,14 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
   },
   session: {
+    setSessionActivity: {
+      description:
+        "Agent callers must use an ADE-bound tracked session. The target may be the caller's chat or a tracked terminal owned by that chat; "
+        + "`--session` cannot target another session. Report one fixed activity label for the current turn. This is a detail inside the existing parent phase, "
+        + "not a board-state change; ADE stamps the source and update time, and null clears the report.",
+      input: `object { sessionId: string, value: ${sessionActivityValueInput} | null }`,
+      example: "ade actions run session.setSessionActivity --input-json '{\"sessionId\":\"chat-123\",\"value\":\"testing\"}' --text",
+    },
     moveOnBoard: {
       description:
         "Move one chat between Work-board columns. Applies the lifecycle write and stages a host-authored message the agent reacts to; "

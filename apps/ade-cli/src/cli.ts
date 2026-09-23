@@ -110,6 +110,11 @@ import {
   type ChatTurnStatusSnapshot,
 } from "../../desktop/src/shared/chatTurnStatus";
 import type { TerminalSessionSummary } from "../../desktop/src/shared/types/sessions";
+import { SESSION_ACTIVITY_VALUES } from "../../desktop/src/shared/types/sessions";
+import {
+  isSessionActivityValue,
+  SESSION_ACTIVITY_SESSION_ID_ENV,
+} from "../../desktop/src/shared/sessionActivity";
 import {
   formatWorkingDuration,
   sessionElapsedLabel,
@@ -408,6 +413,7 @@ type FormatterId =
   | "pr-checks"
   | "pr-comments"
   | "chat-list"
+  | "chat-summary"
   | "chat-read"
   | "chat-status"
   | "chat-models"
@@ -2892,7 +2898,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat launch-status <launch>               One launch's stages (exit 1 when unknown or expired)
     $ ade chat launch-cancel <launch>               Cancel a launch before its agent starts; deletes its chat, lane, and branch
     $ ade chat send <session> --text "next step"    Send a message; steers automatically if the turn is active
-    $ ade chat show <session>                       Session summary (title, provider, model)
+    $ ade chat show <session>                       Session summary (title, provider, model, activity report)
     $ ade chat status <session>                     Live turn status: RUNNING / BLOCKED / IDLE
                                                     Exit 0 running, 1 idle, 2 blocked. Use --text.
                                                     Adds a 'resume' line while a usage limit is live.
@@ -2901,6 +2907,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat continue-on-account <session>        Continue a usage-limited chat on another account that still has room
                                                     Exit 1 when no other account can take it.
     $ ade chat note "testing desktop auth fallback" # Update the Work status line (aim for ${STATUS_NOTE_GUIDELINE_WORDS} words or fewer; truncated past ${MAX_STATUS_NOTE_CHARACTERS} characters)
+    $ ade chat activity testing                      Report a fixed activity label for this turn; use clear to remove it
+                                                    Values: ${SESSION_ACTIVITY_VALUES.join(" | ")}. Agent callers need a bound ADE Work chat; --session may target that chat or a tracked terminal it owns. CTO callers may target sessions explicitly.
     $ ade chat ask "Which account should I use?"    Escalate a blocking question to the user
                                                     'note' and 'ask' default to the caller and accept --session <id>.
                                                     'chat settle' / 'chat unsettle' were removed: only the user (or a
@@ -9243,7 +9251,7 @@ function buildChatPlan(args: string[]): CliPlan {
     : null;
   // `ask` / `note` take free text, not a session positional — they default to
   // the caller's own $ADE_CHAT_SESSION_ID and accept --session <id>.
-  const selfLifecycleSub = sub === "ask" || sub === "note"
+  const selfLifecycleSub = sub === "ask" || sub === "note" || sub === "activity"
     || sub === "generate-names" || sub === "generate_names" || sub === "names";
   // New-lane launches take a prompt (`launch`) or a launch id (`launch-status`,
   // `launch-cancel`), never a session positional; they read their own.
@@ -9252,6 +9260,7 @@ function buildChatPlan(args: string[]): CliPlan {
   const explicitSessionId = readValue(args, ["--session", "--session-id"]);
   const sessionId =
     explicitSessionId ??
+    (sub === "activity" ? process.env[SESSION_ACTIVITY_SESSION_ID_ENV]?.trim() || null : null) ??
     (sub !== "create" && sub !== "list" && !linearSessionSub && !selfLifecycleSub && !launchSub
       ? firstStandalonePositional(args)
       : null);
@@ -9290,6 +9299,32 @@ function buildChatPlan(args: string[]): CliPlan {
           "session",
           "setSessionStatusNote",
           withSession({ note }),
+        ),
+      ],
+    };
+  }
+  if (sub === "activity") {
+    const rawValue = firstStandalonePositional(args);
+    const normalizedValue = rawValue?.trim().toLowerCase();
+    if (!normalizedValue) {
+      throw new CliUsageError(
+        `chat activity requires one value: ${[...SESSION_ACTIVITY_VALUES, "clear"].join(" | ")}.`,
+      );
+    }
+    if (normalizedValue !== "clear" && !isSessionActivityValue(normalizedValue)) {
+      throw new CliUsageError(
+        `Unsupported chat activity '${rawValue}'. Use: ${[...SESSION_ACTIVITY_VALUES, "clear"].join(" | ")}.`,
+      );
+    }
+    return {
+      kind: "execute",
+      label: "chat activity",
+      steps: [
+        actionStep(
+          "result",
+          "session",
+          "setSessionActivity",
+          withSession({ value: normalizedValue === "clear" ? null : normalizedValue }),
         ),
       ],
     };
@@ -9353,6 +9388,7 @@ function buildChatPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "chat show",
+      formatter: "chat-summary",
       steps: [
         actionArgsListStep("result", "chat", "getSessionSummary", [
           requireValue(sessionId, "sessionId"),
@@ -25013,6 +25049,24 @@ function formatChatList(value: unknown): string {
   );
 }
 
+function formatChatSummary(value: unknown): string {
+  const record = isRecord(value) ? value : {};
+  const activity = isRecord(record.activityStatus) ? record.activityStatus : null;
+  const rawActivity = asString(activity?.value);
+  const activityLabel = rawActivity
+    ? `${rawActivity.slice(0, 1).toUpperCase()}${rawActivity.slice(1)}`
+    : null;
+  return renderKeyValues("ADE chat session", [
+    ["session", record.sessionId],
+    ["title", record.title],
+    ["provider", record.provider],
+    ["model", record.model],
+    ["collaboration mode", record.codexEffectiveCollaborationMode],
+    ["activity", activityLabel],
+    ["reported at", activity?.updatedAt],
+  ]);
+}
+
 /**
  * The runtime provider a model family belongs to.
  *
@@ -26928,6 +26982,8 @@ function formatTextOutput(
       return formatPrComments(value);
     case "chat-list":
       return formatChatList(value);
+    case "chat-summary":
+      return formatChatSummary(value);
     case "chat-models":
       return formatChatModels(value);
     case "chat-status":
@@ -27103,6 +27159,7 @@ function inferFormatter(
   if (label === "pr checks") return "pr-checks";
   if (label === "pr comments") return "pr-comments";
   if (label === "chat list") return "chat-list";
+  if (label === "chat show") return "chat-summary";
   if (label === "chat models" || label === "personal chat models") return "chat-models";
   if (label === "chat status") return "chat-status";
   if (label === "chat resume-now") return "chat-resume-now";

@@ -52,7 +52,8 @@ public func activityStatusShoutsLabel(glyph: ActivityGlyph?, tone: ActivityTone)
 ///
 /// Shape carries the meaning as far as colour does — the five read apart at
 /// 9pt on a lock screen and under any colour-vision deficiency, which is why
-/// none of them is a bare dot in a different hue.
+/// none of them is a bare dot in a different hue. The activity-detail glyphs
+/// refine Work-row capsules only; they do not change the coarser grouped counts.
 ///
 /// **What is shared and what is not.** The *glyph identity* is the contract
 /// (`ACTIVITY_STATE_GLYPHS` in `renderer/components/activity/activityPresentation.ts`);
@@ -65,6 +66,11 @@ public func activityStatusShoutsLabel(glyph: ActivityGlyph?, tone: ActivityTone)
 public enum ActivityGlyph: String, Codable, Hashable, Sendable {
     case working
     case planning
+    case implementing
+    case testing
+    case reviewing
+    case debugging
+    case monitoring
     case waiting
     case needsYou
     case done
@@ -83,6 +89,11 @@ public enum ActivityGlyph: String, Codable, Hashable, Sendable {
         // Same notepad the notch strip uses; `list.bullet.rectangle` lost its
         // rules below ~10pt and read as a smear.
         case .planning: return "note.text"
+        case .implementing: return "chevron.left.forwardslash.chevron.right"
+        case .testing: return "flask.fill"
+        case .reviewing: return "magnifyingglass"
+        case .debugging: return "ladybug.fill"
+        case .monitoring: return "eye.fill"
         case .waiting: return "hourglass"
         // A filled dot, not a bell. The bell said "notification"; the row is
         // not a notification, it is a state, and the strip/island read it

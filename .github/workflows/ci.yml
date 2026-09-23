@@ -626,6 +626,12 @@ jobs:
       - name: Test Windows desktop, SQLite, and capability contracts
         run: cd apps/desktop && npx vitest run src/main/packagedRuntimeSmoke.test.ts src/main/services/computerUse/localComputerUse.test.ts src/renderer/lib/platform.test.ts
 
+      # These path-equivalence assertions skip on Linux because case-only path
+      # changes are meaningful there. Run them on Windows so the worker pools'
+      # case-insensitive path reuse is exercised by a native filesystem target.
+      - name: Test Windows SDK worker activity path contracts
+        run: cd apps/desktop && npx vitest run src/main/services/chat/cursorSdkPool.test.ts src/main/services/chat/piSdkPool.test.ts
+
       # The suites docs/development/windows-port-lane.md names as the Windows
       # validation set. Before this step the intersection with this job was
       # empty, so the documented gate was never actually run on Windows.

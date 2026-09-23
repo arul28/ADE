@@ -97,6 +97,7 @@ export {
 
 export type {
   AdeProvider,
+  AgentChatCodexCollaborationMode,
   AgentChatEvent,
   AgentChatEventEnvelope,
   AgentChatFileRef,

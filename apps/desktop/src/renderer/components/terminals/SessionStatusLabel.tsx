@@ -1,10 +1,15 @@
 import React from "react";
 import {
   Alarm,
+  Bug,
   CheckCircle,
   Circle,
   CircleDashed,
   Clock,
+  Code,
+  Eye,
+  Flask,
+  MagnifyingGlass,
   NotePencil,
   Moon,
 } from "@phosphor-icons/react";
@@ -25,6 +30,16 @@ function StatusGlyph({ glyph }: { glyph: SessionStatusGlyph }) {
       return <CircleDashed size={13} weight="bold" aria-hidden className="shrink-0" />;
     case "planning":
       return <NotePencil size={13} weight="bold" aria-hidden className="shrink-0" />;
+    case "implementing":
+      return <Code size={13} weight="bold" aria-hidden className="shrink-0" />;
+    case "testing":
+      return <Flask size={13} weight="bold" aria-hidden className="shrink-0" />;
+    case "reviewing":
+      return <MagnifyingGlass size={13} weight="bold" aria-hidden className="shrink-0" />;
+    case "debugging":
+      return <Bug size={13} weight="bold" aria-hidden className="shrink-0" />;
+    case "monitoring":
+      return <Eye size={13} weight="bold" aria-hidden className="shrink-0" />;
     case "waiting":
       return <Alarm size={13} weight="regular" aria-hidden className="shrink-0" />;
     case "done":
@@ -123,6 +138,13 @@ export function SessionStatusLabel({
       ? `Next run ${new Date(wakeAt).toLocaleString()}`
       : undefined;
   }, [futureAt, waiting]);
+  const activityReportTitle = React.useMemo(() => {
+    if (presentation?.activitySource !== "agent" || !presentation.activityUpdatedAt) return undefined;
+    const updatedAt = Date.parse(presentation.activityUpdatedAt);
+    return Number.isFinite(updatedAt)
+      ? `Agent-reported activity · updated ${new Date(updatedAt).toLocaleString()}`
+      : "Agent-reported activity";
+  }, [presentation?.activitySource, presentation?.activityUpdatedAt]);
 
   if (!presentation) {
     return (
@@ -138,6 +160,7 @@ export function SessionStatusLabel({
     <span
       data-session-status={presentation.label}
       data-session-tone={presentation.tone}
+      data-session-status-source={presentation.activitySource}
       className={cn(
         "inline-flex items-center gap-1 font-medium",
         compact ? "text-[10px]" : "text-[11px]",
@@ -147,6 +170,7 @@ export function SessionStatusLabel({
           && presentation.showsElapsed
           && "motion-safe:animate-[ade-session-working-breathe_2600ms_ease-in-out_infinite]",
       )}
+      title={activityReportTitle ?? exactWakeTitle}
     >
       <StatusGlyph glyph={presentation.glyph} />
       {/* Keep the ticker outside role=status so screen readers do not announce

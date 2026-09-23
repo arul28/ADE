@@ -375,8 +375,31 @@ runtime state changes, when the preview changes more than 1.2 s after
 the previous signal, or as a 10 s heartbeat. Runtime states:
 `running`, `waiting-input`, `idle`, `exited`, `killed`. `idle` is
 inferred from output silence. OSC 133 `B`/`C` markers may confirm running, but
-prompt markers never infer `waiting-input`; only explicit or
-provider-structured lifecycle requests raise attention.
+prompt markers and other painted TUI text never infer `waiting-input` or
+Planning. For tracked CLIs, an explicit ADE request such as `ade chat ask`
+sets waiting-input; structured provider input is handled by the provider
+adapter, with its own provenance.
+
+Agent activity detail is a separate typed report (`planning`, `implementing`,
+`testing`, `reviewing`, `debugging`, or `monitoring`), set through
+`ade chat activity` only when session guidance confirms that provider can
+invoke the runtime-resolved ADE CLI against this runtime's exact RPC socket; an
+executable path alone is not enough, and embedded runtimes omit the guidance.
+It refines a running card's single status label, never changes the parent
+lifecycle phase, and clears when a new user turn is accepted.
+Tracked CLI guidance is enabled for Codex and OpenCode outside Plan
+and external `config-toml`, write-capable non-AGI Droid, Pi full-auto, and
+Cursor launches with an initial prompt. It calls the host-resolved
+`ADE_CLI_PATH` and scopes activity through `ADE_ACTIVITY_SESSION_ID`, the PTY
+row id. `ADE_CHAT_SESSION_ID` continues to identify the owning chat for other
+commands. Windows guidance provides PowerShell and cmd command forms plus a
+PowerShell bridge for Git Bash, and tells the agent to use only the form
+matching its command shell; when none matches, it leaves activity unchanged. Claude tracked CLI guidance stays
+omitted because its shell fallback drops the activity instruction; blank Cursor
+launches remain omitted. Other Pi
+modes and Qwen, Kimi, Grok, and Copilot tracked CLIs remain omitted until their
+command and prompt paths are verified together. PTY output is not scanned for
+these labels.
 
 ### Process tree termination
 

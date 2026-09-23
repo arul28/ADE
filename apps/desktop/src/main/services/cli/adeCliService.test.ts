@@ -57,6 +57,104 @@ afterEach(() => {
 });
 
 describe("createAdeCliService", () => {
+  it("does not trust an inherited ADE_CLI_PATH when ADE resolved no command", () => {
+    const root = makeTempRoot();
+    const untrustedCommand = path.join(root, "untrusted-ade");
+    writeExecutable(untrustedCommand);
+    const service = createAdeCliService({
+      isPackaged: true,
+      resourcesPath: path.join(root, "empty-resources"),
+      userDataPath: path.join(root, "user-data"),
+      appExecutablePath: path.join(root, "ADE.app", "Contents", "MacOS", "ADE"),
+      logger: logger() as any,
+    });
+
+    expect(service.resolved.commandPath).toBeNull();
+    expect(service.agentEnv({ ADE_CLI_PATH: untrustedCommand }).ADE_CLI_PATH).toBeUndefined();
+  });
+
+  it("clears stale CLI resolver variables and PATH fallback when no bundled CLI resolves", () => {
+    const root = makeTempRoot();
+    const inheritedBinDir = path.join(root, "old-ade", "bin");
+    const inheritedEntryPath = path.join(root, "old-ade", "cli.cjs");
+    const fallbackPath = path.join(root, "system-bin");
+    const inheritedPosixCommandPath = path.join(inheritedBinDir, "ade");
+    const inheritedWindowsCommandPath = path.join(inheritedBinDir, "ade.cmd");
+    writeExecutable(inheritedPosixCommandPath);
+    writeExecutable(inheritedWindowsCommandPath, "@echo off\r\nexit /b 0\r\n");
+    fs.mkdirSync(path.dirname(inheritedEntryPath), { recursive: true });
+    fs.writeFileSync(inheritedEntryPath, "console.log('old ade')\n");
+    fs.mkdirSync(fallbackPath, { recursive: true });
+    expect(fs.existsSync(inheritedPosixCommandPath)).toBe(true);
+    expect(fs.existsSync(inheritedWindowsCommandPath)).toBe(true);
+
+    const previousPathEntries = Object.entries(process.env)
+      .filter(([key]) => key.toLowerCase() === "path");
+    const previousCliEnv = new Map(
+      ["ADE_CLI_PATH", "ADE_CLI_BIN_DIR", "ADE_CLI_ENTRY_PATH"]
+        .map((key) => [key, process.env[key]] as const),
+    );
+    const platforms: NodeJS.Platform[] = originalPlatform === "win32"
+      ? ["win32"]
+      : [originalPlatform, "win32"];
+
+    try {
+      for (const platform of platforms) {
+        setPlatform(platform);
+        const envPathKey = platform === "win32" ? "Path" : "PATH";
+        const delimiter = platform === "win32" ? ";" : path.delimiter;
+        const inheritedPath = `${inheritedBinDir}${delimiter}${fallbackPath}`;
+        const inheritedCommandPath = platform === "win32"
+          ? inheritedWindowsCommandPath
+          : inheritedPosixCommandPath;
+        const service = createAdeCliService({
+          isPackaged: true,
+          resourcesPath: path.join(root, `missing-resources-${platform}`),
+          userDataPath: path.join(root, "user-data"),
+          appExecutablePath: path.join(root, "ADE.app", "Contents", "MacOS", "ADE"),
+          logger: logger() as any,
+        });
+        expect(service.resolved.commandPath).toBeNull();
+
+        const inheritedEnv: NodeJS.ProcessEnv = {
+          [envPathKey]: inheritedPath,
+          ADE_CLI_PATH: inheritedCommandPath,
+          ADE_CLI_BIN_DIR: inheritedBinDir,
+          ADE_CLI_ENTRY_PATH: inheritedEntryPath,
+        };
+        const agentEnv = service.agentEnv(inheritedEnv);
+        expect(agentEnv.ADE_CLI_PATH).toBeUndefined();
+        expect(agentEnv.ADE_CLI_BIN_DIR).toBeUndefined();
+        expect(agentEnv.ADE_CLI_ENTRY_PATH).toBeUndefined();
+        expect(agentEnv[envPathKey]?.split(delimiter)).toEqual([fallbackPath]);
+
+        for (const key of Object.keys(process.env)) {
+          if (key.toLowerCase() === "path") delete process.env[key];
+        }
+        process.env[envPathKey] = inheritedPath;
+        process.env.ADE_CLI_PATH = inheritedCommandPath;
+        process.env.ADE_CLI_BIN_DIR = inheritedBinDir;
+        process.env.ADE_CLI_ENTRY_PATH = inheritedEntryPath;
+
+        service.applyToProcessEnv();
+        expect(process.env.ADE_CLI_PATH).toBeUndefined();
+        expect(process.env.ADE_CLI_BIN_DIR).toBeUndefined();
+        expect(process.env.ADE_CLI_ENTRY_PATH).toBeUndefined();
+        expect(process.env[envPathKey]?.split(delimiter)).toEqual([fallbackPath]);
+      }
+    } finally {
+      for (const key of Object.keys(process.env)) {
+        if (key.toLowerCase() === "path") delete process.env[key];
+      }
+      for (const [key, value] of previousPathEntries) process.env[key] = value;
+      for (const [key, value] of previousCliEnv) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      setPlatform(originalPlatform);
+    }
+  });
+
   it("uses packaged ade-cli/bin when the bundled wrapper exists", () => {
     const root = makeTempRoot();
     const resourcesPath = path.join(root, "Resources");

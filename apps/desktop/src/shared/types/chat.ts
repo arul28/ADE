@@ -11,7 +11,7 @@ import type { FileDiff } from "./git";
 import type { LaneGitHubIssue, LaneLinearIssue, SessionLinearIssueLink } from "./lanes";
 import type { AdeRecoveryErrorCode } from "./recovery";
 import type { SessionBackgroundWork } from "../sessionCanonicalState";
-import type { RuntimeProcessSummary } from "./sessions";
+import type { RuntimeProcessSummary, SessionActivityReport } from "./sessions";
 import type { SubagentCapability } from "../subagentCapabilities";
 import { providerDisplayLabel } from "../pendingInputLabels";
 import type { AgentChatStopMode as CanonicalAgentChatStopMode } from "../chatStopModes";
@@ -252,6 +252,7 @@ export type AgentChatReloadClaudePluginsResult = {
 export type AgentChatCodexApprovalPolicy = "untrusted" | "on-request" | "on-failure" | "never";
 export type AgentChatCodexSandbox = "read-only" | "workspace-write" | "danger-full-access";
 export type AgentChatCodexConfigSource = "flags" | "config-toml";
+export type AgentChatCodexCollaborationMode = "default" | "plan";
 export type AgentChatOpenCodePermissionMode = "plan" | "edit" | "full-auto" | "config-toml";
 export type AgentChatDroidPermissionMode = "read-only" | "auto-low" | "auto-medium" | "auto-high" | "agi";
 /** Public Droid-native permission values accepted by chat creation surfaces. */
@@ -1746,6 +1747,8 @@ export type AgentChatEvent =
       // and backward-compatible; a title-only emit carries none of them.
       permissionMode?: AgentChatPermissionMode;
       interactionMode?: AgentChatInteractionMode | null;
+      /** Accepted mode for the active Codex turn; null clears the prior turn's mode. */
+      codexEffectiveCollaborationMode?: AgentChatCodexCollaborationMode | null;
       claudePermissionMode?: AgentChatClaudePermissionMode;
       codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
       codexSandbox?: AgentChatCodexSandbox;
@@ -2420,6 +2423,10 @@ export type AgentChatSessionSummary = {
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   /** Effective service tier reported by the Codex app-server, when known. */
   codexServiceTier?: string | null;
+  /** Collaboration mode accepted with the active Codex app-server turn/start. */
+  codexEffectiveCollaborationMode?: AgentChatCodexCollaborationMode;
+  /** True when a live Codex runtime confirms there is no accepted turn mode. */
+  codexEffectiveCollaborationModeWasCleared?: boolean;
   executionMode?: AgentChatExecutionMode | null;
   permissionMode?: AgentChatPermissionMode;
   interactionMode?: AgentChatInteractionMode | null;
@@ -2589,7 +2596,10 @@ export type AgentChatSessionSummary = {
  * Declared here rather than inferred at each call site so the action registry
  * and the CLI that formats the result cannot drift on the field's name or type.
  */
-export type AdeChatSessionSummaryActionResult = AgentChatSessionSummary & { timeZone: string };
+export type AdeChatSessionSummaryActionResult = AgentChatSessionSummary & {
+  timeZone: string;
+  activityStatus?: SessionActivityReport | null;
+};
 
 export type AgentChatTranscriptEntry = {
   role: "user" | "assistant";

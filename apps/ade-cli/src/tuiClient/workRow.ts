@@ -193,6 +193,7 @@ export function toWorkSessionSummary(
     ...(session.steeringInput || summary?.steeringInput ? { steeringInput: true } : {}),
     settledAt: session.settledAt ?? null,
     statusNote: session.statusNote ?? null,
+    activityStatus: session.activityStatus ?? summary?.activityStatus ?? null,
     attentionRequestedAt: session.attentionRequestedAt ?? null,
     attentionMessage: session.attentionMessage ?? null,
     attentionSource: session.attentionSource ?? null,

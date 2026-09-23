@@ -300,14 +300,6 @@ func workActivityPhase(for phase: CanonicalSessionPhase) -> AccountAttentionPhas
   }
 }
 
-/// Planning is a PRESENTATION fact, never a canonical phase — the same split
-/// desktop makes, where `chatActivityMode` is derived from the chat's
-/// interaction mode and folded in at render time
-/// (`chatSessionProjection.ts`: `interactionMode === "plan"`).
-func workSessionIsPlanning(summary: AgentChatSessionSummary?) -> Bool {
-  summary?.interactionMode?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "plan"
-}
-
 /// Which capsule identity a phase wears, once planning has already been folded
 /// in by the caller. `stopped`/`ended` have none: their story is the neutral dot
 /// and the timestamp, and a row must not shift layout to say "nothing is
@@ -400,6 +392,7 @@ struct WorkSessionStatusPresentation: Equatable {
   let showsElapsed: Bool
   let prominent: Bool
   let kind: SessionBadgeKind?
+  var activityReportUpdatedAt: String? = nil
 }
 
 /// Everything one Work row renders about its state, derived ONCE.
@@ -462,7 +455,8 @@ func workSessionRowPresentation(
     phase: phase,
     resolved: resolved,
     now: now,
-    usageLimitStatus: usageLimitStatus
+    usageLimitStatus: usageLimitStatus,
+    currentTurnStartedAt: summary?.currentTurnStartedAt
   )
   // Whether the usage-limit overlay actually took the slot is the slot
   // function's own answer, not something to re-derive from the rendered glyph:
@@ -502,9 +496,13 @@ private func workUsageLimitStatusMayOwnSlot(_ phase: CanonicalSessionPhase) -> B
 ///      slot; neutral and not prominent, because a row you deferred is not
 ///      asking for anything.
 ///   3. woke — it came back early, which is worth the eye: amber and prominent.
-///   4. planning — a presentation fact derived from the chat's interaction mode,
-///      never a canonical phase. Already folded into `resolved` by the caller.
-///   5. the phase table.
+///   4. settled — no status slot; the collapsed section and timestamp carry the
+///      resting row's context.
+///   5. usage limit — only for ready/idle/failed, where it can quiet an old
+///      failure while a resume is scheduled.
+///   6. fresh agent activity detail — only for a running turn; native Planning
+///      is a separate presentation fact folded into `resolved` by the caller.
+///   7. the phase table, including that pre-resolved Planning presentation.
 ///
 /// `ownedByUsageLimit` is true only when the usage-limit overlay below actually
 /// took the slot. The caller needs that fact to drop the badge and borrow the
@@ -521,7 +519,8 @@ private func workSessionStatusSlot(
   phase: CanonicalSessionPhase,
   resolved: (kind: SessionBadgeKind?, presentation: ActivityPhasePresentation),
   now: Date,
-  usageLimitStatus: WorkUsageLimitRowStatus?
+  usageLimitStatus: WorkUsageLimitRowStatus?,
+  currentTurnStartedAt: String?
 ) -> (presentation: WorkSessionStatusPresentation?, ownedByUsageLimit: Bool) {
   // needsYou skips the overlay gate entirely and falls straight through to the
   // phase table below, which already says "Needs you" in amber.
@@ -582,6 +581,14 @@ private func workSessionStatusSlot(
     ), true)
   }
 
+  if let activityPresentation = workSessionActivityDetailPresentation(
+    session: session,
+    phase: phase,
+    currentTurnStartedAt: currentTurnStartedAt
+  ) {
+    return (activityPresentation, false)
+  }
+
   return (WorkSessionStatusPresentation(
     label: resolved.presentation.label,
     tone: resolved.presentation.tone,
@@ -638,18 +645,15 @@ func workCanonicalSessionState(
 }
 
 /// The genuine last-activity timestamp used ONLY to drive the stale check.
-/// Unlike `workSessionActivityTimestamp` (which feeds display/sort and falls
-/// back to `session.startedAt`), this returns nil when no real activity signal
-/// exists — the iOS `TerminalSessionSummary` carries no desktop-style
-/// `lastActivityAt`, so a plain terminal has no output timestamp. Falling back
-/// to `startedAt` would flag any terminal open >3h as Stale even with output
-/// seconds ago; nil disables the check, mirroring the desktop caller which
-/// passes the real `lastActivityAt` or null (never `startedAt`).
+/// Unlike `workSessionActivityTimestamp` (which falls back to the session's
+/// start time for display), this returns nil when no real activity signal
+/// exists. Falling back to `startedAt` would flag a terminal open >3h as stale
+/// even if it never produced output; nil disables the check, matching desktop.
 private func workSessionStaleActivityTimestamp(
   session: TerminalSessionSummary,
   summary: AgentChatSessionSummary?
 ) -> String? {
-  summary?.lastActivityAt ?? session.chatIdleSinceAt
+  summary?.lastActivityAt ?? session.lastActivityAt ?? session.chatIdleSinceAt
 }
 
 // MARK: - Snooze — a synced VISIBILITY OVERLAY, deliberately NOT a lifecycle state
