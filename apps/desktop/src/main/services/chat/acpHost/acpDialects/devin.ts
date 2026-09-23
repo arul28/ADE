@@ -19,6 +19,7 @@
 
 import {
   capability,
+  capabilityAbsent,
   defineAcpDialect,
   type AcpSpawnContext,
   type AcpSpawnPlan,
@@ -26,6 +27,7 @@ import {
 import {
   ADE_CLIENT_INFO,
   inlineImagePrompt,
+  standardAcpUsage,
   standardClose,
   standardLoad,
   standardResume,
@@ -34,6 +36,7 @@ import {
   transportGatedMcpInjection,
   withOptionalEnv,
 } from "./shared";
+import { readDevinAccount } from "./acpAccounts";
 
 function buildSpawnPlan(context: AcpSpawnContext): AcpSpawnPlan {
   return {
@@ -61,8 +64,6 @@ export const devinDialect = defineAcpDialect({
   postSessionNewNotifications: () => [],
   includeSlashCommand: () => true,
 
-  ignoredNotificationMethods: [],
-
   sessionIdPersistence: {
     assignableAtLaunch: false,
     sessionsDirName: null,
@@ -80,17 +81,15 @@ export const devinDialect = defineAcpDialect({
     "Devin CLI does not yet expose account Knowledge, Playbooks, or Secrets to local sessions.",
   ],
 
-  usageSource: "usage_update",
-  usage: capability(({ usageUpdate }) => {
-    if (!usageUpdate) return null;
-    return {
-      contextUsedTokens: usageUpdate.used,
-      contextWindowTokens: usageUpdate.size,
-      ...(usageUpdate.cost && usageUpdate.cost.currency.toUpperCase() === "USD"
-        ? { costUsd: usageUpdate.cost.amount }
-        : {}),
-    };
-  }),
+  extensionNotifications: {},
+  usage: capability(standardAcpUsage),
+  // Devin keeps no local usage ledger of its own.
+  localUsage: capabilityAbsent,
+  readAccount: readDevinAccount,
+  // Devin reports context size via `usage_update` but never reports a
+  // compaction itself, so the host infers one from a sharp drop in `used`.
+  inferCompaction: true,
+  usageUpdateAfterTurn: false,
 
   closeStyle: "close_request",
   closeSession: capability(standardClose),
