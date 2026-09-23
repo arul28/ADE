@@ -9,7 +9,7 @@ import {
   SYNC_RUNTIME_ONLY_CAPABILITY,
   wsDataToText,
 } from "../sync/syncProtocol";
-import { isPairedRuntimeRpcOverBudgetError } from "./pairedRuntimeErrors";
+import { isPairedRuntimeRpcOverBudgetError, isPairedRuntimeSupersededError } from "./pairedRuntimeErrors";
 import { RuntimeRpcClient } from "./runtimeRpcClient";
 import {
   buildDesktopPairedHello,
@@ -47,6 +47,13 @@ class FakeWebSocket extends EventEmitter {
     if (this.readyState === 3) return;
     this.readyState = 3;
     queueMicrotask(() => this.emit("close"));
+  }
+
+  /** The host closes the socket, with the code and reason `ws` reports. */
+  peerClose(code: number, reason: string): void {
+    if (this.readyState === 3) return;
+    this.readyState = 3;
+    queueMicrotask(() => this.emit("close", code, Buffer.from(reason, "utf8")));
   }
 }
 
@@ -327,6 +334,67 @@ describe("openSyncRuntimeTransport", () => {
     const failure = await client.call("ade/actions/call", { name: "stream_events" }).catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(Error);
     expect(isPairedRuntimeRpcOverBudgetError(failure)).toBe(overBudget);
+    client.close();
+  });
+
+  /**
+   * The host closes an older connection when a newer one from the same device
+   * authenticates. Before, every such close read "connection closed", and two
+   * clients sharing one pairing took the machine from each other every few
+   * seconds with nothing in the message to say why.
+   */
+  it.each([
+    ["the host's supersede close", 4000, "Superseded by a newer connection for this device", true, /4000: Superseded/],
+    // The tunnel relay also uses 4000, for "partner closed". Code alone is not enough.
+    ["a relay close that reuses 4000", 4000, "Partner closed", false, /4000: Partner closed/],
+    ["an abnormal close", 1006, "", false, /closed by the other machine or the network \(1006\)/],
+  ])("names the cause of %s", async (_label, code, reason, superseded, message) => {
+    let socket: FakeWebSocket | null = null;
+    const createWebSocket = () => {
+      socket = new FakeWebSocket((text, ws) => {
+        const envelope = parseSyncEnvelope(wsDataToText(text));
+        if (envelope.type === "hello") {
+          ws.receive(encodeSyncEnvelope({
+            type: "hello_ok",
+            requestId: envelope.requestId,
+            payload: {
+              peer: (envelope.payload as { peer: unknown }).peer,
+              brain: {
+                deviceId: "host-1",
+                deviceName: "Mac Studio",
+                platform: "macOS",
+                deviceType: "desktop",
+                siteId: "host-site-1",
+                dbVersion: 0,
+              },
+              serverDbVersion: 0,
+              heartbeatIntervalMs: 5_000,
+              pollIntervalMs: 1_500,
+              features: { rpcChannel: true, portForward: true },
+            },
+          }));
+          return;
+        }
+        if (envelope.type === "rpc_data") ws.peerClose(code, reason);
+      });
+      return socket as unknown as WebSocket;
+    };
+
+    const paired = credentials();
+    paired.endpoints = ["ws://sync.test"];
+    const transport = await openSyncRuntimeTransport({
+      credentials: paired,
+      channelId: "runtime-superseded",
+      connectTimeoutMs: 2_000,
+      authTimeoutMs: 2_000,
+      createWebSocket,
+    });
+    const client = new RuntimeRpcClient(transport, 2_000);
+
+    const failure = await client.call("ade/actions/call", { name: "stream_events" }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toMatch(message);
+    expect(isPairedRuntimeSupersededError(failure)).toBe(superseded);
     client.close();
   });
 

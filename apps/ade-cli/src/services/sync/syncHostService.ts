@@ -116,6 +116,10 @@ import {
   SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
   SYNC_MOBILE_CHAT_SLIM_CAPABILITY,
 } from "../../../../desktop/src/shared/types";
+import {
+  PAIRED_RUNTIME_SUPERSEDED_CLOSE_CODE,
+  PAIRED_RUNTIME_SUPERSEDED_CLOSE_REASON,
+} from "../../../../desktop/src/shared/types/pairedRuntime";
 import { parseAgentChatTranscript } from "../../../../desktop/src/shared/chatTranscript";
 import { foldChatEventEnvelopesForReplay } from "../../../../desktop/src/shared/chatReplayFold";
 import {
@@ -4629,7 +4633,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       peer.pairedDeviceId = null;
       peer.pairingRecord = null;
       try {
-        peer.ws.close(4000, "Superseded by a newer connection for this device");
+        peer.ws.close(PAIRED_RUNTIME_SUPERSEDED_CLOSE_CODE, PAIRED_RUNTIME_SUPERSEDED_CLOSE_REASON);
       } catch {
         // ignore close failures
       }

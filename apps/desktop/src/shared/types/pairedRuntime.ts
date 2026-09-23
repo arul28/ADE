@@ -27,6 +27,14 @@ export const PAIRED_RUNTIME_RPC_OVER_BUDGET_CODE = "rpc_over_budget";
  */
 export const PAIRED_RUNTIME_RPC_OVER_BUDGET_REASON = "Runtime RPC channel fell behind the sync connection.";
 
+/**
+ * The host closes an older connection from the same device when a newer one
+ * authenticates. Code and reason travel together because the tunnel relay also
+ * uses 4000, for "partner closed", which means something else.
+ */
+export const PAIRED_RUNTIME_SUPERSEDED_CLOSE_CODE = 4000;
+export const PAIRED_RUNTIME_SUPERSEDED_CLOSE_REASON = "Superseded by a newer connection for this device";
+
 export type PairedRuntimeRpcClosePayload = {
   channelId: string;
   reason?: string | null;
