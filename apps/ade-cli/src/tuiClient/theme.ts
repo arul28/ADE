@@ -210,7 +210,7 @@ const SESSION_GLYPH_MARK: Record<Exclude<SessionStatusGlyph, null>, string> = {
   monitoring: "◇",
   planning: "◈",
   implementing: "✎",
-  testing: "✓",
+  testing: "T",
   reviewing: "⌕",
   debugging: "⚙",
   waiting: "⏳",

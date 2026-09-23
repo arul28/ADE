@@ -446,8 +446,9 @@ Shared types and IPC:
   map its dependency-free glyph ids to platform symbols. `sessionStatusShoutsLabel`
   is the nested-compact filter: the status word is painted only for Needs you
   or a red Failed tone.
-- `apps/desktop/src/shared/sessionActivity.ts` — the fixed six-value activity
-  vocabulary and boundary normalizer for one host-timestamped agent report.
+- `apps/desktop/src/shared/types/sessions.ts` — the fixed six-value activity
+  vocabulary. `apps/desktop/src/shared/sessionActivity.ts` imports it and
+  normalizes one host-timestamped agent report at the boundary.
   The report refines a card's single status slot without moving its parent phase;
   `sessionActivity.test.ts` pins normalization and malformed-input handling.
 - `apps/desktop/src/shared/sessionSpawnNesting.ts` — the one by-lane filing

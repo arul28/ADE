@@ -99,6 +99,8 @@ type CursorSdkPoolEntry = {
   idleTimer: ReturnType<typeof setTimeout> | null;
   /** The `local.dirs` this worker was launched with; see `sameSkillDirs`. */
   agentSkillDirs: string[];
+  /** Exact ADE runtime socket allowed for this worker's activity reports. */
+  activityRuntimeSocketPath: string | null;
 };
 
 const pools = new Map<string, CursorSdkPoolEntry>();
@@ -497,6 +499,7 @@ export function buildCursorSdkWorkerEnv(args: {
   socketPath: string;
   workspacePath: string;
   sessionId: string;
+  activityRuntimeSocketPath?: string | null;
 }): NodeJS.ProcessEnv {
   const baseEnv = args.baseEnv ?? process.env;
   const env: NodeJS.ProcessEnv = {
@@ -510,6 +513,8 @@ export function buildCursorSdkWorkerEnv(args: {
     ADE_CURSOR_SDK_STATE_ROOT: args.stateRoot,
   };
   applyCurrentAdeCliEnv(env, baseEnv);
+  const activityRuntimeSocketPath = args.activityRuntimeSocketPath?.trim();
+  if (activityRuntimeSocketPath) env.ADE_RUNTIME_SOCKET_PATH = activityRuntimeSocketPath;
   delete env.ADE_CLI_ENTRY_PATH;
   return env;
 }
@@ -535,16 +540,22 @@ export async function acquireCursorSdkConnection(args: {
    * fallback for a session that gets none.
    */
   agentSkillDirs?: string[];
+  /** The exact ADE runtime this SDK worker may target for activity reports. */
+  activityRuntimeSocketPath?: string | null;
   cleanupStateRoot?: boolean;
   logger?: Logger;
 }): Promise<{ pooled: CursorSdkPooled; generation: number }> {
   for (let staleInitRetries = 0; ; staleInitRetries += 1) {
     const existing = pools.get(args.poolKey);
     if (existing && isCursorSdkPooledAlive(existing.pooled)) {
-      // A live worker cannot pick up a different `local.dirs` without a
-      // restart. Reuse only when the skill roots it was launched with still
-      // match; otherwise replace it so the new roots are not silently ignored.
-      if (sameSkillDirs(existing.agentSkillDirs, args.agentSkillDirs)) {
+      // A live worker cannot pick up different skill roots or an ADE runtime
+      // socket without a restart. Reuse only when both launch capabilities
+      // still match; otherwise replace it rather than silently target stale state.
+      const activityRuntimeSocketPath = args.activityRuntimeSocketPath?.trim() || null;
+      if (
+        sameSkillDirs(existing.agentSkillDirs, args.agentSkillDirs)
+        && existing.activityRuntimeSocketPath === activityRuntimeSocketPath
+      ) {
         clearCursorSdkIdleTimer(existing);
         existing.ref += 1;
         return { pooled: existing.pooled, generation: existing.generation };
@@ -566,7 +577,9 @@ export async function acquireCursorSdkConnection(args: {
 
     const pooled = await init;
     const entry = pools.get(args.poolKey);
-    const live = entry?.pooled === pooled && isCursorSdkPooledAlive(pooled);
+    const live = entry?.pooled === pooled
+      && isCursorSdkPooledAlive(pooled)
+      && entry.activityRuntimeSocketPath === (args.activityRuntimeSocketPath?.trim() || null);
     if (!entry || !live) {
       if (initOwner) {
         throw new Error("Cursor SDK worker was disposed during initialization.");
@@ -608,6 +621,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
       socketPath: paths.socketPath,
       workspacePath: args.workspacePath,
       sessionId: args.sessionId,
+      activityRuntimeSocketPath: args.activityRuntimeSocketPath,
     }),
     stdio: ["ignore", "pipe", "pipe", "ipc"],
     execArgv: [],
@@ -982,6 +996,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
     cleanupStateRoot: args.cleanupStateRoot === true,
     idleTimer: null,
     agentSkillDirs: [...(args.agentSkillDirs ?? [])],
+    activityRuntimeSocketPath: args.activityRuntimeSocketPath?.trim() || null,
   });
   return pooled;
 }

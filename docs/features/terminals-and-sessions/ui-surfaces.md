@@ -352,7 +352,8 @@ words, glyphs, tone, prominence, and elapsed-time behavior through
 `shared/sessionStatusPresentation.ts`. An active ADE chat in its authoritative
 plan interaction mode reads **Planning** in violet; Codex uses the collaboration
 mode accepted by the active `turn/start`. An eligible, current activity report
-replaces the generic **Working** label for a live turn; without one, the card
+replaces the generic **Working** label for a live turn with one fixed short
+label and its matching activity glyph on desktop and iOS; without one, the card
 shows **Planning** or **Working** from the provider mode. Once the foreground
 turn is idle, provider-reported background
 tasks read blue **Background work** (**Background work ×N** when several are

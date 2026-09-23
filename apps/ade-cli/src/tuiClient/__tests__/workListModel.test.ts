@@ -4,6 +4,7 @@ import { ATTENTION_CONTRACT_VERSION } from "../../../../desktop/src/shared/types
 import type { AgentChatUsageLimitResume } from "../../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 import { SESSION_ACTIVITY_VALUES } from "../../../../desktop/src/shared/types/sessions";
+import { sessionGlyphMark } from "../theme";
 import type { TuiChatSessionSummary } from "../adeApi";
 import {
   buildWorkListModel,
@@ -447,6 +448,12 @@ describe("workListModel status", () => {
     const [row] = sessionRows(model);
     expect(row!.filing).toBe("running");
     expect(row!.status?.label).toBe(`${value[0]!.toUpperCase()}${value.slice(1)}`);
+    expect(row!.status?.glyph).toBe(value);
+  });
+
+  it("gives Testing a distinct TUI mark from Done", () => {
+    expect(sessionGlyphMark("testing")).toBe("T");
+    expect(sessionGlyphMark("testing")).not.toBe(sessionGlyphMark("done"));
   });
 
   it("keeps Needs you above a current agent activity report", () => {

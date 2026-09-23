@@ -730,6 +730,27 @@ describe("Cursor SDK pool paths", () => {
     expect(env.ADE_CURSOR_SDK_STATE_ROOT).toBe("/repo/.ade/cache/cursor-sdk/hash/state");
   });
 
+  it("passes only the explicitly authorized ADE runtime socket for activity reports", () => {
+    const env = buildCursorSdkWorkerEnv({
+      baseEnv: {
+        PATH: "/usr/bin",
+        ADE_HOME: "/Users/admin/.ade-beta",
+        ADE_PACKAGE_CHANNEL: "beta",
+        ADE_RUNTIME_SOCKET_PATH: "/Users/admin/.ade/sock/ade.sock",
+      },
+      userHomeDir: "/Users/admin",
+      stateRoot: "/repo/.ade/cache/cursor-sdk/hash/state",
+      socketPath: "/tmp/ade-cursor-sdk/socket.sock",
+      workspacePath: "/repo/.ade/worktrees/lane",
+      sessionId: "session-1",
+      activityRuntimeSocketPath: "/Users/admin/.ade-beta/sock/ade.sock",
+    });
+
+    expect(env.ADE_RUNTIME_SOCKET_PATH).toBe("/Users/admin/.ade-beta/sock/ade.sock");
+    expect(env.ADE_HOME).toBeUndefined();
+    expect(env.ADE_PACKAGE_CHANNEL).toBeUndefined();
+  });
+
   it("rebuilds packaged NODE_PATH for forked workers launched outside the ADE CLI wrapper", () => {
     const resourcesRoot = makeTempDir("ade-packaged-resources-");
     const cliBinDir = path.join(resourcesRoot, "ade-cli", "bin");
@@ -830,6 +851,32 @@ describe("Cursor SDK pool paths", () => {
 
     releaseCursorSdkConnection(poolKey, second.generation);
     expect(child.disposeCount).toBe(1);
+  });
+
+  it("replaces a live worker when its authorized ADE runtime socket changes", async () => {
+    const firstChild = new FakeSdkChild();
+    const secondChild = new FakeSdkChild();
+    forkMock.mockReturnValueOnce(firstChild).mockReturnValueOnce(secondChild);
+    const poolKey = `test-activity-socket:${Date.now()}:${Math.random()}`;
+    const args = {
+      poolKey,
+      projectRoot: path.join(os.tmpdir(), "ade-project"),
+      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
+      modelSdkId: "cursor-model",
+      sessionId: "session-1",
+      policy: { ...TEST_POLICY },
+      activityRuntimeSocketPath: "/runtime/alpha.sock",
+    };
+
+    const first = await acquireCursorSdkConnection(args);
+    const second = await acquireCursorSdkConnection({
+      ...args,
+      activityRuntimeSocketPath: "/runtime/beta.sock",
+    });
+
+    expect(second.pooled).not.toBe(first.pooled);
+    expect(forkMock).toHaveBeenCalledTimes(2);
+    releaseCursorSdkConnection(poolKey, second.generation);
   });
 
   it("evicts a poisoned worker even while another lease is still held", async () => {

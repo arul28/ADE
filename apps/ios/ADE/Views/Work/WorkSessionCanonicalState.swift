@@ -602,7 +602,7 @@ private func workSessionStatusSlot(
       return (WorkSessionStatusPresentation(
         label: activityStatus.value.capitalized,
         tone: isPlanning ? .violet : .blue,
-        glyph: isPlanning ? .planning : .working,
+        glyph: ActivityGlyph(rawValue: activityStatus.value) ?? .working,
         showsElapsed: true,
         prominent: false,
         kind: nil,

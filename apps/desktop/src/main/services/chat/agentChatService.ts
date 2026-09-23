@@ -9638,7 +9638,7 @@ export function createAgentChatService(args: {
   const resolveSessionActivityRuntime = (
     session: Pick<AgentChatSession, "id" | "surface">,
     enabled: boolean,
-  ): { cliPath: string; runtimeSocketPath?: string } | null => {
+  ): { cliPath: string; runtimeSocketPath: string } | null => {
     if (!enabled || isPersonalSession(session)) return null;
     // Only trust ADE_CLI_PATH when the launch-time ADE CLI resolver supplied
     // it. A PATH entry or an inherited user-provided value is not proof that
@@ -9653,16 +9653,23 @@ export function createAgentChatService(args: {
     } catch {
       return null;
     }
-    const runtimeSocketPath = agentEnv?.ADE_RUNTIME_SOCKET_PATH?.trim();
+    // SDK workers intentionally receive a small ADE environment allowlist.
+    // Use the socket that this service was created for first, then the exact
+    // launch-time resolver value. Without an explicit socket, the CLI can
+    // silently fall back to the stable ADE home on Windows and report to a
+    // different channel's runtime, so do not advertise activity reporting.
+    const exactRuntimeSocketPath = runtimeSocketPath
+      ?? (agentEnv?.ADE_RUNTIME_SOCKET_PATH?.trim() || null);
+    if (!exactRuntimeSocketPath) return null;
     return {
       cliPath,
-      ...(runtimeSocketPath ? { runtimeSocketPath } : {}),
+      runtimeSocketPath: exactRuntimeSocketPath,
     };
   };
 
   const sessionActivityGuidanceForRuntime = (
     session: Pick<AgentChatSession, "id">,
-    runtime: { cliPath: string } | null,
+    runtime: { cliPath: string; runtimeSocketPath: string } | null,
   ): string | null => {
     if (!runtime) return null;
     return buildAdeSessionActivityGuidance({
@@ -43020,6 +43027,10 @@ export function createAgentChatService(args: {
     const browserCapabilityReady = prepareBrowserActorCapability(managed);
     if (browserCapabilityReady) await browserCapabilityReady;
     const cursorRuntimeEnv = buildAgentRuntimeEnv(managed);
+    const cursorActivityRuntime = resolveSessionActivityRuntime(
+      managed.session,
+      policy.chatMode === "agent",
+    );
     // Cursor's own skill discovery. ADE copies the bundled catalog into a
     // private shim laid out the way Cursor scans (`.agents/skills/<name>/
     // SKILL.md`) and passes that root as an extra workspace dir, instead of
@@ -43053,6 +43064,9 @@ export function createAgentChatService(args: {
       agentName: manualSessionTitleForRuntime(managed),
       sessionId: managed.session.id,
       policy,
+      ...(cursorActivityRuntime
+        ? { activityRuntimeSocketPath: cursorActivityRuntime.runtimeSocketPath }
+        : {}),
       ...(cursorMcpServerConfig ? { mcpServers: cursorMcpServerConfig } : {}),
       ...(cursorAgentSkills.dirs.length ? { agentSkillDirs: cursorAgentSkills.dirs } : {}),
       logger,

@@ -10442,6 +10442,79 @@ describe("createAgentChatService", () => {
 
       expect(resolveBuiltInBrowserActorCapability(actorToken)).toBeNull();
     });
+
+    it("targets Cursor SDK activity reports at the service runtime and disables them without an exact socket", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const cliPath = path.join(tmpRoot, "activity-cli", "ade");
+      fs.mkdirSync(path.dirname(cliPath), { recursive: true });
+      fs.writeFileSync(cliPath, "#!/bin/sh\nexit 0\n");
+      fs.chmodSync(cliPath, 0o755);
+      const runtimeSocketPath = "/Users/admin/.ade-beta/sock/ade.sock";
+      const getAdeCliAgentEnv = vi.fn(() => ({
+        PATH: path.dirname(cliPath),
+        ADE_CLI_PATH: cliPath,
+        // The service's socket is authoritative if a launcher carries stale env.
+        ADE_RUNTIME_SOCKET_PATH: "/Users/admin/.ade/sock/ade.sock",
+      }));
+
+      const { service } = createService({ getAdeCliAgentEnv, runtimeSocketPath });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      await service.sendMessage({ sessionId: session.id, text: "Run locally." }, { awaitDispatch: true });
+
+      expect(mockState.cursorSdkAcquireCalls.at(-1)).toEqual(expect.objectContaining({
+        activityRuntimeSocketPath: runtimeSocketPath,
+      }));
+      expect(String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? ""))
+        .toContain(`chat activity testing --session '${session.id}'`);
+      await service.dispose({ sessionId: session.id });
+
+      mockState.cursorSdkAcquireCalls = [];
+      mockState.cursorSdkSendCalls = [];
+      const fallbackSocketPath = "/runtime/fallback.sock";
+      const { service: fallbackService } = createService({
+        runtimeSocketPath: "   ",
+        getAdeCliAgentEnv: () => ({
+          PATH: path.dirname(cliPath),
+          ADE_CLI_PATH: cliPath,
+          ADE_RUNTIME_SOCKET_PATH: fallbackSocketPath,
+        }),
+      });
+      const fallbackSession = await fallbackService.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      await fallbackService.sendMessage({ sessionId: fallbackSession.id, text: "Run locally." }, { awaitDispatch: true });
+
+      expect(mockState.cursorSdkAcquireCalls.at(-1)).toEqual(expect.objectContaining({
+        activityRuntimeSocketPath: fallbackSocketPath,
+      }));
+      await fallbackService.dispose({ sessionId: fallbackSession.id });
+
+      mockState.cursorSdkAcquireCalls = [];
+      mockState.cursorSdkSendCalls = [];
+      const { service: noSocketService } = createService({
+        getAdeCliAgentEnv: () => ({ PATH: path.dirname(cliPath), ADE_CLI_PATH: cliPath }),
+      });
+      const noSocketSession = await noSocketService.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      await noSocketService.sendMessage({ sessionId: noSocketSession.id, text: "Run locally." }, { awaitDispatch: true });
+
+      expect(mockState.cursorSdkAcquireCalls.at(-1)).not.toHaveProperty("activityRuntimeSocketPath");
+      expect(String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? ""))
+        .not.toContain("chat activity testing --session");
+      await noSocketService.dispose({ sessionId: noSocketSession.id });
+    });
   });
 
   // --------------------------------------------------------------------------

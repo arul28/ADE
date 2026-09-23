@@ -614,6 +614,15 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
 
   func testAgentActivityRefinesRunningStatusAndKeepsNeedsYouAhead() {
     let values = ["planning", "implementing", "testing", "reviewing", "debugging", "monitoring"]
+    let glyphs: [String: ActivityGlyph] = [
+      "planning": .planning,
+      "implementing": .implementing,
+      "testing": .testing,
+      "reviewing": .reviewing,
+      "debugging": .debugging,
+      "monitoring": .monitoring,
+    ]
+    XCTAssertEqual(Set(glyphs.values.map(\.systemImage)).count, values.count)
     for value in values {
       var session = makeSession(status: "running", runtimeState: "running", toolType: "codex-chat")
       session.activityStatus = SessionActivityReport(
@@ -626,6 +635,7 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
       let status = workSessionRowPresentation(session: session, summary: summary, now: now).status
       XCTAssertEqual(status?.label, value.capitalized, value)
       XCTAssertEqual(status?.tone, value == "planning" ? .violet : .blue, value)
+      XCTAssertEqual(status?.glyph, glyphs[value], value)
       XCTAssertEqual(status?.showsElapsed, true, value)
     }
 
