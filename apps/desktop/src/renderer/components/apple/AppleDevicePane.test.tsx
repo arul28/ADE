@@ -45,6 +45,7 @@ vi.mock("./drawer/AppleToolsDrawer", () => ({
 
 const streamState = { value: "live" as AppleStreamState };
 /** What the pane last asked the stream hook for. */
+const streamReconnect = vi.hoisted(() => ({ fn: (() => {}) as () => void }));
 const streamArgs = vi.hoisted(() => ({
   last: null as null | { deviceUdid: string | null; onError: (message: string | null) => void },
 }));
@@ -66,7 +67,7 @@ vi.mock("./useAppleDeviceStream", () => ({
     handleReaderStatus: vi.fn(),
     handleDimensions: vi.fn(),
     noteFrame: vi.fn(),
-    reconnect: vi.fn(),
+    reconnect: () => streamReconnect.fn(),
     applyStreamEvent: vi.fn(),
     };
   },
@@ -828,6 +829,25 @@ describe("AppleDevicePane after a restart (owner's 2026-09-23 reports)", () => {
       expect(paneState()).not.toBe("starting");
     } finally {
       vi.mocked(Date.now).mockRestore?.();
+      recheck.restore();
+    }
+  });
+
+  it("regression: 'Connecting video' with no start in flight asks the stream again by itself", async () => {
+    // The owner's 2026-09-23 report: the pane opened over a floating device
+    // sat on "Connecting video" until a tab switch remounted it.
+    const recheck = captureRecheck();
+    const reconnect = vi.fn();
+    streamReconnect.fn = reconnect;
+    try {
+      setup({ lane: LANE_DEVICE, stream: "starting" });
+      renderPane();
+      await waitFor(() => expect(paneState()).toBe("starting"));
+      expect(screen.getByText("Connecting video")).toBeTruthy();
+      await recheck.tick();
+      expect(reconnect).toHaveBeenCalledTimes(1);
+    } finally {
+      streamReconnect.fn = () => {};
       recheck.restore();
     }
   });

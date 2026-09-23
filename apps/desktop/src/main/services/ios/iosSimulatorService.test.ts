@@ -2908,6 +2908,50 @@ describe("iosSimulatorService boot contract", () => {
     }
   });
 
+  it("regression: the Mac's last viewer leaving does not cut off a phone reading the same capture", async () => {
+    // The owner's 2026-09-23 report: the floating player went away and its
+    // lane-scoped stop ended the capture the phone was watching through the
+    // relay. The phone kept going only because it reconnected.
+    const { service, helper, dispose } = setup();
+    try {
+      await service.startStream({ deviceUdid: "device-1", laneId: "lane-a", localViewer: true });
+      const upstreamClosed = vi.fn();
+      const relay = createAppleStreamRelayForService({
+        service,
+        remoteBitrateKbpsCap: () => null,
+        connect: (() => ({ onData: () => {}, onEnd: () => {}, close: upstreamClosed })) as never,
+      });
+      const ticket = relay.issue({ laneId: "lane-a" });
+      const socketListeners = new Map<string, (...args: unknown[]) => void>();
+      const socket = {
+        send: vi.fn(),
+        close: vi.fn(),
+        on: (event: string, listener: (...args: unknown[]) => void) => { socketListeners.set(event, listener); },
+      };
+      expect(await relay.attach(socket as never, { ticket: ticket.ticket, token: ticket.token })).toBe(true);
+      const captureStops = () => helper.sent.filter((command) => command.type === "capture-stop").length;
+
+      // The desktop's last lease goes: the renderer's stop carries localViewer.
+      await service.stopStream({ laneId: "lane-a", localViewer: true });
+      expect(captureStops()).toBe(0);
+      expect(service.getStreamStatus({ laneId: "lane-a" }).running).toBe(true);
+      expect(service.hasLocalViewer("lane-a")).toBe(false);
+
+      // The phone leaves too: now the relay, which took the stop over, stops it.
+      socketListeners.get("close")?.();
+      await vi.waitFor(() => expect(service.getStreamStatus({ laneId: "lane-a" }).running).toBe(false));
+      expect(captureStops()).toBe(1);
+      relay.dispose();
+
+      // With no relay viewer at all, a local stop stops.
+      await service.startStream({ deviceUdid: "device-1", laneId: "lane-a", localViewer: true });
+      await service.stopStream({ laneId: "lane-a", localViewer: true });
+      expect(captureStops()).toBe(2);
+    } finally {
+      dispose();
+    }
+  });
+
   it("a viewer arriving while the device is booting waits for it instead of refusing or booting again", async () => {
     const { service, calls, devices, dispose } = setup();
     try {

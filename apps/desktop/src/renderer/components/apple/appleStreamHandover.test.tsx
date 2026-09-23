@@ -13,9 +13,12 @@ import {
   resetAppleStreamLeases,
 } from "./appleStreamLease";
 import { useAppleDeviceStream } from "./useAppleDeviceStream";
+import { useAppStore } from "../../state/appStore";
 import {
+  getAppleMiniPlayerTarget,
   handoffAppleMiniPlayer,
   noteAppleMiniPlayerLaneDevice,
+  openAppleMiniPlayer,
   releaseAppleMiniPlayerHandoverHold,
   resetAppleMiniPlayerForTests,
   retakeAppleMiniPlayer,
@@ -72,8 +75,8 @@ function installApi() {
 let latestUrl: string | null = null;
 
 /** One viewer of the lane's stream — the pane's column, or the floating player. */
-function Viewer() {
-  const pinRef = useRef<OpenProjectBinding | null>(null);
+function Viewer({ pin = null }: { pin?: OpenProjectBinding | null } = {}) {
+  const pinRef = useRef<OpenProjectBinding | null>(pin);
   const stream = useAppleDeviceStream({
     deviceUdid: UDID, laneId: LANE, chatSessionId: "chat-1",
     enabled: true, hidden: false, machineName: null, bitrateKbpsCap: null,
@@ -104,6 +107,7 @@ afterEach(() => {
   cleanup();
   resetAppleStreamLeases();
   resetAppleMiniPlayerForTests();
+  useAppStore.setState({ projectBinding: null });
 });
 
 describe("open → close → open again", () => {
@@ -139,7 +143,8 @@ describe("open → close → open again", () => {
     const pane = mountPane();
     await waitFor(() => expect(calls).toContain("start"));
     pane.unmount();
-    await waitFor(() => expect(calls).toContain("stop"));
+    // After the handover grace: nobody arrived to take the stream up.
+    await waitFor(() => expect(calls).toContain("stop"), { timeout: 3_000 });
     expect(appleStreamLeaseCount(KEY)).toBe(0);
     expect(appleStreamLeaseEpoch(KEY)).toBe(0);
   });
@@ -204,3 +209,51 @@ describe("forgetting a lane's leases", () => {
     expect(appleStreamLeaseCount(other)).toBe(1);
   });
 });
+
+describe("the pane and the floating player name the same machine two ways", () => {
+  /*
+   * The owner's 2026-09-23 report, live: the device floated, the pane was
+   * opened over it, and the pane sat on "Connecting video" until a tab switch.
+   *
+   * The pane passes a null pin ("this window's machine"); the player stores
+   * that machine resolved (`local:/repo`). The lease key used the raw pin, so
+   * the two viewers of ONE capture counted in two buckets, and the player
+   * leaving was "the last viewer" of its bucket: a lane-scoped `stopStream`
+   * under the pane that had just joined the capture.
+   */
+  const LOCAL = {
+    kind: "local",
+    key: "local:/repo",
+    rootPath: "/repo",
+    displayName: "repo",
+    gitOriginUrl: null,
+  } as unknown as OpenProjectBinding;
+
+  it("regression: opening the pane over the floating player never stops the capture", async () => {
+    useAppStore.setState({ projectBinding: LOCAL });
+    act(() => {
+      openAppleMiniPlayer({
+        laneId: LANE, chatSessionId: "chat-1", deviceUdid: UDID,
+        deviceName: "ADE Repro", deviceRuntime: null, family: "iphone", runtimePin: null,
+      });
+    });
+    // The store resolves the player's machine, as the real player receives it.
+    const playerPin = getAppleMiniPlayerTarget()!.runtimePin;
+    expect(playerPin?.key).toBe("local:/repo");
+    const player = render(<Viewer pin={playerPin} />);
+    await waitFor(() => expect(calls).toContain("start"));
+
+    // Open the pane: WorkIosTool retakes the device, the pane (null pin)
+    // mounts, the handover hold is given back, and the player unmounts.
+    act(() => { retakeAppleMiniPlayer(); });
+    render(<Viewer />);
+    act(() => { releaseAppleMiniPlayerHandoverHold(); });
+    player.unmount();
+    await act(async () => { await Promise.resolve(); });
+
+    expect(calls).not.toContain("stop");
+    // One bucket, one viewer left in it.
+    expect(appleStreamLeaseCount(appleStreamLeaseKey({ pinKey: "local:/repo", laneId: LANE, deviceUdid: UDID }))).toBe(1);
+  });
+});
+

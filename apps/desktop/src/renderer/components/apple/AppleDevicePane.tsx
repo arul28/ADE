@@ -404,13 +404,22 @@ export function AppleDevicePane({
    * with the "taking too long" sentence and Start.
    */
   const loading = state === "starting";
+  const streamReconnectRef = useRef(stream.reconnect);
+  streamReconnectRef.current = stream.reconnect;
   useEffect(() => {
     if (!loading) return undefined;
     const since = Date.now();
     const timer = window.setInterval(() => {
       const pending = pendingStartRef.current;
       refreshList();
-      if (!pending) return;
+      if (!pending) {
+        // "Connecting video" with no start in flight: the device is up and
+        // only this viewer's stream is missing. Ask for it again — the
+        // service joins a capture another viewer (the floating player, a
+        // phone) is running, or opens one.
+        streamReconnectRef.current();
+        return;
+      }
       const token = startTokenRef.current;
       const settle = () => {
         if (startTokenRef.current !== token) return;

@@ -604,6 +604,14 @@ export type AppleStreamOwningService = {
    * the service through IPC or a runtime action.
    */
   hasLocalViewer?: (laneId: string) => boolean;
+  /**
+   * Lets the service ask, before a LOCAL viewer's stop, whether a remote
+   * viewer still reads the capture, and hand the stop to the relay if so.
+   */
+  setRemoteViewerProbe?: (probe: {
+    watching(laneId: string): boolean;
+    adopt(laneId: string): void;
+  } | null) => void;
 };
 
 /**
@@ -635,7 +643,7 @@ export function createAppleStreamRelayForService(deps: {
   publicOrigin?: AppleStreamRelayDeps["publicOrigin"];
 }): AppleStreamRelay {
   const startedLanes = new Set<string>();
-  return createAppleStreamRelay({
+  const relay = createAppleStreamRelay({
     logger: deps.logger,
     connect: deps.connect,
     publicOrigin: deps.publicOrigin,
@@ -679,4 +687,20 @@ export function createAppleStreamRelayForService(deps: {
       await Promise.resolve(deps.service.stopStream({ laneId })).catch(() => null);
     },
   });
+  // A desktop viewer leaving must not cut off a phone still reading the same
+  // capture: the service asks here first, and the relay takes the stop over.
+  deps.service.setRemoteViewerProbe?.({
+    watching: (laneId) => relay.visibleViewerCount(laneId) > 0,
+    adopt: (laneId) => {
+      startedLanes.add(laneId);
+    },
+  });
+  const disposeRelay = relay.dispose.bind(relay);
+  return {
+    ...relay,
+    dispose: () => {
+      deps.service.setRemoteViewerProbe?.(null);
+      disposeRelay();
+    },
+  };
 }

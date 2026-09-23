@@ -337,6 +337,14 @@ export class IosSimulatorOwnedBySessionError extends Error {
  * as text: an agent that called `stream-start` without meaning to boot reads
  * it and runs `ade apple start`.
  */
+/** What the service may ask the relay before a local viewer's stop. */
+export type AppleRemoteViewerProbe = {
+  /** A remote viewer is reading this lane's capture right now. */
+  watching(laneId: string): boolean;
+  /** The relay now owns stopping this lane's capture. */
+  adopt(laneId: string): void;
+};
+
 export class AppleDeviceOffError extends Error {
   readonly code: typeof APPLE_DEVICE_OFF_CODE = APPLE_DEVICE_OFF_CODE;
   readonly udid: string;
@@ -5088,8 +5096,24 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     });
   };
 
-  const stopStream = async (streamArgs: { laneId?: string | null; chatSessionId?: string | null } = {}): Promise<IosSimulatorStreamStatus> => {
+  const stopStream = async (
+    streamArgs: { laneId?: string | null; chatSessionId?: string | null; localViewer?: boolean } = {},
+  ): Promise<IosSimulatorStreamStatus> => {
     const runtime = resolveRuntime(streamArgs);
+    /*
+     * The last viewer on THIS machine left, and a phone or web tab is still
+     * reading the same capture through the relay. Stopping it would cut them
+     * off (the owner's 2026-09-23 report: the Mac's view went away while the
+     * phone's kept going only because it reconnected). The capture stays up
+     * and becomes the relay's to stop when its own last viewer leaves.
+     */
+    if (streamArgs.localViewer && runtime.laneId && runtime.streamStatus.running
+      && remoteViewers?.watching(runtime.laneId)) {
+      localViewerLanes.delete(runtime.laneId);
+      remoteViewers.adopt(runtime.laneId);
+      args.logger.info("apple.stream_kept_for_remote_viewer", { laneId: runtime.laneId });
+      return runtime.streamStatus;
+    }
     // A stopped stream has no local viewer. Cleared for every stop — the
     // renderer's own, the relay's, and the internal one that swaps devices —
     // so the flag cannot outlive the capture it described.
@@ -5204,6 +5228,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * to populate one. Cleared on any stop: a stream that is gone has no viewer.
    */
   const localViewerLanes = new Set<string>();
+  /**
+   * The relay's viewers, when this service has a relay in front of it. Set by
+   * `createAppleStreamRelayForService`; null in a process that has none.
+   */
+  let remoteViewers: AppleRemoteViewerProbe | null = null;
+  const setRemoteViewerProbe = (probe: AppleRemoteViewerProbe | null): void => {
+    remoteViewers = probe;
+  };
   const markLocalViewer = (laneId: string | null | undefined): void => {
     const lane = typeof laneId === "string" ? laneId.trim() : "";
     if (lane) localViewerLanes.add(lane);
@@ -6234,6 +6266,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     getStreamStatus,
     /** Is a renderer on this machine still watching this lane's stream? */
     hasLocalViewer,
+    setRemoteViewerProbe,
     frame,
     tap,
     pressButton,
