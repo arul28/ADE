@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import { noteWorkToolMounted } from "../../lib/workToolOnScreen";
 import { useNavigate } from "react-router-dom";
 import { Play, WarningCircle } from "@phosphor-icons/react";
 import type { ComponentType, ReactNode } from "react";
@@ -235,6 +236,8 @@ function WorkBrowserTool(props: WorkToolPanelProps) {
     onInsertDraft,
   } = props;
   const mountScope = useWorkToolMountScope(runtimePin);
+  // `ade ui show browser` answers "shown" only once this is mounted.
+  useLayoutEffect(() => noteWorkToolMounted("browser", laneId ?? null), [laneId]);
   // A surface that cannot drive the tool shows what the desktop is doing with
   // it instead. Checked before the native panel so it never mounts a stubbed
   // namespace it would only fail against.
@@ -446,6 +449,9 @@ function WorkIosTool({
     if (!laneId) return;
     releaseAppleMiniPlayerHandoverHold();
   });
+
+  // `ade apple show` answers "shown" only once this is mounted.
+  useLayoutEffect(() => (laneId ? noteWorkToolMounted("ios", laneId) : undefined), [laneId]);
 
   useLayoutEffect(() => {
     if (!laneId) return undefined;

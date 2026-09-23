@@ -62,9 +62,10 @@ export type WorkToolShowArgs = {
 /**
  * What a desktop did with a request.
  *
- * `shown`: the chat is in front and the surface is open now. `held`: a window
- * has this project open but the chat is not in front, so the surface opens
- * when the user goes to that chat.
+ * `shown`: the surface is on screen now — mounted, laid out, in a visible
+ * window. `held`: a window has this project open but the user cannot see the
+ * surface yet (another chat is in front, or the window is hidden), so it opens
+ * when they go to that chat.
  */
 export type WorkToolShowAckStatus = "shown" | "held";
 
@@ -95,7 +96,7 @@ export function describeWorkToolShowResult(
   const where = desktopLabel ? ` on ${desktopLabel}` : "";
   if (status === "shown") return `Showing the ${name}${where}.`;
   if (status === "held") {
-    return `A desktop window${where} has this project open, but this chat is not in front. The ${name} opens when the user goes to this chat.`;
+    return `A desktop window${where} has this project open, but the user cannot see this chat right now (another chat is in front, or the window is hidden). The ${name} opens when they go to this chat.`;
   }
   return `No desktop window is open for this chat, so nothing was shown. Tell the user to open this chat in ADE Desktop.`;
 }

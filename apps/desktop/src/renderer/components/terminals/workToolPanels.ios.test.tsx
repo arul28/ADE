@@ -28,9 +28,11 @@ const {
 const {
   getAppleMiniPlayerLaneDevice,
   getAppleMiniPlayerTarget,
+  openAppleMiniPlayer,
   resetAppleMiniPlayerForTests,
   takeAppleMiniPlayerPoster,
 } = await import("../apple/appleMiniPlayerStore");
+const { isWorkToolMounted, resetWorkToolOnScreenForTests } = await import("../../lib/workToolOnScreen");
 
 const LANE = "lane-1";
 const UDID = "UDID-1";
@@ -108,6 +110,30 @@ afterEach(() => {
 const WorkIosTool = WORK_TOOL_COMPONENTS.ios;
 
 describe("the Apple tool panel's handover", () => {
+  /*
+   * `apple show` while the device floats: the pane takes the device back
+   * through its own retake handover, and only the mounted tool counts as
+   * "on screen" for the show's answer.
+   */
+  it("takes the device back from the floating player on mount, and says it is mounted", () => {
+    resetWorkToolOnScreenForTests();
+    openAppleMiniPlayer({
+      laneId: LANE,
+      chatSessionId: "chat-1",
+      deviceUdid: UDID,
+      deviceName: "ADE Repro",
+      deviceRuntime: "iOS 26.2",
+      family: "iphone",
+      runtimePin: null,
+    });
+    expect(isWorkToolMounted("ios", LANE)).toBe(false);
+    const view = render(<WorkIosTool {...props()} />);
+    expect(getAppleMiniPlayerTarget()).toBeNull();
+    expect(isWorkToolMounted("ios", LANE)).toBe(true);
+    view.unmount();
+    expect(isWorkToolMounted("ios", LANE)).toBe(false);
+  });
+
   it("caches the lane's device while it is open, so the unmount needs no question", async () => {
     render(<WorkIosTool {...props()} />);
     await vi.waitFor(() => expect(getAppleMiniPlayerLaneDevice(LANE)).toEqual({

@@ -220,6 +220,7 @@ import { ChatIosSimulatorPanel } from "./ChatIosSimulatorPanel";
 import { IosSimulatorRunningPill } from "../work/IosSimulatorRunningPill";
 import { openAppleMiniPlayer } from "../apple/appleMiniPlayerStore";
 import { useWorkToolShowHandler } from "../../lib/workToolShowRequests";
+import { isDocumentVisible } from "../../lib/workToolOnScreen";
 import type { WorkToolShowSurface } from "../../../shared/types/workToolShow";
 import { ChatAppControlPanel } from "./ChatAppControlPanel";
 import { ChatSubagentsPanel } from "./ChatSubagentsPanel";
@@ -7534,7 +7535,11 @@ export function AgentChatPane({
       if (request.chatSessionId !== selectedSessionIdRef.current) return false;
       if (request.surface === "proof") {
         openProofDrawer();
-        return true;
+        // Answered after the drawer's commit, and only in a window the user
+        // can see: "shown" means on screen, not asked for.
+        return new Promise<boolean>((resolve) => {
+          window.setTimeout(() => resolve(isDocumentVisible()), 0);
+        });
       }
       if (request.surface === "apple" && !hideLaneToolDrawers && laneId) {
         setIosSimulatorAvailable(true);

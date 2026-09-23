@@ -237,8 +237,9 @@ When the user asks to see the device ("open the sim drawer", "show me"):
 It targets your own chat and reports what really happened:
 
 - `shown` — it is on screen now.
-- `held` — a desktop window has this project open but your chat is not in
-  front. It opens when the user goes to your chat. Say so.
+- `held` — a desktop window has this project open but the user cannot see
+  it yet (your chat is not in front, or the window is hidden). It opens when
+  the user goes to your chat. Say so.
 - `no_desktop` (exit 1) — no desktop window is open for this chat, so nothing
   was shown. Tell the user; do not claim you opened it.
 

@@ -76,6 +76,7 @@ import {
   receiveWorkToolShowRequest,
   resetWorkToolShowRequestsForTests,
 } from "../../lib/workToolShowRequests";
+import { setDocumentVisibleForTests } from "../../lib/workToolOnScreen";
 import {
   DEFAULT_CHAT_COMPANION_UI_STATE,
   chatCompanionUiStorageKey,
@@ -2081,6 +2082,7 @@ describe("AgentChatPane companion drawers", () => {
   });
 
   it("opens the proof drawer and the Apple drawer when an agent asks with ade ui show", async () => {
+    setDocumentVisibleForTests(true);
     renderDrawerPane();
     await screen.findByRole("button", { name: "Open chat actions drawer" });
 
@@ -2112,6 +2114,7 @@ describe("AgentChatPane companion drawers", () => {
     expect(status).toBe("shown");
     expect(screen.getByTestId("ios-panel").textContent).toBe("iOS panel mounted");
     resetWorkToolShowRequestsForTests();
+    setDocumentVisibleForTests(null);
   });
 
   it("opens the proof drawer as a floating info pane (no split divider)", async () => {

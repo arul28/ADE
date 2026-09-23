@@ -17,6 +17,11 @@ import {
   useWorkToolShowRequestListener,
 } from "../../lib/workToolShowRequests";
 import type { WorkToolShowRequest, WorkToolShowSurface } from "../../../shared/types/workToolShow";
+import {
+  isDocumentVisible,
+  isWorkToolOnScreen,
+  waitForWorkToolOnScreen,
+} from "../../lib/workToolOnScreen";
 import { AppleShutdownConfirmHost } from "../apple/AppleShutdownConfirm";
 import { NativeToolFeedsProvider } from "./NativeToolFeedsContext";
 import { useWorkSidebarTool } from "./useWorkSidebarTool";
@@ -1169,29 +1174,41 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
    * the player turns it off for the chat, and it stays off until the user turns
    * it back on or the agent asks with `ade apple show`.
    */
-  const appleToolOnScreen = workSidebarVisible && workSidebarTool === "ios";
+  const appleToolOpening = workSidebarVisible && workSidebarTool === "ios";
   const showWorkSurface = useCallback((request: WorkToolShowRequest): boolean | Promise<boolean> => {
     if (!activeWorkSession || request.chatSessionId !== activeWorkSession.id) return false;
+    const sessionLaneId = activeWorkSession.laneId || null;
+    /*
+     * Writing the tool into the store is a request, not a result: "shown" is
+     * answered only once the tool has mounted in a pane the user can see (see
+     * `workToolOnScreen`). The 2026-09-23 report was a "shown" for a pane that
+     * never appeared.
+     */
     if (request.surface === "browser") {
       setWorkSidebarTool("browser");
-      return true;
+      return waitForWorkToolOnScreen("browser", sessionLaneId);
     }
     if (request.surface === "apple") {
       // An explicit ask undoes an earlier × for this chat's floating device.
       setWorkLivePreviewEnabledForChat(request.chatSessionId, "ios", true);
+      // Mounting the Apple tool takes the device back from a floating player
+      // (the pane's own retake handover), so the player closes by itself.
       setWorkSidebarTool("ios");
-      return true;
+      return waitForWorkToolOnScreen("ios", sessionLaneId);
     }
     if (request.surface !== "floating-apple") return false;
     // The device is already on screen in the pane.
-    if (appleToolOnScreen) return true;
+    if (isWorkToolOnScreen("ios", sessionLaneId)) return true;
+    // Opening, not yet visible: an automatic float would only be taken back
+    // by the pane a moment later.
+    if (request.auto && appleToolOpening) return false;
     return floatAppleMiniPlayerForChat({
-      laneId: activeWorkSession.laneId || null,
+      laneId: sessionLaneId,
       chatSessionId: request.chatSessionId,
       runtimePin: activeWorkSessionRuntimePin,
       auto: request.auto,
-    });
-  }, [activeWorkSession, activeWorkSessionRuntimePin, appleToolOnScreen, setWorkSidebarTool]);
+    }).then((floated) => floated && isDocumentVisible());
+  }, [activeWorkSession, activeWorkSessionRuntimePin, appleToolOpening, setWorkSidebarTool]);
   useWorkToolShowHandler(
     active && activeWorkSession ? activeWorkSession.id : null,
     WORK_PAGE_SHOW_SURFACES,

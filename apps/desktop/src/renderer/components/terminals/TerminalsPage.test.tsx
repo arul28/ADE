@@ -27,6 +27,12 @@ import {
   receiveWorkToolShowRequest,
   resetWorkToolShowRequestsForTests,
 } from "../../lib/workToolShowRequests";
+import {
+  noteWorkToolMounted,
+  resetWorkToolOnScreenForTests,
+  setDocumentVisibleForTests,
+  setWorkToolsPaneVisibleProbeForTests,
+} from "../../lib/workToolOnScreen";
 
 const crossMachineMocks = vi.hoisted(() => ({
   cancelOptimistic: vi.fn(),
@@ -620,6 +626,7 @@ describe("TerminalsPage chat session activation", () => {
     forgetWorkPtyLaunchPin({ sessionId: "chat-foreign" });
     resetRemoteBrowserOpensForTests();
     resetWorkToolShowRequestsForTests();
+    resetWorkToolOnScreenForTests();
     vi.clearAllMocks();
   });
 
@@ -1662,7 +1669,19 @@ describe("TerminalsPage chat session activation", () => {
       await screen.findByTestId("work-view-area");
     };
 
+    /** The pane, as far as a show can tell: the tool mounts when it is written. */
+    const paneMountsWhatIsWritten = () => {
+      setDocumentVisibleForTests(true);
+      setWorkToolsPaneVisibleProbeForTests(() => true);
+      workMocks.fns.setLaneWorkViewState.mockImplementation(
+        (_root: string, laneId: string, next: { workSidebarTool?: string | null }) => {
+          if (next.workSidebarTool) noteWorkToolMounted(next.workSidebarTool, laneId);
+        },
+      );
+    };
+
     it("opens the Apple tool or the browser for the chat in front", async () => {
+      paneMountsWhatIsWritten();
       await renderWithChatInFront();
       await expect(receiveWorkToolShowRequest(showRequest({ surface: "apple" }))).resolves.toBe("shown");
       expect(workMocks.fns.setLaneWorkViewState).toHaveBeenLastCalledWith(
@@ -1677,6 +1696,43 @@ describe("TerminalsPage chat session activation", () => {
         expect.objectContaining({ workSidebarTool: "browser" }),
       );
     });
+
+    /*
+     * Regression, 2026-09-23 (chat 13d65dd4): `apple show` printed "shown"
+     * while only the floating player was on screen. "shown" now waits for the
+     * Apple tool to mount in a pane the user can see.
+     */
+    it("answers shown for the Apple tool only once it is on screen", async () => {
+      // The pane does not mount on its own here: this test mounts it.
+      workMocks.fns.setLaneWorkViewState.mockImplementation(() => undefined);
+      setDocumentVisibleForTests(true);
+      setWorkToolsPaneVisibleProbeForTests(() => true);
+      await renderWithChatInFront();
+      let answer: string | null = "pending";
+      const pending = receiveWorkToolShowRequest(showRequest({ surface: "apple" }))
+        .then((status) => { answer = status; });
+      await waitFor(() => expect(workMocks.fns.setLaneWorkViewState).toHaveBeenCalledWith(
+        "/repo",
+        "lane-background",
+        expect.objectContaining({ workSidebarTool: "ios" }),
+      ));
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      expect(answer).toBe("pending");
+      // The pane mounts the Apple tool (which takes the device back from the
+      // floating player): now it is shown.
+      noteWorkToolMounted("ios", "lane-background");
+      await pending;
+      expect(answer).toBe("shown");
+    });
+
+    it("answers held, not shown, when the pane never becomes visible", async () => {
+      // A hidden window runs no animation frames: the pane stays a sliver.
+      workMocks.fns.setLaneWorkViewState.mockImplementation(() => undefined);
+      setDocumentVisibleForTests(false);
+      await renderWithChatInFront();
+      noteWorkToolMounted("ios", "lane-background");
+      await expect(receiveWorkToolShowRequest(showRequest({ surface: "apple" }))).resolves.toBe("held");
+    }, 10_000);
 
     it("holds a request for a chat that is not in front without touching this pane", async () => {
       await renderWithChatInFront();
@@ -1717,11 +1773,17 @@ describe("TerminalsPage chat session activation", () => {
       expect(floatMocks.floatAppleMiniPlayerForChat).not.toHaveBeenCalled();
     });
 
-    it("does not float over the Apple tool when it is already on screen", async () => {
+    it("does not float over the Apple tool when it is on screen, or while it opens", async () => {
       workMocks.laneWorkViewByScope = {
         "/repo::lane-background": { workSidebarTool: "ios", workSidebarOpenTools: ["ios"] },
       };
       await renderWithChatInFront({ workSidebarOpen: true });
+      // Opening: written, not yet mounted.
+      await expect(receiveWorkToolShowRequest(showRequest({ surface: "floating-apple", auto: true })))
+        .resolves.toBeNull();
+      setDocumentVisibleForTests(true);
+      setWorkToolsPaneVisibleProbeForTests(() => true);
+      noteWorkToolMounted("ios", "lane-background");
       await expect(receiveWorkToolShowRequest(showRequest({ surface: "floating-apple", auto: true })))
         .resolves.toBe("shown");
       expect(floatMocks.floatAppleMiniPlayerForChat).not.toHaveBeenCalled();
