@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AppleLaneDevice } from "../../../shared/types";
 import { createLaneDeviceLifecycle, type LifecycleLaneRuntime } from "./laneDeviceLifecycle";
-import type { LaneDeviceRegistry } from "./laneDeviceRegistry";
+import { AppleDeviceAttachedNotDeletableError, type LaneDeviceRegistry } from "./laneDeviceRegistry";
 
 const device: AppleLaneDevice = {
   laneId: "lane-b",
@@ -14,8 +14,16 @@ const device: AppleLaneDevice = {
   templateUdid: "device-2",
 };
 
-function setup(owner: string | null) {
+function setup(initialOwner: string | null) {
+  let owner = initialOwner;
   let bound: AppleLaneDevice | null = device;
+  // The service's queue: one step at a time per lane.
+  let queue: Promise<unknown> = Promise.resolve();
+  const serializeDeviceLifecycle = <T>(_runtime: unknown, step: () => Promise<T>): Promise<T> => {
+    const next = queue.then(step, step);
+    queue = next.then(() => undefined, () => undefined);
+    return next;
+  };
   const runtime: LifecycleLaneRuntime = {
     key: "lane-b",
     laneId: "lane-b",
@@ -41,7 +49,7 @@ function setup(owner: string | null) {
     allRuntimes: () => [runtime],
     resolveRuntime: () => runtime,
     requireLaneScope: () => runtime,
-    serializeDeviceLifecycle: (_runtime, step) => step(),
+    serializeDeviceLifecycle,
     assertDarwin: () => {},
     // The service's rule, as `shutdown` applies it.
     assertSessionOwner: (_runtime, caller) => {
@@ -57,7 +65,15 @@ function setup(owner: string | null) {
     emit,
     logger: { info: vi.fn(), debug: vi.fn() },
   });
-  return { lifecycle, laneDevices, shutdown, emit, bound: () => bound };
+  return {
+    lifecycle,
+    laneDevices,
+    shutdown,
+    emit,
+    serializeDeviceLifecycle,
+    bound: () => bound,
+    setOwner: (next: string | null) => { owner = next; },
+  };
 }
 
 describe("laneDeviceLifecycle", () => {
@@ -115,5 +131,39 @@ describe("laneDeviceLifecycle", () => {
     // The Work pane deletes for whoever is running.
     await cloneCase.lifecycle.deviceDelete({ laneId: "lane-b", ignoreOwnership: true });
     expect(cloneCase.laneDevices.deviceDelete).toHaveBeenCalledWith({ laneId: "lane-b" });
+  });
+
+  it("regression: a delete queued behind another chat's start is refused once that chat claims the session", async () => {
+    const { lifecycle, laneDevices, shutdown, serializeDeviceLifecycle, setOwner, bound } = setup(null);
+    let claimed = () => {};
+    const claim = new Promise<void>((resolve) => { claimed = resolve; });
+    // Chat A's start, in flight: it claims the session when it finishes.
+    const start = serializeDeviceLifecycle(null, async () => {
+      await claim;
+      setOwner("chat-a");
+    });
+
+    // No owner yet, so the up-front check passes and the delete waits its turn.
+    const deleted = lifecycle.deviceDelete({ laneId: "lane-b", chatSessionId: "chat-b" });
+    claimed();
+    await start;
+
+    await expect(deleted).rejects.toThrow(/IOS_SIMULATOR_OWNED_BY_OTHER_SESSION/);
+    expect(shutdown).not.toHaveBeenCalled();
+    expect(laneDevices.deviceDelete).not.toHaveBeenCalled();
+    expect(bound()).toBe(device);
+  });
+
+  it("a forced delete whose clone became attached while it waited says to detach", async () => {
+    const { lifecycle, laneDevices } = setup(null);
+    const attached = { ...device, origin: "attached" as const };
+    (laneDevices.deviceDelete as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new AppleDeviceAttachedNotDeletableError(attached),
+    );
+
+    const refused = lifecycle.deviceDelete({ laneId: "lane-b", force: true });
+    await expect(refused).rejects.toThrow(/APPLE_DEVICE_ATTACHED_NOT_DELETABLE/);
+    await expect(refused).rejects.toThrow(/became attached .* Run device-detach/);
+    await expect(refused).rejects.not.toThrow(/Pass force/);
   });
 });

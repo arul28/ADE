@@ -7,7 +7,7 @@ import type {
   RemoteRuntimeConnectionAttemptFailure,
   RemoteRuntimeTarget,
 } from "../../../shared/types/remoteRuntime";
-import { DESKTOP_CLIENT_NAMES } from "../../../shared/syntheticCallerId";
+import { DESKTOP_CLIENT_NAMES } from "../../../shared/runtimeClientNames";
 import {
   coerceProjects,
   validateRemoteRuntimeInitializeResult,

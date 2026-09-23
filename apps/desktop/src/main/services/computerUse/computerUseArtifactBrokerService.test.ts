@@ -472,6 +472,62 @@ describe("computerUseArtifactBrokerService", () => {
     expect(broker.listArtifacts({ limit: 50 })).toHaveLength(0);
   });
 
+  it("regression: a batch whose second row fails to insert files nothing", () => {
+    const events: string[] = [];
+    let artifactInserts = 0;
+    const failingDb: AdeDb = {
+      ...db,
+      run: (sql, params) => {
+        if (/insert into computer_use_artifacts\(/.test(sql) && ++artifactInserts === 2) {
+          throw new Error("disk full");
+        }
+        db.run(sql, params);
+      },
+    };
+    const broker = createComputerUseArtifactBrokerService({
+      db: failingDb,
+      projectId: "project-1",
+      projectRoot,
+      logger: createLogger(),
+      onEvent: (payload) => events.push(payload.type),
+    });
+    const firstCapture = path.join(projectRoot, "first.png");
+    const secondCapture = path.join(projectRoot, "second.png");
+    fs.writeFileSync(firstCapture, "first", "utf8");
+    fs.writeFileSync(secondCapture, "second", "utf8");
+
+    expect(() =>
+      broker.ingest({
+        backend: { name: "ade-cli", style: "manual" },
+        owners: [{ kind: "lane", id: "lane-1" }],
+        inputs: [
+          { kind: "screenshot", title: "First proof", path: firstCapture },
+          { kind: "screenshot", title: "Second proof", path: secondCapture },
+        ],
+      }),
+    ).toThrow(/disk full/);
+
+    // Row 1 was rolled back with row 2, so a retry files each once.
+    expect(broker.listArtifacts({ limit: 50 })).toHaveLength(0);
+    expect(db.all("select id from computer_use_artifact_links")).toHaveLength(0);
+    expect(events).toEqual([]);
+    const stagedDir = path.join(projectRoot, ".ade", "artifacts", "computer-use");
+    expect(fs.existsSync(stagedDir) ? fs.readdirSync(stagedDir) : []).toEqual([]);
+
+    // The same connection still takes writes afterwards.
+    artifactInserts = 10;
+    const retried = broker.ingest({
+      backend: { name: "ade-cli", style: "manual" },
+      owners: [{ kind: "lane", id: "lane-1" }],
+      inputs: [
+        { kind: "screenshot", title: "First proof", path: firstCapture },
+        { kind: "screenshot", title: "Second proof", path: secondCapture },
+      ],
+    });
+    expect(retried.artifacts).toHaveLength(2);
+    expect(broker.listArtifacts({ limit: 50 })).toHaveLength(2);
+  });
+
   it("deletes an artifact's rows and its stored file, and stays idempotent", async () => {
     const broker = createComputerUseArtifactBrokerService({
       db,

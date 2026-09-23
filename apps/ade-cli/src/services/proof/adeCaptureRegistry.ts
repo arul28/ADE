@@ -5,8 +5,13 @@ import { pathKey } from "../../../../desktop/src/main/services/shared/pathCompar
 /** Where ADE-made bytes came from, as the proof drawer labels them. */
 export type AdeCaptureSource = "ade-capture" | "ade-recorder";
 
-/** A remembered capture: who made it, and the hash its bytes had then. */
-export type AdeCaptureMatch = { source: AdeCaptureSource; sha256: string };
+/**
+ * A remembered capture: who made it, and the hash its bytes had then.
+ * `release` puts the claimed entry back, for a filing that failed or was filed
+ * as an attach. It does nothing after the first call, once the entry expired,
+ * or once the path was re-captured.
+ */
+export type AdeCaptureMatch = { source: AdeCaptureSource; sha256: string; release(): void };
 
 const DEFAULT_TTL_MS = 15 * 60_000;
 const DEFAULT_MAX_ENTRIES = 256;
@@ -25,14 +30,10 @@ export type AdeCaptureRegistry = {
   /**
    * The capture behind a remembered file whose bytes are unchanged, else null.
    * Claims the entry: a second filing of the same capture, even a concurrent
-   * one, is an attach. `release` hands it back when the filing did not keep it.
+   * one, is an attach. The match's `release` hands it back when the filing did
+   * not keep it.
    */
   match(filePath: string): Promise<AdeCaptureMatch | null>;
-  /**
-   * Put a claimed capture back, for a filing that failed or was filed as an
-   * attach. Does nothing once the entry expired or the path was re-captured.
-   */
-  release(match: AdeCaptureMatch): void;
 };
 
 export function createAdeCaptureRegistry(options: {
@@ -44,7 +45,6 @@ export function createAdeCaptureRegistry(options: {
   const maxEntries = options.maxEntries ?? DEFAULT_MAX_ENTRIES;
   const now = options.now ?? Date.now;
   const entries = new Map<string, Entry>();
-  const claimed = new WeakMap<AdeCaptureMatch, { key: string; entry: Entry }>();
 
   const prune = () => {
     const at = now();
@@ -80,17 +80,18 @@ export function createAdeCaptureRegistry(options: {
       if (!fingerprint || fingerprint.sha256 !== entry.sha256 || fingerprint.bytes !== entry.bytes) {
         return null;
       }
-      const match: AdeCaptureMatch = { source: entry.source, sha256: entry.sha256 };
-      claimed.set(match, { key, entry });
-      return match;
-    },
-    release(match) {
-      const claim = claimed.get(match);
-      if (!claim) return;
-      claimed.delete(match);
-      if (claim.entry.expiresAt <= now() || entries.has(claim.key)) return;
-      entries.set(claim.key, claim.entry);
-      prune();
+      let released = false;
+      return {
+        source: entry.source,
+        sha256: entry.sha256,
+        release() {
+          if (released) return;
+          released = true;
+          if (entry.expiresAt <= now() || entries.has(key)) return;
+          entries.set(key, entry);
+          prune();
+        },
+      };
     },
   };
 }

@@ -95,7 +95,8 @@ import {
   BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM,
 } from "./services/builtInBrowser/desktopBridgeMethods";
 import { FORWARDABLE_BUILT_IN_BROWSER_METHODS } from "./services/builtInBrowser/remoteBrowserForwarder";
-import { DESKTOP_CLIENT_NAMES, isDesktopClientName, isSyntheticCallerId } from "../../desktop/src/shared/syntheticCallerId";
+import { DESKTOP_CLIENT_NAMES, isDesktopClientName } from "../../desktop/src/shared/runtimeClientNames";
+import { isSyntheticCallerId } from "../../desktop/src/shared/syntheticCallerId";
 import { hasDrawerOwner } from "../../desktop/src/shared/proofProvenance";
 import {
   ADE_CAPTURE_ACTIONS,
@@ -2403,7 +2404,7 @@ export async function resolveIngestProvenance(
   }));
   const captured = matches.filter((entry) => entry !== null);
   const release = () => {
-    for (const entry of captured) registry.release(entry);
+    for (const entry of captured) entry.release();
   };
   const source = captured[0]?.source;
   if (!source || captured.length !== matches.length || captured.some((entry) => entry.source !== source)) {
@@ -5433,7 +5434,8 @@ async function runTool(args: {
         owners,
       });
     } catch (error) {
-      // Nothing was filed, so a retry is still ADE's own capture.
+      // The broker files a batch in one transaction, so nothing was filed and
+      // a retry is still ADE's own capture.
       release();
       throw error;
     }

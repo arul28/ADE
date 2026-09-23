@@ -526,7 +526,15 @@ describe("resolveIngestProvenance", () => {
     const still = path.join(dir, "shot.png");
     fs.writeFileSync(still, "png");
     await registry.remember(still, "ade-capture");
-    expect(await registry.match(still)).toEqual({ source: "ade-capture", sha256: sha256Of(still) });
+    const match = await registry.match(still);
+    expect(match).toMatchObject({ source: "ade-capture", sha256: sha256Of(still) });
+    expect(await registry.match(still)).toBeNull();
+
+    // A copy of the match still hands the claim back, and only once.
+    const copy = { ...match! };
+    copy.release();
+    copy.release();
+    expect(await registry.match(still)).toMatchObject({ source: "ade-capture" });
     expect(await registry.match(still)).toBeNull();
   });
 

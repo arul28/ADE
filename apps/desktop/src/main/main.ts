@@ -313,13 +313,10 @@ import { createCursorCloudFleetService } from "./services/chat/cursorCloudFleetS
 import { buildCursorCloudAutomationDispatches } from "./services/automations/cursorCloudAutomationDispatch";
 import { openCursorCloudCredentialStore } from "./services/chat/cursorCloudCreateOptions";
 import { createGithubPollingService } from "./services/automations/githubPollingService";
-import type { AutomationAdeActionRegistry } from "./services/automations/automationService";
 import {
-  ADE_ACTION_ALLOWLIST,
-  type AdeActionDomain,
+  createAutomationAdeActionLookup,
   flushStagedBoardMoves,
   getAdeActionDomainServices,
-  isAutomationAllowedAdeAction,
 } from "./services/adeActions/registry";
 import {
   createUsageTrackingService,
@@ -5287,28 +5284,9 @@ app.whenReady().then(async () => {
     // that `ade-action` automation steps can invoke the same domain services
     // the RPC server exposes. We do this lazily — the registry re-resolves
     // services on every call so late-bound runtime state remains visible.
-    {
-      const adeActionLookup: AutomationAdeActionRegistry = {
-        isAllowed(domain: string, action: string): boolean {
-          return isAutomationAllowedAdeAction(domain as AdeActionDomain, action);
-        },
-        getService(domain: string): Record<string, unknown> | null {
-          const pseudoRuntime = buildAdeActionRuntimeForAutomations();
-          const services = getAdeActionDomainServices(pseudoRuntime);
-          const service = services[domain as AdeActionDomain] ?? null;
-          return (service ?? null) as Record<string, unknown> | null;
-        },
-        listDomains(): string[] {
-          return Object.keys(ADE_ACTION_ALLOWLIST);
-        },
-        listActions(domain: string): string[] {
-          return [...(ADE_ACTION_ALLOWLIST[domain as AdeActionDomain] ?? [])]
-            // Same rule as `isAllowed`, so nothing listed is refused when run.
-            .filter((action) => isAutomationAllowedAdeAction(domain as AdeActionDomain, action));
-        },
-      };
-      automationService?.bindAdeActionRegistry(adeActionLookup);
-    }
+    automationService?.bindAdeActionRegistry(
+      createAutomationAdeActionLookup(() => getAdeActionDomainServices(buildAdeActionRuntimeForAutomations())),
+    );
 
     // Helper: materialize an AdeRuntime-shaped bag from the current set of
     // locally-created services so that the registry's service map resolves.

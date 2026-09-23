@@ -1403,7 +1403,7 @@ export function createComputerUseArtifactBrokerService(args: {
       prepared.discard();
       throw error;
     }
-    const artifacts = judged.map(({ input, kind, title, stored, fingerprint, unhashedBytes, mediaCreatedAt, recordedBeforeRequest }) => {
+    const writeRows = () => judged.map(({ input, kind, title, stored, fingerprint, unhashedBytes, mediaCreatedAt, recordedBeforeRequest }) => {
       const { uri, storageKind, mimeType } = stored;
       const metadata = {
         ...callerMetadata(input.metadata),
@@ -1433,23 +1433,33 @@ export function createComputerUseArtifactBrokerService(args: {
         metadata,
         laneId,
       });
-      for (const owner of owners) {
-        insertLink(record.id, owner);
-        emit({
-          type: "artifact-linked",
-          artifactId: record.id,
-          at: nowIso(),
-          owner,
-        });
-      }
-      emit({
-        type: "artifact-ingested",
-        artifactId: record.id,
-        at: nowIso(),
-        owner: owners[0] ?? null,
-      });
+      for (const owner of owners) insertLink(record.id, owner);
       return record;
     });
+    let artifacts: ComputerUseArtifactRecord[];
+    // One transaction, so a failed insert files nothing and a retry does not
+    // file the first rows again. A savepoint, so it also nests safely.
+    db.run("savepoint computer_use_ingest");
+    try {
+      artifacts = writeRows();
+      db.run("release computer_use_ingest");
+    } catch (error) {
+      try {
+        db.run("rollback to computer_use_ingest");
+        db.run("release computer_use_ingest");
+      } catch {
+        // Keep the insert error.
+      }
+      prepared.discard();
+      throw error;
+    }
+    // After the commit, so no listener reads a row that was rolled back.
+    for (const record of artifacts) {
+      for (const owner of owners) {
+        emit({ type: "artifact-linked", artifactId: record.id, at: nowIso(), owner });
+      }
+      emit({ type: "artifact-ingested", artifactId: record.id, at: nowIso(), owner: owners[0] ?? null });
+    }
     return {
       artifacts,
       links: readLinkRows(artifacts.map((artifact) => artifact.id)),

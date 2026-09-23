@@ -611,8 +611,11 @@ const BUILD_CLI_PLAN_HELP_CALL_SITES = 2;
  * 110 since `ade ui show` and CLI delegation: `buildUiPlan` reads the show
  * surface and scope, and `runMainAndExit` / `runUnlessDelegated` run the CLI
  * when no delegation took the call. None of them is a browser subcommand.
+ *
+ * 111 since `readIgnoreOwnershipArg`: the Apple ownership verbs read
+ * `--ignore-ownership` through one reader. Not a browser flag.
  */
-const ARGV_READER_COUNT = 110;
+const ARGV_READER_COUNT = 111;
 /*
  * The moved readers — `readParentSessionId`, `readAgentSpawnLineage`,
  * `collectLaunchArgs`/`normalizeLaunchArgs` — now live in launchArgs.ts, which

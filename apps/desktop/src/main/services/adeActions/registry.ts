@@ -181,6 +181,8 @@ import { providerAccountAnalyticsCapture } from "../analytics/featureProductAnal
 // module's whole service graph to get it. Re-exported here because this is
 // where every existing caller looks for them.
 import type { AdeActionDomain } from "./domains";
+import { ADE_ACTION_ALLOWLIST, isAutomationAllowedAdeAction } from "./actionPolicy";
+import type { AutomationAdeActionRegistry } from "../automations/automationService";
 import {
   asActionRecord,
   optionalNonEmptyString,
@@ -3441,5 +3443,31 @@ export function getAdeActionDomainServices(
     search: toService(buildSearchDomainService(runtime)),
     "external-sessions": toService(buildExternalSessionsDomainService(runtime)),
     provider_instances: toService(buildProviderInstancesDomainService(runtime)),
+  };
+}
+
+/**
+ * The action lookup `ade-action` automation steps run through. Same allowlist
+ * and rule as `run_ade_action`; `getServices` is read on every call, so
+ * late-bound services are seen.
+ */
+export function createAutomationAdeActionLookup(
+  getServices: () => Partial<Record<AdeActionDomain, unknown>>,
+): AutomationAdeActionRegistry {
+  return {
+    isAllowed(domain, action) {
+      return isAutomationAllowedAdeAction(domain as AdeActionDomain, action);
+    },
+    getService(domain) {
+      return (getServices()[domain as AdeActionDomain] ?? null) as Record<string, unknown> | null;
+    },
+    listDomains() {
+      return Object.keys(ADE_ACTION_ALLOWLIST);
+    },
+    listActions(domain) {
+      return [...(ADE_ACTION_ALLOWLIST[domain as AdeActionDomain] ?? [])]
+        // Same rule as `isAllowed`, so nothing listed is refused when run.
+        .filter((action) => isAutomationAllowedAdeAction(domain as AdeActionDomain, action));
+    },
   };
 }

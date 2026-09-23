@@ -22,7 +22,7 @@ import {
   shouldUseWindowsCmdWrapper,
 } from "../../../desktop/src/main/services/shared/processExecution";
 import { isSourceCheckoutRuntimeModule } from "../runtimePackaging";
-import { CLI_GLOBAL_VALUE_FLAGS, looksLikeSocketPathOverride } from "./cliGlobalArgs";
+import { isCliGlobalValueFlag, looksLikeSocketPathOverride } from "./cliGlobalArgs";
 
 /** Set on the delegated child: never delegate again (loop guard). */
 export const CLI_DELEGATED_ENV = "ADE_CLI_DELEGATED";
@@ -380,7 +380,7 @@ export function cliCommandWord(argv: readonly string[]): string | null {
     const token = argv[index]!;
     if (token === "--") return null;
     if (!token.startsWith("-")) return token;
-    if (CLI_GLOBAL_VALUE_FLAGS.has(token)) {
+    if (isCliGlobalValueFlag(token)) {
       index += 1;
     } else if (token === "--socket" && looksLikeSocketPathOverride(argv[index + 1] ?? "")) {
       // Bare, `--socket` means "the default socket".

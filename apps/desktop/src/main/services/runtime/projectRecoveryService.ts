@@ -29,7 +29,7 @@ import {
 } from "../state/kvDb";
 import { readVolumeSpace } from "../storage/volume";
 import { isLocalReleaseBuildOutputError } from "../../../shared/runtimeErrors";
-import { DESKTOP_CLIENT_NAMES } from "../../../shared/syntheticCallerId";
+import { DESKTOP_CLIENT_NAMES } from "../../../shared/runtimeClientNames";
 import { clearLastFailure, readLastFailure } from "./lastFailureStore";
 
 const MIB = 1024 * 1024;

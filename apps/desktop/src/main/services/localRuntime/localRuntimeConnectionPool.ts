@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { app } from "electron";
 import { isAdeRuntimeNamedPipePath } from "../../../shared/adeRuntimeIpc";
-import { DESKTOP_CLIENT_NAMES } from "../../../shared/syntheticCallerId";
+import { DESKTOP_CLIENT_NAMES } from "../../../shared/runtimeClientNames";
 import { signalChildProcessTree } from "../shared/utils";
 import {
   isRuntimeProtocolCompatible,

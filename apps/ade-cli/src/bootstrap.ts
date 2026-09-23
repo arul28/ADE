@@ -199,16 +199,11 @@ import { getSharedPushPublisherService, resolvePushRelayStateFile, type PushPrNo
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import type { AppNavigationRequest, AppNavigationResult, PortLease, SyncRoleSnapshot } from "../../desktop/src/shared/types";
 import type { PrEventPayload } from "../../desktop/src/shared/types/prs";
-import {
-  createAutomationService,
-  type AutomationAdeActionRegistry,
-} from "../../desktop/src/main/services/automations/automationService";
+import { createAutomationService } from "../../desktop/src/main/services/automations/automationService";
 import { createAutomationPlannerService } from "../../desktop/src/main/services/automations/automationPlannerService";
 import {
-  ADE_ACTION_ALLOWLIST,
-  type AdeActionDomain,
+  createAutomationAdeActionLookup,
   getAdeActionDomainServices,
-  isAutomationAllowedAdeAction,
 } from "../../desktop/src/main/services/adeActions/registry";
 import { createLaneWorktreeLockService, type LaneWorktreeLockService } from "../../desktop/src/main/services/lanes/laneWorktreeLockService";
 import { createHeadlessLinearServices } from "./headlessLinearServices";
@@ -2606,24 +2601,9 @@ export async function createAdeRuntime(args: {
       }
     };
 
-    const adeActionLookup: AutomationAdeActionRegistry = {
-      isAllowed(domain: string, action: string): boolean {
-        return isAutomationAllowedAdeAction(domain as AdeActionDomain, action);
-      },
-      getService(domain: string): Record<string, unknown> | null {
-        const services = getAdeActionDomainServices(runtime);
-        return (services[domain as AdeActionDomain] ?? null) as Record<string, unknown> | null;
-      },
-      listDomains(): string[] {
-        return Object.keys(ADE_ACTION_ALLOWLIST);
-      },
-      listActions(domain: string): string[] {
-        return [...(ADE_ACTION_ALLOWLIST[domain as AdeActionDomain] ?? [])]
-          // Same rule as `isAllowed`, so nothing listed is refused when run.
-          .filter((action) => isAutomationAllowedAdeAction(domain as AdeActionDomain, action));
-      },
-    };
-    automationService?.bindAdeActionRegistry(adeActionLookup);
+    automationService?.bindAdeActionRegistry(
+      createAutomationAdeActionLookup(() => getAdeActionDomainServices(runtime)),
+    );
 
     usageTrackingService.start();
     runtimeCreated = true;

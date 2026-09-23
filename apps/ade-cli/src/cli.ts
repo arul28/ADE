@@ -3086,6 +3086,11 @@ export function readFlag(args: string[], names: readonly string[]): boolean {
   return false;
 }
 
+/** `--ignore-ownership` (or `--ignore-owner`) as an args spread; absent, no key. */
+function readIgnoreOwnershipArg(args: string[]): { ignoreOwnership: true } | Record<string, never> {
+  return readFlag(args, ["--ignore-ownership", "--ignore-owner"]) ? { ignoreOwnership: true } : {};
+}
+
 function parseScheduledWorkDelaySeconds(value: string): number {
   const match = /^(\d+)(s|m|h|d|w)$/i.exec(value.trim());
   if (!match) {
@@ -4306,8 +4311,8 @@ function parseCliArgs(argv: string[]): ParsedCli {
 
 /**
  * A global value flag at `argv[index]`, spelled `--flag value` or `--flag=value`.
- * The flags are `CLI_GLOBAL_VALUE_FLAGS`, the same set the delegation check
- * skips. `consumed` is how many extra tokens the value took.
+ * The flags are the ones `isCliGlobalValueFlag` accepts, the same guard the
+ * delegation check skips them with. `consumed` is how many extra tokens the value took.
  */
 function readGlobalValueFlag(
   argv: string[],
@@ -10414,15 +10419,11 @@ function buildIosSimulatorPlan(
     // an unparsed `--force` is not an error: collectGenericObjectArgs ignores
     // bare flags, so `claim --lane X --force` was silently refused as if the
     // caller had never said it.
-    const ignoreOwnership = readFlag(args, [
-      "--ignore-ownership",
-      "--ignore-owner",
-    ]);
     const force = readFlag(args, ["--force", "-f"]);
     return iosAction("iOS simulator claim", "claim", {
       ...claimArgs,
       ...(force ? { force: true } : {}),
-      ...(ignoreOwnership ? { ignoreOwnership: true } : {}),
+      ...readIgnoreOwnershipArg(args),
     });
   }
   if (
@@ -10814,9 +10815,7 @@ function buildIosSimulatorPlan(
       chatSessionId: claimArgs.chatSessionId,
       ...(stopUdid ? { udid: stopUdid } : {}),
       ...(readFlag(args, ["--force", "-f"]) ? { force: true } : {}),
-      ...(readFlag(args, ["--ignore-ownership", "--ignore-owner"])
-        ? { ignoreOwnership: true }
-        : {}),
+      ...readIgnoreOwnershipArg(args),
       ...rootArgs(),
     });
   }
@@ -10837,9 +10836,7 @@ function buildIosSimulatorPlan(
       // Parsed for the same reason `claim` parses it: the help and the
       // docs name this flag, and a spelling we accept but drop is how a
       // caller ends up reaching for `--force` instead.
-      ...(readFlag(args, ["--ignore-ownership", "--ignore-owner"])
-        ? { ignoreOwnership: true }
-        : {}),
+      ...readIgnoreOwnershipArg(args),
     });
   }
   // ---------------------------------------------------------------------
@@ -10878,17 +10875,14 @@ function buildIosSimulatorPlan(
   if (sub === "close-device" || sub === "close-sim") {
     const device = readIosSimulatorDevice(args);
     const force = readFlag(args, ["--force", "-f"]);
-    const ignoreOwnership = readFlag(args, [
-      "--ignore-ownership",
-      "--ignore-owner",
-    ]);
+    const ignoreOwnership = readIgnoreOwnershipArg(args);
     // ADE never shuts down a device it did not boot unless the caller says so.
     const shutdownDevice = readFlag(args, ["--shutdown", "--shutdown-device"]);
     return iosAction("iOS simulator close device", "closeDevice", {
       deviceUdid: device,
       chatSessionId: claimArgs.chatSessionId,
       ...(force ? { force: true } : {}),
-      ...(ignoreOwnership ? { ignoreOwnership: true } : {}),
+      ...ignoreOwnership,
       ...(shutdownDevice ? { shutdownDevice: true } : {}),
     });
   }
@@ -11260,9 +11254,7 @@ function buildIosSimulatorPlan(
       ...(laneId ? { laneId } : {}),
       ...(claimArgs.chatSessionId ? { chatSessionId: claimArgs.chatSessionId } : {}),
       ...(force ? { force: true } : {}),
-      ...(readFlag(args, ["--ignore-ownership", "--ignore-owner"])
-        ? { ignoreOwnership: true }
-        : {}),
+      ...readIgnoreOwnershipArg(args),
     });
   }
   if (sub === "record-start") {

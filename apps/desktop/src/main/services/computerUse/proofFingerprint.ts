@@ -134,7 +134,7 @@ export type AttachPolicy = {
 };
 
 /** The slice of a prepared ingest `downgradeIfChanged` reads and rewrites. */
-export type JudgedIngest = {
+type JudgedIngest = {
   owners: ComputerUseArtifactOwner[];
   proofSource: ComputerUseProofSource;
   policy: AttachPolicy;
