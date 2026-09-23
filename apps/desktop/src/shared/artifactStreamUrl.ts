@@ -60,13 +60,38 @@ function withoutTrailingSlash(value: string): string {
 }
 
 /**
+ * Whether a root's paths compare without case: a Windows-shaped root (drive
+ * letter or UNC) always, a POSIX root when this host folds (macOS). Same rule
+ * as `foldsCase` in pathContainment.ts, which cannot load in the renderer.
+ * Only a first gate: the machine holding the file still jails it.
+ */
+function rootFoldsCase(root: string, platform: string | undefined): boolean {
+  if (/^[a-zA-Z]:\//.test(root) || root.startsWith("//")) return true;
+  return platform === "darwin" || platform === "win32";
+}
+
+function hostPlatform(): string | undefined {
+  const scope = globalThis as { process?: { platform?: string }; navigator?: { platform?: string } };
+  if (typeof scope.process?.platform === "string") return scope.process.platform;
+  const navigatorPlatform = scope.navigator?.platform ?? "";
+  if (/^mac/i.test(navigatorPlatform)) return "darwin";
+  if (/^win/i.test(navigatorPlatform)) return "win32";
+  return undefined;
+}
+
+/**
  * A stored artifact uri as a project-relative path, or null when it is not one.
  *
  * Accepts the stored `ade-artifact://project/<path>` form, a plain relative
  * path, or an absolute path inside `projectRoot`. An absolute path anywhere
- * else, a web URL, and any path with `..` in it answer null.
+ * else, a web URL, and any path with `..` in it answer null. `platform` is the
+ * host's own unless a test passes one.
  */
-export function projectRelativeArtifactPath(uri: string, projectRoot: string | null | undefined): string | null {
+export function projectRelativeArtifactPath(
+  uri: string,
+  projectRoot: string | null | undefined,
+  platform: string | undefined = hostPlatform(),
+): string | null {
   const text = uri.trim();
   if (!text || /^https?:\/\//i.test(text)) return null;
 
@@ -76,12 +101,8 @@ export function projectRelativeArtifactPath(uri: string, projectRoot: string | n
     const safe = segments ? safeSegments(segments) : null;
     return safe ? safe.join("/") : null;
   }
-  if (/^ade-artifact:\/\//i.test(text)) {
-    const decoded = decodeSegments(text.replace(/^ade-artifact:\/\/[^/]*/i, ""));
-    if (!decoded) return null;
-    candidate = `/${decoded.join("/")}`;
-  } else if (/^file:\/\//i.test(text)) {
-    const decoded = decodeSegments(text.replace(/^file:\/\/[^/]*/i, ""));
+  if (/^(?:ade-artifact|file):\/\//i.test(text)) {
+    const decoded = decodeSegments(text.replace(/^(?:ade-artifact|file):\/\/[^/]*/i, ""));
     if (!decoded) return null;
     candidate = `/${decoded.join("/")}`;
   } else {
@@ -94,10 +115,10 @@ export function projectRelativeArtifactPath(uri: string, projectRoot: string | n
   if (isAbsolutePath(candidate)) {
     const root = withoutTrailingSlash((projectRoot ?? "").trim().replace(/\\/g, "/"));
     if (!root) return null;
-    const windows = /^[a-zA-Z]:\//.test(root);
-    const inside = windows
-      ? candidate.toLowerCase().startsWith(`${root.toLowerCase()}/`)
-      : candidate.startsWith(`${root}/`);
+    const head = candidate.slice(0, root.length + 1);
+    const inside = rootFoldsCase(root, platform)
+      ? head.toLowerCase() === `${root}/`.toLowerCase()
+      : head === `${root}/`;
     if (!inside) return null;
     candidate = candidate.slice(root.length + 1);
   }

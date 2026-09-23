@@ -16,8 +16,13 @@ import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process"
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { resolveCliSpawnInvocation } from "../../../desktop/src/main/services/shared/processExecution";
+import { isPathInside, pathsEqual } from "../../../desktop/src/main/services/shared/pathCompare";
+import {
+  resolveCliSpawnInvocation,
+  shouldUseWindowsCmdWrapper,
+} from "../../../desktop/src/main/services/shared/processExecution";
 import { isSourceCheckoutRuntimeModule } from "../runtimePackaging";
+import { CLI_GLOBAL_VALUE_FLAGS, looksLikeSocketPathOverride } from "./cliGlobalArgs";
 
 /** Set on the delegated child: never delegate again (loop guard). */
 export const CLI_DELEGATED_ENV = "ADE_CLI_DELEGATED";
@@ -83,10 +88,6 @@ function canonical(filePath: string, fsLike: CliDelegationFs): string {
   return fsLike.realpath(filePath) ?? path.resolve(filePath);
 }
 
-function samePath(a: string, b: string, platform: NodeJS.Platform): boolean {
-  return platform === "win32" || platform === "darwin" ? a.toLowerCase() === b.toLowerCase() : a === b;
-}
-
 /**
  * Decide whether this `ade` run should hand off to `ADE_CLI_PATH`.
  *
@@ -115,7 +116,7 @@ export function resolveCliDelegationTarget(
 
   const current = canonical(currentEntry, fsLike);
   if (isSourceCheckoutRuntimeModule(current)) return null;
-  const same = (candidate: string) => samePath(candidate, current, platform);
+  const same = (candidate: string) => pathsEqual(candidate, current, platform);
 
   const declaredEntry = env.ADE_CLI_ENTRY_PATH?.trim();
   if (declaredEntry && fsLike.isFile(declaredEntry)) {
@@ -185,13 +186,7 @@ export function buildDelegatedCliEnv(env: NodeJS.ProcessEnv, currentEntry: strin
     if (env.ADE_RUNTIME_ROOT?.trim() === resolvedRuntimeRoot) delete next.ADE_RUNTIME_ROOT;
   }
   if (staleRoots.length === 0) return next;
-  const isStale = (entry: string) => {
-    const resolved = path.resolve(entry);
-    return staleRoots.some((root) => {
-      const relative = path.relative(path.resolve(root), resolved);
-      return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-    });
-  };
+  const isStale = (entry: string) => staleRoots.some((root) => isPathInside(path.resolve(entry), path.resolve(root)));
   for (const key of ["NODE_PATH", "ADE_AGENT_SKILLS_DIRS"] as const) {
     const filtered = filterPathList(next[key], isStale);
     if (filtered === undefined) delete next[key];
@@ -202,13 +197,95 @@ export function buildDelegatedCliEnv(env: NodeJS.ProcessEnv, currentEntry: strin
 
 type SpawnLike = (command: string, args: readonly string[], options: SpawnOptions) => ChildProcess;
 
+/** The variables an ADE shim defaults when the caller set neither. */
+const SHIM_DEFAULT_NAMES = new Set(["ADE_HOME", "ADE_RUNTIME_SOCKET_PATH"]);
+
+export type AdeCmdShimLaunch = {
+  execPath: string;
+  entryPath: string;
+  defaults: Array<[string, string]>;
+};
+
+/**
+ * Read a Windows `ade.cmd` exactly as `renderAdeCliShim` writes it for a JS
+ * entry. Null for anything else, including a hand-edited shim, so the caller
+ * falls back to running it through cmd.exe.
+ */
+export function parseAdeCmdShim(text: string): AdeCmdShimLaunch | null {
+  const lines = text.split(/\r?\n/).filter((line) => line.length > 0);
+  if (lines[0] !== "@echo off" || lines[1] !== "setlocal") return null;
+  const unbatch = (value: string) => value.replace(/%%/g, "%");
+  const defaults: Array<[string, string]> = [];
+  let runtimeFlag = false;
+  for (const line of lines.slice(2, -1)) {
+    const set = /^set "([A-Z_]+)=([^"]*)"$/.exec(line);
+    if (set && SHIM_DEFAULT_NAMES.has(set[1]!)) {
+      defaults.push([set[1]!, unbatch(set[2]!)]);
+    } else if (line === "set ELECTRON_RUN_AS_NODE=1") {
+      runtimeFlag = true;
+    } else if (
+      line !== ":ade_run"
+      && line !== "if defined ADE_HOME goto ade_run"
+      && line !== "if defined ADE_RUNTIME_SOCKET_PATH goto ade_run"
+    ) {
+      return null;
+    }
+  }
+  const exec = /^"([^"]+)" "([^"]+)" %\*$/.exec(lines[lines.length - 1] ?? "");
+  if (!runtimeFlag || !exec) return null;
+  return { execPath: unbatch(exec[1]!), entryPath: unbatch(exec[2]!), defaults };
+}
+
+type DelegatedInvocation = { command: string; args: string[]; env: NodeJS.ProcessEnv; windowsVerbatimArguments?: boolean };
+
+/**
+ * How to start the target. A JS entry runs under this process's runtime. On
+ * Windows, an ADE `.cmd` shim is read and its runtime and entry are started
+ * directly: cmd.exe would expand `%VAR%` in the arguments a second time, and
+ * `%` cannot be escaped on a command line. Any other `.cmd` still goes through
+ * cmd.exe with each argument quoted by the shared helper.
+ */
+function resolveDelegatedInvocation(args: {
+  command: string;
+  argv: readonly string[];
+  env: NodeJS.ProcessEnv;
+  execPath: string;
+  platform: NodeJS.Platform;
+  fsLike: CliDelegationFs;
+}): DelegatedInvocation {
+  if (JS_ENTRY_PATTERN.test(args.command)) {
+    return {
+      command: args.execPath,
+      args: [args.command, ...args.argv],
+      env: { ...args.env, ELECTRON_RUN_AS_NODE: "1" },
+    };
+  }
+  if (shouldUseWindowsCmdWrapper(args.command, args.platform)) {
+    const shim = parseAdeCmdShim(args.fsLike.readHead(args.command, SHIM_SCAN_BYTES) ?? "");
+    if (shim) {
+      const callerPicked = Boolean(args.env.ADE_HOME || args.env.ADE_RUNTIME_SOCKET_PATH);
+      return {
+        command: shim.execPath,
+        args: [shim.entryPath, ...args.argv],
+        env: {
+          ...args.env,
+          ...(callerPicked ? {} : Object.fromEntries(shim.defaults)),
+          ELECTRON_RUN_AS_NODE: "1",
+        },
+      };
+    }
+  }
+  return {
+    ...resolveCliSpawnInvocation(args.command, [...args.argv], args.env, args.platform),
+    env: args.env,
+  };
+}
+
 export type DelegatedCliExit = { code: number | null; signal: NodeJS.Signals | null };
 
 /**
  * Run `argv` through the target CLI with inherited stdio, forwarding signals.
- * argv is passed as structured arguments: POSIX spawns the shim directly; a
- * Windows `.cmd` shim goes through `cmd.exe /d /s /c` with each argument quoted
- * by the shared helper; a bare JS entry runs under this process's runtime.
+ * argv is passed as structured arguments (see `resolveDelegatedInvocation`).
  * Resolves with the child's exit; rejects when the child cannot be started.
  */
 export function runDelegatedCli(args: {
@@ -219,26 +296,29 @@ export function runDelegatedCli(args: {
   platform?: NodeJS.Platform;
   spawnFn?: SpawnLike;
   signalSource?: Pick<NodeJS.Process, "on" | "removeListener">;
+  fsLike?: CliDelegationFs;
 }): Promise<DelegatedCliExit> {
   const platform = args.platform ?? process.platform;
   const spawnFn = args.spawnFn ?? (spawn as SpawnLike);
   const signalSource = args.signalSource ?? process;
-  let env = args.env;
-  let invocation: { command: string; args: string[]; windowsVerbatimArguments?: boolean };
-  if (JS_ENTRY_PATTERN.test(args.target.command)) {
-    env = { ...env, ELECTRON_RUN_AS_NODE: "1" };
-    invocation = { command: args.execPath ?? process.execPath, args: [args.target.command, ...args.argv] };
-  } else {
-    invocation = resolveCliSpawnInvocation(args.target.command, [...args.argv], env, platform);
-  }
+  const invocation = resolveDelegatedInvocation({
+    command: args.target.command,
+    argv: args.argv,
+    env: args.env,
+    execPath: args.execPath ?? process.execPath,
+    platform,
+    fsLike: args.fsLike ?? nodeCliDelegationFs,
+  });
 
   return new Promise<DelegatedCliExit>((resolve, reject) => {
     let child: ChildProcess;
     try {
       child = spawnFn(invocation.command, invocation.args, {
-        env,
+        env: invocation.env,
         stdio: "inherit",
-        windowsHide: false,
+        // A parent with no console (an agent host spawns `ade` hidden) would
+        // otherwise get a visible console window for the child.
+        windowsHide: true,
         windowsVerbatimArguments: invocation.windowsVerbatimArguments ?? false,
       });
     } catch (error) {
@@ -288,15 +368,6 @@ function exitLike(result: DelegatedCliExit): never {
 }
 
 /**
- * Entry-point hook, called once at the top of the CLI bundle. Returns null when
- * this process should run normally. Otherwise the child is already running and
- * the returned promise resolves `false` only if it could not be started (the
- * caller then runs normally); on a started child it never resolves, because the
- * process exits with the child's status.
- */
-/** Global flags that take the next token as their value. */
-const GLOBAL_VALUE_FLAGS = new Set(["--project-root", "--workspace-root", "--role", "--timeout", "--timeout-ms"]);
-/**
  * Commands that start or serve a runtime. They run the CLI of the app that
  * launched them, never another install's: `ade serve` handed to an older CLI
  * would start an older brain on this app's socket.
@@ -309,12 +380,11 @@ export function cliCommandWord(argv: readonly string[]): string | null {
     const token = argv[index]!;
     if (token === "--") return null;
     if (!token.startsWith("-")) return token;
-    if (GLOBAL_VALUE_FLAGS.has(token)) {
+    if (CLI_GLOBAL_VALUE_FLAGS.has(token)) {
       index += 1;
-    } else if (token === "--socket") {
-      // `--socket` takes a path only when one follows; bare, it means "the default socket".
-      const next = argv[index + 1] ?? "";
-      if (/[/\\]|\.sock$/i.test(next)) index += 1;
+    } else if (token === "--socket" && looksLikeSocketPathOverride(argv[index + 1] ?? "")) {
+      // Bare, `--socket` means "the default socket".
+      index += 1;
     }
   }
   return null;
@@ -325,6 +395,13 @@ export function cliArgvOwnsRuntime(argv: readonly string[]): boolean {
   return word !== null && RUNTIME_OWNING_COMMANDS.has(word);
 }
 
+/**
+ * Entry-point hook, called once at the top of the CLI bundle. Returns null when
+ * this process should run normally. Otherwise the child is already running and
+ * the returned promise resolves `false` only if it could not be started (the
+ * caller then runs normally); on a started child it never resolves, because the
+ * process exits with the child's status.
+ */
 export function startCliDelegationIfNeeded(): Promise<boolean> | null {
   const guardSet = process.env[CLI_DELEGATED_ENV] === "1";
   // Read once, then drop it so agents and runtimes this CLI launches can still

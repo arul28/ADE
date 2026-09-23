@@ -581,41 +581,22 @@ export function devRuntimeLogPath() {
 /** Appending forever is fine for a dev log; ~20 MB is where it stops being useful. */
 const DEV_RUNTIME_LOG_MAX_BYTES = 20 * 1024 * 1024;
 
-/**
- * Open the dev runtime log for appending, truncating it first when it has
- * grown past the size guard. Returns null when the log cannot be opened — a
- * missing log must never stop the runtime from starting.
- */
-function openDevRuntimeLogFd(logPath) {
-  try {
-    fs.mkdirSync(path.dirname(logPath), { recursive: true });
-    try {
-      // A log we cannot stat or truncate is still a log we can append to;
-      // never let the size guard cost us the daemon's only startup trace.
-      const size = fs.statSync(logPath, { throwIfNoEntry: false })?.size ?? 0;
-      if (size > DEV_RUNTIME_LOG_MAX_BYTES) fs.truncateSync(logPath, 0);
-    } catch {
-      // best effort
-    }
-    // The dev log can carry runtime output; keep it owner-only where the mode
-    // is honored (ignored on Windows).
-    return fs.openSync(logPath, "a", 0o600);
-  } catch {
-    return null;
-  }
-}
-
 /** Where the installed brain keeps its state, and the only root a dev app shares. */
-export function defaultAdeHome() {
+function defaultAdeHome() {
   return path.join(os.homedir(), ".ade");
 }
 
+/** A path as this platform compares it: case-folded on Windows and macOS. */
+function pathCompareKey(value) {
+  const resolved = path.resolve(value);
+  return process.platform === "win32" || process.platform === "darwin" ? resolved.toLowerCase() : resolved;
+}
+
 /** The state root this launch will actually use, and whether it is the default. */
-export function resolveDevAdeHome() {
-  const fromEnv = process.env.ADE_HOME?.trim();
+function resolveDevAdeHome() {
   const fallback = defaultAdeHome();
-  const home = fromEnv || fallback;
-  return { home, isDefault: path.resolve(home) === path.resolve(fallback), fromEnv: Boolean(fromEnv) };
+  const home = process.env.ADE_HOME?.trim() || fallback;
+  return { home, isDefault: pathCompareKey(home) === pathCompareKey(fallback) };
 }
 
 /**
@@ -654,6 +635,30 @@ export function printDevIsolationReport(socketPath, projectRoot, { ownsRuntime =
     "[ade]   installed brain: untouched (its own socket, its own sync lease, service never repaired by a dev app)",
     "",
   ].join("\n"));
+}
+
+/**
+ * Open the dev runtime log for appending, truncating it first when it has
+ * grown past the size guard. Returns null when the log cannot be opened — a
+ * missing log must never stop the runtime from starting.
+ */
+function openDevRuntimeLogFd(logPath) {
+  try {
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    try {
+      // A log we cannot stat or truncate is still a log we can append to;
+      // never let the size guard cost us the daemon's only startup trace.
+      const size = fs.statSync(logPath, { throwIfNoEntry: false })?.size ?? 0;
+      if (size > DEV_RUNTIME_LOG_MAX_BYTES) fs.truncateSync(logPath, 0);
+    } catch {
+      // best effort
+    }
+    // The dev log can carry runtime output; keep it owner-only where the mode
+    // is honored (ignored on Windows).
+    return fs.openSync(logPath, "a", 0o600);
+  } catch {
+    return null;
+  }
 }
 
 /**

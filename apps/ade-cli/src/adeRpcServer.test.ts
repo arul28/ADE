@@ -741,7 +741,11 @@ function createRuntime() {
     computerUseArtifactBrokerService: {
       getBackendStatus: vi.fn(() => ({ backends: [] })),
       listArtifacts: vi.fn(() => []),
-      ingest: vi.fn(() => ({ artifacts: [] })),
+      // One spy for both doors: attaches use the async ingest.
+      ...(() => {
+        const ingest = vi.fn(() => ({ artifacts: [] }));
+        return { ingest, ingestAsync: ingest };
+      })(),
       readArtifactPreview: vi.fn(async () => "data:image/png;base64,AAAA"),
     } as any,
     eventBuffer: {
@@ -5474,6 +5478,36 @@ describe("adeRpcServer", () => {
     await initialize(desktop, { callerId: "desktop-1", role: "cto" });
     await callTool(desktop, "run_ade_action", { domain: "ios_simulator", action: "tap", args: { x: 1, y: 2 } });
     expect(noteAgentAppleActivity).not.toHaveBeenCalled();
+  });
+
+  it("lets only user clients delete an installed simulator", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => (
+      sessionId === "chat-a" ? { id: "chat-a", laneId: "lane-a" } : null
+    ));
+    const deviceDeleteInstalled = vi.fn(async () => ({ ok: true }));
+    fixture.runtime.iosSimulatorService = { deviceDeleteInstalled };
+
+    const agent = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(agent, { callerId: "agent-a", role: "agent", chatSessionId: "chat-a" });
+    const refused = await callTool(agent, "run_ade_action", {
+      domain: "ios_simulator",
+      action: "deviceDeleteInstalled",
+      args: { udid: "SIM-1" },
+    });
+    expect(refused.isError).toBe(true);
+    expect(deviceDeleteInstalled).not.toHaveBeenCalled();
+
+    // The desktop's device picker is a user client and keeps its delete.
+    const desktop = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(desktop, { callerId: "desktop-1", role: "cto" });
+    const deleted = await callTool(desktop, "run_ade_action", {
+      domain: "ios_simulator",
+      action: "deviceDeleteInstalled",
+      args: { udid: "SIM-1" },
+    });
+    expect(deleted?.isError).toBeUndefined();
+    expect(deviceDeleteInstalled).toHaveBeenCalledWith({ udid: "SIM-1" });
   });
 
   it("denies work_tools reads to an agent-shaped caller with no resolvable lane", async () => {

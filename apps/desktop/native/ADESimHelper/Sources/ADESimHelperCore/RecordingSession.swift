@@ -50,17 +50,6 @@ actor RecordingSession {
     private let queue = DispatchSerialQueue(label: "com.ade.sim-helper.recorder", qos: .userInitiated)
     nonisolated var unownedExecutor: UnownedSerialExecutor { queue.asUnownedSerialExecutor() }
 
-    struct Finished: Sendable {
-        let path: String
-        /// Length of the video, after idle cutting.
-        let durationMs: Int
-        /// Real time from the first frame to the stop.
-        let wallDurationMs: Int
-        /// Real time the video leaves out: `wallDurationMs - durationMs`.
-        let idleCutMs: Int
-        let bytes: Int
-    }
-
     enum RecordingError: Error, LocalizedError {
         case alreadyRecording
         case writerUnavailable(String)
@@ -163,7 +152,7 @@ actor RecordingSession {
         }
     }
 
-    func stop() async throws -> Finished {
+    func stop() async throws -> FinishedRecording {
         guard !stopped else { throw RecordingError.alreadyRecording }
         stopped = true
 
@@ -193,13 +182,10 @@ actor RecordingSession {
         }
 
         let bytes = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? NSNumber)??.intValue ?? 0
-        let durationMs = Int((durationSeconds * 1000).rounded())
-        let wallDurationMs = Int((wallSeconds * 1000).rounded())
-        return Finished(
+        return FinishedRecording(
             path: path,
-            durationMs: durationMs,
-            wallDurationMs: wallDurationMs,
-            idleCutMs: max(wallDurationMs - durationMs, 0),
+            durationMs: Int((durationSeconds * 1000).rounded()),
+            wallDurationMs: Int((wallSeconds * 1000).rounded()),
             bytes: bytes
         )
     }
@@ -240,11 +226,11 @@ actor RecordingSession {
         guard !stopped, let jpeg = latestJPEG else { return }
 
         let now = Self.now()
+        timeline.prune(at: now)
         if let startedAt = sessionStartedAt {
             let elapsed = now - startedAt
             // A decoration on screen is activity, so a still is never cut
             // under a ring or a badge that is still animating.
-            timeline.prune(at: now)
             if !timeline.isEmpty { idle.noteActivity(at: elapsed) }
             if idle.enabled, elapsed - classifiedAt >= Self.classifyInterval, jpeg != classifiedPayload {
                 classify(jpeg, at: elapsed)
@@ -267,7 +253,6 @@ actor RecordingSession {
             input.isReadyForMoreMediaData
         else { return }
 
-        timeline.prune(at: now)
         // Strictly increasing, with idle stretches cut.
         guard let seconds = idle.presentationTime(at: now - startedAt) else { return }
         append(image: image, payload: jpeg, adaptor: adaptor, compositedAt: now, presentedAt: seconds)

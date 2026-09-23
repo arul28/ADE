@@ -318,15 +318,20 @@ Proof surfaces across chat and linked workflow contexts:
   [iOS companion › The Proof sheet and viewer](./sync-and-multi-device/ios-companion.md#the-proof-sheet-and-viewer).
 - **Where it came from** — the drawer tile, the timeline card, and the iOS
   Proof sheet row print one quiet line under the title: `Recorded by ADE ·
-  10:24–10:25 AM`, `Captured by ADE`, or `Attached by the agent`. A video
+  10:24–10:25 AM` (plus `· idle cut 1:52` when the recorder cut still time),
+  `Captured by ADE`, or `Attached by the agent`. A video
   flagged as older adds an amber line: `Recorded at 5:19 AM, before this
   request.` Rows without `proofSource` print nothing.
 - **Lane and PR review** — linked proof can be surfaced alongside lane work and PR closeout.
 
 Both clients resolve media through the owning runtime instead of opening the
-runtime host's filesystem path. Desktop uses ADE's range-capable artifact
-protocol for local media and `ade.proof.readArtifactPreview` for remote media;
-the RPC response is capped at 10 MiB. The inline filmstrip can resolve local
+runtime host's filesystem path. Desktop shows local images through the
+`ade-artifact://project/` protocol and remote images through
+`ade.proof.readArtifactPreview` (the RPC response is capped at 10 MiB). Every
+video, local or remote, plays from main's token-guarded loopback media server,
+which answers each Range read; a remote one is pulled in 2 MiB slices from that
+machine's broker. See
+[computer use › Renderer](./computer-use/README.md#renderer). The inline filmstrip can resolve local
 project-relative artifacts synchronously; remote filmstrip tiles fall back to a
 kind label and open the drawer, which performs the bounded runtime read. iOS requests artifact content over its
 sync command surface and caches renderable images locally. When a runtime is

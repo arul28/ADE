@@ -252,7 +252,8 @@ export function createSearchService(deps: SearchServiceDeps) {
   let workChain: Promise<void> = Promise.resolve();
 
   /*
-   * Set once when this runtime cannot host a search index at all.
+   * Set once when this runtime cannot host a search index at all, and
+   * rethrown by every later `ensureDb`.
    *
    * `ensureDb` is lazy and called per operation, so a permanent failure was
    * retried on every chat event: the open threw "no such module: fts5", the
@@ -261,40 +262,26 @@ export function createSearchService(deps: SearchServiceDeps) {
    * index file. A missing module is a property of the runtime, not of the
    * attempt, so it is remembered and the indexer stands down.
    */
-  /**
-   * Thrown by `ensureDb` once the runtime is known to have no usable index.
-   *
-   * Named so a caller can tell "this machine cannot search" from "this one
-   * query failed". Both used to arrive as the same bare error.
-   */
-  class SearchIndexUnavailableError extends Error {
-    constructor(reason: string) {
-      super(reason);
-      this.name = "SearchIndexUnavailableError";
-    }
-  }
-
-  let unavailableReason: string | null = null;
+  let unavailable: SearchIndexFts5UnavailableError | null = null;
 
   const ensureDb = (): SearchIndexDb => {
     // A source processor resuming from an await after dispose() must not
     // re-open the just-closed database (handle leak + writes after teardown);
     // the throw is caught and logged by the queue drain's per-source catch.
     if (disposed) throw new Error("search index disposed");
-    if (unavailableReason) throw new SearchIndexUnavailableError(unavailableReason);
+    if (unavailable) throw unavailable;
     if (!index) {
       try {
         index = openSearchIndexDb(deps.cacheDir);
       } catch (error) {
         if (error instanceof SearchIndexFts5UnavailableError) {
-          unavailableReason = error.message;
+          unavailable = error;
           // ONE line, at warn, naming the consequence and its bound.
           logger?.warn("search.index_unavailable", {
             reason: error.code,
             detail: error.message,
           });
           queue.clear();
-          throw new SearchIndexUnavailableError(unavailableReason);
         }
         throw error;
       }
@@ -391,7 +378,7 @@ export function createSearchService(deps: SearchServiceDeps) {
     if (disposed) return;
     const key = `${sourceKind}:${id}`;
     const dueAt = Date.now() + (debounceMs ?? DEBOUNCE_MS[sourceKind]);
-    if (unavailableReason) return;
+    if (unavailable) return;
     const existing = queue.get(key);
     // Keep the earlier due time so a steady stream of events cannot starve
     // the source forever.
@@ -1662,7 +1649,7 @@ export function createSearchService(deps: SearchServiceDeps) {
     query,
 
     indexStatus(): SearchIndexStatus {
-      if (unavailableReason) {
+      if (unavailable) {
         // `ready: false` is the honest answer and the one the field exists
         // for. Throwing here would turn "this machine cannot search" into an
         // error dialog on a status read.

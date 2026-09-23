@@ -8,6 +8,7 @@ import type {
   AppleScrollResult,
   AppleDeviceCreateArgs,
   AppleDeviceDeleteArgs,
+  AppleDeviceDetachArgs,
   AppleDeviceDeleteInstalledArgs,
   AppleDeviceListArgs,
   AppleDeviceListResult,
@@ -2440,6 +2441,11 @@ declare global {
           args?: AppleDeviceDeleteArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<void>;
+        /** The lane gives up its device and the simulator stays installed. */
+        deviceDetach: (
+          args?: AppleDeviceDetachArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleLaneDevice | null>;
         deviceDeleteInstalled: (
           args: AppleDeviceDeleteInstalledArgs,
           pin?: OpenProjectBinding | null,

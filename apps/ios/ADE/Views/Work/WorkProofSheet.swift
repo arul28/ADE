@@ -54,7 +54,8 @@ func workProofClock(_ date: Date) -> String {
 
 /// The desktop drawer's two provenance lines, read from the metadata the host
 /// stamps on each proof (`proofSource`, `recordedFrom`/`recordedTo`,
-/// `mediaCreatedAt`, `recordedBeforeRequest`). Missing fields print nothing.
+/// `idleCutMs`, `mediaCreatedAt`, `recordedBeforeRequest`). Missing fields
+/// print nothing. Mirrors `proofSourceLine` in proofProvenance.ts.
 func workProofProvenanceLines(
   _ metadataJson: String?,
   formatClock: (Date) -> String = workProofClock
@@ -68,12 +69,13 @@ func workProofProvenanceLines(
   let source: String?
   switch object["proofSource"] as? String {
   case "ade-recorder":
+    let suffix = workProofIdleCutLabel(object["idleCutMs"] as? Double).map { " · \($0)" } ?? ""
     if let from = date("recordedFrom"), let to = date("recordedTo") {
-      source = "Recorded by ADE · \(workProofClockRange(from, to, formatClock: formatClock))"
+      source = "Recorded by ADE · \(workProofClockRange(from, to, formatClock: formatClock))\(suffix)"
     } else if let single = date("recordedFrom") ?? date("recordedTo") {
-      source = "Recorded by ADE · \(formatClock(single))"
+      source = "Recorded by ADE · \(formatClock(single))\(suffix)"
     } else {
-      source = "Recorded by ADE"
+      source = "Recorded by ADE\(suffix)"
     }
   case "ade-capture":
     source = "Captured by ADE"
@@ -91,12 +93,24 @@ func workProofProvenanceLines(
   return (source, older)
 }
 
-/// "10:24–10:25 AM": a day period both ends share is said once.
+/// "idle cut 1:52", or nil when less than a second was cut.
+func workProofIdleCutLabel(_ idleCutMs: Double?) -> String? {
+  guard let idleCutMs, idleCutMs.isFinite, idleCutMs >= 1000 else { return nil }
+  let total = Int((idleCutMs / 1000).rounded())
+  let seconds = String(format: "%02d", total % 60)
+  let minutes = (total / 60) % 60
+  let hours = total / 3600
+  let duration = hours > 0 ? "\(hours):\(String(format: "%02d", minutes)):\(seconds)" : "\(minutes):\(seconds)"
+  return "idle cut \(duration)"
+}
+
+/// "10:24–10:25 AM": a day period both ends share is said once. The period is
+/// everything after the last digit, so a dotted one ("a.m.") stays whole.
 func workProofClockRange(_ from: Date, _ to: Date, formatClock: (Date) -> String = workProofClock) -> String {
   let start = formatClock(from)
   let end = formatClock(to)
   if start == end { return start }
-  if let range = end.range(of: #"\s*[^\d\s:.]+\.?$"#, options: .regularExpression) {
+  if let range = end.range(of: #"\P{Nd}+$"#, options: .regularExpression) {
     let period = String(end[range])
     if start.hasSuffix(period) {
       return "\(start.dropLast(period.count))–\(end)"
@@ -132,7 +146,7 @@ struct WorkProofSheet: View {
   let isRefreshing: Bool
   let refreshError: String?
   let onRefresh: @MainActor () async -> Void
-  let onLoadArtifact: @MainActor (ComputerUseArtifactSummary) async -> Void
+  let onLoadArtifact: WorkArtifactLoader
 
   @Environment(\.dismiss) private var dismiss
   @State private var viewerRequest: WorkProofViewerRequest?
@@ -161,7 +175,7 @@ struct WorkProofSheet: View {
             .listRowBackground(Color.clear)
             .listRowSeparatorTint(ADEColor.border.opacity(0.28))
             .task(id: artifact.id) {
-              await onLoadArtifact(artifact)
+              await onLoadArtifact(artifact, .preview)
             }
           }
         }
@@ -303,7 +317,7 @@ private struct WorkProofThumbnail: View {
         Image(uiImage: image)
           .resizable()
           .scaledToFill()
-      case .video, .remoteURL:
+      case .video, .remoteURL, .videoOnDemand:
         Image(systemName: "play.circle.fill")
           .font(.system(size: 22, weight: .semibold))
           .foregroundStyle(ADEColor.accent)
@@ -334,7 +348,7 @@ private struct WorkProofThumbnail: View {
 struct WorkProofViewer: View {
   let artifacts: [ComputerUseArtifactSummary]
   let artifactContent: [String: WorkLoadedArtifactContent]
-  let onLoadArtifact: @MainActor (ComputerUseArtifactSummary) async -> Void
+  let onLoadArtifact: WorkArtifactLoader
 
   @Environment(\.dismiss) private var dismiss
   @State private var selection: String
@@ -343,7 +357,7 @@ struct WorkProofViewer: View {
     artifacts: [ComputerUseArtifactSummary],
     artifactContent: [String: WorkLoadedArtifactContent],
     initialArtifactId: String,
-    onLoadArtifact: @escaping @MainActor (ComputerUseArtifactSummary) async -> Void
+    onLoadArtifact: @escaping WorkArtifactLoader
   ) {
     self.artifacts = artifacts
     self.artifactContent = artifactContent
@@ -369,10 +383,14 @@ struct WorkProofViewer: View {
     NavigationStack {
       TabView(selection: $selection) {
         ForEach(artifacts) { artifact in
-          WorkProofPage(artifact: artifact, content: artifactContent[artifact.id])
+          WorkProofPage(
+            artifact: artifact,
+            content: artifactContent[artifact.id],
+            onPlay: { Task { await onLoadArtifact(artifact, .play) } }
+          )
             .tag(artifact.id)
             .task(id: artifact.id) {
-              await onLoadArtifact(artifact)
+              await onLoadArtifact(artifact, .preview)
             }
         }
       }
@@ -432,7 +450,7 @@ struct WorkProofViewer: View {
       ShareLink(item: url)
     case .text(let text):
       ShareLink(item: text, preview: SharePreview(title))
-    case .error, .none:
+    case .videoOnDemand, .error, .none:
       EmptyView()
     }
   }
@@ -441,6 +459,7 @@ struct WorkProofViewer: View {
 private struct WorkProofPage: View {
   let artifact: ComputerUseArtifactSummary
   let content: WorkLoadedArtifactContent?
+  let onPlay: () -> Void
 
   var body: some View {
     ZStack {
@@ -456,6 +475,8 @@ private struct WorkProofPage: View {
           .accessibilityLabel(WorkProofRowModel(artifact: artifact).accessibilityLabel)
       case .video(let url), .remoteURL(let url):
         WorkProofVideoPage(url: url, isVideo: workArtifactIsVideo(artifact))
+      case .videoOnDemand(let sizeBytes):
+        WorkArtifactPlayPlaceholder(sizeBytes: sizeBytes, tint: Color.white.opacity(0.72), onPlay: onPlay)
       case .text(let text):
         ScrollView {
           Text(text)

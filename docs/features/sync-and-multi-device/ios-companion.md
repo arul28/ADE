@@ -2982,12 +2982,17 @@ the one button it offers opens a view-only stream, never remote control.
 
 `WorkLaneToolChips.swift` puts the lane's tools in the chat's floating
 badge row, after the PR chip, one chip per thing the phone can open:
-the lane's simulator while it is up (device name, e.g. "iPhone 16 Pro",
-with a green live dot — tap opens `AppleDeviceViewer` full screen),
+the lane's simulator while it is up (the model without the family word,
+e.g. "16 Pro" beside the device glyph, with a green live dot; VoiceOver reads
+"iPhone 16 Pro" — tap opens `AppleDeviceViewer` full screen),
 the desktop browser ("1 tab" / "3 tabs", accent-tinted while an agent is
 driving it), and App Control (the attached app's name). The Mac's active
 tool on its own ("Apple active") is not a chip — it names someone else's
-window, not something to open. A powered-off device is not a chip. Each
+window, not something to open. A powered-off device is not a chip, and
+neither is a booted device the lane does not own: for a lane with no device
+the host reports any booted iPhone on the Mac, so the chip needs
+`apple.status`'s `laneDevice.udid` to match the device shown (a host that
+sends no `laneDevice` shows no simulator chip). Each
 read is gated on its own action (`supportsWorkToolsState`,
 `supportsAppleDeviceStatus`), and the chips are hidden in personal chats
 and while the composer is input-locked, like the PR chip. The browser and
@@ -3050,6 +3055,16 @@ page on screen. The nav bar floats over the capture (`ignoresSafeArea(.top)`)
 rather than shortening the screen the image is centred in, which used to push a
 tall screenshot's top edge under the title; images pinch/double-tap zoom on
 black, and video pages get their own player.
+
+A stored video is read in 2 MiB slices (`readArtifactRange`) into a private
+partial file that is renamed into place only when complete. A row, a card or a
+viewer page appearing only sizes a video with a one-byte slice read: up to
+8 MiB (the host's whole-file cap) it downloads then, and a larger one shows a
+"Play · 34 MB" placeholder and downloads only when the user taps it. Base64
+decoding and the file write run off the main actor. A load cancelled by
+scrolling away leaves nothing behind, so the next appear retries, and leaving
+the chat stops its downloads. A host without `readArtifactRange` gets the
+whole-file read, which it caps at 8 MiB.
 
 ### Fixture screens for simulator screenshots
 

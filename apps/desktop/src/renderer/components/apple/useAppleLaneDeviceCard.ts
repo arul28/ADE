@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
+import { applePowerFromPhase, laneDeviceBooted } from "./appleDeviceState";
 
 /**
  * The tools grid card's one fact about the Apple tool: which device this lane
@@ -64,8 +65,7 @@ export function useAppleLaneDeviceCard(args: {
         setCard(null);
         return;
       }
-      const booted = listed?.installed.find((entry) => entry.udid === lane.udid)?.state === "Booted";
-      setCard({ name: lane.name, state: booted ? "running" : "off" });
+      setCard({ name: lane.name, state: laneDeviceBooted(listed) ? "running" : "off" });
     };
     void read();
     const timer = window.setInterval(() => void read(), POLL_MS);
@@ -82,8 +82,11 @@ export function useAppleLaneDeviceCard(args: {
       if (event.laneId && event.laneId !== laneId) return;
       setStarting(event.phase === "starting" || event.phase === "booted");
       // Power the card knows from the event itself, ahead of the re-read.
-      const power = event.phase === "stopped" ? "off" : event.phase === "streaming" ? "running" : null;
-      if (power) setCard((current) => (current && current.state !== power ? { ...current, state: power } : current));
+      const power = applePowerFromPhase(event.phase);
+      if (power) {
+        const state = power === "on" ? "running" : "off";
+        setCard((current) => (current && current.state !== state ? { ...current, state } : current));
+      }
       // Any phase can change what the lane holds or whether it is up
       // (`released` means the lane gave the device up); read it again now.
       setReadNonce((nonce) => nonce + 1);

@@ -614,6 +614,10 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
     if (nextPath) setPathEnvValue(next, nextPath);
     if (resolved.commandPath) next.ADE_CLI_PATH = resolved.commandPath;
     if (resolved.binDir) next.ADE_CLI_BIN_DIR = resolved.binDir;
+    // Delegation trusts this as the identity of `ADE_CLI_PATH`, so an inherited
+    // value naming another build must not ride along with our command.
+    if (resolved.commandPath && resolved.cliJsPath) next.ADE_CLI_ENTRY_PATH = resolved.cliJsPath;
+    else delete next.ADE_CLI_ENTRY_PATH;
     next[ADE_AGENT_SKILLS_DIRS_ENV] = prependAgentSkillsRoot(next[ADE_AGENT_SKILLS_DIRS_ENV], bundledAgentSkillsRoot);
     if (bundledAgentSkillsRoot) {
       next[ADE_BUNDLED_AGENT_SKILLS_DIR_ENV] = bundledAgentSkillsRoot;
@@ -629,6 +633,8 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
     if (nextPath) setPathEnvValue(process.env, nextPath);
     if (next.ADE_CLI_PATH) process.env.ADE_CLI_PATH = next.ADE_CLI_PATH;
     if (next.ADE_CLI_BIN_DIR) process.env.ADE_CLI_BIN_DIR = next.ADE_CLI_BIN_DIR;
+    if (next.ADE_CLI_ENTRY_PATH) process.env.ADE_CLI_ENTRY_PATH = next.ADE_CLI_ENTRY_PATH;
+    else delete process.env.ADE_CLI_ENTRY_PATH;
     if (next[ADE_AGENT_SKILLS_DIRS_ENV]) process.env[ADE_AGENT_SKILLS_DIRS_ENV] = next[ADE_AGENT_SKILLS_DIRS_ENV];
     if (next[ADE_BUNDLED_AGENT_SKILLS_DIR_ENV]) {
       process.env[ADE_BUNDLED_AGENT_SKILLS_DIR_ENV] = next[ADE_BUNDLED_AGENT_SKILLS_DIR_ENV];

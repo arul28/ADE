@@ -22,8 +22,8 @@ public actor DeviceSession {
     private var unsubscribeAVCC: (@Sendable () async -> Void)?
     private var parameterSets: AnnexB.ParameterSets?
     /// The encoder bitrate the live stream asked for, in kbps, if any. Kept so
-    /// a forced-keyframe re-subscribe rebuilds the encoder with the same cap
-    /// rather than silently reverting to the default.
+    /// an encoder rebuild keeps the same cap rather than silently reverting to
+    /// the default.
     private var streamBitrateKbps: Int?
     private var recording: RecordingSession?
     /// True when capture exists only because a recording asked for it, so
@@ -65,14 +65,18 @@ public actor DeviceSession {
             // Mac's own view has none; rebuilding the encoder (not the server)
             // applies it, and the rebuild starts with a keyframe every reader
             // can decode. No cap means "keep what runs", so a local viewer never
-            // lifts a remote viewer's cap.
-            if let bitrateKbps, bitrateKbps != streamBitrateKbps {
-                streamBitrateKbps = bitrateKbps
-                await forceKeyframe()
+            // lifts a remote viewer's cap. A cap of 0 lifts it: ADE sends that
+            // when the last remote viewer leaves.
+            if let bitrateKbps {
+                let cap = Self.streamCap(bitrateKbps)
+                if cap != streamBitrateKbps {
+                    streamBitrateKbps = cap
+                    await rebuildEncoder()
+                }
             }
             return StartedCapture(url: server.url, token: server.token, metrics: metrics)
         }
-        streamBitrateKbps = bitrateKbps
+        streamBitrateKbps = bitrateKbps.flatMap(Self.streamCap)
 
         if let existing = engine {
             // Capture is running for a recording, with no stream server: the
@@ -85,7 +89,7 @@ public actor DeviceSession {
             self.server = server
             server.onReaderAttached = { [weak self] in
                 guard let self else { return }
-                Task { await self.forceKeyframe() }
+                Task { await self.rebuildEncoder() }
             }
             await subscribe(engine: existing, server: server)
             captureOwnedByRecording = false
@@ -101,7 +105,7 @@ public actor DeviceSession {
         self.server = server
         server.onReaderAttached = { [weak self] in
             guard let self else { return }
-            Task { await self.forceKeyframe() }
+            Task { await self.rebuildEncoder() }
         }
 
         await subscribe(engine: engine, server: server)
@@ -123,6 +127,11 @@ public actor DeviceSession {
         return StartedCapture(url: server.url, token: server.token, metrics: metrics)
     }
 
+    /// 0 on the wire means "no cap": the encoder's own default.
+    private static func streamCap(_ bitrateKbps: Int) -> Int? {
+        bitrateKbps == 0 ? nil : bitrateKbps
+    }
+
     private func subscribe(engine: CaptureEngine, server: FrameStreamServer) async {
         unsubscribeAVCC = await engine.addAVCCConsumer(
             onFrame: { [weak self] _, data, flags in
@@ -132,7 +141,8 @@ public actor DeviceSession {
         )
     }
 
-    /// Re-subscribe to force a fresh IDR.
+    /// Build a new encoder, which starts with a keyframe. A reader that just
+    /// attached needs that keyframe; a new bitrate cap needs the new encoder.
     ///
     /// The vendored `AVCCEncoder` forces a keyframe exactly once, when it is
     /// constructed, and then relies on `MaxKeyFrameInterval` (fps × 5 frames).
@@ -144,7 +154,7 @@ public actor DeviceSession {
     /// Done this way because `CaptureEngine.addConsumer` is private, so there is
     /// no supported way to ask the existing encoder for an IDR without editing
     /// vendored code.
-    private func forceKeyframe() async {
+    private func rebuildEncoder() async {
         guard let engine, let server else { return }
         await unsubscribeAVCC?()
         unsubscribeAVCC = nil
@@ -220,17 +230,6 @@ public actor DeviceSession {
 
     // MARK: - Recording
 
-    public struct FinishedRecording: Sendable {
-        public let path: String
-        /// Length of the video, after idle cutting.
-        public let durationMs: Int
-        /// Real time from the first frame to the stop.
-        public let wallDurationMs: Int
-        /// Real time the video leaves out.
-        public let idleCutMs: Int
-        public let bytes: Int
-    }
-
     /// Start writing an MP4 of this device.
     ///
     /// Starts capture if nothing else has: a recording must not depend on
@@ -278,13 +277,7 @@ public actor DeviceSession {
         do {
             let finished = try await session.stop()
             await releaseRecordingCapture()
-            return FinishedRecording(
-                path: finished.path,
-                durationMs: finished.durationMs,
-                wallDurationMs: finished.wallDurationMs,
-                idleCutMs: finished.idleCutMs,
-                bytes: finished.bytes
-            )
+            return finished
         } catch {
             await releaseRecordingCapture()
             throw error

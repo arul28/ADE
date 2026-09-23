@@ -99,16 +99,12 @@ front. Use `relaunch` or `terminate` for an app that is already there.
 ## A busy device is not a blocker
 
 **Reuse before you create.** `start` with no arguments already does this: it
-binds a free installed device, boots it if it is off, and streams it. A device
-listed as `Shutdown` is installed and ready — it needs a boot, measured in
-seconds, not an install. Reach for a new one only when every installed device
-is owned by another lane.
+binds a free installed device, boots it if it is off, and streams it. Reach for
+a new one only when every installed device is owned by another lane.
 
 **And when the device you find is owned by another chat or lane, do not ask a
-human for it. Make your own.** One simulator runtime serves an unlimited number
-of devices, so creating one for your lane is cheap and takes seconds — it is a new
-folder of app data, not another copy of iOS. `start --create <sourceUdid>` does
-it in a single call.
+human for it. Make your own** with `start --create <sourceUdid>`. It takes
+seconds (see "The lane's device" for why).
 
 This is worth saying plainly because the failure looks reasonable from the
 inside: you find a booted simulator, the guard tells you another chat owns it,
@@ -135,12 +131,12 @@ Two facts that decide what you should do:
   so it is cheap. A device that is `Shutdown` is installed and ready — it needs
   a boot, which takes seconds, not an install.
 
-So "no device free" is almost never true. If every installed device is busy,
-clone one.
+So "no device free" is almost never true: one runtime serves any number of
+devices, and a new one is a folder of app data, not another copy of iOS.
 
 ```bash
 "$ADE_CLI_PATH" apple device-list --installed --text   # what a picker shows
-"$ADE_CLI_PATH" apple device-list --lane --text        # the one this lane owns
+"$ADE_CLI_PATH" apple device-list --text               # the one this lane owns ($ADE_LANE_ID)
 "$ADE_CLI_PATH" apple start --text                     # attach or clone, boot, stream
 "$ADE_CLI_PATH" apple start --udid <udid> --text       # bind a specific installed one
 "$ADE_CLI_PATH" apple start --create <sourceUdid> --text
@@ -156,6 +152,8 @@ clone one.
   clone and refuses an attached device unless `--force`, which only detaches.
 - A clone is deleted when the lane is archived. ADE never deletes a simulator
   it did not create.
+- Deleting an installed simulator from the list is the user's call, made in
+  the desktop picker. ADE refuses it from an agent; do not try.
 
 ## Drive the app
 
@@ -175,7 +173,8 @@ Name elements, not pixels.
   `pos:` survives nothing, so ask for an accessibility identifier instead.
 - `wait-for-element` replaces a sleep. Add `--gone` to wait for a disappearance.
 - Fall back to coordinates only when no query matches: `tap`, `drag`, `swipe`,
-  `scroll`, `type`, `select`.
+  `scroll`, `select`.
+- `type` and `key` act on the focused field, so tap the field first.
 - `foreground` reports which app the device has in front, read from the device
   rather than from what ADE last launched.
 - Hardware buttons: `button home` (also `lock`, `volume-up`, `volume-down`,
@@ -196,9 +195,8 @@ Name elements, not pixels.
   screen was on that axis before you asked; turning within one axis leaves
   the pixel size unchanged, so the exact side is not confirmed.
 
-Agent launches stay in the background. Add `--open-drawer` when the user asked
-to watch, or run `apple show` at any time. `launch --follow` waits out a cold
-build and prints the summary.
+Agent launches stay in the background; `apple show` brings the device up at
+any time.
 
 ### Close an app the way a person does
 
@@ -234,7 +232,9 @@ When the user asks to see the device ("open the sim drawer", "show me"):
 "$ADE_CLI_PATH" ui show proof --text           # this chat's proof drawer
 ```
 
-It targets your own chat and reports what really happened:
+It targets your own chat and reports what really happened. A shell with no
+ADE chat identity (`ADE_CHAT_SESSION_ID` unset, e.g. an OpenCode agent shell)
+cannot use `apple show` or `ui show`; ask the user to open the tool.
 
 - `shown` — it is on screen now.
 - `held` — a desktop window has this project open but the user cannot see

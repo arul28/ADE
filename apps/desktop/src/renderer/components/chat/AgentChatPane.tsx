@@ -219,9 +219,8 @@ import { ChatComputerUsePanel } from "./ChatComputerUsePanel";
 import { ChatIosSimulatorPanel } from "./ChatIosSimulatorPanel";
 import { IosSimulatorRunningPill } from "../work/IosSimulatorRunningPill";
 import { openAppleMiniPlayer } from "../apple/appleMiniPlayerStore";
-import { useWorkToolShowHandler } from "../../lib/workToolShowRequests";
-import { isDocumentVisible } from "../../lib/workToolOnScreen";
-import type { WorkToolShowSurface } from "../../../shared/types/workToolShow";
+import { useChatPaneShowRequests } from "./useChatPaneShowRequests";
+import { appleEventAddresses } from "../apple/appleDeviceState";
 import { ChatAppControlPanel } from "./ChatAppControlPanel";
 import { ChatSubagentsPanel } from "./ChatSubagentsPanel";
 import { RewindFilesConfirmDialog, type RewindFilesConfirmDialogState } from "./RewindFilesConfirmDialog";
@@ -3223,8 +3222,6 @@ function isLikelyMacRenderer(): boolean {
 }
 
 /** What a chat pane can show when an agent asks (`ade ui show`). */
-const CHAT_PANE_SHOW_SURFACES: readonly WorkToolShowSurface[] = ["proof", "apple"];
-const CHAT_PANE_SHOW_SURFACES_IN_WORK: readonly WorkToolShowSurface[] = ["proof"];
 
 export function AgentChatPane({
   laneId,
@@ -7465,18 +7462,24 @@ export function AgentChatPane({
   const iosSimulatorAddressesThisPane = useCallback((
     chatSessionId?: string | null,
     eventLaneId?: string | null,
-  ) => {
-    const scopedChatSessionId = typeof chatSessionId === "string" && chatSessionId.trim().length
-      ? chatSessionId.trim()
-      : null;
-    const scopedLaneId = typeof eventLaneId === "string" && eventLaneId.trim().length
-      ? eventLaneId.trim()
-      : null;
-    if (scopedChatSessionId && scopedChatSessionId !== selectedSessionIdRef.current) return false;
-    if (scopedLaneId && laneId && scopedLaneId !== laneId) return false;
-    if (!scopedChatSessionId && !scopedLaneId && !isTileActive) return false;
-    return true;
-  }, [isTileActive, laneId]);
+  ) => appleEventAddresses(
+    { chatSessionId, laneId: eventLaneId },
+    { chatSessionId: selectedSessionIdRef.current, laneId: laneId ?? null, acceptUnscoped: isTileActive },
+  ), [isTileActive, laneId]);
+
+  /**
+   * Open the chat's Apple drawer. It yields the right pane only on the closed
+   * to open transition, and only to App Control and Cursor Cloud, which cannot
+   * share the split; the chat actions drawer stays as the user left it.
+   */
+  const openIosSimulatorDrawer = useCallback(() => {
+    setIosSimulatorAvailable(true);
+    if (!iosSimulatorOpenRef.current) {
+      setAppControlOpen(false);
+      setCursorCloudPaneOpen(false);
+    }
+    setIosSimulatorOpen(true);
+  }, []);
 
   useEffect(() => {
     const api = window.ade?.iosSimulator;
@@ -7504,20 +7507,12 @@ export function AgentChatPane({
       }
       if (event.type !== "drawer-open-requested") return;
       if (!addressesThisPane(event.chatSessionId, event.laneId)) return;
-      setIosSimulatorAvailable(true);
-      // This event now only arrives for surfaces the user drove (point selection
-      // and inspection, or a launch started from this drawer). Yield the right
-      // pane only on the closed → open transition, and only to App Control,
-      // which is the one panel that cannot share the split. Chat actions (proof)
-      // stays exactly as the user left it.
-      if (!iosSimulatorOpenRef.current) {
-        setAppControlOpen(false);
-        setCursorCloudPaneOpen(false);
-      }
-      setIosSimulatorOpen(true);
+      // Only for surfaces the user drove (point selection and inspection, or a
+      // launch started from this drawer).
+      openIosSimulatorDrawer();
       setIosSimulatorDrawerModeRequest({ mode: event.mode, nonce: Date.now() });
     }, chatRuntimePin);
-  }, [chatRuntimePin, hideLaneToolDrawers, iosSimulatorAddressesThisPane]);
+  }, [chatRuntimePin, hideLaneToolDrawers, iosSimulatorAddressesThisPane, openIosSimulatorDrawer]);
 
   useEffect(() => {
     if (!iosSimulatorOpen && iosSimulatorDrawerModeRequest) {
@@ -7525,34 +7520,14 @@ export function AgentChatPane({
     }
   }, [iosSimulatorOpen, iosSimulatorDrawerModeRequest]);
 
-  // `ade ui show proof` for the chat this pane shows, while it is on screen.
-  // Outside Work this pane also owns the chat's Apple drawer, so it takes
-  // `ade ui show apple` too; in Work the tools pane does.
-  useWorkToolShowHandler(
-    isTileVisible ? selectedSessionId : null,
-    hideLaneToolDrawers ? CHAT_PANE_SHOW_SURFACES_IN_WORK : CHAT_PANE_SHOW_SURFACES,
-    (request) => {
-      if (request.chatSessionId !== selectedSessionIdRef.current) return false;
-      if (request.surface === "proof") {
-        openProofDrawer();
-        // Answered after the drawer's commit, and only in a window the user
-        // can see: "shown" means on screen, not asked for.
-        return new Promise<boolean>((resolve) => {
-          window.setTimeout(() => resolve(isDocumentVisible()), 0);
-        });
-      }
-      if (request.surface === "apple" && !hideLaneToolDrawers && laneId) {
-        setIosSimulatorAvailable(true);
-        if (!iosSimulatorOpenRef.current) {
-          setAppControlOpen(false);
-          setCursorCloudPaneOpen(false);
-        }
-        setIosSimulatorOpen(true);
-        return true;
-      }
-      return false;
-    },
-  );
+  const { proofDrawerRef, appleDrawerRef } = useChatPaneShowRequests({
+    chatSessionId: selectedSessionId,
+    visible: isTileVisible,
+    laneToolDrawersHidden: hideLaneToolDrawers,
+    laneId: laneId ?? null,
+    openProofDrawer,
+    openAppleDrawer: openIosSimulatorDrawer,
+  });
 
   useEffect(() => {
     setIosSimulatorDrawerModeRequest(null);
@@ -12860,7 +12835,7 @@ export function AgentChatPane({
     </div>
   );
   const proofTabContent = (
-    <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
+    <div ref={proofDrawerRef} className="min-h-0 flex-1 overflow-auto px-4 py-3">
       <ChatComputerUsePanel
         snapshot={computerUseSnapshot}
         onRefresh={() => refreshComputerUseSnapshot(selectedSessionId, { force: true })}
@@ -13256,7 +13231,7 @@ export function AgentChatPane({
           Close
         </button>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
+      <div ref={appleDrawerRef} className="min-h-0 flex-1 overflow-auto px-4 py-3">
         {auxiliaryToolDisabledReason ? (
           <div className="rounded-lg border border-amber-400/15 bg-amber-400/[0.05] px-3 py-2 text-[11px] leading-relaxed text-amber-100/70">
             {auxiliaryToolDisabledReason}
@@ -13343,11 +13318,7 @@ export function AgentChatPane({
       {iosSimulatorSessionChip && !effectiveIosSimulatorOpen && laneToolsVisible && iosSimulatorAvailable ? (
         <IosSimulatorRunningPill
           deviceName={iosSimulatorSessionChip.deviceName}
-          onOpen={() => {
-            setAppControlOpen(false);
-            setCursorCloudPaneOpen(false);
-            setIosSimulatorOpen(true);
-          }}
+          onOpen={openIosSimulatorDrawer}
           onFloat={() => {
             // §7: Float opens the mini player, which owns native PiP in its
             // own hover bar. The auto-appearing corner card it used to ask is

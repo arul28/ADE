@@ -5308,18 +5308,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     },
     iosSimulator: {
       /*
-       * Supported, with a device list, so the Apple picker RENDERS here.
-       *
-       * It used to report `supported: false` and carry no `deviceList`, so the
-       * pane stopped at "this host is not a Mac" and the picker could only be
-       * seen by building the Electron app. Two rounds of that page shipped
-       * looking wrong while its unit tests were green, because jsdom computes
-       * no styles and a class name is not a layout. This preview is the cheap
-       * way to look at it, and it is only useful if the page it is meant to
-       * show is reachable.
-       *
-       * The fixture is the owner's own machine as of the round-5 live test:
-       * five simulators on one runtime, two booted, one held by another lane.
+       * Supported, with a device list, so the Apple picker renders in the web
+       * preview (jsdom computes no layout). Five simulators on one runtime, two
+       * booted, one held by another lane.
        */
       getStatus: resolved({
         platform: "darwin",
@@ -5357,6 +5348,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       deviceCreate: resolvedArg({} as any),
       deviceAttach: resolvedArg({} as any),
       deviceDelete: resolvedArg(undefined as any),
+      deviceDetach: resolvedArg(null as any),
       deviceDeleteInstalled: resolvedArg(undefined as any),
       listDevices: resolved([]),
       listLaunchTargets: resolved([]),

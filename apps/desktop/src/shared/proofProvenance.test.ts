@@ -42,6 +42,9 @@ describe("proof provenance", () => {
     expect(plain(formatProofClockRange(at(11, 58), at(12, 2), "en-US"))).toBe("11:58 AM–12:02 PM");
     expect(plain(formatProofClockRange(at(10, 24), at(10, 24), "en-US"))).toBe("10:24 AM");
     expect(formatProofClockRange(at(10, 24), at(10, 25), "en-GB")).toBe("10:24–10:25");
+    // A dotted period is kept whole: not "10:24 a.–10:25 a.m.".
+    expect(plain(formatProofClockRange(at(10, 24), at(10, 25), "en-CA"))).toBe("10:24–10:25 a.m.");
+    expect(plain(formatProofClockRange(at(10, 24), at(13, 25), "en-CA"))).toBe("10:24 a.m.–1:25 p.m.");
   });
 
   it("writes the older line only when flagged", () => {

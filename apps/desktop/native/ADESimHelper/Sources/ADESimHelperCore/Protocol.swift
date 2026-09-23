@@ -49,6 +49,39 @@ public struct DevicePoint: Equatable, Sendable {
     }
 }
 
+/// A recording that finished writing.
+public struct FinishedRecording: Equatable, Sendable {
+    public let path: String
+    /// Length of the video, after idle cutting.
+    public let durationMs: Int
+    /// Real time from the first frame to the stop.
+    public let wallDurationMs: Int
+    /// The file as it landed on disk, so ADE can size the storage warning
+    /// without stat-ing it again.
+    public let bytes: Int
+
+    public init(path: String, durationMs: Int, wallDurationMs: Int, bytes: Int) {
+        self.path = path
+        self.durationMs = durationMs
+        self.wallDurationMs = wallDurationMs
+        self.bytes = bytes
+    }
+
+    /// Real time the video leaves out as dead time.
+    public var idleCutMs: Int { max(wallDurationMs - durationMs, 0) }
+
+    /// The wire keys, shared by the `record-stop` reply and the event.
+    public var payload: [String: Any] {
+        [
+            "path": path,
+            "durationMs": durationMs,
+            "wallDurationMs": wallDurationMs,
+            "idleCutMs": idleCutMs,
+            "bytes": bytes,
+        ]
+    }
+}
+
 /// One NDJSON line from ADE on stdin.
 public enum SimHelperCommand: Equatable, Sendable {
     case listDevices(id: String)
@@ -208,12 +241,13 @@ public enum SimHelperCommandParser {
                     throw Invalid.message("`scale` must be greater than 0 and at most 1.")
                 }
                 // Optional. A remote viewer's cap arrives here; the encoder
-                // applies it. Values outside the sane range are refused rather
-                // than silently clamped, so a caller learns it sent nonsense.
+                // applies it. 0 removes a running cap. Values outside the sane
+                // range are refused rather than silently clamped, so a caller
+                // learns it sent nonsense.
                 var bitrateKbps: Int?
                 if let raw = number("bitrateKbps") {
-                    guard raw >= 100, raw <= 20_000 else {
-                        throw Invalid.message("`bitrateKbps` must be between 100 and 20000.")
+                    guard raw == 0 || (raw >= 100 && raw <= 20_000) else {
+                        throw Invalid.message("`bitrateKbps` must be 0 (no cap) or between 100 and 20000.")
                     }
                     bitrateKbps = Int(raw)
                 }
@@ -402,11 +436,8 @@ public enum SimHelperEvent: @unchecked Sendable {
     case captureStopped(udid: String, reason: String)
     /// A recording is running and the file at `path` is being written.
     case recordStarted(id: String, udid: String, path: String)
-    /// A recording finished. `bytes` is the file as it landed on disk, so ADE
-    /// can size the storage warning without stat-ing it again. `durationMs` is
-    /// the video's length; `wallDurationMs` the real time it covers, and
-    /// `idleCutMs` the difference cut as dead time.
-    case recordStopped(udid: String, path: String, durationMs: Int, wallDurationMs: Int, idleCutMs: Int, bytes: Int)
+    /// A recording finished.
+    case recordStopped(udid: String, finished: FinishedRecording)
 
     public var payload: [String: Any] {
         switch self {
@@ -435,16 +466,11 @@ public enum SimHelperEvent: @unchecked Sendable {
             return ["type": "capture-stopped", "udid": udid, "reason": reason]
         case let .recordStarted(id, udid, path):
             return ["type": "record-started", "id": id, "udid": udid, "path": path]
-        case let .recordStopped(udid, path, durationMs, wallDurationMs, idleCutMs, bytes):
-            return [
-                "type": "record-stopped",
-                "udid": udid,
-                "path": path,
-                "durationMs": durationMs,
-                "wallDurationMs": wallDurationMs,
-                "idleCutMs": idleCutMs,
-                "bytes": bytes,
-            ]
+        case let .recordStopped(udid, finished):
+            var line = finished.payload
+            line["type"] = "record-stopped"
+            line["udid"] = udid
+            return line
         }
     }
 

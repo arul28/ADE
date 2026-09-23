@@ -53,12 +53,6 @@ export type WorkToolShowRequestEvent = {
   event: WorkToolShowRequest;
 };
 
-export type WorkToolShowArgs = {
-  surface: WorkToolShowSurface;
-  chatSessionId?: string | null;
-  laneId?: string | null;
-};
-
 /**
  * What a desktop did with a request.
  *
@@ -73,6 +67,12 @@ export type WorkToolShowAck = {
   requestId: string;
   status: WorkToolShowAckStatus;
   desktopLabel?: string | null;
+  /**
+   * With `held`: the desktop already opened the surface but could not confirm
+   * it is on screen (say the window is hidden). The request is consumed, not
+   * replayed later.
+   */
+  opened?: boolean;
 };
 
 export type WorkToolShowStatus = WorkToolShowAckStatus | "no_desktop";
@@ -84,26 +84,4 @@ export type WorkToolShowResult = {
   requestId: string;
   desktopLabel: string | null;
   message: string;
-};
-
-/** The sentence the CLI prints, one per outcome. */
-export function describeWorkToolShowResult(
-  status: WorkToolShowStatus,
-  surface: WorkToolShowSurface,
-  desktopLabel: string | null,
-): string {
-  const name = WORK_TOOL_SHOW_SURFACE_LABELS[surface];
-  const where = desktopLabel ? ` on ${desktopLabel}` : "";
-  if (status === "shown") return `Showing the ${name}${where}.`;
-  if (status === "held") {
-    return `A desktop window${where} has this project open, but the user cannot see this chat right now (another chat is in front, or the window is hidden). The ${name} opens when they go to this chat.`;
-  }
-  return `No desktop window is open for this chat, so nothing was shown. Tell the user to open this chat in ADE Desktop.`;
-}
-
-export const WORK_TOOL_SHOW_SURFACE_LABELS: Record<WorkToolShowSurface, string> = {
-  apple: "Apple device in the tools pane",
-  "floating-apple": "floating Apple device",
-  browser: "browser in the tools pane",
-  proof: "proof drawer",
 };

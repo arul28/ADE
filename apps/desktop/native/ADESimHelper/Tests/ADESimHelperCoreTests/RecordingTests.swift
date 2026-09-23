@@ -112,7 +112,8 @@ final class RecordingProtocolTests: XCTestCase {
         XCTAssertEqual(started.payload["path"] as? String, "/tmp/a.mp4")
 
         let stopped = SimHelperEvent.recordStopped(
-            udid: "U", path: "/tmp/a.mp4", durationMs: 1234, wallDurationMs: 5000, idleCutMs: 3766, bytes: 99
+            udid: "U",
+            finished: FinishedRecording(path: "/tmp/a.mp4", durationMs: 1234, wallDurationMs: 5000, bytes: 99)
         )
         XCTAssertEqual(stopped.payload["type"] as? String, "record-stopped")
         XCTAssertEqual(stopped.payload["udid"] as? String, "U")

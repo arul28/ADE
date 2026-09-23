@@ -13309,6 +13309,13 @@ describe("ADE CLI", () => {
     if (tab.kind !== "execute") throw new Error("expected an execute plan");
     expect(tab.steps[0]?.params).toMatchObject({ arguments: { args: { text: "\t" } } });
 
+    // Regression: `--device <udid>` before the key name was read as the key.
+    const onDevice = buildCliPlan(["apple", "key", "--device", "ABC-123", "return"]);
+    if (onDevice.kind !== "execute") throw new Error("expected an execute plan");
+    expect(onDevice.steps[0]?.params).toMatchObject({
+      arguments: { action: "typeText", args: { deviceUdid: "ABC-123", text: "\n" } },
+    });
+
     expect(() => buildCliPlan(["apple", "key", "escape"])).toThrow(/Valid keys: return, enter, tab/);
   });
 
@@ -14421,6 +14428,8 @@ describe("ADE CLI", () => {
 
     withEnv({ ADE_CHAT_SESSION_ID: undefined }, () => {
       expect(() => buildCliPlan(["ui", "show", "apple"])).toThrow(/pass --session/);
+      // An OpenCode shell has no chat identity: say so and send it to the user.
+      expect(() => buildCliPlan(["apple", "show"])).toThrow(/no ADE chat identity.*Ask the user to open the tool/);
     });
   }));
 

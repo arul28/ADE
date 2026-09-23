@@ -145,9 +145,21 @@ export function assertFts5Available(db: Pick<DatabaseSyncType, "exec">): void {
 export function openSearchIndexDb(cacheDir: string): SearchIndexDb {
   const dbPath = path.join(cacheDir, SEARCH_INDEX_DB_FILENAME);
 
-  const create = (): DatabaseSyncType => {
+  // A failed probe closes the handle it opened. On Windows an open handle
+  // would also keep the index file from being deleted until exit.
+  const openWithFts5 = (): DatabaseSyncType => {
     const db = openAt(dbPath);
-    assertFts5Available(db);
+    try {
+      assertFts5Available(db);
+    } catch (error) {
+      db.close();
+      throw error;
+    }
+    return db;
+  };
+
+  const create = (): DatabaseSyncType => {
+    const db = openWithFts5();
     db.exec(DDL);
     db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('schemaVersion', ?)").run(
       String(SEARCH_INDEX_SCHEMA_VERSION)
@@ -157,10 +169,9 @@ export function openSearchIndexDb(cacheDir: string): SearchIndexDb {
 
   let db: DatabaseSyncType;
   try {
-    db = openAt(dbPath);
     // Before anything that needs the module, so the caller gets the named
     // error instead of a file deletion it cannot benefit from.
-    assertFts5Available(db);
+    db = openWithFts5();
     const version = readSchemaVersion(db);
     if (version !== SEARCH_INDEX_SCHEMA_VERSION) {
       db.close();

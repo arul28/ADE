@@ -9,8 +9,9 @@ enum WorkToolChipKind: Equatable {
   /// The lane's Apple device, while it is up. Opens `AppleDeviceViewer`.
   /// `family` is the status's raw family, for the glyph.
   case simulator(family: String?)
-  /// The desktop browser's tabs. Opens `WorkToolsSheet`.
-  case browser
+  /// The desktop browser's tabs. Opens `WorkToolsSheet`. `agentUsing`: a chat
+  /// in this lane is driving the browser right now.
+  case browser(tabCount: Int, agentUsing: Bool)
   /// What App Control is attached to. Opens `WorkToolsSheet`.
   case appControl
 }
@@ -18,8 +19,6 @@ enum WorkToolChipKind: Equatable {
 struct WorkToolChip: Equatable, Identifiable {
   let kind: WorkToolChipKind
   let label: String
-  /// Browser chip only: a chat in this lane is driving the browser right now.
-  var agentUsingBrowser: Bool = false
 
   /// The text on the chip. The simulator chip already shows the device icon,
   /// so it drops the family word: "iPhone 16 Pro" shows as "16 Pro". VoiceOver
@@ -41,7 +40,7 @@ struct WorkToolChip: Equatable, Identifiable {
 /// The lane's tool chips for the chat's floating badge row, in order:
 /// simulator, browser, App Control.
 ///
-/// - Simulator: only while the lane's device is up (`appleDeviceRunningName`).
+/// - Simulator: only while the lane's own device is up (`appleDeviceRunningName`).
 ///   A device the lane keeps after Shut down is not advertised.
 /// - Browser: when the desktop browser has tabs ("1 tab" / "N tabs"), or when
 ///   an agent is driving it with none listed ("Browser") — an agent on the
@@ -55,19 +54,25 @@ func workToolChips(state: WorkToolsLaneState?, appleDevice: AppleDeviceStatus?) 
   let tabCount = state?.browser?.tabs.count ?? 0
   let agentUsingBrowser = workToolsAgentIsUsingBrowser(state)
   if tabCount > 0 || agentUsingBrowser {
-    let label: String
-    switch tabCount {
-    case 0: label = "Browser"
-    case 1: label = "1 tab"
-    default: label = "\(tabCount) tabs"
-    }
-    chips.append(WorkToolChip(kind: .browser, label: label, agentUsingBrowser: agentUsingBrowser))
+    chips.append(WorkToolChip(
+      kind: .browser(tabCount: tabCount, agentUsing: agentUsingBrowser),
+      label: workBrowserChipLabel(tabCount: tabCount)
+    ))
   }
   if let appName = state?.appControl?.appName.trimmingCharacters(in: .whitespacesAndNewlines),
      !appName.isEmpty {
     chips.append(WorkToolChip(kind: .appControl, label: appName))
   }
   return chips
+}
+
+/// "Browser" with no tabs, "1 tab", "N tabs".
+func workBrowserChipLabel(tabCount: Int) -> String {
+  switch tabCount {
+  case ...0: return "Browser"
+  case 1: return "1 tab"
+  default: return "\(tabCount) tabs"
+  }
 }
 
 /// Whether a chat in this lane is driving the browser right now. Derived on the
@@ -77,13 +82,6 @@ func workToolsAgentIsUsingBrowser(_ state: WorkToolsLaneState?) -> Bool {
   !(state?.agentBrowserPresence ?? []).isEmpty
 }
 
-/// The lane's device name while it is up ("iPhone 16 Pro"), nil otherwise.
-///
-/// Up means simctl reports it `Booted`, or the host is streaming it. A device
-/// the lane keeps after Shut down carries its own `state` ("Shutdown"), and a
-/// status with no device state at all is not evidence the device is on, so
-/// both read as off. The host fills a missing name with the udid; that is not
-/// a name, so the family ("iPhone") stands in for it.
 /// A device name without its leading family word: "iPhone 16 Pro" -> "16 Pro",
 /// "iPad Air (M2)" -> "Air (M2)". A name that is only the family word, or that
 /// does not start with one, stays as it is.
@@ -100,12 +98,24 @@ func appleDeviceChipModelName(_ name: String) -> String {
   return name
 }
 
+/// The lane's device name while it is up ("iPhone 16 Pro"), nil otherwise.
+///
+/// The lane's means `laneDevice` names the same udid as `device`: for a lane
+/// with no device the host reports any booted iPhone on the Mac, which is not
+/// this lane's to show. Up means simctl reports it `Booted`, or the host is
+/// streaming it. A device the lane keeps after Shut down carries its own
+/// `state` ("Shutdown"), and a status with no device state at all is not
+/// evidence the device is on, so both read as off. The host fills a missing
+/// name with the udid; that is not a name, so the family ("iPhone") stands in.
 func appleDeviceRunningName(_ status: AppleDeviceStatus?) -> String? {
-  guard let device = status?.device else { return nil }
+  guard let device = status?.device,
+        let udid = device.udid, !udid.isEmpty,
+        status?.laneDevice?.udid == udid
+  else { return nil }
   let booted = device.state?.caseInsensitiveCompare("Booted") == .orderedSame
   guard booted || status?.stream?.running == true else { return nil }
   let name = device.name?.trimmingCharacters(in: .whitespacesAndNewlines)
-  let usableName = (name?.isEmpty == false && name != device.udid) ? name : nil
+  let usableName = (name?.isEmpty == false && name != udid) ? name : nil
   return usableName ?? appleDeviceFamilyLabel(device.family) ?? "Simulator"
 }
 
@@ -128,14 +138,36 @@ final class WorkLaneToolsModel: ObservableObject {
   /// the user opened to watch, whereas these chips sit behind every chat.
   static let refreshInterval: Duration = .seconds(10)
 
+  /// The surface a chip opened.
+  enum Surface {
+    case appleDevice
+    case toolsSheet
+  }
+
   @Published private(set) var chips: [WorkToolChip] = []
+  @Published var presented: Surface?
   /// Handed to `AppleDeviceViewer` as its first frame of state. Not published.
   private(set) var appleStatus: AppleDeviceStatus?
+
   /// True while the tools sheet or the device viewer is up. Both poll the same
   /// reads faster and are the authoritative view, so a tick here would be a
   /// duplicate RPC for chips nobody can see. The next tick after dismissal
   /// catches up.
-  var paused = false
+  var paused: Bool { presented != nil }
+
+  func open(_ chip: WorkToolChip) {
+    switch chip.kind {
+    case .simulator: presented = .appleDevice
+    case .browser, .appControl: presented = .toolsSheet
+    }
+  }
+
+  func isPresented(_ surface: Surface) -> Binding<Bool> {
+    Binding(
+      get: { self.presented == surface },
+      set: { if !$0, self.presented == surface { self.presented = nil } }
+    )
+  }
 
   func run(laneId: String, syncService: SyncService) async {
     chips = []
@@ -187,6 +219,42 @@ struct WorkLaneToolsPreview {
 }
 #endif
 
+/// The chips' poll and the two surfaces they open, on the chat view.
+struct WorkLaneToolsPresenter: ViewModifier {
+  @ObservedObject var model: WorkLaneToolsModel
+  let laneId: String
+  /// False for a personal chat, which has no lane.
+  let enabled: Bool
+  #if DEBUG
+  var preview: WorkLaneToolsPreview?
+  #endif
+  @EnvironmentObject private var syncService: SyncService
+
+  func body(content: Content) -> some View {
+    content
+      .task(id: laneId) {
+        #if DEBUG
+        if let preview {
+          model.installPreview(state: preview.state, appleStatus: preview.appleStatus)
+          return
+        }
+        #endif
+        guard enabled else { return }
+        await model.run(laneId: laneId, syncService: syncService)
+      }
+      .sheet(isPresented: model.isPresented(.toolsSheet)) {
+        WorkToolsSheet(laneId: laneId)
+          .presentationDetents([.medium, .large])
+          .presentationDragIndicator(.visible)
+      }
+      // Presented exactly as `AppleDeviceCard` presents it: full screen, seeded
+      // with the last status so the first frame is not an empty viewer.
+      .fullScreenCover(isPresented: model.isPresented(.appleDevice)) {
+        AppleDeviceViewer(laneId: laneId, initialStatus: model.appleStatus)
+      }
+  }
+}
+
 // MARK: - Chip view
 
 /// One lane tool chip in the chat's badge row. Same capsule as the PR and chat
@@ -219,7 +287,7 @@ struct WorkLaneToolChipView: View {
 
   private var symbol: String {
     switch chip.kind {
-    case .simulator(let family): return family == "ipad" ? "ipad" : "iphone"
+    case .simulator(let family): return appleDeviceFamilySymbol(family)
     case .browser: return "globe"
     case .appControl: return "macwindow"
     }
@@ -228,21 +296,25 @@ struct WorkLaneToolChipView: View {
   /// Neutral by default; the browser chip takes the accent while an agent is
   /// driving it, which is the signal the old Tools row carried as a globe.
   private var tint: Color {
-    chip.agentUsingBrowser ? ADEColor.accent : ADEColor.textSecondary
+    if case .browser(_, agentUsing: true) = chip.kind { return ADEColor.accent }
+    return ADEColor.textSecondary
   }
 
-  private var accessibilityText: String {
-    switch chip.kind {
-    case .simulator:
-      return "\(chip.label) running on your Mac. Tap to watch."
-    case .browser:
-      let base = chip.label == "Browser" ? "Browser on your Mac" : "Browser on your Mac, \(chip.label)"
-      return chip.agentUsingBrowser
-        ? "\(base). An agent is using the browser. Tap for details."
-        : "\(base). Tap for details."
-    case .appControl:
-      return "App Control on your Mac, \(chip.label). Tap for details."
-    }
+  private var accessibilityText: String { workToolChipAccessibilityText(chip) }
+}
+
+/// What VoiceOver reads for a chip.
+func workToolChipAccessibilityText(_ chip: WorkToolChip) -> String {
+  switch chip.kind {
+  case .simulator:
+    return "\(chip.label) running on your Mac. Tap to watch."
+  case .browser(let tabCount, let agentUsing):
+    let base = tabCount > 0 ? "Browser on your Mac, \(chip.label)" : "Browser on your Mac"
+    return agentUsing
+      ? "\(base). An agent is using the browser. Tap for details."
+      : "\(base). Tap for details."
+  case .appControl:
+    return "App Control on your Mac, \(chip.label). Tap for details."
   }
 }
 

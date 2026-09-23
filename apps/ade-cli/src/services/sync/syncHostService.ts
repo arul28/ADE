@@ -132,6 +132,7 @@ import {
   type SubagentProgressCoalescer,
 } from "../../../../desktop/src/shared/chatMobileSlim";
 import { readTranscriptHistoryPage } from "../../../../desktop/src/main/services/chat/chatTranscriptHistoryPager";
+import { readFileRange } from "../../../../desktop/src/main/services/shared/fileRange";
 import { findStoredToolResult } from "../../../../desktop/src/main/services/chat/chatToolResultLookup";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
@@ -302,7 +303,6 @@ import {
 import { tryRouteAppleStreamSocket } from "./appleStreamListenerRoute";
 import { MAX_CHAT_ATTACHMENT_BYTES } from "../../../../desktop/src/shared/chatAttachmentLimits";
 import { CURSOR_CLOUD_ARTIFACT_MAX_BYTES } from "../../../../desktop/src/shared/cursorCloudArtifactLimits";
-import { ARTIFACT_RANGE_READ_MAX_BYTES } from "../../../../desktop/src/shared/artifactStreamUrl";
 export { selectChangesetBatchChunk } from "./changesetPump";
 export { SYNC_HOST_MOBILE_REPLICA_RESEED_GAP } from "./mobileReplicaReseed";
 const execFileAsync = promisify(execFile);
@@ -6431,46 +6431,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     request: Extract<SyncFileRequest, { action: "readArtifactRange" }>["args"],
   ): Promise<SyncArtifactRange> {
     const artifactPath = resolveArtifactPath(request);
-    const handle = await fs.promises.open(artifactPath, "r").catch(() => {
-      throw new Error("Artifact file does not exist.");
-    });
-    try {
-      const stat = await handle.stat();
-      if (!stat.isFile()) throw new Error("Artifact file does not exist.");
-      const totalSize = stat.size;
-      const relativePath = normalizeRelative(path.relative(args.projectRoot, artifactPath));
-      const requestedOffset = Number(request.offset ?? 0);
-      const offset = Number.isFinite(requestedOffset) ? Math.max(0, Math.floor(requestedOffset)) : 0;
-      const requestedLength = Number(request.length ?? ARTIFACT_RANGE_READ_MAX_BYTES);
-      const length = Number.isFinite(requestedLength)
-        ? Math.max(1, Math.min(ARTIFACT_RANGE_READ_MAX_BYTES, Math.floor(requestedLength)))
-        : ARTIFACT_RANGE_READ_MAX_BYTES;
-      if (offset >= totalSize) {
-        return {
-          path: relativePath,
-          totalSize,
-          rangeStart: totalSize,
-          rangeEnd: totalSize,
-          encoding: "base64",
-          content: "",
-          eof: true,
-        };
-      }
-      const buffer = Buffer.alloc(Math.min(length, totalSize - offset));
-      const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
-      const rangeEnd = offset + bytesRead;
-      return {
-        path: relativePath,
-        totalSize,
-        rangeStart: offset,
-        rangeEnd,
-        encoding: "base64",
-        content: buffer.subarray(0, bytesRead).toString("base64"),
-        eof: rangeEnd >= totalSize,
-      };
-    } finally {
-      await handle.close();
-    }
+    const range = await readFileRange(artifactPath, request.offset, request.length);
+    return {
+      path: normalizeRelative(path.relative(args.projectRoot, artifactPath)),
+      totalSize: range.totalSize,
+      rangeStart: range.rangeStart,
+      rangeEnd: range.rangeEnd,
+      encoding: "base64",
+      content: range.base64,
+      eof: range.eof,
+    };
   }
 
   function isMobilePeer(peer: PeerState): boolean {

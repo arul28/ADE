@@ -147,6 +147,12 @@ export type LaneDeviceRegistry = {
   }): Promise<AppleDeviceListResult>;
   deviceDelete(args: { laneId: string; force?: boolean | null }): Promise<void>;
   /**
+   * Forget the lane's device and touch no simulator: a clone is not deleted
+   * and nothing is powered off. Returns what was detached, or null when the
+   * lane had no device.
+   */
+  deviceDetach(args: { laneId: string }): Promise<AppleLaneDevice | null>;
+  /**
    * Delete an installed simulator by udid, for the picker's per-device menu.
    *
    * Separate from `deviceDelete`, which is "give up the device THIS lane
@@ -817,6 +823,14 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
       };
     },
     deviceDelete: remove,
+    async deviceDetach(args: { laneId: string }) {
+      const laneId = requireLaneId(args.laneId);
+      const device = readOne(laneId);
+      if (!device) return null;
+      forget(laneId);
+      deps.logger.info("apple.lane_device_detached", { laneId, udid: device.udid, origin: device.origin });
+      return device;
+    },
     get: (laneId: string) => readOne(laneId),
     list: readAll,
     async ensure(args: { laneId: string }) {

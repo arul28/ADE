@@ -182,6 +182,20 @@ describe("laneDeviceRegistry device lifecycle", () => {
     expect(run).not.toHaveBeenCalled();
   });
 
+  it("detaches a clone without deleting it or touching its power", async () => {
+    const run = vi.fn(async (..._call: unknown[]) => ({ stdout: "clone-udid\n", stderr: "" }));
+    const { registry, store } = registryWith(run);
+    await registry.deviceCreate({ laneId: "lane-1" });
+    run.mockClear();
+
+    const detached = await registry.deviceDetach({ laneId: "lane-1" });
+
+    expect(detached).toMatchObject({ udid: "clone-udid", origin: "clone", laneId: "lane-1" });
+    expect(store.rows["lane-1"]).toBeUndefined();
+    expect(run).not.toHaveBeenCalled();
+    await expect(registry.deviceDetach({ laneId: "lane-1" })).resolves.toBeNull();
+  });
+
   it("shuts a clone down before deleting it", async () => {
     // `simctl delete` on a booted device leaves CoreSimulator holding the data
     // directory and reports success having removed nothing.

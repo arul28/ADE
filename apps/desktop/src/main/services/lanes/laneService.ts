@@ -9,7 +9,7 @@ import { getHeadSha, runGit, runGitOrThrow } from "../git/git";
 import { detachPullRequestRowsForLane } from "../prs/pullRequestRowCleanup";
 import { isWithinDir, normalizeBranchName, resolvePathWithinRoot } from "../shared/utils";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
-import { pathsEqual } from "../shared/pathCompare";
+import { isPathInside, pathKey, pathsEqual } from "../shared/pathCompare";
 import { detectConflictKind } from "../git/gitConflictState";
 import { invalidateProjectPathInspectionCache } from "../projects/projectPathInspector";
 import { branchNameFromLaneRef, shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
@@ -7797,19 +7797,21 @@ export function createLaneService({
      * screenshot into an unrelated lane's proof drawer.
      */
     getLaneIdForPath(absolutePath: string): string | null {
-      const candidate = normAbs(absolutePath);
-      if (!candidate) return null;
+      if (!absolutePath) return null;
+      // Both sides go through realpath: a shell's cwd is the physical path,
+      // while a lane row may hold a symlinked spelling of the same folder.
+      const candidate = stablePathThroughExistingAncestor(absolutePath);
       const rows = db.all<Pick<LaneRow, "id" | "worktree_path">>(
         "select id, worktree_path from lanes where project_id = ? and archived_at is null",
         [projectId],
       );
       let best: { id: string; length: number } | null = null;
       for (const row of rows) {
-        const root = normAbs(row.worktree_path ?? "");
-        if (!root) continue;
-        const contained = candidate === root || candidate.startsWith(`${root}${path.sep}`);
-        if (!contained) continue;
-        if (!best || root.length > best.length) best = { id: row.id, length: root.length };
+        if (!row.worktree_path) continue;
+        const root = stablePathThroughExistingAncestor(row.worktree_path);
+        if (!isPathInside(candidate, root)) continue;
+        const length = pathKey(root).length;
+        if (!best || length > best.length) best = { id: row.id, length };
       }
       return best?.id ?? null;
     },

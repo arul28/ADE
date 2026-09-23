@@ -1465,10 +1465,8 @@ export type SyncArtifactRange = {
 export type SyncFileResponsePayload = {
   ok: boolean;
   action: SyncFileRequest["action"];
-  result?:
-    | unknown
-    | SyncFileBlob
-    | SyncArtifactRange;
+  /** Per action: `SyncFileBlob` for the reads, `SyncArtifactRange` for `readArtifactRange`. */
+  result?: unknown;
   error?: {
     code: string;
     message: string;

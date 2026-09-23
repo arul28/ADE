@@ -60,15 +60,8 @@ resolve docs + the matching `ade-perf-*` skill via `references/doc-map.md`.
   cat /tmp/ade-dev-<lane>.log
   ```
 
-  A plain `&` is not enough: it survives the shell exiting but not a SIGTERM to
-  the process group, which is how a turn is torn down. The script puts the app
-  in its own session, so `electron exited (code=143)` mid-run stops happening.
-
-  The default socket is shared, and two dev brains on one socket restart each
-  other. If the report says `sync : ON`, stop: a dev brain holding the
-  machine-wide sync lease drops the installed brain's tunnel and kills the
-  agents under it.
-  Details: `docs/development/local-development.md`.
+  The rules that go with it (own socket, stop if the report says `sync : ON`,
+  why a plain `&` is not enough): `docs/development/local-development.md`.
 - `docs/README.md` — the internal-docs navigation map.
 - `docs/PRD.md` — what ADE is, who it's for, the feature index.
 - `docs/ARCHITECTURE.md` — read the **section** relevant to the touched area

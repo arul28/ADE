@@ -21,6 +21,7 @@ import type {
 import { cn } from "../ui/cn";
 import { appleDeviceModel, type AppleDeviceModelId, type AppleDeviceModelSource } from "./appleDeviceModels";
 import { createAppleDeviceOrbit, type AppleDeviceOrbit } from "./appleDeviceOrbit";
+import { loadAppleDeviceModelInstance } from "./appleDeviceModelLoader";
 
 export type AppleDeviceFamily = "iphone" | "ipad";
 export type AppleDeviceOrientation =
@@ -101,30 +102,6 @@ async function importThreeRuntime() {
 
 type ThreeNS = Awaited<ReturnType<typeof importThreeRuntime>>["THREE"];
 type GltfLoaderCtor = Awaited<ReturnType<typeof importThreeRuntime>>["GLTFLoader"];
-
-/**
- * A GLTFLoader whose embedded textures load through an `<img>`, not `fetch()`.
- *
- * In Chromium, GLTFLoader decodes a `.glb`'s embedded images with
- * `ImageBitmapLoader`, which reads each image's `blob:` URL with `fetch()`.
- * The renderer CSP keeps `blob:` out of `connect-src` on purpose, so every one
- * of the 17 WebP textures failed ("Couldn't load texture blob:…") and the body
- * rendered with bare materials. `img-src` already allows `blob:`, and
- * `TextureLoader` goes through an `<img>`, so the textures load without
- * widening the policy.
- */
-export function createDeviceModelLoader(THREE: Pick<ThreeNS, "TextureLoader">, GLTFLoader: GltfLoaderCtor) {
-  const loader = new GLTFLoader();
-  loader.register((parser) => {
-    const withLoader = parser as unknown as {
-      textureLoader: unknown;
-      options: { manager?: ConstructorParameters<ThreeNS["TextureLoader"]>[0] };
-    };
-    withLoader.textureLoader = new THREE.TextureLoader(withLoader.options.manager);
-    return { name: "ADE_textures_through_img" };
-  });
-  return loader;
-}
 
 type DisplayLayout = {
   rotation: number;
@@ -358,53 +335,6 @@ function meshMaterials(material: Mesh["material"]): Material[] {
   return Array.isArray(material) ? material : [material];
 }
 
-/**
- * One parse per model per process, then a private copy per instance.
- *
- * Measured on this machine: the 3D view mounted ten times in one session and
- * every mount fetched 2.4 MB, ran a GLTF parse of 427 accessors, decoded 17
- * WebP images and uploaded them to the GPU. (The 17 `Couldn't load texture
- * blob:` errors per mount were a separate fault, the CSP refusing `fetch()` of
- * a `blob:` URL; see `createDeviceModelLoader`.)
- *
- * What is cached is the PARSED scene, which is the expensive half. What is NOT
- * shared is anything `disposeImportedSubtree` destroys: it disposes geometries
- * and materials, so each instance gets clones of both and the dispose path
- * needs no exception list and no change at all. That is the property that
- * makes this safe — a cache that required dispose to skip its resources would
- * be one missed call site away from a body that renders empty.
- *
- * Textures ARE shared, deliberately and safely: nothing in the dispose path
- * disposes a texture (it only detaches the live screen texture from a
- * material's `map`), so one decode serves every instance for the life of the
- * process. Three models at ~0.2 MB of image data each is the whole cost.
- *
- * Geometry is still copied per instance — 2.14 MB of the model's 2.34 MB is
- * vertex data. Sharing it would need per-instance cloning of the display mesh
- * alone (`writeScreenUvs` mutates it) plus a dispose exception, and that is the
- * unsafe version above. A memcpy is much cheaper than the parse it replaces.
- */
-const parsedModelCache = new Map<string, Promise<Group>>();
-
-/** Reset between tests; never called in the app. */
-export function __testClearAppleModelCache(): void {
-  parsedModelCache.clear();
-}
-
-function instanceOfCachedScene(template: Group): Group {
-  const copy = template.clone(true);
-  copy.traverse((object) => {
-    const mesh = object as Mesh;
-    if (!mesh.isMesh) return;
-    // Own the two things dispose destroys.
-    mesh.geometry = mesh.geometry.clone();
-    mesh.material = Array.isArray(mesh.material)
-      ? mesh.material.map((material) => material.clone())
-      : mesh.material.clone();
-  });
-  return copy;
-}
-
 function disposeImportedSubtree(root: Object3D, keep: Texture | null): void {
   const geometries = new Set<Mesh["geometry"]>();
   const materials = new Set<Material>();
@@ -590,7 +520,6 @@ function createViewer(
   let drawingBuffer = { width: 0, height: 0, pixelRatio: 0 };
   let pointerMode: "input" | "orbit" | null = null;
   let loadGen = 0;
-  let loadController: AbortController | null = null;
   let currentModelKey = "";
   let lastFrameVersion = Number.NaN;
   let lastCanvas: HTMLCanvasElement | null = null;
@@ -778,32 +707,15 @@ function createViewer(
   };
 
   const loadModel = (source: AppleDeviceModelSource) => {
-    loadController?.abort();
-    const controller = new AbortController();
-    loadController = controller;
     const gen = ++loadGen;
     void (async () => {
       try {
-        let template = parsedModelCache.get(source.id);
-        if (!template) {
-          // The fetch is NOT given the abort signal any more. An abandoned
-          // load used to throw its parse away; now it finishes and fills the
-          // cache, so the mount that superseded it pays nothing. The guards
-          // below still stop an abandoned load from touching the scene.
-          template = (async () => {
-            const response = await fetch(source.url);
-            if (!response.ok) throw new Error(`model ${response.status}`);
-            const gltf = await createDeviceModelLoader(THREE, GLTFLoader).parseAsync(await response.arrayBuffer(), "");
-            return gltf.scene;
-          })();
-          parsedModelCache.set(source.id, template);
-          // A failed parse must not be cached, or one bad load poisons the
-          // model for the life of the process.
-          void template.catch(() => parsedModelCache.delete(source.id));
+        const scene = await loadAppleDeviceModelInstance(source, THREE, GLTFLoader);
+        if (disposed || gen !== loadGen) {
+          // Superseded: drop this instance's own copies.
+          disposeImportedSubtree(scene, null);
+          return;
         }
-        const cached = await template;
-        if (controller.signal.aborted || disposed || gen !== loadGen) return;
-        const scene = instanceOfCachedScene(cached);
         const imported = createImportedBody(THREE, scene, source, texture, layout);
         if (!imported) {
           disposeImportedSubtree(scene, texture);
@@ -814,7 +726,7 @@ function createViewer(
         paintDisplay();
         hooks.onReady({ modelId: source.id });
       } catch (cause) {
-        if (controller.signal.aborted || disposed || gen !== loadGen) return;
+        if (disposed || gen !== loadGen) return;
         void cause;
         // §A1: never a plain slab. The pane falls back to the flat view.
         hooks.onUnavailable("The 3D body could not be loaded.");
@@ -1057,7 +969,6 @@ function createViewer(
       raf = 0;
       if (restoreTimer) clearTimeout(restoreTimer);
       restoreTimer = null;
-      loadController?.abort();
       canvas.removeEventListener("webglcontextlost", onContextLost);
       canvas.removeEventListener("webglcontextrestored", onContextRestored);
       if (body) {

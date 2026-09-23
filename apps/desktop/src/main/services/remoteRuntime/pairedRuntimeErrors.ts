@@ -69,14 +69,19 @@ export class PairedRuntimeRpcOverBudgetError extends Error {
   }
 }
 
-/** True for `PairedRuntimeRpcOverBudgetError`, also when a wrapper carries it as `cause`. */
-export function isPairedRuntimeRpcOverBudgetError(error: unknown): boolean {
+/** True when `error`, or an error up to five `cause` links below it, is a `Ctor`. */
+function hasCauseOfType(error: unknown, Ctor: new (...args: never[]) => Error): boolean {
   let current: unknown = error;
   for (let depth = 0; depth < 5 && current instanceof Error; depth += 1) {
-    if (current instanceof PairedRuntimeRpcOverBudgetError) return true;
+    if (current instanceof Ctor) return true;
     current = (current as Error & { cause?: unknown }).cause;
   }
   return false;
+}
+
+/** True for `PairedRuntimeRpcOverBudgetError`, also when a wrapper carries it as `cause`. */
+export function isPairedRuntimeRpcOverBudgetError(error: unknown): boolean {
+  return hasCauseOfType(error, PairedRuntimeRpcOverBudgetError);
 }
 
 /**
@@ -97,12 +102,7 @@ export class PairedRuntimeSupersededError extends Error {
 
 /** True for `PairedRuntimeSupersededError`, also when a wrapper carries it as `cause`. */
 export function isPairedRuntimeSupersededError(error: unknown): boolean {
-  let current: unknown = error;
-  for (let depth = 0; depth < 5 && current instanceof Error; depth += 1) {
-    if (current instanceof PairedRuntimeSupersededError) return true;
-    current = (current as Error & { cause?: unknown }).cause;
-  }
-  return false;
+  return hasCauseOfType(error, PairedRuntimeSupersededError);
 }
 
 export class PairedRuntimeCompatibilityError extends Error {

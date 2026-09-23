@@ -894,6 +894,8 @@ struct WorkSessionDestinationView: View {
   @State var artifactContent: [String: WorkLoadedArtifactContent] = [:]
   @State var artifactContentRenderSignature = 0
   @State var artifactContentLoadsInFlight = Set<String>()
+  /// Ended and replaced when the chat goes away, which stops its downloads.
+  @State var artifactLoadScope = WorkArtifactLoadScope()
   @State var artifactRefreshInFlight = false
   @State var artifactRefreshError: String?
   @State var fullscreenImage: WorkFullscreenImage?
@@ -2929,6 +2931,8 @@ struct WorkSessionDestinationView: View {
 
   @MainActor
   func cleanupLoadedArtifactContent() {
+    artifactLoadScope.end()
+    artifactLoadScope = WorkArtifactLoadScope()
     artifactContent.values.forEach { workRemoveLoadedArtifactTempFile($0) }
     artifactContent.removeAll()
     refreshArtifactContentRenderSignature()

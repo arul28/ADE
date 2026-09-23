@@ -33,6 +33,7 @@ import {
   resolveRemoteTargetForLaunch,
 } from "./remoteLauncher";
 import type { AdeCodeConnection, ProjectLaunchContext } from "./types";
+import { syntheticCallerId } from "../lib/syntheticCallerId";
 
 export const LOCAL_MACHINE_KEY = "__local__";
 
@@ -502,7 +503,7 @@ async function listProjectsOnBridge(socketUrl: string): Promise<RemoteRuntimePro
     await client.request("ade/initialize", {
       protocolVersion: "2025-06-18",
       clientName: "ade-code",
-      identity: { role: "cto", callerId: `ade-code-hop:${process.pid}` },
+      identity: { role: "cto", callerId: syntheticCallerId("ade-code-hop") },
     });
     await client.request("ade/initialized");
     const raw = await client.request("projects.list", {});

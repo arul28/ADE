@@ -6,7 +6,11 @@ import {
   APPLE_DEFAULT_VIEW_MODE,
   APPLE_DEVICE_ORIENTATION_CYCLE,
   appleElementContextItem,
+  appleEventAddresses,
   appleInputAllowed,
+  appleLaneDeviceBooted,
+  applePowerFromPhase,
+  laneDeviceBooted,
   appleRailVisible,
   appleSimulatorDescription,
   appleToolCardSubtitle,
@@ -245,5 +249,41 @@ describe("appleElementContextItem", () => {
       metadata: { accessibilityIdentifier: "SignInButton.primary" },
     });
     expect(item.accessibilityIdentifier).toBe("SignInButton.primary");
+  });
+});
+
+describe("power and event helpers", () => {
+  it("reads power from a device-state phase", () => {
+    expect(applePowerFromPhase("booted")).toBe("on");
+    expect(applePowerFromPhase("streaming")).toBe("on");
+    expect(applePowerFromPhase("stopped")).toBe("off");
+    expect(applePowerFromPhase("starting")).toBeNull();
+  });
+
+  it("reads the lane's own device out of one list", () => {
+    const lane = { udid: "A" } as never;
+    expect(laneDeviceBooted({ lane, installed: [{ udid: "A", state: "Booted" }] as never })).toBe(true);
+    expect(laneDeviceBooted({ lane, installed: [{ udid: "B", state: "Booted" }] as never })).toBe(false);
+    expect(laneDeviceBooted({ lane: null, installed: [] })).toBe(false);
+    expect(laneDeviceBooted(null)).toBe(false);
+  });
+
+  it("trusts simctl over an open session, and an off answer over both", () => {
+    const status = { activeDevice: null, deviceSession: { deviceUdid: "A" } } as never;
+    expect(appleLaneDeviceBooted({ deviceUdid: "A", offUdid: null, installedForLane: null, status })).toBe(true);
+    expect(appleLaneDeviceBooted({ deviceUdid: "A", offUdid: null, installedForLane: { state: "Shutdown" }, status })).toBe(false);
+    expect(appleLaneDeviceBooted({ deviceUdid: "A", offUdid: "A", installedForLane: { state: "Booted" }, status })).toBe(false);
+    expect(appleLaneDeviceBooted({ deviceUdid: null, offUdid: null, installedForLane: null, status })).toBe(false);
+  });
+
+  it("scopes simulator events to one chat on one lane", () => {
+    const surface = { chatSessionId: "chat-1", laneId: "lane-1", acceptUnscoped: false };
+    expect(appleEventAddresses({ chatSessionId: "chat-1" }, surface)).toBe(true);
+    expect(appleEventAddresses({ chatSessionId: "chat-2" }, surface)).toBe(false);
+    expect(appleEventAddresses({ chatSessionId: "chat-1", laneId: "lane-2" }, surface)).toBe(false);
+    expect(appleEventAddresses({ laneId: "lane-1" }, surface)).toBe(true);
+    expect(appleEventAddresses({ laneId: "lane-1" }, { ...surface, laneId: null })).toBe(false);
+    expect(appleEventAddresses({}, surface)).toBe(false);
+    expect(appleEventAddresses({ laneId: " " }, { ...surface, acceptUnscoped: true })).toBe(true);
   });
 });

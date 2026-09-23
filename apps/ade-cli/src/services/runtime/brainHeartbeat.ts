@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { SUSPEND_GAP_THRESHOLD_MS } from "../power/suspendGapDetector";
 import { writeJsonAtomic } from "./atomicJson";
+import { pathsEqual } from "../../../../desktop/src/main/services/shared/pathCompare";
+import { isAdeRuntimeNamedPipePath } from "../../../../desktop/src/shared/adeRuntimeIpc";
 
 // Re-exported from its old home so existing importers keep working.
 export { writeJsonAtomic };
@@ -40,21 +42,13 @@ export const BRAIN_HEARTBEAT_FILE = "heartbeat.json";
  * endpoint is the machine brain whatever its flags, and a brain on its own
  * socket is not, whatever its flags.
  */
-export function servesMachineRuntimeEndpoint(args: {
-  /** The socket as the caller spelled it, before resolution. */
-  requestedSocketPath: string;
-  /** The same path resolved, or the pipe name unchanged on Windows. */
-  resolvedSocketPath: string;
-  machineSocketPath: string;
-  isNamedPipe: boolean;
-  resolve: (value: string) => string;
-}): boolean {
-  if (args.isNamedPipe) {
+export function servesMachineRuntimeEndpoint(requestedSocketPath: string, machineSocketPath: string): boolean {
+  if (isAdeRuntimeNamedPipePath(requestedSocketPath)) {
     // Named pipes are compared verbatim: there is no filesystem to resolve
     // them against, and case-insensitivity is the pipe server's business.
-    return args.requestedSocketPath === args.machineSocketPath;
+    return requestedSocketPath === machineSocketPath;
   }
-  return args.resolvedSocketPath === args.resolve(args.machineSocketPath);
+  return pathsEqual(path.resolve(requestedSocketPath), path.resolve(machineSocketPath));
 }
 
 /** How often the brain refreshes the heartbeat. */

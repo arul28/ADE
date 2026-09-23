@@ -71,15 +71,17 @@ function Harness({
   hidden = false,
   enabled = true,
   machineName = null,
+  deviceUdid = "UDID-1",
 }: {
   onStream: (stream: AppleDeviceStream) => void;
+  deviceUdid?: string;
   hidden?: boolean;
   enabled?: boolean;
   machineName?: string | null;
 }) {
   const pinRef = useRef<OpenProjectBinding | null>(null);
   const stream = useAppleDeviceStream({
-    deviceUdid: "UDID-1",
+    deviceUdid,
     laneId: "lane-1",
     chatSessionId: "chat-1",
     enabled,
@@ -304,6 +306,7 @@ describe("useAppleDeviceStream", () => {
     }
     // One start, and three recoveries at most.
     expect(api.startStream.mock.calls.length).toBeLessThanOrEqual(4);
+    expect(box.current?.gaveUp).toBe(true);
     const calls = api.startStream.mock.calls.length;
     rerender(<Harness onStream={(next) => { box.current = next; }} hidden />);
     act(() => {
@@ -325,6 +328,20 @@ describe("useAppleDeviceStream", () => {
     await act(async () => { vi.advanceTimersByTime(APPLE_STREAM_STOP_GRACE_MS / 2); });
     render(<Harness onStream={() => {}} />);
     await waitFor(() => expect(appleStreamLeaseCount("bound::lane-1::UDID-1")).toBe(1));
+    await act(async () => { vi.advanceTimersByTime(APPLE_STREAM_STOP_GRACE_MS * 2); });
+    expect(api.stopStream).not.toHaveBeenCalled();
+  });
+
+  /*
+   * Regression (A2-1): `stopStream` is lane-scoped, so the grace stop armed for
+   * device A used to fire after the swap and kill device B's new capture.
+   */
+  it("regression: a device swap inside one viewer does not stop the new stream", async () => {
+    const { rerender } = render(<Harness onStream={() => {}} />);
+    await waitFor(() => expect(appleStreamLeaseCount("bound::lane-1::UDID-1")).toBe(1));
+    rerender(<Harness onStream={() => {}} deviceUdid="UDID-2" />);
+    await waitFor(() => expect(appleStreamLeaseCount("bound::lane-1::UDID-2")).toBe(1));
+    expect(appleStreamLeaseCount("bound::lane-1::UDID-1")).toBe(0);
     await act(async () => { vi.advanceTimersByTime(APPLE_STREAM_STOP_GRACE_MS * 2); });
     expect(api.stopStream).not.toHaveBeenCalled();
   });

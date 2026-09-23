@@ -14923,7 +14923,8 @@ final class SyncService: ObservableObject {
     )
   }
 
-  func readArtifact(artifactId: String? = nil, uri: String? = nil, path: String? = nil) async throws -> SyncFileBlob {
+  /// The artifact a file read names, by id, stored uri or path.
+  private func artifactFileArgs(artifactId: String?, uri: String?, path: String? = nil) -> [String: Any] {
     var args: [String: Any] = [:]
     if let artifactId, !artifactId.isEmpty {
       args["artifactId"] = artifactId
@@ -14934,58 +14935,100 @@ final class SyncService: ObservableObject {
     if let path, !path.isEmpty {
       args["path"] = path
     }
+    return args
+  }
+
+  func readArtifact(artifactId: String? = nil, uri: String? = nil, path: String? = nil) async throws -> SyncFileBlob {
+    let args = artifactFileArgs(artifactId: artifactId, uri: uri, path: path)
     return try decode(try await performFileRequest(action: "readArtifact", args: args), as: SyncFileBlob.self)
   }
 
   /// What one slice read asks for. The host caps a slice at 2 MiB.
   static let artifactRangeChunkBytes = 2 * 1024 * 1024
 
+  /// `performFileRequest`'s error code when the machine is not reachable.
+  static let fileRequestOfflineErrorCode = 16
+
+  /// One slice read, with the fields read straight off the reply: decoding the
+  /// whole reply through `Codable` would re-encode a 2.8 MB string on the main
+  /// actor for every slice.
+  private func readArtifactRange(args: [String: Any], offset: Int, length: Int) async throws -> (content: String, totalSize: Int, rangeEnd: Int, eof: Bool) {
+    var request = args
+    request["offset"] = offset
+    request["length"] = length
+    let raw = try await performFileRequest(action: "readArtifactRange", args: request)
+    guard let range = raw as? [String: Any],
+          let totalSize = (range["totalSize"] as? NSNumber)?.intValue,
+          let rangeEnd = (range["rangeEnd"] as? NSNumber)?.intValue else {
+      throw NSError(domain: "ADE", code: 8, userInfo: [NSLocalizedDescriptionKey: "The machine returned an artifact payload that could not be decoded."])
+    }
+    return (range["content"] as? String ?? "", totalSize, rangeEnd, range["eof"] as? Bool ?? (rangeEnd >= totalSize))
+  }
+
+  /// The stored file's size in bytes, from a one-byte slice read. A host that
+  /// predates the slice read answers "Unsupported file action".
+  func artifactSize(artifactId: String? = nil, uri: String? = nil) async throws -> Int {
+    try await readArtifactRange(args: artifactFileArgs(artifactId: artifactId, uri: uri), offset: 0, length: 1).totalSize
+  }
+
   /// Writes a stored proof to `destination` one bounded slice at a time, so a
   /// recording larger than `readArtifact`'s whole-file cap still plays. A host
   /// that predates the slice read answers "Unsupported file action"; callers
   /// fall back to `readArtifact` on that.
-  func downloadArtifact(artifactId: String? = nil, uri: String? = nil, to destination: URL) async throws {
-    var args: [String: Any] = [:]
-    if let artifactId, !artifactId.isEmpty {
-      args["artifactId"] = artifactId
-    }
-    if let uri, !uri.isEmpty {
-      args["uri"] = uri
-    }
-    let fileManager = FileManager.default
-    try? fileManager.removeItem(at: destination)
-    guard fileManager.createFile(atPath: destination.path, contents: nil) else {
+  ///
+  /// Slices land in a private partial file that is renamed over `destination`
+  /// only when complete, so two downloads of one artifact never share a
+  /// half-written file. Base64 decoding and the disk write run off the main
+  /// actor. `shouldContinue` is checked between slices; false stops the
+  /// download with `CancellationError`.
+  func downloadArtifact(
+    artifactId: String? = nil,
+    uri: String? = nil,
+    to destination: URL,
+    shouldContinue: @MainActor () -> Bool = { true }
+  ) async throws {
+    let args = artifactFileArgs(artifactId: artifactId, uri: uri)
+    let partial = destination.deletingLastPathComponent()
+      .appendingPathComponent("\(destination.lastPathComponent).partial-\(UUID().uuidString)")
+    guard FileManager.default.createFile(atPath: partial.path, contents: nil) else {
       throw NSError(domain: "ADE", code: 8, userInfo: [NSLocalizedDescriptionKey: "Could not save the artifact on this phone."])
     }
-    let handle = try FileHandle(forWritingTo: destination)
     var completed = false
     defer {
-      try? handle.close()
-      if !completed { try? fileManager.removeItem(at: destination) }
+      if !completed { try? FileManager.default.removeItem(at: partial) }
     }
     var offset = 0
     while true {
       try Task.checkCancellation()
-      var request = args
-      request["offset"] = offset
-      request["length"] = Self.artifactRangeChunkBytes
-      let range = try decode(
-        try await performFileRequest(action: "readArtifactRange", args: request),
-        as: SyncArtifactRange.self
-      )
-      guard let data = Data(base64Encoded: range.content) else {
-        throw NSError(domain: "ADE", code: 8, userInfo: [NSLocalizedDescriptionKey: "The machine returned an artifact payload that could not be decoded."])
-      }
-      if !data.isEmpty {
-        try handle.write(contentsOf: data)
-      }
+      guard shouldContinue() else { throw CancellationError() }
+      let range = try await readArtifactRange(args: args, offset: offset, length: Self.artifactRangeChunkBytes)
+      let written = try await Task.detached(priority: .utility) {
+        try SyncService.appendBase64Slice(range.content, to: partial)
+      }.value
       if range.eof || range.rangeEnd >= range.totalSize { break }
-      guard !data.isEmpty, range.rangeEnd > offset else {
+      guard written > 0, range.rangeEnd > offset else {
         throw NSError(domain: "ADE", code: 8, userInfo: [NSLocalizedDescriptionKey: "The artifact ended early on the machine."])
       }
       offset = range.rangeEnd
     }
+    // rename(2) replaces an existing file atomically.
+    guard rename(partial.path, destination.path) == 0 else {
+      throw NSError(domain: "ADE", code: 8, userInfo: [NSLocalizedDescriptionKey: "Could not save the artifact on this phone."])
+    }
     completed = true
+  }
+
+  /// Decodes one base64 slice and appends it to `url`. Returns the byte count.
+  nonisolated private static func appendBase64Slice(_ base64: String, to url: URL) throws -> Int {
+    guard let data = Data(base64Encoded: base64) else {
+      throw NSError(domain: "ADE", code: 8, userInfo: [NSLocalizedDescriptionKey: "The machine returned an artifact payload that could not be decoded."])
+    }
+    guard !data.isEmpty else { return 0 }
+    let handle = try FileHandle(forWritingTo: url)
+    defer { try? handle.close() }
+    try handle.seekToEnd()
+    try handle.write(contentsOf: data)
+    return data.count
   }
 
   // MARK: - Work tools (read-only)
@@ -21877,7 +21920,7 @@ final class SyncService: ObservableObject {
     targetProjectId: String? = nil
   ) async throws -> Any {
     guard canSendLiveRequests() else {
-      throw NSError(domain: "ADE", code: 16, userInfo: [NSLocalizedDescriptionKey: "Can’t reach this computer right now."])
+      throw NSError(domain: "ADE", code: Self.fileRequestOfflineErrorCode, userInfo: [NSLocalizedDescriptionKey: "Can’t reach this computer right now."])
     }
     let requestId = makeRequestId()
     let raw = try await awaitResponse(requestId: requestId) {

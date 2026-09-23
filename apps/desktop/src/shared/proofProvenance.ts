@@ -89,13 +89,14 @@ export function formatProofClock(iso: string, locale?: string): string {
 
 /**
  * "10:24–10:25 AM". A day period both ends share is said once; a 24-hour
- * locale has none and reads "10:24–10:25".
+ * locale has none and reads "10:24–10:25". The period is everything after the
+ * last digit, so a dotted one ("a.m.", "a. m.") stays whole.
  */
 export function formatProofClockRange(fromIso: string, toIso: string, locale?: string): string {
   const from = formatProofClock(fromIso, locale);
   const to = formatProofClock(toIso, locale);
   if (from === to) return from;
-  const period = /\s*[^\d\s:.]+\.?$/u.exec(to)?.[0] ?? "";
+  const period = /\P{Nd}+$/u.exec(to)?.[0] ?? "";
   if (period && from.endsWith(period)) return `${from.slice(0, -period.length)}–${to}`;
   return `${from}–${to}`;
 }

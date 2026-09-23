@@ -5,10 +5,10 @@ import { isPathInside } from "../shared/pathCompare";
 
 /**
  * What every path that serves proof bytes to a `<video>` or `<img>` shares:
- * the `ade-artifact://` handler in `main.ts` and the loopback media server in
- * `artifactMediaServer.ts`. The type table, the Range parse, the one
- * containment check both use for files on this computer, and the reader the
- * runtime bridge installs for files on a paired computer.
+ * the `ade-artifact://` handler below, the loopback media server in
+ * `artifactMediaServer.ts`, and the broker's preview and range reads. The type
+ * table, the Range parse, and the one containment check for files on this
+ * computer.
  */
 
 const MIME_BY_EXTENSION: Record<string, string> = {
@@ -29,10 +29,20 @@ const MIME_BY_EXTENSION: Record<string, string> = {
   mkv: "video/x-matroska",
 };
 
+/** The type of a proof image or video, or null for any other file. */
+export function knownArtifactMimeType(fileName: string): string | null {
+  const ext = path.extname(fileName).replace(/^\./, "").toLowerCase();
+  return MIME_BY_EXTENSION[ext] ?? null;
+}
+
+/** True for the image and video types a preview or a range read may serve. */
+export function isStreamableArtifactFile(fileName: string): boolean {
+  return knownArtifactMimeType(fileName) !== null;
+}
+
 /** The type a proof file is served as, picked so Chromium will play it. */
 export function artifactStreamMimeType(fileName: string): string {
-  const ext = path.extname(fileName).replace(/^\./, "").toLowerCase();
-  return MIME_BY_EXTENSION[ext] ?? "application/octet-stream";
+  return knownArtifactMimeType(fileName) ?? "application/octet-stream";
 }
 
 /** One byte range, inclusive, or `suffix` for `bytes=-N`. */
@@ -61,28 +71,20 @@ export type RemoteArtifactRangeChunk = {
   data: string;
 };
 
+/**
+ * Reads one chunk from a paired computer. The answer is checked with
+ * `decodeRemoteArtifactChunk`, so it is typed as unknown here.
+ */
 export type RemoteArtifactRangeReader = (args: {
   targetId: string;
   projectId: string;
   relativePath: string;
   offset: number;
   length: number;
-}) => Promise<RemoteArtifactRangeChunk>;
+}) => Promise<unknown>;
 
 /** What the proxy asks for per round trip. Small enough that a poster costs about one. */
 export const REMOTE_ARTIFACT_CHUNK_BYTES = 1024 * 1024;
-
-let remoteReader: RemoteArtifactRangeReader | null = null;
-
-/** The runtime bridge installs this once it owns the paired connections. */
-export function setRemoteArtifactRangeReader(reader: RemoteArtifactRangeReader | null): void {
-  remoteReader = reader;
-}
-
-/** The installed reader, or null before the runtime bridge is up. */
-export function getRemoteArtifactRangeReader(): RemoteArtifactRangeReader | null {
-  return remoteReader;
-}
 
 /** Reads one chunk answer. Throws on anything that is not one. */
 export function decodeRemoteArtifactChunk(chunk: unknown): { totalSize: number; bytes: Buffer } {
@@ -168,4 +170,78 @@ export function resolveContainedArtifactFile(args: {
   }
   if (!stat.isFile()) return { ok: false, reason: "not-file", filePath: resolvedFile };
   return { ok: true, filePath: resolvedFile, size: stat.size };
+}
+
+/** A file, or one inclusive byte span of it, as a web stream for a `Response`. */
+export function fileWebStream(filePath: string, start?: number, end?: number): ReadableStream<Uint8Array> {
+  const fileStream = fs.createReadStream(filePath, start === undefined ? {} : { start, end });
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      fileStream.on("data", (chunk) => controller.enqueue(typeof chunk === "string" ? Buffer.from(chunk) : chunk));
+      fileStream.on("end", () => controller.close());
+      fileStream.on("error", (error) => controller.error(error));
+    },
+    cancel() {
+      fileStream.destroy();
+    },
+  });
+}
+
+/**
+ * The `ade-artifact://` answer. The path is in the URL:
+ * `ade-artifact:///absolute/path/to/file.png` or
+ * `ade-artifact://project/<relative path>`. Proof images use it; videos use
+ * the media server, which reads the same Range header the same way.
+ */
+export function respondToArtifactProtocolRequest(
+  request: Request,
+  scope: { projectRoot: string | null; allowedDir: string | null },
+  warn?: (message: string, details: Record<string, unknown>) => void,
+): Response {
+  const notFound = () => new Response("Not found", { status: 404 });
+  const url = new URL(request.url);
+  let requestedPath: string;
+  try {
+    requestedPath = decodeURIComponent(url.pathname);
+  } catch {
+    return notFound();
+  }
+  const file = resolveContainedArtifactFile({
+    requestedPath,
+    projectRelative: url.hostname === "project",
+    projectRoot: scope.projectRoot,
+    allowedDir: scope.allowedDir,
+  });
+  if (!file.ok) {
+    if (file.reason === "missing") {
+      warn?.("[ade-artifact] realpath failed", { filePath: file.filePath });
+    } else if (file.reason === "outside") {
+      warn?.("[ade-artifact] rejected path outside artifacts dir", {
+        resolvedFile: file.filePath,
+        allowedDir: scope.allowedDir,
+      });
+    }
+    return notFound();
+  }
+  const headers: Record<string, string> = {
+    "Content-Type": artifactStreamMimeType(file.filePath),
+    "Accept-Ranges": "bytes",
+  };
+  const range = parseRangeHeader(request.headers.get("Range"));
+  const bytes = resolveByteRange(range, file.size);
+  if (!bytes) {
+    if (range) {
+      return new Response(null, { status: 416, headers: { "Content-Range": `bytes */${file.size}` } });
+    }
+    // An empty file with no Range asked for.
+    return new Response(null, { status: 200, headers: { ...headers, "Content-Length": "0" } });
+  }
+  try {
+    headers["Content-Length"] = String(bytes.end - bytes.start + 1);
+    if (!range) return new Response(fileWebStream(file.filePath), { status: 200, headers });
+    headers["Content-Range"] = `bytes ${bytes.start}-${bytes.end}/${file.size}`;
+    return new Response(fileWebStream(file.filePath, bytes.start, bytes.end), { status: 206, headers });
+  } catch {
+    return notFound();
+  }
 }

@@ -55,13 +55,16 @@ describe("computerUseArtifactBroker proof provenance", () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
-  const makeBroker = () => createComputerUseArtifactBrokerService({
-    db,
-    projectId: "project-1",
-    projectRoot,
-    logger: createLogger(),
-    resolveChatTurnStartedAt: () => turnStartedAt,
-  });
+  const makeBroker = () => {
+    const broker = createComputerUseArtifactBrokerService({
+      db,
+      projectId: "project-1",
+      projectRoot,
+      logger: createLogger(),
+    });
+    broker.setChatTurnStartResolver(() => turnStartedAt);
+    return broker;
+  };
 
   const writeCacheFile = (name: string, bytes: Buffer): string => {
     const dir = path.join(projectRoot, ".ade", "cache");
@@ -209,12 +212,72 @@ describe("computerUseArtifactBroker proof provenance", () => {
     const bytes = mp4Bytes(null, 8);
     fs.writeFileSync(path.join(laneDir, "rec-1.mp4"), bytes);
     fs.writeFileSync(path.join(laneDir, "rec-1.json"), JSON.stringify({
+      id: "rec-1",
       label: "Simulator recording · iPhone · 0:12",
       startedAt: "2026-09-23T05:19:00.000Z",
       proofArtifactId: null,
     }));
     expect(() => attach(broker, writeCacheFile("safari.mp4", bytes), "Safari"))
       .toThrow(/PROOF_DUPLICATE: Same bytes as "Simulator recording · iPhone · 0:12"/);
+  });
+
+  it("attaches an Apple recording whose filing failed, in place, without calling it a copy of itself", () => {
+    const broker = makeBroker();
+    const laneDir = path.join(projectRoot, ".ade", "artifacts", "apple-recordings", "lane-1");
+    fs.mkdirSync(laneDir, { recursive: true });
+    const bytes = mp4Bytes(null, 15);
+    const recording = path.join(laneDir, "rec-2.mp4");
+    fs.writeFileSync(recording, bytes);
+    fs.writeFileSync(path.join(laneDir, "rec-2.json"), JSON.stringify({
+      id: "rec-2",
+      label: "Simulator recording · iPhone · 0:09",
+      startedAt: "2026-09-23T05:19:00.000Z",
+      proofArtifactId: null,
+    }));
+    const result = attach(broker, recording, "Checkout flow");
+    expect(result.artifacts[0]!.uri).toBe(".ade/artifacts/apple-recordings/lane-1/rec-2.mp4");
+    expect(result.artifacts[0]!.metadata).toMatchObject({ contentSha256: sha256(bytes), contentBytes: bytes.length });
+    // A copy of it is still refused.
+    expect(() => attach(broker, writeCacheFile("copy-of-rec.mp4", bytes), "Copy"))
+      .toThrow(/PROOF_DUPLICATE: Same bytes as "Checkout flow"/);
+  });
+
+  it("does not hash ADE's own recording at filing time, but still catches a later copy of it", async () => {
+    const broker = makeBroker();
+    const laneDir = path.join(projectRoot, ".ade", "artifacts", "apple-recordings", "lane-1");
+    fs.mkdirSync(laneDir, { recursive: true });
+    const bytes = mp4Bytes(null, 16);
+    const recording = path.join(laneDir, "rec-3.mp4");
+    fs.writeFileSync(recording, bytes);
+    const filed = broker.ingest({
+      backend: { name: "apple-device", style: "local_fallback", toolName: "apple_record" },
+      owners: [{ kind: "lane", id: "lane-1" }],
+      provenance: { source: "ade-recorder" },
+      inputs: [{ kind: "video_recording", title: "Recorder", path: recording }],
+    });
+    expect(filed.artifacts[0]!.metadata.contentSha256).toBeUndefined();
+    expect(filed.artifacts[0]!.metadata.contentBytes).toBe(bytes.length);
+    // The streamed attach finds it by size, hashes it once, and refuses the copy.
+    await expect(broker.ingestAsync({
+      backend: { name: "ade-cli", style: "manual", toolName: "proof attach" },
+      owners: [{ kind: "chat_session", id: "chat-1" }],
+      inputs: [{ kind: "video_recording", title: "Copy", path: writeCacheFile("rec-copy.mp4", bytes) }],
+    })).rejects.toThrow(/PROOF_DUPLICATE: Same bytes as "Recorder"/);
+    expect(storedFiles()).toHaveLength(0);
+  });
+
+  it("streams the hash of an attached file already in the store", async () => {
+    const broker = makeBroker();
+    const dir = path.join(projectRoot, ".ade", "artifacts", "manual");
+    fs.mkdirSync(dir, { recursive: true });
+    const bytes = mp4Bytes(null, 17);
+    fs.writeFileSync(path.join(dir, "clip.mp4"), bytes);
+    const result = await broker.ingestAsync({
+      backend: { name: "ade-cli", style: "manual", toolName: "proof attach" },
+      owners: [{ kind: "chat_session", id: "chat-1" }],
+      inputs: [{ kind: "video_recording", title: "Clip", path: path.join(dir, "clip.mp4") }],
+    });
+    expect(result.artifacts[0]!.metadata).toMatchObject({ contentSha256: sha256(bytes), contentBytes: bytes.length });
   });
 
   describe("age of an attached video", () => {

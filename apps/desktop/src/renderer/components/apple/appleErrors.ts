@@ -40,6 +40,9 @@ export type AppleErrorDescription = {
 
 export const APPLE_GENERIC_ERROR_SENTENCE = "Something went wrong with the simulator.";
 
+/** The pane gave up waiting on a start (see `useAppleDeviceStartTracker`). */
+export const APPLE_START_GIVE_UP_CODE = "APPLE_START_GIVE_UP";
+
 /** Electron prefixes a rejected `ipcRenderer.invoke` with the channel. */
 const IPC_PREFIX = /^Error invoking remote method '[^']*':\s*(?:[A-Za-z]*Error:\s*)?/;
 
@@ -133,6 +136,7 @@ const RULES: readonly Rule[] = [
   { test: includes(APPLE_DEVICE_ATTACHED_NOT_DELETABLE_CODE), sentence: "ADE only detaches a simulator it did not create." },
   { test: matches(/No installed simulator matches/i), sentence: "That simulator is not installed." },
   { test: matches(/Apple devices belong to a lane|laneId is required|no Apple device yet/i), sentence: "Open the Apple tab from a lane first." },
+  { test: includes(APPLE_START_GIVE_UP_CODE), sentence: "The simulator is taking too long to start.", action: "start" },
   { test: matches(/did not become ready within|CoreSimulator may be stuck/i), sentence: "The simulator is taking too long to start.", action: "start" },
   { test: matches(/simctl clone did not report a udid/i), sentence: "The simulator could not be cloned." },
   // Launch and ownership.

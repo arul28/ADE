@@ -10,18 +10,7 @@ import { WorkLiveCornerCard } from "../work/WorkLiveCornerCard";
 import { WorkSidebar } from "./WorkSidebar";
 import type { WorkSidebarContextTarget } from "./workToolContextInsertion";
 import { AppleDeviceMiniPlayer } from "../apple/AppleDeviceMiniPlayer";
-import { floatAppleMiniPlayerForChat, type AppleMiniPlayerSurface } from "../apple/appleMiniPlayerStore";
-import { setWorkLivePreviewEnabledForChat } from "../chat/chatCompanionUiState";
-import {
-  useWorkToolShowHandler,
-  useWorkToolShowRequestListener,
-} from "../../lib/workToolShowRequests";
-import type { WorkToolShowRequest, WorkToolShowSurface } from "../../../shared/types/workToolShow";
-import {
-  isDocumentVisible,
-  isWorkToolOnScreen,
-  waitForWorkToolOnScreen,
-} from "../../lib/workToolOnScreen";
+import { useWorkShowRequests } from "./useWorkShowRequests";
 import { AppleShutdownConfirmHost } from "../apple/AppleShutdownConfirm";
 import { NativeToolFeedsProvider } from "./NativeToolFeedsContext";
 import { useWorkSidebarTool } from "./useWorkSidebarTool";
@@ -195,7 +184,6 @@ async function allSettledWithConcurrency<T>(
 }
 
 /** What the Work page itself can show for the chat in front. */
-const WORK_PAGE_SHOW_SURFACES: readonly WorkToolShowSurface[] = ["apple", "floating-apple", "browser"];
 
 export function TerminalsPage({ active = true }: { active?: boolean }) {
   const work = useWorkSessions({ active });
@@ -1139,106 +1127,16 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     setWorkSidebarTool("ios");
   }, [setWorkSidebarTool]);
 
-  /**
-   * What the floating device checks before it shows itself.
-   *
-   * Built from the SESSION in front, never from `activeLaneId`: on the
-   * new-chat screen that falls back to the composer's draft lane (and then the
-   * selected or primary lane), so a lane's simulator read as "belonging" to a
-   * new chat that had not started anywhere — the owner's 2026-09-23 report.
-   * No session means no surface, and the player hides (without closing).
-   */
-  const appleMiniPlayerSurface = useMemo<AppleMiniPlayerSurface | null>(() => (
-    activeWorkSession
-      ? {
-          laneId: activeWorkSession.laneId || null,
-          runtimePin: activeWorkSessionRuntimePin,
-          boundBinding: projectBinding,
-        }
-      : null
-  ), [activeWorkSession, activeWorkSessionRuntimePin, projectBinding]);
-
-  /*
-   * `ade ui show` for the chat in front, and the floating device an agent's
-   * work on it brings up.
-   *
-   * Registered only while Work is on screen and only for the session in front,
-   * which is the whole surface rule: another lane's chat and the new-chat
-   * screen register nothing, so an agent elsewhere cannot put anything here.
-   * A request for a chat that is not in front is held and lands when the user
-   * opens that chat.
-   *
-   * The floating rule (`auto` requests, sent by the brain when an agent drives
-   * the device): float only when the Apple tool is not already on screen and
-   * the chat's "Show preview when minimized" is on. That is the default; × on
-   * the player turns it off for the chat, and it stays off until the user turns
-   * it back on or the agent asks with `ade apple show`.
-   */
-  const appleToolOpening = workSidebarVisible && workSidebarTool === "ios";
-  const showWorkSurface = useCallback((request: WorkToolShowRequest): boolean | Promise<boolean> => {
-    if (!activeWorkSession || request.chatSessionId !== activeWorkSession.id) return false;
-    const sessionLaneId = activeWorkSession.laneId || null;
-    /*
-     * Writing the tool into the store is a request, not a result: "shown" is
-     * answered only once the tool has mounted in a pane the user can see (see
-     * `workToolOnScreen`). The 2026-09-23 report was a "shown" for a pane that
-     * never appeared.
-     */
-    if (request.surface === "browser") {
-      setWorkSidebarTool("browser");
-      return waitForWorkToolOnScreen("browser", sessionLaneId);
-    }
-    if (request.surface === "apple") {
-      // An explicit ask undoes an earlier × for this chat's floating device.
-      setWorkLivePreviewEnabledForChat(request.chatSessionId, "ios", true);
-      // Mounting the Apple tool takes the device back from a floating player
-      // (the pane's own retake handover), so the player closes by itself.
-      setWorkSidebarTool("ios");
-      return waitForWorkToolOnScreen("ios", sessionLaneId);
-    }
-    if (request.surface !== "floating-apple") return false;
-    // The device is already on screen in the pane.
-    if (isWorkToolOnScreen("ios", sessionLaneId)) return true;
-    // Opening, not yet visible: an automatic float would only be taken back
-    // by the pane a moment later.
-    if (request.auto && appleToolOpening) return false;
-    return floatAppleMiniPlayerForChat({
-      laneId: sessionLaneId,
-      chatSessionId: request.chatSessionId,
-      runtimePin: activeWorkSessionRuntimePin,
-      auto: request.auto,
-    }).then((floated) => floated && isDocumentVisible());
-  }, [activeWorkSession, activeWorkSessionRuntimePin, appleToolOpening, setWorkSidebarTool]);
-  useWorkToolShowHandler(
-    active && activeWorkSession ? activeWorkSession.id : null,
-    WORK_PAGE_SHOW_SURFACES,
-    showWorkSurface,
-  );
-  // The window's own runtime is heard app-wide; a chat on another machine is
-  // heard on its own pin.
-  useWorkToolShowRequestListener(
-    Boolean(active && activeWorkSessionRuntimePin),
-    activeWorkSessionRuntimePin,
-  );
-
-  /*
-   * `ade apple launch --open-drawer` and an agent's inspect/select reveal. The
-   * chat pane ignores these in Work (its lane drawers are hidden here), so
-   * without this the request reached nothing on the surface agents use most.
-   */
-  useEffect(() => {
-    const api = window.ade?.iosSimulator;
-    const sessionId = activeWorkSession?.id ?? null;
-    const sessionLaneId = activeWorkSession?.laneId || null;
-    if (!active || !sessionId || !api?.onEvent) return undefined;
-    return api.onEvent((event) => {
-      if (event.type !== "drawer-open-requested") return;
-      const chatId = event.chatSessionId?.trim() || null;
-      const laneId = event.laneId?.trim() || null;
-      if (chatId ? chatId !== sessionId : (!laneId || laneId !== sessionLaneId)) return;
-      setWorkSidebarTool("ios");
-    }, activeWorkSessionRuntimePin);
-  }, [active, activeWorkSession?.id, activeWorkSession?.laneId, activeWorkSessionRuntimePin, setWorkSidebarTool]);
+  const appleMiniPlayerSurface = useWorkShowRequests({
+    active,
+    activeWorkSession,
+    runtimePin: activeWorkSessionRuntimePin,
+    projectBinding,
+    activeLaneId,
+    workSidebarVisible,
+    workSidebarTool,
+    setWorkSidebarTool,
+  });
 
   useEffect(() => {
     if (!active) return;

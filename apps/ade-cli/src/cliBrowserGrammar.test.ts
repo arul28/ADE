@@ -607,8 +607,12 @@ const BUILD_CLI_PLAN_HELP_CALL_SITES = 2;
  * only sees cli.ts, which is still the whole browser plan; the moved readers
  * are launch-surface readers no browser subcommand reaches, so nothing they
  * read needs a `BROWSER_VALUE_FLAGS` entry.
+ *
+ * 110 since `ade ui show` and CLI delegation: `buildUiPlan` reads the show
+ * surface and scope, and `runMainAndExit` / `runUnlessDelegated` run the CLI
+ * when no delegation took the call. None of them is a browser subcommand.
  */
-const ARGV_READER_COUNT = 107;
+const ARGV_READER_COUNT = 110;
 /*
  * The moved readers — `readParentSessionId`, `readAgentSpawnLineage`,
  * `collectLaunchArgs`/`normalizeLaunchArgs` — now live in launchArgs.ts, which

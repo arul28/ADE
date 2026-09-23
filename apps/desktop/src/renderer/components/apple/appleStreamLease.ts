@@ -19,6 +19,9 @@
  * a capture the desktop brought up either.
  */
 
+import type { OpenProjectBinding } from "../../../shared/types";
+import { workRuntimeScopeKey } from "../../lib/chatMachineRouting";
+
 type AppleStreamLeaseEntry = {
   count: number;
   /**
@@ -51,8 +54,29 @@ let epochCounter = 0;
 export type AppleStreamViewer = {
   laneId: string | null;
   deviceUdid: string;
-  pinKey: string | null;
+  pinKey: string;
 };
+
+type AppleStreamScopeArgs = {
+  /** The session's pin; null means the machine this window is bound to. */
+  pin: OpenProjectBinding | null | undefined;
+  /** The window's current binding, which a null pin resolves to. */
+  bound: OpenProjectBinding | null | undefined;
+  laneId: string | null | undefined;
+};
+
+/**
+ * The machine and lane a capture belongs to. `stopStream` is scoped to this,
+ * not to one device.
+ *
+ * The pin is resolved here, so a viewer holding a null pin and one holding the
+ * same machine resolved (`local:/…`) count in one bucket. Two spellings were
+ * two buckets, and each viewer leaving was "the last one" of its own.
+ */
+function appleStreamLaneScope(args: AppleStreamScopeArgs): string {
+  const lane = args.laneId?.trim() || "no-lane";
+  return `${workRuntimeScopeKey(args.pin, args.bound)}::${lane}`;
+}
 
 /**
  * One key per stream the helper can actually be running.
@@ -60,14 +84,8 @@ export type AppleStreamViewer = {
  * The machine is in the key because two tabs bound to different Macs can show
  * the same lane id, and they are not watching the same capture.
  */
-export function appleStreamLeaseKey(args: {
-  pinKey: string | null | undefined;
-  laneId: string | null | undefined;
-  deviceUdid: string;
-}): string {
-  const pin = args.pinKey?.trim() || "bound";
-  const lane = args.laneId?.trim() || "no-lane";
-  return `${pin}::${lane}::${args.deviceUdid}`;
+export function appleStreamLeaseKey(args: AppleStreamScopeArgs & { deviceUdid: string }): string {
+  return `${appleStreamLaneScope(args)}::${args.deviceUdid}`;
 }
 
 /**
@@ -140,11 +158,14 @@ export function releaseAppleStreamLease(key: string, epoch?: number): { last: bo
  */
 export function appleStreamViewerForLane(
   laneId: string | null | undefined,
+  /** The machine, as `workRuntimeScopeKey` spells it. Omitted: any machine. */
+  pinKey?: string,
 ): (AppleStreamViewer & { key: string }) | null {
   const wanted = laneId?.trim() || null;
   if (!wanted) return null;
   for (const [key, entry] of leases) {
     if (entry.count <= 0 || !entry.viewer) continue;
+    if (pinKey !== undefined && entry.viewer.pinKey !== pinKey) continue;
     if (entry.viewer.laneId === wanted) return { ...entry.viewer, key };
   }
   return null;
@@ -169,6 +190,22 @@ export function forgetAppleStreamLeasesForLane(laneId: string | null | undefined
     const matchesKey = key.split("::")[1] === wanted;
     if (matchesKey || entry.viewer?.laneId === wanted) leases.delete(key);
   }
+}
+
+/**
+ * How many leases are held on the lane and machine of `key`, on any device.
+ *
+ * The stop the last viewer arms is lane-scoped, so a new device on the same
+ * lane (a swap inside one viewer, or the floating player moving to another
+ * device) must keep it from firing.
+ */
+export function appleStreamLaneLeaseCount(key: string): number {
+  const scope = key.slice(0, key.lastIndexOf("::") + 2);
+  let count = 0;
+  for (const [held, entry] of leases) {
+    if (held.startsWith(scope)) count += Math.max(0, entry.count);
+  }
+  return count;
 }
 
 /** How many viewers hold this stream. Diagnostics and tests. */

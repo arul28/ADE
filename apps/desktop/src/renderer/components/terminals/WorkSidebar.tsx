@@ -281,18 +281,7 @@ export function WorkSidebar({
     if (effectiveTool === "app-control" && appControlSession?.laneId && appControlSession.laneId !== laneId) {
       return laneMismatchMessage(workToolLabel("app-control"), appControlSession.laneId, laneId, scopedLanes);
     }
-    /*
-     * Apple Development has NO pane-level claim, deliberately.
-     *
-     * The banner was written when one simulator session was the pane, so
-     * another lane holding it made the whole view second-hand. That is no
-     * longer true: a lane owns a DEVICE, one runtime install serves any number
-     * of them, and the picker states per device whether it is available, this
-     * lane's, or in use elsewhere and by whom. A banner over the top then says
-     * the pane is claimed while the page below offers four free devices, which
-     * is the opposite of what is true — and it taught an agent to stop and ask
-     * for a device instead of creating its own.
-     */
+    // Apple has no pane-level claim: per-device ownership lives in the picker.
     return null;
   }
   // Lane attribution only. "This session cannot receive inserted context" is

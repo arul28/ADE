@@ -88,7 +88,9 @@ Proof shows what you did for this request. ADE checks:
   files, but prints `warning: This video was recorded at …, before this
   request.` and the drawer marks it older. Repeat that warning to the user.
 - The drawer says where each proof came from: recorded by ADE, captured by
-  ADE, or attached by the agent.
+  ADE, or attached by the agent. `ade proof attach` of a fresh, unchanged ADE
+  capture keeps ADE's label; any other file is "attached by the agent",
+  whatever label you pass.
 
 ## Gotchas
 

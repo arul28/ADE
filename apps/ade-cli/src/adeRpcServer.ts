@@ -94,6 +94,12 @@ import {
   BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM,
 } from "./services/builtInBrowser/desktopBridgeMethods";
 import { FORWARDABLE_BUILT_IN_BROWSER_METHODS } from "./services/builtInBrowser/remoteBrowserForwarder";
+import { isSyntheticCallerId } from "./lib/syntheticCallerId";
+import {
+  ADE_CAPTURE_ACTIONS,
+  createAdeCaptureRegistry,
+  type AdeCaptureRegistry,
+} from "./services/proof/adeCaptureRegistry";
 import { resolveCodexComputerUseMcpConfig } from "../../desktop/src/main/utils/codexComputerUse";
 import { parseTrackedCliLaunchConfig } from "../../desktop/src/main/utils/terminalSessionSignals";
 import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
@@ -1784,15 +1790,16 @@ function isCliProvider(provider: LaunchProfile): provider is CliProvider {
 }
 
 /**
- * `ade-cli:5504`, `ade-code:912` — an id `buildInitializeParams` invents from
- * the client name and its own pid when the caller's environment names no chat
- * session and no attempt.
- *
- * It identifies a PROCESS. It is a usable caller id and a valid `ade-cli`
- * signature, and it must never become an owner of anything durable.
+ * The brain's environment identity, unless the client disclaimed an identity
+ * with a synthetic `<client>:<pid>` caller id. A dev brain started from an
+ * agent shell carries that shell's ADE_CHAT_SESSION_ID, and lending it to an
+ * unbound caller filed that caller's proof in the wrong chat and disabled its
+ * lane inference.
  */
-function isSyntheticCliCallerId(callerId: string): boolean {
-  return /^[a-z][a-z0-9-]*:\d+$/.test(callerId);
+function inheritableEnvContext(envContext: CallerContext, callerId: string | null): CallerContext {
+  return isSyntheticCallerId(callerId)
+    ? { ...envContext, chatSessionId: null, runId: null, stepId: null, attemptId: null, ownerId: null }
+    : envContext;
 }
 
 export function resolveComputerUseOwners(session: SessionState, toolArgs: Record<string, unknown>): ComputerUseArtifactOwner[] {
@@ -1862,7 +1869,7 @@ export function resolveComputerUseOwners(session: SessionState, toolArgs: Record
       if (
         implicitChatSessionId
         && implicitChatSessionId !== "unknown"
-        && !isSyntheticCliCallerId(implicitChatSessionId)
+        && !isSyntheticCallerId(implicitChatSessionId)
       ) {
         add("chat_session", implicitChatSessionId);
       }
@@ -2186,8 +2193,7 @@ function describeCallerRootSource(raw: unknown): string {
  * Shared by the two proof-filing doors — `ingest_computer_use_artifacts` and
  * the `screenshot_environment` / `record_environment` proof path — because
  * they were not sharing it, and the second one therefore filed every capture
- * from an unbound caller with no owner at all. 36 `proof attach` records and
- * seven captures on the owner's machine ended up reachable by nobody.
+ * from an unbound caller with no owner at all.
  */
 async function inferUnboundCallerLaneId(
   runtime: AdeRuntime,
@@ -2345,45 +2351,71 @@ export function isExplicitProofCall(toolArgs: Record<string, unknown>): boolean 
   return toolArgs?.proof === true;
 }
 
-/**
- * The ADE capture commands that file through `ingest_computer_use_artifacts`,
- * by the backend and tool names the CLI writes for them.
- */
-const ADE_CAPTURE_INGEST_LABELS: ReadonlyMap<string, "ade-capture" | "ade-recorder"> = new Map([
-  ["ade-ios-simulator\u0000ios-sim proof", "ade-capture"],
-  ["ade-app-control\u0000app-control proof", "ade-capture"],
-  ["ade-browser\u0000browser proof", "ade-capture"],
-  ["ade-browser\u0000browser record", "ade-recorder"],
+/** Owners a proof listing scopes to. A row with none of them is shown nowhere. */
+const DRAWER_OWNER_KINDS: ReadonlySet<ComputerUseArtifactOwner["kind"]> = new Set([
+  "lane",
+  "chat_session",
+  "automation_run",
 ]);
+
+/** One capture registry per runtime, shared by every connection to it. */
+const captureRegistries = new WeakMap<AdeRuntime, AdeCaptureRegistry>();
+
+function captureRegistryFor(runtime: AdeRuntime): AdeCaptureRegistry {
+  let registry = captureRegistries.get(runtime);
+  if (!registry) {
+    registry = createAdeCaptureRegistry();
+    captureRegistries.set(runtime, registry);
+  }
+  return registry;
+}
 
 /**
  * Where the bytes of an `ingest_computer_use_artifacts` call came from.
  *
- * `ade proof attach` and every other caller are attaches of an existing file,
- * so the broker refuses bytes that are already proof and flags a video older
- * than the request. ADE's own capture commands file through the same tool, and
- * their labels are the only thing that tells them apart. Labels can be typed,
- * so a label only lifts the duplicate check for still images, where a real
- * capture of an unchanged screen can repeat bytes (`ade apple proof` also
- * files the still twice, once from `screenshot`). A video is never exempt: a
- * real recording is always new bytes. The age flag stays on for every call.
+ * Every input must be a file an ADE capture action wrote through this server,
+ * with its bytes unchanged, for the call to be filed as ADE's own capture.
+ * Anything else is an attach: the broker refuses bytes already filed as proof
+ * and flags a video older than the request. Backend and tool names in the
+ * arguments are never trusted. A still is exempt from the duplicate check
+ * because a real capture of an unchanged screen can repeat bytes, and
+ * `ade apple proof` files the still twice (once from `screenshot`). A video is
+ * never exempt. The age flag stays on for every call.
  */
-export function resolveIngestToolProvenance(
-  backendName: string,
-  toolName: string | null,
+export async function resolveIngestProvenance(
+  registry: AdeCaptureRegistry,
   inputs: Array<Record<string, unknown>>,
-): ComputerUseProofProvenanceInput {
-  const labelled = ADE_CAPTURE_INGEST_LABELS.get(`${backendName}\u0000${toolName ?? ""}`);
-  if (!labelled) return { source: "attached" };
+  callerRoot: string,
+): Promise<ComputerUseProofProvenanceInput> {
+  const sources = await Promise.all(inputs.map((input) => {
+    const inputPath = asOptionalTrimmedString(input.path);
+    return inputPath ? registry.match(path.resolve(callerRoot, inputPath)) : Promise.resolve(null);
+  }));
+  const [source] = sources;
+  if (!source || sources.some((entry) => entry !== source)) return { source: "attached" };
   const allStills = inputs.every((input) => {
     const kind = asOptionalTrimmedString(input.kind);
     return kind === "screenshot" || kind === "browser_trace";
   });
-  return {
-    source: labelled,
-    refuseDuplicates: !allStills,
-    flagOlderMedia: true,
-  };
+  return { source, refuseDuplicates: !allStills, flagOlderMedia: true };
+}
+
+/** Remember the file a capture action just wrote. Never fails the action. */
+async function rememberCaptureActionResult(
+  runtime: AdeRuntime,
+  domain: string,
+  action: string,
+  result: unknown,
+): Promise<void> {
+  const capture = ADE_CAPTURE_ACTIONS.get(`${domain}.${action}`);
+  if (!capture || !isRecord(result)) return;
+  const filePath = asOptionalTrimmedString(result[capture.field]);
+  if (!filePath) return;
+  try {
+    await captureRegistryFor(runtime).remember(filePath, capture.source);
+  } catch {
+    // A missed entry only means a later ingest files the bytes as an attach.
+  }
 }
 
 function validateComputerUseOwnerClaims(
@@ -3596,21 +3628,7 @@ function resolveCallerContext(session?: SessionState): CallerContext {
   const envContext = resolveEnvCallerContext();
   if (!session) return envContext;
   const callerId = asOptionalTrimmedString(session.identity.callerId);
-  /*
-   * Second door on the same rule as `parseInitializeIdentity`.
-   *
-   * A session whose caller id is a synthetic `<client>:<pid>` has told us it
-   * has no identity of its own, so the BRAIN's environment must not fill the
-   * gap — a dev brain started from an agent shell carries that shell's
-   * `ADE_CHAT_SESSION_ID`, and merging it here made `isUnboundAdeCliCaller`
-   * answer false for a caller that is plainly unbound. That silently disabled
-   * every lane inference downstream, so the capture was filed with no owner
-   * instead of being placed by the worktree the caller was standing in.
-   */
-  const inheritEnvIdentity = !(callerId && isSyntheticCliCallerId(callerId));
-  const envIdentity: CallerContext = inheritEnvIdentity
-    ? envContext
-    : { ...envContext, chatSessionId: null, runId: null, stepId: null, attemptId: null, ownerId: null };
+  const envIdentity = inheritableEnvContext(envContext, callerId);
   return {
     callerId,
     role: session.identity.role ?? envContext.role,
@@ -3680,35 +3698,17 @@ function parseInitializeIdentity(_runtime: AdeRuntime, params: unknown): Session
   const envContext = resolveEnvCallerContext();
   const requestedRole = normalizeAdeRuntimeRole(identity.role);
   const requestedChatSessionId = asOptionalTrimmedString(identity.chatSessionId);
-  /*
-   * A client that says "I am a process" is NOT the brain's own chat.
-   *
-   * The environment identity exists for the in-process and `--stdio` runtimes,
-   * where the caller and the env are the same program. A long-lived socket
-   * daemon serving other processes must not lend its own identity out — the
-   * browser-actor rule below is the same rule, already written down.
-   *
-   * It was reachable and it leaked: a dev brain started from an agent shell
-   * inherits that shell's `ADE_CHAT_SESSION_ID`, so every unbound caller —
-   * every OpenCode agent, whose shell has no ADE identity of its own — was
-   * stamped as THAT chat and its proof filed into that chat's drawer. A
-   * synthetic `<client>:<pid>` caller id is the client stating it has no
-   * identity, which is exactly when the brain's own must not be substituted.
-   */
   const callerIdClaim = asOptionalTrimmedString(identity.callerId);
-  const clientDisclaimsIdentity = Boolean(callerIdClaim && isSyntheticCliCallerId(callerIdClaim));
-  const inheritableEnvContext: CallerContext = clientDisclaimsIdentity
-    ? { ...envContext, chatSessionId: null, runId: null, stepId: null, attemptId: null, ownerId: null }
-    : envContext;
-  const resolvedChatSessionId = inheritableEnvContext.chatSessionId ?? requestedChatSessionId;
+  const envIdentity = inheritableEnvContext(envContext, callerIdClaim);
+  const resolvedChatSessionId = envIdentity.chatSessionId ?? requestedChatSessionId;
   const validRole = resolveSessionBoundRole({
     defaultRole: normalizeAdeRuntimeRole(process.env.ADE_DEFAULT_ROLE),
     requestedRole,
     chatSessionId: resolvedChatSessionId,
   });
-  const resolvedRunId = inheritableEnvContext.runId ?? asOptionalTrimmedString(identity.runId);
-  const resolvedStepId = inheritableEnvContext.stepId ?? asOptionalTrimmedString(identity.stepId);
-  const resolvedAttemptId = inheritableEnvContext.attemptId ?? asOptionalTrimmedString(identity.attemptId);
+  const resolvedRunId = envIdentity.runId ?? asOptionalTrimmedString(identity.runId);
+  const resolvedStepId = envIdentity.stepId ?? asOptionalTrimmedString(identity.stepId);
+  const resolvedAttemptId = envIdentity.attemptId ?? asOptionalTrimmedString(identity.attemptId);
   // Browser actor capabilities belong to the connecting CLI process. The
   // long-lived runtime daemon must never lend an inherited token to another
   // client, even if it was accidentally launched from an agent-owned shell.
@@ -3720,14 +3720,14 @@ function parseInitializeIdentity(_runtime: AdeRuntime, params: unknown): Session
     && !resolvedAttemptId;
 
   return {
-    callerId: callerIdClaim ?? resolvedChatSessionId ?? inheritableEnvContext.attemptId ?? "unknown",
+    callerId: callerIdClaim ?? resolvedChatSessionId ?? envIdentity.attemptId ?? "unknown",
     role: validRole,
     chatSessionId: resolvedChatSessionId,
     standaloneChatSession,
     runId: resolvedRunId,
     stepId: resolvedStepId,
     attemptId: resolvedAttemptId,
-    ownerId: asOptionalTrimmedString(identity.ownerId) ?? inheritableEnvContext.ownerId,
+    ownerId: asOptionalTrimmedString(identity.ownerId) ?? envIdentity.ownerId,
     browserActorToken,
   };
 }
@@ -4014,8 +4014,7 @@ async function runTool(args: {
      * `ade proof capture` and `ade proof record` file through HERE, and this
      * door had no lane inference of its own — so a caller with no chat session
      * produced an artifact with an EMPTY owner list. Stored, listed by its own
-     * unscoped author, reachable by no drawer. Seven such records exist on the
-     * owner's machine.
+     * unscoped author, reachable by no drawer.
      *
      * Same rule as the ingest door: the lane whose worktree contains the
      * caller's root. A lane the caller NAMES is not trusted here, because this
@@ -4248,6 +4247,13 @@ async function runTool(args: {
     let undoBrowserActivityOnFailure: (() => void) | null = null;
     let result: unknown;
     const isUserClient = isUserClientSession(session);
+    if (domain === "ios_simulator" && action === "deviceDeleteInstalled" && !isUserClient) {
+      // Deleting a simulator is the user's call, made from the device picker.
+      scopeAccessDenied(
+        "ios_simulator.deviceDeleteInstalled is limited to user clients",
+        `run_ade_action:${domain}.${action}`,
+      );
+    }
     if (domain === "analytics" && action === "capture") {
       if (!isUserClient) {
         throw new JsonRpcError(
@@ -4545,12 +4551,13 @@ async function runTool(args: {
       throw error;
     }
     noteBrowserActivityOnSuccess?.();
+    await rememberCaptureActionResult(runtime, domain, action, result);
     if (domain === "ios_simulator" && !isUserClient && APPLE_AGENT_DRIVING_ACTIONS.has(action)) {
       // An agent just drove its chat's device. The desktop showing that chat
       // may float the device if the user has not turned that off.
       const chatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
       if (chatSessionId) {
-        runtime.workToolsStateService?.noteAgentAppleActivity?.({
+        runtime.workToolsStateService?.noteAgentAppleActivity({
           chatSessionId,
           laneId: resolveChatSessionLaneId(runtime, session) ?? null,
         });
@@ -5273,6 +5280,7 @@ async function runTool(args: {
     if (displayId) commandArgs.push(`-D${displayId}`);
     commandArgs.push(artifactPath);
     runLocalCommand("screencapture", commandArgs);
+    await captureRegistryFor(runtime).remember(artifactPath, "ade-capture");
     return await ingestLocalComputerUseArtifact({
       sessionState: session,
       toolName: name,
@@ -5305,6 +5313,7 @@ async function runTool(args: {
     const recordedFrom = new Date().toISOString();
     runLocalCommand("screencapture", commandArgs);
     const recordedTo = new Date().toISOString();
+    await captureRegistryFor(runtime).remember(artifactPath, "ade-recorder");
     return await ingestLocalComputerUseArtifact({
       sessionState: session,
       toolName: name,
@@ -5353,15 +5362,30 @@ async function runTool(args: {
         );
       }
     }
-    const result = runtime.computerUseArtifactBrokerService.ingest({
+    const owners = resolveComputerUseOwners(session, {
+      ...toolArgs,
+      ...(authorized.laneId ? { laneId: authorized.laneId } : {}),
+    });
+    // Refused before anything is stored: a row with no owner is shown by no
+    // drawer, and it would make the retry with an owner a duplicate.
+    if (!owners.some((owner) => DRAWER_OWNER_KINDS.has(owner.kind))) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "This proof has no lane and no chat session, so no proof drawer could show it. Nothing was filed."
+          + " Run ade from inside the lane worktree, or pass --owner lane --owner-id <lane>.",
+      );
+    }
+    const provenance = await resolveIngestProvenance(captureRegistryFor(runtime), inputs, authorized.callerRoot);
+    // Async: an attached file's hash is streamed off the event loop.
+    const result = await runtime.computerUseArtifactBrokerService.ingestAsync({
       backend: {
         name: backendName,
         style: backendStyle,
         toolName: asOptionalTrimmedString(toolArgs.toolName),
         command: asOptionalTrimmedString(toolArgs.command),
       },
-      // Decided here from the call, never read from the caller's arguments.
-      provenance: resolveIngestToolProvenance(backendName, asOptionalTrimmedString(toolArgs.toolName), inputs),
+      // Decided here from the files, never read from the caller's arguments.
+      provenance,
       callerRoot: authorized.callerRoot,
       inputs: inputs.map((entry) => ({
         kind: asOptionalTrimmedString(entry.kind),
@@ -5375,10 +5399,7 @@ async function runTool(args: {
         rawType: asOptionalTrimmedString(entry.rawType),
         ...(isRecord(entry.metadata) ? { metadata: entry.metadata } : {}),
       })),
-      owners: resolveComputerUseOwners(session, {
-        ...toolArgs,
-        ...(authorized.laneId ? { laneId: authorized.laneId } : {}),
-      }),
+      owners,
     });
     return result;
   }
@@ -5507,10 +5528,9 @@ async function runTool(args: {
      *
      * The filter below asks "is this artifact in one of MY owners' sets". An
      * artifact with no owner links is in nobody's set, so every scoped caller
-     * skipped it and only a project-wide one could ever clean it up. Twenty
-     * such rows sat in the owner's database for two months — records whose
-     * files were deleted long ago, invisible in every drawer, and immune to
-     * the tool whose whole job is removing exactly that.
+     * skipped it and only a project-wide one could ever clean it up: records
+     * whose files were deleted, invisible in every drawer, and immune to the
+     * tool whose whole job is removing exactly that.
      *
      * Letting a scoped caller take them is safe because both halves must hold:
      * ownerless means it is in no lane's and no chat's drawer, and broken

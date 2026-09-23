@@ -313,6 +313,7 @@ describe("App Work route keep-alive", () => {
       configurable: true,
       writable: true,
       value: {
+        workTools: { onShowRequest: vi.fn(() => () => {}), acknowledgeShow: vi.fn() },
         builtInBrowser: {
           stopInspect: vi.fn().mockResolvedValue({}),
           setBounds: vi.fn().mockResolvedValue({}),

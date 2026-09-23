@@ -5,9 +5,12 @@ import { afterAll, describe, expect, it } from "vitest";
 import {
   artifactStreamMimeType,
   decodeRemoteArtifactChunk,
+  isStreamableArtifactFile,
+  knownArtifactMimeType,
   parseRangeHeader,
   resolveByteRange,
   resolveContainedArtifactFile,
+  respondToArtifactProtocolRequest,
 } from "./artifactStreamProtocol";
 
 describe("artifact stream helpers", () => {
@@ -15,6 +18,10 @@ describe("artifact stream helpers", () => {
     expect(artifactStreamMimeType("a/b/rec.MOV")).toBe("video/mp4");
     expect(artifactStreamMimeType("x.png")).toBe("image/png");
     expect(artifactStreamMimeType("x.bin")).toBe("application/octet-stream");
+    expect(knownArtifactMimeType("x.m4v")).toBe("video/mp4");
+    expect(knownArtifactMimeType("notes.json")).toBeNull();
+    expect(isStreamableArtifactFile("clip.webm")).toBe(true);
+    expect(isStreamableArtifactFile("notes.json")).toBe(false);
     expect(parseRangeHeader("bytes=10-20")).toEqual({ kind: "from", start: 10, end: 20 });
     expect(parseRangeHeader("bytes=10-")).toEqual({ kind: "from", start: 10, end: null });
     expect(parseRangeHeader("bytes=-5")).toEqual({ kind: "suffix", length: 5 });
@@ -88,5 +95,50 @@ describe("artifact containment", () => {
       projectRoot,
       allowedDir: null,
     })).toMatchObject({ ok: false, reason: "outside" });
+  });
+});
+
+describe("ade-artifact protocol answer", () => {
+  const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ade-artifact-protocol-")));
+  const projectRoot = path.join(tmp, "repo");
+  const allowedDir = path.join(projectRoot, ".ade", "artifacts");
+  fs.mkdirSync(allowedDir, { recursive: true });
+  fs.writeFileSync(path.join(allowedDir, "clip.mp4"), Buffer.from("0123456789"));
+  fs.writeFileSync(path.join(allowedDir, "empty.png"), Buffer.alloc(0));
+  afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const scope = { projectRoot, allowedDir };
+  const ask = (file: string, range?: string) => respondToArtifactProtocolRequest(
+    new Request(`ade-artifact://project/.ade/artifacts/${file}`, range ? { headers: { Range: range } } : {}),
+    scope,
+  );
+
+  it("answers a whole file, a range, and a suffix range with the shared parse", async () => {
+    const whole = ask("clip.mp4");
+    expect(whole.status).toBe(200);
+    expect(whole.headers.get("Content-Type")).toBe("video/mp4");
+    expect(await whole.text()).toBe("0123456789");
+
+    const middle = ask("clip.mp4", "bytes=2-4");
+    expect(middle.status).toBe(206);
+    expect(middle.headers.get("Content-Range")).toBe("bytes 2-4/10");
+    expect(await middle.text()).toBe("234");
+
+    // `bytes=-3` is the last three bytes, not the whole file from 0.
+    const suffix = ask("clip.mp4", "bytes=-3");
+    expect(suffix.status).toBe(206);
+    expect(await suffix.text()).toBe("789");
+  });
+
+  it("answers 200 for a Range it cannot read, 416 past the end, and 404 outside the jail", async () => {
+    const malformed = ask("clip.mp4", "items=0-1");
+    expect(malformed.status).toBe(200);
+    expect(await malformed.text()).toBe("0123456789");
+    const past = ask("clip.mp4", "bytes=50-");
+    expect(past.status).toBe(416);
+    expect(past.headers.get("Content-Range")).toBe("bytes */10");
+    const empty = ask("empty.png");
+    expect(empty.status).toBe(200);
+    expect(empty.headers.get("Content-Length")).toBe("0");
+    expect(ask("../../secret.txt").status).toBe(404);
   });
 });

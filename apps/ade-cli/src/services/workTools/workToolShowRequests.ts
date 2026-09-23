@@ -2,12 +2,12 @@ import { randomUUID } from "node:crypto";
 
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import {
-  describeWorkToolShowResult,
   isWorkToolShowSurface,
   WORK_TOOL_SHOW_REQUEST_EVENT,
-  type WorkToolShowAckStatus,
+  WORK_TOOL_SHOW_SURFACES,
   type WorkToolShowRequest,
   type WorkToolShowResult,
+  type WorkToolShowStatus,
   type WorkToolShowSurface,
 } from "../../../../desktop/src/shared/types/workToolShow";
 
@@ -47,13 +47,43 @@ export const WORK_TOOL_SHOW_HELD_GRACE_MS = 600;
  */
 export const WORK_TOOL_AGENT_ACTIVITY_THROTTLE_MS = 5_000;
 
+const WORK_TOOL_SHOW_SURFACE_LABELS: Record<WorkToolShowSurface, string> = {
+  apple: "Apple device in the tools pane",
+  "floating-apple": "floating Apple device",
+  browser: "browser in the tools pane",
+  proof: "proof drawer",
+};
+
+type HeldAnswer = { desktopLabel: string | null; opened: boolean };
+
+/** The sentence the CLI prints, one per outcome. */
+export function describeWorkToolShowResult(
+  status: WorkToolShowStatus,
+  surface: WorkToolShowSurface,
+  desktopLabel: string | null,
+  opened = false,
+): string {
+  const name = WORK_TOOL_SHOW_SURFACE_LABELS[surface];
+  const where = desktopLabel ? ` on ${desktopLabel}` : "";
+  if (status === "shown") return `Showing the ${name}${where}.`;
+  if (status === "held" && opened) {
+    return `Opened the ${name}${where}, but the window is not in front, so the user may not see it yet.`;
+  }
+  if (status === "held") {
+    return `A desktop window${where} has this project open, but the user cannot see this chat right now (another chat is in front, or the window is hidden). The ${name} opens when they go to this chat.`;
+  }
+  return `No desktop window is open for this chat, so nothing was shown. Tell the user to open this chat in ADE Desktop.`;
+}
+
 type PendingShow = {
   request: WorkToolShowRequest;
-  held: { desktopLabel: string | null } | null;
+  held: HeldAnswer | null;
   heldTimer: ReturnType<typeof setTimeout> | null;
   timer: ReturnType<typeof setTimeout>;
   resolve: (result: WorkToolShowResult) => void;
 };
+
+export type AgentAppleActivity = { chatSessionId: string | null; laneId: string | null };
 
 export type WorkToolShowRequests = {
   show(input: unknown): Promise<WorkToolShowResult>;
@@ -62,7 +92,7 @@ export type WorkToolShowRequests = {
    * An agent just drove this chat's Apple device. Publishes an `auto`
    * floating-player offer, throttled per chat. Never acked and never waited on.
    */
-  noteAgentAppleActivity(input: { chatSessionId?: string | null; laneId?: string | null }): boolean;
+  noteAgentAppleActivity(input: AgentAppleActivity): boolean;
   dispose(): void;
 };
 
@@ -121,8 +151,9 @@ export function createWorkToolShowRequests(args: {
 
   const finish = (
     requestId: string,
-    status: WorkToolShowResult["status"],
+    status: WorkToolShowStatus,
     desktopLabel: string | null,
+    opened = false,
   ): boolean => {
     const entry = pending.get(requestId);
     if (!entry) return false;
@@ -142,7 +173,7 @@ export function createWorkToolShowRequests(args: {
       chatSessionId: request.chatSessionId,
       requestId,
       desktopLabel,
-      message: describeWorkToolShowResult(status, request.surface, desktopLabel),
+      message: describeWorkToolShowResult(status, request.surface, desktopLabel, opened),
     });
     return true;
   };
@@ -153,7 +184,7 @@ export function createWorkToolShowRequests(args: {
       const surface = record.surface;
       if (!isWorkToolShowSurface(surface)) {
         throw new Error(
-          `work_tools.show needs a surface: apple, floating-apple, browser or proof (got "${String(surface)}").`,
+          `work_tools.show needs a surface: ${WORK_TOOL_SHOW_SURFACES.join(", ")} (got "${String(surface)}").`,
         );
       }
       const chatSessionId = trimmedOrNull(record.chatSessionId);
@@ -168,7 +199,7 @@ export function createWorkToolShowRequests(args: {
           if (!entry) return;
           // A window that holds the request is a real answer even when the
           // grace for a better one has not run out.
-          if (entry.held) finish(request.requestId, "held", entry.held.desktopLabel);
+          if (entry.held) finish(request.requestId, "held", entry.held.desktopLabel, entry.held.opened);
           else finish(request.requestId, "no_desktop", null);
         }, ackTimeoutMs);
         timer.unref?.();
@@ -183,13 +214,13 @@ export function createWorkToolShowRequests(args: {
       if (!requestId) return { ok: false };
       const entry = pending.get(requestId);
       if (!entry) return { ok: false };
-      const status = record.status as WorkToolShowAckStatus;
       const desktopLabel = trimmedOrNull(record.desktopLabel);
-      if (status === "shown") return { ok: finish(requestId, "shown", desktopLabel) };
-      if (status !== "held") return { ok: false };
+      if (record.status === "shown") return { ok: finish(requestId, "shown", desktopLabel) };
+      if (record.status !== "held") return { ok: false };
       if (!entry.held) {
-        entry.held = { desktopLabel };
-        const heldTimer = setTimeout(() => finish(requestId, "held", desktopLabel), heldGraceMs);
+        const held: HeldAnswer = { desktopLabel, opened: record.opened === true };
+        entry.held = held;
+        const heldTimer = setTimeout(() => finish(requestId, "held", held.desktopLabel, held.opened), heldGraceMs);
         heldTimer.unref?.();
         entry.heldTimer = heldTimer;
       }
@@ -197,7 +228,7 @@ export function createWorkToolShowRequests(args: {
     },
 
     noteAgentAppleActivity(input) {
-      const chatSessionId = trimmedOrNull(input?.chatSessionId);
+      const chatSessionId = trimmedOrNull(input.chatSessionId);
       if (!chatSessionId || disposed) return false;
       const at = now();
       const last = lastActivityByChat.get(chatSessionId);
@@ -209,7 +240,7 @@ export function createWorkToolShowRequests(args: {
         const oldest = lastActivityByChat.keys().next().value;
         if (oldest) lastActivityByChat.delete(oldest);
       }
-      return publish(buildRequest("floating-apple", chatSessionId, trimmedOrNull(input?.laneId), true));
+      return publish(buildRequest("floating-apple", chatSessionId, trimmedOrNull(input.laneId), true));
     },
 
     dispose() {

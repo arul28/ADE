@@ -60,7 +60,10 @@ Components if none exist.
 
 `device-delete` removes a clone. An attached device is refused unless
 `--force`, and `--force` only detaches it. The clone is deleted on lane
-archive.
+archive. `deviceDetach` gives up the lane's device and leaves the simulator
+installed; agents may call it. `deviceDeleteInstalled` deletes a simulator the
+user picked in the desktop picker; the RPC server takes it from user clients
+only and refuses agents.
 
 **One lane owns a device at a time.** `device-attach` on a simulator another
 lane holds MOVES the binding rather than adding a second one: the losing lane's
@@ -148,7 +151,7 @@ and `--bitrate-kbps` survive on `stream-start`.
 ```bash
 ade --socket apple device-create [--from <simulator>] [--name <name>] --text
 ade --socket apple device-attach --simulator <udid|name> --text
-ade --socket apple device-list [--installed] [--lane] --text
+ade --socket apple device-list [--installed] [--lane <lane-id>] --text
 ade --socket apple device-delete [--force] --text
 
 ade --socket apple record-start [--overlays on|off] [--label <text>] [--keep-idle] [--max-seconds <n>] --text
@@ -256,7 +259,7 @@ forwarded.
 |---|---|---|
 | `device-create` | `deviceCreate` | `--from/--simulator`, `--name`, `--lane` |
 | `device-attach` | `deviceAttach` | `--simulator/--device/--udid` (required), `--lane` |
-| `device-list` | `deviceList` | `--installed`, `--lane` |
+| `device-list` | `deviceList` | `--installed`, `--lane <lane-id>` (defaults to `$ADE_LANE_ID`) |
 | `device-delete` | `deviceDelete` | `--force`, `--lane` |
 | `open-device` (`open-sim`, `boot`) | `openDevice` | `--device/--udid`, `--lane`, `--chat-session`, `--no-window`, `--force` |
 | `close-device` (`close-sim`) | `closeDevice` | `--device`, `--chat-session`, `--force`, `--ignore-ownership`, `--shutdown` |

@@ -5,6 +5,7 @@ import {
   buildDelegatedCliEnv,
   cliArgvOwnsRuntime,
   cliCommandWord,
+  parseAdeCmdShim,
   resolveCliDelegationTarget,
   runDelegatedCli,
   type CliDelegationFs,
@@ -123,6 +124,7 @@ describe("runDelegatedCli", () => {
     expect(spawnFn).toHaveBeenCalledWith(ALPHA_SHIM, argv, expect.objectContaining({
       stdio: "inherit",
       env: { ADE_CLI_DELEGATED: "1" },
+      windowsHide: true,
       windowsVerbatimArguments: false,
     }));
     signalSource.emit("SIGTERM", "SIGTERM");
@@ -143,14 +145,76 @@ describe("runDelegatedCli", () => {
       platform: "win32",
       spawnFn,
       signalSource: new EventEmitter() as never,
+      // Not an ADE shim, so it keeps the cmd.exe path.
+      fsLike: fakeFs({ "C:\\Temp\\ade-cli-shims\\x\\ade.cmd": "@echo off\r\nnode other.js %*\r\n" }),
     });
     expect(spawnFn).toHaveBeenCalledWith(
       "C:\\Windows\\System32\\cmd.exe",
       ["/d", "/s", "/c", "\"\"C:\\Temp\\ade-cli-shims\\x\\ade.cmd\" \"apple\" \"tap\" \"two words\"\""],
-      expect.objectContaining({ windowsVerbatimArguments: true }),
+      // Hidden: a parent with no console would otherwise open a visible one.
+      expect.objectContaining({ windowsVerbatimArguments: true, windowsHide: true }),
     );
     child.emit("exit", 0, null);
     await expect(pending).resolves.toEqual({ code: 0, signal: null });
+  });
+
+  it("regression: starts an ADE .cmd shim's runtime and entry directly, so %VAR% in argv stays literal", async () => {
+    const shimPath = "C:\\Users\\a\\AppData\\Local\\Temp\\ade-cli-shims\\x\\ade.cmd";
+    const execPath = "C:\\Program Files\\ADE Alpha\\ADE Alpha.exe";
+    const entryPath = "C:\\Program Files\\ADE Alpha\\resources\\ade-cli\\cli.cjs";
+    const shim = renderAdeCliShim({
+      entryPath,
+      execPath,
+      brain: { socketPath: "\\\\.\\pipe\\ade-alpha-100%", adeHome: "C:\\Users\\a\\.ade-alpha" },
+      platform: "win32",
+    });
+    const child = Object.assign(new EventEmitter(), { kill: vi.fn() });
+    const spawnFn = vi.fn(() => child as never);
+    const argv = ["chat", "send", "100% done at %USERPROFILE%\nline two"];
+    const pending = runDelegatedCli({
+      target: { command: shimPath, entry: null },
+      argv,
+      env: { ADE_CLI_DELEGATED: "1" },
+      platform: "win32",
+      spawnFn,
+      signalSource: new EventEmitter() as never,
+      fsLike: fakeFs({ [shimPath]: shim }),
+    });
+    expect(spawnFn).toHaveBeenCalledWith(execPath, [entryPath, ...argv], expect.objectContaining({
+      windowsHide: true,
+      windowsVerbatimArguments: false,
+      // The shim's brain defaults apply because the caller picked no brain.
+      env: {
+        ADE_CLI_DELEGATED: "1",
+        ADE_HOME: "C:\\Users\\a\\.ade-alpha",
+        ADE_RUNTIME_SOCKET_PATH: "\\\\.\\pipe\\ade-alpha-100%",
+        ELECTRON_RUN_AS_NODE: "1",
+      },
+    }));
+    child.emit("exit", 0, null);
+    await expect(pending).resolves.toEqual({ code: 0, signal: null });
+  });
+});
+
+describe("parseAdeCmdShim", () => {
+  it("reads back what renderAdeCliShim writes, and keeps a caller's own brain", () => {
+    const text = renderAdeCliShim({
+      entryPath: "C:\\ade\\cli.cjs",
+      execPath: "C:\\ade\\ADE.exe",
+      brain: { socketPath: null, adeHome: null },
+      platform: "win32",
+    });
+    expect(parseAdeCmdShim(text)).toEqual({ execPath: "C:\\ade\\ADE.exe", entryPath: "C:\\ade\\cli.cjs", defaults: [] });
+  });
+
+  it("refuses a shim it did not write, or one for a native binary", () => {
+    expect(parseAdeCmdShim("@echo off\r\nsetlocal\r\ndel /q *\r\n\"a\" \"b\" %*\r\n")).toBeNull();
+    expect(parseAdeCmdShim(renderAdeCliShim({
+      entryPath: "C:\\ade\\ade.exe",
+      execPath: "C:\\ade\\ADE.exe",
+      brain: { socketPath: null, adeHome: null },
+      platform: "win32",
+    }))).toBeNull();
   });
 });
 
@@ -159,6 +223,9 @@ describe("cliArgvOwnsRuntime", () => {
     expect(cliCommandWord(["--socket", "/tmp/a.sock", "--project-root", "/x", "apple", "status"])).toBe("apple");
     expect(cliCommandWord(["--socket", "apple", "status"])).toBe("apple");
     expect(cliCommandWord(["--json"])).toBeNull();
+    // Same socket-path test as the CLI's own parser, Windows spellings included.
+    expect(cliCommandWord(["--socket", "C:\\ade\\ade.sock", "apple"])).toBe("apple");
+    expect(cliCommandWord(["--socket", "\\\\.\\pipe\\ade", "apple"])).toBe("apple");
   });
 
   it("never hands a brain start to another install", () => {

@@ -324,13 +324,14 @@ function AppleMiniPlayerFrameView({
     setHovered(false);
   }, [pipActive, visible]);
 
-  // The device stopped or its stream ended. This player never redials, so the
-  // PiP window would sit on the last frame with the box still concealed. End
-  // PiP, which shows the box again (or leaves it hidden on another surface).
+  // The stream failed for good: an error, or the hook's own reconnects ran
+  // out. A stop it is still recovering from keeps PiP; ending it there closed
+  // the user's window on a hiccup that healed a second later. Ending PiP shows
+  // the box again (or leaves it hidden on another surface).
   useEffect(() => {
     if (!pipActive) return;
-    if (stream.state === "idle" || stream.state === "error") stopPip();
-  }, [pipActive, stopPip, stream.state]);
+    if (stream.state === "error" || stream.gaveUp) stopPip();
+  }, [pipActive, stopPip, stream.gaveUp, stream.state]);
 
   const handleDimensions = useCallback((size: { width: number; height: number }) => {
     setScreen((value) => (

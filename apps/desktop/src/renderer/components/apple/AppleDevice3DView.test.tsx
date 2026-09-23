@@ -2,7 +2,6 @@
 
 import { describe, expect, it } from "vitest";
 import {
-  createDeviceModelLoader,
   appleCanvasHasDecoded,
   appleDeviceInputSize,
   appleDragIntent,
@@ -10,6 +9,7 @@ import {
   orientedToPortrait,
   type AppleDeviceOrientation,
 } from "./AppleDevice3DView";
+import { createDeviceModelLoader } from "./appleDeviceModelLoader";
 
 describe("appleDragIntent (round 4 §A3)", () => {
   it("drives the device when the drag starts on the glass", () => {

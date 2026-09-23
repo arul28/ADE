@@ -29670,6 +29670,26 @@ describe("createAgentChatService", () => {
       service.forceDisposeAll();
     });
 
+    it("forgets the latest turn start of a deleted chat", async () => {
+      installClaudeResponseFixture({
+        sdkSessionId: "sdk-turn-start-delete",
+        responseText: "Done.",
+      });
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.runSessionTurn({ sessionId: session.id, text: "Start the Claude session." });
+      expect(service.getTurnStartedAt(session.id)).toEqual(expect.any(String));
+
+      await service.deleteSession({ sessionId: session.id });
+
+      expect(service.getTurnStartedAt(session.id)).toBeNull();
+      service.forceDisposeAll();
+    });
+
     it("removes persisted chat artifacts and the stored session row", async () => {
       const { service, sessionService } = createService();
       const session = await service.createSession({

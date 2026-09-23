@@ -22,7 +22,7 @@ import {
   type WorkToolsObservationPreview,
 } from "../../../../desktop/src/shared/types/workTools";
 import type { WorkToolShowResult } from "../../../../desktop/src/shared/types/workToolShow";
-import type { WorkToolShowRequests } from "./workToolShowRequests";
+import type { AgentAppleActivity, WorkToolShowRequests } from "./workToolShowRequests";
 
 /**
  * Aggregates the Work tools pane's state for one lane so read-only clients
@@ -174,7 +174,7 @@ export type WorkToolsStateService = {
   /** A desktop renderer answering {@link show}. User clients only. */
   acknowledgeShow(args: unknown): { ok: boolean };
   /** An agent drove this chat's Apple device; see `WorkToolShowRequests`. */
-  noteAgentAppleActivity(args: { laneId: string | null; chatSessionId: string | null }): void;
+  noteAgentAppleActivity(args: AgentAppleActivity): boolean;
   /** Test/diagnostic hook: flushes a pending debounced event immediately. */
   flushPendingEvents(): void;
   dispose(): void;
@@ -633,7 +633,7 @@ export function createWorkToolsStateService(
     },
 
     noteAgentAppleActivity(input) {
-      args.showRequests?.noteAgentAppleActivity(input);
+      return args.showRequests?.noteAgentAppleActivity(input) ?? false;
     },
 
     flushPendingEvents() {

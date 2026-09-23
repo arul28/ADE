@@ -60,6 +60,23 @@ function handlersFor(target = service()) {
 }
 
 describe("buildAppleStatusPayload", () => {
+  it("names the lane's own device, and nothing for the host's any-booted fallback", () => {
+    // The phone's simulator chip needs `laneDevice` to match `device`, so it
+    // never offers a device another lane holds (review finding A3-F4).
+    const owned = buildAppleStatusPayload("lane-a", {
+      activeDevice: { udid: "U1", name: "iPhone 16 Pro", state: "Booted" },
+      laneDevice: { udid: "U1", name: "iPhone 16 Pro", family: "iphone", origin: "clone" },
+    });
+    expect(owned.laneDevice).toEqual({ udid: "U1" });
+    expect(owned.device?.udid).toBe("U1");
+
+    const fallback = buildAppleStatusPayload("lane-b", {
+      activeDevice: { udid: "U2", name: "iPhone 17", state: "Booted" },
+    });
+    expect(fallback.device?.udid).toBe("U2");
+    expect(fallback.laneDevice).toBeNull();
+  });
+
   it("projects the service status into the wire shape without a secret", () => {
     const payload = buildAppleStatusPayload("lane-a", RAW_STATUS);
     expect(payload.device).toEqual({

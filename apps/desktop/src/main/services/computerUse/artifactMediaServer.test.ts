@@ -373,4 +373,31 @@ describe("artifact media server lifecycle", () => {
     expect(second.endsWith(`/${token}`)).toBe(true);
     await lazy.close();
   });
+
+  it("does not leave a server listening when close() lands while a start is still binding", async () => {
+    const created: http.Server[] = [];
+    const realCreate = http.createServer;
+    const spy = vi.spyOn(http, "createServer").mockImplementation(((...args: Parameters<typeof http.createServer>) => {
+      const next = (realCreate as (...a: unknown[]) => http.Server)(...args);
+      created.push(next);
+      return next;
+    }) as typeof http.createServer);
+    try {
+      const racing = createArtifactMediaServer({
+        localScope: () => ({ projectRoot, allowedDir: artifactsDir }),
+        remoteReader: () => null,
+      });
+      const pending = racing.baseUrl();
+      await racing.close();
+      await expect(pending).rejects.toThrow(/closed/);
+      expect(created).toHaveLength(1);
+      await vi.waitFor(() => expect(created[0]!.listening).toBe(false));
+      // The next ask still starts a fresh server.
+      const again = await racing.baseUrl();
+      expect(again).toMatch(/^http:\/\/127\.0\.0\.1:\d+\//);
+      await racing.close();
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });

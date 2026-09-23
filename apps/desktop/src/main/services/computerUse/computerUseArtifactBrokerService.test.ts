@@ -172,7 +172,6 @@ describe("computerUseArtifactBrokerService", () => {
 
     const first = await broker.readArtifactRange({ uri, offset: 0, length: 64 * 1024 * 1024 });
     expect(first.totalSize).toBe(bytes.length);
-    expect(first.mimeType).toBe("video/quicktime");
     // A caller cannot ask past the 2 MiB slice cap.
     expect(Buffer.from(first.data, "base64")).toEqual(bytes.subarray(0, 2 * 1024 * 1024));
 

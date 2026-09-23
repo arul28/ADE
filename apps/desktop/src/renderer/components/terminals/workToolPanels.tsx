@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
-import { noteWorkToolMounted } from "../../lib/workToolOnScreen";
+import { useWorkSurfaceMountRef, workSurfaceKey } from "../../lib/workToolOnScreen";
 import { useNavigate } from "react-router-dom";
 import { Play, WarningCircle } from "@phosphor-icons/react";
 import type { ComponentType, ReactNode } from "react";
@@ -133,14 +133,17 @@ function NoLaneNotice() {
 function NativePanelFrame({
   warningReason,
   padded,
+  frameRef,
   children,
 }: {
   warningReason: string | null;
   padded?: boolean;
+  /** Registers the tool as mounted, for `ade ui show`. */
+  frameRef?: (element: HTMLDivElement | null) => void;
   children: ReactNode;
 }) {
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div ref={frameRef} className="flex h-full min-h-0 flex-col">
       {warningReason ? <WarningBanner message={warningReason} /> : null}
       <div className={cn("min-h-0 flex-1", padded ? "overflow-auto px-3 py-3" : "overflow-hidden")}>
         {children}
@@ -236,16 +239,20 @@ function WorkBrowserTool(props: WorkToolPanelProps) {
     onInsertDraft,
   } = props;
   const mountScope = useWorkToolMountScope(runtimePin);
-  // `ade ui show browser` answers "shown" only once this is mounted.
-  useLayoutEffect(() => noteWorkToolMounted("browser", laneId ?? null), [laneId]);
+  // `ade ui show browser` answers "shown" only once this is on screen.
+  const mountRef = useWorkSurfaceMountRef<HTMLDivElement>(workSurfaceKey("browser", mountScope, laneId ?? null));
   // A surface that cannot drive the tool shows what the desktop is doing with
   // it instead. Checked before the native panel so it never mounts a stubbed
   // namespace it would only fail against.
   if (isReadOnlyWorkTool("browser", toolContext)) {
-    return <WorkToolReadOnlyView tool="browser" laneId={laneId} />;
+    return (
+      <div ref={mountRef} className="contents">
+        <WorkToolReadOnlyView tool="browser" laneId={laneId} />
+      </div>
+    );
   }
   return (
-    <NativePanelFrame warningReason={warningReason}>
+    <NativePanelFrame warningReason={warningReason} frameRef={mountRef}>
       <ChatBuiltInBrowserPanel
         key={`work-browser:${mountScope}`}
         sessionId={panelSessionId}
@@ -401,7 +408,7 @@ function WorkIosTool({
         .then((listed) => {
           if (cancelled) return;
           const lane = listed?.lane ?? null;
-          noteAppleMiniPlayerLaneDevice(laneId, lane
+          noteAppleMiniPlayerLaneDevice({ laneId, runtimePin: pinRef.current }, lane
             ? { udid: lane.udid, name: lane.name, runtime: lane.runtime, family: lane.family }
             : null);
         })
@@ -450,15 +457,15 @@ function WorkIosTool({
     releaseAppleMiniPlayerHandoverHold();
   });
 
-  // `ade apple show` answers "shown" only once this is mounted.
-  useLayoutEffect(() => (laneId ? noteWorkToolMounted("ios", laneId) : undefined), [laneId]);
+  // `ade apple show` answers "shown" only once this is on screen.
+  const mountRef = useWorkSurfaceMountRef<HTMLDivElement>(laneId ? workSurfaceKey("ios", mountScope, laneId) : null);
 
   useLayoutEffect(() => {
     if (!laneId) return undefined;
     retakeAppleMiniPlayer();
     return () => {
       const canvas = paneNodeRef.current?.querySelector("canvas");
-      const udid = getAppleMiniPlayerLaneDevice(laneId)?.udid ?? null;
+      const udid = getAppleMiniPlayerLaneDevice({ laneId, runtimePin: pinRef.current })?.udid ?? null;
       if (canvas && udid && hasDecodedFrame(canvas)) {
         try {
           // JPEG, not PNG: this is a photograph of a screen that is about to be
@@ -481,7 +488,7 @@ function WorkIosTool({
   // 12px gutter and scroll container turned the device back into the drawer
   // this rebuild replaced.
   return (
-    <NativePanelFrame warningReason={warningReason}>
+    <NativePanelFrame warningReason={warningReason} frameRef={mountRef}>
       {/* `contents`, so this ref holder generates no box at all and the pane
           stays the flex child it was — the node exists only to be queried for
           the decoder canvas during the unmount above. */}

@@ -69,6 +69,7 @@ import { formatTime } from "../../lib/format";
 import { navigateToAppTarget, openExternalUrl, openLinkFromUi } from "../../lib/openExternal";
 import { ChipText } from "./ChipText";
 import { normalizePath } from "../../lib/pathUtils";
+import { localArtifactStreamUrl } from "../../../shared/artifactStreamUrl";
 import { useStreamSmoothnessSampler } from "../../perf/streamSmoothness";
 import { AssistantTextBody } from "./AssistantTextBody";
 import { MarkdownBlock, type MosaicRenderContext } from "./chatMarkdownBlock";
@@ -191,10 +192,6 @@ import {
 } from "./chatCardPrimitives";
 
 /** True for an absolute POSIX or Windows path, which the project handler cannot serve. */
-function path_isAbsoluteLike(value: string): boolean {
-  return value.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(value);
-}
-
 /** Stable empty array so a proof-free turn never re-renders the divider. */
 const EMPTY_PROOF_ARTIFACTS: ComputerUseArtifactView[] = [];
 const EMPTY_WORK_LOG_ENTRIES: ChatWorkLogEntry[] = [];
@@ -6221,8 +6218,8 @@ function AgentChatMessageListMain({
     const uri = artifact.uri?.trim();
     if (!uri) return null;
     if (/^ade-artifact:\/\//i.test(uri)) return uri;
-    if (/^https?:\/\//i.test(uri) || path_isAbsoluteLike(uri)) return null;
-    return `ade-artifact://project/${uri.split("/").map(encodeURIComponent).join("/")}`;
+    // No project root: an absolute path or a web URL answers null.
+    return localArtifactStreamUrl(uri, null);
   }, [allowLocalProofArtifactProtocol]);
 
   const turnProofTimeline = useMemo(() => {

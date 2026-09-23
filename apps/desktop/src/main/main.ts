@@ -363,9 +363,8 @@ import { createLinearLiveStatusService, type LinearLiveStatusService } from "./s
 import { createLinearChatLinkPublisher, publishLinearLaneCard } from "./services/cto/linearLaneCardService";
 import { createComputerUseArtifactBrokerService } from "./services/computerUse/computerUseArtifactBrokerService";
 import {
-  artifactStreamMimeType,
-  getRemoteArtifactRangeReader,
-  resolveContainedArtifactFile,
+  respondToArtifactProtocolRequest,
+  type RemoteArtifactRangeReader,
 } from "./services/computerUse/artifactStreamProtocol";
 import { createArtifactMediaServer } from "./services/computerUse/artifactMediaServer";
 import { sceneDocumentStore } from "./services/scenes/sceneDocumentStore";
@@ -1349,13 +1348,15 @@ app.whenReady().then(async () => {
 
   /** Canonical artifacts dir for the active project; ade-artifact:// and the media server only serve under this path. */
   let adeArtifactAllowedDir: string | null = null;
+  /** Reads proof bytes from a paired computer; set once the runtime bridge is up. */
+  let remoteArtifactRangeReader: RemoteArtifactRangeReader | null = null;
 
   // Proof videos play from this loopback server, not `ade-artifact://`:
   // `protocol.handle` cannot answer the second Range read a long recording
   // needs. It starts on the first renderer ask and closes on quit.
   const artifactMediaServer = createArtifactMediaServer({
     localScope: () => ({ projectRoot: activeProjectRoot, allowedDir: adeArtifactAllowedDir }),
-    remoteReader: getRemoteArtifactRangeReader,
+    remoteReader: () => remoteArtifactRangeReader,
     warn: (message, details) => console.warn(message, details),
   });
   ipcMain.handle(IPC.computerUseMediaBaseUrl, () => artifactMediaServer.baseUrl());
@@ -1373,113 +1374,11 @@ app.whenReady().then(async () => {
   });
 
   // Handle ade-artifact:// requests — serves local files for proof drawer images.
-  // Path is encoded in the URL: ade-artifact:///absolute/path/to/file.png or
-  // ade-artifact://project/<relative path>. Videos use the media server above.
-  protocol.handle("ade-artifact", (request) => {
-    const url = new URL(request.url);
-    let requestedPath: string;
-    try {
-      requestedPath = decodeURIComponent(url.pathname);
-    } catch {
-      return new Response("Not found", { status: 404 });
-    }
-    const contained = resolveContainedArtifactFile({
-      requestedPath,
-      projectRelative: url.hostname === "project",
-      projectRoot: activeProjectRoot,
-      allowedDir: adeArtifactAllowedDir,
-    });
-    if (!contained.ok) {
-      if (contained.reason === "missing") {
-        console.warn("[ade-artifact] realpath failed", { filePath: contained.filePath });
-      } else if (contained.reason === "outside") {
-        console.warn("[ade-artifact] rejected path outside artifacts dir", {
-          resolvedFile: contained.filePath,
-          allowedDir: adeArtifactAllowedDir,
-        });
-      }
-      return new Response("Not found", { status: 404 });
-    }
-    const resolvedFile = contained.filePath;
-    try {
-      const fileSize = contained.size;
-      // Serves `.mov` as `video/mp4`; Chromium refuses `video/quicktime`.
-      const mime = artifactStreamMimeType(resolvedFile);
-
-      // Support Range requests — required for <video> playback and seeking
-      const rangeHeader = request.headers.get("Range");
-      if (rangeHeader) {
-        const match = /bytes=(\d+)-(\d*)/.exec(rangeHeader);
-        let start = match ? parseInt(match[1], 10) : 0;
-        let end =
-          match && match[2] !== undefined && match[2] !== ""
-            ? parseInt(match[2], 10)
-            : fileSize - 1;
-        if (!Number.isFinite(start) || start < 0) start = 0;
-        if (!Number.isFinite(end)) end = fileSize - 1;
-        if (end > fileSize - 1) end = fileSize - 1;
-        if (start >= fileSize || start > end) {
-          return new Response(null, {
-            status: 416,
-            headers: {
-              "Content-Range": `bytes */${fileSize}`,
-            },
-          });
-        }
-        const chunkSize = end - start + 1;
-        const fileStream = fs.createReadStream(resolvedFile, { start, end });
-        const webStream = new ReadableStream({
-          start(controller) {
-            fileStream.on("data", (chunk) =>
-              controller.enqueue(
-                typeof chunk === "string" ? Buffer.from(chunk) : chunk,
-              ),
-            );
-            fileStream.on("end", () => controller.close());
-            fileStream.on("error", (err) => controller.error(err));
-          },
-          cancel() {
-            fileStream.destroy();
-          },
-        });
-        return new Response(webStream, {
-          status: 206,
-          headers: {
-            "Content-Type": mime,
-            "Content-Range": `bytes ${start}-${end}/${fileSize}`,
-            "Content-Length": String(chunkSize),
-            "Accept-Ranges": "bytes",
-          },
-        });
-      }
-
-      // Full file response (images, small files)
-      const fileStream = fs.createReadStream(resolvedFile);
-      const webStream = new ReadableStream({
-        start(controller) {
-          fileStream.on("data", (chunk) =>
-            controller.enqueue(
-              typeof chunk === "string" ? Buffer.from(chunk) : chunk,
-            ),
-          );
-          fileStream.on("end", () => controller.close());
-          fileStream.on("error", (err) => controller.error(err));
-        },
-        cancel() {
-          fileStream.destroy();
-        },
-      });
-      return new Response(webStream, {
-        headers: {
-          "Content-Type": mime,
-          "Content-Length": String(fileSize),
-          "Accept-Ranges": "bytes",
-        },
-      });
-    } catch {
-      return new Response("Not found", { status: 404 });
-    }
-  });
+  protocol.handle("ade-artifact", (request) => respondToArtifactProtocolRequest(
+    request,
+    { projectRoot: activeProjectRoot, allowedDir: adeArtifactAllowedDir },
+    (message, details) => console.warn(message, details),
+  ));
   // What this computer's GPU was told to do, decided before any project opens.
   logMachineEvent("info", "app.hardware_acceleration", {
     enabled: !disableHardwareAcceleration,
@@ -8687,6 +8586,7 @@ app.whenReady().then(async () => {
     accountAttentionClient: attentionRelayClient,
     getCurrentAccountOwnerId: () => readAccountOwnerId(),
   });
+  remoteArtifactRangeReader = attentionIpcBridge.readRemoteArtifactRange;
 
   // Explicit project launches still bind a project before the renderer boots;
   // normal launches stay on the welcome/recent-project surface.

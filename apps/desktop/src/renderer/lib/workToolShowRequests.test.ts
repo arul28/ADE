@@ -33,24 +33,24 @@ afterEach(() => {
 
 describe("work tool show requests", () => {
   it("shows at once when the chat's surface is registered", async () => {
-    const show = vi.fn(() => true);
+    const show = vi.fn(() => "shown" as const);
     registerWorkToolShowHandler({ chatSessionId: "chat-1", surfaces: ["apple"], show });
     await expect(receiveWorkToolShowRequest(request())).resolves.toBe("shown");
     expect(show).toHaveBeenCalledTimes(1);
   });
 
   it("holds a request for a chat that is not in front and delivers it when that chat mounts", async () => {
-    const onOtherChat = vi.fn(() => true);
+    const onOtherChat = vi.fn(() => "shown" as const);
     registerWorkToolShowHandler({ chatSessionId: "chat-2", surfaces: ["apple", "proof"], show: onOtherChat });
     const asked = request({ surface: "proof" });
     await expect(receiveWorkToolShowRequest(asked)).resolves.toBe("held");
     expect(onOtherChat).not.toHaveBeenCalled();
 
-    const show = vi.fn(() => true);
+    const show = vi.fn(() => "shown" as const);
     registerWorkToolShowHandler({ chatSessionId: "chat-1", surfaces: ["proof"], show });
     await waitFor(() => expect(show).toHaveBeenCalledWith(asked));
     // Delivered once: a second mount does not replay it.
-    const again = vi.fn(() => true);
+    const again = vi.fn(() => "shown" as const);
     registerWorkToolShowHandler({ chatSessionId: "chat-1", surfaces: ["proof"], show: again });
     await Promise.resolve();
     expect(again).not.toHaveBeenCalled();
@@ -60,7 +60,7 @@ describe("work tool show requests", () => {
     setWorkToolShowClockForTests(1_000);
     await receiveWorkToolShowRequest(request());
     setWorkToolShowClockForTests(1_000 + WORK_TOOL_SHOW_HOLD_TTL_MS + 1);
-    const show = vi.fn(() => true);
+    const show = vi.fn(() => "shown" as const);
     registerWorkToolShowHandler({ chatSessionId: "chat-1", surfaces: ["apple"], show });
     await Promise.resolve();
     expect(show).not.toHaveBeenCalled();
@@ -68,14 +68,14 @@ describe("work tool show requests", () => {
 
   it("never holds an automatic float offer, and answers nothing for it", async () => {
     await expect(receiveWorkToolShowRequest(request({ surface: "floating-apple", auto: true }))).resolves.toBeNull();
-    const show = vi.fn(() => true);
+    const show = vi.fn(() => "shown" as const);
     registerWorkToolShowHandler({ chatSessionId: "chat-1", surfaces: ["floating-apple"], show });
     await Promise.resolve();
     expect(show).not.toHaveBeenCalled();
   });
 
   it("answers a request heard twice only once", async () => {
-    const show = vi.fn(() => true);
+    const show = vi.fn(() => "shown" as const);
     registerWorkToolShowHandler({ chatSessionId: "chat-1", surfaces: ["apple"], show });
     const asked = request();
     await expect(receiveWorkToolShowRequest(asked)).resolves.toBe("shown");
@@ -84,7 +84,7 @@ describe("work tool show requests", () => {
   });
 
   it("holds when the handler could not show it, and when it throws", async () => {
-    registerWorkToolShowHandler({ chatSessionId: "chat-1", surfaces: ["apple"], show: () => false });
+    registerWorkToolShowHandler({ chatSessionId: "chat-1", surfaces: ["apple"], show: () => "declined" as const });
     await expect(receiveWorkToolShowRequest(request())).resolves.toBe("held");
     resetWorkToolShowRequestsForTests();
     registerWorkToolShowHandler({
@@ -93,6 +93,18 @@ describe("work tool show requests", () => {
       show: async () => { throw new Error("no device"); },
     });
     await expect(receiveWorkToolShowRequest(request({ surface: "floating-apple" }))).resolves.toBe("held");
+  });
+
+  /* Regression (A2-3 / D3): a surface the handler already opened is never
+   * replayed, so a tool the user closed does not come back on a re-register. */
+  it("answers held but never replays a request the handler already opened", async () => {
+    const show = vi.fn(() => "opened" as const);
+    registerWorkToolShowHandler({ chatSessionId: "chat-1", surfaces: ["apple"], show });
+    await expect(receiveWorkToolShowRequest(request())).resolves.toBe("held");
+    const again = vi.fn(() => "shown" as const);
+    registerWorkToolShowHandler({ chatSessionId: "chat-1", surfaces: ["apple"], show: again });
+    await Promise.resolve();
+    expect(again).not.toHaveBeenCalled();
   });
 
   it("acks shown or held on the runtime it heard the request on, and never an auto offer", async () => {
@@ -111,11 +123,19 @@ describe("work tool show requests", () => {
     const view = render(createElement(Listener));
     expect(onShowRequest).toHaveBeenCalledWith(expect.any(Function), pin);
 
-    registerWorkToolShowHandler({ chatSessionId: "chat-1", surfaces: ["apple", "floating-apple"], show: () => true });
+    registerWorkToolShowHandler({ chatSessionId: "chat-1", surfaces: ["apple", "floating-apple"], show: () => "shown" as const });
     const shown = request();
     listener!(shown);
     await waitFor(() => expect(acknowledgeShow).toHaveBeenCalledWith(
       expect.objectContaining({ requestId: shown.requestId, status: "shown" }),
+      pin,
+    ));
+    // Opened but not confirmed on screen: the brain is told so.
+    registerWorkToolShowHandler({ chatSessionId: "chat-2", surfaces: ["proof"], show: () => "opened" as const });
+    const opened = request({ chatSessionId: "chat-2", surface: "proof" });
+    listener!(opened);
+    await waitFor(() => expect(acknowledgeShow).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: opened.requestId, status: "held", opened: true }),
       pin,
     ));
     const held = request({ chatSessionId: "chat-9" });

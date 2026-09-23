@@ -24,7 +24,7 @@ See [`../proof.md`](../proof.md) for the user-facing CLI surface (`ade proof cap
 The artifact broker is owned by the ADE runtime that owns the project. Ingest, link, list, delete, broken-record audit/prune/recovery, review compatibility updates, backend status, and event emission all happen inside `ade serve` for that project. Artifacts live under that runtime's `.ade/artifacts/computer-use/` directory:
 
 - **Local runtime:** artifacts on the user's machine, under the local project root.
-- **Remote runtime:** artifacts on the remote host, under the remote project root. The desktop renderer reads image previews through `ade.proof.readArtifactPreview` over the same SSH-tunneled JSON-RPC that backs the rest of the remote project surface. Videos stream instead: the renderer plays `ade-artifact://remote/<targetId>/<projectId>/<path>`, and main answers each Range request with bounded `computer_use_artifacts.readArtifactRange` reads (at most 2 MiB each, CTO role only) from that machine's broker, which resolves the path inside its own `.ade/artifacts`. A host too old to answer falls back to the 10 MiB data URL. Raw artifact bytes are not synced back to the desktop machine.
+- **Remote runtime:** artifacts on the remote host, under the remote project root. The desktop renderer reads image previews through `ade.proof.readArtifactPreview` over the same SSH-tunneled JSON-RPC that backs the rest of the remote project surface. Videos stream instead, from main's loopback media server (see Renderer below): the renderer plays `<base>/remote/<targetId>/<projectId>/<path>`, and main answers each Range request with bounded `computer_use_artifacts.readArtifactRange` reads (at most 2 MiB each, CTO role only) from that machine's broker, which resolves the path inside its own `.ade/artifacts`. A host too old to answer falls back to the 10 MiB data URL. Raw artifact bytes are not synced back to the desktop machine.
 
 The desktop renderer is a viewer: it lists collected proof and displays
 runtime-fetched previews inline in the chat and in the drawer. It does not own
@@ -126,10 +126,22 @@ any of them later.
 
 - `apps/desktop/src/renderer/components/chat/ChatComputerUsePanel.tsx` — shared
   proof card, in-app lightbox, full drawer, availability/error states, and
-  irreversible delete action for the active chat session. Local files, including
-  project-relative and in-project absolute uris, use ADE's range-capable
-  `ade-artifact://project/` protocol. Remote videos stream through
-  `ade-artifact://remote/`; remote images use `ade.proof.readArtifactPreview`.
+  irreversible delete action for the active chat session. Local images,
+  including project-relative and in-project absolute uris, use the
+  `ade-artifact://project/` protocol. Every video, local or remote, plays from
+  main's loopback media server
+  (`apps/desktop/src/main/services/computerUse/artifactMediaServer.ts`):
+  Electron's `protocol.handle` cannot answer the second Range read a `<video>`
+  makes when an MP4 keeps its index at the end, so a long recording never
+  loaded there. The server listens on `127.0.0.1` on an OS-picked port, starts
+  on the first `computerUse.mediaBaseUrl` call, and every path begins with a
+  random per-launch token: `http://127.0.0.1:<port>/<token>/project/<path>` for
+  this computer and `…/<token>/remote/<targetId>/<projectId>/<path>` for a
+  paired one (`shared/artifactStreamUrl.ts` builds and parses both). A local
+  path must resolve inside the project's `.ade/artifacts`, the same check the
+  `ade-artifact://` handler makes; a remote one is read chunk by chunk from
+  that machine's broker, which applies the check on its side. Remote images
+  use `ade.proof.readArtifactPreview`.
   A failed preview names its cause when known (the machine is offline, it sent
   nothing, or the bytes did not play). Neither path falls back to Finder.
 - `apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx`,

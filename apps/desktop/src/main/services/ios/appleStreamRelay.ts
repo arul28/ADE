@@ -585,6 +585,14 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
   };
 }
 
+/** What the service may ask the relay before a local viewer's stop. */
+export type AppleRemoteViewerProbe = {
+  /** A remote viewer is reading this lane's capture right now. */
+  watching(laneId: string): boolean;
+  /** The relay now owns stopping this lane's capture. */
+  adopt(laneId: string): void;
+};
+
 /** The slice of the simulator service the relay drives. */
 export type AppleStreamOwningService = {
   getStreamStatus(args: { laneId?: string | null }): { running: boolean };
@@ -608,10 +616,12 @@ export type AppleStreamOwningService = {
    * Lets the service ask, before a LOCAL viewer's stop, whether a remote
    * viewer still reads the capture, and hand the stop to the relay if so.
    */
-  setRemoteViewerProbe?: (probe: {
-    watching(laneId: string): boolean;
-    adopt(laneId: string): void;
-  } | null) => void;
+  setRemoteViewerProbe?: (probe: AppleRemoteViewerProbe | null) => void;
+  /**
+   * The last remote viewer left while a viewer on this machine still watches:
+   * drop the remote bitrate cap so the local view is back at full quality.
+   */
+  liftStreamBitrateCap?: (args: { laneId: string }) => Promise<unknown>;
 };
 
 /**
@@ -679,11 +689,18 @@ export function createAppleStreamRelayForService(deps: {
       if (localViewers) {
         // Somebody on this machine is still watching. Forget that the relay
         // started it: the local viewer owns the stop now, and a later remote
-        // viewer must not inherit the right to end it.
+        // viewer must not inherit the right to end it. The cap was for the
+        // remote viewers, so it goes with them.
         startedLanes.delete(laneId);
+        await deps.service.liftStreamBitrateCap?.({ laneId });
         return;
       }
-      if (!startedLanes.delete(laneId)) return;
+      // Not the relay's capture to stop, so it keeps running for whoever
+      // started it, without the remote cap.
+      if (!startedLanes.delete(laneId)) {
+        await deps.service.liftStreamBitrateCap?.({ laneId });
+        return;
+      }
       await Promise.resolve(deps.service.stopStream({ laneId })).catch(() => null);
     },
   });

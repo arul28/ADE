@@ -119,8 +119,16 @@ final class ProtocolTests: XCTestCase {
         XCTAssertNil(absent)
     }
 
+    /// 0 lifts a running cap once the last remote viewer has left.
+    func testCaptureStartAcceptsZeroToRemoveTheCap() {
+        guard case let .success(.captureStart(_, _, _, _, bitrateKbps)) = parse(
+            #"{"type":"capture-start","id":"1","udid":"U","bitrateKbps":0}"#
+        ) else { return XCTFail("Expected success") }
+        XCTAssertEqual(bitrateKbps, 0)
+    }
+
     func testRejectsAnOutOfRangeBitrateCap() {
-        for kbps in [50, 25_000] {
+        for kbps in [1, 50, 99, 25_000] {
             guard case .failure(.invalid) = parse(
                 #"{"type":"capture-start","id":"1","udid":"U","bitrateKbps":\#(kbps)}"#
             ) else {

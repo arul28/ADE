@@ -1745,9 +1745,44 @@ struct WorkFullscreenImage: Identifiable {
 enum WorkLoadedArtifactContent {
   case image(UIImage)
   case video(URL)
+  /// A stored video too large to fetch just to draw a row. It downloads when
+  /// the user plays it.
+  case videoOnDemand(sizeBytes: Int)
   case remoteURL(URL)
   case text(String)
   case error(String)
+}
+
+/// Why an artifact is being loaded. A row or card appearing is `.preview`;
+/// only `.play` downloads a video larger than `workArtifactEagerVideoMaxBytes`.
+enum WorkArtifactLoadIntent {
+  case preview
+  case play
+}
+
+typealias WorkArtifactLoader = @MainActor (ComputerUseArtifactSummary, WorkArtifactLoadIntent) async -> Void
+
+/// The largest stored video fetched when its row appears: the host's
+/// whole-file cap (`MAX_SYNC_ARTIFACT_BYTES`), which bounded every preview
+/// load before videos were read in slices.
+let workArtifactEagerVideoMaxBytes = 8 * 1024 * 1024
+
+/// Whether a stored video of this size downloads for `intent`.
+func workArtifactVideoDownloads(sizeBytes: Int, intent: WorkArtifactLoadIntent) -> Bool {
+  intent == .play || sizeBytes <= workArtifactEagerVideoMaxBytes
+}
+
+/// "34 MB" for the play placeholder.
+func workArtifactSizeLabel(_ sizeBytes: Int) -> String {
+  ByteCountFormatter.string(fromByteCount: Int64(sizeBytes), countStyle: .file)
+}
+
+/// Loads started under one scope stop when the chat view that started them
+/// goes away, so a download does not finish into a view that is gone.
+@MainActor
+final class WorkArtifactLoadScope {
+  private(set) var isActive = true
+  func end() { isActive = false }
 }
 
 func workRemoveLoadedArtifactTempFile(_ content: WorkLoadedArtifactContent?) {

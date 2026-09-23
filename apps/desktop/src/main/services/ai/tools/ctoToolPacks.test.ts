@@ -443,8 +443,8 @@ describe("CTO secret exposure", () => {
   });
 
   it("files the CTO's captureProof as an attach, so a copy of old proof is refused", async () => {
-    const ingest = vi.fn().mockReturnValue({ artifacts: [], links: [] });
-    const tools = createCtoOperatorTools(runtimeShapedDeps({ proofIngestService: { ingest } }));
+    const ingest = vi.fn().mockResolvedValue({ artifacts: [], links: [] });
+    const tools = createCtoOperatorTools(runtimeShapedDeps({ proofIngestService: { ingestAsync: ingest } }));
     await tools.captureProof!.execute({
       sourcePath: "/tmp/clip.mp4",
       kind: "video_recording",

@@ -45,7 +45,8 @@ vi.mock("node:child_process", async (importOriginal) => {
   };
 });
 
-const { createAdeRpcRequestHandler, isExplicitProofCall, resolveIngestToolProvenance } = await import("./adeRpcServer");
+const { createAdeRpcRequestHandler, isExplicitProofCall, resolveIngestProvenance } = await import("./adeRpcServer");
+const { createAdeCaptureRegistry } = await import("./services/proof/adeCaptureRegistry");
 
 let projectRoot = "";
 const createdRoots: string[] = [];
@@ -70,6 +71,7 @@ function createRuntime() {
       sessionService: { get: vi.fn(() => ({ id: "chat-1", laneId: "lane-1" })) },
       computerUseArtifactBrokerService: {
         ingest,
+        ingestAsync: ingest,
         getBackendStatus: vi.fn(() => ({ backends: [], localFallback: { available: true } })),
         listArtifacts: vi.fn(() => []),
       },
@@ -241,6 +243,126 @@ describe("explicit proof capture", () => {
     expect(request?.provenance).toEqual({ source: "attached" });
   });
 
+  async function laneAgentHandler(fixture: ReturnType<typeof createRuntime>) {
+    const laneRoot = path.join(projectRoot, ".ade", "worktrees", "lane-7");
+    fs.mkdirSync(laneRoot, { recursive: true });
+    fixture.runtime.laneService.list = vi.fn(async () => [
+      { id: "lane-7", worktreePath: laneRoot, attachedRootPath: null },
+    ]);
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ade/initialize",
+      params: { identity: { callerId: "ade-cli:4242", role: "agent" } },
+    });
+    return { handler, laneRoot };
+  }
+
+  it("regression: an ADE capture label on an old file does not make it ADE's", async () => {
+    const fixture = createRuntime();
+    const { handler, laneRoot } = await laneAgentHandler(fixture);
+    const clip = path.join(laneRoot, "old.mp4");
+    const still = path.join(laneRoot, "old.png");
+    fs.writeFileSync(clip, "old video");
+    fs.writeFileSync(still, "old still");
+
+    for (const [backendName, toolName, input] of [
+      ["ade-browser", "browser record", { kind: "video_recording", title: "Clip", path: clip }],
+      ["ade-ios-simulator", "ios-sim proof", { kind: "screenshot", title: "Still", path: still }],
+    ] as const) {
+      const result = await callTool(handler, "ingest_computer_use_artifacts", {
+        backendStyle: "manual",
+        backendName,
+        toolName,
+        callerRoot: laneRoot,
+        inputs: [input],
+      });
+      expect(JSON.stringify(result.error ?? null)).toBe("null");
+    }
+    const requests = fixture.ingest.mock.calls as unknown as Array<[{ provenance?: Record<string, unknown> }]>;
+    expect(requests.map(([request]) => request?.provenance)).toEqual([
+      { source: "attached" },
+      { source: "attached" },
+    ]);
+  });
+
+  it("files a capture this server wrote, unchanged, as ADE's own", async () => {
+    const fixture = createRuntime();
+    const { handler, laneRoot } = await laneAgentHandler(fixture);
+    const capture = await callTool(handler, "screenshot_environment", { name: "scratch look" });
+    const capturePath: string = capture.structuredContent.artifact.path;
+
+    const result = await callTool(handler, "ingest_computer_use_artifacts", {
+      backendStyle: "manual",
+      backendName: "ade-cli",
+      toolName: "proof attach",
+      callerRoot: laneRoot,
+      inputs: [{ kind: "screenshot", title: "Look", path: capturePath }],
+    });
+
+    expect(JSON.stringify(result.error ?? null)).toBe("null");
+    const [[request]] = fixture.ingest.mock.calls as unknown as Array<[{ provenance?: Record<string, unknown> }]>;
+    expect(request?.provenance).toEqual({ source: "ade-capture", refuseDuplicates: false, flagOlderMedia: true });
+  });
+
+  it("files `ade apple proof` as ADE's capture: the screenshot action's file, unchanged", async () => {
+    const fixture = createRuntime();
+    const { handler, laneRoot } = await laneAgentHandler(fixture);
+    const shotPath = path.join(laneRoot, "screen.png");
+    fixture.runtime.iosSimulatorService = {
+      screenshot: vi.fn(async () => {
+        fs.writeFileSync(shotPath, "device pixels");
+        return { filePath: shotPath, deviceUdid: "SIM-1" };
+      }),
+    };
+    const ingestShot = () => callTool(handler, "ingest_computer_use_artifacts", {
+      backendStyle: "manual",
+      backendName: "ade-ios-simulator",
+      toolName: "ios-sim proof",
+      callerRoot: laneRoot,
+      inputs: [{ kind: "screenshot", title: "Screen", path: shotPath }],
+    });
+
+    await callTool(handler, "run_ade_action", { domain: "ios_simulator", action: "screenshot", args: {} });
+    await ingestShot();
+    // Same path, other bytes: no longer the capture.
+    fs.writeFileSync(shotPath, "an older screenshot");
+    await ingestShot();
+
+    const requests = fixture.ingest.mock.calls as unknown as Array<[{ provenance?: Record<string, unknown> }]>;
+    expect(requests.map(([request]) => request?.provenance)).toEqual([
+      { source: "ade-capture", refuseDuplicates: false, flagOlderMedia: true },
+      { source: "attached" },
+    ]);
+  });
+
+  it("regression: refuses an ownerless ingest before storing it, so a retry with an owner is not a duplicate", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    // A CTO user client standing outside every lane.
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    await handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ade/initialize",
+      params: { identity: { callerId: "ade-cli:4243", role: "cto" } },
+    });
+    const file = path.join(projectRoot, "clip.png");
+    fs.writeFileSync(file, "bytes");
+
+    const result = await callTool(handler, "ingest_computer_use_artifacts", {
+      backendStyle: "manual",
+      backendName: "ade-cli",
+      toolName: "proof attach",
+      callerRoot: projectRoot,
+      inputs: [{ kind: "screenshot", title: "Clip", path: file }],
+    });
+
+    expect(JSON.stringify(result.error ?? "")).toMatch(/no lane and no chat session/);
+    expect(fixture.ingest).not.toHaveBeenCalled();
+  });
+
   it("advertises the proof flag on both capture tools so the model can tell them apart", async () => {
     const fixture = createRuntime();
     const handler = await handlerFor(fixture);
@@ -267,24 +389,64 @@ describe("isExplicitProofCall", () => {
   });
 });
 
-describe("resolveIngestToolProvenance", () => {
-  const still = [{ kind: "screenshot" }];
-  const video = [{ kind: "video_recording" }];
-
-  it("treats every unlabelled call as an attach", () => {
-    expect(resolveIngestToolProvenance("ade-cli", "proof attach", video)).toEqual({ source: "attached" });
-    expect(resolveIngestToolProvenance("agent-browser", null, still)).toEqual({ source: "attached" });
+describe("resolveIngestProvenance", () => {
+  let dir = "";
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-capture-registry-"));
+    createdRoots.push(dir);
   });
 
-  it("lifts the duplicate check only for ADE's own stills", () => {
-    expect(resolveIngestToolProvenance("ade-ios-simulator", "ios-sim proof", still))
-      .toEqual({ source: "ade-capture", refuseDuplicates: false, flagOlderMedia: true });
-    expect(resolveIngestToolProvenance("ade-browser", "browser proof", [{ kind: "screenshot" }, { kind: "browser_trace" }]))
-      .toEqual({ source: "ade-capture", refuseDuplicates: false, flagOlderMedia: true });
-    // A label on a video is typed, not proven, so the checks stay on.
-    expect(resolveIngestToolProvenance("ade-ios-simulator", "ios-sim proof", video))
-      .toEqual({ source: "ade-capture", refuseDuplicates: true, flagOlderMedia: true });
-    expect(resolveIngestToolProvenance("ade-browser", "browser record", video))
+  it("files a file no capture action wrote as an attach, whatever it is called", async () => {
+    const registry = createAdeCaptureRegistry();
+    fs.writeFileSync(path.join(dir, "old.png"), "old");
+    expect(await resolveIngestProvenance(registry, [{ kind: "screenshot", path: "old.png" }], dir))
+      .toEqual({ source: "attached" });
+  });
+
+  it("files ADE's own unchanged capture as ADE's, and lifts the duplicate check only for stills", async () => {
+    const registry = createAdeCaptureRegistry();
+    const still = path.join(dir, "shot.png");
+    const trace = path.join(dir, "net.har");
+    const video = path.join(dir, "clip.webm");
+    fs.writeFileSync(still, "png");
+    fs.writeFileSync(trace, "har");
+    fs.writeFileSync(video, "webm");
+    await registry.remember(still, "ade-capture");
+    await registry.remember(trace, "ade-capture");
+    await registry.remember(video, "ade-recorder");
+
+    expect(await resolveIngestProvenance(registry, [
+      { kind: "screenshot", path: still },
+      { kind: "browser_trace", path: "net.har" },
+    ], dir)).toEqual({ source: "ade-capture", refuseDuplicates: false, flagOlderMedia: true });
+    expect(await resolveIngestProvenance(registry, [{ kind: "video_recording", path: video }], dir))
       .toEqual({ source: "ade-recorder", refuseDuplicates: true, flagOlderMedia: true });
+    // One input ADE did not write makes the whole call an attach.
+    const other = path.join(dir, "other.png");
+    fs.writeFileSync(other, "other");
+    expect(await resolveIngestProvenance(registry, [
+      { kind: "screenshot", path: still },
+      { kind: "screenshot", path: other },
+    ], dir)).toEqual({ source: "attached" });
+  });
+
+  it("regression: bytes swapped in after the capture are an attach", async () => {
+    const registry = createAdeCaptureRegistry();
+    const still = path.join(dir, "shot.png");
+    fs.writeFileSync(still, "fresh");
+    await registry.remember(still, "ade-capture");
+    fs.writeFileSync(still, "stale proof from last week");
+    expect(await resolveIngestProvenance(registry, [{ kind: "screenshot", path: still }], dir))
+      .toEqual({ source: "attached" });
+  });
+
+  it("forgets a capture after its time to live", async () => {
+    let now = 1_000;
+    const registry = createAdeCaptureRegistry({ ttlMs: 100, now: () => now });
+    const still = path.join(dir, "shot.png");
+    fs.writeFileSync(still, "png");
+    await registry.remember(still, "ade-capture");
+    now += 101;
+    expect(await registry.match(still)).toBeNull();
   });
 });

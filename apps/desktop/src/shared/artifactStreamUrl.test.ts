@@ -33,6 +33,19 @@ describe("proof stream URLs", () => {
       .toBe("ade-artifact://project/.ade/artifacts/x.mp4");
   });
 
+  it("compares a root without case on Windows-shaped roots and case-folding hosts only", () => {
+    // UNC roots fold like drive roots.
+    expect(projectRelativeArtifactPath("\\\\Server\\Share\\Repo\\.ade\\artifacts\\x.mp4", "\\\\server\\share\\repo", "linux"))
+      .toBe(".ade/artifacts/x.mp4");
+    expect(projectRelativeArtifactPath("file:///C:/Repo/.ade/artifacts/x.mp4", "c:\\repo", "linux"))
+      .toBe(".ade/artifacts/x.mp4");
+    // POSIX roots fold on macOS and stay exact on Linux.
+    expect(projectRelativeArtifactPath("/users/me/REPO/.ade/artifacts/x.mp4", root, "darwin"))
+      .toBe(".ade/artifacts/x.mp4");
+    expect(projectRelativeArtifactPath("/users/me/REPO/.ade/artifacts/x.mp4", root, "linux")).toBeNull();
+    expect(projectRelativeArtifactPath("/Users/me/repo-evil/x.mp4", root, "darwin")).toBeNull();
+  });
+
   it("refuses paths outside the project and any `..`", () => {
     expect(localArtifactStreamUrl("/Users/me/other/.ade/artifacts/x.mp4", root)).toBeNull();
     expect(localArtifactStreamUrl("/Users/me/repo-evil/x.mp4", root)).toBeNull();

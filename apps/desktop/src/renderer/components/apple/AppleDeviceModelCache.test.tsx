@@ -59,7 +59,8 @@ vi.mock("three/examples/jsm/loaders/GLTFLoader.js", () => ({
   },
 }));
 
-const { AppleDevice3DView, __testClearAppleModelCache } = await import("./AppleDevice3DView");
+const { AppleDevice3DView } = await import("./AppleDevice3DView");
+const { __testClearAppleModelCache } = await import("./appleDeviceModelLoader");
 
 function renderView(onReady: () => void) {
   return render(

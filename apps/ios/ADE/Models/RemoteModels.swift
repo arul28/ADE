@@ -4523,17 +4523,6 @@ struct SyncFileBlob: Codable, Equatable {
   var totalSize: Int? = nil
 }
 
-/// One bounded slice of a stored proof, from the host's `readArtifactRange`.
-struct SyncArtifactRange: Codable, Equatable {
-  var path: String
-  var totalSize: Int
-  var rangeStart: Int
-  var rangeEnd: Int
-  var encoding: String
-  var content: String
-  var eof: Bool
-}
-
 struct ComputerUseArtifactSummary: Codable, Identifiable, Hashable {
   var id: String
   var artifactKind: String

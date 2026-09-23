@@ -2083,39 +2083,68 @@ describe("AgentChatPane companion drawers", () => {
 
   it("opens the proof drawer and the Apple drawer when an agent asks with ade ui show", async () => {
     setDocumentVisibleForTests(true);
+    // jsdom lays nothing out; the drawers are wide enough to be seen.
+    const layout = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockReturnValue({ width: 400, height: 600 } as DOMRect);
     renderDrawerPane();
     await screen.findByRole("button", { name: "Open chat actions drawer" });
 
     let status: string | null = null;
-    await act(async () => {
-      status = await receiveWorkToolShowRequest({
+    // Not inside act: the drawer has to render while the show waits for it.
+    void receiveWorkToolShowRequest({
         requestId: "wts-proof",
         surface: "proof",
         chatSessionId: "session-1",
         laneId: "lane-1",
         auto: false,
         requestedAt: new Date(0).toISOString(),
-      });
-    });
-    expect(status).toBe("shown");
+    }).then((next) => { status = next; });
+    await waitFor(() => expect(status).toBe("shown"), { timeout: 5_000 });
     expect(await screen.findByText("No proof collected yet")).toBeTruthy();
 
     // Outside Work this pane owns the chat's Apple drawer too.
-    await act(async () => {
-      status = await receiveWorkToolShowRequest({
+    // Not inside act: the drawer has to render while the show waits for it.
+    void receiveWorkToolShowRequest({
         requestId: "wts-apple",
         surface: "apple",
         chatSessionId: "session-1",
         laneId: "lane-1",
         auto: false,
         requestedAt: new Date(0).toISOString(),
-      });
-    });
-    expect(status).toBe("shown");
+    }).then((next) => { status = next; });
+    await waitFor(() => expect(status).toBe("shown"), { timeout: 5_000 });
     expect(screen.getByTestId("ios-panel").textContent).toBe("iOS panel mounted");
     resetWorkToolShowRequestsForTests();
     setDocumentVisibleForTests(null);
+    layout.mockRestore();
   });
+
+  /* Regression (A2-4): the Apple drawer answered "shown" before its commit
+   * and in a hidden window. It now waits for the drawer to be on screen. */
+  it("answers held, not shown, for the Apple drawer in a hidden window", async () => {
+    setDocumentVisibleForTests(false);
+    const layout = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockReturnValue({ width: 400, height: 600 } as DOMRect);
+    renderDrawerPane();
+    await screen.findByRole("button", { name: "Open chat actions drawer" });
+
+    let status: string | null = null;
+    // Not inside act: the drawer has to render while the show waits for it.
+    void receiveWorkToolShowRequest({
+        requestId: "wts-apple-hidden",
+        surface: "apple",
+        chatSessionId: "session-1",
+        laneId: "lane-1",
+        auto: false,
+        requestedAt: new Date(0).toISOString(),
+    }).then((next) => { status = next; });
+    await waitFor(() => expect(status).toBe("held"), { timeout: 5_000 });
+    // Opened all the same: the user sees it when the window comes back.
+    expect(screen.getByTestId("ios-panel").textContent).toBe("iOS panel mounted");
+    resetWorkToolShowRequestsForTests();
+    setDocumentVisibleForTests(null);
+    layout.mockRestore();
+  }, 10_000);
 
   it("opens the proof drawer as a floating info pane (no split divider)", async () => {
     renderDrawerPane();

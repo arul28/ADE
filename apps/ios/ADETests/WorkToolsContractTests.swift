@@ -309,11 +309,19 @@ final class WorkToolsContractTests: XCTestCase {
 
   // MARK: - Lane tool chips
 
-  private static func device(_ name: String?, udid: String = "UDID-1", family: String = "iphone", state: String? = "Booted") -> AppleDeviceStatus {
+  /// A status whose device is the lane's own unless `laneDeviceUdid` says otherwise.
+  private static func device(
+    _ name: String?,
+    udid: String = "UDID-1",
+    family: String = "iphone",
+    state: String? = "Booted",
+    laneDeviceUdid: String? = "UDID-1"
+  ) -> AppleDeviceStatus {
     AppleDeviceStatus(
       laneId: "lane-1",
       device: AppleDeviceStatusDevice(udid: udid, name: name, family: family, state: state),
-      stream: AppleDeviceStatusStream(running: false)
+      stream: AppleDeviceStatusStream(running: false),
+      laneDevice: laneDeviceUdid.map { AppleDeviceStatusLaneDevice(udid: $0) }
     )
   }
 
@@ -345,13 +353,26 @@ final class WorkToolsContractTests: XCTestCase {
     XCTAssertEqual(workToolChips(state: nil, appleDevice: AppleDeviceStatus(unavailable: "no_device")), [])
   }
 
+  func testABootedDeviceTheLaneDoesNotOwnHasNoChip() {
+    // A lane with no device: the host reports any booted iPhone on the Mac.
+    XCTAssertEqual(workToolChips(state: nil, appleDevice: Self.device("iPhone 17 Pro", laneDeviceUdid: nil)), [])
+    // The lane owns a device, but the one shown is another.
+    XCTAssertEqual(
+      workToolChips(state: nil, appleDevice: Self.device("iPhone 17 Pro", udid: "OTHER", laneDeviceUdid: "UDID-1")),
+      [])
+    // An older host that sends no laneDevice shows none either.
+    var older = Self.device("iPhone 16 Pro")
+    older.laneDevice = nil
+    XCTAssertNil(appleDeviceRunningName(older))
+  }
+
   func testBrowserTabsAreOneChipWithTheCount() {
     XCTAssertEqual(
       workToolChips(state: WorkToolsLaneState(laneId: "lane-1", browser: Self.tabs(1)), appleDevice: nil),
-      [WorkToolChip(kind: .browser, label: "1 tab")])
+      [WorkToolChip(kind: .browser(tabCount: 1, agentUsing: false), label: "1 tab")])
     XCTAssertEqual(
       workToolChips(state: WorkToolsLaneState(laneId: "lane-1", browser: Self.tabs(3)), appleDevice: nil),
-      [WorkToolChip(kind: .browser, label: "3 tabs")])
+      [WorkToolChip(kind: .browser(tabCount: 3, agentUsing: false), label: "3 tabs")])
     XCTAssertEqual(
       workToolChips(state: WorkToolsLaneState(laneId: "lane-1", browser: Self.tabs(0)), appleDevice: nil),
       [])
@@ -363,11 +384,23 @@ final class WorkToolsContractTests: XCTestCase {
       workToolChips(
         state: WorkToolsLaneState(laneId: "lane-1", browser: Self.tabs(2), agentBrowserPresence: presence),
         appleDevice: nil),
-      [WorkToolChip(kind: .browser, label: "2 tabs", agentUsingBrowser: true)])
+      [WorkToolChip(kind: .browser(tabCount: 2, agentUsing: true), label: "2 tabs")])
     XCTAssertEqual(
       workToolChips(state: WorkToolsLaneState(laneId: "lane-1", agentBrowserPresence: presence), appleDevice: nil),
-      [WorkToolChip(kind: .browser, label: "Browser", agentUsingBrowser: true)])
+      [WorkToolChip(kind: .browser(tabCount: 0, agentUsing: true), label: "Browser")])
     XCTAssertFalse(workToolsAgentIsUsingBrowser(nil))
+  }
+
+  func testChipAccessibilityTextComesFromTheChipData() {
+    XCTAssertEqual(
+      workToolChipAccessibilityText(WorkToolChip(kind: .browser(tabCount: 0, agentUsing: true), label: "Browser")),
+      "Browser on your Mac. An agent is using the browser. Tap for details.")
+    XCTAssertEqual(
+      workToolChipAccessibilityText(WorkToolChip(kind: .browser(tabCount: 2, agentUsing: false), label: "2 tabs")),
+      "Browser on your Mac, 2 tabs. Tap for details.")
+    XCTAssertEqual(
+      workToolChipAccessibilityText(WorkToolChip(kind: .simulator(family: "iphone"), label: "iPhone 16 Pro")),
+      "iPhone 16 Pro running on your Mac. Tap to watch.")
   }
 
   func testAppControlIsAChipNamedForTheApp() {
