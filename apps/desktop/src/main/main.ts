@@ -157,6 +157,8 @@ import { createAppCommandSender } from "./appCommandDispatch";
 import { createAiIntegrationService } from "./services/ai/aiIntegrationService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "./services/ai/cliExecutableResolver";
 import { createAgentChatService, writeSessionLinearIssueContextFile } from "./services/chat/agentChatService";
+import { disposeAllCursorSdkConnections } from "./services/chat/cursorSdkPool";
+import { recoverCursorSdkWorkerOrphans } from "./services/chat/cursorSdkWorkerOrphans";
 import { createChatRuntimeBudget } from "./services/chat/chatRuntimeBudget";
 import { createGithubService } from "./services/github/githubService";
 import { createProjectScaffoldService } from "./services/projects/projectScaffoldService";
@@ -3512,6 +3514,7 @@ app.whenReady().then(async () => {
       logger,
       projectConfigService,
       projectRoot,
+      modelManifest: { adeVersion: app.getVersion(), fetchRemote: true },
     });
 
     const onboardingService = createOnboardingService({
@@ -7097,6 +7100,10 @@ app.whenReady().then(async () => {
     }
 
     shutdownOpenCodeServersBestEffort();
+    // Chat disposal above leaves the shared Cursor one-shot workers, which
+    // belong to no session. The IPC dispose goes out now; the workers also
+    // exit on their own once this process is gone.
+    void disposeAllCursorSdkConnections().catch(() => {});
     terminateLoginImportWorkersBestEffort();
   };
 
@@ -7575,6 +7582,13 @@ app.whenReady().then(async () => {
       error: error instanceof Error ? error.message : String(error),
     });
   }
+  // Cursor SDK workers a dead brain or a crashed main left behind. Only
+  // workers whose owner is dead are touched.
+  void recoverCursorSdkWorkerOrphans({ logger: getActiveContext().logger }).catch((error: unknown) => {
+    getActiveContext().logger.warn("agent_chat.cursor_sdk_worker_orphan_sweep_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
   void recoverOrphanedAdeAgentProcesses({ logger: getActiveContext().logger }).catch((error: unknown) => {
     getActiveContext().logger.warn("agent_process_orphan_recovery_failed", {
       error: error instanceof Error ? error.message : String(error),

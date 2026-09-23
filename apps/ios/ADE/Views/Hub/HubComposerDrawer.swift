@@ -802,6 +802,57 @@ struct HubInlineComposer: View {
     )
     let normalizedReasoning = reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
 
+    // Auto-create lane + plain chat: the host owns the launch (reserve ids,
+    // fetch, checkout, template, create the chat, send the opener) in the
+    // TARGET project, and the hub reports the chat at once. Older hosts that
+    // do not advertise `chat.startLaunch`, and offline sends, keep the chained
+    // flow below unchanged. Same gate as the Work new-chat screen; the drawer
+    // has no Cursor Cloud mode.
+    if let request = ChatLaunchRequest(
+      composerOpener: opener,
+      laneName: workDeterministicAutoLaneName(from: opener, genericSuffix: workAutoLaneGenericSuffix()),
+      provider: provider,
+      modelId: modelId,
+      reasoningEffort: reasoningEffort,
+      codexFastMode: codexFastMode,
+      piMetadata: piMetadata,
+      wire: wire,
+      projectId: targetProjectId,
+      projectRootPath: targetProjectRootPath,
+      originClientId: syncService.pairingDeviceId,
+      isAutoCreateLane: isAutoCreateLane,
+      isChatSession: sessionMode == .chat,
+      cursorCloudMode: false,
+      hostCanStartLaunch: syncService.canStartChatLaunch
+    ) {
+      let laneName = request.laneName
+      let syncService = syncService
+      let attachmentsToStage = readyAttachments
+      let snapshot = syncService.beginChatLaunch(request) {
+        try await workChatSaveInputAttachments(
+          attachmentsToStage,
+          syncService: syncService,
+          targetProjectId: targetProjectId,
+          targetProjectRootPath: targetProjectRootPath
+        )
+      }
+      WorkComposerPreferences.save(composerSelection)
+      saveLastDestination(projectId: targetProjectId, laneId: workAutoCreateLaneSentinelId)
+      ADEHaptics.success()
+      busy = false
+      collapse()
+      onCreated(HubCreatedChat(
+        projectId: targetProjectId,
+        projectRootPath: targetProjectRootPath,
+        projectName: project.displayName,
+        laneName: laneName,
+        sessionId: snapshot.chatSessionId,
+        isCli: false,
+        provider: provider
+      ))
+      return true
+    }
+
     // Resolve the target lane. Auto-create mints a fresh lane in the TARGET
     // project first; on failure we surface the error and never create the chat.
     // Track the minted lane so we can tear it back down if the chat launch

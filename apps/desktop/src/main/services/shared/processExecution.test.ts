@@ -3,17 +3,20 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const spawnSyncMock = vi.fn();
+const execFileMock = vi.fn();
 
 vi.mock("node:child_process", async () => {
   const actual = await vi.importActual<typeof childProcess>("node:child_process");
   return {
     ...actual,
     spawnSync: (...args: unknown[]) => spawnSyncMock(...args),
+    execFile: (...args: unknown[]) => execFileMock(...args),
   };
 });
 
 import {
   killWindowsProcessTree,
+  killWindowsProcessTreeAsync,
   preferNativeExecutablePath,
   quoteWindowsCmdArg,
   resolveCliSpawnInvocation,
@@ -241,6 +244,48 @@ describe("killWindowsProcessTree", () => {
     expect(killWindowsProcessTree(3.14, failure)).toBe(false);
     expect(spawnSyncMock).not.toHaveBeenCalled();
     expect(failure).not.toHaveBeenCalled();
+  });
+});
+
+describe("killWindowsProcessTreeAsync", () => {
+  afterEach(() => {
+    execFileMock.mockReset();
+    spawnSyncMock.mockReset();
+  });
+
+  it("runs the same trusted taskkill /T /F without blocking", async () => {
+    execFileMock.mockImplementationOnce((...args: unknown[]) => {
+      (args.at(-1) as (error: Error | null, stdout: string, stderr: string) => void)(null, "", "");
+    });
+
+    await expect(killWindowsProcessTreeAsync(4321)).resolves.toBe(true);
+    const [command, args, options] = execFileMock.mock.calls[0]!;
+    expect(command).toBe(windowsTaskkillCommand());
+    expect(args).toEqual(["/PID", "4321", "/T", "/F"]);
+    expect(options).toMatchObject({ windowsHide: true });
+    expect(spawnSyncMock).not.toHaveBeenCalled();
+  });
+
+  it("reports a non-zero exit to the failure callback", async () => {
+    execFileMock.mockImplementationOnce((...args: unknown[]) => {
+      const error = Object.assign(new Error("Command failed"), { code: 128 });
+      (args.at(-1) as (error: Error | null, stdout: string, stderr: string) => void)(error, "out", "not found");
+    });
+    const failure = vi.fn();
+
+    await expect(killWindowsProcessTreeAsync(1234, failure)).resolves.toBe(false);
+    expect(failure).toHaveBeenCalledWith(expect.objectContaining({
+      pid: 1234,
+      status: 128,
+      stdout: "out",
+      stderr: "not found",
+    }));
+  });
+
+  it("rejects non-positive or non-integer pids without shelling out", async () => {
+    await expect(killWindowsProcessTreeAsync(0)).resolves.toBe(false);
+    await expect(killWindowsProcessTreeAsync(2.5)).resolves.toBe(false);
+    expect(execFileMock).not.toHaveBeenCalled();
   });
 });
 

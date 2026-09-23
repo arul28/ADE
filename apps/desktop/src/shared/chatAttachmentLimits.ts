@@ -36,6 +36,21 @@ export const LEGACY_MAX_CHAT_ATTACHMENT_BYTES = 10 * 1024 * 1024;
  */
 export const MAX_PROVIDER_INLINE_IMAGE_BYTES = 10 * 1024 * 1024;
 
+/**
+ * The longest base64 string that can decode to at most `bytes` bytes.
+ *
+ * Every base64 sink checks this before it decodes, so an oversized payload is
+ * refused without a second, decoded copy in memory.
+ */
+export function maxBase64EncodedLength(bytes: number): number {
+  return Math.ceil(bytes / 3) * 4;
+}
+
+/** The most bytes a base64 string of this length can decode to, for messages. */
+export function approxDecodedBytes(base64Length: number): number {
+  return Math.floor((base64Length * 3) / 4);
+}
+
 /** Human size for composer copy: "9 KB", "1.4 MB". */
 export function formatAttachmentSize(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return "";

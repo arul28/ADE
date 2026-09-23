@@ -56,6 +56,11 @@ import type { createAdeCliService } from "../../desktop/src/main/services/cli/ad
 import type { createDevToolsService } from "../../desktop/src/main/services/devTools/devToolsService";
 import { createOnboardingService } from "../../desktop/src/main/services/onboarding/onboardingService";
 import { createLaneEnvironmentService } from "../../desktop/src/main/services/lanes/laneEnvironmentService";
+import { planNewLaneEnvironment, runLaneEnvironmentSetup } from "../../desktop/src/main/services/lanes/laneEnvironmentSetup";
+import { createChatLaunchService, type ChatLaunchService } from "../../desktop/src/main/services/chat/chatLaunchService";
+import { resolveChatCreateModel } from "../../desktop/src/main/services/chat/chatCreateModelResolution";
+import { resolveLaneCreateRemoteBaseDetailed } from "./services/laneCreateRemoteBase";
+import { resolveGitCommit } from "../../desktop/src/main/services/git/git";
 import { createLaneTemplateService } from "../../desktop/src/main/services/lanes/laneTemplateService";
 import { createPortAllocationService } from "../../desktop/src/main/services/lanes/portAllocationService";
 import { createLaneProxyService } from "../../desktop/src/main/services/lanes/laneProxyService";
@@ -149,7 +154,7 @@ import {
   captureClaudePluginsIgnoredAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "../../desktop/src/main/services/analytics/agentTurnProductAnalytics";
-import { capturePendingInputDismissedAnalytics } from "../../desktop/src/main/services/analytics/featureProductAnalytics";
+import { captureNewLaneLaunchAnalytics, capturePendingInputDismissedAnalytics } from "../../desktop/src/main/services/analytics/featureProductAnalytics";
 import { createSessionDeltaService } from "../../desktop/src/main/services/sessions/sessionDeltaService";
 import { createProcessRegistryService } from "../../desktop/src/main/services/runtime/processRegistryService";
 import type { createAutoUpdateService } from "../../desktop/src/main/services/updates/autoUpdateService";
@@ -354,6 +359,7 @@ export type AdeRuntime = {
   testService: ReturnType<typeof createTestService>;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
   agentChatService?: ReturnType<typeof createAgentChatService> | null;
+  chatLaunchService?: ChatLaunchService | null;
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
   devinCloudFleetService?: ReturnType<typeof createDevinCloudFleetService> | null;
   prService?: ReturnType<typeof createPrService>;
@@ -1210,6 +1216,13 @@ export async function createAdeRuntime(args: {
       projectConfigService,
       projectRoot,
       enableDynamicModelMetadata: false,
+      // A long-lived agent runtime (the machine brain) keeps the model
+      // directory current; one-shot CLI commands and embedded guests stay
+      // offline and use the bundled/disk copy.
+      modelManifest: {
+        adeVersion: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || null,
+        fetchRemote: resolvedArgs.chatRuntime === "agent" && !embeddedRuntime,
+      },
     });
 
     const conflictService = createConflictService({
@@ -1739,6 +1752,64 @@ export async function createAdeRuntime(args: {
     if (resolvedArgs.chatRuntime === "agent" && !agentChatService) {
       throw new Error("Agent chat runtime was requested but the agent chat service was not initialized.");
     }
+    const chatLaunchService = agentChatService
+      ? createChatLaunchService({
+        launchesDir: path.join(paths.cacheDir, "chat-launches"),
+        logger,
+        laneService,
+        agentChatService,
+        usesLocalLaneBase: () => {
+          try {
+            return projectConfigService.getEffective().git?.newLaneBaseSource === "local";
+          } catch {
+            return false;
+          }
+        },
+        resolveBase: async () => {
+          const { baseRef, fetchSucceeded } = await resolveLaneCreateRemoteBaseDetailed({
+            laneService,
+            gitService,
+            projectConfigService,
+          });
+          return { baseRef, fetch: baseRef ? (fetchSucceeded === false ? "failed" : "ok") : "skipped" };
+        },
+        resolveCommit: (ref) => resolveGitCommit(ref, projectRoot),
+        resolveChatCreate: (create) => resolveChatCreateModel(agentChatService, create),
+        planEnvironment: () => {
+          const effective = projectConfigService.getEffective();
+          const templateId = laneTemplateService.getDefaultTemplateId();
+          const template = templateId ? laneTemplateService.getTemplate(templateId) : null;
+          return planNewLaneEnvironment({
+            laneEnvInit: effective.laneEnvInit ?? null,
+            laneOverlayPolicies: effective.laneOverlayPolicies ?? null,
+            defaultTemplate: template,
+          });
+        },
+        runEnvironment: ({ laneId, templateId }) =>
+          runLaneEnvironmentSetup(
+            {
+              laneService,
+              projectConfigService,
+              portAllocationService,
+              laneEnvironmentService,
+              laneTemplateService,
+            },
+            { laneId, templateId },
+          ),
+        onEnvironmentEvent: (listener) => laneEnvironmentService.onEvent(listener),
+        abortEnvironment: ({ laneId, worktreePath }) => {
+          laneEnvironmentService.abortLaneEnvironment(laneId, worktreePath);
+        },
+        emit: (event) => pushEvent("runtime", { type: "chat_launch_event", event }),
+        onOutcome: ({ outcome, provider }) => captureNewLaneLaunchAnalytics({
+          analytics: productAnalyticsService,
+          surface: "api",
+          outcome,
+          provider,
+        }),
+      })
+      : null;
+    if (chatLaunchService) teardown.push(() => chatLaunchService.dispose());
     // Automations are unattended work the machine's own ADE schedules and owns.
     // An embedded runtime runs inside somebody else's process on somebody
     // else's lifecycle, so it must not start rules, fire ingress dispatches, or
@@ -2373,6 +2444,7 @@ export async function createAdeRuntime(args: {
         autoRebaseService,
         computerUseArtifactBrokerService,
         agentChatService,
+        chatLaunchService,
         cursorCloudFleetService,
         devinCloudFleetService,
         pushPublisherService,
@@ -2549,6 +2621,7 @@ export async function createAdeRuntime(args: {
       externalSessionsService,
       aiIntegrationService,
       agentChatService,
+      chatLaunchService,
       cursorCloudFleetService,
       devinCloudFleetService,
       ctoStateService,

@@ -8,6 +8,7 @@ import {
   resolveComputerUseOwners,
 } from "./adeRpcServer";
 import { JsonRpcError, JsonRpcErrorCode } from "./jsonrpc";
+import type { EventBufferDrainOptions } from "./eventBuffer";
 import {
   issueBuiltInBrowserActorCapability,
   resetBuiltInBrowserActorCapabilitiesForTest,
@@ -860,6 +861,16 @@ function createFakePathExecutable(dir: string, name: string): string {
   fs.writeFileSync(executablePath, process.platform === "win32" ? "@echo off\r\n" : "#!/bin/sh\n");
   if (process.platform !== "win32") fs.chmodSync(executablePath, 0o755);
   return executablePath;
+}
+
+
+/** Mocked drains apply the route's category filter the way the real buffer does. */
+function applyDrainFilter<T extends { events: Array<{ category: string }> }>(
+  options: EventBufferDrainOptions | undefined,
+  result: T,
+): T {
+  const filter = options?.filter as ((event: { category: string }) => boolean) | undefined;
+  return filter ? { ...result, events: result.events.filter(filter) } : result;
 }
 
 describe("adeRpcServer", () => {
@@ -2772,8 +2783,8 @@ describe("adeRpcServer", () => {
       }),
     );
     const createCall = fixture.runtime.ptyService.create.mock.calls[0]?.[0] as { args?: string[]; startupCommand?: string };
-    expect(createCall.args).toEqual(expect.arrayContaining(["--model", "claude-opus-4-8"]));
-    expect(createCall.startupCommand).toContain("claude-opus-4-8");
+    expect(createCall.args).toEqual(expect.arrayContaining(["--model", "claude-opus-5"]));
+    expect(createCall.startupCommand).toContain("claude-opus-5");
     expect(response.structuredContent.model).toBe("anthropic/claude-opus-4-8");
   });
 
@@ -6760,7 +6771,7 @@ describe("adeRpcServer", () => {
   it("stream_events respects category filter", async () => {
     const fixture = createRuntime();
     // Return events with different categories
-    fixture.runtime.eventBuffer.drain = vi.fn((cursor: number) => ({
+    fixture.runtime.eventBuffer.drain = vi.fn((cursor: number, _limit?: number, options?: EventBufferDrainOptions) => applyDrainFilter(options, {
       events: [
         { id: cursor + 1, timestamp: new Date().toISOString(), category: "orchestrator", payload: { type: "step_started" } },
         { id: cursor + 2, timestamp: new Date().toISOString(), category: "runtime", payload: { type: "terminal_session_changed" } },
@@ -6786,7 +6797,7 @@ describe("adeRpcServer", () => {
 
   it("stream_events supports the PTY category", async () => {
     const fixture = createRuntime();
-    fixture.runtime.eventBuffer.drain = vi.fn((cursor: number) => ({
+    fixture.runtime.eventBuffer.drain = vi.fn((cursor: number, _limit?: number, options?: EventBufferDrainOptions) => applyDrainFilter(options, {
       events: [
         { id: cursor + 1, timestamp: new Date().toISOString(), category: "runtime", payload: { type: "terminal_session_changed" } },
         { id: cursor + 2, timestamp: new Date().toISOString(), category: "pty", payload: { type: "pty_data", event: { sessionId: "session-1", data: "hi" } } },
@@ -6812,7 +6823,7 @@ describe("adeRpcServer", () => {
 
   it("stream_events returns runtime validation contract events when requested", async () => {
     const fixture = createRuntime();
-    fixture.runtime.eventBuffer.drain = vi.fn((cursor: number) => ({
+    fixture.runtime.eventBuffer.drain = vi.fn((cursor: number, _limit?: number, options?: EventBufferDrainOptions) => applyDrainFilter(options, {
       events: [
         {
           id: cursor + 1,

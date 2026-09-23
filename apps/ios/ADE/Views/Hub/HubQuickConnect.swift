@@ -78,7 +78,7 @@ struct HubQuickConnectSection: View {
             switch target {
             case .account(let machine):
               HubQuickConnectCard(
-                title: machine.displayName,
+                title: machine.rowLabel,
                 routeHint: machineReachabilityText(
                   isConnected: false,
                   directoryOnline: machine.online,

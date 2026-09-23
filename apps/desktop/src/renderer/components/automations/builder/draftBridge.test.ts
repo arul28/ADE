@@ -15,7 +15,7 @@ function baseDraft(overrides: Partial<AutomationRuleDraft> = {}): AutomationRule
     reviewProfile: "quick",
     toolPalette: ["repo"],
     contextSources: [],
-    guardrails: { maxDurationMin: 10 },
+    guardrails: {},
     outputs: { disposition: "comment-only", createArtifact: false },
     verification: { verifyBeforePublish: false, mode: "intervention" },
     billingCode: "auto:bridge",
@@ -83,5 +83,51 @@ describe("draftBridge step round-trips", () => {
     const reloaded = draftToSteps(saved);
     expect(reloaded).toHaveLength(1);
     expect(reloaded[0]).toMatchObject({ kind: "agent-session", prompt: "review the diff", sessionTitle: "Review" });
+  });
+
+  it("keeps a solo agent's limits on the session and a chained agent's limits on its action", () => {
+    const solo = applyStepsToDraft(baseDraft(), [
+      { kind: "agent-session", prompt: "release", stopAfterMin: 120, stopWhenIdleMin: 30 },
+    ]);
+    // Limits must not block the solo-agent collapse.
+    expect(solo.execution?.kind).toBe("agent-session");
+    expect(solo.execution?.session).toMatchObject({ stopAfterMin: 120, stopWhenIdleMin: 30 });
+    expect(draftToSteps(solo)[0]).toMatchObject({ stopAfterMin: 120, stopWhenIdleMin: 30 });
+
+    const cleared = applyStepsToDraft(solo, [{ kind: "agent-session", prompt: "release" }]);
+    expect(cleared.execution?.session).not.toHaveProperty("stopAfterMin");
+    expect(cleared.execution?.session).not.toHaveProperty("stopWhenIdleMin");
+
+    const chain = applyStepsToDraft(baseDraft(), [
+      { kind: "run-command", command: "npm run build", timeoutMs: 20 * 60_000 },
+      { kind: "agent-session", prompt: "ship it", stopWhenIdleMin: 15 },
+    ]);
+    const actions = chain.execution?.kind === "built-in" ? chain.execution.builtIn?.actions ?? [] : [];
+    expect(actions[0]).toMatchObject({ type: "run-command", timeoutMs: 20 * 60_000 });
+    expect(actions[1]).toMatchObject({ type: "agent-session", stopWhenIdleMin: 15 });
+    expect(chain.actions[1]).toMatchObject({ type: "agent-session", stopWhenIdleMin: 15 });
+  });
+
+  it("caps absurd agent limits and drops non-positive ones on save", () => {
+    const saved = applyStepsToDraft(baseDraft(), [
+      { kind: "agent-session", prompt: "release", stopAfterMin: 10_000_000, stopWhenIdleMin: -5 },
+    ]);
+    // Past ~24.8 days a timer fires at once, so a huge value is capped at 7 days.
+    expect(saved.execution?.session?.stopAfterMin).toBe(7 * 24 * 60);
+    expect(saved.execution?.session).not.toHaveProperty("stopWhenIdleMin");
+    expect(draftToSteps(saved)[0]).toMatchObject({ stopAfterMin: 7 * 24 * 60 });
+  });
+
+  it("drops a legacy step time limit from agent steps so it no longer caps them", () => {
+    const legacy = baseDraft({
+      execution: {
+        kind: "built-in",
+        builtIn: { actions: [{ type: "agent-session", prompt: "long job", timeoutMs: 20 * 60_000 }] },
+      },
+    });
+    const steps = draftToSteps(legacy);
+    expect(steps[0]).not.toHaveProperty("timeoutMs");
+    // Without the stale timeout the lone agent step folds back to a plain agent rule.
+    expect(applyStepsToDraft(legacy, steps).execution?.kind).toBe("agent-session");
   });
 });

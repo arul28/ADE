@@ -25,9 +25,12 @@ const completeVars = {
   DIAGNOSTICS_DAILY_GLOBAL_LIMIT: "400",
 };
 
+const relayBinding = [{ binding: "ACTIVITY_RELAY", service: "ade-push-relay" }];
+
 const completeConfig = {
   vars: completeVars,
-  env: { production: { vars: completeVars } },
+  services: relayBinding,
+  env: { production: { vars: completeVars, services: relayBinding } },
 };
 
 function verify(args: {
@@ -108,7 +111,7 @@ describe("account directory deployment preflight", () => {
     ],
     [
       "the production environment",
-      { vars: completeVars, env: {} },
+      { vars: completeVars, services: relayBinding, env: {} },
       /production environment: PUSH_RELAY_URL/,
     ],
     [
@@ -120,11 +123,21 @@ describe("account directory deployment preflight", () => {
     expect(() => verify({ config })).toThrow(expected as RegExp);
   });
 
+  it.each([
+    ["the default environment", { vars: completeVars, env: { production: { vars: completeVars, services: relayBinding } } }, /default environment: ACTIVITY_RELAY/],
+    // Environments do not inherit bindings: a top-level binding alone left
+    // production calling the relay through workers.dev, which Cloudflare
+    // answers with a 404 the relay never sees.
+    ["production", { vars: completeVars, services: relayBinding, env: { production: { vars: completeVars } } }, /production environment: ACTIVITY_RELAY/],
+  ])("regression: fails when the ACTIVITY_RELAY service binding is missing from %s", (_label, config, expected) => {
+    expect(() => verify({ config })).toThrow(expected);
+  });
+
   it("fails when WEB_CLIENT_ORIGIN is missing", () => {
     // No code default: without it the Worker emits no
     // access-control-allow-origin, so the browser client is blocked outright.
     const vars = { ...completeVars, WEB_CLIENT_ORIGIN: "" };
-    expect(() => verify({ config: { vars, env: { production: { vars } } } }))
+    expect(() => verify({ config: { vars, services: relayBinding, env: { production: { vars, services: relayBinding } } } }))
       .toThrow(/default environment: WEB_CLIENT_ORIGIN/);
   });
 
@@ -137,7 +150,7 @@ describe("account directory deployment preflight", () => {
       PUSH_RELAY_URL: "https://relay.test",
       WEB_CLIENT_ORIGIN: "https://app.test",
     };
-    const result = verify({ config: { vars, env: { production: { vars } } } });
+    const result = verify({ config: { vars, services: relayBinding, env: { production: { vars, services: relayBinding } } } });
     expect(result.warnings).toEqual([
       expect.stringContaining("ONLINE_WINDOW_MS is not set for the default environment"),
       expect.stringContaining("DIAGNOSTICS_DAILY_GLOBAL_LIMIT is not set for the default environment"),
@@ -150,7 +163,7 @@ describe("account directory deployment preflight", () => {
     // Number("unlimited") is NaN, so the Worker silently uses 400 while the
     // config reads as configured.
     const vars = { ...completeVars, DIAGNOSTICS_DAILY_GLOBAL_LIMIT: "unlimited" };
-    const result = verify({ environments: ["production"], config: { vars, env: { production: { vars } } } });
+    const result = verify({ environments: ["production"], config: { vars, services: relayBinding, env: { production: { vars, services: relayBinding } } } });
     expect(result.warnings).toEqual([
       expect.stringContaining("DIAGNOSTICS_DAILY_GLOBAL_LIMIT for the production environment is not a non-negative number"),
     ]);

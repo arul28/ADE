@@ -1049,6 +1049,7 @@ describe("AccountAuthService device authorization", () => {
       store: MemoryCredentialStore;
       nowMs: () => number;
       getMachineKey?: () => string | null;
+      getMachineName?: () => Promise<string | null> | string | null;
       grant?: string | null;
       onDeviceCodeBody?: (body: Record<string, unknown>) => void;
     }) {
@@ -1077,6 +1078,7 @@ describe("AccountAuthService device authorization", () => {
         getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
         getDeviceBridgeUrl: () => "https://directory.example.test/",
         getMachineKey: args.getMachineKey,
+        getMachineName: args.getMachineName,
         now: args.nowMs,
         randomBytes: (size) => Buffer.alloc(size, 0x77),
         randomUUID: () => "device-session",
@@ -1102,6 +1104,48 @@ describe("AccountAuthService device authorization", () => {
       expect(deviceCodeBody).toEqual({
         device_secret: Buffer.alloc(32, 0x77).toString("base64url"),
         machine_key: "machine-a",
+      });
+    });
+
+    // The browser page said "ADE on your computer", so a person with stable and
+    // Alpha on one Mac could not tell which install asked.
+    it("sends this computer's name so the sign-in page can say which computer asked", async () => {
+      let deviceCodeBody: Record<string, unknown> | null = null;
+      const service = deviceLoginService({
+        store: new MemoryCredentialStore(),
+        nowMs: () => Date.parse("2026-07-14T12:00:00.000Z"),
+        getMachineKey: () => "machine-a",
+        getMachineName: async () => "  MacBook Pro · Alpha ",
+        onDeviceCodeBody: (body) => {
+          deviceCodeBody = body;
+        },
+      });
+
+      await service.startDeviceLogin();
+
+      expect(deviceCodeBody).toEqual({
+        device_secret: Buffer.alloc(32, 0x77).toString("base64url"),
+        machine_key: "machine-a",
+        machine_name: "MacBook Pro · Alpha",
+      });
+    });
+
+    it("starts the sign-in without a name when the name cannot be read", async () => {
+      let deviceCodeBody: Record<string, unknown> | null = null;
+      const service = deviceLoginService({
+        store: new MemoryCredentialStore(),
+        nowMs: () => Date.parse("2026-07-14T12:00:00.000Z"),
+        getMachineName: async () => {
+          throw new Error("scutil is unavailable");
+        },
+        onDeviceCodeBody: (body) => {
+          deviceCodeBody = body;
+        },
+      });
+
+      await expect(service.startDeviceLogin()).resolves.toMatchObject({ userCode: "GRNT-CODE" });
+      expect(deviceCodeBody).toEqual({
+        device_secret: Buffer.alloc(32, 0x77).toString("base64url"),
       });
     });
 

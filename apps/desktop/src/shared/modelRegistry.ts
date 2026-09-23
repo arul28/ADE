@@ -2,6 +2,19 @@
 // Model Registry — single source of truth for all AI models
 // ---------------------------------------------------------------------------
 
+import bundledModelManifestJson from "./model-manifest.json";
+import {
+  missingFieldsForNewModel,
+  MODEL_MANIFEST_ROUTE_CLI,
+  MODEL_MANIFEST_ROUTING_FIELDS,
+  MODEL_MANIFEST_SDK_ROUTES,
+  modelManifestGateAllows,
+  modelManifestUpdatedAtMs,
+  parseModelManifest,
+  type ModelManifest,
+  type ModelManifestDefault,
+  type ModelManifestPatchableField,
+} from "./modelManifest";
 import {
   ACP_PROVIDER_MODEL_COLORS,
   DYNAMIC_MODEL_COLORS,
@@ -189,10 +202,10 @@ export function modelSupportsFastMode(descriptor: ModelDescriptor | null | undef
   return modelSupportsServiceTier(descriptor, "fast");
 }
 
-/** GPT-6 Astra and GPT-5.6 Sol/Terra/Luna label `low` as Light. */
+/** The named GPT-6 and GPT-5.6 models (Astra, Sol, Terra, Luna) label `low` as Light. */
 export function usesCodexNamedEffortLabels(providerModelId: string | null | undefined): boolean {
   const normalized = (providerModelId?.trim() ?? "").replace(/^openai\//i, "");
-  return /^(?:gpt-6-astra|gpt-5\.6-(?:sol|terra|luna))$/i.test(normalized);
+  return /^(?:gpt-6-[a-z]+|gpt-5\.6-(?:sol|terra|luna))$/i.test(normalized);
 }
 
 function normalizeCursorControlValue(value: string | null | undefined): string | null {
@@ -338,32 +351,31 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     costTier: "very_high",
   },
   {
-    id: "anthropic/claude-opus-5",
+    id: "anthropic/claude-opus-5-5",
     shortId: "opus",
     aliases: [
       "opus",
-      "opus-5",
-      "opus-5.0",
-      "opus-5-0",
-      "claude-opus-5",
-      "anthropic/claude-opus-5-api",
+      "opus-5.5",
+      "opus-5-5",
+      "claude-opus-5-5",
+      "anthropic/claude-opus-5-5-api",
     ],
-    displayName: "Claude Opus 5",
+    displayName: "Claude Opus 5.5",
     family: "anthropic",
     authTypes: ["cli-subscription"],
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
     reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
-    defaultReasoningEffort: "high",
+    defaultReasoningEffort: "medium",
     serviceTiers: ["fast"],
     color: "#D97706",
     providerRoute: "claude-cli",
-    providerModelId: "claude-opus-5",
+    providerModelId: "claude-opus-5-5",
     cliCommand: "claude",
     isCliWrapped: true,
-    inputPricePer1M: 5,
-    outputPricePer1M: 25,
+    inputPricePer1M: 4,
+    outputPricePer1M: 20,
     costTier: "very_high",
   },
   {
@@ -415,10 +427,16 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     costTier: "low",
   },
   {
-    id: "anthropic/claude-opus-4-8",
-    shortId: "opus-4.8",
+    id: "anthropic/claude-opus-5",
+    shortId: "opus-5",
     aliases: [
+      "opus-5",
+      "opus-5.0",
+      "opus-5-0",
+      "claude-opus-5",
+      "anthropic/claude-opus-5-api",
       "claude-opus-4-8",
+      "anthropic/claude-opus-4-8",
       "opus-4.8",
       "opus-4-8",
       "opus-4.8-1m",
@@ -448,17 +466,18 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
       "anthropic/claude-opus-4-6-1m",
       "anthropic/claude-opus-4-7-1m",
     ],
-    displayName: "Claude Opus 4.8",
+    displayName: "Claude Opus 5",
     family: "anthropic",
     authTypes: ["cli-subscription"],
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+    reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+    defaultReasoningEffort: "high",
     serviceTiers: ["fast"],
     color: "#D97706",
     providerRoute: "claude-cli",
-    providerModelId: "claude-opus-4-8",
+    providerModelId: "claude-opus-5",
     cliCommand: "claude",
     isCliWrapped: true,
     inputPricePer1M: 5,
@@ -1085,6 +1104,228 @@ export function validateModelRegistry(models: ModelDescriptor[] = MODEL_REGISTRY
 validateModelRegistry();
 rebuildIndexes();
 
+// ---------------------------------------------------------------------------
+// Model manifest overlay (see modelManifest.ts)
+//
+// The manifest adds and patches rows in MODEL_REGISTRY in place, so every
+// lookup, picker, and default sees one registry. Each apply first reverts the
+// previous overlay, which keeps re-applying idempotent and lets a later
+// manifest drop a model an earlier one added.
+// ---------------------------------------------------------------------------
+
+type ManifestFieldUndo = { had: boolean; value: unknown };
+type ManifestPatchUndo = {
+  descriptor: ModelDescriptor;
+  previous: Partial<Record<ModelManifestPatchableField, ManifestFieldUndo>>;
+};
+
+export type ModelManifestApplyResult = {
+  applied: boolean;
+  added: string[];
+  patched: string[];
+  skipped: string[];
+  errors: string[];
+};
+
+let manifestPatchUndo: ManifestPatchUndo[] = [];
+let manifestAddedIds = new Set<string>();
+let activeManifest: ModelManifest | null = null;
+let activeManifestAdeVersion: string | null = null;
+let activeAppDefaults: string[] = [];
+let activeProviderDefaults = new Map<ModelProviderGroup, string[]>();
+const manifestListeners = new Set<() => void>();
+
+function cloneManifestValue<T>(value: T): T {
+  return value !== null && typeof value === "object" ? JSON.parse(JSON.stringify(value)) as T : value;
+}
+
+function revertModelManifestOverlay(): void {
+  for (const undo of [...manifestPatchUndo].reverse()) {
+    const target = undo.descriptor as Record<string, unknown>;
+    for (const [key, prior] of Object.entries(undo.previous) as Array<[string, ManifestFieldUndo]>) {
+      if (prior.had) target[key] = prior.value;
+      else delete target[key];
+    }
+  }
+  manifestPatchUndo = [];
+  if (manifestAddedIds.size) {
+    for (let index = MODEL_REGISTRY.length - 1; index >= 0; index -= 1) {
+      if (manifestAddedIds.has(MODEL_REGISTRY[index]!.id)) MODEL_REGISTRY.splice(index, 1);
+    }
+  }
+  manifestAddedIds = new Set();
+}
+
+function insertManifestModel(descriptor: ModelDescriptor, after: string | undefined): void {
+  const anchor = after ? MODEL_REGISTRY.findIndex((entry) => entry.id === after) : -1;
+  if (anchor >= 0) {
+    MODEL_REGISTRY.splice(anchor + 1, 0, descriptor);
+    return;
+  }
+  // No anchor: keep the provider's rows together by landing after its last row.
+  let lastOfFamily = -1;
+  MODEL_REGISTRY.forEach((entry, index) => {
+    if (entry.family === descriptor.family && entry.isCliWrapped === descriptor.isCliWrapped) lastOfFamily = index;
+  });
+  if (lastOfFamily >= 0) MODEL_REGISTRY.splice(lastOfFamily + 1, 0, descriptor);
+  else MODEL_REGISTRY.push(descriptor);
+}
+
+function gatedDefaultIds(list: ModelManifestDefault[] | undefined, adeVersion: string | null): string[] {
+  return (list ?? []).filter((entry) => modelManifestGateAllows(entry, adeVersion)).map((entry) => entry.model);
+}
+
+function applyManifestOverlay(manifest: ModelManifest, adeVersion: string | null): ModelManifestApplyResult {
+  const result: ModelManifestApplyResult = { applied: false, added: [], patched: [], skipped: [], errors: [] };
+  for (const entry of manifest.models) {
+    if (!modelManifestGateAllows(entry, adeVersion)) {
+      result.skipped.push(entry.id);
+      continue;
+    }
+    const existing = MODEL_REGISTRY.find((descriptor) => descriptor.id === entry.id);
+    if (existing) {
+      // Re-routing a model the build ships would let an unsigned file change
+      // which binary runs it; only rows the manifest itself adds carry routing.
+      const rerouted = MODEL_MANIFEST_ROUTING_FIELDS.filter((key) =>
+        key in entry.fields && !manifestAddedIds.has(entry.id)
+        && JSON.stringify(entry.fields[key]) !== JSON.stringify((existing as Record<string, unknown>)[key]));
+      if (rerouted.length) {
+        throw new Error(`${entry.id}: a manifest cannot change ${rerouted.join(", ")} of a built-in model`);
+      }
+      const target = existing as Record<string, unknown>;
+      const previous: ManifestPatchUndo["previous"] = {};
+      for (const [key, value] of Object.entries(entry.fields) as Array<[ModelManifestPatchableField, unknown]>) {
+        previous[key] = { had: Object.prototype.hasOwnProperty.call(target, key), value: target[key] };
+        target[key] = cloneManifestValue(value);
+      }
+      manifestPatchUndo.push({ descriptor: existing, previous });
+      result.patched.push(entry.id);
+      continue;
+    }
+    const missing = missingFieldsForNewModel(entry.fields);
+    if (missing.length) {
+      // Fail the whole manifest: committing the rest would cache a partial
+      // directory instead of keeping the last good one.
+      throw new Error(`${entry.id}: a new model needs ${missing.join(", ")}`);
+    }
+    // Provider resolution keys off isCliWrapped, not the route, so both must
+    // agree with the route or the model would launch through another runtime.
+    const route = entry.fields.providerRoute ?? "";
+    const expectedCli = MODEL_MANIFEST_ROUTE_CLI[route];
+    const expectedWrapped = !MODEL_MANIFEST_SDK_ROUTES.has(route);
+    if (entry.fields.isCliWrapped !== expectedWrapped || entry.fields.cliCommand !== expectedCli) {
+      throw new Error(
+        `${entry.id}: route ${route} needs isCliWrapped: ${expectedWrapped} and cliCommand: ${expectedCli}`,
+      );
+    }
+    insertManifestModel({ id: entry.id, ...cloneManifestValue(entry.fields) } as ModelDescriptor, entry.after);
+    manifestAddedIds.add(entry.id);
+    result.added.push(entry.id);
+  }
+  validateModelRegistry();
+  result.applied = true;
+  return result;
+}
+
+/**
+ * Overlay a model manifest onto the registry. Replaces any previously applied
+ * manifest. If the overlay would corrupt the registry (a duplicate id or
+ * alias), nothing from the new manifest sticks and the previous one is
+ * restored.
+ */
+export function applyModelManifest(
+  manifest: ModelManifest,
+  options?: { adeVersion?: string | null },
+): ModelManifestApplyResult {
+  const adeVersion = options?.adeVersion?.trim() || null;
+  const previous = activeManifest;
+  const previousVersion = activeManifestAdeVersion;
+  revertModelManifestOverlay();
+  let result: ModelManifestApplyResult;
+  try {
+    result = applyManifestOverlay(manifest, adeVersion);
+  } catch (error) {
+    revertModelManifestOverlay();
+    const message = error instanceof Error ? error.message : String(error);
+    if (previous && previous !== manifest) {
+      try {
+        applyManifestOverlay(previous, previousVersion);
+      } catch {
+        revertModelManifestOverlay();
+      }
+    }
+    rebuildIndexes();
+    return { applied: false, added: [], patched: [], skipped: [], errors: [message] };
+  }
+  activeManifest = manifest;
+  activeManifestAdeVersion = adeVersion;
+  activeAppDefaults = gatedDefaultIds(manifest.defaults?.app, adeVersion);
+  activeProviderDefaults = new Map();
+  for (const [provider, list] of Object.entries(manifest.defaults?.providers ?? {})) {
+    if (!isModelProviderGroup(provider)) continue;
+    const ids = gatedDefaultIds(list, adeVersion);
+    if (ids.length) activeProviderDefaults.set(provider, ids);
+  }
+  rebuildIndexes();
+  for (const listener of manifestListeners) {
+    try {
+      listener();
+    } catch {
+      // A listener failing must not undo a good manifest.
+    }
+  }
+  return result;
+}
+
+/** The manifest currently overlaid on the registry, with the version it was gated for. */
+export function getActiveModelManifest(): { manifest: ModelManifest; adeVersion: string | null } | null {
+  return activeManifest ? { manifest: activeManifest, adeVersion: activeManifestAdeVersion } : null;
+}
+
+/**
+ * Adopt the manifest a host sent with its model catalog, if it is newer than
+ * the one already applied. Clients (renderer, TUI) talk to hosts that may be a
+ * few minutes apart on the same GitHub file; newest wins so a picker never
+ * steps backwards.
+ */
+export function adoptHostModelManifest(
+  snapshot: { manifest: unknown; adeVersion: string | null } | null | undefined,
+): boolean {
+  if (!snapshot) return false;
+  const parsed = parseModelManifest(snapshot.manifest);
+  if (!parsed.ok) return false;
+  const active = activeManifest;
+  const activeAt = modelManifestUpdatedAtMs(active);
+  const incomingAt = modelManifestUpdatedAtMs(parsed.manifest);
+  // A different host version (a host switch) takes that host's directory as
+  // is, even if older: the models must be the ones that host can run. For the
+  // same host, newest wins so a picker never steps backwards.
+  const hostChanged = active != null && activeManifestAdeVersion !== (snapshot.adeVersion?.trim() || null);
+  if (active && !hostChanged && activeAt >= incomingAt) return false;
+  return applyModelManifest(parsed.manifest, { adeVersion: snapshot.adeVersion }).applied;
+}
+
+/** Subscribe to manifest applies (catalog caches use this to invalidate). */
+export function onModelManifestApplied(listener: () => void): () => void {
+  manifestListeners.add(listener);
+  return () => {
+    manifestListeners.delete(listener);
+  };
+}
+
+const parsedBundledModelManifest = parseModelManifest(bundledModelManifestJson);
+if (!parsedBundledModelManifest.ok) {
+  throw new Error(`Bundled model-manifest.json is invalid: ${parsedBundledModelManifest.errors.join("; ")}`);
+}
+/** The manifest this build shipped with. Always the floor under a fetched one. */
+export const BUNDLED_MODEL_MANIFEST: ModelManifest = parsedBundledModelManifest.manifest;
+{
+  const bundledResult = applyModelManifest(BUNDLED_MODEL_MANIFEST);
+  if (!bundledResult.applied || bundledResult.errors.length) {
+    throw new Error(`Bundled model-manifest.json failed to apply: ${bundledResult.errors.join("; ")}`);
+  }
+}
+
 export function isLocalProviderFamily(value: string): value is LocalProviderFamily {
   return value === "ollama" || value === "lmstudio";
 }
@@ -1405,26 +1646,30 @@ export function normalizeAnthropicRuntimeAlias(modelId: string): {
     };
   }
   if (
-    normalized === "claude-opus-5"
-    || normalized === "opus-5"
-    || normalized === "opus-5.0"
-    || normalized === "opus-5-0"
+    normalized === "claude-opus-5-5"
+    || normalized === "opus-5.5"
+    || normalized === "opus-5-5"
     || normalized === "opus"
   ) {
     return {
-      modelId: "claude-opus-5",
-      displayName: "Claude Opus 5",
+      modelId: "claude-opus-5-5",
+      displayName: "Claude Opus 5.5",
       contextWindow: 1_000_000,
       maxOutputTokens: 128_000,
       capabilities: ALL_CAPS,
       reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
-      defaultReasoningEffort: "high",
+      defaultReasoningEffort: "medium",
       serviceTiers: ["fast"],
-      wasAlias: normalized !== "claude-opus-5",
+      wasAlias: normalized !== "claude-opus-5-5",
     };
   }
   if (
-    normalized === "claude-opus-4-8"
+    normalized === "claude-opus-5"
+    || normalized === "opus-5"
+    || normalized === "opus-5.0"
+    || normalized === "opus-5-0"
+    || normalized === "claude-opus-4-8"
+    || normalized === "anthropic/claude-opus-4-8"
     || normalized === "opus-4.8"
     || normalized === "opus-4-8"
     || normalized === "opus-4.8-1m"
@@ -1449,14 +1694,15 @@ export function normalizeAnthropicRuntimeAlias(modelId: string): {
     || normalized === "claude-opus-4-6-1m"
   ) {
     return {
-      modelId: "claude-opus-4-8",
-      displayName: "Claude Opus 4.8",
+      modelId: "claude-opus-5",
+      displayName: "Claude Opus 5",
       contextWindow: 1_000_000,
       maxOutputTokens: 128_000,
       capabilities: ALL_CAPS,
-      reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "high",
       serviceTiers: ["fast"],
-      wasAlias: normalized !== "claude-opus-4-8",
+      wasAlias: normalized !== "claude-opus-5",
     };
   }
   return null;
@@ -1986,8 +2232,9 @@ function normalizeDroidEffortLabel(value: string): string {
 const KNOWN_DROID_COMPACT_DISPLAY_NAMES: Record<string, string> = {
   "claude-fable-5-1": "Fable 5.1",
   "claude-fable-5": "Fable 5",
+  "claude-opus-5-5": "Opus 5.5",
   "claude-opus-5": "Opus 5",
-  "claude-opus-4-8": "Opus 4.8",
+  "claude-opus-4-8": "Opus 5",
   "claude-opus-4-5-20251101": "Opus 4.5 (2x)",
   "claude-opus-4-6": "Opus 4.6 (2x)",
   "claude-opus-4-6-fast": "Opus 4.6 Fast Mode (12x)",
@@ -2089,9 +2336,10 @@ export function createDynamicDroidCliModelDescriptor(
     rawProviderModelId.replace(/^custom:/i, ""),
   )?.modelId;
   // Droid's SDK and CLI launch contracts do not consume a Fast toggle. Keep
-  // Opus 5 reasoning metadata, but never surface an inert service-tier control
+  // Opus reasoning metadata, but never surface an inert service-tier control
   // for built-in aliases, direct ids, or custom-proxy ids.
   const serviceTiers = canonicalDroidModelId === "claude-opus-5"
+    || canonicalDroidModelId === "claude-opus-5-5"
     ? undefined
     : options?.serviceTiers?.length
       ? options.serviceTiers
@@ -2575,6 +2823,10 @@ function pickDefaultModelForProvider(
   provider: ModelProviderGroup,
   models: ModelDescriptor[],
 ): ModelDescriptor | undefined {
+  for (const id of activeProviderDefaults.get(provider) ?? []) {
+    const match = models.find((model) => model.id === id);
+    if (match) return match;
+  }
   if (provider === "claude") return pickDefaultClaudeModel(models);
   if (provider === "codex") return pickDefaultCodexModel(models);
   if (provider === "cursor") return pickDefaultCursorDescriptorFromCliList(models);
@@ -2610,6 +2862,19 @@ export function getDefaultModelDescriptor(
     ]);
   }
   return pickDefaultModelForProvider(provider, models);
+}
+
+/**
+ * The app-wide default model: what ADE picks when nothing names a provider
+ * (a new automation, a batch launch, a chat whose model vanished). The
+ * manifest owns it so it can move without a release.
+ */
+export function getAppDefaultModelDescriptor(): ModelDescriptor | undefined {
+  for (const id of activeAppDefaults) {
+    const descriptor = byId.get(id);
+    if (descriptor && !descriptor.deprecated) return descriptor;
+  }
+  return getDefaultModelDescriptor("claude") ?? getDefaultModelDescriptor("codex");
 }
 
 /**
@@ -2707,6 +2972,22 @@ export function getModelPricing(providerModelId: string): { input: number; outpu
     return { input: model.inputPricePer1M, output: model.outputPricePer1M };
   }
   return undefined;
+}
+
+/**
+ * The price this build (or the model manifest) states for a model, ignoring
+ * models.dev overrides. Usage cost reads models.dev through its own dated
+ * cache; falling back to an undated override would keep stale rates alive.
+ */
+export function getModelListPrice(providerModelId: string): { input: number; output: number } | undefined {
+  // Runtimes share wire ids (Codex and Copilot both run `gpt-5.4`), and the
+  // one-per-id index keeps whichever row came last. Take the first row that
+  // actually states a price.
+  const model = MODEL_REGISTRY.find((entry) =>
+    entry.providerModelId === providerModelId
+    && entry.inputPricePer1M != null
+    && entry.outputPricePer1M != null);
+  return model ? { input: model.inputPricePer1M!, output: model.outputPricePer1M! } : undefined;
 }
 
 /** Dynamic pricing overrides — merged from models.dev at runtime */

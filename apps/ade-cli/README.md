@@ -318,6 +318,11 @@ it and keep account-machine pairing on the DPoP-bound runtime path. Every
 machine-directory action is CTO-only, including `renameMachine` and
 `repairMachinePairing`, which the shared ADE action registry does not list.
 
+`deleteMachine` is for people only. It refuses a caller that carries an agent
+identity (a chat, run, step or attempt), and it refuses without
+`confirmation: "REMOVE"`, the token `ade machines remove --confirm REMOVE`
+sends.
+
 `machine.updateAndRestart` is the host half of "Update & restart": it checks for
 a newer build for this machine's channel, applies it, and asks the login service
 to restart the brain, reporting one step at a time. It is CTO-gated and always
@@ -340,7 +345,7 @@ frozen wire identifier for the method, the action domain, and the item ids even
 though the product surface is now called Activity. Agents on a desktop endpoint
 reach the same operations through `ade actions run attention.<action>`.
 
-`runtimeEvents.subscribe` returns `eventEpoch`, `nextCursor`, `hasMore`, `gap`, and `oldestCursor`; when `gap` is true, the caller's cursor predates the retained buffer and it should refresh state before resuming from `oldestCursor` / `nextCursor`. `category` accepts the categories in `REMOTE_RUNTIME_EVENT_CATEGORIES` (`orchestrator`, `dag_mutation`, `runtime`, `pty`, `cto_voice`) — one tuple that the buffer, this schema enum, and every client guard derive from. `cto_voice` is CTO-only in both transports; see the voice notes under the CLI surface below.
+`runtimeEvents.subscribe` returns `eventEpoch`, `nextCursor`, `hasMore`, `gap`, and `oldestCursor`; when `gap` is true, the caller's cursor predates the retained buffer and it should refresh state before resuming from `oldestCursor` / `nextCursor`. Every drain of the event buffer (`stream_events`, `personalChats.streamEvents`, and the replay of both subscribe methods) stops at `limit` events or about 1 MiB of events, whichever comes first, and always returns at least one event. `hasMore: true` means more events are waiting: drain again from `nextCursor`. A remote client reads each drain as one RPC reply over the sync socket, so this cap keeps one reply from filling the host's send budget. `category` accepts the categories in `REMOTE_RUNTIME_EVENT_CATEGORIES` (`orchestrator`, `dag_mutation`, `runtime`, `pty`, `cto_voice`) — one tuple that the buffer, this schema enum, and every client guard derive from. `cto_voice` is CTO-only in both transports; see the voice notes under the CLI surface below.
 
 `personalChats.subscribeEvents` / `personalChats.unsubscribeEvents` are machine-scoped RPC methods, not entries in the `personalChats.call` action registry, so they are absent from `ade chat actions --personal` and `ade chat action --personal <action>` rejects them by design. They push `runtime/event` notifications (`scope: "personal"`, `projectId: null`) to a client holding the connection open; the CLI does not use them, because every `ade chat` command is a one-shot plan that polls. `capabilities.personalChats` advertises `pushEvents` and `mcpServers` so a client can tell a runtime that supports these from an older one that would ignore them — both optional, both absent on older runtimes. `personalChats.streamEvents` cursor draining is unchanged and stays the path for clients that cannot hold a socket.
 
@@ -381,6 +386,16 @@ account directory; signed-out users get a local-first message and existing
 local, PIN, explicit-address, and saved SSH paths remain available. Machine keys
 and device IDs are stable selectors. A display name is accepted only when it is
 unambiguous; otherwise the command prints the matching stable machine keys.
+The directory leaves a removed machine out of `ade machines list`. On the
+removed computer itself, `ade auth status` still says "Signed in" and adds a
+line with the removal date and `ade machines reconnect`, the same facts as the
+desktop banner. Its JSON carries them as `thisComputerRefusal` (`code`,
+`revokedAt`, `recoveryGaveUpAt`), which is null when the directory accepts this
+computer or the sync read failed. `ade sync status --text` shows them as the
+`this computer`, `auto repair stopped` and `reconnect with` rows, and the
+`ade doctor` **Publish health** row names the same date and command.
+`ade machines reconnect --text` prints one sentence that says what happened,
+in the words of the desktop's Reconnect button.
 Directory presence is a short-lived hint: a machine with a directory-verified
 relay endpoint remains connectable after its most recent heartbeat expires.
 Machines without a verified route remain listed but unavailable.
@@ -591,6 +606,10 @@ ade new chat --mode cli --lane lane-id --provider codex --type peer --parent cha
 ade chat list --lane lane-id --include-automation --no-archived --text
 ade chat create --lane lane-id --provider codex --model openai/gpt-5.6-sol --no-parent --permissions full-auto --print-config --json
 ade chat create --lane lane-id --provider codex --no-parent   # tracked agent shells inherit $ADE_CHAT_SESSION_ID; parented launches must add --type subagent|peer, while --no-parent deliberately opts out
+ade chat launch "fix the flaky test" --provider codex --model openai/gpt-5.6-sol --wait --text   # new-lane chat owned by the brain (chat.startLaunch): fetch base, check out worktree, default lane template, then create the chat + send; --wait polls chat.getLaunch (exit 0 completed / 1 failed, cancelled, or timed out)
+ade chat launches --text                                     # chat.listLaunches: launches running or recently finished on the brain
+ade chat launch-status launch-id --text                      # chat.getLaunch (exit 1 when unknown or expired); `ade chat launch-cancel launch-id` = chat.cancelLaunch (deletes the chat, lane, and branch)
+ade actions run chat.retryLaunch --input-json '{"launchId":"launch-id"}'   # also startLaunchNow / queueLaunchMessage / completeLaunchClient (client-side CLI-launch handshake)
 ade chat read session-id --limit 20 --max-chars 8000 --text
 ade chat read session-id --page --cursor 4096 --limit 20 --max-chars 8000 --text
 ade chat status session-id --text                            # live turn phase (exit 0 running / 1 idle / 2 blocked); adds a `resume` line while a usage limit is live
@@ -1013,7 +1032,7 @@ status row (`ok` / `warn` / `fail`) per check. It exits non-zero when any row is
 - **Brain** — whether the machine brain responds on its socket, plus its version, pid, and uptime. `fail` when it is not responding or when its build identity does not match the expected runtime for this CLI/role. A brain that is not answering *yet* is reported as `warn` (`starting`) rather than `fail`: when the login service is registered and the brain process behind it is alive and younger than the young-brain window (`RUNTIME_SERVICE_YOUNG_BRAIN_MS`, 2 min), it is still coming up — first launch, cold disk, large project database — and restarting it would only reset its clock. This is the CLI's read of the same `brain_starting` state the desktop recovery screen shows; `ade runtime status` and `ade brain status` report it as a `starting: true` field with the same wording. Nothing to repair: keep waiting for the endpoint.
 - **Wedge history** — the last wedge that was recovered, read from the runtime dir or the brain's reported `lastWedge`. `warn` when the most recent wedge is within the last 24h. Two things write that record: the in-process loop watchdog (reported as the blocking command and how long it blocked) and the external watchdog (`ade runtime watchdog-check`), which stops a brain whose heartbeat has gone stale and is reported as how long the brain went without a beat. A brain that is wedged right now shows up as a failing **Brain** row; the heartbeat itself has no separate row because a stale heartbeat plus a live brain is exactly what the watchdog converts into a restart within a minute.
 - **Sync port** — the sync host port the brain bound. `ok` on the default port, `warn` when bound elsewhere (with the base-port holders it found), `fail` when the brain is up but reported no port.
-- **Publish health** — account-directory publish state from the brain's sync route health. `ok` when a publish succeeded recently, `fail` when it has been failing for ≥2 min, otherwise `warn`, with the slowest publish leg annotated.
+- **Publish health** — account-directory publish state from the brain's sync route health. `ok` when a publish succeeded recently, `fail` when it has been failing for ≥2 min, otherwise `warn`, with the slowest publish leg annotated. When the directory refuses this computer (`machine_revoked` or `pairing_authentication_required`), the detail gives the removal date, says when the automatic repair stopped, and names `ade machines reconnect`.
 - **Relay** — relay route health as already computed by the brain. `ok` when the relay control is connected, the bridge is validated, and the end-to-end round-trip is verified; `fail` when the route is not fully validated; `warn` when relay is disabled or route health is unavailable. When another ADE process on this machine has claimed the relay slot, the brain deliberately stops redialing and this row reports that suppression ahead of any lower-level close error, so the detail names the fix (quit the rival process) instead of the symptom. `ade sync status --text` shows the same reason on its `relay` line, plus a `relay failing since` row for how long the current outage has run.
 - **Account** — whether this machine's brain is signed in to an ADE account (and the credential source), read via the brain's `account.call status`. `warn` when signed out or unavailable.
 - **Credentials** — whether the shared credential store (`$ADE_HOME/secrets/credentials.json.enc`) can be read, and whether an unreadable one was set aside earlier. `fail` when it cannot be read, naming the next step: a store sealed with a key this process cannot obtain is unlocked by opening the ADE app on this computer, while anything else needs a fresh sign-in. `warn` when a quarantined file is still waiting to be restored. Unlike every other row, this one is read **straight from disk** rather than through the brain — the failure it exists for is a brain that cannot start, so a check that needed a running brain would be silent exactly when it matters. It is non-creating: it never mints a machine key or OS key material, so running the diagnostic cannot change the state it reports. `ade brain repair-credentials` acts on the same reading.

@@ -59,6 +59,9 @@ import { setPendingSessionAnchor } from "./pendingSessionAnchors";
 import { seedCrossMachineOptimisticSession, useRetainedCrossMachineSlices } from "../../state/crossMachineLanes";
 import { cachedGitRemoteIdentity, originUrlForBinding } from "../lanes/laneMachines";
 import { useWorkMachineRouter } from "./useWorkMachineRouter";
+import { chatLaunchBindingKey, useChatLaunchRowSources } from "../../state/chatLaunchStore";
+import { mergeChatLaunchRows, selectRosterChatLaunches } from "../chat/launch/chatLaunchSynthetic";
+import { subscribeChatLaunchClosed } from "../chat/launch/chatLaunchDraftRestore";
 
 type WorkStatusNavigation = "all" | "running" | "awaiting-input" | "ended" | "settled";
 
@@ -565,7 +568,37 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const retainedCrossMachineSlices = useRetainedCrossMachineSlices();
   const machineRouter = useWorkMachineRouter(retainedCrossMachineSlices);
 
-  const [sessions, setSessions] = useState<TerminalSessionSummary[]>([]);
+  // `hostSessions` is exactly what the active binding's runtime reported (plus
+  // the usual optimistic PTY/chat rows); `sessions` below also lists chats whose
+  // new-lane launch is still being set up, so they can be opened and grouped
+  // before the host has created them.
+  const [hostSessions, setHostSessions] = useState<TerminalSessionSummary[]>([]);
+  const chatLaunchRowSources = useChatLaunchRowSources();
+  const activeChatLaunchBindingKey = chatLaunchBindingKey(projectBinding);
+  // Bindings of this same project on other machines. A launch pinned to one of
+  // them lists here too (that machine's slice does not list its chat yet); a
+  // launch of any other project never ghosts into this roster.
+  const crossMachineBindingKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const machine of retainedCrossMachineSlices) {
+      if (machine.binding) keys.add(chatLaunchBindingKey(machine.binding));
+    }
+    return keys;
+  }, [retainedCrossMachineSlices]);
+  const pendingChatLaunches = useMemo(
+    () => selectRosterChatLaunches(chatLaunchRowSources, activeChatLaunchBindingKey, crossMachineBindingKeys),
+    [activeChatLaunchBindingKey, chatLaunchRowSources, crossMachineBindingKeys],
+  );
+  const sessions = useMemo(() => {
+    if (pendingChatLaunches.length === 0) return hostSessions;
+    // A launch row yields to the real row wherever it appears — this roster or
+    // the machine slice that owns a launch pinned to another machine.
+    const knownIds = new Set<string>();
+    for (const machine of retainedCrossMachineSlices) {
+      for (const session of machine.sessions) knownIds.add(session.id);
+    }
+    return mergeChatLaunchRows(hostSessions, pendingChatLaunches, knownIds);
+  }, [hostSessions, pendingChatLaunches, retainedCrossMachineSlices]);
   const [loading, setLoading] = useState(false);
   /** Bumped when the soonest snooze deadline lapses so the partition re-derives. */
   const [snoozeEpoch, setSnoozeEpoch] = useState(0);
@@ -824,16 +857,16 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const missingSessionLaneIdsSignature = useMemo(() => {
     // Lane recovery refreshes only the active binding's lane service; foreign
     // rows are reconciled by their owning machine slice instead.
-    if (sessions.length === 0) return "";
+    if (hostSessions.length === 0) return "";
     const knownLaneIds = new Set(lanes.map((lane) => lane.id));
     const missingLaneIds = new Set<string>();
-    for (const session of sessions) {
+    for (const session of hostSessions) {
       const laneId = session.laneId?.trim();
       if (!laneId || knownLaneIds.has(laneId)) continue;
       missingLaneIds.add(laneId);
     }
     return Array.from(missingLaneIds).sort().join("\0");
-  }, [lanes, sessions]);
+  }, [hostSessions, lanes]);
 
   const selectLaneForActiveTab = useCallback(
     (sessionId: string | null) => {
@@ -1257,7 +1290,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const refresh = useCallback(async (options: { showLoading?: boolean; force?: boolean } = {}) => {
     const requestedProjectRoot = projectRootRef.current;
     if (!requestedProjectRoot) {
-      setSessions([]);
+      setHostSessions([]);
       hasLoadedOnceRef.current = false;
       hasAuthoritativeSessionsRef.current = false;
       return;
@@ -1354,7 +1387,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
           }
         }
       }
-      setSessions(rows);
+      setHostSessions(rows);
       hasLoadedOnceRef.current = true;
       hasAuthoritativeSessionsRef.current = true;
       if (pendingProjectSwitchRef.current === requestedProjectRoot) {
@@ -1382,7 +1415,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       session: optimistic,
       createdAtMs: Date.now(),
     });
-    setSessions((prev) => upsertSessionByStartedAt(prev, optimistic));
+    setHostSessions((prev) => upsertSessionByStartedAt(prev, optimistic));
   }, [lanes]);
 
   // Used by the CLI continuation flow to flip a stopped session straight to
@@ -1390,7 +1423,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   // view swaps the closed snapshot for the live TerminalView without
   // waiting for the next list refresh.
   const upsertSessionSnapshot = useCallback((session: TerminalSessionSummary) => {
-    setSessions((prev) => upsertSessionByStartedAt(prev, session));
+    setHostSessions((prev) => upsertSessionByStartedAt(prev, session));
   }, []);
 
   const scheduleBackgroundRefresh = useCallback((delayMs = 450) => {
@@ -1438,7 +1471,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         : undefined) ?? null;
     pendingProjectSwitchRef.current = projectStateKey;
     hasAuthoritativeSessionsRef.current = false;
-    setSessions(cachedSessions ?? []);
+    setHostSessions(cachedSessions ?? []);
     setLoading(false);
     if (refreshQueuedRef.current) {
       refreshQueuedRef.current.deferred.reject(new Error("projectRoot changed"));
@@ -1473,10 +1506,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     appStore.setState((prev) => ({
       sessionsCacheByProject: {
         ...prev.sessionsCacheByProject,
-        [projectStateKey]: sessions,
+        [projectStateKey]: hostSessions,
       },
     }));
-  }, [appStore, sessions, projectStateKey]);
+  }, [appStore, hostSessions, projectStateKey]);
 
   useEffect(() => {
     if (!projectRoot || !isWorkRoute) return;
@@ -1519,9 +1552,9 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   useEffect(() => {
     // Refresh scheduling is active-binding-only; foreign slices have their own
     // cross-machine sync cadence and must not drive this project's IPC polling.
-    sessionsRef.current = sessions;
-    hasRunningSessionsRef.current = sessions.some((s) => s.status === "running");
-  }, [sessions]);
+    sessionsRef.current = hostSessions;
+    hasRunningSessionsRef.current = hostSessions.some((s) => s.status === "running");
+  }, [hostSessions]);
 
   useEffect(() => {
     if (!isWorkRoute) return;
@@ -1724,6 +1757,36 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       document.removeEventListener("visibilitychange", refreshVisibleWork);
     };
   }, [isRemoteProject, isWorkRoute, scheduleBackgroundRefresh]);
+
+  // Cancel/Delete (or a fallback to the legacy launch path) removed a launch:
+  // close its tab and, if it was on screen, go back to the draft of that kind so
+  // the restored prompt is right there.
+  useEffect(() => subscribeChatLaunchClosed((detail) => {
+    const itemId = detail.sessionId ?? detail.launchId;
+    setProjectViewState((prev) => {
+      const nextOpen = prev.openItemIds.filter((id) => id !== itemId);
+      const wasShown = prev.activeItemId === itemId || prev.selectedItemId === itemId;
+      // A prompt coming back goes to the draft of its kind; a launch cancelled
+      // elsewhere only closes its tab and leaves the draft the user is on alone.
+      const toDraft = wasShown || (prev.activeItemId == null && detail.restoresPrompt === true);
+      if (!toDraft && nextOpen.length === prev.openItemIds.length) return prev;
+      return {
+        ...prev,
+        openItemIds: nextOpen,
+        ...(toDraft ? { activeItemId: null, selectedItemId: null, draftKind: detail.kind } : {}),
+      };
+    });
+  }), [setProjectViewState]);
+
+  // A launch pinned to another machine routes its chat there from the first
+  // frame, before that machine's slice lists the session.
+  useEffect(() => {
+    for (const source of chatLaunchRowSources) {
+      const sessionId = source.snapshot.sessionId;
+      if (!source.binding || !sessionId || source.binding.key === activeBindingKey) continue;
+      machineRouter.rememberSessionPin({ sessionId, laneId: source.snapshot.laneId }, source.binding);
+    }
+  }, [activeBindingKey, chatLaunchRowSources, machineRouter]);
 
   const filtered = useMemo(() => {
     // Filtering here is active-binding-only: SessionListPane applies the same
@@ -1935,7 +1998,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     // session list refreshes, so prune against the same combined index used to
     // render tabs instead of silently dropping every foreign tab.
     // Pending optimistic rows are also live: launchPtySession opens the tab
-    // before React flushes setSessions, and a concurrent refresh can re-render
+    // before React flushes setHostSessions, and a concurrent refresh can re-render
     // with a stale sessionsById in between. Dropping those ids makes the new
     // terminal exist in the roster but never appear as a tab.
     const validIds = new Set(sessionsById.keys());
@@ -1993,12 +2056,12 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const restorePtyClosed = (previousSessions: readonly TerminalSessionSummary[]) => {
     if (previousSessions.length === 0) return;
     const previousById = new Map(previousSessions.map((session) => [session.id, session] as const));
-    setSessions((prev) => prev.map((session) => previousById.get(session.id) ?? session));
+    setHostSessions((prev) => prev.map((session) => previousById.get(session.id) ?? session));
   };
 
   const markPtyClosed = (ptyId: string, sessionId?: string): string => {
     const endedAt = new Date().toISOString();
-    setSessions((prev) =>
+    setHostSessions((prev) =>
       prev.map((session) =>
         session.ptyId === ptyId || (sessionId != null && session.id === sessionId)
           ? {
@@ -2163,7 +2226,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
           session: optimisticSession,
           createdAtMs: Date.now(),
         });
-        setSessions((prev) => upsertSessionByStartedAt(prev, optimisticSession));
+        setHostSessions((prev) => upsertSessionByStartedAt(prev, optimisticSession));
       } else {
         seedCrossMachineOptimisticSession(optimisticSession, runtimePin);
       }
@@ -2197,7 +2260,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   );
 
   const removeSessionFromList = useCallback((sessionId: string) => {
-    setSessions((prev) => prev.filter((session) => session.id !== sessionId));
+    setHostSessions((prev) => prev.filter((session) => session.id !== sessionId));
   }, []);
 
   /**
@@ -2257,7 +2320,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
             session: optimisticSession,
             createdAtMs: Date.now(),
           });
-          setSessions((prev) => upsertSessionByStartedAt(prev, optimisticSession));
+          setHostSessions((prev) => upsertSessionByStartedAt(prev, optimisticSession));
         } else if (runtimePin) {
           seedCrossMachineOptimisticSession(optimisticSession, runtimePin);
         }
@@ -2289,7 +2352,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
             summary: chat.summary,
           };
           if (belongsToActiveBinding) {
-            setSessions((prev) => upsertSessionByStartedAt(prev, chatSession));
+            setHostSessions((prev) => upsertSessionByStartedAt(prev, chatSession));
           } else if (runtimePin) {
             seedCrossMachineOptimisticSession(chatSession, runtimePin);
           }

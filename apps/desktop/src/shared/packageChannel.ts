@@ -41,3 +41,23 @@ export function resolvePackageChannelFromProcess(source: {
   }
   return normalizeAppPackageChannel(source.env?.ADE_PACKAGE_CHANNEL);
 }
+
+const PACKAGE_CHANNEL_DISPLAY_NAMES: Record<AppPackageChannel, string> = {
+  stable: "ADE",
+  beta: "ADE Beta",
+  alpha: "ADE Alpha",
+};
+
+/** "ADE", "ADE Beta" or "ADE Alpha". */
+export function appPackageChannelDisplayName(channel: AppPackageChannel): string {
+  return PACKAGE_CHANNEL_DISPLAY_NAMES[channel];
+}
+
+/**
+ * The suffix a host adds to the machine name it publishes: " · Beta",
+ * " · Alpha", or "" for stable. Row labels remove the same suffix when they
+ * show the install, so both sides read it from here.
+ */
+export function packageChannelNameSuffix(channel: AppPackageChannel): string {
+  return channel === "beta" ? " · Beta" : channel === "alpha" ? " · Alpha" : "";
+}

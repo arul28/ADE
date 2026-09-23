@@ -44,8 +44,12 @@ builder/
   ScheduleEditor.tsx           cron field + live gloss + presets
   triggerFilters/*             GitHub/Linear/Git/File/Lane/Webhook filter panels (logic reused, reskinned)
   StepStack.tsx                stacked step cards + "+" inserters + terminal cleanup zone
-  StepCard.tsx                 step chrome: index, label, alwaysRun badge, move/remove
+  StepCard.tsx                 step chrome: index, label, alwaysRun badge, move/remove;
+                               run-command Time limit (default 5 min, max 12 h)
   AgentStepEditor.tsx          prompt + ModelPicker + ReasoningEffortPicker + permission + lane targeting
+                               + collapsible Limits row (Stop after / Stop when idle for; collapsed
+                               row reads "No limits · runs until it finishes" or the limits set)
+  MinutesInput.tsx             whole-minutes field shared by Limits and Time limit
   AdeActionEditor.tsx          moved here, reskinned (schemas data source untouched)
   RunCommandFields / RunTestsField / DeleteLaneFields
   LaneTargeting.tsx            "Run in": new lane (name template) / existing lane / no lane

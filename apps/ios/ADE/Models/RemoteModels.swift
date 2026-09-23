@@ -2893,6 +2893,17 @@ struct AgentChatFileRef: Codable, Equatable, Hashable {
   var url: String? = nil
 }
 
+/// Wire form of chat attachments for `chat.send`, `chat.createPromptStash`,
+/// `chat.startLaunch` and `chat.queueLaunchMessage`: `path` + `type`, plus
+/// `url` only when it is non-empty.
+func chatAttachmentArgs(_ attachments: [AgentChatFileRef]) -> [[String: Any]] {
+  attachments.map { ref in
+    var entry: [String: Any] = ["path": ref.path, "type": ref.type]
+    if let url = ref.url, !url.isEmpty { entry["url"] = url }
+    return entry
+  }
+}
+
 struct PromptStashEntry: Codable, Equatable, Identifiable {
   var id: String
   var text: String
@@ -3145,10 +3156,37 @@ struct AgentChatAdeCardMetric: Decodable, Equatable {
 }
 
 struct AgentChatAdeCardRow: Decodable, Equatable {
-  var icon: String?
-  var text: String?
-  var detail: String?
-  var tone: String?
+  /// Stable identity within the card (a `lane_setup` row's stage id). Readers
+  /// match on this alone: every host that writes `lane_setup` cards sends it,
+  /// and `text` is display copy that may be reworded.
+  var key: String? = nil
+  var icon: String? = nil
+  var text: String? = nil
+  var detail: String? = nil
+  var tone: String? = nil
+
+  private enum CodingKeys: String, CodingKey {
+    case key, icon, text, detail, tone
+  }
+
+  init(key: String? = nil, icon: String? = nil, text: String? = nil, detail: String? = nil, tone: String? = nil) {
+    self.key = key
+    self.icon = icon
+    self.text = text
+    self.detail = detail
+    self.tone = tone
+  }
+
+  /// Field-by-field so one mistyped value (a numeric `key` from a newer host)
+  /// drops that field, not the row and with it the whole `rows` array.
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    key = try? container.decodeIfPresent(String.self, forKey: .key)
+    icon = try? container.decodeIfPresent(String.self, forKey: .icon)
+    text = try? container.decodeIfPresent(String.self, forKey: .text)
+    detail = try? container.decodeIfPresent(String.self, forKey: .detail)
+    tone = try? container.decodeIfPresent(String.self, forKey: .tone)
+  }
 }
 
 struct AgentChatAdeCardProgress: Decodable, Equatable {
@@ -4668,6 +4706,10 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   /// by-lane Work list. Older hosts omit both keys.
   var orchestrationParentSessionId: String? = nil
   var spawnKind: AgentChatSpawnKind? = nil
+  /// Client-only: the segmented setup rail of a chat launch that still owns
+  /// this row (`workOverlayChatLaunches`). Never on the wire — not in
+  /// `CodingKeys` — and nil for every ordinary session.
+  var launchRail: [ChatLaunchRailSegment]? = nil
 
   /// True when this row is a chat the CTO spawned. The host only stamps
   /// `parentIdentityKey` when there genuinely is a parent, so the key alone is
@@ -4725,6 +4767,7 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
       && lhs.parentIdentityKey == rhs.parentIdentityKey
       && lhs.orchestrationParentSessionId == rhs.orchestrationParentSessionId
       && lhs.spawnKind == rhs.spawnKind
+      && lhs.launchRail == rhs.launchRail
   }
 }
 

@@ -21702,8 +21702,8 @@ final class ADETests: XCTestCase {
     let claudeGroup = groups.first(where: { $0.key == "claude" })
     let anthropicProvider = claudeGroup?.providers.first(where: { $0.key == "anthropic" })
     let fable = anthropicProvider?.models.first(where: { $0.id == "claude-fable-5-1" })
+    let opus55 = anthropicProvider?.models.first(where: { $0.id == "claude-opus-5-5" })
     let opus5 = anthropicProvider?.models.first(where: { $0.id == "claude-opus-5" })
-    let opus48 = anthropicProvider?.models.first(where: { $0.id == "claude-opus-4-8" })
     let openCodeAnthropic = groups
       .first(where: { $0.key == "opencode" })?
       .providers
@@ -21718,20 +21718,20 @@ final class ADETests: XCTestCase {
     let gpt55 = openAIProvider?.models.first(where: { $0.id == "gpt-5.5" })
 
     XCTAssertEqual(anthropicProvider?.models.map(\.id), [
+      "claude-opus-5-5",
       "claude-fable-5-1",
-      "claude-opus-5",
       "claude-sonnet-5",
       "claude-haiku-4-5",
-      "claude-opus-4-8",
+      "claude-opus-5",
     ])
     XCTAssertEqual(openCodeAnthropic?.models.map(\.id), [
       "opencode/anthropic/claude-fable-5-1",
-      "opencode/anthropic/claude-opus-5",
+      "opencode/anthropic/claude-opus-5-5",
       "opencode/anthropic/claude-sonnet-5",
       "opencode/anthropic/claude-haiku-4-5",
-      "opencode/anthropic/claude-opus-4-8",
+      "opencode/anthropic/claude-opus-5",
     ])
-    XCTAssertEqual(workDefaultCatalogModelId(provider: "claude"), "claude-fable-5-1")
+    XCTAssertEqual(workDefaultCatalogModelId(provider: "claude"), "claude-opus-5-5")
     XCTAssertEqual(fable?.displayName, "Claude Fable 5.1")
     XCTAssertEqual(fable?.tier, .flagship)
     XCTAssertEqual(fable?.tagline, "Flagship · 1M context")
@@ -21743,8 +21743,14 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(workKnownModelDisplayName("fable-5.0"), "Claude Fable 5.1")
     XCTAssertEqual(workKnownModelDisplayName("opencode/anthropic/claude-fable-5-1"), "Claude Fable 5.1")
     XCTAssertNotNil(ADEColor.modelBrand(for: "opencode/anthropic/claude-fable-5-1"))
+    XCTAssertEqual(opus55?.displayName, "Claude Opus 5.5")
+    XCTAssertEqual(opus55?.tagline, "Agentic coding · 1M context")
+    XCTAssertEqual(opus55?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(opus55?.defaultReasoningEffort, "medium")
+    XCTAssertTrue(opus55?.supportsCodexFastMode == true)
+    XCTAssertNotNil(ADEColor.modelBrand(for: "claude-opus-5-5"))
     XCTAssertEqual(opus5?.displayName, "Claude Opus 5")
-    XCTAssertEqual(opus5?.tagline, "Agentic coding · 1M context")
+    XCTAssertEqual(opus5?.tagline, "Previous Opus · 1M context")
     XCTAssertEqual(opus5?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(opus5?.defaultReasoningEffort, "high")
     XCTAssertTrue(opus5?.supportsCodexFastMode == true)
@@ -21754,9 +21760,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(droidOpus5?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(droidOpus5?.defaultReasoningEffort, "high")
     XCTAssertFalse(droidOpus5?.supportsCodexFastMode == true)
-    XCTAssertEqual(opus48?.displayName, "Claude Opus 4.8")
-    XCTAssertEqual(opus48?.tier, .flagship)
-    XCTAssertEqual(opus48?.tagline, "Previous Opus · 1M context")
+    XCTAssertEqual(opus5?.tier, .flagship)
     XCTAssertNotNil(ADEColor.modelBrand(for: "claude-opus-4-8"))
     XCTAssertEqual(gpt55?.displayName, "GPT-5.5")
     XCTAssertEqual(gpt55?.tier, .flagship)
@@ -21771,8 +21775,10 @@ final class ADETests: XCTestCase {
       .first(where: { $0.key == "openai" })?
       .models
 
-    XCTAssertEqual(codexModels?.prefix(4).map(\.id), [
+    XCTAssertEqual(codexModels?.prefix(6).map(\.id), [
       "gpt-6-astra",
+      "gpt-6-sol",
+      "gpt-6-luna",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
@@ -21806,13 +21812,58 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(luna?.defaultReasoningEffort, "medium")
 
     XCTAssertTrue(workModelIdsEquivalent("astra", "openai/gpt-6-astra"))
-    XCTAssertTrue(workModelIdsEquivalent("sol", "openai/gpt-5.6-sol"))
+    XCTAssertTrue(workModelIdsEquivalent("sol", "openai/gpt-6-sol"))
+    XCTAssertFalse(workModelIdsEquivalent("sol", "openai/gpt-5.6-sol"))
     XCTAssertTrue(workModelIdsEquivalent("terra", "gpt-5.6-terra"))
-    XCTAssertTrue(workModelIdsEquivalent("luna", "openai/gpt-5.6-luna"))
+    XCTAssertTrue(workModelIdsEquivalent("luna", "openai/gpt-6-luna"))
+    XCTAssertFalse(workModelIdsEquivalent("luna", "openai/gpt-5.6-luna"))
     XCTAssertEqual(workModelCatalogGroupKey(for: "sol", currentProvider: ""), "codex")
     XCTAssertEqual(workKnownModelDisplayName("openai/gpt-6-astra"), "GPT-6 Astra")
     XCTAssertEqual(workKnownModelDisplayName("openai/gpt-5.6-terra"), "GPT-5.6 Terra")
     XCTAssertNotNil(ADEColor.modelBrand(for: "luna"))
+  }
+
+  func testWorkModelCatalogResolvesGPT6SolLunaAndOpus55() {
+    XCTAssertEqual(workKnownModelDisplayName("openai/gpt-6-sol"), "GPT-6 Sol")
+    XCTAssertEqual(workKnownModelDisplayName("gpt-6-sol"), "GPT-6 Sol")
+    XCTAssertEqual(workKnownModelDisplayName("sol"), "GPT-6 Sol")
+    XCTAssertEqual(workKnownModelDisplayName("gpt-5.6-sol"), "GPT-5.6 Sol")
+    XCTAssertEqual(workKnownModelDisplayName("openai/gpt-6-luna"), "GPT-6 Luna")
+    XCTAssertEqual(workKnownModelDisplayName("luna"), "GPT-6 Luna")
+    XCTAssertEqual(workKnownModelDisplayName("gpt-5.6-luna"), "GPT-5.6 Luna")
+    XCTAssertEqual(workKnownModelDisplayName("anthropic/claude-opus-5-5"), "Claude Opus 5.5")
+    XCTAssertEqual(workKnownModelDisplayName("claude-opus-5-5"), "Claude Opus 5.5")
+    XCTAssertEqual(workKnownModelDisplayName("opus"), "Claude Opus 5.5")
+    XCTAssertEqual(workKnownModelDisplayName("opus-5"), "Claude Opus 5")
+    XCTAssertTrue(workModelIdsEquivalent("opus", "anthropic/claude-opus-5-5"))
+    XCTAssertFalse(workModelIdsEquivalent("opus", "claude-opus-5"))
+    XCTAssertEqual(workModelCatalogGroupKey(for: "gpt-6-luna", currentProvider: ""), "codex")
+
+    let groups = workModelCatalogGroups(currentModelId: "", currentProvider: "codex")
+    let codexModels = groups.first(where: { $0.key == "codex" })?.providers.first(where: { $0.key == "openai" })?.models
+    let sol = codexModels?.first(where: { $0.id == "gpt-6-sol" })
+    XCTAssertEqual(sol?.displayName, "GPT-6 Sol")
+    XCTAssertEqual(sol?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max", "ultra"])
+    XCTAssertEqual(sol?.defaultReasoningEffort, "medium")
+    XCTAssertTrue(sol?.supportsCodexFastMode == true)
+    let luna = codexModels?.first(where: { $0.id == "gpt-6-luna" })
+    XCTAssertEqual(luna?.displayName, "GPT-6 Luna")
+    XCTAssertEqual(luna?.tier, .fast)
+    XCTAssertEqual(luna?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(luna?.defaultReasoningEffort, "medium")
+    let opus55 = groups.first(where: { $0.key == "claude" })?.providers.first?.models.first
+    XCTAssertEqual(opus55?.id, "claude-opus-5-5")
+    XCTAssertEqual(opus55?.displayName, "Claude Opus 5.5")
+    XCTAssertEqual(opus55?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(opus55?.defaultReasoningEffort, "medium")
+    XCTAssertTrue(opus55?.supportsCodexFastMode == true)
+
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "openai/gpt-6-sol"), ["low", "medium", "high", "xhigh", "max", "ultra"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "gpt-6-luna"), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-opus-5-5"), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertNotNil(ADEColor.modelBrand(for: "gpt-6-sol"))
+    XCTAssertNotNil(ADEColor.modelBrand(for: "openai/gpt-6-luna"))
+    XCTAssertNotNil(ADEColor.modelBrand(for: "claude-opus-5-5"))
   }
 
   func testMobileComposerReasoningTiersMirrorDesktopRegistry() {
@@ -21826,12 +21877,14 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-opus-5"), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-opus-5"), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "opus"), ["low", "medium", "high", "xhigh", "max"])
-    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-opus-4-8"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
-    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-opus-4-8-api"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
-    XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-opus-4-8"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
-    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-opus-4-7"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
-    XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-opus-4-7"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
-    XCTAssertEqual(ADEColor.reasoningTiers(for: "opus[1m]"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-opus-5-5"), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-opus-5-5"), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-opus-4-8"), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-opus-4-8-api"), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-opus-4-8"), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-opus-4-7"), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-opus-4-7"), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "opus[1m]"), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-sonnet-5"), ["low", "medium", "high", "max"])
     XCTAssertNil(ADEColor.reasoningTiers(for: "claude-haiku-4-5"))
     XCTAssertEqual(ADEColor.reasoningTiers(for: "astra"), ["low", "medium", "high", "xhigh", "max"])
@@ -22584,21 +22637,22 @@ final class ADETests: XCTestCase {
   }
 
   func testWorkModelCatalogMapsCurrentAndMigratedOpusAliases() {
-    XCTAssertTrue(workModelIdsEquivalent("opus", "claude-opus-5"))
+    XCTAssertTrue(workModelIdsEquivalent("opus", "claude-opus-5-5"))
+    XCTAssertTrue(workModelIdsEquivalent("opus-5", "claude-opus-5"))
     XCTAssertTrue(workModelIdsEquivalent("anthropic/claude-opus-5-api", "claude-opus-5"))
-    XCTAssertTrue(workModelIdsEquivalent("opencode/anthropic/opus", "claude-opus-5"))
+    XCTAssertTrue(workModelIdsEquivalent("opencode/anthropic/opus", "claude-opus-5-5"))
     XCTAssertTrue(workModelIdsEquivalent("opencode/anthropic/claude-opus-5", "claude-opus-5"))
-    XCTAssertTrue(workModelIdsEquivalent("opencode/anthropic/claude-opus-4-8", "claude-opus-4-8"))
+    XCTAssertTrue(workModelIdsEquivalent("opencode/anthropic/claude-opus-4-8", "claude-opus-5"))
     XCTAssertEqual(workKnownModelDisplayName("anthropic/claude-opus-5-api"), "Claude Opus 5")
-    XCTAssertEqual(workKnownModelDisplayName("opencode/anthropic/opus"), "Claude Opus 5")
-    XCTAssertTrue(workModelIdsEquivalent("claude-opus-4-6", "claude-opus-4-8"))
-    XCTAssertTrue(workModelIdsEquivalent("anthropic/claude-opus-4-8-api", "claude-opus-4-8"))
-    XCTAssertTrue(workModelIdsEquivalent("anthropic/claude-opus-4-6", "anthropic/claude-opus-4-8"))
-    XCTAssertTrue(workModelIdsEquivalent("opus-4-6", "claude-opus-4-8"))
-    XCTAssertTrue(workModelIdsEquivalent("opus-4.6", "claude-opus-4-8"))
+    XCTAssertEqual(workKnownModelDisplayName("opencode/anthropic/opus"), "Claude Opus 5.5")
+    XCTAssertTrue(workModelIdsEquivalent("claude-opus-4-6", "claude-opus-5"))
+    XCTAssertTrue(workModelIdsEquivalent("anthropic/claude-opus-4-8-api", "claude-opus-5"))
+    XCTAssertTrue(workModelIdsEquivalent("anthropic/claude-opus-4-6", "anthropic/claude-opus-5"))
+    XCTAssertTrue(workModelIdsEquivalent("opus-4-6", "claude-opus-5"))
+    XCTAssertTrue(workModelIdsEquivalent("opus-4.6", "claude-opus-5"))
     XCTAssertTrue(workModelIdsEquivalent("claude-opus-4-6-1m", "claude-opus-4-7-1m"))
     XCTAssertTrue(workModelIdsEquivalent("claude-opus-4-6[1m]", "claude-opus-4-7-1m"))
-    XCTAssertEqual(workKnownModelDisplayName("anthropic/claude-opus-4-6"), "Claude Opus 4.8")
+    XCTAssertEqual(workKnownModelDisplayName("anthropic/claude-opus-4-6"), "Claude Opus 5")
   }
 
   func testExtractWorkNavigationTargetsFindsFilePathsAndPullRequestNumbers() {

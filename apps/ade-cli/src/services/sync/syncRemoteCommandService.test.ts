@@ -28,6 +28,7 @@ function makePayload(
 
 function createService(options?: {
   agentChatService?: Record<string, unknown>;
+  chatLaunchService?: Record<string, unknown>;
   aiIntegrationService?: Record<string, unknown>;
   cursorCloudFleetService?: Record<string, unknown>;
   conflictService?: Record<string, unknown>;
@@ -102,6 +103,7 @@ function createService(options?: {
     ...(options?.operationService ? { operationService: options.operationService } : {}),
     ...(options?.projectConfigService ? { projectConfigService: options.projectConfigService } : {}),
     ...(options?.agentChatService ? { agentChatService: options.agentChatService } : {}),
+    ...(options?.chatLaunchService ? { chatLaunchService: options.chatLaunchService } : {}),
     ...(options?.aiIntegrationService ? { aiIntegrationService: options.aiIntegrationService } : {}),
     ...(options?.cursorCloudFleetService ? { cursorCloudFleetService: options.cursorCloudFleetService } : {}),
     ...(options?.externalSessionsService ? { externalSessionsService: options.externalSessionsService } : {}),
@@ -144,6 +146,38 @@ function makePairingConnectInfo(
 }
 
 describe("createSyncRemoteCommandService", () => {
+  it("validates a phone's chat.startLaunch with the chat.create / chat.send parsers and hands it to the launch service", async () => {
+    const start = vi.fn(async (args: unknown) => ({ launchId: (args as { launchId: string }).launchId, phase: "running" }));
+    const { service } = createService({
+      agentChatService: { getAvailableModels: vi.fn().mockResolvedValue([]) },
+      chatLaunchService: { start, list: vi.fn(() => []) },
+    });
+    const launchId = "6f1c2a4e-1b2c-4d5e-8f90-123456789abc";
+    await service.execute(makePayload("chat.startLaunch", {
+      kind: "chat",
+      mode: "foreground",
+      launchId,
+      laneId: "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+      laneName: "fix-flaky-test",
+      prompt: "fix the flaky test",
+      chat: {
+        create: { provider: "codex", model: "openai/gpt-5.6-sol", laneId: "ignored", sessionId: "ignored" },
+        message: { text: "fix the flaky test", sessionId: "ignored" },
+      },
+    }));
+    expect(start).toHaveBeenCalledTimes(1);
+    const args = start.mock.calls[0]![0] as Record<string, any>;
+    expect(args).toMatchObject({ kind: "chat", launchId, laneName: "fix-flaky-test" });
+    expect(args.chat.create).toMatchObject({ provider: "codex", model: "openai/gpt-5.6-sol" });
+    expect(args.chat.create.laneId).toBeUndefined();
+    expect(args.chat.create.sessionId).toBeUndefined();
+    expect(args.chat.message).toEqual({ text: "fix the flaky test" });
+
+    await expect(service.execute(makePayload("chat.startLaunch", { kind: "chat", launchId, prompt: "x" })))
+      .rejects.toThrow(/chat.create and chat.message/);
+    await expect(service.execute(makePayload("chat.listLaunches"))).resolves.toEqual([]);
+  });
+
   it("registers machine inventory as a viewer-allowed runtime command", () => {
     const { service } = createService();
 

@@ -3,6 +3,7 @@ import { CaretRight, GitBranch, Rocket, WarningCircle } from "@phosphor-icons/re
 import type { LaneLinearIssue, LaneSummary } from "../../../shared/types";
 import { linearIssueBranchName } from "../../../shared/linearIssueBranch";
 import {
+  getAppDefaultModelDescriptor,
   getDefaultModelDescriptor,
 } from "../../../shared/modelRegistry";
 import {
@@ -183,6 +184,7 @@ export function BatchLaunchModal({
   const defaultModelId = useMemo(
     () =>
       recents[0]
+      ?? getAppDefaultModelDescriptor()?.id
       ?? getDefaultModelDescriptor("claude")?.id
       ?? getDefaultModelDescriptor("opencode")?.id
       ?? "",

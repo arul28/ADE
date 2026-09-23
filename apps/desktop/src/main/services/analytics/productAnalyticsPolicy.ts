@@ -202,6 +202,7 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "stop",
   "reset_credit_consumed",
   "pending_input_dismissed",
+  "new_lane_launch",
 ]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {

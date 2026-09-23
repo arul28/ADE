@@ -35,6 +35,10 @@ import {
 } from "../services/projects/machineLayout";
 import { readBrainStartupState } from "../services/runtime/brainStartupState";
 import { DEFAULT_SYNC_HOST_PORT } from "../services/sync/syncProtocol";
+import {
+  describeThisMachineRefusal,
+  readThisMachineRefusalFromWire,
+} from "../services/account/thisMachineRefusalText";
 import type {
   SyncListenerPortDiagnosis,
 } from "../services/sync/sharedSyncListener";
@@ -81,7 +85,11 @@ export type DoctorBrainInput = {
 export type DoctorPublishHealth = Pick<
   SyncAccountDirectoryHealth,
   "state" | "failingSinceMs" | "lastLegDurations"
-> & Partial<Pick<SyncAccountDirectoryHealth, "lastSuccessAt" | "skipReason">>;
+> & Partial<Pick<
+  SyncAccountDirectoryHealth,
+  // The last four name a directory refusal of this computer and its date.
+  "lastSuccessAt" | "skipReason" | "lastHttpStatus" | "lastHttpReason" | "revokedAt" | "recoveryGaveUpAt"
+>>;
 
 export type DoctorInput = {
   nowMs: number;
@@ -767,7 +775,12 @@ function publishRow(
   // so `failingSince` is always set by the time anyone runs this), leaving the
   // row saying "failing for 6m · http_error" about a machine whose repair is one
   // sign-in away.
-  const reasonDetail = health.skipReason ? ` · ${health.skipReason}` : "";
+  //
+  // A named refusal gets the CLI's own sentence instead: it carries the removal
+  // date and `ade machines reconnect`, which the brain's sentence does not.
+  const refusal = readThisMachineRefusalFromWire(health);
+  const reasonText = refusal ? describeThisMachineRefusal(refusal) : health.skipReason;
+  const reasonDetail = reasonText ? ` · ${reasonText}` : "";
   if (failingForMs != null && failingForMs >= PUBLISH_FAILURE_RED_MS) {
     return {
       key: "publish",

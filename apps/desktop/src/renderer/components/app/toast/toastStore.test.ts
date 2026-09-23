@@ -20,6 +20,11 @@ import {
 import { ToastStack } from "./ToastStack";
 import { useLaneEventToasts } from "./useLaneEventToasts";
 import { useAutoDiagnosticsToast } from "./useAutoDiagnosticsToast";
+import {
+  buildOptimisticChatLaunchSnapshot,
+  insertOptimisticChatLaunch,
+  resetChatLaunchStoreForTests,
+} from "../../../state/chatLaunchStore";
 import type { DiagnosticsAutoSentPayload } from "../../../../shared/types/diagnostics";
 
 // The store is a module-level singleton with no reset hook; each test clears
@@ -251,6 +256,32 @@ describe("useLaneEventToasts", () => {
 
     toast?.action?.onClick();
     expect(navigate).toHaveBeenCalledWith("/lanes?laneId=lane-1&focus=single");
+  });
+
+  it("stays quiet about lanes a new-lane launch owns, since the launch already shows them", () => {
+    resetChatLaunchStoreForTests();
+    insertOptimisticChatLaunch(null, buildOptimisticChatLaunchSnapshot({
+      launch: {
+        kind: "chat",
+        mode: "foreground",
+        launchId: "11111111-2222-4333-8444-555555555555",
+        laneId: "lane-launch",
+        laneName: "Launch Lane",
+        prompt: "fix it",
+      },
+      includeFetch: true,
+    }));
+    const api = installLaneEventApi();
+    render(React.createElement(LaneEventHarness, { navigate: vi.fn() }));
+    clearAll();
+
+    api.emitLifecycle({ type: "lane-created", laneId: "lane-launch", laneName: "Launch Lane", color: null });
+    api.emitLifecycle({ type: "lane-deleted", laneId: "lane-launch", laneName: "Launch Lane", color: null });
+    expect(getToasts()).toHaveLength(0);
+
+    api.emitLifecycle({ type: "lane-created", laneId: "lane-other", laneName: "Other Lane", color: null });
+    expect(getToasts().map((toast) => toast.title)).toEqual(["Other Lane"]);
+    resetChatLaunchStoreForTests();
   });
 
   it("skips user rebase success toasts but surfaces automated success and failures", () => {

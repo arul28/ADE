@@ -53,3 +53,34 @@ export function readAccountRefusalCode(
     ? reason as AccountMachineRefusalCode
     : "other";
 }
+
+/** A named refusal of THIS machine, with the facts a person needs to act on it. */
+export type ThisMachineRefusal = {
+  code: AccountMachineRefusalCode;
+  /** ISO time of the removal, when the brain knows it. */
+  revokedAt: string | null;
+  /** Epoch ms at which the automatic repair stopped, or null while it may still run. */
+  recoveryGaveUpAt: number | null;
+};
+
+/**
+ * The refusal the desktop tells the person about, or null.
+ *
+ * Only the two named codes count. An unrecognised 403 has no repair a button
+ * can offer, so it stays with the generic "couldn't publish" line.
+ */
+export function readThisMachineRefusal(
+  health: SyncAccountDirectoryHealth | null | undefined,
+): ThisMachineRefusal | null {
+  const code = readAccountRefusalCode(health);
+  if (code !== "machine_revoked" && code !== "pairing_authentication_required") return null;
+  const revokedAt = typeof health?.revokedAt === "string" && Number.isFinite(Date.parse(health.revokedAt))
+    ? health.revokedAt
+    : null;
+  const gaveUp = health?.recoveryGaveUpAt;
+  return {
+    code,
+    revokedAt,
+    recoveryGaveUpAt: typeof gaveUp === "number" && Number.isFinite(gaveUp) ? gaveUp : null,
+  };
+}

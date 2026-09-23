@@ -409,6 +409,7 @@ private func workRootSessionPresentationRenderSignature(
     hasher.combine(session.archivedAt)
     hasher.combine(session.settledAt)
     hasher.combine(session.statusNote)
+    hasher.combine(session.launchRail)
     hasher.combine(session.attentionRequestedAt)
     hasher.combine(session.attentionMessage)
     hasher.combine(session.lastTurnFailedAt)

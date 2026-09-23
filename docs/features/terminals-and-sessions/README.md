@@ -1157,6 +1157,22 @@ Renderer surfaces:
   when the read resolved inside the scope that asked for it, so a response
   landing after a project-tab switch cannot suppress the new scope's first lane
   read.
+- `apps/desktop/src/renderer/components/terminals/useChatLaunchCliDriver.ts` —
+  the hand-off for brain-owned new-lane CLI launches. The brain sets up the
+  lane and parks a CLI launch at phase `awaiting-client`, because the
+  terminal is a renderer concern. `TerminalsPage` mounts this hook next to
+  `useWorkSessions` (not in the draft pane, so a launch still completes after
+  the user leaves the draft); for each launch this window started
+  (`originClientId`) it starts the PTY through the same `launchPtySession`
+  path every Work CLI launch uses, with the launch's mode as the disposition,
+  then reports the session with `chatLaunch.completeClient({ launchId,
+  sessionId })` — or `{ launchId, error }` on failure. A module-level
+  in-flight set keeps a Work remount from starting one launch twice. A window
+  reloaded mid-launch no longer holds the prepared launch and reports that
+  instead of hanging; if the brain does not take the reported session (the
+  launch was cancelled meanwhile, or is gone), the driver disposes the PTY it
+  just started. See
+  [Chat › New-lane launches](../chat/composer-and-ui.md#new-lane-launches).
 - `apps/desktop/src/renderer/components/terminals/SessionCard.tsx` —
   full-bleed three-line Work row. Line one adapts pin, singleton lane, spawn
   lineage, drifted branch, diff, and last-activity identity around
@@ -1282,9 +1298,20 @@ Renderer surfaces:
   counters, and transcript replay mode for disposed chat-CLI sessions so an
   ended tracked CLI tab can repaint the full retained transcript before falling
   back to `terminal.preview`. Work-tracked agent CLI terminals paste clipboard
-  images by saving the bytes as chat temp attachments through the active runtime
-  and bracketed-pasting a short path/type stub into the PTY, while standalone
-  terminals keep the native clipboard-image shortcut behavior. Selected terminal
+  images by saving the bytes as chat temp attachments on the session's machine
+  (`agentChat.saveTempAttachment` with the session's `runtimePin`) and
+  bracketed-pasting a short path/type stub into the PTY, while standalone
+  terminals keep the native clipboard-image shortcut behavior. On a paired
+  machine that takes the streamed upload, preload sends the bytes through that
+  upload, not the runtime command (see
+  [Composer and UI](../chat/composer-and-ui.md), "Remote hosts"). A failed save
+  is never silent: the terminal logs an `[ade-term] image paste failed` warning
+  (it reaches the main log as `window.console`) and shows "Couldn't attach the
+  image: <reason>" in the pane for 8 seconds. When the error carries no message,
+  the reason is "no reason was given.", because a failed clipboard read also
+  lands here and nothing was saved. A failed save counts as handled, so the
+  paste is not tried a second time. The paste code lives in
+  `terminalImagePaste.ts` (see below). Selected terminal
   text copies through the local desktop clipboard bridge (with browser clipboard
   fallback for previews). Shift+drag remains available for local text
   selection when a full-screen CLI enables terminal mouse tracking; on macOS,
@@ -1315,6 +1342,18 @@ Renderer surfaces:
   `rehydrate-after-fit`, `hydrate-normalize-declined`, `hydrate-complete`, …);
   a dims mismatch warns on **columns only**, since row disagreement is normal
   and columns are what decide wrapping.
+- `apps/desktop/src/renderer/components/terminals/terminalImagePaste.ts`,
+  `TerminalImagePasteNotice.tsx`, and `terminalBracketedPaste.ts` — the image
+  paste path of a Work-tracked CLI terminal, split out of `TerminalView`.
+  `terminalImagePaste.ts` reads the clipboard image, saves it on the session's
+  machine, and writes the path stub into the PTY. It sees the runtime through a
+  narrow interface (session id, pin, disposed, the notice fields, `notify`,
+  `writeInput`), so tests drive it without a mounted terminal. A failure goes
+  through one reporter that logs the `[ade-term] image paste failed` line and
+  sets the pane message for `IMAGE_PASTE_NOTICE_MS` (8 s).
+  `TerminalImagePasteNotice` renders that message with a dismiss button.
+  `terminalBracketedPaste.ts` holds the DEC mode 2004 start and end markers
+  that `TerminalView` and the paste path share.
 - `apps/desktop/src/renderer/components/terminals/terminalTranscriptNormalize.ts`
   — the runtime-free transcript hydration helpers, split out of `TerminalView`
   so they are testable without a mounted terminal. `inferTranscriptColumns`
@@ -1410,7 +1449,14 @@ Renderer surfaces:
 - `apps/desktop/src/renderer/components/terminals/useWorkSessions.ts` —
   hook that owns work view state (open items, active tab, draft kind,
   view mode, filters) and persists it to `localStorage` under
-  `ade.workViewState.v1`. It also owns the board's renderer-side derivation:
+  `ade.workViewState.v1`. It keeps the host roster in `hostSessions` and
+  derives `sessions` by merging stand-in rows for new-lane chat launches whose
+  chat the roster (or the cross-machine slice) does not list yet; launch rows
+  are never written to `sessionsCacheByProject` and never count as running for
+  refresh cadence. `SessionListPane` groups a launch's rows under the lane the
+  brain is still creating (named from the launch, not shown as an orphan
+  lane), and `SessionCard` shows the launch's status line in the preview slot and
+  "Setting up" / "Setup failed" in the status slot while it is pending. It also owns the board's renderer-side derivation:
   `buildWorkBoardModel` and the PR half `lanePrWaitingReason`, exposed as
   `workBoardBuckets` and `workBoardWaitingReasons`. Lane/status deeplinks layer a transient
   `deeplinkViewOverride` over the saved project state instead of rewriting

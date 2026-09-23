@@ -43,6 +43,8 @@ export type AdeCardVariant =
   | "pr_merge_ready"
   | "pr_conflict"
   | "claude_session_quota"
+  /** A chat's new-lane setup record (fetch, checkout, environment, start agent). */
+  | "lane_setup"
   | (string & {});
 
 /** Semantic row glyph. Surfaces map these to their own icon vocabulary. */
@@ -62,6 +64,11 @@ export type AdeCardMetric = {
 };
 
 export type AdeCardRow = {
+  /**
+   * Optional stable identity for the row within its card (e.g. a `lane_setup`
+   * row's stage id). Readers match on this, never on the display `text`.
+   */
+  key?: string | null;
   icon?: AdeCardIcon;
   text: string;
   detail?: string | null;
@@ -142,6 +149,7 @@ export const KNOWN_ADE_CARD_VARIANTS: readonly AdeCardVariant[] = [
   "pr_merge_ready",
   "pr_conflict",
   "claude_session_quota",
+  "lane_setup",
 ];
 
 export function isKnownAdeCardVariant(variant: string | null | undefined): boolean {

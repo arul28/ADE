@@ -1,7 +1,10 @@
+import os from "node:os";
 import path from "node:path";
 import {
   createSyncAccountDirectoryHealth,
+  MAX_ADE_HOME_DISPLAY_CHARS,
   type AdeAccountMachineEndpoint,
+  type AdeInstallChannel,
   type SyncAccountDirectoryHealth,
   type SyncAccountDirectoryLegDurations,
   type SyncRoleSnapshot,
@@ -16,6 +19,11 @@ import {
 } from "../../../../desktop/src/shared/types/power";
 import type { MachinePowerSource } from "../power/machinePowerMonitor";
 import { borrowSharedMachinePowerSource } from "../power/sharedMachinePowerMonitor";
+import { resolveMachineAdeDir } from "../projects/machineLayout";
+import {
+  normalizeAppPackageChannel,
+  packageChannelNameSuffix,
+} from "../../../../desktop/src/shared/packageChannel";
 import { normalizeHarnessPresetList } from "../../../../desktop/src/shared/harnessPresets";
 import {
   buildMachineInventoryDetail,
@@ -112,6 +120,15 @@ export type AccountMachineRegistration = {
   reachableEndpoints: AdeAccountMachineEndpoint[];
   /** Counts only; live account/preset detail stays behind a paired RPC. */
   inventory?: MachineInventorySummary;
+  /**
+   * Which ADE install this is. Two installs on one Mac (ADE and ADE Alpha) are
+   * two machines with the same hostname, and a person removing the one that
+   * "looks like a duplicate" needs this to tell them apart. Omitted when the
+   * install cannot be named; a directory that does not store it ignores it.
+   */
+  channel?: AdeInstallChannel;
+  /** The install's ADE home, as `~/.ade-alpha`. Never the full path. */
+  adeHome?: string;
   /**
    * This machine's battery and wall power, omitted when we could not read it.
    * A machine with no battery reports a null `batteryPercent`, never a zero.
@@ -556,15 +573,43 @@ export function publishedMachineName(
   packageChannel: string | null | undefined,
 ): string {
   const normalizedName = name.trim();
-  const channel = packageChannel?.trim().toLowerCase();
-  const suffix = channel === "beta"
-    ? " · Beta"
-    : channel === "alpha"
-      ? " · Alpha"
-      : "";
+  const suffix = packageChannelNameSuffix(normalizeAppPackageChannel(packageChannel));
   return suffix && !normalizedName.endsWith(suffix)
     ? `${normalizedName}${suffix}`
     : normalizedName;
+}
+
+/**
+ * Name this ADE install for the account directory.
+ *
+ * The channel comes from the packaged channel first. Without one, only the
+ * default `~/.ade` home is called stable: a custom home is a dev or test
+ * install, and calling it "ADE" would make it look like the real one.
+ *
+ * The home is sent relative to the user's home folder so the directory never
+ * stores a username. A home outside it is sent by its folder name only.
+ */
+export function describeAdeInstall(
+  env: NodeJS.ProcessEnv = process.env,
+  homeDir: string = os.homedir(),
+): { channel?: AdeInstallChannel; adeHome?: string } {
+  const adeDir = resolveMachineAdeDir(env);
+  const explicit = normalizeAppPackageChannel(env.ADE_PACKAGE_CHANNEL);
+  const channel: AdeInstallChannel | null = explicit !== "stable"
+    ? explicit
+    : path.basename(adeDir) === ".ade"
+      ? "stable"
+      : null;
+  const relative = path.relative(homeDir, adeDir);
+  const insideHome = !relative.startsWith("..") && !path.isAbsolute(relative);
+  // The home folder itself is "~": its folder name is the username.
+  const adeHome = insideHome
+    ? (relative ? `~/${relative.split(path.sep).join("/")}` : "~")
+    : path.basename(adeDir);
+  return {
+    ...(channel ? { channel } : {}),
+    ...(adeHome ? { adeHome: adeHome.slice(0, MAX_ADE_HOME_DISPLAY_CHARS) } : {}),
+  };
 }
 
 /**
@@ -602,6 +647,8 @@ export function buildAccountMachineRegistration(args: {
   /** This machine's power and sleep state at the moment of the publish. */
   powerPublication?: MachinePowerPublication | null;
   inventory?: MachineInventorySummary | null;
+  /** Which install this is; see `describeAdeInstall`. */
+  install?: { channel?: AdeInstallChannel; adeHome?: string } | null;
 }): AccountMachineRegistration | null {
   const machineKey = args.machineKey.trim();
   const connectInfo = args.snapshot.pairingConnectInfo;
@@ -667,6 +714,8 @@ export function buildAccountMachineRegistration(args: {
       : null,
     reachableEndpoints: endpoints,
     ...(args.inventory ? { inventory: args.inventory } : {}),
+    ...(args.install?.channel ? { channel: args.install.channel } : {}),
+    ...(args.install?.adeHome ? { adeHome: args.install.adeHome } : {}),
   }, args.powerPublication ?? null);
 }
 
@@ -802,6 +851,12 @@ export function createAccountMachinePublisherService(options: {
    */
   let machineRevoked = false;
   let machineRevokedAt: string | null = null;
+  /**
+   * When the automatic repair stopped trying for the current refusal. The
+   * desktop reads it to say "ADE stopped trying" instead of implying a repair
+   * is still coming. Cleared by the next successful publish.
+   */
+  let recoveryGaveUpAtMs: number | null = null;
   /**
    * The directory's `code` from the most recent publish attempt, or null when
    * that attempt did not end in a recognised refusal. Reset at the top of every
@@ -963,6 +1018,7 @@ export function createAccountMachinePublisherService(options: {
           ? health.failingSinceMs ?? args.attemptAt
           : null,
     };
+    if (state === "published") recoveryGaveUpAtMs = null;
     if (health.failingSinceMs == null) {
       publishFailureAnalytics.end();
       sustainedFailureReported = false;
@@ -1239,6 +1295,7 @@ export function createAccountMachinePublisherService(options: {
       packageChannel: process.env.ADE_PACKAGE_CHANNEL,
       publicKeyRawBase64,
       powerPublication: readPowerPublication(),
+      install: describeAdeInstall(),
     });
     if (!observedRegistration) {
       outcome("machine_key_unavailable", {
@@ -1710,6 +1767,7 @@ export function createAccountMachinePublisherService(options: {
       snapshot,
       packageChannel: process.env.ADE_PACKAGE_CHANNEL,
       publicKeyRawBase64,
+      install: describeAdeInstall(),
     });
     if (!registration) return;
 
@@ -1846,10 +1904,28 @@ export function createAccountMachinePublisherService(options: {
       requestTriggeredPublish();
     },
 
+    /**
+     * Record that the automatic repair gave up on this machine's refusal, so
+     * the desktop can say so. Not a state change: the heartbeat stays where
+     * the refusal left it.
+     */
+    recordPairingRecoveryGaveUp(atMs: number = Date.now()): void {
+      recoveryGaveUpAtMs = atMs;
+    },
+
+    /** The automatic repair is trying again, so the old give-up no longer holds. */
+    clearPairingRecoveryGaveUp(): void {
+      recoveryGaveUpAtMs = null;
+    },
+
     getPublisherHealth(): SyncAccountDirectoryHealth {
       return {
         ...health,
         lastLegDurations: { ...health.lastLegDurations },
+        // Only while the removal is latched: a stale date next to a healthy
+        // publish would tell the desktop this machine is still removed.
+        ...(machineRevoked && machineRevokedAt ? { revokedAt: machineRevokedAt } : {}),
+        ...(recoveryGaveUpAtMs != null ? { recoveryGaveUpAt: recoveryGaveUpAtMs } : {}),
       };
     },
 

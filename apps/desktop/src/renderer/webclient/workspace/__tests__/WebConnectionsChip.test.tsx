@@ -17,9 +17,10 @@ function machine(
     dialable?: boolean;
     online?: boolean;
     lastSeenAt?: number | null;
+    channel?: "stable" | "beta" | "alpha" | null;
   },
 ) {
-  const { machineKey, name, dialable = false, online = false, lastSeenAt = null } = overrides;
+  const { machineKey, name, dialable = false, online = false, lastSeenAt = null, channel = null } = overrides;
   return {
     machineKey,
     deviceId: machineKey,
@@ -35,6 +36,7 @@ function machine(
       : [],
     lastSeenAt,
     online,
+    channel,
   };
 }
 
@@ -220,6 +222,36 @@ describe("WebConnectionsChip", () => {
 
     openPopover();
     expect(screen.getByText("Offline · last seen 3h ago")).toBeTruthy();
+  });
+
+  it("tells two installs on one Mac apart and warns before removing a live one", async () => {
+    const removeAccountMachine = vi.fn(async () => undefined);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    try {
+      renderChip(
+        [
+          machine({ machineKey: "alpha", name: "MacBook Pro · Alpha", online: true, lastSeenAt: Date.now() - 60_000, channel: "alpha" }),
+          machine({ machineKey: "stable", name: "MacBook Pro", online: true, channel: "stable" }),
+        ],
+        { removeAccountMachine },
+      );
+
+      openPopover();
+      expect(screen.getByText("MacBook Pro · ADE Alpha")).toBeTruthy();
+      expect(screen.getByText("MacBook Pro · ADE")).toBeTruthy();
+
+      fireEvent.click(screen.getByLabelText("Manage MacBook Pro · Alpha"));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Remove from account" }));
+
+      expect(confirm).toHaveBeenCalledTimes(1);
+      const message = String(confirm.mock.calls[0]?.[0]);
+      expect(message).toContain("Remove MacBook Pro · ADE Alpha from your ADE account?");
+      expect(message).toContain("It was active 1 minute ago.");
+      // Declined: nothing is removed.
+      expect(removeAccountMachine).not.toHaveBeenCalled();
+    } finally {
+      confirm.mockRestore();
+    }
   });
 
   it("names no machine as the app's own — the list is status, not a switcher", () => {

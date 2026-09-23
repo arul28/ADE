@@ -157,7 +157,7 @@ describe("runAccountDeviceLogin", () => {
 
     expect(await runAccountDeviceLogin()).toEqual({
       status: "failed",
-      message: "Signing in again on this computer isn't available on this build.",
+      message: "Confirming it's you on this computer isn't available on this build.",
     });
     expect(startLogin).not.toHaveBeenCalled();
   });

@@ -8,6 +8,7 @@ import type {
   AgentChatPermissionMode,
 } from "./chat";
 import type { PersonalChatRemoteCommandAction } from "./personalChats";
+import type { ChatLaunchEvent } from "./chatLaunch";
 import type {
   CloneProjectInput,
   CreateProjectInput,
@@ -554,6 +555,18 @@ export type SyncAccountDirectoryHealth = {
   reachableEndpointCount: number;
   lastLegDurations: SyncAccountDirectoryLegDurations;
   failingSinceMs: number | null;
+  /**
+   * When the account removed this machine (ISO), while the directory refuses
+   * it. The desktop names the date in its banner. Optional because brains
+   * built before this field never send it.
+   */
+  revokedAt?: string | null;
+  /**
+   * Epoch ms at which the automatic repair stopped trying for the current
+   * refusal. Cleared by the next successful publish. Optional for the same
+   * reason as `revokedAt`.
+   */
+  recoveryGaveUpAt?: number | null;
 };
 
 export function createSyncAccountDirectoryHealth(
@@ -1983,6 +1996,14 @@ export type SyncRemoteCommandAction =
   | "chat.deletePromptStash"
   | "chat.warmupModel"
   | "chat.launch"
+  | "chat.startLaunch"
+  | "chat.getLaunch"
+  | "chat.listLaunches"
+  | "chat.cancelLaunch"
+  | "chat.retryLaunch"
+  | "chat.startLaunchNow"
+  | "chat.queueLaunchMessage"
+  | "chat.completeLaunchClient"
   | "chat.launchCli"
   | "chat.generateAutoLaneIdentity"
   | "chat.getImageDataUrl"
@@ -2394,6 +2415,16 @@ export type SyncRosterSubscribeEnvelope = SyncEnvelopeWithPayload<"roster_subscr
 export type SyncRosterUnsubscribeEnvelope = SyncEnvelopeWithPayload<"roster_unsubscribe", SyncRosterUnsubscribePayload>;
 export type SyncRosterSnapshotEnvelope = SyncEnvelopeWithPayload<"roster_snapshot", SyncRosterSnapshotPayload>;
 export type SyncRosterDeltaEnvelope = SyncEnvelopeWithPayload<"roster_delta", SyncRosterDeltaPayload>;
+/**
+ * Brain → every peer: a new-lane launch changed (shared/types/chatLaunch.ts),
+ * stamped with the host project it belongs to so multi-project clients can
+ * route it.
+ */
+export type SyncChatLaunchEventPayload = ChatLaunchEvent & {
+  projectId: string | null;
+  projectRootPath: string;
+};
+export type SyncChatLaunchEventEnvelope = SyncEnvelopeWithPayload<"chat_launch_event", SyncChatLaunchEventPayload>;
 export type SyncCommandEnvelope = SyncEnvelopeWithPayload<"command", SyncCommandPayload>;
 export type SyncCommandAckEnvelope = SyncEnvelopeWithPayload<"command_ack", SyncCommandAckPayload>;
 export type SyncCommandResultEnvelope = SyncEnvelopeWithPayload<"command_result", SyncCommandResultPayload>;
@@ -2469,6 +2500,7 @@ export type SyncEnvelope =
   | SyncRosterUnsubscribeEnvelope
   | SyncRosterSnapshotEnvelope
   | SyncRosterDeltaEnvelope
+  | SyncChatLaunchEventEnvelope
   | SyncCommandEnvelope
   | SyncCommandAckEnvelope
   | SyncCommandResultEnvelope

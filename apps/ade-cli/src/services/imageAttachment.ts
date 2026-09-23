@@ -3,6 +3,7 @@ import path from "node:path";
 import {
   LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
   legacyAttachmentCapMessage,
+  maxBase64EncodedLength,
 } from "../../../desktop/src/shared/chatAttachmentLimits";
 import {
   resolveStagedAttachmentExtension,
@@ -70,7 +71,7 @@ function decodeBase64ImagePayload(value: string): Buffer {
   if (!compact || !/^[A-Za-z0-9+/]+={0,2}$/.test(compact) || compact.length % 4 === 1) {
     throw new Error("Temporary attachment base64 is invalid.");
   }
-  const maxEncodedLength = Math.ceil(MAX_IMAGE_BYTES / 3) * 4;
+  const maxEncodedLength = maxBase64EncodedLength(MAX_IMAGE_BYTES);
   if (compact.length > maxEncodedLength) throw new Error(legacyAttachmentCapMessage("Temporary attachments"));
   const content = Buffer.from(compact, "base64");
   if (content.byteLength > MAX_IMAGE_BYTES) throw new Error(legacyAttachmentCapMessage("Temporary attachments"));

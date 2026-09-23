@@ -1,3 +1,4 @@
+import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import fs from "node:fs";
 import path from "node:path";
 import { randomInt } from "node:crypto";
@@ -147,6 +148,7 @@ type SyncServiceArgs = {
     typeof createComputerUseArtifactBrokerService
   >;
   agentChatService: ReturnType<typeof createAgentChatService>;
+  chatLaunchService?: ChatLaunchService | null;
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
   devinCloudFleetService?: ReturnType<typeof createDevinCloudFleetService> | null;
   personalChatScope?: PersonalChatScopeContract;
@@ -745,6 +747,7 @@ export function createSyncService(args: SyncServiceArgs) {
     operationService: args.operationService,
     aiIntegrationService: args.aiIntegrationService,
     agentChatService: args.agentChatService,
+    chatLaunchService: args.chatLaunchService,
     cursorCloudFleetService: args.cursorCloudFleetService,
     devinCloudFleetService: args.devinCloudFleetService,
     personalChatScope: args.personalChatScope,
@@ -892,6 +895,7 @@ export function createSyncService(args: SyncServiceArgs) {
       sessionDeltaService: args.sessionDeltaService,
       ptyService: args.ptyService,
       agentChatService: args.agentChatService,
+      chatLaunchService: args.chatLaunchService,
       cursorCloudFleetService: args.cursorCloudFleetService,
       devinCloudFleetService: args.devinCloudFleetService,
       aiIntegrationService: args.aiIntegrationService,

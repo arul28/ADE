@@ -2,12 +2,15 @@ import type {
   AdeAccountMachine,
   AdeAccountMachineEndpoint,
   AdeAccountMachinesResult,
+  AdeInstallChannel,
 } from "./types/account";
+import { MAX_ADE_HOME_DISPLAY_CHARS } from "./types/account";
 import type { SyncHelloOkPayload } from "./types/sync";
 import { fromMachinePowerRecord } from "./types/power";
 import type { MachinePower, MachineSleepState } from "./types/power";
 import type { MachineInventorySummary } from "./types/machineInventory";
 import { isTailnetHostname } from "./tailnet";
+import { appPackageChannelDisplayName, packageChannelNameSuffix } from "./packageChannel";
 
 const DEFAULT_TIMEOUT_MS = 8_000;
 const MAX_MACHINES = 500;
@@ -229,8 +232,24 @@ export function parseAccountMachine(value: unknown): AdeAccountMachine | null {
     reachableEndpoints: endpoints,
     lastSeenAt,
     online: value.online === true,
+    ...parseMachineInstall(value),
     ...parseMachineInventory(value),
     ...parseMachinePower(value),
+  };
+}
+
+/** Dropped, not nulled, when absent, so an older directory's rows are unchanged. */
+function parseMachineInstall(value: Record<string, unknown>): {
+  channel?: AdeInstallChannel;
+  adeHome?: string;
+} {
+  const channel = value.channel === "stable" || value.channel === "beta" || value.channel === "alpha"
+    ? value.channel
+    : null;
+  const adeHome = optionalBoundedString(value.adeHome, MAX_ADE_HOME_DISPLAY_CHARS);
+  return {
+    ...(channel ? { channel } : {}),
+    ...(adeHome ? { adeHome } : {}),
   };
 }
 
@@ -299,6 +318,81 @@ function parseMachinePower(value: Record<string, unknown>): {
 
 export function accountMachineDisplayName(machine: AdeAccountMachine): string | null {
   return machine.customName?.trim() || machine.name?.trim() || null;
+}
+
+/**
+ * Which ADE install a row is, as "ADE Alpha" — or the ADE home when the install
+ * has no channel (a custom home). Null when the directory did not say.
+ */
+export function accountMachineInstallLabel(machine: AdeAccountMachine): string | null {
+  if (machine.channel) return appPackageChannelDisplayName(machine.channel);
+  return machine.adeHome?.trim() || null;
+}
+
+/**
+ * The name a machine row shows: the display name plus the install, as
+ * "MacBook Pro · ADE Alpha". Two installs on one Mac share a hostname, and
+ * a person removing "the duplicate" must be able to see which one it is.
+ *
+ * Hosts already fold " · Alpha" into the name they publish. That suffix is
+ * dropped when the install label replaces it, so the row never reads
+ * "MacBook Pro · Alpha · ADE Alpha". A person's custom name is kept as typed.
+ * Rename fields keep using `accountMachineDisplayName`.
+ */
+export function accountMachineRowLabel(machine: AdeAccountMachine): string | null {
+  const install = accountMachineInstallLabel(machine);
+  const custom = machine.customName?.trim();
+  const reported = machine.name?.trim();
+  if (!install) return custom || reported || null;
+  const suffix = machine.channel ? packageChannelNameSuffix(machine.channel) : "";
+  const base = custom
+    || (reported && suffix && reported.endsWith(suffix) ? reported.slice(0, -suffix.length) : reported)
+    || null;
+  return base ? `${base} · ${install}` : install;
+}
+
+/** A Remove warns when the machine reported in within this window. */
+export const ACCOUNT_MACHINE_RECENT_ACTIVITY_MS = 5 * 60_000;
+
+/**
+ * The warning a Remove confirmation adds for a machine that is probably in use
+ * right now, or null. A removed machine stays signed in but is refused until
+ * someone confirms it on that computer, so removing a live one by mistake cuts
+ * it off without anyone at it noticing.
+ */
+export function accountMachineRecentActivityWarning(
+  machine: AdeAccountMachine,
+  nowMs: number = Date.now(),
+): string | null {
+  const lastSeenAt = machine.lastSeenAt;
+  if (lastSeenAt == null || !Number.isFinite(lastSeenAt)) return null;
+  const ageMs = Math.max(0, nowMs - lastSeenAt);
+  if (ageMs >= ACCOUNT_MACHINE_RECENT_ACTIVITY_MS) return null;
+  const minutes = Math.floor(ageMs / 60_000);
+  const when = minutes < 1
+    ? "less than a minute ago"
+    : minutes === 1
+      ? "1 minute ago"
+      : `${minutes} minutes ago`;
+  return `It was active ${when}. Removing it disconnects it from your account until someone confirms it on that computer.`;
+}
+
+/**
+ * The body of every Remove confirmation (desktop sheet and web confirm). A
+ * machine seen in the last few minutes is probably in use, so that warning
+ * comes first. The words for the way back are the button the person will
+ * find on that computer, not "sign in", because it is still signed in.
+ */
+export function accountMachineRemovalConfirmBody(
+  machine: AdeAccountMachine,
+  nowMs: number = Date.now(),
+): string {
+  const home = machine.adeHome?.trim();
+  return [
+    accountMachineRecentActivityWarning(machine, nowMs),
+    home ? `This install uses ${home}.` : null,
+    "It will no longer connect through your account. To add it back, open ADE on that computer and choose Reconnect this computer.",
+  ].filter(Boolean).join("\n\n");
 }
 
 export function parseAccountMachinesPayload(payload: unknown): AdeAccountMachine[] {

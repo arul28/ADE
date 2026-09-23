@@ -61,12 +61,12 @@ The manifest is a data file, so it is treated as untrusted input.
 
 **The codex install-dir name is not the published package name.**
 `@openai/codex-darwin-arm64` is an npm alias: the tarball is published under
-`@openai/codex` at version `0.155.1-darwin-arm64`. So the pin reads
+`@openai/codex` at version `0.156.0-darwin-arm64`. So the pin reads
 
 ```
 package:   @openai/codex-darwin-arm64      <- the node_modules directory name
-version:   0.155.1-darwin-arm64
-tarball:   .../@openai/codex/-/codex-0.155.1-darwin-arm64.tgz
+version:   0.156.0-darwin-arm64
+tarball:   .../@openai/codex/-/codex-0.156.0-darwin-arm64.tgz
 ```
 
 `ToolTargetPin.package` is deliberately documented as the *install directory*
@@ -125,10 +125,10 @@ profile — 650 MB must never roam.
 
 ```
 <tools root>/
-  @openai/codex-darwin-arm64/0.155.1-darwin-arm64/
+  @openai/codex-darwin-arm64/0.156.0-darwin-arm64/
     vendor/aarch64-apple-darwin/bin/codex
     .install-complete
-  @anthropic-ai/claude-agent-sdk-darwin-arm64/0.3.278/
+  @anthropic-ai/claude-agent-sdk-darwin-arm64/0.3.280/
   opencode-darwin-arm64/1.18.31/
   .staging/
   .locks/

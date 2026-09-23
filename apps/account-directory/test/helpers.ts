@@ -66,6 +66,12 @@ export function activityRelayStub(
     directoryAuth: string | null;
   }> = [];
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    // The Workers runtime's own rule, so a relay call that production would
+    // throw on fails here too. Every relay test used to accept `"error"`,
+    // which is how a 503 on every re-pair reached production.
+    if (init?.redirect !== undefined && init.redirect !== "follow" && init.redirect !== "manual") {
+      throw new TypeError(`Invalid redirect value, must be one of "follow" or "manual" ("${init.redirect}" won't be implemented since it does not make sense at the edge).`);
+    }
     calls.push({
       url: String(input),
       method: init?.method ?? "GET",
@@ -110,6 +116,17 @@ export function request(
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
+}
+
+/**
+ * The Clerk authorize URL a confirmed POST opens. The Worker answers with a
+ * page that opens it (a meta refresh and a link), not a 302.
+ */
+export async function signInUrlFrom(response: Response): Promise<URL> {
+  const body = await response.clone().text();
+  const href = /<a href="([^"]+)">open the sign-in page<\/a>/.exec(body)?.[1];
+  if (!href) throw new Error(`No sign-in link in response (${response.status}).`);
+  return new URL(href.replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#39;/g, "'"));
 }
 
 export function deviceConfirmationRequest(
@@ -164,7 +181,7 @@ export async function completeDeviceLogin(
     env,
     { now: () => now },
   );
-  const state = new URL(approval.headers.get("location")!).searchParams.get("state")!;
+  const state = (await signInUrlFrom(approval)).searchParams.get("state")!;
   const tokenExchange = (async () => new Response(JSON.stringify({
     access_token: accessToken,
     refresh_token: "approved-refresh-token",

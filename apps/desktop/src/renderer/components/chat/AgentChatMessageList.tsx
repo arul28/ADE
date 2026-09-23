@@ -148,6 +148,8 @@ import {
 } from "./chatTranscriptRows";
 import { BackgroundJobLine, SubagentResultCard, SubagentSpawnCard, SubagentStoppedGroupCard } from "./SubagentActivityCards";
 import { AdeCard } from "./AdeCard";
+import { LaneSetupTranscriptCard } from "./launch/LaneSetupCard";
+import { LAUNCH_DELIVERY_ERROR_METADATA_KEY } from "./launch/chatLaunchSynthetic";
 import { navigateToSpawnedChat } from "./spawnNavigation";
 import { ChatUserMinimap } from "./ChatUserMinimap";
 import { promptHistoryEventKey } from "./chatPromptHistory";
@@ -820,8 +822,20 @@ const SURFACE_INLINE_CARD_STYLE: React.CSSProperties = {
   borderColor: "color-mix(in srgb, var(--chat-glass-border) 100%, transparent)",
 };
 
-function describeUserDeliveryState(event: Extract<AgentChatEvent, { type: "user_message" }>): { label: string; className: string } | null {
+function describeUserDeliveryState(
+  event: Extract<AgentChatEvent, { type: "user_message" }>,
+): { label: string; className: string; title?: string } | null {
   if (event.deliveryState === "failed") {
+    // A message queued during a new-lane launch that the host could not hand
+    // to the agent yet. The host keeps it and retries; the reason is on hover.
+    const launchDeliveryError = event.metadata?.[LAUNCH_DELIVERY_ERROR_METADATA_KEY];
+    if (typeof launchDeliveryError === "string" && launchDeliveryError.trim()) {
+      return {
+        label: "Couldn't send — retrying",
+        className: "ade-chat-status-pill border-amber-500/25 text-amber-200",
+        title: launchDeliveryError,
+      };
+    }
     return {
       label: "failed",
       className: "ade-chat-status-pill border-red-500/25 text-red-300",
@@ -2793,7 +2807,11 @@ function renderEvent(
           style={MESSAGE_CARD_STYLE}
         >
           {deliveryChip ? (
-            <span className={cn("mb-1 inline-flex items-center border px-1.5 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*9/14)] font-medium", deliveryChip.className)}>
+            <span
+              className={cn("mb-1 inline-flex items-center border px-1.5 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*9/14)] font-medium", deliveryChip.className)}
+              title={deliveryChip.title}
+              data-testid="user-message-delivery-chip"
+            >
               {deliveryChip.label}
             </span>
           ) : null}
@@ -4144,6 +4162,11 @@ function renderEvent(
     // is what keeps old transcripts readable.
     if (event.variant === CLAUDE_SESSION_QUOTA_CARD_VARIANT && options?.usageLimitResumeActive) {
       return null;
+    }
+    // A new-lane launch's setup record. The live launch snapshot drives it
+    // while setup runs; afterwards it is a one-line summary that expands.
+    if (event.variant === "lane_setup") {
+      return <LaneSetupTranscriptCard card={event} />;
     }
     // Without a dispatcher the card filters out every non-`open` action, so the
     // schema's action row could never be used. `retry`/`refresh` re-enter the

@@ -176,7 +176,7 @@ export async function runAccountDeviceLogin(options: {
   if (!api?.startDeviceLogin || !api.pollDeviceLogin) {
     return {
       status: "failed",
-      message: "Signing in again on this computer isn't available on this build.",
+      message: "Confirming it's you on this computer isn't available on this build.",
     };
   }
 
